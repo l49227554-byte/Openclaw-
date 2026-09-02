@@ -137,7 +137,7 @@ export function createSessionShareCatalog(api: OpenClawPluginApi): SessionCatalo
     id: "openclaw",
     label: "OpenClaw sessions",
     supportsProcessHomeIsolation: true,
-    visibility: "published",
+    audience: "session-viewers",
     async list(query) {
       let nodes: CatalogNode[];
       try {

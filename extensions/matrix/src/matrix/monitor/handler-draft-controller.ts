@@ -210,6 +210,19 @@ export async function createMatrixDraftController(params: {
     }
   };
 
+  const settleAcceptedDraftAfterError = async () => {
+    if (draftDisposition !== "active" || !draftStream?.eventId()) {
+      return;
+    }
+    if (streaming === "partial") {
+      await finalizeAcceptedPartialDraft();
+      return;
+    }
+    // Quiet and progress previews are ordinary Matrix events rather than live
+    // drafts. Preserve current behavior once Matrix has accepted the event.
+    draftDisposition = "retained";
+  };
+
   return {
     draftStream,
     cancelProgressDraft: () => progressDraft.cancel(),
@@ -221,6 +234,7 @@ export async function createMatrixDraftController(params: {
     resetDraftDeliveryState,
     updateDraftFromLatestFullText,
     finalizeAcceptedPartialDraft,
+    settleAcceptedDraftAfterError,
     draftDisposition: () => draftDisposition,
     beginDraftGeneration: () => {
       draftDisposition = "active";

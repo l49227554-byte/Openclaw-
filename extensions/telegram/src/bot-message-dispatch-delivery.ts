@@ -39,6 +39,7 @@ import type { TelegramInlineButtons } from "./button-types.js";
 import { mergeTelegramPartialDeliveryError } from "./chunk-delivery.js";
 import { canonicalizeTelegramPresentationPayload } from "./interactive-fallback.js";
 import { createLaneDeliveryStateTracker } from "./lane-delivery-state.js";
+import { resolveTelegramMediaMaxBytes } from "./media-limits.js";
 import {
   createLaneTextDeliverer,
   type DraftLaneState,
@@ -179,7 +180,10 @@ function createDeliveryBaseOptions(turn: Turn) {
     runtime: turn.runtime,
     bot: turn.bot,
     mediaLocalRoots: turn.mediaLocalRoots,
-    mediaMaxBytes: (turn.opts.mediaMaxMb ?? turn.telegramCfg.mediaMaxMb ?? 100) * 1024 * 1024,
+    mediaMaxBytes: resolveTelegramMediaMaxBytes({
+      mediaMaxMb: turn.opts.mediaMaxMb,
+      fallbackMediaMaxMb: turn.telegramCfg.mediaMaxMb,
+    }),
     replyToMode: turn.replyToMode,
     textLimit: turn.textLimit,
     thread: turn.context.threadSpec,

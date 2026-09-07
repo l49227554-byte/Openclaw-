@@ -8,13 +8,9 @@ import { normalizeAccountId } from "../../routing/session-key.js";
 
 const MB = 1024 * 1024;
 
-function normalizeMediaMaxBytes(limitMb: number | undefined): number | undefined {
-  if (limitMb === undefined) {
-    return undefined;
-  }
-  const limitBytes = limitMb * MB;
-  return Number.isFinite(limitBytes) && limitBytes > 0
-    ? Math.max(1, Math.floor(limitBytes))
+function resolvePositiveLimitBytes(limitMb: number | undefined): number | undefined {
+  return typeof limitMb === "number" && Number.isFinite(limitMb) && limitMb > 0
+    ? Math.floor(limitMb * MB)
     : undefined;
 }
 
@@ -31,9 +27,9 @@ export function resolveChannelMediaMaxBytes(params: {
     cfg: params.cfg,
     accountId,
   });
-  const channelLimitBytes = normalizeMediaMaxBytes(channelLimit);
+  const channelLimitBytes = resolvePositiveLimitBytes(channelLimit);
   if (channelLimitBytes !== undefined) {
     return channelLimitBytes;
   }
-  return normalizeMediaMaxBytes(params.cfg.agents?.defaults?.mediaMaxMb);
+  return resolvePositiveLimitBytes(params.cfg.agents?.defaults?.mediaMaxMb);
 }

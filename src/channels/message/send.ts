@@ -150,7 +150,11 @@ export function serializeDurableMessagePayloadOutcomes(
   }
   return outcomes.map((outcome): SerializedDurableMessagePayloadOutcome => {
     if (outcome.status === "sent") {
-      return { index: outcome.index, status: "sent", resultCount: outcome.results.length };
+      return {
+        index: outcome.index,
+        status: "sent",
+        resultCount: outcome.results.length,
+      };
     }
     if (outcome.status === "suppressed") {
       return {
@@ -458,6 +462,12 @@ async function sendMessageBatch(
         const authority = getReplyPayloadMetadata(payload)?.sessionWriterDeliveryAuthority;
         return authority ? [authority] : [];
       });
+  // Optional audio that repeats a delivered answer owns no durable completion, so
+  // recovery could not rebuild its writer fence. Both delivery lanes — routed and
+  // channel-local — arrive here, so the policy is honored once, at the queue boundary.
+  const liveOnlyPayload =
+    pendingFinalCompletion === undefined &&
+    params.payloads.some((payload) => payload.ttsSupplement?.liveOnly === true);
   const onPlatformSendDispatch =
     ephemeralWriterAuthorities.length > 0
       ? async () => {
@@ -480,6 +490,7 @@ async function sendMessageBatch(
     {
       ...params,
       ...pendingFinalDelivery,
+      ...(liveOnlyPayload ? { skipQueue: true } : {}),
       onPlatformSendDispatch,
       assertDirectAdapterHandoff,
     },

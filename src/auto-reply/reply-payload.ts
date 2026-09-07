@@ -148,7 +148,7 @@ export function isReplyPayloadTtsSupplement(
 export function markReplyPayloadAsTtsSupplement<T extends ReplyPayload>(
   payload: T,
   spokenText: string = payload.spokenText ?? payload.text ?? "",
-  options?: { visibleTextAlreadyDelivered?: boolean },
+  options?: { visibleTextAlreadyDelivered?: boolean; liveOnly?: boolean },
 ): T {
   const normalizedSpokenText = normalizeTtsSupplementSpokenText(spokenText);
   if (!normalizedSpokenText) {
@@ -162,6 +162,7 @@ export function markReplyPayloadAsTtsSupplement<T extends ReplyPayload>(
       ...(options?.visibleTextAlreadyDelivered === true
         ? { visibleTextAlreadyDelivered: true }
         : {}),
+      ...(options?.liveOnly === true ? { liveOnly: true } : {}),
     },
   };
 }

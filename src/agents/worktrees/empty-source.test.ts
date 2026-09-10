@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as commandExec from "../../process/exec.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
@@ -10,6 +11,11 @@ import * as stateLease from "../../state/openclaw-state-lease.js";
 import { requireGit, runGit } from "./git.js";
 import { getRegistryWorktree } from "./registry.js";
 import { ManagedWorktreeService, SNAPSHOT_RETENTION_MS } from "./service.js";
+
+vi.mock("./capacity.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./capacity.js")>()),
+  requireWorktreeDiskSpace: vi.fn(),
+}));
 
 const identity = {
   GIT_AUTHOR_NAME: "OpenClaw Test",
@@ -204,6 +210,49 @@ describe("empty managed workspaces", () => {
     expect((await service.gc()).snapshotsPruned).toBe(1);
     expect(fsSync.existsSync(created.repoRoot)).toBe(false);
     expect(fsSync.existsSync(path.dirname(created.repoRoot))).toBe(false);
+    expect(getRegistryWorktree(env, created.id)).toBeUndefined();
+  });
+
+  it("serializes final source expiry against a concurrent restore", async () => {
+    const created = await create("expiry-restore-race");
+    await fs.writeFile(path.join(created.path, "draft.txt"), "Restorable work\n");
+    await service.remove({ id: created.id, reason: "archive" });
+    now += SNAPSHOT_RETENTION_MS + 1;
+
+    const deletionEntered = createDeferred();
+    const releaseDeletion = createDeferred();
+    const remove = fs.rm;
+    vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (String(args[0]) === created.repoRoot) {
+        deletionEntered.resolve();
+        await releaseDeletion.promise;
+      }
+      return await remove(...args);
+    });
+
+    const cleanup = service.gc();
+    await deletionEntered.promise;
+    let restoreSettled = false;
+    const restore = service
+      .restore({ id: created.id })
+      .then(
+        (record) => ({ record, error: undefined }),
+        (error: unknown) => ({ record: undefined, error }),
+      )
+      .finally(() => {
+        restoreSettled = true;
+      });
+    await new Promise((resolve) => {
+      setTimeout(resolve, 20);
+    });
+    expect(restoreSettled).toBe(false);
+
+    releaseDeletion.resolve();
+    expect((await cleanup).snapshotsPruned).toBe(1);
+    const outcome = await restore;
+    expect(outcome.record).toBeUndefined();
+    expect(outcome.error).toBeInstanceOf(Error);
+    expect(fsSync.existsSync(created.repoRoot)).toBe(false);
     expect(getRegistryWorktree(env, created.id)).toBeUndefined();
   });
 

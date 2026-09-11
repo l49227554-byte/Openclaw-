@@ -44,8 +44,10 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { readUpdateStateSchemaVersions } from "../infra/update-candidate-state.js";
 import type { UpdateRecovery } from "../infra/update-recovery.js";
 import { recordUpdateRunPhase } from "../infra/update-run-ledger.js";
-import { resolveUpdateFinalizationTimeoutMs } from "../infra/update-run-timeouts.js";
-import { UPDATE_RUNNER_TIMEOUT_MS } from "../infra/update-runner-command.js";
+import {
+  resolveUpdateFinalizationTimeoutMs,
+  UPDATE_RUNNER_TIMEOUT_MS,
+} from "../infra/update-run-timeouts.js";
 import { readCurrentGitUpdateRecovery } from "../infra/update-runner-git-recovery.js";
 import { runGatewayUpdate } from "../infra/update-runner.js";
 import type { UpdateRunResult } from "../infra/update-runner.js";

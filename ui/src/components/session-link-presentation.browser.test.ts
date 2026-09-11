@@ -1,10 +1,12 @@
+import { render } from "lit";
 import { afterEach, describe, expect, it } from "vitest";
+import { renderForwardedAttribution } from "../pages/chat/components/chat-forwarded-attribution.ts";
 import "../styles/base.css";
 import "../styles/chat/text.css";
 import "../styles/sidebar-markdown.css";
 import "../styles/chat/grouped.css";
 
-const title = "A resolved session title long enough to need truncation in a narrow chat bubble";
+const title = "A resolved session title long enough to wrap in a narrow chat bubble";
 
 // Zero-sized inline boxes expose the line's baseline without relying on font metrics.
 function baselineMarker(): HTMLSpanElement {
@@ -36,7 +38,7 @@ describe("session link presentation", () => {
       const untitled = host.querySelectorAll("a")[1]!;
       const outer = baselineMarker();
       const inner = baselineMarker();
-      link.after(outer);
+      link.before(outer);
       label.prepend(inner);
 
       for (const width of [240, 700]) {
@@ -44,8 +46,10 @@ describe("session link presentation", () => {
         expect(
           Math.abs(inner.getBoundingClientRect().bottom - outer.getBoundingClientRect().bottom),
         ).toBeLessThan(0.6);
-        expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
-        expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
+        expect(host.scrollWidth).toBeLessThanOrEqual(width);
+        if (width === 240) {
+          expect(label.getClientRects().length).toBeGreaterThan(1);
+        }
         expect(link.getBoundingClientRect().width).toBeLessThanOrEqual(width);
       }
       expect(getComputedStyle(link).color).toBe(getComputedStyle(untitled).color);
@@ -58,19 +62,57 @@ describe("session link presentation", () => {
     },
   );
 
-  // Flex items blockify inline-grid; ordinary Markdown links retain their inline outer display.
-  it.each([
-    ["sidebar-markdown", "inline-grid"],
-    ["chat-reply-attribution", "grid"],
-  ])("shares the titled-link treatment in %s", (className, expectedDisplay) => {
-    const host = document.createElement("div");
-    host.id = "session-link-proof";
-    host.className = className;
-    host.innerHTML = `<a class="markdown-session-link markdown-session-link--titled"><span class="session-label">${title}</span></a><a class="markdown-session-link">untitled</a>`;
-    document.body.append(host);
-    const [titled, untitled] = host.querySelectorAll("a");
-    expect(getComputedStyle(titled!).color).toBe(getComputedStyle(untitled!).color);
-    expect(getComputedStyle(titled!).display).toBe(expectedDisplay);
-    expect(getComputedStyle(titled!.firstElementChild!).textOverflow).toBe("ellipsis");
-  });
+  it.each(["sidebar-markdown", "chat-reply-attribution"])(
+    "shares the titled-link treatment in %s",
+    (className) => {
+      const host = document.createElement("div");
+      host.id = "session-link-proof";
+      host.className = className;
+      host.style.width = "240px";
+      host.innerHTML = `<span>From</span><a class="markdown-session-link markdown-session-link--titled"><span class="session-label">${title}</span></a><a class="markdown-session-link">untitled</a>`;
+      document.body.append(host);
+      const [titled, untitled] = host.querySelectorAll("a");
+      expect(getComputedStyle(titled!).color).toBe(getComputedStyle(untitled!).color);
+      expect(titled!.firstElementChild!.getClientRects().length).toBeGreaterThan(1);
+      expect(host.scrollWidth).toBeLessThanOrEqual(host.clientWidth);
+      expect(titled!.textContent).toBe(title);
+      const outer = baselineMarker();
+      const inner = baselineMarker();
+      host.firstElementChild!.prepend(outer);
+      titled!.firstElementChild!.prepend(inner);
+      expect(
+        Math.abs(inner.getBoundingClientRect().bottom - outer.getBoundingClientRect().bottom),
+      ).toBeLessThan(0.6);
+    },
+  );
+
+  it.each(["agent:research:notes", "LegacySessionWithoutAnyWordBreaks"])(
+    "contains forwarded attribution with a long unbroken name: %s",
+    (sessionKey) => {
+      const host = document.createElement("div");
+      host.id = "session-link-proof";
+      host.style.width = "240px";
+      document.body.append(host);
+      render(
+        renderForwardedAttribution(
+          {
+            kind: "group",
+            key: "forwarded",
+            role: "assistant",
+            senderSession: { sessionKey },
+            messages: [],
+            visibleContent: "text",
+            timestamp: 0,
+            isStreaming: false,
+          },
+          {
+            agentId: "main",
+            agents: [{ id: "research", identity: { name: "UnbrokenResearchAgentDisplayName" } }],
+          },
+        ),
+        host,
+      );
+      expect(host.scrollWidth).toBeLessThanOrEqual(host.clientWidth);
+    },
+  );
 });

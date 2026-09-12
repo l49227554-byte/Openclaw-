@@ -385,8 +385,6 @@ it.runIf(process.platform !== "win32").each([
           const { handleInvoke } =
             await vi.importActual<typeof import("./invoke.js")>("./invoke.js");
           fixture.handleInvoke.mockImplementation(handleInvoke);
-          const { prepareNodeHostRuntime } =
-            await vi.importActual<typeof import("./runtime.js")>("./runtime.js");
           const prepared = await prepareNodeHostRuntime({
             config: { nodeHost: { skills: { enabled: false } } },
             enableDuplexPluginCommands: true,

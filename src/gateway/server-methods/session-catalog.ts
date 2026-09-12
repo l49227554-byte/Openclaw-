@@ -29,8 +29,6 @@ import type {
 } from "../../plugins/session-catalog.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
-import { projectSessionParticipant } from "../session-identity-projection.js";
-import type { SessionActorProfileIdentity } from "../session-utils-contracts.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import { authorizeSessionCatalogThread } from "./session-catalog-authorization.js";
 import { continueAuthorizedSessionCatalog } from "./session-catalog-continue.js";
@@ -49,10 +47,10 @@ import {
   catalogRegistrationSnapshot,
   type CatalogRegistrationSnapshot,
 } from "./session-catalog-provider-access.js";
+import { readAuthorizedSessionCatalog } from "./session-catalog-read.js";
 import { catalogStartHandler } from "./session-catalog-terminal-start.js";
 import {
   filterSessionCatalogHost,
-  isPublishedCatalogVisible,
   resolveSessionCatalogVisibility,
 } from "./session-catalog-visibility.js";
 import type {
@@ -585,37 +583,18 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
       if (!authorization) {
         return;
       }
-      const { catalogId: _catalogId, ...providerRequest } = request;
-      const page = await provider.read({
-        ...providerRequest,
-        agentId: authorization.agentId,
-        allowProcessHomeFallback: authorization.allowProcessHomeFallback,
+      const result = await readAuthorizedSessionCatalog({
+        request,
+        provider,
+        ...authorization,
+        client,
+        context,
       });
-      // Source IO can outlive the caller's role grant; current policy owns data release.
-      if (
-        provider.audience === "session-viewers" &&
-        !isPublishedCatalogVisible(
-          resolveSessionCatalogVisibility(client, context.getRuntimeConfig()),
-        )
-      ) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.FORBIDDEN, "session catalog thread is not visible to this caller"),
-        );
+      if (!result.ok) {
+        respond(false, undefined, result.error);
         return;
       }
-      const profiles = new Map<string, SessionActorProfileIdentity | undefined>();
-      respond(true, {
-        ...page,
-        items: page.items.map((item) =>
-          item.sender?.identity.type === "profile"
-            ? Object.assign({}, item, {
-                sender: projectSessionParticipant(item.sender.identity, profiles),
-              })
-            : item,
-        ),
-      });
+      respond(true, result.page);
     } catch (error) {
       const details = catalogError(error);
       respond(

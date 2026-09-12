@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as windowsEncoding from "../infra/windows-encoding.js";
 
 const fsMocks = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ import { stageScheduledTask } from "./schtasks-install.js";
 import { readScheduledTaskCommand } from "./schtasks-layout.js";
 
 const originalArgv = [...process.argv];
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const originalExecPath = process.execPath;
 const validatedNodePath = "/opt/Validated Node/bin/node";
 const validatedBunPath = "/opt/Validated Bun/bin/bun";
@@ -535,7 +537,7 @@ describe("resolveNodeProgramArguments", () => {
     fsMocks.realpath.mockResolvedValue(entryPath);
     fsMocks.access.mockResolvedValue(undefined);
     vi.spyOn(windowsEncoding, "resolveWindowsOemCodePage").mockReturnValue(437);
-    const home = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-node-command-reset-"));
+    const home = tempDirs.make("openclaw-node-command-reset-");
     const env = {
       HOME: home,
       USERPROFILE: home,
@@ -578,7 +580,6 @@ describe("resolveNodeProgramArguments", () => {
       expect(replaced?.programArguments).not.toContain("fixture.read");
     } finally {
       stdout.destroy();
-      await fs.rm(home, { recursive: true, force: true });
     }
   });
 

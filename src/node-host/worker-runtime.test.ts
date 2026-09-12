@@ -11,14 +11,14 @@ import {
 import { testing as execApprovalsStoreTesting } from "../infra/exec-approvals-store.test-support.js";
 import { saveExecApprovals } from "../infra/exec-approvals.js";
 import { clearExecutablePathCache } from "../infra/executable-path.js";
+import * as pathEnv from "../infra/path-env.js";
+import * as terminalUpload from "../infra/terminal-file-upload.js";
 import { NODE_HOST_STATS_EVENT, NODE_HOST_STATS_INTERVAL_MS } from "../shared/node-host-stats.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import type { ExecEventPayload } from "./invoke-types.js";
-import * as pathEnv from "../infra/path-env.js";
-import * as terminalUpload from "../infra/terminal-file-upload.js";
 import type { NodeHostConfig } from "./config.js";
+import type { ExecEventPayload } from "./invoke-types.js";
 import * as pluginNodeHost from "./plugin-node-host.js";
 
 const fixture = vi.hoisted(() => ({

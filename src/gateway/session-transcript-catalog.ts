@@ -6,7 +6,10 @@ import type { SessionCatalogTranscriptItem } from "../../packages/gateway-protoc
 import { formatToolSummary, resolveToolDisplay } from "../agents/tool-display.js";
 import { readTranscriptSenderIdentity } from "../chat/sender-identity.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
+import type { SessionTranscriptReadScope } from "../config/sessions/session-accessor.sqlite-contract.js";
 import { readSessionTranscriptHistoryEventPage } from "../config/sessions/session-accessor.sqlite-history-events.js";
+import { SessionTranscriptColdError } from "../config/sessions/session-cold-storage-state.js";
+import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import {
@@ -27,6 +30,7 @@ export type SessionTranscriptCatalogPage = {
 type CatalogReadParams = {
   agentId: string;
   sessionKey: string;
+  storePath?: string;
   limit: number;
   cursor?: string;
   sourceDomain: string;
@@ -35,6 +39,7 @@ type CatalogReadParams = {
 
 const MAX_CATALOG_ITEMS = 200;
 const MAX_CATALOG_TEXT_CHARS = 6000;
+const MAX_CATALOG_READ_BYTES = 8 * 1024 * 1024;
 const MAX_CATALOG_SCAN_MESSAGES = 1000;
 const CursorSchema = z.strictObject({
   version: z.literal(1),
@@ -48,6 +53,23 @@ const CursorSchema = z.strictObject({
   skip: z.number().int().nonnegative().max(100_000),
 });
 type CatalogCursor = z.infer<typeof CursorSchema>;
+
+function readCatalogHistoryPage(
+  scope: SessionTranscriptReadScope,
+  options: { offset: number; maxMessages: number },
+) {
+  const page = readSessionTranscriptHistoryEventPage(scope, {
+    ...options,
+    maxBytes: MAX_CATALOG_READ_BYTES,
+    readOnly: true,
+  });
+  if (page.omittedOversized) {
+    throw new Error(
+      "A transcript entry is too large to share. Open the session on the source Gateway to inspect it.",
+    );
+  }
+  return page;
+}
 
 function decodeCursor(cursor: string | undefined): CatalogCursor | undefined {
   if (cursor === undefined) {
@@ -170,7 +192,8 @@ export async function readSessionTranscriptCatalogPage(
   if (!Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > MAX_CATALOG_ITEMS) {
     throw new Error(`Session transcript limit must be an integer from 1 to ${MAX_CATALOG_ITEMS}.`);
   }
-  const entry = loadSessionEntryReadOnly(params);
+  const storePath = resolveSessionStorePathForScope(params);
+  const entry = loadSessionEntryReadOnly({ ...params, storePath });
   if (!entry) {
     throw new Error("Session not found; refresh the session catalog.");
   }
@@ -179,14 +202,14 @@ export async function readSessionTranscriptCatalogPage(
     sessionKey: params.sessionKey,
     sessionId: entry.sessionId,
     sessionEntry: entry,
+    storePath,
   };
   const scopeHash = createHash("sha256")
-    .update(JSON.stringify([params.agentId, params.sessionKey, entry.sessionId]))
+    .update(JSON.stringify([params.agentId, params.sessionKey, entry.sessionId, storePath]))
     .digest("base64url");
-  const snapshot = readSessionTranscriptHistoryEventPage(scope, {
+  const snapshot = readCatalogHistoryPage(scope, {
     offset: 0,
     maxMessages: 1,
-    readOnly: true,
   });
   if (
     cursor &&
@@ -204,10 +227,9 @@ export async function readSessionTranscriptCatalogPage(
   // Appends retain this active-path anchor; leaf rewinds can preserve the rewrite
   // generation, so source hashes alone cannot fence a cursor onto its original branch.
   if (cursor) {
-    const anchoredPage = readSessionTranscriptHistoryEventPage(scope, {
+    const anchoredPage = readCatalogHistoryPage(scope, {
       offset: snapshot.totalMessages - cursor.anchor.seq,
       maxMessages: 1,
-      readOnly: true,
     });
     if (anchoredPage.events[0]?.eventSeq !== cursor.anchor.eventSeq) {
       throw new Error(
@@ -221,10 +243,9 @@ export async function readSessionTranscriptCatalogPage(
   let scanned = 0;
   const items: SessionCatalogTranscriptItem[] = [];
   while (before > 0 && items.length < limit && scanned < MAX_CATALOG_SCAN_MESSAGES) {
-    const page = readSessionTranscriptHistoryEventPage(scope, {
+    const page = readCatalogHistoryPage(scope, {
       offset: snapshot.totalMessages - before,
       maxMessages: Math.min(before, limit + 1),
-      readOnly: true,
     });
     // A source append preserves positions; a rewrite rotates displaySource and invalidates cursors.
     if (
@@ -289,30 +310,43 @@ export async function readSessionTranscriptCatalogPage(
 export function readSessionTranscriptCatalogTitle(params: {
   agentId: string;
   sessionKey: string;
+  storePath?: string;
   entry: SessionEntry;
 }): string | undefined {
   const title = deriveSessionTitle(params.entry);
   if (title) {
     return boundedText(title).text;
   }
-  const scope = { ...params, sessionId: params.entry.sessionId, sessionEntry: params.entry };
-  const snapshot = readSessionTranscriptHistoryEventPage(scope, {
-    offset: 0,
-    maxMessages: 0,
-    readOnly: true,
-  });
-  const page = readSessionTranscriptHistoryEventPage(scope, {
-    offset: Math.max(0, snapshot.totalMessages - 100),
-    maxMessages: 100,
-    readOnly: true,
-  });
-  for (const { event, seq, displayPosition } of page.events) {
-    const message = projectSessionDisplayMessage(
-      projectTranscriptEntryMessage(event, seq, displayPosition),
-    );
-    if (message?.role === "user") {
-      const derived = deriveSessionTitle(params.entry, message.text);
-      return derived ? boundedText(derived).text : undefined;
+  const scope = {
+    ...params,
+    storePath: resolveSessionStorePathForScope(params),
+    sessionId: params.entry.sessionId,
+    sessionEntry: params.entry,
+  };
+  try {
+    const snapshot = readCatalogHistoryPage(scope, { offset: 0, maxMessages: 0 });
+    const page = readSessionTranscriptHistoryEventPage(scope, {
+      offset: Math.max(0, snapshot.totalMessages - 100),
+      maxMessages: 100,
+      maxBytes: MAX_CATALOG_READ_BYTES,
+      readOnly: true,
+    });
+    // A clipped prefix cannot establish the first user message's title.
+    if (page.olderOffset !== undefined || page.omittedOversized) {
+      return undefined;
+    }
+    for (const { event, seq, displayPosition } of page.events) {
+      const message = projectSessionDisplayMessage(
+        projectTranscriptEntryMessage(event, seq, displayPosition),
+      );
+      if (message?.role === "user") {
+        const derived = deriveSessionTitle(params.entry, message.text);
+        return derived ? boundedText(derived).text : undefined;
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof SessionTranscriptColdError)) {
+      throw error;
     }
   }
   return undefined;

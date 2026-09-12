@@ -41,11 +41,14 @@ function sharedEntries(api: OpenClawPluginApi) {
   }
   return listAgentIds(config)
     .toSorted()
-    .flatMap((agentId) =>
-      api.runtime.agent.session
-        .listSessionEntries({ agentId, readOnly: true })
-        .map((session) => Object.assign({}, session, { agentId })),
-    )
+    .flatMap((agentId) => {
+      const storePath = api.runtime.agent.session.resolveStorePath(config.session?.store, {
+        agentId,
+      });
+      return api.runtime.agent.session
+        .listSessionEntries({ agentId, storePath, readOnly: true })
+        .map((session) => Object.assign({}, session, { agentId, storePath }));
+    })
     .filter(
       ({ sessionKey, entry }) =>
         entry.category !== undefined &&
@@ -74,8 +77,8 @@ export function createSessionShareNodeCommands(
         const offset = sessionCatalogPaging.decodeCursor(params.cursor);
         const search = params.searchTerm?.toLowerCase();
         const sessions: SessionCatalogSession[] = [];
-        for (const { agentId, sessionKey, entry } of sharedEntries(api)) {
-          const name = readSessionTranscriptCatalogTitle({ agentId, sessionKey, entry });
+        for (const { agentId, sessionKey, storePath, entry } of sharedEntries(api)) {
+          const name = readSessionTranscriptCatalogTitle({ agentId, sessionKey, storePath, entry });
           if (
             search &&
             !name?.toLowerCase().includes(search) &&
@@ -152,15 +155,17 @@ export function createSessionShareNodeCommands(
           ...source,
           agentId: session.agentId,
           sessionKey: session.sessionKey,
+          storePath: session.storePath,
           limit: params.limit,
           cursor: params.cursor,
         });
-        // Group changes and deletion revoke access even while an async transcript read is in flight.
+        // Group, store, and session changes revoke an in-flight read before publication.
         if (
           !sharedEntries(api).some(
-            ({ agentId, sessionKey, entry }) =>
+            ({ agentId, sessionKey, storePath, entry }) =>
               agentId === session.agentId &&
               sessionKey === session.sessionKey &&
+              storePath === session.storePath &&
               entry.sessionId === session.entry.sessionId,
           )
         ) {

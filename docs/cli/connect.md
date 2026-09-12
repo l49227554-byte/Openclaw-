@@ -102,6 +102,9 @@ npx openclaw connect https://gateway.example/j/<shortcode> --service
 OpenClaw completes the first authenticated connection before installing the
 service. The short-lived bootstrap token is never stored in the service command
 or node-host configuration; later starts use the durable paired-device token.
+When restarting against that saved endpoint, config credentials for a co-located
+Gateway do not override the paired token. Explicit `OPENCLAW_GATEWAY_TOKEN` or
+`OPENCLAW_GATEWAY_PASSWORD` environment credentials still take precedence.
 Use [`openclaw node status`](/cli/node#service-background) to inspect the
 installed service.
 

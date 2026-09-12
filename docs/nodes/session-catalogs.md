@@ -165,4 +165,3 @@ The receiver shows read-only rows under the source node in **OpenClaw sessions**
 Viewers need permission to view others' sessions on role-restricted Gateways.
 This does not permit continuation, terminal access, or worker execution on the
 source. It is separate from hosting new sessions on a node, described in [Session hosting](/nodes/session-hosting).
-

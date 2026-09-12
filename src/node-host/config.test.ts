@@ -7,8 +7,8 @@ import { createBoundedChildOutput } from "../../test/helpers/bounded-child-outpu
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
-import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { logInfo } from "../logger.js";
+import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import {
   readConfigMachineState,
   readConfigMachineStateWithMetadata,

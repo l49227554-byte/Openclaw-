@@ -119,11 +119,17 @@ persisted in service arguments.
 `openclaw node run` and `openclaw node install` resolve gateway auth from config/env (no `--token`/`--password` flags on node commands):
 
 - `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD` are checked first.
-- Then local config fallback: `gateway.auth.token` / `gateway.auth.password`.
+- When reconnecting to the saved Gateway endpoint with a paired node credential, use that credential and skip config auth. An explicit environment override supplies only its own credentials.
+- Otherwise, local config fallback applies: `gateway.auth.token` / `gateway.auth.password`.
 - In local mode, node host intentionally does not inherit `gateway.remote.token` / `gateway.remote.password`.
-- If `gateway.auth.token` / `gateway.auth.password` is explicitly configured via SecretRef and unresolved, node auth resolution fails closed (no remote fallback masking).
+- If config fallback selects an unresolved `gateway.auth.token` / `gateway.auth.password` SecretRef, node auth resolution fails closed (no remote fallback masking).
 - In `gateway.mode=remote`, remote client fields (`gateway.remote.token` / `gateway.remote.password`) are also eligible per remote precedence rules.
 - Node host auth resolution only honors `OPENCLAW_GATEWAY_*` env vars.
+
+The saved endpoint includes its host, port, TLS mode, and context path. Changing
+any of these restores normal config/env auth resolution. A node can therefore
+share its state directory with a local Gateway while reconnecting to a different
+paired Gateway, without sending the local Gateway's password on restart.
 
 For a Gateway behind Cloudflare Access, set `CF_ACCESS_CLIENT_ID` and
 `CF_ACCESS_CLIENT_SECRET` together before `openclaw connect`, `openclaw node

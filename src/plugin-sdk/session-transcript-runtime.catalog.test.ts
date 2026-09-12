@@ -1,11 +1,15 @@
 import fs from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   appendTranscriptEvent,
   appendTranscriptMessage,
   loadSessionEntryReadOnly,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
+import {
+  getSessionColdStorageStatus,
+  runSessionColdStorageMaintenance,
+} from "../config/sessions/session-cold-storage.js";
 import { reconcileSessionTranscriptIndexes } from "../config/sessions/session-transcript-reconcile.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -43,6 +47,65 @@ async function seed(messages: unknown[]) {
 }
 
 describe("native transcript catalog SDK", () => {
+  it("keeps cold transcript listings available without restoring source storage", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await seed([{ role: "user", content: "Archived question" }]);
+      const config = {
+        agents: { entries: { main: {} } },
+        session: { maintenance: { coldStorage: { enabled: true, afterDays: 1 } } },
+      };
+      const inactiveNow = Date.now() + 2 * 24 * 60 * 60 * 1000;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(inactiveNow);
+      try {
+        expect(await runSessionColdStorageMaintenance({ config })).toMatchObject({
+          archivedTranscripts: 1,
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      const entry = loadSessionEntryReadOnly(scope);
+      if (!entry) {
+        throw new Error("missing fixture entry");
+      }
+      expect(readSessionTranscriptCatalogTitle({ ...scope, entry })).toBeUndefined();
+      expect(
+        readSessionTranscriptCatalogTitle({
+          ...scope,
+          entry: { ...entry, label: "Named archive" },
+        }),
+      ).toBe("Named archive");
+      await expect(read(1)).rejects.toThrow("cold storage");
+      expect(await getSessionColdStorageStatus(config)).toEqual([
+        expect.objectContaining({ hotTranscripts: 0, coldTranscripts: 1 }),
+      ]);
+    });
+  });
+
+  it("bounds raw title probes and reports oversized transcript entries without skipping them", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await seed([
+        { role: "user", content: "x".repeat(8 * 1024 * 1024) },
+        { role: "assistant", content: "Small final answer" },
+      ]);
+      const entry = loadSessionEntryReadOnly(scope);
+      if (!entry) {
+        throw new Error("missing fixture entry");
+      }
+      expect.soft(readSessionTranscriptCatalogTitle({ ...scope, entry })).toBeUndefined();
+      const first = await read(1);
+      expect(first.items).toEqual([
+        expect.objectContaining({ type: "agentMessage", text: "Small final answer" }),
+      ]);
+      expect(first.nextCursor).toBeDefined();
+      await expect(read(1, first.nextCursor)).rejects.toThrow("too large to share");
+      await appendTranscriptMessage(scope, {
+        eventId: "oversized-tail",
+        message: { role: "assistant", content: "y".repeat(8 * 1024 * 1024) },
+      });
+      await expect(read(1)).rejects.toThrow("too large to share");
+    });
+  });
+
   it("pages the visible display projection newest-first, including reasoning and tools, without opening a writer", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       await seed([

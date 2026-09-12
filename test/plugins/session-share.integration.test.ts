@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { validateJsonSchemaValue } from "openclaw/plugin-sdk/json-schema-runtime";
 import type { OpenClawPluginNodeHostCommand } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
@@ -8,6 +10,7 @@ import type {
   SessionCatalogSession,
   SessionCatalogTranscriptItem,
 } from "openclaw/plugin-sdk/session-catalog";
+import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { appendSessionTranscriptMessageByIdentity } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -121,6 +124,64 @@ function catalogFixture() {
 }
 
 describe("session-share node commands", () => {
+  it.each(["fixed", "template"])(
+    "reads the configured %s store and revokes an in-flight read when its store changes",
+    async (kind) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const fixture = commandFixture();
+        const store =
+          kind === "template"
+            ? state.path("configured", "{agentId}", "sessions.json")
+            : state.path("configured", "sessions.json");
+        const configuredStorePath = resolveStorePath(store, { agentId: "main" });
+        const defaultStorePath = resolveStorePath(undefined, { agentId: "main" });
+        const scope = {
+          agentId: "main",
+          sessionKey: "agent:main:configured",
+          sessionId: "configured-session",
+        };
+        for (const [storePath, text] of [
+          [defaultStorePath, "Default store copy"],
+          [configuredStorePath, "Configured store question"],
+        ]) {
+          await replaceSessionEntry(
+            { ...scope, storePath },
+            { sessionId: scope.sessionId, updatedAt: Date.now(), category: "Team" },
+          );
+          await appendSessionTranscriptMessageByIdentity({
+            ...scope,
+            storePath,
+            message: { role: "user", content: text },
+          });
+        }
+        fixture.config.session = { store };
+        expect.soft((await fixture.list()).sessions).toEqual([
+          expect.objectContaining({
+            threadId: scope.sessionKey,
+            name: "Configured store question",
+          }),
+        ]);
+        expect
+          .soft((await fixture.read(scope.sessionKey)).items)
+          .toEqual([
+            expect.objectContaining({ type: "userMessage", text: "Configured store question" }),
+          ]);
+
+        const pendingRead = fixture.read(scope.sessionKey);
+        fixture.config.session = { store: defaultStorePath };
+        await expect(pendingRead).rejects.toThrow("no longer shared");
+
+        fixture.config.session = { store };
+        await upsertSessionEntryCore(
+          { ...scope, storePath: configuredStorePath },
+          { category: "Private" },
+        );
+        expect((await fixture.list()).sessions).toEqual([]);
+        await expect(fixture.read(scope.sessionKey)).rejects.toThrow("not shared");
+      });
+    },
+  );
+
   it("publishes only selected nonprivate native sessions with stable paging and search", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const fixture = commandFixture();
@@ -258,6 +319,19 @@ describe("session-share node commands", () => {
         if (groups === undefined) {
           fixture.config.plugins = undefined;
         }
+        const manifest = JSON.parse(
+          fs.readFileSync(
+            new URL("../../extensions/session-share/openclaw.plugin.json", import.meta.url),
+            "utf8",
+          ),
+        ) as { configSchema: Record<string, unknown> };
+        expect(
+          validateJsonSchemaValue({
+            schema: manifest.configSchema,
+            cacheKey: "session-share.disabled-config",
+            value: fixture.config.plugins?.entries?.["session-share"]?.config ?? {},
+          }).ok,
+        ).toBe(true);
         for (const command of fixture.commands) {
           expect(command.isAvailable?.({ config: fixture.config, env: {} })).toBe(false);
         }

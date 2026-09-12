@@ -13,7 +13,7 @@ Session Share is disabled by default. It publishes a read-only **OpenClaw sessio
 
 ## Before you begin
 
-Both machines need OpenClaw with the Session Share plugin. Run the source node host as the same OS user and with the same `OPENCLAW_STATE_DIR` as the source Gateway. The receiver needs a reachable, authenticated Gateway endpoint and permission to approve device pairing.
+Both machines need OpenClaw with the Session Share plugin. Run the source node host as the same OS user and with the same `OPENCLAW_STATE_DIR` and configuration as the source Gateway. Set `OPENCLAW_CONFIG_PATH` too when the source uses a custom config location. The node reads the configured `session.store`, including custom paths and per-agent templates. The receiver needs a reachable, authenticated Gateway endpoint and permission to approve device pairing.
 
 Use the command allowlist below for a sessions-only connection. Without an allowlist, a normal node host can advertise other capabilities.
 
@@ -46,11 +46,10 @@ On the receiver Gateway:
 
 ```bash
 openclaw plugins enable session-share
-openclaw gateway restart
 openclaw devices join-code
 ```
 
-Keep the join URL private. On the source machine, use that URL with exactly the two read-only commands:
+The enable command applies the running Gateway's plugin lifecycle without restarting it. Keep the join URL private. On the source machine, use that URL with exactly the two read-only commands:
 
 ```bash
 openclaw connect <join-url> --service \
@@ -76,6 +75,8 @@ Open the receiver Control UI. Shared rows appear under the source node's heading
 Publication is shared with the receiver's permitted viewers, not just the named owner. Viewers need `operator.read`; on role-restricted Gateways, their profile's role must also permit viewing others' sessions (`sessions.others: "view"`, `"suggest"`, or `"write"`). Owner-only and unprofiled restricted viewers cannot see published rows. See [Operator scopes](/gateway/operator-scopes).
 
 The catalog refreshes by polling, not a live transcript stream. The source node must remain connected for listings and reads. Long transcripts are paginated; individual text fields are redacted and clipped when necessary.
+
+Listings leave cold transcript archives untouched and use any stored title metadata. To read cold history, open the session on the source Gateway first so its normal history owner restores the archive. Each source page also bounds raw transcript reads to 8 MiB; a single larger entry returns an explicit error instead of being silently skipped. Inspect that entry on the source Gateway.
 
 ## Attribute the source node
 

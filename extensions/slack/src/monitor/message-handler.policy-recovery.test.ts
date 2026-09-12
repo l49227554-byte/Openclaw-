@@ -42,9 +42,11 @@ it("settles rejected policy admission and dispatches after configuration is repa
     text: "hello",
   };
   let failure: unknown;
-  const rejected = handler(message, { source: "message", awaitDispatch: true }).catch((error) => {
-    failure = error;
-  });
+  const rejected = handler(message, { source: "message", awaitDispatch: true }).catch(
+    (error: unknown) => {
+      failure = error;
+    },
+  );
   await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
   await vi.waitFor(() =>
     expect(failure).toEqual(

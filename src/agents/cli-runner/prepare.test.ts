@@ -6374,8 +6374,8 @@ describe("prepareCliRunContext", () => {
         path.join(skillDir, "SKILL.md"),
         '---\nname: awaited-probe\ndescription: Probe before sandbox setup\nmetadata: {"openclaw":{"requires":{"bins":["cli-preparation-fixture-tool"]}}}\n---\n',
       );
-      const started = createDeferred<void>();
-      const release = createDeferred<void>();
+      const started = createDeferred();
+      const release = createDeferred();
       const originalAccess = fs.promises.access;
       const access = vi.spyOn(fs.promises, "access").mockImplementation(async (file, mode) => {
         if (String(file).includes("cli-preparation-fixture-tool")) {

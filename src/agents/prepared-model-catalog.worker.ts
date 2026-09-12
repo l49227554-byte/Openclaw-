@@ -13,6 +13,7 @@ import { listRuntimePluginIdsFromRegistry } from "../plugins/active-runtime-regi
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { isManifestPluginAvailableForControlPlane } from "../plugins/manifest-contract-eligibility.js";
 import { restorePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { withPluginSourceCaptureDirectory } from "../plugins/plugin-package-metadata-capture.js";
 import { captureProviderCatalogExpiries } from "../plugins/provider-catalog-expiry.js";
 import { planRuntimePluginDiscovery } from "../plugins/provider-discovery.js";
 import { restorePreparedSyntheticAuthFacts } from "../plugins/provider-synthetic-auth.js";
@@ -37,6 +38,7 @@ import {
   fingerprintPreparedModelCatalogGeneration,
   fingerprintPreparedModelWorkerRequest,
   type PreparedModelCatalogWorkerInput,
+  type PreparedModelCatalogWorkerData,
   type PreparedModelWorkerRequest,
   type PreparedModelWorkerResult,
 } from "./prepared-model-catalog-worker.js";
@@ -407,16 +409,18 @@ function isWorkerRequest(value: unknown): value is PreparedModelWorkerRequest {
 }
 
 if (parentPort) {
-  const value = workerData as PreparedModelCatalogWorkerInput;
+  const value = workerData as PreparedModelCatalogWorkerData;
   let preparedGeneration: ReturnType<typeof prepareWorkerGeneration> | undefined;
   serveWorkerTasks((request) => {
     if (!isWorkerRequest(request)) {
       throw new Error("invalid prepared model catalog worker request");
     }
-    return runPreparedModelCatalogWorkerRequest(
-      value,
-      request,
-      () => (preparedGeneration ??= prepareWorkerGeneration(value)),
+    return withPluginSourceCaptureDirectory(value.sourceCaptureDirectory, () =>
+      runPreparedModelCatalogWorkerRequest(
+        value,
+        request,
+        () => (preparedGeneration ??= prepareWorkerGeneration(value)),
+      ),
     );
   });
 }

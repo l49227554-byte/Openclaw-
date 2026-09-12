@@ -204,7 +204,7 @@ public struct OpenClawChatView: View {
 
     private var readingColumnWidth: CGFloat {
         #if os(macOS)
-        self.isDesktopLayout ? 800 : .infinity
+        self.isDesktopLayout ? 760 : .infinity
         #else
         .infinity
         #endif
@@ -401,7 +401,7 @@ public struct OpenClawChatView: View {
     private var messageList: some View {
         ZStack {
             ScrollView {
-                LazyVStack(spacing: Layout.messageSpacing) {
+                LazyVStack(spacing: self.isDesktopLayout ? 16 : Layout.messageSpacing) {
                     self.messageListRows
 
                     Color.clear
@@ -414,9 +414,9 @@ public struct OpenClawChatView: View {
                 }
                 // Use scroll targets for stable auto-scroll without ScrollViewReader relayout glitches.
                 .scrollTargetLayout()
-                .padding(.top, Layout.messageListPaddingTop)
-                .padding(.horizontal, Layout.messageListPaddingHorizontal)
+                .padding(.top, self.isDesktopLayout ? 24 : Layout.messageListPaddingTop)
                 .frame(maxWidth: self.readingColumnWidth)
+                .padding(.horizontal, self.isDesktopLayout ? 16 : Layout.messageListPaddingHorizontal)
                 .frame(maxWidth: .infinity)
             }
             #if !os(macOS)

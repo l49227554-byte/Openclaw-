@@ -320,10 +320,24 @@ struct MacGatewayChatTransport: OpenClawChatGatewayTransport {
         search: String?,
         archived: Bool) async throws -> OpenClawChatSessionsListResponse
     {
+        try await self.listSessions(
+            limit: limit,
+            search: search,
+            archived: archived,
+            agentID: self.routingIdentity.currentAgentID())
+    }
+
+    func listSessions(
+        limit: Int?,
+        search: String?,
+        archived: Bool,
+        agentID: String?) async throws -> OpenClawChatSessionsListResponse
+    {
         let request = self.sessionsListRequest(
             limit: limit,
             search: search,
-            archived: archived)
+            archived: archived,
+            agentID: agentID)
         let data = try await connection.request(request)
         let decoded = try JSONDecoder().decode(OpenClawChatSessionsListResponse.self, from: data)
         let mainSessionKey = await connection.cachedMainSessionKey()
@@ -355,13 +369,14 @@ struct MacGatewayChatTransport: OpenClawChatGatewayTransport {
     func sessionsListRequest(
         limit: Int?,
         search: String?,
-        archived: Bool) -> OpenClawChatGatewayRequest
+        archived: Bool,
+        agentID: String? = nil) -> OpenClawChatGatewayRequest
     {
         OpenClawChatGatewayRequests.sessionsList(
             limit: limit,
             search: search,
             archived: archived,
-            agentID: self.routingIdentity.currentAgentID())
+            agentID: agentID ?? self.routingIdentity.currentAgentID())
     }
 
     func listChildSessions(parentKey: String) async throws -> [OpenClawChatSessionEntry] {

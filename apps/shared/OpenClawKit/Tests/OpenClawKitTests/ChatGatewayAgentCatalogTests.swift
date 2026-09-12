@@ -10,7 +10,23 @@ struct ChatGatewayAgentCatalogTests {
         """.utf8)
 
         #expect(try OpenClawChatGatewayPayloadCodec.decodeAgentsList(data) ==
-            OpenClawChatAgentsListResponse(defaultId: "system", agents: []))
+            OpenClawChatAgentsListResponse(
+                defaultId: "system",
+                agents: [],
+                sessionRoutingContract: "per-agent|main|system"))
+    }
+
+    @Test func `agent navigation retains identity and configured main routing`() throws {
+        let data = Data(
+            #"{"defaultId":"ops","mainKey":"inbox","scope":"global","agents":[{"id":"ops","name":"Operations","identity":{"emoji":"🛠️"},"workspaceGit":true}]}"#
+                .utf8)
+
+        let catalog = try OpenClawChatGatewayPayloadCodec.decodeAgentsList(data)
+
+        #expect(catalog.sessionRoutingContract == "global|inbox|ops")
+        #expect(catalog.agents == [
+            OpenClawChatAgentChoice(id: "ops", name: "Operations", emoji: "🛠️", workspaceGit: true),
+        ])
     }
 
     @Test(arguments: [

@@ -23,8 +23,13 @@ public enum OpenClawChatGatewayPayloadCodec {
                 OpenClawChatAgentChoice(
                     id: $0.id,
                     name: $0.name,
+                    emoji: $0.identity?["emoji"]?.value as? String,
                     workspaceGit: $0.workspacegit)
-            })
+            },
+            sessionRoutingContract: OpenClawChatSessionRoutingContract.make(
+                scope: result.scope.value as? String,
+                mainKey: result.mainkey,
+                defaultAgentID: result.defaultid))
     }
 
     public static func decodeProgressCard(_ data: Data, agentID: String?) throws -> ProgressCard? {

@@ -392,7 +392,8 @@ struct ChatViewModelTranscriptCacheTests {
         #expect(await cache.loadSessions(agentID: "agent-b").isEmpty)
     }
 
-    @Test func `cached session prepaint stays within the selected agent`() async throws {
+    @Test(arguments: ["main", "gadget"])
+    func `cached session prepaint stays within the selected agent`(defaultAgentID: String) async throws {
         var matchingBare = cacheSessionEntry(key: "shared-tool", updatedAt: 2000)
         matchingBare.agentId = "main"
         var foreignBare = cacheSessionEntry(key: "foreign-tool", updatedAt: 1750)
@@ -413,7 +414,7 @@ struct ChatViewModelTranscriptCacheTests {
         let vm = await makeViewModel(
             sessionKey: "agent:main:main",
             transport: transport,
-            activeAgentID: "main",
+            activeAgentID: defaultAgentID,
             cache: cache,
             load: false)
         let snapshot = await MainActor.run { vm.currentSessionSnapshot() }

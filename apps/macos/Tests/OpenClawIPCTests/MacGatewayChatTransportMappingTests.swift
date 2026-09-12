@@ -251,6 +251,11 @@ struct MacGatewayChatTransportMappingTests {
         let second = transport.sessionsListRequest(limit: nil, search: "recent", archived: true)
         #expect(second.params["agentId"]?.value as? String == "agent-b")
 
+        let selected = transport.sessionsListRequest(
+            limit: 50, search: "older", archived: true, agentID: "research")
+        #expect(selected.params["agentId"]?.value as? String == "research")
+        #expect(transport.sessionTarget(for: "global").agentID == "agent-b")
+
         let unowned = MacGatewayChatTransport()
             .sessionsListRequest(limit: nil, search: nil, archived: false)
         #expect(unowned.params["agentId"] == nil)

@@ -51,6 +51,13 @@ public final class OpenClawChatViewModel {
     public internal(set) var modelChoices: [OpenClawChatModelChoice] = []
     var modelAvailabilityIsSessionScoped = false
     public internal(set) var modelCatalogMessage: String?
+    var agentCatalog: OpenClawChatAgentsListResponse?
+    var isLoadingAgents = false
+    var agentsErrorText: String?
+    @ObservationIgnored
+    var hasRequestedAgents = false
+    @ObservationIgnored
+    var agentCatalogGeneration: UInt64 = 0
     @ObservationIgnored
     var nextModelCatalogRequestID: UInt64 = 0
     var modelPickerFavorites: [String]
@@ -699,7 +706,7 @@ public final class OpenClawChatViewModel {
         if agentChanged {
             self.sessions = ChatSessionSidebarModel.clearingForeignGlobalObserverDigest(
                 in: self.sessions,
-                activeAgentId: nextAgentId)
+                activeAgentId: OpenClawChatSessionKey.agentID(from: self.sessionKey) ?? nextAgentId)
         }
         self.activeAgentId = nextAgentId
         self.sessionRoutingContract = nextContract
@@ -731,6 +738,9 @@ public final class OpenClawChatViewModel {
     }
 
     var resolvedMainSessionKey: String {
+        if let agentID = OpenClawChatSessionKey.agentID(from: self.sessionKey) {
+            return self.mainSessionKey(forAgent: agentID)
+        }
         let trimmed = self.sessionDefaults?.mainSessionKey?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty == false ? trimmed : nil) ?? "main"
@@ -1098,7 +1108,8 @@ extension OpenClawChatViewModel {
             let successfulSettingsPatchRequestID = self.lastSuccessfulSettingsPatchRequestIDsByTarget[target]
             let res: OpenClawChatSessionsListResponse
             do {
-                res = try await self.transport.listSessions(limit: limit, search: nil, archived: false)
+                res = try await self.transport.listSessions(
+                    limit: limit, search: nil, archived: false, agentID: session.deliveryAgentID)
             } catch {
                 if self.outbox != nil, self.healthOK, !self.hasCurrentSessionMetadata {
                     applyTransportHealth(false)
@@ -1585,20 +1596,6 @@ extension OpenClawChatViewModel {
             return nil
         }
         return normalized
-    }
-
-    /// Module-internal: the session-actions extension derives new-session keys.
-    func generatedNewSessionKey(agentID explicitAgentID: String? = nil) -> String {
-        let baseKey = "ios-\(UUID().uuidString.lowercased())"
-        guard let agentID = explicitAgentID ??
-            OpenClawChatSessionKey.agentID(from: sessionKey) ??
-            activeAgentId ??
-            OpenClawChatSessionKey.agentID(from: resolvedMainSessionKey) ??
-            sessions.lazy.compactMap({ OpenClawChatSessionKey.agentID(from: $0.key) }).first
-        else {
-            return baseKey
-        }
-        return "agent:\(agentID):\(baseKey)"
     }
 
     private func modelLabel(for modelID: String) -> String {

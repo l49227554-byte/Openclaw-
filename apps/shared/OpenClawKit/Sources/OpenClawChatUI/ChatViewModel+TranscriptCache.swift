@@ -120,11 +120,11 @@ extension OpenClawChatViewModel {
                     ChatSessionSidebarModel.isSessionInActiveAgentScope(
                         key: $0.key,
                         agentID: $0.agentId,
-                        activeAgentID: self.activeAgentId)
+                        activeAgentID: session.deliveryAgentID)
                 }
                 let scoped = ChatSessionSidebarModel.clearingForeignGlobalObserverDigest(
                     in: agentScoped,
-                    activeAgentId: self.activeAgentId)
+                    activeAgentId: session.deliveryAgentID)
                 self.sessions = self.applyingLocalUnreadOverrides(
                     to: scoped)
             }

@@ -58,14 +58,20 @@ public struct OpenClawChatWindowShell: View {
             ChatSessionSidebar(
                 viewModel: self.viewModel,
                 query: self.$sessionQuery)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 340)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 360)
         } detail: {
             OpenClawChatView(
                 viewModel: self.viewModel,
                 drawsBackground: false,
                 userAccent: self.userAccent,
                 displayOptions: self.displayOptions,
+                assistantName: self.viewModel.selectedAgent?.displayName,
+                assistantAvatarText: self.viewModel.selectedAgent?.emoji,
+                showsAssistantAvatars: false,
                 composerChrome: .clean,
+                messagePlaceholder: self.viewModel.selectedAgent.map {
+                    String(format: String(localized: "Message %@…"), $0.displayName)
+                },
                 emptyAssistantIntro: self.emptyAssistantIntro,
                 emptyAssistantPrompts: self.emptyAssistantPrompts,
                 talkControl: self.talkControl,
@@ -76,7 +82,9 @@ public struct OpenClawChatWindowShell: View {
                 .navigationTitle(self.activeSessionTitle)
                 .toolbar { self.detailToolbar }
                 .background(self.keyboardShortcutHandlers)
+                .background(Color(nsColor: .textBackgroundColor))
         }
+        .task { await self.viewModel.refreshAgents() }
         .confirmationDialog(
             "Clear this thread's history?",
             isPresented: self.$isConfirmingClearHistory)
@@ -179,13 +187,23 @@ public struct OpenClawChatWindowShell: View {
 
     @ToolbarContentBuilder
     private var detailToolbar: some ToolbarContent {
-        if OpenClawSessionColor(name: self.activeSessionEntry?.color) != nil {
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 6) {
-                    OpenClawSessionColorDot(color: self.activeSessionEntry?.color)
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: 8) {
+                if let agent = self.viewModel.selectedAgent {
+                    ChatSidebarAgentAvatar(agent: agent, size: 26)
+                }
+                VStack(alignment: .leading, spacing: 2) {
                     Text(self.activeSessionTitle)
-                        .font(OpenClawChatTypography.body.weight(.semibold))
-                        .lineLimit(1)
+                        .font(OpenClawChatTypography.body(size: 13, weight: .semibold, relativeTo: .headline))
+                    if let agent = self.viewModel.selectedAgent {
+                        Text(verbatim: agent.displayName)
+                            .font(OpenClawChatTypography.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .lineLimit(1)
+                if OpenClawSessionColor(name: self.activeSessionEntry?.color) != nil {
+                    OpenClawSessionColorDot(color: self.activeSessionEntry?.color)
                 }
             }
         }
@@ -274,7 +292,7 @@ public struct OpenClawChatWindowShell: View {
             if self.activeSessionEntry.map({
                 ChatSessionSidebarModel.canArchiveSession(
                     $0,
-                    mainSessionKey: self.viewModel.resolvedMainSessionKey)
+                    mainSessionKey: self.viewModel.selectedAgentMainSessionKey)
             }) == true {
                 Button {
                     if let activeSessionEntry = self.activeSessionEntry {

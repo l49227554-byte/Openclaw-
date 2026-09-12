@@ -33,6 +33,19 @@ extension OpenClawChatViewModel {
         Task { await self.fetchSessions(limit: limit, sessionSnapshot: context) }
     }
 
+    func generatedNewSessionKey(agentID explicitAgentID: String? = nil) -> String {
+        let baseKey = "ios-\(UUID().uuidString.lowercased())"
+        guard let agentID = explicitAgentID ??
+            OpenClawChatSessionKey.agentID(from: sessionKey) ??
+            activeAgentId ??
+            OpenClawChatSessionKey.agentID(from: resolvedMainSessionKey) ??
+            sessions.lazy.compactMap({ OpenClawChatSessionKey.agentID(from: $0.key) }).first
+        else {
+            return baseKey
+        }
+        return "agent:\(agentID):\(baseKey)"
+    }
+
     /// Returns true only when a session switch happened (create or reset
     /// fallback); callers keep UI like the new-session popover open on failure.
     @discardableResult
@@ -335,19 +348,22 @@ extension OpenClawChatViewModel {
     }
 
     public func fetchSessionList(search: String?, archived: Bool) async -> [OpenClawChatSessionEntry] {
+        let session = self.currentSessionSnapshot()
         let normalizedSearch = search?.trimmingCharacters(in: .whitespacesAndNewlines)
         let query = normalizedSearch?.isEmpty == false ? normalizedSearch : nil
         do {
             let res = try await self.transport.listSessions(
                 limit: Self.sessionListFetchLimit,
                 search: query,
-                archived: archived)
+                archived: archived,
+                agentID: session.deliveryAgentID)
+            guard self.isCurrentSession(session) else { return [] }
             return OpenClawChatSessionListOrganizer.organize(res.sessions)
         } catch {
             // A superseded (cancelled) fetch must not produce fallback rows;
             // the newer task owns the scoped list. Callers also guard on
             // Task.isCancelled before applying results.
-            guard !(error is CancellationError), !Task.isCancelled else { return [] }
+            guard self.isCurrentSession(session), !(error is CancellationError), !Task.isCancelled else { return [] }
             guard !archived else { return [] }
             guard let query else { return self.sessions }
             return OpenClawChatSessionListOrganizer.filter(self.sessions, search: query)

@@ -852,6 +852,11 @@ public protocol OpenClawChatTransport: Sendable {
         limit: Int?,
         search: String?,
         archived: Bool) async throws -> OpenClawChatSessionsListResponse
+    func listSessions(
+        limit: Int?,
+        search: String?,
+        archived: Bool,
+        agentID: String?) async throws -> OpenClawChatSessionsListResponse
     func listChildSessions(parentKey: String) async throws -> [OpenClawChatSessionEntry]
     func acquireSwarmRouteLease() async -> OpenClawChatSwarmRouteLease?
     func listAgents() async throws -> OpenClawChatAgentsListResponse?
@@ -1199,6 +1204,16 @@ extension OpenClawChatTransport {
 
     public func listChildSessions(parentKey _: String) async throws -> [OpenClawChatSessionEntry] {
         []
+    }
+
+    /// Existing custom transports retain their own roster scope until they adopt explicit agent routing.
+    public func listSessions(
+        limit: Int?,
+        search: String?,
+        archived: Bool,
+        agentID _: String?) async throws -> OpenClawChatSessionsListResponse
+    {
+        try await self.listSessions(limit: limit, search: search, archived: archived)
     }
 
     /// Convenience for callers that only select archive state. Transports must

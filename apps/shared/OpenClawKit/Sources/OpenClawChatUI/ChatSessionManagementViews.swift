@@ -565,9 +565,11 @@ public struct ChatNewSessionOptionsPopover: View {
             }
             self.routeLease = routeLease
             self.agents = response.agents
-            self.selectedAgentID = response.agents.contains(where: { $0.id == response.defaultId })
+            self.selectedAgentID = response.agents.first(where: {
+                $0.id.lowercased() == self.viewModel.selectedAgentID
+            })?.id ?? (response.agents.contains(where: { $0.id == response.defaultId })
                 ? response.defaultId
-                : response.agents[0].id
+                : response.agents[0].id)
         } catch {
             self.errorText = error.localizedDescription
         }

@@ -98,6 +98,7 @@ test(
     const worktreeId = "wt-live-abandon-1";
     insertRegistryWorktree(process.env, {
       id: worktreeId,
+      name: "live-abandon",
       repoFingerprint: "fp-live",
       repoRoot: "/tmp",
       path: "/tmp",
@@ -128,7 +129,6 @@ test(
       providerId: "device",
       profileId: "device:device-1",
       nodeDeviceId: "device-1",
-      sharedHost: true,
     });
 
     const requested = placements.startDispatch({
@@ -234,6 +234,7 @@ test(
     const worktreeId = "wt-restart-abandon-1";
     insertRegistryWorktree(process.env, {
       id: worktreeId,
+      name: "restart-abandon",
       repoFingerprint: "fp-restart",
       repoRoot: "/tmp",
       path: "/tmp",
@@ -263,7 +264,6 @@ test(
       providerId: "device",
       profileId: "device:device-restart",
       nodeDeviceId: "device-restart",
-      sharedHost: true,
     });
 
     const requested = placements.startDispatch({

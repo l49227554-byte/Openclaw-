@@ -434,7 +434,7 @@ export function createSubagentRegistryRestorer(config: {
             }
             const outcome = await deleteSubagentSessionForCleanup({
               callGateway: deps().callGateway,
-              resolveGatewayContext: getEntryGatewayContextResolver(entry),
+              gatewayBinding: { resolveGatewayContext: getEntryGatewayContextResolver(entry) },
               isCurrent: ownsCleanup,
               childSessionKey: entry.childSessionKey,
               expectedSessionId,

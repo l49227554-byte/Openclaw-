@@ -127,9 +127,10 @@ export function createSlackMessageHandler(params: {
             .map((entry) => entry.opts.dispatchCompletion)
             .filter((completion) => completion !== undefined);
           const retry = entries.find((entry) => entry.retry)?.retry;
-          const runtimeContext = retry?.runtimeContext ?? (await ctx.readRuntimeContext());
+          let admittedContext = retry?.runtimeContext;
           for (let retryAttempt = retry?.attempt ?? 0; ; retryAttempt += 1) {
             try {
+              const runtimeContext = (admittedContext ??= await ctx.readRuntimeContext());
               admissionLifecycle.abortSignal.throwIfAborted();
               await (async () => {
                 const flushedEntry = entries.at(-1);
@@ -344,7 +345,9 @@ export function createSlackMessageHandler(params: {
               }
               break;
             } catch (error) {
+              const runtimeContext = admittedContext;
               if (
+                runtimeContext &&
                 retryAttempt < RETRYABLE_FLUSH_MAX_ATTEMPTS &&
                 isRetryableSlackInboundError(error) &&
                 !entries.some((entry) => entry.opts.eventScope || entry.opts.dispatchCompletion)

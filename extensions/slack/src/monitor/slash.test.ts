@@ -1,3 +1,5 @@
+import path from "node:path";
+import { WebClient } from "@slack/web-api";
 import type { ChatCommandDefinition } from "openclaw/plugin-sdk/command-auth-native";
 // Slack tests cover slash plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
@@ -18,6 +20,11 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import {
+  normalizeSessionDeliveryState,
+  upsertSessionEntry,
+} from "openclaw/plugin-sdk/session-store-runtime";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getSlackSlashMocks, resetSlackSlashMocks } from "./slash.test-harness.js";
 
@@ -1934,8 +1941,69 @@ describe("slack slash commands access groups", () => {
 });
 
 describe("slack slash command session metadata", () => {
+  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
   const { deliverSlackSlashRepliesMock, recordSessionMetaFromInboundMock, resolveAgentRouteMock } =
     getSlackSlashMocks();
+
+  it("routes threaded native Stop to the ordinary DM parent after a policy reload", async () => {
+    const { createInboundSlackTestContext, createSlackTestAccount } =
+      await import("./message-handler/prepare.test-helpers.js");
+    const { createSlackCommandHandler } = await import("./slash.js");
+    const storePath = path.join(tempDirs.make("slack-threaded-stop-"), "sessions.sqlite");
+    const cfg: OpenClawConfig = {
+      session: { store: storePath },
+      channels: { slack: { dmPolicy: "open", allowFrom: ["*"] } },
+    };
+    setRuntimeConfigSnapshot(cfg, cfg);
+    const client = new WebClient("xoxb-synthetic");
+    vi.spyOn(client.conversations, "replies").mockResolvedValue({ ok: true, messages: [] });
+    const ctx = createInboundSlackTestContext({ cfg, appClient: client });
+    ctx.resolveChannelName = async () => ({ name: "directmessage", type: "im" });
+    ctx.resolveUserName = async () => ({ name: "Ada" });
+    ctx.runtime.error = vi.fn();
+    const handleCommand = createSlackCommandHandler({ ctx, account: createSlackTestAccount() });
+    await upsertSessionEntry({
+      agentId: "main",
+      storePath,
+      sessionKey: "agent:main:main",
+      entry: {
+        sessionId: "ordinary-dm",
+        updatedAt: Date.now(),
+        chatType: "direct",
+        delivery: normalizeSessionDeliveryState({
+          context: { channel: "slack", accountId: "default", to: "U1" },
+        }),
+      },
+    });
+    const reloaded: OpenClawConfig = {
+      ...cfg,
+      channels: { slack: { ...cfg.channels?.slack, textChunkLimit: 24 } },
+    };
+    setRuntimeConfigSnapshot(reloaded, reloaded);
+
+    const admitted = await handleCommand({
+      command: createSlashCommand({ channel_id: "D123" }),
+      threadTs: "170.111",
+      eventTs: "171.222",
+      builtInCommand: "stop",
+      prompt: "/stop",
+      ack: vi.fn(),
+      respond: vi.fn(),
+    });
+
+    expect(ctx.runtime.error).not.toHaveBeenCalled();
+    expect(admitted).toBe(true);
+    expect(dispatchMock).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        cfg: reloaded,
+        ctx: expect.objectContaining({
+          CommandBody: "/stop",
+          CommandTargetSessionKey: "agent:main:main",
+          MessageThreadId: "170.111",
+        }),
+      }),
+    );
+  });
 
   it("refreshes slash routing and access policy between invocations", async () => {
     const harness = createPolicyHarness({

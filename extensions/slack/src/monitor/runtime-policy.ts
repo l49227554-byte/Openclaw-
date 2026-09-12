@@ -88,31 +88,45 @@ export function createSlackRuntimeContextReader(ctx: SlackMonitorContext, lookup
         pending: Promise<SlackMonitorContext>;
       }
     | undefined;
-  return () => {
-    const cfg = readConfig();
-    if (!current || current.cfg !== cfg || current.identity !== ctx.installationIdentity) {
-      // Identity and transport caches stay monitor-owned; policy and name resolution
-      // finish on an unpublished snapshot so later reloads cannot rewrite admitted work.
-      // SAFETY: The prototype supplies the complete typed monitor; only policy fields are replaced.
-      const next = Object.create(ctx) as SlackMonitorContext;
-      Object.assign(next, { cfg }, resolveSlackMonitorPolicy(cfg, ctx.accountId, ctx.runtime));
-      next.resolveSlackSystemEventRoute = createSlackSystemEventRouteResolver({
-        cfg,
-        accountId: ctx.accountId,
-        getTeamId: () => ctx.teamId,
-        mainKey: next.mainKey,
-        threadInheritParent: next.threadInheritParent,
-        recallSlackChannelType: ctx.recallSlackChannelType,
-      });
-      next.readRuntimeContext = async () => next;
-      next.isRuntimePolicyCurrent = () => readConfig() === cfg;
-      current = {
-        cfg,
-        identity: ctx.installationIdentity,
-        pending: resolveWorkspacePolicy(next, lookupToken).then(() => next),
-      };
+  return async () => {
+    for (;;) {
+      const cfg = readConfig();
+      const identity = ctx.installationIdentity;
+      if (!current || current.cfg !== cfg || current.identity !== identity) {
+        // Identity and transport caches stay monitor-owned; policy and name resolution
+        // finish on an unpublished snapshot so later reloads cannot rewrite admitted work.
+        // SAFETY: The prototype supplies the complete typed monitor; only policy fields are replaced.
+        const next = Object.create(ctx) as SlackMonitorContext;
+        Object.assign(next, { cfg }, resolveSlackMonitorPolicy(cfg, ctx.accountId, ctx.runtime));
+        next.resolveSlackSystemEventRoute = createSlackSystemEventRouteResolver({
+          cfg,
+          accountId: ctx.accountId,
+          getTeamId: () => ctx.teamId,
+          mainKey: next.mainKey,
+          threadInheritParent: next.threadInheritParent,
+          recallSlackChannelType: ctx.recallSlackChannelType,
+        });
+        next.readRuntimeContext = async () => next;
+        next.isRuntimePolicyCurrent = () =>
+          readConfig() === cfg && ctx.installationIdentity === identity;
+        current = {
+          cfg,
+          identity,
+          pending: resolveWorkspacePolicy(next, lookupToken).then(() => next),
+        };
+      }
+      try {
+        const resolved = await current.pending;
+        if (resolved.isRuntimePolicyCurrent()) {
+          return resolved;
+        }
+      } catch (error) {
+        if (readConfig() === cfg && ctx.installationIdentity === identity) {
+          throw error;
+        }
+      }
+      // A lookup does not admit work; resolve again if its policy changed while waiting.
     }
-    return current.pending;
   };
 }
 

@@ -3,6 +3,7 @@ import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plu
 import type { ChannelRuntimeSurface } from "openclaw/plugin-sdk/channel-contract";
 import { buildChannelInboundEventContext } from "openclaw/plugin-sdk/channel-inbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   setRuntimeConfigSnapshot,
   clearRuntimeConfigSnapshot,
@@ -147,6 +148,59 @@ describe("slack startup user allowlist resolution", () => {
       expect(slackTestState.replyMock).toHaveBeenCalledTimes(2);
       expect(slackTestState.appStopMock).not.toHaveBeenCalled();
     } finally {
+      await stopSlackMonitor(monitor);
+    }
+  });
+
+  it("rejects a sender revoked while workspace policy resolution is pending", async () => {
+    const initial: OpenClawConfig = {
+      channels: {
+        slack: {
+          enabled: true,
+          dangerouslyAllowNameMatching: true,
+          dmPolicy: "allowlist",
+          allowFrom: ["UOLD"],
+        },
+      },
+    };
+    resetSlackTestState(initial);
+    setRuntimeConfigSnapshot(initial, initial);
+    slackTestState.replyMock.mockResolvedValue({ text: "ok" });
+    const lookup = createDeferred<Array<{ input: string; resolved: boolean }>>();
+    const monitor = startSlackMonitor(monitorSlackProvider);
+    try {
+      const handler = await getSlackHandlerOrThrow("message");
+      await flush();
+      const send = async (user: string, ts: string) =>
+        handler({
+          event: { type: "message", user, ts, text: "hello", channel: "D123", channel_type: "im" },
+        });
+      await send("UOLD", "201.001");
+      expect(slackTestState.replyMock).toHaveBeenCalledTimes(1);
+      const resolving: OpenClawConfig = {
+        channels: { slack: { ...initial.channels?.slack, allowFrom: ["UOLD", "@lookup"] } },
+      };
+      slackTestState.resolveSlackUserAllowlistMock.mockImplementationOnce(() => lookup.promise);
+      setRuntimeConfigSnapshot(resolving, resolving);
+      const pending = send("UOLD", "201.002");
+      await vi.waitFor(() =>
+        expect(slackTestState.resolveSlackUserAllowlistMock).toHaveBeenLastCalledWith(
+          expect.objectContaining({ entries: ["UOLD", "@lookup"] }),
+        ),
+      );
+      expect(slackTestState.replyMock).toHaveBeenCalledTimes(1);
+      const revoked: OpenClawConfig = {
+        channels: { slack: { ...initial.channels?.slack, allowFrom: ["UNEW"] } },
+      };
+      setRuntimeConfigSnapshot(revoked, revoked);
+      lookup.resolve([]);
+      await pending;
+      expect(slackTestState.replyMock).toHaveBeenCalledTimes(1);
+      await send("UNEW", "201.003");
+      expect(slackTestState.replyMock).toHaveBeenCalledTimes(2);
+      expect(slackTestState.appStopMock).not.toHaveBeenCalled();
+    } finally {
+      lookup.resolve([]);
       await stopSlackMonitor(monitor);
     }
   });

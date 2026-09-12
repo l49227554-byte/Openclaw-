@@ -647,7 +647,7 @@ export function createSlackCommandHandler(params: {
           if (p.sessionTarget) {
             resolvedSlashRoute = p.sessionTarget;
             isCurrentSession = captureSlackSessionTargetGuard(
-              { ...ctx, cfg },
+              ctx,
               p.sessionTarget,
               p.isSessionTargetCurrent,
             );
@@ -655,7 +655,7 @@ export function createSlackCommandHandler(params: {
           }
           const routing = await resolveSlackSessionEventRoutingContext({
             intent: "stop",
-            ctx: { ...ctx, cfg },
+            ctx,
             account,
             message: {
               type: "message",

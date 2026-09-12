@@ -51,6 +51,7 @@ type ChatMetadataBinding = {
   client: GatewayBrowserClient;
   scope: { agentId?: string; sessionKey: string };
   version: number;
+  sessionFactsInvalidated: boolean;
   catalogRequest?: { version: number; controller: AbortController; promise: Promise<boolean> };
   isCurrent: () => boolean;
   unsubscribe: () => void;
@@ -150,6 +151,7 @@ function bindChatMetadata(host: ChatPageHost): ChatMetadataBinding | undefined {
     client,
     scope,
     version: 0,
+    sessionFactsInvalidated: false,
     isCurrent: () =>
       metadataBindings.get(host) === binding &&
       host.connected &&
@@ -162,7 +164,8 @@ function bindChatMetadata(host: ChatPageHost): ChatMetadataBinding | undefined {
         return;
       }
       if (update.type === "invalidated") {
-        void refreshChatMetadata(host, { refreshSessionFacts: true });
+        binding.sessionFactsInvalidated ||= update.refreshSessionFacts;
+        void refreshChatMetadata(host);
         return;
       }
       if (update.type === "loading") {
@@ -181,10 +184,7 @@ function bindChatMetadata(host: ChatPageHost): ChatMetadataBinding | undefined {
   return binding;
 }
 
-export async function refreshChatMetadata(
-  host: ChatPageHost,
-  options?: { refreshSessionFacts?: boolean },
-): Promise<void> {
+export async function refreshChatMetadata(host: ChatPageHost): Promise<void> {
   const binding = bindChatMetadata(host);
   if (!binding) {
     retireChatMetadataRequests(host);
@@ -195,11 +195,12 @@ export async function refreshChatMetadata(
   const version = binding.version;
   const catalog = loadChatModelCatalog(host, binding).then(async (accepted) => {
     if (
-      options?.refreshSessionFacts &&
+      binding.sessionFactsInvalidated &&
       accepted &&
       binding.isCurrent() &&
       binding.version === version
     ) {
+      binding.sessionFactsInvalidated = false;
       await refreshCurrentChatSessionList(host).catch(() => undefined);
     }
   });

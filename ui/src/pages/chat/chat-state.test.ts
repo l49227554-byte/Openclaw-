@@ -4205,9 +4205,13 @@ describe("refreshChatMetadata", () => {
     } as unknown as ChatPageHost;
   }
 
-  it.each([false, true])(
-    "converges session facts after catalog invalidation with a pending picker read=%s",
-    async (pickerPending) => {
+  it.each([
+    { pickerPending: false, scopedAfterGlobal: false },
+    { pickerPending: true, scopedAfterGlobal: false },
+    { pickerPending: false, scopedAfterGlobal: true },
+  ])(
+    "converges catalog invalidation with pending picker=$pickerPending and scoped follow-up=$scopedAfterGlobal",
+    async ({ pickerPending, scopedAfterGlobal }) => {
       const prepared = { id: "model", name: "Model", provider: "test", contextWindow: 8_192 };
       const discovered = { ...prepared, contextWindow: 262_144 };
       const catalog = createDeferred<{ models: (typeof prepared)[] }>();
@@ -4227,6 +4231,12 @@ describe("refreshChatMetadata", () => {
         const picker = pickerPending ? refreshChatModelCatalogOnDemand(state) : undefined;
         invalidated = true;
         invalidateChatMetadataStore(state.client!);
+        if (scopedAfterGlobal) {
+          invalidateChatMetadataStore(state.client!, {
+            agentId: "work",
+            sessionKey: state.sessionKey,
+          });
+        }
         expect(refreshSessions).not.toHaveBeenCalled();
         catalog.resolve({ models: [discovered] });
         await vi.waitFor(() => expect(refreshSessions).toHaveBeenCalledOnce());
@@ -4342,6 +4352,7 @@ describe("refreshChatMetadata", () => {
     async (reason) => {
       const request = vi.fn().mockResolvedValue({ commands: [], models: [] });
       const state = createMetadataState(request);
+      const refreshSessions = vi.spyOn(state.sessions, "refresh").mockResolvedValue(undefined);
       await refreshChatMetadata(state);
       for (const [key, eventReason] of [
         ["agent:work:other", reason],
@@ -4362,6 +4373,8 @@ describe("refreshChatMetadata", () => {
       await vi.waitFor(() =>
         expect(request.mock.calls.filter(([method]) => method === "chat.metadata")).toHaveLength(2),
       );
+      await refreshChatMetadata(state);
+      expect(refreshSessions).not.toHaveBeenCalled();
       retireChatMetadataRequests(state);
     },
   );

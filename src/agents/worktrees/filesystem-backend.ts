@@ -82,6 +82,32 @@ export async function detectWorktreeFilesystemBackend(
   options: WorktreeFilesystemOptions,
 ): Promise<WorktreeFilesystemBackend | null> {
   assertActive(options);
+  if (process.platform === "darwin") {
+    const { apfsFilesystem } = await import("./filesystem-apfs.native.js");
+    const volume = await fs.statfs(parentPath);
+    assertActive(options);
+    if (apfsFilesystem.type === undefined || volume.type !== apfsFilesystem.type) {
+      return null;
+    }
+    return {
+      id: "apfs",
+      async createTemplate(destination, templateOptions) {
+        assertActive(templateOptions);
+        await fs.mkdir(destination);
+      },
+      async cloneTemplate(source, destination, cloneOptions) {
+        const stats = await fs.lstat(source);
+        if (!stats.isDirectory()) {
+          throw new Error(`Worktree template is not a directory: ${source}`);
+        }
+        assertActive(cloneOptions);
+        // Join the atomic native operation even on cancellation, so recovery
+        // cannot race a clone still writing the destination on another thread.
+        await apfsFilesystem.cloneDirectory(source, destination);
+        assertActive(cloneOptions);
+      },
+    };
+  }
   if (process.platform !== "linux") {
     return null;
   }

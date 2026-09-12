@@ -8,6 +8,7 @@ import {
   TSDOWN_NON_SDK_DTS_CONFIG_GROUPS,
   TSDOWN_PLUGIN_SDK_DTS_CONFIG_GROUPS,
 } from "../../scripts/lib/tsdown-config-groups.mts";
+import { prepareTsgoCommand } from "../../scripts/run-tsgo.mts";
 import { materializeNativeCompiler } from "./native-boundary-fixture.js";
 import { createScriptTestHarness } from "./test-helpers.js";
 import {
@@ -97,6 +98,8 @@ describe("tsdown checkout declaration resolution", () => {
         path.join(root, "node_modules/typescript-native/lib/getExePath.js"),
       );
       expect(getExePath.default()).toBe(path.toNamespacedPath(native));
+      const command = prepareTsgoCommand(["--version"], process.env, root);
+      expect(command?.bin).toBe(getExePath.default());
       const result = spawnSync(resolveRepoToolBinPath("tsgo", { cwd: root }), ["--version"], {
         cwd: root,
         encoding: "utf8",

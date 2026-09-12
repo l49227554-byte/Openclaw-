@@ -162,7 +162,7 @@ function bindChatMetadata(host: ChatPageHost): ChatMetadataBinding | undefined {
         return;
       }
       if (update.type === "invalidated") {
-        void refreshChatMetadata(host);
+        void refreshChatMetadata(host, { refreshSessionFacts: true });
         return;
       }
       if (update.type === "loading") {
@@ -181,7 +181,10 @@ function bindChatMetadata(host: ChatPageHost): ChatMetadataBinding | undefined {
   return binding;
 }
 
-export async function refreshChatMetadata(host: ChatPageHost): Promise<void> {
+export async function refreshChatMetadata(
+  host: ChatPageHost,
+  options?: { refreshSessionFacts?: boolean },
+): Promise<void> {
   const binding = bindChatMetadata(host);
   if (!binding) {
     retireChatMetadataRequests(host);
@@ -189,7 +192,18 @@ export async function refreshChatMetadata(host: ChatPageHost): Promise<void> {
   }
   // Only accepted store publications update availability or fetch errors.
   const metadata = loadChatMetadata(binding.client, binding.scope).catch(() => undefined);
-  await Promise.all([metadata, loadChatModelCatalog(host, binding)]);
+  const version = binding.version;
+  const catalog = loadChatModelCatalog(host, binding).then(async (accepted) => {
+    if (
+      options?.refreshSessionFacts &&
+      accepted &&
+      binding.isCurrent() &&
+      binding.version === version
+    ) {
+      await refreshCurrentChatSessionList(host).catch(() => undefined);
+    }
+  });
+  await Promise.all([metadata, catalog]);
 }
 
 export async function refreshChatModelAuthStatus(host: ChatPageHost, opts?: { refresh?: boolean }) {

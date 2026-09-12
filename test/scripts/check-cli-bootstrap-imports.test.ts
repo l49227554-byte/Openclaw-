@@ -453,11 +453,11 @@ describe("gateway run chunk metadata", () => {
     const root = createGatewayBuildFixture();
     const plugin = createGatewayRunChunkMetadataPlugin(root);
     let producerMs = 0;
-    const handler = plugin.generateBundle.handler;
+    const originalHook = { ...plugin.generateBundle };
     plugin.generateBundle.handler = function (...args) {
       const start = performance.now();
       try {
-        return handler.apply(this, args);
+        return originalHook.handler.apply(this, args);
       } finally {
         producerMs += performance.now() - start;
       }

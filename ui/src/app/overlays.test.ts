@@ -1,6 +1,7 @@
 // @vitest-environment node
 // Control UI tests cover application-owned overlay races.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import { hasSameOriginGatewayTransport } from "../dev-gateway.ts";
 import { createUpdateRunFixture as updateRunFixture } from "../test-helpers/update-run.ts";
 import type { ConnectionBootstrapCoordinator } from "./connection-bootstrap.ts";
@@ -9,7 +10,6 @@ import {
   approval,
   client,
   createGatewayHarness,
-  deferred,
   flushMicrotasks,
   registerOverlayPairingAccessTests,
   type RequestFn,
@@ -320,8 +320,8 @@ describe("application approval overlays", () => {
   });
 
   it("discards pending approvals when access changes on the same client", async () => {
-    const firstList = deferred();
-    const secondList = deferred();
+    const firstList = deferred<unknown>();
+    const secondList = deferred<unknown>();
     let execListRequests = 0;
     const request = vi.fn<RequestFn>((method) => {
       if (method !== "exec.approval.list") {
@@ -401,8 +401,8 @@ describe("application approval overlays", () => {
   });
 
   it("does not let a revoked approval decision release a restored decision", async () => {
-    const staleResolution = deferred();
-    const currentResolution = deferred();
+    const staleResolution = deferred<unknown>();
+    const currentResolution = deferred<unknown>();
     let resolutionCount = 0;
     const request = vi.fn<RequestFn>((method) => {
       if (method.endsWith(".list")) {
@@ -449,8 +449,8 @@ describe("application approval overlays", () => {
   });
 
   it("retires a grant-only downgrade without clearing the readable approval queue", async () => {
-    const staleResolution = deferred();
-    const currentResolution = deferred();
+    const staleResolution = deferred<unknown>();
+    const currentResolution = deferred<unknown>();
     let resolutionCount = 0;
     const request = vi.fn<RequestFn>((method) => {
       if (method.endsWith(".list")) {
@@ -527,8 +527,8 @@ describe("application approval overlays", () => {
   });
 
   it("reloads pending approvals for each connected epoch", async () => {
-    const firstList = deferred();
-    const reconnectedList = deferred();
+    const firstList = deferred<unknown>();
+    const reconnectedList = deferred<unknown>();
     let execListRequests = 0;
     const request = vi.fn<RequestFn>((method) => {
       if (method !== "exec.approval.list") {
@@ -574,7 +574,7 @@ describe("application approval overlays", () => {
   });
 
   it("keeps a resolve failure attached to its older request", async () => {
-    const resolveAttempt = deferred();
+    const resolveAttempt = deferred<unknown>();
     const request = vi.fn<RequestFn>((method) =>
       method.endsWith(".list") ? Promise.resolve([]) : resolveAttempt.promise,
     );
@@ -650,8 +650,8 @@ describe("application approval overlays", () => {
   });
 
   it("keeps A's failure visible after deciding B successfully", async () => {
-    const firstResolve = deferred();
-    const secondResolve = deferred();
+    const firstResolve = deferred<unknown>();
+    const secondResolve = deferred<unknown>();
     let resolveCalls = 0;
     const request = vi.fn<RequestFn>((method) => {
       if (method !== "exec.approval.resolve") {
@@ -684,7 +684,7 @@ describe("application approval overlays", () => {
   });
 
   it("clears an approval's error when that approval is retried", async () => {
-    const firstResolve = deferred();
+    const firstResolve = deferred<unknown>();
     let resolveCalls = 0;
     const request = vi.fn<RequestFn>((method) => {
       if (method !== "exec.approval.resolve") {
@@ -729,7 +729,7 @@ describe("application approval overlays", () => {
   });
 
   it("does not release a new client's busy state when an old resolve settles", async () => {
-    const oldResolve = deferred();
+    const oldResolve = deferred<unknown>();
     const oldRequest = vi.fn<RequestFn>((method) =>
       method.endsWith(".list") ? Promise.resolve([]) : oldResolve.promise,
     );
@@ -740,7 +740,7 @@ describe("application approval overlays", () => {
     const oldDecision = overlays.decideApproval("allow-once");
     harness.update({ client: null, phase: "stopped" });
 
-    const newResolve = deferred();
+    const newResolve = deferred<unknown>();
     const newClient = client((method) =>
       method.endsWith(".list") ? Promise.resolve([]) : newResolve.promise,
     );
@@ -763,7 +763,7 @@ describe("application approval overlays", () => {
   });
 
   it("does not dismiss a new approval when an old same-client decision settles", async () => {
-    const oldResolve = deferred();
+    const oldResolve = deferred<unknown>();
     const request = vi.fn<RequestFn>((method) =>
       method.endsWith(".list") ? Promise.resolve([]) : oldResolve.promise,
     );
@@ -787,7 +787,7 @@ describe("application approval overlays", () => {
   });
 
   it("ignores a decision that settles after disposal", async () => {
-    const resolveAttempt = deferred();
+    const resolveAttempt = deferred<unknown>();
     const request = vi.fn<RequestFn>((method) =>
       method.endsWith(".list") ? Promise.resolve([]) : resolveAttempt.promise,
     );

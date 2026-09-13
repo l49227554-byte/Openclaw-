@@ -25,7 +25,7 @@ Workboard is bundled but disabled by default:
 2. Open the **Workboard** plugin, select **Lifecycle**, and turn on the enabled
    switch. Because Workboard is included with OpenClaw, it does not need an
    **Install** action.
-3. If the UI reports that a restart is required, restart the Gateway.
+3. Wait for the lifecycle action to finish, then open the Workboard tab.
 
 The Workboard tab appears in the Control UI nav after the plugin runtime loads.
 While it is disabled, the tab stays hidden from navigation. Opening the
@@ -37,9 +37,11 @@ The equivalent CLI workflow is:
 
 ```bash
 openclaw plugins enable workboard
-openclaw gateway restart
 openclaw dashboard
 ```
+
+Enablement applies to a running Gateway automatically. If it is offline, start
+it before opening the dashboard. See [Apply changes and inspect](/plugins/manage-plugins#apply-changes-and-inspect).
 
 ## Configuration
 
@@ -61,7 +63,6 @@ plugin entry:
 
 ```bash
 openclaw plugins disable workboard
-openclaw gateway restart
 ```
 
 ## Card fields
@@ -445,6 +446,10 @@ attachment metadata and blobs, diagnostics, notifications, worker logs,
 protocol state, and subscriptions all live in Workboard tables (not
 plugin key-value entries). A card export preserves the board narrative
 without inlining attachment blob contents.
+
+SQLite opening, queries, and transactions run in a background database worker.
+Disabling or reloading the plugin drains admitted storage work before closing
+its connections.
 
 Installations that used Workboard in the `.28` release can run
 `openclaw doctor --fix` to migrate the shipped legacy plugin-state namespaces

@@ -21,9 +21,15 @@ For unmatched HTTP paths, the app-shell fallback respects the request's `Accept`
 
 It speaks **directly to the Gateway WebSocket** on the same port.
 
+If the Gateway's request queue is full, the Control UI shows "The server is busy. Please try again in a moment." Wait briefly, then retry the action.
+
 While the initial connection or a route loads, shimmer placeholders reserve the chat layout. They respect your theme and reduced-motion preference; Gateway startup progress remains visible when available.
 
+The selected chat loads before automatic sidebar task lists refresh. Live events remain subscribed during startup, and explicit sidebar actions remain available. Background lists resume after the transcript loads or reports an error.
+
 Closed Terminal, Browser, Desktop, and Home/Ask OpenClaw panels initialize when you open them rather than during initial navigation. Panels saved as open still restore after a reload.
+
+Hidden retained chats defer command and model metadata refreshes until you return to them. Repeated background changes share the current metadata read and refresh once more after it finishes, instead of issuing overlapping requests.
 
 Choose **New agent** in the sidebar or Agents home to open the custodian chat.
 It recommends a chief of staff, researcher, writer, reviewer, or a small team
@@ -33,6 +39,27 @@ creation waits for operator approval. Created agents appear in Agents home and
 the agent switcher.
 If team creation stops partway through, the custodian reports the retained
 agents so you can inspect them before creating the missing members.
+
+## Watch a desktop in Picture-in-Picture
+
+Connect the Desktop viewer, then choose **Open desktop in Picture-in-Picture** in
+its toolbar. The browser opens a view-only, always-on-top window so you can watch
+the remote computer while using other tabs or apps. The same action is available
+in the docked panel, chat side panel, and focused desktop window.
+
+This requires a secure context (HTTPS or localhost) and a desktop browser that
+exposes the Document Picture-in-Picture API, including supported Chrome and
+Firefox versions. The control is disabled when the API is unavailable or the
+desktop is not connected. Browser permissions can still deny the request; check
+those permissions and click the control again to retry. OpenClaw does not replace
+unsupported PiP with an ordinary popup.
+
+PiP mirrors the existing live connection without taking control or opening a
+second desktop connection. Closing PiP leaves the original viewer and remote task
+running. Disconnecting, changing the viewer's source or session, or closing the
+originating viewer closes PiP; it does not stop the remote task. Keep the opener
+tab open. A sleeping computer or a browser that suspends the entire page cannot
+continue streaming.
 
 ## Quick open (local)
 

@@ -198,17 +198,6 @@ suite.define(() => {
           };
           await trigger.waitFor({ state: "visible" });
           await expect.poll(() => pickerValue(primary)).toBe("fixture/anchor");
-          await expect
-            .poll(() =>
-              requests.some(
-                ({ params }) =>
-                  params.view === "configured" &&
-                  params.agentId === "main" &&
-                  params.preparedOnly === undefined &&
-                  params.refresh === undefined,
-              ),
-            )
-            .toBe(true);
           expect(acquisitions()).toBe(initialAcquisitions);
           stages.push({ stage: "initial", acquisitions: acquisitions() });
 
@@ -223,7 +212,6 @@ suite.define(() => {
             expect(request.params).toEqual({
               view: "configured",
               agentId: "main",
-              includeDefaultModels: true,
               refresh: true,
             });
             expect(replies.get(request.id)?.ok).toBe(true);
@@ -591,8 +579,8 @@ suite.define(() => {
           await page.keyboard.press("ControlOrMeta+K");
           await input.fill("palette");
           await status.waitFor({ state: "visible" });
-          expect(catalogParams.length).toBeGreaterThan(requestsBeforeOpen);
-          expect(catalogParams.at(-1)).toEqual({
+          // The selected Chat can issue its session-scoped read on this connection too.
+          expect(catalogParams.slice(requestsBeforeOpen)).toContainEqual({
             view: "configured",
             agentId: "reviewer",
           });

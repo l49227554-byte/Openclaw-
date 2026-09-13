@@ -557,15 +557,15 @@ export function resolveEffectiveHookTargetAgentId(
   }
   if (
     persistedOwner.kind === "configured" &&
-    resolvedAgentId &&
-    resolvedAgentId !== persistedOwner.agentId
+    selectedAgentId &&
+    selectedAgentId !== persistedOwner.agentId
   ) {
     return {
       ok: false,
       code: "owner-conflict",
-      agentId: resolvedAgentId,
+      agentId: selectedAgentId,
       ownerAgentId: persistedOwner.agentId,
-      error: `agentId "${resolvedAgentId}" conflicts with global session-store owner "${persistedOwner.agentId}"; use agentId "${persistedOwner.agentId}" or update agents.defaults.sessionStore.agentId`,
+      error: `agentId "${selectedAgentId}" conflicts with global session-store owner "${persistedOwner.agentId}"; use agentId "${persistedOwner.agentId}" or update agents.defaults.sessionStore.agentId`,
     };
   }
   const effectiveAgentId =

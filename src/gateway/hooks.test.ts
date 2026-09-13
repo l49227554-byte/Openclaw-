@@ -450,30 +450,40 @@ describe("gateway hooks helpers", () => {
     });
   });
 
-  test("global hook dispatch honors the persisted fixed-store owner", () => {
-    const resolved = resolveHooksConfigOrThrow({
-      hooks: { enabled: true, token: "secret" },
-      session: { scope: "global", store: "/tmp/shared.sqlite" },
-      agents: {
-        ownership: "explicit",
-        defaults: { sessionStore: { agentId: "ops" } },
-        entries: { ops: {}, research: {} },
-      },
-    });
+  test.each([undefined, "research"])(
+    "global hook dispatch honors the persisted fixed-store owner (runtime default: %s)",
+    (runtimeDefault) => {
+      const resolved = resolveHooksConfigOrThrow({
+        hooks: { enabled: true, token: "secret" },
+        session: { scope: "global", store: "/tmp/shared.sqlite" },
+        agents: {
+          ownership: "explicit",
+          defaults: {
+            sessionStore: { agentId: "ops" },
+            ...(runtimeDefault ? { systemAgent: { agentId: runtimeDefault } } : {}),
+          },
+          entries: { ops: {}, research: {} },
+        },
+      });
 
-    expect(resolveEffectiveHookTargetAgentId(resolved, undefined, "request")).toEqual({
-      ok: true,
-      effectiveAgentId: "ops",
-    });
-    expect(resolveEffectiveHookTargetAgentId(resolved, "research", "request")).toEqual({
-      ok: false,
-      code: "owner-conflict",
-      agentId: "research",
-      ownerAgentId: "ops",
-      error:
-        'agentId "research" conflicts with global session-store owner "ops"; use agentId "ops" or update agents.defaults.sessionStore.agentId',
-    });
-  });
+      expect(resolveEffectiveHookTargetAgentId(resolved, undefined, "request")).toEqual({
+        ok: true,
+        effectiveAgentId: "ops",
+      });
+      expect(resolveEffectiveHookTargetAgentId(resolved, undefined, "mapping")).toEqual({
+        ok: true,
+        effectiveAgentId: "ops",
+      });
+      expect(resolveEffectiveHookTargetAgentId(resolved, "research", "request")).toEqual({
+        ok: false,
+        code: "owner-conflict",
+        agentId: "research",
+        ownerAgentId: "ops",
+        error:
+          'agentId "research" conflicts with global session-store owner "ops"; use agentId "ops" or update agents.defaults.sessionStore.agentId',
+      });
+    },
+  );
 
   test("isHookAgentAllowed honors hooks.allowedAgentIds for effective target routing", () => {
     const resolved = resolveHooksConfigOrThrow(buildHookAgentConfig(["hooks"]));

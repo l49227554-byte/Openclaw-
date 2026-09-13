@@ -219,68 +219,92 @@ describe("ACP session metadata SQLite store", () => {
     });
   });
 
-  it("batch-loads legacy bare metadata without rekeying during a read", async () => {
-    await withTestDir({ prefix: "openclaw-acp-batch-owner-" }, async (dir) => {
-      const databasePath = path.join(dir, "state", "openclaw.sqlite");
-      const cfg = {
-        session: { store: path.join(dir, "sessions.json") },
-        agents: {
-          ownership: "explicit",
-          defaults: { sessionStore: { agentId: "ops" } },
-          entries: { ops: {}, research: {} },
-        },
-      } satisfies OpenClawConfig;
-      const entry: SessionEntry = {
-        sessionId: "ops-global",
-        lifecycleRevision: "ops-revision",
-        updatedAt: 100,
-      };
-      writeAcpSessionMetaForMigration({
-        databasePath,
-        sessionKey: "global",
-        lifecycleRevision: "ops-revision",
-        meta: {
-          backend: "acpx",
-          agent: "codex",
-          runtimeSessionName: "legacy-global",
-          mode: "persistent",
-          state: "idle",
-          lastActivityAt: 123,
-        },
-      });
-
-      const batch = readAcpSessionMetaBatch({
-        cfg,
-        databasePath,
-        entries: [{ sessionKey: "global", agentId: "ops", entry }],
-      });
-
-      expect(batch.get(entry)?.runtimeSessionName).toBe("legacy-global");
-      expect(
-        readAcpSessionMetaForEntry({
-          cfg,
+  it.each(["persisted", "sole"] as const)(
+    "batch-loads legacy bare metadata without rekeying during a read (%s owner)",
+    async (ownerKind) => {
+      await withTestDir({ prefix: "openclaw-acp-batch-owner-" }, async (dir) => {
+        const databasePath = path.join(dir, "state", "openclaw.sqlite");
+        const cfg: OpenClawConfig = {
+          session: { store: path.join(dir, "sessions.json") },
+          agents: {
+            ownership: "explicit",
+            ...(ownerKind === "persisted"
+              ? {
+                  defaults: { sessionStore: { agentId: "ops" } },
+                  entries: { ops: {}, research: {} },
+                }
+              : { entries: { ops: {} } }),
+          },
+        };
+        const entry: SessionEntry = {
+          sessionId: "ops-global",
+          lifecycleRevision: "ops-revision",
+          updatedAt: 100,
+        };
+        const staleEntry: SessionEntry = { ...entry, lifecycleRevision: "ops-next" };
+        writeAcpSessionMetaForMigration({
           databasePath,
           sessionKey: "global",
-          agentId: "ops",
-          entry,
-        })?.runtimeSessionName,
-      ).toBe("legacy-global");
-      expect(
-        readAcpSessionMetaForEntry({ databasePath, sessionKey: "global", entry })
-          ?.runtimeSessionName,
-      ).toBe("legacy-global");
-      const database = new DatabaseSync(databasePath, {
-        readOnly: true,
-      });
-      try {
+          lifecycleRevision: "ops-revision",
+          meta: {
+            backend: "acpx",
+            agent: "codex",
+            runtimeSessionName: "legacy-global",
+            mode: "persistent",
+            state: "idle",
+            lastActivityAt: 123,
+          },
+        });
+
+        const batch = readAcpSessionMetaBatch({
+          cfg,
+          databasePath,
+          entries: [
+            { sessionKey: "global", agentId: "ops", entry },
+            { sessionKey: "global", agentId: "ops", entry: staleEntry },
+          ],
+        });
+
+        expect(batch.get(entry)?.runtimeSessionName).toBe("legacy-global");
+        expect(batch.get(staleEntry)).toBeUndefined();
         expect(
-          database.prepare("SELECT session_key FROM acp_sessions ORDER BY session_key").all(),
-        ).toEqual([{ session_key: "global" }]);
-      } finally {
-        database.close();
-      }
-    });
-  });
+          readAcpSessionMetaForEntry({
+            cfg,
+            databasePath,
+            sessionKey: "global",
+            agentId: "ops",
+            entry,
+          })?.runtimeSessionName,
+        ).toBe("legacy-global");
+        expect(
+          readAcpSessionMetaForEntry({
+            cfg,
+            databasePath,
+            sessionKey: "global",
+            agentId: "ops",
+            entry: staleEntry,
+          }),
+        ).toBeUndefined();
+        expect(
+          readAcpSessionMetaForEntry({ databasePath, sessionKey: "global", entry })
+            ?.runtimeSessionName,
+        ).toBe("legacy-global");
+        expect(
+          readAcpSessionMetaForEntry({ databasePath, sessionKey: "global", entry: staleEntry }),
+        ).toBeUndefined();
+        const database = new DatabaseSync(databasePath, {
+          readOnly: true,
+        });
+        try {
+          expect(
+            database.prepare("SELECT session_key FROM acp_sessions ORDER BY session_key").all(),
+          ).toEqual([{ session_key: "global" }]);
+        } finally {
+          database.close();
+        }
+      });
+    },
+  );
 
   it("deletes the legacy row selected by fallback when metadata is cleared", async () => {
     await withTestDir({ prefix: "openclaw-acp-clear-legacy-owner-" }, async (dir) => {

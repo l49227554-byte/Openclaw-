@@ -3143,6 +3143,8 @@ class NodeRuntime private constructor(
   internal val gatewayComposerDefaultAgentOwner: StateFlow<GatewayDefaultAgentOwner?> = chat.composerDefaultAgentOwner
   val chatSessionId: StateFlow<String?> = chat.sessionId
   val chatMessages: StateFlow<List<ChatMessage>> = chat.messages
+  val chatMessagesFromCache: StateFlow<Boolean> = chat.messagesFromCache
+  val chatMessagesReadyAtSelection: StateFlow<Boolean> = chat.messagesReadyAtSelection
   val chatTranscriptAnchor: StateFlow<ChatTranscriptAnchorState?> = chat.transcriptAnchor
   val chatHistoryLoading: StateFlow<Boolean> = chat.historyLoading
   internal val chatSessionCreating: StateFlow<Boolean> = chat.isCreatingSession

@@ -636,6 +636,8 @@ class MainViewModel private constructor(
 
   val chatSessionOwnerAgentId: StateFlow<String?> = runtimeState(initial = null) { it.chatSessionOwnerAgentId }
   val chatMessages: StateFlow<List<ChatMessage>> = runtimeState(initial = emptyList()) { it.chatMessages }
+  internal val chatMessagesFromCache: StateFlow<Boolean> = runtimeState(initial = false) { it.chatMessagesFromCache }
+  internal val chatMessagesReadyAtSelection: StateFlow<Boolean> = runtimeState(initial = false) { it.chatMessagesReadyAtSelection }
   val chatTranscriptAnchor: StateFlow<ChatTranscriptAnchorState?> =
     runtimeState(initial = null) { it.chatTranscriptAnchor }
   val chatHistoryLoading: StateFlow<Boolean> = runtimeState(initial = false) { it.chatHistoryLoading }

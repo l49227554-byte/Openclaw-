@@ -63,7 +63,6 @@ import ai.openclaw.app.ui.TabletopPaneBounds
 import ai.openclaw.app.ui.copyGatewayDiagnosticsReport
 import ai.openclaw.app.ui.design.ClawAgentAvatar
 import ai.openclaw.app.ui.design.ClawListItem
-import ai.openclaw.app.ui.design.ClawLoadingState
 import ai.openclaw.app.ui.design.ClawPanel
 import ai.openclaw.app.ui.design.ClawPrimaryButton
 import ai.openclaw.app.ui.design.ClawSecondaryButton
@@ -342,6 +341,8 @@ internal fun ChatScreen(
   features: List<DisplayFeature> = emptyList(),
 ) {
   val messages by viewModel.chatMessages.collectAsState()
+  val messagesFromCache by viewModel.chatMessagesFromCache.collectAsState()
+  val messagesReadyAtSelection by viewModel.chatMessagesReadyAtSelection.collectAsState()
   val transcriptAnchor by viewModel.chatTranscriptAnchor.collectAsState()
   val historyLoading by viewModel.chatHistoryLoading.collectAsState()
   val sessionCreating by viewModel.chatSessionCreating.collectAsState()
@@ -927,6 +928,8 @@ internal fun ChatScreen(
     prepareFullMessageRead = { message -> viewModel.prepareFullMessageRead(composerOwner, selectionGeneration, gatewayCatalogRevision, message) },
     session = activeSession,
     messages = messages,
+    messagesFromCache = messagesFromCache,
+    messagesReadyAtSelection = messagesReadyAtSelection,
     transcriptAnchor = transcriptAnchor,
     historyLoading = historyLoading,
     activeRunCount = selectedActiveRun.count,
@@ -1543,6 +1546,8 @@ private fun ChatMessageList(
   prepareFullMessageRead: (ChatMessage) -> ChatController.FullMessageRead?,
   session: ChatSessionEntry?,
   messages: List<ChatMessage>,
+  messagesFromCache: Boolean,
+  messagesReadyAtSelection: Boolean,
   transcriptAnchor: ChatTranscriptAnchorState?,
   historyLoading: Boolean,
   activeRunCount: Int,
@@ -1664,7 +1669,17 @@ private fun ChatMessageList(
           catalogRevision = gatewayCatalogRevision,
           prepareRead = prepareFullMessageRead,
         ) { visibleContent, disclosure ->
-          Box(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+          val showLoading =
+            timeline.items.isEmpty() &&
+              !messagesFromCache &&
+              showChatLoadingPlaceholder(historyLoading = historyLoading, healthOk = healthOk, gatewayOffline = gatewayOffline)
+          ChatHistoryReveal(
+            owner = fullMessageOwner,
+            selectionGeneration = selectionGeneration,
+            loading = showLoading,
+            revealImmediately = messagesReadyAtSelection,
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+          ) {
             LazyColumn(
               modifier = Modifier.fillMaxSize().nestedScroll(readerScroll.nestedScrollConnection).onGloballyPositioned(readerScroll.navigation.anchors::viewportPlaced),
               state = readerScroll.listState,
@@ -1801,17 +1816,13 @@ private fun ChatMessageList(
               }
             }
 
-            if (timeline.items.isEmpty()) {
-              if (showChatLoadingPlaceholder(historyLoading = historyLoading, healthOk = healthOk, gatewayOffline = gatewayOffline)) {
-                ClawLoadingState(title = nativeString("Loading thread"), modifier = Modifier.align(Alignment.Center))
-              } else {
-                EmptyChatHint(
-                  healthOk = healthOk,
-                  gatewayOffline = gatewayOffline,
-                  onStarterPrompt = onStarterPrompt,
-                  modifier = Modifier.align(Alignment.Center),
-                )
-              }
+            if (timeline.items.isEmpty() && !showLoading) {
+              EmptyChatHint(
+                healthOk = healthOk,
+                gatewayOffline = gatewayOffline,
+                onStarterPrompt = onStarterPrompt,
+                modifier = Modifier.align(Alignment.Center),
+              )
             }
           }
         }

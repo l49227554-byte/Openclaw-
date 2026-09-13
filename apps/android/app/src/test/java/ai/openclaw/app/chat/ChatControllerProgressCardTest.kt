@@ -71,6 +71,49 @@ class ChatControllerProgressCardTest {
   ): String = """{"card":{"sessionKey":"$sessionKey","revision":$revision,"updatedAt":$updatedAt,"markdown":"$markdown","steps":$steps}}"""
 
   @Test
+  fun switchingBackPublishesTheRecentProgressCardSynchronously() =
+    runTest {
+      var mainRequests = 0
+      val refreshedMain = CompletableDeferred<String>()
+      val gateway = ScriptedGateway(chatControllerTestJson)
+      gateway.respondWith("chat.history", historyResponse("session-1", emptyList()))
+      gateway.respond("progressCard.get") { paramsJson ->
+        when (gateway.sessionKeyOf(paramsJson)) {
+          "agent:main:main" -> {
+            if (mainRequests++ == 0) {
+              cardResponse(markdown = "Main")
+            } else {
+              refreshedMain.await()
+            }
+          }
+
+          "agent:main:other" -> {
+            cardResponse(sessionKey = "agent:main:other", markdown = "Other")
+          }
+
+          else -> {
+            error("unexpected session")
+          }
+        }
+      }
+      val controller = newController(gateway)
+
+      controller.switchSession("agent:main:main", "main")
+      runCurrent()
+      assertEquals("Main", controller.progressCard.value?.markdown)
+      controller.switchSession("agent:main:other", "main")
+      runCurrent()
+      assertEquals("Other", controller.progressCard.value?.markdown)
+
+      controller.switchSession("agent:main:main", "main")
+
+      assertEquals("Main", controller.progressCard.value?.markdown)
+      refreshedMain.complete(cardResponse(revision = 2, markdown = "Refreshed main"))
+      runCurrent()
+      assertEquals("Refreshed main", controller.progressCard.value?.markdown)
+    }
+
+  @Test
   fun deniedProgressRefreshClearsOnlyTheCurrentOwner() =
     runTest {
       for (replacement in listOf("none", "session", "socket")) {

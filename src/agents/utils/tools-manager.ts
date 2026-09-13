@@ -128,13 +128,15 @@ function commandExists(cmd: string): boolean {
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
-function getToolPath(tool: "fd" | "rg", toolsDir: string): string | null {
+function getToolPath(tool: "fd" | "rg", toolsDir: string | undefined): string | null {
   const config = TOOLS[tool];
 
   // Check our tools directory first
-  const localPath = join(toolsDir, config.binaryName + (platform() === "win32" ? ".exe" : ""));
-  if (existsSync(localPath)) {
-    return localPath;
+  if (toolsDir) {
+    const localPath = join(toolsDir, config.binaryName + (platform() === "win32" ? ".exe" : ""));
+    if (existsSync(localPath)) {
+      return localPath;
+    }
   }
 
   // Check system PATH - if found, just return the command name (it's in PATH)
@@ -408,6 +410,17 @@ export async function ensureTool(tool: "fd" | "rg", silent = false): Promise<str
   }
 
   const config = TOOLS[tool];
+
+  if (!toolsDir) {
+    if (!silent) {
+      console.log(
+        chalk.yellow(
+          `${config.name} not found. Install it on PATH or select an agent owner before downloading.`,
+        ),
+      );
+    }
+    return undefined;
+  }
 
   if (isOfflineModeEnabled()) {
     if (!silent) {

@@ -79,6 +79,42 @@ afterEach(() => {
 });
 
 describe("ensureTool", () => {
+  it.each(["fd", "rg", "shell"] as const)(
+    "keeps %s usable without an ambient agent owner",
+    async (tool) => {
+      const home = expectDefined(tempAgentDir, "test home");
+      const configPath = join(home, "openclaw.json");
+      vi.spyOn(os, "homedir").mockReturnValue(home);
+      vi.stubEnv("HOME", home);
+      vi.stubEnv("USERPROFILE", home);
+      vi.stubEnv("OPENCLAW_HOME", home);
+      vi.stubEnv("OPENCLAW_STATE_DIR", home);
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
+      vi.stubEnv("OPENCLAW_AGENT_DIR", "");
+      writeFileSync(
+        configPath,
+        JSON.stringify({ agents: { ownership: "explicit", entries: { alpha: {}, beta: {} } } }),
+      );
+      const before = snapshotFiles(home);
+      const { getAgentDir } = await import("../config.js");
+      expect(() => getAgentDir()).toThrow("Select an agent owner");
+
+      if (tool === "shell") {
+        const { getBashShellEnv } = await import("../shell-utils.js");
+        const sourceEnv = { PATH: join(home, "system-bin"), EXAMPLE: "preserved" };
+        expect(getBashShellEnv(undefined, sourceEnv)).toEqual(sourceEnv);
+      } else {
+        const { ensureTool } = await import("./tools-manager.js");
+        spawnSyncMock.mockReturnValue({ status: 0 });
+        await expect(ensureTool(tool, true)).resolves.toBe(tool);
+        spawnSyncMock.mockReturnValue({ status: 1 });
+        await expect(ensureTool(tool, true)).resolves.toBeUndefined();
+        expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+      }
+      expect(snapshotFiles(home)).toEqual(before);
+    },
+  );
+
   it.each(
     [
       { name: "legacy only", legacy: "payload", canonical: "missing", selected: "legacy" },

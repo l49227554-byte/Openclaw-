@@ -120,6 +120,7 @@ export function getAgentDir(): string {
 }
 
 /** Get path to managed binaries directory (fd, rg) */
-export function getBinDir(): string {
-  return join(getAgentDir(), "bin");
+export function getBinDir(): string | undefined {
+  const directory = getAgentDirResolution().optionalDirectory;
+  return directory ? join(directory.dir, "bin") : undefined;
 }

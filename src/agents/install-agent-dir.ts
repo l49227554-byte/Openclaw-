@@ -87,7 +87,7 @@ export function resolveInstallAgentDir(
     };
   };
   let directory: InstallAgentDirectory | undefined;
-  const resolveDirectory = (): InstallAgentDirectory => {
+  const resolveDirectory = (): InstallAgentDirectory | undefined => {
     const target = targetDir();
     const explicit = overrideDir();
     if (explicit !== undefined) {
@@ -107,12 +107,7 @@ export function resolveInstallAgentDir(
         throw error;
       }
     }
-    if (!target) {
-      throw new Error(
-        "Select an agent owner or set OPENCLAW_AGENT_DIR before resolving the install directory.",
-      );
-    }
-    return select(target, "current");
+    return target ? select(target, "current") : undefined;
   };
   return {
     get config() {
@@ -125,8 +120,17 @@ export function resolveInstallAgentDir(
       const dir = targetDir();
       return dir === undefined ? undefined : { dir, owner: agentId() };
     },
-    get directory() {
+    get optionalDirectory() {
       return (directory ??= resolveDirectory());
+    },
+    get directory() {
+      const selected = (directory ??= resolveDirectory());
+      if (!selected) {
+        throw new Error(
+          "Select an agent owner or set OPENCLAW_AGENT_DIR before resolving the install directory.",
+        );
+      }
+      return selected;
     },
   };
 }

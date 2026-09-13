@@ -605,9 +605,7 @@
   padding-inline-start: 1.3em;
   color: var(--link);
   cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
-  text-underline-offset: 2px;
+  text-decoration: none;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -631,6 +629,7 @@
 
 :is(.chat-text, .sidebar-markdown, .chat-reply-attribution) a.markdown-session-link:hover {
   color: var(--link-hover);
+  text-decoration: underline;
 }
 
 :is(.chat-text, .sidebar-markdown) a.markdown-session-link > code {

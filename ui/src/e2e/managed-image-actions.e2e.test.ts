@@ -6,6 +6,7 @@ import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-ar
 import {
   captureUiProofEnabled,
   createChatFlowE2eSuite,
+  expectDefined,
   installMockGateway,
 } from "./chat-flow.test-support.ts";
 import { createControlUiE2eContextOptions } from "./control-ui-e2e-suite.test-support.ts";
@@ -20,7 +21,7 @@ beforeEach(() => {
 });
 
 suite.define(() => {
-  it("previews, downloads, and opens a ticketed generated image", async () => {
+  it("reuses full image bytes across downloads and the lightbox", async () => {
     const filenamePrefix = "a".repeat(119);
     const imageTitle = `${filenamePrefix}📊`;
     const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
@@ -134,12 +135,20 @@ suite.define(() => {
       await downloadButton.click();
       expect((await download).suggestedFilename()).toBe(`${filenamePrefix}.png`);
 
+      const repeatedDownload = page.waitForEvent("download");
+      await downloadButton.click();
+      const downloadedPath = expectDefined(
+        await (await repeatedDownload).path(),
+        "downloaded image path",
+      );
+      expect(await readFile(downloadedPath)).toEqual(imageBytes);
+
       await page.getByRole("button", { name: `Open image ${imageTitle}` }).click();
       await page
         .getByRole("dialog", { name: `Image preview: ${imageTitle}` })
         .waitFor({ state: "visible" });
-      expect(requestedVariants).toEqual(["thumbnail", "full", "full"]);
-      expect(await gateway.getRequests("artifacts.download")).toHaveLength(3);
+      expect(requestedVariants).toEqual(["thumbnail", "full"]);
+      expect(await gateway.getRequests("artifacts.download")).toHaveLength(2);
     } finally {
       await suite.closeBrowserContext(context);
     }

@@ -68,15 +68,28 @@ export function teamsMeetingStatusScript(params: {
   const selectors = JSON.stringify(TEAMS_MEETING_SELECTORS);
   const expectedIdentity = normalizeTeamsMeetingUrlForReuse(params.meetingUrl);
   const toggleStateFunction = teamsMeetingToggleStateFunctionSource();
-  return (
+  const statusSource =
     teamsMeetingStatusPreludeSource({
       ...params,
       expectedIdentity,
       pageIdentitySource: teamsMeetingIdentityFunctionSource(params.meetingUrl),
       selectors,
       toggleStateFunction,
-    }) + teamsMeetingStatusCallSource()
-  );
+    }) + teamsMeetingStatusCallSource();
+  // Classify sign-in only after the shared status guard has denied ownership
+  // and retired this session's resources. Login pages never gain call authority.
+  return `async () => {
+    const result = JSON.parse(await (${statusSource})());
+    const hostname = location.hostname.toLowerCase();
+    if (result.manualAction?.reason === "teams-session-conflict" &&
+        (hostname === "login.microsoftonline.com" || hostname.endsWith(".microsoftonline.com"))) {
+      result.manualAction = {
+        reason: "teams-login-required",
+        message: "Sign in to Microsoft Teams in the OpenClaw browser profile, then retry the meeting join.",
+      };
+    }
+    return JSON.stringify(result);
+  }`;
 }
 
 export function teamsMeetingTranscriptScript(

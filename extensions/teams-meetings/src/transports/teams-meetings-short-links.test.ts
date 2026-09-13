@@ -6,6 +6,8 @@ import {
   runStatusScript,
   runLeaveScript,
   MEETING_STATE_KEY,
+  URL as LEGACY_URL,
+  CONSUMER_URL,
 } from "./teams-meetings-platform-adapter.test-helpers.js";
 import {
   normalizeTeamsMeetingUrl,
@@ -36,8 +38,8 @@ const invalid = [
   SHORT.replace("1234567890123", ""),
   SHORT.replace("1234567890123", "12.34"),
   SHORT.replace("1234567890123", "１２３"),
-  SHORT.split("?")[0],
-  SHORT.split("?")[0] + "?p=",
+  SHORT.slice(0, SHORT.indexOf("?")),
+  SHORT.slice(0, SHORT.indexOf("?")) + "?p=",
   SHORT + "&p=other",
   SHORT + "&%70=other",
   SHORT.replace("Synthetic_opaque-Token", "%00"),
@@ -133,6 +135,46 @@ describe("new work meeting links", () => {
     });
     expect(leave.clicks).toBe(1);
   });
+  it.each([SHORT, LEGACY_URL, CONSUMER_URL])(
+    "preserves login guidance without granting meeting controls: %s",
+    async (meetingUrl) => {
+      const currentUrl = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+      const leave = control({ label: "Leave" });
+      const join = control({ label: "Join now" });
+      const microphone = control({ label: "Mute", pressed: true });
+      const camera = control({ label: "Turn camera off", pressed: true });
+      const priorMeeting = {
+        identity: normalizeTeamsMeetingUrlForReuse(meetingUrl),
+        sessionId: "session-1",
+        inCallControl: leave,
+        inCallUrl: currentUrl,
+        verifiedAt: Date.now(),
+      };
+      const page = await runStatusScript({
+        currentUrl,
+        meetingUrl,
+        priorMeeting,
+        leave,
+        join,
+        microphone,
+        camera,
+        captureCaptions: true,
+        captionRows: [],
+        allowMicrophone: true,
+      });
+      expect(page.result).toMatchObject({
+        inCall: false,
+        manualAction: { reason: "teams-login-required" },
+      });
+      expect(page.window).not.toHaveProperty(MEETING_STATE_KEY);
+      expect(page.window).not.toHaveProperty("__openclawTeamsCaptions");
+      expect(page.captionButton.clicks).toBe(0);
+      runLeaveScript({ currentUrl, meetingUrl, priorMeeting, leave });
+      for (const button of [leave, join, microphone, camera]) {
+        expect(button.clicks).toBe(0);
+      }
+    },
+  );
   it("does not adopt a different passcode or mutate a newer page owner", async () => {
     const leave = control({ label: "Leave" });
     const priorMeeting = {
@@ -175,7 +217,7 @@ describe("new work meeting links", () => {
     expect(page.window).not.toHaveProperty(MEETING_STATE_KEY);
   });
   it.each([
-    OTHER.split("?")[0],
+    OTHER.slice(0, OTHER.indexOf("?")),
     OTHER + "&p=duplicate",
     "https://evil.example/v2/",
     "https://teams.microsoft.com/unrelated",
@@ -197,9 +239,10 @@ describe("new work meeting links", () => {
   it.each([
     SHORT,
     OTHER,
-    OTHER.split("?")[0],
+    OTHER.slice(0, OTHER.indexOf("?")),
     "https://teams.microsoft.com/v2/",
     "https://evil.example/v2/",
+    "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
   ])(
     "gates audio capture against current identity even with a retained control: %s",
     async (currentUrl) => {

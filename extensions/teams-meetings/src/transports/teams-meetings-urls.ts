@@ -5,8 +5,13 @@ type TeamsMeetingIdentity = { kind: "work"; key: string } | { kind: "consumer"; 
 function parseTeamsMeetingIdentity(url: string | undefined): TeamsMeetingIdentity | undefined {
   // Keep this function self-contained: the browser runs its serialized source.
   // URL parsing otherwise silently drops controls; reject rather than repair.
-  // eslint-disable-next-line no-control-regex
-  if (!url || /[\u0000-\u0020\u007f\\]/.test(url)) {
+  if (
+    !url ||
+    Array.from(url).some(
+      (character) =>
+        character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127 || character === "\\",
+    )
+  ) {
     return undefined;
   }
   try {
@@ -43,8 +48,10 @@ function parseTeamsMeetingIdentity(url: string | undefined): TeamsMeetingIdentit
         if (
           passcodes.length !== 1 ||
           !passcode ||
-          // eslint-disable-next-line no-control-regex -- reject control-bearing credentials
-          /[\s\u0000-\u001f\u007f\ufffd]/u.test(passcode) ||
+          /[\s\ufffd]/u.test(passcode) ||
+          Array.from(passcode).some(
+            (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+          ) ||
           /%(?![0-9a-f]{2})/i.test(rawPasscode ?? "")
         ) {
           return undefined;

@@ -169,7 +169,6 @@ export type ConfigWriteCoordinator = {
   patchForm: (path: Array<string | number>, value: unknown) => void;
   removeFormValue: (path: Array<string | number>) => void;
   setRaw: (value: string) => void;
-  resetDraft: () => void;
   discardDraft: (options?: { reloadOnly?: boolean }) => Promise<void>;
   setWritesSuspended: (suspended: boolean, refreshAdmission?: () => Promise<void>) => void;
   waitForPendingWrites: () => Promise<void>;

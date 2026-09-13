@@ -538,13 +538,6 @@ export function createConfigWriteCoordinator({
     patchForm: (path, value) => mutateDraft(() => updateConfigFormValue(state, path, value)),
     removeFormValue: (path) => mutateDraft(() => removeConfigFormValue(state, path)),
     setRaw: (value) => mutateDraft(() => updateConfigRawValue(state, value)),
-    resetDraft: () => {
-      patches.clear();
-      cancelScheduledAutoSave();
-      mutate(() => resetConfigPendingChanges(state));
-      clearAutoSaveDraftConnection();
-      reconcileAppliedRefresh();
-    },
     discardDraft: async (options) => {
       // Settle pending writes first (with trailing saves suppressed — the
       // draft is being thrown away, not re-written) so a late ack cannot

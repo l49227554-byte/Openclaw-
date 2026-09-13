@@ -42,7 +42,6 @@ export type RuntimeConfigCapability = {
   patchForm: (path: Array<string | number>, value: unknown) => void;
   removeFormValue: (path: Array<string | number>) => void;
   setRaw: (value: string) => void;
-  resetDraft: () => void;
   /** Reloads from disk; offline drafts reset locally unless reloadOnly is requested. */
   discardDraft: (options?: { reloadOnly?: boolean }) => Promise<void>;
   /** Pauses/resumes all config writes (autosave + manual) while e.g. the app updater runs. */
@@ -249,7 +248,6 @@ export function createRuntimeConfigCapability(
     patchForm: writes.patchForm,
     removeFormValue: writes.removeFormValue,
     setRaw: writes.setRaw,
-    resetDraft: writes.resetDraft,
     discardDraft: writes.discardDraft,
     setWritesSuspended: writes.setWritesSuspended,
     waitForPendingWrites: writes.waitForPendingWrites,

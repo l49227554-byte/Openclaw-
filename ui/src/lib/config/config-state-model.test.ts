@@ -160,7 +160,7 @@ describe("config state model", () => {
       expect(canReloadControlUiDocument()).toBe(true);
       runtimeConfig.patchForm(["count"], 3);
       expect(canReloadControlUiDocument()).toBe(false);
-      runtimeConfig.resetDraft();
+      await runtimeConfig.discardDraft();
       expect(canReloadControlUiDocument()).toBe(true);
       runtimeConfig.setRaw('{"count":4}');
       expect(canReloadControlUiDocument()).toBe(false);

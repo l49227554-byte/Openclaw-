@@ -27,6 +27,9 @@ describe("progress-card markdown", () => {
     expect(stripProgressCardRawContentBlocks("before<script>unfinished")).toBe(
       "before<script>unfinished",
     );
+    expect(stripProgressCardRawContentBlocks("<script><style </script>VISIBLE</style>")).toBe(
+      "VISIBLE</style>",
+    );
   });
 
   it("keeps raw-content preprocessing bounded for repeated unclosed tags", () => {
@@ -36,6 +39,15 @@ describe("progress-card markdown", () => {
     const progressHtml = toSanitizedMarkdownHtml(markdown, { progressBars: true });
 
     expect(progressHtml).not.toContain("<script");
+    expect(performance.now() - startedAt).toBeLessThan(100);
+  });
+
+  it("keeps malformed closing-tag validation bounded", () => {
+    const markdown = "</script ".repeat(7_000) + " ".repeat(70_000) + ">";
+    const startedAt = performance.now();
+
+    toSanitizedMarkdownHtml(markdown, { progressBars: true });
+
     expect(performance.now() - startedAt).toBeLessThan(100);
   });
 });

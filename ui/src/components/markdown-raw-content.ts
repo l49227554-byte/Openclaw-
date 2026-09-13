@@ -41,8 +41,13 @@ function readProgressCardRawContentTag(
     return null;
   }
   const nameEnd = nameStart + name.length;
-  if (isClosing && input.slice(nameEnd, close).trim() !== "") {
-    return null;
+  if (isClosing) {
+    for (let index = nameEnd; index < close; index += 1) {
+      const character = input[index];
+      if (character !== " " && character !== "\t" && character !== "\n" && character !== "\r") {
+        return null;
+      }
+    }
   }
   return { start, end: close + 1, isClosing, name };
 }
@@ -65,10 +70,11 @@ export function stripProgressCardRawContentBlocks(input: string): string {
     const tag = readProgressCardRawContentTag(input, start, nextClose);
     if (tag) {
       tags.push(tag);
-      searchFrom = tag.end;
-    } else {
-      searchFrom = start + 1;
     }
+    // A candidate tag can contain another '<' before its closing '>'. Keep
+    // inspecting those starts so an embedded raw-block closer remains visible
+    // to the pairing pass, matching the previous regex's search semantics.
+    searchFrom = start + 1;
   }
 
   // Pair each opener with the next compatible close in one reverse pass. This

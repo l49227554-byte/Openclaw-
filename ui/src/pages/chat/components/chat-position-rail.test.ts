@@ -460,6 +460,19 @@ describe("conversation position rail", () => {
   });
 
   it("keeps the focused run marker through streaming and retargets its persisted answer", async () => {
+    const observed = new Set<Element>();
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe = (element: Element) => observed.add(element);
+        unobserve = (element: Element) => observed.delete(element);
+        disconnect = () => observed.clear();
+      },
+    );
+    const settleFrames = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
     const user = message("question", "user", "Review the card", 1, "stream-run");
     const props = threadProps("rail-stream-handoff", "agent:main:main", [user]);
     Object.assign(props, {
@@ -492,6 +505,39 @@ describe("conversation position rail", () => {
       const streamBubble = [...container.querySelectorAll<HTMLElement>(".chat-bubble")].find(
         (bubble) => bubble.textContent?.includes("Draft response"),
       )!;
+      const root = container.querySelector<HTMLElement>(".chat-thread")!;
+      const marks = container.querySelector<HTMLElement>(".chat-position-rail__marks")!;
+      Object.defineProperty(marks, "clientHeight", { configurable: true, value: 600 });
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(true);
+      const query = vi.spyOn(root, "querySelectorAll");
+      props.stream = "Draft **updated** response";
+      rerender();
+      await settleFrames();
+      expect(streamBubble.querySelector("strong")?.textContent).toBe("updated");
+      expect(query.mock.calls.filter(([selector]) => selector.includes(".chat-bubble"))).toEqual(
+        [],
+      );
+      const streamParent = streamBubble.parentNode!;
+      const streamNext = streamBubble.nextSibling;
+      streamBubble.remove();
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(false);
+      const wrapper = document.createElement("section");
+      wrapper.append(streamBubble);
+      root.append(wrapper);
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(true);
+      const streamId = streamBubble.dataset.messageId!;
+      delete streamBubble.dataset.messageId;
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(false);
+      streamBubble.dataset.messageId = streamId;
+      await settleFrames();
+      expect(observed.has(streamBubble)).toBe(true);
+      streamParent.insertBefore(streamBubble, streamNext);
+      wrapper.remove();
+      await settleFrames();
       provisional.click();
       await Promise.resolve();
       expect(streamBubble.classList.contains("chat-bubble--reply-target")).toBe(true);

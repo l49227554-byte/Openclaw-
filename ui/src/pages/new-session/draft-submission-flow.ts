@@ -411,11 +411,6 @@ export class DraftSubmissionFlow {
       agentId: submissionAgentId,
       client: submissionClient,
       context,
-      clearDraft: () => {
-        this.messageValue = "";
-        this.mentionsValue = [];
-        this.sessionStartup.clear();
-      },
     });
     const submissionRecoveryScope = pendingPlacement
       ? this.pendingPlacement.recoveryScope
@@ -593,12 +588,11 @@ export class DraftSubmissionFlow {
         if (!ownsStartedPlacement()) {
           return;
         }
-        await this.draftPersistence.clearSubmittedDraft();
+        await this.clearSubmittedDraft(true);
         if (!ownsStartedPlacement()) {
           return;
         }
         this.pendingPlacement.reset();
-        this.attachmentDraft.clearAfterSubmit(true);
         if (completeInBackground(recovery.sessionKey, recovery.messageId)) {
           return;
         }
@@ -629,11 +623,10 @@ export class DraftSubmissionFlow {
           buildInitialChatSubmission(sessionKey, initialTurn, submissionClient, initialRun.runId),
         );
       }
-      await this.draftPersistence.clearSubmittedDraft();
+      await this.clearSubmittedDraft(!handedOffAttachments);
       if (requestId !== this.submitRequestToken) {
         return;
       }
-      this.attachmentDraft.clearAfterSubmit(!handedOffAttachments);
       if (
         completeInBackground(
           sessionKey,
@@ -647,7 +640,6 @@ export class DraftSubmissionFlow {
         key: sessionKey,
         agentId: submissionAgentId,
       });
-      this.sessionStartup.clear();
     } catch (error) {
       if (requestId === this.submitRequestToken && this.gateway.client === submissionClient) {
         this.sessionStartup.clear();
@@ -699,13 +691,10 @@ export class DraftSubmissionFlow {
         return;
       }
       this.startedSession.current = null;
-      await this.draftPersistence.clearSubmittedDraft();
+      await this.clearSubmittedDraft(true);
       if (requestId !== this.submitRequestToken || this.gateway.client !== client) {
         return;
       }
-      this.messageValue = "";
-      this.mentionsValue = [];
-      this.attachmentDraft.clearAfterSubmit(true);
       navigateToStartedTerminal(context, result.sessionId);
     } catch (error) {
       if (requestId === this.submitRequestToken && this.gateway.client === client) {
@@ -717,6 +706,17 @@ export class DraftSubmissionFlow {
         this.callbacks.requestUpdate();
       }
     }
+  }
+
+  private clearSubmittedDraft(releaseAttachments: boolean): Promise<void> {
+    // Capture the original draft for durable cleanup, then consume it before
+    // any await: reconnects and failed navigation must not revive an accepted send.
+    const persistence = this.draftPersistence.clearSubmittedDraft();
+    this.messageValue = "";
+    this.mentionsValue = [];
+    this.attachmentDraft.clearAfterSubmit(releaseAttachments);
+    this.sessionStartup.clear();
+    return persistence;
   }
 
   disconnect() {

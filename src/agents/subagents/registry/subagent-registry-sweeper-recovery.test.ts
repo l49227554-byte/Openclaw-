@@ -837,28 +837,6 @@ describe("subagent registry recovery scheduling", () => {
     );
   });
 
-  it("archives a retired recovery row without deleting its newer child session", async () => {
-    const runtime = { current: {} as GatewayRecoveryRuntime };
-    const { entry, runs, callGateway, notifyContextEngineSubagentEnded, sweeper } =
-      createHarness(runtime);
-    entry.cleanup = "delete";
-    entry.archiveAtMs = Date.now() - 1;
-    entry.execution = {
-      status: "terminal",
-      startedAt: Date.now() - 60_000,
-      endedAt: Date.now() - 55_000,
-      outcome: { status: "error", error: "retired Gateway lifecycle" },
-      suppressSessionEffects: true,
-    };
-    entry.endedReason = "subagent-error";
-
-    await sweeper.sweepOnce();
-
-    expect(callGateway).not.toHaveBeenCalled();
-    expect(notifyContextEngineSubagentEnded).not.toHaveBeenCalled();
-    expect(runs.has(entry.runId)).toBe(false);
-  });
-
   it("retires an archived stale owner when guarded deletion sees a successor", async () => {
     const runtime = { current: {} as GatewayRecoveryRuntime };
     const { entry, runs, callGateway, notifyContextEngineSubagentEnded, sweeper } =

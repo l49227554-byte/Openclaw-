@@ -34,6 +34,7 @@ import {
   directSessionReq,
 } from "./test/server-sessions.test-helpers.js";
 import { createWorkerInferenceDrainService } from "./worker-environments/inference-control.test-helpers.js";
+import "./server.subagent-delete-cleanup-retention.gateway.test-support.js";
 
 const {
   createConfiguredGlobalAgentSessionStore,
@@ -436,6 +437,70 @@ test.each(["runtime loading", "cleanup"] as const)(
     } finally {
       loading?.mockRestore();
     }
+  },
+);
+
+test.each(["gateway-retired", "cleanup-owner-replaced"] as const)(
+  "sessions.delete preserves the stored row when transferred cleanup loses %s authority",
+  async (expiredAuthority) => {
+    const sessionKey = `agent:main:subagent:${expiredAuthority}`;
+    const sessionId = `sess-${expiredAuthority}`;
+    const lifecycleRevision = `revision-${expiredAuthority}`;
+    const { storePath } = await createSessionStoreDir();
+    await writeSessionStore({
+      entries: {
+        [sessionKey]: sessionStoreEntry(sessionId, { lifecycleRevision }),
+      },
+    });
+    let gatewayCurrent = true;
+    let cleanupOwnerCurrent = true;
+    const assertCurrent = () => {
+      if (!gatewayCurrent) {
+        throw new Error("gateway retired");
+      }
+      if (!cleanupOwnerCurrent) {
+        throw new Error("cleanup owner replaced");
+      }
+    };
+    let releaseRuntimeCleanup = () => {};
+    const runtimeCleanupStarted = new Promise<void>((resolve) => {
+      bundleMcpRuntimeMocks.disposeSessionMcpRuntime.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseRuntimeCleanup = release;
+        });
+      });
+    });
+
+    const deletion = directSessionReq(
+      "sessions.delete",
+      {
+        key: sessionKey,
+        expectedSessionId: sessionId,
+        expectedLifecycleRevision: lifecycleRevision,
+      },
+      {
+        sessionMutationAuthorization: {
+          assertCurrent,
+          assertTargetCurrent: assertCurrent,
+        },
+      },
+    );
+    await runtimeCleanupStarted;
+    if (expiredAuthority === "gateway-retired") {
+      gatewayCurrent = false;
+    } else {
+      cleanupOwnerCurrent = false;
+    }
+    releaseRuntimeCleanup();
+
+    await expect(deletion).rejects.toThrow(
+      expiredAuthority === "gateway-retired" ? "gateway retired" : "cleanup owner replaced",
+    );
+    expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject({
+      sessionId,
+      lifecycleRevision,
+    });
   },
 );
 

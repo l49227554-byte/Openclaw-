@@ -530,7 +530,7 @@ describe("Microsoft Teams meeting captions and permissions", () => {
       sessionId: "session-1",
       visible: [],
     };
-    const currentUrl = "https://teams.live.com/v2/";
+    const currentUrl = "https://teams.microsoft.com/v2/";
     const { window } = await runStatusScript({
       captureCaptions: true,
       currentUrl,

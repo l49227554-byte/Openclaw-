@@ -7,71 +7,26 @@ import {
 import { TEAMS_MEETING_SELECTORS } from "./teams-meetings-selectors.js";
 import { teamsMeetingStatusCallSource } from "./teams-meetings-status-call-source.js";
 import { teamsMeetingStatusPreludeSource } from "./teams-meetings-status-prejoin-source.js";
-import { normalizeTeamsMeetingUrlForReuse } from "./teams-meetings-urls.js";
+import {
+  normalizeTeamsMeetingUrlForReuse,
+  teamsMeetingIdentityFunctionSource,
+} from "./teams-meetings-urls.js";
 
 export function teamsMeetingAudioCaptureScript(params: MeetingBrowserAudioCaptureRequest): string {
   return createMeetingBrowserAudioCaptureSource({
     ...params,
     audioOutputsGlobal: "__openclawTeamsAudioOutputs",
     ownershipSource: `
-      ${pageIdentityFunctionSource()}
+      ${teamsMeetingIdentityFunctionSource(params.meetingUrl)}
       const expectedIdentity = ${JSON.stringify(normalizeTeamsMeetingUrlForReuse(params.meetingUrl))};
       const state = window.__openclawTeamsMeeting;
+      const currentIdentity = meetingIdentity(location.href);
       return Boolean(expectedIdentity && state?.sessionId === sessionId &&
         state.identity === expectedIdentity && !state.leavePending &&
-        (meetingIdentity(location.href) === expectedIdentity ||
-          (state.inCallUrl === location.href && state.inCallControl?.isConnected)));
+        (currentIdentity === expectedIdentity ||
+          (!currentIdentity && state.inCallUrl === location.href && state.inCallControl?.isConnected)));
     `,
   });
-}
-
-function pageIdentityFunctionSource(): string {
-  return `const meetingIdentity = (rawUrl) => {
-    try {
-      const parsed = new URL(rawUrl);
-      const host = parsed.hostname.toLowerCase();
-      if (parsed.protocol !== "https:") return undefined;
-      if (host === "teams.microsoft.com") {
-        const match = parsed.pathname.match(/^\\/l\\/meetup-join\\/([^/]+)(?:\\/0)?\\/?$/i);
-        if (!match?.[1]) return undefined;
-        const threadId = decodeURIComponent(match[1]);
-        return /^19:[^/]+@thread\\.(?:v2|tacv2)$/i.test(threadId)
-          ? "teams-work:" + threadId
-          : undefined;
-      }
-      if (host === "teams.live.com") {
-        const launcherTarget = parsed.pathname.toLowerCase() === "/dl/launcher/launcher.html"
-          ? parsed.searchParams.get("url")
-          : undefined;
-        const launcherMatch = launcherTarget?.match(/^\\/_#\\/meet\\/([^/?#]+)(?:\\?(.+))?$/i);
-        let lightMeeting;
-        if (parsed.pathname.toLowerCase() === "/light-meetings/launch") {
-          try {
-            const coordinates = parsed.searchParams.get("coords");
-            const decoded = coordinates && coordinates.length <= 16_384
-              ? JSON.parse(atob(coordinates))
-              : undefined;
-            if (decoded && typeof decoded === "object") lightMeeting = decoded;
-          } catch {}
-        }
-        const match = parsed.pathname.match(/^\\/meet\\/([^/]+)\\/?$/i) || launcherMatch ||
-          (typeof lightMeeting?.meetingCode === "string"
-            ? [undefined, lightMeeting.meetingCode]
-            : undefined);
-        if (!match?.[1]) return undefined;
-        const code = decodeURIComponent(match[1]);
-        const passcode = launcherMatch
-          ? new URLSearchParams(launcherMatch[2] || "").get("p")
-          : typeof lightMeeting?.passcode === "string"
-            ? lightMeeting.passcode
-            : parsed.searchParams.get("p");
-        return /^[a-z0-9_-]+$/i.test(code)
-          ? "teams-consumer:" + code.toLowerCase() + ":p:" + encodeURIComponent(passcode || "")
-          : undefined;
-      }
-    } catch {}
-    return undefined;
-  };`;
 }
 
 function teamsMeetingToggleStateFunctionSource(): string {
@@ -117,7 +72,7 @@ export function teamsMeetingStatusScript(params: {
     teamsMeetingStatusPreludeSource({
       ...params,
       expectedIdentity,
-      pageIdentitySource: pageIdentityFunctionSource(),
+      pageIdentitySource: teamsMeetingIdentityFunctionSource(params.meetingUrl),
       selectors,
       toggleStateFunction,
     }) + teamsMeetingStatusCallSource()
@@ -139,7 +94,7 @@ export function teamsMeetingTranscriptScript(
       meeting: "__openclawTeamsMeeting",
     },
     meetingSessionId,
-    pageIdentitySource: pageIdentityFunctionSource(),
+    pageIdentitySource: teamsMeetingIdentityFunctionSource(meetingUrl),
     platformDisplayName: "Teams",
   });
 }
@@ -168,7 +123,7 @@ export function teamsMeetingLeaveScript(params: {
     expectedIdentity,
     leaveInitiated: params.leaveInitiated,
     meetingSessionId: params.meetingSessionId,
-    pageIdentitySource: pageIdentityFunctionSource(),
+    pageIdentitySource: teamsMeetingIdentityFunctionSource(params.meetingUrl),
     platform: {
       displayName: "Teams",
       globals: {

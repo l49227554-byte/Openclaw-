@@ -347,15 +347,20 @@ describe("readScheduledTaskCommand", () => {
     });
   });
 
-  it("returns null when script has no command", async () => {
-    await withScheduledTaskScript(
-      { scriptLines: ["@echo off", "rem This is just a comment"] },
-      async (env) => {
-        const result = await readScheduledTaskCommand(env);
-        expect(result).toBeNull();
-      },
-    );
-  });
+  it.each(["", "< NUL", "2>err<NUL", '>>"out log" 2>&1'])(
+    "rejects a script with no command before redirections: %s",
+    async (redirections) => {
+      await withScheduledTaskScript(
+        { scriptLines: ["@echo off", "rem This is just a comment", redirections] },
+        async (env) => {
+          await expect(readScheduledTaskCommand(env)).resolves.toBeNull();
+          await expect(readScheduledTaskCommand(env, { requireEffective: true })).rejects.toThrow(
+            "Effective Scheduled Task service command could not be inspected.",
+          );
+        },
+      );
+    },
+  );
 
   it("parses full script with all components", async () => {
     await withScheduledTaskScript(

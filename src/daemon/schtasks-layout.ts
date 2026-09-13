@@ -110,7 +110,7 @@ function stripTrailingCmdRedirections(commandLine: string): string {
 
   const firstRedirect = tokens.findIndex((token) => token.redirect !== undefined);
   const firstToken = tokens[firstRedirect];
-  if (firstRedirect <= 0 || !firstToken) {
+  if (!firstToken) {
     return commandLine;
   }
   for (let index = firstRedirect; index < tokens.length; index++) {
@@ -134,6 +134,7 @@ function stripTrailingCmdRedirections(commandLine: string): string {
       return commandLine;
     }
   }
+  // Redirection alone has no executable for the service reader to inspect.
   return commandLine.slice(0, firstToken.start);
 }
 

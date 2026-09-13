@@ -121,8 +121,10 @@ async function probeZaiChatCompletions(params: {
         // Resolve immediately before body consumption so headers and every
         // body shape share one operation budget, including slow-drip streams.
         timeoutMs: resolveTimeoutMs,
-        onIdleTimeout: ({ chunkTimeoutMs }) =>
-          new Error(`Z.AI probe error body timed out after ${chunkTimeoutMs}ms`),
+        // The probe's deadline owns the budget, including caller timeouts over 30s.
+        chunkTimeoutMs: 0,
+        onTimeout: ({ timeoutMs }) =>
+          new Error(`Z.AI probe error body timed out after ${timeoutMs}ms`),
         onOverflow: ({ maxBytes }) =>
           new Error(`Z.AI probe error body exceeded size limit (${maxBytes} bytes)`),
       });

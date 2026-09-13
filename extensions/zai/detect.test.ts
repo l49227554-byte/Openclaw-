@@ -396,6 +396,49 @@ describe("detectZaiEndpoint", () => {
     );
   });
 
+  it.each([
+    { bodyDelayMs: 31_000, expectedModel: "glm-5.1", expectedCalls: 2 },
+    { bodyDelayMs: 41_000, expectedModel: undefined, expectedCalls: 1 },
+  ])("honors a 40s probe deadline with a $bodyDelayMs ms error body", async (scenario) => {
+    vi.useFakeTimers();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let calls = 0;
+    try {
+      const detectedPromise = detectZaiEndpoint({
+        apiKey: "sk-test", // pragma: allowlist secret
+        endpoint: "coding-global",
+        timeoutMs: 40_000,
+        fetchFn: async () => {
+          calls += 1;
+          if (calls > 1) {
+            return new Response("{}", { status: 200 });
+          }
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                timer = setTimeout(() => {
+                  controller.enqueue(new TextEncoder().encode('{"error":{"code":"1211"}}'));
+                  controller.close();
+                }, scenario.bodyDelayMs);
+              },
+              cancel() {
+                clearTimeout(timer);
+              },
+            }),
+            { status: 400 },
+          );
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(41_001);
+      expect((await detectedPromise)?.modelId).toBe(scenario.expectedModel);
+      expect(calls).toBe(scenario.expectedCalls);
+    } finally {
+      clearTimeout(timer);
+      vi.useRealTimers();
+    }
+  });
+
   it("fails closed when a probe error body stalls without chunks", async () => {
     // Headers return 400, but the error body never enqueues. Without
     // the whole-body deadline the probe would hang indefinitely.

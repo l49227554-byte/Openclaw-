@@ -3,6 +3,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import type {
   AgentHarnessScopedCreateRunningTaskRunParams,
   AgentHarnessScopedFinalizeTaskRunParams,
@@ -11,9 +12,10 @@ import type {
   AgentHarnessTaskRuntimeScope,
 } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import { withTempDir } from "openclaw/plugin-sdk/test-env";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CodexAppServerClient } from "./client.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config.js";
+import { setManagedCodexPluginRoot } from "./managed-binary.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import { codexNativeSubagentRunId } from "./native-subagent-task-mirror.js";
 import type { JsonObject } from "./protocol.js";
@@ -103,6 +105,13 @@ async function waitFor<T>(probe: () => T | undefined, timeoutMs: number, what: s
 }
 
 describeLive("codex native subagent monitor live", () => {
+  beforeEach(() => {
+    setManagedCodexPluginRoot(fileURLToPath(new URL("../../", import.meta.url)));
+  });
+  afterEach(() => {
+    setManagedCodexPluginRoot(undefined);
+  });
+
   it("delivers spawned subagent results live and recovers them from history", async () => {
     const apiKey = process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) {

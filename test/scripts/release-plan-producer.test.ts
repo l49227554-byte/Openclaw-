@@ -16,13 +16,15 @@ import {
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 import { collectClawHubPublishablePluginPackages } from "../../scripts/lib/plugin-clawhub-release.ts";
 import { collectPublishablePluginPackages } from "../../scripts/lib/plugin-npm-release.ts";
 import { collectExtensionPackageJsonCandidates } from "../../scripts/lib/plugin-publication-candidates.ts";
 import {
   canonicalReleasePlanLockJson,
   createReleasePlanLock,
+  parseReleasePlanLockJson,
+  validateReleasePlan,
   type ReleasePlan,
   type ReleasePlanLock,
 } from "../../scripts/release-plan-contract.mjs";
@@ -32,10 +34,13 @@ import {
 } from "../../scripts/release-plan-producer-core.mts";
 import {
   produceReleasePlan as trustedCheckoutProduceReleasePlan,
+  produceVerifiedReleaseInventory as trustedCheckoutProduceVerifiedReleaseInventory,
   verifyReleasePlanLock as trustedCheckoutVerifyReleasePlanLock,
   type MainQualificationValidationIntent,
   type ReleasePlanIntent,
   type ReleasePlanSource,
+  type ReleaseInventorySource,
+  type VerifiedReleaseInventory,
 } from "../../scripts/release-plan-producer.mts";
 import { writePublishablePluginFixture } from "../helpers/publishable-plugin-fixture.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -292,22 +297,19 @@ function trustedToolingGh(toolingFullRef: string, toolingSha: string) {
 
 function runCoreOperation(
   request:
-    | { operation: "produce"; params: ReleasePlanSource }
+    | { operation: "produce" | "produce-lock"; params: ReleasePlanSource }
+    | { operation: "produce-inventory"; params: ReleaseInventorySource }
     | { operation: "verify-lock"; lockJson: string; params: ReleasePlanSource },
 ) {
-  const { runGh, ...params } = request.params;
-  return runReleasePlanProducerOperation(
-    { ...request, params },
-    {
-      runGh:
-        runGh ??
-        (() => {
-          throw new Error("unexpected GitHub API request");
-        }),
-      parseYamlDocuments: (sources) =>
-        sources.map((source) => parse(source)) as [unknown, unknown, unknown],
-    },
-  );
+  return runReleasePlanProducerOperation(request, {
+    runGh:
+      request.params.runGh ??
+      (() => {
+        throw new Error("unexpected GitHub API request");
+      }),
+    parseYamlDocuments: (sources) =>
+      sources.map((source) => parse(source)) as [unknown, unknown, unknown],
+  });
 }
 
 function produceReleasePlan(params: ReleasePlanSource) {
@@ -327,6 +329,10 @@ type YamlPackageHarnessParams = {
 
 function runYamlPackageSubprocess(
   options: {
+    inventory?: boolean;
+    version?: string;
+    toolingFullRef?: string;
+    identityResponse?: (params: YamlPackageHarnessParams) => string;
     main?: {
       intent: "diagnostic" | "main-qualification";
       validationIntent?: MainQualificationValidationIntent;
@@ -341,7 +347,7 @@ function runYamlPackageSubprocess(
     remoteToolingSha?: (params: YamlPackageHarnessParams) => string;
   } = {},
 ) {
-  let fixture = createFixtureRepo();
+  let fixture = createFixtureRepo(options.version);
   if (options.mutateTooling) {
     options.mutateTooling(fixture);
     const toolingSha = commit(fixture.root, "mutated tooling");
@@ -365,24 +371,44 @@ function runYamlPackageSubprocess(
     "yaml-package-harness.mts",
     `
 ${options.beforeImport?.(params) ?? ""}
-const { produceReleasePlan } = await import("./scripts/release-plan-producer.mts");
+const { produceReleasePlan, produceVerifiedReleaseInventory } = await import("./scripts/release-plan-producer.mts");
 ${options.beforeProduce?.(params) ?? ""}
 
-const toolingFullRef = ${JSON.stringify(options.main ? "refs/heads/main" : fixture.toolingFullRef)};
+const toolingFullRef = ${JSON.stringify(options.toolingFullRef ?? (options.main ? "refs/heads/main" : fixture.toolingFullRef))};
 const toolingSha = ${JSON.stringify(fixture.toolingSha)};
-const plan = produceReleasePlan({
+const plan = ${options.inventory ? "produceVerifiedReleaseInventory" : "produceReleasePlan"}({
   repoRoot: ${JSON.stringify(fixture.root)},
-  intent: ${JSON.stringify(options.main?.intent ?? "publish")},
+  ${
+    options.inventory
+      ? ""
+      : `intent: ${JSON.stringify(options.main?.intent ?? "publish")},
   validationIntent: ${JSON.stringify(options.main?.validationIntent)},
+  candidateRef: ${JSON.stringify(options.main ? fixture.candidateSha : fixture.candidateRef)},`
+  }
   candidateSha: ${JSON.stringify(fixture.candidateSha)},
-  candidateRef: ${JSON.stringify(options.main ? fixture.candidateSha : fixture.candidateRef)},
   toolingSha,
   toolingFullRef,
-  runGh: () => JSON.stringify({
+  runGh: (args) => {
+    ${
+      options.inventory
+        ? `
+    const expected = toolingFullRef === "refs/heads/main"
+      ? ["api", "repos/openclaw/openclaw/compare/" + toolingSha + "...main", "--method", "GET", "--jq", "{status}"]
+      : ["api", "repos/openclaw/openclaw/git/ref/" + toolingFullRef.slice("refs/".length), "--method", "GET"];
+    if (JSON.stringify(args) !== JSON.stringify(expected)) throw new Error("unexpected inventory identity request");
+    `
+        : ""
+    }
+    return ${
+      options.identityResponse
+        ? JSON.stringify(options.identityResponse(params))
+        : `JSON.stringify({
     status: ${JSON.stringify(options.main?.comparisonStatus)},
     ref: toolingFullRef,
     object: { type: "commit", sha: ${JSON.stringify(options.remoteToolingSha?.(params) ?? fixture.toolingSha)} },
-  }),
+  })`
+    };
+  },
 });
 process.stdout.write(JSON.stringify(plan));
 const moduleApi = await import("node:module");
@@ -422,6 +448,213 @@ function yamlTempEntries(root: string) {
 }
 
 describe("release plan producer", () => {
+  it.each(["main", "protected"] as const)(
+    "produces verified inventory with %s tooling without plan authority",
+    (route) => {
+      const { result, fixture } = runYamlPackageSubprocess({
+        inventory: true,
+        ...(route === "main"
+          ? {
+              main: { intent: "diagnostic", comparisonStatus: "identical" },
+            }
+          : {}),
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const inventory = JSON.parse(result.stdout) as VerifiedReleaseInventory;
+      const params = sourceParams(fixture, "diagnostic");
+      if (route === "main") {
+        params.toolingFullRef = "refs/heads/main";
+        params.runGh = () => JSON.stringify({ status: "identical" });
+      }
+      const plan = produceReleasePlan(params);
+      expect(inventory).toEqual({
+        candidateSha: fixture.candidateSha,
+        tooling: plan.tooling,
+        version: plan.version,
+        inventory: plan.inventory,
+      });
+      expect(() => validateReleasePlan(inventory)).toThrow();
+      expect(() => parseReleasePlanLockJson(JSON.stringify(inventory))).toThrow();
+    },
+  );
+
+  it("verifies Tideclaw inventory but retains all existing plan operation restrictions", () => {
+    const toolingFullRef = "refs/heads/tideclaw/alpha/2026-09-13-1200Z";
+    const { result, fixture } = runYamlPackageSubprocess({
+      inventory: true,
+      version: "2026.9.9-alpha.1",
+      toolingFullRef,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const inventory = JSON.parse(result.stdout) as VerifiedReleaseInventory;
+    expect(inventory).toMatchObject({
+      candidateSha: fixture.candidateSha,
+      version: "2026.9.9-alpha.1",
+      tooling: { ref: toolingFullRef, sha: fixture.toolingSha },
+    });
+    expect(Object.keys(inventory).toSorted()).toEqual([
+      "candidateSha",
+      "inventory",
+      "tooling",
+      "version",
+    ]);
+    const params = { ...sourceParams(fixture, "diagnostic"), toolingFullRef };
+    for (const operation of ["produce", "produce-lock", "verify-lock"] as const) {
+      expect(() => runCoreOperation({ operation, params, lockJson: "{}" })).toThrow(
+        "release tooling identity is not trusted main, a protected tag, or a prevalidated branch",
+      );
+    }
+    expect(() => validateReleasePlan(inventory)).toThrow();
+    expect(() => parseReleasePlanLockJson(JSON.stringify(inventory))).toThrow();
+  });
+
+  it.each([
+    [
+      "moved",
+      ({ fixture }: YamlPackageHarnessParams) =>
+        JSON.stringify({
+          ref: "refs/heads/tideclaw/alpha/2026-09-13-1200Z",
+          object: { type: "commit", sha: fixture.candidateSha },
+        }),
+    ],
+    ["missing", () => "{}"],
+    [
+      "wrong ref",
+      ({ fixture }: YamlPackageHarnessParams) =>
+        JSON.stringify({
+          ref: "refs/heads/main",
+          object: { type: "commit", sha: fixture.toolingSha },
+        }),
+    ],
+    [
+      "non-commit",
+      ({ fixture }: YamlPackageHarnessParams) =>
+        JSON.stringify({
+          ref: "refs/heads/tideclaw/alpha/2026-09-13-1200Z",
+          object: { type: "tag", sha: fixture.toolingSha },
+        }),
+    ],
+    ["malformed", () => "not JSON"],
+  ] as const)(
+    "rejects %s Tideclaw inventory identity before YAML execution",
+    (_label, identityResponse) => {
+      const { result, sentinelPath } = runYamlPackageSubprocess({
+        inventory: true,
+        version: "2026.9.9-alpha.1",
+        toolingFullRef: "refs/heads/tideclaw/alpha/2026-09-13-1200Z",
+        identityResponse,
+        mutate: ({ packageRoot, sentinelPath: mutationSentinel }) => {
+          writeFileSync(
+            join(packageRoot, "dist/index.js"),
+            `require("node:fs").writeFileSync(${JSON.stringify(mutationSentinel)}, "executed");`,
+          );
+        },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).not.toContain("verified release plan child");
+      expect(existsSync(sentinelPath)).toBe(false);
+    },
+  );
+
+  it.each([
+    "refs/heads/topic/alpha",
+    "refs/heads/release/2026.9.9",
+    "refs/heads/tideclaw/alpha/not-a-date",
+    "refs/tags/tideclaw/alpha/2026-09-13-1200Z",
+    "a".repeat(40),
+  ])("rejects noncanonical inventory tooling %s", (toolingFullRef) => {
+    const { result } = runYamlPackageSubprocess({
+      inventory: true,
+      version: "2026.9.9-alpha.1",
+      toolingFullRef,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "release tooling identity must be trusted main or an exact protected tag",
+    );
+  });
+
+  it.each(["2026.9.9", "2026.9.9-beta.1"])(
+    "rejects non-alpha %s on Tideclaw inventory",
+    (version) => {
+      const { result } = runYamlPackageSubprocess({
+        inventory: true,
+        version,
+        toolingFullRef: "refs/heads/tideclaw/alpha/2026-09-13-1200Z",
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Tideclaw inventory requires an alpha candidate");
+    },
+  );
+
+  it.each(["candidateSha", "toolingSha"] as const)("rejects non-exact inventory %s", (field) => {
+    const fixture = createFixtureRepo();
+    const params = { ...sourceParams(fixture), [field]: "main" };
+    expect(() => runCoreOperation({ operation: "produce-inventory", params })).toThrow(
+      `${field === "candidateSha" ? "candidate" : "tooling"} SHA must be an exact lowercase 40-character commit SHA`,
+    );
+  });
+
+  it.each([
+    [
+      "ref",
+      'workflowRef: "tideclaw/alpha/2026-09-13-1201Z",',
+      'workflowFullRef: "refs/heads/tideclaw/alpha/2026-09-13-1201Z",',
+      "prevalidated release tooling branch is missing or unreadable",
+    ],
+    [
+      "SHA",
+      "workflowRef: toolingRef,",
+      "workflowFullRef: toolingFullRef,",
+      "prevalidated release tooling branch",
+    ],
+  ])(
+    "binds inventory child %s to the parent's cached identity",
+    (field, refLine, fullRefLine, message) => {
+      const { result } = runYamlPackageSubprocess({
+        inventory: true,
+        version: "2026.9.9-alpha.1",
+        toolingFullRef: "refs/heads/tideclaw/alpha/2026-09-13-1200Z",
+        mutateTooling: ({ root }) => {
+          const path = join(root, "scripts/release-plan-producer-core.mts");
+          const original = readFileSync(path, "utf8");
+          const changed = original
+            .replace("workflowRef: toolingRef,", refLine)
+            .replace("workflowFullRef: toolingFullRef,", fullRefLine)
+            .replace(
+              "workflowSha: toolingSha,",
+              field === "SHA" ? `workflowSha: "${"f".repeat(40)}",` : "workflowSha: toolingSha,",
+            );
+          expect(changed).not.toBe(original);
+          writeFileSync(path, changed);
+        },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(message);
+    },
+  );
+
+  it("does not accept caller-provided prevalidated authority for inventory", () => {
+    const params = {
+      ...sourceParams(createFixtureRepo()),
+      toolingFullRef: "refs/heads/topic/alpha",
+      allowPrevalidatedRef: true,
+    };
+    expect(() => runCoreOperation({ operation: "produce-inventory", params })).toThrow(
+      "release tooling identity is not trusted main, a protected tag, or a prevalidated branch",
+    );
+  });
+
+  it("refuses unknown producer operations instead of producing a lock", () => {
+    const params = sourceParams(createFixtureRepo());
+    expect(() =>
+      runCoreOperation({
+        operation: "unknown" as "produce-lock",
+        params,
+      }),
+    ).toThrow("unsupported release plan producer operation");
+  });
+
   it("rejects invalid identity through the verified child dispatcher", () => {
     expect(() =>
       runReleasePlanProducerOperation(
@@ -875,6 +1108,7 @@ describe("release plan producer", () => {
 
   it("exports bootstrap operations for trusted-checkout callers", () => {
     expect(trustedCheckoutProduceReleasePlan).toBeTypeOf("function");
+    expect(trustedCheckoutProduceVerifiedReleaseInventory).toBeTypeOf("function");
     expect(trustedCheckoutVerifyReleasePlanLock).toBeTypeOf("function");
   });
 
@@ -1300,6 +1534,142 @@ mutateModule.syncBuiltinESMExports();
     expect(() => produceReleasePlan(sourceParams(fixture))).toThrow(
       "declares conflicting platform windows: .github/workflows/windows-node-release.yml and .github/workflows/docker-release.yml",
     );
+  });
+
+  it("shares current sourced platforms across inventory, plans, and verified locks", () => {
+    const fixture = createFixtureRepo();
+    for (const path of [
+      ".github/workflows/openclaw-release-publish.yml",
+      "scripts/lib/release-publish-children.sh",
+    ]) {
+      writeFixture(fixture.root, path, readFileSync(resolve(path), "utf8"));
+    }
+    const toolingSha = commit(fixture.root, "current publication source");
+    const params = sourceParams({
+      ...fixture,
+      toolingSha,
+      toolingFullRef: `refs/tags/release-publish/${toolingSha.slice(0, 12)}-1`,
+    });
+    const plan = produceReleasePlan(params);
+    const inventory = runCoreOperation({
+      operation: "produce-inventory",
+      params,
+    }) as VerifiedReleaseInventory;
+    expect(inventory.inventory).toEqual(plan.inventory);
+    expect(plan.inventory.platforms).toEqual([
+      { id: "android", source: ".github/workflows/android-release.yml" },
+      { id: "docker", source: ".github/workflows/docker-release.yml" },
+      { id: "vcr", source: ".github/workflows/vercel-container-registry-publish.yml" },
+      { id: "windows", source: ".github/workflows/windows-node-release.yml" },
+    ]);
+    expect(
+      verifyReleasePlanLock(canonicalReleasePlanLockJson(createReleasePlanLock(plan)), params).plan,
+    ).toEqual(plan);
+    for (const omitted of ["android", "windows"]) {
+      const partial = structuredClone(plan);
+      partial.inventory.platforms = partial.inventory.platforms.filter(({ id }) => id !== omitted);
+      expect(() =>
+        verifyReleasePlanLock(canonicalReleasePlanLockJson(createReleasePlanLock(partial)), params),
+      ).toThrow("repository-derived authority");
+    }
+  });
+
+  it.each([
+    "missing",
+    "missing-object",
+    "symlink",
+    "late-source",
+    "wrong-source",
+    "missing-definition",
+    "duplicate-definition",
+    "ambiguous-dispatch",
+    "conflict",
+    "dormant",
+    "unlinked",
+  ])("reads only unambiguous linked committed platform helpers: %s", (fault) => {
+    const fixture = createFixtureRepo();
+    const helperPath = "scripts/lib/release-publish-children.sh";
+    const workflowPath = ".github/workflows/openclaw-release-publish.yml";
+    const helper = readFileSync(resolve(helperPath), "utf8");
+    const publisher = parse(readFileSync(resolve(workflowPath), "utf8")) as {
+      jobs: Record<string, { steps?: { run?: string }[] }>;
+    };
+    for (const step of publisher.jobs.publish_windows?.steps ?? []) {
+      if (!step.run?.includes("promote_windows_release_assets")) {
+        continue;
+      }
+      if (fault === "late-source") {
+        step.run = step.run
+          .replace("source scripts/lib/release-publish-children.sh", "")
+          .replace(
+            "promote_windows_release_assets",
+            "promote_windows_release_assets\nsource scripts/lib/release-publish-children.sh",
+          );
+      }
+      if (fault === "wrong-source") {
+        step.run = step.run.replace(
+          "source scripts/lib/release-publish-children.sh",
+          "source other.sh",
+        );
+      }
+      if (fault === "conflict") {
+        step.run =
+          "promote_windows_release_assets() {\n  dispatch_workflow docker-release.yml\n}\n" +
+          step.run;
+      }
+    }
+    if (fault === "unlinked") {
+      for (const id of ["publish_windows", "publish_android"]) {
+        delete publisher.jobs[id];
+      }
+    }
+    writeFixture(fixture.root, workflowPath, stringify(publisher));
+    const sentinel = join(fixture.root, "helper-executed");
+    let bytes = helper + `\ntouch ${JSON.stringify(sentinel)}\n`;
+    if (fault === "missing-definition") {
+      bytes = bytes.replace("promote_windows_release_assets()", "promote_other_release_assets()");
+    }
+    if (fault === "duplicate-definition") {
+      bytes += helper;
+    }
+    if (fault === "ambiguous-dispatch") {
+      bytes = bytes.replace(
+        "promote_windows_release_assets() {",
+        "promote_windows_release_assets() {\n  dispatch_workflow other.yml",
+      );
+    }
+    if (fault === "dormant") {
+      bytes += "\npromote_unused_release_assets() {\n  invalid_dormant_definition\n}\n";
+    }
+    if (fault !== "missing" && fault !== "unlinked") {
+      writeFixture(fixture.root, helperPath, bytes);
+    }
+    if (fault === "symlink") {
+      unlinkSync(join(fixture.root, helperPath));
+      symlinkSync("npm-core-release-packages.json", join(fixture.root, helperPath));
+    }
+    const toolingSha = commit(fixture.root, `platform helper ${fault}`);
+    if (fault === "missing-object") {
+      const oid = execFileSync("git", ["rev-parse", `${toolingSha}:${helperPath}`], {
+        cwd: fixture.root,
+        encoding: "utf8",
+      }).trim();
+      unlinkSync(join(fixture.root, ".git/objects", oid.slice(0, 2), oid.slice(2)));
+    }
+    const params = sourceParams({
+      ...fixture,
+      toolingSha,
+      toolingFullRef: `refs/tags/release-publish/${toolingSha.slice(0, 12)}-1`,
+    });
+    if (fault === "dormant" || fault === "unlinked") {
+      const ids = produceReleasePlan(params).inventory.platforms.map(({ id }) => id);
+      expect(ids).toEqual(
+        fault === "unlinked" ? ["docker", "vcr"] : ["android", "docker", "vcr", "windows"],
+      );
+    } else {
+      expect(() => produceReleasePlan(params)).toThrow(/platform|release-publish-children/u);
+    }
+    expect(existsSync(sentinel)).toBe(false);
   });
 
   it("matches the exact current publisher inventory: 95 npm and 91 ClawHub packages", () => {

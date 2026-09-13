@@ -6,7 +6,6 @@ import { icons } from "../components/icons.ts";
 import { renderLazyElementModal } from "../components/lazy-view-error.ts";
 import { renderConnectingSplash } from "../components/loading-skeleton.ts";
 import { renderNewSessionLink } from "../components/new-session-link.ts";
-import { HOME_PANEL_TOGGLE_EVENT } from "../components/panel-toggle-contract.ts";
 import {
   renderLazySettingsSidebar,
   type SettingsSidebarModule,
@@ -67,6 +66,7 @@ import {
   normalizeCatalogOpenTarget,
   normalizeChatSendShortcut,
 } from "./settings.ts";
+import { renderCollapsedHomeToggle } from "./shell-assistant-toggles.ts";
 import { createUpdateProgressWatcher } from "./update-confirmation.ts";
 
 const EMPTY_SESSION_HAS_DRAFT = () => false;
@@ -499,23 +499,7 @@ export function renderApplicationShell(host: ShellViewHost) {
                     ${icons.search}
                   </button>
                 </openclaw-tooltip>
-                ${
-                  homePanelAvailable
-                    ? html`<openclaw-tooltip
-                        .content=${`${t("assistantPanel.toggle")} (${formatKeyboardShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.homePanel)})`}
-                      >
-                        <button
-                          type="button"
-                          class="shell-chrome-controls__button shell-chrome-controls__home"
-                          aria-label=${t("assistantPanel.toggle")}
-                          @click=${() =>
-                            window.dispatchEvent(new CustomEvent(HOME_PANEL_TOGGLE_EVENT))}
-                        >
-                          ${icons.home}
-                        </button>
-                      </openclaw-tooltip>`
-                    : nothing
-                }
+                ${homePanelAvailable ? renderCollapsedHomeToggle() : nothing}
               </div>
             `
           : nothing

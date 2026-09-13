@@ -103,6 +103,23 @@ describe("physical tab creation authority", () => {
     expect(h.tabsRemove).not.toHaveBeenCalled();
   });
 
+  it("keeps an HTTP creation revoked after group removal and restoration before its callback", async () => {
+    const h = await setup("selected");
+    const create = h.tabsCreate.getMockImplementation()!;
+    h.tabsCreate.mockImplementationOnce(async (properties) => {
+      const tab = await create(properties);
+      for (const groupId of [7, -1, 7]) {
+        h.updateTab(tab.id, { groupId });
+      }
+      return tab;
+    });
+    expect(
+      await h.request({ type: "createTab", url: "https://example.com/destination" }),
+    ).toMatchObject({ type: "error", message: "created tab is no longer available" });
+    expect(h.debuggerAttach).not.toHaveBeenCalled();
+    expect(h.tabsRemove).not.toHaveBeenCalled();
+  });
+
   it.each([
     { pendingUrl: "https://example.com/destination", response: "result" },
     { pendingUrl: "chrome://settings", response: "error" },
@@ -132,9 +149,14 @@ describe("physical tab creation authority", () => {
     },
   );
 
-  it.each(["before", "after"] as const)(
-    "preserves selected navigation when the initial loading snapshot arrives %s its root commit",
-    async (eventOrder) => {
+  it.each([
+    { event: "initial loading snapshot", eventOrder: "before" },
+    { event: "initial loading snapshot", eventOrder: "after" },
+    { event: "same-group update", eventOrder: "before" },
+    { event: "same-group update", eventOrder: "after" },
+  ] as const)(
+    "preserves selected navigation when the $event arrives $eventOrder its root commit",
+    async ({ event, eventOrder }) => {
       const h = await setup("selected");
       await h.create();
       await h.attach();
@@ -142,17 +164,26 @@ describe("physical tab creation authority", () => {
       h.debuggerSendCommand.mockImplementationOnce(async () => {
         h.updateTab(101, { pendingUrl: url }, false);
         const initialLoadingTab = await h.tabsGet(101);
-        const loading = () =>
-          h.tabsUpdatedListener?.(101, { status: "loading" }, initialLoadingTab);
+        const update = () => {
+          if (event === "initial loading snapshot") {
+            h.tabsUpdatedListener?.(101, { status: "loading" }, initialLoadingTab);
+          } else {
+            const tab =
+              eventOrder === "before"
+                ? initialLoadingTab
+                : { ...initialLoadingTab, url, pendingUrl: undefined };
+            h.tabsUpdatedListener?.(101, { groupId: tab.groupId }, tab);
+          }
+        };
         if (eventOrder === "before") {
-          loading();
+          update();
         }
         h.updateTab(101, { url, pendingUrl: undefined }, false);
         h.debuggerEventListener?.({ tabId: 101 }, "Page.frameNavigated", {
           frame: { id: "main", loaderId: "destination", url },
         });
         if (eventOrder === "after") {
-          loading();
+          update();
         }
         return { frameId: "main", loaderId: "destination" };
       });
@@ -176,6 +207,7 @@ describe("physical tab creation authority", () => {
     "different pending URL",
     "restricted pending URL",
     "group change",
+    "group removal and restoration",
     "incognito",
     "current native tab is blank",
   ] as const)("keeps loading-snapshot authority revoked for %s", async (revocation) => {
@@ -204,6 +236,9 @@ describe("physical tab creation authority", () => {
       } else if (revocation === "group change") {
         change.groupId = snapshot.groupId = -1;
         h.updateTab(101, { groupId: -1 }, false);
+      } else if (revocation === "group removal and restoration") {
+        h.updateTab(101, { groupId: -1 });
+        h.updateTab(101, { groupId: 7 });
       } else if (revocation === "incognito") {
         snapshot.incognito = true;
         h.updateTab(101, { incognito: true }, false);

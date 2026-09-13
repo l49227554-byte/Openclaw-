@@ -56,6 +56,7 @@ async function invoke(
     ? {
         ...service,
         close: async () => {},
+        revokeRunAuthority: () => {},
         preparePluginReload: () => ({ drain: async () => {}, resume: () => {} }),
       }
     : undefined;
@@ -181,6 +182,7 @@ describe("Gateway computer RPC", () => {
         invoke: dispatch,
         status: async () => ({ configured: true, available: true }),
         close: async () => {},
+        revokeRunAuthority: () => {},
         preparePluginReload: () => ({ drain: async () => {}, resume: () => {} }),
       },
       validateAgentRuntimeApprovalAuthority: (candidate: AgentRuntimeIdentity) =>

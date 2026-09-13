@@ -36,6 +36,15 @@ function exited(stderr = ""): RunExit {
 
 function createFakeSupervisor() {
   const inputs: SpawnInput[] = [];
+  const completedSpawns = new Map<number, ReturnType<typeof createDeferred<void>>>();
+  const spawnCompletion = (count: number) => {
+    let completion = completedSpawns.get(count);
+    if (!completion) {
+      completion = createDeferred();
+      completedSpawns.set(count, completion);
+    }
+    return completion;
+  };
   const runs: Array<{
     managed: ManagedRun;
     settle: (exit: RunExit) => void;
@@ -83,6 +92,9 @@ function createFakeSupervisor() {
       if (input.mode === "child" && input.argv[0] === "dbus-daemon") {
         input.onStdout?.(`${input.env?.DBUS_SESSION_BUS_ADDRESS},guid=fixture\n`);
       }
+      const completion = spawnCompletion(inputs.length);
+      // Notify after the spawn caller resumes; earlier native setup can await real filesystem work.
+      setImmediate(() => completion.resolve());
       return managed;
     },
     cancel(runId) {
@@ -100,6 +112,7 @@ function createFakeSupervisor() {
     inputs,
     runs,
     supervisor,
+    afterSpawn: (count: number) => spawnCompletion(count).promise,
     exit(index: number, stderr = "") {
       const run = runs[index];
       if (!run || run.settled) {
@@ -147,18 +160,6 @@ async function createFixture() {
   });
   cleanups.push(() => desktop.stop());
   return { desktop, fake, probeRfb, root, runPasswordTool, x11SocketDir };
-}
-
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (predicate()) {
-      return;
-    }
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-  }
-  throw new Error("condition did not settle");
 }
 
 describe("managed Linux desktop", () => {
@@ -308,7 +309,8 @@ describe("managed Linux desktop", () => {
   );
 
   it("restarts the pair three times, then reports the last stderr line as failed", async () => {
-    const onFailed = vi.fn();
+    const failed = createDeferred();
+    const onFailed = vi.fn(() => failed.resolve());
     const fixture = await createFixture();
     const desktop = createManagedLinuxDesktop({
       supervisor: fixture.fake.supervisor,
@@ -328,10 +330,11 @@ describe("managed Linux desktop", () => {
       [2, 6],
     ] as const) {
       fixture.fake.exit(inputIndex, `restart ${crash}\n`);
-      await waitFor(() => fixture.fake.inputs.length === inputIndex + 6);
+      await fixture.fake.afterSpawn(inputIndex + 6);
+      expect(fixture.fake.inputs).toHaveLength(inputIndex + 6);
     }
     fixture.fake.exit(9, "detail line\nlast stderr line\n");
-    await waitFor(() => desktop.status().state === "failed");
+    await failed.promise;
     expect(desktop.status()).toMatchObject({
       state: "failed",
       error: expect.stringContaining("last stderr line"),
@@ -347,12 +350,16 @@ describe("managed Linux desktop", () => {
     await desktop.acquire();
     const cleanup = createDeferred();
     cleanups.push(async () => cleanup.resolve());
-    const onStop = vi.fn(async () => await cleanup.promise);
+    const stopStarted = createDeferred();
+    const onStop = vi.fn(async () => {
+      stopStarted.resolve();
+      await cleanup.promise;
+    });
     const computer = await desktop.acquireComputer({ onStop });
     const stopped = desktop.stop();
     expect(desktop.stop()).toBe(stopped);
     expect(computer.isCurrent()).toBe(false);
-    await waitFor(() => onStop.mock.calls.length === 1);
+    await stopStarted.promise;
     expect(fake.runs.every((run) => !run.settled)).toBe(true);
     await expect(desktop.acquireComputer({ onStop })).rejects.toThrow("unavailable");
     cleanup.resolve();
@@ -368,16 +375,23 @@ describe("managed Linux desktop", () => {
       await desktop.acquire();
       const cleanup = createDeferred();
       cleanups.push(async () => cleanup.resolve());
-      const onStop = vi.fn(async () => await cleanup.promise);
+      const stopStarted = createDeferred();
+      const onStop = vi.fn(async () => {
+        stopStarted.resolve();
+        await cleanup.promise;
+      });
       const previous = await desktop.acquireComputer({ onStop });
       fake.exit(crashedProcess);
-      await waitFor(() => onStop.mock.calls.length === 1);
+      await stopStarted.promise;
+      expect(onStop).toHaveBeenCalledOnce();
       expect(previous.isCurrent()).toBe(false);
       expect(fake.runs.filter((run) => !run.settled)).toHaveLength(2);
       expect(fake.inputs).toHaveLength(3);
       await expect(desktop.acquireComputer({ onStop })).rejects.toThrow("unavailable");
       cleanup.resolve();
-      await waitFor(() => fake.inputs.length === 6 && desktop.status().state === "running");
+      await fake.afterSpawn(6);
+      expect(fake.inputs).toHaveLength(6);
+      expect(desktop.status().state).toBe("running");
       const next = await desktop.acquireComputer({ onStop: async () => undefined });
       expect(next.isCurrent()).toBe(true);
       expect(previous.isCurrent()).toBe(false);

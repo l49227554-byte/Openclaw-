@@ -323,8 +323,11 @@ export async function startGatewayCoreRuntime(input: {
             delegatedAuthority: authority,
           }),
         onApprovalLifecycle: approvalSessionEvents.publish,
-        onAgentRunAuthorityClosed: (authority) => {
-          secretEgressProxy?.revokeRun(authority.operationalRunInstance);
+        onAgentRunAuthorityClosed: (authority, approvalReason) => {
+          gatewayComputerService.revokeRunAuthority(authority);
+          if (!approvalReason) {
+            secretEgressProxy?.revokeRun(authority.operationalRunInstance);
+          }
         },
       }),
       coreGatewayHandlers: coreGatewayHandlersLocal,

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { AgentRunDelegatedAuthority } from "../../infra/agent-run-authority.types.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ComputerUseCapabilityDescriptor } from "../../plugins/computer-use-contract.js";
 import type {
@@ -8,6 +9,7 @@ import type {
 } from "../../plugins/registry-types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { parseNodeWorkerComputerInput } from "../../worker/node-computer-protocol.js";
+import { computerRunOwner } from "./computer-owner.js";
 import { startComputerHostProcess, type ComputerHostProcess } from "./computer-process.js";
 import {
   ComputerHostFinalizationError,
@@ -40,6 +42,7 @@ export type GatewayComputerService = {
   status(): Promise<GatewayComputerStatus>;
   invoke(request: ComputerInvokeRequest): Promise<unknown>;
   close(): Promise<void>;
+  revokeRunAuthority(authority: AgentRunDelegatedAuthority): void;
   preparePluginReload: (params: { changedPluginIds: ReadonlySet<string> }) => {
     drain: () => Promise<void>;
     resume: () => void;
@@ -373,6 +376,12 @@ export function createGatewayComputerService(options: {
       stopped = true;
       if (current) {
         await retireForShutdown(current);
+      }
+    },
+    revokeRunAuthority(authority) {
+      const runtime = current;
+      if (runtime?.execution?.owner === computerRunOwner(authority)) {
+        retireInBackground(runtime);
       }
     },
   };

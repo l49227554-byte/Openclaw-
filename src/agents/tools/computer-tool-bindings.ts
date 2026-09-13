@@ -97,16 +97,15 @@ export async function resolveComputerBinding(params: {
       invoke: (request) => sessionTransport.invoke({ ...request, nodeId: node.nodeId }),
     };
   }
-  if (params.target !== "node" && params.node === undefined) {
-    const canUsePrepared = !params.gatewayOpts.gatewayUrl && !params.gatewayOpts.gatewayToken;
-    const prepared = canUsePrepared ? params.gatewayStatus : undefined;
-    const usePrepared =
-      prepared?.available === true ||
-      (prepared?.configured === false && params.target !== "gateway");
-    const gateway =
-      (usePrepared ? prepared : undefined) ??
-      (await loadGatewayComputerStatus(params.gatewayOpts, params.signal));
-    if (gateway.available) {
+  const gatewayOverride =
+    params.gatewayOpts.gatewayUrl !== undefined || params.gatewayOpts.gatewayToken !== undefined;
+  // Published remote Gateways select paired nodes without the newer computer RPCs.
+  if (
+    params.target !== "node" &&
+    params.node === undefined &&
+    (params.target === "gateway" || !gatewayOverride)
+  ) {
+    const assertHostedCaller = () => {
       if (
         !shouldUseInProcessGatewayTool(params.gatewayOpts) ||
         !getGatewayToolCallerIdentity()?.operationalRunInstance
@@ -116,6 +115,19 @@ export async function resolveComputerBinding(params: {
             "Use a paired node, or use computer.invoke over one persistent operator RPC connection.",
         );
       }
+    };
+    if (params.target === "gateway") {
+      assertHostedCaller();
+    }
+    const prepared = !gatewayOverride ? params.gatewayStatus : undefined;
+    const usePrepared =
+      prepared?.available === true ||
+      (prepared?.configured === false && params.target !== "gateway");
+    const gateway =
+      (usePrepared ? prepared : undefined) ??
+      (await loadGatewayComputerStatus(params.gatewayOpts, params.signal));
+    if (gateway.available) {
+      assertHostedCaller();
       const close = await bindGatewayComputerCleanup({
         options: params.gatewayOpts,
         generation: gateway.computerUse.provider.generation,

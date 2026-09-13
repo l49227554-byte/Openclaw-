@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createCompiledSdkHost } from "../../plugins/compiled-sdk-host.test-support.js";
+import { computerUseSdkEntrypoint } from "../../plugins/loader-sdk-bridge-artifacts.test-support.js";
 import {
   createColdPluginConfig,
   createColdPluginFixture,
@@ -62,6 +64,9 @@ module.exports = {
   config.plugins!.allow = [pluginId];
   const configPath = path.join(home, "openclaw.json");
   fs.writeFileSync(configPath, JSON.stringify(config));
+  const sdkHost = createCompiledSdkHost(computerUseSdkEntrypoint, (prefix) =>
+    tempDirs.make(prefix),
+  );
   const child = startComputerHostProcess({
     env: {
       PATH: path.dirname(process.execPath),
@@ -71,6 +76,7 @@ module.exports = {
       OPENCLAW_STATE_DIR: path.join(home, "state"),
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+      ...(sdkHost ? { OPENCLAW_DEV_SOURCE_ROOT: sdkHost } : {}),
       NODE_ENV: "test",
     },
     pluginIds: [pluginId],

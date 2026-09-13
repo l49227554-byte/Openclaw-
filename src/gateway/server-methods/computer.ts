@@ -4,6 +4,7 @@ import {
   validateComputerInvokeParams,
   validateComputerStatusParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { computerRunOwner } from "../desktop/computer-owner.js";
 import { respondUnavailableOnThrow } from "./response.js";
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -34,12 +35,7 @@ function resolveComputerCaller(
   const signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
   return {
     owner: identity
-      ? JSON.stringify([
-          "agent",
-          identity.operationalRunInstance.instanceId,
-          identity.delegatedAuthority.lifecycleGeneration,
-          identity.delegatedAuthority.claimId,
-        ])
+      ? computerRunOwner(identity.delegatedAuthority)
       : JSON.stringify([discovery ? "discovery" : "operator", connId]),
     signal,
     ...(!identity && !client.internal?.syntheticClient && client.connectionSignal

@@ -586,8 +586,7 @@ async function updateCommandInternal(
     inspectActivatedUpdateState,
   } = await import("./update-execution.runtime.js");
 
-  const { progress: displayProgress, stop } = presentation;
-  const progress = createUpdateRunProgress(run, displayProgress);
+  const progress = createUpdateRunProgress(run, presentation.progress);
   let preUpdatePluginInstallRecords: Awaited<ReturnType<typeof prepareMutableUpdateRuntime>> = {};
   let mutableUpdatePrepared = false;
   const prepareMutableUpdate = async (env?: NodeJS.ProcessEnv, activationTimeoutMs?: number) => {
@@ -620,7 +619,7 @@ async function updateCommandInternal(
     updateStepTimeoutMs,
     startedAt,
     progress,
-    stop,
+    stop: presentation.stop,
     channel,
     tag,
     opts,
@@ -655,7 +654,7 @@ async function updateCommandInternal(
       preflight: true,
       activationTimeoutMs: resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs),
     });
-    stop();
+    presentation.stop();
     return await finishAlreadyCurrentUpdate({
       ...currentCoreFinalization,
       root: result.root ?? root,
@@ -669,7 +668,7 @@ async function updateCommandInternal(
   recoveryState.triageTarget.failureResult = result;
   recoveryState.triageTarget.env =
     recoveryEnv ?? ownedManagedUpdateContext?.env ?? recoveryState.triageTarget.env;
-  stop();
+  presentation.stop();
   const finalization = {
     ...executionState,
     expectedVersion: targetVersion ?? undefined,

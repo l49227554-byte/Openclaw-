@@ -362,6 +362,7 @@ function runYamlPackageSubprocess(
     recursive: true,
   });
   const sentinelPath = join(fixture.root, "yaml-executed");
+  const identityRequestsPath = join(fixture.root, "identity-requests.jsonl");
   const tempRoot = join(fixture.root, "yaml-temp");
   mkdirSync(tempRoot);
   const params = { fixture, packageRoot, sentinelPath, tempRoot };
@@ -392,6 +393,7 @@ const plan = ${options.inventory ? "produceVerifiedReleaseInventory" : "produceR
     ${
       options.inventory
         ? `
+    process.getBuiltinModule("node:fs").appendFileSync(${JSON.stringify(identityRequestsPath)}, JSON.stringify(args) + "\\n");
     const expected = toolingFullRef === "refs/heads/main"
       ? ["api", "repos/openclaw/openclaw/compare/" + toolingSha + "...main", "--method", "GET", "--jq", "{status}"]
       : ["api", "repos/openclaw/openclaw/git/ref/" + toolingFullRef.slice("refs/".length), "--method", "GET"];
@@ -437,6 +439,7 @@ if (leakedSnapshotCache.length > 0) {
       },
     }),
     fixture,
+    identityRequestsPath,
     packageRoot,
     sentinelPath,
     tempRoot,
@@ -478,35 +481,41 @@ describe("release plan producer", () => {
     },
   );
 
-  it("verifies Tideclaw inventory but retains all existing plan operation restrictions", () => {
-    const toolingFullRef = "refs/heads/tideclaw/alpha/2026-09-13-1200Z";
-    const { result, fixture } = runYamlPackageSubprocess({
-      inventory: true,
-      version: "2026.9.9-alpha.1",
-      toolingFullRef,
-    });
-    expect(result.status, result.stderr).toBe(0);
-    const inventory = JSON.parse(result.stdout) as VerifiedReleaseInventory;
-    expect(inventory).toMatchObject({
-      candidateSha: fixture.candidateSha,
-      version: "2026.9.9-alpha.1",
-      tooling: { ref: toolingFullRef, sha: fixture.toolingSha },
-    });
-    expect(Object.keys(inventory).toSorted()).toEqual([
-      "candidateSha",
-      "inventory",
-      "tooling",
-      "version",
-    ]);
-    const params = { ...sourceParams(fixture, "diagnostic"), toolingFullRef };
-    for (const operation of ["produce", "produce-lock", "verify-lock"] as const) {
-      expect(() => runCoreOperation({ operation, params, lockJson: "{}" })).toThrow(
-        "release tooling identity is not trusted main, a protected tag, or a prevalidated branch",
-      );
-    }
-    expect(() => validateReleasePlan(inventory)).toThrow();
-    expect(() => parseReleasePlanLockJson(JSON.stringify(inventory))).toThrow();
-  });
+  it.each([
+    ["refs/heads/tideclaw/alpha/2026-09-13-1200Z", "2026.9.9-alpha.1"],
+    ["refs/heads/release/2026.9.9", "2026.9.9"],
+    ["refs/heads/extended-stable/2026.8.33", "2026.8.33"],
+  ])(
+    "verifies canonical %s inventory but retains all existing plan operation restrictions",
+    (toolingFullRef, version) => {
+      const { result, fixture } = runYamlPackageSubprocess({
+        inventory: true,
+        version,
+        toolingFullRef,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const inventory = JSON.parse(result.stdout) as VerifiedReleaseInventory;
+      expect(inventory).toMatchObject({
+        candidateSha: fixture.candidateSha,
+        version,
+        tooling: { ref: toolingFullRef, sha: fixture.toolingSha },
+      });
+      expect(Object.keys(inventory).toSorted()).toEqual([
+        "candidateSha",
+        "inventory",
+        "tooling",
+        "version",
+      ]);
+      const params = { ...sourceParams(fixture, "diagnostic"), toolingFullRef };
+      for (const operation of ["produce", "produce-lock", "verify-lock"] as const) {
+        expect(() => runCoreOperation({ operation, params, lockJson: "{}" })).toThrow(
+          "release tooling identity is not trusted main, a protected tag, or a prevalidated branch",
+        );
+      }
+      expect(() => validateReleasePlan(inventory)).toThrow();
+      expect(() => parseReleasePlanLockJson(JSON.stringify(inventory))).toThrow();
+    },
+  );
 
   it.each([
     [
@@ -557,21 +566,105 @@ describe("release plan producer", () => {
   );
 
   it.each([
-    "refs/heads/topic/alpha",
-    "refs/heads/release/2026.9.9",
-    "refs/heads/tideclaw/alpha/not-a-date",
-    "refs/tags/tideclaw/alpha/2026-09-13-1200Z",
-    "a".repeat(40),
-  ])("rejects noncanonical inventory tooling %s", (toolingFullRef) => {
+    ["refs/heads/topic/alpha", "workflow ref is not a trusted direct"],
+    ["refs/heads/tideclaw/alpha/not-a-date", "workflow ref is not a trusted direct"],
+    [
+      "refs/tags/tideclaw/alpha/2026-09-13-1200Z",
+      "release tooling identity must be trusted main or an exact protected tag",
+    ],
+    ["a".repeat(40), "release tooling identity must be trusted main or an exact protected tag"],
+  ])("rejects noncanonical inventory tooling %s", (toolingFullRef, message) => {
     const { result } = runYamlPackageSubprocess({
       inventory: true,
       version: "2026.9.9-alpha.1",
       toolingFullRef,
     });
     expect(result.status).toBe(1);
+    expect(result.stderr).toContain(message);
+  });
+
+  it.each([
+    "refs/heads/release/../main",
+    "refs/heads/release//2026.9.9",
+    "refs/heads/release/2026.9.9?other=main",
+    "refs/heads/release/2026.9.9#main",
+    "refs/heads/release/%2e%2e/main",
+    "refs/heads/release/2026.9.9\n",
+    `refs/heads/${"a".repeat(257)}`,
+  ])("rejects unsafe inventory branch transport %j before GET", (toolingFullRef) => {
+    const { result, identityRequestsPath } = runYamlPackageSubprocess({
+      inventory: true,
+      toolingFullRef,
+    });
+    expect(result.status).toBe(1);
     expect(result.stderr).toContain(
       "release tooling identity must be trusted main or an exact protected tag",
     );
+    expect(existsSync(identityRequestsPath)).toBe(false);
+  });
+
+  describe.each([
+    ["refs/heads/release/2026.9.9", "2026.9.9"],
+    ["refs/heads/extended-stable/2026.8.33", "2026.8.33"],
+  ])("canonical inventory branch %s", (toolingFullRef, version) => {
+    it.each(["missing", "moved", "wrong ref", "non-commit", "malformed"])(
+      "rejects %s identity before YAML execution",
+      (fault) => {
+        const { result, sentinelPath, identityRequestsPath } = runYamlPackageSubprocess({
+          inventory: true,
+          toolingFullRef,
+          version,
+          identityResponse: ({ fixture }) =>
+            fault === "malformed"
+              ? "not JSON"
+              : JSON.stringify(
+                  fault === "missing"
+                    ? {}
+                    : {
+                        ref: fault === "wrong ref" ? "refs/heads/main" : toolingFullRef,
+                        object: {
+                          type: fault === "non-commit" ? "tag" : "commit",
+                          sha: fault === "moved" ? fixture.candidateSha : fixture.toolingSha,
+                        },
+                      },
+                ),
+          mutate: ({ packageRoot, sentinelPath: mutationSentinel }) => {
+            writeFileSync(
+              join(packageRoot, "dist/index.js"),
+              `require("node:fs").writeFileSync(${JSON.stringify(mutationSentinel)}, "executed");`,
+            );
+          },
+        });
+        expect(result.status).toBe(1);
+        expect(result.stderr).not.toContain("verified release plan child");
+        expect(existsSync(sentinelPath)).toBe(false);
+        expect(readFileSync(identityRequestsPath, "utf8").trim().split("\n")).toHaveLength(1);
+      },
+    );
+
+    it("binds the child SHA to the parent's cached branch response", () => {
+      const { result, identityRequestsPath } = runYamlPackageSubprocess({
+        inventory: true,
+        toolingFullRef,
+        version,
+        mutateTooling: ({ root }) => {
+          const path = join(root, "scripts/release-plan-producer-core.mts");
+          const original = readFileSync(path, "utf8");
+          const start = original.indexOf("const verifiedTooling = verifyReleaseToolingIdentity({");
+          expect(start).toBeGreaterThan(0);
+          const changed =
+            original.slice(0, start) +
+            original
+              .slice(start)
+              .replace("workflowSha: toolingSha,", `workflowSha: "${"f".repeat(40)}",`);
+          expect(changed).not.toBe(original);
+          writeFileSync(path, changed);
+        },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("prevalidated release tooling branch");
+      expect(readFileSync(identityRequestsPath, "utf8").trim().split("\n")).toHaveLength(1);
+    });
   });
 
   it.each(["2026.9.9", "2026.9.9-beta.1"])(
@@ -618,13 +711,18 @@ describe("release plan producer", () => {
         mutateTooling: ({ root }) => {
           const path = join(root, "scripts/release-plan-producer-core.mts");
           const original = readFileSync(path, "utf8");
-          const changed = original
-            .replace("workflowRef: toolingRef,", refLine)
-            .replace("workflowFullRef: toolingFullRef,", fullRefLine)
-            .replace(
-              "workflowSha: toolingSha,",
-              field === "SHA" ? `workflowSha: "${"f".repeat(40)}",` : "workflowSha: toolingSha,",
-            );
+          const start = original.indexOf("const verifiedTooling = verifyReleaseToolingIdentity({");
+          expect(start).toBeGreaterThan(0);
+          const changed =
+            original.slice(0, start) +
+            original
+              .slice(start)
+              .replace("workflowRef: toolingRef,", refLine)
+              .replace("workflowFullRef: toolingFullRef,", fullRefLine)
+              .replace(
+                "workflowSha: toolingSha,",
+                field === "SHA" ? `workflowSha: "${"f".repeat(40)}",` : "workflowSha: toolingSha,",
+              );
           expect(changed).not.toBe(original);
           writeFileSync(path, changed);
         },
@@ -641,7 +739,7 @@ describe("release plan producer", () => {
       allowPrevalidatedRef: true,
     };
     expect(() => runCoreOperation({ operation: "produce-inventory", params })).toThrow(
-      "release tooling identity is not trusted main, a protected tag, or a prevalidated branch",
+      "workflow ref is not a trusted direct",
     );
   });
 

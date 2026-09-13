@@ -81,8 +81,6 @@ const TOOLING_MODULE_PATHS = [
   "scripts/release-validation-intent.mjs",
 ] as const;
 const PROTECTED_TAG_PATTERN = /^release-publish\/([a-f0-9]{12})-([1-9][0-9]*)$/u;
-const TIDECLAW_FULL_REF_PATTERN =
-  /^refs\/heads\/tideclaw\/alpha\/[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}Z$/u;
 const MAX_TOOLING_FILE_BYTES = 512 * 1024,
   MAX_TOOLING_BYTES = 2 * 1024 * 1024;
 const YAML_PACKAGE_TREE_SHA256 = "610ccacfe592d226ac1eb04842d1f591c5381f2a68b9f785643101d10db52c27";
@@ -298,7 +296,15 @@ function verifyRemoteTooling(
   const sha = requireSha(params.toolingSha, "tooling SHA");
   const tagRef = params.toolingFullRef.replace(/^refs\/tags\//u, "");
   const protectedMatch = PROTECTED_TAG_PATTERN.exec(tagRef);
-  const tideclaw = inventoryOnly && TIDECLAW_FULL_REF_PATTERN.test(params.toolingFullRef);
+  // Acquisition is not admission: the verified child owns canonical branch policy.
+  // Preserve its literal GET argv while rejecting reserved and traversal operands.
+  const inventoryBranch =
+    inventoryOnly &&
+    params.toolingFullRef !== "refs/heads/main" &&
+    /^refs\/heads\/[A-Za-z0-9._/-]{1,256}$/u.test(params.toolingFullRef) &&
+    params.toolingFullRef.trim() === params.toolingFullRef &&
+    !params.toolingFullRef.includes("..") &&
+    params.toolingFullRef.split("/").every((part) => part !== "" && part !== ".");
   let args: string[], failure: string;
   if (protectedMatch) {
     if (protectedMatch[1] !== sha.slice(0, 12)) {
@@ -317,14 +323,14 @@ function verifyRemoteTooling(
       "{status}",
     ];
     failure = "main release tooling ancestry could not be verified";
-  } else if (tideclaw) {
+  } else if (inventoryBranch) {
     args = [
       "api",
       `repos/${REPOSITORY}/git/ref/heads/${params.toolingFullRef.slice("refs/heads/".length)}`,
       "--method",
       "GET",
     ];
-    failure = "Tideclaw release tooling branch is missing or unreadable";
+    failure = "inventory release tooling branch is missing or unreadable";
   } else {
     throw new Error("release tooling identity must be trusted main or an exact protected tag");
   }
@@ -340,18 +346,18 @@ function verifyRemoteTooling(
     object?: { type?: unknown; sha?: unknown };
   };
   if (
-    (protectedMatch || tideclaw) &&
+    (protectedMatch || inventoryBranch) &&
     (response.ref !== params.toolingFullRef ||
       response.object?.type !== "commit" ||
       response.object.sha !== sha)
   ) {
     throw new Error(
-      `${tideclaw ? "Tideclaw release tooling branch" : "protected release tooling tag"} is missing, moved, annotated, or bound to the wrong SHA`,
+      `${inventoryBranch ? "inventory release tooling branch" : "protected release tooling tag"} is missing, moved, annotated, or bound to the wrong SHA`,
     );
   }
   if (
     !protectedMatch &&
-    !tideclaw &&
+    !inventoryBranch &&
     response.status !== "ahead" &&
     response.status !== "identical"
   ) {

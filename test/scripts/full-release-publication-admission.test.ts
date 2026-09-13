@@ -738,6 +738,74 @@ process.stdout.write(${JSON.stringify(
 }
 
 describe("FRV publication source admission", () => {
+  it.each([
+    ["2026.9.9", "normal", false],
+    ["2026.9.9-1", "normal", false],
+    ["2026.9.9", "prepared", false],
+    ["2026.9.9-1", "prepared", false],
+    ["2026.9.9", "normal", true],
+    ["2026.9.9-1", "prepared", true],
+  ] as const)(
+    "preserves beta-first %s publication through %s with Windows=%s",
+    (version, route, windows) => {
+      const result = fixture({
+        version,
+        targetContextRef: `v${version}`,
+        selection: { ...(windows ? windowsSelection : selection), route, npmDistTag: "beta" },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.fact).toMatchObject({
+        status: "source-admitted",
+        publicationSelection: { route, npmDistTag: "beta" },
+        projection: { version },
+      });
+      const platforms = expectDefined(result.fact?.projection?.platforms, "source platforms");
+      if (windows) {
+        expect(platforms).toContainEqual(expect.objectContaining({ id: "windows" }));
+      } else {
+        expect(platforms).not.toContainEqual(expect.objectContaining({ id: "windows" }));
+      }
+    },
+    30_000,
+  );
+
+  it.each([
+    ["refs/heads/release/2026.9.9", "2026.9.9", "normal", "beta", "release/2026.9.9"],
+    [
+      "refs/heads/extended-stable/2026.8.33",
+      "2026.8.33",
+      "extended-stable",
+      "extended-stable",
+      "extended-stable/2026.8.33",
+    ],
+  ])(
+    "admits canonical branch inventory through actual divergent %s tooling",
+    (toolingFullRef, version, route, npmDistTag, targetContextRef) => {
+      const result = fixture({
+        toolingFullRef,
+        version,
+        targetContextRef,
+        selection: { ...selection, route, npmDistTag },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.targetSha).not.toBe(result.toolingSha);
+      expect(result.fact).toMatchObject({
+        status: "source-admitted",
+        tooling: { ref: toolingFullRef, sha: result.toolingSha },
+        projection: { version },
+      });
+      expect(result.requests).toEqual([
+        [
+          "api",
+          `repos/openclaw/openclaw/git/ref/${toolingFullRef.slice("refs/".length)}`,
+          "--method",
+          "GET",
+        ],
+      ]);
+    },
+    30_000,
+  );
+
   it("admits alpha inventory through actual divergent Tideclaw tooling", () => {
     const toolingFullRef = "refs/heads/tideclaw/alpha/2026-09-13-1200Z";
     const result = fixture({
@@ -882,12 +950,14 @@ describe("FRV publication source admission", () => {
   );
 
   it.each([
-    ["2026.9.9-alpha.1", "alpha", "alpha", "v2026.9.9-alpha.1"],
-    ["2026.9.9-beta.1", "normal", "beta", "release/2026.9.9"],
-    ["2026.9.9", "normal", "latest", "release/2026.9.9"],
-  ])(
-    "matches actual Windows publication selection for %s",
-    (version, route, npmDistTag, targetContextRef) => {
+    ["2026.9.9-alpha.1", "alpha", "alpha", "v2026.9.9-alpha.1", false],
+    ["2026.9.9-beta.1", "normal", "beta", "release/2026.9.9", false],
+    ["2026.9.9", "normal", "latest", "release/2026.9.9", true],
+    ["2026.9.9", "normal", "beta", "v2026.9.9", true],
+    ["2026.9.9-1", "normal", "beta", "v2026.9.9-1", true],
+  ] as const)(
+    "matches actual Windows publication selection for %s through %s to %s",
+    (version, route, npmDistTag, targetContextRef, expected) => {
       const publisher = parse(
         readFileSync(join(repo, ".github/workflows/openclaw-release-publish.yml"), "utf8"),
       ) as Workflow;
@@ -896,6 +966,7 @@ describe("FRV publication source admission", () => {
         {
           inputs: {
             tag: `v${version}`,
+            npm_dist_tag: npmDistTag,
             windows_node_tag: windowsSelection.windowsNodeTag,
             windows_node_installer_digests: JSON.stringify(
               windowsSelection.windowsNodeInstallerDigests,
@@ -904,7 +975,7 @@ describe("FRV publication source admission", () => {
           needs: { finalize_github_release: { result: "success" } },
         },
       );
-      expect(enabled).toBe(npmDistTag === "latest");
+      expect(enabled).toBe(expected);
       const result = fixture({
         version,
         targetContextRef,
@@ -913,7 +984,11 @@ describe("FRV publication source admission", () => {
       if (!enabled) {
         expect(result.status, result.stderr).toBe(1);
         expect(result.stderr).toContain("Windows assets require a stable publication");
-        expect(result.effects).not.toContain("Provision trusted admission parser");
+        if (route === "alpha") {
+          expect(result.effects).not.toContain("Provision trusted admission parser");
+        } else {
+          expect(result.effects).toContain("Admit publication source");
+        }
         expect(result.fact).toBeUndefined();
         return;
       }
@@ -1009,6 +1084,25 @@ describe("FRV publication source admission", () => {
           expect.arrayContaining([{ name: "@openclaw/demo-plugin", version, targets: ["npm"] }]),
         );
       }
+    },
+    30_000,
+  );
+
+  it.each([
+    ["2026.9.9-beta.1", "latest", "release/2026.9.9"],
+    ["2026.9.9-alpha.1", "beta", "v2026.9.9-alpha.1"],
+    ["2026.8.33", "beta", "extended-stable/2026.8.33"],
+  ])(
+    "rejects incompatible committed %s publication to %s",
+    (version, npmDistTag, targetContextRef) => {
+      const result = fixture({
+        version,
+        targetContextRef,
+        selection: { ...selection, npmDistTag },
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain("publication selection does not match");
+      expect(result.fact).toBeUndefined();
     },
     30_000,
   );
@@ -1308,6 +1402,25 @@ describe("publication source intent and durable binding", () => {
           sourceAdmission: changed,
         }),
       ).toThrow();
+    }
+    for (const version of ["2026.9.9-alpha.1", "2026.9.9-beta.1", "2026.8.33", "2026.8.33-1"]) {
+      const changed = structuredClone(admitted);
+      changed.publicationSelection = normalizePublicationIntent(
+        "publish",
+        JSON.stringify(windowsSelection),
+      ).publicationSelection;
+      changed.projection!.version = version;
+      changed.projection!.platforms = [
+        { id: "windows", source: ".github/workflows/windows-node-release.yml" },
+      ];
+      const { digest: _digest, ...content } = changed;
+      changed.digest = createHash("sha256").update(publicationSourceJson(content)).digest("hex");
+      expect(() =>
+        validatePublicationSourceBinding({
+          sourceAdmissionContract: "1",
+          sourceAdmission: changed,
+        }),
+      ).toThrow("Windows assets require a stable publication");
     }
   });
 });

@@ -16,7 +16,6 @@ import {
   normalizePublicationIntent,
   publicationSourceJson,
 } from "./full-release-publication-contract.mjs";
-import { resolveNpmPublishPlan } from "./lib/npm-publish-plan.mjs";
 import {
   assertPluginReleaseVersionFloors,
   parsePluginReleaseSelection,
@@ -189,13 +188,14 @@ function projectSource(
     throw new Error("unsupported extended-stable correction");
   }
   const extended = selection.route === "extended-stable";
-  const npmPlan = resolveNpmPublishPlan(
-    plan.version,
-    undefined,
-    extended ? "extended-stable" : undefined,
-  );
+  const allowedTags =
+    train === "stable"
+      ? ["beta", "latest"]
+      : train === "extended-stable"
+        ? ["extended-stable"]
+        : [parsed.channel];
   if (
-    npmPlan.publishTag !== selection.npmDistTag ||
+    !allowedTags.includes(selection.npmDistTag) ||
     (train === "extended-stable") !== extended ||
     (parsed.channel === "alpha") !== (selection.route === "alpha")
   ) {
@@ -203,6 +203,9 @@ function projectSource(
   }
   if (selection.route === "prepared" && !["beta", "stable"].includes(train)) {
     throw new Error("prepared publication requires a regular beta/stable candidate");
+  }
+  if (selection.windowsNodeTag && train !== "stable") {
+    throw new Error("Windows assets require a stable publication");
   }
   const mode = parsePluginReleaseSelectionMode(selection.pluginPublishScope);
   const names = parsePluginReleaseSelection(selection.plugins.join(","));

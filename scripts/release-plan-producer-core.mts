@@ -21,7 +21,10 @@ import {
   type ReleasePlanLock,
   type ReleasePlanPurpose,
 } from "./release-plan-contract.mjs";
-import { verifyReleaseToolingIdentity } from "./release-tooling-identity.mjs";
+import {
+  resolveReleaseToolingIdentity,
+  verifyReleaseToolingIdentity,
+} from "./release-tooling-identity.mjs";
 import {
   releaseValidationIntentForPurpose,
   resolveReleaseValidationIntent,
@@ -64,8 +67,6 @@ type ReleasePlanProducerRequest =
   | { operation: "verify-lock"; lockJson: string; params: ReleasePlanSource };
 
 const REPOSITORY = "openclaw/openclaw";
-const TIDECLAW_FULL_REF_PATTERN =
-  /^refs\/heads\/tideclaw\/alpha\/[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}Z$/u;
 const VALIDATION_WORKFLOW_PATH = ".github/workflows/full-release-validation.yml";
 const PUBLICATION_WORKFLOW_PATH = ".github/workflows/openclaw-release-publish.yml";
 const NPM_CORE_PACKAGE_POLICY_PATH = "scripts/lib/npm-core-release-packages.json";
@@ -593,8 +594,21 @@ function resolveSource(params: ReleaseInventorySource, inventoryOnly = false) {
     throw new Error("candidate SHA does not resolve to itself");
   }
   const toolingRef = toolingFullRef.replace(/^refs\/(?:heads|tags)\//u, "");
+  if (inventoryOnly) {
+    resolveReleaseToolingIdentity({
+      workflowContract: "2",
+      requestedIdentityJson: JSON.stringify({
+        ref: toolingRef,
+        fullRef: toolingFullRef,
+        sha: toolingSha,
+      }),
+      workflowFullRef: toolingFullRef,
+      workflowRef: toolingRef,
+      workflowSha: toolingSha,
+    });
+  }
   const verifiedTooling = verifyReleaseToolingIdentity({
-    allowPrevalidatedRef: inventoryOnly && TIDECLAW_FULL_REF_PATTERN.test(toolingFullRef),
+    allowPrevalidatedRef: inventoryOnly,
     repository: REPOSITORY,
     workflowFullRef: toolingFullRef,
     workflowRef: toolingRef,
@@ -628,7 +642,11 @@ function collectVerifiedInventory(
   if (!parsed || parsed.version !== candidate.version) {
     throw new Error(`unsupported release version: ${candidate.version}`);
   }
-  if (source.verifiedTooling.route === "prevalidated-branch" && parsed.channel !== "alpha") {
+  if (
+    source.verifiedTooling.route === "prevalidated-branch" &&
+    source.verifiedTooling.ref.startsWith("tideclaw/alpha/") &&
+    parsed.channel !== "alpha"
+  ) {
     throw new Error("Tideclaw inventory requires an alpha candidate");
   }
   const inventory = {

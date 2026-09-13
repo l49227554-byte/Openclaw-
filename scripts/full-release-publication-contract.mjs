@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { canonicalizeJsonValue, compareAscii } from "./lib/canonical-json.mjs";
-import { parseReleaseVersion } from "./lib/release-version.mjs";
+import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version.mjs";
 
 export const FULL_RELEASE_SOURCE_ADMISSION_CONTRACT = "1";
 const purposes = ["publish", "diagnostic", "main-qualification", "postpublish-confidence"];
@@ -155,7 +155,7 @@ export function normalizePublicationIntent(purpose, selectionJson = "") {
     if (selected.route === "extended-stable") {
       throw new Error("extended-stable does not select Windows assets");
     }
-    if (selected.npmDistTag !== "latest") {
+    if (!["beta", "latest"].includes(selected.npmDistTag)) {
       throw new Error("Windows assets require a stable publication");
     }
     windows.windowsNodeTag = text(selected.windowsNodeTag, "Windows source tag", 256);
@@ -398,11 +398,19 @@ function validatePublicationSourceFact(value, expected = {}) {
     }
     object(value.projection, ["version", "packages", "platforms"], "publication source projection");
     text(value.projection.version, "projection version", 128);
-    if (!parseReleaseVersion(value.projection.version)) {
+    const version = parseReleaseVersion(value.projection.version);
+    if (!version) {
       throw new Error("invalid projection version");
     }
     if (!Array.isArray(value.projection.packages) || !Array.isArray(value.projection.platforms)) {
       throw new Error("invalid publication source projection");
+    }
+    if (
+      (value.publicationSelection.windowsNodeTag ||
+        value.projection.platforms.some((entry) => entry?.id === "windows")) &&
+      classifyReleaseTrain(version) !== "stable"
+    ) {
+      throw new Error("Windows assets require a stable publication");
     }
     for (const [entries, name] of [
       [value.projection.packages, "name"],

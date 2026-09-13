@@ -19,6 +19,7 @@ const elements = {
   editConnection: document.querySelector("#edit-connection"),
   installButton: document.querySelector("#install-button"),
   installControls: document.querySelector("#install-controls"),
+  installHint: document.querySelector("#install-hint"),
   installLog: document.querySelector("#install-log"),
   logStatus: document.querySelector("#log-status"),
   logWrap: document.querySelector("#log-wrap"),
@@ -85,6 +86,9 @@ function render({
   if (activity) {
     elements.activityLabel.textContent = activity;
   }
+  elements.installHint.textContent = firstRunBuild?.platform === "freebsd"
+    ? "Installs the CLI in ~/.openclaw using your system Node.js and npm."
+    : "Installs the CLI and managed Node runtime in ~/.openclaw.";
   show(elements.installControls, showInstall);
   show(elements.actionControls, false);
   show(elements.editConnection, false);

@@ -288,6 +288,12 @@ test.each(
       }
 
       await actions.continueLocalSetup();
+      assert.equal(
+        elements.get("#install-hint")?.textContent,
+        externalService
+          ? "Installs the CLI in ~/.openclaw using your system Node.js and npm."
+          : "Installs the CLI and managed Node runtime in ~/.openclaw.",
+      );
       if (phase === "unconfigured") {
         assert.deepEqual(
           invoked

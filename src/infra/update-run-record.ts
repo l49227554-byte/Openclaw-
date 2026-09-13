@@ -10,6 +10,9 @@ export function summarizeUpdateStepFailure(
     "name" | "exitCode" | "termination" | "stdoutTail" | "stderrTail" | "failureFacts"
   >,
 ): string {
+  const repeatsCliError =
+    step.failureFacts?.length &&
+    /^\[openclaw\] (?:The CLI command failed\.|Reason: )/mu.test(step.stderrTail ?? "");
   // Schema refusals lead with the cause, followed by documentation and generic recovery advice.
   const excerpts =
     step.name === "database-schema-preflight"
@@ -18,7 +21,7 @@ export function summarizeUpdateStepFailure(
           sliceUtf16Safe(tail?.trim().split(/\r?\n/u).at(-1) ?? "", -120),
         );
   return truncateUtf16Safe(
-    [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...(step.failureFacts?.length ? [] : excerpts)]
+    [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...(repeatsCliError ? [] : excerpts)]
       .filter(Boolean)
       .join("; "),
     300,

@@ -1,9 +1,8 @@
 // Memory Core plugin module owns ranked search-window filtering and diagnostics.
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
-  formatMemoryIndexRebuildGuidance,
   resolveMemoryIndexIdentityDiagnostic,
-  resolveMemorySearchStaleness,
+  resolveMemoryIndexSearchDiagnostic,
   MEMORY_SEARCH_DEADLINE_CONTROL,
   type MemoryIndexIdentityDiagnostic,
   type MemoryProviderStatus,
@@ -27,24 +26,12 @@ export function buildPausedMemoryIndexUnavailableResult(
     status: Pick<MemoryProviderStatus, "provider" | "requestedProvider" | "lastSyncError">;
   },
 ) {
-  const cause =
-    diagnostic.owner === "configuration"
-      ? `the current memory configuration no longer matches the index (${diagnostic.reason})`
-      : diagnostic.code === "metadata_missing"
-        ? `the memory index metadata is missing (${diagnostic.reason}); no configuration change is needed`
-        : `this OpenClaw version changed the memory index format (${diagnostic.reason}); no configuration change is needed`;
-  const repairFailure = diagnostic.owner === "openclaw" && params.status.lastSyncError?.trim();
-  const repairGuidance = repairFailure
-    ? resolveMemorySearchStaleness(
-        { ...params.status, custom: { indexIdentity: diagnostic } },
-        params.agentId,
-      )
-    : null;
-  return buildMemorySearchUnavailableResult(repairFailure || diagnostic.reason, {
-    warning: `Tell the user: memory search is paused because ${cause}.`,
-    action: `Tell the user to run: ${formatMemoryIndexRebuildGuidance(params.status, params.agentId)}`,
-    ...repairGuidance,
-  });
+  const { error, warning, action } = resolveMemoryIndexSearchDiagnostic(
+    diagnostic,
+    params.status,
+    params.agentId,
+  );
+  return buildMemorySearchUnavailableResult(error, { warning, action });
 }
 
 type ManagerState = { manager: MemorySearchManager; managerMs?: number };

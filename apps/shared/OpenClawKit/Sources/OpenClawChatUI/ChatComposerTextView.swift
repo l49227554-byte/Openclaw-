@@ -223,6 +223,7 @@ private final class ChatComposerNSTextView: NSTextView {
             if self.placeholder != oldValue { self.needsDisplay = true }
         }
     }
+
     var onSend: (() -> Void)?
     var onPasteImageAttachment: ((_ data: Data, _ fileName: String, _ mimeType: String) -> Void)?
     var onKeyCommand: ((_ command: ChatComposerKeyCommand, _ context: ChatComposerKeyCommandContext) -> Bool)?

@@ -87,6 +87,25 @@ describe("DraftSubmissionFlow", () => {
       expect(retained?.message["__openclaw"]).toMatchObject({
         humanMentions: [{ profileId: "profile-alex", start: 0, end: 5 }],
       });
+      if (next === "reconnect") {
+        cleanup.mockRestore();
+        flow.resumeInterruptedSubmission();
+        expect(flow.submissionOutcomeUnknown).toBeNull();
+        flow.setMessage("a new prompt after reconnect");
+        expect(flow.canSubmit()).toBe(true);
+        vi.mocked(context.sessions.createResult).mockResolvedValue({
+          key: "agent:main:dashboard:next-draft",
+          initialRun: { status: "started", runId: "next-draft-run" },
+        });
+        vi.mocked(context.navigateAndWait).mockImplementation(async () => {
+          queueMicrotask(() => document.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT)));
+        });
+        await flow.submit();
+        expect(
+          vi.mocked(context.sessions.createResult).mock.calls.map(([params]) => params?.message),
+        ).toEqual(["@Alex keep the accepted prompt", "a new prompt after reconnect"]);
+        expect(flow.message).toBe("");
+      }
     },
   );
   it("replaces the native draft route with the started terminal session", async () => {

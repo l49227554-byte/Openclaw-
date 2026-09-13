@@ -59,7 +59,10 @@ export class DraftSubmissionFlow {
   private visibilityValue: NewSessionVisibility = "normal";
   private messageValue = "";
   private mentionsValue: readonly HumanMention[] = [];
-  private activeSubmission: { message: ReturnType<typeof buildLocalUserMessage> } | null = null;
+  private activeSubmission: {
+    phase: "creating" | "accepted";
+    message: ReturnType<typeof buildLocalUserMessage>;
+  } | null = null;
   private blockedSubmitGate: string | null = null;
   submissionOutcomeUnknown: SubmissionOutcomeReason | null = null;
   private readonly startedSession = new StartedSessionNavigation();
@@ -306,12 +309,9 @@ export class DraftSubmissionFlow {
   invalidate(outcomeUnknown: SubmissionOutcomeReason | null = null) {
     this.submitRequestToken += 1;
     this.startedSession.current = null;
-    const interrupted =
-      outcomeUnknown !== null && this.activeSubmission !== null && this.sessionStartup.interrupt();
-    if (
-      (outcomeUnknown && this.activeSubmission && !interrupted) ||
-      this.sessionStartup.retireChangedOwner()
-    ) {
+    const creating = this.activeSubmission?.phase === "creating";
+    const interrupted = outcomeUnknown !== null && creating && this.sessionStartup.interrupt();
+    if ((outcomeUnknown && creating && !interrupted) || this.sessionStartup.retireChangedOwner()) {
       this.submissionOutcomeUnknown = outcomeUnknown;
     }
     // A recoverable reconnect still owns the submission; do not flash the draft
@@ -424,6 +424,7 @@ export class DraftSubmissionFlow {
     // The draft keeps custody until creation succeeds; this snapshot only makes
     // foreground submission visible while the Gateway is still admitting it.
     this.activeSubmission = {
+      phase: "creating",
       message: background ? null : buildLocalUserMessage(initialTurn, "available"),
     };
     this.error = null;
@@ -603,9 +604,6 @@ export class DraftSubmissionFlow {
         });
         return;
       }
-      if (requestId !== this.submitRequestToken) {
-        return;
-      }
       const { key: sessionKey, initialRun } = result;
       const handedOffAttachments =
         initialRun.status === "rejected" &&
@@ -665,7 +663,7 @@ export class DraftSubmissionFlow {
     this.blockedSubmitGate = null;
     const requestId = ++this.submitRequestToken;
     const initialMessage = this.messageValue.trim();
-    this.activeSubmission = { message: null };
+    this.activeSubmission = { phase: "creating", message: null };
     this.error = null;
     this.place.browser.close();
     this.callbacks.closeTransientUi();
@@ -709,8 +707,11 @@ export class DraftSubmissionFlow {
   }
 
   private clearSubmittedDraft(releaseAttachments: boolean): Promise<void> {
-    // Capture the original draft for durable cleanup, then consume it before
-    // any await: reconnects and failed navigation must not revive an accepted send.
+    // Record acceptance before any await so reconnects cannot mark it unknown.
+    // Capture durable content before releasing the now-consumed draft.
+    if (this.activeSubmission) {
+      this.activeSubmission.phase = "accepted";
+    }
     const persistence = this.draftPersistence.clearSubmittedDraft();
     this.messageValue = "";
     this.mentionsValue = [];

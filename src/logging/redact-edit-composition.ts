@@ -30,6 +30,17 @@ export function composeRedactionEdits(
   let offset = 0;
   let position = 0;
   const consume = (end: number, keep: boolean): { start: number; end: number } => {
+    if (end === position) {
+      const piece = pieces[index];
+      if (!piece) {
+        return { start: length, end: length };
+      }
+      const start = piece.replacement === undefined ? piece.start + offset : piece.start;
+      return {
+        start,
+        end: piece.replacement !== undefined && offset > 0 ? piece.end : start,
+      };
+    }
     let sourceStart: number | undefined;
     let sourceEnd = 0;
     while (position < end) {

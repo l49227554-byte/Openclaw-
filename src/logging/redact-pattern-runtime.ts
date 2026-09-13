@@ -23,7 +23,7 @@ export function readRedactMatch(args: unknown[]) {
   return { match, groups, input, offset };
 }
 
-export type RedactMatch = ReturnType<typeof readRedactMatch>;
+export type RedactMatch = ReturnType<typeof readRedactMatch> & { replacement?: string };
 
 /**
  * Programmatic synchronous rule; never serialized into logging.redactPatterns.
@@ -31,6 +31,7 @@ export type RedactMatch = ReturnType<typeof readRedactMatch>;
  * matches in order without overlap, with UTF-16 offsets and that same input.
  * groups uses "" for unmatched captures; the last nonempty capture selects the
  * secret's last occurrence in match, or an empty array selects the whole match.
+ * replacement carries a fixed policy mask; absent values use the caller's token hints.
  */
 type RedactMatcher = {
   readonly source: string;

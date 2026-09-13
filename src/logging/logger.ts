@@ -346,7 +346,11 @@ function prepareFileLogRecord(logObj: TsLogRecord): {
         !["string", "number", "boolean", "bigint"].includes(typeof value) &&
         !(value instanceof Error) &&
         !(isPlainLogRecordObject(value) && typeof value.message === "string");
-      return { key, json, messageText: json || typeof value === "string" };
+      const part: FileLogMessagePart = { key, json };
+      if (typeof value === "number" && !Number.isFinite(value)) {
+        part.primitiveText = String(value);
+      }
+      return part;
     });
   const agentId = readFirstContextString(sources, ["agent_id", "agentId"]);
   const sessionId = readFirstContextString(sources, ["session_id", "sessionId", "sessionKey"]);
@@ -613,9 +617,10 @@ function buildLogger(): TsLogger<LogObj> {
             time,
             ...fields,
           },
-          new Set(messageParts.filter((part) => part.messageText).map((part) => part.key)),
-          (materialized) => buildFileLogMessage(materialized, messageParts),
-          resolveFileLogRedactOptions(),
+          {
+            deriveMessage: (materialized) => buildFileLogMessage(materialized, messageParts),
+            decodedOptions: resolveFileLogRedactOptions(),
+          },
         );
         const line = JSON.stringify(record);
         fileLogTransport.enqueue({

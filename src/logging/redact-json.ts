@@ -14,14 +14,42 @@ export type RedactionTarget = {
   start: number;
   end: number;
   value: string;
-  key?: string;
-  fieldValue?: string;
 };
+type RedactionScalarOrigin = { structured: boolean; primitiveMask: boolean };
+export type RedactionOrigins = {
+  value: RedactionScalarOrigin;
+  children: Map<string, RedactionOrigins>;
+};
+export type RedactionEditSelector = (
+  match: RedactMatch,
+  pattern: ResolvedRedactPattern,
+  project: (start: number, end: number) => RedactionTarget | undefined,
+) => RedactionEdit | undefined;
+
+export function getPatternRedactionEdits(
+  value: string,
+  pattern: ResolvedRedactPattern,
+  getEdit: RedactionEditSelector,
+): RedactionEdit[] {
+  const edits: RedactionEdit[] = [];
+  for (const match of iterateRedactMatches(value, pattern)) {
+    const edit = getEdit(match, pattern, (start, end) => ({
+      start,
+      end,
+      value: value.slice(start, end),
+    }));
+    if (edit && edit.end >= edit.start) {
+      edits.push(edit);
+    }
+  }
+  return edits;
+}
+
 export type RedactionField = {
+  origin: RedactionScalarOrigin;
   key: string;
   path: readonly string[];
   objectPath: boolean;
-  messagePart: boolean;
   isKey: boolean;
   string: boolean;
   value: string;
@@ -35,6 +63,7 @@ export type RedactionMessage = {
     json: boolean;
     messageField: boolean;
     start: number;
+    primitiveLength?: number;
   }[];
 };
 
@@ -58,7 +87,7 @@ function mergeRedactionEdits(edits: RedactionEdit[]): RedactionEdit[] {
   return merged;
 }
 
-function applyRedactionEdits(value: string, edits: RedactionEdit[]): string {
+export function applyRedactionEdits(value: string, edits: RedactionEdit[]): string {
   const parts: string[] = [];
   let cursor = 0;
   for (const edit of mergeRedactionEdits(edits)) {
@@ -96,27 +125,40 @@ type EncodedEdit = {
   replacement: string;
 };
 
-type FieldContext = Pick<RedactionField, "key" | "path" | "objectPath" | "messagePart"> & {
+type FieldContext = Pick<RedactionField, "key" | "path" | "objectPath"> & {
+  origins?: RedactionOrigins;
+  origin: RedactionScalarOrigin;
   rootKey?: string;
   rootValueStart?: number;
 };
 type JsonContainer = {
   array: boolean;
+  nextIndex: number;
   context: FieldContext;
   field?: FieldContext;
 };
 
 const JSON_TOKEN_RE = /"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\]]/g;
 
-function readScalarTokens(text: string, messageKeys?: ReadonlySet<string>): ScalarToken[] {
+function readScalarTokens(text: string, origins: RedactionOrigins): ScalarToken[] {
   const tokens: ScalarToken[] = [];
   const containers: JsonContainer[] = [];
-  const root: FieldContext = { key: "", path: [], objectPath: true, messagePart: false };
+  const root: FieldContext = {
+    key: "",
+    path: [],
+    origins,
+    origin: origins.value,
+    objectPath: true,
+  };
   const valueContext = (parent: JsonContainer | undefined): FieldContext =>
     !parent
       ? root
       : parent.array
-        ? parent.context
+        ? {
+            ...parent.context,
+            origin: parent.context.origins?.value ?? parent.context.origin,
+            origins: parent.context.origins?.children.get(String(parent.nextIndex++)),
+          }
         : expectDefined(parent.field, "JSON object field context");
   for (const match of text.matchAll(JSON_TOKEN_RE)) {
     const raw = match[0];
@@ -126,6 +168,7 @@ function readScalarTokens(text: string, messageKeys?: ReadonlySet<string>): Scal
       const array = raw === "[";
       containers.push({
         array,
+        nextIndex: 0,
         context: array ? { ...context, objectPath: false } : context,
       });
       continue;
@@ -155,8 +198,8 @@ function readScalarTokens(text: string, messageKeys?: ReadonlySet<string>): Scal
       context = {
         key: "",
         path: [],
+        origin: inherited.origin,
         objectPath: false,
-        messagePart: inherited.messagePart,
         rootKey: inherited.rootKey,
         rootValueStart: inherited.rootValueStart,
       };
@@ -172,18 +215,21 @@ function readScalarTokens(text: string, messageKeys?: ReadonlySet<string>): Scal
       container.field = {
         key: value,
         path: [...inherited.path, value],
+        origins: inherited.origins?.children.get(value),
+        origin: inherited.origins?.value ?? inherited.origin,
         objectPath: inherited.objectPath,
-        messagePart:
-          inherited.messagePart ||
-          (inherited.path.length === 0 && messageKeys?.has(value) === true),
         rootKey: containers.length === 1 ? value : inherited.rootKey,
         rootValueStart: containers.length === 1 ? valueStart : inherited.rootValueStart,
       };
     } else {
       context = valueContext(parent);
     }
+    const origin: RedactionScalarOrigin = isKey
+      ? { structured: false, primitiveMask: false }
+      : (context.origins?.value ?? context.origin);
     tokens.push({
       ...context,
+      origin,
       start,
       end,
       isKey,
@@ -278,7 +324,7 @@ function projectMessageEdits(
         }
       } else {
         start = part.start + edit.start;
-        end = part.start + edit.end;
+        end = part.start + (part.primitiveLength ?? edit.end);
       }
       if (start < message.contentLength) {
         projected.push({
@@ -472,19 +518,19 @@ function updateCurrentRecord(
 
 export function redactJsonRecord(
   input: string,
+  origins: RedactionOrigins,
   patternPhases: readonly [ResolvedRedactPattern[], ResolvedRedactPattern[]],
-  getEdit: (
-    match: RedactMatch,
-    pattern: ResolvedRedactPattern,
-    project: (start: number, end: number) => RedactionTarget | undefined,
-  ) => RedactionEdit | undefined,
-  conditionalEdits: (field: RedactionField, changed: boolean) => RedactionEdit[],
+  getEdit: RedactionEditSelector,
+  legacyFieldEdits: (field: RedactionField, original: string) => RedactionEdit[],
   fieldEdits: (field: RedactionField) => RedactionEdit[],
   prepEdits: (field: RedactionField) => RedactionEdit[],
-  messageKeys?: ReadonlySet<string>,
+  preserveDecodedField: (field: RedactionField) => boolean,
   message?: RedactionMessage,
 ): string {
-  const tokens = readScalarTokens(input, messageKeys);
+  const tokens = readScalarTokens(input, origins);
+  const decodedTokens = tokens.filter(
+    (token) => !token.isKey && token.string && !preserveDecodedField(token),
+  );
   const messageToken = message
     ? tokens.find((token) => !token.isKey && token.path.length === 1 && token.key === "message")
     : undefined;
@@ -501,7 +547,6 @@ export function redactJsonRecord(
   if (prepared.size > 0) {
     current = updateCurrentRecord(current, tokens, prepared);
   }
-  const conditionalProtected = new Set<ScalarToken>();
   const projectMessage = (): boolean => {
     if (!messageToken || !message) {
       return false;
@@ -553,38 +598,17 @@ export function redactJsonRecord(
     );
     return commitPatternEdits(input, messageToken);
   };
-  // Preserve the first matching representation used by each transport before adding the other.
   for (const [phase, patterns] of patternPhases.entries()) {
-    const decoded = phase === 0;
     for (const pattern of patterns) {
-      let pending: Set<ScalarToken> | undefined;
+      const pending = new Set<ScalarToken>();
       const add = (token: ScalarToken, edit: RedactionEdit) => {
         (token.pending ??= []).push(edit);
-        (pending ??= new Set()).add(token);
+        pending.add(token);
       };
-      if (decoded) {
-        for (const token of tokens) {
-          if (token.isKey) {
-            continue;
-          }
-          const value = token.currentValue;
-          for (const match of iterateRedactMatches(value, pattern)) {
-            const edit = getEdit(match, pattern, (start, end) => ({
-              start,
-              end,
-              value: value.slice(start, end),
-              key: token.key,
-              fieldValue: value,
-            }));
-            if (!edit || edit.end <= edit.start) {
-              continue;
-            }
-            add(
-              token,
-              !token.string && token.edits.length === 0
-                ? { start: 0, end: value.length, replacement: "***" }
-                : edit,
-            );
+      if (phase === 0) {
+        for (const token of decodedTokens) {
+          for (const edit of getPatternRedactionEdits(token.currentValue, pattern, getEdit)) {
+            add(token, edit);
           }
         }
       } else {
@@ -594,7 +618,7 @@ export function redactJsonRecord(
             capture = { start, end };
             return undefined;
           });
-          if (!capture || capture.end <= capture.start) {
+          if (!capture || capture.end < capture.start) {
             continue;
           }
           for (
@@ -602,7 +626,7 @@ export function redactJsonRecord(
             index < tokens.length;
             index += 1
           ) {
-            const token = expectDefined(tokens[index], "bounded JSON token capture");
+            const token = expectDefined(tokens[index], "serialized capture token");
             if (token.currentStart >= capture.end) {
               break;
             }
@@ -611,38 +635,51 @@ export function redactJsonRecord(
               add(token, { start: 0, end: value.length, replacement: "***" });
               continue;
             }
-            const start = currentDecodedBoundary(
-              input,
-              token,
-              Math.max(capture.start, token.currentStart + 1),
-              replacementBoundaries,
-            );
+            let startPosition = Math.max(capture.start, token.currentStart + 1);
+            let start = currentDecodedBoundary(input, token, startPosition, replacementBoundaries);
             const end = currentDecodedBoundary(
               input,
               token,
               Math.min(capture.end, token.currentEnd - 1),
               replacementBoundaries,
             );
-            // Cutting an escape cannot leave the rest of a quoted credential visible.
-            if (start === undefined || end === undefined || end <= start) {
-              add(token, { start: 0, end: value.length, replacement: "***" });
+            if (start === undefined || end === undefined) {
+              while (start === undefined) {
+                start = currentDecodedBoundary(
+                  input,
+                  token,
+                  --startPosition,
+                  replacementBoundaries,
+                );
+              }
+              add(token, { start, end: value.length, replacement: "***" });
+              continue;
+            }
+            if (end < start) {
               continue;
             }
             const edit = getEdit(match, pattern, () => ({
               start,
               end,
-              value: value.slice(start, end),
-              key: token.key,
-              fieldValue: value,
+              value: current.slice(
+                Math.max(capture.start, token.currentStart + 1),
+                Math.min(capture.end, token.currentEnd - 1),
+              ),
             }));
-            if (edit) {
-              add(token, edit);
+            if (!edit) {
+              continue;
             }
+            let replacement = "***";
+            if (capture.start >= token.currentStart + 1 && capture.end <= token.currentEnd - 1) {
+              try {
+                replacement = JSON.parse(`"${edit.replacement}"`);
+              } catch {
+                // A legacy hint can cut an escape; its selected span still receives a full mask.
+              }
+            }
+            add(token, { ...edit, replacement });
           }
         }
-      }
-      if (!pending) {
-        continue;
       }
       for (const token of pending) {
         if (!commitPatternEdits(input, token)) {
@@ -655,17 +692,14 @@ export function redactJsonRecord(
     }
     const changed = new Set<ScalarToken>();
     for (const token of tokens) {
-      if (phase === 0 && commitOriginalEdits(input, token, fieldEdits(token))) {
-        changed.add(token);
-      }
-      if (token.string && !conditionalProtected.has(token)) {
-        const edits = conditionalEdits(token, token.edits.length > 0);
-        if (edits.length > 0) {
-          conditionalProtected.add(token);
-          if (commitOriginalEdits(input, token, edits)) {
-            changed.add(token);
-          }
+      if (phase === 0) {
+        token.pending = legacyFieldEdits({ ...token, value: token.currentValue }, token.value);
+        if (commitPatternEdits(input, token)) {
+          changed.add(token);
         }
+      } else if (commitOriginalEdits(input, token, fieldEdits(token))) {
+        // Final field protection must not change the hints consumed by configured rules.
+        changed.add(token);
       }
     }
     if (projectMessage() && messageToken) {

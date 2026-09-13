@@ -26,7 +26,11 @@ function stringifyFileLogMessagePart(value: unknown, json: boolean): string | un
   return undefined;
 }
 
-export type FileLogMessagePart = { key: string; json: boolean; messageText: boolean };
+export type FileLogMessagePart = {
+  key: string;
+  json: boolean;
+  primitiveText?: string;
+};
 
 export function buildFileLogMessage(
   record: Record<string, unknown>,
@@ -35,9 +39,9 @@ export function buildFileLogMessage(
   const text: string[] = [];
   const spans: RedactionMessage["parts"] = [];
   let length = 0;
-  for (const { key, json } of parts) {
+  for (const { key, json, primitiveText } of parts) {
     const value = record[key];
-    const part = stringifyFileLogMessagePart(value, json);
+    const part = primitiveText ?? stringifyFileLogMessagePart(value, json);
     if (!part?.trim()) {
       continue;
     }
@@ -49,6 +53,7 @@ export function buildFileLogMessage(
       json,
       messageField: !json && isRecord(value),
       start: length,
+      ...(primitiveText === undefined ? {} : { primitiveLength: primitiveText.length }),
     });
     text.push(part);
     length += part.length;

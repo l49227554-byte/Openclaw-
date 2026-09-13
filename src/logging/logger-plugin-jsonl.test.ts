@@ -93,7 +93,7 @@ it("registered plugin logger writes quoted credentials as valid file and console
   expect(result.records).toHaveLength(1);
   expect(result.console).toHaveLength(1);
   for (const record of [...result.records, ...result.console]) {
-    expect(record.message).toBe("***");
+    expect(record.message).toBe("--token ***");
   }
   expect((await readConfiguredLogTail()).lines).toEqual(result.lines);
 });
@@ -207,4 +207,202 @@ it("registered plugin service logger projects ordered native argument masks into
     'derived ordered {"stage":"***","account":"***","next":"***","ordinary":"visible"}',
   );
   expect(JSON.stringify(result.records)).not.toContain("PRIVATE_VALUE");
+});
+
+it("registered plugin service logger masks opaque credential headers with the default policy", async () => {
+  const result = await logFromPlugin("header proof", {
+    "x-pomerium-jwt-assertion": "opaque-value",
+  });
+  expect(result.records).toHaveLength(1);
+  expect(result.console).toHaveLength(1);
+  expect(result.records[0]["1"]["x-pomerium-jwt-assertion"]).toBe("***");
+  expect(result.console[0]["x-pomerium-jwt-assertion"]).toBe("***");
+  expect(JSON.stringify(result.records)).not.toContain("opaque-value");
+  expect(JSON.stringify(result.console)).not.toContain("opaque-value");
+});
+
+it("registered plugin service logger preserves hints required by later rules", async () => {
+  const value = "FIRST_PRIVATE_VALUE_1234567890 SECOND_PRIVATE_VALUE";
+  const result = await logFromPlugin(`HUNT hints ${value}`, { value }, [
+    ...getDefaultRedactPatterns(),
+    "FIRST_PRIVATE_VALUE_1234567890",
+    "/FIRST_…7890 (SECOND_PRIVATE_VALUE)/g",
+  ]);
+  expect(result.records[0]["1"].value).toBe("FIRST_…7890 SECOND…ALUE");
+  expect(result.records[0].message).toBe("HUNT hints FIRST_…7890 SECOND…ALUE");
+  expect(result.console[0]).toMatchObject({
+    value: "FIRST_…7890 SECOND…ALUE",
+    message: "HUNT hints FIRST_…7890 SECOND…ALUE",
+  });
+});
+
+it("registered plugin service logger preserves console severity and time during decoded masking", async () => {
+  const year = String(new Date().getFullYear());
+  const result = await logFromPlugin("HUNT structural", { value: "info" }, ["^info$", `^${year}`]);
+  expect(result.console[0]).toMatchObject({ level: "info", value: "***" });
+  expect(result.console[0].time).toMatch(new RegExp(`^${year}-`));
+});
+
+it.each([
+  String.raw`/"hostname":"[^"]+","message":"(PRIVATE_VALUE)"/g`,
+  String.raw`/"message":"(PRIVATE_VALUE)","traceId":/g`,
+])(
+  "registered plugin service logger preserves serialized display order for %s",
+  async (pattern) => {
+    const result = await logFromPlugin(
+      "PRIVATE_VALUE",
+      {
+        trace: {
+          traceId: "1234567890abcdef1234567890abcdef",
+          spanId: "1234567890abcdef",
+          traceFlags: "01",
+        },
+      },
+      [...getDefaultRedactPatterns(), pattern],
+    );
+    expect(result.records[0].message).toBe("***");
+  },
+);
+
+it.each([Number.NaN, Infinity, -Infinity])(
+  "registered plugin service logger retains non-finite diagnostic text for %s",
+  async (value) => {
+    const result = await logFromPlugin("native values", undefined, undefined, (logger) => {
+      logger.info("HUNT value", value);
+      logger.info(value);
+    });
+    expect(result.records.map((record) => record.message)).toEqual([
+      `HUNT value ${String(value)}`,
+      String(value),
+    ]);
+  },
+);
+
+it("registered plugin service logger preserves unselected console diagnostic text", async () => {
+  const result = await logFromPlugin("abcd-efgh-ijkl-mnop");
+  expect(result.console[0].message).toBe("abcd-efgh-ijkl-mnop");
+});
+
+it("registered plugin service logger preserves encoded hints required by serialized rules", async () => {
+  const value = "AA\nBCDEFGHIJKLMNOPQRSTUVWXYZ1234 SECOND_PRIVATE_VALUE";
+  const result = await logFromPlugin("encoded hints", { value }, [
+    String.raw`/"value":"(AA\\nBCDEFGHIJKLMNOPQRSTUVWXYZ1234)/g`,
+    String.raw`/AA\\nBC…1234 (SECOND_PRIVATE_VALUE)/g`,
+  ]);
+  expect(result.records[0]["1"].value).toBe("AA\nBC…1234 SECOND…ALUE");
+  expect(result.console[0].value).toBe("AA\nBC…1234 SECOND…ALUE");
+});
+
+it("registered plugin service logger preserves registered hints required by later rules", async () => {
+  registerSecretValueForRedaction("FIRST_PRIVATE_VALUE_1234567890");
+  const value = "FIRST_PRIVATE_VALUE_1234567890 SECOND_PRIVATE_VALUE";
+  const result = await logFromPlugin("registered hints", { value }, [
+    "/FIRST_…7890 (SECOND_PRIVATE_VALUE)/g",
+  ]);
+  expect(result.records[0]["1"].value).toBe("FIRST_…7890 SECOND…ALUE");
+  expect(result.console[0].value).toBe("FIRST_…7890 SECOND…ALUE");
+});
+
+it.each([
+  {
+    fields: { password: "ABCDEFGHIJKLMN1234567890", next: "SECOND_PRIVATE_VALUE" },
+    patterns: ['/"password":"ABCDEF…7890","next":"(SECOND_PRIVATE_VALUE)"/g'],
+  },
+  {
+    fields: { password: "FIRST_PRIVATE_VALUE_1234567890", next: "SECOND_PRIVATE_VALUE" },
+    patterns: [
+      "FIRST_PRIVATE_VALUE_1234567890",
+      '/"password":"FIRST_…7890","next":"(SECOND_PRIVATE_VALUE)"/g',
+    ],
+  },
+  {
+    fields: { text: "abcd-efgh-ijkl-mnop", next: "SECOND_PRIVATE_VALUE" },
+    patterns: ['/"text":"abcd-e…mnop","next":"(SECOND_PRIVATE_VALUE)"/g'],
+  },
+  {
+    fields: { publicShare: { id: "ABCDEFGHIJKLMNOPQRSTUVWX" }, next: "SECOND_PRIVATE_VALUE" },
+    patterns: ['/"publicShare":\\{"id":"ABCDEF…UVWX"\\},"next":"(SECOND_PRIVATE_VALUE)"/g'],
+  },
+])(
+  "registered plugin service logger preserves field hints for serialized rules: $patterns",
+  async ({ fields, patterns }) => {
+    const result = await logFromPlugin("field hints", fields, patterns);
+    expect(result.records[0]["1"].next).toBe("SECOND…ALUE");
+    if ("password" in fields) {
+      expect(result.records[0]["1"].password).toBe("***");
+    }
+  },
+);
+
+it.each([12345678901234567890n, Number.NaN, Infinity, -Infinity, false])(
+  "registered plugin service logger retains primitive field masks during conversion: %s",
+  async (value) => {
+    const result = await logFromPlugin(
+      "primitive field",
+      { password: value, next: "SECOND_PRIVATE_VALUE" },
+      [String.raw`/"password":"\*\*\*","next":"(SECOND_PRIVATE_VALUE)"/g`],
+    );
+    expect(result.records[0]["1"]).toEqual({ password: "***", next: "SECOND…ALUE" });
+  },
+);
+
+it.each([123456, false])(
+  "registered plugin service logger retains primitive share masks: %s",
+  async (value) => {
+    const result = await logFromPlugin(
+      "primitive share",
+      { publicShare: { id: value }, next: "SECOND_PRIVATE_VALUE" },
+      [String.raw`/"publicShare":\{"id":"\*\*\*"\},"next":"(SECOND_PRIVATE_VALUE)"/g`],
+    );
+    expect(result.records[0]["1"].next).toBe("SECOND…ALUE");
+  },
+);
+
+it("registered plugin service logger protects a plain toJSON receiver before conversion", async () => {
+  const result = await logFromPlugin("plain receiver", {
+    value: {
+      password: "FIRST_PRIVATE_VALUE_1234567890",
+      toJSON() {
+        return this.password;
+      },
+    },
+  });
+  expect(result.records[0]["1"].value).toBe("FIRST_…7890");
+  expect(JSON.stringify(result.records)).not.toContain("FIRST_PRIVATE_VALUE_1234567890");
+});
+
+it("registered plugin service logger applies anchored rules before plain toJSON composition", async () => {
+  const result = await logFromPlugin(
+    "composed receiver",
+    {
+      value: {
+        content: "FIRST_PRIVATE_VALUE_1234567890",
+        toJSON() {
+          return `prefix ${this.content}`;
+        },
+      },
+    },
+    ["^FIRST_PRIVATE_VALUE_1234567890$"],
+  );
+  expect(result.records[0]["1"].value).toBe("prefix FIRST_…7890");
+});
+
+it("registered plugin service logger preserves URL hints required by configured rules", async () => {
+  const value =
+    "https://example.invalid/?token=FIRST_PRIVATE_VALUE_1234567890 SECOND_PRIVATE_VALUE";
+  const result = await logFromPlugin("URL hints", { value }, [
+    "/token=FIRST_…7890 (SECOND_PRIVATE_VALUE)/g",
+  ]);
+  expect(result.records[0]["1"].value).not.toContain("SECOND_PRIVATE_VALUE");
+  expect(result.console[0].value).not.toContain("SECOND_PRIVATE_VALUE");
+});
+
+it("registered plugin service logger never restores a secret after a zero-width rule", async () => {
+  const value = "FIRST_PRIVATE_VALUE_1234567890 SECOND_PRIVATE_VALUE";
+  const result = await logFromPlugin("empty-span rule", { value }, [
+    "/^FIRST_PRIVATE_VALUE_1234567890/g",
+    "/(?<=^FIRST_…7890 )/g",
+  ]);
+  expect(result.records[0]["1"].value).toBe("FIRST_…7890 ***SECOND_PRIVATE_VALUE");
+  expect(result.console[0].value).toBe("FIRST_…7890 ***SECOND_PRIVATE_VALUE");
 });

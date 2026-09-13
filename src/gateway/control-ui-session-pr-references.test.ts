@@ -1,6 +1,6 @@
-import { renameSync } from "node:fs";
+import { copyFileSync, renameSync } from "node:fs";
 import path from "node:path";
-import { backup, DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
@@ -21,7 +21,7 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { loadSessionPullRequestReferences } from "./control-ui-session-pr-references.js";
 import { loadControlUiSessionPullRequests } from "./control-ui-session-prs.js";
-import { githubJson, pullListItem } from "./control-ui-session-prs.test-support.js";
+import { githubJson, pullListItem, requestUrl } from "./control-ui-session-prs.test-support.js";
 import * as transcriptReaders from "./session-transcript-readers.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -115,7 +115,7 @@ describe("session pull request references", () => {
     await writeMessages([{ role: "assistant", content: text(pr(300)) }]);
     const search = vi.spyOn(transcriptSearch, "searchSessionTranscripts");
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
-      const url = new URL(String(input));
+      const url = new URL(requestUrl(input));
       return githubJson(
         url.pathname.endsWith("/pulls")
           ? []
@@ -166,7 +166,9 @@ describe("session pull request references", () => {
       tempDirs.make("openclaw-pr-reference-replacement-"),
       "agent.sqlite",
     );
-    await backup(database.db, replacementPath);
+    // Closing the isolated owner checkpoints its committed WAL before copying.
+    closeOpenClawAgentDatabasesForTest();
+    copyFileSync(database.path, replacementPath);
     const replacement = new DatabaseSync(replacementPath);
     try {
       // A replacement file may carry the same logical watermarks as the old file.
@@ -192,7 +194,6 @@ describe("session pull request references", () => {
     } finally {
       replacement.close();
     }
-    closeOpenClawAgentDatabasesForTest();
     renameSync(replacementPath, database.path);
     await expect(loadSessionPullRequestReferences(scope, repository)).resolves.toEqual([301]);
   });

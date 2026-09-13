@@ -342,7 +342,7 @@ internal fun ChatScreen(
 ) {
   val messages by viewModel.chatMessages.collectAsState()
   val messagesFromCache by viewModel.chatMessagesFromCache.collectAsState()
-  val messagesReadyAtSelection by viewModel.chatMessagesReadyAtSelection.collectAsState()
+  val transcriptPresented by viewModel.chatTranscriptPresented.collectAsState()
   val transcriptAnchor by viewModel.chatTranscriptAnchor.collectAsState()
   val historyLoading by viewModel.chatHistoryLoading.collectAsState()
   val sessionCreating by viewModel.chatSessionCreating.collectAsState()
@@ -929,7 +929,8 @@ internal fun ChatScreen(
     session = activeSession,
     messages = messages,
     messagesFromCache = messagesFromCache,
-    messagesReadyAtSelection = messagesReadyAtSelection,
+    transcriptPresented = transcriptPresented,
+    onTranscriptPresented = { viewModel.markChatTranscriptPresented(selectionGeneration) },
     transcriptAnchor = transcriptAnchor,
     historyLoading = historyLoading,
     activeRunCount = selectedActiveRun.count,
@@ -1547,7 +1548,8 @@ private fun ChatMessageList(
   session: ChatSessionEntry?,
   messages: List<ChatMessage>,
   messagesFromCache: Boolean,
-  messagesReadyAtSelection: Boolean,
+  transcriptPresented: Boolean,
+  onTranscriptPresented: () -> Unit,
   transcriptAnchor: ChatTranscriptAnchorState?,
   historyLoading: Boolean,
   activeRunCount: Int,
@@ -1677,7 +1679,8 @@ private fun ChatMessageList(
             owner = fullMessageOwner,
             selectionGeneration = selectionGeneration,
             loading = showLoading,
-            revealImmediately = messagesReadyAtSelection,
+            presented = transcriptPresented,
+            onPresented = onTranscriptPresented,
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
           ) {
             LazyColumn(

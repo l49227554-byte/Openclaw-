@@ -50,15 +50,16 @@ class ChatHistoryRevealTest {
   private val loading = mutableStateOf(true)
   private val owner = mutableStateOf(ChatComposerOwner("gateway-a", "main", "main"))
   private val selectionGeneration = mutableStateOf(0L)
-  private val revealImmediately = mutableStateOf(false)
+  private val presented = mutableStateOf(false)
   private val contentColor = mutableStateOf(Color.Red)
+  private val mounted = mutableStateOf(true)
 
   @Test
   fun preloadedContentDoesNotFlashSkeletonOrFade() {
     showReveal()
     composeRule.onNodeWithContentDescription("Loading thread").assertDoesNotExist()
     updateState {
-      revealImmediately.value = true
+      presented.value = true
       loading.value = false
     }
     composeRule.mainClock.advanceTimeByFrame()
@@ -90,6 +91,12 @@ class ChatHistoryRevealTest {
     updateState { contentColor.value = Color.Green }
     composeRule.mainClock.advanceTimeByFrame()
     assertEquals("A live transcript update must not restart the reveal", 1f, renderedColor().green, 0.02f)
+
+    updateState { mounted.value = false }
+    composeRule.mainClock.advanceTimeByFrame()
+    updateState { mounted.value = true }
+    composeRule.mainClock.advanceTimeByFrame()
+    assertEquals("A presented transcript must not fade again after recreation", 1f, renderedColor().green, 0.02f)
   }
 
   @Test
@@ -148,6 +155,7 @@ class ChatHistoryRevealTest {
         } else {
           selectionGeneration.value += 1
         }
+        presented.value = false
       }
       composeRule.mainClock.advanceTimeByFrame()
       composeRule.mainClock.advanceTimeByFrame()
@@ -177,14 +185,17 @@ class ChatHistoryRevealTest {
     composeRule.mainClock.autoAdvance = false
     composeRule.setContent {
       ClawDesignTheme {
-        ChatHistoryReveal(
-          owner = owner.value,
-          selectionGeneration = selectionGeneration.value,
-          loading = loading.value,
-          revealImmediately = revealImmediately.value,
-          modifier = Modifier.size(240.dp, 320.dp).background(Color.Black).testTag("history-reveal"),
-        ) {
-          Box(Modifier.fillMaxSize().background(contentColor.value))
+        if (mounted.value) {
+          ChatHistoryReveal(
+            owner = owner.value,
+            selectionGeneration = selectionGeneration.value,
+            loading = loading.value,
+            presented = presented.value,
+            onPresented = { presented.value = true },
+            modifier = Modifier.size(240.dp, 320.dp).background(Color.Black).testTag("history-reveal"),
+          ) {
+            Box(Modifier.fillMaxSize().background(contentColor.value))
+          }
         }
       }
     }

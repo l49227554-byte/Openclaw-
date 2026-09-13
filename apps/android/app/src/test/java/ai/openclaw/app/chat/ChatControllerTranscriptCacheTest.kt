@@ -584,7 +584,7 @@ class ChatControllerTranscriptCacheTest {
         controller.messages.value.map { it.content.single().text },
       )
       assertTrue(controller.messagesFromCache.value)
-      assertFalse(controller.messagesReadyAtSelection.value)
+      assertFalse(controller.transcriptPresented.value)
     }
 
   @Test
@@ -621,7 +621,7 @@ class ChatControllerTranscriptCacheTest {
 
       assertEquals(listOf("main history"), controller.messages.value.map { it.content.single().text })
       assertTrue(controller.messagesFromCache.value)
-      assertTrue(controller.messagesReadyAtSelection.value)
+      assertTrue(controller.transcriptPresented.value)
 
       advanceUntilIdle()
       assertEquals(listOf("main history"), controller.messages.value.map { it.content.single().text })

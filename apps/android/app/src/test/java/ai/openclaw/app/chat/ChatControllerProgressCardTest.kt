@@ -74,9 +74,16 @@ class ChatControllerProgressCardTest {
   fun switchingBackPublishesTheRecentProgressCardSynchronously() =
     runTest {
       var mainRequests = 0
+      val mainHistory = CompletableDeferred<String>()
       val refreshedMain = CompletableDeferred<String>()
       val gateway = ScriptedGateway(chatControllerTestJson)
-      gateway.respondWith("chat.history", historyResponse("session-1", emptyList()))
+      gateway.respond("chat.history") { paramsJson ->
+        if (gateway.sessionKeyOf(paramsJson) == "agent:main:main") {
+          mainHistory.await()
+        } else {
+          historyResponse("session-other", emptyList())
+        }
+      }
       gateway.respond("progressCard.get") { paramsJson ->
         when (gateway.sessionKeyOf(paramsJson)) {
           "agent:main:main" -> {
@@ -109,6 +116,7 @@ class ChatControllerProgressCardTest {
 
       assertEquals("Main", controller.progressCard.value?.markdown)
       refreshedMain.complete(cardResponse(revision = 2, markdown = "Refreshed main"))
+      mainHistory.complete(historyResponse("session-main", emptyList()))
       runCurrent()
       assertEquals("Refreshed main", controller.progressCard.value?.markdown)
     }

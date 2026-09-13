@@ -637,7 +637,7 @@ class MainViewModel private constructor(
   val chatSessionOwnerAgentId: StateFlow<String?> = runtimeState(initial = null) { it.chatSessionOwnerAgentId }
   val chatMessages: StateFlow<List<ChatMessage>> = runtimeState(initial = emptyList()) { it.chatMessages }
   internal val chatMessagesFromCache: StateFlow<Boolean> = runtimeState(initial = false) { it.chatMessagesFromCache }
-  internal val chatMessagesReadyAtSelection: StateFlow<Boolean> = runtimeState(initial = false) { it.chatMessagesReadyAtSelection }
+  internal val chatTranscriptPresented: StateFlow<Boolean> = runtimeState(initial = false) { it.chatTranscriptPresented }
   val chatTranscriptAnchor: StateFlow<ChatTranscriptAnchorState?> =
     runtimeState(initial = null) { it.chatTranscriptAnchor }
   val chatHistoryLoading: StateFlow<Boolean> = runtimeState(initial = false) { it.chatHistoryLoading }
@@ -1758,6 +1758,10 @@ class MainViewModel private constructor(
     ownerAgentId: String? = null,
   ) {
     ensureRuntime().switchChatSession(sessionKey, ownerAgentId)
+  }
+
+  internal fun markChatTranscriptPresented(selectionGeneration: Long) {
+    runtimeRef.value?.markChatTranscriptPresented(selectionGeneration)
   }
 
   fun refreshSessionCatalog(agentId: String?) {

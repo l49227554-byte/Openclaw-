@@ -27,7 +27,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,13 +41,15 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 
 @Composable
 internal fun ChatHistoryReveal(
   owner: ChatComposerOwner,
   selectionGeneration: Long,
   loading: Boolean,
-  revealImmediately: Boolean = false,
+  presented: Boolean,
+  onPresented: () -> Unit,
   modifier: Modifier = Modifier,
   content: @Composable BoxScope.() -> Unit,
 ) {
@@ -56,27 +57,27 @@ internal fun ChatHistoryReveal(
   // Routing verification is not a new transcript; selectionGeneration owns that identity.
   val opacity =
     remember(owner.gatewayStableId, selectionGeneration, loading) {
-      Animatable(if (!animationsEnabled || revealImmediately) 1f else 0f)
+      Animatable(if (!animationsEnabled || presented) 1f else 0f)
     }
   var skeletonVisible by remember(owner.gatewayStableId, selectionGeneration) { mutableStateOf(false) }
   LaunchedEffect(owner.gatewayStableId, selectionGeneration, loading) {
     if (loading) {
       skeletonVisible = false
       // Fast cache/history reads should reveal content without flashing a placeholder.
-      val startedAt = withFrameNanos { it }
-      while (withFrameNanos { it } - startedAt < 150_000_000L) {
-        // Frame time keeps the grace period independent of the system animation scale.
-      }
+      delay(150)
       skeletonVisible = true
     }
   }
-  LaunchedEffect(opacity, loading, animationsEnabled, revealImmediately) {
+  LaunchedEffect(opacity, loading, animationsEnabled, presented) {
     when {
       loading -> Unit
-      !animationsEnabled || revealImmediately -> opacity.snapTo(1f)
+      !animationsEnabled || presented -> opacity.snapTo(1f)
       else -> opacity.animateTo(1f, tween(200, easing = LinearOutSlowInEasing))
     }
-    if (!loading) skeletonVisible = false
+    if (!loading) {
+      skeletonVisible = false
+      onPresented()
+    }
   }
   Box(modifier) {
     // Keep the reader composed so history can be laid out before it becomes visible.

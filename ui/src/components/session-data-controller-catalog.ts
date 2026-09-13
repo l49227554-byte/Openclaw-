@@ -12,7 +12,6 @@ import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import {
   refreshSessionCatalogsLive,
   SESSION_CATALOG_CHANGED_REFRESH_MS,
-  SESSION_CATALOG_STABLE_REFRESH_MS,
   SessionCatalogLiveState,
   sessionCatalogListClient,
 } from "./app-sidebar-session-catalog-live.ts";
@@ -266,7 +265,6 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
   }
   const generation = owner.sessionScopeGeneration;
   const revision = owner.sessionCatalogRevision;
-  let refreshed = false;
   await refreshSessionCatalogsLive({
     live: owner.sessionCatalogLive,
     client,
@@ -280,7 +278,6 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     pageDepths: owner.sessionCatalogPageDepths,
     connected: () => owner.isSessionDataHostConnected,
     applyFinal: (catalogs, revisedCatalogIds) => {
-      refreshed = true;
       owner.sessionCatalogs = owner.sessionCatalogLive.resumeDiscovery(catalogs);
       owner.sessionCatalogRefreshStatus = completePanelRefresh();
       owner.requestSessionDataUpdate();
@@ -292,6 +289,7 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
       }
       owner.sessionCatalogRevision += 1;
     },
+    continueRefresh: () => discoverHiddenSessionCatalogPages(owner),
     applyError: (error) => {
       owner.sessionCatalogRefreshStatus = failPanelRefresh(
         owner.sessionCatalogRefreshStatus,
@@ -302,13 +300,6 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     },
     refresh: () => refreshSessionCatalogsInBackground(owner),
   });
-  if (
-    refreshed &&
-    generation === owner.sessionScopeGeneration &&
-    client === visibleSessionCatalogClient(owner)
-  ) {
-    await discoverHiddenSessionCatalogPages(owner);
-  }
 }
 
 function hiddenSessionCatalogPages(owner: SessionCatalogDataOwner) {
@@ -324,46 +315,26 @@ function hiddenSessionCatalogPages(owner: SessionCatalogDataOwner) {
   });
 }
 
-async function discoverHiddenSessionCatalogPages(owner: SessionCatalogDataOwner): Promise<void> {
+async function discoverHiddenSessionCatalogPages(owner: SessionCatalogDataOwner): Promise<boolean> {
   const pages = hiddenSessionCatalogPages(owner);
   if (pages.length === 0) {
-    return;
+    return false;
   }
   const generation = owner.sessionScopeGeneration;
   const client = visibleSessionCatalogClient(owner);
   if (!client || !owner.isSessionDataHostConnected) {
-    return;
+    return false;
   }
   // Empty pages advance a finite sweep without becoming a visible window that
   // every poll must replay. Once rows appear, ordinary expanded-page refresh owns them.
-  const live = owner.sessionCatalogLive;
-  live.cancelTimer();
-  const { requestOwner } = live.beginRequest(generation);
-  try {
-    await Promise.all(
-      pages.map(({ catalogId, hostIds }) =>
-        loadMoreSessionCatalog(owner, catalogId, hostIds, true),
-      ),
-    );
-  } finally {
-    if (live.ownsRequest(requestOwner)) {
-      live.requestGeneration = null;
-      if (
-        generation === owner.sessionScopeGeneration &&
-        client === visibleSessionCatalogClient(owner)
-      ) {
-        const delayMs = live.refreshPending
-          ? 0
-          : hiddenSessionCatalogPages(owner).length > 0
-            ? SESSION_CATALOG_CHANGED_REFRESH_MS
-            : SESSION_CATALOG_STABLE_REFRESH_MS;
-        live.refreshPending = false;
-        live.schedule(delayMs, owner.isSessionDataHostConnected, () =>
-          refreshSessionCatalogsInBackground(owner),
-        );
-      }
-    }
-  }
+  await Promise.all(
+    pages.map(({ catalogId, hostIds }) => loadMoreSessionCatalog(owner, catalogId, hostIds, true)),
+  );
+  return (
+    generation === owner.sessionScopeGeneration &&
+    client === visibleSessionCatalogClient(owner) &&
+    hiddenSessionCatalogPages(owner).length > 0
+  );
 }
 
 export function invalidateSessionCatalogs(owner: SessionCatalogDataOwner): void {

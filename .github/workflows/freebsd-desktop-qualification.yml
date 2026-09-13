@@ -1,0 +1,68 @@
+name: FreeBSD Desktop Qualification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/freebsd-desktop-qualification.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: freebsd-desktop-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: FreeBSD desktop native tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Record source revision
+        run: git rev-parse HEAD
+
+      - name: Test and build the desktop app on FreeBSD
+        uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
+        with:
+          release: "15.1"
+          arch: x86_64
+          sync: rsync
+          disable-cache: true
+          debug-on-error: false
+          prepare: |
+            set -eu
+            mkdir -p /usr/local/etc/pkg/repos
+            printf '%s\n' 'FreeBSD-ports: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg update -f
+            pkg install -y node24 rust git pkgconf gtk3 webkit2-gtk_41 dbus libappindicator
+          run: |
+            set -eu
+            uname -a
+            node --version
+            rustc --version
+            cargo --version
+            pkg-config --modversion gtk+-3.0 webkit2gtk-4.1
+            node --input-type=module <<'NODE'
+            import assert from 'node:assert/strict';
+            import { readFileSync } from 'node:fs';
+            import { execFileSync } from 'node:child_process';
+            const manifest = readFileSync('apps/linux/src-tauri/Cargo.toml', 'utf8');
+            const required = manifest.match(/^rust-version\s*=\s*"([^"]+)"/m)?.[1];
+            assert.ok(required, 'Cargo.toml must declare rust-version');
+            const actual = execFileSync('rustc', ['--version'], { encoding: 'utf8' }).split(' ')[1];
+            const wanted = required.split('.').map(Number);
+            const installed = actual.split('.').map(Number);
+            const difference = installed.map((part, index) => part - (wanted[index] ?? 0)).find(part => part !== 0) ?? 0;
+            assert.ok(difference >= 0, `rustc ${actual} does not satisfy ${required}`);
+            NODE
+            cd apps/linux/src-tauri
+            cargo test --locked --all-targets
+            cargo build --locked

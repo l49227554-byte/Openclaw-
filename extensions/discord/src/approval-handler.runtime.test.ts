@@ -1,6 +1,9 @@
 // Discord tests cover approval handler plugin behavior.
 import assert from "node:assert/strict";
-import { createChannelApprovalHandlerFromCapability } from "openclaw/plugin-sdk/approval-handler-runtime";
+import {
+  createChannelApprovalHandlerFromCapability,
+  createLazyChannelApprovalNativeRuntimeAdapter,
+} from "openclaw/plugin-sdk/approval-handler-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { parseExecApprovalData } from "./approval-custom-id.js";
 import { discordApprovalNativeRuntime } from "./approval-handler.runtime.js";
@@ -160,11 +163,16 @@ describe("discordApprovalNativeRuntime", () => {
       context: { token: "discord-token", config: {} },
       nowMs: () => 0,
       capability: {
-        nativeRuntime: {
-          ...discordApprovalNativeRuntime,
-          availability: { isConfigured: () => true, shouldHandle: () => true },
-          presentation: { ...discordApprovalNativeRuntime.presentation, buildPendingPayload },
-        },
+        nativeRuntime: createLazyChannelApprovalNativeRuntimeAdapter({
+          capabilityBoundary: true,
+          eventKinds: discordApprovalNativeRuntime.eventKinds,
+          isConfigured: () => true,
+          shouldHandle: () => true,
+          load: async () => ({
+            ...discordApprovalNativeRuntime,
+            presentation: { ...discordApprovalNativeRuntime.presentation, buildPendingPayload },
+          }),
+        }),
       },
     });
     assert(handler);

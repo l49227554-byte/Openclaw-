@@ -248,7 +248,10 @@ describe("discord exec approval monitor helpers", () => {
     "preserves the native %s card when its controls are already gone",
     async (outcome) => {
       const currentMessage = { components: [{ type: 10, content: outcome }] };
-      const interaction = createInteraction({ fetchReply: vi.fn(async () => currentMessage) });
+      const fetchReply = vi.fn(async () => currentMessage);
+      const editReply = vi.fn();
+      const followUp = vi.fn();
+      const interaction = createInteraction({ fetchReply, editReply, followUp });
       const button = createExecApprovalButton({
         getApprovers: () => ["123"],
         resolveApproval: async () => ({ ok: true, resolution: createApprovalResolution() }),
@@ -256,9 +259,9 @@ describe("discord exec approval monitor helpers", () => {
 
       await button.run(interaction, { kind: "system-agent", id: "abc", action: "allow-once" });
 
-      expect(interaction.fetchReply).toHaveBeenCalledOnce();
-      expect(interaction.editReply).not.toHaveBeenCalled();
-      expect(interaction.followUp).toHaveBeenCalledWith({
+      expect(fetchReply).toHaveBeenCalledOnce();
+      expect(editReply).not.toHaveBeenCalled();
+      expect(followUp).toHaveBeenCalledWith({
         content: "Approval resolved: Allowed once.",
         ephemeral: true,
       });
@@ -266,7 +269,11 @@ describe("discord exec approval monitor helpers", () => {
   );
 
   it("preserves the card when its current controls cannot be read", async () => {
+    const editReply = vi.fn();
+    const followUp = vi.fn();
     const interaction = createInteraction({
+      editReply,
+      followUp,
       fetchReply: vi.fn(async () => {
         throw new Error("message lookup failed");
       }),
@@ -278,15 +285,17 @@ describe("discord exec approval monitor helpers", () => {
 
     await button.run(interaction, { kind: "system-agent", id: "abc", action: "allow-once" });
 
-    expect(interaction.editReply).not.toHaveBeenCalled();
-    expect(interaction.followUp).toHaveBeenCalledWith({
+    expect(editReply).not.toHaveBeenCalled();
+    expect(followUp).toHaveBeenCalledWith({
       content: "Approval resolved: Allowed once.",
       ephemeral: true,
     });
   });
 
   it("does not replace another approval's controls on the same message", async () => {
-    const interaction = createInteraction(undefined, "system-agent", "replacement");
+    const editReply = vi.fn();
+    const followUp = vi.fn();
+    const interaction = createInteraction({ editReply, followUp }, "system-agent", "replacement");
     const button = createExecApprovalButton({
       getApprovers: () => ["123"],
       resolveApproval: async () => ({ ok: true, resolution: createApprovalResolution() }),
@@ -294,8 +303,8 @@ describe("discord exec approval monitor helpers", () => {
 
     await button.run(interaction, { kind: "system-agent", id: "abc", action: "allow-once" });
 
-    expect(interaction.editReply).not.toHaveBeenCalled();
-    expect(interaction.followUp).toHaveBeenCalledOnce();
+    expect(editReply).not.toHaveBeenCalled();
+    expect(followUp).toHaveBeenCalledOnce();
   });
 
   it("shows a follow-up when gateway resolution fails", async () => {

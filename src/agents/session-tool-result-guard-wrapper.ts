@@ -31,6 +31,7 @@ import { projectAgentHarnessTranscriptMessageForDisplay } from "./harness/transc
 import type { AgentMessage } from "./runtime/index.js";
 import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
 import type { SessionManager } from "./sessions/index.js";
+import { setSessionToolTextPreparer } from "./sessions/session-tool-result-redaction.js";
 import {
   copyCodeModeSourceAppend,
   type CodeModeSourceAppend,
@@ -306,8 +307,9 @@ export function guardSessionManager(
     },
     onUserMessageBlocked: opts?.onUserMessageBlocked,
   });
-  guardedSessionManager.prepareModelVisibleToolText = (block) =>
-    prepareModelVisibleToolTextBlock(block, resolveTranscriptLoggingConfig(opts?.config));
+  setSessionToolTextPreparer(guardedSessionManager, (block) =>
+    prepareModelVisibleToolTextBlock(block, resolveTranscriptLoggingConfig(opts?.config)),
+  );
   guardedSessionManager.flushPendingToolResults = guard.flushPendingToolResults;
   guardedSessionManager.clearPendingToolResults = guard.clearPendingToolResults;
   guardedSessionManager.clearNextUserMessagePersistenceSuppression =

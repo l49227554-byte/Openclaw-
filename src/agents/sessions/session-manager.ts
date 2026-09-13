@@ -29,7 +29,6 @@ import {
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { Message } from "../../llm/types.js";
-import { prepareModelVisibleToolTextBlock } from "../../logging/redact.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
 import { SessionManagerBranching } from "./session-manager-branching.js";
@@ -86,11 +85,6 @@ export class SessionManager extends SessionManagerBranching {
   /** Makes pending append-oriented persistence durable without rewriting committed entries. */
   override flushPendingPersistence(): void {
     super.flushPendingPersistence();
-  }
-
-  /** Apply this manager's redaction policy before tool text enters model context. */
-  prepareModelVisibleToolText<T extends { type: "text"; text: string }>(block: T): T {
-    return prepareModelVisibleToolTextBlock(block);
   }
 
   // Worker rollback instrumentation wraps the method on this public prototype.

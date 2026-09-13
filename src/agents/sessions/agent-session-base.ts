@@ -53,6 +53,7 @@ import {
 } from "./queued-user-message-retirement.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import type { SessionManager } from "./session-manager.js";
+import { prepareSessionToolResult } from "./session-tool-result-redaction.js";
 import type { SettingsManager } from "./settings-manager.js";
 import type { SourceInfo } from "./source-info.js";
 import { reportSteeringMessagePersistenceFailure } from "./steering-message-identity.js";
@@ -362,27 +363,11 @@ export abstract class AgentSessionBase {
         async () => await this.handleAgentEventUnlocked(event),
       );
       // Supported callbacks can change the current result or register another secret.
-      this.prepareModelVisibleToolResult(event);
+      prepareSessionToolResult(this.sessionManager, event);
       return;
     }
     await this.handleAgentEventUnlocked(event);
   };
-
-  private prepareModelVisibleToolResult(event: AgentEvent): boolean {
-    if (event.type !== "message_end" || event.message.role !== "toolResult") {
-      return false;
-    }
-    let changed = false;
-    event.message.content = event.message.content.map((block) => {
-      if (block.type !== "text") {
-        return block;
-      }
-      const prepared = this.sessionManager.prepareModelVisibleToolText(block);
-      changed ||= prepared.text !== block.text;
-      return prepared;
-    });
-    return changed;
-  }
 
   private async handleAgentEventUnlocked(event: AgentEvent): Promise<void> {
     if (event.type === "agent_start") {
@@ -400,7 +385,7 @@ export abstract class AgentSessionBase {
     // Emit to extensions first
     let messageChanged = await this.emitExtensionEvent(event);
     // Extensions can replace the final result. Protect listeners before publishing it.
-    messageChanged = this.prepareModelVisibleToolResult(event) || messageChanged;
+    messageChanged = prepareSessionToolResult(this.sessionManager, event) || messageChanged;
     const publishAfterPersistence = event.type === "message_end" && event.message.role === "user";
 
     // Notify all listeners
@@ -414,7 +399,7 @@ export abstract class AgentSessionBase {
       this.emit(event);
     }
     // Persist the same prepared bytes after synchronous listener changes.
-    messageChanged = this.prepareModelVisibleToolResult(event) || messageChanged;
+    messageChanged = prepareSessionToolResult(this.sessionManager, event) || messageChanged;
 
     // Handle session persistence
     if (event.type === "message_end") {

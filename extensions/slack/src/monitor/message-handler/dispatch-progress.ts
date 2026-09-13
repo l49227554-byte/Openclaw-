@@ -192,10 +192,6 @@ export function createSlackProgressRuntime(runtimeParams: {
     combineProgressHeadlineAndExplanation(
       explicitProgressTitle ?? snapshot.statusHeadline,
       snapshot.planExplanation,
-      {
-        headline: explicitProgressTitle ? undefined : snapshot.statusHeadlineFormat,
-        explanation: snapshot.planExplanationFormat,
-      },
     );
 
   const normalizeProgressText = (text: string | undefined) =>

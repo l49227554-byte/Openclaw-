@@ -62,11 +62,8 @@ export function resolveNativeProgressNarration(
 export function combineProgressHeadlineAndExplanation(
   headline: string | undefined,
   explanation: string | undefined,
-  formats?: { headline?: "plain"; explanation?: "plain" },
 ): string | undefined {
-  return headline &&
-    explanation &&
-    (headline !== explanation || formats?.headline !== formats?.explanation)
+  return headline && explanation && headline !== explanation
     ? `${headline} — ${explanation}`
     : (headline ?? explanation);
 }

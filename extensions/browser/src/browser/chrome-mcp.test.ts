@@ -1347,8 +1347,9 @@ describe("chrome MCP page parsing", () => {
         await expect(result).resolves.toEqual(Buffer.from(`screenshot:${format}`));
       }
       const filePath = vi
-        .mocked(session.client.callTool)
-        .mock.calls.find(([call]) => call.name === "take_screenshot")?.[0].arguments?.filePath;
+        .mocked(session.client)
+        .callTool.mock.calls.find(([call]) => call.name === "take_screenshot")?.[0]
+        .arguments?.filePath;
       if (typeof filePath !== "string") {
         throw new Error("screenshot path missing");
       }

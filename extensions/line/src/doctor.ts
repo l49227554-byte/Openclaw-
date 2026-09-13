@@ -1,3 +1,4 @@
+import { parseAccessGroupAllowFromEntry } from "openclaw/plugin-sdk/access-groups";
 import { firstDefined } from "openclaw/plugin-sdk/allow-from";
 import type {
   ChannelDoctorAdapter,
@@ -16,6 +17,7 @@ type AllowFromSource = "group" | "defaults" | "channel";
 
 type LineGroupCoverage = {
   covered: boolean;
+  referenceBacked: string[];
   /** Enabled groups with no sender allowlist anywhere in their resolved config. */
   uncovered: string[];
   /** Enabled groups whose resolved allowlist is empty, keyed by the key that supplies it. */
@@ -24,8 +26,12 @@ type LineGroupCoverage = {
 
 const GROUP_DEFAULTS_KEY = "*";
 
-function hasAllowFromEntries(values?: unknown): boolean {
-  return Array.isArray(values) && normalizeAllowFrom(values).hasEntries;
+function classifyAllowFrom(values?: unknown): { covered: boolean; referenced: boolean } {
+  const entries = Array.isArray(values) ? normalizeAllowFrom(values).entries : [];
+  return {
+    covered: entries.some((entry) => parseAccessGroupAllowFromEntry(entry) === null),
+    referenced: entries.some((entry) => parseAccessGroupAllowFromEntry(entry) !== null),
+  };
 }
 
 /**
@@ -56,17 +62,16 @@ function inspectLineGroupCoverage(params: {
 }): LineGroupCoverage {
   const empty: Record<AllowFromSource, string[]> = { group: [], defaults: [], channel: [] };
   const entries = readGroupEntries(params.account, params.parent);
-  if (entries.length === 0) {
-    return { covered: false, uncovered: [], empty };
-  }
-
   const groups = Object.fromEntries(entries);
   const defaults = groups[GROUP_DEFAULTS_KEY];
 
   // A group with no entry of its own resolves to the defaults node alone.
-  let covered =
-    defaults?.enabled !== false &&
-    hasAllowFromEntries(firstDefined(defaults?.allowFrom, params.groupAllowFrom));
+  const defaultCoverage = classifyAllowFrom(
+    firstDefined(defaults?.allowFrom, params.groupAllowFrom),
+  );
+  let covered = defaults?.enabled !== false && defaultCoverage.covered;
+  const referenceBacked =
+    defaults?.enabled !== false && defaultCoverage.referenced ? [GROUP_DEFAULTS_KEY] : [];
 
   const uncovered: string[] = [];
   for (const [id, group] of entries) {
@@ -81,8 +86,16 @@ function inspectLineGroupCoverage(params: {
     if (effectiveGroup?.enabled === false) {
       continue;
     }
-    if (hasAllowFromEntries(firstDefined(effectiveGroup?.allowFrom, params.groupAllowFrom))) {
+    const allowlist = classifyAllowFrom(
+      firstDefined(effectiveGroup?.allowFrom, params.groupAllowFrom),
+    );
+    if (allowlist.referenced) {
+      referenceBacked.push(id);
+    }
+    if (allowlist.covered) {
       covered = true;
+    } else if (allowlist.referenced) {
+      continue;
     } else if (group.allowFrom !== undefined) {
       empty.group.push(id);
     } else if (defaults?.allowFrom !== undefined) {
@@ -93,7 +106,7 @@ function inspectLineGroupCoverage(params: {
       uncovered.push(id);
     }
   }
-  return { covered, uncovered, empty };
+  return { covered, referenceBacked, uncovered, empty };
 }
 
 function readLineGroupCoverage(
@@ -130,8 +143,15 @@ function collectLineEmptyAllowlistExtraWarnings(
   if (!isLineGroupAllowlistScope(params)) {
     return [];
   }
-  const { covered, uncovered, empty } = readLineGroupCoverage(params);
+  const { covered, referenceBacked, uncovered, empty } = readLineGroupCoverage(params);
   const warnings: string[] = [];
+
+  if (referenceBacked.length > 0) {
+    const single = referenceBacked.length === 1;
+    warnings.push(
+      `- ${params.prefix}.groups: ${single ? "group" : "groups"} ${formatGroupIds(referenceBacked)} ${single ? "uses" : "use"} access-group references. Doctor cannot verify their LINE sender membership here. Check the referenced access groups before relying on group access.`,
+    );
+  }
 
   const dropped = (ids: string[]) =>
     `- ${params.prefix}.groups: ${ids.length === 1 ? "group" : "groups"} ${formatGroupIds(ids)} ${ids.length === 1 ? "resolves" : "resolve"} to an empty sender allowlist — messages there are silently dropped.`;
@@ -152,12 +172,13 @@ function collectLineEmptyAllowlistExtraWarnings(
     );
   }
 
-  // When nothing is served the shared warning already states the whole channel is
-  // dropping group messages, so only the narrower cases are worth adding.
-  if (covered && uncovered.length > 0) {
+  // Reference-backed permissions are unknown here, so the shared all-groups claim
+  // cannot replace warnings about groups with no sender list.
+  if ((covered || referenceBacked.length > 0) && uncovered.length > 0) {
     const single = uncovered.length === 1;
+    const otherGroups = referenceBacked.length > 0 ? "" : " while your other groups keep working";
     warnings.push(
-      `- ${params.prefix}.groups: ${single ? "group" : "groups"} ${formatGroupIds(uncovered)} ${single ? "has" : "have"} no sender allowlist — messages there are silently dropped while your other groups keep working. Add sender IDs under ${params.prefix}.groups.<id>.allowFrom, or under ${params.prefix}.groups."*".allowFrom to cover every group, or to ${params.prefix}.groupAllowFrom.`,
+      `- ${params.prefix}.groups: ${single ? "group" : "groups"} ${formatGroupIds(uncovered)} ${single ? "has" : "have"} no sender allowlist — messages there are silently dropped${otherGroups}. Add sender IDs under ${params.prefix}.groups.<id>.allowFrom, or under ${params.prefix}.groups."*".allowFrom to cover every group, or to ${params.prefix}.groupAllowFrom.`,
     );
   }
 
@@ -166,6 +187,11 @@ function collectLineEmptyAllowlistExtraWarnings(
 
 export const lineDoctor: ChannelDoctorAdapter = {
   collectEmptyAllowlistExtraWarnings: collectLineEmptyAllowlistExtraWarnings,
-  shouldSkipDefaultEmptyGroupAllowlistWarning: (params) =>
-    isLineGroupAllowlistScope(params) && readLineGroupCoverage(params).covered,
+  shouldSkipDefaultEmptyGroupAllowlistWarning: (params) => {
+    if (!isLineGroupAllowlistScope(params)) {
+      return false;
+    }
+    const { covered, referenceBacked } = readLineGroupCoverage(params);
+    return covered || referenceBacked.length > 0;
+  },
 };

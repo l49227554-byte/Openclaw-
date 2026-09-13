@@ -17,7 +17,7 @@ import {
   renderComposer,
   resetComposerTestFixtures,
 } from "./composer.test-support.ts";
-import { NewSessionComposerTextareaController } from "./composer.ts";
+import { NewSessionComposerTextareaController } from "./composer-controller.ts";
 import { renderNewSessionBody, renderNewSessionDraftComposer } from "./draft-composer.ts";
 import { NewSessionModelControl } from "./model-control.ts";
 

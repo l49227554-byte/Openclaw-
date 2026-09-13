@@ -41,6 +41,7 @@ export function repairJson(
   json: string,
   options?: { preserveValidControlEscapes?: boolean },
 ): string {
+  // oxlint-disable-next-line no-control-regex -- JSON string repair must detect raw control characters.
   if (!/[\\\x00-\x1f]/.test(json)) {
     return json;
   }

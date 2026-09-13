@@ -530,12 +530,6 @@ export async function recoverPendingWorkspaceResults(
           completeRecoveredWorkspaceTeardown({ placements, placement: active, turnClaim });
           continue;
         }
-        if (placements.getPlacementMove(pending.sessionId)?.abandonSource) {
-          // Move recovery owns forced abandonment for this session. Preserve the
-          // pending result fence so recoverPlacementMoves can retire it under
-          // FORCED_WORKER_ABANDONMENT_ERROR and return to local placement.
-          continue;
-        }
         const failed = placements.failWorkspaceResultAndReleaseTurn(
           pending,
           workerDisappearanceError(environment) ??

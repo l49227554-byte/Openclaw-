@@ -126,9 +126,10 @@ function stripTrailingCmdRedirections(commandLine: string): string {
       return commandLine;
     }
     const value = commandLine.slice(target.start, target.end);
+    // Unquoted expansions can introduce filename delimiters and leave extra argv.
     if (
       (value.includes('"') && !/^"[^"]+"$/.test(value)) ||
-      (!value.includes('"') && /[,;=]/.test(value)) ||
+      (!value.includes('"') && /[,;=%!]/.test(value)) ||
       (token.redirect === "<" && !/^(?:NUL|"NUL")$/i.test(value))
     ) {
       return commandLine;

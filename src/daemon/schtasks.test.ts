@@ -462,6 +462,35 @@ describe("readScheduledTaskCommand", () => {
     });
   });
 
+  it.each(["%OPENCLAW_TEST_LOG_PATH%", "!OPENCLAW_TEST_LOG_PATH!"])(
+    "preserves unquoted redirect expansion boundaries: %s",
+    async (target) => {
+      await withScheduledTaskScript(
+        {
+          scriptLines: [
+            "@echo off",
+            'set "OPENCLAW_TEST_LOG_PATH=C:\\Logs\\gateway output.log"',
+            `node gateway.js --port 18789 < NUL >> ${target} 2>&1`,
+          ],
+        },
+        async (env) => {
+          const result = await readScheduledTaskCommand(env, { requireEffective: true });
+          expect(result?.programArguments).toEqual([
+            "node",
+            "gateway.js",
+            "--port",
+            "18789",
+            "<",
+            "NUL",
+            ">>",
+            target,
+            "2>&1",
+          ]);
+        },
+      );
+    },
+  );
+
   it.each([
     [">out&whoami", [">out&whoami"]],
     [">out&whoami 2>&1", [">out&whoami", "2>&1"]],

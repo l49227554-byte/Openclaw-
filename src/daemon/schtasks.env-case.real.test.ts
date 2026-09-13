@@ -17,6 +17,7 @@ import {
 import {
   readWindowsProcessSnapshot,
   resolveScheduledTaskOwnedGatewayPids,
+  terminateScheduledTaskGatewayListeners,
 } from "./schtasks-process.js";
 import { startStartupEntry } from "./schtasks-runtime.js";
 
@@ -43,19 +44,26 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 describe.skipIf(process.platform !== "win32")("Windows launcher redirection ownership", () => {
   it.each([
-    { message: "a >b & c", normalized: true, extraArgument: "" },
-    { message: 'a "q" >b', normalized: false, extraArgument: "" },
-    { message: "comma target", normalized: false, extraArgument: ",extra" },
+    { message: "a >b & c", normalized: true, extraArgument: "", target: "" },
+    { message: 'a "q" >b', normalized: false, extraArgument: "", target: "" },
+    { message: "comma target", normalized: false, extraArgument: ",extra", target: "" },
+    {
+      message: "unquoted expansion",
+      normalized: false,
+      extraArgument: "output.log",
+      target: "%OPENCLAW_TEST_LOG_PATH%",
+    },
   ])(
     "checks real cmd and CIM argv for $message",
-    async ({ message, normalized, extraArgument }) => {
+    async ({ message, normalized, extraArgument, target }) => {
       const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw launcher proof "));
       const scriptPath = path.join(dir, "gateway.cmd");
       const childPath = path.join(dir, "gateway-child.cjs");
       const reportPath = path.join(dir, "child.json");
       const stopPath = path.join(dir, "stop");
       const outputPath = path.join(dir, extraArgument ? "gateway.log" : "gateway output.log");
-      const redirectTarget = extraArgument ? `gateway.log${extraArgument}` : `"${outputPath}"`;
+      const redirectTarget =
+        target || (extraArgument ? `gateway.log${extraArgument}` : `"${outputPath}"`);
       const children: LaunchedChild[] = [];
       onTestFinished(async () => {
         await fs.writeFile(stopPath, "");
@@ -110,28 +118,37 @@ server.listen(port, "127.0.0.1", () => {
         buildTaskScript({
           programArguments,
           workingDirectory: dir,
-          environment: { OPENCLAW_TEST_LAUNCHER_VALUE: "retained", NODE_OPTIONS: "" },
+          environment: {
+            OPENCLAW_TEST_LAUNCHER_VALUE: "retained",
+            OPENCLAW_TEST_LOG_PATH: "gateway.log output.log",
+            NODE_OPTIONS: "",
+          },
         }).trimEnd() + ` >> ${redirectTarget} 2>&1\r\n`;
       const originalBytes = encodeWindowsLauncherScript({ format: "cmd", content });
       await fs.writeFile(scriptPath, originalBytes);
       const env = { OPENCLAW_TASK_SCRIPT: scriptPath };
-      const child = spawn(
-        getWindowsCmdExePath(),
-        ["/d", "/s", "/v:off", "/c", '""%OPENCLAW_TASK_SCRIPT%""'],
-        {
-          env: { ...process.env, ...env },
-          windowsHide: true,
-          windowsVerbatimArguments: true,
-          stdio: "ignore",
-        },
-      );
-      const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-        (resolve, reject) => {
-          child.once("error", reject);
-          child.once("close", (code, signal) => resolve({ code, signal }));
-        },
-      );
-      children.push({ child, closed });
+      const launch = (): LaunchedChild => {
+        const child = spawn(
+          getWindowsCmdExePath(),
+          ["/d", "/s", "/v:off", "/c", '""%OPENCLAW_TASK_SCRIPT%""'],
+          {
+            env: { ...process.env, ...env },
+            windowsHide: true,
+            windowsVerbatimArguments: true,
+            stdio: "ignore",
+          },
+        );
+        const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+          (resolve, reject) => {
+            child.once("error", reject);
+            child.once("close", (code, signal) => resolve({ code, signal }));
+          },
+        );
+        const launched = { child, closed };
+        children.push(launched);
+        return launched;
+      };
+      const { child, closed } = launch();
       await Promise.race([
         expect.poll(() => fs.readFile(reportPath, "utf8"), { timeout: 10_000 }).toBeTruthy(),
         closed.then(() => {
@@ -181,11 +198,50 @@ server.listen(port, "127.0.0.1", () => {
         await expect(resolveScheduledTaskOwnedGatewayPids(env, { port })).resolves.toEqual([]);
       }
       expect(await fs.readFile(scriptPath)).toEqual(originalBytes);
+      if (normalized) {
+        // This live listener has the shortened argv that an unresolved target
+        // must never authorize. Restore the real launcher before owned recovery.
+        await fs.writeFile(
+          scriptPath,
+          encodeWindowsLauncherScript({
+            format: "cmd",
+            content: content.replace(
+              `>> ${redirectTarget} 2>&1`,
+              ">> %OPENCLAW_TEST_LOG_PATH% 2>&1",
+            ),
+          }),
+        );
+        await expect(
+          terminateScheduledTaskGatewayListeners(env, { port, probeHosts: ["127.0.0.1"] }),
+        ).resolves.toEqual([]);
+        expect(() => process.kill(observed.pid, 0)).not.toThrow();
+        await fs.writeFile(scriptPath, originalBytes);
+        await expect(
+          terminateScheduledTaskGatewayListeners(env, { port, probeHosts: ["127.0.0.1"] }),
+        ).resolves.toEqual([observed.pid]);
+        await withTestTimeout(closed, 10_000, "Owned launcher did not close after termination");
+        expect(() => process.kill(observed.pid, 0)).toThrow();
+
+        await fs.rm(reportPath);
+        const replacement = launch();
+        await expect.poll(() => fs.readFile(reportPath, "utf8"), { timeout: 10_000 }).toBeTruthy();
+        const restarted: { pid: number; port: number } = JSON.parse(
+          await fs.readFile(reportPath, "utf8"),
+        );
+        expect(restarted.pid).not.toBe(observed.pid);
+        expect(restarted.port).toBe(port);
+        await fs.writeFile(stopPath, "");
+        expect(
+          await withTestTimeout(replacement.closed, 10_000, "Replacement launcher did not close"),
+        ).toEqual({ code: 0, signal: null });
+      }
       await fs.writeFile(stopPath, "");
-      expect(await withTestTimeout(closed, 10_000, "Launcher fixture did not close")).toEqual({
-        code: 0,
-        signal: null,
-      });
+      if (!normalized) {
+        expect(await withTestTimeout(closed, 10_000, "Launcher fixture did not close")).toEqual({
+          code: 0,
+          signal: null,
+        });
+      }
       expect(await fs.readFile(outputPath, "utf8")).toContain("launcher-stdout");
       expect(await fs.readFile(outputPath, "utf8")).toContain("launcher-stderr");
     },

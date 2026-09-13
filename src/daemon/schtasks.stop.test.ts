@@ -781,6 +781,39 @@ describe("Scheduled Task stop/restart cleanup", () => {
     });
   });
 
+  it.each([
+    { operation: "stop", control: stopScheduledTask },
+    { operation: "restart", control: restartScheduledTask },
+  ])(
+    "refuses shortened argv from an unquoted redirect expansion during $operation",
+    async ({ control }) => {
+      await withPreparedGatewayTask(async ({ env, stdout }) => {
+        const commandLine =
+          '"C:\\Program Files\\nodejs\\node.exe" "C:\\OpenClaw\\gateway.js" gateway --port 18789';
+        await fs.writeFile(
+          resolveTaskScriptPath(env),
+          [
+            "@echo off",
+            'set "OPENCLAW_TEST_LOG_PATH=C:\\Logs\\gateway output.log"',
+            `${commandLine} < NUL >> %OPENCLAW_TEST_LOG_PATH% 2>&1`,
+          ].join("\r\n"),
+        );
+        vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+        pushSuccessfulSchtasksResponses(3);
+        mockWindowsTaskkillSuccess();
+        inspectPortUsageMock.mockResolvedValue(busyPortUsage(6262, { commandLine }));
+
+        const failure = await control({ env, stdout }).catch((err: unknown) => err);
+
+        expect(taskkillPids()).toEqual([]);
+        expect(killProcessTreeMock).not.toHaveBeenCalled();
+        expect(String(failure)).toContain("remaining listener ownership could not be verified");
+        expect(String(failure)).toContain("quote the entire redirection target");
+        expect(schtasksCalls.some((args) => args[0] === "/Run")).toBe(false);
+      });
+    },
+  );
+
   it("falls back to inspected gateway listeners when sync verification misses on Windows", async () => {
     await withPreparedGatewayTask(async ({ env, stdout }) => {
       pushSuccessfulSchtasksResponses(3);

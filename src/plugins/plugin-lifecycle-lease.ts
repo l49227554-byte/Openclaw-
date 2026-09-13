@@ -24,9 +24,12 @@ export type PluginLifecycleLeaseContext = OpenClawStateLeaseContext & {
   databasePath: string;
 };
 
+type PluginLifecycleRefusal = { current?: { error: unknown } };
+
 type ActivePluginLifecycleLease = {
   databasePath: string;
   lease: PluginLifecycleLeaseContext;
+  refusal: PluginLifecycleRefusal;
 };
 
 type PluginLifecycleLeaseOptions = Pick<
@@ -70,32 +73,48 @@ export async function withPluginLifecycleLease<T>(
   options: PluginLifecycleLeaseOptions,
   run: (lease: PluginLifecycleLeaseContext) => Promise<T>,
 ): Promise<T> {
+  const active = activePluginLifecycleLease.getStore();
+  const refusal: PluginLifecycleRefusal = active?.refusal ?? {};
+  const assertAuthority = (check: () => void) => {
+    if (refusal.current) {
+      throw refusal.current.error;
+    }
+    try {
+      check();
+    } catch (error) {
+      refusal.current = { error };
+      throw error;
+    }
+  };
   const assertCurrent = options.assertCurrent;
-  assertCurrent?.();
+  assertAuthority(() => assertCurrent?.());
   const runWithLease = async (lease: PluginLifecycleLeaseContext) => {
-    const owned: PluginLifecycleLeaseContext = assertCurrent
-      ? {
-          ...lease,
-          assertOwned: () => {
-            assertCurrent();
-            lease.assertOwned();
-          },
-          assertOwnedInTransaction: (database) => {
-            assertCurrent();
-            lease.assertOwnedInTransaction(database);
-          },
-        }
-      : lease;
+    const owned: PluginLifecycleLeaseContext =
+      !assertCurrent && lease === active?.lease
+        ? lease
+        : {
+            ...lease,
+            assertOwned: () =>
+              assertAuthority(() => {
+                assertCurrent?.();
+                lease.assertOwned();
+              }),
+            assertOwnedInTransaction: (database) =>
+              assertAuthority(() => {
+                assertCurrent?.();
+                lease.assertOwnedInTransaction(database);
+              }),
+          };
     if (assertCurrent) {
       owned.assertOwned();
     }
-    // Nested writers inherit both authorities, including the synchronous
-    // install-index commit. Releasing the plugin lease still owns its cleanup.
-    return activePluginLifecycleLease.run({ databasePath: owned.databasePath, lease: owned }, () =>
-      run(owned),
+    // Package settlement and nested metadata writers share the first refusal.
+    // A recovered read cannot authorize rollback beneath retained inventory.
+    return activePluginLifecycleLease.run(
+      { databasePath: owned.databasePath, lease: owned, refusal },
+      () => run(owned),
     );
   };
-  const active = activePluginLifecycleLease.getStore();
   if (
     active &&
     options.env === undefined &&

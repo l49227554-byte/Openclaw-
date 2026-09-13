@@ -87,7 +87,12 @@ describe("retained managed npm record commits", () => {
           });
           expect(failedReads).toBe(1);
           expect(lease.signal.aborted).toBe(false);
-          expect(() => lease.assertOwned()).not.toThrow();
+          expect(() => lease.assertOwned()).toThrowError(
+            expect.objectContaining({
+              code: "OPENCLAW_STATE_LEASE_STORAGE_FAILED",
+              cause: readFailure,
+            }),
+          );
           expect(tentativeRow).toBeDefined();
           expect(tentativeRow).not.toEqual(previousRow);
           expect(readPersistedInstalledPluginIndexRowSync({ env: state.env })).toEqual(

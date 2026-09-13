@@ -160,6 +160,24 @@ describe("SQLite transcript history events", () => {
     const otherEmpty = readRecentSessionTranscriptHistoryEvents(other, limits);
     expect(otherEmpty).toMatchObject({ events: [], totalMessages: 0 });
     expect(otherEmpty.deltaCursor).toBeUndefined();
+    await persistSessionTranscriptTurn(other, {
+      messages: ["other-first", "other-middle", "other-last"].map((eventId, index, ids) => ({
+        eventId,
+        parentId: index === 0 ? null : ids[index - 1],
+        message: { role: "user", content: eventId },
+      })),
+      touchSessionEntry: false,
+    });
+    expect(
+      readRecentSessionTranscriptHistoryEvents(other, limits).events.map(historyEventId),
+    ).toEqual(["other-first", "other-middle", "other-last"]);
+    expect(
+      readSessionTranscriptHistoryEventPage(other, {
+        maxMessages: 1,
+        offset: 1,
+        maxBytes: limits.maxBytes,
+      }).events.map(historyEventId),
+    ).toEqual(["other-middle"]);
     expect(
       readRecentSessionTranscriptHistoryEvents(scope, limits).events.map(historyEventId),
     ).toEqual(["after-empty"]);

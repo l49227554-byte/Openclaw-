@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
-import { tryResolveAgentOperationAgentId } from "../../agents/agent-scope-config.js";
+import { tryResolveLegacyDataOwnerAgentId } from "../../agents/agent-scope-config.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -100,7 +100,7 @@ function resolveAcpLegacyUnscopedOwner(
   return persistedOwner.kind === "configured"
     ? persistedOwner.agentId
     : persistedOwner.kind === "none"
-      ? tryResolveAgentOperationAgentId(cfg)
+      ? tryResolveLegacyDataOwnerAgentId(cfg)
       : undefined;
 }
 

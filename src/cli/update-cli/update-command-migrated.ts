@@ -11,8 +11,8 @@ import {
   resolveUpdateStateContentVersion,
   updateStateSchemaVersionsMatch,
 } from "../../infra/update-candidate-state.js";
+import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import type { UpdateRunStep } from "../../infra/update-run-record.js";
-import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-run-timeouts.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
@@ -197,6 +197,16 @@ export async function continueMigratedUpdateInFreshProcess(
       const { windowsTaskAutoStartRecovery: _windows, ...serializableStop } = preManagedServiceStop;
       stopState = serializableStop;
     }
+    run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
+      params.updateStepTimeoutMs,
+      {
+        env: params.ownedManagedUpdateEnv ?? run.env,
+        databases: params.schemaVersions,
+        pluginCount: Object.keys(params.preUpdatePluginInstallRecords).length,
+        nodeRunner: params.packageUpdateNodeRunner,
+      },
+    );
+    assertCurrent();
     const resultPath = path.join(scratchDir, "result.json");
     const { requesterAuthority, executorFence, ...runIdentity } = run;
     const input: MigratedUpdateFinalizationInput = {
@@ -227,7 +237,7 @@ export async function continueMigratedUpdateInFreshProcess(
         beforeInput,
         // This continuation includes bounded plugin steps as well as service
         // verification; the whole-process bound must exceed one step's budget.
-        timeoutMs: resolveUpdateFinalizationTimeoutMs(params.updateStepTimeoutMs),
+        timeoutMs: run.activationTimeoutMs,
         killProcessTree: true,
         requireProcessTreeExtinction: true,
         killGraceMs: 500,

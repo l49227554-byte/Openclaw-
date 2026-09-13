@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
+import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
-import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-run-timeouts.js";
 import { defaultRuntime } from "../../runtime.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -506,11 +506,18 @@ async function updateCommandInternal(
     stop: presentation.stop,
     refuseUpdate,
   };
-  if (packageAlreadyCurrent) {
+  const pluginCount = Object.keys(configSnapshot.config.plugins?.entries ?? {}).length;
+  const activateCurrentCore = async () => {
     run.executorFence = await executor.enter(root, {
       preflight: true,
-      activationTimeoutMs: resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs),
+      activationTimeoutMs: (run.activationTimeoutMs ??= await resolveUpdateFinalizationTimeoutMs(
+        updateStepTimeoutMs,
+        { env: run.env, pluginCount },
+      )),
     });
+  };
+  if (packageAlreadyCurrent) {
+    await activateCurrentCore();
     const { finishAlreadyCurrentUpdate } = await import("./update-execution.runtime.js");
     return await finishAlreadyCurrentUpdate({
       ...currentCoreFinalization,
@@ -593,13 +600,9 @@ async function updateCommandInternal(
     if (!mutableUpdatePrepared) {
       assertUpdatePackageActivationAdmission(root);
     }
-    const fence = await executor.enter(root, {
-      activationTimeoutMs:
-        activationTimeoutMs === undefined
-          ? undefined
-          : resolveUpdateFinalizationTimeoutMs(activationTimeoutMs),
-    });
+    const fence = await executor.enter(root, { activationTimeoutMs });
     run.executorFence = fence;
+    run.activationTimeoutMs ??= activationTimeoutMs;
     fence.assertCurrent();
     if (mutableUpdatePrepared) {
       return;
@@ -650,10 +653,7 @@ async function updateCommandInternal(
   const { result } = executionState;
   result.runId = run.runId;
   if (result.status === "skipped" && result.reason === "already-current") {
-    run.executorFence = await executor.enter(root, {
-      preflight: true,
-      activationTimeoutMs: resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs),
-    });
+    await activateCurrentCore();
     presentation.stop();
     return await finishAlreadyCurrentUpdate({
       ...currentCoreFinalization,

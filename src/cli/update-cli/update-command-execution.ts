@@ -1,6 +1,4 @@
 import path from "node:path";
-import { readConfigFileSnapshot } from "../../config/config.js";
-import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveStateDir } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ScheduledTaskAutoStartRecoveryError } from "../../daemon/schtasks-update-recovery.js";
@@ -14,6 +12,7 @@ import {
   createUpdateDoctorConfigWarningStep,
   type UpdateDoctorConfigChange,
 } from "../../infra/update-doctor-config.js";
+import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   verifyPackageUpdateRecovery,
@@ -29,7 +28,6 @@ import {
 } from "../../state/openclaw-schema-versions.js";
 import { formatCliCommand } from "../command-format.js";
 import {
-  captureTargetDatabaseSchemaContext,
   checkTargetDatabaseSchemasForContexts,
   formatSchemaRefusalLines,
   hasSchemaRefusal,
@@ -40,6 +38,7 @@ import {
   resolveGitInstallDir,
   UpdatePreMutationError,
 } from "./shared.js";
+import { readUpdateCandidateSource } from "./update-command-config-snapshot.js";
 import { inspectUpdateDatabaseContexts } from "./update-command-database-context.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
 import { createBeforeGitMutation, updateGitInstall } from "./update-command-git.js";
@@ -64,10 +63,7 @@ import {
   type MutableUpdateExecutionResult,
 } from "./update-command-result.js";
 import { isUpdatedInstallGatewayExecutorSupported } from "./update-command-service-command.js";
-import {
-  resolveUpdatedInstallCommandEnv,
-  withOwnedManagedUpdateEnv,
-} from "./update-command-service-env.js";
+import { resolveUpdatedInstallCommandEnv } from "./update-command-service-env.js";
 import {
   collectServiceInspectionFailureFacts,
   GatewayServiceUpdateOwnershipError,
@@ -334,20 +330,6 @@ export async function executeMutableUpdate(
   let result: UpdateRunResult;
   let failure: MutableUpdateExecutionResult["failure"];
   let mutationStarted = false;
-  const readCandidateSource = async (env: NodeJS.ProcessEnv) => {
-    if (params.legacyConfigPlan) {
-      const context = await captureTargetDatabaseSchemaContext(env, {
-        legacyConfigPlan: params.legacyConfigPlan,
-      });
-      if (context.legacyConfigPlan) {
-        return { config: context.config, hash: hashConfigRaw(context.configSnapshot.raw) };
-      }
-    }
-    const snapshot = await withOwnedManagedUpdateEnv(env, () =>
-      readConfigFileSnapshot({ skipPluginValidation: true, observe: false }),
-    );
-    return { config: snapshot.config, hash: hashConfigRaw(snapshot.raw) };
-  };
   const validateCandidate = async (root: string) => {
     assertUpdateCommandRecovery(opts);
     const env = ownedManagedUpdateContext?.env ?? opts.run?.env ?? process.env;
@@ -422,7 +404,8 @@ export async function executeMutableUpdate(
       }
       const snapshot = rehearsal
         ? { config: rehearsal.sourceConfig, hash: rehearsal.sourceConfigHash }
-        : (validatedConfigSnapshot ?? (await readCandidateSource(env)));
+        : (validatedConfigSnapshot ??
+          (await readUpdateCandidateSource(env, params.legacyConfigPlan)));
       const validation = await validateUpdateCandidateCanary({
         root,
         config: snapshot.config,
@@ -500,7 +483,7 @@ export async function executeMutableUpdate(
   const beforeActivate = async (roots: readonly string[] = [params.root]) => {
     assertExecutionCurrent();
     const env = ownedManagedUpdateContext?.env ?? opts.run?.env ?? process.env;
-    const snapshot = await readCandidateSource(env);
+    const snapshot = await readUpdateCandidateSource(env, params.legacyConfigPlan);
     if (
       validatedConfigSnapshot?.hash !== undefined &&
       snapshot.hash !== validatedConfigSnapshot.hash
@@ -543,7 +526,15 @@ export async function executeMutableUpdate(
     // Health and candidate work can outlive the inspected service/config generation.
     await recheckSchemas(admittedTargetSchemaVersions);
     assertExecutionCurrent();
-    await params.prepareMutableUpdate(env, updateStepTimeoutMs);
+    const activationTimeoutMs = await resolveUpdateFinalizationTimeoutMs(updateStepTimeoutMs, {
+      env,
+      databases: schemaVersions,
+      observedStartupMs: observedGatewayStartupMs,
+      pluginCount: Object.keys(config.plugins?.entries ?? {}).length,
+      nodeRunner: params.packageUpdateNodeRunner,
+    });
+    assertExecutionCurrent();
+    await params.prepareMutableUpdate(env, activationTimeoutMs);
     assertExecutionCurrent();
     if (opts.run) {
       recordUpdateRunPhase(opts.run.runId, "activating", undefined, { env: opts.run.env });

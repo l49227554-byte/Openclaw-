@@ -44,6 +44,7 @@ export type UpdateCommandOptions = {
   run?: {
     runId: string;
     defaultStepTimeoutMs?: number;
+    activationTimeoutMs?: number;
     env: NodeJS.ProcessEnv;
     /** Prepared before replacement; never load the old authority graph after activation. */
     requesterAuthority?: UpdateRequesterAuthority;

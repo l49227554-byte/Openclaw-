@@ -61,7 +61,7 @@ it.each([true, false, undefined])(
       "agent:main:discussion": {
         sessionId: "discussion",
         updatedAt: 3,
-        title: "Subagent design discussion",
+        label: "Subagent design discussion",
         createdActor: { type: "human", source: "profile", id: "profile-ada" },
       },
       "agent:main:fork": {

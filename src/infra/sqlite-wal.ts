@@ -626,10 +626,17 @@ export function configureSqliteWalMaintenance(
   let splitBrainDetectionEnabled = Boolean(tripwireDatabasePath);
   let splitBrainDetectionWarningLogged = false;
   const checkpointOwner = createSqliteWalCheckpoint(
-    db,
     options,
     DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES,
   );
+  const runCheckpoint = (mode: SqliteWalCheckpointMode): boolean => {
+    try {
+      return checkpointOwner.record(mode, db.prepare(`PRAGMA wal_checkpoint(${mode});`).get());
+    } catch (error) {
+      checkpointOwner.recordError(error);
+      return false;
+    }
+  };
 
   // Bounded page release for databases opened with auto_vacuum=INCREMENTAL.
   // A no-op elsewhere, and never a blocking full VACUUM: unbounded vacuums on
@@ -662,7 +669,7 @@ export function configureSqliteWalMaintenance(
       return false;
     }
   };
-  const checkpoint = (): boolean => runMaintenance(() => checkpointOwner.run(checkpointMode));
+  const checkpoint = (): boolean => runMaintenance(() => runCheckpoint(checkpointMode));
 
   let timer: IntervalHandle | null = null;
   if (timerIntervalMs > 0) {
@@ -694,7 +701,7 @@ export function configureSqliteWalMaintenance(
             }
           }
           runMaintenance(() => {
-            const checkpointed = checkpointOwner.run(periodicCheckpointMode);
+            const checkpointed = runCheckpoint(periodicCheckpointMode);
             runIncrementalVacuum();
             return checkpointed;
           });
@@ -719,9 +726,7 @@ export function configureSqliteWalMaintenance(
       // Cache eviction passes PASSIVE: a TRUNCATE close-checkpoint waits on
       // readers and has starved the event loop for seconds under fleet churn.
       // Orderly dispose/delete keeps TRUNCATE so sidecars are flushed for unlink.
-      return runMaintenance(() =>
-        checkpointOwner.run(closeOptions?.checkpointMode ?? checkpointMode),
-      );
+      return runMaintenance(() => runCheckpoint(closeOptions?.checkpointMode ?? checkpointMode));
     },
   };
 }

@@ -100,7 +100,8 @@ WAL** warning after two consecutive blocked checkpoints, or after one blocked
 checkpoint when the WAL exceeds both twice the database size and the existing
 64 MiB journal-size limit. Checkpoint errors warn immediately. A later complete
 checkpoint clears the warning; a large WAL alone does not mean a checkpoint is
-blocked.
+blocked. File-size observation failures are recorded and logged separately from
+SQLite's completion result; they do not turn a completed checkpoint into a failure.
 
 The warning includes observed WAL and database sizes, checkpointed and total WAL
 frames, the last observed complete checkpoint, the consecutive blocked count,

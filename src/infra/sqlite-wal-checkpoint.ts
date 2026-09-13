@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
+import type { SQLOutputValue } from "node:sqlite";
 import { hasErrnoCode } from "./errno.js";
 import { formatErrorMessage } from "./errors.js";
 import { normalizeSqliteNumber } from "./sqlite-number.js";
@@ -38,7 +38,6 @@ function sqliteFileBytes(pathname: string): number {
 
 /** The maintenance lifecycle owns this checkpoint result and its last observation. */
 export function createSqliteWalCheckpoint(
-  db: DatabaseSync,
   options: SqliteWalCheckpointOptions,
   journalSizeLimitBytes: number,
 ) {
@@ -59,6 +58,7 @@ export function createSqliteWalCheckpoint(
   const recordCheckpointError = (error: unknown, observation = checkpointObservation()): void => {
     health = {
       ...observation,
+      observedAtMs: Date.now(),
       state: "error",
       consecutiveBlocked: 0,
       warning: true,
@@ -67,11 +67,14 @@ export function createSqliteWalCheckpoint(
     options.onCheckpointError?.(error);
   };
 
-  const runCheckpoint = (mode: SqliteWalCheckpointMode): boolean => {
+  const recordCheckpoint = (
+    mode: SqliteWalCheckpointMode,
+    row: Record<string, SQLOutputValue> | undefined,
+  ): boolean => {
     const observation = checkpointObservation();
     let busy: boolean;
+    let sizeError: unknown;
     try {
-      const row = db.prepare(`PRAGMA wal_checkpoint(${mode});`).get();
       const [busyResult, logFrames, checkpointedFrames] = Object.values(row ?? {}).map((value) =>
         normalizeSqliteNumber(
           typeof value === "number" || typeof value === "bigint" ? value : null,
@@ -91,8 +94,14 @@ export function createSqliteWalCheckpoint(
         observation.consecutiveBlocked = (health?.consecutiveBlocked ?? 0) + 1;
       }
       if (options.databasePath) {
-        observation.databaseBytes = sqliteFileBytes(options.databasePath);
-        observation.walBytes = sqliteFileBytes(`${options.databasePath}-wal`);
+        try {
+          observation.databaseBytes = sqliteFileBytes(options.databasePath);
+          observation.walBytes = sqliteFileBytes(`${options.databasePath}-wal`);
+        } catch (error) {
+          // Size diagnostics must not change the native checkpoint's completion result.
+          sizeError = error;
+          observation.error = formatErrorMessage(error);
+        }
       }
       // Allow the existing retained-WAL ceiling or two database images before warning early.
       observation.warning =
@@ -106,6 +115,9 @@ export function createSqliteWalCheckpoint(
       recordCheckpointError(error, observation);
       return false;
     }
+    if (observation.error !== undefined) {
+      options.onCheckpointError?.(sizeError);
+    }
     if (busy || observation.warning) {
       const label = options.databaseLabel ?? "sqlite database";
       options.onCheckpointError?.(
@@ -118,7 +130,7 @@ export function createSqliteWalCheckpoint(
   };
 
   return {
-    run: runCheckpoint,
+    record: recordCheckpoint,
     recordError: recordCheckpointError,
     get health() {
       return health ? { ...health } : undefined;

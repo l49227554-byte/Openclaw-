@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
 import { configureSqliteWalMaintenance } from "./sqlite-wal.js";
@@ -8,6 +8,37 @@ import { configureSqliteWalMaintenance } from "./sqlite-wal.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 describe("SQLite WAL checkpoint observations", () => {
+  it("keeps a completed checkpoint successful when file-size observation fails", () => {
+    const databasePath = path.join(tempDirs.make("openclaw-wal-size-error-"), "state.sqlite");
+    const { DatabaseSync } = requireNodeSqlite();
+    const writer = new DatabaseSync(databasePath);
+    const onCheckpointError = vi.fn();
+    const maintenance = configureSqliteWalMaintenance(writer, {
+      databasePath,
+      checkpointIntervalMs: 0,
+      onCheckpointError,
+    });
+    writer.exec("CREATE TABLE events (value TEXT); INSERT INTO events VALUES ('committed');");
+    const failure = new Error("file-size observation unavailable");
+    const stat = vi.spyOn(fs, "statSync").mockImplementationOnce(() => {
+      throw failure;
+    });
+    try {
+      expect(maintenance.checkpoint()).toBe(true);
+      expect(maintenance.health).toMatchObject({
+        state: "complete",
+        warning: false,
+        error: "file-size observation unavailable",
+        lastCompletedAtMs: expect.any(Number),
+      });
+      expect(onCheckpointError).toHaveBeenCalledWith(failure);
+    } finally {
+      stat.mockRestore();
+      maintenance.close();
+      writer.close();
+    }
+  });
+
   it.each([
     { checkpointMode: "TRUNCATE", readBigInts: false, returnArrays: false },
     { checkpointMode: "PASSIVE", readBigInts: false, returnArrays: false },

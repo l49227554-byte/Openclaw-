@@ -22,7 +22,9 @@ export type SessionStorePathScope = {
 };
 
 /** Incognito key identity takes precedence over an explicit durable store path. */
-export function resolveExplicitSessionStorePath(scope: SessionStorePathScope): string | undefined {
+export function resolveExplicitSessionStorePathForScope(
+  scope: SessionStorePathScope,
+): string | undefined {
   if (isIncognitoSessionKey(scope.sessionKey)) {
     return resolveIncognitoOpenClawAgentSqlitePath({
       agentId: resolveAgentIdFromSessionKey(scope.sessionKey),

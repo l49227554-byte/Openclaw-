@@ -1,5 +1,8 @@
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
-import { resolveConcreteSessionStorePath, resolveExplicitSessionStorePath } from "./paths.js";
+import {
+  resolveConcreteSessionStorePath,
+  resolveExplicitSessionStorePathForScope,
+} from "./paths.js";
 import { resolveSessionEntry } from "./session-accessor.sqlite-exact-read.js";
 import type {
   SessionTranscriptReadScope,
@@ -23,7 +26,7 @@ export function resolveSessionTranscriptReadTargetCore(
     storePath: resolveConcreteSessionStorePath(scope.storePath),
   };
   const storePath =
-    resolveExplicitSessionStorePath(boundScope) ?? resolveDefaultStorePath?.(boundScope);
+    resolveExplicitSessionStorePathForScope(boundScope) ?? resolveDefaultStorePath?.(boundScope);
   if (!storePath) {
     throw new Error("Transcript reads require a concrete session store path");
   }

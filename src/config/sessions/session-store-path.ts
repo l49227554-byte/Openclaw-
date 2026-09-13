@@ -2,7 +2,7 @@ import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { getRuntimeConfig } from "../io.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import {
-  resolveExplicitSessionStorePath,
+  resolveExplicitSessionStorePathForScope,
   resolveSessionStorePathCore,
   type SessionStorePathScope,
 } from "./paths.js";
@@ -11,7 +11,7 @@ export function resolveSessionStorePathForScope(
   scope: SessionStorePathScope,
   config?: OpenClawConfig,
 ): string {
-  const explicitStorePath = resolveExplicitSessionStorePath(scope);
+  const explicitStorePath = resolveExplicitSessionStorePathForScope(scope);
   if (explicitStorePath) {
     return explicitStorePath;
   }

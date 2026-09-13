@@ -61,8 +61,10 @@ openclaw channels status --probe
   channels: {
     imessage: {
       enabled: true,
-      cliPath: "/usr/local/bin/imsg",
-      dbPath: "/Users/user/Library/Messages/chat.db",
+      // `imsg` is the default; set an absolute path only for a non-PATH install
+      // (Homebrew puts it in /opt/homebrew/bin on Apple Silicon).
+      cliPath: "imsg",
+      dbPath: "/Users/<user>/Library/Messages/chat.db",
     },
   },
 }
@@ -114,7 +116,7 @@ exec ssh -T messages-mac imsg "$@"
       cliPath: "/home/openclaw/.openclaw/scripts/imsg-ssh",
       remoteHost: "user@messages-mac", // Mac that runs Messages.app and imsg
       // This path is interpreted on the Messages Mac, not on the Gateway host.
-      dbPath: "/Users/user/Library/Messages/chat.db",
+      dbPath: "/Users/<user>/Library/Messages/chat.db",
       includeAttachments: true,
       // Optional: extra allowed attachment roots (merged with the default
       // /Users/*/Library/Messages/Attachments).

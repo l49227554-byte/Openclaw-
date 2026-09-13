@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   QA_EVIDENCE_FILENAME,
+  splitQaModelRef,
   type QaEvidenceSummaryJson,
 } from "../../../../extensions/qa-lab/api.js";
 import {
@@ -357,7 +358,7 @@ function isBlockedPrerequisiteFailure(message: string) {
   return CLAWHUB_BLOCKED_PREREQUISITE_PATTERNS.some((pattern) => pattern.test(message));
 }
 
-function resolveParallelsEvidenceModel(options: ProducerOptions) {
+function resolveParallelsEvidenceIdentity(options: ProducerOptions) {
   try {
     // Match the child runner's default OpenAI route without changing its arguments.
     const models = Array.from(
@@ -365,11 +366,28 @@ function resolveParallelsEvidenceModel(options: ProducerOptions) {
       (platform) =>
         resolveParallelsProviderAuth({ provider: "openai", platform }, process.env).auth.modelId,
     );
+    const refs = models.map(splitQaModelRef);
+    // Malformed qualified refs must not prevent writing the blocked evidence.
+    if (
+      models.some(
+        (value, index) =>
+          value.includes("/") && (!refs[index]?.provider.trim() || !refs[index]?.model.trim()),
+      )
+    ) {
+      return { primaryModel: "" };
+    }
     const [model] = models;
-    return model?.trim() && models.every((value) => value === model) ? model : "";
+    const providerId = refs[0]?.provider.trim();
+    return {
+      primaryModel: model?.trim() && models.every((value) => value === model) ? model : "",
+      providerId:
+        providerId && refs.every((ref) => ref?.provider.trim() === providerId)
+          ? providerId
+          : undefined,
+    };
   } catch {
     // Invalid metadata must not replace the producer's blocked or failure result.
-    return "";
+    return { primaryModel: "" };
   }
 }
 
@@ -377,7 +395,7 @@ function createClawHubEvidenceWriter(options: ProducerOptions) {
   return createQaScriptEvidenceWriter({
     artifactBase: options.artifactBase,
     logFileName: "parallels-npm-update.log",
-    primaryModel: resolveParallelsEvidenceModel(options),
+    ...resolveParallelsEvidenceIdentity(options),
     providerMode: "live-frontier",
     repoRoot: options.repoRoot,
     target: {

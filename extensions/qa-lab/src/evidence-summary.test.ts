@@ -89,7 +89,7 @@ describe("evidence summary", () => {
         generatedAt: "2026-09-10T00:00:00.000Z",
         primaryModel,
         providerMode,
-        ...{ providerId },
+        providerId,
         targets: [{ id: "provider-identity", title: "Provider identity", sourcePath: "probe.ts" }],
         results: [
           { id: "provider-identity", status: "blocked", failureMessage: "missing candidate" },
@@ -119,7 +119,7 @@ describe("evidence summary", () => {
       generatedAt: "2026-09-10T00:00:00.000Z",
       primaryModel: "",
       providerMode: "live-frontier",
-      ...{ providerId: "openai" },
+      providerId: "openai",
       targets: [{ id: "provider-identity", title: "Provider identity", sourcePath: "probe.ts" }],
       results: [
         { id: "provider-identity", status: "blocked", failureMessage: "missing candidate" },

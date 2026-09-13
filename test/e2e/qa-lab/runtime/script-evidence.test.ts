@@ -36,7 +36,7 @@ async function makeWriter(
       maxLogBytes: params.maxLogBytes ?? 64,
       primaryModel: params.primaryModel ?? "mock-openai/gpt-5.6-luna",
       providerMode: params.providerMode ?? "mock-openai",
-      ...{ providerId: params.providerId },
+      providerId: params.providerId,
       repoRoot,
       target: {
         id: "script-evidence-test",

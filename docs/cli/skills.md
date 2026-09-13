@@ -108,10 +108,19 @@ and separator-normalized matches must identify one skill; ambiguous selectors
 fail instead of choosing discovery order. Workshop reads and update targeting
 use the same lookup.
 
+`check` separates **visibility** from **readiness**:
+
+- **Visibility** means the skill is available to the selected agent's prompt,
+  picker, or command surface after allowlists and load precedence are applied.
+- **Readiness** means the skill can actually run on the selected Gateway or
+  node because its declared prerequisites are satisfied.
+
 `check` reports missing prerequisites independently of agent exclusion: a skill
 excluded by the agent allowlist can also appear under **Missing requirements**.
 Disabled skills and skills blocked by the bundled allowlist keep their separate
-readiness categories.
+readiness categories. Treat a visible skill with missing requirements as
+discoverable but not ready; install or configure the reported prerequisite
+before expecting the model to use it successfully.
 
 Curator `status`, `pin`, `unpin`, and `restore`, plus Workshop `apply`, preserve
 the same target boundary. They never read or mutate client-local state after an

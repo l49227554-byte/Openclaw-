@@ -88,6 +88,18 @@ Human output, chat completion notices, the Control UI update view, and the
 `openclaw status` update line use the same report, including on success. The report shows recorded facts; an absent verification fact
 means that check has not been observed.
 
+Failed steps include bounded `failureFacts` when the updater observed a specific
+check, Doctor finding, package-manager error, service inspection reason, or plugin
+failure. Each fact names the check and reason code, with an optional affected
+config key, plugin ID, and one diagnostic line of at most 200 characters. These
+facts survive the run ledger and appear in the local summary and the reviewed
+GitHub failure report. Secrets and private paths are redacted before recording;
+public reports include recognized error causes instead of arbitrary command or
+user text, and show config key families instead of operator-defined names. Only
+catalog-confirmed public check and plugin IDs are included; unknown IDs and codes
+remain complete locally and are redacted publicly. Older runs cannot recover facts that their updater did not record. Existing history
+and report size limits still apply.
+
 Recoverable maintenance failures appear as recorded warnings even when the update
 succeeds. Each warning names the skipped work, the cause, and a repair command.
 Doctor also shows warnings from the latest run as historical observations: a later
@@ -98,6 +110,16 @@ A foreground updater publishes its final result after required finalization work
 and its local executor have settled. A late ownership or release failure returns
 an error instead of publishing an earlier success. Existing terminal history is
 not overwritten.
+
+Activation has an enclosing deadline derived from the update's existing phase
+budget. If it expires, the updater cancels owned work and waits within that budget
+for its child processes to settle, then records `update-activation-timeout` as a
+failed outcome. A child that has not stopped retains its ownership and recovery
+state. Inspect `openclaw update status` and `openclaw doctor`, and wait for the
+owning updater and its children to stop before running `openclaw update repair`.
+The timeout does not authorize rollback or removal of retained update state.
+If migration or pending recovery prevents a safe history write, the updater
+reports the timeout and preserves that state for its owning runtime to reconcile.
 
 Successful installation verification does not imply that obsolete package backups
 were deleted. If the package owner confirms that only obsolete-backup cleanup is

@@ -354,6 +354,13 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
     includeInOpenClawGroup: true,
   },
   {
+    id: "plugins",
+    description: "Manage and reload plugins",
+    sectionId: "automation",
+    profiles: ["coding"],
+    includeInOpenClawGroup: true,
+  },
+  {
     id: "nodes",
     description: "Nodes + devices",
     sectionId: "nodes",
@@ -454,6 +461,13 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
   {
     id: "tts",
     description: "Text-to-speech conversion",
+    sectionId: "media",
+    profiles: [],
+    includeInOpenClawGroup: true,
+  },
+  {
+    id: "pdf",
+    description: "PDF reading and extraction",
     sectionId: "media",
     profiles: [],
     includeInOpenClawGroup: true,

@@ -1018,7 +1018,7 @@ impl DesktopState {
 }
 
 fn local_mode(snapshot: &GatewaySnapshot) -> &'static str {
-    if snapshot.installed && !snapshot.running {
+    if snapshot.phase == "stopped" {
         "stopped"
     } else {
         "reconnecting"
@@ -1032,9 +1032,23 @@ fn local_recovery_owns_gateway(navigation: &Result<bool, String>) -> bool {
 #[cfg(test)]
 mod navigation_tests {
     use super::{
-        is_active_onboarding_url, is_release_version, local_recovery_owns_gateway, NavigationState,
-        Url,
+        is_active_onboarding_url, is_release_version, local_mode, local_recovery_owns_gateway,
+        GatewaySnapshot, NavigationState, Url,
     };
+
+    #[test]
+    fn unknown_gateway_status_keeps_recovery_active() {
+        let unknown = GatewaySnapshot::reconnecting("Gateway service inspection failed.");
+        assert_eq!(local_mode(&unknown), "reconnecting");
+
+        let stopped = GatewaySnapshot {
+            phase: "stopped",
+            status: "Stopped".to_string(),
+            detail: None,
+            ..unknown
+        };
+        assert_eq!(local_mode(&stopped), "stopped");
+    }
 
     #[test]
     fn only_active_onboarding_preserves_the_dashboard_during_reconnect() {
@@ -1287,6 +1301,10 @@ async fn gateway_action(
 }
 
 fn main() {
+    // AppIndicator uses the GTK application name for the tray menu heading.
+    #[cfg(target_os = "linux")]
+    gtk::glib::set_application_name("OpenClaw");
+
     let global_shortcuts_supported = tray::global_shortcuts_supported();
     let quickchat_state = quickchat::QuickChatState::new(global_shortcuts_supported);
     let quickchat_shortcut_state = quickchat_state.clone();

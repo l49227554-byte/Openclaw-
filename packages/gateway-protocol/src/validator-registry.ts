@@ -19,6 +19,7 @@ export {
 
 // Validator names mirror schemas so callers can pair them with wire contracts.
 export const validateCommandsListParams = compile(S.CommandsListParamsSchema);
+export const validateCanvasDocumentPreviewParams = compile(S.CanvasDocumentPreviewParamsSchema);
 export const validateCanvasDocumentViewParams = compile(S.CanvasDocumentViewParamsSchema);
 export const validateConnectParams = compile(S.ConnectParamsSchema);
 export const validateWorkerAdmissionHandshake = compile(S.WorkerAdmissionHandshakeSchema);
@@ -507,6 +508,7 @@ export const validateCapabilityConsentErrorDetails = compile(S.CapabilityConsent
 export const validatePluginsListParams = compile(S.PluginsListParamsSchema);
 export const validatePluginsInspectParams = compile(S.PluginsInspectParamsSchema);
 export const validatePluginsRefreshParams = compile(S.PluginsRefreshParamsSchema);
+export const validatePluginsReloadParams = compile(S.PluginsReloadParamsSchema);
 export const validatePluginsSearchParams = compile(S.PluginsSearchParamsSchema);
 export const validatePluginsCatalogBrowseParams = compile(S.PluginsCatalogBrowseParamsSchema);
 export const validatePluginsCatalogCategoriesParams = compile(

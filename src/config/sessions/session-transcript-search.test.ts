@@ -286,6 +286,34 @@ describe("searchSessionTranscripts", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("filters role and generation before selecting the most recent matching messages", async () => {
+    const sessionKey = "agent:main:main";
+    await appendAssistantMessage("current", sessionKey, "needle oldest");
+    await appendAssistantMessage("current", sessionKey, `needle latest ${"context ".repeat(30)}`);
+    for (let index = 0; index < 28; index += 1) {
+      await appendUserMessage("current", sessionKey, "needle user");
+    }
+    await appendAssistantMessage("other-generation", sessionKey, "needle other generation");
+
+    expect(
+      searchSessionTranscripts({
+        agentId: "main",
+        env: env(),
+        query: "needle",
+        sessionKeys: [sessionKey],
+        sessionId: "current",
+        role: "assistant",
+        order: "recent",
+        limit: 1,
+      }),
+    ).toMatchObject({
+      hits: [
+        { sessionId: "current", role: "assistant", snippet: expect.stringContaining("latest") },
+      ],
+      truncated: true,
+    });
+  });
+
   it("rejects empty and oversized queries", () => {
     expect(() => search("   ")).toThrow(/query must not be empty/);
     expect(() => search("x".repeat(4097))).toThrow(/must not exceed/);
@@ -418,6 +446,7 @@ describe("searchSessionTranscripts", () => {
     const pending = () => listSessionsNeedingTranscriptIndexReconcile(db);
 
     expect(pending()).toEqual([]);
+    expect(search("indexed").indexing).toBe(false);
 
     executeSqliteQuerySync(
       db,
@@ -427,6 +456,8 @@ describe("searchSessionTranscripts", () => {
         .where("session_id", "=", "session-1"),
     );
     expect(pending()).toEqual(["session-1"]);
+    expect(search("indexed").indexing).toBe(true);
+    await waitForSearchReconcile("indexed");
 
     executeSqliteQuerySync(
       db,
@@ -436,12 +467,15 @@ describe("searchSessionTranscripts", () => {
         .where("session_id", "=", "session-1"),
     );
     expect(pending()).toEqual(["session-1"]);
+    expect(search("indexed").indexing).toBe(true);
+    await waitForSearchReconcile("indexed");
 
     executeSqliteQuerySync(
       db,
       kysely.deleteFrom("session_transcript_index_state").where("session_id", "=", "session-1"),
     );
     expect(pending()).toEqual(["session-1"]);
+    expect(search("indexed").indexing).toBe(true);
   });
 
   it("sweeps orphaned index rows during reconcile", async () => {

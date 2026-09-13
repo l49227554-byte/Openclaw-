@@ -546,27 +546,45 @@ html:is(.openclaw-native-macos, .openclaw-native-nav, .openclaw-native-web-chrom
   line-height: 1.45;
 }
 
-.settings-sidebar__loading {
-  padding: 10px 12px;
-}
-
-.settings-sidebar__loading-rows {
-  display: grid;
-  gap: 12px;
-}
-
-.settings-sidebar__loading-row {
+/* Loading skeleton reuses __nav/__group/__item geometry; only the fills are placeholders. */
+.settings-sidebar__loading-search {
   display: block;
-  width: 82%;
+  width: 100%;
+  height: 34px;
+}
+
+.settings-sidebar__loading-group-label {
+  display: block;
+  width: 64px;
+  height: 9px;
+  margin: 2px 9px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.settings-sidebar__loading-item {
+  pointer-events: none;
+}
+
+.settings-sidebar__loading-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+
+.settings-sidebar__loading-label {
+  display: block;
+  width: 58%;
   height: 12px;
+  border-radius: var(--radius-sm);
 }
 
-.settings-sidebar__loading-row:nth-child(3n + 2) {
+.settings-sidebar__loading-item:nth-child(3n) .settings-sidebar__loading-label {
+  width: 46%;
+}
+
+.settings-sidebar__loading-item:nth-child(3n + 2) .settings-sidebar__loading-label {
   width: 68%;
-}
-
-.settings-sidebar__loading-row:nth-child(3n) {
-  width: 74%;
 }
 
 .settings-sidebar__group {
@@ -715,6 +733,13 @@ openclaw-settings-save-indicator:empty {
   align-items: center;
   gap: 5px;
   min-width: 0;
+}
+
+.settings-save-indicator--recovery {
+  flex-direction: column;
+  align-items: flex-start;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .settings-save-indicator--danger {
@@ -2429,6 +2454,7 @@ openclaw-settings-save-indicator:empty {
   flex-direction: column;
   gap: 4px;
   padding-top: 12px;
+  padding-inline-start: 0;
   margin: 12px 0 10px;
   border-top: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
   border-radius: 0;
@@ -3345,9 +3371,9 @@ a:is(
   padding-right: 0;
 }
 
-/* Footer agent chip: identity-first entrance to the active agent. The body
-   resumes the latest conversation; trailing actions create/open the menu. */
-.sidebar-brand > openclaw-sidebar-agent-card {
+/* The header identifies the active agent or the whole workspace. */
+.sidebar-brand > openclaw-sidebar-agent-card,
+.sidebar-workspace-header {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -3362,7 +3388,8 @@ a:is(
   flex: 0 1 auto;
 }
 
-.sidebar-agent-card__main {
+.sidebar-agent-card__main,
+.sidebar-workspace-header__main {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3380,17 +3407,27 @@ a:is(
 }
 
 .sidebar-agent-card__main:hover,
+.sidebar-workspace-header__main:hover,
+.sidebar-workspace-header__main[aria-expanded="true"],
 .sidebar-agent-card--open .sidebar-agent-card__main {
   background: color-mix(in srgb, var(--bg-hover) 84%, transparent);
 }
 
-.sidebar-agent-card__main:active {
+.sidebar-agent-card__main:active,
+.sidebar-workspace-header__main:active {
   background: color-mix(in srgb, var(--bg-hover) 96%, transparent);
 }
 
-.sidebar-agent-card__main:focus-visible {
+.sidebar-agent-card__main:focus-visible,
+.sidebar-workspace-header__main:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 48%, transparent);
   outline-offset: 1px;
+}
+
+.sidebar-workspace-header__mark {
+  width: var(--sidebar-agent-avatar-size);
+  height: var(--sidebar-agent-avatar-size);
+  flex: none;
 }
 
 .sidebar-agent-card__avatar {
@@ -4023,32 +4060,11 @@ wa-dropdown-item.sidebar-agent-menu__agent-switch:focus-visible {
     filter 120ms ease;
 }
 
-.sidebar-agent-menu__agent-tile .sidebar-agent-menu__agent-avatar .agent-select__avatar--text,
-.sidebar-agent-menu__agent-tile .sidebar-agent-menu__agent-avatar .agent-select__avatar--icon {
-  width: var(--agent-avatar-glyph-size);
-  height: var(--agent-avatar-glyph-size);
-  background: transparent;
-  color: var(--secondary-foreground);
-  font-size: var(--agent-avatar-glyph-size);
-  line-height: 1;
-}
-
-.sidebar-agent-menu__agent-tile .sidebar-agent-menu__agent-avatar img.agent-select__avatar {
-  display: block;
+.sidebar-agent-menu__agent-tile .sidebar-agent-menu__agent-avatar .agent-select__avatar {
   width: var(--agent-avatar-size);
   height: var(--agent-avatar-size);
-  border-radius: var(--radius-full);
-  object-fit: cover;
-  opacity: var(--agent-avatar-opacity);
-  filter: var(--agent-avatar-filter);
-  transition:
-    opacity 120ms ease,
-    filter 120ms ease;
-}
-
-.sidebar-agent-menu__agent-avatar:has(img.agent-select__avatar) {
-  opacity: 1;
-  filter: none;
+  font-size: var(--agent-avatar-glyph-size);
+  line-height: 1;
 }
 
 .sidebar-agent-menu__agent-switch--active .sidebar-agent-menu__agent-avatar {

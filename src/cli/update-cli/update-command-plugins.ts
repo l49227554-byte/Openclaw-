@@ -17,6 +17,7 @@ import {
   withoutPluginInstallRecords,
   withPluginInstallRecords,
 } from "../../plugins/installed-plugin-index-records.js";
+import { listPersistedBundledPluginLocationBridges } from "../../plugins/location-bridges.js";
 import { isTrustedOfficialPluginInstallRecord } from "../../plugins/official-external-install-records.js";
 import type { MissingPluginInstallPayload } from "../../plugins/payload-verification.js";
 import { refreshPluginRegistryAfterConfigMutation } from "../../plugins/registry-refresh.js";
@@ -33,7 +34,6 @@ import {
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
 import { formatCliCommand } from "../command-format.js";
 import { resolvePluginCapabilityConsentCliOptions } from "../plugin-capability-consent.js";
-import { listPersistedBundledPluginLocationBridges } from "../plugins-location-bridges.js";
 import { readPackageVersion } from "./shared.js";
 import {
   assessPluginUpdate,
@@ -225,6 +225,9 @@ export async function updatePluginsAfterCoreUpdate(params: {
   });
   for (const error of cohort.sync.summary.errors) {
     collectPluginOutcome({ ...error, status: "error" });
+  }
+  for (const warning of cohort.sync.summary.warnings) {
+    getLogger().warn(warning);
   }
   let pluginConfig = cohort.config;
   let pluginsChanged = cohort.changed || params.configChanged === true;
@@ -438,7 +441,9 @@ export async function updatePluginsAfterCoreUpdate(params: {
     ...new Map(pluginUpdateOutcomes.map((outcome) => [outcome.pluginId, outcome])).values(),
   ];
   const status =
-    warnings.length > 0 || finalPluginOutcomes.some((outcome) => outcome.status === "error")
+    warnings.length > 0 ||
+    cohort.sync.summary.warnings.length > 0 ||
+    finalPluginOutcomes.some((outcome) => outcome.status === "error")
       ? "warning"
       : "ok";
   const result: ProducedPluginUpdateResult = {

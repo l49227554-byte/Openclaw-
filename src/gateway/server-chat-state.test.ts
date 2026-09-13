@@ -154,7 +154,13 @@ describe("createChatRunState", () => {
     },
   );
 
-  it.each(["naming_worktree", "creating_worktree", "running_setup", "preparing_context"])(
+  it.each([
+    "naming_worktree",
+    "creating_worktree",
+    "running_setup",
+    "preparing_context",
+    "memory_flushing",
+  ])(
     "retains only the latest startup status (%s) until observable run activity begins",
     (phase) => {
       const state = createChatRunState();
@@ -387,6 +393,45 @@ describe("createChatRunState", () => {
       toolCallId: "tool-78",
     });
   });
+
+  it.each(["tool", "notice"])(
+    "recounts changed payloads before %s activity evicts multiple reconnect owners",
+    (stream) => {
+      const state = createChatRunState();
+      const args = { text: "x".repeat(1_024) };
+      for (let seq = 1; seq <= 50; seq += 1) {
+        state.recordProgressEvent("run-1", {
+          runId: "run-1",
+          seq,
+          stream: "tool",
+          ts: seq,
+          data: { phase: "start", toolCallId: `tool-${seq}`, args },
+        });
+      }
+      // Tool producers can retain and update nested payload objects between events.
+      args.text = "é".repeat(2_048);
+      state.recordProgressEvent("run-1", {
+        runId: "run-1",
+        seq: 51,
+        stream,
+        ts: 51,
+        data:
+          stream === "tool"
+            ? { phase: "start", toolCallId: "latest" }
+            : { phase: "warning", message: "Still running" },
+      });
+      const snapshot = state.runs.get("run-1")?.progressSnapshot;
+      expect(snapshot?.events.at(-1)?.seq).toBe(51);
+      expect(snapshot?.events.length).toBeLessThan(49);
+      expect(snapshot?.byteLength).toBe(
+        snapshot?.events.reduce(
+          (total, event) => total + Buffer.byteLength(JSON.stringify(event)),
+          0,
+        ),
+      );
+      expect(snapshot?.byteLength).toBeLessThanOrEqual(128 * 1024);
+    },
+  );
 
   it("keeps a review-heavy reconnect bounded, adverse, and attached to its owner", () => {
     const state = createChatRunState();

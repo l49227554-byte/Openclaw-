@@ -1651,6 +1651,63 @@ describe("chat history pagination", () => {
 });
 
 describe("retained input navigation", () => {
+  it.each(["pending custody", "transcript"] as const)(
+    "hides the retained queue copy represented by %s without hiding an identical new send",
+    (source) => {
+      const historyState = makeChatHost({ currentSessionId: "retained-input-session" });
+      const message = {
+        role: "user",
+        content: "Check the deployment notes",
+        timestamp: 100,
+        idempotencyKey: "retained-run:user",
+      };
+      if (source === "pending custody") {
+        applyChatPendingInputs(historyState, {
+          total: 1,
+          items: [
+            {
+              id: "retained-input",
+              runId: "retained-run",
+              acceptedAt: 100,
+              state: "queued",
+              message,
+            },
+          ],
+        });
+      }
+      const queue = ["before", "retained", "new"].map((id, index) => ({
+        id,
+        text: message.content,
+        createdAt: 100 + index,
+        sendRunId: `${id}-run`,
+        sendState: "waiting-reconnect" as const,
+      }));
+      const onQueueRemove = vi.fn();
+      const onQueueMove = vi.fn();
+      const container = renderChatView({
+        historyState,
+        messages: source === "transcript" ? [message] : [],
+        queue,
+        onQueueRemove,
+        onQueueMove,
+      });
+
+      const rows = container.querySelectorAll(".chat-queue__item");
+      expect([...rows].map((row) => row.getAttribute("data-chat-queue-item"))).toEqual([
+        "before",
+        "new",
+      ]);
+      const grips = [...container.querySelectorAll<HTMLButtonElement>(".chat-queue__grip")];
+      expect(grips).toHaveLength(2);
+      expect(grips.every((grip) => grip.disabled)).toBe(true);
+      grips[1]?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+      expect(onQueueMove).not.toHaveBeenCalled();
+      rows[1]?.querySelector<HTMLButtonElement>(".chat-queue__remove")?.click();
+      expect(onQueueRemove).toHaveBeenCalledWith("new");
+      expect(queue).toHaveLength(3);
+    },
+  );
+
   it("does not show an inventory banner for a single retained message", () => {
     const historyState = makeChatHost({
       sessionKey: "agent:main:retained-input",
@@ -6124,6 +6181,10 @@ describe("chat attachment picker", () => {
 
       expect(readers).toHaveLength(1);
       expect(reads.pendingReads).toBe(1);
+      const status = container.querySelector(".chat-attachments-status");
+      expect(status?.textContent).toContain("Preparing attachments");
+      expect(status?.getAttribute("role")).toBe("status");
+      expect(status?.classList.contains("sr-only")).toBe(false);
       expect(getComposerTextarea(container).disabled).toBe(false);
       const send = requireElement(
         container,
@@ -6131,6 +6192,8 @@ describe("chat attachment picker", () => {
         "send button",
       ) as HTMLButtonElement;
       expect(send.disabled).toBe(true);
+      expect(send.getAttribute("aria-busy")).toBe("true");
+      expect(send.closest("openclaw-tooltip")?.content).toBe("Preparing attachments…");
       getComposerTextarea(container).dispatchEvent(
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter" }),
       );
@@ -6153,6 +6216,8 @@ describe("chat attachment picker", () => {
         "ready send button",
       ) as HTMLButtonElement;
       expect(readySend.disabled).toBe(false);
+      expect(readySend.getAttribute("aria-busy")).toBe("false");
+      expect(container.querySelector(".chat-attachments-status")?.textContent?.trim()).toBe("");
       readySend.click();
       expect(onSend).toHaveBeenCalledOnce();
     },
@@ -6595,7 +6660,7 @@ describe("chat attachment picker", () => {
     const container = renderChatView({ attachments: [attachment], onAttachmentsChange });
     const removeButton = requireElement(
       container,
-      '[aria-label="Remove attachment"]',
+      '[aria-label="Remove pasted-image.png"]',
       "remove attachment button",
     ) as HTMLButtonElement;
 
@@ -6723,7 +6788,7 @@ describe("chat attachment picker", () => {
 
     requireElement(
       container,
-      '[aria-label="Remove attachment"]',
+      '[aria-label="Remove ordinary.png"]',
       "ordinary attachment remove button",
     ).dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
@@ -6884,29 +6949,30 @@ describe("chat welcome", () => {
     return container;
   }
 
-  it("renders configured assistant avatars and the animated Clawd fallback", () => {
-    let container = renderWelcome({ assistantAvatar: "VC", assistantAvatarUrl: null });
-
-    const avatar = container.querySelector<HTMLElement>(".agent-chat__avatar");
-    expect(avatar?.tagName).toBe("DIV");
-    expect(avatar?.textContent?.trim()).toBe("VC");
+  it("renders configured images and emoji before the generated agent face", async () => {
+    let container = renderWelcome({ assistantAvatar: "🦉", assistantAvatarUrl: null });
+    const avatar = container.querySelector<HTMLElement>(".agent-chat__welcome-avatar");
+    expect(avatar?.querySelector("[data-avatar]")?.getAttribute("data-avatar")).toBe("🦉");
     expect(avatar?.getAttribute("aria-label")).toBe("Val");
 
     container = renderWelcome({
-      assistantAvatar: "avatars/val.png",
+      assistantAvatar: "🦉",
       assistantAvatarUrl: "blob:identity-avatar",
     });
-
-    const imageAvatar = container.querySelector<HTMLImageElement>("img");
-    expect(imageAvatar?.getAttribute("src")).toBe("blob:identity-avatar");
-    expect(imageAvatar?.getAttribute("alt")).toBe("Val");
+    const image = container.querySelector("img");
+    expect(image?.getAttribute("src")).toBe("blob:identity-avatar");
+    image?.dispatchEvent(new Event("load"));
+    const identity = container.querySelector(".identity-avatar--agent");
+    expect(identity?.classList.contains("is-fallback")).toBe(false);
+    image?.dispatchEvent(new Event("error"));
+    expect(identity?.classList.contains("is-fallback")).toBe(true);
+    expect(identity?.querySelector("[data-avatar]")?.getAttribute("data-avatar")).toBe("🦉");
 
     container = renderWelcome({ assistantAvatar: null, assistantAvatarUrl: null });
-
-    const clawd = container.querySelector(".agent-chat__welcome-clawd");
-    expect(clawd).not.toBeNull();
-    expect(clawd?.querySelector("openclaw-mascot")?.getAttribute("mood")).toBe("idle");
-    expect(container.querySelector(".agent-chat__badge")).toBeNull();
+    await vi.waitFor(() =>
+      expect(container.querySelector(".identity-avatar__agent-face")).not.toBeNull(),
+    );
+    expect(container.querySelector(".agent-chat__welcome-clawd")).toBeNull();
   });
 
   it("replaces sendable welcome actions with model setup", () => {
@@ -6986,24 +7052,6 @@ describe("chat welcome", () => {
     expect(getComposerTextarea(container).disabled).toBe(true);
     container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.click();
     expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it("teases and catches file drags with the welcome mascot", () => {
-    const container = renderWelcome({ assistantAvatar: null, assistantAvatarUrl: null });
-    const welcome = requireElement(container, ".agent-chat__welcome", "welcome screen");
-    const mascot = requireElement(
-      container,
-      ".agent-chat__welcome-clawd openclaw-mascot",
-      "welcome mascot",
-    ) as HTMLElement & { tease: boolean; catchOnce: () => void };
-    const catchOnce = vi.spyOn(mascot, "catchOnce");
-
-    welcome.dispatchEvent(createDragEvent("dragenter"));
-    expect(mascot.tease).toBe(true);
-
-    welcome.dispatchEvent(createDragEvent("drop"));
-    expect(mascot.tease).toBe(false);
-    expect(catchOnce).toHaveBeenCalledOnce();
   });
 
   it("renders welcome text from the active locale", async () => {
@@ -9952,7 +10000,7 @@ describe("right-click Reply", () => {
     const labels = [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
       button.textContent?.trim(),
     );
-    expect(labels).toEqual(["Reply", "Rewind to here", "Fork from here"]);
+    expect(labels).toEqual(["Reply", "Rewind to here", "Copy as markdown", "Fork from here"]);
     getContextMenuAction("Fork from here").click();
     expect(onForkMessage).toHaveBeenCalledWith("persisted-user");
 
@@ -9981,7 +10029,9 @@ describe("right-click Reply", () => {
     expect(onCopy).toHaveBeenCalledOnce();
   });
 
-  it("offers Reply only for the bubble that owns the frame actions", () => {
+  it("copies commentary without offering Reply for another bubble's frame actions", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
     const onSetReply = vi.fn();
     const { bubble, group } = renderChatBubble(
       { onSetReply },
@@ -9994,8 +10044,15 @@ describe("right-click Reply", () => {
 
     const event = dispatchContextMenu(bubble);
 
-    expect(event.defaultPrevented).toBe(false);
-    expect(document.querySelector(".chat-reply-context-menu")).toBeNull();
+    expect(event.defaultPrevented).toBe(true);
+    expect(
+      [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
+        button.textContent?.trim(),
+      ),
+    ).toEqual(["Copy as markdown"]);
+    getContextMenuAction("Copy as markdown").click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Intermediate commentary"));
+    expect(onSetReply).not.toHaveBeenCalled();
   });
 
   it("dismisses an inline confirmation before opening the reply context menu", () => {
@@ -10083,18 +10140,27 @@ describe("right-click Reply", () => {
     expect(target.text).toBe("x".repeat(499));
   });
 
-  it("keeps the native context menu for links inside a replyable bubble", () => {
-    const { bubble } = renderChatBubble({ onSetReply: vi.fn() }, { text: "hello world" });
-    const link = document.createElement("a");
-    link.href = "https://example.com";
-    link.textContent = "Example";
-    bubble.appendChild(link);
+  it.each([
+    ["links", html`<a href="https://example.com"><span>Example</span></a>`, "span"],
+    ["images", html`<button><img src="/example.png" alt="Example" /></button>`, "img"],
+    [
+      "linked images",
+      html`<a href="https://example.com"><img src="/example.png" alt="Example" /></a>`,
+      "img",
+    ],
+  ] as const)(
+    "keeps the native context menu for %s inside a replyable bubble",
+    (_name, content, selector) => {
+      const { bubble } = renderChatBubble({ onSetReply: vi.fn() }, { text: "hello world" });
+      const preview = bubble.appendChild(document.createElement("div"));
+      render(content, preview);
 
-    const evt = dispatchContextMenu(link);
+      const evt = dispatchContextMenu(preview.querySelector<HTMLElement>(selector)!);
 
-    expect(evt.defaultPrevented).toBe(false);
-    expect(document.querySelector(".chat-reply-context-menu")).toBeNull();
-  });
+      expect(evt.defaultPrevented).toBe(false);
+      expect(document.querySelector(".chat-reply-context-menu")).toBeNull();
+    },
+  );
 
   it("keeps the native context menu when Reply is unavailable", () => {
     const { bubble } = renderChatBubble({}, { text: "still streaming" });
@@ -10317,7 +10383,7 @@ describe("right-click Reply", () => {
       [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
         button.textContent?.trim(),
       ),
-    ).toEqual(["Copy", "Reply"]);
+    ).toEqual(["Copy", "Reply", "Copy as markdown"]);
     getContextMenuAction("Copy").click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("selectable"));
 
@@ -10330,7 +10396,7 @@ describe("right-click Reply", () => {
       [...document.querySelectorAll(".chat-reply-context-menu button")].map((button) =>
         button.textContent?.trim(),
       ),
-    ).toEqual(["Reply"]);
+    ).toEqual(["Reply", "Copy as markdown"]);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -113,7 +113,9 @@ registeredElementSuite.define(() => {
           await page.clock.install();
           await pauseVirtualClock(page);
           const url = new URL(registeredElementSuite.server.baseUrl);
-          if (recovery) url.searchParams.set("openclaw_mount_recovery", "1");
+          if (recovery) {
+            url.searchParams.set("openclaw_mount_recovery", "1");
+          }
           url.searchParams.set("session", "synthetic-session");
           url.hash = "synthetic-fragment";
           await page.goto(url.href, { waitUntil: "commit" });

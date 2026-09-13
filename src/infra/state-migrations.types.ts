@@ -190,6 +190,11 @@ export type MigrationMessages = {
     configuredOwner: string;
     path: string;
   }>;
+  sqliteFamilies?: Array<{
+    database: string;
+    files: string[];
+    outcome: "moved" | "quarantined" | "deferred";
+  }>;
   /** Every blocking warning is an ownership refusal confined to these agent databases. */
   refusedAgentDatabasePaths?: readonly string[];
 };
@@ -218,6 +223,7 @@ export type LegacyStateMigrationStepPlan = {
 export type LegacyStateMigrationStepReceipt = Omit<LegacyStateMigrationStepPlan, "outcome"> & {
   outcome: "completed" | "skipped" | "warning" | "refused" | "deferred";
   deferred?: MigrationMessages["deferred"];
+  sqliteFamilies?: MigrationMessages["sqliteFamilies"];
   changes: string[];
   warnings: string[];
   notices?: string[];

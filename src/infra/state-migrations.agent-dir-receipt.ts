@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isMissingPathError } from "./errno.js";
+import { isPathInside } from "./path-guards.js";
 import { replaceFileAtomicSync } from "./replace-file.js";
 
 export const LEGACY_AGENT_DIR_RECEIPT = ".legacy-agent-dir-migration.json";
@@ -55,5 +56,40 @@ export function recordCompletedLegacyAgentDirMigration(sourceRoot: string, targe
     beforeRename: requireMissingReceipt,
     syncTempFile: true,
     syncParentDir: true,
+  });
+}
+
+export function legacyAgentQuarantineNotices(
+  stateDir: string,
+  agentId: string,
+  now = Date.now(),
+): string[] {
+  let stateRoot: string;
+  try {
+    stateRoot = fs.realpathSync(stateDir);
+  } catch {
+    return [];
+  }
+  // Released migrations placed these artifacts under agents/<id>; keep their cleanup hint.
+  return [stateRoot, path.join(stateRoot, "agents", agentId)].flatMap((parent) => {
+    try {
+      const resolvedParent = fs.realpathSync(parent);
+      if (resolvedParent !== stateRoot && !isPathInside(stateRoot, resolvedParent)) {
+        return [];
+      }
+      const old = fs.readdirSync(resolvedParent, { withFileTypes: true }).filter((entry) => {
+        const timestamp = /^agent\.legacy-(\d+)(?:-|$)/.exec(entry.name)?.[1];
+        return (
+          entry.isDirectory() && timestamp && now - Number(timestamp) > 30 * 24 * 60 * 60 * 1000
+        );
+      });
+      return old.length > 0
+        ? [
+            `${old.length} legacy agent quarantine(s) older than 30 days in ${resolvedParent}; inspect agent.legacy-* and remove only copies you no longer need.`,
+          ]
+        : [];
+    } catch {
+      return [];
+    }
   });
 }

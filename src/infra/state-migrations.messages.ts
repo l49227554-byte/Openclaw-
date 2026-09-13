@@ -78,6 +78,7 @@ export function createLegacyStateMigrationStepReceipt(
     changes: result.changes,
     warnings: result.warnings,
     ...(result.deferred?.length ? { deferred: result.deferred } : {}),
+    ...(result.sqliteFamilies?.length ? { sqliteFamilies: result.sqliteFamilies } : {}),
     ...(result.refusedAgentDatabasePaths?.length
       ? { refusedAgentDatabasePaths: result.refusedAgentDatabasePaths }
       : {}),

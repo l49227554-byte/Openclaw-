@@ -60,7 +60,10 @@ import {
   detectLegacyAcpReplayLedger,
   migrateLegacyAcpReplayLedger,
 } from "./state-migrations.acp-replay.js";
-import { resolveLegacyStandaloneAgentDir } from "./state-migrations.agent-dir-receipt.js";
+import {
+  legacyAgentQuarantineNotices,
+  resolveLegacyStandaloneAgentDir,
+} from "./state-migrations.agent-dir-receipt.js";
 import {
   detectLegacyApnsRegistrations,
   migrateLegacyApnsRegistrations,
@@ -91,7 +94,6 @@ import {
 import { migrationFileExists, readSessionStoreJson5, safeReadDir } from "./state-migrations.fs.js";
 import {
   inspectLegacyAgentDir,
-  legacyAgentQuarantineNotices,
   migrateLegacyAgentDir,
   migrateLegacySessions,
 } from "./state-migrations.legacy-sessions.js";

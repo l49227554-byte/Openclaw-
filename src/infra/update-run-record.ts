@@ -5,7 +5,10 @@ import type { UpdateStepResult } from "./update-runner-types.js";
 
 /** A bounded diagnostic excerpt for a failed update step, never its command log or cwd. */
 export function summarizeUpdateStepFailure(
-  step: Pick<UpdateStepResult, "name" | "exitCode" | "termination" | "stdoutTail" | "stderrTail">,
+  step: Pick<
+    UpdateStepResult,
+    "name" | "exitCode" | "termination" | "stdoutTail" | "stderrTail" | "failureFacts"
+  >,
 ): string {
   // Schema refusals lead with the cause, followed by documentation and generic recovery advice.
   const excerpts =
@@ -15,7 +18,7 @@ export function summarizeUpdateStepFailure(
           sliceUtf16Safe(tail?.trim().split(/\r?\n/u).at(-1) ?? "", -120),
         );
   return truncateUtf16Safe(
-    [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...excerpts]
+    [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...(step.failureFacts?.length ? [] : excerpts)]
       .filter(Boolean)
       .join("; "),
     300,

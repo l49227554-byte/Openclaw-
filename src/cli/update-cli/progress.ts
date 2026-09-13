@@ -3,6 +3,7 @@ import { spinner } from "@clack/prompts";
 import { UPDATE_RUN_PHASES } from "../../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { formatDurationPrecise } from "../../infra/format-time/format-duration.ts";
+import { formatUpdateFailureFact } from "../../infra/update-failure-facts-format.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunPhase, UpdateRunRecord } from "../../infra/update-run-record.js";
 import {
@@ -177,6 +178,7 @@ type DisplayStep = Pick<
   | "stderrTail"
   | "termination"
   | "signal"
+  | "failureFacts"
 >;
 
 function printStep(step: DisplayStep): void {
@@ -189,6 +191,12 @@ function printStep(step: DisplayStep): void {
         : "";
   defaultRuntime.log(`  ${formatStepStatus(step)} ${step.name}${termination} ${duration}`);
   if (!isAdvisoryStep(step) && step.exitCode === 0) {
+    return;
+  }
+  if (!step.advisory && step.failureFacts?.length) {
+    for (const fact of step.failureFacts) {
+      defaultRuntime.log(`    ${theme.error(formatUpdateFailureFact(fact))}`);
+    }
     return;
   }
   // Build tools often report failures on stdout. Keep the final diagnostic from

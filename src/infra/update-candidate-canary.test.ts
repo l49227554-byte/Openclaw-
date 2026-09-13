@@ -738,6 +738,42 @@ describe("update candidate canary", () => {
     await expect(fs.access(rehearsal.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each(["lint", "startup"])(
+    "retains the CLI reason when %s exits before its report",
+    async (phase) => {
+      const spawnNormally = mocks.spawn.getMockImplementation()!;
+      mocks.spawn.mockImplementation((command, args: string[], options) => {
+        if (!(phase === "lint" ? args.includes("--lint") : args.includes("--update-canary"))) {
+          return spawnNormally(command, args, options);
+        }
+        const child = new FakeChild(nextPid++);
+        queueMicrotask(() => {
+          child.stderr.write("[openclaw] The CLI command failed.\n");
+          child.stderr.write(
+            "[openclaw] Reason: Unable to resolve health API token=synthetic-secret\n",
+          );
+          child.stderr.write(
+            Array.from({ length: 60 }, (_, index) => `cleanup ${index}\n`).join(""),
+          );
+          child.emit("close", 1);
+        });
+        return child;
+      });
+      const result = await validateUpdateCandidateCanary({
+        root,
+        stateDir: root,
+        config: {},
+        env: { API_TOKEN: "synthetic-secret" },
+        timeoutMs: 3_000,
+      });
+      expect(result).toMatchObject({ status: "error", phase });
+      expect(result.steps.at(-1)?.failureFacts?.[0]?.message).toContain(
+        "Unable to resolve health API",
+      );
+      expect(JSON.stringify(result)).not.toContain("synthetic-secret");
+    },
+  );
+
   it("preserves bounded Doctor findings before the diagnostic log tail", async () => {
     const spawnNormally = mocks.spawn.getMockImplementation()!;
     mocks.spawn.mockImplementation((command, args: string[], options) => {

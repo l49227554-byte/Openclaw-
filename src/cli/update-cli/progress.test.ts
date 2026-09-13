@@ -190,6 +190,32 @@ describe("update progress", () => {
     expect(log.mock.calls.flat().join("\n")).toContain(message);
   });
 
+  it("shows recorded failure facts without replaying the child error envelope", () => {
+    const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+    presentation = createUpdateProgress(true, context);
+    const failed = {
+      ...step,
+      durationMs: 1,
+      exitCode: 1,
+      stdoutTail: '{"ok":false,"error":{"message":"Unable to load plugin"}}',
+      stderrTail:
+        "[openclaw] The CLI command failed.\n[openclaw] Reason: Unable to load plugin\n[openclaw] Help: openclaw --help",
+      failureFacts: [{ check: "doctor", code: "doctor-failed", message: "Unable to load plugin" }],
+    };
+    presentation.progress.onStepComplete?.(failed);
+    const progress = log.mock.calls.flat().join("\n");
+    expect(progress.match(/Unable to load plugin/gu)).toHaveLength(1);
+    expect(progress).not.toContain("The CLI command failed");
+    log.mockClear();
+    printResult(
+      { ...result, runId: undefined, status: "error", steps: [{ ...failed, cwd: "/fixture" }] },
+      {},
+    );
+    const report = log.mock.calls.flat().join("\n");
+    expect(report.match(/Unable to load plugin/gu)).toHaveLength(1);
+    expect(report).not.toContain("Help: openclaw --help");
+  });
+
   it("follows restart verification after step progress stops and flushes before the final report", async () => {
     vi.useFakeTimers();
     const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});

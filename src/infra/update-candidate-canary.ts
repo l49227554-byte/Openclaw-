@@ -172,6 +172,18 @@ export async function validateUpdateCandidateCanary(params: {
     });
     let stdout = "";
     let firstStderrLine: string | undefined;
+    let cliReason: string | undefined;
+    const captureStderr = (line: string) => {
+      if (!line.trim()) {
+        return;
+      }
+      const safe = redactSupportDiagnosticLine(line, { env, stateDir: params.stateDir });
+      firstStderrLine ??= safe;
+      // The CLI prints a generic heading before its actual failure reason.
+      if (line.startsWith("[openclaw] Reason: ")) {
+        cliReason ??= safe.replace(/^\[openclaw\] Reason: /u, "");
+      }
+    };
     let stdoutBytes = 0;
     let outputExceeded = false;
     const flushers = [child.stdout, child.stderr].map((stream) => {
@@ -193,11 +205,8 @@ export async function validateUpdateCandidateCanary(params: {
         const lines = pending.split(/\r?\n/u);
         pending = lines.pop() ?? "";
         for (const line of lines) {
-          if (stream === child.stderr && line.trim()) {
-            firstStderrLine ??= redactSupportDiagnosticLine(line, {
-              env,
-              stateDir: params.stateDir,
-            });
+          if (stream === child.stderr) {
+            captureStderr(line);
           }
           capture(line);
         }
@@ -213,11 +222,8 @@ export async function validateUpdateCandidateCanary(params: {
       });
       return () => {
         if (pending) {
-          if (stream === child.stderr && pending.trim()) {
-            firstStderrLine ??= redactSupportDiagnosticLine(pending, {
-              env,
-              stateDir: params.stateDir,
-            });
+          if (stream === child.stderr) {
+            captureStderr(pending);
           }
           capture(pending);
           pending = "";
@@ -256,7 +262,7 @@ export async function validateUpdateCandidateCanary(params: {
       closed,
       hasExited: () => exited,
       stdout: () => stdout,
-      firstStderrLine: () => firstStderrLine,
+      firstStderrLine: () => cliReason ?? firstStderrLine,
       outputExceeded: () => outputExceeded,
     };
   };

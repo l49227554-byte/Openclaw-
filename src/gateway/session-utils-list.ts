@@ -16,6 +16,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withPinnedActivePluginRegistryWorkspaceDir } from "../plugins/runtime-workspace-state.js";
 import {
   isIncognitoSessionKey,
+  isSubagentSessionKey,
   LEGACY_IMPLICIT_AGENT_ID,
   normalizeAgentId,
   parseAgentSessionKey,
@@ -234,6 +235,7 @@ function* filterSessionEntries(params: {
     const storeKey = target?.storeKey ?? key;
     if (
       isCronRunSessionKey(key) ||
+      (opts.excludeSubagents === true && isSubagentSessionKey(key)) ||
       (!includeGlobal && storeKey === "global") ||
       (!includeUnknown && storeKey === "unknown")
     ) {

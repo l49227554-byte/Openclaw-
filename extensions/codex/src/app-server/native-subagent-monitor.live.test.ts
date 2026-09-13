@@ -172,7 +172,7 @@ describeLive("codex native subagent monitor live", () => {
 
         const streamed = createDeliveryRecorder();
         const monitor = new CodexNativeSubagentMonitor(client as never, streamed.runtime);
-        monitor.registerParent({
+        const parentRegistration = monitor.registerParent({
           parentThreadId,
           requesterSessionKey: "live:streamed",
           taskRuntimeScope: {
@@ -185,7 +185,7 @@ describeLive("codex native subagent monitor live", () => {
         // child still owes its own model round (plus a sleep for margin), so
         // the parent turn completes first, like an OpenClaw run cleaning up
         // after yield while its native subagent is still working.
-        await client.request(
+        const turn = await client.request(
           "turn/start",
           {
             threadId: parentThreadId,
@@ -193,11 +193,13 @@ describeLive("codex native subagent monitor live", () => {
               {
                 type: "text",
                 text: "Spawn exactly one subagent with this exact task: 'First run the shell command sleep 20 and wait for it to finish. Then reply with exactly the word BANANA42.' Do not wait for the subagent to finish. Reply DONE immediately after spawning it.",
+                text_elements: [],
               },
             ],
           },
           { timeoutMs: 300_000 },
         );
+        parentRegistration.bindTurn(turn.turn.id);
 
         await waitFor(
           () => (parentTurnCompleted ? true : undefined),
@@ -207,6 +209,7 @@ describeLive("codex native subagent monitor live", () => {
         // The child is still sleeping when the parent turn ends; delivery after
         // this point proves the detached path, not same-turn streaming.
         expect(streamed.deliveries).toHaveLength(0);
+        parentRegistration.unregister();
 
         const delivery = await waitFor(
           () => streamed.deliveries[0],
@@ -258,7 +261,7 @@ describeLive("codex native subagent monitor live", () => {
           } as AgentHarnessTaskRecord,
         ]);
         const recoveryMonitor = new CodexNativeSubagentMonitor(client as never, recovery.runtime);
-        recoveryMonitor.registerParent({
+        const recoveryRegistration = recoveryMonitor.registerParent({
           parentThreadId,
           requesterSessionKey: "live:recovery",
           taskRuntimeScope: {
@@ -266,6 +269,7 @@ describeLive("codex native subagent monitor live", () => {
           } as AgentHarnessTaskRuntimeScope,
           agentId: "live",
         });
+        recoveryRegistration.unregister();
         const recovered = await waitFor(
           () => recovery.deliveries[0],
           120_000,

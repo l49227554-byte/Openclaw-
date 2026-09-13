@@ -16,6 +16,7 @@ import { isPluginOwnedBindingMetadata } from "../../plugins/conversation-binding
 import type { ResolvedAgentRoute } from "../../routing/resolve-route.js";
 import { deriveLastRoutePolicy } from "../../routing/resolve-route.js";
 import {
+  isFreeAcpSessionKey,
   isUnscopedSessionKeySentinel,
   resolveAgentIdFromSessionKey,
 } from "../../routing/session-key.js";
@@ -195,6 +196,9 @@ export function resolveRuntimeConversationBindingRoute(
       ? (normalizeOptionalString(bindingRecord.metadata?.agentId) ?? params.route.agentId)
       : undefined,
   );
+  // A free ACP key names an external harness. Keep the bound key as the session identity while
+  // the configured channel route agent stays the reply dispatch owner.
+  const ownerAgentId = isFreeAcpSessionKey(boundSessionKey) ? params.route.agentId : undefined;
   return {
     bindingOwnerAvailable: true,
     bindingRecord,
@@ -204,6 +208,7 @@ export function resolveRuntimeConversationBindingRoute(
       ...params.route,
       sessionKey: boundSessionKey,
       agentId: boundAgentId,
+      ...(ownerAgentId ? { ownerAgentId } : {}),
       lastRoutePolicy: deriveLastRoutePolicy({
         sessionKey: boundSessionKey,
         mainSessionKey: params.route.mainSessionKey,

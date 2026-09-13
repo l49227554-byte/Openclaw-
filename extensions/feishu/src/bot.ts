@@ -1438,6 +1438,7 @@ export async function handleFeishuMessage(params: {
         },
         route: {
           agentId,
+          ownerAgentId: route.ownerAgentId,
           dmScope: route.dmScope,
           accountId: agentAccountId,
           routeSessionKey: agentSessionKey,

@@ -371,7 +371,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: shared removed-model choice recovery text for channel consumers.
       // +2: shared stored-account key selection and its plugin-owned policy type.
       // +1: shared per-connection webhook request ordering for channel listeners.
-      4465,
+      // +1: canonical free ACP harness session-key classifier for channel route ownership.
+      4466,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -508,7 +509,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: canonical env-value reader and managed SecretRef marker constructor.
       // +1: shared stored-account key selection for channel readers and writers.
       // +1: shared per-connection webhook request ordering for channel listeners.
-      2639,
+      // +1: canonical free ACP harness session-key classifier for channel route ownership.
+      2640,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

@@ -50,6 +50,7 @@ Examples:
     - OpenClaw binds a thread to a target ACP session.
     - Follow-up messages in that thread route to the bound ACP session.
     - ACP output is delivered back to the same thread.
+    - The configured agent that owns the chat surface stays the dispatch owner. The harness id in a spawned session key (`agent:<harness>:acp:<id>`) is not a configured agent; it only scopes the ACP session's storage and execution.
     - `/session unbind`, close, archive, idle timeout, or max-age expiry removes the binding. `/session unbind` detaches only the current conversation and leaves the ACP session running.
     - `/acp close`, `/acp cancel`, `/acp status`, `/status`, and `/session` are Gateway commands, not prompts to the ACP harness.
 

@@ -13,7 +13,7 @@ import type {
   PluginDoctorAcpSessionClaim,
   PluginDoctorStateMigrationContext,
 } from "../../plugins/doctor-contract-module.js";
-import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { isFreeAcpSessionKey } from "../../routing/session-key.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openExistingOpenClawStateDatabaseReadOnly,
@@ -37,9 +37,7 @@ function isRetiredClaimOwner(
   config: OpenClawConfig,
   target: { agentId: string; sessionKey: string },
 ): boolean {
-  const parsed = parseAgentSessionKey(target.sessionKey);
-  const freeAcp = parsed?.rest.startsWith("acp:") && !parsed.rest.startsWith("acp:binding:");
-  return !listAgentIds(config).includes(target.agentId) && !freeAcp;
+  return !listAgentIds(config).includes(target.agentId) && !isFreeAcpSessionKey(target.sessionKey);
 }
 
 function readClaimBinding(

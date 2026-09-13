@@ -1221,6 +1221,162 @@ describe("dispatchReplyFromConfig", () => {
     expect(blockPayload?.text).toBe("Bound ACP reply");
   });
 
+  it("keeps the configured route owner when a channel routes the bound free ACP key as the session", async () => {
+    setNoAbort();
+    const boundSessionKey = "agent:opencode:acp:bound-session";
+    const sourceStorePath = "/tmp/main-sessions.json";
+    const targetStorePath = "/tmp/opencode-sessions.json";
+    const targetEntry = { sessionId: "target-session-id", updatedAt: Date.now() };
+    const stores: Record<string, Record<string, Record<string, unknown>>> = {
+      [sourceStorePath]: {},
+      [targetStorePath]: { [boundSessionKey]: targetEntry },
+    };
+    sessionStoreMocks.resolveSessionStorePathCore.mockImplementation(
+      (_configuredPath?: unknown, options?: { agentId?: string }) =>
+        options?.agentId === "opencode" ? targetStorePath : sourceStorePath,
+    );
+    sessionStoreMocks.loadSessionStore.mockImplementation(
+      (storePath?: string) => (storePath ? stores[storePath] : undefined) ?? {},
+    );
+    sessionStoreMocks.resolveSessionStoreEntry.mockImplementation(
+      (params?: { store: Record<string, Record<string, unknown>>; sessionKey: string }) => ({
+        existing: params?.store[params.sessionKey],
+      }),
+    );
+    sessionStoreMocks.loadSessionEntry.mockImplementation((paramsUnknown: unknown) => {
+      const params = paramsUnknown as { sessionKey: string; storePath: string };
+      return stores[params.storePath]?.[params.sessionKey];
+    });
+    const runtime = createAcpRuntime([
+      { type: "text_delta", text: "Bound ACP reply" },
+      { type: "done" },
+    ]);
+    acpMocks.readAcpSessionEntry.mockImplementation(
+      (params: { sessionKey: string; cfg?: OpenClawConfig }) =>
+        params.sessionKey === boundSessionKey
+          ? {
+              sessionKey: boundSessionKey,
+              storeSessionKey: boundSessionKey,
+              cfg: {},
+              storePath: "/tmp/mock-sessions.json",
+              entry: {},
+              acp: {
+                backend: "acpx",
+                agent: "opencode",
+                runtimeSessionName: "runtime:opencode",
+                mode: "persistent",
+                state: "idle",
+                lastActivityAt: Date.now(),
+              },
+            }
+          : null,
+    );
+    acpMocks.requireAcpRuntimeBackend.mockReturnValue({
+      id: "acpx",
+      runtime,
+    });
+    const boundThreadBinding = {
+      bindingId: "binding-acp-thread",
+      targetSessionKey: boundSessionKey,
+      targetKind: "session",
+      conversation: {
+        channel: "discord",
+        accountId: "default",
+        conversationId: "T123",
+        parentConversationId: "C123",
+      },
+      status: "active",
+      boundAt: Date.now(),
+    } satisfies SessionBindingRecord;
+    sessionBindingMocks.resolveByConversation.mockReturnValue(boundThreadBinding);
+    sessionBindingMocks.listBySession.mockImplementation((targetSessionKey: string) =>
+      targetSessionKey === boundSessionKey ? [boundThreadBinding] : [],
+    );
+
+    const cfg = {
+      acp: {
+        enabled: true,
+        dispatch: { enabled: true },
+        stream: { deliveryMode: "live", coalesceIdleMs: 0, maxChunkChars: 256 },
+      },
+    } as OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const replyResolver = vi.fn(async () => ({ text: "fallback reply" }) satisfies ReplyPayload);
+    // Thread routing already replaced the channel route with the bound harness key, so the
+    // configured owner only survives as the route-owner fact.
+    const ctx = buildTestCtx({
+      Provider: "discord",
+      Surface: "discord",
+      OriginatingChannel: "discord",
+      OriginatingTo: "discord:T123",
+      To: "discord:T123",
+      AccountId: "default",
+      SessionKey: boundSessionKey,
+      AgentId: "opencode",
+      RouteOwnerAgentId: "main",
+      BodyForAgent: "continue",
+    });
+    const preparedLookup = vi.fn(async ({ agentId }: { agentId: string }) => {
+      if (agentId !== "main") {
+        throw new Error(`unexpected prepared reply dispatch owner ${agentId}`);
+      }
+      return Object.freeze({
+        agentId: "main",
+        agentDir: "/tmp/main-agent",
+        workspaceDir: "/tmp/main-workspace",
+        config: cfg,
+        modelCatalog: { entries: [], routeVariants: [] },
+        inboundPluginRegistry: createTestRegistry([]),
+      });
+    });
+    const runtimeLoaders = await import("./dispatch-from-config.runtime-loaders.js");
+    const preparedLoader = vi.spyOn(runtimeLoaders, "loadPreparedModelRuntime").mockResolvedValue({
+      loadPublishedGatewayReplyDispatchRuntime: preparedLookup,
+    } as never);
+
+    let result: Awaited<ReturnType<typeof dispatchReplyFromConfig>>;
+    try {
+      result = await dispatchReplyFromConfig({
+        ctx,
+        cfg,
+        dispatcher,
+        replyResolver,
+        usePublishedModelRuntime: true,
+      });
+    } finally {
+      preparedLoader.mockRestore();
+    }
+
+    expect(result.queuedFinal).toBe(true);
+    expect(preparedLookup).toHaveBeenCalledWith({ agentId: "main" });
+    // ACP execution, storage, and transcript identity stay with the bound harness key.
+    expect(sessionStoreMocks.loadSessionEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "opencode",
+        storePath: targetStorePath,
+        sessionKey: boundSessionKey,
+      }),
+    );
+    expect(sessionStoreMocks.loadSessionEntry).not.toHaveBeenCalledWith(
+      expect.objectContaining({ storePath: sourceStorePath, sessionKey: boundSessionKey }),
+    );
+    const ensureSessionOptions = firstMockArg(runtime.ensureSession, "ensure session") as
+      | { agent?: unknown; sessionKey?: unknown }
+      | undefined;
+    expect(ensureSessionOptions?.sessionKey).toBe(boundSessionKey);
+    expect(ensureSessionOptions?.agent).toBe("opencode");
+    const runTurnOptions = firstMockArg(runtime.runTurn, "run turn") as
+      | { text?: unknown }
+      | undefined;
+    expect(runTurnOptions?.text).toBe("continue");
+    expect(replyResolver).not.toHaveBeenCalled();
+    const blockPayload = firstMockArg(
+      dispatcher.sendBlockReply as ReturnType<typeof vi.fn>,
+      "block reply",
+    ) as ReplyPayload | undefined;
+    expect(blockPayload?.text).toBe("Bound ACP reply");
+  });
+
   it("coalesces tiny ACP token deltas into normal Discord text spacing", async () => {
     setNoAbort();
     const runtime = createAcpRuntime([

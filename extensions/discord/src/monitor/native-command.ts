@@ -726,6 +726,7 @@ async function dispatchDiscordCommandInteraction(params: {
     commandArgs: commandArgs ?? {},
     sessionKey,
     commandTargetSessionKey,
+    routeOwnerAgentId: effectiveRoute.ownerAgentId,
     accountId: effectiveRoute.accountId,
     interactionId,
     channelId,

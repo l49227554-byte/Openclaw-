@@ -967,6 +967,41 @@ describe("preflightDiscordMessage", () => {
     expect(expectPreflightResult(result).boundSessionKey).toBe(threadBinding.targetSessionKey);
   });
 
+  it("keeps the configured channel agent as dispatch owner for free ACP thread bindings", async () => {
+    const threadBinding = createThreadBinding({
+      targetKind: "session",
+      targetSessionKey: "agent:claude:acp:11111111-1111-4111-8111-111111111111",
+      metadata: { agentId: "claude", boundBy: "test" },
+    });
+    const threadId = "thread-acp-owner-1";
+    const parentId = "channel-parent-acp-owner-1";
+    const message = createDiscordMessage({
+      id: "m-acp-owner-1",
+      channelId: threadId,
+      content: "continue",
+      author: {
+        id: "user-1",
+        bot: false,
+        username: "alice",
+      },
+    });
+
+    const result = await runThreadBoundPreflight({
+      threadId,
+      parentId,
+      message,
+      threadBinding,
+      discordConfig: {} as DiscordConfig,
+      registerBindingAdapter: true,
+    });
+
+    const preflight = expectPreflightResult(result);
+    expect(preflight.boundSessionKey).toBe(threadBinding.targetSessionKey);
+    expect(preflight.route.sessionKey).toBe(threadBinding.targetSessionKey);
+    expect(preflight.route.agentId).toBe("claude");
+    expect(preflight.route.ownerAgentId).toBe("main");
+  });
+
   it("looks up thread bindings once for an accepted ordinary guild message", async () => {
     const channelId = "channel-binding-lookup-once";
     const manager = createThreadBindingManager({

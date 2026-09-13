@@ -18,6 +18,7 @@ import {
   buildAgentPeerSessionKey,
   buildGroupHistoryKey,
   classifySessionKeyShape,
+  isFreeAcpSessionKey,
   isValidAgentId,
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
@@ -521,5 +522,24 @@ describe("isValidAgentId", () => {
     { input: "a".repeat(65), expected: false },
   ] as const)("validates agent id %j => $expected", ({ input, expected }) => {
     expect(isValidAgentId(input)).toBe(expected);
+  });
+});
+
+describe("isFreeAcpSessionKey", () => {
+  it("recognizes spawned harness sessions that do not name a configured agent", () => {
+    expect(isFreeAcpSessionKey("agent:claude:acp:11111111-1111-4111-8111-111111111111")).toBe(true);
+    expect(isFreeAcpSessionKey("agent:main:acp:discord-thread-1")).toBe(true);
+  });
+
+  it("keeps configured binding keys owner-scoped", () => {
+    expect(isFreeAcpSessionKey("agent:main:acp:binding:discord:default:abc123")).toBe(false);
+  });
+
+  it("rejects non-ACP and unscoped keys", () => {
+    expect(isFreeAcpSessionKey("agent:main:discord:channel:c1")).toBe(false);
+    expect(isFreeAcpSessionKey("agent:main:subagent:child-1")).toBe(false);
+    expect(isFreeAcpSessionKey("acp:bare-session")).toBe(false);
+    expect(isFreeAcpSessionKey("global")).toBe(false);
+    expect(isFreeAcpSessionKey(undefined)).toBe(false);
   });
 });

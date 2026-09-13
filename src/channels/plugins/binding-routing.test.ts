@@ -112,7 +112,28 @@ describe("runtime conversation binding route", () => {
       mainSessionKey: "agent:main:main",
       lastRoutePolicy: "session",
       matchedBy: "binding.channel",
+      ownerAgentId: "main",
     });
+  });
+
+  it.each([
+    {
+      label: "configured ACP binding keys",
+      targetSessionKey: "agent:review:acp:binding:demo:default:abc123",
+    },
+    { label: "subagent sessions", targetSessionKey: "agent:review:subagent:child-1" },
+    { label: "channel sessions", targetSessionKey: "agent:review:demo:channel:room-9" },
+  ])("keeps $label owned by the bound key's agent", ({ targetSessionKey }) => {
+    const binding = createBinding({ targetSessionKey });
+    registerAdapter(binding);
+
+    const result = resolveRuntimeConversationBindingRoute({
+      route: createRoute(),
+      conversation: binding.conversation,
+    });
+
+    expect(result.route).toMatchObject({ sessionKey: targetSessionKey, agentId: "review" });
+    expect(result.route.ownerAgentId).toBeUndefined();
   });
 
   it("touches plugin-owned bindings without rewriting the channel route", () => {

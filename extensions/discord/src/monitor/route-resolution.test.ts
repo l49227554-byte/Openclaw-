@@ -119,6 +119,40 @@ describe("discord route resolution helpers", () => {
     });
   });
 
+  it("keeps the routed agent as dispatch owner for free ACP harness bindings", () => {
+    const route: ResolvedAgentRoute = {
+      agentId: "main",
+      channel: "discord",
+      accountId: "default",
+      sessionKey: "agent:main:discord:channel:c1",
+      mainSessionKey: "agent:main:main",
+      lastRoutePolicy: "session",
+      matchedBy: "default",
+    };
+    const harnessSessionKey = "agent:claude:acp:11111111-1111-4111-8111-111111111111";
+
+    expect(
+      resolveDiscordEffectiveRoute({
+        route,
+        boundSessionKey: harnessSessionKey,
+        matchedBy: "binding.channel",
+      }),
+    ).toEqual({
+      ...route,
+      agentId: "claude",
+      sessionKey: harnessSessionKey,
+      ownerAgentId: "main",
+      matchedBy: "binding.channel",
+    });
+    expect(
+      resolveDiscordEffectiveRoute({
+        route,
+        boundSessionKey: "agent:main:acp:binding:discord:default:abc123",
+        matchedBy: "binding.channel",
+      }).ownerAgentId,
+    ).toBeUndefined();
+  });
+
   it("falls back to configured route when no bound session exists", () => {
     const route: ResolvedAgentRoute = {
       agentId: "main",

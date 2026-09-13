@@ -724,6 +724,7 @@ export async function buildTelegramInboundContextPayload(params: {
     },
     route: {
       agentId: route.agentId,
+      ownerAgentId: route.ownerAgentId,
       dmScope: route.dmScope,
       accountId: route.accountId,
       routeSessionKey: route.sessionKey,

@@ -46,6 +46,35 @@ describe("buildDiscordNativeCommandContext", () => {
     expect(ctx.Timestamp).toBe(123);
   });
 
+  it("carries the configured route owner for free ACP thread sessions", () => {
+    const harnessSessionKey = "agent:claude:acp:11111111-1111-4111-8111-111111111111";
+    const base = {
+      prompt: "/status",
+      commandArgs: {},
+      sessionKey: harnessSessionKey,
+      commandTargetSessionKey: harnessSessionKey,
+      accountId: "default",
+      interactionId: "interaction-2",
+      channelId: "thread-1",
+      threadParentId: "chan-1",
+      commandAuthorized: true,
+      isDirectMessage: false,
+      isGroupDm: false,
+      isGuild: true,
+      isThreadChannel: true,
+      user: { id: "user-1", username: "tester" },
+      sender: { id: "user-1" },
+    };
+
+    const owned = buildDiscordNativeCommandContext({ ...base, routeOwnerAgentId: "main" });
+    expect(owned.SessionKey).toBe(harnessSessionKey);
+    expect(owned.CommandTargetSessionKey).toBe(harnessSessionKey);
+    expect(owned.RouteOwnerAgentId).toBe("main");
+
+    const unowned = buildDiscordNativeCommandContext(base);
+    expect(unowned.RouteOwnerAgentId).toBeUndefined();
+  });
+
   it("builds guild slash command context with owner allowlist and channel metadata", () => {
     const ctx = buildDiscordNativeCommandContext({
       prompt: "/status",

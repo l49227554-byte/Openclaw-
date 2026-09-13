@@ -4,6 +4,7 @@ import type { SessionBindingRecord } from "openclaw/plugin-sdk/conversation-runt
 import {
   deriveLastRoutePolicy,
   isAcpSessionKey,
+  isFreeAcpSessionKey,
   isSubagentSessionKey,
   parseAgentSessionKey,
   resolveAgentRoute,
@@ -115,6 +116,8 @@ export function resolveDiscordEffectiveRoute(params: {
     ...params.route,
     sessionKey: boundSessionKey,
     agentId: resolveAgentIdFromSessionKey(boundSessionKey),
+    // A free ACP key names an external harness; the routed channel agent keeps dispatch ownership.
+    ...(isFreeAcpSessionKey(boundSessionKey) ? { ownerAgentId: params.route.agentId } : {}),
     lastRoutePolicy: deriveLastRoutePolicy({
       sessionKey: boundSessionKey,
       mainSessionKey: params.route.mainSessionKey,

@@ -240,6 +240,7 @@ export async function resolveMatrixInboundContext(config: {
     },
     route: {
       agentId: _route.agentId,
+      ownerAgentId: _route.ownerAgentId,
       dmScope: _route.dmScope,
       accountId: _route.accountId,
       routeSessionKey: _route.sessionKey,

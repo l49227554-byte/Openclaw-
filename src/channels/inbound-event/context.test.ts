@@ -346,6 +346,21 @@ describe("buildChannelInboundEventContext", () => {
 
     expect(ctx.AgentId).toBe("bound-agent");
     expect(ctx.SessionKey).toBe("feishu:direct:ou_user1");
+    expect(ctx.RouteOwnerAgentId).toBeUndefined();
+  });
+
+  it("carries the configured route owner for free ACP harness sessions", async () => {
+    const ctx = buildTestInboundEventContext({
+      route: {
+        agentId: "claude",
+        routeSessionKey: "agent:claude:acp:11111111-1111-4111-8111-111111111111",
+        ownerAgentId: "main",
+      },
+    });
+
+    expect(ctx.AgentId).toBe("claude");
+    expect(ctx.SessionKey).toBe("agent:claude:acp:11111111-1111-4111-8111-111111111111");
+    expect(ctx.RouteOwnerAgentId).toBe("main");
   });
 
   it("carries room event semantics into the finalized context", async () => {

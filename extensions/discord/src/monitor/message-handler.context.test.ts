@@ -35,6 +35,31 @@ describe("discord buildDiscordMessageProcessContext sender bot status", () => {
     expect(result.ctxPayload.ConversationRoutePeerId).toBe(ctx.messageChannelId);
   });
 
+  it("carries the configured route owner for free ACP thread bindings", async () => {
+    const harnessSessionKey = "agent:claude:acp:11111111-1111-4111-8111-111111111111";
+    const ctx = await createBaseDiscordMessageContext({
+      boundSessionKey: harnessSessionKey,
+      route: {
+        agentId: "claude",
+        channel: "discord",
+        accountId: "default",
+        sessionKey: harnessSessionKey,
+        mainSessionKey: "agent:main:main",
+        ownerAgentId: "main",
+      },
+    });
+
+    const result = await buildDiscordMessageProcessContext({
+      ctx,
+      text: "continue",
+      mediaList: [],
+    });
+
+    expect(result?.ctxPayload.SessionKey).toBe(harnessSessionKey);
+    expect(result?.ctxPayload.AgentId).toBe("claude");
+    expect(result?.ctxPayload.RouteOwnerAgentId).toBe("main");
+  });
+
   it("projects a cached conversation avatar into channel-owned context", async () => {
     const ctx = await createBaseDiscordMessageContext({
       conversationAvatar: "/media/inbound/discord-avatar.png",

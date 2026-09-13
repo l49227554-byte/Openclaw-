@@ -359,6 +359,7 @@ async function finalizeLineInboundContext(params: {
     },
     route: {
       agentId: params.route.agentId,
+      ownerAgentId: params.route.ownerAgentId,
       dmScope: params.route.dmScope,
       accountId: params.route.accountId,
       routeSessionKey: params.route.sessionKey,

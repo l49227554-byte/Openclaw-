@@ -30,6 +30,34 @@ describe("progress-card markdown", () => {
     expect(stripProgressCardRawContentBlocks("<script><style </script>VISIBLE</style>")).toBe(
       "VISIBLE</style>",
     );
+    expect(stripProgressCardRawContentBlocks("<scriptſ>visible</script>")).toBe(
+      "<scriptſ>visible</script>",
+    );
+    expect(stripProgressCardRawContentBlocks("<ſcript>hidden</ſcript>")).toBe("");
+    expect(stripProgressCardRawContentBlocks("<script>hidden</script\f>")).toBe("");
+    expect(stripProgressCardRawContentBlocks("<script </script>VISIBLE</script>")).toBe("");
+
+    const unicodeBoundaryHtml = toSanitizedMarkdownHtml("`<scriptſ>visible</script>`", {
+      progressBars: true,
+    });
+    const unicodeFoldHtml = toSanitizedMarkdownHtml("`<ſcript>hidden</ſcript>`", {
+      progressBars: true,
+    });
+    const closingWhitespaceHtml = toSanitizedMarkdownHtml(
+      "`before<script>hidden</script\f>after`",
+      { progressBars: true },
+    );
+    const embeddedCloserHtml = toSanitizedMarkdownHtml(
+      "`before<script </script>VISIBLE</script>after`",
+      { progressBars: true },
+    );
+
+    expect(unicodeBoundaryHtml).toContain("visible");
+    expect(unicodeFoldHtml).not.toContain("hidden");
+    expect(closingWhitespaceHtml).not.toContain("hidden");
+    expect(closingWhitespaceHtml).toContain("beforeafter");
+    expect(embeddedCloserHtml).not.toContain("VISIBLE");
+    expect(embeddedCloserHtml).toContain("beforeafter");
   });
 
   it("keeps raw-content preprocessing bounded for repeated unclosed tags", () => {

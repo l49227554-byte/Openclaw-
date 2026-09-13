@@ -1,23 +1,18 @@
-const PROGRESS_CARD_RAW_CONTENT_TAGS = ["script", "style", "iframe", "object", "template"];
+const PROGRESS_CARD_RAW_CONTENT_TAGS = [
+  { name: "script", pattern: /^script$/iu },
+  { name: "style", pattern: /^style$/iu },
+  { name: "iframe", pattern: /^iframe$/iu },
+  { name: "object", pattern: /^object$/iu },
+  { name: "template", pattern: /^template$/iu },
+];
+const PROGRESS_CARD_RAW_CONTENT_WORD_CHARACTER_RE = /^\w$/iu;
+const PROGRESS_CARD_RAW_CONTENT_WHITESPACE_RE = /^\s$/u;
 
 interface ProgressCardRawContentTag {
   end: number;
   isClosing: boolean;
   name: string;
   start: number;
-}
-
-function isAsciiWordCharacter(value: string | undefined): boolean {
-  if (value === undefined) {
-    return false;
-  }
-  const code = value.charCodeAt(0);
-  return (
-    (code >= 48 && code <= 57) ||
-    (code >= 65 && code <= 90) ||
-    code === 95 ||
-    (code >= 97 && code <= 122)
-  );
 }
 
 function readProgressCardRawContentTag(
@@ -30,21 +25,21 @@ function readProgressCardRawContentTag(
   if (isClosing) {
     nameStart += 1;
   }
-  const name = PROGRESS_CARD_RAW_CONTENT_TAGS.find((candidate) => {
-    const nameEnd = nameStart + candidate.length;
+  const candidate = PROGRESS_CARD_RAW_CONTENT_TAGS.find((entry) => {
+    const nameEnd = nameStart + entry.name.length;
     return (
-      input.slice(nameStart, nameEnd).toLowerCase() === candidate &&
-      !isAsciiWordCharacter(input[nameEnd])
+      entry.pattern.test(input.slice(nameStart, nameEnd)) &&
+      !PROGRESS_CARD_RAW_CONTENT_WORD_CHARACTER_RE.test(input[nameEnd] ?? "")
     );
   });
-  if (!name) {
+  if (!candidate) {
     return null;
   }
+  const name = candidate.name;
   const nameEnd = nameStart + name.length;
   if (isClosing) {
     for (let index = nameEnd; index < close; index += 1) {
-      const character = input[index];
-      if (character !== " " && character !== "\t" && character !== "\n" && character !== "\r") {
+      if (!PROGRESS_CARD_RAW_CONTENT_WHITESPACE_RE.test(input[index] ?? "")) {
         return null;
       }
     }
@@ -77,20 +72,42 @@ export function stripProgressCardRawContentBlocks(input: string): string {
     searchFrom = start + 1;
   }
 
-  // Pair each opener with the next compatible close in one reverse pass. This
-  // avoids rescanning the remaining message for every unmatched opening tag.
-  const nextClosingTag = new Map<string, number>();
-  const matchingClose = Array.from({ length: tags.length }, () => -1);
-  for (let index = tags.length - 1; index >= 0; index -= 1) {
+  // Pair each opener with the first compatible close after the opener ends.
+  // Closing-tag positions are monotonic, so binary search avoids rescanning the
+  // remaining message for every unmatched opening tag.
+  const closingTagsByName = new Map<string, number[]>();
+  for (let index = 0; index < tags.length; index += 1) {
     const tag = tags[index];
-    if (!tag) {
+    if (!tag?.isClosing) {
       continue;
     }
-    if (tag.isClosing) {
-      nextClosingTag.set(tag.name, index);
-    } else {
-      matchingClose[index] = nextClosingTag.get(tag.name) ?? -1;
+    const indices = closingTagsByName.get(tag.name) ?? [];
+    indices.push(index);
+    closingTagsByName.set(tag.name, indices);
+  }
+  const matchingClose = Array.from({ length: tags.length }, () => -1);
+  for (let index = 0; index < tags.length; index += 1) {
+    const tag = tags[index];
+    if (!tag || tag.isClosing) {
+      continue;
     }
+    const closingIndices = closingTagsByName.get(tag.name);
+    if (!closingIndices) {
+      continue;
+    }
+    let low = 0;
+    let high = closingIndices.length;
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2);
+      const closeIndex = closingIndices[middle];
+      const close = closeIndex === undefined ? undefined : tags[closeIndex];
+      if (close && close.start >= tag.end) {
+        high = middle;
+      } else {
+        low = middle + 1;
+      }
+    }
+    matchingClose[index] = closingIndices[low] ?? -1;
   }
 
   let output = "";

@@ -52,7 +52,7 @@ export function isInterruptedChatInput(history: ChatHistoryResult, item: ChatQue
 }
 
 /** Reconcile exact pending custody before considering transcript consumption. */
-export function reconcilePendingChatOutboxInput(
+function reconcilePendingChatOutboxInput(
   host: ChatHost,
   outbox: StoredChatOutbox,
   item: ChatQueueItem,

@@ -25,7 +25,11 @@ export function projectProgressCardChannelUpdate(input: unknown) {
             .replace(/\s+/g, " ")
             .trim() || "Progress updated"
         : undefined;
-    return { steps, ...(explanation ? { explanation } : {}) };
+    return {
+      steps,
+      ...(explanation ? { explanation } : {}),
+      ...(!steps.length && explanation ? { explanationFormat: "plain" as const } : {}),
+    };
   } catch (error) {
     if (error instanceof ProgressCardInputError) {
       return undefined;

@@ -17,6 +17,7 @@ describe("projectProgressCardChannelUpdate", () => {
       expected: {
         steps: [],
         explanation: "Checking recent plan submissions and the tool's selection guidance.",
+        explanationFormat: "plain",
       },
     },
     {
@@ -25,12 +26,16 @@ describe("projectProgressCardChannelUpdate", () => {
         markdown:
           '<progress aria-label="Checks, 1/2" value="1" max="2"></progress>\n\n**Checking** [results](https://example.com).<br>Next step.<script>ignored()</script>',
       },
-      expected: { steps: [], explanation: "Checking results. Next step." },
+      expected: {
+        steps: [],
+        explanation: "Checking results. Next step.",
+        explanationFormat: "plain",
+      },
     },
     {
       name: "markup without visible text",
       input: { markdown: '<progress value="1" max="2"></progress>' },
-      expected: { steps: [], explanation: "Progress updated" },
+      expected: { steps: [], explanation: "Progress updated", explanationFormat: "plain" },
     },
     {
       name: "checklist with a note",

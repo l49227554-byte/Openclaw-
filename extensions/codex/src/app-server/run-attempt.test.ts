@@ -2966,6 +2966,7 @@ describe("runCodexAppServerAttempt", () => {
         title: "Plan updated",
         source: "openclaw",
         explanation: "Working results.",
+        explanationFormat: "plain",
         steps: [],
       },
     });

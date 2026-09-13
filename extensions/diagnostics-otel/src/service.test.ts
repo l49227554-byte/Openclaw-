@@ -3046,6 +3046,51 @@ describe("diagnostics-otel service", () => {
     expect(status.message?.length).toBeLessThanOrEqual(4 * 1024 + 20);
   });
 
+  test.each(["completed", "error"] as const)(
+    "harness elapsed histogram separates measured zero from unknown (%s)",
+    async (terminal) => {
+      await startServiceFixture(["metrics"]);
+      const base = { runId: "elapsed-run", harnessId: "openclaw", durationMs: 3_600_250 };
+      const wall = {
+        clock: "process-monotonic" as const,
+        startedAtUnixMs: 1_788_696_000_000,
+        endedAtUnixMs: 1_788_692_400_250,
+      };
+      for (const timing of [
+        undefined,
+        wall,
+        { ...wall, elapsedMs: -1 },
+        { ...wall, elapsedMs: Number.NaN },
+        { ...wall, elapsedMs: 86_400_001 },
+        { ...wall, elapsedMs: 250 },
+        { ...wall, elapsedMs: 0 },
+      ]) {
+        const event =
+          terminal === "completed"
+            ? {
+                ...base,
+                type: "harness.run.completed" as const,
+                outcome: "completed" as const,
+                timing,
+              }
+            : {
+                ...base,
+                type: "harness.run.error" as const,
+                phase: "send" as const,
+                errorCategory: "Error",
+                timing,
+              };
+        emitTrustedDiagnosticEventWithPrivateData(event, {});
+      }
+      await flushDiagnosticEvents();
+      expect(
+        telemetryState.histograms
+          .get("openclaw.harness.duration_ms")
+          ?.record.mock.calls.map(([elapsed]) => elapsed),
+      ).toEqual([250, 0]);
+    },
+  );
+
   test("harness.run.completed error span carries the redacted message", async () => {
     await startServiceFixture(["traces", "metrics"]);
 
@@ -4588,6 +4633,12 @@ describe("diagnostics-otel service", () => {
       yieldDetected: true,
       itemLifecycle: { startedCount: 3, completedCount: 2, activeCount: 1 },
       replyDisposition: "silent",
+      timing: {
+        clock: "process-monotonic",
+        elapsedMs: 90,
+        startedAtUnixMs: 1_788_696_000_000,
+        endedAtUnixMs: 1_788_696_000_090,
+      },
     });
     await emitEventAndFlush("tool.execution.error", {
       toolCallId: "tool-1",

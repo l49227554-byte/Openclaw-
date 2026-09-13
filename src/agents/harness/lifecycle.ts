@@ -236,14 +236,29 @@ function emitAgentHarnessRunStarted(
   });
 }
 
+function captureHarnessTiming(startedAt: number, startedMonotonic: number) {
+  const endedAtUnixMs = Date.now();
+  const elapsed = performance.now() - startedMonotonic;
+  return {
+    clock: "process-monotonic" as const,
+    ...(Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= 86_400_000
+      ? { elapsedMs: Math.floor(elapsed) }
+      : {}),
+    startedAtUnixMs: startedAt,
+    endedAtUnixMs,
+  };
+}
+
 function emitAgentHarnessRunCompleted(params: {
   harness: AgentHarness;
   attemptParams: AgentHarnessAttemptParams;
   result: AgentHarnessCanonicalAttemptResult;
   startedAt: number;
+  startedMonotonic: number;
   trace?: DiagnosticTraceContext;
 }): void {
-  const { harness, attemptParams, result, startedAt, trace } = params;
+  const { harness, attemptParams, result, startedAt, startedMonotonic, trace } = params;
+  const timing = captureHarnessTiming(startedAt, startedMonotonic);
   const outcome = agentHarnessRunOutcome(result);
   const terminal = projectAgentRunAttemptTerminal(result.terminal);
   // A classified (non-thrown) failure carries its error on result.terminal;
@@ -258,7 +273,8 @@ function emitAgentHarnessRunCompleted(params: {
     {
       type: "harness.run.completed",
       ...agentHarnessDiagnosticBase(harness, attemptParams, trace ?? result.diagnosticTrace),
-      durationMs: Date.now() - startedAt,
+      durationMs: timing.endedAtUnixMs - startedAt,
+      timing,
       outcome,
       ...(result.agentHarnessResultClassification
         ? { resultClassification: result.agentHarnessResultClassification }
@@ -275,17 +291,20 @@ function emitAgentHarnessRunError(params: {
   harness: AgentHarness;
   attemptParams: AgentHarnessAttemptParams;
   startedAt: number;
+  startedMonotonic: number;
   phase: AgentHarnessLifecyclePhase;
   error: unknown;
   trace?: DiagnosticTraceContext;
 }): void {
-  const { harness, attemptParams, startedAt, phase, error, trace } = params;
+  const { harness, attemptParams, startedAt, startedMonotonic, phase, error, trace } = params;
+  const timing = captureHarnessTiming(startedAt, startedMonotonic);
   const errorMessage = diagnosticErrorMessage(error);
   emitTrustedDiagnosticEventWithPrivateData(
     {
       type: "harness.run.error",
       ...agentHarnessDiagnosticBase(harness, attemptParams, trace),
-      durationMs: Date.now() - startedAt,
+      durationMs: timing.endedAtUnixMs - startedAt,
+      timing,
       phase,
       errorCategory: diagnosticErrorCategory(error),
     },
@@ -304,6 +323,7 @@ export async function runAgentHarnessLifecycleAttempt(
   let result: AgentHarnessCanonicalAttemptResult;
   let phase: AgentHarnessLifecyclePhase = "prepare";
   const startedAt = Date.now();
+  const startedMonotonic = performance.now();
   const activeHarnessTrace = getActiveDiagnosticTraceContext();
   let agentRunTrace: DiagnosticTraceContext | undefined;
   let agentRunStartedAt = 0;
@@ -367,6 +387,7 @@ export async function runAgentHarnessLifecycleAttempt(
       harness,
       attemptParams: params,
       startedAt,
+      startedMonotonic,
       phase,
       error,
       trace: activeHarnessTrace,
@@ -381,6 +402,7 @@ export async function runAgentHarnessLifecycleAttempt(
     attemptParams: params,
     result,
     startedAt,
+    startedMonotonic,
     trace: activeHarnessTrace,
   });
   return result;
@@ -394,6 +416,7 @@ export async function runAgentHarnessLifecycleFinalization(
 ): Promise<AgentHarnessLifecycleFinalizationOutcome> {
   let phase: AgentHarnessLifecyclePhase = "prepare";
   const startedAt = Date.now();
+  const startedMonotonic = performance.now();
   const activeHarnessTrace = getActiveDiagnosticTraceContext();
   const agentRunTrace =
     shouldEmitAgentRunDiagnostics(harness) && activeHarnessTrace
@@ -439,6 +462,7 @@ export async function runAgentHarnessLifecycleFinalization(
         outcome: "completed",
       });
     }
+    const timing = captureHarnessTiming(startedAt, startedMonotonic);
     emitTrustedDiagnosticEvent({
       type: "harness.run.completed",
       ...agentHarnessDiagnosticBase(
@@ -446,7 +470,8 @@ export async function runAgentHarnessLifecycleFinalization(
         params,
         result.result.diagnosticTrace ?? activeHarnessTrace,
       ),
-      durationMs: Date.now() - startedAt,
+      durationMs: timing.endedAtUnixMs - startedAt,
+      timing,
       outcome: "completed",
       itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
     });
@@ -456,6 +481,7 @@ export async function runAgentHarnessLifecycleFinalization(
       harness,
       attemptParams: params,
       startedAt,
+      startedMonotonic,
       phase,
       error,
       trace: activeHarnessTrace,

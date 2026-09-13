@@ -765,3 +765,15 @@ OTEL_SDK_DISABLED=true openclaw gateway
 - [Diagnostics flags](/diagnostics/flags) - targeted debug-log flags
 - [Diagnostics export](/gateway/diagnostics) - operator support-bundle tool (separate from OTEL export)
 - [Configuration reference](/gateway/configuration-reference#diagnostics) - full `diagnostics.*` field reference
+
+### Harness elapsed time across clock changes
+
+Harness terminal events carry process-monotonic elapsed time independently of
+wall-clock endpoints. The harness duration metric records only a measured elapsed
+value, including zero; legacy or invalid timing produces no duration sample.
+Harness spans retain the raw producer wall-clock observations in
+`openclaw.harness.timing.started_at_unix_ms` and
+`openclaw.harness.timing.ended_at_unix_ms`, with
+`openclaw.harness.timing.elapsed_ms` supplied only when measured. Export delay and
+wall-clock corrections must not be added to the elapsed interval. This does not
+provide a clock shared between processes or VMs.

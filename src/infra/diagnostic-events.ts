@@ -619,9 +619,18 @@ export type DiagnosticHarnessRunStartedEvent = DiagnosticHarnessRunBaseEvent & {
   type: "harness.run.started";
 };
 
+/** Producer clock evidence, independent of wall-clock changes and export delay. */
+type DiagnosticHarnessTiming = {
+  clock: "process-monotonic";
+  elapsedMs?: number;
+  startedAtUnixMs: number;
+  endedAtUnixMs: number;
+};
+
 export type DiagnosticHarnessRunCompletedEvent = DiagnosticHarnessRunBaseEvent & {
   type: "harness.run.completed";
   durationMs: number;
+  timing?: DiagnosticHarnessTiming;
   outcome: DiagnosticHarnessRunOutcome;
   resultClassification?: "empty" | "reasoning-only" | "planning-only";
   yieldDetected?: boolean;
@@ -637,6 +646,7 @@ export type DiagnosticHarnessRunCompletedEvent = DiagnosticHarnessRunBaseEvent &
 export type DiagnosticHarnessRunErrorEvent = DiagnosticHarnessRunBaseEvent & {
   type: "harness.run.error";
   durationMs: number;
+  timing?: DiagnosticHarnessTiming;
   phase: DiagnosticHarnessRunPhase;
   errorCategory: string;
   cleanupFailed?: boolean;

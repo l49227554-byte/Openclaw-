@@ -12,6 +12,45 @@ import { normalizeOtelErrorMessage } from "./service-content-normalization.js";
 import type { DiagnosticsRecorderRuntime } from "./service-recorder-runtime.js";
 import type { HarnessRunDiagnosticEvent, ModelFailoverDiagnosticEvent } from "./service-types.js";
 
+function harnessTiming(evt: HarnessRunDiagnosticEvent) {
+  const timing = evt.type === "harness.run.started" ? undefined : evt.timing;
+  if (
+    timing?.clock !== "process-monotonic" ||
+    !Number.isSafeInteger(timing.startedAtUnixMs) ||
+    timing.startedAtUnixMs < 0 ||
+    !Number.isSafeInteger(timing.endedAtUnixMs) ||
+    timing.endedAtUnixMs < 0
+  ) {
+    return undefined;
+  }
+  const elapsedMs = timing.elapsedMs;
+  return {
+    ...timing,
+    elapsedMs:
+      typeof elapsedMs === "number" &&
+      Number.isSafeInteger(elapsedMs) &&
+      elapsedMs >= 0 &&
+      elapsedMs <= 86_400_000
+        ? elapsedMs
+        : undefined,
+  };
+}
+
+function harnessTimingAttrs(timing: ReturnType<typeof harnessTiming>) {
+  return timing
+    ? {
+        "openclaw.harness.timing.clock": timing.clock,
+        ...(timing.elapsedMs !== undefined
+          ? { "openclaw.harness.timing.elapsed_ms": timing.elapsedMs }
+          : {}),
+        // OTel normalizes an end before start to zero duration. Preserve both raw
+        // producer observations before ending the span; elapsed never moves them.
+        "openclaw.harness.timing.started_at_unix_ms": timing.startedAtUnixMs,
+        "openclaw.harness.timing.ended_at_unix_ms": timing.endedAtUnixMs,
+      }
+    : {};
+}
+
 export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
   const {
     harnessDurationHistogram,
@@ -63,12 +102,16 @@ export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
     metadata: DiagnosticEventMetadata,
     privateData: DiagnosticEventPrivateData,
   ) => {
-    harnessDurationHistogram.record(evt.durationMs, harnessRunMetricAttrs(evt));
+    const timing = harnessTiming(evt);
+    if (timing?.elapsedMs !== undefined) {
+      harnessDurationHistogram.record(timing.elapsedMs, harnessRunMetricAttrs(evt));
+    }
     if (!tracesEnabled) {
       return;
     }
     const spanAttrs: Record<string, string | number | boolean> = {
       ...harnessRunMetricAttrs(evt),
+      ...harnessTimingAttrs(timing),
     };
     if (evt.resultClassification) {
       spanAttrs["openclaw.harness.result_classification"] = normalizeDiagnosticValue(
@@ -99,7 +142,8 @@ export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
       trackedSpan ??
       spanWithDuration("openclaw.harness.run", spanAttrs, evt.durationMs, {
         parentContext: activeTrustedParentContext(evt, metadata),
-        endTimeMs: evt.ts,
+        endTimeMs: timing?.endedAtUnixMs ?? evt.ts,
+        startTimeMs: timing?.startedAtUnixMs,
       });
     setSpanAttrs(span, spanAttrs);
     if (evt.outcome === "error") {
@@ -109,11 +153,11 @@ export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
       });
     }
     if (trackedSpan && trustedTrace?.spanId) {
-      completeTrackedLifecycleSpan(trustedTrace, trackedSpan, evt.ts);
+      completeTrackedLifecycleSpan(trustedTrace, trackedSpan, timing?.endedAtUnixMs ?? evt.ts);
       return;
     }
     runtime.bindTrustedSpan(evt, metadata, span, "harness.run");
-    span.end(evt.ts);
+    span.end(timing?.endedAtUnixMs ?? evt.ts);
   };
 
   const recordHarnessRunError = (
@@ -127,7 +171,10 @@ export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
       "openclaw.harness.phase": evt.phase,
       "openclaw.errorCategory": errorType,
     };
-    harnessDurationHistogram.record(evt.durationMs, attrs);
+    const timing = harnessTiming(evt);
+    if (timing?.elapsedMs !== undefined) {
+      harnessDurationHistogram.record(timing.elapsedMs, attrs);
+    }
     if (!tracesEnabled) {
       return;
     }
@@ -135,6 +182,7 @@ export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
     const redactedError = normalizeOtelErrorMessage(privateData.errorMessage);
     const spanAttrs: Record<string, string | number | boolean> = {
       ...attrs,
+      ...harnessTimingAttrs(timing),
       "error.type": errorType,
       ...(redactedError ? { "openclaw.error": redactedError } : {}),
       ...(evt.cleanupFailed ? { "openclaw.harness.cleanup_failed": true } : {}),
@@ -147,7 +195,8 @@ export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
       trackedSpan ??
       spanWithDuration("openclaw.harness.run", spanAttrs, evt.durationMs, {
         parentContext: activeTrustedParentContext(evt, metadata),
-        endTimeMs: evt.ts,
+        endTimeMs: timing?.endedAtUnixMs ?? evt.ts,
+        startTimeMs: timing?.startedAtUnixMs,
       });
     setSpanAttrs(span, spanAttrs);
     span.setStatus({
@@ -157,11 +206,11 @@ export function createHarnessRecorders(runtime: DiagnosticsRecorderRuntime) {
     // Retain on the error path too: for the openclaw harness this span is the only
     // ancestor a late child can attach to, and aborted turns emit no run.completed.
     if (trackedSpan && trustedTrace?.spanId) {
-      completeTrackedLifecycleSpan(trustedTrace, trackedSpan, evt.ts);
+      completeTrackedLifecycleSpan(trustedTrace, trackedSpan, timing?.endedAtUnixMs ?? evt.ts);
       return;
     }
     runtime.bindTrustedSpan(evt, metadata, span, "harness.run");
-    span.end(evt.ts);
+    span.end(timing?.endedAtUnixMs ?? evt.ts);
   };
 
   const recordContextAssembled = (

@@ -89,6 +89,13 @@ describe("legacy state migration caller storage", () => {
   it.each(
     [
       { name: "configured main directory", agentId: "main", custom: true, override: "none" },
+      {
+        name: "deferred main SQLite family",
+        agentId: "main",
+        custom: true,
+        override: "none",
+        sqlite: true,
+      },
       { name: "non-main default", agentId: "worker", custom: false, override: "none" },
       { name: "configured non-main directory", agentId: "worker", custom: true, override: "none" },
       { name: "explicit legacy directory", agentId: "worker", custom: true, override: "legacy" },
@@ -141,6 +148,11 @@ describe("legacy state migration caller storage", () => {
           fs.mkdirSync(path.join(legacyDir, "bin"), { recursive: true });
           fs.writeFileSync(path.join(legacyDir, "bin", binary), "legacy binary");
           fs.writeFileSync(path.join(legacyDir, "settings.json"), "SDK settings");
+          const legacyDatabase = path.join(legacyDir, "openclaw-agent.sqlite");
+          if (testCase.sqlite) {
+            openOpenClawAgentDatabase({ agentId: "main", env: state.env, path: legacyDatabase });
+            closeOpenClawAgentDatabasesForTest();
+          }
           if (targetDir !== legacyDir) {
             fs.mkdirSync(path.join(targetDir, "bin"), { recursive: true });
             fs.writeFileSync(path.join(targetDir, "bin", binary), "current binary");
@@ -167,29 +179,50 @@ describe("legacy state migration caller storage", () => {
                 homedir: () => state.home,
                 legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
               });
-              if (malformed) {
-                // Doctor's invalid-config gate is separate; exercise only its selected directory move.
-                await migrateLegacyAgentDir(detected, () => 1234);
-              } else {
-                const migrated = await autoMigrateLegacyState({
-                  cfg,
-                  env,
-                  homedir: () => state.home,
-                  doctorOnlyStateMigrations: true,
-                  legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
+              // Doctor's invalid-config gate is separate from its selected directory repair.
+              const migration = malformed
+                ? await migrateLegacyAgentDir(detected, () => 1234)
+                : (
+                    await autoMigrateLegacyState({
+                      cfg,
+                      env,
+                      homedir: () => state.home,
+                      doctorOnlyStateMigrations: true,
+                      legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
+                    })
+                  ).stepReceipts.find((receipt) => receipt.id === "agent-dir");
+              expect(migration).toBeDefined();
+              if (testCase.sqlite) {
+                expect(migration).toMatchObject({
+                  outcome: "deferred",
+                  sqliteFamilies: [
+                    {
+                      database: legacyDatabase,
+                      files: expect.arrayContaining([legacyDatabase]),
+                      destination: path.join(targetDir, "openclaw-agent.sqlite"),
+                      outcome: "deferred",
+                      reason: "sqlite-family",
+                    },
+                  ],
                 });
+                expect(fs.existsSync(legacyDatabase)).toBe(true);
+                expect(fs.existsSync(path.join(targetDir, "openclaw-agent.sqlite"))).toBe(false);
                 expect(
-                  migrated.stepReceipts.find((receipt) => receipt.id === "agent-dir"),
-                ).toBeDefined();
+                  fs.existsSync(path.join(targetDir, ".legacy-agent-dir-migration.json")),
+                ).toBe(false);
               }
 
-              expect(getAgentDir()).toBe(targetDir);
+              const activeDir = testCase.sqlite ? legacyDir : targetDir;
+              expect(getAgentDir()).toBe(activeDir);
+              expect(
+                resolveInstallAgentDir(cfg, { env, homedir: () => state.home }).directory.dir,
+              ).toBe(activeDir);
               expect(fs.readFileSync(path.join(getAgentDir(), "settings.json"), "utf8")).toBe(
                 "SDK settings",
               );
               expect(detected.agentDir.targetDir).toBe(targetDir);
               await expect(ensureTool("fd", true)).resolves.toBe(
-                path.join(targetDir, "bin", binary),
+                path.join(activeDir, "bin", binary),
               );
               expect(fs.readFileSync(path.join(targetDir, "bin", binary), "utf8")).toBe(
                 targetDir === legacyDir ? "legacy binary" : "current binary",

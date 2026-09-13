@@ -217,70 +217,47 @@ describe("legacy agent directory migration", () => {
   it.each<{
     relativeDatabase: string;
     destination: "database" | "wal" | "journal" | "empty";
-    failMove: boolean;
-    rollbackFails?: boolean;
     orphanSource?: boolean;
-    failAfterFamily?: "binary" | "quarantine";
+    blockedRestore?: "database" | "wal" | "shm";
   }>([
-    { relativeDatabase: "openclaw-agent.sqlite", destination: "database", failMove: false },
-    { relativeDatabase: "state/openclaw.sqlite", destination: "database", failMove: false },
-    { relativeDatabase: "sessions/transcripts.sqlite", destination: "database", failMove: false },
-    { relativeDatabase: "state/openclaw.sqlite", destination: "wal", failMove: false },
-    { relativeDatabase: "sessions/transcripts.sqlite", destination: "journal", failMove: false },
-    { relativeDatabase: "state/openclaw.sqlite", destination: "empty", failMove: false },
-    { relativeDatabase: "openclaw-agent.sqlite", destination: "empty", failMove: true },
-    {
+    { relativeDatabase: "openclaw-agent.sqlite", destination: "database" },
+    { relativeDatabase: "state/openclaw.sqlite", destination: "database" },
+    { relativeDatabase: "sessions/transcripts.sqlite", destination: "database" },
+    { relativeDatabase: "cache.db", destination: "empty" },
+    { relativeDatabase: "custom-store", destination: "wal" },
+    { relativeDatabase: "sessions/transcripts.sqlite", destination: "journal" },
+    { relativeDatabase: "state/openclaw.sqlite", destination: "empty" },
+    { relativeDatabase: "sessions/transcripts.sqlite", destination: "empty", orphanSource: true },
+    ...(["database", "wal", "shm"] as const).map((blockedRestore) => ({
       relativeDatabase: "openclaw-agent.sqlite",
-      destination: "empty",
-      failMove: false,
-      failAfterFamily: "binary",
-    },
-    {
-      relativeDatabase: "state/openclaw.sqlite",
-      destination: "empty",
-      failMove: false,
-      failAfterFamily: "quarantine",
-    },
-    {
-      relativeDatabase: "sessions/transcripts.sqlite",
-      destination: "empty",
-      failMove: true,
-      rollbackFails: true,
-    },
-    {
-      relativeDatabase: "sessions/transcripts.sqlite",
-      destination: "empty",
-      failMove: false,
-      orphanSource: true,
-    },
+      destination: "empty" as const,
+      blockedRestore,
+    })),
   ])(
-    "keeps the $relativeDatabase family recoverable (destination: $destination, move failure: $failMove, later failure: $failAfterFamily)",
-    async ({
-      relativeDatabase,
-      destination,
-      failMove,
-      rollbackFails,
-      orphanSource,
-      failAfterFamily,
-    }) => {
+    "leaves SQLite families in place while merging files ($relativeDatabase, destination: $destination, blocked restore: $blockedRestore)",
+    async ({ relativeDatabase, destination, orphanSource, blockedRestore }) => {
       await withOpenClawTestState(
-        { label: "legacy-agent-wal-family", layout: "split", agentEnv: "clear" },
+        { label: "legacy-agent-family-deferred", layout: "split", agentEnv: "clear" },
         async (state) => {
           const legacyDir = path.join(state.home, ".openclaw", "agent");
           const targetDir = state.agentDir("main");
           const sourceDatabase = path.join(legacyDir, relativeDatabase);
+          const otherDatabase = path.join(legacyDir, "a-other.sqlite");
           const targetDatabase = path.join(targetDir, relativeDatabase);
-          const deferred = Boolean(failMove || orphanSource || failAfterFamily);
-          if (failAfterFamily) {
-            for (const directory of [legacyDir, targetDir]) {
-              await fs.mkdir(path.join(directory, "bin"), { recursive: true });
-              await fs.writeFile(path.join(directory, "bin/identical"), "shared binary");
-            }
-            await fs.writeFile(path.join(legacyDir, "bin/after"), "legacy binary");
+          for (const directory of [
+            path.dirname(sourceDatabase),
+            path.dirname(targetDatabase),
+            path.join(legacyDir, "bin"),
+            path.join(targetDir, "bin"),
+          ]) {
+            await fs.mkdir(directory, { recursive: true });
           }
-          await fs.mkdir(path.dirname(sourceDatabase), { recursive: true });
-          if (destination !== "empty" || failMove) {
-            await fs.mkdir(path.dirname(targetDatabase), { recursive: true });
+          await fs.writeFile(path.join(legacyDir, "bin/fd"), "installed legacy tool");
+          await fs.writeFile(path.join(legacyDir, "bin/collision"), "legacy binary");
+          await fs.writeFile(path.join(targetDir, "bin/collision"), "current binary");
+          const failedBinary = path.join(legacyDir, "bin/zz-fail");
+          if (blockedRestore) {
+            await fs.writeFile(failedBinary, "retained binary");
           }
           const seed = openOpenClawAgentDatabase({
             agentId: "main",
@@ -293,24 +270,15 @@ describe("legacy agent directory migration", () => {
             );
             if (destination === "database") {
               fsSync.copyFileSync(seed.path, targetDatabase);
-              const target = new DatabaseSync(targetDatabase);
-              try {
-                target.exec(
-                  "INSERT INTO wal_proof VALUES ('destination row'); PRAGMA wal_checkpoint(TRUNCATE);",
-                );
-              } finally {
-                target.close();
-              }
             } else if (destination !== "empty") {
               fsSync.writeFileSync(`${targetDatabase}-${destination}`, "unrelated recovery bytes");
             }
             seed.db.exec("INSERT INTO wal_proof VALUES ('legacy WAL row');");
-            for (const pathname of resolveSqliteDatabaseFilePaths(seed.path)) {
-              if (fsSync.existsSync(pathname)) {
-                fsSync.copyFileSync(
-                  pathname,
-                  `${sourceDatabase}${pathname.slice(seed.path.length)}`,
-                );
+            for (const file of resolveSqliteDatabaseFilePaths(seed.path).filter((candidate) =>
+              fsSync.existsSync(candidate),
+            )) {
+              for (const database of [sourceDatabase, otherDatabase]) {
+                fsSync.copyFileSync(file, `${database}${file.slice(seed.path.length)}`);
               }
             }
           } finally {
@@ -336,137 +304,109 @@ describe("legacy agent directory migration", () => {
           if (orphanSource) {
             await fs.unlink(sourceDatabase);
           }
-          const detected = await detectLegacyStateMigrations({
-            cfg: { agents: { entries: { main: {} } }, plugins: { enabled: false } },
-            env: state.env,
-            homedir: () => state.home,
-            legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
-          });
+          const detect = () =>
+            detectLegacyStateMigrations({
+              cfg: { agents: { entries: { main: {} } }, plugins: { enabled: false } },
+              env: state.env,
+              homedir: () => state.home,
+              legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
+            });
+          const detected = await detect();
+          const families = [otherDatabase, sourceDatabase].map((database) => ({
+            database,
+            files: resolveSqliteDatabaseFilePaths(database).filter((file) =>
+              fsSync.existsSync(file),
+            ),
+            destination: path.join(targetDir, path.relative(legacyDir, database)),
+            outcome: "deferred",
+            reason: "sqlite-family",
+          }));
           const rename = fsSync.renameSync;
-          const sourceFiles = [
-            sourceDatabase,
-            `${sourceDatabase}-wal`,
-            `${sourceDatabase}-shm`,
-          ].filter((file) => fsSync.existsSync(file));
-          const directoryMoves: string[] = [];
-          let moves = 0;
           const renameSpy = vi.spyOn(fsSync, "renameSync").mockImplementation((from, to) => {
             if (
-              (failAfterFamily === "binary" &&
-                String(from) === path.join(legacyDir, "bin/after")) ||
-              (failAfterFamily === "quarantine" && String(from) === legacyDir)
+              blockedRestore &&
+              (String(from) === failedBinary ||
+                (String(from) ===
+                  `${targetDatabase}${blockedRestore === "database" ? "" : `-${blockedRestore}`}` &&
+                  String(to) ===
+                    `${sourceDatabase}${blockedRestore === "database" ? "" : `-${blockedRestore}`}`))
             ) {
-              throw new Error("injected later move failure");
-            }
-            const relative = path.relative(String(from), sourceDatabase);
-            const containsFamily =
-              relative !== "" &&
-              !relative.startsWith("..") &&
-              !path.isAbsolute(relative) &&
-              fsSync.statSync(from).isDirectory() &&
-              sourceFiles.every((file) => fsSync.existsSync(file));
-            if (
-              failMove &&
-              sourceFiles.includes(String(from)) &&
-              ++moves === (rollbackFails ? 3 : 2)
-            ) {
-              throw Object.assign(new Error("injected family move failure"), { code: "EIO" });
-            }
-            if (
-              rollbackFails &&
-              String(from) === `${targetDatabase}-wal` &&
-              String(to) === `${sourceDatabase}-wal`
-            ) {
-              throw Object.assign(new Error("injected family rollback failure"), { code: "EIO" });
+              throw new Error("injected binary or family restore failure");
             }
             rename(from, to);
-            if (containsFamily) {
-              directoryMoves.push(path.join(String(to), relative));
-            }
           });
-          const migration = migrateLegacyAgentDir(detected, () => 1234);
-          if (rollbackFails) {
-            await expect(migration).rejects.toThrow("Could not restore SQLite family");
-            expect(fsSync.existsSync(sourceDatabase)).toBe(true);
-            expect(fsSync.existsSync(targetDatabase)).toBe(false);
-            expect(await fs.readFile(`${targetDatabase}-wal`)).toEqual(walBytes);
-            expect(
-              fsSync.existsSync(path.join(targetDir, ".legacy-agent-dir-migration.json")),
-            ).toBe(false);
-            return;
+          const copy = fsSync.copyFileSync;
+          const copySpy = vi.spyOn(fsSync, "copyFileSync").mockImplementation((from, to, mode) => {
+            if (blockedRestore && String(from) === failedBinary) {
+              throw new Error("injected binary move failure");
+            }
+            copy(from, to, mode);
+          });
+          const result = await migrateLegacyAgentDir(detected, () => 1234);
+          const receipt = migrationReceipt("agent-dir", result);
+          expect(destinationFiles()).toEqual(originalDestination);
+          for (const family of families) {
+            for (const file of family.files) {
+              expect(fsSync.existsSync(file), `Retained family member: ${file}`).toBe(true);
+            }
+            expect(receipt.sqliteFamilies).toContainEqual(family);
           }
-          const receipt = migrationReceipt("agent-dir", await migration);
-
-          if (destination !== "empty" || deferred) {
-            expect(destinationFiles()).toEqual(originalDestination);
-          }
-          const quarantines = (await fs.readdir(state.stateDir)).filter((name) =>
-            name.startsWith("agent.legacy-"),
+          expect(receipt.sqliteFamilies).toHaveLength(2);
+          expect(receipt.outcome).toBe("deferred");
+          expect(() => throwIfDoctorStateMigrationRefused([receipt])).not.toThrow();
+          expect(receipt.warnings.join("\n")).toContain("a later release moves it");
+          expect(fsSync.existsSync(path.join(targetDir, ".legacy-agent-dir-migration.json"))).toBe(
+            false,
           );
-          expect(quarantines).toHaveLength(destination === "empty" ? 0 : 1);
-          const recoveredDatabase = deferred
-            ? sourceDatabase
-            : destination === "empty"
-              ? targetDatabase
-              : path.join(
-                  state.stateDir,
-                  expectDefined(quarantines[0], "family quarantine"),
-                  relativeDatabase,
-                );
-          const files = [
-            recoveredDatabase,
-            `${recoveredDatabase}-wal`,
-            `${recoveredDatabase}-shm`,
-          ].filter((file) => !orphanSource || file !== recoveredDatabase);
-          if (destination !== "empty") {
-            expect(
-              renameSpy.mock.calls.filter(([from]) => sourceFiles.includes(String(from))),
-            ).toEqual([]);
-            expect(directoryMoves).toContain(recoveredDatabase);
-          }
-          for (const file of files) {
-            expect(fsSync.existsSync(file)).toBe(true);
-          }
-          expect(await fs.readFile(`${recoveredDatabase}-wal`)).toEqual(walBytes);
-          if (destination !== "empty" || deferred) {
-            expect(receipt).toMatchObject({
-              sqliteFamilies: [
-                {
-                  database: recoveredDatabase,
-                  files,
-                  outcome: deferred ? "deferred" : "quarantined",
-                },
-              ],
-            });
-          }
-          if (deferred) {
-            expect(receipt.outcome).toBe("deferred");
-            expect(
-              fsSync.existsSync(path.join(targetDir, ".legacy-agent-dir-migration.json")),
-            ).toBe(false);
-          } else if (destination === "empty") {
-            expect(receipt.outcome).toBe("completed");
-            expect(directoryMoves).toContain(targetDatabase);
-          }
-          if (failAfterFamily) {
-            expect(getAgentDir()).toBe(legacyDir);
-            await expect(fs.readFile(path.join(legacyDir, "bin/after"), "utf8")).resolves.toBe(
-              "legacy binary",
+          expect(getAgentDir()).toBe(legacyDir);
+          await expect(fs.readFile(path.join(targetDir, "bin/fd"), "utf8")).resolves.toBe(
+            "installed legacy tool",
+          );
+          await expect(fs.readFile(path.join(legacyDir, "bin/fd"), "utf8")).resolves.toBe(
+            "installed legacy tool",
+          );
+          await expect(fs.readFile(path.join(legacyDir, "bin/collision"), "utf8")).resolves.toBe(
+            "legacy binary",
+          );
+          await expect(fs.readFile(path.join(targetDir, "bin/collision"), "utf8")).resolves.toBe(
+            "current binary",
+          );
+          expect(
+            (await fs.readdir(state.stateDir)).filter((name) => name.startsWith("agent.legacy-")),
+          ).toEqual([]);
+          const touchesFamily = (from: fsSync.PathLike) =>
+            families.some((family) =>
+              family.files.some(
+                (file) => file === String(from) || file.startsWith(`${String(from)}${path.sep}`),
+              ),
             );
-            await expect(fs.readFile(path.join(legacyDir, "bin/identical"), "utf8")).resolves.toBe(
-              "shared binary",
-            );
+          expect(renameSpy.mock.calls.some(([from]) => touchesFamily(from))).toBe(false);
+          expect(copySpy.mock.calls.some(([from]) => touchesFamily(from))).toBe(false);
+          if (blockedRestore) {
+            expect(receipt.warnings.join("\n")).toContain("injected binary move failure");
+            await expect(fs.readFile(failedBinary, "utf8")).resolves.toBe("retained binary");
           }
+          const repeated = migrationReceipt(
+            "agent-dir",
+            await migrateLegacyAgentDir(await detect(), () => 5678),
+          );
+          expect(repeated.sqliteFamilies).toEqual(receipt.sqliteFamilies);
+          expect(
+            (await fs.readdir(state.stateDir)).filter((name) => name.startsWith("agent.legacy-")),
+          ).toEqual([]);
           if (orphanSource) {
-            await fs.copyFile(mainOnly, recoveredDatabase);
+            await fs.copyFile(mainOnly, sourceDatabase);
           }
-          const recovered = new DatabaseSync(recoveredDatabase, { readOnly: true });
-          try {
-            expect(recovered.prepare("SELECT value FROM wal_proof").all()).toEqual([
-              { value: "legacy WAL row" },
-            ]);
-          } finally {
-            recovered.close();
+          for (const database of [sourceDatabase, otherDatabase]) {
+            expect(await fs.readFile(`${database}-wal`)).toEqual(walBytes);
+            const recovered = new DatabaseSync(database, { readOnly: true });
+            try {
+              expect(recovered.prepare("SELECT value FROM wal_proof").all()).toEqual([
+                { value: "legacy WAL row" },
+              ]);
+            } finally {
+              recovered.close();
+            }
           }
         },
       );
@@ -717,6 +657,13 @@ describe("legacy agent directory migration", () => {
             rename(source, target);
           });
 
+          const copy = fsSync.cpSync;
+          vi.spyOn(fsSync, "cpSync").mockImplementation((source, target, options) => {
+            if (source === sourceBin) {
+              throw new Error("synthetic binary move failure");
+            }
+            copy(source, target, options);
+          });
           const result = await migrateLegacyAgentDir(detected, () => 1234);
 
           expect(result.warnings).toContainEqual(
@@ -744,6 +691,13 @@ describe("legacy agent directory migration", () => {
           const quarantines = (await fs.readdir(state.stateDir)).filter((name) =>
             name.startsWith("agent.legacy-"),
           );
+          if (companion) {
+            expect(completed.outcome).toBe("deferred");
+            expect(quarantines).toHaveLength(0);
+            expect(getAgentDir()).toBe(legacyDir);
+            expect(fsSync.existsSync(path.join(canonicalDir, receiptName))).toBe(false);
+            return;
+          }
           expect(quarantines).toHaveLength(1);
           await expect(
             fs.readFile(

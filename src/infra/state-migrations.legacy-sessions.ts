@@ -9,7 +9,6 @@ import { isErrno } from "./errors.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { isPathInside } from "./path-guards.js";
 import { resolveSqliteDatabaseFilePaths, SQLITE_SIDECAR_SUFFIXES } from "./sqlite-files.js";
-import { moveSqliteFilesWithRollback, rollbackFileMoves } from "./sqlite-recovery-files.js";
 import { quoteSqliteIdentifier } from "./sqlite-schema-sql.js";
 import {
   LEGACY_AGENT_DIR_RECEIPT,
@@ -399,9 +398,6 @@ type SqliteFamilyPlan = {
   kind: "sqlite";
   relative: string;
   files: string[];
-  complete: boolean;
-  conflict: boolean;
-  moved: boolean;
 };
 type AgentDirEntryPlan =
   | SqliteFamilyPlan
@@ -441,8 +437,8 @@ function planLegacyAgentDir(sourceRoot: string, targetRoot: string) {
     );
     const reserved = new Set<string>();
     const result: AgentDirEntryPlan[] = [];
-    // Reserve complete sibling families before ordinary merging, including orphan sidecars.
-    // Conflicted families stay in the source for its single atomic quarantine rename.
+    // Reserve every sibling family, including orphan sidecars. SQLite files and their
+    // containing directories stay at the source until atomic family migration is supported.
     for (const base of bases) {
       const candidates = resolveSqliteDatabaseFilePaths(base);
       const members = candidates.filter((name) => names.has(name));
@@ -453,14 +449,6 @@ function planLegacyAgentDir(sourceRoot: string, targetRoot: string) {
         kind: "sqlite",
         relative: path.join(relative, base),
         files: members.map((name) => path.join(relative, name)),
-        complete:
-          names.get(base)?.isFile() === true && members.every((name) => names.get(name)?.isFile()),
-        conflict:
-          targetBlocked ||
-          candidates.some((name) =>
-            fs.lstatSync(path.join(target, name), { throwIfNoEntry: false }),
-          ),
-        moved: false,
       };
       members.forEach((name) => reserved.add(name));
       families.push(family);
@@ -489,45 +477,6 @@ function planLegacyAgentDir(sourceRoot: string, targetRoot: string) {
   return { entries: plan("", false), families };
 }
 
-function moveLegacySqliteFamily(
-  family: SqliteFamilyPlan,
-  sourceRoot: string,
-  targetRoot: string,
-  movedFiles: { sourcePath: string; destinationPath: string }[],
-): boolean {
-  const current = resolveSqliteDatabaseFilePaths(path.join(sourceRoot, family.relative))
-    .filter((file) => fs.lstatSync(file, { throwIfNoEntry: false }))
-    .map((file) => path.relative(sourceRoot, file));
-  if (
-    current.length !== family.files.length ||
-    current.some((file, index) => file !== family.files[index])
-  ) {
-    family.files = current;
-    throw new Error(`SQLite family changed: ${path.join(sourceRoot, family.relative)}`);
-  }
-  if (
-    resolveSqliteDatabaseFilePaths(path.join(targetRoot, family.relative)).some((file) =>
-      fs.lstatSync(file, { throwIfNoEntry: false }),
-    )
-  ) {
-    return false;
-  }
-  const moves = family.files
-    .toSorted(
-      (left, right) =>
-        Number(left === family.relative) - Number(right === family.relative) ||
-        left.localeCompare(right),
-    )
-    .map((relative) => ({
-      sourcePath: path.join(sourceRoot, relative),
-      destinationPath: path.join(targetRoot, relative),
-    }));
-  moveSqliteFilesWithRollback(moves);
-  movedFiles.push(...moves);
-  family.moved = true;
-  return true;
-}
-
 export async function migrateLegacyAgentDir(
   detected: LegacyStateDetection,
   now: () => number,
@@ -546,45 +495,45 @@ export async function migrateLegacyAgentDir(
     const duplicates: string[] = [];
     const directories: string[] = [];
     const movedFiles: { sourcePath: string; destinationPath: string }[] = [];
-    const changesStart = changes.length;
     let plan: ReturnType<typeof planLegacyAgentDir> | undefined;
     let sourceRoot = legacyDir;
     let targetRoot = targetDir;
     let retainedRoot = legacyDir;
     let quarantined = false;
+    let preserveSource = false;
     function merge(entry: AgentDirEntryPlan) {
       const relative = entry.relative;
       const from = path.join(sourceRoot, relative);
       const to = path.join(targetRoot, relative);
+      if (entry.kind === "sqlite") {
+        return;
+      }
       // A source-carried receipt cannot certify this migration.
       if (relative === LEGACY_AGENT_DIR_RECEIPT) {
         conflicts.push(relative);
         return;
       }
-      if (entry.kind === "sqlite") {
-        if (entry.conflict || !moveLegacySqliteFamily(entry, sourceRoot, targetRoot, movedFiles)) {
-          conflicts.push(relative);
-        } else {
-          changes.push(
-            `Moved SQLite family ${relative} (${entry.files.join(", ")}) → ${destination}`,
-          );
-        }
-        return;
-      }
       const source = fs.lstatSync(from);
       const target = fs.lstatSync(to, { throwIfNoEntry: false });
-      if (
-        !target &&
-        (entry.kind !== "directory" || entry.families.every((family) => !family.conflict))
-      ) {
-        fs.renameSync(from, to);
-        movedFiles.push({ sourcePath: from, destinationPath: to });
-        if (entry.kind === "directory") {
-          entry.families.forEach((family) => {
-            family.moved = true;
-          });
+      if (!target && (entry.kind !== "directory" || entry.families.length === 0)) {
+        if (preserveSource) {
+          if (source.isFile()) {
+            fs.copyFileSync(from, to, fs.constants.COPYFILE_EXCL);
+          } else {
+            fs.cpSync(from, to, {
+              recursive: true,
+              force: false,
+              errorOnExist: true,
+              verbatimSymlinks: true,
+            });
+          }
+        } else {
+          fs.renameSync(from, to);
+          movedFiles.push({ sourcePath: from, destinationPath: to });
         }
-        changes.push(`Moved agent file ${relative} → ${destination}`);
+        changes.push(
+          `${preserveSource ? "Copied" : "Moved"} agent file ${relative} → ${destination}`,
+        );
       } else if (entry.kind === "directory" && (!target || target.isDirectory())) {
         if (!target) {
           fs.mkdirSync(to, { mode: source.mode & 0o7777 });
@@ -601,6 +550,10 @@ export async function migrateLegacyAgentDir(
         fs.readFileSync(from).equals(fs.readFileSync(to))
       ) {
         duplicates.push(relative);
+      } else if (entry.kind === "directory" && entry.families.length > 0) {
+        warnings.push(
+          `Kept legacy directory ${from}: destination ${to} is not a directory; its SQLite families remain in place.`,
+        );
       } else {
         conflicts.push(relative);
       }
@@ -637,13 +590,23 @@ export async function migrateLegacyAgentDir(
       }
       // Ownership inspection can materialize a SQLite shared-memory sidecar; inventory afterward.
       plan = planLegacyAgentDir(sourceRoot, targetDir);
-      const incomplete = plan.families.filter((family) => !family.complete);
-      for (const family of incomplete) {
+      preserveSource = plan.families.length > 0;
+      for (const family of plan.families) {
+        const database = path.join(sourceRoot, family.relative);
+        const files = family.files.map((file) => path.join(sourceRoot, file));
+        const target = path.join(targetDir, family.relative);
+        sqliteFamilies.push({
+          database,
+          files,
+          destination: target,
+          outcome: "deferred",
+          reason: "sqlite-family",
+        });
         warnings.push(
-          `Deferred incomplete SQLite family at ${path.join(sourceRoot, family.relative)}; keep its database and recovery files together and inspect missing or non-regular files before retrying.`,
+          `Deferred SQLite family ${database} (${files.join(", ")}) → ${target}: the store keeps being used from its current location; a later release moves it.`,
         );
       }
-      if (ownerMismatch || incomplete.length > 0) {
+      if (ownerMismatch) {
         continue;
       }
       const stateRoot = fs.realpathSync(detected.stateDir);
@@ -668,6 +631,9 @@ export async function migrateLegacyAgentDir(
       for (const entry of plan.entries) {
         merge(entry);
       }
+      if (preserveSource) {
+        continue;
+      }
       // Removing the source pathname commits cutover. Until then every rename is reversible.
       // Keep duplicates and source directories intact so a failed cutover can restore all moves.
       const backupDir = path.join(stateRoot, `agent.legacy-${now()}-${randomUUID()}`);
@@ -687,11 +653,8 @@ export async function migrateLegacyAgentDir(
       if (conflicts.length > 0) {
         changes.push(`Quarantined ${conflicts.length} conflicting agent path(s) → ${backupDir}`);
         for (const relative of conflicts) {
-          const family = plan.families.find((candidate) => candidate.relative === relative);
           warnings.push(
-            family
-              ? `Quarantined SQLite family ${relative} (${family.files.join(", ")}) at ${backupDir}; destination family left unchanged.`
-              : `Kept ${path.join(targetDir, relative)}; quarantined legacy copy at ${path.join(backupDir, relative)}`,
+            `Kept ${path.join(targetDir, relative)}; quarantined legacy copy at ${path.join(backupDir, relative)}`,
           );
         }
       } else {
@@ -702,26 +665,30 @@ export async function migrateLegacyAgentDir(
       }
     } catch (error) {
       if (!quarantined) {
-        rollbackFileMoves(movedFiles, error);
-        for (const family of plan?.families ?? []) {
-          family.moved = false;
+        // Only non-database entries enter this list; SQLite families never move.
+        for (const move of movedFiles.toReversed()) {
+          try {
+            if (fs.lstatSync(move.sourcePath, { throwIfNoEntry: false })) {
+              throw new Error(`Source was recreated: ${move.sourcePath}`, { cause: error });
+            }
+            fs.renameSync(move.destinationPath, move.sourcePath);
+          } catch (restoreError) {
+            warnings.push(
+              `Could not restore ${move.sourcePath}; preserved at ${move.destinationPath}: ${String(restoreError)}`,
+            );
+          }
         }
-        changes.splice(changesStart);
-      }
-      if (error instanceof AggregateError) {
-        throw error;
       }
       warnings.push(
         `Could not finish legacy agent migration: ${String(error)}. Any remaining source is preserved at ${retainedRoot}. Rerun openclaw doctor --fix after resolving this error.`,
       );
     } finally {
-      for (const family of plan?.families ?? []) {
-        const root = family.moved ? targetRoot : retainedRoot;
-        sqliteFamilies.push({
-          database: path.join(root, family.relative),
-          files: family.files.map((file) => path.join(root, file)),
-          outcome: family.moved ? "moved" : quarantined ? "quarantined" : "deferred",
-        });
+      if (preserveSource) {
+        for (const relative of conflicts) {
+          warnings.push(
+            `Kept ${path.join(targetDir, relative)}; legacy copy remains at ${path.join(sourceRoot, relative)} with the deferred SQLite store.`,
+          );
+        }
       }
     }
   }
@@ -732,8 +699,6 @@ export async function migrateLegacyAgentDir(
     warningDisposition: "recoverable",
     ...(sqliteFamilies.length > 0 ? { sqliteFamilies } : {}),
     ...(deferred.length > 0 ? { deferred } : {}),
-    ...(deferred.length > 0 || sqliteFamilies.some((family) => family.outcome === "deferred")
-      ? ({ outcome: "deferred" } as const)
-      : {}),
+    ...(deferred.length > 0 || sqliteFamilies.length > 0 ? ({ outcome: "deferred" } as const) : {}),
   };
 }

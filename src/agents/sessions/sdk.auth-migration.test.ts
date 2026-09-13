@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -626,8 +626,26 @@ describe("SDK installation ownership", () => {
               expect(snapshotFiles(legacyDir)).toEqual(before);
               expect(result.stepReceipts.some((entry) => entry.outcome === "refused")).toBe(false);
             } else {
-              expect(receipt?.outcome).toBe("completed");
+              expect(receipt).toMatchObject({
+                outcome: "deferred",
+                sqliteFamilies: [
+                  {
+                    database: original.storePath,
+                    files: expect.arrayContaining([original.storePath]),
+                    destination: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+                    outcome: "deferred",
+                    reason: "sqlite-family",
+                  },
+                ],
+              });
+              expect(snapshotFiles(legacyDir)).toEqual(before);
+              expect(result.stepReceipts.some((entry) => entry.outcome === "refused")).toBe(false);
             }
+            await expect(
+              access(
+                path.join(state.agentDir(configuredOwner), ".legacy-agent-dir-migration.json"),
+              ),
+            ).rejects.toMatchObject({ code: "ENOENT" });
             closeOpenClawAgentDatabasesForTest();
           }
 
@@ -638,9 +656,8 @@ describe("SDK installation ownership", () => {
               "resolved SDK target",
             );
             expect(target.agentId).toBe("main");
-            const activeDir =
-              doctor && configuredOwner === "main" ? state.agentDir("main") : legacyDir;
-            expect(target.storePath).toBe(path.join(activeDir, "openclaw-agent.sqlite"));
+            const activeDir = legacyDir;
+            expect(target.storePath).toBe(original.storePath);
             const { ensureTool } = await import("../utils/tools-manager.js");
             await expect(ensureTool("fd", true)).resolves.toBe(path.join(activeDir, "bin", binary));
             const discovered = ModelRegistry.create(AuthStorage.inMemory());

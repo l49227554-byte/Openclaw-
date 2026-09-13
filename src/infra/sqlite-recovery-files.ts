@@ -12,67 +12,55 @@ export function moveSqliteFilesAside(
 } {
   const recoveryFiles = inspectSqliteRecoveryFiles(sqlitePath);
   const moves = planSqliteRecoveryMoves(recoveryFiles.existing);
-  moveSqliteFilesWithRollback(
-    moves.toSorted(
-      (left, right) =>
-        Number(left.sourcePath === sqlitePath) - Number(right.sourcePath === sqlitePath) ||
-        left.sourcePath.localeCompare(right.sourcePath),
-    ),
-    assertCurrent,
-  );
-  return {
-    movedFiles: moves.map((move) => move.destinationPath),
-    skippedFiles: recoveryFiles.missing,
-  };
-}
-
-/** Execute one planned offline file set; preserve both sides if rollback loses authority. */
-export function moveSqliteFilesWithRollback(
-  moves: readonly { sourcePath: string; destinationPath: string }[],
-  assertCurrent?: () => void,
-): void {
-  const completed: (typeof moves)[number][] = [];
+  const completed: typeof moves = [];
   try {
-    for (const move of moves) {
-      assertCurrent?.();
-      if (pathExists(move.destinationPath)) {
-        throw new Error(`SQLite family destination changed: ${move.destinationPath}`);
+    // Preserve every journal before removing the main pathname. Recovery is
+    // offline; rollback restores the set after a caught rename failure.
+    for (const move of moves.toSorted((left, right) => {
+      if (left.sourcePath === sqlitePath) {
+        return 1;
       }
+      if (right.sourcePath === sqlitePath) {
+        return -1;
+      }
+      return left.sourcePath.localeCompare(right.sourcePath);
+    })) {
+      assertCurrent();
       fs.renameSync(move.sourcePath, move.destinationPath);
       completed.push(move);
     }
   } catch (error) {
-    rollbackFileMoves(completed, error, assertCurrent);
+    const rollbackErrors: unknown[] = [];
+    const preservedPaths: string[] = [];
+    for (const move of completed.toReversed()) {
+      try {
+        assertCurrent();
+        if (pathExists(move.sourcePath)) {
+          throw new Error(`rollback source was recreated: ${move.sourcePath}`, {
+            cause: error,
+          });
+        }
+        fs.renameSync(move.destinationPath, move.sourcePath);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+        preservedPaths.push(move.destinationPath);
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      const rollbackDetails = rollbackErrors
+        .map((rollbackError) => String(rollbackError))
+        .join("; ");
+      throw new Error(
+        `Could not move corrupt SQLite file set aside or restore it: ${sqlitePath}; rollback failures: ${rollbackDetails}. Preserved recovery files: ${preservedPaths.join(", ")}`,
+        { cause: error },
+      );
+    }
     throw error;
   }
-}
-
-export function rollbackFileMoves(
-  moves: readonly { sourcePath: string; destinationPath: string }[],
-  error: unknown,
-  assertCurrent?: () => void,
-): void {
-  const rollbackErrors: unknown[] = [];
-  const preservedPaths: string[] = [];
-  for (const move of moves.toReversed()) {
-    try {
-      assertCurrent?.();
-      if (pathExists(move.sourcePath)) {
-        throw new Error(`rollback source was recreated: ${move.sourcePath}`, { cause: error });
-      }
-      fs.renameSync(move.destinationPath, move.sourcePath);
-    } catch (rollbackError) {
-      rollbackErrors.push(rollbackError);
-      preservedPaths.push(move.destinationPath);
-    }
-  }
-  if (rollbackErrors.length > 0) {
-    throw new AggregateError(
-      [error, ...rollbackErrors],
-      `Could not restore SQLite family ${moves.map((move) => move.sourcePath).join(", ")}; rollback failures: ${rollbackErrors.map(String).join("; ")}. Preserved recovery files: ${preservedPaths.join(", ")}`,
-      { cause: error },
-    );
-  }
+  return {
+    movedFiles: moves.map((move) => move.destinationPath),
+    skippedFiles: recoveryFiles.missing,
+  };
 }
 
 export function inspectSqliteRecoveryFiles(sqlitePath: string): {

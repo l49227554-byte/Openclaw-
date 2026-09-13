@@ -193,7 +193,9 @@ export type MigrationMessages = {
   sqliteFamilies?: Array<{
     database: string;
     files: string[];
-    outcome: "moved" | "quarantined" | "deferred";
+    destination: string;
+    outcome: "deferred";
+    reason: "sqlite-family";
   }>;
   /** Every blocking warning is an ownership refusal confined to these agent databases. */
   refusedAgentDatabasePaths?: readonly string[];

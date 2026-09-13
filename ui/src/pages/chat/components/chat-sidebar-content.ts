@@ -87,6 +87,7 @@ function renderSidebarAttachment(
     !isCrossOriginHttpSource(src ?? "")
   ) {
     return html`<openclaw-chat-text-attachment
+      .compact=${true}
       .src=${src ?? ""}
       .sourceIdentity=${content.sourceIdentity ?? src ?? ""}
       .label=${content.title}

@@ -13,6 +13,7 @@ import {
   isCurrentSessionWorkspace,
   loadSessionWorkspace,
   openSessionCheckoutSidebar,
+  openSessionWorkspacePreview,
   refreshSessionWorkspaceState,
   requestWorkspaceUpdate,
   trackSessionCheckoutSidebar,
@@ -166,44 +167,75 @@ function openWorkspaceItem<T>(
   load: () => Promise<T | null | undefined>,
   render: (result: T) => SidebarContent | null,
   missingMessage: string,
+  options: {
+    line?: number | null;
+    label?: string;
+    resolveLabel?: (result: T) => string | undefined;
+  } = {},
 ) {
   if (!state.client || !state.connected) {
     return;
   }
-  const request = { kind: "loading" } as const;
+  const request = {
+    kind: "loading",
+    fileTab: {
+      id: itemId,
+      label: options.label ?? basenameForPath(itemId.slice(itemId.indexOf(":") + 1)),
+    },
+  } as const;
+  const preview = openSessionWorkspacePreview(state, itemId, request.fileTab.label, request);
   workspace.activeId = itemId;
-  // The Review selection owns completion; Files rows can change independently.
-  openSessionCheckoutSidebar(state, request);
+  if (options.line != null) {
+    preview.navigation = { line: options.line };
+    if (preview.content.kind === "file") {
+      preview.content.navigation = preview.navigation;
+    }
+    workspace.previews = [...workspace.previews];
+  }
+  // Reopening an unavailable file retries its read without creating another tab.
+  if (preview.content.kind === "unavailable") {
+    preview.content = request;
+    workspace.previews = [...workspace.previews];
+  }
+  state.handleOpenSidebar(request);
+  if (preview.content !== request) {
+    return;
+  }
   const isCurrent = () =>
-    state.sidebarContent === request && isCurrentSessionWorkspace(state, workspace);
+    workspace.previews.includes(preview) &&
+    preview.content === request &&
+    isCurrentSessionWorkspace(state, workspace);
   const fail = (message: string) => {
     if (!isCurrent()) {
       return;
     }
     workspace.error = message;
     const unavailable = { kind: "unavailable" as const, message };
-    trackSessionCheckoutSidebar(unavailable);
-    state.sidebarContent = unavailable;
+    preview.content = unavailable;
+    workspace.previews = [...workspace.previews];
   };
   void (async () => {
     workspace.error = null;
     try {
       const result = await load();
       const content = result == null ? null : render(result);
+      const label = result == null ? undefined : options.resolveLabel?.(result);
       if (!content) {
         fail(missingMessage);
         return;
       }
       if (isCurrent()) {
-        trackSessionCheckoutSidebar(content);
-        state.sidebarContent = content;
+        if (content.kind === "file" && preview.navigation) {
+          content.line = preview.navigation.line;
+          content.navigation = preview.navigation;
+        }
+        preview.content = content;
+        preview.label = label || preview.label;
+        workspace.previews = [...workspace.previews];
       }
     } catch (error) {
       fail(formatUiError(error));
     } finally {
-      if (state.sidebarContent === request) {
-        state.sidebarContent = null;
-      }
       requestWorkspaceUpdate(state);
     }
   })();
@@ -219,7 +251,7 @@ function openFile(
   openWorkspaceItem(
     state,
     workspace,
-    `file:${path}`,
+    `file:${requestPath}`,
     () =>
       state.sessions.getFile(workspace.sessionKey, requestPath, {
         agentId: workspace.agentId,
@@ -353,6 +385,7 @@ function openFile(
       };
     },
     `Failed to load ${path}`,
+    { line: opts.line, resolveLabel: (result) => result.file?.name },
   );
 }
 
@@ -424,6 +457,12 @@ function openArtifact(
             url: result.url,
           }),
     `Failed to load artifact ${artifactId}`,
+    {
+      label:
+        workspace.list?.artifacts?.find((artifact) => artifact.id === artifactId)?.title ||
+        t("chat.workspaceFiles.artifacts"),
+      resolveLabel: (result) => result.artifact?.title,
+    },
   );
 }
 

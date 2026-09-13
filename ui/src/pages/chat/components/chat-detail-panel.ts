@@ -19,7 +19,11 @@ import { type EditorId, openEditor } from "../../../lib/editor-links.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
 import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
-import type { AttachmentSidebarRuntime, SidebarContent } from "./chat-sidebar-content-types.ts";
+import type {
+  FileSidebarNavigation,
+  AttachmentSidebarRuntime,
+  SidebarContent,
+} from "./chat-sidebar-content-types.ts";
 import {
   buildRawContent,
   handleSidebarClick,
@@ -40,6 +44,7 @@ type ChatDetailPanelContent = Exclude<SidebarContent, { kind: "task" }>;
 
 class ChatDetailPanel extends OpenClawLightDomElement {
   @property({ attribute: false }) content: ChatDetailPanelContent | null = null;
+  @property({ attribute: false }) fileNavigation: FileSidebarNavigation | null = null;
   @property({ attribute: false }) execNode: string | null = null;
   @property({ attribute: false }) attachmentRuntime: AttachmentSidebarRuntime = {};
   @property() basePath = "";
@@ -75,6 +80,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
 
   private fileOperationVersion = 0;
   private showingRawText = false;
+  private rawFileContent: FileSidebarContent | null = null;
   private fileEditor: FileEditorViewHandle | null = null;
   private fileEditorLoad: Promise<void> | null = null;
   private fileDraftContent: string | null = null;
@@ -117,12 +123,26 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       releaseChatMediaResourceSubscriber(this.requestAttachmentUpdate);
     }
     if (!changed.has("content")) {
+      // A line link is navigation, not replacement content: keep drafts, undo,
+      // save operations, and the mounted editor intact. Plain tab selection
+      // does not change this request and must not reset raw view or scroll.
+      if (
+        changed.has("fileNavigation") &&
+        this.fileNavigation &&
+        this.content?.kind === "file" &&
+        this.showingRawText
+      ) {
+        this.showingRawText = false;
+        this.visibleContent = this.rawFileContent ?? this.content;
+        this.rawFileContent = null;
+      }
       return;
     }
     releaseChatMediaResourceSubscriber(this.requestAttachmentUpdate);
     this.visibleContent = this.content;
     this.error = null;
     this.showingRawText = false;
+    this.rawFileContent = null;
     this.fileSearchOpen = false;
     this.fileSearchQuery = "";
     this.fileSearchMatchIndex = 0;
@@ -171,7 +191,10 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     if (visibleContent?.kind === "file" && !this.showingRawText && !this.error) {
       void this.ensureFileEditor().then(() => {
         this.syncFileEditor();
-        if (changed.has("content") && visibleContent.line != null) {
+        if (
+          (changed.has("content") || changed.has("fileNavigation")) &&
+          (this.fileNavigation?.line ?? visibleContent.line) != null
+        ) {
           this.scrollToFileLine(visibleContent);
         }
       });
@@ -182,8 +205,9 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     if (this.visibleContent !== content || this.showingRawText) {
       return;
     }
-    if (content.line != null) {
-      this.fileEditor?.scrollToLine(content.line, true);
+    const line = this.fileNavigation?.line ?? content.line;
+    if (line != null) {
+      this.fileEditor?.scrollToLine(line, true);
     }
   }
 
@@ -292,7 +316,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     editor.setEditable(this.fileEditing && !this.fileReloading);
     const matches = this.fileSearchMatches();
     editor.setDecorations({
-      targetLine: content.line,
+      targetLine: this.fileNavigation?.line ?? content.line,
       matches,
       currentMatch: matches[this.fileSearchMatchIndex] ?? null,
     });
@@ -377,7 +401,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       return;
     }
     this.fileEditorMenuOpen = false;
-    openEditor(editor, absPath, content.line);
+    openEditor(editor, absPath, this.fileNavigation?.line ?? content.line);
   };
 
   private readonly copyFileValue = (action: FileCopyAction) => {
@@ -622,6 +646,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     if (!rawContent) {
       return;
     }
+    this.rawFileContent = this.visibleContent?.kind === "file" ? this.visibleContent : null;
     this.showingRawText = true;
     this.destroyFileEditor();
     this.visibleContent = rawContent;

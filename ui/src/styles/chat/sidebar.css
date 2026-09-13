@@ -2403,3 +2403,45 @@ wa-dropdown.session-diff-menu::part(menu) {
   height: 28px;
   padding: 5px;
 }
+
+openclaw-chat-files-panel,
+.chat-files-panel__content,
+.chat-files-panel__page:not([hidden]) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.chat-files-panel__page[hidden] {
+  display: none;
+}
+
+.sidebar-file-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: none;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--control-ui-text-sm);
+}
+
+.sidebar-file-toolbar__type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-file-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: none;
+}

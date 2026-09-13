@@ -116,11 +116,10 @@ export function legacyAcpDatabaseSessionKeys(
       `${ACP_LEGACY_AGENT_SCOPED_DB_KEY_PREFIX}${normalizeAgentId(agentId)}:${normalizedKey}`,
     );
   }
-  const compatibilityOwner = resolveAcpLegacyUnscopedOwner(cfg, normalizedKey);
   if (
     parseAgentSessionKey(normalizedKey) ||
     !agentId ||
-    compatibilityOwner === normalizeAgentId(agentId)
+    resolveAcpLegacyUnscopedOwner(cfg, normalizedKey) === normalizeAgentId(agentId)
   ) {
     keys.push(normalizedKey);
   }

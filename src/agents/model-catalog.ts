@@ -46,6 +46,7 @@ export type BuildPreparedModelCatalogParams = {
   modelRegistry: ModelRegistry;
   readOnly?: boolean;
   includeProviderPluginAugmentation?: boolean;
+  providerIds?: readonly string[];
   metadataSnapshot: PluginMetadataSnapshot;
   providerOutcomes?: ModelCatalogSnapshot["providerOutcomes"];
   workspaceDir?: string;
@@ -395,6 +396,7 @@ export async function buildPreparedModelCatalogSnapshot(
           ? resolveProviderApiKeyForProvider(providerId)
           : { apiKey: undefined, discoveryApiKey: undefined };
       const supplemental = await augmentModelCatalogWithProviderPlugins({
+        providerIds: params.providerIds,
         config: cfg,
         workspaceDir,
         env,
@@ -494,11 +496,4 @@ export async function buildPreparedModelCatalogSnapshot(
  */
 export function modelSupportsVision(entry: ModelCatalogEntry | undefined): boolean {
   return modelCatalogEntrySupportsInput(entry, "image");
-}
-
-/**
- * Check if a model supports native document/PDF input based on its catalog entry.
- */
-export function modelSupportsDocument(entry: ModelCatalogEntry | undefined): boolean {
-  return modelCatalogEntrySupportsInput(entry, "document");
 }

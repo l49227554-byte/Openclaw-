@@ -11,7 +11,6 @@ import {
   buildPreparedModelCatalogSnapshot,
   findModelCatalogEntry,
   loadManifestModelCatalog,
-  modelSupportsDocument,
   modelSupportsVision,
 } from "./model-catalog.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
@@ -980,7 +979,7 @@ describe("prepared model catalog builder", () => {
     );
   });
 
-  it("reports media capabilities from the prepared row", () => {
+  it("reports image capability from the prepared row", () => {
     const entry: ModelCatalogEntry = {
       id: "media",
       name: "Media",
@@ -988,6 +987,5 @@ describe("prepared model catalog builder", () => {
       input: ["text", "image", "document"],
     };
     expect(modelSupportsVision(entry)).toBe(true);
-    expect(modelSupportsDocument(entry)).toBe(true);
   });
 });

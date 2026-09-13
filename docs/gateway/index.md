@@ -249,8 +249,8 @@ Manual user-unit example when you need a custom install path:
 Description=OpenClaw Gateway
 After=network-online.target
 Wants=network-online.target
-StartLimitBurst=5
-StartLimitIntervalSec=60
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Service]
 ExecStart=/usr/local/bin/openclaw gateway --port 18789
@@ -396,7 +396,7 @@ For full diagnosis ladders, use [Gateway Troubleshooting](/gateway/troubleshooti
 
 - [Configuration](/gateway/configuration)
 - [Gateway troubleshooting](/gateway/troubleshooting)
-- [Background process](/gateway/background-process)
+- [Background exec and process tool](/gateway/background-process) — the agent-facing exec and process tool, not a Gateway service control
 - [Health](/gateway/health)
 - [Doctor](/gateway/doctor)
 - [Authentication](/gateway/authentication)

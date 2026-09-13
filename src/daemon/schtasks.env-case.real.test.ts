@@ -56,16 +56,14 @@ describe.skipIf(process.platform !== "win32")("Windows launcher redirection owne
       const stopPath = path.join(dir, "stop");
       const outputPath = path.join(dir, extraArgument ? "gateway.log" : "gateway output.log");
       const redirectTarget = extraArgument ? `gateway.log${extraArgument}` : `"${outputPath}"`;
-      let launched: LaunchedChild | undefined;
+      const children: LaunchedChild[] = [];
       onTestFinished(async () => {
         await fs.writeFile(stopPath, "");
-        if (launched) {
-          await withTestTimeout(
-            launched.closed,
-            10_000,
-            "Launcher fixture did not close; retaining its directory",
-          );
-        }
+        await withTestTimeout(
+          Promise.all(children.map(({ closed }) => closed)),
+          10_000,
+          "Launcher fixture did not close; retaining its directory",
+        );
         await fs.rm(dir, { recursive: true });
       });
       const port = await getFreePort();
@@ -133,7 +131,7 @@ server.listen(port, "127.0.0.1", () => {
           child.once("close", (code, signal) => resolve({ code, signal }));
         },
       );
-      launched = { child, closed };
+      children.push({ child, closed });
       await Promise.race([
         expect.poll(() => fs.readFile(reportPath, "utf8"), { timeout: 10_000 }).toBeTruthy(),
         closed.then(() => {

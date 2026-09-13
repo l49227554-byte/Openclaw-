@@ -9,8 +9,15 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { compileConfigRegex } from "../security/config-regex.js";
 import { readLoggingConfig } from "./config.js";
 import { replacePatternBounded } from "./redact-bounded.js";
+import type { RedactionEdit } from "./redact-edit-composition.js";
 import { modelVisibleToolTextRedactionState } from "./redact-internal-state.js";
 import { isFullContextToolPayloadRedaction } from "./redact-internal.js";
+import {
+  redactJsonRecord,
+  type RedactionField,
+  type RedactionMessage,
+  type RedactionTarget,
+} from "./redact-json.js";
 import {
   iterateRedactMatches,
   parseRedactPatternSource,
@@ -508,6 +515,14 @@ function isShellReferenceToKey(key: string, value: string): boolean {
   return braced?.[1] === key;
 }
 
+function maskSecretFieldValue(key: string, value: string, fullMask = false): string {
+  const expansion = value.match(/^\$\{([A-Z_][A-Z0-9_]*):[-=?+][^{}]+\}(?![\s\S])/);
+  if (expansion && expansion[1] === key) {
+    return `${value.slice(0, value.indexOf(":") + 2)}***}`;
+  }
+  return fullMask ? "***" : maskToken(value);
+}
+
 function readEnvAssignmentKey(match: string): string | undefined {
   return match.match(/\b([A-Z_][A-Z0-9_]*)\b\s*[=:]/)?.[1];
 }
@@ -600,16 +615,37 @@ function getSecretCaptureStart(
   );
 }
 
-function redactMatch(
+function getRedactionEdit(
   { match, groups, input, offset }: RedactMatch,
   pattern: ResolvedRedactPattern,
   preserveSourceAssignment?: (text: string, offset: number) => boolean,
-): string {
+  project?: (start: number, end: number) => RedactionTarget | undefined,
+): RedactionEdit | undefined {
   if (match.includes("PRIVATE KEY-----")) {
-    return redactPemBlock(match, "…redacted…");
+    const target = project
+      ? project(offset, offset + match.length)
+      : { start: offset, end: offset + match.length, value: match };
+    return (
+      target && {
+        ...target,
+        replacement: project ? "***" : redactPemBlock(target.value, "…redacted…"),
+      }
+    );
   }
   const selected = selectSecretCapture(match, groups);
-  const token = selected.value;
+  const tokenIndex =
+    selected.value === match ? 0 : getSecretCaptureStart(pattern, input, match, offset, selected);
+  if (tokenIndex < 0) {
+    return undefined;
+  }
+  const start = offset + tokenIndex;
+  const target = project
+    ? project(start, start + selected.value.length)
+    : { start, end: start + selected.value.length, value: selected.value };
+  if (!target) {
+    return undefined;
+  }
+  const token = target.value;
   if (
     sourceAssignmentPatterns.has(pattern) &&
     preserveSourceAssignment?.(
@@ -617,7 +653,7 @@ function redactMatch(
       offset + getSecretCaptureStart(pattern, input, match, offset, selected),
     )
   ) {
-    return match;
+    return undefined;
   }
   const formAwareValue = formAwareEqualsAssignmentPatterns.has(pattern)
     ? splitFormAwareCredentialValue(token)
@@ -625,9 +661,15 @@ function redactMatch(
   // An earlier pass (form-body or quoted-assignment masking) may already have replaced this
   // value with ***; re-masking would strip its quote wrapper around the placeholder.
   if (splitSecretValueForMask(formAwareValue.secret).maskable === "***") {
-    return match;
+    return undefined;
   }
   const isShellReferencePattern = shellReferencePreservingPatterns.has(pattern);
+  if (project && isShellReferencePattern && target.key && target.fieldValue) {
+    const replacement = maskSecretFieldValue(target.key, target.fieldValue, true);
+    if (replacement.startsWith("${")) {
+      return { start: 0, end: target.fieldValue.length, replacement };
+    }
+  }
   // Preserve shell variable references (e.g. `MY_TOKEN=$MY_TOKEN`) for assignment patterns
   // registered as shell-reference-preserving, so non-secret expansions that merely echo the
   // assignment key are not masked.
@@ -635,27 +677,34 @@ function redactMatch(
     isShellReferencePattern &&
     (shouldPreserveShellReferenceMatch(match, token) || isEmptyShellParameterExpansionTail(token))
   ) {
-    return match;
+    return undefined;
   }
   // Assignment values can legitimately include trailing shell/structural characters
   // (e.g. `${VAR:-default}`); mask the captured token whole so those characters count toward the
   // retained hint instead of being exposed by delimiter-aware masking.
   // Source goes through both the guard and SQLite. Full assignment masks keep
   // those copies identical; diagnostic hints otherwise shrink on the second pass.
-  const masked =
-    preserveSourceAssignment && sourceAssignmentPatterns.has(pattern)
+  const masked = project
+    ? "***"
+    : preserveSourceAssignment && sourceAssignmentPatterns.has(pattern)
       ? maskSecretValue(token)
       : isShellReferencePattern
         ? maskToken(token)
         : `${maskSecretValue(formAwareValue.secret, { hinted: true })}${formAwareValue.suffix}`;
-  if (token === match) {
-    return masked;
-  }
-  const tokenIndex = getSecretCaptureStart(pattern, input, match, offset, selected);
-  if (tokenIndex < 0) {
-    return match;
-  }
-  return `${match.slice(0, tokenIndex)}${masked}${match.slice(tokenIndex + token.length)}`;
+  return { start: target.start, end: target.end, replacement: masked };
+}
+
+function redactMatch(
+  match: RedactMatch,
+  pattern: ResolvedRedactPattern,
+  preserveSourceAssignment?: (text: string, offset: number) => boolean,
+): string {
+  const edit = getRedactionEdit(match, pattern, preserveSourceAssignment);
+  return edit
+    ? match.match.slice(0, edit.start - match.offset) +
+        edit.replacement +
+        match.match.slice(edit.end - match.offset)
+    : match.match;
 }
 
 export function redactText(
@@ -1094,6 +1143,152 @@ function redactSecretsWithOptions<T>(value: T, options: RedactOptions): T {
 
 export function redactSecrets<T>(value: T): T {
   return redactSecretsWithOptions(value, resolveToolPayloadRedaction());
+}
+
+function preservesStructuredReference(key: string, value: string): boolean {
+  return (
+    (key.toLowerCase() === "session" && STRUCTURED_INTERNAL_SOURCE_PATH_VALUE_RE.test(value)) ||
+    isShellReferenceToKey(key, value)
+  );
+}
+
+function shouldRedactStructuredStringField(
+  key: string,
+  value: string,
+  path: readonly string[],
+  objectPath: boolean,
+): boolean {
+  return (
+    shouldRedactStructuredAuthorizationCode(
+      key.toLowerCase(),
+      path,
+      objectPath ? value : undefined,
+    ) ||
+    (isSensitiveFieldKey(key) && !preservesStructuredReference(key, value))
+  );
+}
+
+function getFieldRecordEdits(field: RedactionField, mode: RedactSensitiveMode): RedactionEdit[] {
+  const { key, value, path, objectPath } = field;
+  if (!field.string) {
+    return mode !== "off" && value !== "null" && shouldRedactStructuredPrimitiveField(key, path)
+      ? [{ start: 0, end: value.length, replacement: "***" }]
+      : [];
+  }
+  if (mode === "off") {
+    return [];
+  }
+  if (
+    isPublicShareIdPath(path) ||
+    shouldRedactStructuredStringField(key, value, path, objectPath)
+  ) {
+    return [
+      {
+        start: 0,
+        end: value.length,
+        replacement: maskSecretFieldValue(key, value, true),
+      },
+    ];
+  }
+  return [];
+}
+
+function getTextRecordEdits(field: RedactionField, mode: RedactSensitiveMode): RedactionEdit[] {
+  const { value } = field;
+  const edits: RedactionEdit[] = [];
+  redactRegisteredSecretValues(value, (secret, start) => {
+    edits.push({
+      start: field.string ? start : 0,
+      end: field.string ? start + secret.length : value.length,
+      replacement: "***",
+    });
+    return secret;
+  });
+  if (mode === "off" || !field.string) {
+    return edits;
+  }
+  const bitmap = computeSensitiveRedactionBitmap(value, { mode, patterns: [] });
+  for (let start = 0; start < bitmap.length; start += 1) {
+    if (!bitmap[start]) {
+      continue;
+    }
+    let end = start + 1;
+    while (bitmap[end]) {
+      end += 1;
+    }
+    edits.push({ start, end, replacement: "***" });
+    start = end - 1;
+  }
+  return edits;
+}
+
+function getAppPasswordRecordEdits(field: RedactionField, changed: boolean): RedactionEdit[] {
+  const edits: RedactionEdit[] = [];
+  const { key, value, messagePart } = field;
+  if (messagePart || changed || STRUCTURED_APP_PASSWORD_FIELD_RE.test(key)) {
+    for (const match of value.matchAll(APP_SPECIFIC_PASSWORD_RE)) {
+      if (looksLikeAppSpecificPassword(match[0])) {
+        edits.push({ start: match.index, end: match.index + match[0].length, replacement: "***" });
+      }
+    }
+  }
+  return edits;
+}
+
+export function resolveFileLogRedactOptions(): ResolvedRedactOptions {
+  return resolveRedactOptions(resolveToolPayloadRedaction());
+}
+
+const structuredAuthRecordPattern: ResolvedRedactPattern = {
+  source: "structured authorization parameters",
+  *exec(input) {
+    for (const { start, end } of findStructuredAuthParamRanges(input)) {
+      yield { match: input.slice(start, end), groups: [], input, offset: start };
+    }
+  },
+};
+
+/** Converts native values once and applies configured and structural protection before output. */
+export function redactLogRecordForTransport(
+  record: Record<string, unknown>,
+  messageKeys?: ReadonlySet<string>,
+  deriveMessage?: (record: Record<string, unknown>) => RedactionMessage | undefined,
+  decodedOptions: ResolvedRedactOptions = resolveRedactOptions(),
+): Record<string, unknown> {
+  const resolved = resolveRedactOptions();
+  const ancestors: object[] = [];
+  const json = JSON.stringify(record, function (this: object, _key, value: unknown) {
+    if (typeof value === "bigint") {
+      return String(value);
+    }
+    if (value !== null && typeof value === "object") {
+      while (ancestors.length > 0 && ancestors.at(-1) !== this) {
+        ancestors.pop();
+      }
+      if (ancestors.includes(value)) {
+        return "[Circular]";
+      }
+      ancestors.push(value);
+    }
+    return value;
+  });
+  const materialized: Record<string, unknown> = JSON.parse(json);
+  const message = deriveMessage?.(materialized);
+  if (message) {
+    materialized.message = message.text;
+  }
+  return JSON.parse(
+    redactJsonRecord(
+      message ? JSON.stringify(materialized) : json,
+      [decodedOptions.patterns, [structuredAuthRecordPattern, ...resolved.patterns]],
+      (match, pattern, project) => getRedactionEdit(match, pattern, undefined, project),
+      getAppPasswordRecordEdits,
+      (field) => getFieldRecordEdits(field, resolved.mode),
+      (field) => getTextRecordEdits(field, resolved.mode),
+      messageKeys,
+      message,
+    ),
+  );
 }
 
 export function redactModelVisibleSecrets<T>(value: T): T {

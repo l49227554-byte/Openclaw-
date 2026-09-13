@@ -664,7 +664,12 @@ extension OpenClawChatViewModel {
                 thinking: thinkingLevel,
                 idempotencyKey: attempt.runId,
                 attachments: attempt.encodedAttachments)
-            guard isCurrentSession(attempt.draft.session) else { return }
+            guard isCurrentSession(attempt.draft.session) else {
+                if response.status != "error", response.status != "timeout" {
+                    self.finishAcceptedComposerSend(attempt.draft)
+                }
+                return
+            }
             await self.handleLiveSendResponse(response, attempt: attempt)
         } catch {
             await self.handleLiveSendFailure(

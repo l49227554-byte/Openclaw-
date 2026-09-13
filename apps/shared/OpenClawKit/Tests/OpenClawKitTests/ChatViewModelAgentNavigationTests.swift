@@ -24,19 +24,78 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
     let catalogs: [Result<OpenClawChatAgentsListResponse?, Failure>]
     let catalogGate: AgentNavigationGate?
     let sendGate: AgentNavigationGate?
+    let supportsAgentScopes: Bool
+    let firstAbortGate: AgentNavigationGate?
     private(set) var catalogRequests = 0
     private(set) var sentKeys: [String] = []
     private(set) var createdKeys: [String] = []
     private(set) var listedAgentIDs: [String?] = []
+    private(set) var historyTargets: [OpenClawChatSessionTarget] = []
+    private(set) var subscriptionTargets: [OpenClawChatSessionTarget] = []
+    private(set) var sentTargets: [OpenClawChatSessionTarget] = []
+    private(set) var mutationRequests: [OpenClawChatGatewayRequest] = []
+    private(set) var abortTargets: [OpenClawChatSessionTarget] = []
+    private(set) var fullMessageTargets: [OpenClawChatSessionTarget] = []
 
     init(
         catalogs: [Result<OpenClawChatAgentsListResponse?, Failure>],
         catalogGate: AgentNavigationGate? = nil,
-        sendGate: AgentNavigationGate? = nil)
+        sendGate: AgentNavigationGate? = nil,
+        supportsAgentScopes: Bool = true,
+        firstAbortGate: AgentNavigationGate? = nil)
     {
         self.catalogs = catalogs
         self.catalogGate = catalogGate
         self.sendGate = sendGate
+        self.supportsAgentScopes = supportsAgentScopes
+        self.firstAbortGate = firstAbortGate
+    }
+
+    nonisolated func scoped(toAgentID agentID: String) -> (any OpenClawChatTransport)? {
+        self.supportsAgentScopes ? AgentScopedNavigationTransport(base: self, agentID: agentID) : nil
+    }
+
+    func recordHistory(_ target: OpenClawChatSessionTarget) -> OpenClawChatHistoryPayload {
+        self.historyTargets.append(target)
+        return OpenClawChatHistoryPayload(
+            sessionKey: target.sessionKey,
+            sessionId: nil,
+            messages: [],
+            thinkingLevel: "off")
+    }
+
+    func recordSubscription(_ target: OpenClawChatSessionTarget) {
+        self.subscriptionTargets.append(target)
+    }
+
+    func recordSend(_ target: OpenClawChatSessionTarget) {
+        self.sentTargets.append(target)
+    }
+
+    func recordAbort(_ target: OpenClawChatSessionTarget) async {
+        self.abortTargets.append(target)
+        if self.abortTargets.count == 1 { await self.firstAbortGate?.wait() }
+    }
+
+    func recordFullMessage(_ target: OpenClawChatSessionTarget) {
+        self.fullMessageTargets.append(target)
+    }
+
+    func requestFullMessage(sessionKey: String, messageID _: String) async throws -> OpenClawChatMessage? {
+        self.recordFullMessage(.init(sessionKey: sessionKey, agentID: nil))
+        return nil
+    }
+
+    func recordMutation(_ request: OpenClawChatGatewayRequest) -> Data {
+        self.mutationRequests.append(request)
+        return Data("{}".utf8)
+    }
+
+    func acquireSessionMutationRouteLease() async -> OpenClawChatSessionMutationRouteLease? {
+        OpenClawChatSessionMutationRouteLease(
+            sessionTarget: { .resolve($0, selectedAgentID: "main", policy: .preserveBareKeys) },
+            unreadAckContract: true,
+            request: { await self.recordMutation($0) })
     }
 
     func listAgents() async throws -> OpenClawChatAgentsListResponse? {
@@ -95,6 +154,53 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
     }
 }
 
+private struct AgentScopedNavigationTransport: OpenClawChatTransport {
+    let base: AgentNavigationTransport
+    let agentID: String
+
+    func scoped(toAgentID agentID: String) -> (any OpenClawChatTransport)? {
+        self.base.scoped(toAgentID: agentID)
+    }
+
+    func requestFullMessage(sessionKey: String, messageID _: String) async throws -> OpenClawChatMessage? {
+        await self.base.recordFullMessage(.init(sessionKey: sessionKey, agentID: self.agentID))
+        return nil
+    }
+
+    func requestHistory(sessionKey: String) async throws -> OpenClawChatHistoryPayload {
+        await self.base.recordHistory(.init(sessionKey: sessionKey, agentID: self.agentID))
+    }
+
+    func setActiveSessionKey(_ sessionKey: String) async throws {
+        await self.base.recordSubscription(.init(sessionKey: sessionKey, agentID: self.agentID))
+    }
+
+    func abortRun(sessionKey: String, runId _: String) async throws {
+        await self.base.recordAbort(.init(sessionKey: sessionKey, agentID: self.agentID))
+    }
+
+    func sendMessage(
+        sessionKey: String,
+        message: String,
+        thinking: String,
+        idempotencyKey: String,
+        attachments: [OpenClawChatAttachmentPayload]) async throws -> OpenClawChatSendResponse
+    {
+        await self.base.recordSend(.init(sessionKey: sessionKey, agentID: self.agentID))
+        return try await self.base.sendMessage(
+            sessionKey: sessionKey, message: message, thinking: thinking,
+            idempotencyKey: idempotencyKey, attachments: attachments)
+    }
+
+    func requestHealth(timeoutMs _: Int) async throws -> Bool {
+        true
+    }
+
+    func events() -> AsyncStream<OpenClawChatTransportEvent> {
+        self.base.events()
+    }
+}
+
 @MainActor
 private final class AgentNavigationFixture {
     let suite = "OpenClawAgentNavigationTests.\(UUID().uuidString)"
@@ -130,6 +236,131 @@ struct ChatViewModelAgentNavigationTests {
             sessionRoutingContract: contract)
     }
 
+    @Test(arguments: ["per-sender|inbox|main", "global|inbox|main"])
+    func `bare global selection preserves its owner and distinct drafts after default changes`(
+        contract: String) async throws
+    {
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog(contract: contract))])
+        let fixture = AgentNavigationFixture(transport: transport, routingContract: contract)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.switchSession(to: "global", agentID: "research")
+        let research = OpenClawChatSessionTarget(sessionKey: "global", agentID: "research")
+        try await waitUntil("research history subscribed") { await transport.historyTargets.contains(research) }
+        #expect(await transport.subscriptionTargets.contains(research))
+        vm.syncActiveAgentId("replacement-default")
+        #expect(vm.selectedAgentID == "research")
+        #expect(vm.currentSessionTarget == research)
+        vm.input = "Send to Research"
+        vm.send()
+        try await waitUntil("research send") { await transport.sentTargets == [research] }
+        try await waitUntil("research send settles") { await MainActor.run { !vm.isSending } }
+        vm.input = "research draft"
+
+        vm.switchSession(to: "global", agentID: "main")
+        let main = OpenClawChatSessionTarget(sessionKey: "global", agentID: "main")
+        try await waitUntil("same-key main history subscribed") { await transport.historyTargets.contains(main) }
+        #expect(vm.input.isEmpty)
+        vm.input = "main draft"
+        vm.switchSession(to: "agent:research:global")
+        #expect(vm.input.isEmpty)
+        vm.input = "ordinary qualified global draft"
+        vm.switchSession(to: "global", agentID: "research")
+        #expect(vm.input == "research draft")
+        vm.switchSession(to: "agent:research:global")
+        #expect(vm.input == "ordinary qualified global draft")
+    }
+
+    @Test(arguments: ["main", "research"])
+    func `unsupported scoped transports reject every explicit bare conversation owner`(agentID: String) {
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog())], supportsAgentScopes: false)
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        fixture.viewModel.switchSession(to: "global", agentID: agentID)
+        #expect(fixture.viewModel.sessionKey == "main")
+        #expect(fixture.viewModel.errorText != nil)
+    }
+
+    @Test func `full message expansion retains the owner captured before navigation`() async throws {
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog())])
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.switchSession(to: "global", agentID: "research")
+        let request = ChatFullMessageReaderRequest(
+            viewModel: vm, messageID: "message-one")
+        vm.switchSession(to: "global", agentID: "main")
+        _ = try await request.load()
+        #expect(await transport.fullMessageTargets == [.init(sessionKey: "global", agentID: "research")])
+    }
+
+    @Test func `ambient custom transports keep their full message reader without scoped support`() async throws {
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog())], supportsAgentScopes: false)
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        let request = ChatFullMessageReaderRequest(viewModel: fixture.viewModel, messageID: "message-one")
+        _ = try await request.load()
+        #expect(await transport.fullMessageTargets == [.init(sessionKey: "main", agentID: nil)])
+    }
+
+    @Test(arguments: ["global|inbox|main", "per-sender|inbox|main"])
+    func `qualified main aliases share drafts while ordinary global remains separate`(contract: String) async {
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog(contract: contract))])
+        let fixture = AgentNavigationFixture(
+            transport: transport, sessionKey: "agent:research:main", routingContract: contract)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        await vm.refreshAgents()
+        vm.input = "Primary draft"
+        vm.switchAgent(to: "research")
+        #expect(vm.sessionKey == "agent:research:inbox")
+        #expect(vm.input == "Primary draft")
+        vm.switchSession(to: "agent:research:global")
+        #expect(vm.input.isEmpty)
+        vm.input = "Ordinary global draft"
+        vm.switchSession(to: "agent:research:main")
+        #expect(vm.input == "Primary draft")
+        vm.switchSession(to: "agent:research:global")
+        #expect(vm.input == "Ordinary global draft")
+    }
+
+    @Test func `an abort keeps its captured global owner across navigation between runs`() async throws {
+        let gate = AgentNavigationGate()
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog())], firstAbortGate: gate)
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.switchSession(to: "global", agentID: "research")
+        try await waitUntil("research bootstrap finishes") { await MainActor.run { !vm.isLoading } }
+        vm.pendingRuns = ["run-one", "run-two"]
+        vm.abort()
+        try await waitUntil("first abort begins") { await transport.abortTargets.count == 1 }
+        vm.switchSession(to: "global", agentID: "main")
+        await gate.release()
+        try await waitUntil("both requested runs aborted") { await transport.abortTargets.count == 2 }
+        #expect(await transport.abortTargets.allSatisfy {
+            $0 == OpenClawChatSessionTarget(sessionKey: "global", agentID: "research")
+        })
+    }
+
+    @Test func `row mutations retain the global owner while another agent is selected`() async throws {
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog())])
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.renameSession(key: "global", label: "Research notes", agentID: "research")
+        vm.setSessionPinned(key: "global", pinned: true, agentID: "research")
+        vm.setSessionUnread(key: "global", unread: true, agentID: "research")
+        await vm.setSessionColor(key: "global", color: "blue", agentID: "research")
+        try await vm.setSessionGroup(key: "global", group: "Work", agentID: "research")
+        vm.deleteSession("global", agentID: "research")
+        try await waitUntil("all row mutations dispatched") { await transport.mutationRequests.count == 6 }
+        let requests = await transport.mutationRequests
+        #expect(requests.allSatisfy { $0.params["key"]?.value as? String == "global" })
+        #expect(requests.allSatisfy { $0.params["agentId"]?.value as? String == "research" })
+        #expect(vm.selectedAgentID == "main")
+    }
+
     @Test(arguments: ["per-agent|inbox|main", "global|inbox|main"])
     func `agent selection reopens its main and keeps sends and new chats on that agent`(contract: String) async throws {
         let transport = AgentNavigationTransport(catalogs: [.success(self.catalog(contract: contract))])
@@ -139,7 +370,7 @@ struct ChatViewModelAgentNavigationTests {
         await vm.refreshAgents()
 
         vm.switchAgent(to: "RESEARCH")
-        let mainKey = contract.hasPrefix("global|") ? "global" : "inbox"
+        let mainKey = "inbox"
         let selectedKey = "agent:research:\(mainKey)"
         #expect(vm.sessionKey == selectedKey)
         #expect(vm.selectedAgentID == "research")
@@ -194,7 +425,7 @@ struct ChatViewModelAgentNavigationTests {
             routingContract: contract)
         defer { fixture.close() }
         let vm = fixture.viewModel
-        let mainKey = contract.hasPrefix("global|") ? "global" : "inbox"
+        let mainKey = "inbox"
 
         vm.deleteSession("agent:research:topic")
 

@@ -114,7 +114,7 @@ struct ChatSessionSidebar: View {
             TextField(String(localized: "Thread name"), text: self.$renameText)
             Button(String(localized: "Rename")) {
                 if let session = self.sessionPendingRename {
-                    self.viewModel.renameSession(key: session.key, label: self.renameText)
+                    self.viewModel.renameSession(key: session.key, label: self.renameText, agentID: session.agentId)
                 }
                 self.sessionPendingRename = nil
             }
@@ -125,7 +125,7 @@ struct ChatSessionSidebar: View {
         .confirmationDialog(self.deleteDialogTitle, isPresented: self.isPresentingDeleteDialog) {
                 Button(String(localized: "Delete Thread"), role: .destructive) {
                     if let session = self.sessionPendingDeletion {
-                        self.viewModel.deleteSession(session.key)
+                        self.viewModel.deleteSession(session.key, agentID: session.agentId)
                     }
                     self.sessionPendingDeletion = nil
                 }
@@ -146,7 +146,8 @@ struct ChatSessionSidebar: View {
             },
             set: { next in
                 guard let next, next != self.viewModel.sessionKey else { return }
-                self.viewModel.switchSession(to: next)
+                let agentID = self.viewModel.sessions.first(where: { $0.key == next })?.agentId
+                self.viewModel.switchSession(to: next, agentID: agentID)
             })
     }
 
@@ -366,7 +367,7 @@ struct ChatSessionSidebar: View {
             self.actionLabel(String(localized: "Rename…"), systemImage: "pencil")
         }
         Button {
-            self.viewModel.setSessionPinned(key: session.key, pinned: session.pinned != true)
+            self.viewModel.setSessionPinned(key: session.key, pinned: session.pinned != true, agentID: session.agentId)
         } label: {
             self.actionLabel(
                 session.pinned == true ? String(localized: "Unpin") : String(localized: "Pin"),
@@ -376,7 +377,8 @@ struct ChatSessionSidebar: View {
             Task {
                 await self.viewModel.forkSession(
                     key: session.key,
-                    fromLastCompleted: session.hasActiveRun == true)
+                    fromLastCompleted: session.hasActiveRun == true,
+                    agentID: session.agentId)
             }
         } label: {
             self.actionLabel(
@@ -386,7 +388,7 @@ struct ChatSessionSidebar: View {
                 systemImage: "arrow.triangle.branch")
         }
         Button {
-            self.viewModel.setSessionUnread(key: session.key, unread: session.unread != true)
+            self.viewModel.setSessionUnread(key: session.key, unread: session.unread != true, agentID: session.agentId)
         } label: {
             self.actionLabel(
                 session.unread == true ? String(localized: "Mark Read") : String(localized: "Mark Unread"),
@@ -405,7 +407,7 @@ struct ChatSessionSidebar: View {
             }
         }
         OpenClawSessionColorMenu(color: session.color) { color in
-            Task { await self.viewModel.setSessionColor(key: session.key, color: color) }
+            Task { await self.viewModel.setSessionColor(key: session.key, color: color, agentID: session.agentId) }
         }
         Divider()
         Button {

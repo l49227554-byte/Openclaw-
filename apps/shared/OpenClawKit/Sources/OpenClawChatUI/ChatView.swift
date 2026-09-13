@@ -277,12 +277,7 @@ public struct OpenClawChatView: View {
         .sheet(item: self.$fullMessageRequest) { request in
             ChatFullMessageReader(
                 request: request,
-                markdownVariant: self.markdownVariant,
-                load: {
-                    try await self.viewModel.transport.requestFullMessage(
-                        sessionKey: request.sessionKey,
-                        messageID: request.messageID)
-                })
+                markdownVariant: self.markdownVariant)
         }
         #if os(iOS)
         .sheet(item: self.$selectTextMessage) {
@@ -484,7 +479,7 @@ public struct OpenClawChatView: View {
             self.hasPerformedInitialScroll = true
             self.lastTurnStartID = self.latestVisibleTurnStartID
         }
-        .onChange(of: self.viewModel.sessionKey) { _, _ in
+        .onChange(of: self.viewModel.currentSessionTarget) { _, _ in
             self.speech?.stop()
             self.hasPerformedInitialScroll = false
             self.followTarget = .latest
@@ -1335,7 +1330,7 @@ extension OpenClawChatView {
         {
             Button {
                 self.fullMessageRequest = ChatFullMessageReaderRequest(
-                    sessionKey: self.viewModel.sessionKey,
+                    viewModel: self.viewModel,
                     messageID: messageID)
             } label: {
                 Label {

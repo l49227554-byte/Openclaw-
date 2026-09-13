@@ -534,13 +534,9 @@ public enum ChatSessionSidebarModel {
         activeAgentID: String?) -> String
     {
         let normalizedCurrent = currentSessionKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedAgent = activeAgentID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let preferredAliasKey = if normalizedCurrent == "global",
-                                   let normalizedAgent,
-                                   !normalizedAgent.isEmpty
-        {
-            "agent:\(normalizedAgent):global"
-        } else if normalizedCurrent == "main" {
+        // The stored global row is distinct from an ordinary owner-qualified :global conversation.
+        if normalizedCurrent == "global" { return currentSessionKey }
+        let preferredAliasKey = if normalizedCurrent == "main" {
             mainSessionKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         } else {
             ""
@@ -586,7 +582,7 @@ public enum ChatSessionSidebarModel {
         query: String) -> [OpenClawChatSessionEntry]
     {
         let scopedSessions = sessions.filter {
-            self.isSessionInActiveAgentScope(key: $0.key, activeAgentID: activeAgentID)
+            self.isSessionInActiveAgentScope(key: $0.key, agentID: $0.agentId, activeAgentID: activeAgentID)
         }
         let selectedSessionKey = self.selectedSessionKey(
             sessions: scopedSessions,

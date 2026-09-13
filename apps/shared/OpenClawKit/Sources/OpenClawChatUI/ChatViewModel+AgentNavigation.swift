@@ -6,7 +6,7 @@ extension OpenClawChatViewModel {
     }
 
     var selectedAgentID: String? {
-        OpenClawChatSessionKey.agentID(from: self.sessionKey)?.lowercased() ??
+        self.explicitSessionAgentID ?? OpenClawChatSessionKey.agentID(from: self.sessionKey)?.lowercased() ??
             self.activeAgentId ?? self.agentCatalog?.defaultId.lowercased() ??
             OpenClawChatSessionKey.agentID(from: self.resolvedMainSessionKey)?.lowercased()
     }
@@ -32,7 +32,7 @@ extension OpenClawChatViewModel {
             self.agentCatalog?.sessionRoutingContract ?? self.sessionRoutingContract)
         let mainKey: String
         if let routing {
-            mainKey = routing.scope == "global" ? "global" : routing.mainKey
+            mainKey = routing.mainKey
         } else {
             let configured = self.sessionDefaults?.mainSessionKey?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -42,7 +42,7 @@ extension OpenClawChatViewModel {
         }
         // An explicit key keeps both the transport and composer draft on the selected agent,
         // even when the Gateway's default agent changes or its session scope is global.
-        return "agent:\(agentID.lowercased()):\(mainKey)"
+        return ChatSessionNavigation.primaryKey(agentID: agentID, mainKey: mainKey)
     }
 
     func refreshAgents() async {

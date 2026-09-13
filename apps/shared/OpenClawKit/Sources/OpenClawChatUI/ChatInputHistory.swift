@@ -234,12 +234,24 @@ struct ChatInputHistory: Equatable, Sendable {
 }
 
 extension OpenClawChatViewModel {
-    func composerSessionKey(for sessionKey: String) -> String {
-        guard OpenClawChatSessionKey.agentID(from: sessionKey) == nil,
-              let agentID = self.activeAgentId ?? self.agentCatalog?.defaultId
+    func composerSessionKey(for sessionKey: String, agentID: String? = nil) -> String {
+        let qualifiedOwner = OpenClawChatSessionKey.agentID(from: sessionKey)
+        guard let agentID = qualifiedOwner ?? agentID ??
+            self.explicitSessionAgentID ?? self.activeAgentId ?? self.agentCatalog?.defaultId
         else { return sessionKey }
+        let routing = OpenClawChatSessionRoutingContract.parse(
+            self.agentCatalog?.sessionRoutingContract ?? self.sessionRoutingContract)
+        if qualifiedOwner != nil {
+            return ChatSessionNavigation.comparisonKey(
+                sessionKey, agentID: agentID, scope: routing?.scope, mainKey: routing?.mainKey)
+        }
         if sessionKey.lowercased() == "main" {
             return self.mainSessionKey(forAgent: agentID)
+        }
+        if sessionKey.lowercased() == "global" {
+            return routing?.scope == "global"
+                ? self.mainSessionKey(forAgent: agentID)
+                : "\(agentID)\u{0}global"
         }
         return "agent:\(agentID.lowercased()):\(sessionKey)"
     }
@@ -310,9 +322,9 @@ extension OpenClawChatViewModel {
         self.inputHistoriesBySession[key] = history
     }
 
-    func prepareComposerForSessionSwitch(to nextSessionKey: String) {
+    func prepareComposerForSessionSwitch(to nextSessionKey: String, agentID: String? = nil) {
         let currentKey = self.composerSessionKey(for: self.sessionKey)
-        let nextKey = self.composerSessionKey(for: nextSessionKey)
+        let nextKey = self.composerSessionKey(for: nextSessionKey, agentID: agentID)
         var currentHistory = self.inputHistoriesBySession[currentKey] ?? ChatInputHistory()
         let draft = currentHistory.draftForSessionSwitch(currentDraft: self.input)
         if draft.isEmpty {

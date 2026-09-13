@@ -199,9 +199,9 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
             indexIdentity.status === "mismatched" &&
             indexIdentity.owner === "openclaw"));
       if (shouldRepairIdentity) {
-        // Repair before a read-generation lease can block the rebuild's writer.
+        // The writer rechecks identity under its lease; another manager may have repaired it.
         await this.syncAdmitted(
-          { reason: "search", force: true },
+          { reason: "search" },
           { allowEmbeddingBootstrapFallback: true },
         ).catch((err: unknown) => {
           if (err instanceof WorkerTaskError && err.code === "overloaded") {

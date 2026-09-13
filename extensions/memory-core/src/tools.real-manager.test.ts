@@ -339,6 +339,76 @@ describe("memory_search real manager", () => {
     },
   );
 
+  it("memory_search reports a failed format repair and keeps the published index", async () => {
+    const cfg = fixture.createConfig({ vectorEnabled: false });
+    cfg.memory = { ...cfg.memory, search: { ...cfg.memory?.search, cache: { enabled: false } } };
+    const manager = await fixture.getFreshManager(cfg, "cli");
+    await manager.sync({ reason: "cli", force: true });
+    await manager.close();
+    const db = openOpenClawAgentDatabase({ agentId: "main" }).db;
+    db.prepare(
+      "UPDATE memory_index_meta SET value = json_set(value, '$.provenanceVersion', 0) WHERE key = 'memory_index_meta_v1'",
+    ).run();
+    const revision = readMemoryDatabaseRevision(db);
+    const embeddings = await import("./memory/embeddings.js");
+    const createProvider = embeddings.createEmbeddingProvider;
+    let unavailable = true;
+    const providerFailure = Object.assign(
+      new Error("HTTP 400: synthetic embedding provider unavailable"),
+      { status: 400 },
+    );
+    const create = vi
+      .spyOn(embeddings, "createEmbeddingProvider")
+      .mockImplementation(async (...args) => {
+        const result = await createProvider(...args);
+        const provider = result.provider;
+        if (!provider) {
+          throw new Error("fixture embedding provider missing");
+        }
+        return {
+          ...result,
+          provider: {
+            ...provider,
+            embedBatch: async (inputs) => {
+              if (unavailable) {
+                throw providerFailure;
+              }
+              return await provider.embedBatch(inputs);
+            },
+          },
+        };
+      });
+    try {
+      const tool = createMemorySearchTool({ config: cfg, agentId: "main" });
+      if (!tool) {
+        throw new Error("memory_search tool missing");
+      }
+      const failed = await tool.execute("failed-format-repair", {
+        query: "alpha",
+        corpus: "memory",
+      });
+      expect(failed.details).toMatchObject({
+        unavailable: true,
+        error: expect.stringContaining("HTTP 400"),
+        warning: expect.stringContaining("The existing index was left unchanged."),
+        action: expect.stringContaining("openclaw memory status --deep --agent main"),
+      });
+      expect(readMemoryDatabaseRevision(db)).toBe(revision);
+      unavailable = false;
+      await closeAllMemorySearchManagers();
+      const recovered = await tool.execute("provider-restored", {
+        query: "alpha",
+        corpus: "memory",
+      });
+      expect(recovered.details).toMatchObject({
+        results: [expect.objectContaining({ path: "memory/2026-01-12.md" })],
+      });
+      expect(recovered.details).not.toHaveProperty("unavailable");
+    } finally {
+      create.mockRestore();
+    }
+  });
+
   it("preserves reindex guidance alongside wiki results after an embedding model change", async () => {
     const manager = await fixture.getFreshManager(
       fixture.createConfig({ model: "old-embed", vectorEnabled: false }),

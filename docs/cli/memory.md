@@ -107,6 +107,11 @@ After an OpenClaw index-format upgrade, the first search rebuilds the index befo
 returning results. This can take longer and call
 the configured embedding provider. Later searches reuse the repaired index;
 status inspection alone does not rebuild it.
+Concurrent searches wait for the active repair. A slow repair can exceed the
+interactive tool's deadline; the tool reports unavailability while admitted
+index work finishes. If a format repair fails before publication, search reports
+the recorded sync error and retains the prior index. Use `memory status --deep`
+to inspect that failure before retrying.
 
 If status reports an index identity warning after changing embedding settings,
 check the affected agent's provider, model, sources, and extra paths, then rebuild:

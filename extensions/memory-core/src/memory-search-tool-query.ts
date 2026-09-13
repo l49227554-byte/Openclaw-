@@ -3,6 +3,7 @@ import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import {
   formatMemoryIndexRebuildGuidance,
   resolveMemoryIndexIdentityDiagnostic,
+  resolveMemorySearchStaleness,
   MEMORY_SEARCH_DEADLINE_CONTROL,
   type MemoryIndexIdentityDiagnostic,
   type MemoryProviderStatus,
@@ -23,7 +24,7 @@ export function buildPausedMemoryIndexUnavailableResult(
   diagnostic: MemoryIndexIdentityDiagnostic,
   params: {
     agentId: string;
-    status: Pick<MemoryProviderStatus, "provider" | "requestedProvider">;
+    status: Pick<MemoryProviderStatus, "provider" | "requestedProvider" | "lastSyncError">;
   },
 ) {
   const cause =
@@ -32,9 +33,17 @@ export function buildPausedMemoryIndexUnavailableResult(
       : diagnostic.code === "metadata_missing"
         ? `the memory index metadata is missing (${diagnostic.reason}); no configuration change is needed`
         : `this OpenClaw version changed the memory index format (${diagnostic.reason}); no configuration change is needed`;
-  return buildMemorySearchUnavailableResult(diagnostic.reason, {
+  const repairFailure = diagnostic.owner === "openclaw" && params.status.lastSyncError?.trim();
+  const repairGuidance = repairFailure
+    ? resolveMemorySearchStaleness(
+        { ...params.status, custom: { indexIdentity: diagnostic } },
+        params.agentId,
+      )
+    : null;
+  return buildMemorySearchUnavailableResult(repairFailure || diagnostic.reason, {
     warning: `Tell the user: memory search is paused because ${cause}.`,
     action: `Tell the user to run: ${formatMemoryIndexRebuildGuidance(params.status, params.agentId)}`,
+    ...repairGuidance,
   });
 }
 

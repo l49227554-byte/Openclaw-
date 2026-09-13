@@ -298,6 +298,14 @@ export function resolveMemorySearchStaleness(
   agentId?: string,
 ): { stale: true; warning: string; action: string } | null {
   const diagnostic = resolveMemoryIndexIdentityDiagnostic(status);
+  const repairFailure = diagnostic?.owner === "openclaw" && status.lastSyncError?.trim();
+  if (repairFailure) {
+    return {
+      stale: true,
+      warning: `Memory index repair failed: ${repairFailure}. The existing index was left unchanged.`,
+      action: `Run: openclaw memory status --deep${agentId?.trim() ? ` --agent ${agentId.trim()}` : ""}. Resolve the reported sync failure before retrying the search.`,
+    };
+  }
   const reason = diagnostic
     ? `${diagnostic.reason} (owner: ${diagnostic.owner}, code: ${diagnostic.code})`
     : status.lastSyncError?.trim();

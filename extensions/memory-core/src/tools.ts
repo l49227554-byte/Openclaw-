@@ -378,16 +378,17 @@ export function createMemorySearchTool(options: MemoryToolOptions) {
           }
           const executed = attempted.value!;
           if (executed.pausedIndexIdentity) {
+            const unavailableResult = buildPausedMemoryIndexUnavailableResult(
+              executed.pausedIndexIdentity,
+              { agentId, status: executed.status },
+            );
             return unavailableMemoryCorpus(
               "memory",
               {
                 results: [],
-                unavailableResult: buildPausedMemoryIndexUnavailableResult(
-                  executed.pausedIndexIdentity,
-                  { agentId, status: executed.status },
-                ),
+                unavailableResult,
               },
-              executed.pausedIndexIdentity.reason,
+              unavailableResult.error,
             );
           }
           const status = executed.status;

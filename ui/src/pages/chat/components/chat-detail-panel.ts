@@ -263,6 +263,8 @@ class ChatDetailPanel extends OpenClawLightDomElement {
           editor.destroy();
           return;
         }
+        // Reload may settle while the editor awaits its language support.
+        editor.setContent(this.currentFileText());
         this.fileEditor = editor;
         this.fileDraftContent = null;
         editor.onDocChanged((nextContent) => {

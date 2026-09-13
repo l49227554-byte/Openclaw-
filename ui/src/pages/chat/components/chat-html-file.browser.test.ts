@@ -1,3 +1,5 @@
+import { LanguageDescription } from "@codemirror/language";
+import { languages } from "@codemirror/language-data";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SidebarContent } from "./chat-sidebar-content-types.ts";
 import { readFileDraft, setFileDraft } from "./chat-sidebar-file-view.ts";
@@ -197,6 +199,70 @@ describe.runIf(browserMode)("HTML file presentation", () => {
       await expect
         .poll(() => panel.querySelector(".cm-content")?.textContent)
         .toBe(action === "Reload" ? latest : draft);
+    },
+  );
+
+  it.each([true, false])(
+    "keeps Reload authoritative while Source language loading is pending (editable=%s)",
+    async (editable) => {
+      const draft = "<h1>Conflicting draft</h1>";
+      const latest = { content: "<h1>Reloaded from disk</h1>", hash: "reloaded-hash", editable };
+      const reload = Promise.withResolvers<typeof latest>();
+      const languageReady = Promise.withResolvers<void>();
+      const { panel, file } = await mount("reload-race.html", draft, undefined, "draft-hash");
+      const save = vi.mocked(file.edit!.save);
+      save
+        .mockResolvedValueOnce({ ok: false, code: "conflict" })
+        .mockResolvedValue({ ok: true, hash: "saved" });
+      vi.mocked(file.edit!.fetchLatest).mockReturnValueOnce(reload.promise);
+      await userEvent.click(button(panel, "Save"));
+      await expect
+        .poll(() => panel.querySelector(".file-view__save-notice")?.textContent)
+        .toContain("Reload");
+      await userEvent.click(button(panel, "Reload"));
+      await expect.poll(() => vi.mocked(file.edit!.fetchLatest).mock.calls.length).toBe(1);
+      const description = LanguageDescription.matchFilename(languages, file.name);
+      if (!description) {
+        throw new Error("Missing HTML language loader");
+      }
+      const load = description.load.bind(description);
+      const pendingLanguage = vi.spyOn(description, "load").mockImplementationOnce(async () => {
+        await languageReady.promise;
+        return load();
+      });
+      try {
+        await userEvent.click(button(panel, "Source"));
+        await expect.poll(() => pendingLanguage.mock.calls.length).toBe(1);
+        expect(panel.querySelector(".cm-editor")).toBeNull();
+        reload.resolve(latest);
+        await expect.poll(() => readFileDraft(file)).toBeUndefined();
+        expect(panel.querySelector(".cm-editor")).toBeNull();
+        languageReady.resolve();
+        await expect
+          .poll(() => panel.querySelector(".cm-content")?.textContent)
+          .toBe(latest.content);
+        const input = panel.querySelector<HTMLElement>(".cm-content")!;
+        expect(input.getAttribute("contenteditable")).toBe(String(editable));
+        if (editable) {
+          expect(button(panel, "Save").disabled).toBe(true);
+          const edited = latest.content + "<p>New edit</p>";
+          await userEvent.fill(input, edited);
+          await userEvent.click(button(panel, "Save"));
+          await expect
+            .poll(() => save.mock.lastCall)
+            .toEqual([{ content: edited, expectedHash: latest.hash }]);
+          await expect.poll(() => readFileDraft(file)).toBeUndefined();
+        } else {
+          expect(
+            [...panel.querySelectorAll("button")].some(
+              (element) => element.textContent?.trim() === "Save",
+            ),
+          ).toBe(false);
+        }
+      } finally {
+        languageReady.resolve();
+        pendingLanguage.mockRestore();
+      }
     },
   );
 

@@ -5,6 +5,7 @@ import type {
   ChannelDoctorEmptyAllowlistAccountContext,
 } from "openclaw/plugin-sdk/channel-contract";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { normalizeAllowFrom } from "./bot-access.js";
 
 /** Which key supplied the allowlist a group actually resolves to. */
 type AllowFromSource = "group" | "defaults" | "channel";
@@ -20,7 +21,7 @@ type LineGroupCoverage = {
 const GROUP_DEFAULTS_KEY = "*";
 
 function hasAllowFromEntries(values?: unknown): boolean {
-  return Array.isArray(values) && values.length > 0;
+  return Array.isArray(values) && normalizeAllowFrom(values).hasEntries;
 }
 
 /**

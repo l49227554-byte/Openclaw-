@@ -166,12 +166,11 @@ export type ConfigMethod =
   | "config.schema";
 
 export type ConfigWriteCoordinator = {
-  prepareDiscard: () => Promise<void>;
   patchForm: (path: Array<string | number>, value: unknown) => void;
   removeFormValue: (path: Array<string | number>) => void;
   setRaw: (value: string) => void;
   resetDraft: () => void;
-  discardDraft: () => Promise<void>;
+  discardDraft: (options?: { reloadOnly?: boolean }) => Promise<void>;
   setWritesSuspended: (suspended: boolean, refreshAdmission?: () => Promise<void>) => void;
   waitForPendingWrites: () => Promise<void>;
   save: (options?: RuntimeConfigDispatchOptions) => Promise<boolean>;
@@ -289,7 +288,7 @@ export async function executeConfigExternalMutation<T>(
   }
 }
 
-export type ConfigLoadOptions = LoadConfigOptions & {
+type ConfigLoadOptions = LoadConfigOptions & {
   background?: boolean;
   beforeApplySnapshot?: () => void;
 };

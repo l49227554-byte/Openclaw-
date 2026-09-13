@@ -41,6 +41,9 @@ export function repairJson(
   json: string,
   options?: { preserveValidControlEscapes?: boolean },
 ): string {
+  if (!/[\\\x00-\x1f]/.test(json)) {
+    return json;
+  }
   const preserveValidControlEscapes = options?.preserveValidControlEscapes === true;
   let repaired = "";
   let inString = false;

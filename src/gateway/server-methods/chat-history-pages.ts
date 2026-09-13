@@ -1,7 +1,11 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { readTranscriptDisplayPosition } from "../../chat/transcript-display-position.js";
 import { getCliSessionBinding } from "../../config/sessions/cli-session-binding.js";
-import { resolveSessionTranscriptActiveLeafEntryId } from "../../config/sessions/session-accessor.js";
+import { resolveSessionTranscriptActiveLeafEntryId } from "../../config/sessions/session-accessor.sqlite-message-cut.js";
+import type {
+  ChatHistoryPage,
+  ChatHistoryPageParams,
+} from "../../config/sessions/session-history-types.js";
 import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
 import {
   dropPreSessionStartAnnouncePairs,
@@ -26,24 +30,6 @@ import {
   readSessionMessagesAsync,
   type ReadRecentSessionMessagesResult,
 } from "../session-transcript-readers.js";
-import type { loadSessionEntry } from "../session-utils.js";
-
-export type ChatHistoryPage = {
-  activeLeafEntryId?: string | null;
-  deltaCursor?: string;
-  messages: unknown[];
-  responseOffset?: number;
-  completeCliImport?: true;
-  // Absent only for anchored (messageId) reads: the anchor may resolve a
-  // reset-archive transcript that numeric offset cursors cannot address, so
-  // anchored responses expose no paging metadata.
-  pagination?: {
-    offset: number;
-    totalMessages: number;
-    rawPageMessages: number;
-    exhausted?: true;
-  };
-};
 
 function readCliIdentityProjectionKey(message: unknown): string | undefined {
   const id = readChatHistoryMessageId(message);
@@ -142,7 +128,7 @@ function resolveChatHistoryActiveLeafEntryId(
 /** Add checkpoint token metrics to the synthetic transcript compaction marker. */
 export function enrichChatHistoryCompactionMarkers(
   messages: unknown[],
-  entry: ReturnType<typeof loadSessionEntry>["entry"],
+  entry: ChatHistoryPageParams["entry"],
 ): unknown[] {
   const checkpoints = entry?.compactionCheckpoints;
   if (!Array.isArray(checkpoints) || checkpoints.length === 0) {
@@ -257,21 +243,6 @@ export function capChatHistoryAroundMessage(params: {
   }
   return params.messages.slice(start, end);
 }
-
-export type ChatHistoryPageParams = {
-  entry: ReturnType<typeof loadSessionEntry>["entry"];
-  provider: string | undefined;
-  sessionId: string | undefined;
-  storePath: string | undefined;
-  sessionAgentId: string;
-  canonicalKey: string;
-  max: number;
-  maxHistoryBytes: number;
-  effectiveMaxChars: number;
-  offset: number | undefined;
-  messageId: string | undefined;
-  ignoreCliSessionImports?: boolean;
-};
 
 export async function readChatHistoryPage(
   params: ChatHistoryPageParams,

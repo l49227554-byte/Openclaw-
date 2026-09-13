@@ -1,11 +1,3 @@
-import type {
-  ChatHistoryPage,
-  ChatHistoryPageParams,
-} from "../../gateway/server-methods/chat-history-pages.js";
-import type {
-  SessionHistoryReadParams,
-  SessionHistorySnapshot,
-} from "../../gateway/session-history-state.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
   DEFAULT_WORKER_PENDING_TASKS,
@@ -18,19 +10,17 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { readRestoredSessionTranscript } from "./session-cold-storage-read.js";
+import type {
+  ChatHistoryPage,
+  SessionHistorySnapshot,
+  SessionHistoryWorkerRequest,
+  SessionHistoryWorkerResult,
+} from "./session-history-types.js";
 import { isSessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { resolveSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { runSessionHistoryWorkerRequest } from "./session-transcript-worker-runtime.js";
 import type { SessionTranscriptHistoryWorkerInput } from "./session-transcript.worker.js";
-
-export type SessionHistoryWorkerRequest =
-  | { kind: "rpc"; params: ChatHistoryPageParams & { sessionId: string; storePath: string } }
-  | { kind: "http"; params: SessionHistoryReadParams };
-
-export type SessionHistoryWorkerResult =
-  | { kind: "rpc"; page: ChatHistoryPage }
-  | { kind: "http"; snapshot: SessionHistorySnapshot };
 
 type QueuedHistoryRead = {
   promise: Promise<SessionHistoryWorkerResult>;

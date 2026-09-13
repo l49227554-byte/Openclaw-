@@ -3,7 +3,13 @@
 import { isDeepStrictEqual } from "node:util";
 import { expectDefined } from "@openclaw/normalization-core";
 import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coercion";
-import type { SessionEntry } from "../config/sessions.js";
+import type {
+  PaginatedSessionHistory,
+  SessionHistoryMessage,
+  SessionHistoryReadParams,
+  SessionHistorySnapshot,
+  SessionHistoryTranscriptTarget,
+} from "../config/sessions/session-history-types.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import {
   DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS,
@@ -27,43 +33,11 @@ import {
 // Session history state owns the SSE-friendly transcript projection:
 // raw messages are projected for display, paginated by transcript seq, then
 // incrementally updated until cursor/window semantics require a full refresh.
-type SessionHistoryTranscriptMeta = {
-  idempotencyKey?: string;
-  seq?: number;
-  turnBoundary?: boolean;
-};
-
-type SessionHistoryMessage = Record<string, unknown> & {
-  __openclaw?: SessionHistoryTranscriptMeta;
-};
-
-type PaginatedSessionHistory = {
-  items: SessionHistoryMessage[];
-  messages: SessionHistoryMessage[];
-  nextCursor?: string;
-  hasMore: boolean;
-};
-
-export type SessionHistorySnapshot = {
-  history: PaginatedSessionHistory;
-  rawTranscriptSeq: number;
-  turnBoundaryPending: boolean;
-  assistantErrorPending: boolean;
-  transcriptPath?: string;
-};
 
 type InlineSessionHistoryAppend = {
   message?: SessionHistoryMessage;
   messageSeq?: number;
   shouldRefresh?: boolean;
-};
-
-type SessionHistoryTranscriptTarget = {
-  agentId?: string;
-  sessionEntry?: SessionEntry;
-  sessionId: string;
-  sessionKey: string;
-  storePath?: string;
 };
 
 type SessionHistoryRawSnapshot = {
@@ -72,13 +46,6 @@ type SessionHistoryRawSnapshot = {
   rawTranscriptSeq?: number;
   totalRawMessages?: number;
   transcriptPath?: string;
-};
-
-export type SessionHistoryReadParams = {
-  target: SessionHistoryTranscriptTarget;
-  maxChars?: number;
-  limit?: number;
-  cursor?: string;
 };
 
 export async function readSessionHistorySnapshotAsync(

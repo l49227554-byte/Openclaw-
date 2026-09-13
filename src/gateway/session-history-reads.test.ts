@@ -9,6 +9,7 @@ import {
   replaceTranscriptEvents,
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-accessor.js";
+import type { SessionHistorySnapshot } from "../config/sessions/session-history-types.js";
 import { SessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
@@ -22,7 +23,6 @@ import {
   readSessionHistorySnapshotAsync,
   readSessionHistorySnapshotLocal,
   SessionHistorySseState,
-  type SessionHistorySnapshot,
 } from "./session-history-state.js";
 import { readChatHistoryMessageId } from "./session-history-tail.js";
 import * as sessionTranscriptReaders from "./session-transcript-readers.js";

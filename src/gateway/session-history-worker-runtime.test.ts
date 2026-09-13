@@ -1,11 +1,11 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import {
-  readSessionHistoryPageInWorker,
-  type SessionHistoryWorkerRequest,
-  type SessionHistoryWorkerResult,
-} from "../config/sessions/session-history-worker-runtime.js";
+import type {
+  SessionHistoryWorkerRequest,
+  SessionHistoryWorkerResult,
+} from "../config/sessions/session-history-types.js";
+import { readSessionHistoryPageInWorker } from "../config/sessions/session-history-worker-runtime.js";
 import type { SessionTranscriptHistoryWorkerInput } from "../config/sessions/session-transcript.worker.js";
 import { DEFAULT_WORKER_PENDING_TASKS } from "../infra/worker-task-capacity.js";
 

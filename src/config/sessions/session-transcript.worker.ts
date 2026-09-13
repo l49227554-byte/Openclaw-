@@ -12,7 +12,7 @@ import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
-} from "./session-history-worker-runtime.js";
+} from "./session-history-types.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import {
   runWithSessionTranscriptReadFence,

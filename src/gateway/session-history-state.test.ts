@@ -5,6 +5,10 @@ import { createHash } from "node:crypto";
 import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 import { describe, expect, test, vi } from "vitest";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
+import type {
+  SessionHistoryReadParams,
+  SessionHistorySnapshot,
+} from "../config/sessions/session-history-types.js";
 import {
   assistantTextMessage,
   messageToolCall,
@@ -12,11 +16,7 @@ import {
   textContent,
   userTextMessage,
 } from "./session-history-fixtures.test-support.js";
-import {
-  SessionHistorySseState,
-  type SessionHistoryReadParams,
-  type SessionHistorySnapshot,
-} from "./session-history-state.js";
+import { SessionHistorySseState } from "./session-history-state.js";
 import * as sessionTranscriptReaders from "./session-transcript-readers.js";
 
 type StateOptions = Pick<SessionHistoryReadParams, "maxChars" | "limit" | "cursor"> &

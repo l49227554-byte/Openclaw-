@@ -1,16 +1,17 @@
 import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import type {
+  SessionTranscriptReadScope,
+  TranscriptEvent,
+} from "../config/sessions/session-accessor.js";
 import {
   isSessionTranscriptProjectionUnavailableError,
   readRecentSessionTranscriptMessageEvents,
   readSessionTranscriptMessageEvents,
-  resolveConcreteSessionStorePath,
+  visitSessionTranscriptMessageEvents,
   waitForSessionTranscriptProjection,
   type SessionTranscriptMessageEvent,
-  type SessionTranscriptReadScope,
-  type TranscriptEvent,
-} from "../config/sessions/session-accessor.js";
-import { visitSessionTranscriptMessageEvents } from "../config/sessions/session-accessor.sqlite-active-events.js";
+} from "../config/sessions/session-accessor.sqlite-active-events.js";
 import {
   readRecentSessionTranscriptHistoryEvents,
   readSessionTranscriptHistoryEventById,
@@ -20,6 +21,7 @@ import {
   readSessionTranscriptHistoryEvents,
   type SessionTranscriptMessageByIdOptions,
 } from "../config/sessions/session-accessor.sqlite-history-events.js";
+import { resolveConcreteSessionStorePath } from "../config/sessions/session-accessor.transcript-target.js";
 import { readRestoredSessionTranscript } from "../config/sessions/session-cold-storage-read.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import type { TranscriptRecentReadLimits } from "../sessions/transcript-anchor-page.js";
@@ -47,7 +49,7 @@ import {
 export type { ReadSessionMessagesAsyncOptions };
 export { capArrayByJsonBytes } from "./session-utils.fs.js";
 export { attachOpenClawTranscriptMeta } from "./session-transcript-message.js";
-export { readSessionTranscriptVisibleMessageDeltaCore } from "../config/sessions/session-accessor.js";
+export { readSessionTranscriptVisibleMessageDeltaCore } from "../config/sessions/session-accessor.sqlite-active-events.js";
 
 export type { SessionTranscriptReadScope };
 

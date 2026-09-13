@@ -27,10 +27,15 @@ function fixture() {
 }
 
 function run(body: string, env: NodeJS.ProcessEnv = {}) {
-  return spawnSync("bash", ["--noprofile", "--norc", "-c", `source ${scriptPath}\n${body}`], {
-    encoding: "utf8",
-    env: { ...process.env, OPENCLAW_INSTALL_CLI_SH_NO_RUN: "1", ...env, BASH_ENV: "", ENV: "" },
-  });
+  // Sourcing cannot use the installer's system-Bash re-exec guard on macOS.
+  return spawnSync(
+    process.platform === "darwin" ? "/bin/bash" : "bash",
+    ["--noprofile", "--norc", "-c", `source ${scriptPath}\n${body}`],
+    {
+      encoding: "utf8",
+      env: { ...process.env, OPENCLAW_INSTALL_CLI_SH_NO_RUN: "1", ...env, BASH_ENV: "", ENV: "" },
+    },
+  );
 }
 
 function install(bin: string, prefix: string, body = "", env: NodeJS.ProcessEnv = {}) {

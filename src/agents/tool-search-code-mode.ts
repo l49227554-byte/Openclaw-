@@ -8,6 +8,7 @@ import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import { appendBoundedTextTail, SESSION_TOOL_STDERR_TAIL_BYTES } from "./sessions/tools/limits.js";
 import { TOOL_SEARCH_CODE_MODE_CHILD_SOURCE } from "./tool-search-code-mode-child.js";
 import { toToolSearchJsonSafe } from "./tool-search-json.js";
+import { withUnavailableMcpServers } from "./tool-search-lookup-miss.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
 import type {
   CodeModeBridgeMethod,
@@ -39,13 +40,14 @@ export async function runCodeMode(params: {
     signal: params.signal,
     onUpdate: params.onUpdate,
   });
-  return {
+  const result = {
     ok: true,
     // JSON IPC already detached and normalized the child's result.
     value: value ?? null,
     logs,
     telemetry: runtime.telemetry(),
   };
+  return withUnavailableMcpServers(result, params.ctx);
 }
 
 function resolveCodeModeChildCommand(): { executable: string; args: string[] } {

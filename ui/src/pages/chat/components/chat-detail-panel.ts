@@ -14,10 +14,11 @@ import type { MarkdownRenderOptions } from "../../../components/markdown-render-
 import type { SessionLinkTarget } from "../../../components/markdown-session-links.ts";
 import { t } from "../../../i18n/index.ts";
 import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
-import { copyToClipboard } from "../../../lib/clipboard.ts";
 import { type EditorId, openEditor } from "../../../lib/editor-links.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
 import { OpenClawLightDomElement } from "../../../lit/openclaw-element.ts";
+import { FileCopyController } from "./chat-file-copy-controller.ts";
+import { FileHtmlPreviewController } from "./chat-html-preview.ts";
 import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
 import type {
   FileSidebarNavigation,
@@ -30,13 +31,7 @@ import {
   handleSidebarKeydown,
   renderSidebarPanel,
 } from "./chat-sidebar-content.ts";
-import {
-  computeFileMatches,
-  emptyCopyFeedback,
-  readFileDraft,
-  setFileDraft,
-  type FileCopyAction,
-} from "./chat-sidebar-file-view.ts";
+import { computeFileMatches, readFileDraft, setFileDraft } from "./chat-sidebar-file-view.ts";
 import type { FileEditorViewHandle } from "./file-editor-view.ts";
 
 type FileSidebarContent = Extract<SidebarContent, { kind: "file" }>;
@@ -67,7 +62,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   @state() private fileSearchQuery = "";
   @state() private fileSearchMatchIndex = 0;
   @state() private fileEditorMenuOpen = false;
-  @state() private fileCopyFeedback = emptyCopyFeedback;
+  private readonly fileCopy = new FileCopyController(this, () => this.visibleContent);
   @state() private fileEditorLoading = false;
   @state() private fileEditing = false;
   @state() private fileDirty = false;
@@ -78,6 +73,12 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     | { kind: "error"; message: string }
     | null = null;
 
+  private readonly htmlPreview = new FileHtmlPreviewController(
+    this,
+    () => this.visibleContent,
+    () => this.currentFileText(),
+  );
+
   private fileOperationVersion = 0;
   private showingRawText = false;
   private rawFileContent: FileSidebarContent | null = null;
@@ -86,11 +87,6 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   private fileDraftContent: string | null = null;
   private fileSavedContent = "";
   private fileHash = "";
-  private readonly copyAttempts = new Map<FileCopyAction, number>();
-  private readonly copyFeedbackTimers = new Map<
-    FileCopyAction,
-    ReturnType<typeof globalThis.setTimeout>
-  >();
   private readonly requestAttachmentUpdate = () => this.requestUpdate();
 
   constructor() {
@@ -100,14 +96,15 @@ class ChatDetailPanel extends OpenClawLightDomElement {
 
   override connectedCallback() {
     super.connectedCallback();
-    this.fileCopyFeedback = emptyCopyFeedback;
     document.addEventListener("pointerdown", this.handleDocumentPointerDown);
   }
 
   override disconnectedCallback() {
     document.removeEventListener("pointerdown", this.handleDocumentPointerDown);
+    if (this.fileDirty) {
+      this.fileDraftContent = this.currentFileText();
+    }
     this.destroyFileEditor();
-    this.clearFileCopyFeedback();
     releaseChatMediaResourceSubscriber(this.requestAttachmentUpdate);
     super.disconnectedCallback();
   }
@@ -121,6 +118,9 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       previousRuntime.connectionEpoch !== this.attachmentRuntime.connectionEpoch
     ) {
       releaseChatMediaResourceSubscriber(this.requestAttachmentUpdate);
+    }
+    if (changed.has("fileNavigation") && this.fileNavigation && this.content?.kind === "file") {
+      this.htmlPreview.showSource();
     }
     if (!changed.has("content")) {
       // A line link is navigation, not replacement content: keep drafts, undo,
@@ -147,8 +147,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     this.fileSearchQuery = "";
     this.fileSearchMatchIndex = 0;
     this.fileEditorMenuOpen = false;
-    this.clearFileCopyFeedback();
-    this.fileCopyFeedback = emptyCopyFeedback;
+    this.fileCopy.reset();
     this.fileOperationVersion += 1;
     this.fileEditing = false;
     this.fileDirty = false;
@@ -171,24 +170,22 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       (this.content?.kind === "file" ? (this.content.edit?.hash ?? "") : "");
     this.fileEditing = Boolean(restoredDraft);
     this.fileDirty = Boolean(restoredDraft);
-    this.fileEditorLoading = this.content?.kind === "file";
+    this.htmlPreview.reset(
+      this.fileDraftContent,
+      Boolean(this.fileNavigation || (this.content?.kind === "file" && this.content.line != null)),
+    );
+    this.fileEditorLoading = this.content?.kind === "file" && !this.htmlPreview.showing;
     this.destroyFileEditor();
-  }
-
-  private clearFileCopyFeedback() {
-    for (const timer of this.copyFeedbackTimers.values()) {
-      globalThis.clearTimeout(timer);
-    }
-    this.copyFeedbackTimers.clear();
-    // Keep attempt tokens monotonic so old work cannot become current after reconnection.
-    for (const [action, attempt] of this.copyAttempts) {
-      this.copyAttempts.set(action, attempt + 1);
-    }
   }
 
   protected override updated(changed: Map<string, unknown>) {
     const visibleContent = this.visibleContent;
-    if (visibleContent?.kind === "file" && !this.showingRawText && !this.error) {
+    if (
+      visibleContent?.kind === "file" &&
+      !this.showingRawText &&
+      !this.htmlPreview.showing &&
+      !this.error
+    ) {
       void this.ensureFileEditor().then(() => {
         this.syncFileEditor();
         if (
@@ -200,6 +197,19 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       });
     }
   }
+
+  private currentFileText(): string {
+    return (
+      this.fileEditor?.getContent() ??
+      this.fileDraftContent ??
+      (this.visibleContent?.kind === "file" ? this.visibleContent.content : "")
+    );
+  }
+
+  private readonly toggleHtmlSource = () => {
+    this.fileSearchOpen = false;
+    this.htmlPreview.toggle();
+  };
 
   private scrollToFileLine(content: FileSidebarContent) {
     if (this.visibleContent !== content || this.showingRawText) {
@@ -227,7 +237,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     }
     const content = this.visibleContent;
     const parent = this.querySelector<HTMLElement>(".file-view__mount");
-    if (content?.kind !== "file" || !parent) {
+    if (content?.kind !== "file" || !parent || this.htmlPreview.showing) {
       return Promise.resolve();
     }
     const version = this.fileOperationVersion;
@@ -348,6 +358,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   }
 
   private readonly toggleFileSearch = () => {
+    this.htmlPreview.showSource();
     this.fileSearchOpen = !this.fileSearchOpen;
     this.fileEditorMenuOpen = false;
     if (!this.fileSearchOpen) {
@@ -404,43 +415,19 @@ class ChatDetailPanel extends OpenClawLightDomElement {
     openEditor(editor, absPath, this.fileNavigation?.line ?? content.line);
   };
 
-  private readonly copyFileValue = (action: FileCopyAction) => {
+  private readonly editFile = async () => {
     const content = this.visibleContent;
-    if (content?.kind !== "file") {
+    if (content?.kind !== "file" || !content.edit) {
       return;
     }
-    const attempt = (this.copyAttempts.get(action) ?? 0) + 1;
-    this.copyAttempts.set(action, attempt);
-    void copyToClipboard(action === "path" ? content.path : content.content).then((copied) => {
-      // A newer copy or file selection owns feedback; stale completions must stay invisible.
-      if (
-        this.copyAttempts.get(action) !== attempt ||
-        this.visibleContent !== content ||
-        !this.isConnected
-      ) {
-        return;
-      }
-      this.fileCopyFeedback = {
-        ...this.fileCopyFeedback,
-        [action]: copied ? "copied" : "failed",
-      };
-      globalThis.clearTimeout(this.copyFeedbackTimers.get(action));
-      this.copyFeedbackTimers.set(
-        action,
-        globalThis.setTimeout(
-          () => {
-            this.copyFeedbackTimers.delete(action);
-            this.fileCopyFeedback = { ...this.fileCopyFeedback, [action]: undefined };
-          },
-          copied ? 1500 : 2000,
-        ),
-      );
-    });
-  };
-
-  private readonly editFile = () => {
-    const content = this.visibleContent;
-    if (content?.kind !== "file" || !content.edit || !this.fileEditor) {
+    this.htmlPreview.showSource();
+    await this.updateComplete;
+    await this.ensureFileEditor();
+    if (this.visibleContent !== content || !this.fileEditor) {
+      return;
+    }
+    if (this.fileEditing) {
+      this.fileEditor.focus();
       return;
     }
     this.fileSavedContent = content.content;
@@ -461,6 +448,8 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       return;
     }
     this.fileEditor?.setContent(this.fileSavedContent);
+    this.fileDraftContent = null;
+    this.htmlPreview.discard(this.fileSavedContent);
     const content = this.visibleContent;
     if (content?.kind === "file") {
       setFileDraft(content, null);
@@ -642,6 +631,10 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   };
 
   private readonly showRawText = () => {
+    if (this.htmlPreview.file) {
+      this.htmlPreview.showSource();
+      return;
+    }
     const rawContent = buildRawContent(this.visibleContent);
     if (!rawContent) {
       return;
@@ -662,16 +655,24 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   };
 
   override render() {
+    const file = this.htmlPreview.file;
     const matches = this.fileSearchMatches();
     const currentMatchIndex = matches.length
       ? Math.min(this.fileSearchMatchIndex, matches.length - 1)
       : 0;
     return renderSidebarPanel({
       content: this.visibleContent,
-      error: this.error,
+      error: file ? null : this.error,
       onRetry: this.retryFileEditor,
       fileView: {
-        copyFeedback: this.fileCopyFeedback,
+        htmlPreview: this.htmlPreview.controls({
+          error: this.error,
+          onRetry: this.retryFileEditor,
+          onToggle: this.toggleHtmlSource,
+          runtime: this.attachmentRuntime,
+          mode: this.embedSandboxMode,
+        }),
+        copyFeedback: this.fileCopy.feedback,
         currentMatchIndex,
         dirty: this.fileDirty,
         execNode: this.execNode,
@@ -684,9 +685,9 @@ class ChatDetailPanel extends OpenClawLightDomElement {
         saveNotice: this.fileSaveNotice,
         saving: this.fileSaving,
         searchOpen: this.fileSearchOpen,
-        onCopy: this.copyFileValue,
+        onCopy: this.fileCopy.copy,
         onDiscard: this.discardFileEdits,
-        onEdit: this.editFile,
+        onEdit: () => void this.editFile(),
         onNextMatch: () => this.moveFileSearch(1),
         onOpenEditor: this.openInEditor,
         onOverwrite: this.overwriteFile,

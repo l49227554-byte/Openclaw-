@@ -40,10 +40,14 @@ export type SessionWorkspacePreview = {
   id: string;
   label: string;
   content: SidebarSelection;
+  canonicalKey?: string;
+  requestIds?: string[];
   navigation?: FileSidebarNavigation;
+  navigationOrder?: number;
 };
 
 export type SessionWorkspaceState = {
+  navigationOrder?: number;
   previews: SessionWorkspacePreview[];
   activePreviewId: string | null;
   filter: SessionWorkspaceFilter;

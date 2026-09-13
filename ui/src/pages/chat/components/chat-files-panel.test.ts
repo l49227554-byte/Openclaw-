@@ -1,5 +1,6 @@
 import { html } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SessionWorkspaceGetResult } from "../../../api/types.ts";
 import { readPanelHostedTabs } from "../../../components/panel-hosted-tabs.ts";
 import {
   createGatewayBrowserClientFixture,
@@ -29,6 +30,128 @@ function host(): SessionWorkspaceHost {
 }
 afterEach(() => document.body.replaceChildren());
 describe("workspace file tabs", () => {
+  it.each([
+    ["README.md", "/workspace/README.md"],
+    ["/workspace/README.md", "README.md"],
+  ])("reconciles %s and %s without replacing the retained file", async (firstPath, aliasPath) => {
+    const state = host();
+    const response: SessionWorkspaceGetResult = {
+      sessionKey: state.sessionKey,
+      root: "/workspace",
+      file: {
+        name: "README.md",
+        path: "README.md",
+        workspacePath: "README.md",
+        kind: "read",
+        missing: false,
+        previewKind: "text",
+        contentEncoding: "utf8",
+        content: "Original buffer",
+      },
+    };
+    const getFile = vi.fn().mockResolvedValue(response);
+    state.sessions.getFile = getFile;
+    openSessionWorkspaceFile(state, { path: firstPath, line: 2 });
+    await vi.waitFor(() =>
+      expect(getSessionWorkspace(state).previews[0]?.content.kind).toBe("file"),
+    );
+    const retained = getSessionWorkspace(state).previews[0]!;
+    const originalContent = retained.content;
+    getFile.mockResolvedValueOnce({
+      ...response,
+      file: { ...response.file, content: "New disk buffer" },
+    });
+    openSessionWorkspaceFile(state, { path: aliasPath, line: 7 });
+    await vi.waitFor(() => expect(getSessionWorkspace(state).previews).toEqual([retained]));
+    expect(retained.content).toBe(originalContent);
+    expect(retained.content).toMatchObject({ content: "Original buffer", navigation: { line: 7 } });
+    expect(getSessionWorkspace(state).activePreviewId).toBe(retained.id);
+    openSessionWorkspaceFile(state, { path: aliasPath, line: 9 });
+    expect(getFile).toHaveBeenCalledTimes(2);
+    expect(retained.content).toMatchObject({ navigation: { line: 9 } });
+    closeSessionWorkspacePreview(state, retained.id);
+    openSessionWorkspaceFile(state, { path: aliasPath });
+    await vi.waitFor(() =>
+      expect(getSessionWorkspace(state).previews[0]?.content.kind).toBe("file"),
+    );
+    expect(getFile).toHaveBeenCalledTimes(3);
+  });
+
+  it("merges late aliases without stealing selection or replacing newer line intent", async () => {
+    const state = host();
+    const pending = new Map<string, (value: SessionWorkspaceGetResult) => void>();
+    const getFile = vi.fn(
+      (_key: string, path: string) =>
+        new Promise<SessionWorkspaceGetResult>((resolve) => {
+          pending.set(path, resolve);
+        }),
+    );
+    state.sessions.getFile = getFile;
+    const response: SessionWorkspaceGetResult = {
+      sessionKey: state.sessionKey,
+      root: "/workspace",
+      file: {
+        name: "README.md",
+        path: "README.md",
+        workspacePath: "README.md",
+        kind: "read",
+        missing: false,
+        content: "File contents",
+      },
+    };
+    openSessionWorkspaceFile(state, { path: "README.md", line: 2 });
+    openSessionWorkspaceFile(state, { path: "/workspace/README.md", line: 7 });
+    pending.get("/workspace/README.md")!(response);
+    await vi.waitFor(() =>
+      expect(getSessionWorkspace(state).previews[1]?.content.kind).toBe("file"),
+    );
+    const retained = getSessionWorkspace(state).previews[1]!;
+    openSessionWorkspacePreview(state, "attachment:other", "other.txt", {
+      kind: "markdown",
+      content: "Other",
+    });
+    pending.get("README.md")!(response);
+    await vi.waitFor(() => expect(getSessionWorkspace(state).previews).toHaveLength(2));
+    expect(getSessionWorkspace(state).previews[0]).toBe(retained);
+    expect(getSessionWorkspace(state).activePreviewId).toBe("attachment:other");
+    expect(retained.content).toMatchObject({ navigation: { line: 7 } });
+    openSessionWorkspaceFile(state, { path: "README.md", line: 9 });
+    expect(getFile).toHaveBeenCalledTimes(2);
+    expect(getSessionWorkspace(state).activePreviewId).toBe(retained.id);
+    expect(retained.content).toMatchObject({ navigation: { line: 9 } });
+  });
+
+  it.each(["image", "unsupported"] as const)(
+    "reconciles canonical aliases for %s previews",
+    async (previewKind) => {
+      const state = host();
+      const response: SessionWorkspaceGetResult = {
+        sessionKey: state.sessionKey,
+        root: "/workspace",
+        file: {
+          name: "asset.png",
+          path: "asset.png",
+          workspacePath: "asset.png",
+          kind: "read",
+          missing: false,
+          previewKind,
+          ...(previewKind === "image"
+            ? { mimeType: "image/png", contentEncoding: "base64" as const, content: "iVBORw0KGgo=" }
+            : { mimeType: "application/octet-stream", size: 512 }),
+        },
+      };
+      state.sessions.getFile = vi.fn().mockResolvedValue(response);
+      openSessionWorkspaceFile(state, { path: "asset.png" });
+      await vi.waitFor(() =>
+        expect(getSessionWorkspace(state).previews[0]?.content.kind).not.toBe("loading"),
+      );
+      const original = getSessionWorkspace(state).previews[0]!;
+      openSessionWorkspaceFile(state, { path: "/workspace/asset.png" });
+      await vi.waitFor(() => expect(getSessionWorkspace(state).previews).toEqual([original]));
+      expect(getSessionWorkspace(state).activePreviewId).toBe(original.id);
+    },
+  );
+
   it("scopes main-view tab and content IDs to each panel and keeps them stable", async () => {
     const panels = [0, 1].map(() => {
       const panel = document.createElement("openclaw-chat-files-panel");

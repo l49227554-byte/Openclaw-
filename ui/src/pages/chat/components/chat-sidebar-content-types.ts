@@ -123,6 +123,7 @@ type FileSidebarContent = {
   /** Stable per-session identity used to retain an unsaved in-memory draft. */
   draftKey?: string;
   root?: string | null;
+  mimeType?: string;
   language?: string;
   line?: number | null;
   /** New identity for an explicit line request; ordinary tab selection retains it. */

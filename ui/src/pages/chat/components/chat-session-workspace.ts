@@ -171,6 +171,7 @@ function openWorkspaceItem<T>(
     line?: number | null;
     label?: string;
     resolveLabel?: (result: T) => string | undefined;
+    resolveKey?: (result: T) => string | undefined;
   } = {},
 ) {
   if (!state.client || !state.connected) {
@@ -187,6 +188,8 @@ function openWorkspaceItem<T>(
   workspace.activeId = itemId;
   if (options.line != null) {
     preview.navigation = { line: options.line };
+    workspace.navigationOrder = (workspace.navigationOrder ?? 0) + 1;
+    preview.navigationOrder = workspace.navigationOrder;
     if (preview.content.kind === "file") {
       preview.content.navigation = preview.navigation;
     }
@@ -220,11 +223,43 @@ function openWorkspaceItem<T>(
       const result = await load();
       const content = result == null ? null : render(result);
       const label = result == null ? undefined : options.resolveLabel?.(result);
+      const canonicalKey = result == null ? undefined : options.resolveKey?.(result);
       if (!content) {
         fail(missingMessage);
         return;
       }
       if (isCurrent()) {
+        const canonical = canonicalKey
+          ? workspace.previews.find(
+              (entry) => entry !== preview && entry.canonicalKey === canonicalKey,
+            )
+          : undefined;
+        if (canonical) {
+          canonical.requestIds = [
+            ...new Set([
+              ...(canonical.requestIds ?? []),
+              preview.id,
+              ...(preview.requestIds ?? []),
+            ]),
+          ];
+          if (
+            preview.navigation &&
+            (preview.navigationOrder ?? 0) > (canonical.navigationOrder ?? 0)
+          ) {
+            canonical.navigation = preview.navigation;
+            canonical.navigationOrder = preview.navigationOrder;
+            if (canonical.content.kind === "file") {
+              canonical.content.navigation = canonical.navigation;
+            }
+          }
+          // Keep the existing editor and draft; the alias read only resolves identity.
+          workspace.previews = workspace.previews.filter((entry) => entry !== preview);
+          if (workspace.activePreviewId === preview.id) {
+            workspace.activePreviewId = canonical.id;
+          }
+          return;
+        }
+        preview.canonicalKey = canonicalKey;
         if (content.kind === "file" && preview.navigation) {
           content.line = preview.navigation.line;
           content.navigation = preview.navigation;
@@ -378,6 +413,7 @@ function openFile(
           file.workspacePath || file.path || path,
         ].join("\u0000"),
         root: result.root ?? null,
+        mimeType: file.mimeType,
         language: languageForFile(name),
         line: opts.line ?? null,
         rawText: file.content,
@@ -385,7 +421,16 @@ function openFile(
       };
     },
     `Failed to load ${path}`,
-    { line: opts.line, resolveLabel: (result) => result.file?.name },
+    {
+      line: opts.line,
+      resolveLabel: (result) => result.file?.name,
+      resolveKey: (result) => {
+        const canonicalPath = result.file?.workspacePath || result.file?.path;
+        return canonicalPath
+          ? JSON.stringify(["file", result.root ?? "", canonicalPath])
+          : undefined;
+      },
+    },
   );
 }
 

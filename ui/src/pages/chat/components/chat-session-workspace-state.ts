@@ -232,7 +232,9 @@ export function openSessionWorkspacePreview(
   content: SidebarSelection,
 ) {
   const workspace = getSessionWorkspace(state);
-  let preview = workspace.previews.find((entry) => entry.id === id);
+  let preview = workspace.previews.find(
+    (entry) => entry.id === id || entry.requestIds?.includes(id),
+  );
   if (!preview) {
     preview = { id, label, content };
     workspace.previews = [...workspace.previews, preview];

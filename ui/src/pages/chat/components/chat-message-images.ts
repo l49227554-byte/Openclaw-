@@ -445,6 +445,7 @@ function resolveManagedOutgoingImageResource(
   opts?: ImageRenderOptions,
   artifactId?: string,
   variant: ManagedImageVariant = "thumbnail",
+  retryFailed = false,
 ): ChatMediaResource<string | null> {
   const variantUrl = buildManagedOutgoingImageVariantUrl(source, variant, opts?.resourceBasePath);
   const authToken = opts?.authToken?.trim() ?? "";
@@ -465,9 +466,10 @@ function resolveManagedOutgoingImageResource(
   }
   if (resource.value === null) {
     if (
-      resource.retryAttempted ||
-      resource.unavailableAt === undefined ||
-      Date.now() - resource.unavailableAt < MANAGED_OUTGOING_IMAGE_RETRY_MS
+      !retryFailed &&
+      (resource.retryAttempted ||
+        resource.unavailableAt === undefined ||
+        Date.now() - resource.unavailableAt < MANAGED_OUTGOING_IMAGE_RETRY_MS)
     ) {
       return resource;
     }
@@ -593,7 +595,7 @@ async function readManagedOutgoingImageBlob(
   opts?: ImageRenderOptions,
   artifactId?: string,
 ): Promise<Blob> {
-  const resource = resolveManagedOutgoingImageResource(source, opts, artifactId, "full");
+  const resource = resolveManagedOutgoingImageResource(source, opts, artifactId, "full", true);
   if (resource.pending) {
     await resource.pending;
   }

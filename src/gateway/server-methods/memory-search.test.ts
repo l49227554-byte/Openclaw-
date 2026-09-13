@@ -6,17 +6,16 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSelectionRequiredError } from "../../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type {
-  MemoryProviderStatus,
-  MemorySearchManager,
-  MemorySearchResult,
-} from "../../memory-host-sdk/host/types.js";
+import type { MemoryProviderStatus, MemorySearchResult } from "../../memory-host-sdk/host/types.js";
 import {
   createPluginStateKeyedStore,
   type OpenKeyedStoreOptions,
   type PluginStateKeyedStore,
 } from "../../plugin-state/plugin-state-store.js";
-import type { MemoryPluginRuntime } from "../../plugins/registry-contribution-types.js";
+import type {
+  MemoryPluginRuntime,
+  RegisteredMemorySearchManager,
+} from "../../plugins/registry-contribution-types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   createOpenClawTestState,
@@ -448,7 +447,7 @@ describe("memory.search gateway method", () => {
 
       markOldProvenance();
       const beforeConcurrent = readRevision();
-      const acquired: MemorySearchManager[] = [];
+      const acquired: RegisteredMemorySearchManager[] = [];
       const bothAcquired = createDeferredCore();
       getActiveMemorySearchManagerCore.mockImplementation(async (params) => {
         const result = await memoryRuntime.getMemorySearchManager(params);

@@ -33,6 +33,7 @@ import {
   type InitialChatSnapshotHydration,
 } from "./chat-history-state.ts";
 import { syncSelectedSessionMessageSubscription } from "./chat-history-subscription.ts";
+import { ChatPaneActiveResources } from "./chat-pane-active-resources.ts";
 import {
   type ChatAttachmentGatewayOwner,
   ChatPaneComposerHandoff,
@@ -96,6 +97,8 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     requestUpdate: () => this.requestUpdate(),
     updateSidebarLayout: (layout) => this.commitSidebarLayout(layout),
   });
+
+  protected readonly activeSessionResources = new ChatPaneActiveResources();
 
   private chatRouteReadyReported = false;
   private currentSessionArchived: boolean | undefined;
@@ -517,6 +520,16 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
             this.clearTypingActorForSessionMessage(event.payload);
           }
           handlePageGatewayEvent(state, event, () => this.presented);
+          if (event.event === "sessions.changed" && this.presented && this.visuallyPresented) {
+            this.activeSessionResources.reconcileSession(event.payload, state, {
+              requestUpdate: () => this.requestUpdate(),
+              updated: () => this.updateComplete,
+            });
+          }
+          if (event.event === "presence" || event.event === "node.runnerInventory.changed") {
+            this.activeSessionResources.invalidate();
+            this.requestUpdate();
+          }
         }
       }),
     );
@@ -628,6 +641,14 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     const board = this.resolveBoardView();
     this.syncRetainedBoardSession(board);
     this.sessionPanelToggles.flush();
+    this.activeSessionResources.syncPane({
+      state: () => this.state,
+      gateway: this.context.gateway.snapshot,
+      isConnected: () => this.isConnected,
+      isPresented: () => this.presented && this.visuallyPresented,
+      commit: (layout) => this.commitSidebarLayout(layout, { persist: false }),
+      requestUpdate: () => this.requestUpdate(),
+    });
     this.setConversationVisible(
       Boolean(
         this.state &&
@@ -644,6 +665,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
   }
 
   override disconnectedCallback() {
+    this.activeSessionResources.sync(null);
     this.composerPresentation?.dispose();
     this.composerPresentation = undefined;
     if (this.state) {

@@ -64,7 +64,9 @@ describe("automation plugin reload recovery", () => {
             ingress: { kind: "schedule", boundary: "cron.script", state: "present" },
             onPostAdmission: (admitted) => {
               admissions.push(admitted);
-              if (when === "during admission") markPluginRegistryRetired(registries[0]);
+              if (when === "during admission") {
+                markPluginRegistryRetired(registries[0]);
+              }
             },
             onExecutionStarted: started,
           },
@@ -83,7 +85,9 @@ describe("automation plugin reload recovery", () => {
       return {
         ...prepared,
         createTools: (...args: Parameters<PreparedRuntime["createTools"]>) => {
-          if (repeat || generation === 1) instance.quiesce();
+          if (repeat || generation === 1) {
+            instance.quiesce();
+          }
           return prepared.createTools(...args);
         },
       };
@@ -117,7 +121,9 @@ describe("automation plugin reload recovery", () => {
           throw new Error("Fixture plugin could not load");
         }
         const current = preparePluginRuntime(generation);
-        if (generation > 1) current.instance.quiesce();
+        if (generation > 1) {
+          current.instance.quiesce();
+        }
         return current.prepared;
       });
       const runtime = createCronScriptRuntime({ config: {}, prepareRuntime });

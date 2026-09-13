@@ -503,6 +503,7 @@ export function maybeEmitFailureRecovery(
     alertConfig: ResolvedFailureAlert | null;
     runAtMs?: number;
     triggerOnly?: boolean;
+    replay?: boolean;
     deferredNotifications?: DeferredCronNotifications;
   },
 ): void {
@@ -514,6 +515,7 @@ export function maybeEmitFailureRecovery(
   params.job.state.lastFailureAlertAtMs = undefined;
   const route = params.alertConfig;
   if (
+    params.replay ||
     !incident.signature ||
     !route ||
     (params.job.delivery?.bestEffort === true && !params.job.failureAlert)
@@ -557,12 +559,20 @@ export function finalizeCronFailureNotifications(
     deferredNotifications?: DeferredCronNotifications;
   },
 ): void {
-  // Replaying finalized history must never request another notification.
-  if (params.replay) {
+  if (params.result.status === "ok" && params.completionStatus === "succeeded") {
+    maybeEmitFailureRecovery(state, {
+      job: params.job,
+      alertConfig: params.alertConfig,
+      runAtMs: params.result.startedAt,
+      replay: params.replay,
+      deferredNotifications: params.deferredNotifications,
+    });
     return;
   }
-  if (params.completionStatus !== "succeeded") {
-    recordUnresolvedFailure(params.job, params.result.failureNotificationDetail);
+  recordUnresolvedFailure(params.job, params.result.failureNotificationDetail);
+  // Replay repairs incident state but never requests a historical notification.
+  if (params.replay) {
+    return;
   }
   if (params.result.status === "error" && !params.autoDisableNotificationOwnsFailure) {
     maybeEmitFailureAlert(state, {
@@ -620,12 +630,5 @@ export function finalizeCronFailureNotifications(
     } else {
       notify();
     }
-  } else if (params.result.status === "ok" && params.completionStatus === "succeeded") {
-    maybeEmitFailureRecovery(state, {
-      job: params.job,
-      alertConfig: params.alertConfig,
-      runAtMs: params.result.startedAt,
-      deferredNotifications: params.deferredNotifications,
-    });
   }
 }

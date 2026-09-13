@@ -29,7 +29,7 @@ import {
   MIN_REFIRE_GAP_MS,
   type TimedCronRunOutcome,
 } from "./timer-execution-timeout.js";
-import { emitCronOutcomeEventForJob, recordCronOutcomeForJob } from "./timer-outcome-events.js";
+import { emitCronOutcomeForJob } from "./timer-outcome-events.js";
 import {
   applyTriggerEvaluationState,
   applyTriggerRunResult,
@@ -592,6 +592,7 @@ export function applyTriggerNoFireResult(
   opts?: {
     scheduleMode?: "advance" | "immediate-preserve" | "stale-preserve";
     triggerOwnership?: CronTriggerOwnership;
+    replay?: boolean;
     deferredNotifications?: DeferredCronNotifications;
   },
 ): void {
@@ -613,6 +614,7 @@ export function applyTriggerNoFireResult(
       job,
       alertConfig: resolveFailureAlert(state, job),
       triggerOnly: true,
+      replay: opts?.replay,
       deferredNotifications: opts?.deferredNotifications,
     });
   }
@@ -775,17 +777,4 @@ export function applyOutcomeToAuthoritativeJob(
   }
 
   return shouldDelete;
-}
-
-/** Records a terminal task/event fact before the fallible runtime-row commit. */
-function emitCronOutcomeForJob(
-  state: CronServiceState,
-  job: CronJob,
-  result: TimedCronRunOutcome,
-): void {
-  if (result.status === "ok" && result.triggerEval && !result.triggerEval.fired) {
-    return;
-  }
-  recordCronOutcomeForJob(state, job, result);
-  emitCronOutcomeEventForJob(state, job, result);
 }

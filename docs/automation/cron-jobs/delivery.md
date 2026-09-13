@@ -81,6 +81,8 @@ Execution failures use one scheduler-owned threshold and cooldown policy. A job 
 
 Repeated failures with the same cause form one incident and do not send repeated alerts, even after the cooldown expires or the Gateway restarts. A changed cause or destination can send a new alert after the cooldown. Once an alerted automation completes successfully, it sends one recovery notice and clears the incident. Skipped runs and unknown delivery outcomes do not establish recovery. A successful quiet trigger check can recover a trigger failure, but cannot establish that a previously failed payload has recovered.
 
+Startup recovery reconciles incidents from saved run outcomes without sending historical notifications. A saved successful run clears the old incident even if its job-state update was interrupted, so a later recurrence can alert again.
+
 Failure notification routes resolve in this order:
 
 1. Route fields in the job's `failureAlert` object.

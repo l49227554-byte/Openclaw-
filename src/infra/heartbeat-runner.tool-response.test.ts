@@ -628,6 +628,30 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
     expectHeartbeatToolPrompt(result);
   });
 
+  it("gives a CLI fallback a silent escape hatch instead of delivering prose", async () => {
+    // A Codex-configured primary selects the response-tool prompt, but a
+    // claude-cli fallback cannot see the direct-only heartbeat_respond tool.
+    // The prompt must tell that fallback model how to stay silent, and the
+    // runner must suppress the resulting silent reply instead of delivering
+    // prose to the channel.
+    await withTempTelegramHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const cfg = createConfig({ tmpDir, storePath });
+      await seedTelegramSession(storePath, cfg);
+      replySpy.mockImplementation(async (context) =>
+        String(context?.Body ?? "").includes(SILENT_REPLY_TOKEN)
+          ? { text: SILENT_REPLY_TOKEN }
+          : { text: "Heartbeat wake with nothing to report." },
+      );
+      const sendTelegram = vi.fn().mockResolvedValue({ messageId: "m1" });
+
+      const result = await runHeartbeat(cfg, replySpy, sendTelegram);
+
+      expect(result.status).toBe("ran");
+      expect(replyOptions(replySpy).sourceReplyDeliveryMode).toBe("message_tool_only");
+      expect(sendTelegram).not.toHaveBeenCalled();
+    });
+  });
+
   it("uses the isolated Codex runtime instead of the base OpenClaw runtime", async () => {
     // One direction proves prompt recalculation after isolation. Reciprocal
     // runtime precedence is covered directly by thinking-runtime.test.ts.

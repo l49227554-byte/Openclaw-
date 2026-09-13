@@ -114,6 +114,18 @@ suite.define(() => {
             expect(await indicator.textContent()).toContain(recoveryBackupPath);
             const recover = indicator.getByRole("button", { name: "Discard draft and reload" });
             await recover.waitFor();
+            await gateway.setOnline(false);
+            await recover.click();
+            await expect.poll(() => prefix.inputValue()).toBe("later draft");
+            expect(await indicator.textContent()).toContain(recoveryBackupPath);
+            expect(await gateway.getRequests("config.set")).toHaveLength(1);
+            await gateway.setOnline(true);
+            await page.waitForFunction(() => {
+              const app = document.querySelector("openclaw-app") as HTMLElement & {
+                runtime?: { context: { gateway: { snapshot: { phase: string } } } };
+              };
+              return app.runtime?.context.gateway.snapshot.phase === "connected";
+            });
             for (const candidate of [
               { ...snapshot, exists: false, config: {}, raw: null, hash: "missing" },
               { ...snapshot, valid: false, raw: "{", hash: "invalid" },

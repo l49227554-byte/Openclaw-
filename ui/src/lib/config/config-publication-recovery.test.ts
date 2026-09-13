@@ -60,9 +60,29 @@ it.each(["Settings", "external"])(
       }),
     );
     await failedWrite;
-    await queuedWrite;
     const recovery = runtimeConfig.state.configRecoveryError;
     expect(recovery).toContain("/settings/openclaw.json.bak");
+    await expect(queuedWrite).resolves.toMatchObject({ ok: false, error: recovery });
+    await expect(externalWrite()).resolves.toMatchObject({ ok: false, error: recovery });
+
+    runtimeConfig.setRaw('{"count":42}');
+    const discard = runtimeConfig.discardDraft();
+    publish(false);
+    await discard;
+    await runtimeConfig.discardDraft();
+    expect(runtimeConfig.state.configRaw).toBe('{"count":42}');
+    expect(runtimeConfig.state.configFormDirty).toBe(true);
+    expect(runtimeConfig.state.configRecoveryError).toBe(recovery);
+    await expect(externalWrite()).resolves.toMatchObject({
+      ok: false,
+      error: "Connection changed before the configuration update started.",
+    });
+    publish(true);
+    await vi.advanceTimersByTimeAsync(0);
+    readState = "failed";
+    await runtimeConfig.discardDraft();
+    expect(runtimeConfig.state.configRaw).toBe('{"count":42}');
+    expect(runtimeConfig.state.configFormDirty).toBe(true);
 
     runtimeConfig.setRaw("{");
     runtimeConfig.patchForm(["count"], 4);
@@ -83,7 +103,7 @@ it.each(["Settings", "external"])(
     await runtimeConfig.save();
     await runtimeConfig.apply();
     await runtimeConfig.patch({ raw: { count: 4 }, note: "test" });
-    await externalWrite();
+    await expect(externalWrite()).resolves.toMatchObject({ ok: false, error: recovery });
     await vi.advanceTimersByTimeAsync(CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS);
     expect(request.mock.calls.filter(([method]) => method === "config.set")).toHaveLength(1);
     expect(

@@ -366,7 +366,7 @@ export function completeDeliveryQueueEntryInDatabase(
   }
 }
 
-/** Load, transform, and persist a pending delivery queue entry. */
+/** Load, transform, and persist a pending delivery queue entry atomically. */
 export function updateDeliveryQueueEntry(
   queueName: string,
   id: string,
@@ -374,12 +374,29 @@ export function updateDeliveryQueueEntry(
   update: (entry: DeliveryQueueEntryState) => DeliveryQueueEntryState,
   context?: DeliveryQueueStateContext,
 ): void {
-  const database = openStateDatabase(stateDir, context);
-  const current = loadDeliveryQueueEntryInDatabase(database, queueName, id, "pending");
-  if (!current) {
-    throw enoent(queueName, id);
-  }
-  upsertDeliveryQueueEntryInDatabase({ queueName, entry: update(current) }, database);
+  runOpenClawStateWriteTransaction(
+    (database) => {
+      const current = loadDeliveryQueueEntryInDatabase(database, queueName, id, "pending");
+      if (!current) {
+        throw enoent(queueName, id);
+      }
+      // Only a still-pending row is updated; a concurrent terminalize that lands
+      // between the read and this write must not be resurrected as pending.
+      const applied = upsertDeliveryQueueEntryInDatabase(
+        { queueName, entry: update(current), updatePendingOnly: true },
+        database,
+      );
+      if (!applied) {
+        throw enoent(queueName, id);
+      }
+    },
+    {
+      env: resolveDeliveryQueueStateEnv(stateDir, context),
+    },
+    {
+      operationLabel: `update ${queueName} delivery entry`,
+    },
+  );
 }
 
 type ReserveDeliveryQueueAttemptResult =

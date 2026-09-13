@@ -3,7 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import {
   claimDeliveryQueueEntryPlatformSend,
   promoteDeliveryQueueEntryPlatformSend,
@@ -43,6 +46,7 @@ describe("delivery-queue-sqlite corrupt JSON resilience", () => {
   });
 
   afterEach(() => {
+    closeOpenClawStateDatabaseForTest();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

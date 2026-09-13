@@ -201,7 +201,7 @@ export async function writeInstanceBindingProbePlugin(
         registryId,
         sessionsId: coordinator.identify(context.sessionCompanion),
         placementId: coordinator.identify(context.workerSessionPlacementService),
-        ...(coordinator.channelProof ? { reloadSettled: context.isConfigReloadSettled() } : {}),
+        ...(coordinator.channelProof || coordinator.channel ? { reloadSettled: context.isConfigReloadSettled() } : {}),
       });
     }, { scope: "operator.read" });
   },

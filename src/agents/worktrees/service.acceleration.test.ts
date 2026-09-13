@@ -135,6 +135,87 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
     });
   });
 
+  it.each(["tracked", "staged", "untracked", "ignored", "renamed", "HEAD"] as const)(
+    "rebuilds a template with %s contamination before creating another checkout",
+    async (change) => {
+      await fs.writeFile(path.join(repo, ".gitignore"), "ignored-*\n");
+      await git(repo, "add", ".gitignore");
+      await git(repo, "commit", "-m", "ignore template fixture");
+      // The older commit has identical files, so HEAD validation cannot be
+      // replaced by comparing the tree or accepting a clean inventory alone.
+      await git(repo, "commit", "--allow-empty", "-m", "new template base");
+      await service.create({ repoRoot: repo, name: "seed", baseRef: "HEAD" });
+      const original = listTemplates(env)[0];
+      assert(original);
+      const unusualName = process.platform === "win32" ? "é space.txt" : "é space\nname.txt";
+      if (change === "HEAD") {
+        await git(original.path, "checkout", "--detach", "HEAD~1");
+      } else if (change === "renamed") {
+        await git(original.path, "mv", "README.md", unusualName);
+      } else if (change === "tracked" || change === "staged") {
+        await fs.writeFile(path.join(original.path, "README.md"), "template contamination\n");
+        if (change === "staged") {
+          await git(original.path, "add", "README.md");
+        }
+      } else {
+        await fs.writeFile(
+          path.join(original.path, `${change === "ignored" ? "ignored-" : ""}${unusualName}`),
+          "template contamination\n",
+        );
+      }
+
+      const created = await service.create({
+        repoRoot: repo,
+        name: "replacement",
+        baseRef: "HEAD",
+      });
+
+      const replacement = listTemplates(env)[0];
+      assert(replacement);
+      expect(replacement.id).not.toBe(original.id);
+      await expect(fs.access(original.path)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.readdir(created.path)).toSorted()).toEqual([
+        ".git",
+        ".gitignore",
+        "README.md",
+      ]);
+      expect(await fs.readFile(path.join(created.path, "README.md"), "utf8")).toBe("base\n");
+      expect(await git(created.path, "rev-parse", "HEAD")).toBe(original.sourceCommit);
+      expect(
+        await git(created.path, "status", "--porcelain", "--untracked-files=all", "--ignored"),
+      ).toBe("");
+    },
+  );
+
+  it("accelerates with spaces, Unicode and supported newlines in Git metadata paths", async () => {
+    const unusualName = process.platform === "win32" ? "é space" : "é space\nline";
+    const movedRepo = path.join(path.dirname(repo), unusualName);
+    await fs.rename(repo, movedRepo);
+    repo = await fs.realpath(movedRepo);
+    service = new ManagedWorktreeService({
+      env,
+      now: () => now,
+      getConfig: () => ({
+        worktreeRoot: path.join(path.dirname(repo), `${unusualName}-worktrees`),
+      }),
+    });
+    const commands = vi.spyOn(commandExec, "runCommandWithTimeout");
+
+    const first = await service.create({ repoRoot: repo, name: "first", baseRef: "HEAD" });
+    const second = await service.create({ repoRoot: repo, name: "second", baseRef: "HEAD" });
+
+    expect(backend.createTemplate).toHaveBeenCalledTimes(1);
+    expect(backend.cloneTemplate).toHaveBeenCalledTimes(2);
+    // A malformed metadata path must not silently discard the completed clone
+    // and pay for a second, ordinary checkout.
+    expect(commands.mock.calls.some(([args]) => args.includes("reset"))).toBe(false);
+    for (const record of [first, second]) {
+      expect(await fs.readFile(path.join(record.path, "README.md"), "utf8")).toBe("base\n");
+      expect(await git(record.path, "status", "--porcelain")).toBe("");
+      expect(await git(record.path, "symbolic-ref", "--short", "HEAD")).toBe(record.branch);
+    }
+  });
+
   it("honors the opt-out without probing a filesystem backend", async () => {
     acceleration = false;
     const created = await service.create({ repoRoot: repo, name: "native", baseRef: "HEAD" });

@@ -43,6 +43,8 @@ export type UpdateCommandOptions = {
   /** Internal orchestration context, shared across update phases and child processes. */
   run?: {
     runId: string;
+    defaultStepTimeoutMs?: number;
+    activationTimeoutMs?: number;
     env: NodeJS.ProcessEnv;
     /** Prepared before replacement; never load the old authority graph after activation. */
     requesterAuthority?: UpdateRequesterAuthority;
@@ -435,14 +437,19 @@ export async function resolveGlobalManager(params: {
   timeoutMs: number;
 }): Promise<GlobalInstallManager> {
   if (params.installKind === "package") {
+    const diagnostics: string[] = [];
     const detected = await detectGlobalInstallManagerForRoot(
       runCommandWithTimeout,
       params.root,
       params.timeoutMs,
+      diagnostics,
     );
     if (!detected) {
       const reason = resolveUnmanagedUpdateInstallReason();
-      throw new UpdatePreMutationError(reason, UPDATE_INSTALL_SKIP_GUIDANCE[reason]!);
+      throw new UpdatePreMutationError(
+        reason,
+        `${UPDATE_INSTALL_SKIP_GUIDANCE[reason]} Inspected: ${diagnostics.join("; ")}.`,
+      );
     }
     return detected;
   }

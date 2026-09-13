@@ -57,7 +57,7 @@ import {
 } from "./chat-state-route.ts";
 import type { ChatProps } from "./chat-view.ts";
 import { getChatComposerState } from "./components/chat-composer-state.ts";
-import { chatPullRequestId, createPullRequestBranch } from "./components/chat-pull-requests.ts";
+import { chatPullRequestId } from "./components/chat-pull-requests.ts";
 import {
   openSessionWorkspaceFile,
   revealSessionWorkspaceFile,
@@ -261,6 +261,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           agentDefaultPermissionMode: selectedAgent?.defaultPermissionMode,
           modelAccess: mutationAccess.model,
           effortAccess: mutationAccess.effort,
+          contextWindowAccess: mutationAccess.contextWindow,
           permissionAccess: mutationAccess.permission,
           canSelectFull: hasOperatorAdminAccess(gatewaySnapshot.hello?.auth ?? null),
           onModelSetup: () => this.context.navigate("model-setup"),
@@ -525,11 +526,7 @@ export class ChatPane extends ChatPaneLayoutRender {
         (pullRequest) => !this.dismissedSessionPullRequestIds.has(chatPullRequestId(pullRequest)),
       ),
       githubRepo: this.githubRepo,
-      pullRequestsBranch: createPullRequestBranch(
-        this.sessionPullRequests,
-        this.sessionPullRequestsBranch,
-      ),
-      // A dismissed open PR still exists, so the row must not offer a duplicate.
+      pullRequestsBranch: this.sessionPullRequestsBranch,
       pullRequestsRateLimited: this.sessionPullRequestsRateLimited,
       pullRequestsExpanded: this.sessionPullRequestsExpanded,
       onOpenSessionDiff: sessionWorkspace.onOpenDiff,

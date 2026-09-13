@@ -1,18 +1,24 @@
 // Gateway concurrency benchmark tests cover CLI controls, probe budgets, and summaries.
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
+import type { Profiler } from "node:inspector";
 import { createServer as createRawServer, type Socket } from "node:net";
 import { performance } from "node:perf_hooks";
 import { describe, expect, it, vi } from "vitest";
 import { testing } from "../../scripts/bench-gateway-concurrency.ts";
+import { readGatewayMemory } from "../../scripts/lib/gateway-bench-probes.ts";
 import {
-  controlGatewayHeapProfile,
+  controlGatewayProfile,
+  readGatewayCpuProfile,
   readGatewayHeapProfile,
-} from "../../scripts/lib/gateway-bench-heap.ts";
+} from "../../scripts/lib/gateway-bench-profile.ts";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { withTempDir } from "../../src/test-utils/temp-dir.js";
 import { createDeferred } from "../helpers/promise.js";
+
+const testNodeExecPath = resolveTestNodeExecPath();
 
 type BenchmarkRun = Parameters<typeof testing.summarizeRuns>[0][number];
 
@@ -45,14 +51,99 @@ function createBenchmarkRun(overrides: Partial<BenchmarkRun> = {}): BenchmarkRun
 }
 
 describe("gateway concurrency benchmark script", () => {
-  it("profiles load allocations after collection without charging startup allocations", async () => {
+  it.each([
+    {
+      name: "populated",
+      fields: { externalBytes: 2_621_440, arrayBuffersBytes: 1_572_864 },
+      expected: { externalMb: 2.5, arrayBuffersMb: 1.5 },
+    },
+    {
+      name: "zero",
+      fields: { externalBytes: 0, arrayBuffersBytes: 0 },
+      expected: { externalMb: 0, arrayBuffersMb: 0 },
+    },
+    { name: "missing", fields: {}, expected: {} },
+    {
+      name: "external-only",
+      fields: { externalBytes: 2_621_440 },
+      expected: { externalMb: 2.5 },
+    },
+    {
+      name: "ArrayBuffers-only",
+      fields: { arrayBuffersBytes: 1_572_864 },
+      expected: { arrayBuffersMb: 1.5 },
+    },
+    {
+      name: "invalid",
+      fields: { externalBytes: "unknown", arrayBuffersBytes: Number.POSITIVE_INFINITY },
+      expected: {},
+    },
+  ])("preserves $name optional Gateway memory in MiB", async ({ fields, expected }) => {
+    const rpc = vi.fn().mockResolvedValue({
+      processMemory: {
+        heapTotalBytes: 1_310_720,
+        heapUsedBytes: 524_288,
+        rssBytes: 3_145_728,
+        ...fields,
+      },
+    });
+
+    const sample = await readGatewayMemory(rpc, performance.now());
+
+    expect(rpc).toHaveBeenCalledExactlyOnceWith("status", { includeChannelSummary: false });
+    expect(sample).toEqual({
+      atMs: expect.any(Number),
+      heapTotalMb: 1.25,
+      heapUsedMb: 0.5,
+      rssMb: 3,
+      ...expected,
+    });
+  });
+
+  it("summarizes only observed optional memory values and complete growth pairs", () => {
+    const memory = createBenchmarkRun().memory;
+    const runs = [
+      {
+        before: { externalMb: 2, arrayBuffersMb: 1 },
+        after: { externalMb: 5, arrayBuffersMb: 2 },
+      },
+      {
+        before: { externalMb: 0, arrayBuffersMb: 0 },
+        after: { externalMb: 0, arrayBuffersMb: 0 },
+      },
+      {
+        before: { externalMb: 8, arrayBuffersMb: 3 },
+        after: { externalMb: 6, arrayBuffersMb: 1.5 },
+      },
+      { before: { externalMb: 100 }, after: { arrayBuffersMb: 6 } },
+      { before: { arrayBuffersMb: 8 }, after: { externalMb: 9 } },
+      { before: {}, after: {} },
+    ].map(({ before, after }) =>
+      createBenchmarkRun({
+        memory: {
+          ...memory,
+          before: { ...memory.before, ...before },
+          after: { ...memory.after, ...after },
+        },
+      }),
+    );
+
+    expect(testing.summarizeRuns(runs)).toMatchObject({
+      gatewayExternalMb: { count: 4, max: 9, p50: 5, p95: 9, p99: 9 },
+      gatewayExternalGrowthMb: { count: 3, max: 3, p50: 0, p95: 3, p99: 3 },
+      gatewayArrayBuffersMb: { count: 4, max: 6, p50: 1.5, p95: 6, p99: 6 },
+      gatewayArrayBuffersGrowthMb: { count: 3, max: 1, p50: 0, p95: 1, p99: 1 },
+    });
+  });
+
+  it("writes load CPU and collected allocations before child teardown, excluding startup", async () => {
     await withTempDir("gateway-heap-profile-", async (dir) => {
       const child = spawn(
-        process.execPath,
+        testNodeExecPath,
         [
           "--expose-gc",
           "--import",
-          new URL("../../scripts/lib/gateway-bench-heap-preload.ts", import.meta.url).href,
+          new URL("../../scripts/lib/gateway-bench-profile-preload.ts", import.meta.url).href,
           "--input-type=module",
           "--eval",
           `process.stdin.resume();
@@ -65,8 +156,13 @@ describe("gateway concurrency benchmark script", () => {
         function loadAllocations() {
           return Array.from({ length: 20000 }, (_, index) => Array(100).fill(index));
         }
+        function loadCpuWork() {
+          const until = performance.now() + 250;
+          while (performance.now() < until) {}
+        }
         process.on("message", (message) => {
           if (message !== "allocate") return;
+          loadCpuWork();
           globalThis.load = loadAllocations();
           globalThis.load = null;
           gc();
@@ -87,11 +183,24 @@ describe("gateway concurrency benchmark script", () => {
         ]);
         expect(ready[0]).toBe("ready");
         const profilePath = `${dir}/load.heapprofile`;
-        await controlGatewayHeapProfile(child, "start", profilePath);
+        const cpuProfilePath = `${dir}/load.cpuprofile`;
+        await controlGatewayProfile(child, "cpu", "start", cpuProfilePath);
         const allocated = once(child, "message");
         child.send("allocate");
         expect((await allocated)[0]).toBe("allocated");
-        await controlGatewayHeapProfile(child, "stop", profilePath);
+        await controlGatewayProfile(child, "cpu", "stop", cpuProfilePath);
+        await controlGatewayProfile(child, "heap", "start", profilePath);
+        const heapAllocated = once(child, "message");
+        child.send("allocate");
+        expect((await heapAllocated)[0]).toBe("allocated");
+        await controlGatewayProfile(child, "heap", "stop", profilePath);
+        expect(child.exitCode).toBeNull();
+        const cpuSummary = readGatewayCpuProfile(cpuProfilePath);
+        expect(cpuSummary.sampleCount).toBeGreaterThan(0);
+        const cpu: Profiler.Profile = JSON.parse(await readFile(cpuProfilePath, "utf8"));
+        const functions = cpu.nodes.map((node) => node.callFrame.functionName);
+        expect(functions).toContain("loadCpuWork");
+        expect(functions).not.toContain("startupAllocations");
         const profile = readGatewayHeapProfile(profilePath);
         expect(profile.sampledAllocatedBytes).toBeGreaterThan(1_000_000);
         const stacks = profile.topAllocationSites.flatMap((site) => site.stack).join("\n");
@@ -192,6 +301,10 @@ describe("gateway concurrency benchmark script", () => {
       "--concurrency must be at most 64",
     );
     expect(testing.parseOptions([]).turnsPerSession).toBe(1);
+    expect(
+      testing.parseOptions(["--load-cpu-prof-dir", "/tmp/gateway-load-cpu-profiles"])
+        .loadCpuProfDir,
+    ).toBe("/tmp/gateway-load-cpu-profiles");
     expect(() => testing.parseOptions(["--turns-per-session", "0"])).toThrow("--turns-per-session");
     expect(() => testing.parseOptions(["--turns-per-session", "101"])).toThrow(
       "--turns-per-session must be at most 100",
@@ -242,6 +355,12 @@ describe("gateway concurrency benchmark script", () => {
         "65536",
       ]),
     ).toThrow("synthetic history");
+  });
+
+  it("rejects overlapping load CPU and heap captures before gateway startup", () => {
+    expect(() =>
+      testing.parseOptions(["--load-cpu-prof-dir", "/tmp/cpu", "--heap-prof-dir", "/tmp/heap"]),
+    ).toThrow("--load-cpu-prof-dir and --heap-prof-dir require separate benchmark runs");
   });
 
   it("summarizes plugin metadata scans captured after startup warmup", () => {
@@ -302,6 +421,10 @@ describe("gateway concurrency benchmark script", () => {
       });
 
     expect(testing.summarizeRuns([createRun(2, [10, 20]), createRun(1, [30])])).toMatchObject({
+      gatewayExternalMb: null,
+      gatewayExternalGrowthMb: null,
+      gatewayArrayBuffersMb: null,
+      gatewayArrayBuffersGrowthMb: null,
       gatewayHeapGrowthMb: { count: 2, max: 20, p50: 20, p95: 20, p99: 20 },
       gatewayPeakRssMb: { count: 2, max: 210, p50: 210, p95: 210, p99: 210 },
       gatewayRssGrowthMb: { count: 2, max: 20, p50: 20, p95: 20, p99: 20 },
@@ -840,7 +963,7 @@ describe("gateway concurrency benchmark script", () => {
   });
 
   it("loads through native Node TypeScript stripping", () => {
-    const result = spawnSync(process.execPath, ["scripts/bench-gateway-concurrency.ts", "--help"], {
+    const result = spawnSync(testNodeExecPath, ["scripts/bench-gateway-concurrency.ts", "--help"], {
       cwd: process.cwd(),
       encoding: "utf8",
     });
@@ -850,7 +973,7 @@ describe("gateway concurrency benchmark script", () => {
   });
 
   it("ends CLI failures with the required wrapper marker", () => {
-    const result = spawnSync(process.execPath, ["scripts/bench-gateway-concurrency.ts", "--wat"], {
+    const result = spawnSync(testNodeExecPath, ["scripts/bench-gateway-concurrency.ts", "--wat"], {
       cwd: process.cwd(),
       encoding: "utf8",
     });

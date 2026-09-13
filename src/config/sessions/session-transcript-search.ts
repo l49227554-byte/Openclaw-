@@ -10,7 +10,7 @@ import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import { resolveSqliteReadScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
-import { listSessionsNeedingTranscriptIndexReconcile } from "./session-transcript-index.js";
+import { hasSessionsNeedingTranscriptIndexReconcile } from "./session-transcript-index.js";
 import {
   isSessionTranscriptIndexReconcileRunning,
   startSessionTranscriptIndexReconcile,
@@ -51,7 +51,10 @@ export function searchSessionTranscripts(params: {
   env?: NodeJS.ProcessEnv;
   limit?: number;
   query: string;
+  role?: "assistant" | "user";
+  sessionId?: string;
   sessionKeys?: string[];
+  order?: "relevance" | "recent";
   storePath?: string;
 }): SessionTranscriptSearchResult {
   const query = params.query.trim();
@@ -68,12 +71,12 @@ export function searchSessionTranscripts(params: {
       runSqliteDeferredTransactionSync(
         database.db,
         () => {
-          const dirtySessions = listSessionsNeedingTranscriptIndexReconcile(database.db);
-          if (dirtySessions.length > 0) {
+          const hasDirtySessions = hasSessionsNeedingTranscriptIndexReconcile(database.db);
+          if (hasDirtySessions) {
             startSessionTranscriptIndexReconcile(databaseOptions);
           }
           const indexing =
-            dirtySessions.length > 0 || isSessionTranscriptIndexReconcileRunning(databaseOptions);
+            hasDirtySessions || isSessionTranscriptIndexReconcileRunning(databaseOptions);
           const limit = Math.min(Math.max(1, params.limit ?? 10), SEARCH_LIMIT_MAX);
           // Shared databases hold multiple logical agents. Filter before LIMIT;
           // reserved global/unknown sentinels retain their store-wide scope.
@@ -86,6 +89,14 @@ export function searchSessionTranscripts(params: {
               : sessionFilterValues.length > 0
                 ? ` AND session_windows.session_key IN (${sessionFilterValues.map(() => "?").join(", ")})`
                 : "";
+          const whereGeneration = params.sessionId
+            ? " AND session_transcript_fts.session_id = ?"
+            : "";
+          const whereRole = params.role ? " AND session_transcript_fts.role = ?" : "";
+          const order =
+            params.order === "recent"
+              ? "timestamp DESC, session_transcript_fts.rowid DESC"
+              : "rank ASC, timestamp DESC, message_id ASC";
           const archivedTranscriptsExcluded =
             executeSqliteQueryTakeFirstSync(
               database.db,
@@ -107,6 +118,9 @@ export function searchSessionTranscripts(params: {
                 .$if(
                   params.sessionKeys !== undefined && sessionFilterValues.length > 0,
                   (builder) => builder.where("window.session_key", "in", sessionFilterValues),
+                )
+                .$if(params.sessionId !== undefined, (builder) =>
+                  builder.where("window.session_id", "=", params.sessionId!),
                 ),
             )?.count ?? 0;
           // MATCH, snippet(), and bm25() are FTS5 primitives without a Kysely
@@ -122,14 +136,20 @@ export function searchSessionTranscripts(params: {
       bm25(session_transcript_fts) AS rank
     FROM session_transcript_fts
     JOIN session_windows ON session_windows.session_id = session_transcript_fts.session_id
-    WHERE session_transcript_fts MATCH ?${whereSession}
+    WHERE session_transcript_fts MATCH ?${whereSession}${whereGeneration}${whereRole}
       AND session_transcript_fts.session_id NOT IN (
         SELECT session_id FROM session_transcript_index_state WHERE needs_rebuild != 0
       )
-    ORDER BY rank ASC, timestamp DESC, message_id ASC
+    ORDER BY ${order}
     LIMIT ?
     `);
-          const values = [toFtsQuery(query), ...sessionFilterValues, limit + 1];
+          const values = [
+            toFtsQuery(query),
+            ...sessionFilterValues,
+            ...(params.sessionId ? [params.sessionId] : []),
+            ...(params.role ? [params.role] : []),
+            limit + 1,
+          ];
           const rows = statement.all(...values) as Array<{
             message_id: unknown;
             rank: unknown;

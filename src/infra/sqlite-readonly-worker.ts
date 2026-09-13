@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { toUSVString } from "node:util";
 import { formatByteSize } from "@openclaw/normalization-core";
+import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasErrnoCode } from "./errno.js";
@@ -14,9 +15,9 @@ import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-wor
 import type { SqliteSchemaHeader } from "./sqlite-schema-header.js";
 
 const SQLITE_READONLY_STDERR_TAIL_CHARS = 4_000;
-const SQLITE_INSPECTION_TIMEOUT_MS = 30_000;
-const SQLITE_INSPECTION_TIMEOUT_MAX_MS = 30 * 60_000;
-export const SQLITE_INSPECTION_BYTES_PER_SECOND = 32 * 1024 * 1024;
+const SLOW_HARDWARE_HEADROOM = 10;
+const SQLITE_INSPECTION_TIMEOUT_MS = 30_000 * SLOW_HARDWARE_HEADROOM;
+const SQLITE_INSPECTION_BYTES_PER_SECOND = 32 * 1024 * 1024;
 const log = createSubsystemLogger("state/sqlite");
 
 export function resolveSqliteInspectionBudget(
@@ -24,13 +25,15 @@ export function resolveSqliteInspectionBudget(
   pathname: string,
   sizeBytes: number | bigint | undefined,
 ): { timeoutMs: number; size: string } {
-  // A full copy or integrity scan reads the whole file at least once.
-  // 32 MiB/s is a conservative cold-cache floor on cloud block storage; the
-  // fixed 30 seconds covers child startup and shutdown.
-  const timeoutMs = Math.min(
+  // Copy reads source and writes private files; comparison reads both again.
+  // Leave tenfold headroom below the cloud-storage rate for old, slow disks.
+  const timeoutMs = resolveTimerTimeoutMs(
     SQLITE_INSPECTION_TIMEOUT_MS +
-      Math.ceil(Number(sizeBytes ?? 0) / SQLITE_INSPECTION_BYTES_PER_SECOND) * 1000,
-    SQLITE_INSPECTION_TIMEOUT_MAX_MS,
+      Math.ceil(
+        (4 * SLOW_HARDWARE_HEADROOM * Number(sizeBytes ?? 0)) / SQLITE_INSPECTION_BYTES_PER_SECOND,
+      ) *
+        1000,
+    SQLITE_INSPECTION_TIMEOUT_MS,
   );
   const size =
     sizeBytes === undefined
@@ -47,14 +50,47 @@ export function resolveSqliteInspectionBudget(
   return { timeoutMs, size };
 }
 
-function readSqliteSnapshotBudget(pathname: string): { timeoutMs: number; size: string } {
-  let sizeBytes: bigint | undefined;
+/** Sum serial SQLite inspection budgets without overflowing Node timers. */
+export function resolveAggregateSqliteInspectionTimeoutMs(
+  operation: string,
+  databases: readonly { path: string; sizeBytes: bigint | undefined }[],
+): number {
+  let timeoutMs = 0;
+  for (const database of databases) {
+    timeoutMs += resolveSqliteInspectionBudget(
+      operation,
+      database.path,
+      database.sizeBytes,
+    ).timeoutMs;
+  }
+  return resolveTimerTimeoutMs(
+    timeoutMs,
+    SQLITE_INSPECTION_TIMEOUT_MS,
+    SQLITE_INSPECTION_TIMEOUT_MS,
+  );
+}
+
+export function readSqliteInspectionBudget(
+  operation: string,
+  pathname: string,
+  mainSizeBytes?: bigint,
+): { timeoutMs: number; size: string } {
+  let sizeBytes = mainSizeBytes;
   try {
-    sizeBytes = fs.statSync(pathname, { bigint: true }).size;
+    sizeBytes ??= fs.statSync(pathname, { bigint: true }).size;
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      try {
+        sizeBytes += fs.statSync(pathname + suffix, { bigint: true }).size;
+      } catch (error) {
+        if (!hasErrnoCode(error, "ENOENT")) {
+          throw error;
+        }
+      }
+    }
   } catch {
     // Let the child report the source error with its normal diagnostics.
   }
-  return resolveSqliteInspectionBudget("read-only snapshot", pathname, sizeBytes);
+  return resolveSqliteInspectionBudget(operation, pathname, sizeBytes);
 }
 
 export function sqliteInspectionTimeoutError(
@@ -75,6 +111,21 @@ type SqliteReadOnlyWorkerResult =
   | { ok: false; message: string };
 type SqliteReadOnlyWorkerOutput = { failure?: string; stderr: string; stdout: string };
 
+function isAgentSchemaMeta(value: unknown): boolean {
+  return (
+    value === null ||
+    (typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 3 &&
+      "agentId" in value &&
+      (value.agentId === null || typeof value.agentId === "string") &&
+      "role" in value &&
+      (value.role === null || typeof value.role === "string") &&
+      "schemaVersion" in value &&
+      (value.schemaVersion === null || typeof value.schemaVersion === "number"))
+  );
+}
+
 function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteReadOnlyWorkerResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -90,8 +141,11 @@ function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteReadOnlyWo
       "userVersion" in header &&
       typeof header.userVersion === "number" &&
       Number.isInteger(header.userVersion) &&
-      Object.keys(header).every((key) => key === "userVersion" || key === "writerAppVersion") &&
-      (!("writerAppVersion" in header) || typeof header.writerAppVersion === "string")
+      Object.keys(header).every(
+        (key) => key === "userVersion" || key === "writerAppVersion" || key === "agentSchemaMeta",
+      ) &&
+      (!("writerAppVersion" in header) || typeof header.writerAppVersion === "string") &&
+      (!("agentSchemaMeta" in header) || isAgentSchemaMeta(header.agentSchemaMeta))
     );
   }
   return (
@@ -174,6 +228,7 @@ function sqliteReadOnlyWorkerArgv(
   pathname: string,
   mode: SqliteReadOnlyWorkerMode,
   stagingRoot?: string,
+  agentSchemaVersionForOwnership?: number,
 ) {
   const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sqliteReadOnly);
   return [
@@ -181,13 +236,21 @@ function sqliteReadOnlyWorkerArgv(
     SQLITE_READONLY_CHILD_ARG,
     mode,
     path.resolve(pathname),
-    ...(stagingRoot ? [stagingRoot] : []),
+    ...(stagingRoot || agentSchemaVersionForOwnership !== undefined ? [stagingRoot ?? ""] : []),
+    ...(agentSchemaVersionForOwnership !== undefined
+      ? [String(agentSchemaVersionForOwnership)]
+      : []),
   ];
 }
 
 export function runSqliteReadOnlyWorker(
   pathname: string,
-  options: { mode: "schema-header"; stagingRoot?: string; signal?: AbortSignal },
+  options: {
+    mode: "schema-header";
+    stagingRoot?: string;
+    signal?: AbortSignal;
+    agentSchemaVersionForOwnership?: number;
+  },
 ): Promise<SqliteSchemaHeader>;
 export function runSqliteReadOnlyWorker(
   pathname: string,
@@ -195,14 +258,24 @@ export function runSqliteReadOnlyWorker(
 ): Promise<string>;
 export function runSqliteReadOnlyWorker(
   pathname: string,
-  options: { mode: SqliteReadOnlyWorkerMode; stagingRoot?: string; signal?: AbortSignal },
+  options: {
+    mode: SqliteReadOnlyWorkerMode;
+    stagingRoot?: string;
+    signal?: AbortSignal;
+    agentSchemaVersionForOwnership?: number;
+  },
 ): Promise<string | SqliteSchemaHeader> {
   return new Promise<string | SqliteSchemaHeader>((resolve, reject) => {
-    const { timeoutMs, size } = readSqliteSnapshotBudget(pathname);
+    const { timeoutMs, size } = readSqliteInspectionBudget("read-only snapshot", pathname);
     let output: SqliteReadOnlyWorkerOutput = { stderr: "", stdout: "" };
     const child = execFile(
       process.execPath,
-      sqliteReadOnlyWorkerArgv(pathname, options.mode, options.stagingRoot),
+      sqliteReadOnlyWorkerArgv(
+        pathname,
+        options.mode,
+        options.stagingRoot,
+        options.agentSchemaVersionForOwnership,
+      ),
       {
         encoding: "utf8",
         timeout: timeoutMs,
@@ -244,7 +317,7 @@ export function runSqliteReadOnlyWorker(
 }
 
 export function runSqliteReadOnlyWorkerSync(pathname: string, stagingRoot: string): string {
-  const { timeoutMs, size } = readSqliteSnapshotBudget(pathname);
+  const { timeoutMs, size } = readSqliteInspectionBudget("read-only snapshot", pathname);
   const result = spawnSync(
     process.execPath,
     sqliteReadOnlyWorkerArgv(pathname, "sync", stagingRoot),

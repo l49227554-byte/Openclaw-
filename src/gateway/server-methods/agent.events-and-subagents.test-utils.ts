@@ -1231,7 +1231,9 @@ describe("gateway agent handler", () => {
       endedAt: 3,
       outcome: { status: "ok" },
     });
-    mocks.replaceSubagentRunAfterSteer.mockRejectedValueOnce(new Error("reactivate boom"));
+    mocks.replaceSubagentRunAfterSteer.mockImplementationOnce(() => {
+      throw new Error("reactivate boom");
+    });
 
     const respond = await invokeAgent(
       {

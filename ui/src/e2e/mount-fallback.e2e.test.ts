@@ -136,7 +136,7 @@ registeredElementSuite.define(() => {
           expect(new URL(page.url()).searchParams.get("session")).toBe("synthetic-session");
           expect(new URL(page.url()).hash).toBe("#synthetic-fragment");
         },
-        () => release.resolve(),
+        async () => release.resolve(),
       );
     },
   );

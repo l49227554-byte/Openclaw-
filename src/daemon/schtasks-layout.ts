@@ -43,7 +43,7 @@ function stripTrailingCmdRedirections(commandLine: string): string {
   // Validate the entire command before removing anything. A compound command or
   // uncertain cmd/argv quote boundary must never become exact process-ownership proof.
   for (let index = 0; index < commandLine.length;) {
-    if (/[ \t]/.test(commandLine[index])) {
+    if (/[ \t]/.test(commandLine.charAt(index))) {
       index++;
       continue;
     }
@@ -81,7 +81,7 @@ function stripTrailingCmdRedirections(commandLine: string): string {
     }
     let quoted = false;
     while (index < commandLine.length) {
-      const char = commandLine[index];
+      const char = commandLine.charAt(index);
       if (
         char === "\r" ||
         char === "\n" ||
@@ -109,12 +109,13 @@ function stripTrailingCmdRedirections(commandLine: string): string {
   }
 
   const firstRedirect = tokens.findIndex((token) => token.redirect !== undefined);
-  if (firstRedirect <= 0) {
+  const firstToken = tokens[firstRedirect];
+  if (firstRedirect <= 0 || !firstToken) {
     return commandLine;
   }
   for (let index = firstRedirect; index < tokens.length; index++) {
     const token = tokens[index];
-    if (!token.redirect) {
+    if (!token?.redirect) {
       return commandLine;
     }
     if (token.redirect === ">&") {
@@ -133,7 +134,7 @@ function stripTrailingCmdRedirections(commandLine: string): string {
       return commandLine;
     }
   }
-  return commandLine.slice(0, tokens[firstRedirect].start);
+  return commandLine.slice(0, firstToken.start);
 }
 
 export function shouldFallbackToStartupEntry(params: { code: number; detail: string }): boolean {

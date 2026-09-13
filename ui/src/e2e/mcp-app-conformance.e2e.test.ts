@@ -846,7 +846,7 @@ suite.define(() => {
             ).toHaveLength(initializations);
 
             // Playwright does not support BFCache restoration; use its supported history flow.
-            // Production no-store headers stay unchanged, and ordinary history is not BFCache proof.
+            // Authenticated documents remain no-store; ordinary history is not BFCache proof.
             const historyContext = await newProofContext();
             const historyPage = await historyContext.newPage();
             const historyStates: Array<Record<string, unknown>> = [];
@@ -875,8 +875,10 @@ suite.define(() => {
               historyObservations.responses = responses;
               historyPage.on("response", (response) => {
                 if (response.url().includes("mcp-app")) {
+                  const url = new URL(response.url());
                   responses.push({
-                    pathname: new URL(response.url()).pathname,
+                    pathname: url.pathname,
+                    version: url.pathname === "/mcp-app-sandbox" ? url.searchParams.get("v") : null,
                     status: response.status(),
                     cacheControl: response.headers()["cache-control"],
                   });
@@ -917,17 +919,24 @@ suite.define(() => {
               expect(
                 historyEvents.filter((event) => event.event === "response-written"),
               ).toMatchObject([{ id: historyCallId, isError: false }]);
-              for (const pathname of [
-                "/__openclaw__/mcp-app",
-                "/__openclaw__/mcp-app/view",
-                "/mcp-app-sandbox",
-              ]) {
+              for (const pathname of ["/__openclaw__/mcp-app", "/__openclaw__/mcp-app/view"]) {
                 expect(responses.filter((response) => response.pathname === pathname)).toEqual(
                   expect.arrayContaining([
                     expect.objectContaining({ status: 200, cacheControl: "no-store" }),
                   ]),
                 );
               }
+              expect(
+                responses.filter((response) => response.pathname === "/mcp-app-sandbox"),
+              ).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    status: 200,
+                    cacheControl: "public, max-age=31536000, immutable",
+                    version: expect.stringMatching(/^[a-f0-9]{64}$/),
+                  }),
+                ]),
+              );
               historyObservations.phase = "complete";
             } finally {
               try {

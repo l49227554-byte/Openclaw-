@@ -4726,6 +4726,7 @@ export const en: TranslationMap & {
     },
     composer: {
       composerInput: "Chat composer",
+      emojiSuggestions: "Emoji suggestions",
       placeholder: "Message {name}",
       emptyHint: "Write a message to send.",
       placeholderWithAttachments: "Add a message or paste more images...",

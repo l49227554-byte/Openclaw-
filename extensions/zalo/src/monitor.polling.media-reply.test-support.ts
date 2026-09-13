@@ -242,10 +242,7 @@ describe("Zalo polling media replies", () => {
           await vi.waitFor(() => {
             expect(delivery.outcome, "Zalo reply delivery to settle").toBeDefined();
           });
-          const outcome = expectDefined(delivery.outcome, "Zalo reply delivery");
-          if (!outcome.ok) {
-            throw outcome.error;
-          }
+          expect(delivery.outcome).toEqual({ ok: true });
           expect(sendPhotoMock).toHaveBeenCalledTimes(1);
           expect(prepareHostedZaloMediaUrlMock).toHaveBeenCalledWith({
             mediaUrl,

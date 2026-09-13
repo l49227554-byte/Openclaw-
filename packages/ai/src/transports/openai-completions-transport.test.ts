@@ -342,6 +342,29 @@ describe("openai completions transport", () => {
     expect(request.headers.has("api-version")).toBe(false);
   });
 
+  it("moves regional Azure AI Foundry completions api-version headers into query params", async () => {
+    const request = await captureTransportRequest({
+      id: "gpt-4o-mini",
+      name: "GPT-4o Mini",
+      api: "openai-completions",
+      provider: "azure-custom",
+      baseUrl: "https://eastus.api.cognitive.microsoft.com/openai/deployments/gpt-4o-mini",
+      headers: {
+        "api-key": "azure-key",
+        "api-version": "2024-10-21",
+      },
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } as unknown as Model<"openai-completions">);
+    const url = new URL(request.url);
+
+    expect(Object.fromEntries(url.searchParams)).toEqual({ "api-version": "2024-10-21" });
+    expect(request.headers.has("api-version")).toBe(false);
+  });
+
   it("preserves configured query params without moving non-Azure headers", async () => {
     const request = await captureTransportRequest(
       makeCompletionsModel({

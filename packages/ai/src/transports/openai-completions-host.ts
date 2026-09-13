@@ -7,6 +7,7 @@ export function isAzureOpenAICompatibleHost(hostname: string): boolean {
   return (
     hostname.endsWith(".openai.azure.com") ||
     hostname.endsWith(".services.ai.azure.com") ||
-    hostname.endsWith(".cognitiveservices.azure.com")
+    hostname.endsWith(".cognitiveservices.azure.com") ||
+    hostname.endsWith(".api.cognitive.microsoft.com")
   );
 }

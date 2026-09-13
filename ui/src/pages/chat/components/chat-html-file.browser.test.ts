@@ -209,7 +209,7 @@ describe.runIf(browserMode)("HTML file presentation", () => {
       const draft = "<h1>Conflicting draft</h1>";
       const latest = { content: "<h1>Reloaded from disk</h1>", hash: "reloaded-hash", editable };
       const reload = createDeferred<typeof latest>();
-      const languageReady = createDeferred<void>();
+      const languageReady = createDeferred();
       const { panel, file } = await mount("reload-race.html", draft, undefined, "draft-hash");
       const save = vi.mocked(file.edit!.save);
       save

@@ -308,8 +308,11 @@ describe("resolveHeartbeatPromptForResponseTool", () => {
     expect(prompt).toContain("heartbeat_respond");
     expect(prompt).toContain("notify=false");
     // A claude-cli fallback cannot see the direct-only heartbeat_respond tool,
-    // so the prompt must hand it a silent reply instead of prose.
+    // so the prompt must hand it a silent reply when quiet and keep the alert
+    // text path open when attention is required.
     expect(prompt).toContain(SILENT_REPLY_TOKEN);
+    expect(prompt).toContain(`${SILENT_REPLY_TOKEN} when nothing needs the user's attention`);
+    expect(prompt).toContain("only the alert text");
     expect(prompt).not.toContain(HEARTBEAT_TOKEN);
   });
 
@@ -322,5 +325,7 @@ describe("resolveHeartbeatPromptForResponseTool", () => {
     expect(prompt).toContain("heartbeat_respond");
     expect(prompt).toContain("notify=false");
     expect(prompt).toContain(SILENT_REPLY_TOKEN);
+    expect(prompt).toContain(`${SILENT_REPLY_TOKEN} when nothing needs the user's attention`);
+    expect(prompt).toContain("only the alert text");
   });
 });

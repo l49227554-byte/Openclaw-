@@ -221,6 +221,64 @@ it("registered plugin service logger masks opaque credential headers with the de
   expect(JSON.stringify(result.console)).not.toContain("opaque-value");
 });
 
+it("registered plugin service logger protects a credential-header receiver before one file conversion", async () => {
+  let conversions = 0;
+  const receiver = {
+    "x-pomerium-jwt-assertion": "opaque-value",
+    toJSON() {
+      conversions += 1;
+      return this["x-pomerium-jwt-assertion"];
+    },
+  };
+  const result = await logFromPlugin("header receiver", undefined, undefined, (logger) => {
+    logger.info("header receiver", { value: receiver });
+  });
+  expect(conversions).toBe(1);
+  expect(result.records).toHaveLength(1);
+  expect(result.records[0]["2"].value).toBe("***");
+  expect(result.records[0].message).toBe('header receiver {"value":"***"}');
+  expect(JSON.stringify(result.records)).not.toContain("opaque-value");
+});
+
+it.each(["opaque-value", 123456])(
+  "registered plugin service logger retains header context until configured rules run: %s",
+  async (value) => {
+    const result = await logFromPlugin(
+      "header context",
+      { "x-pomerium-jwt-assertion": value, next: "SECOND_PRIVATE_VALUE" },
+      [`/"x-pomerium-jwt-assertion":${JSON.stringify(value)},"next":"(SECOND_PRIVATE_VALUE)"/g`],
+    );
+    expect(result.records[0]["1"]).toEqual({
+      "x-pomerium-jwt-assertion": "***",
+      next: "SECOND…ALUE",
+    });
+  },
+);
+
+it("registered plugin service logger preserves class display punctuation after quoted credentials", async () => {
+  let conversions = 0;
+  const result = await logFromPlugin("class conversion", undefined, undefined, (logger) => {
+    logger.info(
+      "class conversion",
+      new (class {
+        toJSON() {
+          conversions += 1;
+          return {
+            token: "OPAQUE_CONVERT_TOKEN",
+            text: '--token "synthetic-credential-123456"',
+            after: "still-visible",
+          };
+        }
+      })(),
+    );
+  });
+  expect(conversions).toBe(1);
+  expect(result.records[0].message).toBe(
+    'class conversion {"token":"***","text":"--token ***","after":"still-visible"}',
+  );
+  expect(JSON.stringify(result.records)).not.toContain("synthetic-credential-123456");
+});
+
 it("registered plugin service logger preserves hints required by later rules", async () => {
   const value = "FIRST_PRIVATE_VALUE_1234567890 SECOND_PRIVATE_VALUE";
   const result = await logFromPlugin(`HUNT hints ${value}`, { value }, [
@@ -269,7 +327,7 @@ it.each([Number.NaN, Infinity, -Infinity])(
   async (value) => {
     const result = await logFromPlugin("native values", undefined, undefined, (logger) => {
       logger.info("HUNT value", value);
-      logger.info(value);
+      logger.log(3, "INFO", value);
     });
     expect(result.records.map((record) => record.message)).toEqual([
       `HUNT value ${String(value)}`,
@@ -359,31 +417,27 @@ it.each([123456, false])(
 );
 
 it("registered plugin service logger protects a plain toJSON receiver before conversion", async () => {
-  const result = await logFromPlugin("plain receiver", {
-    value: {
-      password: "FIRST_PRIVATE_VALUE_1234567890",
-      toJSON() {
-        return this.password;
-      },
+  const receiver = {
+    password: "FIRST_PRIVATE_VALUE_1234567890",
+    toJSON() {
+      return this.password;
     },
-  });
+  };
+  const result = await logFromPlugin("plain receiver", { value: receiver });
   expect(result.records[0]["1"].value).toBe("FIRST_…7890");
   expect(JSON.stringify(result.records)).not.toContain("FIRST_PRIVATE_VALUE_1234567890");
 });
 
 it("registered plugin service logger applies anchored rules before plain toJSON composition", async () => {
-  const result = await logFromPlugin(
-    "composed receiver",
-    {
-      value: {
-        content: "FIRST_PRIVATE_VALUE_1234567890",
-        toJSON() {
-          return `prefix ${this.content}`;
-        },
-      },
+  const receiver = {
+    content: "FIRST_PRIVATE_VALUE_1234567890",
+    toJSON() {
+      return `prefix ${this.content}`;
     },
-    ["^FIRST_PRIVATE_VALUE_1234567890$"],
-  );
+  };
+  const result = await logFromPlugin("composed receiver", { value: receiver }, [
+    "^FIRST_PRIVATE_VALUE_1234567890$",
+  ]);
   expect(result.records[0]["1"].value).toBe("prefix FIRST_…7890");
 });
 

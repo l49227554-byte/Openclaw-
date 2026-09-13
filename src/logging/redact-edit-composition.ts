@@ -146,3 +146,33 @@ export function rebaseRedactionEdits(
     replacement: edit.replacement,
   }));
 }
+
+export function mergeRedactionEdits(edits: RedactionEdit[]): RedactionEdit[] {
+  edits.sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: RedactionEdit[] = [];
+  for (const edit of edits) {
+    const previous = merged.at(-1);
+    if (!previous || edit.start >= previous.end) {
+      merged.push({ ...edit });
+    } else if (
+      edit.start !== previous.start ||
+      edit.end !== previous.end ||
+      edit.replacement !== previous.replacement
+    ) {
+      previous.end = Math.max(previous.end, edit.end);
+      // Conflicting captures cannot retain a hint exposing another captured value.
+      previous.replacement = "***";
+    }
+  }
+  return merged;
+}
+
+export function applyRedactionEdits(value: string, edits: RedactionEdit[]): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const edit of mergeRedactionEdits(edits)) {
+    parts.push(value.slice(cursor, edit.start), edit.replacement);
+    cursor = edit.end;
+  }
+  return parts.join("") + value.slice(cursor);
+}

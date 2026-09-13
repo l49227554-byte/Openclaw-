@@ -1,5 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import {
+  applyRedactionEdits,
+  mergeRedactionEdits,
   composeRedactionEdits,
   rebaseRedactionEdits,
   type RedactionEdit,
@@ -66,36 +68,6 @@ export type RedactionMessage = {
     primitiveLength?: number;
   }[];
 };
-
-function mergeRedactionEdits(edits: RedactionEdit[]): RedactionEdit[] {
-  edits.sort((left, right) => left.start - right.start || left.end - right.end);
-  const merged: RedactionEdit[] = [];
-  for (const edit of edits) {
-    const previous = merged.at(-1);
-    if (!previous || edit.start >= previous.end) {
-      merged.push({ ...edit });
-    } else if (
-      edit.start !== previous.start ||
-      edit.end !== previous.end ||
-      edit.replacement !== previous.replacement
-    ) {
-      previous.end = Math.max(previous.end, edit.end);
-      // Conflicting captures cannot retain a hint exposing another captured value.
-      previous.replacement = "***";
-    }
-  }
-  return merged;
-}
-
-export function applyRedactionEdits(value: string, edits: RedactionEdit[]): string {
-  const parts: string[] = [];
-  let cursor = 0;
-  for (const edit of mergeRedactionEdits(edits)) {
-    parts.push(value.slice(cursor, edit.start), edit.replacement);
-    cursor = edit.end;
-  }
-  return parts.join("") + value.slice(cursor);
-}
 
 type ScalarToken = RedactionField & {
   start: number;
@@ -516,6 +488,28 @@ function updateCurrentRecord(
   return parts.join("");
 }
 
+function projectedStringEnd(
+  input: string,
+  tokens: ScalarToken[],
+  message: RedactionMessage,
+  token: ScalarToken,
+  start: number,
+  end: number,
+): number {
+  const jsonParts = new Set(message.parts.filter((part) => part.json).map((part) => part.key));
+  const spans = projectMessageEdits(input, tokens, message, (source) =>
+    source.string && !source.isKey && source.rootKey !== undefined && jsonParts.has(source.rootKey)
+      ? [{ start: 0, end: source.value.length, replacement: "" }]
+      : [],
+  ).filter((span) => span.end < message.contentLength);
+  const containing = rebaseRedactionEdits(token.edits, spans).filter(
+    (span) => span.start <= start && start < span.end && end <= span.end,
+  );
+  return containing.length === 1
+    ? expectDefined(containing[0], "displayed source string").end
+    : token.currentValue.length;
+}
+
 export function redactJsonRecord(
   input: string,
   origins: RedactionOrigins,
@@ -637,12 +631,8 @@ export function redactJsonRecord(
             }
             let startPosition = Math.max(capture.start, token.currentStart + 1);
             let start = currentDecodedBoundary(input, token, startPosition, replacementBoundaries);
-            const end = currentDecodedBoundary(
-              input,
-              token,
-              Math.min(capture.end, token.currentEnd - 1),
-              replacementBoundaries,
-            );
+            let endPosition = Math.min(capture.end, token.currentEnd - 1);
+            let end = currentDecodedBoundary(input, token, endPosition, replacementBoundaries);
             if (start === undefined || end === undefined) {
               while (start === undefined) {
                 start = currentDecodedBoundary(
@@ -652,18 +642,26 @@ export function redactJsonRecord(
                   replacementBoundaries,
                 );
               }
-              add(token, { start, end: value.length, replacement: "***" });
+              while (end === undefined) {
+                end = currentDecodedBoundary(input, token, ++endPosition, replacementBoundaries);
+              }
+              const maskEnd =
+                token === messageToken && message
+                  ? projectedStringEnd(input, tokens, message, token, start, end)
+                  : value.length;
+              add(token, { start, end: maskEnd, replacement: "***" });
               continue;
             }
             if (end < start) {
               continue;
             }
+            const { start: captureStart, end: captureEnd } = capture;
             const edit = getEdit(match, pattern, () => ({
               start,
               end,
               value: current.slice(
-                Math.max(capture.start, token.currentStart + 1),
-                Math.min(capture.end, token.currentEnd - 1),
+                Math.max(captureStart, token.currentStart + 1),
+                Math.min(captureEnd, token.currentEnd - 1),
               ),
             }));
             if (!edit) {

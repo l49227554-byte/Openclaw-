@@ -9,12 +9,15 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { compileConfigRegex } from "../security/config-regex.js";
 import { readLoggingConfig } from "./config.js";
 import { replacePatternBounded } from "./redact-bounded.js";
-import { composeRedactionEdits, type RedactionEdit } from "./redact-edit-composition.js";
+import {
+  applyRedactionEdits,
+  composeRedactionEdits,
+  type RedactionEdit,
+} from "./redact-edit-composition.js";
 import { modelVisibleToolTextRedactionState } from "./redact-internal-state.js";
 import { isFullContextToolPayloadRedaction } from "./redact-internal.js";
 import {
   redactJsonRecord,
-  applyRedactionEdits,
   getPatternRedactionEdits,
   type RedactionField,
   type RedactionMessage,
@@ -1202,32 +1205,30 @@ function shouldRedactStructuredStringField(
   );
 }
 
+function classifyLogFieldProtection(
+  key: string,
+  path: readonly string[],
+  objectPath: boolean,
+  value: string | undefined,
+): "legacy" | "header" | undefined {
+  const legacy =
+    value === undefined
+      ? shouldRedactStructuredPrimitiveField(key, path)
+      : isPublicShareIdPath(path) ||
+        shouldRedactStructuredStringField(key, value, path, objectPath);
+  return legacy ? "legacy" : CREDENTIAL_HEADER_FIELD_RE.test(key) ? "header" : undefined;
+}
+
 function getFieldRecordEdits(field: RedactionField, mode: RedactSensitiveMode): RedactionEdit[] {
   const { key, value, path, objectPath } = field;
-  if (!field.string) {
-    return mode !== "off" &&
-      value !== "null" &&
-      (shouldRedactStructuredPrimitiveField(key, path) || CREDENTIAL_HEADER_FIELD_RE.test(key))
-      ? [{ start: 0, end: value.length, replacement: "***" }]
-      : [];
-  }
-  if (mode === "off") {
+  if (
+    mode === "off" ||
+    (!field.string && value === "null") ||
+    !classifyLogFieldProtection(key, path, objectPath, field.string ? value : undefined)
+  ) {
     return [];
   }
-  if (
-    isPublicShareIdPath(path) ||
-    CREDENTIAL_HEADER_FIELD_RE.test(key) ||
-    shouldRedactStructuredStringField(key, value, path, objectPath)
-  ) {
-    return [
-      {
-        start: 0,
-        end: value.length,
-        replacement: maskSecretFieldValue(key, value),
-      },
-    ];
-  }
-  return [];
+  return [{ start: 0, end: value.length, replacement: maskSecretFieldValue(key, value) }];
 }
 
 function getTextRecordEdits(
@@ -1276,7 +1277,11 @@ function getTextRecordEdits(
   return combined;
 }
 
-function getLegacyFieldRecordEdits(field: RedactionField, original: string): RedactionEdit[] {
+function getLegacyFieldRecordEdits(
+  field: RedactionField,
+  original: string,
+  beforeConversion = false,
+): RedactionEdit[] {
   const { key, value, path, objectPath } = field;
   if (field.isKey || !field.origin.structured || !field.string) {
     return [];
@@ -1299,7 +1304,8 @@ function getLegacyFieldRecordEdits(field: RedactionField, original: string): Red
   if (edits.length > 0 || value !== original) {
     return edits;
   }
-  return shouldRedactStructuredStringField(key, value, path, objectPath)
+  const protection = classifyLogFieldProtection(key, path, objectPath, value);
+  return protection === "legacy" || (beforeConversion && protection === "header")
     ? [{ start: 0, end: value.length, replacement: maskToken(value) }]
     : [];
 }
@@ -1407,13 +1413,13 @@ function prepareFileToJsonReceivers(
       }
       return applyRedactionEdits(
         current,
-        getLegacyFieldRecordEdits({ ...field, value: current }, value),
+        getLegacyFieldRecordEdits({ ...field, value: current }, value, true),
       );
     }
     if (value === null || typeof value !== "object") {
       return decode &&
         ["number", "boolean", "bigint"].includes(typeof value) &&
-        shouldRedactStructuredPrimitiveField(key, path)
+        classifyLogFieldProtection(key, path, objectPath, undefined)
         ? "***"
         : value;
     }
@@ -1496,7 +1502,7 @@ export function redactLogRecordForTransport(
     const primitiveMask =
       structured &&
       ["number", "boolean", "bigint"].includes(typeof source) &&
-      shouldRedactStructuredPrimitiveField(fieldKey, path);
+      classifyLogFieldProtection(fieldKey, path, !array, undefined) === "legacy";
     const circular =
       value !== null &&
       typeof value === "object" &&

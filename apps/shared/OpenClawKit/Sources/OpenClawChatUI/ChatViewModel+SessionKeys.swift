@@ -178,15 +178,15 @@ extension OpenClawChatViewModel {
     /// Session mutations and their ordering use the routed gateway identity,
     /// never a presentation alias such as `main`.
     func sessionMutationIdentity(for key: String, listedKey: String? = nil, agentID: String? = nil) -> String {
-        let listedKey = listedKey ?? self.sessions.first(where: { $0.key == key })?.key ??
+        let entry = self.sessions.first(where: { $0.key == key }) ??
             (self.matchesCurrentSessionKey(incoming: key, current: self.sessionKey)
-                ? self.currentSessionEntry()?.key
+                ? self.currentSessionEntry()
                 : nil)
         let target = self.modelPatchTarget(
             sessionKey: key,
-            canonicalSessionKey: listedKey,
+            canonicalSessionKey: listedKey ?? entry?.key,
             agentID: OpenClawChatSessionKey.agentID(from: key) ?? agentID ??
-                self.explicitSessionAgentID ?? self.activeAgentId,
+                entry?.agentId ?? self.currentSessionSnapshot().deliveryAgentID,
             sessionRoutingContract: nil)
         if target.canonicalSessionKey == "global", let owner = target.agentID {
             return self.composerSessionKey(for: "global", agentID: owner)

@@ -36,19 +36,22 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
     private(set) var mutationRequests: [OpenClawChatGatewayRequest] = []
     private(set) var abortTargets: [OpenClawChatSessionTarget] = []
     private(set) var fullMessageTargets: [OpenClawChatSessionTarget] = []
+    private var sessionsByAgentID: [String: [OpenClawChatSessionEntry]]
 
     init(
         catalogs: [Result<OpenClawChatAgentsListResponse?, Failure>],
         catalogGate: AgentNavigationGate? = nil,
         sendGate: AgentNavigationGate? = nil,
         supportsAgentScopes: Bool = true,
-        firstAbortGate: AgentNavigationGate? = nil)
+        firstAbortGate: AgentNavigationGate? = nil,
+        sessionsByAgentID: [String: [OpenClawChatSessionEntry]] = [:])
     {
         self.catalogs = catalogs
         self.catalogGate = catalogGate
         self.sendGate = sendGate
         self.supportsAgentScopes = supportsAgentScopes
         self.firstAbortGate = firstAbortGate
+        self.sessionsByAgentID = sessionsByAgentID
     }
 
     nonisolated func scoped(toAgentID agentID: String) -> (any OpenClawChatTransport)? {
@@ -88,6 +91,13 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
 
     func recordMutation(_ request: OpenClawChatGatewayRequest) -> Data {
         self.mutationRequests.append(request)
+        if let owner = request.params["agentId"]?.value as? String,
+           let key = request.params["key"]?.value as? String,
+           let unread = request.params["unread"]?.value as? Bool,
+           let index = self.sessionsByAgentID[owner]?.firstIndex(where: { $0.key == key })
+        {
+            self.sessionsByAgentID[owner]?[index].unread = unread
+        }
         return Data("{}".utf8)
     }
 
@@ -117,8 +127,9 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
         agentID: String?) async throws -> OpenClawChatSessionsListResponse
     {
         self.listedAgentIDs.append(agentID)
+        let sessions = self.sessionsByAgentID[agentID ?? "main"] ?? []
         return OpenClawChatSessionsListResponse(
-            ts: nil, path: nil, count: 0, defaults: nil, sessions: [])
+            ts: nil, path: nil, count: sessions.count, defaults: nil, sessions: sessions)
     }
 
     func sendMessage(
@@ -169,6 +180,17 @@ private struct AgentScopedNavigationTransport: OpenClawChatTransport {
 
     func requestHistory(sessionKey: String) async throws -> OpenClawChatHistoryPayload {
         await self.base.recordHistory(.init(sessionKey: sessionKey, agentID: self.agentID))
+    }
+
+    func listSessions(
+        limit: Int?, search: String?, archived: Bool, agentID: String?) async throws -> OpenClawChatSessionsListResponse
+    {
+        try await self.base.listSessions(
+            limit: limit, search: search, archived: archived, agentID: agentID ?? self.agentID)
+    }
+
+    func acquireSessionMutationRouteLease() async -> OpenClawChatSessionMutationRouteLease? {
+        await self.base.acquireSessionMutationRouteLease()
     }
 
     func setActiveSessionKey(_ sessionKey: String) async throws {
@@ -229,11 +251,82 @@ private final class AgentNavigationFixture {
 
 @MainActor
 struct ChatViewModelAgentNavigationTests {
+    private func globalSession(owner: String) -> OpenClawChatSessionEntry {
+        var entry = OpenClawChatSessionEntry.placeholder(key: "global")
+        entry.agentId = owner
+        entry.label = "\(owner) notes"
+        entry.pinned = true
+        entry.unread = true
+        entry.markedUnreadAt = 10
+        return entry
+    }
+
     private func catalog(contract: String = "per-agent|main|main") -> OpenClawChatAgentsListResponse {
         OpenClawChatAgentsListResponse(
             defaultId: "main",
             agents: [.init(id: "main", name: "Assistant"), .init(id: "research", name: "Research")],
             sessionRoutingContract: contract)
+    }
+
+    @Test func `sequential global activations acknowledge their owners and preserve manual unread marks`() async throws {
+        let contract = "global|inbox|main"
+        let transport = AgentNavigationTransport(
+            catalogs: [.success(self.catalog(contract: contract))],
+            sessionsByAgentID: [
+                "research": [self.globalSession(owner: "research")],
+                "main": [self.globalSession(owner: "main")],
+            ])
+        let fixture = AgentNavigationFixture(
+            transport: transport, sessionKey: "agent:research:inbox", routingContract: contract)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.load()
+        try await waitUntil("Research activation acknowledged") {
+            let requestCount = await transport.mutationRequests.count
+            return await MainActor.run { requestCount == 1 && !vm.isLoading }
+        }
+        vm.setSessionUnread(key: "global", unread: true, agentID: "research")
+        try await waitUntil("Research manual unread mark accepted") { await transport.mutationRequests.count == 2 }
+        vm.refresh()
+        try await waitUntil("Research refresh settled") { await MainActor.run { !vm.isLoading } }
+        #expect(await transport.mutationRequests.count == 2)
+        #expect(vm.currentSessionEntry()?.unread == true)
+
+        vm.switchSession(to: "global", agentID: "main")
+        try await waitUntil("Main activation acknowledged") { await transport.mutationRequests.count == 3 }
+        let acknowledgements = await transport.mutationRequests.filter { $0.params["unread"]?.value as? Bool == false }
+        #expect(acknowledgements.map { $0.params["agentId"]?.value as? String } == ["research", "main"])
+        #expect(acknowledgements.allSatisfy { $0.params["key"]?.value as? String == "global" })
+        let research = try await transport.listSessions(limit: nil, search: nil, archived: false, agentID: "research")
+        #expect(research.sessions.first?.unread == true)
+    }
+
+    @Test(arguments: [false, true])
+    func `primary navigation selects its named global row without a placeholder`(hasHomeRow: Bool) async throws {
+        let contract = "global|inbox|main"
+        let transport = AgentNavigationTransport(
+            catalogs: [.success(self.catalog(contract: contract))],
+            sessionsByAgentID: ["research": [self.globalSession(owner: "research")]])
+        let fixture = AgentNavigationFixture(
+            transport: transport, sessionKey: "agent:research:inbox", routingContract: contract)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.load()
+        try await waitUntil("canonical global row loaded") { await MainActor.run { !vm.isLoading } }
+        let sections = ChatSessionSidebarModel.sections(
+            sessions: vm.sessions, currentSessionKey: vm.sessionKey,
+            mainSessionKey: vm.selectedAgentMainSessionKey, activeAgentID: vm.selectedAgentID,
+            excludesMainSession: hasHomeRow, query: "", sessionRoutingContract: contract)
+        let rows = sections.flatMap(\.nodes).map(\.session)
+        #expect(rows.map(\.key) == (hasHomeRow ? [] : ["global"]))
+        if !hasHomeRow {
+            #expect(rows.first?.label == "research notes")
+            #expect(sections.first?.id == "pinned")
+        }
+        #expect(ChatSessionSidebarModel.selectedSessionKey(
+            sessions: vm.sessions, currentSessionKey: vm.sessionKey,
+            mainSessionKey: vm.selectedAgentMainSessionKey, activeAgentID: vm.selectedAgentID,
+            sessionRoutingContract: contract) == "global")
     }
 
     @Test(arguments: ["per-sender|inbox|main", "global|inbox|main"])

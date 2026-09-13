@@ -979,11 +979,11 @@ extension OpenClawChatViewModel {
         guard self.isCurrentSession(session), self.hasAppliedLiveHistory,
               let entry = self.currentSessionEntry() ?? fallbackEntry,
               let revision = self.unreadPatchGuard.shouldPatch(
-                  key: self.sessionMutationIdentity(for: entry.key, listedKey: entry.key),
+                  key: self.sessionMutationIdentity(for: entry.key, listedKey: entry.key, agentID: entry.agentId),
                   unread: entry.unread,
                   markedUnreadAt: entry.markedUnreadAt)
         else { return }
-        let identityKey = self.sessionMutationIdentity(for: entry.key, listedKey: entry.key)
+        let identityKey = self.sessionMutationIdentity(for: entry.key, listedKey: entry.key, agentID: entry.agentId)
         let target = self.sessionMutationTarget(key: entry.key, agentID: entry.agentId)
         let transport = self.transport
         let routeLease = Task { await transport.acquireSessionMutationRouteLease() }

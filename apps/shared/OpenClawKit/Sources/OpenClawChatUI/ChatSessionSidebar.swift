@@ -29,7 +29,9 @@ struct ChatSessionSidebar: View {
             mainSessionKey: self.viewModel.selectedAgentMainSessionKey,
             activeAgentID: self.viewModel.selectedAgentID,
             groups: self.groups,
-            query: self.query)
+            query: self.query,
+            sessionRoutingContract: self.viewModel.agentCatalog?.sessionRoutingContract ??
+                self.viewModel.sessionRoutingContract)
         List(selection: self.selectionBinding) {
             self.newThreadButton
                 .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 16, trailing: 0))
@@ -142,7 +144,9 @@ struct ChatSessionSidebar: View {
                     sessions: self.viewModel.sessions,
                     currentSessionKey: self.viewModel.sessionKey,
                     mainSessionKey: self.viewModel.selectedAgentMainSessionKey,
-                    activeAgentID: self.viewModel.selectedAgentID)
+                    activeAgentID: self.viewModel.selectedAgentID,
+                    sessionRoutingContract: self.viewModel.agentCatalog?.sessionRoutingContract ??
+                        self.viewModel.sessionRoutingContract)
             },
             set: { next in
                 guard let next, next != self.viewModel.sessionKey else { return }

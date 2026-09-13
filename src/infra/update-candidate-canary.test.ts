@@ -53,8 +53,8 @@ let runtimeContract: unknown;
 let lintReport: { ok: boolean; checksRun: number; findings: unknown[]; warnings: unknown[] };
 let databasePath: string | undefined;
 
-function canaryStateOptions() {
-  return { root, stateDir: root, config: {}, env: {} };
+function canaryStateOptions(timeoutMs?: number) {
+  return { root, stateDir: root, config: {}, env: {}, timeoutMs };
 }
 
 beforeEach(async () => {
@@ -164,12 +164,7 @@ describe("update candidate canary", () => {
         ],
       };
       stubHealthyGateway();
-      const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
-        env: {},
-      });
+      const result = await validateUpdateCandidateCanary(canaryStateOptions());
       expect(result.status).toBe(blocking ? "error" : "ok");
       if (blocking) {
         expect(result).toMatchObject({ phase: "lint", reason: "doctor-failed" });
@@ -337,13 +332,7 @@ describe("update candidate canary", () => {
         },
       );
       stubHealthyGateway();
-      const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
-        env: {},
-        timeoutMs: 3000,
-      });
+      const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
       expect(result.status).toBe(failsValidation ? "error" : "ok");
       expect(result.doctorConfigWrites).not.toBe(true);
       expect(result.doctorConfigChanges).toEqual(
@@ -399,13 +388,7 @@ describe("update candidate canary", () => {
         },
       );
       stubHealthyGateway();
-      const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
-        env: {},
-        timeoutMs: 3000,
-      });
+      const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
       expect(result.status).toBe(expectedStatus);
       const step = result.steps.find((entry) => entry.name === "candidate migration rehearsal");
       expect(step?.exitCode).toBe(exitCode);
@@ -445,13 +428,7 @@ describe("update candidate canary", () => {
     pluginInventory = inventory;
     stubHealthyGateway();
 
-    const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
-      timeoutMs: 3000,
-    });
+    const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
 
     expect(result.status).toBe(proceeds ? "ok" : "error");
     expect(mocks.spawn.mock.calls.some(([, args]) => args.includes("gateway"))).toBe(proceeds);
@@ -486,10 +463,7 @@ describe("update candidate canary", () => {
     const onStep = vi.fn();
     try {
       const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
-        env: {},
+        ...canaryStateOptions(),
         timeoutMs: 3000,
         onStep,
       });
@@ -524,13 +498,7 @@ describe("update candidate canary", () => {
         candidateMutation,
       };
       stubHealthyGateway();
-      const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
-        env: {},
-        timeoutMs: 3000,
-      });
+      const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
       expect(result.status).toBe("ok");
       expect(result.candidateSchemaVersions).toEqual({ state: 2, agent: 3 });
       expect(result).not.toHaveProperty("checkpointContinuation");
@@ -541,10 +509,7 @@ describe("update candidate canary", () => {
     stubHealthyGateway();
     const onStep = vi.fn();
     const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
+      ...canaryStateOptions(),
       timeoutMs: 3_000,
       onStep,
     });
@@ -872,10 +837,7 @@ describe("update candidate canary", () => {
         ),
       );
       const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
-        env: {},
+        ...canaryStateOptions(),
         timeoutMs: 250,
       });
       expect(result.status).toBe(failure === "readiness" ? "ok" : "error");
@@ -902,12 +864,7 @@ describe("update candidate canary", () => {
 
   it("refuses a candidate that cannot keep Doctor away from managed services", async () => {
     await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "2026.4.1" }));
-    const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
-    });
+    const result = await validateUpdateCandidateCanary(canaryStateOptions());
     expect(result.status).toBe("error");
     expect(mocks.snapshot).not.toHaveBeenCalled();
     expect(mocks.spawn).not.toHaveBeenCalled();
@@ -923,10 +880,7 @@ describe("update candidate canary", () => {
       return child;
     });
     const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
+      ...canaryStateOptions(),
       timeoutMs: 3_000,
       signal: controller.signal,
     });
@@ -938,13 +892,7 @@ describe("update candidate canary", () => {
 
   it("rejects a zero-exit continuation worker without its compiled schema contract before boot", async () => {
     runtimeContract = null;
-    const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
-      timeoutMs: 3_000,
-    });
+    const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
     expect(result).toMatchObject({ status: "error", phase: "runtime" });
     expect(result.steps.at(-1)).toMatchObject({
       name: "candidate migration continuation",
@@ -956,10 +904,7 @@ describe("update candidate canary", () => {
   it("aborts further validation and removes private state when recording a step fails", async () => {
     await expect(
       validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
-        env: {},
+        ...canaryStateOptions(),
         timeoutMs: 3_000,
         onStep: () => {
           throw new Error("ledger unavailable");
@@ -992,13 +937,7 @@ describe("update candidate canary", () => {
       });
       return child;
     });
-    const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
-      timeoutMs: 3_000,
-    });
+    const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
     expect(result).toMatchObject({ status: "error", phase: overflow ? "plugins" : "runtime" });
   });
 
@@ -1019,13 +958,7 @@ describe("update candidate canary", () => {
       });
       return child;
     });
-    const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
-      timeoutMs: 3_000,
-    });
+    const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
     expect(result.status).toBe("error");
     for (const line of expected) {
       expect(result.logTail).toContain(line);
@@ -1045,13 +978,7 @@ describe("update candidate canary", () => {
       });
       return child;
     });
-    const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
-      env: {},
-      timeoutMs: 3_000,
-    });
+    const result = await validateUpdateCandidateCanary(canaryStateOptions(3_000));
     expect(result.status).toBe("error");
     expect(result.logTail.join("\n")).not.toContain("synthetic-sensitive-suffix");
     expect(result.logTail).toContain("following-safe-line");

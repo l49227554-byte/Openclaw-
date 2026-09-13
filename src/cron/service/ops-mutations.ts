@@ -9,11 +9,11 @@ import {
   type CronActiveJobMarker,
   isCronJobActive,
   noteActiveCronJobRemoval,
-  noteActiveCronJobScheduleMutation,
   noteActiveCronJobTriggerMutation,
   onCronJobInactive,
   requestActiveCronJobCancellation,
 } from "../active-jobs.js";
+import { describeUnavailableCronAgent } from "../agent-availability.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { cronSchedulingInputsEqual } from "../schedule-identity.js";
 import { removeCronJobBaseSession } from "../session-reaper.js";
@@ -43,7 +43,7 @@ import {
 } from "./locked.js";
 import { normalizeOptionalAgentId } from "./normalize.js";
 import { resolveCurrentDefaultAgentId, resolveEffectiveJobAgentId } from "./ops-shared.js";
-import { cronRunReceiptOwnerMutationHooks } from "./run-receipts.js";
+import { cronRunReceiptMutationHooks } from "./run-receipts.js";
 import type {
   CronAddResult,
   CronAddOptions,
@@ -68,14 +68,32 @@ import { armTimer } from "./timer.js";
 
 const RETRY_ADD_AFTER_SESSION_CLEANUP = new Error("retry add after session cleanup");
 
+/** Cancels only caller-corroborated definitions while the durable lifecycle fence holds. */
+export async function quiesceJobs(
+  state: CronServiceState,
+  jobs: readonly { id: string; revision: string }[],
+  commitGuard: () => void,
+): Promise<void> {
+  await locked(state, async () => {
+    await ensureLoadedForOperation(state);
+    for (const expected of jobs) {
+      const job = state.store?.jobs.find((candidate) => candidate.id === expected.id);
+      if (!job || resolveCronJobConfigRevision(job) !== expected.revision) {
+        throw new Error(`Cron job ${expected.id} changed before cancellation.`);
+      }
+    }
+    commitGuard();
+    for (const job of jobs) {
+      requestActiveCronJobCancellation(job.id, "Claw agent removal.");
+    }
+  });
+}
+
 async function resolveConfiguredChannelsForValidation(
   state: CronServiceState,
 ): Promise<readonly string[] | undefined> {
-  if (!state.deps.listConfiguredChannels) {
-    return undefined;
-  }
   try {
-    return await state.deps.listConfiguredChannels();
+    return await state.deps.listConfiguredChannels?.();
   } catch {
     // Channel discovery is advisory at mutation time. Runtime delivery remains
     // authoritative, so discovery failures must not create false rejections.
@@ -192,11 +210,15 @@ function finalizeUpdatedJob(params: {
       // Preserve only genuine execution. Queued reservations must clear so a
       // disabled job can accept a later force run with the same timestamp.
       if (!isCronJobActive(nextJob.id)) {
-        nextJob.state.runningAtMs = undefined;
+        Object.assign(nextJob.state, { runningAtMs: undefined, runningReceiptId: undefined });
+        delete nextJob.state.runningScheduleChangeId;
       }
     }
   } else if (isJobEnabled(nextJob) && !hasScheduledNextRunAtMs(nextJob.state.nextRunAtMs)) {
     nextJob.state.nextRunAtMs = computeJobNextRunAtMs(nextJob, now);
+  }
+  if (nextJob.state.runningAtMs !== job.state.runningAtMs) {
+    delete nextJob.state.runningReceiptId;
   }
 }
 
@@ -225,26 +247,26 @@ async function persistUpdatedJob(params: {
   const ownerChanged =
     resolveEffectiveJobAgentId(previousJob, defaultAgentId) !==
     resolveEffectiveJobAgentId(nextJob, defaultAgentId);
-  await persistOrRestore(state, snapshot, {
-    suppressScheduledJobId: nextJob.id,
-    transactionHooks: ownerChanged
-      ? cronRunReceiptOwnerMutationHooks({ state, jobId: nextJob.id })
-      : undefined,
-  });
-  if (!cronSchedulingInputsEqual(previousJob, nextJob)) {
-    // Mark only committed edits; a failed SQLite write cannot retire the run's
-    // schedule ownership, and idempotent re-saves must not create a new claim.
-    noteActiveCronJobScheduleMutation(nextJob.id);
-  }
-  if (isJobEnabled(previousJob) && !isJobEnabled(nextJob)) {
-    requestActiveCronJobCancellation(nextJob.id, "Cron job disabled by operator.");
-  }
-  if (
+  const triggerStateChanged =
     !isDeepStrictEqual(previousJob.trigger, nextJob.trigger) ||
     !isDeepStrictEqual(previousJob.state.triggerState, nextJob.state.triggerState) ||
     ((previousJob.payload.kind === "script" || nextJob.payload.kind === "script") &&
-      !isDeepStrictEqual(previousJob.payload, nextJob.payload))
-  ) {
+      !isDeepStrictEqual(previousJob.payload, nextJob.payload));
+  const scheduleChanged = !cronSchedulingInputsEqual(previousJob, nextJob);
+  await persistOrRestore(state, snapshot, {
+    suppressScheduledJobId: nextJob.id,
+    transactionHooks: cronRunReceiptMutationHooks({
+      state,
+      jobId: nextJob.id,
+      ownerChanged,
+      triggerStateChanged,
+      ...(scheduleChanged ? { scheduleChangedJob: nextJob } : {}),
+    }),
+  });
+  if (isJobEnabled(previousJob) && !isJobEnabled(nextJob)) {
+    requestActiveCronJobCancellation(nextJob.id, "Cron job disabled by operator.");
+  }
+  if (triggerStateChanged) {
     // Trigger/script definitions and shared-state edits retire the admitted
     // state writer; otherwise an obsolete evaluation or script wins later.
     noteActiveCronJobTriggerMutation(nextJob.id);
@@ -309,7 +331,7 @@ export async function add(
     await ensureLoadedForOperation(state);
     const agentId = resolveEffectiveJobAgentId(input, resolveCurrentDefaultAgentId(state));
     if (state.deps.isAgentAvailable?.(agentId) === false) {
-      throw new Error(`cron job agent is unavailable: ${agentId}`);
+      throw new Error(describeUnavailableCronAgent(agentId));
     }
     const normalizedId = normalizeOptionalString(input.id);
     if (input.id !== undefined && !normalizedId) {
@@ -488,7 +510,7 @@ async function updateLoadedJob(params: {
   await precondition?.(structuredClone(job), now);
   const nextJob = structuredClone(job);
   applyJobPatch(nextJob, patch, {
-    defaultAgentId: state.deps.defaultAgentId,
+    defaultAgentId: resolveCurrentDefaultAgentId(state),
     scheduleValidationNowMs: now,
     cronConfig: state.deps.cronConfig,
     scheduledToolPolicy: opts?.scheduledToolPolicy,
@@ -499,7 +521,7 @@ async function updateLoadedJob(params: {
   if (patch.agentId !== undefined) {
     const agentId = resolveEffectiveJobAgentId(nextJob, resolveCurrentDefaultAgentId(state));
     if (state.deps.isAgentAvailable?.(agentId) === false) {
-      throw new Error(`cron job agent is unavailable: ${agentId}`);
+      throw new Error(describeUnavailableCronAgent(agentId));
     }
   }
   finalizeUpdatedJob({
@@ -611,7 +633,7 @@ export async function remove(
       const done = new Promise<void>((resolve) => {
         finish = resolve;
       });
-      const release = registerPendingCronSessionCleanup(state, id, done);
+      const release = registerPendingCronSessionCleanup(state, id, done, agentId);
       sessionCleanup = {
         activeMarker,
         agentId,
@@ -643,8 +665,11 @@ export async function remove(
           sessionStorePath,
         });
       }
+      return undefined;
     } catch (error) {
-      state.deps.log.warn({ jobId: id, err: String(error) }, "cron: session cleanup failed");
+      const message = `Cron job ${id} was removed, but session cleanup failed: ${String(error)}. Use openclaw sessions list --json, then openclaw sessions delete to retry.`;
+      state.deps.log.warn({ jobId: id, err: message }, "cron: session cleanup failed");
+      return message;
     } finally {
       release();
       finish();
@@ -652,9 +677,12 @@ export async function remove(
   };
   if (activeMarker) {
     onCronJobInactive(activeMarker, () => void cleanup());
-    return result;
+    return { ...result, sessionCleanup: "pending" as const };
   }
-  await cleanup();
+  const cleanupError = await cleanup();
+  if (cleanupError) {
+    throw new Error(cleanupError);
+  }
   return result;
 }
 

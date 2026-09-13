@@ -1,4 +1,5 @@
 import type { SessionsDiffResult } from "../../../../../packages/gateway-protocol/src/index.js";
+import { formatFencedCodeBlock } from "../../../../../src/shared/markdown-code.js";
 import { GatewayRequestError } from "../../../api/gateway.ts";
 import type { ArtifactDownloadResult, SessionWorkspaceGetResult } from "../../../api/types.ts";
 import { hasOperatorAdminAccess } from "../../../app/operator-access.ts";
@@ -12,6 +13,7 @@ import {
   isCurrentSessionWorkspace,
   loadSessionWorkspace,
   openSessionCheckoutSidebar,
+  openSessionWorkspacePreview,
   refreshSessionWorkspaceState,
   requestWorkspaceUpdate,
   trackSessionCheckoutSidebar,
@@ -140,7 +142,7 @@ function artifactSidebarContent(params: {
     const language = mimeType === "application/json" ? "json" : "";
     return {
       kind: "markdown",
-      content: `# ${title}\n\n\`\`\`${language}\n${decoded}\n\`\`\``,
+      content: `# ${title}\n\n${formatFencedCodeBlock(decoded, language)}`,
       rawText: decoded,
     };
   }
@@ -158,31 +160,6 @@ export function refreshSessionWorkspace(state: SessionWorkspaceHost, refreshFile
   }
 }
 
-function beginWorkspaceOpenRequest(workspace: SessionWorkspaceState, itemId: string): object {
-  workspace.activeId = itemId;
-  return (workspace.openRequest = {});
-}
-
-function isCurrentWorkspaceOpenRequest(
-  state: SessionWorkspaceHost,
-  workspace: SessionWorkspaceState,
-  request: object,
-  itemId: string,
-): boolean {
-  return (
-    workspace.openRequest === request &&
-    isCurrentSessionWorkspace(state, workspace) &&
-    workspace.activeId === itemId
-  );
-}
-
-export function isSessionWorkspaceItemLoading(state: SessionWorkspaceHost): boolean {
-  const workspace = state.sessionWorkspaceState;
-  return Boolean(
-    workspace && isCurrentSessionWorkspace(state, workspace) && workspace.openRequest !== undefined,
-  );
-}
-
 function openWorkspaceItem<T>(
   state: SessionWorkspaceHost,
   workspace: SessionWorkspaceState,
@@ -190,34 +167,110 @@ function openWorkspaceItem<T>(
   load: () => Promise<T | null | undefined>,
   render: (result: T) => SidebarContent | null,
   missingMessage: string,
+  options: {
+    line?: number | null;
+    label?: string;
+    resolveLabel?: (result: T) => string | undefined;
+    resolveKey?: (result: T) => string | undefined;
+  } = {},
 ) {
   if (!state.client || !state.connected) {
     return;
   }
-  const request = beginWorkspaceOpenRequest(workspace, itemId);
+  const request = {
+    kind: "loading",
+    fileTab: {
+      id: itemId,
+      label: options.label ?? basenameForPath(itemId.slice(itemId.indexOf(":") + 1)),
+    },
+  } as const;
+  const preview = openSessionWorkspacePreview(state, itemId, request.fileTab.label, request);
+  workspace.activeId = itemId;
+  if (options.line != null) {
+    preview.navigation = { line: options.line };
+    workspace.navigationOrder = (workspace.navigationOrder ?? 0) + 1;
+    preview.navigationOrder = workspace.navigationOrder;
+    if (preview.content.kind === "file") {
+      preview.content.navigation = preview.navigation;
+    }
+    workspace.previews = [...workspace.previews];
+  }
+  // Reopening an unavailable file retries its read without creating another tab.
+  if (preview.content.kind === "unavailable") {
+    preview.content = request;
+    workspace.previews = [...workspace.previews];
+  }
+  state.handleOpenSidebar(request);
+  if (preview.content !== request) {
+    return;
+  }
+  const isCurrent = () =>
+    workspace.previews.includes(preview) &&
+    preview.content === request &&
+    isCurrentSessionWorkspace(state, workspace);
+  const fail = (message: string) => {
+    if (!isCurrent()) {
+      return;
+    }
+    workspace.error = message;
+    const unavailable = { kind: "unavailable" as const, message };
+    preview.content = unavailable;
+    workspace.previews = [...workspace.previews];
+  };
   void (async () => {
-    state.handleOpenSidebar(null);
     workspace.error = null;
     try {
       const result = await load();
       const content = result == null ? null : render(result);
+      const label = result == null ? undefined : options.resolveLabel?.(result);
+      const canonicalKey = result == null ? undefined : options.resolveKey?.(result);
       if (!content) {
-        if (isCurrentWorkspaceOpenRequest(state, workspace, request, itemId)) {
-          workspace.error = missingMessage;
-        }
+        fail(missingMessage);
         return;
       }
-      if (isCurrentWorkspaceOpenRequest(state, workspace, request, itemId)) {
-        openSessionCheckoutSidebar(state, content);
+      if (isCurrent()) {
+        const canonical = canonicalKey
+          ? workspace.previews.find(
+              (entry) => entry !== preview && entry.canonicalKey === canonicalKey,
+            )
+          : undefined;
+        if (canonical) {
+          canonical.requestIds = [
+            ...new Set([
+              ...(canonical.requestIds ?? []),
+              preview.id,
+              ...(preview.requestIds ?? []),
+            ]),
+          ];
+          if (
+            preview.navigation &&
+            (preview.navigationOrder ?? 0) > (canonical.navigationOrder ?? 0)
+          ) {
+            canonical.navigation = preview.navigation;
+            canonical.navigationOrder = preview.navigationOrder;
+            if (canonical.content.kind === "file") {
+              canonical.content.navigation = canonical.navigation;
+            }
+          }
+          // Keep the existing editor and draft; the alias read only resolves identity.
+          workspace.previews = workspace.previews.filter((entry) => entry !== preview);
+          if (workspace.activePreviewId === preview.id) {
+            workspace.activePreviewId = canonical.id;
+          }
+          return;
+        }
+        preview.canonicalKey = canonicalKey;
+        if (content.kind === "file" && preview.navigation) {
+          content.line = preview.navigation.line;
+          content.navigation = preview.navigation;
+        }
+        preview.content = content;
+        preview.label = label || preview.label;
+        workspace.previews = [...workspace.previews];
       }
     } catch (error) {
-      if (isCurrentWorkspaceOpenRequest(state, workspace, request, itemId)) {
-        workspace.error = formatUiError(error);
-      }
+      fail(formatUiError(error));
     } finally {
-      if (workspace.openRequest === request) {
-        delete workspace.openRequest;
-      }
       requestWorkspaceUpdate(state);
     }
   })();
@@ -233,7 +286,7 @@ function openFile(
   openWorkspaceItem(
     state,
     workspace,
-    `file:${path}`,
+    `file:${requestPath}`,
     () =>
       state.sessions.getFile(workspace.sessionKey, requestPath, {
         agentId: workspace.agentId,
@@ -360,6 +413,7 @@ function openFile(
           file.workspacePath || file.path || path,
         ].join("\u0000"),
         root: result.root ?? null,
+        mimeType: file.mimeType,
         language: languageForFile(name),
         line: opts.line ?? null,
         rawText: file.content,
@@ -367,6 +421,16 @@ function openFile(
       };
     },
     `Failed to load ${path}`,
+    {
+      line: opts.line,
+      resolveLabel: (result) => result.file?.name,
+      resolveKey: (result) => {
+        const canonicalPath = result.file?.workspacePath || result.file?.path;
+        return canonicalPath
+          ? JSON.stringify(["file", result.root ?? "", canonicalPath])
+          : undefined;
+      },
+    },
   );
 }
 
@@ -406,6 +470,7 @@ export function revealSessionWorkspaceFile(state: SessionWorkspaceHost, path: st
   workspace.collapsed = false;
   workspace.browserPath = separator > 0 ? normalizedPath.slice(0, separator) : "";
   workspace.browserSearch = "";
+  workspace.filter = "all";
   workspace.activeId = `file:${path}`;
   loadSessionWorkspace(state, workspace, true);
   requestWorkspaceUpdate(state);
@@ -437,6 +502,12 @@ function openArtifact(
             url: result.url,
           }),
     `Failed to load artifact ${artifactId}`,
+    {
+      label:
+        workspace.list?.artifacts?.find((artifact) => artifact.id === artifactId)?.title ||
+        t("chat.workspaceFiles.artifacts"),
+      resolveLabel: (result) => result.artifact?.title,
+    },
   );
 }
 
@@ -479,6 +550,12 @@ export function createSessionWorkspaceProps(
     activeId: workspace.activeId,
     dock: workspace.dock,
     narrowLayout: options?.narrowLayout === true,
+    filter: workspace.filter,
+    browserSearch: workspace.browserSearch,
+    onSetFilter: (filter) => {
+      workspace.filter = filter;
+      requestWorkspaceUpdate(state);
+    },
     onToggleCollapsed: () => toggleSessionWorkspace(state),
     onSetDock: (dock) => setSessionWorkspaceDock(state, dock),
     onRefresh: () => loadSessionWorkspace(state, workspace, true),
@@ -499,6 +576,7 @@ export function createSessionWorkspaceProps(
     },
     onSearch: (search) => {
       workspace.browserSearch = search;
+      requestWorkspaceUpdate(state);
       clearWorkspaceTimer(workspace);
       workspace.browserSearchTimer = globalThis.setTimeout(() => {
         workspace.browserSearchTimer = null;

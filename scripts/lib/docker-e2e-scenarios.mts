@@ -366,6 +366,14 @@ function kitchenSinkRpcLane() {
   );
 }
 
+export const fleetCacheLane = lane("fleet-cache", "pnpm test:docker:fleet-cache", {
+  e2eImageKind: false,
+  needsPackage: true,
+  resources: ["docker", "service", "npm"],
+  timeoutMs: 30 * 60 * 1000,
+  weight: 4,
+});
+
 export const mainLanes: DockerE2eLane[] = [
   lane(
     "docker-selected-plugins",
@@ -407,6 +415,14 @@ export const mainLanes: DockerE2eLane[] = [
     providers: ["claude-cli", "google-gemini-cli"],
     timeoutMs: LIVE_PROFILE_TIMEOUT_MS,
     weight: 4,
+  }),
+  liveLane("live-anthropic-cache", liveDockerScriptCommand("e2e/anthropic-cache-live-docker.sh"), {
+    e2eImageKind: "functional",
+    provider: "claude",
+    retries: 0,
+    retryPatterns: [],
+    timeoutMs: 15 * 60 * 1000,
+    weight: 2,
   }),
   liveLane(
     "live-gateway",
@@ -667,6 +683,7 @@ export const mainLanes: DockerE2eLane[] = [
   lane(
     "session-runtime-context",
     "OPENCLAW_SKIP_DOCKER_BUILD=1 pnpm test:docker:session-runtime-context",
+    { resources: ["service"] },
   ),
   lane(
     "plugin-binding-command-escape",
@@ -924,6 +941,7 @@ const primaryReleasePathChunks: Record<string, DockerE2eLane[]> = {
       "gateway-network",
       "config-reload",
       "session-runtime-context",
+      "live-anthropic-cache",
       "plugin-binding-command-escape",
       "agent-bundle-mcp-tools",
       "mcp-channels",

@@ -449,7 +449,9 @@ export async function updateGitInstall(params: {
   beforeGitMutation?: BeforeGitMutation;
   validateCandidate?: (root: string) => Promise<void>;
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
-  managedServiceEnv?: NodeJS.ProcessEnv;
+  onConfigSnapshot?: Parameters<typeof runPackageUpdateDoctor>[0]["onConfigSnapshot"];
+  getDoctorContext?: Parameters<typeof runPackageUpdateDoctor>[0]["getDoctorContext"];
+  getManagedServiceEnv: () => NodeJS.ProcessEnv | undefined;
   invocationCwd?: string;
   nodeRunner?: string;
   inspectGitTarget?: UpdateRunnerOptions["inspectGitTarget"];
@@ -485,7 +487,7 @@ export async function updateGitInstall(params: {
       root: params.root,
       reason: "npm lifecycle policy preflight",
       recovery: await (params.installKind === "git"
-        ? readCurrentGitUpdateRecovery(params.root)
+        ? readCurrentGitUpdateRecovery(params.root, effectiveTimeout)
         : verifyPackageUpdateRecovery(params.root)),
       steps: [],
       durationMs: Date.now() - params.startedAt,
@@ -512,6 +514,15 @@ export async function updateGitInstall(params: {
       inspectGitTarget: params.inspectGitTarget,
       publishGitCheckout,
       validateCandidate: params.validateCandidate,
+      runGitDoctor: installTarget
+        ? undefined
+        : (root) =>
+            runPackageUpdateDoctor({
+              ...params,
+              managedServiceEnv: params.getManagedServiceEnv(),
+              root,
+              timeoutMs: effectiveTimeout,
+            }),
       prepareGitExposure: installTarget
         ? async (candidateRoot, candidateSha, candidateEnv) => {
             const packageName =
@@ -530,9 +541,10 @@ export async function updateGitInstall(params: {
               expectedGitCheckout: { root: candidateRoot, sha: candidateSha },
               activateGitRoot: updateRoot,
               onTransaction: params.onTransaction,
-              postVerifyStep: (root) =>
+              postVerifyStep: (root: string) =>
                 runPackageUpdateDoctor({
                   ...params,
+                  managedServiceEnv: params.getManagedServiceEnv(),
                   root,
                   timeoutMs: effectiveTimeout,
                 }),
@@ -573,7 +585,7 @@ export async function updateGitInstall(params: {
         root: params.root,
         reason: cloneStep.name,
         recovery: await (params.installKind === "git"
-          ? readCurrentGitUpdateRecovery(params.root)
+          ? readCurrentGitUpdateRecovery(params.root, effectiveTimeout)
           : verifyPackageUpdateRecovery(params.root)),
         steps: [cloneStep],
         durationMs: Date.now() - params.startedAt,
@@ -591,9 +603,13 @@ export async function updateGitInstall(params: {
         status: packageUpdate.failedStep ? "error" : "ok",
         reason:
           packageUpdate.reason ??
-          (packageUpdate.failedStep
-            ? normalizeFallbackFailureReason(packageUpdate.failedStep.name)
-            : undefined),
+          (packageUpdate.failedStep?.configWriteRefusal
+            ? packageUpdate.failedStep.configWriteRefusal.reason === "requester-revoked"
+              ? "requester-revoked"
+              : "repair-requires-config-change"
+            : packageUpdate.failedStep
+              ? normalizeFallbackFailureReason(packageUpdate.failedStep.name)
+              : undefined),
         recovery: packageUpdate.recovery,
         steps: [...steps, ...packageUpdate.steps],
         durationMs: Date.now() - params.startedAt,
@@ -606,7 +622,7 @@ export async function updateGitInstall(params: {
       const [packageOwner, gitOwner, serviceUsesPackage] = await Promise.all([
         fs.realpath(packageRoot).catch(() => null),
         fs.realpath(updateRoot).catch(() => null),
-        gatewayServiceCommandUsesRoot({ root: packageRoot, env: params.managedServiceEnv }),
+        gatewayServiceCommandUsesRoot({ root: packageRoot, env: params.getManagedServiceEnv() }),
       ]);
       // Source publication can fail after stopping an untouched package service.
       // Recover that exact package; its version alone cannot authorize Git source.

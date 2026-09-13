@@ -9,13 +9,18 @@ import {
   hasExplicitlyVisibleAgentPayload,
   type AgentDeliveryEvidence,
 } from "../agents/embedded-agent-runner/delivery-evidence.js";
-import { formatGeneratedMediaDeliveryRetryForPrompt } from "../agents/internal-events.js";
+import {
+  buildGeneratedMediaDeliveryContext,
+  formatGeneratedMediaDeliveryRetryForPrompt,
+} from "../agents/internal-events.js";
+import type { RuntimeContextFragment } from "../agents/internal-runtime-context.js";
 import { resolveDurableCompletionDeliveryMode } from "../auto-reply/reply/completion-delivery-policy.js";
 import { resolveStateDir } from "../config/paths.js";
 import {
   getRestartRecoveryTerminalDeliveryEvidence,
   hasRestartRecoveryTerminalRun,
 } from "../config/sessions/restart-recovery-state.js";
+import { SessionTranscriptWriterClaimReboundError } from "../config/sessions/transcript-write-context.js";
 import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import {
@@ -307,6 +312,7 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
   agentId: string;
   storePath: string;
   entry: QueuedSessionDelivery;
+  runtimeContextFragments?: RuntimeContextFragment[];
   sessionEntry?: SessionEntry;
   stateDir?: string;
   resolveGatewayContext?: GatewayContextResolver;
@@ -331,7 +337,7 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
   }
   const persistInternalMedia =
     route.channel === INTERNAL_MESSAGE_CHANNEL && (entry.expectedMediaUrls?.length ?? 0) > 0
-      ? async (mediaUrls: string[]) => {
+      ? async (mediaUrls: string[], transcriptRunId: string | null) => {
           const sessionId = params.sessionEntry?.sessionId?.trim();
           if (!sessionId) {
             throw new Error("queued internal generated-media delivery has no owning session");
@@ -383,22 +389,54 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
             }
             content.push(...blocks);
           }
-          const appended = await appendAssistantMessageToSessionTranscript({
+          const scope = {
             agentId: params.agentId,
             sessionKey: params.canonicalKey,
+            sessionId,
             storePath: params.storePath,
-            expectedSessionId: sessionId,
-            ...(params.sessionEntry?.cronRunContinuation?.lifecycleRevision
-              ? {
-                  expectedLifecycleRevision:
-                    params.sessionEntry.cronRunContinuation.lifecycleRevision,
-                }
-              : {}),
-            content: [],
-            displayContent: content,
-            idempotencyKey: `${queuedRunId}:generated-media-transcript`,
-            updateMode: "inline",
-          });
+          };
+          const expectedLifecycleRevision =
+            params.sessionEntry?.cronRunContinuation?.lifecycleRevision ??
+            params.sessionEntry?.lifecycleRevision ??
+            null;
+          const { enrichAssistantTranscriptMediaForRun, publishAssistantTranscriptRewrite } =
+            await import("./server-methods/chat-transcript-persistence.js");
+          let enriched: { messageId: string } | null = null;
+          if (transcriptRunId) {
+            try {
+              enriched = await enrichAssistantTranscriptMediaForRun({
+                scope,
+                runId: transcriptRunId,
+                expectedLifecycleRevision,
+                content,
+                mediaUrls,
+              });
+            } catch (error) {
+              if (error instanceof SessionTranscriptWriterClaimReboundError) {
+                await deadLetterSessionDelivery(
+                  entry,
+                  "queued internal generated-media delivery lost its owning session",
+                  params.stateDir,
+                );
+              }
+              throw error;
+            }
+          }
+          // Keep the existing media-only delivery contract when no model reply
+          // was persisted, or an older recovery receipt lacks its run binding.
+          const appended = enriched
+            ? { ok: true as const, messageId: enriched.messageId }
+            : await appendAssistantMessageToSessionTranscript({
+                agentId: params.agentId,
+                sessionKey: params.canonicalKey,
+                storePath: params.storePath,
+                expectedSessionId: sessionId,
+                expectedLifecycleRevision,
+                content: [],
+                displayContent: content,
+                idempotencyKey: `${queuedRunId}:generated-media-transcript`,
+                updateMode: "inline",
+              });
           if (!appended.ok) {
             if (appended.code === "session-rebound") {
               await deadLetterSessionDelivery(
@@ -419,15 +457,23 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
           if (!attached) {
             throw new Error("queued internal generated-media artifact attachment failed");
           }
+          if (enriched) {
+            await publishAssistantTranscriptRewrite({ scope, rewritten: [enriched] });
+          }
         }
       : undefined;
-  const evaluateResult = async (result: AgentDeliveryEvidence): Promise<true> => {
+  const evaluateResult = async (
+    result: AgentDeliveryEvidence,
+    transcriptRunId: string | null = queuedRunId,
+  ): Promise<true> => {
     await evaluateQueuedGeneratedMediaAgentResult({
       entry,
       result,
       route,
       ...(params.stateDir !== undefined ? { stateDir: params.stateDir } : {}),
-      ...(persistInternalMedia ? { persistInternalMedia } : {}),
+      ...(persistInternalMedia
+        ? { persistInternalMedia: (mediaUrls) => persistInternalMedia(mediaUrls, transcriptRunId) }
+        : {}),
     });
     return true;
   };
@@ -436,7 +482,7 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
     queuedRunId,
   );
   if (terminalEvidence) {
-    return await evaluateResult(terminalEvidence);
+    return await evaluateResult(terminalEvidence, terminalEvidence.transcriptRunId ?? null);
   }
   if (hasRestartRecoveryTerminalRun(params.sessionEntry, queuedRunId)) {
     await deadLetterSessionDelivery(
@@ -500,6 +546,16 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
         ...(cronSessionId ? { allowSyntheticCronRunContinuation: true } : {}),
         expectFinal: true,
         forceSyntheticClient: true,
+        runtimeContextFragments:
+          (entry.expectedMediaUrls?.length ?? 0) > 0
+            ? [
+                ...((entry.agentRunAttempt ?? 0) > 0 ? [] : (params.runtimeContextFragments ?? [])),
+                ...buildGeneratedMediaDeliveryContext(
+                  entry.expectedMediaUrls ?? [],
+                  (entry.agentRunAttempt ?? 0) > 0,
+                ),
+              ]
+            : params.runtimeContextFragments,
         internalDeliveryMediaUrls: entry.expectedMediaUrls ?? [],
         ...(entry.suppressTextDelivery === true ? { internalDeliverySuppressText: true } : {}),
         ...(params.resolveGatewayContext
@@ -550,7 +606,10 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
         queuedRunId,
       );
       if (latestTerminalEvidence) {
-        return await evaluateResult(latestTerminalEvidence);
+        return await evaluateResult(
+          latestTerminalEvidence,
+          latestTerminalEvidence.transcriptRunId ?? null,
+        );
       }
       log.warn(
         "queued generated-media agent turn ended without durable delivery evidence; failing closed",

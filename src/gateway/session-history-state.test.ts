@@ -2,10 +2,17 @@
  * Session history state hashing and metadata tests.
  */
 import { createHash } from "node:crypto";
+import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 import { describe, expect, test, vi } from "vitest";
-import { STREAM_ERROR_FALLBACK_TEXT } from "../agents/stream-message-shared.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
 import { projectChatDisplayMessagesWithState } from "./chat-display-projection.js";
+import {
+  assistantTextMessage,
+  messageToolCall,
+  messageToolResult,
+  textContent,
+  userTextMessage,
+} from "./session-history-fixtures.test-support.js";
 import { buildSessionHistorySnapshot, SessionHistorySseState } from "./session-history-state.js";
 import * as sessionTranscriptReaders from "./session-transcript-readers.js";
 
@@ -14,26 +21,6 @@ type RawStateOptions = Omit<
   Parameters<typeof SessionHistorySseState.fromRawSnapshot>[0],
   "target" | "rawMessages"
 >;
-
-function textContent(text: string) {
-  return [{ type: "text" as const, text }];
-}
-
-function assistantTextMessage(text: string, seq: number) {
-  return {
-    role: "assistant" as const,
-    content: textContent(text),
-    __openclaw: { seq },
-  };
-}
-
-function userTextMessage(text: string, seq: number) {
-  return {
-    role: "user" as const,
-    content: textContent(text),
-    __openclaw: { seq },
-  };
-}
 
 function newState(rawMessages: Array<Record<string, unknown>>, options: RawStateOptions = {}) {
   return SessionHistorySseState.fromRawSnapshot({
@@ -49,34 +36,6 @@ function newStateWithUserText(text: string): SessionHistorySseState {
 
 function expectOnlyAssistantText(snapshot: HistorySnapshot, text: string, seq: number): void {
   expect(snapshot.history.messages).toEqual([assistantTextMessage(text, seq)]);
-}
-
-function messageToolCall(id: string, message: string, args: Record<string, unknown> = {}) {
-  return {
-    type: "toolCall" as const,
-    id,
-    name: "message",
-    arguments: {
-      action: "send",
-      message,
-      ...args,
-    },
-  };
-}
-
-function messageToolResult(
-  toolCallId: string,
-  messageId: string,
-  seq?: number,
-  content: Record<string, unknown> = {},
-) {
-  return {
-    role: "toolResult" as const,
-    toolName: "message",
-    toolCallId,
-    content: { ok: true, messageId, ...content },
-    ...(seq === undefined ? {} : { __openclaw: { seq } }),
-  };
 }
 
 function appendAssistantText(state: SessionHistorySseState, text: string, messageSeq?: number) {
@@ -662,7 +621,6 @@ describe("SessionHistorySseState", () => {
         });
       const pageReadSpy = vi
         .spyOn(sessionTranscriptReaders, "readSessionMessagesPageWithStatsAsync")
-        .mockResolvedValueOnce({ messages: [], totalMessages: 8 })
         .mockResolvedValueOnce({
           messages: [assistantTextMessage("tail two", expectedSeq)],
           totalMessages: 8,
@@ -682,7 +640,7 @@ describe("SessionHistorySseState", () => {
         expect(refreshed.nextCursor).toBe(String(expectedSeq));
         expect(refreshed.messages[0]?.["__openclaw"]?.seq).toBe(expectedSeq);
         expect(tailReadSpy).toHaveBeenCalledTimes(cursor ? 0 : 1);
-        expect(pageReadSpy).toHaveBeenCalledTimes(cursor ? 2 : 0);
+        expect(pageReadSpy).toHaveBeenCalledTimes(cursor ? 1 : 0);
         expect(fullReadSpy).not.toHaveBeenCalled();
       } finally {
         fullReadSpy.mockRestore();
@@ -766,36 +724,39 @@ describe("SessionHistorySseState", () => {
     expect(snapshot.rawTranscriptSeq).toBe(2);
   });
 
-  test("drops subagent announce inter-session user messages from projected history", () => {
-    const snapshot = buildSessionHistorySnapshot({
-      rawMessages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: [
-                "[Inter-session message] sourceSession=agent:main:subagent:child sourceChannel=internal sourceTool=subagent_announce isUser=false",
-                "This content was routed by OpenClaw from another session or internal tool.",
-                "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>",
-                "subagent completion payload",
-                "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
-              ].join("\n"),
+  test.each(["subagent_announce", "subagent_settle"])(
+    "drops %s inter-session user messages from projected history",
+    (sourceTool) => {
+      const snapshot = buildSessionHistorySnapshot({
+        rawMessages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: [
+                  `[Inter-session message] sourceSession=agent:main:subagent:child sourceChannel=internal sourceTool=${sourceTool} isUser=false`,
+                  "This content was routed by OpenClaw from another session or internal tool.",
+                  "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>",
+                  "subagent completion payload",
+                  "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+                ].join("\n"),
+              },
+            ],
+            provenance: {
+              kind: "inter_session",
+              sourceSessionKey: "agent:main:subagent:child",
+              sourceTool,
             },
-          ],
-          provenance: {
-            kind: "inter_session",
-            sourceSessionKey: "agent:main:subagent:child",
-            sourceTool: "subagent_announce",
+            __openclaw: { seq: 1 },
           },
-          __openclaw: { seq: 1 },
-        },
-        assistantTextMessage("clean child result", 2),
-      ],
-    });
+          assistantTextMessage("clean child result", 2),
+        ],
+      });
 
-    expectOnlyAssistantText(snapshot, "clean child result", 2);
-  });
+      expectOnlyAssistantText(snapshot, "clean child result", 2);
+    },
+  );
 
   test("drops generated media completion wakes while retaining final media", () => {
     const assistantReply = {

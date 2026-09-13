@@ -16,6 +16,7 @@ import type {
 } from "../../api/types.ts";
 import { handleCopyButton } from "../../components/copy-button.ts";
 import { renderHubTabs } from "../../components/hub-tabs.ts";
+import type { PanelRefreshStatus } from "../../components/panel-refresh-status.ts";
 import {
   renderSettingsEmpty,
   renderSettingsNavRow,
@@ -32,7 +33,7 @@ import "../../styles/agents.css";
 import "../../styles/sidebar-markdown.css";
 import "./memory/memory-panel.ts";
 import type { AgentsPanel } from "../../lib/agents/index.ts";
-import type { AgentIdentityDraft } from "./panels-overview.ts";
+import type { AgentIdentityDraft, IdentityAvatarLoader } from "./panels-overview.ts";
 import { renderAgentOverview } from "./panels-overview.ts";
 import { renderAgentFiles, renderAgentChannels, renderAgentCron } from "./panels-status-files.ts";
 import { renderAgentTools, renderAgentSkills } from "./panels-tools-skills.ts";
@@ -72,6 +73,7 @@ type AgentFilesState = {
   contents: Record<string, string>;
   drafts: Record<string, string>;
   saving: boolean;
+  conflict: string | null;
 };
 
 type AgentSkillsState = {
@@ -117,6 +119,7 @@ type AgentsProps = {
   agentIdentityError: string | null;
   agentIdentityById: Record<string, AgentIdentityResult>;
   identityDraft: AgentIdentityDraft;
+  identityAvatarLoader: IdentityAvatarLoader;
   identitySaving: boolean;
   identityError: string | null;
   agentSkills: AgentSkillsState;
@@ -127,7 +130,7 @@ type AgentsProps = {
   runtimeSessionKey: string;
   runtimeSessionMatchesSelectedAgent: boolean;
   modelCatalog: ModelCatalogEntry[];
-  modelCatalogError: string | null;
+  modelCatalogStatus: PanelRefreshStatus;
   pinnedAgentIds: readonly string[];
   onTogglePinnedAgent: (agentId: string) => void;
   onRefresh: () => void;
@@ -139,6 +142,8 @@ type AgentsProps = {
   onFileDraftChange: (name: string, content: string) => void;
   onFileReset: (name: string) => void;
   onFileSave: (name: string) => void;
+  onFileReload: (name: string) => void;
+  onFileOverwrite: (name: string) => void;
   onToolsProfileChange: (agentId: string, profile: string | null, clearAllow: boolean) => void;
   onToolsOverridesChange: (agentId: string, alsoAllow: string[], deny: string[]) => void;
   onConfigReload: () => void;
@@ -148,7 +153,7 @@ type AgentsProps = {
   onIdentitySave: () => void;
   onModelChange: (agentId: string, modelId: string | null) => void;
   onModelFallbacksChange: (agentId: string, fallbacks: string[]) => void;
-  onModelCatalogRetry: () => void;
+  onModelCatalogOpen: () => void;
   onChannelsRefresh: () => void;
   onOpenMemoryImport?: () => void;
   onOpenMemorySettings?: () => void;
@@ -205,7 +210,9 @@ function buildAgentRosterTree(agents: AgentRosterRow[]) {
 
 export function renderAgents(props: AgentsProps) {
   const agents = props.agentsList?.agents ?? [];
-  const defaultId = props.agentsList?.defaultId ?? null;
+  const defaultId = props.agentsList?.selectionRequired
+    ? null
+    : (props.agentsList?.defaultId ?? null);
   const selectedId = props.selectedAgentId ?? defaultId ?? agents[0]?.id ?? null;
   const selectedAgent = selectedId
     ? (agents.find((agent) => agent.id === selectedId) ?? null)
@@ -373,6 +380,7 @@ export function renderAgents(props: AgentsProps) {
                             agentIdentityError: props.agentIdentityError,
                             agentIdentityLoading: props.agentIdentityLoading,
                             identityDraft: props.identityDraft,
+                            identityAvatarLoader: props.identityAvatarLoader,
                             identitySaving: props.identitySaving,
                             identityError: props.identityError,
                             canUpdateConfig: props.access.canUpdateConfig,
@@ -381,7 +389,7 @@ export function renderAgents(props: AgentsProps) {
                             configSaving: props.config.saving,
                             configDirty: props.config.dirty,
                             modelCatalog: props.modelCatalog,
-                            modelCatalogError: props.modelCatalogError,
+                            modelCatalogStatus: props.modelCatalogStatus,
                             onConfigReload: props.onConfigReload,
                             onConfigSave: props.onConfigSave,
                             onIdentityFieldChange: props.onIdentityFieldChange,
@@ -389,7 +397,7 @@ export function renderAgents(props: AgentsProps) {
                             onIdentitySave: props.onIdentitySave,
                             onModelChange: props.onModelChange,
                             onModelFallbacksChange: props.onModelFallbacksChange,
-                            onModelCatalogRetry: props.onModelCatalogRetry,
+                            onModelCatalogOpen: props.onModelCatalogOpen,
                             onSelectPanel: props.onSelectPanel,
                           }),
                         )
@@ -406,12 +414,15 @@ export function renderAgents(props: AgentsProps) {
                           agentFileContents: props.agentFiles.contents,
                           agentFileDrafts: props.agentFiles.drafts,
                           agentFileSaving: props.agentFiles.saving,
+                          agentFileConflict: props.agentFiles.conflict,
                           canWrite: props.access.canWriteFiles,
                           onLoadFiles: props.onLoadFiles,
                           onSelectFile: props.onSelectFile,
                           onFileDraftChange: props.onFileDraftChange,
                           onFileReset: props.onFileReset,
                           onFileSave: props.onFileSave,
+                          onFileReload: props.onFileReload,
+                          onFileOverwrite: props.onFileOverwrite,
                         })
                       : nothing
                   }
@@ -490,6 +501,7 @@ export function renderAgents(props: AgentsProps) {
                   ${
                     props.activePanel === "cron"
                       ? renderAgentCron({
+                          basePath: props.basePath,
                           context: buildAgentContext(
                             selectedAgent,
                             props.config.form,

@@ -6,6 +6,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AssistantMessage, UserMessage } from "openclaw/plugin-sdk/llm";
 import { beforeEach, expect, vi } from "vitest";
+import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
+import { createZeroUsageFixture } from "../../agents/test-helpers/usage-fixtures.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
@@ -119,7 +121,7 @@ const sessionCleanupMocks = vi.hoisted(() => ({
     );
     return { followupCleared: 0, laneCleared: 0, keys: clearedKeys };
   }),
-  stopSubagentsForRequester: vi.fn(async () => ({ stopped: 0 })),
+  stopSessionResetSubagents: vi.fn(async () => {}),
 }));
 
 const bootstrapCacheMocks = vi.hoisted(() => ({
@@ -199,13 +201,13 @@ vi.mock("../../auto-reply/reply/queue/cleanup.js", async () => {
   };
 });
 
-vi.mock("../../auto-reply/reply/abort.js", async () => {
-  const actual = await vi.importActual<typeof import("../../auto-reply/reply/abort.js")>(
-    "../../auto-reply/reply/abort.js",
-  );
+vi.mock("../../auto-reply/reply/session-reset-cleanup.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../auto-reply/reply/session-reset-cleanup.js")
+  >("../../auto-reply/reply/session-reset-cleanup.js");
   return {
     ...actual,
-    stopSubagentsForRequester: sessionCleanupMocks.stopSubagentsForRequester,
+    stopSessionResetSubagents: sessionCleanupMocks.stopSessionResetSubagents,
   };
 });
 
@@ -300,8 +302,11 @@ vi.mock("../../agents/agent-bundle-mcp-tools.js", async (importOriginal) => ({
   retireSessionMcpRuntime: bundleMcpRuntimeMocks.retireSessionMcpRuntime,
 }));
 
-export function setupGatewaySessionsHandlerTestHarness() {
-  const { getHarness, openClient, ...handlerFixture } = createGatewaySessionsTestHarness(false);
+export function setupGatewaySessionsHandlerTestHarness(setup?: GatewaySessionsSuiteSetup) {
+  const { getHarness, openClient, ...handlerFixture } = createGatewaySessionsTestHarness(
+    false,
+    setup,
+  );
   void [getHarness, openClient];
   return handlerFixture;
 }
@@ -320,7 +325,7 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
     clearRuntimeConfigSnapshot();
     clearConfigCache();
     sessionCleanupMocks.clearSessionQueues.mockClear();
-    sessionCleanupMocks.stopSubagentsForRequester.mockClear();
+    sessionCleanupMocks.stopSessionResetSubagents.mockClear();
     bootstrapCacheMocks.clearBootstrapSnapshot.mockReset();
     sessionHookMocks.hasInternalHookListeners.mockReset();
     sessionHookMocks.hasInternalHookListeners.mockReturnValue(true);
@@ -549,29 +554,18 @@ export async function createCheckpointFixture(
     content: "before compaction",
     timestamp: Date.now(),
   };
-  const assistantMessage: AssistantMessage = {
-    role: "assistant",
+  const assistantMessage: AssistantMessage = makeAgentAssistantMessage({
     content: [{ type: "text", text: "working on it" }],
     api: "responses",
-    provider: "openai",
     model: "gpt-test",
     usage: {
+      ...createZeroUsageFixture(),
       input: 1,
       output: 1,
-      cacheRead: 0,
-      cacheWrite: 0,
       totalTokens: 2,
-      cost: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        total: 0,
-      },
     },
-    stopReason: "stop",
     timestamp: Date.now(),
-  };
+  });
   session.appendMessage(userMessage);
   session.appendMessage(assistantMessage);
   const preCompactionLeafId = session.getLeafId();
@@ -613,11 +607,13 @@ export function expectActiveRunCleanup(
   sessionId: string,
   requesterAgentId: string,
 ) {
-  expect(sessionCleanupMocks.stopSubagentsForRequester).toHaveBeenCalledWith({
-    cfg: expect.any(Object),
-    requesterSessionKey,
-    requesterAgentId,
-  });
+  expect(sessionCleanupMocks.stopSessionResetSubagents).toHaveBeenCalledWith(
+    expect.objectContaining({
+      cfg: expect.any(Object),
+      sessionKey: requesterSessionKey,
+      agentId: requesterAgentId,
+    }),
+  );
   expectSessionQueueCleanup(expectedQueueKeys);
   expect(embeddedRunMock.abortCalls).toEqual([sessionId]);
   expect(embeddedRunMock.waitCalls).toEqual([sessionId]);

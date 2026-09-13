@@ -2,7 +2,12 @@ import { constants as osConstants } from "node:os";
 import process from "node:process";
 import { getWindowsSystem32ExePath } from "../infra/windows-install-roots.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
-import { COMMAND_PROCESS_TREE_KILL_GRACE_MS, spawnCommand } from "./exec-spawn.js";
+import { isChildProcessTreeAlive } from "./child-process-tree.js";
+import {
+  COMMAND_PROCESS_TREE_KILL_GRACE_MS,
+  runOutsideCommandProcessScope,
+  spawnCommand,
+} from "./exec-spawn.js";
 import { killProcessTree as terminateProcessTree } from "./kill-tree.js";
 
 const WINDOWS_TASKKILL_TIMEOUT_MS = 5_000;
@@ -39,14 +44,16 @@ export function createCommandTerminationController(params: {
     !params.isChildExited() && params.child.exitCode == null && params.child.signalCode == null;
   const spawnTaskkill = async (args: string[]) => {
     try {
-      await spawnCommand([getWindowsSystem32ExePath("taskkill.exe"), ...args], {
-        baseEnv: params.baseEnv,
-        env: params.env,
-        forceKillAfterDelay: COMMAND_PROCESS_TREE_KILL_GRACE_MS,
-        reject: false,
-        stdio: "ignore",
-        timeout: WINDOWS_TASKKILL_TIMEOUT_MS,
-      });
+      await runOutsideCommandProcessScope(() =>
+        spawnCommand([getWindowsSystem32ExePath("taskkill.exe"), ...args], {
+          baseEnv: params.baseEnv,
+          env: params.env,
+          forceKillAfterDelay: COMMAND_PROCESS_TREE_KILL_GRACE_MS,
+          reject: false,
+          stdio: "ignore",
+          timeout: WINDOWS_TASKKILL_TIMEOUT_MS,
+        }),
+      );
     } catch {
       // Best-effort Windows cleanup still joins every attempted helper.
     }
@@ -95,16 +102,7 @@ export function createCommandTerminationController(params: {
       if (processTreeSettlement) {
         return !force;
       }
-      cleanup = "cooperative";
-      const groupAlive = () => {
-        try {
-          process.kill(-childPid, 0);
-          return true;
-        } catch (error) {
-          // SAFETY: Node's kill error carries errno; only ESRCH certifies absence.
-          return (error as NodeJS.ErrnoException).code !== "ESRCH";
-        }
-      };
+      const groupAlive = () => isChildProcessTreeAlive({ pid: childPid });
       const forceAndObserve = async () => {
         const start = getFileLockProcessStartTime(childPid);
         if (start !== null && start !== originalStart) {
@@ -134,6 +132,12 @@ export function createCommandTerminationController(params: {
         processTreeSettlement = forceAndObserve();
         return false;
       }
+      // Failed roots can finish without descendants. Record graceful cleanup only
+      // when this invocation still owns a live or unproven tree to terminate.
+      if (!directChildAlive && !groupAlive()) {
+        return false;
+      }
+      cleanup = "cooperative";
       try {
         process.kill(-childPid, params.killSignal ?? "SIGTERM");
       } catch (error) {

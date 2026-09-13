@@ -86,7 +86,7 @@ export function invalidateComputerFrameIfMissing(params: {
   imagesBlocked?: boolean;
 }): boolean {
   const frameToolCallId = params.contextEpoch.frameToolCallId;
-  if (frameToolCallId === undefined) {
+  if (frameToolCallId === undefined || params.imagesBlocked) {
     return invalidateComputerFrame(params.contextEpoch);
   }
 
@@ -105,7 +105,6 @@ export function invalidateComputerFrameIfMissing(params: {
   }
 
   if (
-    !params.imagesBlocked &&
     frameImageIdentity !== undefined &&
     frameImageIdentity === params.contextEpoch.frameImageIdentity
   ) {
@@ -189,6 +188,7 @@ export async function projectScreenshotResult(params: {
 
 export async function projectComputerActResult(params: {
   result: ComputerActResult;
+  precedingAction?: { action: ComputerToolAction; result: ComputerActResult };
   target: ComputerTarget;
   action: ComputerToolAction;
   referenceWidth: number;
@@ -230,14 +230,29 @@ export async function projectComputerActResult(params: {
   return {
     result: {
       content: [
+        ...(params.precedingAction
+          ? [
+              {
+                type: "text" as const,
+                text: computerActResultText(
+                  params.precedingAction.action,
+                  params.precedingAction.result,
+                ),
+              },
+            ]
+          : []),
         { type: "text", text: JSON.stringify({ action: params.action, ...result }) },
         ...content,
       ],
       details: {
         node: params.target.nodeId,
-        action: params.action,
+        action: params.precedingAction?.action ?? params.action,
         screenIndex: params.target.screenIndex,
-        result,
+        // Keep mutation evidence separate from the read's coordinate space and other metadata.
+        result: params.precedingAction
+          ? projectComputerActResultMetadata(params.precedingAction.result)
+          : result,
+        ...(params.precedingAction ? { followUpObservation: result } : {}),
         media: { outbound: false },
       },
     },

@@ -9,6 +9,8 @@ import type {
   ClawHubSkillSecurityVerdictItem,
   ClawHubSkillVerificationResponse,
 } from "../../infra/clawhub-skills.js";
+import { hasErrnoCode } from "../../infra/errno.js";
+import { withTempDir } from "../../test-utils/temp-dir.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
 
 const fetchClawHubSkillDetailMock = vi.fn();
@@ -70,7 +72,8 @@ vi.mock("../../plugins/install-security-scan.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../infra/fs-safe.js", () => ({
+vi.mock("../../infra/fs-safe.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/fs-safe.js")>()),
   pathExists: pathExistsMock,
 }));
 
@@ -1438,6 +1441,60 @@ describe("skills-clawhub", () => {
     expect(installed.skills.agentreceipt).toMatchObject({ version: "1.0.0" });
   });
 
+  it.for([".clawhub", ".clawdhub"])(
+    "rejects symlinked %s tracking without changing the link or its target",
+    async (directory, context) => {
+      const workspaceDir = await tempDirs.make("openclaw-skills-linked-tracking-");
+      const target = path.join(workspaceDir, "original.json");
+      const content = JSON.stringify({ version: 1, skills: {} });
+      const lockPath = path.join(workspaceDir, directory, "lock.json");
+      await fs.writeFile(target, content);
+      await fs.mkdir(path.dirname(lockPath));
+      try {
+        await fs.symlink(target, lockPath);
+      } catch (error) {
+        if (process.platform === "win32" && hasErrnoCode(error, "EPERM")) {
+          // Windows file symlinks require a host-granted capability.
+          context.skip();
+          return;
+        }
+        throw error;
+      }
+
+      await expect(readTrackedClawHubSkillSlugs(workspaceDir)).rejects.toThrow(
+        "Malformed workspace ClawHub lockfile",
+      );
+      expect((await fs.lstat(lockPath)).isSymbolicLink()).toBe(true);
+      expect(await fs.readFile(target, "utf8")).toBe(content);
+    },
+  );
+
+  it("reads the replacement tracking when an existing lock changes before open", async () => {
+    const workspaceDir = await tempDirs.make("openclaw-skills-replaced-tracking-");
+    await writeTrackedSkill(workspaceDir, "weather");
+    const lockPath = path.join(workspaceDir, ".clawhub", "lock.json");
+    const replacement = path.join(workspaceDir, "replacement.json");
+    await fs.writeFile(
+      replacement,
+      JSON.stringify({ version: 1, skills: { calendar: { version: "2.0.0", installedAt: 123 } } }),
+    );
+    const open = fs.open.bind(fs);
+    let replaced = false;
+    const spy = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      if (!replaced && args[0] === lockPath) {
+        replaced = true;
+        await fs.rename(replacement, lockPath);
+      }
+      return await open(...args);
+    });
+    try {
+      await expect(readTrackedClawHubSkillSlugs(workspaceDir)).resolves.toEqual(["calendar"]);
+      expect(replaced).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("persists install artifact and verification provenance in the ClawHub lockfile", async () => {
     const workspaceDir = await tempDirs.make("openclaw-skills-lock-");
     const warn = vi.fn();
@@ -2561,18 +2618,14 @@ describe("skills-clawhub", () => {
     });
 
     it("still rejects an untracked Unicode slug passed to update", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skills-clawhub-"));
-
-      try {
+      await withTempDir("openclaw-skills-clawhub-", async (workspaceDir) => {
         await expect(
           updateSkillsFromClawHub({
             workspaceDir,
             slug: "re\u0430ct",
           }),
         ).rejects.toThrow("Invalid skill slug");
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
   });
 
@@ -2631,8 +2684,7 @@ describe("skills-clawhub", () => {
 
   describe("verification target resolution", () => {
     it("preserves installed skills.sh references for verification", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         const skillDir = await writeTrackedSkill(workspaceDir, "agentreceipt", {
           requestedReference: "skills-sh:openclaw/skills/agentreceipt",
           trustState: "not-scanned-by-clawhub",
@@ -2661,9 +2713,7 @@ describe("skills-clawhub", () => {
             installedVersion: "2.0.0",
           },
         });
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects a different installed skills.sh reference before verification", async () => {
@@ -2734,8 +2784,7 @@ describe("skills-clawhub", () => {
     );
 
     it("uses installed owner namespace when resolving owner-qualified verification targets", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "weather", {
           ownerHandle: "demo-owner",
           registry: "https://private.example.com/clawhub",
@@ -2761,9 +2810,7 @@ describe("skills-clawhub", () => {
             installedVersion: "2.0.0",
           },
         });
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("accepts owner-qualified installed verification targets", async () => {
@@ -2823,8 +2870,7 @@ describe("skills-clawhub", () => {
     });
 
     it("keeps the installed registry when an explicit version overrides the installed version", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "agentreceipt", {
           registry: "https://private.example.com/clawhub",
           installedVersion: "2.0.0",
@@ -2850,14 +2896,11 @@ describe("skills-clawhub", () => {
             installedVersion: "2.0.0",
           },
         });
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("keeps the installed registry when an explicit tag is provided", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "agentreceipt", {
           registry: "https://private.example.com/clawhub",
           installedVersion: "2.0.0",
@@ -2883,14 +2926,11 @@ describe("skills-clawhub", () => {
             installedVersion: "2.0.0",
           },
         });
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects installed owner namespace metadata that does not match lock tracking", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "weather", {
           ownerHandle: "demo-owner",
         });
@@ -2912,14 +2952,11 @@ describe("skills-clawhub", () => {
           throw new Error("expected owner mismatch failure");
         }
         expect(result.error).toContain("origin metadata does not match");
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects installed origin metadata without workspace lock tracking", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "agentreceipt", {
           writeLock: false,
         });
@@ -2934,14 +2971,11 @@ describe("skills-clawhub", () => {
           throw new Error("expected untracked origin failure");
         }
         expect(result.error).toContain("not tracked by the workspace ClawHub lockfile");
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects installed origin metadata for a different skill slug", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "agentreceipt", {
           originSlug: "trusted-skill",
         });
@@ -2956,14 +2990,11 @@ describe("skills-clawhub", () => {
           throw new Error("expected slug mismatch failure");
         }
         expect(result.error).toContain('origin metadata for "trusted-skill"');
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects installed origin metadata that does not match lock tracking", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "agentreceipt", {
           installedVersion: "2.0.0",
           installedAt: 123,
@@ -2988,14 +3019,11 @@ describe("skills-clawhub", () => {
           throw new Error("expected lock mismatch failure");
         }
         expect(result.error).toContain("does not match the workspace ClawHub lockfile");
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects installed origin metadata when lock registry disagrees", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await writeTrackedSkill(workspaceDir, "agentreceipt", {
           registry: "https://origin.example.com/clawhub",
           installedVersion: "2.0.0",
@@ -3021,14 +3049,11 @@ describe("skills-clawhub", () => {
           throw new Error("expected registry mismatch failure");
         }
         expect(result.error).toContain("does not match the workspace ClawHub lockfile");
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects lock-tracked installed skills without origin metadata", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await fs.mkdir(path.join(workspaceDir, ".clawhub"), { recursive: true });
         await fs.writeFile(
           path.join(workspaceDir, ".clawhub", "lock.json"),
@@ -3059,14 +3084,11 @@ describe("skills-clawhub", () => {
           throw new Error("expected missing origin failure");
         }
         expect(result.error).toContain("missing ClawHub origin metadata");
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("rejects malformed workspace locks before registry fallback", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         await fs.mkdir(path.join(workspaceDir, ".clawhub"), { recursive: true });
         await fs.writeFile(path.join(workspaceDir, ".clawhub", "lock.json"), "{not json", "utf8");
 
@@ -3080,9 +3102,7 @@ describe("skills-clawhub", () => {
           throw new Error("expected malformed lock failure");
         }
         expect(result.error).toContain("Malformed workspace ClawHub lockfile");
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("uses the configured registry and latest selector for uninstalled skills", async () => {
@@ -3188,8 +3208,7 @@ describe("skills-clawhub", () => {
     });
 
     it("fails clearly when installed origin metadata is malformed", async () => {
-      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skill-verify-"));
-      try {
+      await withTempDir("openclaw-skill-verify-", async (workspaceDir) => {
         const skillDir = path.join(workspaceDir, "skills", "agentreceipt");
         await fs.mkdir(path.join(skillDir, ".clawhub"), { recursive: true });
         await fs.writeFile(path.join(skillDir, ".clawhub", "origin.json"), "{not json", "utf8");
@@ -3205,9 +3224,7 @@ describe("skills-clawhub", () => {
         }
         expect(result.error).toContain("Malformed ClawHub origin metadata");
         expect(result.error).toContain(path.join(skillDir, ".clawhub", "origin.json"));
-      } finally {
-        await fs.rm(workspaceDir, { recursive: true, force: true });
-      }
+      });
     });
 
     it("fails clearly for invalid slugs and conflicting selectors", async () => {
@@ -3235,7 +3252,7 @@ describe("skills-clawhub", () => {
     });
   });
 
-  it("uses search for browse-all skill discovery", async () => {
+  it("preserves an empty query for trending skill discovery", async () => {
     searchClawHubSkillsMock.mockResolvedValueOnce([
       {
         score: 1,
@@ -3258,7 +3275,7 @@ describe("skills-clawhub", () => {
       },
     ]);
     expect(searchClawHubSkillsMock).toHaveBeenCalledWith({
-      query: "*",
+      query: "",
       limit: 20,
       baseUrl: undefined,
     });
@@ -3303,8 +3320,7 @@ describe("ClawHub origin provenance readback", () => {
   }
 
   it("restores matching provenance and rejects one-sided origin edits", async () => {
-    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-origin-prov-"));
-    try {
+    await withTempDir("openclaw-origin-prov-", async (workspaceDir) => {
       const artifact = {
         kind: "clawpack" as const,
         sha256: "a".repeat(64),
@@ -3383,14 +3399,11 @@ describe("ClawHub origin provenance readback", () => {
           reason: expect.stringContaining("does not match the workspace ClawHub lockfile"),
         });
       }
-    } finally {
-      await fs.rm(workspaceDir, { recursive: true, force: true });
-    }
+    });
   });
 
   it("drops malformed provenance fields while keeping the link valid", async () => {
-    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-origin-prov-"));
-    try {
+    await withTempDir("openclaw-origin-prov-", async (workspaceDir) => {
       const skillDir = await writeOriginWithProvenance({
         workspaceDir,
         slug: "agentreceipt",
@@ -3419,9 +3432,7 @@ describe("ClawHub origin provenance readback", () => {
       expect(link.artifact).toBeUndefined();
       expect(link.skillFile).toBeUndefined();
       expect(link.sourceUrl).toBeUndefined();
-    } finally {
-      await fs.rm(workspaceDir, { recursive: true, force: true });
-    }
+    });
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

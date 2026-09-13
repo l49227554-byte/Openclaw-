@@ -26,11 +26,15 @@ import {
   getPendingDevicePairing,
   listDevicePairing,
   removePairedDevice,
-  type DeviceAuthToken,
+  type PairedDevice,
   rejectDevicePairing,
   updatePairedDeviceMetadata,
 } from "../../infra/device-pairing.js";
 import type { DiagnosticSecurityEventInput } from "../../infra/diagnostic-events.js";
+import type {
+  DevicePairingList,
+  PairedDevice as RedactedPairedDevice,
+} from "../device-pairing-list.types.js";
 import { reconcileRevokedDeviceWorker } from "../device-worker-revocation.js";
 import { GATEWAY_EVENT_DEVICE_PAIR_CHANGED } from "../events.js";
 import { clearRemovedNodeRuntimeState } from "../node-runtime-state.js";
@@ -59,9 +63,9 @@ const DEVICE_PAIR_APPROVAL_DENIED_MESSAGE = "device pairing approval denied";
 const DEVICE_PAIR_REJECTION_DENIED_MESSAGE = "device pairing rejection denied";
 
 function redactPairedDevice(
-  device: { tokens?: Record<string, DeviceAuthToken> } & Record<string, unknown>,
+  device: PairedDevice,
   opts?: { connected?: boolean },
-) {
+): RedactedPairedDevice {
   // Pairing lists are visible to operators; expose token lifecycle metadata
   // without returning raw token material or the internal approved-scope set.
   const { tokens, approvedScopes: _approvedScopes, ...rest } = device;
@@ -111,21 +115,6 @@ function shouldReturnRotatedDeviceToken(authz: DeviceManagementAuthz): boolean {
   return Boolean(authz.callerDeviceId && authz.callerDeviceId === authz.normalizedTargetDeviceId);
 }
 
-function emitDeviceSecurityEvent(params: {
-  action: string;
-  outcome: DiagnosticSecurityEventInput["outcome"];
-  severity: DiagnosticSecurityEventInput["severity"];
-  authz: DeviceSessionAuthz;
-  targetDeviceId?: string;
-  policyId: string;
-  decision: NonNullable<DiagnosticSecurityEventInput["policy"]>["decision"];
-  controlId: string;
-  reason?: string;
-  attributes?: Record<string, string | number | boolean>;
-}) {
-  emitDeviceManagementSecurityEvent(params);
-}
-
 function emitDevicePairingDeniedSecurityEvent(params: {
   authz: DeviceSessionAuthz;
   targetDeviceId?: string;
@@ -133,7 +122,7 @@ function emitDevicePairingDeniedSecurityEvent(params: {
   reason: string;
   severity?: DiagnosticSecurityEventInput["severity"];
 }) {
-  emitDeviceSecurityEvent({
+  emitDeviceManagementSecurityEvent({
     action: "device.pairing.denied",
     outcome: "denied",
     severity: params.severity ?? "medium",
@@ -158,7 +147,7 @@ function emitDevicePairingLifecycleSecurityEvent(params: {
   controlId: string;
   attributes?: Record<string, string | number | boolean>;
 }) {
-  emitDeviceSecurityEvent({
+  emitDeviceManagementSecurityEvent({
     action: params.action,
     outcome: "success",
     severity: params.severity,
@@ -179,7 +168,7 @@ function emitDeviceTokenDeniedSecurityEvent(params: {
   reason: string;
   role: string;
 }) {
-  emitDeviceSecurityEvent({
+  emitDeviceManagementSecurityEvent({
     action: params.action,
     outcome: "denied",
     severity: "medium",
@@ -202,7 +191,7 @@ function emitDeviceTokenLifecycleSecurityEvent(params: {
   role: string;
   scopeCount?: number;
 }) {
-  emitDeviceSecurityEvent({
+  emitDeviceManagementSecurityEvent({
     action: params.action,
     outcome: "success",
     severity: params.severity,
@@ -245,7 +234,7 @@ export const deviceHandlers: GatewayRequestHandlers = {
             connected: context.hasConnectedClientsForDevice?.(device.deviceId.trim()) ?? false,
           }),
         ),
-      },
+      } satisfies DevicePairingList,
       undefined,
     );
   },
@@ -255,7 +244,7 @@ export const deviceHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
-    const { requestId } = params as { requestId: string };
+    const requestId = (params as { requestId: string }).requestId.trim();
     const authz = resolveDeviceSessionAuthz(client);
     if (!authz.isAdminCaller) {
       const pending = await getPendingDevicePairing(requestId);
@@ -368,7 +357,7 @@ export const deviceHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateDevicePairRejectParams, "device.pair.reject", respond)) {
       return;
     }
-    const { requestId } = params as { requestId: string };
+    const requestId = (params as { requestId: string }).requestId.trim();
     const authz = resolveDeviceSessionAuthz(client);
     if (authz.callerDeviceId && !authz.isAdminCaller) {
       const pending = await getPendingDevicePairing(requestId);
@@ -502,10 +491,7 @@ export const deviceHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateDevicePairRenameParams, "device.pair.rename", respond)) {
       return;
     }
-    const { deviceId, label } = params as {
-      deviceId: string;
-      label: string;
-    };
+    const { deviceId, label } = params;
     const trimmed = label.trim();
     if (!trimmed) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "label required"));
@@ -571,11 +557,7 @@ export const deviceHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
-    const { deviceId, role, scopes } = params as {
-      deviceId: string;
-      role: string;
-      scopes?: string[];
-    };
+    const { deviceId, role, scopes } = params;
     const authz = resolveDeviceManagementAuthz(client, deviceId);
     if (deniesCrossDeviceManagement(authz)) {
       logDeviceTokenRotationDenied({

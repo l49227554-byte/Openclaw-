@@ -31,6 +31,7 @@ import {
   createForeignPublicationSession,
   createPersonalPublicationFixture,
   personalPublicationAccount as account,
+  expectPersonalPublicationReplay,
 } from "./github-personal-publication.test-support.js";
 import {
   BRANCH,
@@ -57,6 +58,7 @@ import {
   seedActivePlacement,
 } from "./worker-environments/placement-dispatch-test-fixtures.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
+import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
 
 const mocks = githubPublicationTestMocks();
 
@@ -453,6 +455,13 @@ describe("personal publication authority and recovery", () => {
     });
   });
 
+  it("replays only the original personal selection and content without new publication work", async () => {
+    await expectPersonalPublicationReplay({ generation, coordinator, action }, (requestId) => ({
+      receipt: readPersonalGitHubPublication(owner, { requestId }),
+      commandCount: commands.length,
+    }));
+  });
+
   it("keeps credential locations out of publication errors when refresh materialization fails", async () => {
     mocks.refreshIdentity.mockRejectedValueOnce(
       new Error("failed to replace /private/credentials/github/personal/synthetic/hosts.yml"),
@@ -476,6 +485,11 @@ describe("personal publication authority and recovery", () => {
         });
       }
       if (state === "remote" || state === "reconciliation") {
+        seedAttachedPlacementEnvironment(openOpenClawStateDatabase(), {
+          environmentId: "remote",
+          sessionId: REQUEST.sessionId,
+          ownerEpoch: 1,
+        });
         const active = seedActivePlacement(placements, { environmentId: "remote", ownerEpoch: 1 });
         selectedAction = { ...action, sessionId: active.sessionId, sessionKey: REQUEST.sessionKey };
         if (state === "reconciliation") {

@@ -1,25 +1,16 @@
-import { listAgentIds } from "openclaw/plugin-sdk/agent-runtime";
 import { resolveSessionAgentIdsStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OpenClawPluginNodeHostCommand } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
-import {
-  publishSessionCatalogHost,
-  sessionCatalogAdoptedSourceKey,
-  type SessionCatalogEntrySnapshot,
-  type SessionCatalogProvider,
+import type {
+  SessionCatalogEntrySnapshot,
+  SessionCatalogProvider,
 } from "openclaw/plugin-sdk/session-catalog";
+import { publishSessionCatalogHost } from "openclaw/plugin-sdk/session-catalog-paging";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { CodexAppServerBindingStore } from "./app-server/session-binding.js";
-import { listAdoptedSessionEntries } from "./session-catalog-adoption.js";
 import type { CodexCatalogHome } from "./session-catalog-homes.js";
-import { listNodeAdoptedSessionEntries } from "./session-catalog-node-adoption.js";
-import {
-  compareNodeLabels,
-  listPairedNode,
-  nodeLabel,
-  type CatalogNode,
-} from "./session-catalog-node-continue.js";
+import type { CatalogNode } from "./session-catalog-node-continue.js";
 import {
   catalogError,
   CatalogParamsError,
@@ -50,7 +41,6 @@ import {
   codexNodeTerminalCapability,
   createCodexTerminalNodeHostCommand,
   createCodexTerminalStartNodeHostCommand,
-  type CodexTerminalConfigSources,
 } from "./session-catalog-terminal.js";
 import {
   parseCodexCatalogTranscriptPage,
@@ -155,6 +145,9 @@ async function listGatewayHost(params: {
       searchTerm: params.query.search,
       signal: params.signal,
     });
+    params.signal?.throwIfAborted();
+    const { listAdoptedSessionEntries } = await import("./session-catalog-adoption.js");
+    const { sessionCatalogAdoptedSourceKey } = await import("openclaw/plugin-sdk/session-catalog");
     params.signal?.throwIfAborted();
     const adoptedSessions = await listAdoptedSessionEntries({
       agentId: params.agentId,
@@ -297,6 +290,9 @@ export async function listCodexSessionCatalog(params: {
     };
   }
   params.signal?.throwIfAborted();
+  const { listNodeAdoptedSessionEntries } = await import("./session-catalog-node-adoption.js");
+  const { compareNodeLabels, listPairedNode } = await import("./session-catalog-node-continue.js");
+  params.signal?.throwIfAborted();
   const adoptedNodeSessions = listNodeAdoptedSessionEntries({
     agentId,
     config: params.config,
@@ -322,32 +318,19 @@ export async function listCodexSessionCatalog(params: {
 /** Builds the node-local read-only Codex app-server catalog command. */
 export function createCodexSessionCatalogNodeHostCommands(
   controlFactory: CodexSessionCatalogControlFactory,
-  configSources: CodexTerminalConfigSources,
   bindingStore?: CodexAppServerBindingStore,
 ): OpenClawPluginNodeHostCommand[] {
-  // Node commands register before an agent request exists. Bind from the invoke payload so
-  // explicit multi-agent Codex homes never collapse to an ambient default.
+  // Native sources ignore the Gateway route; explicit preexisting sources retain their selector.
   const bindRequest = (paramsJSON?: string | null) => {
     const parsed = parseJsonParams(paramsJSON);
     if (!isRecord(parsed)) {
       throw new CatalogParamsError("Codex session catalog parameters must be an object");
     }
-    const requestedAgentId = readBoundedOptionalString(parsed, "agentId", MAX_SESSION_ID_LENGTH);
-    const config = configSources.getRuntimeConfig() ?? {};
-    const agentId = resolveSessionAgentIdsStrict({
-      config,
-      agentId: requestedAgentId,
-    }).sessionAgentId;
-    if (!listAgentIds(config).includes(agentId)) {
-      throw new CatalogParamsError(`unknown Codex session catalog agent: ${agentId}`);
-    }
+    const agentId = readBoundedOptionalString(parsed, "agentId", MAX_SESSION_ID_LENGTH);
     const request = { ...parsed };
     delete request.agentId;
-    const source = controlFactory.homesForAgent(agentId)[0];
     return {
-      agentId,
-      control: controlFactory.forRequest(agentId, source),
-      sourceHomeId: source?.sourceHomeId,
+      ...controlFactory.forNode(agentId),
       params: request,
       paramsJSON: JSON.stringify(request),
     };
@@ -436,7 +419,7 @@ export function createCodexSessionCatalogNodeHostCommands(
         }
       },
     },
-    createCodexTerminalNodeHostCommand(bindRequest, configSources),
+    createCodexTerminalNodeHostCommand(bindRequest),
     createCodexTerminalStartNodeHostCommand(),
   ];
   // MacNodeHostWorker sets app ownership at launch. Its native catalog may use a
@@ -554,6 +537,7 @@ export async function readCodexSessionTranscript(params: {
           ),
         { threadId: params.threadId, cursor, limit },
       );
+  const { nodeLabel } = await import("./session-catalog-node-continue.js");
   return {
     hostId: params.hostId,
     label: nodeLabel(node),

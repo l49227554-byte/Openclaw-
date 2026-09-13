@@ -1,6 +1,10 @@
 import { listAgentWorkspaceDirs } from "../agents/workspace-dirs.js";
 import { getGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
-import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
+import { loadInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-record-reader.js";
+import {
+  loadPluginManifestRegistryCore,
+  type PluginManifestRegistry,
+} from "../plugins/manifest-registry.js";
 import { createPluginCache, getPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { resolvePluginControlPlaneFingerprint } from "../plugins/plugin-control-plane-context.js";
 import {
@@ -13,6 +17,7 @@ import {
 } from "../plugins/plugin-metadata-snapshot.js";
 import { normalizePluginPolicyId } from "../plugins/plugin-policy-id.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
+import type { PluginInstallRecord } from "./types.plugins.js";
 
 function mergeRegistries(registries: readonly PluginManifestRegistry[]): PluginManifestRegistry {
   const grouped = new Map<
@@ -45,11 +50,37 @@ function mergeRegistries(registries: readonly PluginManifestRegistry[]): PluginM
   return { plugins, diagnostics };
 }
 
+/** Read complete installed ownership for maintenance, including older partial index caches. */
+export function discoverConfigWidePluginManifestRegistry(params: {
+  config?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  workspaceDir?: string;
+  artifactPreservingReadOnly?: boolean;
+}): PluginManifestRegistry {
+  const env = params.env ?? process.env;
+  const workspaceDirs =
+    params.workspaceDir !== undefined
+      ? [params.workspaceDir]
+      : params.config
+        ? listAgentWorkspaceDirs(params.config, env)
+        : [];
+  const installRecords = loadInstalledPluginIndexInstallRecordsSync({
+    env,
+    artifactPreservingReadOnly: params.artifactPreservingReadOnly,
+  });
+  return mergeRegistries(
+    (workspaceDirs.length > 0 ? workspaceDirs : [undefined]).map((workspaceDir) =>
+      loadPluginManifestRegistryCore({ config: params.config, env, workspaceDir, installRecords }),
+    ),
+  );
+}
+
 type ResolveConfigWidePluginMetadataParams = {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
   allowCurrent?: boolean;
+  installRecords?: Record<string, PluginInstallRecord>;
 };
 
 export function resolveConfigWidePluginMetadataSnapshot(
@@ -60,7 +91,11 @@ export function resolveConfigWidePluginMetadataSnapshot(
       resolveConfigWidePluginMetadataSnapshot(params),
     );
   }
-  if (params.allowCurrent !== false && params.stateDir === undefined) {
+  if (
+    params.allowCurrent !== false &&
+    params.stateDir === undefined &&
+    params.installRecords === undefined
+  ) {
     const gatewaySnapshot = getGatewayPluginMetadataSnapshot();
     if (gatewaySnapshot) {
       return gatewaySnapshot;
@@ -96,6 +131,7 @@ function resolveConfigWidePluginMetadataSnapshotImpl(
       ...(params.stateDir ? { stateDir: params.stateDir } : {}),
       env,
       allowCurrent: params.allowCurrent,
+      ...(params.installRecords ? { installRecords: params.installRecords } : {}),
       allowWorkspaceScopedCurrent: true,
     });
   const firstSnapshot = resolveSnapshot(workspaceDirs[0]);

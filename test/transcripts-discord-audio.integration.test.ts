@@ -6,8 +6,9 @@ import { transcribeAudioFile } from "openclaw/plugin-sdk/media-understanding-run
 import { vi } from "vitest";
 import { loadDiscordVoiceTestHarness } from "../extensions/discord/test-api.js";
 import type { MediaUnderstandingModelConfig } from "../src/config/types.tools.js";
+import { createPluginMetadataSnapshotFixture } from "../src/plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../src/plugins/registry-empty.js";
-import { withPluginRuntimeRegistryScope } from "../src/plugins/runtime/gateway-request-scope.js";
+import { withPluginRuntimeGenerationScope } from "../src/plugins/runtime/generation-scope.js";
 
 const { defineDiscordVoiceTests } = await loadDiscordVoiceTestHarness();
 const cli = vi.hoisted(() => vi.fn());
@@ -55,6 +56,16 @@ defineDiscordVoiceTests(
           source: "test/transcripts-discord-audio.integration.test.ts",
           provider: { id: "synthetic-audio", capabilities: ["audio"], transcribeAudio: provider },
         });
+        // Keep the synthetic runtime and discovery inventory in one generation;
+        // transcription must not materialize unrelated bundled plugin owners.
+        const metadataSnapshot = createPluginMetadataSnapshotFixture({
+          plugins: [
+            {
+              id: "synthetic-audio",
+              contracts: { mediaUnderstandingProviders: ["synthetic-audio"] },
+            },
+          ],
+        });
         const apiModel: MediaUnderstandingModelConfig = {
           provider: "synthetic-audio",
           model: "synthetic-stt",
@@ -91,17 +102,25 @@ defineDiscordVoiceTests(
         );
         await manager.join({ guildId: "g1", channelId: "1001" });
         const entry = getSessionEntry(manager);
+        const dispatched = createDeferred<void>();
+        agentCommandMock.mockImplementation(async () => {
+          dispatched.resolve();
+          return { payloads: [] };
+        });
         if (dispatch === "control") {
-          controlRealtimeVoiceAgentRunMock.mockResolvedValue({
-            ok: true,
-            mode: "cancel",
-            sessionKey: entry.route.sessionKey,
-            active: true,
-            aborted: true,
-            message: "Cancelled",
-            speak: false,
-            show: true,
-            suppress: true,
+          controlRealtimeVoiceAgentRunMock.mockImplementation(async () => {
+            dispatched.resolve();
+            return {
+              ok: true,
+              mode: "cancel",
+              sessionKey: entry.route.sessionKey,
+              active: true,
+              aborted: true,
+              message: "Cancelled",
+              speak: false,
+              show: true,
+              suppress: true,
+            };
           });
         }
         const stream = new PassThrough({ objectMode: true });
@@ -122,8 +141,9 @@ defineDiscordVoiceTests(
         transcribeAudioFileMock.mockImplementation(async (params) => {
           wavPaths.push(params.filePath);
           wavSizes.push((await fs.stat(params.filePath)).size);
-          const result = await withPluginRuntimeRegistryScope(registry, () =>
-            transcribeAudioFile(params),
+          const result = await withPluginRuntimeGenerationScope(
+            { metadataSnapshot, pluginRegistry: registry },
+            () => transcribeAudioFile(params),
           );
           results.push(result);
           return result;
@@ -185,11 +205,16 @@ defineDiscordVoiceTests(
             await expect(fs.stat(wavPath)).rejects.toMatchObject({ code: "ENOENT" });
           }
           const completeText = opening === "fallback" ? `${prefix}\n${suffix}` : suffix;
+          if (!oversized) {
+            // Recording completion does not join the independent conversation queue.
+            await dispatched.promise;
+          }
           if (oversized) {
             expect(agentCommandMock).not.toHaveBeenCalled();
             expect(controlRealtimeVoiceAgentRunMock).not.toHaveBeenCalled();
           } else if (dispatch === "control") {
             expect(controlRealtimeVoiceAgentRunMock).toHaveBeenCalledExactlyOnceWith({
+              getToolAuthorityOverlay: expect.any(Function),
               sessionKey: entry.route.sessionKey,
               text: completeText,
             });

@@ -4572,7 +4572,7 @@ describe("runCliAgent reliability", () => {
     }
   });
 
-  it("builds fresh-session history reseed prompts from hook-mutated prompts", async () => {
+  it("builds fresh-session caller-memory prompts from hook-mutated prompts", async () => {
     const { dir, sessionFile, sessionTarget } = createSessionFixture({
       history: [{ role: "user", content: "earlier ask" }],
     });
@@ -4605,9 +4605,15 @@ describe("runCliAgent reliability", () => {
     };
     setHookRunnerForTest(hookRunner);
 
+    const admission = prepareSystemAgentRunAdmission(
+      config,
+      "run-history-hook",
+      "main",
+      "cli-history-hook-fixture",
+    );
     try {
       const context = await prepareCliRunContext({
-        admittedRunContext: createTestAdmittedRunContext("run-history-hook"),
+        preparedRunAdmission: admission,
         sessionId: "s1",
         sessionFile,
         sessionTarget,
@@ -4618,6 +4624,8 @@ describe("runCliAgent reliability", () => {
         model: "gpt-5.4",
         timeoutMs: 1_000,
         runId: "run-history-hook",
+        // This test supplies explicit memory; durable account provenance has separate coverage.
+        sessionManager: SessionManager.fromEntries(manager.getEntries(), dir),
       });
 
       expect(context.params.prompt).toBe("hook context\n\ncurrent ask");
@@ -4625,6 +4633,7 @@ describe("runCliAgent reliability", () => {
       expect(context.openClawHistoryPrompt).toContain("hook context");
       expect(context.openClawHistoryPrompt).toContain("current ask");
     } finally {
+      admission.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -4660,9 +4669,15 @@ describe("runCliAgent reliability", () => {
     };
     setHookRunnerForTest(hookRunner);
 
+    const admission = prepareSystemAgentRunAdmission(
+      config,
+      "run-native-compact",
+      "main",
+      "cli-native-control-fixture",
+    );
     try {
       const context = await prepareCliRunContext({
-        admittedRunContext: createTestAdmittedRunContext("run-native-compact"),
+        preparedRunAdmission: admission,
         sessionId: "s1",
         sessionFile,
         sessionTarget,
@@ -4692,6 +4707,7 @@ describe("runCliAgent reliability", () => {
       expect(context.contextEngine).toBeUndefined();
       expect(context.claudeSkillsPluginArgs).toEqual([]);
     } finally {
+      admission.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

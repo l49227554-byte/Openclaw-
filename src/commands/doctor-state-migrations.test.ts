@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveSharedMainAuthAgentDir } from "../agents/auth-profiles/shared-main-dir.js";
@@ -731,7 +732,7 @@ async function detectAndRunMigrations(params: {
     cfg: params.cfg,
     env: { OPENCLAW_STATE_DIR: params.root } as NodeJS.ProcessEnv,
   });
-  await runLegacyStateMigrations({ detected, now: params.now });
+  return runLegacyStateMigrations({ detected, now: params.now });
 }
 
 async function withStateDir<T>(root: string, run: () => Promise<T>): Promise<T> {
@@ -1427,7 +1428,7 @@ describe("doctor legacy state migrations", () => {
     expect(store["agent:main:unknown:group:abc"]?.sessionId).toBe("generic");
   });
 
-  it("migrates legacy agent dir with conflict fallback", async () => {
+  it("preserves conflicting agent files and records a recoverable quarantine", async () => {
     const { root, cfg } = await makeRootWithEmptyCfg();
     writeLegacyAgentFiles(root, {
       "foo.txt": "legacy",
@@ -1438,11 +1439,22 @@ describe("doctor legacy state migrations", () => {
     fs.mkdirSync(targetAgentDir, { recursive: true });
     fs.writeFileSync(path.join(targetAgentDir, "foo.txt"), "new", "utf-8");
 
-    await detectAndRunMigrations({ root, cfg, now: () => 123 });
+    const result = await detectAndRunMigrations({ root, cfg, now: () => 123 });
 
     expect(fs.readFileSync(path.join(targetAgentDir, "baz.txt"), "utf-8")).toBe("legacy2");
-    const backupDir = path.join(root, "agents", "main", "agent.legacy-123");
-    expect(fs.existsSync(path.join(backupDir, "foo.txt"))).toBe(true);
+    expect(fs.readFileSync(path.join(targetAgentDir, "foo.txt"), "utf-8")).toBe("new");
+    const backups = fs.readdirSync(root).filter((name) => name.startsWith("agent.legacy-"));
+    expect(backups).toHaveLength(1);
+    const backupDir = path.join(
+      fs.realpathSync(root),
+      expectDefined(backups[0], "conflict quarantine"),
+    );
+    expect(fs.readdirSync(backupDir)).toEqual(["foo.txt"]);
+    expect(fs.readFileSync(path.join(backupDir, "foo.txt"), "utf-8")).toBe("legacy");
+    expect(result.stepReceipts.find((receipt) => receipt.id === "agent-dir")).toMatchObject({
+      outcome: "warning",
+      warnings: [expect.stringContaining(path.join(backupDir, "foo.txt"))],
+    });
   });
 
   it("auto-migrates legacy agent dir on startup", async () => {
@@ -3594,7 +3606,13 @@ describe("doctor legacy state migrations", () => {
     expect(fs.existsSync(`${sourcePath}.migrated`)).toBe(true);
   });
 
-  it("keeps the plugin-state sidecar when the sidecar has a newer row than canonical state", async () => {
+  it.each<[name: string, sidecarCreatedAt: number]>([
+    ["keeps the plugin-state sidecar when the sidecar has a newer row than canonical state", 3000],
+    [
+      "keeps the plugin-state sidecar when sidecar and canonical rows have equal timestamps but different values",
+      1000,
+    ],
+  ])("%s", async (_name, sidecarCreatedAt) => {
     const root = makeDoctorStateDir();
     const sourcePath = path.join(root, "plugin-state", "state.sqlite");
     fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
@@ -3617,61 +3635,7 @@ describe("doctor legacy state migrations", () => {
           plugin_id, namespace, entry_key, value_json, created_at, expires_at
         ) VALUES (?, ?, ?, ?, ?, ?)
       `);
-      insert.run("discord", "components", "interaction:1", '{"ok":true}', 3000, null);
-    } finally {
-      db.close();
-    }
-    await withStateDir(root, async () => {
-      seedPluginStateEntriesForTests([
-        {
-          pluginId: "discord",
-          namespace: "components",
-          key: "interaction:1",
-          value: { ok: false },
-          createdAt: 1000,
-          expiresAt: null,
-        },
-      ]);
-    });
-    resetPluginStateStoreForTests();
-
-    const detected = await detectLegacyStateMigrations({
-      cfg: {},
-      env: { OPENCLAW_STATE_DIR: root } as NodeJS.ProcessEnv,
-    });
-    const result = await runLegacyStateMigrations({ detected });
-
-    expect(result.warnings).toStrictEqual([
-      "Left plugin-state sidecar in place because 1 row differs from shared state without a newer canonical timestamp. First key: discord/components/interaction:1",
-    ]);
-    expect(fs.existsSync(sourcePath)).toBe(true);
-    expect(fs.existsSync(`${sourcePath}.migrated`)).toBe(false);
-  });
-
-  it("keeps the plugin-state sidecar when sidecar and canonical rows have equal timestamps but different values", async () => {
-    const root = makeDoctorStateDir();
-    const sourcePath = path.join(root, "plugin-state", "state.sqlite");
-    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
-    const sqlite = requireNodeSqlite();
-    const db = new sqlite.DatabaseSync(sourcePath);
-    try {
-      db.exec(`
-        CREATE TABLE plugin_state_entries (
-          plugin_id TEXT NOT NULL,
-          namespace TEXT NOT NULL,
-          entry_key TEXT NOT NULL,
-          value_json TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
-          expires_at INTEGER,
-          PRIMARY KEY (plugin_id, namespace, entry_key)
-        );
-      `);
-      const insert = db.prepare(`
-        INSERT INTO plugin_state_entries (
-          plugin_id, namespace, entry_key, value_json, created_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      insert.run("discord", "components", "interaction:1", '{"ok":true}', 1000, null);
+      insert.run("discord", "components", "interaction:1", '{"ok":true}', sidecarCreatedAt, null);
     } finally {
       db.close();
     }

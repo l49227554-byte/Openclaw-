@@ -3,6 +3,7 @@ import { uniqueStrings } from "@openclaw/normalization-core/string-normalization
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
+  sqliteStringSet,
 } from "../../infra/kysely-sync.js";
 import { getChildLogger } from "../../logging/logger.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -23,7 +24,7 @@ import {
 } from "./session-accessor.sqlite-entry-equality.js";
 import {
   readExactSessionEntryRow,
-  readSessionEntryRow,
+  readSessionEntryRowScan,
 } from "./session-accessor.sqlite-entry-read.js";
 import {
   clearSessionCollaborationForKey,
@@ -53,10 +54,12 @@ import {
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
 import { preserveCreationStamp } from "./session-entry-provenance.js";
+import { resolveSessionPublicShare } from "./session-public-share.js";
 import { resolveDeliveryProvenCanonicalSessionKey } from "./store-entry.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 export {
   parseReadableSqliteSessionEntryRow,
+  parseReadableSqliteSessionEntryRows,
   readExactSessionEntryJson,
   readExactSessionEntryRow,
   readExactSessionEntryRowValidated,
@@ -92,21 +95,62 @@ export function readSessionEntrySelectionSnapshot(
   sessionKey: string,
   exact: boolean,
 ): SqliteLifecycleTargetSnapshot {
-  const selected = exact
-    ? readExactSessionEntryRow(database, sessionKey)
-    : readSessionEntryRow(database, sessionKey);
-  return selected ? [{ entry: selected.entry, sessionKey: selected.row.session_key }] : [];
+  if (exact) {
+    const selected = readExactSessionEntryRow(database, sessionKey);
+    return selected
+      ? [
+          {
+            entry: selected.entry,
+            sessionKey: selected.row.session_key,
+            persistedRows: {
+              lookupKeys: [sessionKey.trim()],
+              rows: [selected.row],
+            },
+          },
+        ]
+      : [];
+  }
+  const scanned = readSessionEntryRowScan(database, sessionKey);
+  return scanned?.selected
+    ? [
+        {
+          entry: scanned.selected.entry,
+          sessionKey: scanned.selected.row.session_key,
+          persistedRows: { lookupKeys: scanned.lookupKeys, rows: scanned.rows },
+        },
+      ]
+    : [];
+}
+
+/** Reuses preparation only when every persisted column still matches; otherwise hydrate. */
+export function readUnchangedLifecycleTargetSnapshot(
+  database: OpenClawAgentDatabase,
+  prepared: SqliteLifecycleTargetSnapshot,
+): SqliteLifecycleTargetSnapshot | undefined {
+  const persisted = prepared[0]?.persistedRows;
+  if (!persisted || persisted.lookupKeys.length === 0) {
+    return undefined;
+  }
+  const rows = executeSqliteQuerySync(
+    database.db,
+    getSessionKysely(database.db)
+      .selectFrom("session_nodes")
+      .selectAll()
+      .where("session_key", "in", sqliteStringSet(persisted.lookupKeys))
+      .orderBy("session_key", "asc"),
+  ).rows;
+  return isDeepStrictEqual(rows, persisted.rows) ? prepared : undefined;
 }
 
 export function resolveLifecyclePrimaryEntry(
-  database: OpenClawAgentDatabase,
+  database: Pick<OpenClawAgentDatabase, "agentId" | "db">,
   target: { canonicalKey: string; storeKeys: string[] },
   options: { allowCanonicalMove?: boolean } = {},
 ): SqliteLifecycleTargetSnapshot[number] | undefined {
   const rows = target.storeKeys.flatMap((key) => {
     const sessionKey = key.trim();
     const row = readExactSessionEntryRow(database, sessionKey);
-    return row ? [{ sessionKey, entry: row.entry }] : [];
+    return row ? [{ sessionKey, entry: row.entry, rawRow: row.row }] : [];
   });
   if (rows.length > 1) {
     throw canonicalSessionKeyMigrationRequiredError(
@@ -119,11 +163,20 @@ export function resolveLifecyclePrimaryEntry(
       `non-canonical persisted row resolves to session key ${target.canonicalKey}`,
     );
   }
-  return row;
+  return row
+    ? {
+        entry: row.entry,
+        sessionKey: row.sessionKey,
+        persistedRows: {
+          lookupKeys: target.storeKeys.map((key) => key.trim()),
+          rows: [row.rawRow],
+        },
+      }
+    : undefined;
 }
 
 export function readLifecycleTargetSnapshot(
-  database: OpenClawAgentDatabase,
+  database: Pick<OpenClawAgentDatabase, "agentId" | "db">,
   target: { canonicalKey: string; storeKeys: string[] },
   options: { allowCanonicalMove?: boolean } = {},
 ): SqliteLifecycleTargetSnapshot {
@@ -385,6 +438,8 @@ export function writeSessionEntry(
   entry: SessionEntry,
   options: {
     allowStoredAliases?: boolean;
+    /** Canonical row revalidated in this write transaction; null proves absence. */
+    canonicalPreviousEntry?: SessionEntry | null;
     consumePendingReset?: boolean;
     preserveNodeSuggestions?: boolean;
     previousEntry?: SessionEntry | null;
@@ -401,16 +456,19 @@ export function writeSessionEntry(
       );
     }
   }
-  let normalizedEntry = normalizeSessionEntryTimestamp(entry);
+  let normalizedEntry: SessionEntry = normalizeSessionEntryTimestamp(entry);
   if (!hasValidSessionEntryIdentity(normalizedEntry)) {
     throw new Error("Refusing invalid SQLite session entry identity");
   }
   // Doctor validated the raw rejected row before entering the transaction and passes its
   // hydrated snapshot explicitly; re-reading it through the runtime parser must stay fail-closed.
+  // The commit owner can supply its revalidated canonical row instead of decoding it again.
   const canonicalPreviousEntry =
-    options.allowStoredAliases && options.previousEntry !== undefined
-      ? (options.previousEntry ?? undefined)
-      : readExactSessionEntryRow(database, sessionKey)?.entry;
+    options.canonicalPreviousEntry !== undefined
+      ? (options.canonicalPreviousEntry ?? undefined)
+      : options.allowStoredAliases && options.previousEntry !== undefined
+        ? (options.previousEntry ?? undefined)
+        : readExactSessionEntryRow(database, sessionKey)?.entry;
   if (canonicalPreviousEntry?.sandbox === "required") {
     if (
       normalizedEntry.sandbox !== "required" ||
@@ -444,6 +502,22 @@ export function writeSessionEntry(
     normalizedEntry.updatedAt = 0;
   }
   const updatedAt = normalizedEntry.updatedAt;
+  // Public/plugin projections omit this server-owned field. Same-session replacements
+  // retain publication; only an explicit field clear or a new session id revokes it.
+  if (
+    !Object.hasOwn(normalizedEntry, "publicShare") &&
+    canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId
+  ) {
+    normalizedEntry.publicShare = resolveSessionPublicShare(canonicalPreviousEntry);
+  }
+  // A copied or reset entry must never publish its replacement generation.
+  // Checking the embedded binding also covers forks into previously absent nodes.
+  if (
+    normalizedEntry.incognito === true ||
+    normalizedEntry.publicShare?.sessionId !== normalizedEntry.sessionId
+  ) {
+    delete normalizedEntry.publicShare;
+  }
   // The lifecycle-selected entry owns visibility copy-forward semantics.
   if (previousEntry && previousEntry.sessionId !== normalizedEntry.sessionId) {
     delete normalizedEntry.visibility;
@@ -533,7 +607,11 @@ export function writeSessionEntry(
       .values(sessionRow)
       .onConflict((conflict) =>
         conflict.column("session_id").doUpdateSet({
-          session_key: sessionKey,
+          // Logical nodes can share a physical window. Only creation or a
+          // generation change claims it; metadata updates retain its owner.
+          ...(canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId
+            ? {}
+            : { session_key: sessionKey }),
           previous_session_id: sessionRow.previous_session_id,
           reason: sessionRow.reason,
           session_scope: sessionRow.session_scope,

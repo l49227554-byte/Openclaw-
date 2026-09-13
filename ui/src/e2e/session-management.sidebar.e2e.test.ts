@@ -54,55 +54,57 @@ suite.define(() => {
       viewport: { height: 900, width: 1280 },
     });
     const page = await context.newPage();
+    const children = [
+      sessionRow(childOneKey, "Research sources", baseTime - 1_000, {
+        hasActiveRun: true,
+        spawnedBy: parentKey,
+        startedAt: baseTime - 61_000,
+        status: "running",
+      }),
+      sessionRow(childTwoKey, "Verify tests", baseTime - 2_000, {
+        endedAt: baseTime - 2_000,
+        spawnedBy: parentKey,
+        startedAt: baseTime - 62_000,
+        status: "done",
+      }),
+      {
+        ...sessionRow(staleRunningChildKey, "Stale activity", baseTime - 3_000, {
+          hasActiveRun: false,
+          spawnedBy: parentKey,
+          startedAt: baseTime - 64_000,
+          status: "running",
+        }),
+        runtimeMs: 61_000,
+        runtimeSampledAt: baseTime,
+      },
+      {
+        ...sessionRow(failedChildKey, "Failed checks", baseTime - 4_000, {
+          endedAt: baseTime - 4_000,
+          hasActiveRun: true,
+          spawnedBy: parentKey,
+          startedAt: baseTime - 64_000,
+          status: "failed",
+        }),
+        lastReadAt: baseTime,
+        runtimeMs: 60_000,
+        runtimeSampledAt: baseTime,
+      },
+    ];
+    const parentRow = sessionRow(parentKey, "Plan release", baseTime, {
+      childSessions: [childOneKey, childTwoKey, staleRunningChildKey, failedChildKey],
+    });
     const gateway = await installMockGateway(page, {
+      // Direct routes resolve canonical identity before the sidebar list arrives.
+      sessions: [parentRow, ...children],
       methodResponses: {
         "sessions.list": {
           cases: [
             {
               match: { spawnedBy: parentKey },
-              response: sessionsListResponse([
-                sessionRow(childOneKey, "Research sources", baseTime - 1_000, {
-                  hasActiveRun: true,
-                  spawnedBy: parentKey,
-                  startedAt: baseTime - 61_000,
-                  status: "running",
-                }),
-                sessionRow(childTwoKey, "Verify tests", baseTime - 2_000, {
-                  endedAt: baseTime - 2_000,
-                  spawnedBy: parentKey,
-                  startedAt: baseTime - 62_000,
-                  status: "done",
-                }),
-                {
-                  ...sessionRow(staleRunningChildKey, "Stale activity", baseTime - 3_000, {
-                    hasActiveRun: false,
-                    spawnedBy: parentKey,
-                    startedAt: baseTime - 64_000,
-                    status: "running",
-                  }),
-                  runtimeMs: 61_000,
-                  runtimeSampledAt: baseTime,
-                },
-                {
-                  ...sessionRow(failedChildKey, "Failed checks", baseTime - 4_000, {
-                    endedAt: baseTime - 4_000,
-                    hasActiveRun: true,
-                    spawnedBy: parentKey,
-                    startedAt: baseTime - 64_000,
-                    status: "failed",
-                  }),
-                  lastReadAt: baseTime,
-                  runtimeMs: 60_000,
-                  runtimeSampledAt: baseTime,
-                },
-              ]),
+              response: sessionsListResponse(children),
             },
             {
-              response: sessionsListResponse([
-                sessionRow(parentKey, "Plan release", baseTime, {
-                  childSessions: [childOneKey, childTwoKey, staleRunningChildKey, failedChildKey],
-                }),
-              ]),
+              response: sessionsListResponse([parentRow]),
             },
           ],
         },
@@ -115,9 +117,19 @@ suite.define(() => {
       const parent = page.locator(`[data-session-key="${parentKey}"]`);
       await parent.waitFor({ state: "visible", timeout: 10_000 });
       await expect.poll(() => page.locator(".sidebar-recent-session--child").count()).toBe(0);
+      // Delegated work keeps the idle parent's ring visible even with children collapsed.
       await expect
-        .poll(() => parent.locator(".session-run-spinner").getAttribute("aria-label"))
-        .toBe("Active run");
+        .poll(() => parent.locator(".sidebar-child-session-toggle--running").count())
+        .toBe(1);
+      await parent.getByRole("img", { name: "Subagents working", exact: true }).waitFor();
+      const accessibility = await context.newCDPSession(page);
+      const collapsedTree = await accessibility.send("Accessibility.getFullAXTree");
+      const collapsedToggle = collapsedTree.nodes.find(
+        (node) =>
+          node.role?.value === "button" &&
+          node.name?.value === "Show 4 child sessions for Plan release",
+      );
+      expect(collapsedToggle?.description?.value).toBe("Active run");
       await captureUiProof(suite, page, "child-sessions-collapsed.png");
 
       await parent.getByRole("button", { name: "Show 4 child sessions for Plan release" }).click();
@@ -150,6 +162,15 @@ suite.define(() => {
       expect(await childToggle.getAttribute("class")).toContain(
         "sidebar-child-session-toggle--running",
       );
+      const expandedTree = await accessibility.send("Accessibility.getFullAXTree");
+      const expandedToggle = expandedTree.nodes.find(
+        (node) =>
+          node.role?.value === "button" &&
+          node.name?.value === "Hide 4 child sessions for Plan release",
+      );
+      expect(expandedToggle).toBeDefined();
+      expect(expandedToggle?.description?.value ?? "").toBe("");
+      await accessibility.detach();
       for (const child of [staleRunningChild, failedChild]) {
         expect(await child.locator("openclaw-elapsed-time").count()).toBe(0);
         expect((await child.locator(".session-row-trail").textContent())?.trim()).toBeTruthy();
@@ -275,7 +296,7 @@ suite.define(() => {
       // must explicitly unmount it before the sidebar becomes display:none.
       await openSessionMenu();
       const beforeKeyboardCollapse = await hiddenActionCounts();
-      await page.keyboard.press("Meta+B");
+      await page.keyboard.press("ControlOrMeta+B");
       await expectDesktopCollapsed();
       await expect.poll(() => sessionMenu.count()).toBe(0);
       await expectHiddenShortcutsInert(beforeKeyboardCollapse);
@@ -331,7 +352,7 @@ suite.define(() => {
         .toBe(0);
       await openSessionMenu();
       const beforeDrawerCollapse = await hiddenActionCounts();
-      await page.keyboard.press("Meta+B");
+      await page.keyboard.press("ControlOrMeta+B");
       await expectDrawerClosed();
       await expect.poll(() => sessionMenu.count()).toBe(0);
       await expect

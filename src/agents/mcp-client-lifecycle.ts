@@ -1,9 +1,8 @@
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { settlesWithin } from "../shared/settle-within.js";
+import { isMcpRequestTimeoutError } from "./mcp-error.js";
 import { OpenClawStreamableHTTPClientTransport } from "./mcp-http-transport.js";
 import { OpenClawStdioClientTransport } from "./mcp-stdio-transport.js";
 import { recordAgentCleanupFailure } from "./run-cleanup-timeout.js";
@@ -13,6 +12,7 @@ type LifecycleSession = {
   transport: Transport & { terminateSession?: () => Promise<void> };
   transportType: "stdio" | "sse" | "streamable-http";
   detachStderr?: () => void;
+  onCleanupError?: (error: unknown) => void;
 };
 
 export class McpClientConnectTimeoutError extends Error {}
@@ -51,15 +51,30 @@ export async function connectMcpClient(params: {
   });
   try {
     await Promise.race([
-      params.client.connect(params.transport, {
-        signal,
-        timeout: params.timeoutMs,
-        maxTotalTimeout: params.timeoutMs,
-      }),
+      (async () => {
+        const { client } = params;
+        const close = client.close;
+        client.close = () => {
+          const closing = close.call(client);
+          // SDK initialization discards this promise; preserve rejection for awaited callers.
+          void closing.catch(() => recordAgentCleanupFailure());
+          return closing;
+        };
+        try {
+          await client.connect(params.transport, {
+            signal,
+            timeout: params.timeoutMs,
+            maxTotalTimeout: params.timeoutMs,
+          });
+        } finally {
+          // A deadline can win the outer race before SDK initialization actually settles.
+          client.close = close;
+        }
+      })(),
       aborted,
     ]);
   } catch (error) {
-    if (deadline.aborted || (isRecord(error) && error.code === ErrorCode.RequestTimeout)) {
+    if (deadline.aborted || isMcpRequestTimeoutError(error)) {
       await disposeMcpClient(
         {
           client: params.client,
@@ -98,8 +113,16 @@ export async function disposeMcpClient(
   const ignoreCloseFailure = async (close: () => void | PromiseLike<unknown>) => {
     try {
       await close();
-    } catch {
+    } catch (error) {
+      const firstFailure = !failed;
       markFailed();
+      if (firstFailure) {
+        try {
+          session.onCleanupError?.(error);
+        } catch {
+          // Diagnostic observers cannot interrupt resource cleanup.
+        }
+      }
     }
   };
   try {

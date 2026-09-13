@@ -70,7 +70,6 @@ npm install
 npm run build
 npm run validate
 openclaw plugins install .
-openclaw gateway restart
 ```
 
 The scaffold includes a draft-analysis operation, an agent tool, a native page,
@@ -176,7 +175,10 @@ A composer replacement receives the current draft, admission state, disabled
 reason, and canonical `setDraft`, `send`, and optional `abort` operations. Use
 these operations instead of issuing a raw chat RPC. `send()` resolves `true`
 when admitted, `false` when rejected, or `undefined` for a local command or no
-submission. Show rejected submissions rather than clearing the draft.
+submission. Show rejected submissions rather than clearing the draft. Composer
+operations retire when the view stops being presented, even while its DOM and
+host lifetime survive. Use the fresh operations supplied by `update` when the
+view is presented again; previously captured operations remain retired.
 
 The host also exposes session and agent snapshots and operations, plugin page
 navigation, authenticated requests, and subscriptions. Session and agent
@@ -282,7 +284,8 @@ Custom element definitions belong to the browser document. If a plugin changes
 an existing custom element class, reload the browser tab as well, or use a new
 versioned tag name.
 
-Backend changes still use the normal plugin update and Gateway restart. Browser
+Backend changes use [plugin update or Reload](/cli/plugins/uninstall-and-update)
+to replace the running plugin without restarting the Gateway. Browser
 reload does not replace backend services or change an already running agent's
 tool catalog.
 
@@ -337,8 +340,11 @@ layouts; adjust those layouts before installation.
 Artifact activation also refuses to replace the plugin backing OpenClaw's active
 inference route. Stop OpenClaw and install that artifact from a trusted shell.
 
-After the Gateway restarts, inspect `plugins.controlUi.status` to see activation
-reports from currently connected Control UI clients. A report names the plugin
+Gateway-hosted artifact activation waits for backend runtime application. Terminal
+or other hosts without a live Gateway lifecycle callback save the install and
+report the writer's follow-up; that result is not a runtime application receipt.
+Once the Gateway has applied the plugin, inspect `plugins.controlUi.status` to see
+activation reports from currently connected Control UI clients. A report names the plugin
 revision and either `activated` or `failed`; it is a browser activation receipt,
 not proof that every feature operation has been exercised. No connected browser
 means no browser activation receipt yet.

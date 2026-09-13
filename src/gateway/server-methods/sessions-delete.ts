@@ -8,7 +8,7 @@ import {
   type SessionsDeleteResult,
   validateSessionsDeleteParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
+import { tryResolveAgentOperationAgentId } from "../../agents/agent-scope-config.js";
 import {
   deleteSessionEntryLifecycle,
   SESSION_LIFECYCLE_CHANGED_ERROR_REASON,
@@ -29,7 +29,6 @@ import { handleSessionStateSessionDeleted } from "../../sessions/session-state-e
 import { removeSessionWorktree } from "../../sessions/session-worktree-lifecycle.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
-import { resolveSessionStoreAgentId } from "../session-store-key.js";
 import { loadGatewaySessionEntryReadOnly, loadSessionEntry } from "../session-utils.js";
 import { prepareSessionWorkerPlacementRetirement } from "../worker-environments/session-placement-lifecycle.js";
 import { emitSessionsChanged } from "./session-change-event.js";
@@ -73,7 +72,7 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
     const { target, storePath } = resolveGatewaySessionTargetFromKey(key, cfg, {
       agentId: requestedAgentId,
     });
-    const compatibilityDefaultAgentId = tryResolveLegacyCompatibilityAgentId(cfg);
+    const compatibilityDefaultAgentId = tryResolveAgentOperationAgentId(cfg);
     const persistedStoreOwner = resolvePersistedSessionStoreOwnerForKey(cfg, key);
     const protectedGlobalAgentId =
       persistedStoreOwner.kind === "configured"
@@ -260,7 +259,7 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
             const postCleanupTarget = loadAccessorSessionEntryForGatewayTarget({
               key,
               cfg,
-              ...(requestedAgentId ? { agentId: requestedAgentId } : {}),
+              agentId: requestedAgentId,
             });
             const postCleanupEntry = postCleanupTarget.entry;
             deletedWorktreeId = normalizeOptionalString(postCleanupEntry?.worktree?.id);
@@ -320,10 +319,7 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
               // generation-scoped purge and checkout cleanup still finish before
               // this fence opens, so a same-key successor cannot be mistaken for it.
               const deletedSessionKey = target.canonicalKey ?? key;
-              handleSessionStateSessionDeleted(
-                deletedSessionKey,
-                requestedAgentId ?? resolveSessionStoreAgentId(cfg, deletedSessionKey),
-              );
+              handleSessionStateSessionDeleted(deletedSessionKey, requestedAgentId);
               worktreePreserved = await removeSessionWorktree({
                 id: deletedWorktreeId,
                 sessionKey: deletedSessionKey,

@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import { GatewayBrowserClient } from "../../api/gateway.ts";
 import type {
   AgentsFilesListResult,
@@ -10,107 +11,20 @@ import type {
   ModelCatalogEntry,
   ToolsEffectiveResult,
 } from "../../api/types.ts";
-import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
+import type { ApplicationContext } from "../../app/context.ts";
 import { refreshVisibleToolsEffectiveForCurrentSession } from "../../lib/agents/index.ts";
-import type { AgentsPanel } from "../../lib/agents/panels.ts";
-import { invalidateChatMetadataStore } from "../../lib/chat/chat-metadata-store.ts";
-import { loadCronJobsPage, type CronState } from "../../lib/cron/index.ts";
-import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
+import { loadCronJobsPage } from "../../lib/cron/index.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
+import {
+  emitCatalogChanged,
+  gateway,
+  setPageGateway,
+  snapshot,
+  type TestAgentsPage,
+} from "./agents-page.test-support.ts";
 import type { AgentsRouteData } from "./route.ts";
 import "./agents-page.ts";
-
-const AGENTS_PAGE_GATEWAY_HELLO = gatewayHelloForMethods(["config.patch", "config.set"]);
-
-type TestAgentsPage = HTMLElement & {
-  context: ApplicationContext;
-  readonly client: GatewayBrowserClient | null;
-  readonly connected: boolean;
-  agentsList: unknown;
-  agentsSelectedId: string | null;
-  routeData?: AgentsRouteData;
-  agentFilesLoading: boolean;
-  agentFilesList: AgentsFilesListResult | null;
-  agentFileActive: string | null;
-  agentFileContents: Record<string, string>;
-  agentIdentityLoading: boolean;
-  agentSkillsError: string | null;
-  readonly agentsPanel: AgentsPanel;
-  readonly sessions: ApplicationContext["sessions"];
-  toolsEffectiveError: string | null;
-  toolsEffectiveLoading: boolean;
-  toolsEffectiveResult: ToolsEffectiveResult | null;
-  chatModelCatalog: ModelCatalogEntry[];
-  chatModelCatalogError: string | null;
-  cron: CronState;
-  requestGeneration: number;
-  routeDataInitialized: boolean;
-  subscriptions: {
-    hostConnected: () => void;
-    hostUpdate: () => void;
-    hostDisconnected: () => void;
-  };
-  willUpdate: (changed: Map<PropertyKey, unknown>) => void;
-  gateway: {
-    applySnapshot: (
-      snapshot: ApplicationGatewaySnapshot,
-      binding: { initial: boolean; sourceChanged: boolean },
-    ) => void;
-    invalidate: () => void;
-  };
-  ensureAgentIdentities: () => void;
-  loadActivePanelData: () => void;
-  ensureModelCatalog: (options?: { refresh?: boolean }) => void;
-  refreshCron: () => Promise<void>;
-  requestUpdate: () => void;
-  runCronTask: <T>(task: (cronState: CronState) => Promise<T>) => Promise<T>;
-  loadEffectiveToolsForAgent: (agentId: string) => void;
-  loadAgentFiles: (agentId: string, force?: boolean) => Promise<void>;
-  clearAgentSkills: (agentId: string) => void;
-  saveAgentConfig: () => void;
-  setDefaultAgent: (agentId: string) => void;
-};
-
-function setPageGateway(
-  page: TestAgentsPage,
-  client: GatewayBrowserClient | null,
-  connected = true,
-  sourceChanged = false,
-) {
-  page.gateway.applySnapshot(snapshot(client, connected), { initial: false, sourceChanged });
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
-function snapshot(
-  client: GatewayBrowserClient | null,
-  connected = true,
-): ApplicationGatewaySnapshot {
-  return {
-    client,
-    phase: connected ? "connected" : "stopped",
-    offlineStable: false,
-    canvasPluginSurfaceUrl: null,
-    hello: AGENTS_PAGE_GATEWAY_HELLO,
-    assistantAgentId: null,
-    sessionKey: "main",
-    lastError: null,
-    lastErrorCode: null,
-  };
-}
-
-function gateway(current: ApplicationGatewaySnapshot): ApplicationContext["gateway"] {
-  return {
-    snapshot: current,
-    subscribe: vi.fn(() => () => undefined),
-  } as unknown as ApplicationContext["gateway"];
-}
 
 const files = (agentId: string, workspace: string) => ({ agentId, workspace, files: [] });
 
@@ -248,7 +162,7 @@ describe("AgentsPage gateway lifecycle", () => {
   });
 
   it("does not stage a default-agent change after a same-client reconnect", async () => {
-    const loading = deferred<void>();
+    const loading = deferred();
     const client = {} as GatewayBrowserClient;
     const currentGateway = gateway(snapshot(client));
     const agents = agentsCapability(async () => files("main", "unused"));
@@ -375,10 +289,10 @@ describe("AgentsPage gateway lifecycle", () => {
 
     await waitForFast(() => expect(page.chatModelCatalog).toEqual(models));
     expect(request).toHaveBeenCalledOnce();
-    expect(request).toHaveBeenCalledWith("chat.metadata", { agentId: "main" });
+    expect(request).toHaveBeenCalledWith("models.list", { view: "configured", agentId: "main" });
   });
 
-  it("caches separate configured model catalogs for the default and worker agents", async () => {
+  it("reads separate configured model catalogs when switching default and worker agents", async () => {
     const defaultModels = [
       { id: "default-model", name: "Default account model", provider: "openai" },
     ];
@@ -402,11 +316,58 @@ describe("AgentsPage gateway lifecycle", () => {
 
     page.agentsSelectedId = "main";
     page.loadActivePanelData();
-    expect(page.chatModelCatalog).toEqual(defaultModels);
+    await waitForFast(() => expect(page.chatModelCatalog).toEqual(defaultModels));
     expect(request).toHaveBeenCalledTimes(2);
-    expect(request).toHaveBeenNthCalledWith(1, "chat.metadata", { agentId: "main" });
-    expect(request).toHaveBeenNthCalledWith(2, "chat.metadata", { agentId: "worker" });
+    expect(request).toHaveBeenNthCalledWith(1, "models.list", {
+      view: "configured",
+      agentId: "main",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "models.list", {
+      view: "configured",
+      agentId: "worker",
+    });
   });
+
+  it.each([false, true])(
+    "keeps returned choices and reports catalog failure until recovery (retained rows: %s)",
+    async (hasRows) => {
+      const models = hasRows ? [{ id: "current", name: "Current model", provider: "fixture" }] : [];
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce({
+          models: [{ id: "old", name: "Old model", provider: "fixture" }],
+        })
+        .mockResolvedValueOnce({ models, refreshFailed: true })
+        .mockResolvedValueOnce({ models: [] });
+      const page = document.createElement("openclaw-agents-page") as TestAgentsPage;
+      page.routeData = { panel: "overview" } as AgentsRouteData;
+      setPageGateway(page, createTestGatewayClient(request));
+      page.agentsSelectedId = "main";
+
+      page.loadActivePanelData();
+      await waitForFast(() => expect(page.chatModelCatalog[0]?.id).toBe("old"));
+      emitCatalogChanged(page.context.gateway);
+      await waitForFast(() =>
+        expect(page.chatModelCatalogStatus.error).toBe(
+          hasRows
+            ? "Some models could not be refreshed. Open Models to try again."
+            : "Models unavailable",
+        ),
+      );
+      expect(page.chatModelCatalog).toEqual(models);
+
+      page.ensureModelCatalog({ refresh: true });
+      await waitForFast(() => expect(page.chatModelCatalogStatus.stale).toBe(false));
+      expect(page.chatModelCatalogStatus.error).toBeNull();
+      expect(page.chatModelCatalog).toEqual([]);
+      expect(request.mock.calls.map(([method, params]) => ({ method, params }))).toEqual(
+        Array.from({ length: 3 }, () => ({
+          method: "models.list",
+          params: { agentId: "main", view: "configured" },
+        })),
+      );
+    },
+  );
 
   it("rejects a stale default-agent catalog after switching to a worker agent", async () => {
     const defaultModels = [
@@ -437,10 +398,13 @@ describe("AgentsPage gateway lifecycle", () => {
 
     expect(page.chatModelCatalog).toEqual(workerModels);
     expect(request).toHaveBeenCalledTimes(2);
-    expect(request).toHaveBeenNthCalledWith(2, "chat.metadata", { agentId: "worker" });
+    expect(request).toHaveBeenNthCalledWith(2, "models.list", {
+      view: "configured",
+      agentId: "worker",
+    });
   });
 
-  it("re-reads a cached model catalog when the picker asks for a refresh", async () => {
+  it("keeps picker opens cached and reloads after a catalog publication", async () => {
     const oldModels = [{ id: "old", name: "Old Model", alias: "opus", provider: "anthropic" }];
     const nextModels = [{ id: "new", name: "Opus 4.8", alias: "opus", provider: "anthropic" }];
     const request = vi
@@ -455,12 +419,14 @@ describe("AgentsPage gateway lifecycle", () => {
     page.loadActivePanelData();
     await waitForFast(() => expect(page.chatModelCatalog).toEqual(oldModels));
 
-    // Without refresh the per-agent cache answers; provider-key changes would
-    // stay invisible for the connection lifetime.
     page.ensureModelCatalog();
     expect(request).toHaveBeenCalledTimes(1);
 
     page.ensureModelCatalog({ refresh: true });
+    await waitForFast(() => expect(page.chatModelCatalog).toEqual(oldModels));
+    expect(request).toHaveBeenCalledTimes(1);
+
+    emitCatalogChanged(page.context.gateway);
     await waitForFast(() => expect(page.chatModelCatalog).toEqual(nextModels));
     expect(request).toHaveBeenCalledTimes(2);
   });
@@ -485,7 +451,7 @@ describe("AgentsPage gateway lifecycle", () => {
 
       page.loadActivePanelData();
       if (replacement === "publication") {
-        invalidateChatMetadataStore(client);
+        emitCatalogChanged(page.context.gateway);
       } else {
         if (replacement === "reconnect") {
           setPageGateway(page, client, false);
@@ -496,11 +462,16 @@ describe("AgentsPage gateway lifecycle", () => {
           true,
           replacement === "gateway source",
         );
-        invalidateChatMetadataStore(client);
+        emitCatalogChanged(page.context.gateway);
         page.agentsSelectedId = "main";
         page.loadActivePanelData();
       }
 
+      if (replacement === "publication" || replacement === "gateway source") {
+        expect(oldRequest.mock.calls.length + nextRequest.mock.calls.length).toBe(1);
+        expect(page.chatModelCatalog).toEqual([]);
+        oldResult.resolve({ models: oldModels });
+      }
       await waitForFast(() => expect(page.chatModelCatalog).toEqual(nextModels));
       oldResult.resolve({ models: oldModels });
       await oldResult.promise;
@@ -529,13 +500,16 @@ describe("AgentsPage gateway lifecycle", () => {
 
     setPageGateway(page, client, false);
     expect(page.chatModelCatalog).toEqual([]);
-    invalidateChatMetadataStore(client);
+    emitCatalogChanged(page.context.gateway);
     setPageGateway(page, client);
     page.loadActivePanelData();
 
     await waitForFast(() => expect(page.chatModelCatalog).toEqual(nextModels));
     expect(request).toHaveBeenCalledTimes(2);
-    expect(request).toHaveBeenNthCalledWith(2, "chat.metadata", { agentId: "main" });
+    expect(request).toHaveBeenNthCalledWith(2, "models.list", {
+      view: "configured",
+      agentId: "main",
+    });
   });
 
   it("surfaces a rejected agent-scoped metadata RPC and retries without marking an empty catalog loaded", async () => {
@@ -551,16 +525,19 @@ describe("AgentsPage gateway lifecycle", () => {
 
     page.loadActivePanelData();
     await waitForFast(() => {
-      expect(page.chatModelCatalogError).toBe("model catalog unavailable");
+      expect(page.chatModelCatalogStatus.error).toBe("model catalog unavailable");
     });
     expect(page.chatModelCatalog).toEqual([]);
 
     page.loadActivePanelData();
     await waitForFast(() => expect(page.chatModelCatalog).toEqual(models));
 
-    expect(page.chatModelCatalogError).toBeNull();
+    expect(page.chatModelCatalogStatus.error).toBeNull();
     expect(request).toHaveBeenCalledTimes(2);
-    expect(request).toHaveBeenNthCalledWith(2, "chat.metadata", { agentId: "main" });
+    expect(request).toHaveBeenNthCalledWith(2, "models.list", {
+      view: "configured",
+      agentId: "main",
+    });
   });
 
   it("requests the selected agent's implicit default cron job before the first 50 unrelated jobs", async () => {
@@ -920,6 +897,7 @@ describe("AgentsPage gateway lifecycle", () => {
       agents: [{ id: "main", name: "Main" }],
     };
     page.agentsSelectedId = "main";
+    page.routeData = { panel: "files" } as AgentsRouteData;
     page.agentFileContents = { "cached.md": "keep" };
     page.routeDataInitialized = true;
     page.context = {
@@ -987,8 +965,8 @@ describe("AgentsPage gateway lifecycle", () => {
   });
 
   it("keeps replacement identity loading active when the old capability settles", async () => {
-    const oldEnsure = deferred<void>();
-    const nextEnsure = deferred<void>();
+    const oldEnsure = deferred();
+    const nextEnsure = deferred();
     const client = {} as GatewayBrowserClient;
     const currentGateway = gateway(snapshot(client));
     const agents = agentsCapability(async () => files("main", "unused"));
@@ -1047,6 +1025,7 @@ describe("AgentsPage gateway lifecycle", () => {
     } as unknown as ApplicationContext["sessions"];
     const page = document.createElement("openclaw-agents-page") as TestAgentsPage;
     const context = pageContext(currentGateway, agents, { sessions: oldSessions });
+    page.routeData = agentsRouteData(currentGateway);
     page.context = context;
     setPageGateway(page, client);
     page.subscriptions.hostConnected();

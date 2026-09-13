@@ -11,8 +11,12 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createEmbeddingProvider } from "./embeddings.js";
 import type { IndexedMemoryChunk } from "./manager-chunk-writer.js";
+import { MemoryIndexDatabase } from "./manager-database-context.js";
 import { MemoryManagerEmbeddingOps } from "./manager-embedding-ops.js";
-import type { MemorySemanticProviderGeneration } from "./manager-sync-ops.js";
+import type {
+  MemoryIndexWorkItem,
+  MemorySemanticProviderGeneration,
+} from "./manager-sync-ops.js";
 
 type CapturedRequest = {
   method: string | undefined;
@@ -39,7 +43,6 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 }
 
 async function startEmbeddingServer(options?: {
-  /** Returns a rejection for a request the provider should not have sent, or undefined to serve it. */
   reject?: (inputCount: number) => { status: number; body: string } | undefined;
 }): Promise<TestServer> {
   const requests: CapturedRequest[] = [];
@@ -253,29 +256,23 @@ const ZHIPU_REJECTION_BODY = JSON.stringify({
   error: { code: "1214", message: "input array max 64" },
 });
 
-/**
- * Drives the real Memory Core embedding owner. Only the collaborators that would
- * open an index or acquire an external provider are supplied; the batching,
- * splitting, retry classification, and timeout methods under test stay real.
- */
+// Keep batching, splitting, retry classification, and timeout ownership real.
 function createMemoryEmbeddingOwner(params: {
   provider: NonNullable<Awaited<ReturnType<typeof createEmbeddingProvider>>["provider"]>;
   providerRuntime: Awaited<ReturnType<typeof createEmbeddingProvider>>["runtime"];
-  database: DatabaseSync;
+  database: MemoryIndexDatabase;
 }) {
   return Object.assign(Object.create(MemoryManagerEmbeddingOps.prototype), {
     provider: params.provider,
     providerRuntime: params.providerRuntime,
-    // `db` is a getter over `publishedDatabase`; the cache lookup is disabled, so
-    // only the handle itself is needed to satisfy the owner's database context.
-    publishedDatabase: { db: params.database },
+    publishedDatabase: params.database,
     cache: { enabled: false },
     settings: { sync: {} },
     markLocalEmbeddingProviderDegraded: () => {},
     withProviderUse: async <T>(_provider: unknown, run: () => Promise<T>) => await run(),
   }) as {
     embedChunksInBatches: (
-      chunks: IndexedMemoryChunk[],
+      candidates: Array<MemoryIndexWorkItem & { chunk: IndexedMemoryChunk }>,
       generation: MemorySemanticProviderGeneration,
     ) => Promise<number[][]>;
   };
@@ -287,33 +284,51 @@ async function createMemoryEmbeddingOwnerForServer(baseUrl: string, database: Da
   if (!provider) {
     throw new Error("expected the OpenAI-compatible embedding provider to be created");
   }
+  const indexDatabase = new MemoryIndexDatabase(database);
   const generation: MemorySemanticProviderGeneration = {
     kind: "semantic",
     provider,
     runtime: created.runtime,
-    database,
+    database: indexDatabase,
+    databaseRevision: 0,
+    cacheWritesInvalidated: false,
     providerKey: "integration-proof",
     identities: [],
   };
   return {
-    owner: createMemoryEmbeddingOwner({ provider, providerRuntime: created.runtime, database }),
+    owner: createMemoryEmbeddingOwner({
+      provider,
+      providerRuntime: created.runtime,
+      database: indexDatabase,
+    }),
     generation,
   };
 }
 
 // Unique text lengths make each vector identify its own input, because the
 // fixture server answers with `[text.length, indexWithinRequest + 0.5, 3]`.
-function distinctChunks(count: number): IndexedMemoryChunk[] {
-  return Array.from(
-    { length: count },
-    (_, index) =>
-      ({
-        text: "x".repeat(index + 1),
-        hash: `hash-${index}`,
-        startLine: index + 1,
-        endLine: index + 1,
-      }) as IndexedMemoryChunk,
-  );
+function distinctCandidates(
+  count: number,
+): Array<MemoryIndexWorkItem & { chunk: IndexedMemoryChunk }> {
+  return Array.from({ length: count }, (_, index) => ({
+    chunk: {
+      text: "x".repeat(index + 1),
+      hash: `hash-${index}`,
+      startLine: index + 1,
+      endLine: index + 1,
+      importance: null,
+      triggers: null,
+      projectKey: null,
+    },
+    entry: {
+      path: `memory/chunk-${index}.md`,
+      absPath: `/fixture/memory/chunk-${index}.md`,
+      mtimeMs: 0,
+      size: index + 1,
+      hash: `hash-${index}`,
+    },
+    source: "memory",
+  }));
 }
 
 describe("memory-core embedding batch recovery over real transport", () => {
@@ -325,49 +340,54 @@ describe("memory-core embedding batch recovery over real transport", () => {
           : undefined,
     });
     const database = new DatabaseSync(":memory:");
-    const { owner, generation } = await createMemoryEmbeddingOwnerForServer(
-      server.baseUrl,
-      database,
-    );
-    const chunks = distinctChunks(100);
+    try {
+      const { owner, generation } = await createMemoryEmbeddingOwnerForServer(
+        server.baseUrl,
+        database,
+      );
+      const embeddings = await owner.embedChunksInBatches(distinctCandidates(100), generation);
 
-    const embeddings = await owner.embedChunksInBatches(chunks, generation);
-
-    // The byte budget alone put all 100 short chunks in one request; recovery
-    // halved it until each request fit the 64-item cap.
-    expect(server.requests.map((request) => (request.body.input as unknown[]).length)).toEqual([
-      100, 50, 50,
-    ]);
-    // Vectors come back in input order across the split: the first component is
-    // each chunk's own unique length, ascending.
-    expect(embeddings).toEqual(
-      Array.from({ length: 100 }, (_, index) => [index + 1, (index % 50) + 0.5, 3]),
-    );
-    database.close();
+      expect(server.requests.map((request) => (request.body.input as unknown[]).length)).toEqual([
+        100, 50, 50,
+      ]);
+      expect(embeddings).toEqual(
+        Array.from({ length: 100 }, (_, index) => [index + 1, (index % 50) + 0.5, 3]),
+      );
+    } finally {
+      database.close();
+    }
   });
 
-  it("does not split a generic provider rejection that names no numeric bound", async () => {
+  it.each([
+    "input array must contain strings",
+    "input array item max length 64",
+    "input array max 64 tokens",
+    "input array max 64tokens",
+    "input array max 64.5",
+  ])("does not split a terminal provider rejection: %s", async (message) => {
     const server = await startEmbeddingServer({
       reject: () => ({
         status: 400,
         body: JSON.stringify({
-          error: { code: "1214", message: "input array must contain strings" },
+          error: { code: "1214", message },
         }),
       }),
     });
     const database = new DatabaseSync(":memory:");
-    const { owner, generation } = await createMemoryEmbeddingOwnerForServer(
-      server.baseUrl,
-      database,
-    );
-
-    await expect(owner.embedChunksInBatches(distinctChunks(100), generation)).rejects.toMatchObject(
-      {
+    try {
+      const { owner, generation } = await createMemoryEmbeddingOwnerForServer(
+        server.baseUrl,
+        database,
+      );
+      await expect(
+        owner.embedChunksInBatches(distinctCandidates(100), generation),
+      ).rejects.toMatchObject({
         code: "MEMORY_EMBEDDING_OPERATION_FAILED",
         operation: "batch",
-      },
-    );
-    expect(server.requests).toHaveLength(1);
-    database.close();
+      });
+      expect(server.requests).toHaveLength(1);
+    } finally {
+      database.close();
+    }
   });
 });

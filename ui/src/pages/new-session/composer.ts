@@ -15,6 +15,7 @@ import {
   createChatAttachmentDropHandlers,
   handleChatAttachmentPaste,
   renderAttachmentPreview,
+  renderAttachmentReadStatus,
   renderChatAttachmentInputs,
 } from "../chat/components/chat-attachments.ts";
 import {
@@ -30,13 +31,11 @@ import {
   type HumanMentionDirectory,
   type HumanMentionMenuHost,
 } from "../chat/components/chat-composer-mention-menu.ts";
+import { resolveComposerMenus } from "../chat/components/chat-composer-menus.ts";
 import type { ChatComposerPlusMenuView } from "../chat/components/chat-composer-plus-menu.ts";
 import {
   createSkillMenuState,
-  getActiveSkillMenuOptionId,
-  getActiveSkillMenuOptionLabel,
   handleSkillMenuKeydown,
-  isSkillMenuVisible,
   renderSkillMenu,
   resetSkillMenuState,
   updateSkillMenu,
@@ -44,10 +43,7 @@ import {
 } from "../chat/components/chat-composer-skill-menu.ts";
 import {
   createSlashMenuState,
-  getActiveSlashMenuOptionId,
-  getActiveSlashMenuOptionLabel,
   handleSlashMenuKeydown,
-  isSlashMenuVisible,
   renderSlashMenu,
   resetSlashMenuState,
   type SlashMenuHost,
@@ -123,12 +119,12 @@ function renderStartControl(options: NewSessionComposerOptions) {
       }"
       ?disabled=${!options.canSubmit && !reasonedBlock}
       aria-disabled=${String(!options.canSubmit)}
-      aria-busy=${String(options.submitting)}
+      aria-busy=${String(options.submitting || options.pendingAttachmentReads > 0)}
       aria-label=${startLabel}
       @click=${() => submitNewSession(options)}
     >
       ${
-        options.submitting
+        options.submitting || options.pendingAttachmentReads > 0
           ? icons.loader
           : options.nativeTerminal
             ? icons.squareTerminal
@@ -523,32 +519,23 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
         options.message,
         options.requestUpdate,
       );
-  const skillMenuVisible =
-    !options.nativeTerminal && !composerLocked && isSkillMenuVisible(skillMenuState);
-  const slashMenuVisible =
-    !options.nativeTerminal && !composerLocked && isSlashMenuVisible(slashMenuState);
-  const menuVisible = skillMenuVisible || slashMenuVisible || mentionMenu.open;
+  const {
+    skillMenuVisible,
+    slashMenuVisible,
+    menuVisible,
+    menuListboxId,
+    activeMenuOptionId,
+    activeMenuOptionLabel,
+  } = resolveComposerMenus(
+    skillMenuHost.paneId,
+    !options.nativeTerminal && !composerLocked,
+    skillMenuState,
+    slashMenuState,
+    mentionMenu,
+  );
   if (mentionMenu.open) {
     ensureChatComposerPickerDismissal();
   }
-  const menuListboxId = paneDomId(
-    skillMenuHost.paneId,
-    mentionMenu.open
-      ? "mention-menu-listbox"
-      : skillMenuVisible
-        ? "skill-menu-listbox"
-        : "slash-menu-listbox",
-  );
-  const activeMenuOptionId = mentionMenu.open
-    ? mentionMenu.activeId(skillMenuHost.paneId)
-    : skillMenuVisible
-      ? getActiveSkillMenuOptionId(skillMenuState, skillMenuHost.paneId)
-      : getActiveSlashMenuOptionId(slashMenuState, slashMenuHost.paneId);
-  const activeMenuOptionLabel = mentionMenu.open
-    ? mentionMenu.activeLabel()
-    : skillMenuVisible
-      ? getActiveSkillMenuOptionLabel(skillMenuState)
-      : getActiveSlashMenuOptionLabel(slashMenuState);
   const menuAnnouncementId = paneDomId(skillMenuHost.paneId, "active-menu-announcement");
   const ordinaryShortcut = options.requiresModifier ? "Control+Enter Meta+Enter" : "Enter";
   const backgroundShortcut = options.requiresModifier
@@ -584,6 +571,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
         ${mentionMenu.render(mentionMenuHost, options.requestUpdate)}
         ${options.nativeTerminal ? nothing : renderChatAttachmentInputs(attachmentProps)}
         ${renderAttachmentPreview(attachmentProps)}
+        ${renderAttachmentReadStatus(options.pendingAttachmentReads)}
         ${renderSelectedHumanMentions(options.message, options.mentions, () =>
           options.onInput(options.message, []),
         )}
@@ -711,11 +699,6 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
             </div>
           </div>
         </div>
-        ${
-          options.pendingAttachmentReads > 0
-            ? html`<span class="sr-only" role="status">${t("newSession.readingAttachment")}</span>`
-            : nothing
-        }
       </div>
       ${
         options.blockedSubmitNotice

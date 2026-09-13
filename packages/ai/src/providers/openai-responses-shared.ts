@@ -156,16 +156,7 @@ export function resolveResponsesReasoningEffort<TApi extends Api>(
   model: Model<TApi>,
   reasoning: SimpleStreamOptions["reasoning"] | undefined,
 ): ResponsesReasoningEffort | undefined {
-  if (!reasoning) {
-    return undefined;
-  }
-  const supportsRequestedEffort =
-    model.reasoning &&
-    model.thinkingLevelMap?.[reasoning] === undefined &&
-    resolveOpenAIModelReasoningEfforts(model)?.includes(reasoning);
-  const clampedReasoning = supportsRequestedEffort
-    ? reasoning
-    : clampThinkingLevel(model, reasoning);
+  const clampedReasoning = reasoning ? clampThinkingLevel(model, reasoning) : undefined;
   return clampedReasoning === "off" ? undefined : clampedReasoning;
 }
 
@@ -200,9 +191,9 @@ export function applyCommonResponsesParams<TApi extends Api>(
   }
 
   if (context.tools) {
-    const converted = convertResponsesToolPayload(context.tools, { model });
-    if (converted.tools.length > 0) {
-      params.tools = converted.tools;
+    const tools = convertResponsesToolPayload(context.tools, { model });
+    if (tools.length > 0) {
+      params.tools = tools;
     }
   }
 

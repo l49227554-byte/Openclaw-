@@ -1,3 +1,4 @@
+import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "../../../src/infra/update-run-legacy-expiry.js";
 import type { UpdateRunRecord } from "../../../src/infra/update-run-record.js";
 import { renderUpdateRunReport } from "../../../src/infra/update-run-report.js";
 import { classifyUpdateOutcome } from "../../../src/shared/update-outcome.js";
@@ -109,12 +110,7 @@ function readUpdateAttemptId(sentinel: UpdateRestartStatusResponse["sentinel"]):
 }
 
 /** One projection owns the recorded display facts and the typed triage transition. */
-export function projectUpdateSentinel(
-  sentinel: UpdateRestartStatusResponse["sentinel"],
-  requestId?: string,
-): {
-  outcome: ReturnType<typeof classifyUpdateOutcome>;
-  record: UpdateOutcomeRecord;
+export function projectUpdateSentinel(sentinel: UpdateRestartStatusResponse["sentinel"]): {
   attempt: RecordedUpdateAttempt | null;
   banner: ApplicationStatusBanner | null;
   failure: UpdateFailureTriage | null;
@@ -159,20 +155,11 @@ export function projectUpdateSentinel(
       (typeof sentinel.ts === "number" ? `recorded:${sentinel.ts}` : null),
     timestampMs: sentinel.ts ?? null,
   };
-  const id = record.id ?? requestId;
   const failure: UpdateFailureTriage | null =
-    outcome === "failed" && id && banner ? { id, outcome, attempt, banner } : null;
-  // A response can carry a newer failure than the persisted status record.
-  if (failure && (record.id !== null || record.timestampMs !== null)) {
-    failure.reconciledRecord = record;
-  }
-  return {
-    outcome,
-    record,
-    attempt,
-    banner,
-    failure,
-  };
+    outcome === "failed" && record.id && banner
+      ? { id: record.id, outcome, attempt, banner, reconciledRecord: record }
+      : null;
+  return { attempt, banner, failure };
 }
 
 function lastLogLine(tail: string | null | undefined): string | null {
@@ -217,22 +204,6 @@ export type UpdateRunResponse = {
   sentinel?: { payload?: UpdateRestartStatusResponse["sentinel"] } | null;
 };
 
-async function requestUpdateRestartStatus(
-  client: Pick<GatewayBrowserClient, "request">,
-  timeoutMs: number,
-  request: { refreshCheckout?: true } = {},
-  onError?: (error: unknown) => void,
-): Promise<UpdateRestartStatusResponse | null> {
-  try {
-    return await client.request<UpdateRestartStatusResponse>("update.status", request, {
-      timeoutMs,
-    });
-  } catch (error) {
-    onError?.(error);
-    return null;
-  }
-}
-
 export function createUpdateStatusRefresher(params: {
   getClient: () => GatewayBrowserClient | null;
   getEpoch: () => number;
@@ -267,16 +238,18 @@ export function createUpdateStatusRefresher(params: {
       params.onRefreshing(true);
     }
     try {
-      const response = await requestUpdateRestartStatus(
-        client,
-        5_000,
-        refreshCheckout ? { refreshCheckout: true } : {},
-        (error) => {
+      const response = await client
+        .request<UpdateRestartStatusResponse>(
+          "update.status",
+          refreshCheckout ? { refreshCheckout: true } : {},
+          { timeoutMs: 5_000 },
+        )
+        .catch((error: unknown) => {
           if (mode !== "background" && isCurrent()) {
             params.onError(error);
           }
-        },
-      );
+          return null;
+        });
       if (response && isCurrent()) {
         params.onStatus(response);
       }
@@ -330,7 +303,10 @@ export function projectUpdateRunFailure(run: UpdateRunRecord): UpdateFailureTria
     id: run.runId,
     reconciledRecord: { id: run.runId, timestampMs: run.finishedAtMs ?? run.updatedAtMs },
     outcome: "failed",
-    banner: { tone: "danger", text: renderUpdateRunReport(run).markdown },
+    banner: {
+      tone: run.reason === LEGACY_UPDATE_RUN_EXPIRED_REASON ? "warn" : "danger",
+      text: renderUpdateRunReport(run).markdown,
+    },
     attempt: {
       timestampMs: run.finishedAtMs ?? run.updatedAtMs,
       status: run.status,

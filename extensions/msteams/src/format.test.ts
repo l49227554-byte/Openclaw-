@@ -1,8 +1,12 @@
-import crypto, { randomUUID } from "node:crypto";
-import { syncBuiltinESMExports } from "node:module";
+import { randomUUID } from "node:crypto";
 import MarkdownIt from "markdown-it";
 import { describe, expect, it, vi } from "vitest";
 import { formatMSTeamsMarkdown } from "./format.js";
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, randomUUID: vi.fn(actual.randomUUID) };
+});
 
 describe("formatMSTeamsMarkdown", () => {
   const fixtures = [
@@ -165,9 +169,19 @@ describe("formatMSTeamsMarkdown", () => {
     expect(parser.renderInline(formatMSTeamsMarkdown(markdown, "off"))).toBe(html);
   });
 
-  it("keeps raw tables when table conversion is disabled", () => {
-    const table = ["| Name | State |", "|---|---|", "| deploy | ready |"].join("\n");
+  it.each(["", "  ", "> "])("keeps raw table prefix %j when conversion is disabled", (prefix) => {
+    const table = ["| Name | State |", "|---|---|", "| deploy | ready |"]
+      .map((line) => prefix + line)
+      .join("\n");
     expect(formatMSTeamsMarkdown(table, "off")).toBe(table);
+  });
+
+  it("keeps separate raw tables after lone carriage-return line endings", () => {
+    const table = "| A | B |\r|---|---|\r| x | y |";
+    const source = `# Before\r\r${table}\r\r# After\r\r${table}`;
+    expect(formatMSTeamsMarkdown(source, "off")).toBe(
+      `**Before**\n\n${table}\n\n**After**\n\n${table}`,
+    );
   });
 
   it("keeps one-column raw tables when table conversion is disabled", () => {
@@ -326,19 +340,20 @@ describe("formatMSTeamsMarkdown", () => {
     ],
     ["character references", `${encodedToken} ${mention}`, `${encodedToken} ${mention}`],
   ])("preserves forged placeholders in %s", (_name, source, expected) => {
-    const entropy = vi.spyOn(crypto, "randomUUID").mockImplementation(() => {
-      throw new Error("unexpected extra entropy request");
-    });
+    const entropy = vi
+      .mocked(randomUUID)
+      .mockClear()
+      .mockImplementation(() => {
+        throw new Error("unexpected extra entropy request");
+      });
     entropy
       .mockReturnValueOnce(collisionUuid)
       .mockReturnValueOnce("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
     try {
-      syncBuiltinESMExports();
-      expect(randomUUID).toBe(entropy);
       expect(formatMSTeamsMarkdown(source, "off")).toBe(expected);
+      expect(entropy).toHaveBeenCalledTimes(2);
     } finally {
-      entropy.mockRestore();
-      syncBuiltinESMExports();
+      entropy.mockReset();
     }
   });
 });

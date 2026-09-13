@@ -53,9 +53,29 @@ export {
 } from "./test-helpers/bundled-plugin-paths.js";
 export { importFreshModule } from "./test-helpers/import-fresh.js";
 export { runDirectImportSmoke } from "./test-helpers/direct-smoke.js";
+
+export async function findSourceImportBackedges(
+  entry: string,
+  forbidden: readonly string[],
+): Promise<string[]> {
+  // Ordinary fixture imports must not load the compiler or read repository configuration.
+  const inspector = await import("../../test/helpers/source-import-closure.js");
+  return inspector.findSourceImportBackedges(entry, forbidden);
+}
+
 export {
   createGrayscaleAlphaPngBuffer,
   createNoisyPngBuffer,
   createNoisyRgbaBuffer,
   createSolidPngBuffer,
 } from "./test-helpers/image-fixtures.js";
+export {
+  createMeetingBrowserFixture,
+  createMeetingNodeBrowserFixture,
+} from "./test-helpers/meeting-browser.js";
+export {
+  createMeetingPluginFixture,
+  defineMeetingPluginSurfaceTests,
+} from "./test-helpers/meeting-plugin-contract.js";
+export { defineMeetingChromeCleanupTests } from "./test-helpers/meeting-chrome-contract.js";
+export { defineMeetingSessionFlowTests } from "./test-helpers/meeting-session-contract.js";

@@ -1,22 +1,14 @@
-type NativeWindowDragMessage = { type: "window-drag" };
+import { webKitHostWindow } from "./native-webkit-bridge.ts";
 
-type WebKitMessageHandler = {
-  postMessage(message: NativeWindowDragMessage): void;
-};
-
-function getNativeWindowDragPoster(): WebKitMessageHandler["postMessage"] | undefined {
+function getNativeWindowDragPoster() {
   // Native macOS hosts install this handler before navigation; its absence
   // (plain browsers, other hosts) keeps default mouse behavior.
-  const handler = (
-    window as unknown as {
-      webkit?: { messageHandlers?: { openclawWindowDrag?: WebKitMessageHandler } };
-    }
-  ).webkit?.messageHandlers?.openclawWindowDrag;
+  const handler = webKitHostWindow()?.webkit?.messageHandlers?.openclawWindowDrag;
   return handler?.postMessage.bind(handler);
 }
 
 const INTERACTIVE_TARGET_SELECTOR =
-  "a, button, input, select, textarea, [role='button'], [contenteditable]";
+  "a, button, input, select, textarea, [role='button'], [role='tab'], [role='menu'], [role^='menuitem'], [contenteditable]";
 
 /**
  * mousedown handler for chrome-like rows (split pane headers): asks the native

@@ -3,6 +3,7 @@
 // This is intentionally tarball-only: the check proves Docker lanes consume the
 // prebuilt package artifact with dist inventory, not a source checkout.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,9 @@ import { collectNpmPackInventory, compareNpmPackInventory } from "./lib/npm-pack
 import { collectPackageDistImportErrors } from "./lib/package-dist-imports.mjs";
 import {
   comparePackageDistInventory,
+  comparePackageDistContentInventory,
+  parsePackageDistContentInventory,
+  PACKAGE_DIST_CONTENT_INVENTORY_RELATIVE_PATH,
   PACKAGE_DIST_INVENTORY_RELATIVE_PATH,
 } from "./lib/package-dist-inventory-contract.mts";
 import {
@@ -123,6 +127,11 @@ const REQUIRED_BUNDLED_WORKSPACE_RUNTIME_ENTRIES = new Map([
         whenExported: "./transports",
       },
       {
+        specifier: "@openclaw/ai/internal/openai-completions-compat",
+        entry: "dist/internal/openai-completions-compat.mjs",
+        whenExported: "./internal/openai-completions-compat",
+      },
+      {
         specifier: "@openclaw/ai/internal/openai-responses-payload-policy",
         entry: "dist/internal/openai-responses-payload-policy.mjs",
         whenExported: "./internal/openai-responses-payload-policy",
@@ -130,6 +139,11 @@ const REQUIRED_BUNDLED_WORKSPACE_RUNTIME_ENTRIES = new Map([
       {
         specifier: "@openclaw/ai/internal/runtime",
         entry: "dist/internal/runtime.mjs",
+      },
+      {
+        specifier: "@openclaw/ai/internal/tool-schema",
+        entry: "dist/internal/tool-schema.mjs",
+        whenExported: "./internal/tool-schema",
       },
     ],
   ],
@@ -888,6 +902,28 @@ if (entrySet.has(PACKAGE_DIST_INVENTORY_RELATIVE_PATH)) {
       errors.push(`invalid ${PACKAGE_DIST_INVENTORY_RELATIVE_PATH}`);
     } else {
       const inventoryEntries = inventory as string[];
+      if (entrySet.has(PACKAGE_DIST_CONTENT_INVENTORY_RELATIVE_PATH)) {
+        const expected = parsePackageDistContentInventory(
+          JSON.parse(readTarEntry(PACKAGE_DIST_CONTENT_INVENTORY_RELATIVE_PATH)),
+        );
+        const actual = inventoryEntries
+          .filter((entry) => entry !== PACKAGE_DIST_CONTENT_INVENTORY_RELATIVE_PATH)
+          .map((entry) => {
+            if (!entrySet.has(entry) || !entry.startsWith("dist/")) {
+              throw new Error(`Inventory references absent tar entry ${entry}`);
+            }
+            const file = path.join(extractedPackageRoot, entry);
+            const bytes = fs.readFileSync(file);
+            return {
+              path: entry,
+              sha256: createHash("sha256").update(bytes).digest("hex"),
+              size: bytes.length,
+              mode: fs.statSync(file).mode & 0o777,
+            };
+          });
+        errors.push(...comparePackageDistContentInventory(expected, actual));
+      }
+
       const parity = comparePackageDistInventory({
         files: normalized.filter(
           (entry) =>

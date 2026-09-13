@@ -353,7 +353,7 @@ export function registerBrowserAgentSnapshotRoutes(
       res,
       ctx,
       targetId,
-      run: async ({ profileCtx, tab, cdpUrl, signal }) => {
+      run: async ({ profileCtx, tab, cdpUrl, signal, assertCurrent }) => {
         if (getBrowserProfileCapabilities(profileCtx.profile).usesChromeMcp) {
           const ssrfPolicyOpts = browserNavigationPolicyForProfile(ctx, profileCtx);
           await assertBrowserNavigationAllowed({ url, ...ssrfPolicyOpts });
@@ -383,6 +383,7 @@ export function registerBrowserAgentSnapshotRoutes(
             targetId: tab.targetId,
             url,
             timeoutMs,
+            ...(assertCurrent ? { assertCurrent } : {}),
             ...(resolveRelayTarget
               ? {
                   resolveOperationTarget: resolveRelayTarget,
@@ -594,6 +595,7 @@ export function registerBrowserAgentSnapshotRoutes(
           });
           buffer = snap.buffer;
         } else {
+          const profileRuntime = ctx.state().profiles.get(profileCtx.profile.name);
           buffer = await captureScreenshot({
             wsUrl: tab.wsUrl ?? "",
             ...(tab.wsLookup ? { lookup: tab.wsLookup } : {}),
@@ -601,7 +603,9 @@ export function registerBrowserAgentSnapshotRoutes(
             format: type,
             quality: type === "jpeg" ? 85 : undefined,
             timeoutMs,
-            headless: ctx.state().profiles.get(profileCtx.profile.name)?.running?.headless,
+            headless:
+              profileRuntime?.running?.headless ??
+              (await profileRuntime?.externalBrowserMode?.headless),
           });
         }
 
@@ -641,6 +645,7 @@ export function registerBrowserAgentSnapshotRoutes(
       await runProfileRouteOperation({
         profileCtx,
         signal: req.signal,
+        assertCurrent: req.assertCurrent,
         run: async (signal) => {
           const tab = await profileCtx.ensureTabAvailable(targetId || undefined, {
             allowPlaywrightFallback: hasPlaywright,
@@ -654,6 +659,7 @@ export function registerBrowserAgentSnapshotRoutes(
               ...ssrfPolicyOpts,
             });
           }
+          await req.assertCurrent?.(profileCtx.profile);
           const deltaFamily: SnapshotDeltaFamily | undefined =
             plan.format === "ai"
               ? {

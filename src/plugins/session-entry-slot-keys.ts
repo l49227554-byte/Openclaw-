@@ -160,11 +160,13 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "transcriptByteCompactionLatch",
   "compactionCheckpoints",
   "memoryFlush",
+  "cliHistoryBoundary",
   "cliSessionIds",
   "cliSessionBindings",
   "acpSessionBinding",
   "claudeCliSessionId",
   "label",
+  "autoLabel",
   "icon",
   "color",
   "category",
@@ -173,6 +175,7 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "delivery",
   "groupId",
   "subject",
+  "topicName",
   "groupChannel",
   "space",
   "skillsSnapshot",
@@ -184,6 +187,7 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "quotaSuspension",
   "pendingTranscriptRepair",
   "visibility",
+  "publicShare",
 ] as const satisfies ReadonlyArray<
   keyof SessionEntry | "__proto__" | "constructor" | "prototype" | "sessionFile" | "transcriptPath"
 >;

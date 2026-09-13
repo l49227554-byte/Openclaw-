@@ -1,12 +1,13 @@
-import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { estimateStringChars } from "@openclaw/normalization-core/cjk-chars";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { z } from "zod";
+import { iterateSessionContextEntries } from "../../../packages/agent-core/src/harness/session/session.js";
 import { parseDurationMs } from "../../cli/parse-duration.js";
 import type { AgentContextPruningConfig } from "../../config/types.agent-defaults.js";
+import { sha256Base64Url } from "../../infra/crypto-digest.js";
 import { createDedupeCache } from "../../infra/dedupe.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { TextContent } from "../../llm/types.js";
@@ -23,6 +24,7 @@ import {
 import { formatContextLimitTruncationNotice } from "./context-truncation-notice.js";
 import { log } from "./logger.js";
 import {
+  hashToolResultProjectionSnapshot,
   recordToolResultPromptProjection,
   type ToolResultPromptProjectionState,
 } from "./session-prompt-state.js";
@@ -900,6 +902,15 @@ const cacheTtlProjectionSnapshotSchema = z.object({
     ]),
   ),
   ambiguousToolResultBaseKeys: z.array(z.string()).optional(),
+  frozenToolResults: z
+    .array(
+      z.object({
+        key: z.string(),
+        sourceHash: z.string(),
+        texts: z.array(z.string()).optional(),
+      }),
+    )
+    .optional(),
 });
 
 /** Reads pruned keys from the active transcript branch, never from a sibling branch. */
@@ -907,6 +918,7 @@ export function restoreCacheTtlToolResultProjections(
   projectionState: ToolResultPromptProjectionState,
   entries: readonly { type?: unknown; customType?: unknown; data?: unknown }[],
 ): void {
+  projectionState.lastWrittenSnapshotHash = undefined;
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index];
     if (entry?.type === "reset") {
@@ -919,8 +931,26 @@ export function restoreCacheTtlToolResultProjections(
     if (!parsed.success) {
       continue;
     }
+    projectionState.lastWrittenSnapshotHash = hashToolResultProjectionSnapshot({
+      prunedToolResults: parsed.data.prunedToolResults,
+      ambiguousToolResultBaseKeys: parsed.data.ambiguousToolResultBaseKeys ?? [],
+      frozenToolResults: parsed.data.frozenToolResults ?? [],
+    });
     for (const key of parsed.data.ambiguousToolResultBaseKeys ?? []) {
       projectionState.ambiguousBaseKeys.add(key);
+    }
+    for (const { key, sourceHash, texts } of parsed.data.frozenToolResults ?? []) {
+      // A live attempt can be ahead of its last marker; never roll it back.
+      if (projectionState.sourceHashByKey.has(key)) {
+        continue;
+      }
+      projectionState.sourceHashByKey.set(key, sourceHash);
+      projectionState.frozen.add(key);
+      if (texts) {
+        projectionState.replacements.set(key, {
+          content: texts.map((text) => ({ type: "text", text })),
+        });
+      }
     }
     for (const { key, ...mark } of parsed.data.prunedToolResults) {
       if (!projectionState.replacements.get(key)?.cacheTtl) {
@@ -1112,7 +1142,7 @@ function getToolResultTextBlocks(message: AgentMessage): string[] {
 
 function hashToolResultText(texts: string[]): string {
   // JSON framing preserves block boundaries and lone surrogates, including persisted fallback keys.
-  return createHash("sha256").update(JSON.stringify(texts)).digest("base64url");
+  return sha256Base64Url(JSON.stringify(texts));
 }
 
 function buildAggregateToolResultReplacements(params: {
@@ -1492,7 +1522,10 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
   storePath?: string;
 }): { truncated: boolean; truncatedCount: number; reason?: string } {
   const { sessionManager, contextWindowTokens } = params;
-  const branch = sessionManager.getBranch() as ToolResultBranchEntry[];
+  const branch = Array.from(
+    iterateSessionContextEntries(sessionManager.getBranch()),
+    ({ entry }) => entry,
+  );
 
   if (branch.length === 0) {
     return { truncated: false, truncatedCount: 0, reason: "empty session" };
@@ -1524,24 +1557,25 @@ function truncateOversizedToolResultsInExistingSessionManager(params: {
       params.projectionState,
     );
   }
-  const hasRuntimeTarget = Boolean(
-    params.sessionId && params.sessionKey && params.agentId && params.storePath,
-  );
-  if (rewriteResult.changed && (params.sessionFile || hasRuntimeTarget)) {
+  const target =
+    sessionManager.getSessionTarget() ??
+    (params.sessionId && params.sessionKey && params.agentId && params.storePath
+      ? {
+          agentId: params.agentId,
+          sessionId: params.sessionId,
+          sessionKey: params.sessionKey,
+          storePath: params.storePath,
+        }
+      : undefined);
+  if (rewriteResult.changed && (params.sessionFile || target)) {
     emitSessionTranscriptUpdate({
       ...(params.sessionFile ? { sessionFile: params.sessionFile } : {}),
-      sessionKey: params.sessionKey,
-      ...(params.agentId ? { agentId: params.agentId } : {}),
-      ...(params.sessionId && params.sessionKey && params.agentId && params.storePath
-        ? {
-            target: {
-              agentId: params.agentId,
-              sessionId: params.sessionId,
-              sessionKey: params.sessionKey,
-              storePath: params.storePath,
-            },
-          }
-        : {}),
+      ...(target
+        ? { target }
+        : {
+            sessionKey: params.sessionKey,
+            ...(params.agentId ? { agentId: params.agentId } : {}),
+          }),
     });
   }
 

@@ -21,7 +21,6 @@ import {
   listFinishedSessions,
   listRunningSessions,
   prepareSessionPoll,
-  setJobTtlMs,
 } from "./bash-process-registry.js";
 import { describeProcessTool } from "./bash-tools.descriptions.js";
 import {
@@ -29,6 +28,7 @@ import {
   appendExecTimeoutRetryGuidance,
   renderExecExitLabel,
 } from "./bash-tools.exec-output.js";
+import { ProcessToolOutputSchema } from "./bash-tools.process-schema.js";
 import { handleProcessSendKeys, writeProcessStdin } from "./bash-tools.process-send-keys.js";
 import { processSchema } from "./bash-tools.schemas.js";
 import {
@@ -49,7 +49,6 @@ import { textResult } from "./tools/tool-results.js";
 
 /** Defaults injected by tests, agent scopes, and scoped process registries. */
 export type ProcessToolDefaults = {
-  cleanupMs?: number;
   hasCronTool?: boolean;
   inputWaitIdleMs?: number;
   scopeKey?: string;
@@ -251,20 +250,17 @@ async function sleepPollInterval(ms: number, signal?: AbortSignal): Promise<void
       cleanup();
       reject(createAbortError(signal?.reason));
     };
+    // An active poll must outlive the child's last handle so one-shot callers receive its result.
     const timer: ReturnType<typeof setTimeout> | undefined = setTimeout(onResolve, ms);
-    timer.unref?.();
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
-/** Build the process-control tool with optional cleanup, scope, and input-idle defaults. */
+/** Build the process-control tool with optional scope and input-idle defaults. */
 export function createProcessTool(
   defaults?: ProcessToolDefaults,
 ): AgentToolWithMeta<typeof processSchema, unknown> {
   const assertSourceCurrent = captureAgentToolSourceExecutionGuard();
-  if (defaults?.cleanupMs !== undefined) {
-    setJobTtlMs(defaults.cleanupMs);
-  }
   const scopeKey = defaults?.scopeKey;
   const inputWaitIdleMs = clampWithDefault(
     defaults?.inputWaitIdleMs ?? readEnvInt("OPENCLAW_PROCESS_INPUT_WAIT_IDLE_MS"),
@@ -301,6 +297,7 @@ export function createProcessTool(
     displaySummary: PROCESS_TOOL_DISPLAY_SUMMARY,
     description: describeProcessTool({ hasCronTool: defaults?.hasCronTool === true }),
     parameters: processSchema,
+    outputSchema: ProcessToolOutputSchema,
     execute: async (_toolCallId, args, signal, _onUpdate): Promise<AgentToolResult<unknown>> => {
       const assertCurrent = () => {
         signal?.throwIfAborted();

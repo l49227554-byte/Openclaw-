@@ -4,6 +4,7 @@ import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { Client } from "../internal/discord.js";
+import type { DiscordLivePolicyReader } from "../monitor/live-policy.js";
 import { decodeOpusStreamChunks } from "./audio.js";
 import {
   beginVoiceCapture,
@@ -42,6 +43,7 @@ import {
   type VoiceOperationResult,
   type VoiceJoinOptions,
   type VoiceSessionEntry,
+  type VoiceRealtimeAgentTurnParams,
 } from "./session.js";
 import type { DiscordVoiceSpeakerContextResolver } from "./speaker-context.js";
 import { DiscordVoiceRecording } from "./voice-recording.js";
@@ -56,6 +58,7 @@ export class DiscordVoiceReceive {
 
   constructor(
     private readonly params: {
+      readPolicy?: DiscordLivePolicyReader;
       accountId: string;
       admissionAllowFrom?: string[];
       botUserId: () => string | undefined;
@@ -128,7 +131,9 @@ export class DiscordVoiceReceive {
     // Scans cannot recover unsubscribed packets. Only a native start may admit
     // conversation for a new receive stream; already-owned streams keep their admission.
     const conversationAllowed =
-      origin === "native" && !entry.captureOnly && !(playing && !realtime?.isBargeInEnabled());
+      origin === "native" &&
+      !entry.captureOnly &&
+      !(playing && !realtime?.canReceiveDuringPlayback());
     if (!capture && !conversationAllowed) {
       logVoiceVerbose(
         `capture ignored: guild ${entry.guildId} channel ${entry.channelId} user ${userId} reason=${playing ? "protected playback" : "inactive capture"}`,
@@ -177,6 +182,7 @@ export class DiscordVoiceReceive {
 
   private responseContext(entry: VoiceSessionEntry, userId: string) {
     return {
+      readPolicy: this.params.readPolicy,
       entry,
       userId,
       accountId: this.params.accountId,
@@ -213,7 +219,7 @@ export class DiscordVoiceReceive {
       entry.realtimeLifecycle.status === "active" ? entry.realtimeLifecycle.instance : undefined;
     const protectedPlayback = () =>
       entry.player.state.status === voiceSdk.AudioPlayerStatus.Playing &&
-      !realtime?.isBargeInEnabled();
+      !realtime?.canReceiveDuringPlayback();
     this.enableDaveReceivePassthrough(
       entry,
       `speaker ${userId} start`,
@@ -300,12 +306,7 @@ export class DiscordVoiceReceive {
           isCurrent: () => this.params.isEntryCurrent(entry),
           canAdmit: () => !protectedPlayback(),
           createTurn: realtime
-            ? (context) => {
-                if (entry.player.state.status === voiceSdk.AudioPlayerStatus.Playing) {
-                  realtime.handleBargeIn("speaker-start");
-                }
-                return realtime.beginSpeakerTurn(context, userId, realtimeRecording);
-              }
+            ? (context) => realtime.beginSpeakerTurn(context, userId, realtimeRecording)
             : undefined,
           warn: (message) => logger.warn(message),
         })
@@ -518,11 +519,12 @@ export class DiscordVoiceReceive {
     });
   }
 
-  private async resolveDiscordVoiceIngressContext(
+  async resolveDiscordVoiceIngressContext(
     entry: VoiceSessionEntry,
     userId: string,
   ): Promise<DiscordVoiceIngressContext | null> {
     return await resolveDiscordVoiceIngressContextWithParticipants({
+      readPolicy: this.params.readPolicy,
       client: this.params.client,
       entry,
       userId,
@@ -534,18 +536,25 @@ export class DiscordVoiceReceive {
     });
   }
 
-  async runDiscordRealtimeAgentTurn(params: {
-    context: {
-      extraSystemPrompt?: string;
-      senderIsOwner: boolean;
-      speakerLabel: string;
-    };
-    entry: VoiceSessionEntry;
-    message: string;
-    toolsAllow?: string[];
-    userId: string;
-  }): Promise<string> {
+  async runDiscordRealtimeAgentTurn(
+    params: VoiceRealtimeAgentTurnParams & { entry: VoiceSessionEntry },
+  ): Promise<string> {
     const { context, entry, message, toolsAllow, userId } = params;
+    params.signal?.throwIfAborted();
+    const currentContext = await this.resolveDiscordVoiceIngressContext(entry, userId);
+    params.signal?.throwIfAborted();
+    if (
+      !this.params.isEntryCurrent(entry) ||
+      !params.isCurrent() ||
+      !currentContext ||
+      currentContext.isCurrent?.() === false ||
+      currentContext.senderIsOwner !== context.senderIsOwner
+    ) {
+      throw new DOMException(
+        "Discord voice speaker authorization changed before delegation",
+        "AbortError",
+      );
+    }
     logger.info(
       `discord voice: agent turn start guild=${entry.guildId} channel=${entry.channelId} voiceSession=${entry.voiceSessionKey} supervisorSession=${entry.route.sessionKey} agent=${entry.route.agentId} user=${userId} speaker=${context.speakerLabel} owner=${context.senderIsOwner} model=${this.params.discordConfig.voice?.model ?? "route-default"} message=${formatVoiceLogPreview(message)}`,
     );
@@ -557,8 +566,9 @@ export class DiscordVoiceReceive {
       cfg: this.params.cfg,
       discordConfig: this.params.discordConfig,
       runtime: this.params.runtime,
-      context,
+      context: currentContext,
       toolsAllow,
+      ...(params.signal ? { signal: params.signal } : {}),
       admissionAllowFrom: this.params.admissionAllowFrom,
       fetchGuildName: async (guildId) => {
         const guild = await this.params.client.fetchGuild(guildId).catch(() => null);

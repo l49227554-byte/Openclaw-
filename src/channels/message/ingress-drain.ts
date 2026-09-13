@@ -30,7 +30,10 @@ import {
   type ActiveHandlerState,
   type ChannelIngressDrainDispatchResult,
 } from "./ingress-drain-state.js";
-import { supersedeActiveStatesIfNeeded } from "./ingress-drain-supersede.js";
+import {
+  supersedeActiveStatesIfNeeded,
+  type IngressSupersedeDecision,
+} from "./ingress-drain-supersede.js";
 import type {
   ChannelIngressQueue,
   ChannelIngressQueueClaim,
@@ -66,12 +69,13 @@ export type CreateChannelIngressDrainOptions<
     lifecycle: ChannelIngressDispatchLifecycle,
   ) => Promise<ChannelIngressDrainDispatchResult | void> | ChannelIngressDrainDispatchResult | void;
   resolveNonRetryableFailure?: (err: unknown) => IngressNonRetryableFailure | null;
+  /** A returned guard is checked synchronously before cancelling pre-adoption work. */
   shouldSupersedePending?: (
     newEvent:
       | ChannelIngressQueueRecord<TPayload, TMetadata>
       | ChannelIngressQueueClaim<TPayload, TMetadata>,
     pendingEvent: ChannelIngressQueueClaim<TPayload, TMetadata>,
-  ) => boolean | Promise<boolean>;
+  ) => IngressSupersedeDecision | Promise<IngressSupersedeDecision>;
   deriveLaneKey?: (record: ChannelIngressQueueRecord<TPayload, TMetadata>) => string | undefined;
   reconcileStoredLaneKey?: (
     record: ChannelIngressQueueRecord<TPayload, TMetadata>,
@@ -247,10 +251,16 @@ export function createChannelIngressDrain<
       config: options.retryPolicy,
       now: now(),
     });
+    const committed =
+      disposition.kind === "fail"
+        ? await failClaim(claim, disposition.reason, disposition.message)
+        : await releaseClaim(claim, { lastError: disposition.message });
+    const displayId = claim.id.replace(/^0+(?=\d)/, "") || claim.id;
+    if (!committed) {
+      log(`spooled update ${displayId} settlement skipped: claim no longer owns the event`);
+      return;
+    }
     if (disposition.kind === "fail") {
-      // Operator-visible dead-letter line. Prefer numeric id when the event id
-      // is a zero-padded telegram update_id so logs stay human-readable.
-      const displayId = claim.id.replace(/^0+(?=\d)/, "") || claim.id;
       log(
         `spooled update ${displayId} failed with non-retryable ${disposition.reason}: ${disposition.message}; dead-lettered`,
       );
@@ -259,12 +269,9 @@ export function createChannelIngressDrain<
           `spooled update ${displayId} on lane ${claim.laneKey ?? displayId} reached retry limit after ${disposition.attempt} attempts; dead-lettered`,
         );
       }
-      await failClaim(claim, disposition.reason, disposition.message);
       return;
     }
-    const displayId = claim.id.replace(/^0+(?=\d)/, "") || claim.id;
     log(`spooled update ${displayId} failed; keeping for retry: ${disposition.message}`);
-    await releaseClaim(claim, { lastError: disposition.message });
   };
 
   const armStallWatchdog = (state: ActiveHandlerState<TPayload, TMetadata>) => {

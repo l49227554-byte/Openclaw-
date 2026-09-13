@@ -1,13 +1,6 @@
-import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { createTranscriptsTool } from "../agents/tools/transcripts-tool.js";
-import {
-  getRuntimeConfigSnapshot,
-  resetConfigRuntimeState,
-  setRuntimeConfigSnapshot,
-} from "../config/runtime-snapshot.js";
+import { getRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { diffGatewayReloadPaths } from "../gateway/config-diff.js";
 import {
@@ -16,89 +9,95 @@ import {
   listConfigReloadRefinementPrefixes,
 } from "../gateway/config-reload-plan.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
-import {
-  captureActivePluginRegistrySnapshot,
-  restoreActivePluginRegistrySnapshot,
-  setActivePluginRegistry,
-} from "../plugins/runtime.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTranscriptsAutoStartService } from "./auto-start.js";
 import { activeSessions, readTranscriptCaptureSnapshot, startTranscripts } from "./capture.js";
 import * as providerRegistry from "./provider-registry.js";
-import type {
-  TranscriptOccupancyWatchRequest,
-  TranscriptSourceProvider,
-  TranscriptStartRequest,
-} from "./provider-types.js";
+import type { TranscriptOccupancyWatchRequest, TranscriptStartRequest } from "./provider-types.js";
 import { readTranscriptLibraryStatus } from "./status.js";
+import {
+  transcriptStatusRoom as room,
+  useTranscriptStatusFixture,
+} from "./status.producer.test-harness.js";
 import { transcriptSessionSelector, TranscriptsStore } from "./store.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-let previousRegistry: ReturnType<typeof captureActivePluginRegistrySnapshot>;
-beforeEach(() => {
-  previousRegistry = captureActivePluginRegistrySnapshot();
-});
-afterEach(() => {
-  activeSessions.clear();
-  resetConfigRuntimeState();
-  closeOpenClawStateDatabaseForTest();
-  restoreActivePluginRegistrySnapshot(previousRegistry);
-  vi.useRealTimers();
-  vi.restoreAllMocks();
-});
-
-const room = {
-  providerId: "fixture-voice",
-  accountId: "work",
-  guildId: "guild",
-  channelId: "room",
-};
-
-function fixture(config: OpenClawConfig = { transcripts: { autoStart: [room] } }) {
-  const stateDir = tempDirs.make("transcript-status-producer-");
-  const store = new TranscriptsStore(path.join(stateDir, "transcripts"), {
-    env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
-  });
-  const provider: TranscriptSourceProvider = {
-    id: room.providerId,
-    aliases: ["voice-alias"],
-    name: "Fixture voice",
-    sourceKinds: ["live-audio"],
-    accessControl: {
-      channelId: "discord",
-      resolveAccountId: ({ source }) => ({ ok: true, value: source.accountId ?? "default" }),
-      authorize: async ({ caller }) =>
-        caller.kind === "operator"
-          ? { ok: true, value: undefined }
-          : { ok: false, error: "operator required" },
-    },
-    start: async ({ session }) => ({ ok: true, session }),
-    stop: async ({ sessionId }) => ({ ok: true, sessionId }),
-  };
-  vi.spyOn(providerRegistry, "getTranscriptSourceProvider").mockReturnValue(provider);
-  vi.spyOn(providerRegistry, "listTranscriptSourceProviders").mockReturnValue([provider]);
-  const registry = createEmptyPluginRegistry();
-  registry.transcriptSourceProviders.push({ pluginId: "fixture", source: "fixture", provider });
-  setActivePluginRegistry(registry);
-  const ctx = { config, stateDir, agentId: "main", logger: { warn: vi.fn() } };
-  const tool = createTranscriptsTool({ ...ctx, caller: { kind: "operator", source: "local" } });
-  return {
-    ctx,
-    store,
-    provider,
-    tool,
-    read: () => readTranscriptLibraryStatus(store, config),
-    start: (rawParams: Record<string, unknown>, configuredLifecycle?: true) =>
-      startTranscripts({
-        ctx: { ...ctx, caller: { kind: "operator", source: "local" } },
-        store,
-        rawParams,
-        configuredLifecycle,
-      }),
-  };
-}
+const fixture = useTranscriptStatusFixture();
 
 describe("configured transcript source provenance", () => {
+  it.each(["reorder", "title"] as const)(
+    "retains capture and retry diagnostics across an accepted %s change",
+    async (change) => {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const sources = ["ready", "waiting"].map((sessionId) =>
+        Object.assign({}, room, {
+          sessionId,
+          channelId: sessionId,
+          title: `Original ${sessionId}`,
+        }),
+      );
+      const f = fixture({ transcripts: { autoStart: sources } });
+      let unavailable = true;
+      const start = vi.fn(async (request: TranscriptStartRequest) =>
+        unavailable && request.session.sessionId === "waiting"
+          ? { ok: false as const, error: "synthetic provider unavailable" }
+          : { ok: true as const, session: request.session },
+      );
+      f.provider.start = start;
+      const service = createTranscriptsAutoStartService(f.ctx);
+      try {
+        service.start();
+        await vi.waitFor(async () =>
+          expect((await f.read()).configuredSources).toMatchObject([
+            { sessionId: "ready", state: "armed" },
+            { sessionId: "waiting", startDiagnostic: "retrying" },
+          ]),
+        );
+        const next = {
+          transcripts: {
+            autoStart:
+              change === "reorder"
+                ? sources.toReversed()
+                : sources.map((source) =>
+                    Object.assign({}, source, { title: `Future ${source.sessionId}` }),
+                  ),
+          },
+        };
+        service.start(next);
+        const retained = await readTranscriptLibraryStatus(f.store, next);
+        expect(
+          retained.configuredSources.find((source) => source.sessionId === "waiting"),
+        ).toMatchObject({ startDiagnostic: "retrying" });
+        expect(
+          retained.configuredSources.find((source) => source.sessionId === "ready"),
+        ).toMatchObject({
+          state: "armed",
+        });
+        expect(start).toHaveBeenCalledTimes(2);
+
+        unavailable = false;
+        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.waitFor(async () =>
+          expect(
+            (await readTranscriptLibraryStatus(f.store, next)).configuredSources,
+          ).toMatchObject(
+            next.transcripts.autoStart.map(({ sessionId }) => ({ sessionId, state: "armed" })),
+          ),
+        );
+        expect(start).toHaveBeenCalledTimes(3);
+        // An admitted retry keeps its existing capture title even after a future-title edit.
+        expect(start.mock.calls.at(-1)![0].session.title).toBe("Original waiting");
+        const status = await readTranscriptLibraryStatus(f.store, next);
+        for (const configured of status.configuredSources) {
+          const session = await f.store.readSession(configured.sessionId!);
+          expect(session).toBeDefined();
+          expect(configured.activeSelectors).toEqual([transcriptSessionSelector(session!)]);
+        }
+      } finally {
+        await service.stop();
+      }
+    },
+  );
+
   it.each([
     { name: "direct title edit", titles: ["Future title"], unrelated: false },
     { name: "logging then title", titles: ["Future title"], unrelated: true },
@@ -382,16 +381,18 @@ describe("configured transcript source provenance", () => {
       const originalWrite = f.store.writeSession.bind(f.store);
       let titleFailed = false;
       let cleanupFails = true;
-      vi.spyOn(TranscriptsStore.prototype, "writeSession").mockImplementation(async (session) => {
-        if (session.title === "Room title" && !titleFailed) {
-          titleFailed = true;
-          throw new Error("title write unavailable");
-        }
-        if (session.stoppedAt && fault === "session-write" && cleanupFails) {
-          throw new Error("final session write unavailable");
-        }
-        await originalWrite(session);
-      });
+      vi.spyOn(TranscriptsStore.prototype, "writeSession").mockImplementation(
+        async (session, condition) => {
+          if (session.title === "Room title" && !titleFailed) {
+            titleFailed = true;
+            throw new Error("title write unavailable");
+          }
+          if (session.stoppedAt && fault === "session-write" && cleanupFails) {
+            throw new Error("final session write unavailable");
+          }
+          await originalWrite(session, condition);
+        },
+      );
       const originalSummary = f.store.writeSummary.bind(f.store);
       vi.spyOn(TranscriptsStore.prototype, "writeSummary").mockImplementation(async (...args) => {
         if (fault === "summary-write" && cleanupFails) {
@@ -515,12 +516,14 @@ describe("configured transcript source provenance", () => {
         return { ok: true, sessionId };
       });
       const writeSession = f.store.writeSession.bind(f.store);
-      vi.spyOn(TranscriptsStore.prototype, "writeSession").mockImplementation(async (session) => {
-        if (cleanupFails && fault === "session-write" && session.stoppedAt) {
-          throw new Error("final session unavailable");
-        }
-        await writeSession(session);
-      });
+      vi.spyOn(TranscriptsStore.prototype, "writeSession").mockImplementation(
+        async (session, condition) => {
+          if (cleanupFails && fault === "session-write" && session.stoppedAt) {
+            throw new Error("final session unavailable");
+          }
+          await writeSession(session, condition);
+        },
+      );
       const writeSummary = f.store.writeSummary.bind(f.store);
       vi.spyOn(TranscriptsStore.prototype, "writeSummary").mockImplementation(async (...args) => {
         if (cleanupFails && fault === "summary-write") {
@@ -705,6 +708,64 @@ describe("configured transcript source provenance", () => {
       await vi.advanceTimersByTimeAsync(65_000);
       expect(start).toHaveBeenCalledTimes(1);
       expect(await f.store.listSessionEntries()).toHaveLength(1);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("rejects a duplicate fixed ID after its first capture ends without changing saved notes", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    // Crossing midnight lets an accidental second capture create a distinct archive row.
+    vi.setSystemTime(new Date("2026-09-05T23:59:58.000Z"));
+    const entry = { ...room, sessionId: "daily" };
+    const delayedId = "delayed-voice";
+    const f = fixture({
+      transcripts: { autoStart: [entry, { ...entry, providerId: delayedId }] },
+    });
+    const start = vi.fn(f.provider.start!);
+    const delayedStart = vi.fn(f.provider.start!);
+    f.provider.start = start;
+    const delayedProvider = { ...f.provider, id: delayedId, start: delayedStart };
+    vi.mocked(providerRegistry.getTranscriptSourceProvider).mockImplementation((id) =>
+      id === room.providerId ? f.provider : undefined,
+    );
+    const service = createTranscriptsAutoStartService(f.ctx);
+    try {
+      service.start();
+      await vi.waitFor(async () =>
+        expect((await f.read()).configuredSources).toMatchObject([
+          { state: "armed" },
+          { startDiagnostic: "retrying" },
+        ]),
+      );
+      const request = start.mock.calls[0]![0];
+      await request.onUtterance({ text: "Saved before the duplicate retry", final: true });
+      await request.onStatus!({ active: false });
+      expect((await f.read()).active).toEqual([]);
+      const session = (await f.store.readSession(entry.sessionId))!;
+      expect(session.stoppedAt).toEqual(expect.any(String));
+      const notes = await f.store.readSummary(session);
+      expect(notes.summary?.transcript).toEqual(["Saved before the duplicate retry"]);
+      const revision = await f.store.readSummaryInputRevision(session);
+      vi.mocked(providerRegistry.getTranscriptSourceProvider).mockImplementation((id) =>
+        id === delayedId ? delayedProvider : f.provider,
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(async () =>
+        expect((await f.read()).configuredSources[1]?.startDiagnostic).not.toBe("starting"),
+      );
+      expect.soft((await f.read()).configuredSources[1]).toMatchObject({
+        state: "not-active",
+        startDiagnostic: "id-conflict",
+        activeSelectors: [],
+      });
+      await vi.advanceTimersByTimeAsync(65_000);
+      expect(start).toHaveBeenCalledOnce();
+      expect(delayedStart).not.toHaveBeenCalled();
+      expect(await f.store.listSessionEntries()).toHaveLength(1);
+      expect(await f.store.readSession(entry.sessionId)).toEqual(session);
+      expect(await f.store.readSummary(session)).toEqual(notes);
+      expect(await f.store.readSummaryInputRevision(session)).toBe(revision);
     } finally {
       await service.stop();
     }

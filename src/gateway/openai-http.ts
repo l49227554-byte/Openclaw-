@@ -2,6 +2,7 @@
 // Translates OpenAI chat requests to OpenClaw agent runs and SSE/JSON responses.
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 import { estimateBase64DecodedBytes } from "@openclaw/media-core/base64";
 import { asPositiveSafeInteger } from "@openclaw/normalization-core/number-coercion";
 import {
@@ -14,7 +15,6 @@ import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
 import type { AgentStreamParams, ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
-import { STREAM_ERROR_FALLBACK_TEXT } from "../agents/stream-message-shared.js";
 import { toOpenAiChatCompletionsUsage, type OpenAiChatCompletionsUsage } from "../agents/usage.js";
 import { readAgentRunTerminalOutcome } from "../channels/turn/agent-run-terminal-outcome.js";
 import { createDefaultDeps } from "../cli/deps.js";
@@ -43,6 +43,7 @@ import {
   resolveAssistantResultText,
   resolveAssistantTextCompletion,
   resolveAssistantTextInput,
+  resolveAssistantTextStreamDelta,
   type AssistantTextSnapshot,
 } from "./agent-event-assistant-text.js";
 import {
@@ -80,9 +81,9 @@ import { normalizeInputHostnameAllowlist } from "./input-allowlist.js";
 import { resolveAgentRunUsage } from "./openai-agent-run-usage.js";
 import { resolveOpenAiCompatError, validateOpenAiSamplingParams } from "./openai-compat-errors.js";
 import {
+  applyToolChoice,
   isToolChoiceConstraintSatisfied,
   resolveUnsatisfiedToolChoiceMessage,
-  toolChoiceConstraintPrompt,
   type ToolChoiceConstraint,
 } from "./openai-tool-choice.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
@@ -240,24 +241,15 @@ function extractClientToolsFromChatRequest(tools: unknown): ClientToolDefinition
   return clientTools;
 }
 
-function applyChatToolChoice(params: { tools: ClientToolDefinition[]; toolChoice: unknown }): {
-  tools: ClientToolDefinition[];
-  extraSystemPrompt?: string;
-  constraint?: ToolChoiceConstraint;
-} {
-  const { tools, toolChoice } = params;
+function resolveChatToolChoice(toolChoice: unknown): ToolChoiceConstraint | "none" | undefined {
   if (toolChoice == null || toolChoice === "auto") {
-    return { tools };
+    return undefined;
   }
   if (toolChoice === "none") {
-    return { tools: [] };
+    return "none";
   }
   if (toolChoice === "required") {
-    if (tools.length === 0) {
-      throw new Error("tool_choice=required but no tools were provided");
-    }
-    const constraint: ToolChoiceConstraint = { type: "required" };
-    return { tools, extraSystemPrompt: toolChoiceConstraintPrompt(constraint), constraint };
+    return { type: "required" };
   }
   if (typeof toolChoice !== "object" || Array.isArray(toolChoice)) {
     throw new Error("tool_choice must be a string or object");
@@ -270,16 +262,7 @@ function applyChatToolChoice(params: { tools: ClientToolDefinition[]; toolChoice
     if (!targetName) {
       throw new Error("tool_choice.function.name is required");
     }
-    const matched = tools.filter((tool) => tool.function?.name === targetName);
-    if (matched.length === 0) {
-      throw new Error(`tool_choice requested unknown tool: ${targetName}`);
-    }
-    const constraint: ToolChoiceConstraint = { type: "function", name: targetName };
-    return {
-      tools: matched,
-      extraSystemPrompt: toolChoiceConstraintPrompt(constraint),
-      constraint,
-    };
+    return { type: "function", name: targetName };
   }
   if (typeof choiceType !== "string") {
     throw new Error("unsupported tool_choice type");
@@ -326,7 +309,7 @@ function writeAssistantContentChunk(
 
 function writeAssistantFinishChunk(
   res: ServerResponse,
-  params: ChatCompletionStreamIdentity & { finishReason: "stop" | "tool_calls" },
+  params: ChatCompletionStreamIdentity & { finishReason: "stop" | "length" | "tool_calls" },
 ) {
   writeChatCompletionChunk(res, params, {
     choices: [
@@ -983,10 +966,10 @@ export async function handleOpenAiHttpRequest(
   let toolChoiceConstraint: ToolChoiceConstraint | undefined;
   try {
     const parsedClientTools = extractClientToolsFromChatRequest(payload.tools);
-    const toolChoiceResult = applyChatToolChoice({
-      tools: parsedClientTools,
-      toolChoice: payload.tool_choice,
-    });
+    const toolChoiceResult = applyToolChoice(
+      parsedClientTools,
+      resolveChatToolChoice(payload.tool_choice),
+    );
     resolvedClientTools = toolChoiceResult.tools;
     toolChoicePrompt = toolChoiceResult.extraSystemPrompt;
     toolChoiceConstraint = toolChoiceResult.constraint;
@@ -1117,7 +1100,7 @@ export async function handleOpenAiHttpRequest(
           {
             index: 0,
             message: { role: "assistant", content },
-            finish_reason: "stop",
+            finish_reason: stopReason === "length" ? "length" : "stop",
           },
         ],
         usage,
@@ -1146,10 +1129,11 @@ export async function handleOpenAiHttpRequest(
   setSseHeaders(res);
 
   let wroteStopChunk = false;
-  let streamedAssistantText = "";
   let assistantText: AssistantTextSnapshot = { text: "" };
+  let streamedAssistantText = assistantText;
   let pendingAssistantText: AssistantTextSnapshot | undefined;
   let finalResultText: string | undefined;
+  let finalFinishReason: "stop" | "length" = "stop";
   let finalToolCalls: ReturnType<typeof resolveStopReasonAndPendingToolCalls>["pendingToolCalls"];
   let finalUsage: OpenAiChatCompletionsUsage | undefined;
   let finalizeRequested = false;
@@ -1185,21 +1169,20 @@ export async function handleOpenAiHttpRequest(
         assistantText,
         pending: pendingAssistantText,
         resultText: finalResultText,
-        streamedText: streamedAssistantText,
+        streamedText: streamedAssistantText.text,
         fallbackText: finalToolCalls ? "" : "No response from OpenClaw.",
       });
-      if (!text.startsWith(streamedAssistantText)) {
+      if (!text.startsWith(streamedAssistantText.text)) {
         finishStreamWithError({
           message: "Assistant output cannot be represented as an append-only response stream.",
           type: "api_error",
         });
         return;
       }
-      const content = text.slice(streamedAssistantText.length);
+      const content = text.slice(streamedAssistantText.text.length);
       if (content) {
         writeAssistantContentChunk(res, { ...streamIdentity, content });
       }
-      streamedAssistantText = text;
       if (finalToolCalls) {
         writeAssistantToolCallsIncrementalChunks(res, {
           ...streamIdentity,
@@ -1211,7 +1194,7 @@ export async function handleOpenAiHttpRequest(
       if (!wroteStopChunk) {
         writeAssistantFinishChunk(res, {
           ...streamIdentity,
-          finishReason: finalToolCalls ? "tool_calls" : "stop",
+          finishReason: finalToolCalls ? "tool_calls" : finalFinishReason,
         });
         wroteStopChunk = true;
       }
@@ -1251,24 +1234,26 @@ export async function handleOpenAiHttpRequest(
         return;
       }
 
-      assistantText = mergeAssistantText(assistantText, input, "append-only");
+      const previous = assistantText;
+      const merged = mergeAssistantText(previous, input, "append-only");
+      assistantText = merged;
       // Hold prose until the run proves the requested client-tool call exists.
       if (toolChoiceConstraint) {
         return;
       }
       // SSE cannot retract bytes already delivered, even for an item correction.
-      if (!assistantText.text.startsWith(streamedAssistantText)) {
+      const content = resolveAssistantTextStreamDelta(previous, merged, streamedAssistantText);
+      if (content === undefined) {
         terminalStreamError ??= {
           message: "Assistant output cannot be represented as an append-only response stream.",
           type: "api_error",
         };
         return;
       }
-      const content = assistantText.text.slice(streamedAssistantText.length);
+      streamedAssistantText = assistantText;
       if (!content) {
         return;
       }
-      streamedAssistantText = assistantText.text;
       writeAssistantContentChunk(res, { ...streamIdentity, content });
       return;
     }
@@ -1369,6 +1354,7 @@ export async function handleOpenAiHttpRequest(
       }
 
       finalResultText = resolveAssistantResultText(result);
+      finalFinishReason = stopReason === "length" ? "length" : "stop";
       finalToolCalls =
         stopReason === "tool_calls" && pendingToolCalls?.length ? pendingToolCalls : undefined;
       requestFinalize();

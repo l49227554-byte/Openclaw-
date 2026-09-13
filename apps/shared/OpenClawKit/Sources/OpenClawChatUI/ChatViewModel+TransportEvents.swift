@@ -29,6 +29,7 @@ extension OpenClawChatViewModel {
             let reconnected = ok && !self.healthOK
             applyTransportHealth(ok)
             if reconnected {
+                self.refreshAgentsIfRequested()
                 let session = self.currentSessionSnapshot()
                 Task { [weak self] in await self?.fetchModels(sessionSnapshot: session) }
                 self.scheduleProgressCardFetch()
@@ -36,6 +37,7 @@ extension OpenClawChatViewModel {
                 Task { [weak self] in await self?.refreshSwarmCapability() }
                 Task { [weak self] in await self?.loadComposerCapabilities(force: true) }
             } else if !ok {
+                self.invalidateAgentCatalog()
                 self.modelAvailabilityIsSessionScoped = false
                 self.invalidateComposerCapabilities()
             }
@@ -43,6 +45,7 @@ extension OpenClawChatViewModel {
             let context = self.currentSessionSnapshot()
             Task { await self.pollHealthIfNeeded(force: false, sessionSnapshot: context) }
         case .chatMetadataChanged:
+            self.refreshAgentsIfRequested()
             let session = self.currentSessionSnapshot()
             Task { [weak self] in await self?.fetchModels(sessionSnapshot: session) }
             Task { [weak self] in await self?.refreshSwarmCapability(sessionSnapshot: session) }
@@ -52,7 +55,7 @@ extension OpenClawChatViewModel {
             self.sessions = ChatSessionSidebarModel.applying(
                 observerDigest: digest,
                 to: self.sessions,
-                activeAgentId: self.activeAgentId)
+                activeAgentId: self.currentSessionSnapshot().deliveryAgentID)
         case let .chat(chat):
             self.handleChatEvent(chat)
         case let .sessionMessage(message):
@@ -70,6 +73,8 @@ extension OpenClawChatViewModel {
             self.resolveQuestionEvent(resolved)
             self.reconcileQuestionsAfterEvent()
         case .routeChanged, .seqGap:
+            self.invalidateAgentCatalog(clear: true)
+            self.refreshAgentsIfRequested()
             if case .routeChanged = evt {
                 self.applyProgressCard(nil)
             }
@@ -111,7 +116,7 @@ extension OpenClawChatViewModel {
         let projectedSessions = ChatSessionSidebarModel.applying(
             sessionChange: change,
             to: self.sessions,
-            activeAgentId: self.activeAgentId)
+            activeAgentId: self.currentSessionSnapshot().deliveryAgentID)
         if let projectedSessions {
             self.sessions = projectedSessions
         } else if !ownedSwarmActivityNote, change.reason != "patch", change.reason != "command-metadata" {
@@ -133,7 +138,7 @@ extension OpenClawChatViewModel {
         guard ChatSessionSidebarModel.sessionMatchesActiveAgent(
             sessionKey: eventSessionKey,
             agentId: change.agentId,
-            activeAgentId: self.activeAgentId)
+            activeAgentId: self.currentSessionSnapshot().deliveryAgentID)
         else { return }
         let swarmEvent = self.observeSwarmEvent(change)
         let ownedSwarmActivityNote = swarmEvent && SelfContainedSwarmHelpers.isActivityNote(change)
@@ -219,13 +224,9 @@ extension OpenClawChatViewModel {
 
         if isTerminal, ownsCurrentRun, let runID {
             let wasSelectedRun = self.liveUsageRunID == runID
-            if self.pendingRuns.contains(runID) {
-                self.retirePendingRun(
-                    runID,
-                    hapticEvent: phase == "error" ? .runFailed : .runCompleted)
-            } else {
-                self.retireTerminalRun(runID)
-            }
+            self.retirePendingRun(
+                runID,
+                hapticEvent: phase == "error" ? .runFailed : .runCompleted)
             if wasSelectedRun {
                 self.pendingToolCallsById = [:]
                 self.updateStreamingAssistantText(nil)
@@ -242,7 +243,7 @@ extension OpenClawChatViewModel {
             if let projected = ChatSessionSidebarModel.applying(
                 sessionChange: change,
                 to: self.sessions,
-                activeAgentId: self.activeAgentId)
+                activeAgentId: self.currentSessionSnapshot().deliveryAgentID)
             {
                 self.sessions = projected
             }
@@ -438,7 +439,7 @@ extension OpenClawChatViewModel {
             if let projected = ChatSessionSidebarModel.applying(
                 sessionChange: change,
                 to: self.sessions,
-                activeAgentId: self.activeAgentId)
+                activeAgentId: self.currentSessionSnapshot().deliveryAgentID)
             {
                 self.sessions = projected
             }
@@ -780,14 +781,14 @@ extension OpenClawChatViewModel {
 
         if phase == "start" {
             guard let sequence = evt.seq else { return }
-            _ = self.applyLiveRunLifecycle(runID: evt.runId, sequence: sequence, terminal: false)
+            _ = self.acceptLiveRunSequence(runID: evt.runId, sequence: sequence)
             return
         }
         guard isTerminalPhase || isFailure || aborted || isSuccessfulStatus else { return }
         let acceptedLifecycle = if isLegacySessionStream {
             true
         } else if let sequence = evt.seq {
-            self.applyLiveRunLifecycle(runID: evt.runId, sequence: sequence, terminal: true)
+            self.acceptLiveRunSequence(runID: evt.runId, sequence: sequence)
         } else {
             isPendingRun || isAdvertisedRun || isSelectedRun
         }
@@ -798,7 +799,8 @@ extension OpenClawChatViewModel {
             self.retirePendingRun(
                 evt.runId,
                 hapticEvent: isFailure || aborted ? .runFailed : .runCompleted)
-        } else if evt.seq == nil {
+        } else if !isLegacySessionStream || evt.seq == nil {
+            // Sequenced legacy streams carry a session ID.
             self.retireTerminalRun(evt.runId)
         }
         guard isSelectedRun || isLegacySessionStream else {

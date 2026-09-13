@@ -57,6 +57,7 @@ import { captureEnv, withEnvAsync } from "../test-utils/env.js";
 import { getFreePort } from "../test-utils/ports.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
+import { quoteCliArg } from "./quote-cli-arg.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
 
 const commandTransport = vi.hoisted(() => ({
@@ -1745,10 +1746,21 @@ describe("update-cli", () => {
   }) => {
     const nodeModules = path.join(params.prefix, "lib", "node_modules");
     const root = path.join(nodeModules, "openclaw");
-    const serviceNode = path.join(params.prefix, "bin", "node");
+    const serviceNode = path.join(
+      params.prefix,
+      "bin",
+      sqliteHostPlatform === "win32" ? "node.exe" : "node",
+    );
     const serviceNpm = path.join(params.prefix, "bin", "npm");
     await fs.mkdir(path.dirname(serviceNode), { recursive: true });
-    await fs.writeFile(serviceNode, "#!/bin/sh\n", { encoding: "utf-8", mode: 0o755 });
+    // Metadata sizing executes the selected path outside the CLI transport mock.
+    if (sqliteHostPlatform === "win32") {
+      await fs.copyFile(process.execPath, serviceNode);
+    } else {
+      await fs.writeFile(serviceNode, `#!/bin/sh\nexec ${quoteCliArg(process.execPath)} "$@"\n`, {
+        mode: 0o755,
+      });
+    }
     const serviceNpmReal =
       params.withNpm === false
         ? undefined

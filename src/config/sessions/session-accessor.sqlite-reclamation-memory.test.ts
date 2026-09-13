@@ -39,8 +39,8 @@ vi.mock("./session-accessor.sqlite-worker-request.js", async (importOriginal) =>
     await importOriginal<typeof import("./session-accessor.sqlite-worker-request.js")>();
   return {
     ...actual,
-    runSqliteMutationWorkerRequest: (
-      params: Parameters<typeof actual.runSqliteMutationWorkerRequest>[0],
+    runSqliteMutationWorkerRequest: <Result>(
+      params: Parameters<typeof actual.runSqliteMutationWorkerRequest<Result>>[0],
     ) => {
       let inWriteAdmission: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined;
       return actual.runSqliteMutationWorkerRequest({

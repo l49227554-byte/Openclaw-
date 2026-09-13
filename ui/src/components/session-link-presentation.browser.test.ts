@@ -6,7 +6,7 @@ import "../styles/chat/text.css";
 import "../styles/sidebar-markdown.css";
 import "../styles/chat/grouped.css";
 
-const title = "A resolved session title long enough to wrap in a narrow chat bubble";
+const title = "A resolved session title long enough to be truncated in a narrow chat bubble";
 
 // Zero-sized inline boxes expose the line's baseline without relying on font metrics.
 function baselineMarker(): HTMLSpanElement {
@@ -31,34 +31,39 @@ describe("session link presentation", () => {
       const host = document.createElement("div");
       host.id = "session-link-proof";
       host.className = "chat-text";
-      host.innerHTML = `<p>Open <a class="markdown-session-link markdown-session-link--titled" href="/chat/main/research"><span class="session-label">${title}</span></a> or <a class="markdown-session-link" href="/chat/main/unknown">an untitled session</a>.</p>`;
+      host.innerHTML = `<p>Open <a class="markdown-bare-url markdown-session-link markdown-session-link--titled" href="/chat/main/research"><span class="session-label">${title}</span></a> or <a class="markdown-session-link" href="/chat/main/unknown">an untitled session</a>.</p>`;
       document.body.append(host);
       const link = host.querySelector<HTMLAnchorElement>("a")!;
       const label = link.querySelector<HTMLSpanElement>("span")!;
       const untitled = host.querySelectorAll("a")[1]!;
+      for (const width of [240, 700]) {
+        host.style.width = `${width}px`;
+        expect(host.scrollWidth).toBeLessThanOrEqual(width);
+        expect(link.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+        expect(label.getBoundingClientRect().height).toBeLessThanOrEqual(
+          Number.parseFloat(getComputedStyle(label).lineHeight) + 0.5,
+        );
+        expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+        expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
+      }
+      expect(link.textContent).toBe(title);
+      label.textContent = "Release checklist";
+      host.style.width = "240px";
       const outer = baselineMarker();
       const inner = baselineMarker();
       link.before(outer);
       label.prepend(inner);
-
-      for (const width of [240, 700]) {
-        host.style.width = `${width}px`;
-        expect(
-          Math.abs(inner.getBoundingClientRect().bottom - outer.getBoundingClientRect().bottom),
-        ).toBeLessThan(0.6);
-        expect(host.scrollWidth).toBeLessThanOrEqual(width);
-        if (width === 240) {
-          expect(label.getClientRects().length).toBeGreaterThan(1);
-        }
-        expect(link.getBoundingClientRect().width).toBeLessThanOrEqual(width);
-      }
+      expect(label.scrollWidth).toBe(label.clientWidth);
+      expect(
+        Math.abs(inner.getBoundingClientRect().bottom - outer.getBoundingClientRect().bottom),
+      ).toBeLessThan(0.6);
       expect(getComputedStyle(link).color).toBe(getComputedStyle(untitled).color);
       expect(getComputedStyle(link, "::before").backgroundColor).toBe(getComputedStyle(link).color);
       expect(getComputedStyle(link, "::before").maskImage).toContain("data:image/svg+xml");
       expect(getComputedStyle(link, "::before").animationName).toBe("none");
       outer.remove();
       inner.remove();
-      expect(link.textContent).toBe(title);
+      expect(link.textContent).toBe("Release checklist");
     },
   );
 
@@ -73,9 +78,15 @@ describe("session link presentation", () => {
       document.body.append(host);
       const [titled, untitled] = host.querySelectorAll("a");
       expect(getComputedStyle(titled!).color).toBe(getComputedStyle(untitled!).color);
-      expect(titled!.firstElementChild!.getClientRects().length).toBeGreaterThan(1);
+      const label = titled!.firstElementChild as HTMLElement;
+      expect(label.getBoundingClientRect().height).toBeLessThanOrEqual(
+        Number.parseFloat(getComputedStyle(label).lineHeight) + 0.5,
+      );
+      expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+      expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
       expect(host.scrollWidth).toBeLessThanOrEqual(host.clientWidth);
       expect(titled!.textContent).toBe(title);
+      label.textContent = "Release checklist";
       const outer = baselineMarker();
       const inner = baselineMarker();
       host.firstElementChild!.prepend(outer);

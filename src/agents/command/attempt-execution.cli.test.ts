@@ -1945,7 +1945,7 @@ describe("CLI attempt execution", () => {
       runCliAgentMock.mockResolvedValueOnce(makeCliResult("continued in fork", "fork-successor"));
       await runClaudeCliAttempt({
         sessionKey,
-        sessionEntry: sessionStore[sessionKey],
+        sessionEntry,
         sessionStore,
         body: "continue in a fork",
         runId: "run-cli-after-before-successor-failure",

@@ -103,7 +103,7 @@ export function markInterruptedStartupRun(params: {
       error: STARTUP_INTERRUPTED_ERROR,
       startedAt: runningAtMs,
     },
-    completionFailed: false,
+    completionStatus: "failed",
     autoDisableNotificationOwnsFailure,
     deferredNotifications: params.deferredNotifications,
   });

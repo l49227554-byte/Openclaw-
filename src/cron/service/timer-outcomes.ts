@@ -11,6 +11,7 @@ import { maybeAutoDisableCronJobAfterRunFailure } from "./auto-disable.js";
 import {
   finalizeCronFailureNotifications,
   maybeEmitFailureAlert,
+  maybeEmitFailureRecovery,
   resolveFailureAlert,
 } from "./failure-alerts.js";
 import {
@@ -224,7 +225,7 @@ export function applyJobResult(
       job,
       alertConfig,
       result,
-      completionFailed: completionStatus === "failed",
+      completionStatus,
       autoDisableNotificationOwnsFailure,
       replay: opts?.replay,
       deferredNotifications: opts?.deferredNotifications,
@@ -608,6 +609,12 @@ export function applyTriggerNoFireResult(
     job.state.consecutiveErrors = 0;
     job.state.scheduleErrorCount = 0;
     applyTriggerEvaluationState(job, result.triggerEval, result.endedAt);
+    maybeEmitFailureRecovery(state, {
+      job,
+      alertConfig: resolveFailureAlert(state, job),
+      triggerOnly: true,
+      deferredNotifications: opts?.deferredNotifications,
+    });
   }
   if (opts?.scheduleMode === "immediate-preserve" || opts?.scheduleMode === "stale-preserve") {
     job.state.nextRunAtMs = previousNextRunAtMs;

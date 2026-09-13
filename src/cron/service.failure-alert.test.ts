@@ -45,6 +45,7 @@ async function withFailureAlertCron(
     enqueueSystemEvent: ReturnType<typeof vi.fn>;
     requestHeartbeat: ReturnType<typeof vi.fn>;
     sendCronFailureAlert: ReturnType<typeof vi.fn<SendCronFailureAlert>>;
+    runIsolatedAgentJob: ReturnType<typeof vi.fn<RunIsolatedAgentJob>>;
     addJob: (name: string, overrides?: Partial<CronJobCreate>) => ReturnType<CronService["add"]>;
   }) => Promise<void>,
 ): Promise<void> {
@@ -56,6 +57,7 @@ async function withFailureAlertCron(
     status: "error",
     error: "temporary upstream error",
   };
+  const runIsolatedAgentJob = vi.fn<RunIsolatedAgentJob>(async () => runResult);
   const cron = new CronService({
     storePath: store.storePath,
     cronEnabled: true,
@@ -65,7 +67,7 @@ async function withFailureAlertCron(
     log: noopLogger,
     enqueueSystemEvent,
     requestHeartbeat,
-    runIsolatedAgentJob: vi.fn(async () => runResult),
+    runIsolatedAgentJob,
     ...(params.useFallback ? {} : { sendCronFailureAlert }),
   });
 
@@ -76,6 +78,7 @@ async function withFailureAlertCron(
       enqueueSystemEvent,
       requestHeartbeat,
       sendCronFailureAlert,
+      runIsolatedAgentJob,
       addJob: async (name, overrides) => await cron.add(createFailureAlertJob(name, overrides)),
     });
   } finally {
@@ -139,13 +142,13 @@ describe("CronService failure alerts", () => {
       cooldownMs: 120_000,
     },
     { name: "zero", global: undefined, job: { after: 8, cooldownMs: 0 }, cooldownMs: 0 },
-  ])("honors $name cooldown for delivery failures without an after gate", async (testCase) => {
+  ])("groups delivery failures with $name cooldown without an after gate", async (testCase) => {
     await withFailureAlertCron(
       {
         failureAlert: testCase.global,
         runResult: { status: "ok", delivered: false, deliveryError: "primary rejected" },
       },
-      async ({ cron, sendCronFailureAlert, addJob }) => {
+      async ({ cron, sendCronFailureAlert, runIsolatedAgentJob, addJob }) => {
         const job = await addJob("delivery cooldown", {
           delivery: {
             ...createTelegramDelivery(),
@@ -172,6 +175,14 @@ describe("CronService failure alerts", () => {
         }
 
         vi.setSystemTime(firstAt + testCase.cooldownMs);
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledOnce();
+
+        runIsolatedAgentJob.mockResolvedValue({
+          status: "ok",
+          delivered: false,
+          deliveryError: "primary target no longer exists",
+        });
         await cron.run(job.id, "force");
         expect(sendCronFailureAlert).toHaveBeenCalledTimes(2);
         expect(cron.getJob(job.id)?.state.lastFailureAlertAtMs).toBe(Date.now());
@@ -289,13 +300,13 @@ describe("CronService failure alerts", () => {
     );
   });
 
-  it("alerts after configured consecutive failures and honors cooldown", async () => {
+  it("groups an incident, alerts on a changed cause, and reports recovery once", async () => {
     await withFailureAlertCron(
       {
         failureAlert: { enabled: true, after: 2, cooldownMs: 60_000 },
         runResult: { status: "error", error: "wrong model id" },
       },
-      async ({ cron, sendCronFailureAlert, addJob }) => {
+      async ({ cron, sendCronFailureAlert, runIsolatedAgentJob, addJob }) => {
         const job = await addJob("daily report", {
           delivery: { mode: "announce", channel: "telegram", to: "19098680" },
         });
@@ -312,13 +323,36 @@ describe("CronService failure alerts", () => {
         expect((firstAlert.job as { id?: string } | undefined)?.id).toBe(job.id);
         expectAlertTextContaining(sendCronFailureAlert, 'Automation "daily report" failed 2 times');
 
+        runIsolatedAgentJob.mockResolvedValue({ status: "error", error: "timeout" });
         await cron.run(job.id, "force");
         expect(sendCronFailureAlert).toHaveBeenCalledTimes(1);
 
+        runIsolatedAgentJob.mockResolvedValue({ status: "error", error: "wrong model id" });
         vi.advanceTimersByTime(60_000);
         await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(1);
+
+        runIsolatedAgentJob.mockResolvedValue({ status: "error", error: "timeout" });
+        await cron.run(job.id, "force");
         expect(sendCronFailureAlert).toHaveBeenCalledTimes(2);
-        expectAlertTextContaining(sendCronFailureAlert, 'Automation "daily report" failed 4 times');
+        expectAlertTextContaining(sendCronFailureAlert, "Cause: timeout");
+
+        runIsolatedAgentJob.mockResolvedValue({ status: "ok" });
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(2);
+
+        runIsolatedAgentJob.mockResolvedValue({ status: "ok", delivered: true });
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(3);
+        expectAlertTextContaining(sendCronFailureAlert, 'Automation "daily report" recovered');
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(3);
+
+        runIsolatedAgentJob.mockResolvedValue({ status: "error", error: "timeout" });
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(3);
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(4);
       },
     );
   });
@@ -345,6 +379,47 @@ describe("CronService failure alerts", () => {
           channel: "telegram",
           to: "12345",
         });
+      },
+    );
+  });
+
+  it("reports an existing incident to a changed failure destination", async () => {
+    await withFailureAlertCron(
+      { failureAlert: { after: 1, cooldownMs: 60_000 } },
+      async ({ cron, sendCronFailureAlert, addJob }) => {
+        const job = await addJob("rerouted incident", { delivery: createTelegramDelivery() });
+        await cron.run(job.id, "force");
+        await cron.update(job.id, { failureAlert: { to: "new-recipient" } });
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledOnce();
+
+        vi.advanceTimersByTime(60_000);
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(2);
+        expectAlertFields(sendCronFailureAlert, { to: "new-recipient" });
+      },
+    );
+  });
+
+  it("fences delayed alerts across recovery and failure in the same clock tick", async () => {
+    await withFailureAlertCron(
+      { failureAlert: { after: 1, cooldownMs: 0 } },
+      async ({ cron, sendCronFailureAlert, runIsolatedAgentJob, addJob }) => {
+        const job = await addJob("same-tick incident", { delivery: createTelegramDelivery() });
+        await cron.run(job.id, "force");
+        runIsolatedAgentJob.mockResolvedValueOnce({ status: "ok", delivered: true });
+        await cron.run(job.id, "force");
+        await cron.run(job.id, "force");
+        expect(sendCronFailureAlert).toHaveBeenCalledTimes(3);
+
+        const first = sendCronFailureAlert.mock.calls[0]![0];
+        const current = sendCronFailureAlert.mock.calls[2]![0];
+        expect(first.runAtMs).toBe(current.runAtMs);
+        await first.onDeliverySettled({ delivered: true, status: "delivered" });
+        expect(cron.getJob(job.id)?.state.lastFailureNotificationDeliveryStatus).toBe("unknown");
+
+        await current.onDeliverySettled({ delivered: true, status: "delivered" });
+        expect(cron.getJob(job.id)?.state.lastFailureNotificationDeliveryStatus).toBe("delivered");
       },
     );
   });
@@ -915,6 +990,18 @@ describe("CronService failure alerts", () => {
         code: "tool_budget_exceeded" as const,
       },
       expected: "Cause: automation script exceeded its tool budget",
+    },
+    {
+      name: "plugin reload failure",
+      detail: {
+        kind: "script-failure" as const,
+        source: "payload" as const,
+        code: "plugin_reload_failed" as const,
+      },
+      expected:
+        "Cause: tools could not be refreshed after a plugin reload.\n" +
+        "The automation script did not run. Automatic setup recovery failed.\n" +
+        "Check automation history and plugin status, then retry the automation.",
     },
   ])("renders a closed $name fact in threshold alerts", async ({ detail, expected }) => {
     await withFailureAlertCron(

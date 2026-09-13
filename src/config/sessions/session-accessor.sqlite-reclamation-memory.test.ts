@@ -43,7 +43,7 @@ vi.mock("./session-accessor.sqlite-worker-request.js", async (importOriginal) =>
       params: Parameters<typeof actual.runSqliteMutationWorkerRequest<Result>>[0],
     ) => {
       let inWriteAdmission: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined;
-      return actual.runSqliteMutationWorkerRequest({
+      return actual.runSqliteMutationWorkerRequest<Result>({
         ...params,
         withWriteAdmission: (performWrite, diagnostics) =>
           params.withWriteAdmission((refusal) => {

@@ -62,7 +62,7 @@ describe("status-overview-rows", () => {
     expect(findRowValue(rows, "Telemetry")).toBe("muted(disabled · update checks only)");
     expect(findRowValue(rows, "Host desktop")).toBe("muted(disabled)");
     expect(findRowValue(rows, "Sessions")).toBe(
-      "2 active · default gpt-5.5 (12k ctx) · store.json",
+      "2 stored · default gpt-5.5 (12k ctx) · store.json",
     );
   });
 

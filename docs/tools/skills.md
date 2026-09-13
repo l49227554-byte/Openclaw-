@@ -466,18 +466,22 @@ OpenClaw filters skills at load time using `metadata.openclaw` (JSON5 object
 embedded in the frontmatter, see the parsing note above). A skill with no
 `metadata.openclaw` block is always eligible unless explicitly disabled.
 
-Skill **visibility** and skill **readiness** are related but different:
+Skill **inventory**, skill **readiness**, and skill **visibility** are related
+but different:
 
-- **Visibility** answers whether an agent can see or invoke the skill after
-  precedence, agent allowlists, bundled allowlists, and session snapshot rules.
+- **Inventory** answers whether OpenClaw discovered the skill in a configured
+  root or bundled source.
 - **Readiness** answers whether the current runtime can satisfy the skill's
   declared requirements, such as binaries, environment variables, config paths,
   operating system constraints, or reachable node-hosted capabilities.
+- **Visibility** answers whether a ready, eligible skill is exposed to the
+  selected agent after agent allowlists, invocation flags, and session snapshot
+  rules are applied.
 
-A skill can be discoverable in inventory but still not ready to run. Use
+A skill can be present in inventory but still not ready or visible. Use
 [`openclaw skills check`](/cli/skills#commands) when debugging a skill that
-appears in configuration but does not show up for an agent, or when a skill is
-visible but its required tool, credential, or host capability is missing.
+appears in configuration but does not show up for an agent, or when its required
+tool, credential, or host capability is missing.
 
 ```markdown
 ---

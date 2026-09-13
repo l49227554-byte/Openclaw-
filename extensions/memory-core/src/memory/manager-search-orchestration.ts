@@ -197,11 +197,9 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
         (indexIdentity.status === "missing" ||
           (searchSyncEnabled &&
             indexIdentity.status === "mismatched" &&
-            indexIdentity.owner === "openclaw" &&
-            indexIdentity.code === "chunking_version"));
+            indexIdentity.owner === "openclaw"));
       if (shouldRepairIdentity) {
-        // Missing metadata has no safe generation; chunking upgrades need a full
-        // rebuild. Repair before a read-generation lease can block its writer.
+        // Repair before a read-generation lease can block the rebuild's writer.
         await this.syncAdmitted(
           { reason: "search", force: true },
           { allowEmbeddingBootstrapFallback: true },

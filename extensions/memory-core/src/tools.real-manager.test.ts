@@ -12,11 +12,13 @@ import { openOpenClawAgentDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EmbeddingProvider } from "./memory/embeddings.js";
+import { readMemoryDatabaseRevision } from "./memory/manager-db.js";
 import * as generationLease from "./memory/manager-index-generation-lease.js";
 import {
   createManagerIndexFixture,
   type ManagerIndexFixture,
 } from "./memory/manager-index.test-support.js";
+import { MEMORY_INDEX_PROVENANCE_VERSION } from "./memory/manager-reindex-state.js";
 import { createMemoryGetTool, createMemorySearchTool, testing } from "./tools.js";
 
 const { closeAllMemorySearchManagers, getMemorySearchManager } = await import("./memory/index.js");
@@ -287,42 +289,55 @@ describe("memory_search real manager", () => {
     },
   );
 
-  it("attributes a persisted provenance mismatch to OpenClaw", async () => {
-    const cfg = fixture.createConfig({
-      provider: "none",
-      vectorEnabled: false,
-    });
-    const manager = await fixture.getFreshManager(cfg);
-    await manager.sync({ reason: "cli", force: true });
-    await manager.close();
-    await closeAllMemorySearchManagers();
+  it.each([undefined, 0, MEMORY_INDEX_PROVENANCE_VERSION])(
+    "memory_search repairs provenance %s once and preserves current indexes",
+    async (provenanceVersion) => {
+      const cfg = fixture.createConfig({
+        provider: "none",
+        vectorEnabled: false,
+      });
+      const manager = await fixture.getFreshManager(cfg);
+      await manager.sync({ reason: "cli", force: true });
+      await manager.close();
+      await closeAllMemorySearchManagers();
 
-    const db = openOpenClawAgentDatabase({ agentId: "main" }).db;
-    const row = db
-      .prepare("SELECT value FROM memory_index_meta WHERE key = 'memory_index_meta_v1'")
-      .get() as { value: string };
-    db.prepare("UPDATE memory_index_meta SET value = ? WHERE key = 'memory_index_meta_v1'").run(
-      JSON.stringify({ ...JSON.parse(row.value), provenanceVersion: 0 }),
-    );
-    closeOpenClawAgentDatabasesForTest();
+      const db = openOpenClawAgentDatabase({ agentId: "main" }).db;
+      const row = db
+        .prepare("SELECT value FROM memory_index_meta WHERE key = 'memory_index_meta_v1'")
+        .get() as { value: string };
+      db.prepare("UPDATE memory_index_meta SET value = ? WHERE key = 'memory_index_meta_v1'").run(
+        JSON.stringify({ ...JSON.parse(row.value), provenanceVersion }),
+      );
+      const before = readMemoryDatabaseRevision(db);
 
-    const tool = createMemorySearchTool({ config: cfg, agentId: "main" });
-    if (!tool) {
-      throw new Error("memory_search tool missing");
-    }
-    const result = await tool.execute("provenance-mismatch", { query: "alpha" });
-
-    expect(result.details).toMatchObject({
-      disabled: true,
-      unavailable: true,
-      error: "index provenance classifier changed",
-      warning:
-        "Tell the user: memory search is paused because this OpenClaw version changed the memory index format (index provenance classifier changed); no configuration change is needed.",
-      action:
-        "Tell the user to run: openclaw memory status --index --agent main. Rebuilding uses keyword indexing only and does not call an embedding provider.",
-    });
-    expect(fixture.provider.embedQueryCalls).toBe(0);
-  });
+      const tool = createMemorySearchTool({ config: cfg, agentId: "main" });
+      if (!tool) {
+        throw new Error("memory_search tool missing");
+      }
+      const result = await tool.execute("provenance-mismatch", {
+        query: "alpha",
+        corpus: "memory",
+      });
+      expect(result.details).toMatchObject({
+        results: [
+          expect.objectContaining({
+            path: "memory/2026-01-12.md",
+            citation: expect.stringContaining("memory/2026-01-12.md"),
+          }),
+        ],
+      });
+      expect(result.details).not.toHaveProperty("unavailable");
+      const after = readMemoryDatabaseRevision(db);
+      if (provenanceVersion === MEMORY_INDEX_PROVENANCE_VERSION) {
+        expect(after).toBe(before);
+      } else {
+        expect(after).toBeGreaterThan(before);
+      }
+      await tool.execute("provenance-current", { query: "alpha", corpus: "memory" });
+      expect(readMemoryDatabaseRevision(db)).toBe(after);
+      expect(fixture.provider.embedQueryCalls).toBe(0);
+    },
+  );
 
   it("preserves reindex guidance alongside wiki results after an embedding model change", async () => {
     const manager = await fixture.getFreshManager(

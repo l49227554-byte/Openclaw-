@@ -251,10 +251,11 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         indexIdentity.status === "missing" && !hasTargetArchiveFiles && canRebuildMissingIdentity;
       const needsExplicitIdentityReindex =
         params?.reason === "cli" && indexIdentity.status !== "valid" && !hasTargetArchiveFiles;
-      // Source hashes do not reflect chunk boundaries, so an implementation
-      // upgrade must rebuild the shadow index instead of attempting dirty sync.
-      const needsChunkingVersionReindex =
-        meta !== null && meta.chunkingVersion !== MEMORY_CHUNKING_VERSION && !hasTargetArchiveFiles;
+      // Runtime format changes need a shadow rebuild even when source hashes match.
+      const needsRuntimeVersionReindex =
+        indexIdentity.status === "mismatched" &&
+        indexIdentity.owner === "openclaw" &&
+        !hasTargetArchiveFiles;
       const canRunRetryFullReindex =
         indexIdentity.status !== "missing" || needsInitialIndex || canRebuildMissingIdentity;
       needsFullReindex =
@@ -262,7 +263,7 @@ export abstract class MemoryManagerSyncOps extends MemoryManagerSourceSyncOps {
         needsInitialIndex ||
         needsMissingIdentityReindex ||
         needsExplicitIdentityReindex ||
-        needsChunkingVersionReindex ||
+        needsRuntimeVersionReindex ||
         (this.memoryFullRetryDirty && canRunRetryFullReindex) ||
         (this.sessionsFullRetryDirty && indexIdentity.status !== "valid" && canRunRetryFullReindex);
       const needsFullSessionReindex = needsFullReindex || this.sessionsFullRetryDirty;

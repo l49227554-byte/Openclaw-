@@ -103,6 +103,11 @@ Interactive `memory_search` keeps three attempts and at most eight seconds of
 total retry sleep within the agent tool's 15-second deadline. A cancelled caller
 interrupts its retry wait.
 
+After an OpenClaw index-format upgrade, the first search rebuilds the index before
+returning results. This can take longer and call
+the configured embedding provider. Later searches reuse the repaired index;
+status inspection alone does not rebuild it.
+
 If status reports an index identity warning after changing embedding settings,
 check the affected agent's provider, model, sources, and extra paths, then rebuild:
 

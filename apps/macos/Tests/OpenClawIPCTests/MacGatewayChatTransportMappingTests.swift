@@ -150,7 +150,8 @@ struct MacGatewayChatTransportMappingTests {
                     OpenClawChatAgentChoice(id: "zeta", name: " Zeta ", workspaceGit: true),
                     OpenClawChatAgentChoice(id: "legacy"),
                     OpenClawChatAgentChoice(id: "alpha", workspaceGit: false),
-                ])
+                ],
+                sessionRoutingContract: "per-agent|main|system")
             #expect(try await transport.listAgents() == expected)
             let lease = try #require(await transport.acquireNewSessionRouteLease())
             #expect(try await lease.listAgents() == expected)

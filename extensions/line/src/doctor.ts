@@ -1,4 +1,3 @@
-// Line plugin module implements doctor behavior.
 import { firstDefined } from "openclaw/plugin-sdk/allow-from";
 import type {
   ChannelDoctorAdapter,
@@ -6,6 +5,11 @@ import type {
 } from "openclaw/plugin-sdk/channel-contract";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { normalizeAllowFrom } from "./bot-access.js";
+import {
+  resolveExactLineGroupConfigKey,
+  resolveLineGroupConfigEntry,
+  resolveLineGroupLookupIds,
+} from "./group-keys.js";
 
 /** Which key supplied the allowlist a group actually resolves to. */
 type AllowFromSource = "group" | "defaults" | "channel";
@@ -45,14 +49,6 @@ function readGroupEntries(
   );
 }
 
-/**
- * Group coverage as LINE's admission gate computes it.
- *
- * `resolveLineGroupConfigEntry` treats `groups["*"]` as a defaults node rather than a
- * rival entry, and admission reads `firstDefined(groupConfig.allowFrom, groupAllowFrom)`.
- * A group switched off with `enabled: false` is refused before any allowlist applies,
- * so it is neither covered nor a gap.
- */
 function inspectLineGroupCoverage(params: {
   account: Record<string, unknown>;
   parent?: Record<string, unknown>;
@@ -64,43 +60,37 @@ function inspectLineGroupCoverage(params: {
     return { covered: false, uncovered: [], empty };
   }
 
-  const defaults = entries.find(([id]) => id === GROUP_DEFAULTS_KEY)?.[1];
-  const resolveAllowFrom = (
-    group?: Record<string, unknown>,
-  ): { value: unknown; source?: AllowFromSource } => {
-    if (group?.allowFrom !== undefined) {
-      return { value: group.allowFrom, source: group === defaults ? "defaults" : "group" };
-    }
-    if (defaults?.allowFrom !== undefined) {
-      return { value: defaults.allowFrom, source: "defaults" };
-    }
-    if (params.groupAllowFrom !== undefined) {
-      return { value: params.groupAllowFrom, source: "channel" };
-    }
-    return { value: undefined };
-  };
+  const groups = Object.fromEntries(entries);
+  const defaults = groups[GROUP_DEFAULTS_KEY];
 
   // A group with no entry of its own resolves to the defaults node alone.
   let covered =
-    defaults?.enabled !== false && hasAllowFromEntries(resolveAllowFrom(defaults).value);
+    defaults?.enabled !== false &&
+    hasAllowFromEntries(firstDefined(defaults?.allowFrom, params.groupAllowFrom));
 
   const uncovered: string[] = [];
   for (const [id, group] of entries) {
     if (id === GROUP_DEFAULTS_KEY) {
       continue;
     }
-    if (firstDefined(group.enabled, defaults?.enabled) === false) {
+    const groupId = resolveLineGroupLookupIds(id)[0];
+    if (resolveExactLineGroupConfigKey({ groups, groupId }) !== id) {
       continue;
     }
-    const { value, source } = resolveAllowFrom(group);
-    if (hasAllowFromEntries(value)) {
+    const effectiveGroup = resolveLineGroupConfigEntry(groups, { groupId });
+    if (effectiveGroup?.enabled === false) {
+      continue;
+    }
+    if (hasAllowFromEntries(firstDefined(effectiveGroup?.allowFrom, params.groupAllowFrom))) {
       covered = true;
-    } else if (source === undefined) {
-      uncovered.push(id);
+    } else if (group.allowFrom !== undefined) {
+      empty.group.push(id);
+    } else if (defaults?.allowFrom !== undefined) {
+      empty.defaults.push(id);
+    } else if (params.groupAllowFrom !== undefined) {
+      empty.channel.push(id);
     } else {
-      // The remedy depends on which key supplies the empty list: the group's own
-      // entry, the defaults node, or the channel-wide list.
-      empty[source].push(id);
+      uncovered.push(id);
     }
   }
   return { covered, uncovered, empty };
@@ -129,17 +119,11 @@ function isLineGroupAllowlistScope(params: ChannelDoctorEmptyAllowlistAccountCon
   );
 }
 
-/**
- * Replace the shared warning when per-group allowlists make its claim untrue.
- *
- * The shared warning states every group message is dropped, which stops being true once
- * one group carries its own `allowFrom`. Suppressing it alone would hide the groups that
- * really are dropped, so name those here instead.
- */
 function formatGroupIds(ids: string[]): string {
   return ids.map((id) => `"${id}"`).join(", ");
 }
 
+/** Name blocked groups when a working per-group allowlist makes the shared warning untrue. */
 function collectLineEmptyAllowlistExtraWarnings(
   params: ChannelDoctorEmptyAllowlistAccountContext,
 ): string[] {

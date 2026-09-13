@@ -6,23 +6,23 @@ import {
   getAgentRunContextOwnership,
   releaseAgentRunContext,
 } from "../infra/agent-run-registry.js";
-import { createSubagentTaskBackingDetail } from "../tasks/task-backing-authority.js";
-import { createAcpTaskBackingDetailForTest } from "../tasks/task-backing-authority.test-support.js";
-import { updateTask } from "../tasks/task-registry-mutation.js";
 import {
-  createTaskRecord,
   deleteTaskRecordById,
   getTaskById,
-  markTaskTerminalById,
   publishTaskRecordAfterAtomicStore,
-  reloadTaskRegistryFromStore,
-} from "../tasks/task-registry.js";
+} from "../tasks/runtime-internal.js";
+import { createSubagentTaskBackingDetail } from "../tasks/task-backing-authority.js";
+import { createAcpTaskBackingDetailForTest } from "../tasks/task-backing-authority.test-support.js";
+import { finalizeTaskRunById } from "../tasks/task-executor.js";
+import { updateTask } from "../tasks/task-registry-mutation.js";
+import { reloadTaskRegistryFromStore } from "../tasks/task-registry-state.js";
 import {
   configureTaskRegistryRuntime,
   getTaskRegistryObservers,
   getTaskRegistryStore,
   type TaskRegistryObserverEvent,
 } from "../tasks/task-registry.store.js";
+import { createTaskFixture } from "../tasks/task-registry.test-support.js";
 import { bindTaskRunOwner } from "../tasks/task-run-owner.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
 import type { TaskEventPayload } from "./server-methods/task-summary.js";
@@ -57,9 +57,8 @@ export const sessionTaskDefaults = {
 } as const;
 
 function createRunningTask(runId: string | null = "task-publication-run") {
-  const task = createTaskRecord({
+  return createTaskFixture("cli", {
     ...sessionTaskDefaults,
-    runtime: "cli",
     runId: runId ?? undefined,
     requesterSessionKey: "global",
     requesterAgentId: "main",
@@ -67,10 +66,6 @@ function createRunningTask(runId: string | null = "task-publication-run") {
     status: "running",
     lastEventAt: 1_000,
   });
-  if (!task) {
-    throw new Error("expected task record");
-  }
-  return task;
 }
 
 const waitForObserver = () =>
@@ -144,7 +139,7 @@ export function registerTaskSubscriptionOwnershipTests(setup: Setup): void {
       }
     };
     try {
-      markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
+      finalizeTaskRunById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
       if (change === "retired" || change === "metadata" || change === "reload") {
         expect(closeTaskSessions).toHaveBeenCalledExactlyOnceWith(task.taskId);
       } else {
@@ -192,7 +187,7 @@ export function registerTaskSubscriptionOwnershipTests(setup: Setup): void {
         }
       };
       try {
-        markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
+        finalizeTaskRunById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
         if (change === "retired") {
           expect(getAgentRunContext(runId)).toBeUndefined();
           expect(closeTaskSessions).toHaveBeenCalledExactlyOnceWith(task.taskId);
@@ -247,7 +242,7 @@ export function registerTaskSubscriptionOwnershipTests(setup: Setup): void {
       replace = () => {
         updateTask(task.taskId, { detail: next });
       };
-      markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
+      finalizeTaskRunById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
       expect(getTaskById(task.taskId)).toMatchObject({ detail: next, status: "succeeded" });
       expect(closeTaskSessions).not.toHaveBeenCalled();
     },
@@ -312,7 +307,7 @@ export function registerTaskSubscriptionOwnershipTests(setup: Setup): void {
         );
       };
       try {
-        markTaskTerminalById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
+        finalizeTaskRunById({ taskId: task.taskId, status: "succeeded", endedAt: 2_000 });
         expect(opened).toBeDefined();
         await expect(opened).resolves.toMatchObject({ ok: true });
         expect(pty.killed).toBe(false);

@@ -730,6 +730,7 @@ function getOpenClawStateDatabaseIfOpen(
 }
 
 export {
+  retainOpenClawStateDatabase,
   recordOpenClawStateDatabaseOpenFailure,
   clearOpenClawStateDatabaseOpenFailure,
   closeOpenClawStateDatabaseByPathAsync,

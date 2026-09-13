@@ -250,6 +250,60 @@ async function streamIncompleteMistralResponseOverLoopback() {
   }
 }
 
+async function streamAbnormalOpenAIWebSocketClose() {
+  const {
+    closeOpenAICodexWebSocketSessions,
+    resetOpenAICodexWebSocketStateForTest,
+    streamOpenAICodexResponses,
+  } = await import("../../../../packages/ai/src/providers/openai-chatgpt-responses.js");
+  class AbnormalCloseWebSocket extends EventTarget {
+    constructor() {
+      super();
+      queueMicrotask(() => this.dispatchEvent(new Event("open")));
+    }
+
+    send(): void {
+      queueMicrotask(() => {
+        this.dispatchEvent(
+          Object.assign(new Event("close"), { code: 1006, reason: "", wasClean: false }),
+        );
+      });
+    }
+
+    close(): void {}
+  }
+  const model = {
+    id: "gpt-5.6-luna",
+    name: "GPT-5.6 Luna",
+    api: "openai-chatgpt-responses",
+    provider: "openai",
+    baseUrl: "https://chatgpt.test/backend-api",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 16_000,
+  } satisfies Model<"openai-chatgpt-responses">;
+  const context = {
+    messages: [{ role: "user", content: "hi", timestamp: 1 }],
+  } satisfies Context;
+  const jwtPayload = Buffer.from(
+    JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" } }),
+  ).toString("base64url");
+
+  vi.stubGlobal("WebSocket", AbnormalCloseWebSocket);
+  try {
+    return await streamOpenAICodexResponses(model, context, {
+      apiKey: `header.${jwtPayload}.signature`,
+      transport: "websocket",
+    }).result();
+  } finally {
+    closeOpenAICodexWebSocketSessions();
+    resetOpenAICodexWebSocketStateForTest();
+    vi.unstubAllGlobals();
+  }
+}
+
 describe("handleEmbeddedAssistantFailure", () => {
   it("surfaces storage failure without replaying the run or rotating credentials", async () => {
     const fixture = makeExhaustedCredentialFailureInput();
@@ -506,6 +560,64 @@ describe("handleEmbeddedAssistantFailure", () => {
     expect(result.result).toBe("fallback complete");
     expect(proof.partialReturned).toBe(false);
     console.log(`[terminal-stream recovery proof] ${JSON.stringify(proof)}`);
+  });
+
+  it("advances model fallback after an OpenAI WebSocket 1006 abnormal close", async () => {
+    const assistant = await streamAbnormalOpenAIWebSocketClose();
+    const classification = classifyAssistantFailoverReason(assistant);
+    const config = {
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.6-luna",
+            fallbacks: ["google/mock-2"],
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const calls: string[] = [];
+    let embeddedFailure: { reason: string; rawError?: string } | undefined;
+
+    const result = await runWithModelFallback({
+      cfg: config,
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      sessionId: "session:openai-websocket-1006",
+      skipAuthProfileRuntime: true,
+      run: async (provider, model) => {
+        calls.push(`${provider}/${model}`);
+        if (provider === "openai") {
+          try {
+            await handleEmbeddedAssistantFailure(
+              makeTerminalStreamFailureInput({
+                assistant,
+                model,
+                profileAvailable: false,
+                provider,
+              }).input,
+            );
+          } catch (error) {
+            if (error instanceof FailoverError) {
+              embeddedFailure = { reason: error.reason, rawError: error.rawError };
+            }
+            throw error;
+          }
+        }
+        return "fallback complete";
+      },
+    });
+
+    expect(assistant).toMatchObject({
+      stopReason: "error",
+      errorMessage: "WebSocket closed 1006",
+    });
+    expect(classification).toBe("timeout");
+    expect(embeddedFailure).toEqual({
+      reason: "timeout",
+      rawError: "WebSocket closed 1006",
+    });
+    expect(calls).toEqual(["openai/gpt-5.6-luna", "google/mock-2"]);
+    expect(result.result).toBe("fallback complete");
   });
 
   it.each(INCOMPLETE_TERMINAL_STREAM_CASES)(

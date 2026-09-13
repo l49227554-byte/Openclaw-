@@ -47,6 +47,60 @@ describe("classifyAssistantFailoverReason", () => {
     ).toBeNull();
   });
 
+  it("classifies only abnormal WebSocket closure as a transient timeout", () => {
+    expect(
+      classifyAssistantFailoverReason({
+        ...opencodeGoStalledStreamError,
+        api: "openai-chatgpt-responses",
+        provider: "openai",
+        errorMessage: "WebSocket closed 1006",
+      }),
+    ).toBe("timeout");
+
+    for (const errorMessage of [
+      "WebSocket closed 1000 normal closure",
+      "WebSocket closed 1009 message too big",
+    ]) {
+      expect(
+        classifyAssistantFailoverReason({
+          ...opencodeGoStalledStreamError,
+          api: "openai-chatgpt-responses",
+          provider: "openai",
+          errorMessage,
+        }),
+      ).not.toBe("timeout");
+    }
+  });
+
+  it("keeps abort, auth, context overflow, and schema errors in distinct lanes", () => {
+    expect(
+      classifyAssistantFailoverReason({
+        ...opencodeGoStalledStreamError,
+        stopReason: "aborted",
+        errorMessage: "WebSocket closed 1006",
+      }),
+    ).toBeNull();
+    expect(
+      classifyAssistantFailoverReason({
+        ...opencodeGoStalledStreamError,
+        errorMessage: "WebSocket closed 1006 invalid token",
+      }),
+    ).toBe("auth");
+    expect(
+      classifyAssistantFailoverReason({
+        ...opencodeGoStalledStreamError,
+        errorMessage:
+          "WebSocket closed 1006: The input (263000 tokens) is longer than the model's context length (262144 tokens).",
+      }),
+    ).toBe("context_overflow");
+    expect(
+      classifyAssistantFailoverReason({
+        ...opencodeGoStalledStreamError,
+        errorMessage: "WebSocket closed 1006 invalid request format",
+      }),
+    ).toBe("format");
+  });
+
   it("uses structured assistant error bodies for model-not-found 400s", () => {
     expect(
       classifyAssistantFailoverReason({

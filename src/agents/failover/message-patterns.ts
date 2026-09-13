@@ -197,6 +197,10 @@ const ERROR_PATTERNS = {
     "network request failed",
     "fetch failed",
     "socket hang up",
+    // RFC 6455 code 1006 is synthesized locally when a WebSocket ends without a
+    // close frame. The OpenAI ChatGPT Responses transport preserves this exact
+    // terminal message, so treat only the abnormal-close code as transient.
+    /^websocket closed(?:\s*\(?(?:code\s*)?1006\)?)(?:[:\s].*)?$/i,
     // Codex and node-fetch expose these exact terminal transport messages.
     // Keep them anchored so unrelated local stream failures do not trigger model failover.
     /^stream disconnected before completion(?::[\s\S]*)?$/i,

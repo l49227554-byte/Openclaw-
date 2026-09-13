@@ -1,6 +1,7 @@
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../../test/helpers/promise.js";
 import type { SidebarContent } from "./chat-sidebar-content-types.ts";
 import { readFileDraft, setFileDraft } from "./chat-sidebar-file-view.ts";
 import "../../../styles.css";
@@ -207,8 +208,8 @@ describe.runIf(browserMode)("HTML file presentation", () => {
     async (editable) => {
       const draft = "<h1>Conflicting draft</h1>";
       const latest = { content: "<h1>Reloaded from disk</h1>", hash: "reloaded-hash", editable };
-      const reload = Promise.withResolvers<typeof latest>();
-      const languageReady = Promise.withResolvers<void>();
+      const reload = createDeferred<typeof latest>();
+      const languageReady = createDeferred<void>();
       const { panel, file } = await mount("reload-race.html", draft, undefined, "draft-hash");
       const save = vi.mocked(file.edit!.save);
       save

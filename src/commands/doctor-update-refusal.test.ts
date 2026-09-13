@@ -15,6 +15,7 @@ import { flushLogger, resetLogger, setLoggerOverride } from "../logging/logger.j
 import type { OpenClawDatabaseSchemaPreflight } from "../state/openclaw-database-preflight.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { deleteTestEnvValue } from "../test-utils/env.js";
 import {
   type OpenClawTestState,
   withOpenClawTestState,
@@ -59,7 +60,6 @@ afterEach(async () => {
   setLoggerOverride(null);
   resetLogger();
   vi.restoreAllMocks();
-  vi.unstubAllEnvs();
 });
 
 type History =
@@ -177,7 +177,8 @@ async function withFixture(
       },
     },
     async (state) => {
-      vi.stubEnv("OPENCLAW_HOME", undefined);
+      // The enclosing test-state scope owns environment restoration.
+      deleteTestEnvValue("OPENCLAW_HOME");
       const root = state.path("checkout");
       const commits = createCheckout(root, history);
       vi.mocked(resolveOpenClawPackageRoot).mockResolvedValue(root);
@@ -355,7 +356,7 @@ describe("Doctor refusal recovery under the released Git update driver", () => {
 
   it("keeps non-driver schema admission and maintenance refusal unchanged", async () => {
     await withFixture("detached", async ({ root, schemas }) => {
-      vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", undefined);
+      deleteTestEnvValue("OPENCLAW_UPDATE_IN_PROGRESS");
       await expect(guardUpdateDoctorSchemaUpgrade({ schemas, runtime })).resolves.toBeUndefined();
       vi.mocked(maybeStopManagedServiceBeforeMutableUpdate).mockResolvedValue({
         stopped: false,

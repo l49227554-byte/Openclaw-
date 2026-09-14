@@ -282,6 +282,8 @@ describe("talk realtime gateway relay", () => {
   ])("keeps a relay reusable after each terminal response", async (outcome, terminalType) => {
     let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
     const close = vi.fn();
+    const logGateway = { info: vi.fn(), warn: vi.fn() };
+    const connId = "00000000-0000-4000-8000-000000000002";
     const provider: RealtimeVoiceProviderPlugin = {
       id: "relay-test",
       label: "Relay Test",
@@ -293,6 +295,7 @@ describe("talk realtime gateway relay", () => {
     };
     const events: Array<{ payload: unknown; delivery?: { dropIfSlow?: boolean } }> = [];
     const context = {
+      logGateway,
       broadcastToConnIds: (
         _event: string,
         payload: unknown,
@@ -302,7 +305,7 @@ describe("talk realtime gateway relay", () => {
     } as never;
     const session = createTalkRealtimeRelaySession({
       context,
-      connId: "conn-1",
+      connId,
       provider,
       providerConfig: {},
       instructions: "be brief",
@@ -313,9 +316,12 @@ describe("talk realtime gateway relay", () => {
       throw new Error("expected realtime bridge request");
     }
 
+    bridgeRequest.onReady?.();
+    bridgeRequest.onTranscript?.("user", "private transcript", false);
+
     void sendTalkRealtimeRelayAudio({
       relaySessionId: session.relaySessionId,
-      connId: "conn-1",
+      connId,
       audioBase64: Buffer.from("first").toString("base64"),
       timestamp: 1,
     });
@@ -362,7 +368,7 @@ describe("talk realtime gateway relay", () => {
 
     void sendTalkRealtimeRelayAudio({
       relaySessionId: session.relaySessionId,
-      connId: "conn-1",
+      connId,
       audioBase64: Buffer.from("later").toString("base64"),
       timestamp: 2,
     });
@@ -393,6 +399,16 @@ describe("talk realtime gateway relay", () => {
     ).toHaveLength(2);
     expect(relaySessions.has(session.relaySessionId)).toBe(true);
     expect(close).not.toHaveBeenCalled();
+    stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId });
+    expect(logGateway.info.mock.calls).toEqual([
+      [`[talk-relay] ready relaySessionId=${session.relaySessionId} connId=${connId}`],
+      [`[talk-relay] close relaySessionId=${session.relaySessionId} connId=${connId}`],
+    ]);
+    expect(logGateway.warn.mock.calls).toEqual(
+      outcome.status === "failed" || outcome.status === "incomplete"
+        ? [[`[talk-relay] error relaySessionId=${session.relaySessionId} connId=${connId}`]]
+        : [],
+    );
   });
 
   it("redacts failed response outcome details from relay broadcasts", async () => {
@@ -593,7 +609,7 @@ describe("talk realtime gateway relay", () => {
       });
     };
     try {
-      const logGateway = { warn: vi.fn() };
+      const logGateway = { info: vi.fn(), warn: vi.fn() };
       const broadcastToConnIds = vi.fn();
       const context = {
         broadcastToConnIds,
@@ -631,6 +647,9 @@ describe("talk realtime gateway relay", () => {
       await Promise.resolve();
       await Promise.resolve();
 
+      expect(logGateway.info).toHaveBeenCalledWith(
+        `[talk-relay] close relaySessionId=${firstOwned.relaySessionId} connId=unknown`,
+      );
       expect(bridgeCloses[0]).toHaveBeenCalledOnce();
       expect(bridgeCloses[1]).toHaveBeenCalledOnce();
       expect(bridgeCloses[2]).not.toHaveBeenCalled();

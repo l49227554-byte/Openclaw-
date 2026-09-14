@@ -4,7 +4,16 @@ import {
   prepareReplyToolAuthority,
   type ReplyToolAuthorityInput,
 } from "../../auto-reply/reply/reply-tool-authority.js";
+import {
+  getDiagnosticSessionActivitySnapshot,
+  markDiagnosticRunProgress,
+  isDiagnosticEmbeddedRunOwnerClosed,
+} from "../../logging/diagnostic-run-activity.js";
 import { resolveAdmittedRunActiveAssertion } from "../admitted-run-context.js";
+import {
+  ACTIVE_EMBEDDED_RUNS,
+  type EmbeddedAgentQueueHandle,
+} from "../embedded-agent-runner/run-state.js";
 import type { EmbeddedRunAttemptInternalParams } from "../embedded-agent-runner/run/internal-params.js";
 import {
   getGatewayToolCallerIdentity,
@@ -31,6 +40,7 @@ type ToolAuthorityAttempt = Pick<
   | "runId"
   | "abortSignal"
   | "toolAuthorityFingerprint"
+  | "onRunProgress"
 > & { hostCapabilities?: AgentHarnessAttemptParamsV2["hostCapabilities"] };
 
 /** Execution-only: policy preparation must finish before authority reaches a publisher. */
@@ -38,7 +48,12 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
   internal: Pick<EmbeddedRunAttemptInternalParams, "admittedRunContext" | "replyOperation">,
   attempt: Attempt,
   narrow: ((input: ReplyToolAuthorityInput) => ReplyToolAuthorityInput) | undefined,
-  run: (prepared: Attempt & { toolAuthorityFingerprint?: string }) => Promise<T>,
+  run: (
+    prepared: Attempt & {
+      toolAuthorityFingerprint?: string;
+      onRunProgress: NonNullable<AgentHarnessAttemptParamsV2["onRunProgress"]>;
+    },
+  ) => Promise<T>,
 ): Promise<T> {
   const admitted = internal.admittedRunContext;
   const instance = admitted.operationalRunInstance;
@@ -72,6 +87,8 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
     },
   };
   let live = true;
+  let progressHandle: EmbeddedAgentQueueHandle | undefined;
+  let assertProgressHandle: (() => void) | undefined;
   // Preserve the complete admitted snapshot, but bind its hash and projection
   // only after hooks or native ownership have selected the actual model.
   const direct = operation ? undefined : prepareReplyToolAuthority(input, narrow);
@@ -127,9 +144,54 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
   if (attempt.hostCapabilities && questionAuthority) {
     registerAgentHarnessQuestionAnswerAuthority(attempt.hostCapabilities, questionAuthority);
   }
+  const onRunProgress: NonNullable<AgentHarnessAttemptParamsV2["onRunProgress"]> = (info) => {
+    try {
+      assertActive();
+      assertProgressHandle?.();
+    } catch {
+      return;
+    }
+    if (progressHandle) {
+      if (
+        ACTIVE_EMBEDDED_RUNS.get(sessionId) !== progressHandle ||
+        progressHandle.isStopped?.() ||
+        progressHandle.isAborted?.() ||
+        (progressHandle.diagnosticOwner &&
+          isDiagnosticEmbeddedRunOwnerClosed(progressHandle.diagnosticOwner))
+      ) {
+        return;
+      }
+      // Native transport activity must reach recovery synchronously, independent
+      // of optional/queued telemetry. Core-owned model/tool phases keep their
+      // own clocks; notification traffic is not evidence of semantic progress.
+      const refreshDiagnostics =
+        !progressHandle.diagnosticOwner &&
+        getDiagnosticSessionActivitySnapshot({ sessionId, sessionKey }).activeWorkKind ===
+          "embedded_run";
+      // Runtime probes and diagnostic snapshots can retire their own owner.
+      // Recheck after callbacks, immediately before either clock is refreshed.
+      try {
+        assertProgressHandle?.();
+      } catch {
+        return;
+      }
+      if (ACTIVE_EMBEDDED_RUNS.get(sessionId) !== progressHandle) {
+        return;
+      }
+      if (refreshDiagnostics) {
+        markDiagnosticRunProgress({
+          sessionId,
+          sessionKey,
+          runId,
+          reason: `harness:${info.reason}`,
+        });
+      }
+    }
+    attempt.onRunProgress?.(info);
+  };
   const runPrepared = () =>
     withAgentQuestionAnswerAuthority(questionAuthority, () =>
-      run({ ...attempt, toolAuthorityFingerprint: fingerprint }),
+      run({ ...attempt, onRunProgress, toolAuthorityFingerprint: fingerprint }),
     );
   try {
     if (!agentId || !sessionKey) {
@@ -167,6 +229,17 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
               operation.toolAuthorityRoute?.provider === route.provider &&
               operation.toolAuthorityRoute.model === route.model);
           assertRegistered();
+          // Capture once: a retained callback must not adopt a replacement,
+          // including another handle with identical session and run strings.
+          if (!progressHandle) {
+            progressHandle = handle;
+            assertProgressHandle = () => {
+              assertRegistered();
+              if (!ownsOperation()) {
+                throw new Error("embedded progress owner is no longer active");
+              }
+            };
+          }
           return {
             source: operation ? "reply" : "attempt",
             assertActive: assertRegistered,

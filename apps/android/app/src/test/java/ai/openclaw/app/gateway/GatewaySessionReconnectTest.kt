@@ -988,6 +988,24 @@ class GatewaySessionReconnectTest {
     }
 
   @Test
+  fun connectedHelloPublishesGatewayBootIdentity() =
+    runBlocking {
+      val hello = CompletableDeferred<GatewayHelloSummary>()
+      val server =
+        startGatewayServer(json = Json { ignoreUnknownKeys = true }) { webSocket, id, method ->
+          if (method == "connect") webSocket.send(connectResponseFrame(id, bootId = "boot-a"))
+        }
+      val harness = createReconnectHarness(onHello = hello::complete)
+
+      try {
+        connectNodeSession(harness.session, server.port)
+        assertEquals("boot-a", withTimeout(LIFECYCLE_TEST_TIMEOUT_MS) { hello.await() }.bootId)
+      } finally {
+        shutdownReconnectHarness(harness, server)
+      }
+    }
+
+  @Test
   fun connectedHelloScopesGlobalSessionsOnlyForTheCurrentConnection() =
     runBlocking {
       for (mainSessionKey in listOf("global", "agent:main:conversation")) {
@@ -2256,15 +2274,17 @@ class GatewaySessionReconnectTest {
     capabilities: Set<String> = emptySet(),
     mainSessionKey: String = "main",
     mainKey: String = "main",
+    bootId: String? = null,
   ): String {
     val encodedMainSessionKey = JsonPrimitive(mainSessionKey)
     val encodedMainKey = JsonPrimitive(mainKey)
+    val server = bootId?.let { "\"server\":{\"bootId\":${JsonPrimitive(it)}}," }.orEmpty()
     if (methods == null) {
-      return """{"type":"res","id":"$id","ok":true,"payload":{"snapshot":{"sessionDefaults":{"mainSessionKey":$encodedMainSessionKey,"mainKey":$encodedMainKey}}}}"""
+      return """{"type":"res","id":"$id","ok":true,"payload":{$server"snapshot":{"sessionDefaults":{"mainSessionKey":$encodedMainSessionKey,"mainKey":$encodedMainKey}}}}"""
     }
     val encodedMethods = methods.joinToString(",") { JsonPrimitive(it).toString() }
     val encodedCapabilities = capabilities.joinToString(",") { JsonPrimitive(it).toString() }
-    return """{"type":"res","id":"$id","ok":true,"payload":{"features":{"methods":[$encodedMethods],"capabilities":[$encodedCapabilities]},"snapshot":{"sessionDefaults":{"mainSessionKey":$encodedMainSessionKey,"mainKey":$encodedMainKey}}}}"""
+    return """{"type":"res","id":"$id","ok":true,"payload":{$server"features":{"methods":[$encodedMethods],"capabilities":[$encodedCapabilities]},"snapshot":{"sessionDefaults":{"mainSessionKey":$encodedMainSessionKey,"mainKey":$encodedMainKey}}}}"""
   }
 
   private fun startGatewayServer(

@@ -119,6 +119,8 @@ internal data class CachedSessionEntity(
   val endedAt: Long?,
   val runtimeMs: Long?,
   val outputTokens: Long?,
+  val modelProvider: String?,
+  val model: String?,
   val hasRunMetadata: Boolean,
   // Preserves gateway list order so offline session rows render in the familiar order.
   val rowOrder: Int,
@@ -154,6 +156,18 @@ internal interface ChatCacheDao {
 
   @Query("DELETE FROM cached_gateway_owners WHERE gatewayId = :gatewayId")
   suspend fun deleteGatewayOwner(gatewayId: String)
+
+  @Query("SELECT * FROM cached_model_descriptors WHERE gatewayId = :gatewayId AND agentId = :agentId")
+  suspend fun modelDescriptors(
+    gatewayId: String,
+    agentId: String,
+  ): List<CachedModelDescriptorEntity>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertModelDescriptors(rows: List<CachedModelDescriptorEntity>)
+
+  @Query("DELETE FROM cached_model_descriptors WHERE gatewayId = :gatewayId")
+  suspend fun deleteModelDescriptors(gatewayId: String)
 
   @Query("SELECT * FROM cached_sessions WHERE gatewayId = :gatewayId AND agentId = :agentId ORDER BY rowOrder ASC")
   suspend fun sessions(
@@ -311,6 +325,8 @@ class RoomChatTranscriptCache internal constructor(
         endedAt = row.endedAt,
         runtimeMs = row.runtimeMs,
         outputTokens = row.outputTokens,
+        modelProvider = row.modelProvider,
+        model = row.model,
         hasRunMetadata = row.hasRunMetadata,
       )
     }
@@ -580,6 +596,8 @@ private fun ChatSessionEntry.toCachedSession(
     endedAt = endedAt,
     runtimeMs = runtimeMs,
     outputTokens = outputTokens,
+    modelProvider = modelProvider,
+    model = model,
     hasRunMetadata = hasRunMetadata,
     rowOrder = rowOrder,
   )

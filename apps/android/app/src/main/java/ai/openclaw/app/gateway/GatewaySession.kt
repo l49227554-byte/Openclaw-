@@ -222,6 +222,7 @@ data class GatewayHelloSummary(
   val serverName: String?,
   val remoteAddress: String?,
   val serverVersion: String?,
+  val bootId: String? = null,
   val mainSessionKey: String?,
   val updateAvailable: GatewayUpdateAvailableSummary?,
   val authRole: String? = null,
@@ -1626,6 +1627,12 @@ class GatewaySession(
       val server = obj["server"].asObjectOrNull()
       val serverName = server?.get("host").asStringOrNull()
       val serverVersion = server?.get("version").asStringOrNull()
+      val bootId =
+        server
+          ?.get("bootId")
+          .asStringOrNull()
+          ?.trim()
+          ?.takeIf(String::isNotEmpty)
       val methods =
         obj["features"]
           .asObjectOrNull()
@@ -1728,6 +1735,7 @@ class GatewaySession(
             serverName = serverName,
             remoteAddress = remoteAddress,
             serverVersion = serverVersion,
+            bootId = bootId,
             mainSessionKey = nextMainSessionKey,
             updateAvailable = parseUpdateAvailable(snapshot?.get("updateAvailable").asObjectOrNull()),
             authRole = authRole,

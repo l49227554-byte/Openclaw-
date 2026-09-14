@@ -10,6 +10,7 @@ import ai.openclaw.app.chat.ChatCommandOutbox
 import ai.openclaw.app.chat.ChatComposerOwner
 import ai.openclaw.app.chat.ChatController
 import ai.openclaw.app.chat.ChatMessage
+import ai.openclaw.app.chat.ChatModelDescriptorCache
 import ai.openclaw.app.chat.ChatOutboxItem
 import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.chat.ChatPermissionMode
@@ -820,6 +821,7 @@ internal fun gatewayConnectionDisplay(
 
 private data class AndroidChatStores(
   val transcriptCache: ChatTranscriptCache,
+  val modelDescriptorCache: ChatModelDescriptorCache,
   val commandOutbox: ChatCommandOutbox,
   val clientDatabases: AndroidClientDatabases,
   val externalTranscriptCache: ChatTranscriptCache? = null,
@@ -883,6 +885,7 @@ private fun openAndroidChatStores(
     }
   return AndroidChatStores(
     transcriptCache = databases.transcriptCache(),
+    modelDescriptorCache = databases.modelDescriptorCache(),
     commandOutbox = databases.commandOutbox(),
     clientDatabases = databases,
   )
@@ -920,6 +923,7 @@ class NodeRuntime private constructor(
   initialReconnectSuppressed: Boolean,
 ) {
   private val chatTranscriptCache = chatStores.transcriptCache
+  private val chatModelDescriptorCache = chatStores.modelDescriptorCache
   private val chatCommandOutbox = chatStores.commandOutbox
   private val clientDatabases = chatStores.clientDatabases
   private val externalTranscriptCache = chatStores.externalTranscriptCache
@@ -1600,6 +1604,8 @@ class NodeRuntime private constructor(
   @Volatile private var nodePresenceAliveLastSuccessAtMs: Long? = null
   private var nodeHostStatsJob: Job? = null
   private var operatorConnected = false
+
+  @Volatile private var connectedGatewayBootId: String? = null
   private var operatorStatusText: String = "Offline"
   private var nodeStatusText: String = "Offline"
   private var operatorConnectionProblem: GatewayConnectionProblem? = null
@@ -1632,6 +1638,7 @@ class NodeRuntime private constructor(
         _serverName.value = hello.serverName
         _remoteAddress.value = hello.remoteAddress
         _gatewayVersion.value = hello.serverVersion
+        connectedGatewayBootId = hello.bootId
         _gatewayUpdateAvailable.value = hello.updateAvailable
         val operatorScopes = normalizeOperatorScopes(hello.authScopes)
         _operatorScopes.value = operatorScopes
@@ -1913,6 +1920,7 @@ class NodeRuntime private constructor(
     _serverName.value = null
     _remoteAddress.value = null
     _gatewayVersion.value = null
+    connectedGatewayBootId = null
     _gatewayUpdateAvailable.value = null
     replaceGatewayMethods(null, present = false)
     replaceGatewayCapabilities(null)
@@ -2160,7 +2168,9 @@ class NodeRuntime private constructor(
           session = operatorSession,
           json = json,
           transcriptCache = chatTranscriptCache,
+          modelDescriptorCache = chatModelDescriptorCache,
           cacheScope = ::chatCacheScope,
+          currentGatewayBootId = { connectedGatewayBootId },
           currentDefaultAgentId = { gatewayDefaultAgentId.value },
           currentDefaultAgentRevision = gatewayDefaultAgentRevision::get,
           gatewayAdvertisesMethod = ::gatewayAdvertisesMethod,

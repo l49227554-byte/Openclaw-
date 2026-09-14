@@ -38,6 +38,7 @@ class RoomChatTranscriptCacheTest {
         }.asCoroutineDispatcher(),
       ).build()
   private val store = RoomChatTranscriptCache(database = database)
+  private val descriptorStore = RoomChatModelDescriptorCache(database = database)
 
   @After
   fun tearDown() {
@@ -120,6 +121,143 @@ class RoomChatTranscriptCacheTest {
   }
 
   @Test
+  fun coldOpenPublishesCachedTranscriptAndFriendlyModelTogether() =
+    runTest {
+      val live =
+        createChatController(
+          transcriptCache = store,
+          modelDescriptorCache = descriptorStore,
+          cacheScope = { ChatCacheScope("gateway-a", 1) },
+          currentGatewayBootId = { "boot-a" },
+        ) { method, _ ->
+          when (method) {
+            "chat.history" -> {
+              """{"sessionId":"session-1","messages":[{"role":"assistant","content":"cached transcript"}],"sessionInfo":{"key":"main","modelProvider":"openai","model":"gpt-5.6-sol"}}"""
+            }
+
+            "sessions.list" -> {
+              """{"sessions":[{"key":"main","modelProvider":"openai","model":"gpt-5.6-sol"}]}"""
+            }
+
+            "chat.metadata" -> {
+              """{"commands":[],"models":[{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","provider":"openai"}]}"""
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+      live.load("main")
+      advanceUntilIdle()
+      assertEquals("GPT-5.6 Sol", live.selectedModelLabel.value)
+
+      val historyStarted = CompletableDeferred<Unit>()
+      val releaseHistory = CompletableDeferred<Unit>()
+      val controller =
+        createChatController(
+          transcriptCache = store,
+          modelDescriptorCache = descriptorStore,
+          cacheScope = { ChatCacheScope("gateway-a", 2) },
+          currentGatewayBootId = { "boot-a" },
+        ) { method, _ ->
+          when (method) {
+            "chat.history" -> {
+              historyStarted.complete(Unit)
+              releaseHistory.await()
+              historyResponse("session-1", emptyList())
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+
+      controller.load("main")
+      historyStarted.await()
+      assertEquals(
+        "cached transcript",
+        controller.messages.value
+          .single()
+          .content
+          .single()
+          .text,
+      )
+      assertEquals("openai/gpt-5.6-sol", controller.selectedModelRef.value)
+      assertEquals("GPT-5.6 Sol", controller.selectedModelLabel.value)
+
+      releaseHistory.complete(Unit)
+      advanceUntilIdle()
+    }
+
+  @Test
+  fun gatewayBootChangeRevalidatesCachedLabelBeforeHistoryCompletes() =
+    runTest {
+      saveSessions(
+        listOf(
+          ChatSessionEntry(
+            key = "main",
+            updatedAtMs = null,
+            modelProvider = "openai",
+            model = "gpt-5.6-sol",
+          ),
+        ),
+      )
+      saveTranscript(listOf(message("cached transcript", role = "assistant")))
+      descriptorStore.save(
+        gatewayId = "gateway-a",
+        agentId = "main",
+        bootId = "boot-a",
+        verifiedAtMs = System.currentTimeMillis(),
+        models = listOf(modelSummary("gpt-5.6-sol", "GPT-5.6 Sol")),
+      )
+      val historyStarted = CompletableDeferred<Unit>()
+      val releaseHistory = CompletableDeferred<Unit>()
+      val metadataStarted = CompletableDeferred<Unit>()
+      val controller =
+        createChatController(
+          transcriptCache = store,
+          modelDescriptorCache = descriptorStore,
+          cacheScope = { ChatCacheScope("gateway-a", 1) },
+          currentGatewayBootId = { "boot-b" },
+        ) { method, _ ->
+          when (method) {
+            "chat.history" -> {
+              historyStarted.complete(Unit)
+              releaseHistory.await()
+              historyResponse("session-1", emptyList())
+            }
+
+            "chat.metadata" -> {
+              metadataStarted.complete(Unit)
+              """{"commands":[],"models":[{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","provider":"openai"}]}"""
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+
+      controller.load("main")
+      historyStarted.await()
+      metadataStarted.await()
+      assertEquals(
+        "cached transcript",
+        controller.messages.value
+          .single()
+          .content
+          .single()
+          .text,
+      )
+      assertEquals("GPT-5.6 Sol", controller.selectedModelLabel.value)
+
+      releaseHistory.complete(Unit)
+      advanceUntilIdle()
+    }
+
+  @Test
   fun toolOnlyAssistantKeepsUnknownUsageAfterOfflineReload() =
     runTest {
       val controller =
@@ -166,6 +304,23 @@ class RoomChatTranscriptCacheTest {
           ?.name,
       )
     }
+
+  private fun modelSummary(
+    id: String,
+    name: String,
+  ): ai.openclaw.app.GatewayModelSummary =
+    ai.openclaw.app.GatewayModelSummary(
+      id = id,
+      name = name,
+      provider = "openai",
+      available = true,
+      supportsVision = false,
+      supportsAudio = false,
+      supportsVideo = false,
+      supportsDocuments = false,
+      supportsReasoning = true,
+      contextTokens = 128_000L,
+    )
 
   @Test
   fun canonicalSessionInfoKeepsRequestedAliasTranscriptReachable() =
@@ -295,6 +450,59 @@ class RoomChatTranscriptCacheTest {
       assertEquals(listOf("history B"), controller.messages.value.map { it.content.single().text })
       assertEquals(listOf("history A"), loadTranscript().map { it.content.single().text })
       assertEquals(listOf("history B"), loadTranscript(sessionKey = "other").map { it.content.single().text })
+    }
+
+  @Test
+  fun delayedCachePrimeCannotReplaceANewerLiveSessionModel() =
+    runTest {
+      saveSessions(
+        listOf(
+          ChatSessionEntry(
+            key = "main",
+            updatedAtMs = null,
+            modelProvider = "openai",
+            model = "cached-model",
+          ),
+        ),
+      )
+      saveTranscript(listOf(message("cached transcript", role = "assistant")))
+      val historyStarted = CompletableDeferred<Unit>()
+      val releaseHistory = CompletableDeferred<Unit>()
+      val controller =
+        createChatController(
+          transcriptCache = store,
+          modelDescriptorCache = descriptorStore,
+          cacheScope = { ChatCacheScope("gateway-a", 1) },
+        ) { method, _ ->
+          when (method) {
+            "chat.history" -> {
+              historyStarted.complete(Unit)
+              releaseHistory.await()
+              historyResponse("session-1", emptyList())
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+
+      deferNextDatabaseOperation = true
+      controller.load("main")
+      runCurrent()
+      val releaseCachePrime = requireNotNull(deferredDatabaseOperation)
+      controller.handleGatewayEvent(
+        "sessions.changed",
+        """{"sessionKey":"main","agentId":"main","phase":"message","session":{"key":"main","modelProvider":"openai","model":"live-model"}}""",
+      )
+      assertEquals("openai/live-model", controller.selectedModelRef.value)
+
+      releaseCachePrime.run()
+      historyStarted.await()
+      assertEquals("openai/live-model", controller.selectedModelRef.value)
+
+      releaseHistory.complete(Unit)
+      advanceUntilIdle()
     }
 
   @Test

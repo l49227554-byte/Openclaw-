@@ -35,6 +35,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -79,6 +80,7 @@ private const val WEAR_AGENT_PULSE_DIRECT_CHILDREN_GROUP = "__wear_agent_pulse_d
 private const val SUBAGENT_ACTIVITY_RETENTION_MS = 60_000L
 private const val MAX_RETAINED_TERMINAL_SUBAGENT_TASKS = 100
 private const val MAX_RECENT_TRANSCRIPTS = 8
+private const val MAX_CACHED_MODEL_DESCRIPTORS = 512
 private const val SESSION_EDITOR_MAX_BASE64_CHARS = ((OUTBOX_MAX_COMMAND_ATTACHMENT_BYTES + 2) / 3) * 4
 private val MANAGED_MEDIA_PATH_REGEX =
   Regex("^/api/chat/media/outgoing/[^/]+/([0-9a-fA-F-]{36})/full(?:\\?.*)?$")
@@ -200,7 +202,9 @@ class ChatController internal constructor(
       }
     },
   private val transcriptCache: ChatTranscriptCache? = null,
+  private val modelDescriptorCache: ChatModelDescriptorCache? = null,
   private val cacheScope: () -> ChatCacheScope? = { null },
+  private val currentGatewayBootId: () -> String? = { null },
   private val currentDefaultAgentId: () -> String? = { "main" },
   private val currentDefaultAgentRevision: () -> Long = { 0L },
   private val loadGatewayImageArtifact: suspend (
@@ -228,7 +232,9 @@ class ChatController internal constructor(
     session: GatewaySession,
     json: Json,
     transcriptCache: ChatTranscriptCache? = null,
+    modelDescriptorCache: ChatModelDescriptorCache? = null,
     cacheScope: () -> ChatCacheScope? = { null },
+    currentGatewayBootId: () -> String? = { null },
     currentDefaultAgentId: () -> String? = { "main" },
     currentDefaultAgentRevision: () -> Long = { 0L },
     gatewayAdvertisesMethod: (method: String) -> Boolean? = { null },
@@ -254,7 +260,9 @@ class ChatController internal constructor(
       session.captureRequestLease(gatewayScope?.gatewayId)
     },
     transcriptCache = transcriptCache,
+    modelDescriptorCache = modelDescriptorCache,
     cacheScope = cacheScope,
+    currentGatewayBootId = currentGatewayBootId,
     currentDefaultAgentId = currentDefaultAgentId,
     currentDefaultAgentRevision = currentDefaultAgentRevision,
     loadGatewayImageArtifact = { gatewayId, sessionKey, agentId, artifactId ->
@@ -412,6 +420,13 @@ class ChatController internal constructor(
   // Guarded by gatewayScopeApplyLock. Keeps recent immutable render input ready for synchronous
   // conversation switches; Room remains the cold-start cache.
   private val recentConversations = LinkedHashMap<ChatComposerOwner, RecentConversationSnapshot>()
+  private val modelDescriptors = LinkedHashMap<ChatModelDescriptorOwner, CachedModelDescriptor>()
+
+  private data class ChatModelDescriptorOwner(
+    val gatewayId: String,
+    val agentId: String,
+    val modelRef: String,
+  )
 
   private val _sessionKey = MutableStateFlow("main")
   val sessionKey: StateFlow<String> = _sessionKey.asStateFlow()
@@ -450,7 +465,6 @@ class ChatController internal constructor(
     val progressCard: ChatProgressCard?,
     val progressCardScopeKey: String?,
     val selectedModelRef: String?,
-    val selectedModelDisplayName: String?,
   )
 
   private data class PendingRunProjection(
@@ -873,6 +887,8 @@ class ChatController internal constructor(
   private val chatMetadataRequestSequence = AtomicLong(0)
   private var chatMetadataScope: ChatMetadataScope? = null
   private var chatMetadataLoadState = ChatMetadataLoadState.Unloaded
+  private var chatMetadataRequestInFlight = false
+  private var modelDescriptorRevalidationRequired = false
   private var sessionsListArchived = false
 
   // Retained selection and event rows must not enlarge the next requested page.
@@ -972,6 +988,8 @@ class ChatController internal constructor(
       restoreRunStateOnReconnect = true
       pendingHealthRefresh = null
       _healthOk.value = false
+      chatMetadataRequestInFlight = false
+      modelDescriptorRevalidationRequired = true
     }
     updateErrorText(null)
     clearChatMetadata()
@@ -1155,6 +1173,7 @@ class ChatController internal constructor(
   internal suspend fun clearGatewayCache(gatewayId: String) {
     clearGatewayCache(gatewayId) { gateway ->
       transcriptCache?.clearGateway(gateway)
+      modelDescriptorCache?.clearGateway(gateway)
       commandOutbox.clearGateway(gateway)
     }
   }
@@ -1168,6 +1187,7 @@ class ChatController internal constructor(
     synchronized(gatewayScopeApplyLock) {
       lastSelectedChatSessionByOwner.keys.removeAll { it.gatewayStableId == gateway }
       recentConversations.keys.removeAll { it.gatewayStableId == gateway }
+      modelDescriptors.keys.removeAll { it.gatewayId == gateway }
     }
     synchronized(defaultAgentPersistenceRevisions) {
       defaultAgentPersistenceRevisions[gateway] = (defaultAgentPersistenceRevisions[gateway] ?: 0L) + 1L
@@ -3243,7 +3263,6 @@ class ChatController internal constructor(
               progressCard = _progressCard.value,
               progressCardScopeKey = progressCardScopeKey,
               selectedModelRef = _selectedModelRef.value,
-              selectedModelDisplayName = selectedModelDisplayName,
             )
           }
         }
@@ -3301,14 +3320,15 @@ class ChatController internal constructor(
         }
         val listedModelRef = _sessions.value.firstOrNull { it.key == key }?.providerQualifiedModelRef()
         val selectedModelRef = listedModelRef ?: recentConversation?.selectedModelRef
-        val recentModelMatches = recentConversation?.selectedModelRef == selectedModelRef
         val catalogDisplayName = selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
+        val cachedDisplayName =
+          selectedModelRef?.let { modelRef ->
+            activeAgentId?.let { agentId ->
+              currentCacheScope()?.gatewayId?.let { gatewayId -> modelDescriptor(gatewayId, agentId, modelRef)?.displayName }
+            }
+          }
         _selectedModelRef.value = selectedModelRef
-        selectedModelDisplayName =
-          recentConversation
-            ?.selectedModelDisplayName
-            ?.takeIf { recentModelMatches }
-            ?: catalogDisplayName
+        selectedModelDisplayName = catalogDisplayName ?: cachedDisplayName
         _selectedModelLabel.value =
           selectedChatModelLabel(
             selectedModelRef = selectedModelRef,
@@ -3612,7 +3632,6 @@ class ChatController internal constructor(
     progressCard: ChatProgressCard?,
     progressCardScopeKey: String?,
     selectedModelRef: String?,
-    selectedModelDisplayName: String?,
   ) {
     recentConversations.remove(owner)
     recentConversations[owner] =
@@ -3622,7 +3641,6 @@ class ChatController internal constructor(
         progressCard = progressCard,
         progressCardScopeKey = progressCardScopeKey,
         selectedModelRef = selectedModelRef,
-        selectedModelDisplayName = selectedModelDisplayName,
       )
     while (recentConversations.size > MAX_RECENT_TRANSCRIPTS) {
       recentConversations.remove(recentConversations.keys.first())
@@ -3633,6 +3651,32 @@ class ChatController internal constructor(
     val conversation = recentConversations.remove(owner) ?: return null
     recentConversations[owner] = conversation
     return conversation
+  }
+
+  private fun modelDescriptor(
+    gatewayId: String,
+    agentId: String,
+    modelRef: String,
+  ): CachedModelDescriptor? {
+    val owner = ChatModelDescriptorOwner(gatewayId, agentId, modelRef)
+    val descriptor = modelDescriptors.remove(owner) ?: return null
+    modelDescriptors[owner] = descriptor
+    return descriptor
+  }
+
+  private fun rememberModelDescriptors(
+    gatewayId: String,
+    agentId: String,
+    descriptors: List<CachedModelDescriptor>,
+  ) {
+    descriptors.forEach { descriptor ->
+      val owner = ChatModelDescriptorOwner(gatewayId, agentId, descriptor.modelRef)
+      modelDescriptors.remove(owner)
+      modelDescriptors[owner] = descriptor
+    }
+    while (modelDescriptors.size > MAX_CACHED_MODEL_DESCRIPTORS) {
+      modelDescriptors.remove(modelDescriptors.keys.first())
+    }
   }
 
   internal fun markTranscriptPresented(selectionGeneration: Long) {
@@ -4108,6 +4152,12 @@ class ChatController internal constructor(
       }
 
       "chat.metadata.changed" -> {
+        synchronized(gatewayScopeApplyLock) { modelDescriptorRevalidationRequired = true }
+        refreshCommands()
+      }
+
+      "config.changed" -> {
+        synchronized(gatewayScopeApplyLock) { modelDescriptorRevalidationRequired = true }
         refreshCommands()
       }
 
@@ -4997,32 +5047,27 @@ class ChatController internal constructor(
                 (effectiveDefaultAgentId() == requestAgentId || (liveDefaultAgentId == null && effectiveDefaultAgentId() == null))
             )
         )
-    val cached =
-      runCatching { cache.loadTranscript(requestCacheScope.gatewayId, requestAgentId, sessionKey) }
-        .getOrDefault(emptyList())
+    val (cached, cachedSessions, cachedDescriptors) =
+      coroutineScope {
+        val transcript = async { runCatching { cache.loadTranscript(requestCacheScope.gatewayId, requestAgentId, sessionKey) }.getOrDefault(emptyList()) }
+        val sessions = async { runCatching { cache.loadSessions(requestCacheScope.gatewayId, requestAgentId) }.getOrDefault(emptyList()) }
+        val descriptors =
+          async {
+            runCatching { modelDescriptorCache?.load(requestCacheScope.gatewayId, requestAgentId).orEmpty() }
+              .getOrDefault(emptyList())
+          }
+        Triple(transcript.await(), sessions.await(), descriptors.await())
+      }
     synchronized(gatewayScopeApplyLock) {
       val projectedMessages = optimisticMessagesByRunId.values.toList()
       val visibleRowsAreOnlyProjected = _messages.value.all { message -> message in projectedMessages }
-      if (
-        cached.isNotEmpty() &&
-        visibleRowsAreOnlyProjected &&
+      val cacheOwnerIsCurrent =
         requestCacheScope == currentCacheScope() &&
-        requestOwnerIsCurrent() &&
-        isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())
-      ) {
-        _messagesFromCache.value = true
-        _messages.value = mergeOptimisticMessages(incoming = cached, optimistic = projectedMessages)
-      }
-    }
-    if (_sessions.value.isEmpty()) {
-      val cachedSessions = runCatching { cache.loadSessions(requestCacheScope.gatewayId, requestAgentId) }.getOrDefault(emptyList())
-      synchronized(gatewayScopeApplyLock) {
-        if (
-          cachedSessions.isNotEmpty() &&
-          _sessions.value.isEmpty() &&
-          requestCacheScope == currentCacheScope() &&
-          requestOwnerIsCurrent()
-        ) {
+          requestOwnerIsCurrent() &&
+          isCurrentHistoryLoad(sessionKey, _sessionKey.value, generation, historyLoadGeneration.get())
+      if (cacheOwnerIsCurrent) {
+        rememberModelDescriptors(requestCacheScope.gatewayId, requestAgentId, cachedDescriptors)
+        if (cachedSessions.isNotEmpty() && _sessions.value.isEmpty()) {
           publishSessions(
             reconcileGlobalObserverDigestOwner(
               cachedSessions.map { session -> session.copy(ownerAgentId = requestAgentId) },
@@ -5030,8 +5075,31 @@ class ChatController internal constructor(
             ),
           )
         }
+        val cachedModelRef =
+          _sessions.value.firstOrNull { it.key == sessionKey }?.providerQualifiedModelRef()
+            ?: cachedSessions.firstOrNull { it.key == sessionKey }?.providerQualifiedModelRef()
+        if (cachedModelRef != null) {
+          _selectedModelRef.value = cachedModelRef
+          selectedModelDisplayName =
+            modelDescriptor(requestCacheScope.gatewayId, requestAgentId, cachedModelRef)?.displayName
+          _selectedModelLabel.value =
+            selectedChatModelLabel(
+              selectedModelRef = cachedModelRef,
+              displayName = selectedModelDisplayName,
+              resolutionComplete = false,
+            )
+        }
+      }
+      if (
+        cached.isNotEmpty() &&
+        visibleRowsAreOnlyProjected &&
+        cacheOwnerIsCurrent
+      ) {
+        _messagesFromCache.value = true
+        _messages.value = mergeOptimisticMessages(incoming = cached, optimistic = projectedMessages)
       }
     }
+    refreshModelMetadataIfNeeded(requestCacheScope.gatewayId, requestAgentId)
   }
 
   // Write-through uses the scope captured before the live request. Re-resolving here could put
@@ -5189,6 +5257,7 @@ class ChatController internal constructor(
     _modelCatalog.value = emptyList()
     chatMetadataScope = nextScope
     chatMetadataLoadState = ChatMetadataLoadState.Unloaded
+    chatMetadataRequestInFlight = false
   }
 
   private suspend fun fetchChatMetadata(requestSequence: Long = chatMetadataRequestSequence.incrementAndGet()) {
@@ -5201,10 +5270,14 @@ class ChatController internal constructor(
           clearChatMetadata(metadataScope)
           disableSwarmProgress()
         }
+        chatMetadataRequestInFlight = true
         currentSessionActionSnapshot(_sessionKey.value)
       }
     var shouldRefreshSwarm = false
     var shouldDisableSwarm = false
+    var acceptedModels: List<GatewayModelSummary>? = null
+    val verifiedAtMs = System.currentTimeMillis()
+    val requestBootId = currentGatewayBootId()?.trim()?.takeIf(String::isNotEmpty)
     try {
       val res = requestGatewayBound(requestCacheScope?.gatewayId, "chat.metadata", metadataScope.params().toString())
       val root = json.parseToJsonElement(res).asObjectOrNull()
@@ -5218,6 +5291,10 @@ class ChatController internal constructor(
           _commands.value = parseChatCommands(json, res)
           val models = parseGatewayModels(root?.get("models") as? JsonArray)
           _modelCatalog.value = models
+          val descriptors = models.mapNotNull { it.toCachedModelDescriptor(requestBootId, verifiedAtMs) }
+          requestCacheScope?.gatewayId?.let { gatewayId ->
+            rememberModelDescriptors(gatewayId, metadataScope.agentId, descriptors)
+          }
           // chat.metadata cannot distinguish a valid empty catalog from its timeout fallback.
           // Retry one empty response, then accept empty so health events cannot poll forever.
           val nextLoadState =
@@ -5236,6 +5313,11 @@ class ChatController internal constructor(
               )
           }
           chatMetadataLoadState = nextLoadState
+          chatMetadataRequestInFlight = false
+          if (models.isNotEmpty() || nextLoadState == ChatMetadataLoadState.Loaded) {
+            modelDescriptorRevalidationRequired = false
+            acceptedModels = models
+          }
           synchronized(swarmLock) { swarmEnabled = metadataSwarmEnabled }
           shouldRefreshSwarm = metadataSwarmEnabled
           shouldDisableSwarm = !metadataSwarmEnabled
@@ -5255,6 +5337,7 @@ class ChatController internal constructor(
           requestSelection != null &&
           isCurrentSessionAction(requestSelection)
         ) {
+          chatMetadataRequestInFlight = false
           _selectedModelLabel.value =
             selectedChatModelLabel(
               selectedModelRef = _selectedModelRef.value,
@@ -5262,6 +5345,21 @@ class ChatController internal constructor(
               resolutionComplete = true,
             )
           if (_errorText.value == null) updateLocalizedErrorText(chatMetadataRefreshError)
+        }
+      }
+    }
+    acceptedModels?.takeIf { it.isNotEmpty() }?.let { models ->
+      val gatewayId = requestCacheScope?.gatewayId ?: return@let
+      cacheMutationMutex.withLock {
+        if (requestCacheScope != currentCacheScope()) return@withLock
+        runCatching {
+          modelDescriptorCache?.save(
+            gatewayId = gatewayId,
+            agentId = metadataScope.agentId,
+            bootId = requestBootId,
+            verifiedAtMs = verifiedAtMs,
+            models = models,
+          )
         }
       }
     }
@@ -5523,7 +5621,8 @@ class ChatController internal constructor(
           // Socket ownership precedes the logical lock, matching request enqueue and disconnect.
           if (lease == null) publish() else lease.commitIfCurrent(publish)
           if (!applied || lease?.isCurrent() != true || !synchronized(gatewayScopeApplyLock) { ownsSelection() }) return@async
-          if (healthy == true && !hasCurrentChatMetadata()) fetchChatMetadata()
+          val metadataRefreshInFlight = synchronized(gatewayScopeApplyLock) { chatMetadataRequestInFlight }
+          if (healthy == true && !hasCurrentChatMetadata() && !metadataRefreshInFlight) fetchChatMetadata()
           if (refresh.refreshSessions && lease.isCurrent() && synchronized(gatewayScopeApplyLock) { ownsSelection() }) fetchSessions(limit = 50)
         } finally {
           synchronized(gatewayScopeApplyLock) { refresh.claimed = false }
@@ -5545,6 +5644,23 @@ class ChatController internal constructor(
 
   private fun refreshCommandsAfterReconnect() {
     if (hasCurrentChatMetadata()) return
+    refreshCommands()
+  }
+
+  private fun refreshModelMetadataIfNeeded(
+    gatewayId: String,
+    agentId: String,
+  ) {
+    val gatewayScope = currentCacheScope() ?: return
+    if (gatewayScope.gatewayId != gatewayId) return
+    val shouldRefresh =
+      synchronized(gatewayScopeApplyLock) {
+        val modelRef = _selectedModelRef.value ?: return@synchronized false
+        val descriptor = modelDescriptor(gatewayId, agentId, modelRef)
+        !chatMetadataRequestInFlight &&
+          (modelDescriptorRevalidationRequired || descriptor?.isFresh(currentGatewayBootId(), System.currentTimeMillis()) != true)
+      }
+    if (!shouldRefresh || captureRequestLease(gatewayScope)?.isCurrent() != true) return
     refreshCommands()
   }
 
@@ -8138,9 +8254,15 @@ class ChatController internal constructor(
     val previousModelRef = _selectedModelRef.value
     val selectedModelRef = entry?.providerQualifiedModelRef()
     val catalogDisplayName = selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
+    val cachedDisplayName =
+      selectedModelRef?.let { modelRef ->
+        val gatewayId = currentCacheScope()?.gatewayId ?: return@let null
+        val agentId = resolveAgentIdForSessionKey(entry.key) ?: return@let null
+        modelDescriptor(gatewayId, agentId, modelRef)?.displayName
+      }
     _selectedModelRef.value = selectedModelRef
-    if (selectedModelRef != previousModelRef || catalogDisplayName != null) {
-      selectedModelDisplayName = catalogDisplayName
+    if (selectedModelRef != previousModelRef || catalogDisplayName != null || cachedDisplayName != null) {
+      selectedModelDisplayName = catalogDisplayName ?: cachedDisplayName
     }
     _selectedModelLabel.value =
       selectedChatModelLabel(

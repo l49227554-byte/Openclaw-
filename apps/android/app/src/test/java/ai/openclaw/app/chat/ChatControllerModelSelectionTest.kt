@@ -2349,7 +2349,7 @@ class ChatControllerModelSelectionTest {
   @Test
   fun newerMetadataPublicationFencesOlderResponseAndFailure() =
     runTest {
-      for (event in listOf("chat.metadata.changed", "patch", "command-metadata", "reset", "seqGap")) {
+      for (event in listOf("chat.metadata.changed", "config.changed", "patch", "command-metadata", "reset", "seqGap")) {
         for (oldRequestFails in listOf(false, true)) {
           val oldRefresh = CompletableDeferred<String>()
           val newRefresh = CompletableDeferred<String>()
@@ -2377,7 +2377,7 @@ class ChatControllerModelSelectionTest {
           } else {
             oldRefresh.complete(availabilityMetadata(true))
           }
-          if (event == "chat.metadata.changed" || event == "seqGap") {
+          if (event == "chat.metadata.changed" || event == "config.changed" || event == "seqGap") {
             controller.handleGatewayEvent(event, null)
           } else {
             controller.handleGatewayEvent("sessions.changed", """{"sessionKey":"main","agentId":"main","reason":"$event"}""")

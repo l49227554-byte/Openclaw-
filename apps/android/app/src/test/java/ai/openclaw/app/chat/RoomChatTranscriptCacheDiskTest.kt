@@ -1,5 +1,6 @@
 package ai.openclaw.app.chat
 
+import ai.openclaw.app.GatewayModelSummary
 import ai.openclaw.app.ui.chat.ChatTimelineItem
 import ai.openclaw.app.ui.chat.buildChatTimeline
 import ai.openclaw.app.ui.chat.withCompletedWorkGroups
@@ -36,6 +37,41 @@ class RoomChatTranscriptCacheDiskTest {
       database.close()
     }
   }
+
+  @Test
+  fun modelDescriptorsSurviveReopenAndAreSharedAcrossSessionSelections() =
+    runTest {
+      withDatabase { database ->
+        RoomChatTranscriptCache(database).saveSessions(
+          gatewayId = "gateway-a",
+          agentId = "main",
+          sessions =
+            listOf(
+              ChatSessionEntry(key = "review", updatedAtMs = null, modelProvider = "openai", model = "gpt-5.6-sol"),
+              ChatSessionEntry(key = "coding", updatedAtMs = null, modelProvider = "openai", model = "gpt-5.6-sol"),
+            ),
+        )
+        RoomChatModelDescriptorCache(database).save(
+          gatewayId = "gateway-a",
+          agentId = "main",
+          bootId = "boot-a",
+          verifiedAtMs = 1_000L,
+          models = listOf(model("gpt-5.6-sol", "GPT-5.6 Sol"), model("raw-id", "raw-id")),
+        )
+      }
+
+      withDatabase { database ->
+        val sessions = RoomChatTranscriptCache(database).loadSessions("gateway-a", "main")
+        assertEquals(listOf("openai", "openai"), sessions.map { it.modelProvider })
+        assertEquals(listOf("gpt-5.6-sol", "gpt-5.6-sol"), sessions.map { it.model })
+        val descriptor = RoomChatModelDescriptorCache(database).load("gateway-a", "main").single()
+        assertEquals("openai/gpt-5.6-sol", descriptor.modelRef)
+        assertEquals("GPT-5.6 Sol", descriptor.displayName)
+        assertTrue(descriptor.isFresh("boot-a", 1_000L + MODEL_DESCRIPTOR_CACHE_TTL_MS - 1))
+        assertTrue(!descriptor.isFresh("boot-b", 1_001L))
+        assertTrue(!descriptor.isFresh("boot-a", 1_000L + MODEL_DESCRIPTOR_CACHE_TTL_MS))
+      }
+    }
 
   @Test
   fun admittedToolResultEvictsOldestTextAndSurvivesDiskReopenWithinItsScope() =
@@ -218,6 +254,23 @@ class RoomChatTranscriptCacheDiskTest {
       steerTargetRunId = "run-parent",
       entryId = "live-tool-entry",
       turnBoundary = true,
+    )
+
+  private fun model(
+    id: String,
+    name: String,
+  ): GatewayModelSummary =
+    GatewayModelSummary(
+      id = id,
+      name = name,
+      provider = "openai",
+      available = true,
+      supportsVision = false,
+      supportsAudio = false,
+      supportsVideo = false,
+      supportsDocuments = false,
+      supportsReasoning = true,
+      contextTokens = 128_000L,
     )
 
   private fun assertToolResult(

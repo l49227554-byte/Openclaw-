@@ -77,8 +77,8 @@ internal interface ClientStateControlDao {
 
 /** Disposable gateway-derived projections. Schema mismatches and corruption rebuild this file. */
 @Database(
-  entities = [CachedSessionEntity::class, CachedMessageEntity::class, CachedGatewayOwnerEntity::class],
-  version = 3,
+  entities = [CachedSessionEntity::class, CachedMessageEntity::class, CachedGatewayOwnerEntity::class, CachedModelDescriptorEntity::class],
+  version = 4,
   exportSchema = true,
 )
 internal abstract class GatewayCacheDatabase : RoomDatabase() {
@@ -371,6 +371,8 @@ private class OpenedAndroidClientDatabases private constructor(
 
   val transcriptCache = RoomChatTranscriptCache(gatewayCache)
 
+  val modelDescriptorCache = RoomChatModelDescriptorCache(gatewayCache)
+
   val commandOutbox = RoomChatCommandOutbox(clientState)
 
   suspend fun stageGatewayRemoval(gatewayId: String) {
@@ -488,6 +490,7 @@ private class OpenedAndroidClientDatabases private constructor(
   ) {
     try {
       transcriptCache.clearGateway(gatewayId)
+      modelDescriptorCache.clearGateway(gatewayId)
     } catch (error: Exception) {
       if (propagateFailure) throw error
       // Cache is disposable. Keep cache-pending for the next open, but the durable purge has
@@ -552,9 +555,12 @@ internal class AndroidClientDatabases private constructor(
   }
 
   private val transcriptCache = DeferredChatTranscriptCache(::ready)
+  private val modelDescriptorCache = DeferredChatModelDescriptorCache(::ready)
   private val commandOutbox = DeferredChatCommandOutbox(::ready)
 
   fun transcriptCache(): ChatTranscriptCache = transcriptCache
+
+  fun modelDescriptorCache(): ChatModelDescriptorCache = modelDescriptorCache
 
   fun commandOutbox(): ChatCommandOutbox = commandOutbox
 
@@ -628,6 +634,25 @@ private class DeferredChatTranscriptCache(
   ) = ready().transcriptCache.deleteSession(gatewayId, agentId, sessionKey)
 
   override suspend fun clearGateway(gatewayId: String) = ready().transcriptCache.clearGateway(gatewayId)
+}
+
+private class DeferredChatModelDescriptorCache(
+  private val ready: suspend () -> OpenedAndroidClientDatabases,
+) : ChatModelDescriptorCache {
+  override suspend fun load(
+    gatewayId: String,
+    agentId: String,
+  ): List<CachedModelDescriptor> = ready().modelDescriptorCache.load(gatewayId, agentId)
+
+  override suspend fun save(
+    gatewayId: String,
+    agentId: String,
+    bootId: String?,
+    verifiedAtMs: Long,
+    models: List<ai.openclaw.app.GatewayModelSummary>,
+  ) = ready().modelDescriptorCache.save(gatewayId, agentId, bootId, verifiedAtMs, models)
+
+  override suspend fun clearGateway(gatewayId: String) = ready().modelDescriptorCache.clearGateway(gatewayId)
 }
 
 private class DeferredChatCommandOutbox(

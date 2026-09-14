@@ -52,7 +52,7 @@ class ClientDatabasesTest {
       createV2Fixture(context.getDatabasePath(names.legacy).path)
 
       withCleanDatabases(names, setOf("gateway-test")) { databases ->
-        assertEquals(3, databases.gatewayCacheDatabase().userVersion())
+        assertEquals(4, databases.gatewayCacheDatabase().userVersion())
         assertEquals(1, databases.clientStateDatabase().userVersion())
 
         val rows = databases.commandOutbox().load("gateway-test").associateBy { it.id }
@@ -273,8 +273,17 @@ class ClientDatabasesTest {
 
       withCleanDatabases(names, setOf("gateway-b")) { reopened ->
         assertTrue(reopened.transcriptCache().loadTranscript("gateway-a", "main", "main").isEmpty())
+        assertTrue(reopened.modelDescriptorCache().load("gateway-a", "main").isEmpty())
         assertTrue(reopened.commandOutbox().load("gateway-a").isEmpty())
         assertEquals(listOf("keep"), reopened.transcriptCache().loadTranscript("gateway-b", "main", "main").map { it.content.single().text })
+        assertEquals(
+          "Model keep",
+          reopened
+            .modelDescriptorCache()
+            .load("gateway-b", "main")
+            .single()
+            .displayName,
+        )
         assertEquals(listOf("keep"), reopened.commandOutbox().load("gateway-b").map { it.text })
       }
     }
@@ -336,6 +345,27 @@ class ClientDatabasesTest {
       agentId = "main",
       sessionKey = "main",
       messages = listOf(cachedMessage(text)),
+    )
+    databases.modelDescriptorCache().save(
+      gatewayId = gatewayId,
+      agentId = "main",
+      bootId = "boot-a",
+      verifiedAtMs = 1,
+      models =
+        listOf(
+          ai.openclaw.app.GatewayModelSummary(
+            id = "model-$text",
+            name = "Model $text",
+            provider = "test",
+            available = true,
+            supportsVision = false,
+            supportsAudio = false,
+            supportsVideo = false,
+            supportsDocuments = false,
+            supportsReasoning = false,
+            contextTokens = null,
+          ),
+        ),
     )
     databases.enqueue(gatewayId, text)
   }

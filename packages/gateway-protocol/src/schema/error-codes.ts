@@ -159,5 +159,3 @@ export function missingScopeErrorShape(params: {
   const details = buildMissingScopeErrorDetails(params);
   return errorShape(ErrorCodes.FORBIDDEN, `missing scope: ${params.missingScope}`, { details });
 }
-
-export { readSessionWorkspaceRecoveryRequiredError } from "../session-workspace-recovery-error-details.js";

@@ -58,7 +58,6 @@ function createRecoveryHarness() {
   const request = vi.spyOn(client, "request").mockImplementation(async () => await move.promise);
   const operations: Promise<unknown>[] = [];
   return {
-    error,
     recoveryError,
     remove,
     move,

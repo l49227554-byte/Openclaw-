@@ -708,8 +708,6 @@ export async function deleteSession(
       }
     }
   } catch (error) {
-    if (host.sessionData.isSessionMutationScopeCurrent(scope)) {
-      host.sessionData.publishSessionMutationError(scope, error);
-    }
+    host.sessionData.publishSessionMutationError(scope, error);
   }
 }

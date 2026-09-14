@@ -1,5 +1,6 @@
 import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
+import { readSessionWorkspaceRecoveryRequiredError } from "../error-details.js";
 import {
   ErrorCodes,
   CronJobNotFoundErrorDetailsSchema,
@@ -19,7 +20,6 @@ import {
   readMissingScopeErrorDetails,
   readCronJobNotFoundError,
   readGitHubPublicationSelectionRejectedError,
-  readSessionWorkspaceRecoveryRequiredError,
   UnknownAgentIdErrorDetailsSchema,
 } from "./error-codes.js";
 import { ErrorShapeSchema } from "./frames.js";

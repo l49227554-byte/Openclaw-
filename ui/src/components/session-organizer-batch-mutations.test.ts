@@ -483,13 +483,7 @@ describe("patchSessionRows", () => {
 type OperationsHarness = ReturnType<typeof createHarness>;
 
 const destructiveHarness = {
-  methods: [
-    "sessions.delete",
-    "sessions.move",
-    "sessions.patch",
-    "sessions.reclaim",
-    "sessions.groups.delete",
-  ],
+  methods: ["sessions.delete", "sessions.reclaim", "sessions.groups.delete"],
   scopes: ["operator.write", "operator.admin"],
 };
 

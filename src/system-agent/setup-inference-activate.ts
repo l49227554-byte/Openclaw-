@@ -293,55 +293,76 @@ async function stageCandidate(ctx: StageContext): Promise<StagedCandidate | Stag
   }
 }
 
-/** Save credentials once, confirm the candidate in memory, then commit its config. */
-export async function activateSetupInference(
-  params: ActivateSetupInferenceParams,
-): Promise<ActivateSetupInferenceResult> {
+async function withSetupInferenceErrorRedaction<T>(
+  operation: () => Promise<T>,
+  apiKey: string | undefined,
+): Promise<T> {
   try {
-    const result = await activateCandidate({
-      ...params,
-      onActivationCompletion: params.onActivationCompletion
-        ? (complete) =>
-            params.onActivationCompletion?.(async () => {
-              try {
-                return await complete();
-              } catch (error) {
-                // oxlint-disable-next-line preserve-caught-error -- A deferred failure can contain the submitted setup secret.
-                throw new Error(await redactSetupInferenceError(error, params.apiKey));
-              }
-            })
-        : undefined,
-    });
-    return result.ok
-      ? {
-          ...result,
-          lines: await Promise.all(
-            result.lines.map((line) => redactSetupInferenceError(line, params.apiKey)),
-          ),
-        }
-      : { ...result, error: await redactSetupInferenceError(result.error, params.apiKey) };
+    return await operation();
   } catch (error) {
-    const redacted = await redactSetupInferenceError(error, params.apiKey);
+    const redacted = await redactSetupInferenceError(error, apiKey);
     if (error instanceof WizardCancelledError) {
       throw new WizardCancelledError(redacted);
     }
     if (error instanceof WizardNavigationError) {
       throw new WizardNavigationError(error.direction);
     }
-    if (error instanceof SetupInferenceCancelledError || params.signal?.aborted) {
-      return { ok: false, status: "unavailable", error: "Provider login was cancelled." };
+    if (error instanceof SetupInferenceCancelledError) {
+      throw new SetupInferenceCancelledError();
     }
     if (error instanceof SetupInferenceActivationUnavailableError) {
-      return { ok: false, status: "unavailable", error: redacted };
+      throw new SetupInferenceActivationUnavailableError(redacted);
     }
     if (error instanceof SetupInferenceOwnerDriftError) {
-      return { ok: false, status: "auth", error: redacted };
+      throw new SetupInferenceOwnerDriftError(redacted);
     }
     if (error instanceof SetupInferenceActivationIndeterminateError) {
       throw new SetupInferenceActivationIndeterminateError(redacted);
     }
     // oxlint-disable-next-line preserve-caught-error -- The original cause can contain the submitted setup secret.
     throw new Error(redacted);
+  }
+}
+
+/** Save credentials once, confirm the candidate in memory, then commit its config. */
+export async function activateSetupInference(
+  params: ActivateSetupInferenceParams,
+): Promise<ActivateSetupInferenceResult> {
+  try {
+    return await withSetupInferenceErrorRedaction(async () => {
+      const onActivationCompletion = params.onActivationCompletion;
+      const result = await activateCandidate({
+        ...params,
+        onActivationCompletion: onActivationCompletion
+          ? (complete) =>
+              onActivationCompletion(() =>
+                withSetupInferenceErrorRedaction(complete, params.apiKey),
+              )
+          : undefined,
+      });
+      return result.ok
+        ? {
+            ...result,
+            lines: await Promise.all(
+              result.lines.map((line) => redactSetupInferenceError(line, params.apiKey)),
+            ),
+          }
+        : { ...result, error: await redactSetupInferenceError(result.error, params.apiKey) };
+    }, params.apiKey);
+  } catch (error) {
+    if (error instanceof WizardCancelledError || error instanceof WizardNavigationError) {
+      throw error;
+    }
+    if (error instanceof SetupInferenceCancelledError || params.signal?.aborted) {
+      return { ok: false, status: "unavailable", error: "Provider login was cancelled." };
+    }
+    if (error instanceof SetupInferenceActivationUnavailableError) {
+      return { ok: false, status: "unavailable", error: error.message };
+    }
+    if (error instanceof SetupInferenceOwnerDriftError) {
+      return { ok: false, status: "auth", error: error.message };
+    }
+    throw error;
   }
 }
 

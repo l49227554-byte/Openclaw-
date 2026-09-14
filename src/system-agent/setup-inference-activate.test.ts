@@ -33,13 +33,22 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
+import { WizardCancelledError, WizardNavigationError } from "../wizard/prompts.js";
 import { listSystemAgentAuditEntriesForTests } from "./audit.test-support.js";
 import { resolveSystemAgentConfiguredRouteFromConfig } from "./inference-route.js";
 import { activateSetupInference } from "./setup-inference-activate.js";
-import type { ActivateSetupInferenceDeps } from "./setup-inference-core.js";
+import {
+  SetupInferenceActivationIndeterminateError,
+  SetupInferenceActivationUnavailableError,
+  SetupInferenceCancelledError,
+  SetupInferenceOwnerDriftError,
+  type ActivateSetupInferenceDeps,
+  type ActivateSetupInferenceParams,
+} from "./setup-inference-core.js";
 import * as credentialActivation from "./setup-inference-credential-access.js";
 import { saveSetupCredential } from "./setup-inference-credentials.js";
 import { detectSetupInference } from "./setup-inference-detect.js";
+import * as activationTransition from "./setup-inference-transition.js";
 import { createSystemAgentPluginMetadataTestSnapshot } from "./system-agent.test-helpers.js";
 
 const tempDirs = createTempDirTracker();
@@ -244,6 +253,10 @@ async function fixture(
   const activate = (
     kind: Parameters<typeof activateSetupInference>[0]["kind"] = "provider-auth",
     activationConfirmed?: true,
+    overrides: Pick<
+      ActivateSetupInferenceParams,
+      "apiKey" | "signal" | "onActivationCompletion"
+    > = {},
   ) =>
     metadata.run(() =>
       activateSetupInference({
@@ -256,6 +269,7 @@ async function fixture(
         prompter: activationConfirmed ? undefined : prompter,
         activationConfirmed,
         signal: options.signal,
+        ...overrides,
         deps,
       }),
     );
@@ -801,5 +815,110 @@ describe("setup activation credentials and configuration", () => {
     );
     expect(setup.readProfile()?.[1]).toMatchObject(credential);
     expect(setup.run).toHaveBeenCalledOnce();
+  });
+});
+
+describe.each(["initial", "deferred"] as const)("setup %s error boundary", (phase) => {
+  it.each([
+    { name: "unknown", create: () => new Error(), status: null, abort: false },
+    {
+      name: "wizard cancellation",
+      create: () => new WizardCancelledError(),
+      status: null,
+      abort: true,
+    },
+    {
+      name: "wizard navigation",
+      create: () => new WizardNavigationError("back"),
+      status: null,
+      abort: true,
+    },
+    {
+      name: "setup cancellation",
+      create: () => new SetupInferenceCancelledError(),
+      status: "unavailable",
+      abort: false,
+    },
+    {
+      name: "unavailable",
+      create: () => new SetupInferenceActivationUnavailableError(),
+      status: "unavailable",
+      abort: false,
+    },
+    {
+      name: "owner drift",
+      create: () => new SetupInferenceOwnerDriftError(),
+      status: "auth",
+      abort: false,
+    },
+    {
+      name: "indeterminate",
+      create: () => new SetupInferenceActivationIndeterminateError(),
+      status: null,
+      abort: false,
+    },
+    { name: "aborted signal", create: () => new Error(), status: "unavailable", abort: true },
+  ])("preserves $name without exposing submitted secrets", async ({ create, status, abort }) => {
+    const setup = await fixture({ authMethod: "api_key" });
+    const controller = new AbortController();
+    const submitted = "opaque-submitted-setup-secret";
+    const payload = `activation failed: ${submitted}; {"access_token":"structured-setup-secret"}`;
+    const fault = Object.assign(create(), {
+      message: payload,
+      cause: new Error(payload),
+      stack: payload,
+    });
+    const fail = async (): Promise<never> => {
+      if (abort) {
+        controller.abort();
+      }
+      throw fault;
+    };
+    let complete: (() => Promise<boolean>) | undefined;
+    const transition = vi
+      .spyOn(activationTransition, "commitSetupInferenceActivation")
+      .mockImplementation(async (params) => {
+        if (phase === "initial") {
+          return await fail();
+        }
+        assert(params.deferCompletion);
+        params.deferCompletion(fail);
+        return params.config;
+      });
+    const activation = setup.activate("api-key", true, {
+      apiKey: submitted,
+      signal: controller.signal,
+      ...(phase === "deferred"
+        ? {
+            onActivationCompletion: (completion: () => Promise<boolean>) => {
+              complete = completion;
+            },
+          }
+        : {}),
+    });
+    let operation: Promise<unknown> = activation;
+    if (phase === "deferred") {
+      expect(await activation).toMatchObject({ ok: true });
+      assert(complete);
+      operation = complete();
+    }
+    if (phase === "initial" && status) {
+      const result = await operation;
+      expect(result).toMatchObject({ ok: false, status });
+      expect(JSON.stringify(result)).not.toContain(submitted);
+      expect(JSON.stringify(result)).not.toContain("structured-setup-secret");
+    } else {
+      const safe = await operation.catch((error: unknown) => error);
+      expect(safe, JSON.stringify(safe)).toBeInstanceOf(fault.constructor);
+      assert(safe instanceof Error);
+      expect(safe).not.toBe(fault);
+      expect(safe.cause).toBeUndefined();
+      expect(`${safe.message}\n${safe.stack}`).not.toContain(submitted);
+      expect(`${safe.message}\n${safe.stack}`).not.toContain("structured-setup-secret");
+      if (fault instanceof WizardNavigationError) {
+        expect(safe).toMatchObject({ direction: "back" });
+      }
+    }
+    expect(transition).toHaveBeenCalledOnce();
   });
 });

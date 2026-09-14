@@ -851,8 +851,8 @@ describe("update candidate canary", () => {
           presentation.dispose();
           log.mockRestore();
         });
-        for (const step of result.steps) {
-          presentation.progress.onStepComplete?.(step);
+        for (const [index, step] of result.steps.entries()) {
+          presentation.progress.onStepComplete?.({ ...step, index, total: result.steps.length });
         }
         expect(log.mock.calls.flat().join("\n")).toContain("incompatible plugin");
       }

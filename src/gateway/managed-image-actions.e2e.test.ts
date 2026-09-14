@@ -84,15 +84,26 @@ describe("managed image actions Gateway E2E", () => {
             : MANAGED_OUTGOING_MEDIA_ARTIFACT_ID_PREFIX;
         let block: Record<string, unknown>;
         if (provenance === "fresh") {
+          const sourceDir = path.join(stateDir, "scoped-artifact-sources");
+          const sourcePath = path.join(sourceDir, name);
+          if (kind === "document") {
+            // Documents use trusted file ingestion; data URLs admit image/audio/video only.
+            await fs.mkdir(sourceDir, { recursive: true });
+            await fs.writeFile(sourcePath, bytes);
+          }
           const created = await createManagedOutgoingMediaBlocks({
             sessionKey,
             messageId,
             stateDir,
+            localRoots: [sourceDir],
             items: [
               {
-                url: `data:${mimeType};base64,${bytes.toString("base64")}`,
+                url:
+                  kind === "image"
+                    ? `data:${mimeType};base64,${bytes.toString("base64")}`
+                    : sourcePath,
                 filename: name,
-                trustedLocal: false,
+                trustedLocal: kind === "document",
               },
             ],
           });

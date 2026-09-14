@@ -33,7 +33,7 @@ function createRecoveryHarness(action: "delete" | "archive") {
       },
     });
   const error = recoveryError();
-  const move = createDeferred<void>();
+  const move = createDeferred();
   let current = true;
   const abort = new AbortController();
   const snapshot: ApplicationGatewaySnapshot = {

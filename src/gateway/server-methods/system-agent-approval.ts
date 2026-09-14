@@ -176,13 +176,10 @@ export async function prepareDelegatedSystemAgentApproval(params: {
   await reconcileSystemAgentApproval(params.session, manager, runtimeApprovalAuthority);
   assertLiveApprovalAuthority();
 
-<<<<<<< HEAD
   return async function resolveProposal(
     proposal: Parameters<DelegatedProposalResolver>[0],
     corrective = false,
   ): ReturnType<DelegatedProposalResolver> {
-=======
-  return async (proposal) => {
     let ownedApproval: GatewaySystemAgentSession["pendingApproval"];
     // Retirement belongs to the proposal's owner. A same-source observer that lost its
     // lease between preparation and resolution would otherwise cancel the live original.
@@ -195,7 +192,6 @@ export async function prepareDelegatedSystemAgentApproval(params: {
         manager?.forceDenyIfRuntimeAuthorityClosed(pending.id) === null
       );
     };
->>>>>>> e52eba953d1 (fix(gateway): scope delegated approval retirement to its owner)
     const withProposalFailureCleanup = async <T>(resolve: () => Promise<T>): Promise<T> => {
       try {
         return await resolve();

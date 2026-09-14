@@ -1,4 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
+import {
+  getRuntimeAuthProfileStoreCredentialMutationToken,
+  type RuntimeAuthProfileStoreMutationOwner,
+  type RuntimeAuthProfileStoreMutationToken,
+} from "../agents/auth-profiles/mutation-lineage.js";
 import { getRuntimeAuthProfileStoreCredentialsRevision } from "../agents/auth-profiles/runtime-snapshots.js";
 import {
   withSetupCredentialAccess,
@@ -129,13 +134,18 @@ export async function activateSavedSetupCredential(params: {
   }
   delete current.setup;
   params.beforeWrite?.();
-  let revision = getRuntimeAuthProfileStoreCredentialsRevision();
   const committed = saveAuthProfileStoreIfPersistenceSnapshotMatches({
     store,
     snapshot: before,
     agentDir,
     stateDir: params.stateDir,
   });
+  const credentialOwner: RuntimeAuthProfileStoreMutationOwner = {
+    kind: "resolved",
+    databasePath: committed.owned.owner.databasePath,
+    sharedDatabasePath: committed.owned.owner.sharedDatabasePath,
+  };
+  let mutationToken: RuntimeAuthProfileStoreMutationToken;
   const rollback = () => {
     restoreAuthProfileStorePersistenceSnapshot(before, committed.owned, agentDir, {
       stateDir: params.stateDir,
@@ -150,7 +160,9 @@ export async function activateSavedSetupCredential(params: {
         "A newer credential update superseded this activation. Review Model Setup.",
       );
     }
-    revision = getRuntimeAuthProfileStoreCredentialsRevision();
+    mutationToken = getRuntimeAuthProfileStoreCredentialMutationToken(agentDir, params.profileId, {
+      owner: credentialOwner,
+    });
   };
   try {
     if (!committed.publishRuntimeSnapshots()) {
@@ -160,11 +172,22 @@ export async function activateSavedSetupCredential(params: {
     rollback();
     throw error;
   }
-  revision = getRuntimeAuthProfileStoreCredentialsRevision();
+  mutationToken = getRuntimeAuthProfileStoreCredentialMutationToken(agentDir, params.profileId, {
+    owner: credentialOwner,
+  });
   return {
     rollback,
     assertCurrent: () => {
-      if (revision !== getRuntimeAuthProfileStoreCredentialsRevision()) {
+      const currentToken = getRuntimeAuthProfileStoreCredentialMutationToken(
+        agentDir,
+        params.profileId,
+        { owner: credentialOwner },
+      );
+      if (
+        !mutationToken.known ||
+        !currentToken.known ||
+        mutationToken.revision !== currentToken.revision
+      ) {
         throw new SetupInferenceOwnerDriftError(
           "The credential changed before activation completed. Review Model Setup.",
         );

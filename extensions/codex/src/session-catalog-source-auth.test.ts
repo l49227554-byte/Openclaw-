@@ -170,7 +170,8 @@ describe("managed catalog source authentication", () => {
         },
       });
       expect(options.authProfileId).toBeUndefined();
-      expect(auth.readStore.mock.calls).toEqual([[f.dirs.alpha]]);
+      expect(auth.readStore.mock.calls.length).toBeGreaterThan(0);
+      expect(auth.readStore.mock.calls.every(([dir]) => dir === f.dirs.alpha)).toBe(true);
       const bridged = await bridgeCodexAppServerStartOptions(options);
       expect(bridged.args).toContain('cli_auth_credentials_store="ephemeral"');
       expect(bridged.env?.CODEX_HOME).toBe(path.join(f.dirs.alpha!, "codex-home"));
@@ -183,7 +184,7 @@ describe("managed catalog source authentication", () => {
   );
 
   it.each(["direct", "pinned"] as const)(
-    "fails closed on missing source auth through %s requests",
+    "preserves native-only source access through %s requests",
     async (mode) => {
       const f = await fixture();
       const source = f.factory
@@ -191,16 +192,78 @@ describe("managed catalog source authentication", () => {
         .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
       auth.stores.delete(f.dirs.alpha!);
       const control = f.factory.forRequest("beta", source);
-      await expect(
+      await (mode === "pinned"
+        ? control.withPinnedConnection((pinned) => pinned.readThread("source-thread"))
+        : control.readThread("source-thread"));
+      const options =
         mode === "pinned"
-          ? control.withPinnedConnection((pinned) => pinned.readThread("source-thread"))
-          : control.readThread("source-thread"),
-      ).rejects.toThrow("no usable managed OpenAI");
-      expect(commandRpcMocks.codexControlRequest).not.toHaveBeenCalled();
-      expect(pinnedConnectionMocks.getClient).not.toHaveBeenCalled();
-      expect(auth.readStore.mock.calls).toEqual([[f.dirs.alpha]]);
+          ? pinnedConnectionMocks.getClient.mock.calls.at(-1)?.[0]
+          : commandRpcMocks.codexControlRequest.mock.calls.at(-1)?.[3];
+      expect(options.authProfileId).toBeNull();
+      expect(options.preparedAuth).toBeUndefined();
+      expect(options.startOptions.env.CODEX_HOME).toBe(path.join(f.dirs.alpha!, "codex-home"));
+      expect(auth.readStore.mock.calls.length).toBeGreaterThan(0);
+      expect(auth.readStore.mock.calls.every(([dir]) => dir === f.dirs.alpha)).toBe(true);
     },
   );
+
+  it.each(["remove", "replace"] as const)(
+    "rejects %s of prepared credentials before I/O",
+    async (change) => {
+      const f = await fixture();
+      const source = f.factory
+        .homesForAgent("beta")
+        .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+      await f.factory.forRequest("beta", source).readThread("source-thread");
+      const options = commandRpcMocks.codexControlRequest.mock.calls.at(-1)?.[3];
+      expect(options.assertCurrent).toBeTypeOf("function");
+      options.assertCurrent();
+      if (change === "remove") {
+        auth.stores.delete(f.dirs.alpha!);
+      } else {
+        auth.stores.set(f.dirs.alpha!, {
+          version: 1,
+          profiles: {
+            "openai:alpha": { type: "api_key", provider: "openai", key: "synthetic-replacement" },
+          },
+        });
+      }
+      expect(() => options.assertCurrent()).toThrow("authentication changed");
+    },
+  );
+
+  it("rejects a credential replaced during preparation", async () => {
+    const f = await fixture();
+    const source = f.factory
+      .homesForAgent("beta")
+      .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+    auth.readStore.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        auth.stores.get(f.dirs.alpha!)!.profiles["openai:alpha"] = {
+          type: "api_key",
+          provider: "openai",
+          key: "synthetic-replacement",
+        };
+      });
+    });
+    await expect(f.factory.forRequest("beta", source).readThread("thread")).rejects.toThrow(
+      "authentication changed",
+    );
+    expect(commandRpcMocks.codexControlRequest).not.toHaveBeenCalled();
+  });
+
+  it("invalidates native preparation when a managed profile is selected", async () => {
+    const f = await fixture();
+    const source = f.factory
+      .homesForAgent("beta")
+      .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+    const saved = auth.stores.get(f.dirs.alpha!)!;
+    auth.stores.delete(f.dirs.alpha!);
+    await f.factory.forRequest("beta", source).readThread("thread");
+    const options = commandRpcMocks.codexControlRequest.mock.calls.at(-1)?.[3];
+    auth.stores.set(f.dirs.alpha!, saved);
+    expect(() => options.assertCurrent()).toThrow("authentication changed");
+  });
 
   it("keeps native and arbitrary homes native without reading managed credentials", async () => {
     const f = await fixture();

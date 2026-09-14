@@ -428,6 +428,30 @@ export function createCodexSessionCatalogControl(params: {
     byAgent.set(cacheKey, resolved);
     return resolved;
   };
+  const createSourceAuthorityGuard = (
+    agentId: string | undefined,
+    source?: CodexCatalogControlSource,
+  ): (() => void) => {
+    const runtimeConfig = params.getRuntimeConfig();
+    return () => {
+      if (
+        source?.sourceAgentDir &&
+        (params.getRuntimeConfig() !== runtimeConfig ||
+          !agentId ||
+          !homeResolver
+            .forAgent(agentId)
+            .some(
+              (home) =>
+                home.sourceHomeId === source.sourceHomeId &&
+                home.sourceAgentDir === source.sourceAgentDir,
+            ))
+      ) {
+        throw new CatalogParamsError(
+          "Codex catalog source ownership changed; refresh the catalog.",
+        );
+      }
+    };
+  };
   const createRequestSnapshot = (
     agentId: string | undefined,
     source?: CodexCatalogControlSource,
@@ -435,15 +459,23 @@ export function createCodexSessionCatalogControl(params: {
     const pluginConfig = getPluginConfig();
     const runtime = source?.appServer ?? params.resolveRuntimeOptions({ pluginConfig });
     const requestOptions = resolveRequestOptions(runtime.start, agentId, source);
+    const assertSourceCurrent = createSourceAuthorityGuard(agentId, source);
     return createCodexCatalogRequestSnapshot(
       runtime.requestTimeoutMs,
       async (method, requestParams, timeoutMs, assertCurrent) => {
         const { codexControlRequest } = await import("./command-rpc.js");
         const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
+        assertSourceCurrent();
         const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
+        const assertAuthorityCurrent = () => {
+          assertSourceCurrent();
+          clientOptions.assertCurrent?.();
+          assertCurrent?.();
+        };
+        assertAuthorityCurrent();
         return await codexControlRequest(pluginConfig, method, requestParams, {
           ...clientOptions,
-          assertCurrent,
+          assertCurrent: assertAuthorityCurrent,
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         });
       },
@@ -460,6 +492,7 @@ export function createCodexSessionCatalogControl(params: {
       const pluginConfig = getPluginConfig();
       const runtime = source?.appServer ?? params.resolveRuntimeOptions({ pluginConfig });
       const requestOptions = resolveRequestOptions(runtime.start, agentId, source);
+      const assertSourceCurrent = createSourceAuthorityGuard(agentId, source);
       const { agentDir, config: runtimeConfig } = requestOptions;
       // Capture the request's config/home before loading execution; imports must
       // not let a concurrent reload move this pinned operation to another owner.
@@ -471,12 +504,20 @@ export function createCodexSessionCatalogControl(params: {
       const { resolveCodexAppServerClientInstanceId } = await import("./app-server/client.js");
       const { requestCodexAppServerClientJson } = await import("./app-server/request.js");
       const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
+      assertSourceCurrent();
       const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
+      const assertAuthorityCurrent = () => {
+        assertSourceCurrent();
+        clientOptions.assertCurrent?.();
+      };
+      assertAuthorityCurrent();
       const client = await getLeasedSharedCodexAppServerClient({
         ...clientOptions,
+        assertCurrent: assertAuthorityCurrent,
         timeoutMs: runtime.requestTimeoutMs,
       });
       try {
+        assertAuthorityCurrent();
         const requests = createCodexCatalogRequestSnapshot(
           runtime.requestTimeoutMs,
           async <M extends CodexCatalogRequestMethod>(
@@ -484,15 +525,21 @@ export function createCodexSessionCatalogControl(params: {
             requestParams: CodexAppServerRequestParams<M>,
             timeoutMs?: number,
             assertCurrent?: () => void,
-          ): Promise<CodexAppServerRequestResult<M>> =>
-            await requestCodexAppServerClientJson<CodexAppServerRequestResult<M>>({
+          ): Promise<CodexAppServerRequestResult<M>> => {
+            const assertRequestCurrent = () => {
+              assertAuthorityCurrent();
+              assertCurrent?.();
+            };
+            assertRequestCurrent();
+            return await requestCodexAppServerClientJson<CodexAppServerRequestResult<M>>({
               client,
               method,
               requestParams,
               config: runtimeConfig,
               timeoutMs: timeoutMs ?? runtime.requestTimeoutMs,
-              assertCurrent,
-            }),
+              assertCurrent: assertRequestCurrent,
+            });
+          },
         );
         const pinnedControl: CodexSessionCatalogControl =
           createCodexSessionCatalogControlFromRequests({
@@ -515,7 +562,10 @@ export function createCodexSessionCatalogControl(params: {
             sourceHomeId: source?.sourceHomeId,
             managedThreads: params.managedThreads,
             now,
-            withPinnedConnection: async (nestedRun) => await nestedRun(pinnedControl),
+            withPinnedConnection: async (nestedRun) => {
+              assertAuthorityCurrent();
+              return await nestedRun(pinnedControl);
+            },
           });
         return await run(pinnedControl);
       } finally {

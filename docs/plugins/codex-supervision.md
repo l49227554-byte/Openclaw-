@@ -106,10 +106,14 @@ Supplemental stores discovered under a uniquely identified OpenClaw agent direct
 use that source agent's effective managed OpenAI authentication, including normal
 shared-profile inheritance. The selected route agent
 remains the owner of catalog actions; its credentials are not substituted for the
-source agent's. Missing or unusable effective source authentication fails closed. Managed
+source agent's. When no managed profile is selected, the discovered store retains
+native authentication without requiring a credential import or configuration change.
+A selected but unusable managed profile fails closed rather than switching identities. Managed
 authentication is handed to an ephemeral App Server credential store, without
 rewriting the source's native `auth.json`. Normal managed-provider token refresh
-still belongs to OpenClaw's existing authentication lifecycle.
+still belongs to OpenClaw's existing authentication lifecycle. Source membership and
+prepared profile authority are checked again during acquisition and before requests,
+including reads and actions over pinned connections.
 
 The primary supervision store, native user store, remote connections, and explicitly
 configured additional stores retain native authentication. Explicit/native paths

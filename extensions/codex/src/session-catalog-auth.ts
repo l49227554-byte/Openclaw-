@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveCodexAppServerPreparedAuthProfileSnapshot } from "./app-server/auth-bridge.js";
@@ -41,20 +42,47 @@ export async function prepareCodexCatalogClientOptions(params: {
     config: options.config,
   });
   const profileId = resolveCodexAppServerAuthProfileId({ store, config: options.config });
-  const snapshot = profileId
-    ? await resolveCodexAppServerPreparedAuthProfileSnapshot({
-        agentDir: sourceAgentDir,
-        authProfileId: profileId,
-        authProfileStore: store,
-        config: options.config,
-      })
-    : undefined;
-  if (!profileId || !snapshot) {
+  const credentialFingerprint = (value: unknown) =>
+    createHash("sha256")
+      .update(JSON.stringify(value) ?? "")
+      .digest("hex");
+  const preparedCredential = credentialFingerprint(
+    profileId ? store.profiles[profileId] : undefined,
+  );
+  const assertCurrent = () => {
+    assertHomeCurrent();
+    const currentStore = resolveCodexAppServerAuthProfileStore({
+      agentDir: sourceAgentDir,
+      config: options.config,
+    });
+    if (
+      resolveCodexAppServerAuthProfileId({ store: currentStore, config: options.config }) !==
+        profileId ||
+      credentialFingerprint(profileId ? currentStore.profiles[profileId] : undefined) !==
+        preparedCredential
+    ) {
+      throw new Error(
+        "Codex catalog source authentication changed; refresh the catalog before retrying.",
+      );
+    }
+  };
+  if (!profileId) {
+    // Discovery does not opt a native-only store into managed authentication.
+    return { ...options, authProfileId: null, assertCurrent };
+  }
+  const snapshot = await resolveCodexAppServerPreparedAuthProfileSnapshot({
+    agentDir: sourceAgentDir,
+    authProfileId: profileId,
+    authProfileStore: store,
+    config: options.config,
+  });
+  if (!snapshot) {
     throw new Error("Codex catalog source has no usable managed OpenAI authentication.");
   }
-  assertHomeCurrent();
+  assertCurrent();
   return {
     ...options,
+    assertCurrent,
     agentDir: sourceAgentDir,
     startOptions: {
       ...options.startOptions,

@@ -228,6 +228,7 @@ describe("Codex supervision catalog", () => {
         agentDir: resolveDefaultAgentDir(config),
         config,
         authProfileId: null,
+        assertCurrent: expect.any(Function),
         startOptions: expect.objectContaining({ transport: "stdio", homeScope: "user" }),
         timeoutMs: expect.any(Number),
       },

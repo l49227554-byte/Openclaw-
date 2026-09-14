@@ -256,8 +256,8 @@ async function resolveOpenSharedMatrixClientState(
       continue;
     }
     if (existing) {
-      // The auth key also identifies the crypto store. A successor instance
-      // must wait for its old owner instead of opening a second Rust client.
+      // Wait for the state cached in this module to drain and retire before
+      // creating another client for the same auth key under a new owner.
       await awaitMatrixStartupWithAbort(existing.noLeases.promise, params.abortSignal);
       continue;
     }

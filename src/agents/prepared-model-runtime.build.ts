@@ -8,12 +8,15 @@ import { prepareModelCatalogThinkingPolicies } from "../plugins/provider-thinkin
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { resolveUsableAgentCredentialModes } from "./agent-auth-credentials.js";
 import { getPreparedRuntimeAuthMaterializations } from "./auth-profiles/runtime-materializations.js";
+import { augmentPreparedModelCatalogWithAgentHarness } from "./harness/model-catalog.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import {
   createPreparedModelCatalogWorker,
   createPreparedModelCatalogWorkerInput,
 } from "./prepared-model-catalog-worker.js";
 import {
+  getPreparedModelFullCatalogAuth,
+  setPreparedModelFullCatalogAuth,
   setPreparedModelRuntimeAuthMaterializations,
   setPreparedModelRuntimeAuthLoader,
   setPreparedModelRuntimeAuthStore,
@@ -32,7 +35,10 @@ import {
   prepareConfiguredRuntimeFactsBatch,
   prepareWorkspaceBuildGroup,
 } from "./prepared-model-runtime.facts.js";
-import { prepareFullCatalogFacts } from "./prepared-model-runtime.full-catalog.js";
+import {
+  markPreparedModelCatalogFull,
+  prepareFullCatalogFacts,
+} from "./prepared-model-runtime.full-catalog.js";
 import {
   createPreparedInboundRegistryLoader,
   preparedModelRuntimeWorkspaceFactsKey,
@@ -53,6 +59,7 @@ const MAX_CONCURRENT_FULL_MODEL_CATALOG_BUILDS = 1;
 const limitFullModelCatalogBuild = pLimit(MAX_CONCURRENT_FULL_MODEL_CATALOG_BUILDS);
 
 type PreparedModelRuntimeCatalogAccess = Readonly<{
+  isCurrent: () => boolean;
   readFullModelCatalog: () => ModelCatalogSnapshot | undefined;
   loadFullModelCatalog: (options?: { refresh?: boolean }) => Promise<ModelCatalogSnapshot>;
   loadAuth: (scope: PreparedModelRuntimeAuthScope) => Promise<PreparedModelRuntimeAuth>;
@@ -159,6 +166,7 @@ function createFullModelCatalogAccess(params: {
     isCurrent: params.isCurrent,
   });
   return {
+    isCurrent: params.isCurrent,
     loadAuth: ({ providerIds, profileIds }) => {
       const key = [...new Set(providerIds)]
         .toSorted((left, right) => left.localeCompare(right))
@@ -213,7 +221,23 @@ function createFullModelCatalogAccess(params: {
               // Full inventory belongs to explicit control-plane reads. The generation queue
               // prevents a stale plan from overlapping or following a replacement build.
               assertCurrent();
-              const catalog = await worker.loadCatalog();
+              const workerCatalog = await worker.loadCatalog();
+              assertCurrent();
+              const auth = getPreparedModelFullCatalogAuth(workerCatalog);
+              if (!auth) {
+                throw new Error("prepared model catalog worker omitted its auth generation");
+              }
+              // Native observations cannot cross the worker boundary. Establish them in
+              // the parent registry owned by this generation before publishing its rows.
+              const catalog = markPreparedModelCatalogFull(
+                await augmentPreparedModelCatalogWithAgentHarness({
+                  input: params.agentFacts.input,
+                  snapshot: workerCatalog,
+                  pluginRegistry: params.pluginGeneration.pluginRegistry,
+                  isCurrent: params.isCurrent,
+                }),
+              );
+              setPreparedModelFullCatalogAuth(catalog, auth);
               assertCurrent();
               return catalog;
             }),
@@ -269,6 +293,8 @@ function createSnapshot(
     ...(input.inheritedAuthDir ? { inheritedAuthDir: input.inheritedAuthDir } : {}),
     ...(input.workspaceDir ? { workspaceDir: input.workspaceDir } : {}),
     config: input.config,
+    observationConfig: input.config,
+    isCurrent: catalogAccess.isCurrent,
     authModes: resolveUsableAgentCredentialModes(credentials),
     metadataSnapshot: pluginMetadataSnapshot,
     allowGatewaySubagentBinding: input.allowGatewaySubagentBinding === true,

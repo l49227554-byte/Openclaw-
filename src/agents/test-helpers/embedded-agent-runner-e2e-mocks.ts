@@ -85,6 +85,8 @@ function createEmptyPreparedModelRuntimeSnapshot(
     ...(input.workspaceDir !== undefined ? { workspaceDir: input.workspaceDir } : {}),
     activeProjectKeys: [],
     config: input.config,
+    observationConfig: input.config,
+    isCurrent: () => true,
     authModes: {},
     metadataSnapshot: createEmptyPluginMetadataSnapshot(input.workspaceDir),
     pluginRegistry: createEmptyPluginRegistry(),

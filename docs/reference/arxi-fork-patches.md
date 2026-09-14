@@ -13,8 +13,8 @@ title: "Arxi fork patch ledger"
 
 Arxi is pinned to the stable OpenClaw `v2026.8.2` release at exact upstream
 commit `0965053fe6b9341776df147a6934b7485c60b5ca`. The release contains the broad
-upstream bug-fix set selected for this update; Arxi does not cherry-pick a newer
-unreleased OpenClaw commit on top.
+upstream bug-fix set selected for this update. Subsequent narrow backports are
+recorded below without changing that base release pin.
 
 The bundled Codex app-server client is independently pinned to
 `@openai/codex@0.152.1`. Its harness protocol was checked against the exact
@@ -75,6 +75,18 @@ or runtime layers merely because they existed in the previous history.
   while continuing to exclude the credential database.
 - Generated SDK surface budgets and protocol consumers were rebased to the
   released upstream surface; they do not introduce a parallel API layer.
+
+## Native catalog generation ownership
+
+Backport the catalog ownership contract from upstream
+[`6c446343` / #134524](https://github.com/openclaw/openclaw/pull/134524).
+Native discovery and readiness use the registry and observation config owned by
+the prepared generation. Worker publication establishes native observations in
+that parent registry, keeping the catalog paired with its exact auth generation.
+Retirement or supersession fails closed instead of consulting an unrelated
+global registry. These private ownership fields are not exposed by the public
+catalog API. Regression coverage includes an empty catalog after ambient registry
+retirement and rejection of a generation superseded during discovery.
 
 ## Proactivity ownership
 

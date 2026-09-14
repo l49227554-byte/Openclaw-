@@ -9,6 +9,7 @@ import { setPreparedModelRuntimeAuthLoader } from "../agents/prepared-model-runt
 import { PreparedModelRuntimePublicationSupersededError } from "../agents/prepared-model-runtime.errors.js";
 import { markPreparedModelCatalogFull } from "../agents/prepared-model-runtime.full-catalog.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import {
   loadDeferredCatalog,
   registerGatewayModelCatalogPrivateAccess,
@@ -56,6 +57,9 @@ function ownerSnapshot(
     ...(agentId ? { agentId } : {}),
     agentDir: "/tmp/gateway-agent",
     config,
+    observationConfig: config,
+    isCurrent: () => true,
+    pluginRegistry: createEmptyPluginRegistry(),
     authModes: {},
     authStore: { version: 1, profiles: {} },
     metadataSnapshot: { index: { plugins: [] }, plugins: [] } as never,
@@ -194,6 +198,9 @@ describe("gateway prepared model catalog", () => {
     } satisfies Partial<GatewayModelCatalogSnapshot>);
     expect(projected).not.toHaveProperty("authStore");
     expect(projected).not.toHaveProperty("metadataSnapshot");
+    expect(projected).not.toHaveProperty("pluginRegistry");
+    expect(projected).not.toHaveProperty("observationConfig");
+    expect(projected).not.toHaveProperty("isCurrent");
 
     expect(loadPublishedPreparedModelCatalogOwnerSnapshot).toHaveBeenCalledWith({
       agentId: "worker",

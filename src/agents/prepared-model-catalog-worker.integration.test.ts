@@ -671,7 +671,9 @@ describe("prepared model catalog worker boundary", () => {
     const added = await projectModels();
     expect(added).toMatchObject({
       result: {
-        models: [expect.objectContaining({ id: "durable-model", available: true })],
+        models: expect.arrayContaining([
+          expect.objectContaining({ id: "durable-model", available: true }),
+        ]),
       },
       projected: {
         authStore: {
@@ -700,7 +702,9 @@ describe("prepared model catalog worker boundary", () => {
     const removed = await projectModels();
     expect(removed).toMatchObject({
       result: {
-        models: [expect.objectContaining({ id: "durable-model", available: false })],
+        models: expect.arrayContaining([
+          expect.objectContaining({ id: "durable-model", available: false }),
+        ]),
       },
     });
     expect(removed.projected.authStore).toBeDefined();
@@ -837,7 +841,9 @@ describe("prepared model catalog worker boundary", () => {
     };
 
     await expect(listModels()).resolves.toMatchObject({
-      models: [expect.objectContaining({ id: "gpt-5.4", available: false })],
+      models: expect.arrayContaining([
+        expect.objectContaining({ id: "gpt-5.4", available: false }),
+      ]),
     });
     fs.writeFileSync(
       path.join(codexHome, "auth.json"),
@@ -852,11 +858,13 @@ describe("prepared model catalog worker boundary", () => {
     );
 
     await expect(listModels()).resolves.toMatchObject({
-      models: [expect.objectContaining({ id: "gpt-5.4", available: true })],
+      models: expect.arrayContaining([expect.objectContaining({ id: "gpt-5.4", available: true })]),
     });
     fs.rmSync(path.join(codexHome, "auth.json"));
     await expect(listModels()).resolves.toMatchObject({
-      models: [expect.objectContaining({ id: "gpt-5.4", available: false })],
+      models: expect.arrayContaining([
+        expect.objectContaining({ id: "gpt-5.4", available: false }),
+      ]),
     });
   });
 

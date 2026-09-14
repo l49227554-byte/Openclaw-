@@ -257,6 +257,9 @@ async function defaultBuildProjection(params: {
     preparedRuntimeAuthMaterializations: getPreparedModelRuntimeAuthMaterializations(
       params.facts.owner,
     ),
+    pluginRegistry: params.facts.owner.pluginRegistry,
+    isCurrent: params.facts.owner.isCurrent,
+    observationConfig: params.facts.owner.observationConfig,
     ...(params.preferredProfileId ? { preferredProfileId: params.preferredProfileId } : {}),
     ...(params.lockedProfileId ? { lockedProfileId: params.lockedProfileId } : {}),
   });

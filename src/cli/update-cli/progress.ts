@@ -6,7 +6,7 @@ import { formatDurationPrecise } from "../../infra/format-time/format-duration.t
 import { formatUpdateFailureFact } from "../../infra/update-failure-facts-format.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import {
-  hasRepeatedCliError,
+  updateStepDiagnostics,
   type UpdateRunPhase,
   type UpdateRunRecord,
 } from "../../infra/update-run-record.js";
@@ -201,9 +201,6 @@ function printStep(step: DisplayStep): void {
     for (const fact of step.failureFacts) {
       defaultRuntime.log(`    ${theme.error(formatUpdateFailureFact(fact))}`);
     }
-    if (hasRepeatedCliError(step)) {
-      return;
-    }
   }
   // Build tools often report failures on stdout. Keep the final diagnostic from
   // each stream, so npm's stderr footer cannot hide the actual build error.
@@ -211,7 +208,10 @@ function printStep(step: DisplayStep): void {
   if (step.advisory) {
     defaultRuntime.log(`    ${color(step.advisory.message)}`);
   }
-  for (const output of [step.stdoutTail, step.stderrTail]) {
+  const tails = step.advisory
+    ? [step.stdoutTail, step.stderrTail]
+    : updateStepDiagnostics(step).tails;
+  for (const output of tails) {
     for (const line of (output ?? "").trimEnd().split("\n").slice(-10)) {
       if (line.trim()) {
         defaultRuntime.log(`    ${color(line)}`);

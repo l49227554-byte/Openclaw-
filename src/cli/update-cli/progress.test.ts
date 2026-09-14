@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
 import { defaultRuntime } from "../../runtime.js";
+import { formatCliJsonFailure } from "../failure-output.js";
 import { createUpdateProgress, printResult } from "./progress.js";
 
 vi.mock("../../infra/update-run-ledger.js", () => ({ getUpdateRun: vi.fn() }));
@@ -193,11 +194,15 @@ describe("update progress", () => {
   it("shows recorded failure facts without replaying the child error envelope", () => {
     const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
     presentation = createUpdateProgress(true, context);
+    const envelope = formatCliJsonFailure(new Error("Unable to load plugin"), {
+      argv: [],
+      env: {},
+    });
     const failed = {
       ...step,
       durationMs: 1,
       exitCode: 1,
-      stdoutTail: '{"ok":false,"error":{"message":"Unable to load plugin"}}',
+      stdoutTail: JSON.stringify(envelope),
       stderrTail:
         "[openclaw] The CLI command failed.\n[openclaw] Reason: Unable to load plugin\n[openclaw] Help: openclaw --help",
       failureFacts: [{ check: "doctor", code: "doctor-failed", message: "Unable to load plugin" }],
@@ -214,6 +219,18 @@ describe("update progress", () => {
     const report = log.mock.calls.flat().join("\n");
     expect(report.match(/Unable to load plugin/gu)).toHaveLength(1);
     expect(report).not.toContain("Help: openclaw --help");
+    for (const stdoutTail of [
+      "Additional diagnostic",
+      JSON.stringify({ ...envelope, details: "Additional diagnostic" }),
+    ]) {
+      log.mockClear();
+      const detailed = { ...failed, stdoutTail, cwd: "/fixture" };
+      presentation.progress.onStepComplete?.(detailed);
+      expect(log.mock.calls.flat().join("\n")).toContain("Additional diagnostic");
+      log.mockClear();
+      printResult({ ...result, runId: undefined, status: "error", steps: [detailed] }, {});
+      expect(log.mock.calls.flat().join("\n")).toContain("Additional diagnostic");
+    }
     log.mockClear();
     presentation.progress.onStepComplete?.({
       ...failed,

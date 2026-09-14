@@ -3,7 +3,9 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { formatCliFailureLines, formatCliJsonFailure } from "../cli/failure-output.js";
 import { createUpdateProgress } from "../cli/update-cli/progress.js";
+import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { defaultRuntime } from "../runtime.js";
 import * as diskSpace from "./disk-space.js";
@@ -121,9 +123,7 @@ describe("update candidate canary", () => {
     const onStep = vi.fn();
     try {
       const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
+        ...canaryStateOptions(),
         env: { TMPDIR: "/synthetic/tmp" },
         onStep,
       });
@@ -182,11 +182,8 @@ describe("update candidate canary", () => {
     const servingRoot = path.join(root, "installed");
     const env = { OPENCLAW_DEV_SOURCE_ROOT: servingRoot };
     const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
+      ...canaryStateOptions(3000),
       env,
-      timeoutMs: 3000,
     });
     expect(result.status).toBe("ok");
     expect(mocks.snapshot.mock.calls[0]?.[1].baseEnv.OPENCLAW_DEV_SOURCE_ROOT).toBe(root);
@@ -209,10 +206,7 @@ describe("update candidate canary", () => {
       return child;
     });
     try {
-      const result = await validateUpdateCandidateCanary({
-        ...canaryStateOptions(),
-        timeoutMs: 1_000,
-      });
+      const result = await validateUpdateCandidateCanary(canaryStateOptions(1_000));
       expect(result).toMatchObject({ status: "error", phase: "doctor" });
       expect(result.logTail.join("\n")).toContain("deadline exceeded");
       expect(result.steps.at(-1)).toMatchObject({ exitCode: 1 });
@@ -239,10 +233,7 @@ describe("update candidate canary", () => {
     });
     stubHealthyGateway();
     try {
-      const result = await validateUpdateCandidateCanary({
-        ...canaryStateOptions(),
-        timeoutMs: 30_000,
-      });
+      const result = await validateUpdateCandidateCanary(canaryStateOptions(30_000));
       expect(result, result.logTail.join("\n")).toMatchObject({ status: "ok", phase: "readiness" });
       expect(result.durationMs).toBeGreaterThanOrEqual(300_001);
       expect(result.steps).toContainEqual(
@@ -282,10 +273,7 @@ describe("update candidate canary", () => {
       );
       stubHealthyGateway();
       try {
-        const result = await validateUpdateCandidateCanary({
-          ...canaryStateOptions(),
-          timeoutMs,
-        });
+        const result = await validateUpdateCandidateCanary(canaryStateOptions(timeoutMs));
         expect(result.steps[0]?.snapshotCapacity?.sqliteBytes).toBe(sqliteBytes);
         expect(result.status, result.logTail.join("\n")).toBe(expectedStatus);
         expect(result.phase).toBe(expectedStatus === "ok" ? "readiness" : "doctor");
@@ -465,8 +453,7 @@ describe("update candidate canary", () => {
     const onStep = vi.fn();
     try {
       const result = await validateUpdateCandidateCanary({
-        ...canaryStateOptions(),
-        timeoutMs: 3000,
+        ...canaryStateOptions(3000),
         onStep,
       });
       expect(result.status).toBe("ok");
@@ -511,8 +498,7 @@ describe("update candidate canary", () => {
     stubHealthyGateway();
     const onStep = vi.fn();
     const result = await validateUpdateCandidateCanary({
-      ...canaryStateOptions(),
-      timeoutMs: 3_000,
+      ...canaryStateOptions(3_000),
       onStep,
     });
     expect(result).toMatchObject({ status: "ok", phase: "runtime" });
@@ -668,27 +654,14 @@ describe("update candidate canary", () => {
       timeoutMs: 3_000,
     });
     try {
-      const first = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config,
-        env: {},
-        rehearsal,
-        timeoutMs: 3_000,
-      });
+      const options = { ...canaryStateOptions(3_000), config, rehearsal };
+      const first = await validateUpdateCandidateCanary(options);
       expect(first.status).toBe("ok");
       const copied = JSON.parse(await fs.readFile(rehearsal.configPath, "utf8")) as OpenClawConfig;
       copied.logging = { ...copied.logging, level: "debug" };
       const repairedConfig = JSON.stringify(copied);
       await fs.writeFile(rehearsal.configPath, repairedConfig);
-      const second = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config,
-        env: {},
-        rehearsal,
-        timeoutMs: 3_000,
-      });
+      const second = await validateUpdateCandidateCanary(options);
       expect(second.status).toBe("ok");
       expect(observed).toEqual([
         { configPath: rehearsal.configPath, level: "info" },
@@ -705,9 +678,10 @@ describe("update candidate canary", () => {
     await expect(fs.access(rehearsal.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.each(["lint", "startup"])(
+  it.each(["lint", "startup", "multiline", "envelope", "compact"])(
     "retains the CLI reason when %s exits before its report",
-    async (phase) => {
+    async (scenario) => {
+      const phase = scenario === "startup" ? "startup" : "lint";
       const spawnNormally = mocks.spawn.getMockImplementation()!;
       mocks.spawn.mockImplementation((command, args: string[], options) => {
         if (!(phase === "lint" ? args.includes("--lint") : args.includes("--update-canary"))) {
@@ -715,6 +689,33 @@ describe("update candidate canary", () => {
         }
         const child = new FakeChild(nextPid++);
         queueMicrotask(() => {
+          if (["multiline", "envelope", "compact"].includes(scenario)) {
+            const error =
+              scenario === "multiline"
+                ? createInvalidConfigError(
+                    "/fixture/openclaw.json",
+                    `- gateway.port: invalid ${"x".repeat(160)} token=synthetic-secret\n- gateway.host: unknown`,
+                  )
+                : new Error("Unable to resolve health API");
+            if (scenario !== "multiline") {
+              child.stdout.write(
+                JSON.stringify(
+                  formatCliJsonFailure(error, { argv: [], env: {} }),
+                  null,
+                  scenario === "compact" ? undefined : 2,
+                ) + "\n",
+              );
+            }
+            child.stderr.write(
+              formatCliFailureLines({
+                title: "The CLI command failed.",
+                error,
+                env: {},
+              }).join("\n") + "\n",
+            );
+            child.emit("close", 1);
+            return;
+          }
           child.stderr.write("[openclaw] The CLI command failed.\n");
           child.stderr.write(
             "[openclaw] Reason: Unable to resolve health API token=synthetic-secret\n",
@@ -727,16 +728,33 @@ describe("update candidate canary", () => {
         return child;
       });
       const result = await validateUpdateCandidateCanary({
-        root,
-        stateDir: root,
-        config: {},
+        ...canaryStateOptions(3_000),
         env: { API_TOKEN: "synthetic-secret" },
-        timeoutMs: 3_000,
       });
       expect(result).toMatchObject({ status: "error", phase });
-      expect(result.steps.at(-1)?.failureFacts?.[0]?.message).toContain(
-        "Unable to resolve health API",
+      const failed = result.steps.at(-1)!;
+      expect(failed.failureFacts?.[0]?.message).toContain(
+        scenario === "multiline" ? "Invalid config" : "Unable to resolve health API",
       );
+      if (["multiline", "envelope", "compact"].includes(scenario)) {
+        const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+        const presentation = createUpdateProgress(true);
+        onTestFinished(() => {
+          presentation.dispose();
+          log.mockRestore();
+        });
+        presentation.progress.onStepComplete?.({ ...failed, index: 0, total: 1 });
+        const output = log.mock.calls.flat().join("\n");
+        if (scenario === "multiline") {
+          expect(output).toContain("gateway.port: invalid");
+          expect(output).toContain("gateway.host: unknown");
+          expect(updateRunStepsFromResultStep(failed).at(-1)?.detail).toContain(
+            "gateway.port: invalid",
+          );
+        } else {
+          expect(output.match(/Unable to resolve health API/gu)).toHaveLength(1);
+        }
+      }
       expect(JSON.stringify(result)).not.toContain("synthetic-secret");
     },
   );
@@ -777,11 +795,8 @@ describe("update candidate canary", () => {
     });
     const onStep = vi.fn();
     const result = await validateUpdateCandidateCanary({
-      root,
-      stateDir: root,
-      config: {},
+      ...canaryStateOptions(3_000),
       env: { API_TOKEN: "synthetic-canary-secret" },
-      timeoutMs: 3_000,
       onStep,
     });
     expect(result).toMatchObject({ status: "error", phase: "lint" });
@@ -838,10 +853,7 @@ describe("update candidate canary", () => {
           Response.json({ status: "started" }, { status: url.endsWith("readyz") ? 503 : 200 }),
         ),
       );
-      const result = await validateUpdateCandidateCanary({
-        ...canaryStateOptions(),
-        timeoutMs: 250,
-      });
+      const result = await validateUpdateCandidateCanary(canaryStateOptions(250));
       expect(result.status).toBe(failure === "readiness" ? "ok" : "error");
       expect(result.phase).toBe(failure);
       if (failure === "plugins") {
@@ -894,8 +906,7 @@ describe("update candidate canary", () => {
       return child;
     });
     const result = await validateUpdateCandidateCanary({
-      ...canaryStateOptions(),
-      timeoutMs: 3_000,
+      ...canaryStateOptions(3_000),
       signal: controller.signal,
     });
     expect(result.status).toBe("error");
@@ -918,8 +929,7 @@ describe("update candidate canary", () => {
   it("aborts further validation and removes private state when recording a step fails", async () => {
     await expect(
       validateUpdateCandidateCanary({
-        ...canaryStateOptions(),
-        timeoutMs: 3_000,
+        ...canaryStateOptions(3_000),
         onStep: () => {
           throw new Error("ledger unavailable");
         },

@@ -37,26 +37,18 @@ export class DebugOverlay extends OpenClawLightDomElement {
 
   private contentKey = 0;
   private recoveryActionPending = false;
-  private readonly content = new LazyCustomElementRequestController(
-    this,
-    undefined,
-    async (canReload) => {
-      const reloading = await retryStaleChunkReloadWhenReachable({
-        canReload: () => {
-          if (!canReload()) {
-            return false;
-          }
-          this.recoveryActionPending = persistLazyShellAction({
-            eventType: DEBUG_OVERLAY_REQUEST_EVENT,
-          });
-          return this.recoveryActionPending;
-        },
-      });
-      if (!reloading && canReload()) {
-        this.clearRecoveryAction();
-      }
-      return reloading;
-    },
+  private readonly content = new LazyCustomElementRequestController(this, undefined, (canReload) =>
+    retryStaleChunkReloadWhenReachable({
+      canReload: () => {
+        if (!canReload()) {
+          return false;
+        }
+        this.recoveryActionPending = persistLazyShellAction({
+          eventType: DEBUG_OVERLAY_REQUEST_EVENT,
+        });
+        return this.recoveryActionPending;
+      },
+    }),
   );
 
   override disconnectedCallback(): void {
@@ -73,7 +65,11 @@ export class DebugOverlay extends OpenClawLightDomElement {
     this.contentKey += 1;
     document.addEventListener("keydown", this.handleKeydown, true);
     if (!isOptionalElementDefined(DEBUG_OVERLAY_CONTENT)) {
-      this.content.request(DEBUG_OVERLAY_CONTENT);
+      // Automatic stale-chunk reloads can happen before the manual Retry path.
+      this.recoveryActionPending = persistLazyShellAction({
+        eventType: DEBUG_OVERLAY_REQUEST_EVENT,
+      });
+      this.content.request(DEBUG_OVERLAY_CONTENT, () => this.clearRecoveryAction());
     }
   }
 

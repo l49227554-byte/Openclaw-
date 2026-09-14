@@ -45,7 +45,11 @@ const suite = createControlUiE2eSuite({
     `Playwright Chromium is not installed or cannot start at ${executablePath}. Run \`pnpm --dir ui exec playwright install --with-deps chromium\`.`,
 });
 
-async function installChunkFailure(page: Page, chunk: RegExp, manualProbe?: Promise<void>) {
+async function installChunkFailure(
+  page: Page,
+  chunk: RegExp,
+  options: { manualProbe?: Promise<void>; automaticReload?: boolean } = {},
+) {
   let headCount = 0;
   let chunkRequestCount = 0;
   let failedChunkUrl: string | undefined;
@@ -55,11 +59,11 @@ async function installChunkFailure(page: Page, chunk: RegExp, manualProbe?: Prom
       return;
     }
     headCount += 1;
-    if (headCount === 1) {
+    if (headCount === 1 && !options.automaticReload) {
       await route.fulfill({ status: 503 });
       return;
     }
-    await manualProbe;
+    await options.manualProbe;
     await route.fallback();
   });
   await page.route(chunk, async (route: Route) => {
@@ -332,7 +336,7 @@ suite.define(() => {
           const failure = await installChunkFailure(
             page,
             /\/assets\/command-palette-[^/?]+\.js(?:\?.*)?$/u,
-            manualProbe,
+            { manualProbe },
           );
           await installMockGateway(page);
           let documentRequests = 0;
@@ -607,17 +611,35 @@ suite.define(() => {
     },
   );
 
-  it.each(dockedCases.filter((testCase) => testCase.dock !== "bottom"))(
-    "recovers $name from its in-place stale-chunk error",
-    async (testCase) => {
-      await suite.withPage(
-        { locale: "en-US", serviceWorkers: "block", viewport },
-        async ({ page }) => {
-          const failure = await installChunkFailure(page, testCase.chunk);
-          const composer = await installDockedScenario(page, testCase.dock);
-          await testCase.open(page);
-          const frame = testCase.frame(page);
-          const error = frame.locator(".lazy-view-error");
+  it.each(
+    dockedCases
+      .filter((testCase) => testCase.dock !== "bottom")
+      .flatMap((testCase) =>
+        (testCase.dock ? [false] : [false, true]).map((automaticReload) =>
+          Object.assign({}, testCase, {
+            automaticReload,
+            recovery: automaticReload ? "automatic reload" : "manual Retry",
+          }),
+        ),
+      ),
+  )("recovers $name from its in-place stale-chunk error via $recovery", async (testCase) => {
+    await suite.withPage(
+      { locale: "en-US", serviceWorkers: "block", viewport },
+      async ({ page }) => {
+        const failure = await installChunkFailure(page, testCase.chunk, {
+          automaticReload: testCase.automaticReload,
+        });
+        const composer = await installDockedScenario(page, testCase.dock);
+        const automaticReload = testCase.automaticReload
+          ? page.waitForEvent("domcontentloaded")
+          : undefined;
+        await testCase.open(page);
+        const frame = testCase.frame(page);
+        const error = frame.locator(".lazy-view-error");
+        if (automaticReload) {
+          await automaticReload;
+          await waitForControlUiGatewayReady(page);
+        } else {
           await error.waitFor();
           if (captureUiProof) {
             await page.screenshot({
@@ -636,19 +658,26 @@ suite.define(() => {
           await expect.poll(failure.headCount).toBe(1);
 
           await retryThroughReload(page, error);
-          await testCase.ready(page).waitFor();
-          expect(failure.chunkRequestCount()).toBe(2);
-          expect(await page.locator(".lazy-view-error, openclaw-modal-dialog").count()).toBe(0);
-          if (captureUiProof) {
-            await page.screenshot({
-              animations: "disabled",
-              path: path.join(artifactDir, `${testCase.proofName}-recovered.png`),
-            });
-          }
-        },
-      );
-    },
-  );
+        }
+        await testCase.ready(page).waitFor();
+        expect(failure.chunkRequestCount()).toBe(2);
+        expect(await page.locator(".lazy-view-error, openclaw-modal-dialog").count()).toBe(0);
+        expect(await composer.inputValue()).toBe("Keep working");
+        if (captureUiProof) {
+          await page.screenshot({
+            animations: "disabled",
+            path: path.join(artifactDir, `${testCase.proofName}-recovered.png`),
+          });
+        }
+        if (!testCase.dock) {
+          await page.reload();
+          await waitForControlUiGatewayReady(page);
+          expect(await frame.isVisible()).toBe(false);
+          expect(await composer.inputValue()).toBe("Keep working");
+        }
+      },
+    );
+  });
 
   it("keeps native titlebar state and actions current while its chunk is loading", async () => {
     await suite.withPage(

@@ -473,8 +473,8 @@ export class ShellChromeOwner {
     const descriptor = lazyShellEvent(DEBUG_OVERLAY_REQUEST_EVENT, event);
     const overlay = host.querySelector<DebugOverlayElement>("openclaw-debug-overlay");
     if (overlay) {
-      overlay.toggle();
       this.clearPendingLazyAction(descriptor);
+      overlay.toggle();
       return;
     }
     this.pendingLazyAction = descriptor;

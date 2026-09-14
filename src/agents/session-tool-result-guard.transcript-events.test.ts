@@ -5,9 +5,11 @@ import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { transformMessages } from "../../packages/ai/src/transcript-transform.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { makeTextToolResult } from "../../test/helpers/text-tool-result.js";
+import { makeUserMessage } from "../../test/helpers/user-message.js";
 import {
   appendTranscriptMessage,
   listSessionPendingInputs,
@@ -123,11 +125,7 @@ describe("guardSessionManager transcript updates", () => {
 
   it("reloads the session manager after atomic compaction persistence rolls back", async () => {
     const { sessionManager, root, target } = await openPersistedSessionManager();
-    const keptId = sessionManager.appendMessage({
-      role: "user",
-      content: "keep",
-      timestamp: 1,
-    });
+    const keptId = sessionManager.appendMessage(makeUserMessage("keep", 1));
     const guarded = guardSessionManager(sessionManager, {
       withCompactionPersistence: (append, validateAppend) =>
         persistCompactionBoundaryWithSessionEntrySync(target, {
@@ -224,11 +222,7 @@ describe("guardSessionManager transcript updates", () => {
       expect(listSessionPendingInputs(target)).toEqual({ items: [], total: 0 });
       expect(approvalHook).toHaveBeenCalledOnce();
 
-      const unstagedId = guarded.appendMessage({
-        role: "user",
-        content: "Unstaged source",
-        timestamp: 3,
-      });
+      const unstagedId = guarded.appendMessage(makeUserMessage("Unstaged source", 3));
       expect(approvalHook).toHaveBeenCalledTimes(2);
       expect(guarded.getEntry(unstagedId)).toMatchObject({
         message: { role: "user", content: "[approved] Unstaged source" },
@@ -238,6 +232,53 @@ describe("guardSessionManager transcript updates", () => {
       ambient.finishPendingInput?.("interrupted");
       resetGlobalHookRunner();
     }
+  });
+
+  it("combines explicit redaction with one fresh SQLite admission across replay", async () => {
+    const { root, target, sessionEntry, sessionManager } = await openPersistedSessionManager();
+    const message = {
+      role: "user" as const,
+      content: "private-note=fixture-only-redaction-value",
+      idempotencyKey: "redacted-admission:user",
+      timestamp: 1,
+    };
+    const assertOriginalInputCommit = vi.fn(() => {
+      expect(
+        SessionManager.open(target, root)
+          .getBranch()
+          .filter((entry) => entry.type === "message"),
+      ).toHaveLength(0);
+    });
+    const recorder = createUserTurnTranscriptRecorder({
+      message,
+      target: { ...target, sessionEntry },
+      assertOriginalInputCommit,
+    });
+    const admitted = vi.fn();
+    assert(recorder.setAdmissionHandler);
+    recorder.setAdmissionHandler(admitted);
+    const guarded = guardSessionManager(sessionManager, {
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      config: { logging: { redactPatterns: [String.raw`private-note=([^\s]+)`] } },
+      preparedUserTurnMessage: message,
+      preparedUserTurnTranscriptRecorder: recorder,
+    });
+
+    const entryId = guarded.appendMessage({ ...message });
+    expect(guarded.appendMessage({ ...message })).toBe(entryId);
+    expect(assertOriginalInputCommit).toHaveBeenCalledOnce();
+    expect(admitted).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ entryId, idempotencyKey: message.idempotencyKey }),
+    );
+    closeOpenClawAgentDatabasesForTest();
+    const persisted = SessionManager.open(target, root)
+      .getBranch()
+      .filter((entry) => entry.type === "message");
+    expect(persisted).toMatchObject([
+      { id: entryId, message: { role: "user", content: "private-note=***" } },
+    ]);
+    expect(JSON.stringify(persisted)).not.toContain(message.content);
   });
 
   it.each([
@@ -908,14 +949,7 @@ describe("deferred assistant error transcript", () => {
     };
     failed.usage = { ...failed.usage, output: 7, totalTokens: 7 };
     manager.appendMessage(failed);
-    manager.appendMessage({
-      role: "toolResult",
-      toolCallId: "call-terminal",
-      toolName: "read",
-      content: [{ type: "text", text: "Result" }],
-      isError: false,
-      timestamp: 1,
-    });
+    manager.appendMessage(makeTextToolResult("call-terminal", "read", "Result", false, 1));
     await owner.settle(true);
     const messages = SessionManager.open(target).buildSessionContext().messages;
     expect(messages).toMatchObject([

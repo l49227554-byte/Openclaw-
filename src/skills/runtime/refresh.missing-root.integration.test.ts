@@ -11,6 +11,64 @@ vi.mock("../loading/plugin-skills.js", () => ({
   resolvePluginSkillRootsFromMetadata: () => [],
 }));
 
+it.each(["initial", "closed", "disabled", "evicted"] as const)(
+  "reads repaired skills immediately after %s watcher acquisition",
+  async (lifecycle) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "skills-acquire-")));
+    const workspaceDir = path.join(root, "workspace");
+    const skillDir = path.join(workspaceDir, "skills", "acquire-proof");
+    const skillFile = path.join(skillDir, "SKILL.md");
+    const { ensureSkillsWatcher, closeSkillsWatchers } = await import("./refresh.js");
+    const { getSkillsSnapshotVersion } = await import("./refresh-state.js");
+    const { loadWorkspaceSkills } = await import("../loading/workspace-skill-loader.js");
+    const options = { config: {}, agentId: "main" };
+    try {
+      await fs.mkdir(skillDir, { recursive: true });
+      if (lifecycle !== "initial") {
+        ensureSkillsWatcher({ workspaceDir, ...options });
+        if (lifecycle === "closed") {
+          await closeSkillsWatchers();
+        } else if (lifecycle === "disabled") {
+          ensureSkillsWatcher({
+            workspaceDir,
+            ...options,
+            config: { skills: { load: { watch: false } } },
+          });
+        } else {
+          const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61 * 60_000);
+          try {
+            ensureSkillsWatcher({ workspaceDir: path.join(root, "other"), ...options });
+          } finally {
+            clock.mockRestore();
+          }
+        }
+      }
+      // Cache the invalid file after teardown, so teardown invalidation cannot
+      // accidentally prove freshness on reacquisition.
+      nativeFs.writeFileSync(skillFile, "not valid skill frontmatter\n");
+      const readSkill = () =>
+        loadWorkspaceSkills(workspaceDir, options).find(
+          (entry) => entry.skill.name === "acquire-proof",
+        );
+      expect(readSkill()).toBeUndefined();
+      nativeFs.writeFileSync(
+        skillFile,
+        "---\nname: acquire-proof\ndescription: Repaired before acquisition\n---\n",
+      );
+      expect(readSkill()).toBeUndefined();
+      // No await: the first synchronous consumer must not need a ready/change event.
+      ensureSkillsWatcher({ workspaceDir, ...options });
+      expect(readSkill()?.skill.description).toBe("Repaired before acquisition");
+      const version = getSkillsSnapshotVersion(workspaceDir);
+      ensureSkillsWatcher({ workspaceDir, ...options });
+      expect(getSkillsSnapshotVersion(workspaceDir)).toBe(version);
+    } finally {
+      await closeSkillsWatchers();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
 it.each(["create", "edit"] as const)(
   "refreshes cached skills after %s during initial watcher registration",
   async (operation) => {
@@ -76,9 +134,17 @@ it("refreshes skills created beneath an initially missing project skills root", 
   const { ensureSkillsWatcher, closeSkillsWatchers, registerSkillsChangeListener } =
     await import("./refresh.js");
   const changes: string[] = [];
+  let readyEvents = 0;
   const unregister = registerSkillsChangeListener((event) => {
-    if (event.workspaceDir === workspaceDir && event.reason === "watch" && event.changedPath) {
-      changes.push(event.changedPath);
+    if (event.workspaceDir !== workspaceDir) {
+      return;
+    }
+    if (event.reason === "watch") {
+      if (event.changedPath) {
+        changes.push(event.changedPath);
+      } else {
+        readyEvents += 1;
+      }
     }
   });
   try {
@@ -91,11 +157,19 @@ it("refreshes skills created beneath an initially missing project skills root", 
     });
     const existingSkill = path.join(workspaceDir, "skills", "existing", "SKILL.md");
     // This control covers writes after registration; the cases above cover
-    // cached discovery while the initial scan is still pending.
+    // cached discovery while the initial scan is still pending. Wait for the
+    // public ready invalidations because Bun cannot observe Chokidar's already-
+    // bound node:fs export through the spy below.
     await vi.waitFor(() => {
-      expect(registeredPaths.has(workspaceDir)).toBe(true);
-      expect(registeredPaths.has(path.dirname(existingSkill))).toBe(true);
+      expect(readyEvents).toBe(1);
     });
+    // Bun does not project spy replacements onto already-bound node:fs named exports.
+    if (!process.versions.bun) {
+      await vi.waitFor(() => {
+        expect(registeredPaths.has(workspaceDir)).toBe(true);
+        expect(registeredPaths.has(path.dirname(existingSkill))).toBe(true);
+      });
+    }
     await fs.writeFile(existingSkill, "existing skill");
     await vi.waitFor(() => expect(changes).toContain(existingSkill), { timeout: 3_000 });
     const newSkill = path.join(workspaceDir, ".agents", "skills", "new", "SKILL.md");
@@ -109,9 +183,11 @@ it("refreshes skills created beneath an initially missing project skills root", 
       },
       { timeout: 3_000 },
     );
-    expect(inheritedContexts.length).toBeGreaterThan(0);
-    for (const context of inheritedContexts) {
-      expect(context).toEqual({ turn: undefined, pendingInput: undefined });
+    if (!process.versions.bun) {
+      expect(inheritedContexts.length).toBeGreaterThan(0);
+      for (const context of inheritedContexts) {
+        expect(context).toEqual({ turn: undefined, pendingInput: undefined });
+      }
     }
   } finally {
     unregister();

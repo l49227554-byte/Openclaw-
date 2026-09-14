@@ -34,10 +34,7 @@ import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.
 import { resolveUserPath } from "../../utils.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { isMinimaxVlmProvider } from "../minimax-vlm.js";
-import {
-  resolveImageFallbackCandidates,
-  resolveImageFallbackDefaultProvider,
-} from "../model-fallback-candidates.js";
+import { resolveImageFallbackCandidates } from "../model-fallback-candidates.js";
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.js";
 import { optionalFiniteNumberSchema, optionalPositiveIntegerSchema } from "../schema/typebox.js";
 import { readFiniteNumberParam, readPositiveIntegerParam } from "./common.js";
@@ -423,6 +420,7 @@ function resolveCompressionModelCandidates(params: {
   cfg?: OpenClawConfig;
   imageModelConfig?: ImageModelConfig | null;
   modelOverride?: string;
+  preparedModelRuntime?: PreparedModelRuntimeSnapshot;
 }): Array<{ provider: string; model: string }> {
   const overrideConfig = resolveImageModelConfigForOverride({
     cfg: params.cfg,
@@ -440,7 +438,7 @@ function resolveCompressionModelCandidates(params: {
     : params.cfg;
   return resolveImageFallbackCandidates({
     cfg: effectiveCfg,
-    defaultProvider: resolveImageFallbackDefaultProvider(effectiveCfg),
+    manifestPlugins: params.preparedModelRuntime?.metadataSnapshot,
   });
 }
 
@@ -607,6 +605,7 @@ async function runImagePrompt(params: {
 
   const result = await runWithImageModelFallback({
     cfg: effectiveCfg,
+    manifestPlugins: params.preparedModelRuntime?.metadataSnapshot,
     modelOverride: params.modelOverride,
     abortSignal: params.signal,
     run: async (provider, modelId) => {
@@ -637,6 +636,22 @@ async function runImagePrompt(params: {
         provider,
         providerRegistry,
       );
+      const request = {
+        provider,
+        model: modelId,
+        prompt: params.prompt,
+        maxTokens: resolveImageToolMaxTokens(undefined),
+        timeoutMs,
+        ...(params.signal ? { signal: params.signal } : {}),
+        cfg: providerCfg,
+        ...(params.agentId ? { agentId: params.agentId } : {}),
+        agentDir: params.agentDir,
+        authStore: params.authStore,
+        ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
+        ...(params.preparedModelRuntime
+          ? { preparedModelRuntime: params.preparedModelRuntime }
+          : {}),
+      };
       if (
         params.images.length > 1 &&
         (imageProvider?.describeImages || !imageProvider?.describeImage)
@@ -651,54 +666,12 @@ async function runImagePrompt(params: {
             fileName: `image-${index + 1}`,
             mime: image.mimeType,
           })),
-          provider,
-          model: modelId,
-          prompt: params.prompt,
-          maxTokens: resolveImageToolMaxTokens(undefined),
-          timeoutMs,
-          ...(params.signal ? { signal: params.signal } : {}),
-          cfg: providerCfg,
-          ...(params.agentId ? { agentId: params.agentId } : {}),
-          agentDir: params.agentDir,
-          authStore: params.authStore,
-          ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
-          ...(params.preparedModelRuntime
-            ? { preparedModelRuntime: params.preparedModelRuntime }
-            : {}),
+          ...request,
         });
         return { text: described.text, provider, model: described.model ?? modelId };
       }
       const describeImage =
         imageProvider?.describeImage ?? imageToolProviderDeps.describeImageWithModel;
-      if (params.images.length === 1) {
-        const image = params.images.at(0);
-        if (!image) {
-          throw new Error("Image input disappeared during model execution");
-        }
-        // A run cancelled mid-dispatch must not buy another provider call.
-        params.signal?.throwIfAborted();
-        const described = await describeImage({
-          buffer: image.buffer,
-          fileName: "image-1",
-          mime: image.mimeType,
-          provider,
-          model: modelId,
-          prompt: params.prompt,
-          maxTokens: resolveImageToolMaxTokens(undefined),
-          timeoutMs,
-          ...(params.signal ? { signal: params.signal } : {}),
-          cfg: providerCfg,
-          ...(params.agentId ? { agentId: params.agentId } : {}),
-          agentDir: params.agentDir,
-          authStore: params.authStore,
-          ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
-          ...(params.preparedModelRuntime
-            ? { preparedModelRuntime: params.preparedModelRuntime }
-            : {}),
-        });
-        return { text: described.text, provider, model: described.model ?? modelId };
-      }
-
       const parts: string[] = [];
       for (const [index, image] of params.images.entries()) {
         // A run cancelled mid-dispatch must not buy another provider call.
@@ -707,21 +680,15 @@ async function runImagePrompt(params: {
           buffer: image.buffer,
           fileName: `image-${index + 1}`,
           mime: image.mimeType,
-          provider,
-          model: modelId,
-          prompt: `${params.prompt}\n\nDescribe image ${index + 1} of ${params.images.length}.`,
-          maxTokens: resolveImageToolMaxTokens(undefined),
-          timeoutMs,
-          ...(params.signal ? { signal: params.signal } : {}),
-          cfg: providerCfg,
-          ...(params.agentId ? { agentId: params.agentId } : {}),
-          agentDir: params.agentDir,
-          authStore: params.authStore,
-          ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
-          ...(params.preparedModelRuntime
-            ? { preparedModelRuntime: params.preparedModelRuntime }
-            : {}),
+          ...request,
+          prompt:
+            params.images.length === 1
+              ? params.prompt
+              : `${params.prompt}\n\nDescribe image ${index + 1} of ${params.images.length}.`,
         });
+        if (params.images.length === 1) {
+          return { text: described.text, provider, model: described.model ?? modelId };
+        }
         parts.push(`Image ${index + 1}:\n${described.text.trim()}`);
       }
       return {

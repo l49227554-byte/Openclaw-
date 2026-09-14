@@ -12,8 +12,14 @@ import {
   ToolsGitHubAuthorizeFailedResultSchema,
 } from "./agents-models-skills.js";
 import { closedObject } from "./closed-object.js";
-import { NonEmptyString } from "./primitives.js";
+import { ModelAuthProfileIdSchema } from "./model-account-selection.js";
+import { NonEmptyString, UserProfileIdSchema } from "./primitives.js";
 import { WizardAnswerSchema, WizardStepSchema } from "./wizard.js";
+
+export {
+  ChatAccountSelectionSchema,
+  type ChatAccountSelection,
+} from "./model-account-selection.js";
 
 export const USER_PREFS_ENTRY_LIMIT = 32;
 export const USER_PREFS_PROFILE_KEY_LIMIT = 128;
@@ -35,7 +41,6 @@ export {
   type UiAppearancePreferenceKey,
 } from "./ui-appearance-preferences.js";
 
-const UserProfileIdSchema = Type.String({ minLength: 1, maxLength: 128 });
 const UserProfileDisplayNameSchema = Type.String({ maxLength: 256 });
 const UserProfileRoleSchema = Type.String({ minLength: 1, maxLength: 128, pattern: "\\S" });
 const UserPreferenceKeySchema = Type.String({ pattern: "^.{1,256}$" });
@@ -101,7 +106,6 @@ export const UsersSetAvatarResultSchema = closedObject({
   avatarRevision: NonEmptyString,
 });
 
-const ModelAuthProfileIdSchema = Type.String({ minLength: 1, maxLength: 256 });
 const ModelAuthProviderIdSchema = Type.String({ minLength: 1, maxLength: 128 });
 const ModelAuthConnectIdSchema = Type.String({ minLength: 1, maxLength: 128 });
 export const UserProfileAuthLinkSchema = closedObject({
@@ -134,28 +138,6 @@ export const UsersSelectModelAccountParamsSchema = closedObject({
 export const UsersSelectModelAccountResultSchema = closedObject({
   links: Type.Array(UserProfileAuthLinkSchema),
 });
-
-const ChatAccountSelectionSourceSchema = Type.Optional(
-  Type.Union([Type.Literal("auto"), Type.Literal("user"), Type.Literal("user-link")]),
-);
-const ChatAccountSelectionLabelSchema = Type.String({ minLength: 1, maxLength: 256 });
-/** Configured preference only; provider failover can use a different account. */
-export const ChatAccountSelectionSchema = Type.Union([
-  closedObject({ kind: Type.Literal("automatic"), label: ChatAccountSelectionLabelSchema }),
-  closedObject({
-    kind: Type.Literal("personal"),
-    label: ChatAccountSelectionLabelSchema,
-    // Collaborators see the person, not private credential identifiers or labels.
-    authProfileId: Type.Optional(ModelAuthProfileIdSchema),
-    source: ChatAccountSelectionSourceSchema,
-  }),
-  closedObject({
-    kind: Type.Literal("shared"),
-    label: ChatAccountSelectionLabelSchema,
-    authProfileId: ModelAuthProfileIdSchema,
-    source: ChatAccountSelectionSourceSchema,
-  }),
-]);
 
 export const UsersListAuthLinksParamsSchema = closedObject({ profileId: UserProfileIdSchema });
 export const UsersListAuthLinksResultSchema = closedObject({
@@ -288,7 +270,7 @@ export type UsersListModelAccountsParams = Static<typeof UsersListModelAccountsP
 export type UsersListModelAccountsResult = Static<typeof UsersListModelAccountsResultSchema>;
 export type UsersSelectModelAccountParams = Static<typeof UsersSelectModelAccountParamsSchema>;
 export type UsersSelectModelAccountResult = Static<typeof UsersSelectModelAccountResultSchema>;
-export type ChatAccountSelection = Static<typeof ChatAccountSelectionSchema>;
+
 export type UsersAuthConnectStartParams = Static<typeof UsersAuthConnectStartParamsSchema>;
 export type UsersAuthConnectStartResult = Static<typeof UsersAuthConnectStartResultSchema>;
 export type UsersAuthConnectAnswerParams = Static<typeof UsersAuthConnectAnswerParamsSchema>;

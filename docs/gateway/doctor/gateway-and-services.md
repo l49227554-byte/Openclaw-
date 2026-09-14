@@ -69,7 +69,7 @@ warnings, workspace status, gateway auth and health, and supervisors.
 
   </Accordion>
   <Accordion title="11b. Bootstrap file size">
-    Doctor checks workspace bootstrap candidates (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `BOOTSTRAP.md`, and `MEMORY.md`) against the configured character budget after runtime filtering. Root `BOOTSTRAP.md` is excluded after workspace setup completes. It reports per-file raw vs. injected character counts, truncation percentage, truncation cause (`max/file` or `max/total`), and total injected characters as a fraction of the total budget. When files are truncated or near the limit, doctor prints tips for tuning `agents.defaults.bootstrapMaxChars` and `agents.defaults.bootstrapTotalMaxChars`.
+    Doctor checks workspace bootstrap candidates (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `BOOTSTRAP.md`, and `MEMORY.md`) against the configured character budget after runtime filtering. Root `BOOTSTRAP.md` is excluded after workspace setup completes. It reports per-file raw vs. injected character counts, truncation percentage, truncation cause (`max/file` or `max/total`), and total injected characters as a fraction of the total budget. When files are truncated or near the limit, doctor prints tips for tuning `agents.defaults.bootstrapMaxChars` and `agents.defaults.bootstrapTotalMaxChars`. `USER.md` is the exception: it has a fixed 4,000-character cap that these settings cannot raise, so doctor names the cap and recommends compacting the file instead. See [User model](/concepts/user-model).
 
     This includes files declared by the bundled `bootstrap-extra-files` hook when a fresh Gateway startup would select it, provided each matched basename is one of those six (for example, `packages/core/AGENTS.md`). Other basenames are ignored. Doctor uses each agent's workspace and limits without importing or running custom hook handlers. It predicts fresh-start selection, not the previous handler generation that a running Gateway can retain after a failed hook reload.
 
@@ -86,6 +86,62 @@ warnings, workspace status, gateway auth and health, and supervisors.
   </Accordion>
   <Accordion title="11d. Stale channel plugin cleanup">
     When `openclaw doctor --fix` removes a missing channel plugin, it also removes the dangling channel-scoped config that referenced that plugin: `channels.<id>` entries, heartbeat targets that named the channel, and `agents.*.models["<channel>/*"]` overrides. This prevents Gateway boot loops where the channel runtime is gone but config still asks the gateway to bind to it.
+  </Accordion>
+  <Accordion title="11e. Project clone shape">
+    Doctor checks stored project clones registered with `source: "cloned"`. It
+    reports the project name and path, shallow state, every
+    `remote.*.partialclonefilter` and `remote.*.promisor` key (including URL-keyed
+    twins), and `extensions.partialclone` when present. Address-like names replace
+    userinfo with `***` and omit query strings and fragments, including remote-helper
+    and scp-like addresses that are not standard URLs. Full clones produce no
+    finding. Missing or unreadable clones are reported as skipped; other projects
+    are still checked. Agent workspaces and manually registered checkouts are
+    outside this check.
+
+    Each clone uses three local Git reads, each limited to five seconds and
+    64 KiB of captured output. Doctor does not fetch, repack, or change clone
+    configuration, even with `--fix`. Partial clones support managed-worktree
+    object prefetch, but full clones avoid missing-object and shallow-history
+    failures during checkout and snapshot restore.
+
+    For a focused read-only report, run:
+
+    ```bash
+    openclaw doctor --lint --only core/doctor/project-clone-shape --json
+    ```
+
+    The check also runs in ordinary Doctor and `--lint --all`; it is excluded
+    from the default lint profile. Lint inspects the registry through Doctor's
+    private state snapshot.
+
+    Follow Doctor's printed commands in a POSIX shell with access to `origin`.
+    Stop on any failed step. For a shallow partial clone with the usual origin
+    keys, the sequence is:
+
+    ```bash
+    cd /path/to/project-clone
+    git config --unset-all remote.origin.partialclonefilter
+    git fetch --refetch --unshallow origin
+    git rev-list --objects --missing=print --all | grep '^?' | cut -c2- | git fetch origin --no-tags --no-write-fetch-head --recurse-submodules=no --stdin
+    git config --unset-all remote.origin.promisor
+    git repack -a -d
+    ```
+
+    Unset **every** reported `partialclonefilter` key before refetching, including
+    keys such as `remote.https://github.com/openclaw/openclaw.git.partialclonefilter`.
+    Omit `--unshallow` if the repository is not shallow; Git rejects that option
+    for complete history. Keep promisor settings until missing objects have been
+    fetched by ID, then unset every reported `promisor` key and, if present,
+    `extensions.partialclone` before repacking. Doctor prints exact unset commands
+    for plain remote names without `://`, `::`, or `@`. For address-like entries, follow the local lookup and
+    unset instructions before continuing; the original key may contain credentials
+    and must not be copied into shared reports. The redacted name identifies the
+    entry but is not its literal Git config key.
+
+    Rerun Doctor afterward. If history or objects remain missing, recover them
+    from the original repository. Origin may not contain local-only snapshots;
+    see [snapshot restore](/concepts/managed-worktrees#snapshots-cleanup-and-restore).
+
   </Accordion>
   <Accordion title="12. Gateway auth checks (local token)">
     Doctor checks local gateway token auth readiness.
@@ -134,7 +190,10 @@ warnings, workspace status, gateway auth and health, and supervisors.
     - Explicit repair refuses unavailable service inspection and unmatched services that may still run. After their owner stops them and the native manager confirms they are offline, Doctor repairs its selected state without changing or starting those services. A disabled systemd unit can still be restarting; Doctor checks runtime state as well as installation state.
     - An updater's explicit Gateway activation policy leaves stop/restart ownership with the updater. Doctor still requires native proof that the service is offline; a live `update --no-restart` repair fails without stopping or restarting it. Stop the service through its owner before retrying the update. Older update parents without that policy retain ordinary Doctor maintenance.
     - `openclaw doctor --fix --force` preserves the service definition too. Use `openclaw gateway install --force` to request a rewrite; operator-owned systemd drop-ins remain unchanged.
-    - `OPENCLAW_SERVICE_REPAIR_POLICY=external` keeps doctor read-only for gateway service lifecycle. It still reports service health and runs non-service repairs, but skips service install/start/restart/bootstrap, supervisor config rewrites, and legacy service cleanup because an external supervisor owns that lifecycle.
+    - `OPENCLAW_SERVICE_REPAIR_POLICY=external` keeps doctor read-only for gateway service lifecycle. Have the deployment owner stop the Gateway, run Doctor as the state-owning account, then restart through that owner. The policy skips native maintenance inspection and service mutations, including install/start/restart/bootstrap, supervisor config rewrites, and legacy service cleanup. It keeps Gateway/state coordinators and agent-database lease checks, reports service health, and runs non-service repairs. See [Existing system LaunchDaemons](/gateway#existing-system-launchdaemons).
+    - Doctor and `gateway status --deep` name unavailable launchd domains, missing systemd user-session buses, and native probe access denial separately. Linux guidance covers `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, and `dbus-user-session`; externally supervised deployments receive the existing policy above. See [Gateway and service recovery](/cli/doctor/recovery).
+    - Within a live Linux service inspection, OpenClaw can retain the authenticated user manager's private connection if its session bus stops. Typed command and runtime reads continue only for that original manager and unit. A missing initial manager identity or a replaced manager remains unavailable; OpenClaw does not start the bus or select another manager. This read-only recovery does not change service start/stop authority.
+
     - On macOS, a same-label system LaunchDaemon blocks user LaunchAgent install, start, restart, and bootstrap repair. Doctor reports the system owner and stops service recovery; `--force` does not bypass this ownership boundary. See [Existing system LaunchDaemons](/gateway#existing-system-launchdaemons).
     - On Linux, doctor does not rewrite command/entrypoint metadata while the matching systemd gateway unit is active. If a stopped unit's command or working directory is overridden by an operator-owned systemd drop-in, inspect it with `systemctl --user cat <unit>.service`, then update or remove the drop-in; rewriting the managed base cannot change the effective launcher. `Environment=` drop-ins remain supported. Doctor also ignores inactive non-legacy extra gateway-like units during the duplicate-service scan so companion service files do not create cleanup noise.
     - On Linux, doctor checks authority over the installed and planned service files before persisting a recovered gateway token. If that check blocks service repair, the repair leaves config and token unchanged and reports how to restore inspection access or involve the deployment owner; `--force` cannot bypass it. Unrelated Doctor config repairs are unaffected.

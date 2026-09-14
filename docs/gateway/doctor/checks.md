@@ -18,6 +18,7 @@ full behavior and rationale of each numbered check, follow the links under
     - UI protocol freshness check (rebuilds Control UI when the protocol schema is newer).
     - Health check + restart prompt.
     - Problem-only skill and plugin notes; healthy inventory stays in `openclaw skills check` and `openclaw plugins list`.
+    - Runtime tool schema checks report failing MCP servers and continue with the remaining checks. If subprocess cleanup cannot be confirmed, Doctor retains the server findings and adds a cleanup diagnostic; inspect or stop the affected MCP processes before rerunning Doctor.
 
   </Accordion>
   <Accordion title="Config and migrations">
@@ -72,6 +73,7 @@ full behavior and rationale of each numbered check, follow the links under
 
   </Accordion>
   <Accordion title="Workspace and shell">
+    - Partial or shallow registry-owned project clone warnings, with manual repair commands for every detected partial-clone key and shallow history.
     - systemd linger check on Linux.
     - Workspace bootstrap file size check (truncation/near-limit warnings for context files).
     - Skills readiness check for the default agent; reports allowed skills with missing bins, env, config, or OS requirements, and `--fix` can disable unavailable skills in `skills.entries`.

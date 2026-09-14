@@ -37,6 +37,7 @@ import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { classifySessionKind, type SessionKind } from "../sessions/classify-session-kind.js";
 import { isAcpSessionKey } from "../sessions/session-key-utils.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
+import { sortAndLimitBy } from "../shared/sort-and-limit.js";
 import { resolveAgentRuntimeLabel } from "../status/agent-runtime-label.js";
 import {
   deliveryContextFromSession,
@@ -75,7 +76,6 @@ type SessionRow = SessionDisplayRow & {
 type SessionCandidate = { agentId: string; entry: SessionEntry; sessionKey: string };
 
 const DEFAULT_SESSIONS_LIMIT = 100;
-const TOP_N_SELECTION_LIMIT = 200;
 const contextLookupRuntimeLoader = createLazyImportLoader(() => import("../agents/context.js"));
 
 const formatKTokens = (value: number) => `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
@@ -95,35 +95,6 @@ function applyAcpModelOverlayIfNeeded(
 
 function compareSessionRowsByUpdatedAt(a: SessionCandidate, b: SessionCandidate): number {
   return (b.entry.updatedAt ?? 0) - (a.entry.updatedAt ?? 0);
-}
-
-function selectNewestSessionRows(
-  rows: SessionCandidate[],
-  limit: number | undefined,
-): SessionCandidate[] {
-  if (limit === undefined) {
-    return rows.toSorted(compareSessionRowsByUpdatedAt);
-  }
-  if (limit > TOP_N_SELECTION_LIMIT) {
-    return rows.toSorted(compareSessionRowsByUpdatedAt).slice(0, limit);
-  }
-  // For small limits, keep only the top N rows without sorting the full store;
-  // large limits use the simpler full sort above.
-  const selected: SessionCandidate[] = [];
-  for (const row of rows) {
-    const insertAt = selected.findIndex(
-      (candidate) => compareSessionRowsByUpdatedAt(row, candidate) < 0,
-    );
-    if (insertAt >= 0) {
-      selected.splice(insertAt, 0, row);
-      if (selected.length > limit) {
-        selected.pop();
-      }
-    } else if (selected.length < limit) {
-      selected.push(row);
-    }
-  }
-  return selected;
 }
 
 function parseSessionsLimit(value: string | number | undefined): number | undefined | null {
@@ -313,7 +284,7 @@ export async function sessionsCommand(
   const aggregateAgents = opts.allAgents === true;
   const cfg = getRuntimeConfig();
   const displayDefaults = resolveSessionDisplayDefaults(cfg);
-  const { lookupContextTokens, resolveContextTokensForModel } =
+  const { lookupContextTokens, resolveModelContextTokenProjection } =
     await contextLookupRuntimeLoader.load();
   const configContextTokens =
     lookupContextTokens(displayDefaults.model, { allowAsyncLoad: false }) ?? DEFAULT_CONTEXT_TOKENS;
@@ -351,7 +322,7 @@ export async function sessionsCommand(
       .map(({ sessionKey, entry }) => ({ agentId: target.agentId, entry, sessionKey }));
   });
   const totalCount = allEntries.length;
-  const sessionEntries = selectNewestSessionRows(allEntries, limit).map(
+  const sessionEntries = sortAndLimitBy(allEntries, limit, compareSessionRowsByUpdatedAt).map(
     ({ agentId: storeAgentId, entry, sessionKey }) => {
       const row = toSessionDisplayRow(sessionKey, entry);
       const agentId = parseAgentSessionKey(row.key)?.agentId ?? storeAgentId;
@@ -397,9 +368,16 @@ export async function sessionsCommand(
     // the runtime's context policy, so retain their model-only offline fallback.
     const usesCliContextFallback =
       !hasPersistedContextTokens && classifyCliProvider(agentRuntime.id);
-    const resolvedContextTokens = usesCliContextFallback
-      ? lookupContextTokens(modelRef.model, { allowAsyncLoad: false })
-      : resolveContextTokensForModel({
+    const modelContext = usesCliContextFallback
+      ? {
+          contextTokens: lookupContextTokens(modelRef.model, { allowAsyncLoad: false }),
+          authoredContextTokens: resolveAuthoredModelContextTokens({
+            cfg,
+            provider: modelRef.provider,
+            model: modelRef.model,
+          }),
+        }
+      : resolveModelContextTokenProjection({
           cfg,
           provider: modelRef.provider,
           model: modelRef.model,
@@ -410,12 +388,8 @@ export async function sessionsCommand(
       provider: modelRef.provider,
       model: modelRef.model,
       agentHarnessId: agentRuntime.id,
-      resolvedContextTokens,
-      authoredContextTokens: resolveAuthoredModelContextTokens({
-        cfg,
-        provider: modelRef.provider,
-        model: modelRef.model,
-      }),
+      resolvedContextTokens: modelContext.contextTokens,
+      authoredContextTokens: modelContext.authoredContextTokens,
     });
     return Object.assign({}, row, {
       agentId,

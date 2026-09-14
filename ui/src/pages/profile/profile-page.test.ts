@@ -11,6 +11,7 @@ import type { AuthenticatedUser } from "../../app/user-profile.ts";
 import { i18n, t } from "../../i18n/index.ts";
 import { setAvatarGatewayOrigin } from "../../lib/identity-avatar-context.ts";
 import { createApplicationContextProvider } from "../../test-helpers/application-context.ts";
+import { choosePickerValue } from "../../test-helpers/select-picker.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import type { ModelAccounts } from "./model-accounts.ts";
 import { createConnectedContext } from "./profile-page.test-support.ts";
@@ -122,10 +123,11 @@ function selectProfileAvatar(page: ParentNode) {
 
 async function startProfileSignIn(page: ParentNode) {
   page.querySelector<HTMLButtonElement>(".profile-auth-add-account")!.click();
-  await waitForFast(() => expect(page.querySelector('wa-option[value="openai"]')).not.toBeNull());
-  const picker = page.querySelector<HTMLElement & { value: string }>(".profile-auth-provider")!;
-  picker.value = "openai";
-  picker.dispatchEvent(new Event("change", { bubbles: true }));
+  await waitForFast(() =>
+    expect(page.querySelector('[role="option"][data-value="openai"]')).not.toBeNull(),
+  );
+  const picker = page.querySelector<HTMLElement>(".profile-auth-provider")!;
+  await choosePickerValue(picker, "openai");
   await waitForFast(() =>
     expect(page.querySelector<HTMLButtonElement>(".profile-auth-connect-start")?.disabled).toBe(
       false,
@@ -514,15 +516,17 @@ it("falls back to the text avatar when the hero image fails to load", async () =
   const page = mountProfilePage(harness.context);
 
   await page.updateComplete;
-  const image = page.querySelector<HTMLImageElement>(".profile-hero__avatar-image");
+  const avatar = page.querySelector(".profile-hero__avatar .identity-avatar--agent")!;
+  const image = avatar.querySelector("img");
   expect(image?.getAttribute("src")).toBe("data:image/png;base64,unloadable");
-  expect(page.querySelector(".profile-hero__avatar-text")).toBeNull();
+  expect(avatar.classList).toContain("is-pending");
 
   image?.dispatchEvent(new Event("error"));
   await page.updateComplete;
 
-  expect(page.querySelector(".profile-hero__avatar-image")).toBeNull();
-  expect(page.querySelector(".profile-hero__avatar-text")?.textContent).toBe("🦞");
+  expect(avatar.querySelector("img")).toBeNull();
+  expect(avatar.classList).toContain("is-fallback");
+  expect(avatar.querySelector(".identity-avatar__text")?.getAttribute("data-avatar")).toBe("🦞");
 });
 
 it("fetches a protected hero avatar with the current Control UI credential", async () => {
@@ -570,7 +574,9 @@ it("fetches a protected hero avatar with the current Control UI credential", asy
       signal: expect.any(AbortSignal),
     });
     expect(
-      page.querySelector<HTMLImageElement>(".profile-hero__avatar-image")?.getAttribute("src"),
+      page
+        .querySelector<HTMLImageElement>(".profile-hero__avatar .identity-avatar__image")
+        ?.getAttribute("src"),
     ).toBe("blob:hero-avatar");
   });
 

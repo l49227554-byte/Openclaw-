@@ -33,6 +33,7 @@ import {
 import { asWorkerInferenceControl } from "../worker-environments/inference-control.js";
 import type { WorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import {
+  prepareSessionWorkerPlacementArchiveCheck,
   prepareSessionWorkerPlacementMutationCheck,
   prepareSessionWorkerPlacementStop,
 } from "../worker-environments/session-placement-lifecycle.js";
@@ -111,6 +112,7 @@ export async function prepareSessionLifecycleDrain(
   const workerControl = asWorkerInferenceControl(workerService);
   let workerDrain: WorkerInferenceSessionDrain | undefined;
   let terminalDrain: AgentTerminalSessionDrain | undefined;
+  let reclaimed: Promise<void> | undefined;
   let releaseAdmissions = () => {};
   let released = false;
   const release = () => {
@@ -137,7 +139,7 @@ export async function prepareSessionLifecycleDrain(
         // cancellation completion here: it may need placement and lifecycle recovery.
         params.authorize?.();
         params.beforeCancel?.();
-        const reclaim = prepareSessionWorkerPlacementStop(params);
+        const workerStop = prepareSessionWorkerPlacementStop(params);
         releaseAdmissions = closeSessionWorkAdmissions({
           scope: params.storePath,
           identities: params.lifecycleIdentities,
@@ -156,6 +158,11 @@ export async function prepareSessionLifecycleDrain(
           });
         }
 
+        // Capture dispatch custody before cancellation can settle its placement.
+        if (workerStop.startBeforeDrain) {
+          reclaimed = workerStop.stop();
+          void reclaimed.catch(() => {});
+        }
         let controllerDrain = Promise.resolve(true);
         const cancellation = abortChatRunsForSessionKeyWithPartials({
           context: params.context,
@@ -191,7 +198,7 @@ export async function prepareSessionLifecycleDrain(
         });
         // Observe failures immediately while the short mutation releases its queues.
         void cancellation.catch(() => {});
-        return { reclaim, cancellation, controllerDrain };
+        return { workerStop, cancellation, controllerDrain };
       },
     });
     const abortResult = await prepared.cancellation;
@@ -244,15 +251,17 @@ export async function prepareSessionLifecycleDrain(
     if (!drains.every(Boolean)) {
       throw new Error("Session work is still active after the lifecycle drain");
     }
-    // Safe reclaim must finish before the archive or delete can commit.
-    await prepared.reclaim();
+    // Failed placements keep cleanup custody without delaying archive visibility.
+    // Other placements and destructive deletion still require safe reclaim.
+    await (reclaimed ?? prepared.workerStop.stop());
     // Provider settlement keeps its placement custody and deadline. Only after reclaim
     // finishes does the ordinary admission bound apply, including for local sessions.
     await withTimeout(admittedWork, timeoutMs, "session work admission lifecycle drain");
-    const assertPlacementCurrent = prepareSessionWorkerPlacementMutationCheck({
-      context: params.context,
-      sessionId: params.sessionId,
-    });
+    const placementTarget = { context: params.context, sessionId: params.sessionId };
+    const assertPlacementCurrent =
+      params.action === "archive"
+        ? prepareSessionWorkerPlacementArchiveCheck(placementTarget).assertCurrent
+        : prepareSessionWorkerPlacementMutationCheck(placementTarget);
     return {
       // Only the caller's active mutation may replace this mutex-free ingress lease.
       handoffToMutation: () => releaseAdmissions(),
@@ -267,6 +276,7 @@ export async function prepareSessionLifecycleDrain(
       },
     };
   } catch (error) {
+    await reclaimed?.catch(() => {});
     release();
     throw error;
   }

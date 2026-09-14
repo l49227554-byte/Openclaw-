@@ -5,7 +5,6 @@ import {
   formatErrorMessage,
   resolveAgentHarnessBeforePromptBuildResult,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import type { ImageContent } from "openclaw/plugin-sdk/llm";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   buildCodexSystemPromptReport,
@@ -19,6 +18,7 @@ import {
   CodexContextAttachmentError,
   isCodexDurableCustomMessage,
   projectContextEngineAssemblyForCodex,
+  type CodexProjectedImageGroup,
   type CodexProjectedContextRange,
 } from "./context-engine-projection.js";
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
@@ -37,6 +37,7 @@ import {
   codexLegacyDynamicToolsFingerprint,
 } from "./thread-lifecycle.js";
 import { hasCodexMirrorOrigin } from "./transcript-mirror-attestation.js";
+import { buildCodexParentLocalInstructions } from "./turn-params.js";
 import { readMirrorIdentity } from "./upstream-prompt-provenance.js";
 
 function isRestrictivePromptToolsAllow(toolsAllow: string[] | undefined): boolean {
@@ -80,8 +81,12 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     sandbox,
   } = connection;
   const { toolBridge } = attemptTools;
-  let contextImages: ImageContent[] = [];
-  const currentUserTurnIdempotencyKey = params.userTurnTranscriptRecorder?.message?.idempotencyKey;
+  let contextImageGroups: CodexProjectedImageGroup[] = [];
+  let turnContextImageGroups: CodexProjectedImageGroup[] = [];
+  // A refreshed native thread receives the original admitted user as historical context.
+  const currentUserTurnIdempotencyKey = params.pluginRuntimeRefreshMessages
+    ? undefined
+    : params.userTurnTranscriptRecorder?.message?.idempotencyKey;
   const assertProjectionCurrent = () => {
     params.hostCapabilities.assertActive();
     connection.assertCurrent();
@@ -124,11 +129,12 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       originalHistoryMessages: historyState.messages,
       prompt: params.prompt,
       maxRenderedContextChars: codexContinuityProjectionMaxChars,
+      toolPayloadMode: params.pluginRuntimeRefreshMessages ? "preserve" : "elide",
       prepareFileContext,
       currentUserTurnIdempotencyKey,
     });
     assertProjectionCurrent();
-    contextImages = projection.images ?? [];
+    contextImageGroups = projection.imageGroups ?? [];
     promptState.promptText = projection.promptText;
     promptState.promptContextRange = projection.promptContextRange;
     promptState.prePromptMessageCount = projection.prePromptMessageCount;
@@ -187,12 +193,13 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       prompt: params.prompt,
       systemPromptAddition: assembled.systemPromptAddition,
       maxRenderedContextChars: codexContextProjectionMaxChars,
-      toolPayloadMode: contextEngineProjection ? "preserve" : "elide",
+      toolPayloadMode:
+        contextEngineProjection || params.pluginRuntimeRefreshMessages ? "preserve" : "elide",
       ...(projectionDecision.project ? { prepareFileContext } : {}),
       currentUserTurnIdempotencyKey,
     });
     assertProjectionCurrent();
-    contextImages = projectionDecision.project ? (projection.images ?? []) : [];
+    contextImageGroups = projectionDecision.project ? (projection.imageGroups ?? []) : [];
     const decisionBinding = decisionStartupBinding;
     embeddedAgentLog.info("codex app-server context-engine projection decision", {
       sessionId: params.sessionId,
@@ -229,7 +236,10 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         runtime.nativeToolSurfaceEnabled ? mutable.startupBinding : undefined,
       );
     } catch (assembleErr) {
-      if (assembleErr instanceof CodexContextAttachmentError) {
+      if (
+        assembleErr instanceof CodexContextAttachmentError ||
+        params.pluginRuntimeRefreshMessages
+      ) {
         throw assembleErr;
       }
       assertProjectionCurrent();
@@ -358,26 +368,45 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         promptInputRange: promptBuildResult.promptInputRange,
         decoratedPrompt: turnPromptText,
       });
-    return fitCodexProjectedContextForTurnStart({
+    const imageOffset =
+      projectedRanges && promptState.promptContextRange
+        ? projectedRanges.contextRange.start - promptState.promptContextRange.start
+        : undefined;
+    const fitted = fitCodexProjectedContextForTurnStart({
       promptText: turnPromptText,
       contextRange: projectedRanges?.contextRange,
       requestRange: projectedRanges?.requestRange,
       preservedRange,
+      imageGroups:
+        imageOffset === undefined
+          ? []
+          : contextImageGroups.map((group) => ({
+              images: group.images,
+              start: group.start + imageOffset,
+              end: group.end + imageOffset,
+            })),
     });
+    turnContextImageGroups = fitted.imageGroups ?? [];
+    return fitted.promptText;
   };
   const firstPromptBuild = await buildPromptFromCurrentInputs();
   const turnState = {
     promptBuild: firstPromptBuild,
     codexTurnPromptText: decorateCodexTurnPromptText(firstPromptBuild),
   };
+  let parentLocalEgress = false;
+  const parentLocalContext = {
+    turnScopedDeveloperInstructions: workspaceBootstrapContext.turnScopedDeveloperInstructions,
+    skillsCollaborationInstructions,
+    memoryCollaborationInstructions: workspaceBootstrapContext.memoryCollaborationInstructions,
+  };
   const buildRenderedCodexDeveloperInstructions = () =>
     joinPresentSections(
       turnState.promptBuild.developerInstructions,
-      buildTurnCollaborationMode(params, {
-        turnScopedDeveloperInstructions: workspaceBootstrapContext.turnScopedDeveloperInstructions,
-        skillsCollaborationInstructions,
-        memoryCollaborationInstructions: workspaceBootstrapContext.memoryCollaborationInstructions,
-      }).settings.developer_instructions ?? undefined,
+      (parentLocalEgress
+        ? buildCodexParentLocalInstructions(params, parentLocalContext)
+        : buildTurnCollaborationMode(params, parentLocalContext).settings.developer_instructions) ??
+        undefined,
     );
   const rebuildCodexPromptBuildFromCurrentProjection = async () => {
     turnState.promptBuild = await buildPromptFromCurrentInputs();
@@ -462,7 +491,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         (action === "started" &&
           (message.role === "compactionSummary" || message.role === "branchSummary")),
     );
-    if (activeContextEngine || !hasContinuity) {
+    if (activeContextEngine || (!hasContinuity && !params.pluginRuntimeRefreshMessages?.length)) {
       return false;
     }
     if (action === "resumed" && promptState.precomputedStaleBindingContinuityProjectionApplied) {
@@ -526,7 +555,10 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       try {
         await applyActiveContextEngineProjection(undefined);
       } catch (assembleErr) {
-        if (assembleErr instanceof CodexContextAttachmentError) {
+        if (
+          assembleErr instanceof CodexContextAttachmentError ||
+          params.pluginRuntimeRefreshMessages
+        ) {
           throw assembleErr;
         }
         assertProjectionCurrent();
@@ -560,8 +592,8 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   let workspaceReferencesIncluded = true;
   return {
     context,
-    get contextImages() {
-      return contextImages;
+    get contextImageGroups() {
+      return turnContextImageGroups;
     },
     codexModelInputHistoryMessages,
     turnState,
@@ -571,6 +603,10 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         Object.assign(systemPromptReport, buildSystemPromptReport(!include));
         workspaceReferencesIncluded = include;
       }
+    },
+    setParentLocalEgress: () => {
+      parentLocalEgress = true;
+      Object.assign(systemPromptReport, buildSystemPromptReport(!workspaceReferencesIncluded));
     },
     buildRenderedCodexDeveloperInstructions,
     rebuildCodexTurnPromptTextFromCurrentProjection,

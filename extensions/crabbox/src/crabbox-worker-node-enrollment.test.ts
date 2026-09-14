@@ -65,6 +65,8 @@ const state = process.env.OPENCLAW_STATE_DIR;
 if (args[0] === "--version") {
   console.log("OpenClaw 2026.8.1");
 } else if (args[0] === "plugins" && args[1] === "enable") {
+  fs.appendFileSync(path.join(state, "activation.jsonl"), JSON.stringify({ runtimePublished: fs.existsSync(path.join(state, "runtime")) }) + "\\n");
+  if (${JSON.stringify(build)} === "activation-failed") process.exit(1);
   fs.appendFileSync(path.join(state, "enabled"), args[2] + "\\n");
 } else {
   process.title = "openclaw-connect";
@@ -141,7 +143,9 @@ async function serveArtifact(
   const handle: http.RequestListener = (request, response) => {
     authorizations.push(request.headers.authorization);
     if (options.resetBeforeHeaders) {
-      request.socket.resetAndDestroy();
+      // End the connection before headers in every host runtime; the child must
+      // diagnose the peer loss without relying on resetAndDestroy support.
+      request.socket.destroy();
       return;
     }
     if (options.redirect) {
@@ -151,7 +155,9 @@ async function serveArtifact(
     }
     response.writeHead(200, { "content-length": archive.length });
     if (options.truncate) {
-      response.write(archive.subarray(0, 1), () => response.destroy());
+      // Establish the response boundary before injecting a mid-body disconnect.
+      response.flushHeaders();
+      response.write(archive.subarray(0, 1), () => setImmediate(() => response.destroy()));
       return;
     }
     response.end(archive);
@@ -449,6 +455,44 @@ describe.skipIf(process.platform === "win32")("source node bootstrap", () => {
     expect(Object.keys(openCrabboxWarmImageStore().entries()[0]!.value.allocations)).toEqual([]);
   }, 60_000);
 
+  it.each(["file", "directory"] as const)(
+    "rejects an occupied runtime %s before plugin activation",
+    async (kind) => {
+      const { home, stateDir } = testHome();
+      fs.mkdirSync(stateDir, { recursive: true });
+      const pointer = path.join(stateDir, "runtime");
+      if (kind === "directory") {
+        fs.mkdirSync(pointer);
+      }
+      const retained = kind === "directory" ? path.join(pointer, "keep") : pointer;
+      fs.writeFileSync(retained, "retained fixture");
+      const { nodeBootstrap } = await serveArtifact(await packageFixture("occupied"));
+      const result = await enroll(home, nodeBootstrap);
+      expect(result).toMatchObject({
+        code: 1,
+        output: expect.stringContaining("runtime pointer is occupied"),
+      });
+      expect(fs.readFileSync(retained, "utf8")).toBe("retained fixture");
+      expect(fs.existsSync(path.join(stateDir, "activation.jsonl"))).toBe(false);
+      expect(fs.existsSync(path.join(stateDir, "node.pid"))).toBe(false);
+    },
+  );
+
+  it("leaves the runtime pointer unpublished when plugin activation fails", async () => {
+    const { home, stateDir } = testHome();
+    const { nodeBootstrap } = await serveArtifact(await packageFixture("activation-failed"));
+    const result = await enroll(home, nodeBootstrap);
+    expect(result).toMatchObject({
+      code: 1,
+      output: expect.stringContaining("could not enable plugin"),
+    });
+    expect(fs.existsSync(path.join(stateDir, "runtime"))).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, "node.pid"))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(stateDir, "activation.jsonl"), "utf8"))).toEqual({
+      runtimePublished: false,
+    });
+  });
+
   it("rejects malformed forwarded credentials without disclosing their value", async () => {
     const { home } = testHome();
     const { nodeBootstrap, authorizations } = await serveArtifact(
@@ -590,6 +634,12 @@ describe.skipIf(process.platform === "win32")("source node bootstrap", () => {
       JSON.parse(fs.readFileSync(path.join(path.dirname(launch.cli), "installed.json"), "utf8")),
     ).toEqual({ scriptsRan: true });
     expect(fs.readFileSync(path.join(stateDir, "enabled"), "utf8")).toBe("demo\n");
+    expect(JSON.parse(fs.readFileSync(path.join(stateDir, "activation.jsonl"), "utf8"))).toEqual({
+      runtimePublished: false,
+    });
+    expect(fs.realpathSync(path.join(stateDir, "runtime"))).toBe(
+      path.dirname(path.dirname(path.dirname(launch.cli))),
+    );
     expect(fs.readdirSync(stateDir).some((name) => name.startsWith("node-bootstrap-"))).toBe(false);
     expect(authorizations).toEqual([`Bearer ${nodeBootstrap.token}`]);
     stop();
@@ -602,8 +652,14 @@ describe.skipIf(process.platform === "win32")("source node bootstrap", () => {
   it("selects new source bytes even when the public version has not changed", async () => {
     const { home, stateDir, stop } = testHome();
     const first = await serveArtifact(await packageFixture("first"));
-    await expectSetupPhases(enroll(home, first.nodeBootstrap));
+    const coldPhases = await expectSetupPhases(enroll(home, first.nodeBootstrap));
+    expect(coldPhases).toContain("openclaw-bootstrap-installation");
+    expect(coldPhases.at(-1)).toBe("openclaw-bootstrap-complete");
     const oldLaunch = await readLaunch(stateDir);
+    expect(oldLaunch).toMatchObject({ build: "first", args: expect.arrayContaining(["connect"]) });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(path.dirname(oldLaunch.cli), "installed.json"), "utf8")),
+    ).toEqual({ scriptsRan: true });
     stop();
     fs.rmSync(path.join(stateDir, "launch.json"));
     const second = await serveArtifact(await packageFixture("second"));
@@ -613,7 +669,7 @@ describe.skipIf(process.platform === "win32")("source node bootstrap", () => {
     expect(launch.cli).not.toBe(oldLaunch.cli);
   }, 30_000);
 
-  it.skipIf(process.platform !== "linux")(
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
     "reuses only a live process with the exact artifact and invocation",
     async () => {
       const { home, stateDir } = testHome();
@@ -624,6 +680,31 @@ describe.skipIf(process.platform === "win32")("source node bootstrap", () => {
       await expectSetupPhases(enroll(home, nodeBootstrap));
       expect(fs.readFileSync(path.join(stateDir, "node.pid"), "utf8")).toBe(pid);
       expect(authorizations).toHaveLength(1);
+      if (process.platform === "darwin") {
+        const launchFile = path.join(stateDir, "node-launch.json");
+        const record = JSON.parse(fs.readFileSync(launchFile, "utf8"));
+        expect(record).toMatchObject({
+          pid: Number(pid),
+          stateDir,
+          cli: (await readLaunch(stateDir)).cli,
+        });
+        expect(fs.statSync(launchFile).mode & 0o777).toBe(0o600);
+        expect(fs.statSync(stateDir).mode & 0o777).toBe(0o700);
+        expect(record.startTime).toBe(
+          execFileSync("ps", ["-o", "lstart=", "-p", pid.trim()], { encoding: "utf8" })
+            .trim()
+            .replace(/\s+/g, " "),
+        );
+        fs.writeFileSync(
+          launchFile,
+          JSON.stringify({ ...record, startTime: "different process start" }),
+        );
+        expect(await enroll(home, nodeBootstrap)).toMatchObject({
+          code: 1,
+          output: expect.stringContaining("release and reprovision the worker"),
+        });
+        fs.writeFileSync(launchFile, JSON.stringify(record));
+      }
       const rejected = await enroll(home, { ...nodeBootstrap, sha256: "b".repeat(64) });
       expect(rejected).toMatchObject({
         code: 1,

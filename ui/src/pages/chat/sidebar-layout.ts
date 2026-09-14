@@ -64,7 +64,37 @@ export function sidebarActivePanel(layout: SidebarLayout): SidebarPanel | undefi
   return sidebarSidePanels(layout).find((panel) => panel.id === layout.columns[0]?.activePanelId);
 }
 
+/** Logical presentation, independent of responsive/narrow viewport projection. */
+export function sidebarDashboardPresentation(
+  layout: SidebarLayout,
+): "split" | "expanded" | undefined {
+  if (!isSidebarSlotVisible(layout, "dashboard")) {
+    return undefined;
+  }
+  return layout.expanded || layout.open !== true ? "expanded" : "split";
+}
+
+/** Open without changing panel identities, docking, dimensions, or other panel state. */
+export function openDashboardPresentation(
+  layout: SidebarLayout,
+  presentation: "split" | "expanded",
+): SidebarLayout {
+  let next = openSlot(layout, "dashboard");
+  if (presentation === "expanded") {
+    const dashboard = next.columns[0]?.panels.find((panel) => panel.slot === "dashboard");
+    if (dashboard) {
+      next = promoteSidebarPanel(next, dashboard.id);
+    }
+  } else if (sidebarMainPanel(next)?.slot === "dashboard") {
+    next = openSlot(next, "conversation");
+  }
+  return setSidebarExpanded(next, presentation === "expanded");
+}
+
 export function isSidebarSlotVisible(layout: SidebarLayout, slot: SidebarSlotId): boolean {
+  if (layout.expanded && layout.expandedSide) {
+    return layout.open === true && sidebarActivePanel(layout)?.slot === slot;
+  }
   if ((sidebarMainPanel(layout)?.slot ?? "conversation") === slot) {
     return true;
   }
@@ -128,13 +158,14 @@ export function promoteSidebarPanel(layout: SidebarLayout, panelId: string): Sid
   next.columns[0]!.activePanelId = previousMainId;
   next.open = true;
   next.expanded = false;
+  delete next.expandedSide;
   return next;
 }
 
 export function openSlot(layout: SidebarLayout, slot: SidebarSlotId): SidebarLayout {
   const next = cloneLayout(layout);
   if ((sidebarMainPanel(next)?.slot ?? "conversation") === slot) {
-    return next;
+    return next.expandedSide ? setSidebarExpanded(next, false) : next;
   }
   const existing = next.columns
     .flatMap((column) => column.panels)
@@ -143,6 +174,7 @@ export function openSlot(layout: SidebarLayout, slot: SidebarSlotId): SidebarLay
     next.open = true;
     if (next.expanded) {
       next.expanded = false;
+      delete next.expandedSide;
     }
     const column = next.columns.find((entry) => entry.panels.includes(existing));
     if (column) {
@@ -157,6 +189,7 @@ export function openSlot(layout: SidebarLayout, slot: SidebarSlotId): SidebarLay
   next.open = true;
   if (next.expanded) {
     next.expanded = false;
+    delete next.expandedSide;
   }
   return next;
 }
@@ -167,6 +200,9 @@ export function closeSlot(layout: SidebarLayout, slot: SidebarSlotId): SidebarLa
     .flatMap((column) => column.panels)
     .find((entry) => entry.slot === slot);
   if (panel) {
+    if (next.expandedSide && panel.id === sidebarActivePanel(next)?.id) {
+      next = setSidebarExpanded(next, false);
+    }
     if (slot === "conversation") {
       if (panel.id !== next.mainPanelId) {
         next.open = false;
@@ -200,6 +236,7 @@ export function activatePanel(layout: SidebarLayout, panelId: string): SidebarLa
     next.open = true;
     if (next.expanded) {
       next.expanded = false;
+      delete next.expandedSide;
     }
   }
   return next;
@@ -233,15 +270,36 @@ export function setSidebarOpen(layout: SidebarLayout, open: boolean): SidebarLay
     next.columns[0] ??= createSidebarColumn();
     if (next.expanded) {
       next.expanded = false;
+      delete next.expandedSide;
     }
   }
   next.open = open;
+  if (!open && next.expandedSide) {
+    next.expanded = false;
+    delete next.expandedSide;
+  }
   return next;
 }
 
 export function setSidebarExpanded(layout: SidebarLayout, expanded: boolean): SidebarLayout {
   // Restore split must reveal the side even when focus began with that panel closed.
-  return { ...cloneLayout(layout), expanded, ...(expanded ? { open: true } : {}) };
+  const next = cloneLayout(layout);
+  delete next.expandedSide;
+  return { ...next, expanded, ...(expanded ? { open: true } : {}) };
+}
+
+/** Focus in place: restoring must not leave the main and side views swapped. */
+export function toggleSidebarPanelExpanded(layout: SidebarLayout, panelId: string): SidebarLayout {
+  if (!sidebarSidePanels(layout).some((panel) => panel.id === panelId)) {
+    return cloneLayout(layout);
+  }
+  if (layout.expanded && layout.expandedSide && sidebarActivePanel(layout)?.id === panelId) {
+    return setSidebarExpanded(layout, false);
+  }
+  const next = activatePanel(ensureSidebarConversation(layout), panelId);
+  next.expanded = true;
+  next.expandedSide = true;
+  return next;
 }
 
 export function setSidebarDock(layout: SidebarLayout, dock: SidebarDock): SidebarLayout {

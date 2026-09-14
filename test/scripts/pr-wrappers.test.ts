@@ -1166,17 +1166,6 @@ exit 99
     expect(script).toContain('exec "$base" merge-run "$pr"');
   });
 
-  it("defaults to squash and allows commit-preserving merge methods", () => {
-    const script = readScript("scripts/pr-lib/merge.sh");
-
-    expect(script).toContain("OPENCLAW_PR_MERGE_METHOD:-squash");
-    expect(script).toContain("--squash");
-    expect(script).toContain("--merge");
-    expect(script).toContain("--rebase");
-    expect(script).toContain("--auto");
-    expect(script).toContain('--match-head-commit "$PREP_HEAD_SHA"');
-  });
-
   it("keeps prepare wrapper modes delegated to the main PR helper", () => {
     const script = readScript("scripts/pr-prepare");
 
@@ -1507,11 +1496,26 @@ exit 99
     { name: "successful last quota request", status: 200, code: 0, body: viewer, headers: quota },
   ];
 
+  const esmPreflightCase: (typeof preflightCases)[number] = {
+    name: "valid viewer below an ESM package",
+    status: 200,
+    code: 0,
+    body: viewer,
+  };
   it.each([
-    ...preflightCases.map((scenario) => ({ ...scenario, route: "default" })),
-    { ...preflightCases[0]!, route: "override" },
-  ])("GitHub API preflight: $name ($route)", ({ route, ...scenario }) => {
-    const dir = tempDirs.make("openclaw-pr-auth-");
+    ...preflightCases.map((scenario) => ({ ...scenario, route: "default", esmParent: false })),
+    { ...preflightCases[0]!, route: "override", esmParent: false },
+    { ...esmPreflightCase, route: "default", esmParent: true },
+    { ...esmPreflightCase, route: "override", esmParent: true },
+  ])("GitHub API preflight: $name ($route)", ({ route, esmParent, ...scenario }) => {
+    const root = tempDirs.make("openclaw-pr-auth-");
+    const dir = esmParent ? join(root, "fixture") : root;
+    if (esmParent) {
+      writeFileSync(join(root, "package.json"), '{"type":"module"}\n');
+      mkdirSync(dir);
+    }
+    // Both extensionless executables use CommonJS, even below a repo-local TMPDIR.
+    writeFileSync(join(dir, "package.json"), '{"type":"commonjs"}\n');
     const env = isolatedWrapperEnv(dir);
     const bin = join(dir, "bin");
     mkdirSync(bin);

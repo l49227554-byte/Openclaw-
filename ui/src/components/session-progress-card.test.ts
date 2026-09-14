@@ -221,6 +221,92 @@ describe("renderSessionProgressCard", () => {
     expect(pausedStep?.querySelector("polyline")).not.toBeNull();
   });
 
+  it.each([
+    ["stale", RUN_STARTED_MS - 1, "paused", false],
+    ["current", RUN_STARTED_MS, "in_progress", true],
+  ] as const)(
+    "treats %s progress as current only after the active run starts",
+    (_name, updatedAt, expectedStatus, expectedLive) => {
+      const container = document.createElement("div");
+      render(
+        renderSessionProgressCard(
+          { ...progressCard, updatedAt },
+          "composer",
+          undefined,
+          "running",
+          RUN_STARTED_MS,
+          undefined,
+          true,
+        ),
+        container,
+      );
+
+      expect(
+        container.querySelector(
+          `.session-progress-card__current-marker[data-status="${expectedStatus}"]`,
+        ),
+      ).not.toBeNull();
+      expect(container.querySelector(".session-run-spinner") !== null).toBe(expectedLive);
+    },
+  );
+
+  it.each([
+    ["fresh", undefined, undefined],
+    ["reused", RUN_STARTED_MS - 1_000, RUN_STARTED_MS],
+  ] as const)(
+    "pauses timestamped progress while a %s session run is queued",
+    (_name, startedAt, endedAt) => {
+      const container = document.createElement("div");
+      render(
+        renderSessionProgressCard(
+          { ...progressCard, updatedAt: RUN_STARTED_MS - 1 },
+          "composer",
+          undefined,
+          "queued",
+          startedAt,
+          endedAt,
+          true,
+        ),
+        container,
+      );
+
+      expect(
+        container.querySelector('.session-progress-card__current-marker[data-status="paused"]'),
+      ).not.toBeNull();
+      expect(container.querySelector(".session-progress-card__step--paused")).not.toBeNull();
+      expect(container.querySelector(".session-run-spinner")).toBeNull();
+    },
+  );
+
+  it.each([
+    ["stale", RUN_STARTED_MS - 1, "paused", false],
+    ["current", RUN_STARTED_MS, "in_progress", true],
+  ] as const)(
+    "treats %s status-less progress as current only after the active run starts",
+    (_name, updatedAt, expectedStatus, expectedLive) => {
+      const container = document.createElement("div");
+      render(
+        renderSessionProgressCard(
+          { ...progressCard, updatedAt },
+          "composer",
+          undefined,
+          undefined,
+          RUN_STARTED_MS,
+          undefined,
+          true,
+        ),
+        container,
+      );
+
+      expect(
+        container.querySelector(
+          `.session-progress-card__current-marker[data-status="${expectedStatus}"]`,
+        ),
+      ).not.toBeNull();
+      expect(container.querySelector(".session-run-spinner") !== null).toBe(expectedLive);
+    },
+  );
+
   it("keeps a disclosure affordance beside a completed dismissible composer card", () => {
     const container = document.createElement("div");
     const completed = {
@@ -288,7 +374,7 @@ describe("renderSessionProgressCard", () => {
       '[data-progress-card-placement="composer"]',
     );
     expect(card?.open).toBe(false);
-    card!.open = true;
+    card!.querySelector("summary")!.click();
 
     render(
       renderSessionProgressCard(
@@ -330,15 +416,10 @@ describe("renderSessionProgressCard", () => {
     );
     expect(card?.open).toBe(false);
 
-    card!.open = true;
-    renderRun("run-1", null);
-    expect(card?.open).toBe(true);
-
-    card!.open = false;
     renderRun(null, "run-1");
     expect(card?.open).toBe(true);
 
-    card!.open = false;
+    card!.querySelector("summary")!.click();
     renderRun(null, "run-1");
     expect(card?.open).toBe(false);
 
@@ -348,7 +429,7 @@ describe("renderSessionProgressCard", () => {
     expect(card?.open).toBe(true);
   });
 
-  it("does not change disclosure at run boundaries when auto-collapse is disabled", () => {
+  it("preserves manual disclosure through final and resets it for a new run", () => {
     const container = document.createElement("div");
     const renderRun = (activeRunId: string | null, completedRunId: string | null) =>
       render(
@@ -372,11 +453,85 @@ describe("renderSessionProgressCard", () => {
     );
     expect(card?.open).toBe(true);
 
-    card!.open = false;
+    card!.querySelector("summary")!.click();
     renderRun(null, "run-1");
     expect(card?.open).toBe(false);
     renderRun("run-2", null);
-    expect(card?.open).toBe(false);
+    expect(card?.open).toBe(true);
+  });
+
+  it.each([false, true])(
+    "follows reading position until a manual choice (initial history: %s)",
+    (readingHistory) => {
+      const container = document.createElement("div");
+      const renderPosition = (history: boolean, activeRunId = "run-1", revision = 2) =>
+        render(
+          renderSessionProgressCard(
+            { ...progressCard, revision },
+            "composer",
+            undefined,
+            "running",
+            RUN_STARTED_MS,
+            undefined,
+            true,
+            false,
+            { activeRunId, readingHistory: history },
+          ),
+          container,
+        );
+      renderPosition(readingHistory);
+      const card = container.querySelector<HTMLDetailsElement>("details")!;
+      expect(card.open).toBe(!readingHistory);
+      renderPosition(!readingHistory);
+      expect(card.open).toBe(readingHistory);
+      renderPosition(readingHistory);
+      expect(card.open).toBe(!readingHistory);
+
+      card.querySelector("summary")!.click();
+      expect(card.open).toBe(readingHistory);
+      renderPosition(!readingHistory);
+      renderPosition(readingHistory, "run-1", 3);
+      expect(card.open).toBe(readingHistory);
+
+      renderPosition(false, "run-2", 4);
+      expect(card.open).toBe(true);
+      renderPosition(true, "run-2", 5);
+      expect(card.open).toBe(false);
+    },
+  );
+
+  it("keeps a manual collapse through final and resets it on the next task", () => {
+    const container = document.createElement("div");
+    const renderRun = (
+      activeRunId: string | null,
+      completedRunId: string | null,
+      readingHistory = false,
+    ) =>
+      render(
+        renderSessionProgressCard(
+          progressCard,
+          "composer",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          true,
+          true,
+          { activeRunId, completedRunId, readingHistory },
+        ),
+        container,
+      );
+    renderRun("run-1", null);
+    const card = container.querySelector<HTMLDetailsElement>("details")!;
+    card.querySelector("summary")!.click();
+    card.querySelector("summary")!.click();
+    renderRun(null, "run-1");
+    expect(card.open).toBe(false);
+    renderRun("run-2", "run-1");
+    renderRun(null, "run-2", true);
+    expect(card.open).toBe(false);
+    renderRun(null, "run-2");
+    expect(card.open).toBe(true);
   });
 
   it("keeps the collapsed counter in the summary action column", () => {
@@ -548,7 +703,7 @@ describe("renderSessionProgressCard", () => {
       '[data-progress-card-placement="composer"]',
     );
     expect(card?.open).toBe(true);
-    card!.open = false;
+    card!.querySelector("summary")!.click();
 
     render(
       renderSessionProgressCard(
@@ -576,7 +731,7 @@ describe("renderSessionProgressCard", () => {
     const first = container.querySelector<HTMLDetailsElement>(
       '[data-progress-card-placement="composer"]',
     );
-    first!.open = false;
+    first!.querySelector("summary")!.click();
 
     render(
       renderSessionProgressCard({ ...progressCard, sessionKey: "agent:main:next" }, "composer"),

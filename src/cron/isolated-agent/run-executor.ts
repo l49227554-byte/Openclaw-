@@ -5,8 +5,13 @@ import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
+import { resolveGroupToolPolicyOutcome } from "../../agents/agent-tools.policy.js";
 import type { BootstrapContextMode } from "../../agents/bootstrap-files.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
+import {
+  cliBackendAcceptsAuthProfileForwarding,
+  resolveCliExecutionAuthProfileId,
+} from "../../agents/cli-execution-auth.js";
 import { resolveCliRuntimeToolsAllow } from "../../agents/cli-runner/tool-policy.js";
 import { settleCliSessionResult } from "../../agents/cli-session-store.js";
 import {
@@ -69,6 +74,7 @@ import {
   resolveBootstrapWarningSignaturesSeen,
   resolveCandidateThinkingLevel,
   resolveCronAgentLane,
+  resolveFastModeState,
   runCliAgent,
 } from "./run-execution.runtime.js";
 import { resolveCronFallbacksOverride } from "./run-fallback-policy.js";
@@ -332,6 +338,19 @@ function createCronPromptExecutor(
   const { sourceDelivery } = params;
   const sourceReplyDeliveryMode = sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
+  if (scheduledToolPolicy?.mode === "account") {
+    const policyOutcome = resolveGroupToolPolicyOutcome({
+      config: params.cfgWithAgentDefaults,
+      sessionKey: scheduledToolPolicy.ownerSessionKey,
+      messageProvider: messageChannel,
+      accountId: scheduledToolPolicy.ownerAccountId,
+      requireConfiguredAccount: true,
+      senderPolicyMode: "never",
+    });
+    if (policyOutcome.kind === "account-unavailable") {
+      throw new Error(policyOutcome.message);
+    }
+  }
   // Cron prompts may intentionally have nothing to report; both runners must agree on silence.
   const allowEmptyAssistantReplyAsSilent = true;
   const finalizePromptForResolvedTools = ({
@@ -620,7 +639,19 @@ function createCronPromptExecutor(
           bootstrapPromptWarningSignaturesSeen[bootstrapPromptWarningSignaturesSeen.length - 1];
         // CLI providers can resume provider-native sessions; embedded providers
         // use OpenClaw's transcript/session file plus prompt-cache affinity.
+        const fastModeState = resolveFastModeState({
+          cfg: params.cfgWithAgentDefaults,
+          provider: providerOverride,
+          model: modelOverride,
+          agentId: params.agentId,
+          sessionEntry: params.cronSession.sessionEntry,
+        });
         if (cliExecution) {
+          const allowCliAuthProfileForwarding = cliBackendAcceptsAuthProfileForwarding({
+            provider: executionProvider,
+            config: params.cfgWithAgentDefaults,
+            agentId: params.agentId,
+          });
           // Cron intentionally reuses its durable session id as the run id; turn
           // claims stay unique via per-claim ids and the worker gate handles this
           // via credential rotation (see worker-environments/service.ts fences).
@@ -635,6 +666,22 @@ function createCronPromptExecutor(
               const cliSessionBinding = params.cronSession.isNewSession
                 ? undefined
                 : await getCliSessionBinding(params.cronSession.sessionEntry, executionProvider);
+              const authProfileId = allowCliAuthProfileForwarding
+                ? resolveCliExecutionAuthProfileId({
+                    cliExecutionProvider: executionProvider,
+                    authProfileProvider: providerOverride,
+                    config: params.cfgWithAgentDefaults,
+                    agentDir: params.agentDir,
+                    sessionBinding: cliSessionBinding,
+                    selected: params.liveSelection.authProfileId
+                      ? {
+                          authProfileId: params.liveSelection.authProfileId,
+                          authProfileIdSource:
+                            params.liveSelection.authProfileIdSource === "user" ? "user" : "auto",
+                        }
+                      : undefined,
+                  })
+                : undefined;
               const guardedCliSessionBinding =
                 cliSessionBinding && hasCliSessionReuseMetadata(cliSessionBinding)
                   ? cliSessionBinding
@@ -666,6 +713,7 @@ function createCronPromptExecutor(
                 ),
                 provider: executionProvider,
                 model: modelOverride,
+                authProfileId,
                 thinkLevel: candidateThinkLevel,
                 timeoutMs: params.timeoutMs,
                 runId,
@@ -694,6 +742,8 @@ function createCronPromptExecutor(
                 bootstrapContextRunKind: "cron",
                 bootstrapPromptWarningSignaturesSeen,
                 bootstrapPromptWarningSignature,
+                fastMode: fastModeState.mode,
+                fastModeAutoOnSeconds: fastModeState.fastAutoOnSeconds,
                 fastModeStartedAtMs,
                 fastModeAutoProgressState,
                 isFinalFallbackAttempt: runOptions.isFinalFallbackAttempt,
@@ -730,14 +780,14 @@ function createCronPromptExecutor(
               }
               return candidateResult;
             },
-            { abortSignal: params.abortSignal, trigger: "cron" },
+            { preparedRunAdmission, abortSignal: params.abortSignal, trigger: "cron" },
           );
           bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
             result.meta?.systemPromptReport,
           );
           return result;
         }
-        const { resolveFastModeState, runEmbeddedAgent } = await cronEmbeddedRuntimeLoader.load();
+        const { runEmbeddedAgent } = await cronEmbeddedRuntimeLoader.load();
         const promptCacheKey = resolveIsolatedCronPromptCacheKey({
           job: params.job,
           agentId: params.agentId,
@@ -778,6 +828,7 @@ function createCronPromptExecutor(
           provider: providerOverride,
           model: modelOverride,
           agentHarnessRuntimeOverride: sessionRuntimeOverride,
+          requestedRouteResolution: "resolved",
           modelFallbacksOverride: cronFallbacksOverride,
           authProfileId: params.liveSelection.authProfileId,
           authProfileIdSource: params.liveSelection.authProfileId
@@ -785,26 +836,15 @@ function createCronPromptExecutor(
             : undefined,
           // Scheduled run: keep bursty cron overloaded/rate_limit local, while
           // still sharing real credential/account failures across auth profiles.
-          authProfileFailurePolicy: "local_transient",
+          authProfileFailurePolicy: runOptions.authProfileFailurePolicy ?? "local_transient",
           // Fallback selection is turn-local. Revalidate the stored or
           // requested level without rewriting the durable preference.
           thinkLevel: candidateThinkLevel,
-          ...(() => {
-            const fastModeState = resolveFastModeState({
-              cfg: params.cfgWithAgentDefaults,
-              provider: providerOverride,
-              model: modelOverride,
-              agentId: params.agentId,
-              sessionEntry: params.cronSession.sessionEntry,
-            });
-            return {
-              fastMode: fastModeState.mode,
-              fastModeAutoOnSeconds: fastModeState.fastAutoOnSeconds,
-              fastModeStartedAtMs,
-              fastModeAutoProgressState,
-              isFinalFallbackAttempt: runOptions.isFinalFallbackAttempt,
-            };
-          })(),
+          fastMode: fastModeState.mode,
+          fastModeAutoOnSeconds: fastModeState.fastAutoOnSeconds,
+          fastModeStartedAtMs,
+          fastModeAutoProgressState,
+          isFinalFallbackAttempt: runOptions.isFinalFallbackAttempt,
           verboseLevel: params.resolvedVerboseLevel,
           timeoutMs: params.timeoutMs,
           runTimeoutOverrideMs: params.runTimeoutOverrideMs,

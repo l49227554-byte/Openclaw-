@@ -542,13 +542,13 @@ describe("sessions.list single-flight", () => {
 
       const degraded = await listSessions({ client, context, request });
       const degradedRow = degraded.sessions.find((session) => session.key === sessionKey);
-      expect(degradedRow?.derivedTitle).not.toBe("active prompt");
+      expect(degradedRow?.derivedTitle).not.toBe("Active prompt");
       expect(degradedRow?.lastMessagePreview).toBeUndefined();
 
       await waitForSessionTranscriptIndexReconcile({ agentId: "main", env: state.env });
       const healed = await listSessions({ client, context, request });
       expect(healed.sessions.find((session) => session.key === sessionKey)).toMatchObject({
-        derivedTitle: "active prompt",
+        derivedTitle: "Active prompt",
         lastMessagePreview: "active reply",
       });
       expect(loader.calls).toHaveBeenCalledTimes(2);
@@ -806,6 +806,7 @@ describe("sessions.list single-flight", () => {
       const respond = vi.fn();
 
       await sessionReadHandlers["sessions.list"]?.({
+        req: { type: "req", id: "session-list-test", method: "sessions.list" },
         params: { activeMinutes: 0 },
         client: identifiedClient("owner@example.com"),
         context: requestContext(config),

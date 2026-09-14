@@ -1,6 +1,7 @@
 // Imported by a dispatch-from-config entrypoint to keep its mocked suite in one Vitest module graph.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PROVIDER_CONVERSATION_STATE_ERROR_USER_MESSAGE } from "../../agents/failover/user-copy.js";
+import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { WorkerSessionPlacementRecord } from "../../gateway/worker-environments/placement-record.js";
 import type { SessionBindingRecord } from "../../infra/outbound/session-binding-service.js";
@@ -9,7 +10,7 @@ import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import {
-  NO_VISIBLE_REPLY_FALLBACK_TEXT,
+  buildNoVisibleReplyFallbackText,
   QUEUE_CAP_REJECTION_TEXT,
 } from "./dispatch-from-config.payloads.js";
 import {
@@ -18,6 +19,8 @@ import {
   emptyConfig,
   globalMocks,
   hookMocks,
+  mockPluginBinding,
+  mockPluginBindingClaim,
   mocks,
   placementContextMocks,
   sessionBindingMocks,
@@ -41,6 +44,8 @@ import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
 import { buildTestCtx } from "./test-ctx.js";
+
+const NO_VISIBLE_REPLY_FALLBACK_TEXT = buildNoVisibleReplyFallbackText();
 
 function sendPolicySessionEntry(sendPolicy: "allow" | "deny") {
   return { sessionId: "s1", updatedAt: 0, sendPolicy };
@@ -623,6 +628,57 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     });
     expect(result.noVisibleReplyFallbackEligible).toBeUndefined();
   });
+
+  it.each([
+    ["caller-run", undefined, false, "caller-run"],
+    [undefined, "generated-run", false, "generated-run"],
+    ["caller-run", "observed-run", true, "observed-run"],
+    [undefined, undefined, true, undefined],
+    ["<@everyone>", undefined, true, undefined],
+  ] as const)(
+    "keeps fallback correlation non-error (supplied=%s, observed=%s, routed=%s)",
+    async (runId, generatedRunId, routed, reference) => {
+      setNoAbort();
+      const dispatcher = createDispatcher();
+      const onAgentRunStart = vi.fn();
+      const replyOptions = { runId, onAgentRunStart };
+      const replyResolver = vi.fn(async (_ctx: MsgContext, options?: GetReplyOptions) => {
+        if (generatedRunId) {
+          options?.onAgentRunStart?.(generatedRunId);
+          options?.onAgentRunTerminalOutcome?.("completed");
+        }
+        return undefined;
+      });
+      const result = await dispatchReplyFromConfig({
+        ctx: buildTestCtx({
+          ChatType: "direct",
+          Provider: "telegram",
+          Surface: "telegram",
+          OriginatingChannel: routed ? "discord" : "telegram",
+          OriginatingTo: "user:1",
+        }),
+        cfg: emptyConfig,
+        dispatcher,
+        replyResolver,
+        replyOptions,
+      });
+      const payload = {
+        text: reference
+          ? `${NO_VISIBLE_REPLY_FALLBACK_TEXT} Reference: ${reference}.`
+          : NO_VISIBLE_REPLY_FALLBACK_TEXT,
+      };
+      if (routed) {
+        expect(firstRouteReplyCall().payload).toEqual(payload);
+        expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+      } else {
+        expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith(payload);
+      }
+      expect(result.noVisibleReplyFallbackDelivered).toBe(true);
+      expect(readAgentRunTerminalOutcome(result)).toBe(generatedRunId ? "completed" : undefined);
+      expect(replyOptions).toEqual({ runId, onAgentRunStart });
+      expect(onAgentRunStart.mock.calls).toEqual(generatedRunId ? [[generatedRunId]] : []);
+    },
+  );
 
   it("keeps ambient group turns silent even when silence policy is disallow", async () => {
     setNoAbort();
@@ -1478,31 +1534,23 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
 
   it("rejects archived plugin-bound work before the plugin handler runs", async () => {
     setNoAbort();
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) => hookName === "inbound_claim") as () => boolean,
+    mockPluginBindingClaim(
+      {
+        status: "handled",
+        result: { handled: true, reply: { text: "must not send" } },
+      },
+      { receiveMessages: false },
     );
-    hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-    hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
-      status: "handled",
-      result: { handled: true, reply: { text: "must not send" } },
-    });
-    sessionBindingMocks.resolveByConversation.mockReturnValue({
+    mockPluginBinding({
       bindingId: "binding-archived",
       targetSessionKey: "plugin-binding:codex:archived",
-      targetKind: "session",
       conversation: {
         channel: "discord",
         accountId: "default",
         conversationId: "channel:archived-test",
       },
-      status: "active",
-      boundAt: 1710000000000,
-      metadata: {
-        pluginBindingOwner: "plugin",
-        pluginId: "openclaw-codex-app-server",
-        pluginRoot: "/tmp/plugin",
-      },
-    } satisfies SessionBindingRecord);
+      pluginRoot: "/tmp/plugin",
+    });
     const archivedAt = Date.now() - 1_000;
     sessionStoreMocks.currentEntry = {
       sessionId: "s1",
@@ -1643,7 +1691,7 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     },
   );
 
-  it("does not auto-restore an archived restart-recovery tombstone", async () => {
+  it("keeps an archived restart tombstone closed while sending recovery guidance", async () => {
     setNoAbort();
     const sessionId = "restart-tombstone-session";
     const sessionKey = "agent:main:matrix:channel:room-a";
@@ -1690,7 +1738,10 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
       mainRestartRecovery: { tombstone: { reason: "automatic recovery exhausted" } },
     });
     expect(replyResolver).not.toHaveBeenCalled();
-    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: "My session in this room ended during restart recovery. Use /reset or /new to start a replacement session.",
+      isError: true,
+    });
   });
 
   it("does not add a lifecycle parent lookup for an ordinary healthy threaded turn", async () => {
@@ -2042,32 +2093,17 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     // rewind. Under deny, skip the plugin claim entirely and let the agent
     // process the message with delivery suppressed. See #53328.
     setNoAbort();
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) =>
-        hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
-    );
-    hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-    hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
-      status: "handled",
-      result: { handled: true },
-    });
-    sessionBindingMocks.resolveByConversation.mockReturnValue({
+    mockPluginBindingClaim();
+    mockPluginBinding({
       bindingId: "binding-deny",
       targetSessionKey: "plugin-binding:codex:abc123",
-      targetKind: "session",
       conversation: {
         channel: "discord",
         accountId: "default",
         conversationId: "channel:deny-test",
       },
-      status: "active",
-      boundAt: 1710000000000,
-      metadata: {
-        pluginBindingOwner: "plugin",
-        pluginId: "openclaw-codex-app-server",
-        pluginRoot: "/tmp/plugin",
-      },
-    } satisfies SessionBindingRecord);
+      pluginRoot: "/tmp/plugin",
+    });
     sessionStoreMocks.currentEntry = sendPolicySessionEntry("deny");
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "agent reply" }) satisfies ReplyPayload);
@@ -2194,30 +2230,18 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     "routes plugin-owned bindings under message-tool-only source delivery: $name",
     async (params) => {
       setNoAbort();
-      hookMocks.runner.hasHooks.mockImplementation(
-        ((hookName?: string) =>
-          hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
-      );
-      hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-      hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
+      mockPluginBindingClaim({
         status: "handled",
         result: params.pluginReply
           ? { handled: true, reply: params.pluginReply }
           : { handled: true },
       });
-      sessionBindingMocks.resolveByConversation.mockReturnValue({
+      mockPluginBinding({
         bindingId: params.bindingId,
         targetSessionKey: "plugin-binding:codex:abc123",
-        targetKind: "session",
         conversation: params.conversation,
-        status: "active",
-        boundAt: 1710000000000,
-        metadata: {
-          pluginBindingOwner: "plugin",
-          pluginId: "openclaw-codex-app-server",
-          pluginRoot: "/tmp/plugin",
-        },
-      } satisfies SessionBindingRecord);
+        pluginRoot: "/tmp/plugin",
+      });
       sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow");
       const dispatcher = createDispatcher();
       const replyResolver = vi.fn(async () => ({ text: "agent reply" }) satisfies ReplyPayload);
@@ -2262,33 +2286,21 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
 
   it("keeps unmentioned plugin-bound fallback from ordinary group agent dispatch", async () => {
     setNoAbort();
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) =>
-        hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
-    );
-    hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-    hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
+    mockPluginBindingClaim({
       status: "no_handler",
     });
     hookMocks.runner.runInboundClaimForPluginOutcome.mockClear();
-    sessionBindingMocks.resolveByConversation.mockReturnValue({
+    mockPluginBinding({
       bindingId: "binding-message-tool-fallback",
       targetSessionKey: "plugin-binding:codex:abc123",
-      targetKind: "session",
       conversation: {
         channel: "telegram",
         accountId: "default",
         conversationId: "-1001234567890:topic:11",
         parentConversationId: "-1001234567890",
       },
-      status: "active",
-      boundAt: 1710000000000,
-      metadata: {
-        pluginBindingOwner: "plugin",
-        pluginId: "openclaw-codex-app-server",
-        pluginRoot: "/tmp/plugin",
-      },
-    } satisfies SessionBindingRecord);
+      pluginRoot: "/tmp/plugin",
+    });
     sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow");
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "agent reply" }) satisfies ReplyPayload);
@@ -2353,33 +2365,21 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     },
   ])("$name", async ({ groupRequireMention, expectedDispatches }) => {
     setNoAbort();
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) =>
-        hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
-    );
-    hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-    hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
+    mockPluginBindingClaim({
       status: "no_handler",
     });
     hookMocks.runner.runInboundClaimForPluginOutcome.mockClear();
     installThreadingTestPlugin({ id: "imessage" });
-    sessionBindingMocks.resolveByConversation.mockReturnValue({
+    mockPluginBinding({
       bindingId: "binding-imessage-always-on-fallback",
       targetSessionKey: "plugin-binding:codex:imessage",
-      targetKind: "session",
       conversation: {
         channel: "imessage",
         accountId: "default",
         conversationId: "chat:primary",
       },
-      status: "active",
-      boundAt: 1710000000000,
-      metadata: {
-        pluginBindingOwner: "plugin",
-        pluginId: "openclaw-codex-app-server",
-        pluginRoot: "/tmp/plugin",
-      },
-    } satisfies SessionBindingRecord);
+      pluginRoot: "/tmp/plugin",
+    });
     sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow");
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "agent reply" }) satisfies ReplyPayload);
@@ -2432,33 +2432,21 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
 
   it("lets authorized control commands without CommandSource escape plugin-bound fallback", async () => {
     setNoAbort();
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) =>
-        hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
-    );
-    hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-    hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
+    mockPluginBindingClaim({
       status: "no_handler",
     });
     hookMocks.runner.runInboundClaimForPluginOutcome.mockClear();
-    sessionBindingMocks.resolveByConversation.mockReturnValue({
+    mockPluginBinding({
       bindingId: "binding-message-tool-command",
       targetSessionKey: "plugin-binding:codex:abc123",
-      targetKind: "session",
       conversation: {
         channel: "telegram",
         accountId: "default",
         conversationId: "-1001234567890:topic:11",
         parentConversationId: "-1001234567890",
       },
-      status: "active",
-      boundAt: 1710000000000,
-      metadata: {
-        pluginBindingOwner: "plugin",
-        pluginId: "openclaw-codex-app-server",
-        pluginRoot: "/tmp/plugin",
-      },
-    } satisfies SessionBindingRecord);
+      pluginRoot: "/tmp/plugin",
+    });
     sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow");
     const cfg = { messages: { visibleReplies: "message_tool" } } as OpenClawConfig;
     const dispatcher = createDispatcher();
@@ -2496,34 +2484,19 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
 
   it("keeps unauthorized native commands on the plugin-bound claim path", async () => {
     setNoAbort();
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) =>
-        hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
-    );
-    hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-    hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
-      status: "handled",
-      result: { handled: true },
-    });
+    mockPluginBindingClaim();
     hookMocks.runner.runInboundClaimForPluginOutcome.mockClear();
-    sessionBindingMocks.resolveByConversation.mockReturnValue({
+    mockPluginBinding({
       bindingId: "binding-native-unauthorized",
       targetSessionKey: "plugin-binding:codex:abc123",
-      targetKind: "session",
       conversation: {
         channel: "telegram",
         accountId: "default",
         conversationId: "-1001234567890:topic:11",
         parentConversationId: "-1001234567890",
       },
-      status: "active",
-      boundAt: 1710000000000,
-      metadata: {
-        pluginBindingOwner: "plugin",
-        pluginId: "openclaw-codex-app-server",
-        pluginRoot: "/tmp/plugin",
-      },
-    } satisfies SessionBindingRecord);
+      pluginRoot: "/tmp/plugin",
+    });
     sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow");
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "core reply" }) satisfies ReplyPayload);
@@ -2568,34 +2541,19 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
 
   it("keeps structured normal command turns on the plugin-bound claim path", async () => {
     setNoAbort();
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) =>
-        hookName === "inbound_claim" || hookName === "message_received") as () => boolean,
-    );
-    hookMocks.registry.plugins = [{ id: "openclaw-codex-app-server", status: "loaded" }];
-    hookMocks.runner.runInboundClaimForPluginOutcome.mockResolvedValue({
-      status: "handled",
-      result: { handled: true },
-    });
+    mockPluginBindingClaim();
     hookMocks.runner.runInboundClaimForPluginOutcome.mockClear();
-    sessionBindingMocks.resolveByConversation.mockReturnValue({
+    mockPluginBinding({
       bindingId: "binding-structured-normal-turn",
       targetSessionKey: "plugin-binding:codex:abc123",
-      targetKind: "session",
       conversation: {
         channel: "telegram",
         accountId: "default",
         conversationId: "-1001234567890:topic:11",
         parentConversationId: "-1001234567890",
       },
-      status: "active",
-      boundAt: 1710000000000,
-      metadata: {
-        pluginBindingOwner: "plugin",
-        pluginId: "openclaw-codex-app-server",
-        pluginRoot: "/tmp/plugin",
-      },
-    } satisfies SessionBindingRecord);
+      pluginRoot: "/tmp/plugin",
+    });
     sessionStoreMocks.currentEntry = sendPolicySessionEntry("allow");
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async () => ({ text: "core reply" }) satisfies ReplyPayload);

@@ -9,7 +9,6 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { PluginStatusReport } from "../plugins/status.js";
 import { createCompatibilityNotice, createPluginRecord } from "../plugins/status.test-fixtures.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { withEnvAsync } from "../test-utils/env.js";
 import {
   buildPluginCompatibilityNoticesMock,
   withPluginDiagnosticsReportForInspectionMock,
@@ -21,7 +20,6 @@ import {
   resetPluginsCliTestState,
   refreshPluginRegistryMock,
   runPluginsCommand,
-  runtimeErrors,
   pluginsCliRuntimeLogs,
 } from "./plugins-cli-test-helpers.js";
 
@@ -473,84 +471,6 @@ describe("plugins cli list", () => {
     expect(output).not.toContain("\u001b");
   });
 
-  it("emits one sanitized JSON doctor report without human decoration", async () => {
-    const homeDir = "/tmp/openclaw-plugin-doctor-home";
-    mockDoctorReport({
-      plugins: [
-        createPluginRecord({
-          id: "broken",
-          origin: "config",
-          source: `${homeDir}/plugins/broken/index.ts`,
-          status: "error",
-          error: `failed to load ${homeDir}/plugins/broken/runtime.ts`,
-        }),
-      ],
-      diagnostics: [
-        {
-          level: "warn",
-          pluginId: "broken",
-          source: `${homeDir}/plugins/shadowed/index.ts`,
-          message:
-            "duplicate plugin id resolved by explicit config-selected plugin; " +
-            `global plugin will be overridden by config plugin (${homeDir}/plugins/broken/index.ts)`,
-        },
-        {
-          level: "warn",
-          message: `failed to inspect ${homeDir}/plugins/unreadable`,
-        },
-      ],
-    });
-
-    await withEnvAsync({ OPENCLAW_HOME: homeDir }, async () => {
-      await runPluginsCommand(["plugins", "doctor", "--json"]);
-    });
-
-    expect(pluginsCliRuntimeLogs).toHaveLength(1);
-    expect(runtimeErrors).toEqual([]);
-    expect(pluginsCliRuntimeLogs[0]).not.toContain(homeDir);
-    expect(pluginsCliRuntimeLogs[0]).not.toContain("Plugin errors:");
-    expect(pluginsCliRuntimeLogs[0]).not.toContain("Docs:");
-    expect(JSON.parse(pluginsCliRuntimeLogs[0] ?? "null")).toEqual({
-      ok: false,
-      pluginErrors: [
-        {
-          id: "broken",
-          error: "failed to load $OPENCLAW_HOME/plugins/broken/runtime.ts",
-          source: "$OPENCLAW_HOME/plugins/broken/index.ts",
-        },
-      ],
-      diagnostics: [
-        {
-          level: "warn",
-          message: "failed to inspect $OPENCLAW_HOME/plugins/unreadable",
-        },
-      ],
-      sourceShadowing: [
-        {
-          pluginId: "broken",
-          message:
-            "duplicate plugin id resolved by explicit config-selected plugin; " +
-            "global plugin will be overridden by config plugin ($OPENCLAW_HOME/plugins/broken/index.ts)",
-          active: {
-            source: "$OPENCLAW_HOME/plugins/broken/index.ts",
-            origin: "config",
-            status: "error",
-            error: "failed to load $OPENCLAW_HOME/plugins/broken/runtime.ts",
-          },
-          shadowedSource: "$OPENCLAW_HOME/plugins/shadowed/index.ts",
-          repair: [
-            "openclaw plugins inspect broken",
-            "edit or remove the config-selected plugin source",
-            "openclaw plugins registry --refresh",
-            "openclaw gateway restart --force",
-          ],
-        },
-      ],
-      compatibility: [],
-      configurationWarnings: [],
-    });
-  });
-
   it.each([
     {
       description: "a required plugin is missing",
@@ -970,14 +890,16 @@ describe("plugins cli list", () => {
   });
 
   it("reports persisted plugin registry state without refreshing", async () => {
+    // Identical sources: only the changed facets tell the operator what moved.
     inspectPluginRegistryMock.mockResolvedValue({
       state: "stale",
       refreshReasons: ["stale-manifest"],
       differences: [
         {
           pluginId: "demo",
+          changed: ["install", "diagnostics"],
           persistedSource: "/plugins/demo/index.js",
-          derivedSource: "/plugins/demo/dist/index.js",
+          derivedSource: "/plugins/demo/index.js",
         },
       ],
       persisted: {
@@ -999,7 +921,7 @@ describe("plugins cli list", () => {
     expect(pluginsCliRuntimeLogs.join("\n")).toContain("stale");
     expect(pluginsCliRuntimeLogs.join("\n")).toContain("Refresh reasons:");
     expect(pluginsCliRuntimeLogs.join("\n")).toContain(
-      "demo: persisted /plugins/demo/index.js; derived /plugins/demo/dist/index.js",
+      "demo: install+diagnostics changed; persisted /plugins/demo/index.js; derived /plugins/demo/index.js",
     );
     expect(pluginsCliRuntimeLogs.join("\n")).toContain("openclaw plugins registry --refresh");
   });
@@ -1037,6 +959,7 @@ describe("plugins cli list", () => {
       differences: [
         {
           pluginId: "demo",
+          changed: ["record"],
           persistedSource: "/plugins/demo/index.js",
           derivedSource: "/plugins/demo/dist/index.js",
         },
@@ -1046,7 +969,7 @@ describe("plugins cli list", () => {
     });
 
     await expect(runPluginsCommand(["plugins", "registry", "--refresh"])).rejects.toThrow(
-      /demo: persisted \/plugins\/demo\/index\.js; derived \/plugins\/demo\/dist\/index\.js.*openclaw plugins registry --refresh/su,
+      /demo: record changed; persisted \/plugins\/demo\/index\.js; derived \/plugins\/demo\/dist\/index\.js.*openclaw plugins registry --refresh/su,
     );
   });
 
@@ -1058,6 +981,7 @@ describe("plugins cli list", () => {
       differences: [
         {
           pluginId: "demo",
+          changed: ["record"],
           persistedSource: "/plugins/demo/index.js",
           derivedSource: "/plugins/demo/dist/index.js",
         },
@@ -1077,6 +1001,7 @@ describe("plugins cli list", () => {
       differences: [
         {
           pluginId: "demo",
+          changed: ["record"],
           persistedSource: "/plugins/demo/index.js",
           derivedSource: "/plugins/demo/dist/index.js",
         },

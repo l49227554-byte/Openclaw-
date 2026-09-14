@@ -3,6 +3,7 @@ import {
   setReplyPayloadMetadata,
   type ReplyPayloadMetadata,
 } from "../../../auto-reply/reply-payload.js";
+import { isSilentReplyText } from "../../../auto-reply/tokens.js";
 import {
   SessionTranscriptWriterClaimReboundError,
   withOwnedSessionTranscriptWrites,
@@ -33,9 +34,14 @@ import {
   resolveRuntimeModelAttempt,
   runEmbeddedSettledTurnFinalizationWithBackend,
 } from "./backend.js";
-import { resolveSettledToolBatchEvidence } from "./incomplete-turn-recovery.js";
+import { resolveFinalAssistantVisibleText } from "./helpers.js";
+import {
+  resolveSettledToolBatchEvidence,
+  shouldTreatEmptyAssistantReplyAsSilent,
+} from "./incomplete-turn-recovery.js";
 import type { createEmbeddedRunLaneController } from "./lane-controller.js";
 import {
+  isEmbeddedRunTerminalTimeout,
   resolveEmbeddedRunAttemptTerminalOutcome,
   type EmbeddedRunTerminalState,
 } from "./terminal-outcome.js";
@@ -174,6 +180,24 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
       });
       assertFinalizationActive();
       attempt = finalization.attempt;
+      // The harness retains authored silence as an empty result; only the host
+      // owns the optional terminal reply contract and the settled tool failures.
+      if (
+        finalization.outcome === "empty" &&
+        runParams.terminalReplyExpectation === "optional" &&
+        !initial.attempt.lastToolError &&
+        shouldTreatEmptyAssistantReplyAsSilent({
+          allowEmptyAssistantReplyAsSilent: runParams.allowEmptyAssistantReplyAsSilent,
+          terminalReplyExpectation: runParams.terminalReplyExpectation,
+          onlyExplicitSilentReply: true,
+          payloadCount: 0,
+          aborted: input.finalization.abortSignal.aborted,
+          timedOut: isEmbeddedRunTerminalTimeout(initial.terminalState.outcome),
+          attempt,
+        })
+      ) {
+        finalization.outcome = "answered";
+      }
       mergeUsageIntoAccumulator(input.terminalBase.usageAccumulator, attempt.attemptUsage);
       mergeAttemptRunStatsIntoAccumulator(input.terminalBase.usageAccumulator, attempt);
       lastRunPromptUsage = attempt.attemptUsage ?? lastRunPromptUsage;
@@ -280,10 +304,12 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
     ...completion,
     lastRunPromptUsage,
   });
-  // The isolated finalizer cannot call a message tool. Its answer is
-  // host-owned recovery output and must cross that source-reply suppression.
+  // Only a real finalizer answer may cross source-reply suppression. The
+  // synthetic fallback remains a private diagnostic on message-tool-only runs.
   finalizedPrepared.payloadsWithToolMedia?.forEach((payload) => {
-    markReplyPayloadForSourceSuppressionDelivery(payload);
+    if (finalizationOutcome === "answered") {
+      markReplyPayloadForSourceSuppressionDelivery(payload);
+    }
     if (sessionWriterDeliveryAuthority) {
       setReplyPayloadMetadata(payload, { sessionWriterDeliveryAuthority });
     }
@@ -291,6 +317,12 @@ export async function prepareTerminalWithSettledTurnFinalization(input: {
   // A failure-honest final answer cannot turn a settled cron denial into success.
   prepared = {
     ...finalizedPrepared,
+    // Do not offer the private diagnostic to stranded-reply recovery as an
+    // undelivered model answer. Automatic-delivery callers retain their fallback.
+    ...(finalizationOutcome !== "answered" &&
+    runParams.sourceReplyDeliveryMode === "message_tool_only"
+      ? { finalAssistantVisibleText: "", finalAssistantRawText: "" }
+      : {}),
     failureSignal: settledFailureSignal,
     terminalToolFailure: settledTerminalToolFailure,
   };
@@ -421,7 +453,13 @@ function buildSettledTurnFinalizationAttemptResult(input: {
   runtimePlan?: EmbeddedRunAttemptParams["runtimePlan"];
 }): EmbeddedRunAttemptWithReceiptEvidence {
   const { result, settledAttempt } = input;
-  const text = input.outcome === "empty" ? "" : resolveSettledTurnFinalizationText(result);
+  const authoredText = resolveFinalAssistantVisibleText(result.assistant) ?? "";
+  const text =
+    input.outcome === "empty"
+      ? isSilentReplyText(authoredText)
+        ? authoredText
+        : ""
+      : resolveSettledTurnFinalizationText(result);
   // Finalization replaces terminal ownership, not host-private facts from settled tools.
   // Its response model does not replace the original runtime-owned selection.
   // Replay, abort, and lifecycle state remain finalizer-local.

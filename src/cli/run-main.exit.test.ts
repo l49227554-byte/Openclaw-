@@ -16,12 +16,14 @@ import { loggingState } from "../logging/state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginCache, getScopedPluginCache, type PluginCache } from "../plugins/plugin-cache.js";
 import { withSecureTestNodeExecPath } from "../secrets/test-node-command.test-support.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import type { LocalOnboardingState } from "../state/local-onboarding-state.js";
 import { captureEnv, withEnvAsync } from "../test-utils/env.js";
 import { ExpectedCliError } from "./failure-output.js";
 import { getGatewayRunRuntimeHooks } from "./gateway-cli/runtime-hooks.js";
 import type { RootHelpRenderOptions } from "./program/root-help.js";
-import { registerSignalExitBarrier } from "./signal-exit-barrier.js";
+import { getPendingCliDisposers } from "./runtime-cleanup.js";
+import { registerSignalExitBarrier, waitForSignalExitBarriers } from "./signal-exit-barrier.js";
 
 const TLS_FINGERPRINT = "ab".repeat(32);
 const PREFIXED_TLS_FINGERPRINT = `sha256:${TLS_FINGERPRINT.toUpperCase()}`;
@@ -55,7 +57,8 @@ const normalizeEnvMock = vi.hoisted(() => vi.fn());
 const pinConfigDirMock = vi.hoisted(() => vi.fn());
 const pinRuntimePathsMock = vi.hoisted(() => vi.fn());
 const ensurePathMock = vi.hoisted(() => vi.fn());
-const assertRuntimeMock = vi.hoisted(() => vi.fn());
+const assertRuntimeMock = vi.hoisted(() => vi.fn(async () => {}));
+const isCurrentRuntimeSupportedMock = vi.hoisted(() => vi.fn(async () => true));
 const closeActiveMemorySearchManagersMock = vi.hoisted(() => vi.fn(async () => {}));
 const hasMemoryRuntimeMock = vi.hoisted(() => vi.fn(() => false));
 const listRegisteredAgentHarnessesMock = vi.hoisted(() => vi.fn((): unknown[] => []));
@@ -317,8 +320,10 @@ vi.mock("../infra/path-env.js", () => ({
   ensureOpenClawCliOnPath: ensurePathMock,
 }));
 
-vi.mock("../infra/runtime-guard.js", () => ({
+vi.mock("../infra/runtime-guard.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/runtime-guard.js")>()),
   assertSupportedRuntime: assertRuntimeMock,
+  isCurrentRuntimeSupported: isCurrentRuntimeSupportedMock,
 }));
 
 vi.mock("../plugins/memory-runtime.js", () => ({
@@ -2370,13 +2375,28 @@ describe("runCli exit behavior", () => {
     expect(shouldStartProxyForCli(argv)).toBe(false);
   });
 
-  it("starts the managed proxy for network-capable commands by default", async () => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
+  it.each([true, false])(
+    "selects proxy config after async runtime support resolves to %s",
+    async (supported) => {
+      tryRouteCliMock.mockResolvedValueOnce(true);
+      isCurrentRuntimeSupportedMock.mockResolvedValueOnce(supported);
+      if (supported) {
+        loadConfigMock.mockReturnValueOnce({ proxy: { proxyUrl: "http://validated.invalid" } });
+      } else {
+        readSourceConfigBestEffortMock.mockResolvedValueOnce({
+          proxy: { proxyUrl: "http://source.invalid" },
+        });
+      }
 
-    await runCli(["node", "openclaw", "plugins", "marketplace", "list"]);
+      await runCli(["node", "openclaw", "plugins", "marketplace", "list"]);
 
-    expect(startProxyMock).toHaveBeenCalledWith(undefined);
-  });
+      expect(readSourceConfigBestEffortMock).toHaveBeenCalledTimes(supported ? 0 : 1);
+      expect(loadConfigMock).toHaveBeenCalledTimes(supported ? 1 : 0);
+      expect(startProxyMock).toHaveBeenCalledWith({
+        proxyUrl: supported ? "http://validated.invalid" : "http://source.invalid",
+      });
+    },
+  );
 
   it.each([
     ["worker", { observe: false, pluginValidation: "core-only" }],
@@ -2580,7 +2600,7 @@ describe("runCli exit behavior", () => {
       "full Commander path with root options",
       ["node", "openclaw", "--log-level", "debug", "gateway", "run"],
     ],
-  ])("loads trusted dotenv and isolates %s gateway proxy config reads", async (_name, argv) => {
+  ])("isolates %s gateway proxy config reads core-only", async (_name, argv) => {
     existsSyncOverride.value = (target) => target === path.join(process.cwd(), ".env");
     if (_name === "full Commander path with root options") {
       tryRouteCliMock.mockResolvedValueOnce(false);
@@ -2599,7 +2619,7 @@ describe("runCli exit behavior", () => {
     expect(loadConfigMock).toHaveBeenCalledWith({
       isolateEnv: true,
       observe: false,
-      skipPluginValidation: true,
+      pluginValidation: "core-only",
     });
     expect(startProxyMock).toHaveBeenCalledWith(undefined);
   });
@@ -2647,6 +2667,17 @@ describe("runCli exit behavior", () => {
     const configReadOrder = readConfigFileSnapshotMock.mock.invocationCallOrder[0] ?? 0;
     expect(runtimeGuardOrder).toBeGreaterThan(0);
     expect(configReadOrder).toBeGreaterThan(runtimeGuardOrder);
+  });
+
+  it("stops before config selection when asynchronous runtime validation rejects", async () => {
+    const error = new Error("unsupported runtime");
+    const validation = Promise.reject(error);
+    // The regression must also join this rejection when old code ignores the returned promise.
+    void validation.catch(() => {});
+    assertRuntimeMock.mockReturnValueOnce(validation);
+
+    await expect(runCli(["node", "openclaw", "gateway", "run"])).rejects.toBe(error);
+    expect(readConfigFileSnapshotMock).not.toHaveBeenCalled();
   });
 
   it("re-pins runtime paths after selecting gateway config", async () => {
@@ -3432,6 +3463,43 @@ describe("runCli exit behavior", () => {
       exitSpy.mockRestore();
       processOnceSpy.mockRestore();
     }
+  });
+
+  it("keeps the original signal proxy stop pending through bounded command cleanup", async () => {
+    const handle = makeProxyHandle();
+    const route = createDeferredCore<boolean>();
+    const stopping = createDeferredCore();
+    const resume = createDeferredCore();
+    startProxyMock.mockResolvedValueOnce(handle);
+    tryRouteCliMock.mockReturnValueOnce(route.promise);
+    stopProxyMock.mockImplementationOnce(async () => {
+      stopping.resolve();
+      await resume.promise;
+    });
+    const running = runCli(["node", "openclaw", "plugins", "marketplace", "list"]);
+    let barrier: Promise<void> | undefined;
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await vi.waitFor(() => expect(tryRouteCliMock).toHaveBeenCalled());
+      barrier = waitForSignalExitBarriers();
+      await stopping.promise;
+      vi.useFakeTimers();
+      route.resolve(true);
+      await vi.waitFor(() => expect(getPendingCliDisposers()).toContain("managed-proxy"));
+      await vi.advanceTimersByTimeAsync(5_000);
+      await running;
+      expect(getPendingCliDisposers()).toContain("managed-proxy");
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("managed-proxy"));
+      expect(stopProxyMock).toHaveBeenCalledExactlyOnceWith(handle);
+    } finally {
+      route.resolve(true);
+      resume.resolve();
+      vi.useRealTimers();
+      await barrier;
+      await running;
+      stderr.mockRestore();
+    }
+    expect(getPendingCliDisposers()).not.toContain("managed-proxy");
   });
 
   it("synchronously kills the managed proxy during hard process exit", async () => {

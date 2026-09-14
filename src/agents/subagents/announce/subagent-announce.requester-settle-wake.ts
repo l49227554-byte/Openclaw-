@@ -22,6 +22,7 @@ import { buildAnnounceIdempotencyKey } from "../../announce-idempotency.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import {
   countActiveDescendantRuns,
+  getLatestLiveSubagentRunByChildSessionKey,
   getLatestSubagentRunByChildSessionKey,
   hasDescendantRunAwaitingSettle,
   listSubagentRunsForRequester,
@@ -31,6 +32,12 @@ import type {
   SubagentRunRecord,
 } from "../registry/subagent-registry.types.js";
 import { hasSubagentRunEnded } from "../registry/subagent-run-liveness.js";
+import { withRequesterCronAuthority } from "../requester-cron-authority.js";
+import {
+  consumeRequesterFinalAttachment,
+  revokeRequesterFinalAttachment,
+  transferRequesterFinalAttachment,
+} from "../requester-final-attachment.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import {
   deliverSubagentAnnouncement,
@@ -70,6 +77,7 @@ const activeRequesterSettleWakeBatches = new Map<string, () => boolean>();
 function buildRequesterSettleWakeMessage(params: {
   findings?: string;
   requireVisibleReply: boolean;
+  parentOnly?: boolean;
   modelRouteChange?: string;
   preserveModelRouteNotice: boolean;
 }): string {
@@ -77,9 +85,11 @@ function buildRequesterSettleWakeMessage(params: {
     "[Subagent Context] Every subagent spawned from this session has now settled — none are still running or awaiting completion delivery.",
     "[Subagent Context] Do not keep waiting or call sessions_yield again for this batch; no further completion events will arrive.",
     "[Subagent Context] Child settlement ends this batch, not necessarily the original user request. Review the results against the requested outcome and continue any remaining in-scope work before replying.",
-    params.requireVisibleReply
-      ? "[Subagent Context] Child completion delivery is internal; the original user request still requires your visible final answer only after the requested outcome is complete or genuinely blocked."
-      : `[Subagent Context] Reply ONLY: ${SILENT_REPLY_TOKEN} only if you already delivered the consolidated final answer for this batch.`,
+    params.parentOnly
+      ? `[Subagent Context] Process these results privately. Your final stays internal; no external response is required. Continue in-scope work or reply ONLY: ${SILENT_REPLY_TOKEN}.`
+      : params.requireVisibleReply
+        ? "[Subagent Context] Child completion delivery is internal; the original user request still requires your visible final answer only after the requested outcome is complete or genuinely blocked."
+        : `[Subagent Context] Reply ONLY: ${SILENT_REPLY_TOKEN} only if you already delivered the consolidated final answer for this batch.`,
     ...(params.modelRouteChange
       ? [
           params.modelRouteChange,
@@ -201,9 +211,42 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   if (!requesterSessionKey || !initialState) {
     return false;
   }
+  const finalizeRequesterAttachment = (
+    runIds: readonly string[],
+    state: RequesterSettleWakeBatchState,
+    delivery?: SubagentAnnounceDeliveryResult,
+    requesterSessionId?: string,
+  ): void => {
+    if (
+      !requesterAgentId ||
+      state.requesterYieldBatch !== true ||
+      state.rearmGeneration === undefined
+    ) {
+      return;
+    }
+    const finalText = delivery?.finalAssistantVisibleText?.trim();
+    if (delivery?.delivered && requesterSessionId && finalText) {
+      consumeRequesterFinalAttachment({
+        requesterAgentId,
+        requesterSessionKey,
+        requesterSessionId,
+        batchRunIds: runIds,
+        rearmGeneration: state.rearmGeneration,
+        text: finalText,
+      });
+      return;
+    }
+    revokeRequesterFinalAttachment({
+      requesterAgentId,
+      requesterSessionKey,
+      batchRunIds: runIds,
+      rearmGeneration: state.rearmGeneration,
+    });
+  };
   const admittedRearmGeneration = initialState.rearmGeneration;
   if (isCronSessionKey(requesterSessionKey)) {
     completeBatch([params.settledEntry], initialState.rearmGeneration);
+    finalizeRequesterAttachment([params.settledEntry.runId], initialState);
     return false;
   }
 
@@ -282,6 +325,34 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   }
   const batchRunIds = settledBatch.map((entry) => entry.runId).toSorted();
   const selectedState = readSharedBatchState(settledBatch);
+  const getRequesterRun = () =>
+    getLatestLiveSubagentRunByChildSessionKey(
+      requesterSessionKey,
+      (entry) => entry.pauseReason === "sessions_yield",
+    ) ?? getLatestLiveSubagentRunByChildSessionKey(requesterSessionKey);
+  const requesterRun = getRequesterRun();
+  const requesterGeneration = requesterRun?.generation;
+  const requesterCreatedAt = requesterRun?.createdAt;
+  const requesterTaskRunId = requesterRun?.taskRunId ?? requesterRun?.runId;
+  const isBatchDeliveryClosed = () => {
+    const currentRequester = getRequesterRun();
+    return (
+      requesterRun?.killReconciliation?.suppressTaskDelivery === true ||
+      requesterRun?.suppressCompletionDelivery === true ||
+      currentRequester?.killReconciliation?.suppressTaskDelivery === true ||
+      currentRequester?.suppressCompletionDelivery === true ||
+      // This marker is written by requester-wide abort/reset, so even a
+      // completed sibling cannot keep the old frozen obligation alive.
+      settledBatch.some((entry) => entry.killReconciliation?.suppressTaskDelivery === true) ||
+      settledBatch.every((entry) => entry.suppressCompletionDelivery === true)
+    );
+  };
+  if (isBatchDeliveryClosed()) {
+    // Cancellation already owns the task result; only consume its obsolete wake.
+    completeBatch(settledBatch, currentRearmGeneration);
+    finalizeRequesterAttachment(batchRunIds, selectedState);
+    return false;
+  }
   function deferBatch(state: RequesterSettleWakeBatchState): void {
     const countTowardsLimit =
       countActiveDescendantRuns(requesterSessionKey, requesterAgentId) === 0;
@@ -299,6 +370,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
         path: "none",
         error: "requester settle wake deferred too many times",
       });
+      finalizeRequesterAttachment(batchRunIds, state);
       return;
     }
     params.transitionBatch(settledBatch, {
@@ -346,6 +418,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     (!requesterYieldedAfterDelivery && requesterDepth >= 1)
   ) {
     completeBatch(settledBatch, selectedState.rearmGeneration);
+    finalizeRequesterAttachment(batchRunIds, selectedState);
     return false;
   }
 
@@ -359,6 +432,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       path: "none",
       error: "requester session unavailable",
     });
+    finalizeRequesterAttachment(batchRunIds, selectedState);
     return false;
   }
 
@@ -369,6 +443,24 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       getLatestSubagentRunByChildSessionKey,
     }),
   );
+  // Delivered children remain in yield cohorts. One private result makes the
+  // aggregate private; public siblings keep their individual completion route.
+  const privateRows = completionRows.filter((entry) => entry.completionTarget === "parent");
+  const parentOnly = privateRows.length > 0;
+  if (
+    privateRows.some((entry) => entry.completionRequesterSessionId !== requesterEntry.sessionId)
+  ) {
+    completeBatch(settledBatch, selectedState.rearmGeneration, {
+      delivered: false,
+      path: "none",
+      reason: "completion_handoff_unavailable",
+      error: "private completion requester session was replaced",
+      terminal: true,
+      disposition: "intentional_non_delivery",
+    });
+    finalizeRequesterAttachment(batchRunIds, selectedState);
+    return false;
+  }
   const findings = buildChildCompletionFindings(completionRows);
   const requesterSessionOrigin = normalizeDeliveryContext(params.requesterOrigin);
   const directOrigin = resolveAnnounceOrigin(requesterEntry, requesterSessionOrigin);
@@ -394,6 +486,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   const wakeMessage = buildRequesterSettleWakeMessage({
     findings,
     requireVisibleReply: requesterYieldedAfterDelivery,
+    parentOnly,
     modelRouteChange,
     preserveModelRouteNotice: !completionChannel || !isDeliverableMessageChannel(completionChannel),
   });
@@ -452,6 +545,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
           path: "none",
           error: state.lastError ?? "requester settle wake attempts exhausted",
         });
+        finalizeRequesterAttachment(batchRunIds, state);
         return false;
       }
       attemptIndex = state.attemptCount;
@@ -466,31 +560,116 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       params.transitionBatch(settledBatch, state);
     }
 
+    const directIdempotencyKey = buildAnnounceIdempotencyKey(
+      privateRows.length > 0 || attemptIndex === 0
+        ? wakeKeyBase
+        : `${wakeKeyBase}:retry-${attemptIndex}`,
+    );
+    const requesterSessionId = requesterEntry.sessionId;
+    const requesterLifecycleRevision = requesterEntry.lifecycleRevision;
+    const isRequesterCurrent = () => {
+      const currentRequester = getRequesterRun();
+      // Normal admission adopts a paused requester before execution starts.
+      // Only this admitted continuation may replace its captured task owner.
+      if (
+        (currentRequester !== requesterRun ||
+          currentRequester?.generation !== requesterGeneration ||
+          currentRequester?.createdAt !== requesterCreatedAt) &&
+        (!requesterRun ||
+          !currentRequester ||
+          currentRequester.runId !== directIdempotencyKey ||
+          currentRequester.taskRunId !== requesterTaskRunId ||
+          currentRequester.requesterSessionKey !== requesterRun.requesterSessionKey ||
+          currentRequester.requesterAgentId !== requesterRun.requesterAgentId)
+      ) {
+        return false;
+      }
+      const currentSession = loadRequesterSessionEntry(requesterSessionKey, requesterAgentId).entry;
+      return (
+        currentSession?.sessionId === requesterSessionId &&
+        currentSession?.lifecycleRevision === requesterLifecycleRevision
+      );
+    };
+    const isBatchCurrent = () => {
+      const currentRuns = listSubagentRunsForRequester(requesterSessionKey, { requesterAgentId });
+      return settledBatch.every(
+        (entry) =>
+          currentRuns.includes(entry) &&
+          entry.requesterSettleWake?.rearmGeneration === currentRearmGeneration,
+      );
+    };
+    const isSourceSessionEffectsAllowed = () =>
+      !params.signal?.aborted &&
+      !isGatewayClosed() &&
+      isBatchCurrent() &&
+      isRequesterCurrent() &&
+      !isBatchDeliveryClosed();
+    const settleRevokedBatch = (): boolean => {
+      if (isGatewayClosed() || !isBatchCurrent()) {
+        return true;
+      }
+      if (isBatchDeliveryClosed() || !isRequesterCurrent()) {
+        completeBatch(settledBatch, currentRearmGeneration);
+        finalizeRequesterAttachment(batchRunIds, state);
+        return true;
+      }
+      return false;
+    };
+    if (requesterAgentId && state.requesterYieldBatch && state.rearmGeneration !== undefined) {
+      transferRequesterFinalAttachment({
+        requesterAgentId,
+        requesterSessionKey,
+        requesterSessionId: requesterEntry.sessionId,
+        batchRunIds,
+        rearmGeneration: state.rearmGeneration,
+        requesterTurnRunId: directIdempotencyKey,
+      });
+    }
     let delivery: Awaited<ReturnType<typeof deliverSubagentAnnouncement>>;
     try {
-      delivery = await deliverSubagentAnnouncement({
-        requesterSessionKey,
-        requesterAgentId,
-        triggerMessage: wakeMessage,
-        steerMessage: wakeMessage,
-        summaryLine: "all spawned subagents settled",
-        requesterSessionOrigin,
-        requesterOrigin: requesterSessionOrigin,
-        directOrigin,
-        sourceSessionKey: currentSettledEntry.childSessionKey,
-        sourceTool: "subagent_settle",
-        targetRequesterSessionKey: requesterSessionKey,
-        requesterIsSubagent: requesterDepth >= 1,
-        expectsCompletionMessage: false,
-        requireDirectDelivery: true,
-        ...(requesterYieldedAfterDelivery ? { requireVisibleReply: true } : {}),
-        directIdempotencyKey: buildAnnounceIdempotencyKey(
-          attemptIndex === 0 ? wakeKeyBase : `${wakeKeyBase}:retry-${attemptIndex}`,
-        ),
-        signal: params.signal,
-        resolveGatewayContext,
-      });
+      delivery = await withRequesterCronAuthority(
+        {
+          requesterSessionKey,
+          requesterSessionId,
+          requesterAgentId,
+          batch: settledBatch,
+          rearmGeneration: state.requesterYieldBatch ? state.rearmGeneration : undefined,
+          runId: directIdempotencyKey,
+          isCurrent: isSourceSessionEffectsAllowed,
+        },
+        () =>
+          deliverSubagentAnnouncement({
+            requesterSessionKey,
+            requesterAgentId,
+            triggerMessage: wakeMessage,
+            steerMessage: wakeMessage,
+            summaryLine: "all spawned subagents settled",
+            requesterSessionOrigin,
+            requesterOrigin: requesterSessionOrigin,
+            directOrigin,
+            sourceSessionKey: currentSettledEntry.childSessionKey,
+            sourceTool: "subagent_settle",
+            targetRequesterSessionKey: requesterSessionKey,
+            requesterIsSubagent: requesterDepth >= 1,
+            expectsCompletionMessage: false,
+            requireDirectDelivery: true,
+            ...(parentOnly
+              ? {
+                  completionTarget: "parent",
+                  completionRequesterSessionId: requesterEntry.sessionId,
+                }
+              : {}),
+            ...(!parentOnly && requesterYieldedAfterDelivery ? { requireVisibleReply: true } : {}),
+            directIdempotencyKey,
+            signal: params.signal,
+            resolveGatewayContext,
+            isSourceSessionEffectsAllowed,
+          }),
+      );
     } catch (error) {
+      if (settleRevokedBatch()) {
+        return false;
+      }
       // A transport exception can arrive after gateway admission. Replay the
       // same persisted idempotency key; only a known no-turn result may rotate it.
       const lastError = error instanceof Error ? error.message : String(error);
@@ -505,6 +684,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
           path: "none",
           error: lastError,
         });
+        finalizeRequesterAttachment(batchRunIds, state);
         return false;
       }
       const nextAttemptAt = Date.now() + retryDelayMs;
@@ -527,7 +707,11 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     }
     if (delivery.delivered) {
       completeBatch(settledBatch, state.rearmGeneration, delivery);
+      finalizeRequesterAttachment(batchRunIds, state, delivery, requesterEntry.sessionId);
       return true;
+    }
+    if (settleRevokedBatch()) {
+      return false;
     }
     if (
       delivery.disposition === "ambiguous" ||
@@ -536,6 +720,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       delivery.reason === "requester_abandoned"
     ) {
       completeBatch(settledBatch, state.rearmGeneration, delivery);
+      finalizeRequesterAttachment(batchRunIds, state, delivery, requesterEntry.sessionId);
       return false;
     }
 
@@ -544,6 +729,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     const lastError = delivery.error ?? delivery.reason ?? "undelivered";
     if (attemptCount >= REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS || retryDelayMs === undefined) {
       completeBatch(settledBatch, state.rearmGeneration, { ...delivery, error: lastError });
+      finalizeRequesterAttachment(batchRunIds, state, delivery, requesterEntry.sessionId);
       return false;
     }
     const nextAttemptAt = Date.now() + retryDelayMs;

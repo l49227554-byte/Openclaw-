@@ -47,6 +47,10 @@ behaviors:
 | Admission      | Optional. Set `acceptUnknownModel: ({ id, record }) => boolean` when your request shaping is model-version specific, so discovery cannot publish a model you cannot yet build a valid request for. It is called only for IDs your static catalog does not already publish; known IDs bypass it and keep their published metadata. Return `false` to drop the row. Providers that omit it keep the previous behavior unchanged. Prefer comparing the vendor's advertised capabilities against your own contract checks over a hand-maintained model list, and fail closed when the row carries no capability data. |
 | Failure        | Live discovery is advisory. Auth, network, timeout, pagination, parsing, empty-catalog, and filtering failures return the provider-owned static seed instead of removing the provider.                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
+Relative catalog cache TTLs start when a successful load completes. Cache hits
+preserve that deadline, and explicit absolute provider deadlines remain unchanged.
+Pending loads retain their initial expiry so stalled work can be replaced.
+
 Bundled providers set `discoveryMode: "strict"` in their catalog options.
 This code option keeps successful empty results empty and reports failed
 acquisition through `ProviderCatalogResult.outcomes`, rather than returning
@@ -260,6 +264,27 @@ earlier matching entry. Cache rates absent from the base default to zero.
 Invalid effective token rates return `undefined`. Entries with time-based or
 unknown conditions are skipped; other known charge dimensions are ignored.
 
+## Selecting catalog augmentation hooks
+
+`augmentModelCatalogWithProviderPlugins` is exported from
+`openclaw/plugin-sdk/provider-catalog-runtime`. Its optional top-level
+`providerIds` selects which registered `augmentModelCatalog` hooks run:
+
+- Omit `providerIds` to keep the unscoped behavior.
+- Pass `[]` to run no augmentation hooks.
+- Pass provider IDs or registered aliases to select matching hooks. Matching
+  normalizes IDs and aliases, including hook aliases used by provider families.
+
+This selector does **not** filter the rows returned by a selected hook. A family
+hook may return rows for several providers; the caller owns any row filtering.
+The helper returns supplemental rows, not the input `context.entries`.
+
+The shipped v2026.9.4 export has no `providerIds` selector and may ignore that
+option at runtime. Plugins that depend on scoped hook selection must require a
+host release containing the selector in `openclaw.compat.pluginApi`. Omitting
+the option retains the existing behavior on both older and newer hosts.
+
+This top-level selector is separate from the `catalog.run` callback context.
 When `ctx.providerIds` is present, it contains the normalized provider
 identities selected for that catalog owner. Return `null` before resolving
 credentials or making network requests when the hook serves none of them;
@@ -340,10 +365,33 @@ agent/workspace paths.
 
 If your auth flow also needs to patch `models.providers.*`, aliases, and
 the agent default model during onboarding, use the preset helpers from
-`openclaw/plugin-sdk/provider-onboard`. The narrowest helpers are
-`createDefaultModelPresetAppliers(...)`,
+`openclaw/plugin-sdk/provider-onboard`. For registered connection-only setup,
+use `createProviderConnectionPresetAppliers(...)` with a lazy `catalogModels`
+supplier. Ordinary setup writes connection facts, aliases, and a missing
+primary without copying the built-in catalog into saved configuration.
+Explicit `models.mode: "replace"` evaluates the supplier and merges generated
+rows behind authored rows. Each setup result owns its generated model data.
+
+Use `createDefaultModelsConnectionPresetAppliers(...)` when replace mode must
+retain the existing required-default rule: add the supplied `defaultModels`
+only when the configured provider lacks the selected `defaultModelId`.
+`applyProviderConnectionConfig(...)` provides the catalog variant for auth
+flows that resolve their endpoint or primary per invocation. These helpers
+preserve authored rows, existing aliases and fallbacks. The auth flow still
+owns any explicit default selection.
+
+The existing public `createDefaultModelPresetAppliers(...)`,
 `createDefaultModelsPresetAppliers(...)`, and
-`createModelCatalogPresetAppliers(...)`.
+`createModelCatalogPresetAppliers(...)` retain their catalog-seeding behavior
+in ordinary mode. The latter two also accept lazy model suppliers. A provider
+with published config helpers can share one preset descriptor between its
+existing helper and its new registered setup helper; migrate the registration
+without silently changing the published helper's contract.
+
+Independently published plugins must require the host release containing these
+helpers in `openclaw.compat.pluginApi`. The core release version-sync tool
+updates that range with the paired release; these imports do not work on an
+older host that lacks the helpers.
 
 When a provider's native endpoint supports streamed usage blocks on the
 normal `openai-completions` transport, prefer the shared catalog helpers in

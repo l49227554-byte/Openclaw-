@@ -1,8 +1,10 @@
 // Applies resource policy for expensive local and CI check commands.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const GIB = 1024 ** 3;
 const DEFAULT_LOCAL_GO_GC = "30";
@@ -70,6 +72,26 @@ export function resolveRepoToolBinPath(
     resolveCommonDir = resolveGitCommonDir,
   }: RepoToolOptions = {},
 ) {
+  if (toolName === "tsgo") {
+    // TypeScript 6 owns the in-process compiler API; CLI checks use the stable
+    // native compiler explicitly, independent of either package's tsc bin link.
+    const require = createRequire(import.meta.url);
+    const {
+      createDeclarationInputBoundary,
+    }: typeof import("./tsdown-declaration-boundary.mts") = require("./tsdown-declaration-boundary.mts");
+    const inputs = createDeclarationInputBoundary(cwd);
+    const fromCheckout = createRequire(path.join(inputs.root, "package.json"));
+    const nativeRoot = path.dirname(
+      inputs.assert(fromCheckout.resolve("typescript-native/package.json")),
+    );
+    const getExePath: { default: () => string } = require(
+      inputs.assert(path.join(nativeRoot, "lib/getExePath.js")),
+    );
+    const executable = getExePath.default();
+    // Windows launches need the extended-length prefix; normalize only for admission.
+    inputs.assert(fileURLToPath(pathToFileURL(executable)));
+    return executable;
+  }
   const localPath = path.resolve(cwd, "node_modules", ".bin", toolName);
   if (fileExists(localPath)) {
     return localPath;
@@ -156,11 +178,8 @@ export function applyLocalTsgoPolicy(args: string[], env: Env, hostResources: Re
     insertBeforeSeparator(nextArgs, "--declaration", "false");
   }
 
-  if (!isLocalCheckEnabled(nextEnv)) {
-    return { env: nextEnv, args: nextArgs };
-  }
-
-  if (defaultProjectRun) {
+  const localCheckEnabled = isLocalCheckEnabled(nextEnv);
+  if (localCheckEnabled && defaultProjectRun) {
     insertBeforeSeparator(nextArgs, "--incremental");
     insertBeforeSeparator(
       nextArgs,
@@ -170,12 +189,15 @@ export function applyLocalTsgoPolicy(args: string[], env: Env, hostResources: Re
   }
 
   const resolvedHostResources = resolveHostResources(hostResources);
-  if (shouldThrottleLocalChecks(nextEnv, resolvedHostResources, "auto")) {
+  if (
+    shouldThrottleLocalChecks(nextEnv, resolvedHostResources, "auto") ||
+    (isCiLikeEnv(nextEnv) && isConstrainedCiCheckHost(resolvedHostResources))
+  ) {
     insertBeforeSeparator(nextArgs, "--singleThreaded");
     insertBeforeSeparator(nextArgs, "--checkers", "1");
     applyThrottledGoRuntimeEnv(nextEnv, resolvedHostResources);
   }
-  if (nextEnv.OPENCLAW_TSGO_PPROF_DIR && !hasFlag(nextArgs, "--pprofDir")) {
+  if (localCheckEnabled && nextEnv.OPENCLAW_TSGO_PPROF_DIR && !hasFlag(nextArgs, "--pprofDir")) {
     insertBeforeSeparator(nextArgs, "--pprofDir", nextEnv.OPENCLAW_TSGO_PPROF_DIR);
   }
 

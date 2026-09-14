@@ -33,7 +33,10 @@ import {
   wrapBrowserExternalJson,
   wrapBrowserExternalText,
 } from "./browser-tool.snapshot.js";
-import { resolveBrowserActRequestTimeoutMs } from "./browser/act-policy.js";
+import {
+  EXISTING_SESSION_TIMEOUT_OVERRIDE_KINDS,
+  resolveBrowserActRequestTimeoutMs,
+} from "./browser/act-policy.js";
 import type {
   BrowserBatchAbort,
   BrowserBatchActionResult,
@@ -73,14 +76,6 @@ const ACT_TIMEOUT_KINDS = new Set([
   "evaluate",
   "wait",
 ]);
-const EXISTING_SESSION_TIMEOUT_REJECTED_KINDS = new Set([
-  "type",
-  "hover",
-  "scrollIntoView",
-  "drag",
-  "select",
-  "fill",
-]);
 
 function normalizePositiveTimeoutMs(value: unknown): number | undefined {
   return readPositiveIntegerParam({ value }, "value", {
@@ -102,7 +97,7 @@ function withLocalActTimeout(
   if (
     normalizePositiveTimeoutMs(typedRequest.timeoutMs) !== undefined ||
     !ACT_TIMEOUT_KINDS.has(request.kind) ||
-    (usesChromeMcp && EXISTING_SESSION_TIMEOUT_REJECTED_KINDS.has(request.kind))
+    (usesChromeMcp && !EXISTING_SESSION_TIMEOUT_OVERRIDE_KINDS.has(request.kind))
   ) {
     return request;
   }
@@ -614,24 +609,27 @@ export async function executeActAction(params: {
       signal: params.signal,
     });
   };
-  try {
+  const dispatchAndFinishAct = async (actionRequest: BrowserActRequest) => {
     const result = proxyRequest
       ? await proxyRequest({
           method: "POST",
           path: "/act",
           profile,
-          body: request,
-          timeoutMs: resolveActProxyTimeoutMs(request),
+          body: actionRequest,
+          timeoutMs: resolveActProxyTimeoutMs(actionRequest),
         })
-      : await browserToolActionDeps.browserAct(baseUrl, effectiveRequest, {
+      : await browserToolActionDeps.browserAct(baseUrl, actionRequest, {
           profile,
           signal: params.signal,
         });
     return await finishActResult(
       result,
       readStringValue((result as { targetId?: unknown }).targetId) ??
-        readStringValue(effectiveRequest.targetId),
+        readStringValue(actionRequest.targetId),
     );
+  };
+  try {
+    return await dispatchAndFinishAct(effectiveRequest);
   } catch (err) {
     const proxyRoute = proxyRequest?.route();
     const usesChromeMcp = proxyRequest
@@ -672,23 +670,7 @@ export async function executeActAction(params: {
         canRetryChromeActAfterSoleTargetRefresh(effectiveRequest) &&
         tabs.length === 1
       ) {
-        const retryResult = proxyRequest
-          ? await proxyRequest({
-              method: "POST",
-              path: "/act",
-              profile,
-              body: retryRequest,
-              timeoutMs: resolveActProxyTimeoutMs(retryRequest),
-            })
-          : await browserToolActionDeps.browserAct(baseUrl, retryRequest, {
-              profile,
-              signal: params.signal,
-            });
-        return await finishActResult(
-          retryResult,
-          readStringValue((retryResult as { targetId?: unknown }).targetId) ??
-            readStringValue(retryRequest.targetId),
-        );
+        return await dispatchAndFinishAct(retryRequest);
       }
       if (tabRefreshError) {
         throw new Error(

@@ -41,6 +41,9 @@ const forceFreePortAndWait = vi.fn(async (_port: number, _opts: unknown) => ({
 const cleanStaleGatewayProcessesSync = vi.fn(
   (_port?: number, _options?: { protectedPid?: number }) => [],
 );
+const warnAboutGatewayRestartStorm = vi.fn(
+  async (_env: NodeJS.ProcessEnv, _warn: (message: string) => void) => {},
+);
 const waitForPortBindable = vi.fn(async (_port: number, _opts?: unknown) => 0);
 const findVerifiedGatewayListenerPidsOnPortSync = vi.fn((_port: number) => [] as number[]);
 const formatGatewayPidList = vi.fn((pids: number[]) => pids.join(", "));
@@ -277,6 +280,11 @@ vi.mock("../../infra/restart-stale-pids.js", () => ({
     cleanStaleGatewayProcessesSync(port, options),
 }));
 
+vi.mock("../../daemon/restart-storm.js", () => ({
+  warnAboutGatewayRestartStorm: (env: NodeJS.ProcessEnv, warn: (message: string) => void) =>
+    warnAboutGatewayRestartStorm(env, warn),
+}));
+
 vi.mock("../../infra/gateway-processes.js", () => ({
   findVerifiedGatewayListenerPidsOnPortSync: (port: number) =>
     findVerifiedGatewayListenerPidsOnPortSync(port),
@@ -298,10 +306,6 @@ vi.mock("../../gateway/ws-logging.js", () => ({
 
 vi.mock("../../globals.js", () => ({
   setVerbose: (enabled: boolean) => setVerbose(enabled),
-}));
-
-vi.mock("../../infra/gateway-lock.js", () => ({
-  GatewayLockError: class GatewayLockError extends Error {},
 }));
 
 vi.mock("../../infra/ports-inspect.js", () => ({
@@ -449,6 +453,7 @@ describe("gateway run option collisions", () => {
     parkCurrentLaunchAgentForMaintenance.mockReset();
     parkCurrentLaunchAgentForMaintenance.mockResolvedValue(false);
     cleanStaleGatewayProcessesSync.mockClear();
+    warnAboutGatewayRestartStorm.mockReset();
     waitForPortBindable.mockClear();
     ensureDevGatewayConfig.mockClear();
     runGatewayLoop.mockClear();
@@ -1180,6 +1185,28 @@ describe("gateway run option collisions", () => {
     );
     expect(normalizeStateDirEnv).toHaveBeenCalledWith(process.env);
   });
+
+  it.each([
+    { platform: "darwin", managed: true, warns: true },
+    { platform: "darwin", managed: false, warns: false },
+    { platform: "linux", managed: true, warns: false },
+  ] as const)(
+    "reports restart storms before server startup only for managed macOS Gateways ($platform, managed=$managed)",
+    async ({ platform, managed, warns }) => {
+      const warning = "Gateway restart storm: inspect launchd jobs with openclaw gateway status.";
+      warnAboutGatewayRestartStorm.mockImplementation(async (_env, warn) => warn(warning));
+      startGatewayServer.mockImplementationOnce(async () => {
+        expect(gatewayLogMessages.includes(warning)).toBe(warns);
+        return { close: vi.fn(async () => {}) };
+      });
+      await withMockedPlatform(platform, () =>
+        withEnvAsync({ OPENCLAW_SERVICE_MARKER: managed ? "openclaw" : undefined }, async () => {
+          await runGatewayCli(["gateway", "run", "--allow-unconfigured"]);
+        }),
+      );
+      expect(startGatewayServer).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("protects the inherited service pid before replacing it", async () => {
     await withEnvAsync(
@@ -2102,7 +2129,7 @@ describe("gateway run option collisions", () => {
     expect(runtimeErrors.join("\n")).toContain("newer");
     expect(runtimeErrors.join("\n")).toContain("restore your pre-update backup");
     expect(runtimeErrors.join("\n")).toMatch(
-      /Stop the service.*then restore your pre-update backup.*then start it again/s,
+      /Stop the service.*then restore your pre-update backup created with openclaw backup create, then start it again/s,
     );
     expect(triageAfterFailure).not.toHaveBeenCalled();
     expect(startGatewayServer).toHaveBeenCalledTimes(phase === "server" ? 1 : 0);

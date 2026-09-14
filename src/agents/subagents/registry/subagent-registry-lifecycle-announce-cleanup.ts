@@ -1,6 +1,7 @@
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
+import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import {
   ensureCompletionState,
   ensureDeliveryState,
@@ -130,20 +131,31 @@ export const finalizeResumedAnnounceGiveUp = async (
   }
 };
 
-export const retryDeferredCompletedAnnounces = (
+export const resumeAncestorCleanup = (
   context: SubagentLifecycleAnnounceCleanupContext,
-  excludeRunId?: string,
+  settledEntry: SubagentRunRecord,
 ) => {
   const params = context.options;
   const now = Date.now();
-  for (const [runId, entry] of params.runs.entries()) {
-    if (excludeRunId && runId === excludeRunId) {
-      continue;
+  const visited = new Set([settledEntry.childSessionKey]);
+  let requesterSessionKey = settledEntry.requesterSessionKey;
+  while (requesterSessionKey && !visited.has(requesterSessionKey)) {
+    visited.add(requesterSessionKey);
+    const entry = params.getLatestRunForChildSession(requesterSessionKey);
+    if (!entry || params.runs.get(entry.runId) !== entry) {
+      break;
     }
+    requesterSessionKey = entry.requesterSessionKey;
+    const { runId } = entry;
     if (typeof entry.execution.endedAt !== "number") {
       continue;
     }
     if (entry.cleanupCompletedAt || entry.cleanupHandled) {
+      continue;
+    }
+    // A failed cleanup belongs to its retry timer or exhausted process-local
+    // budget; even descendant settlement must not reopen that attempt early.
+    if (context.hasCleanupFailure(entry)) {
       continue;
     }
     if (isDeliverySuspended(entry)) {
@@ -394,6 +406,7 @@ export const startSubagentAnnounceCleanupFlow = (
     entry.cleanupHandled = false;
     params.resumedRuns.delete(runId);
     params.persist(runId);
+    context.clearCleanupFailureCount(entry);
     return true;
   }
   let suppressSessionEffects = shouldSuppressSubagentRecoverySessionEffects(entry);
@@ -474,6 +487,8 @@ export const startSubagentAnnounceCleanupFlow = (
             params.persist(runId);
             const sessionCleanup = await deleteSubagentSessionForCleanup({
               callGateway: params.callGateway,
+              gatewayBinding: { resolveGatewayContext: getGatewayContextResolver(entry) },
+              isCurrent: childSessionEffectsAllowed,
               childSessionKey: entry.childSessionKey,
               spawnMode: entry.spawnMode,
               expectedSessionId: cleanupSessionIdentity.sessionId,
@@ -544,6 +559,7 @@ export const startSubagentAnnounceCleanupFlow = (
     childSessionKey: pendingPayload.childSessionKey,
     childRunId: pendingPayload.childRunId,
     requesterSessionKey: pendingPayload.requesterSessionKey,
+    requesterAgentId: resolveSubagentRequesterAgentId(params.getRuntimeConfig(), entry),
     requesterOrigin,
     requesterDisplayKey: pendingPayload.requesterDisplayKey,
     task: pendingPayload.task,
@@ -559,6 +575,8 @@ export const startSubagentAnnounceCleanupFlow = (
     outcome: pendingPayload.outcome,
     spawnMode: pendingPayload.spawnMode,
     expectsCompletionMessage: pendingPayload.expectsCompletionMessage,
+    completionTarget: pendingPayload.completionTarget,
+    completionRequesterSessionId: pendingPayload.completionRequesterSessionId,
     wakeOnDescendantSettle: pendingPayload.wakeOnDescendantSettle === true,
     suppressChildSessionEffects: suppressSessionEffects,
     isChildSessionEffectsAllowed: childSessionEffectsAllowed,

@@ -12,7 +12,6 @@ import {
   scheduleCommittedChatScroll,
 } from "../scroll.ts";
 import { SIDEBAR_GEOMETRY_COMMIT_EVENT } from "../sidebar-layout.ts";
-import { renderReadOnlyTranscript } from "./chat-read-only-transcript.ts";
 import { renderChatThread } from "./chat-thread.ts";
 import { ChatTranscriptController } from "./chat-transcript-controller.ts";
 import {
@@ -49,6 +48,14 @@ function stubMcpAppLifecycle(
     teardown: vi.fn(teardown),
   };
   return { app: Object.assign(app, lifecycle), ...lifecycle };
+}
+
+function numberedContentRows(length: number): TestContentRow[] {
+  return Array.from({ length }, (_, index) => ({
+    kind: "content",
+    key: `row:${index}`,
+    content: html`<div>row ${index}</div>`,
+  }));
 }
 
 function mcpRangeRows(appContent: unknown): TestContentRow[] {
@@ -167,6 +174,76 @@ describe("chat transcript controller", () => {
     expect(transcriptSize(container)).toBe(540);
   });
 
+  it.each([false, true])(
+    "keeps the committed rows and message lookup together while a touch holds a prepend, idle=%s",
+    async (idleBeforeRelease) => {
+      const initial: TestContentRow[] = [
+        {
+          kind: "content",
+          key: "retained-row",
+          content: html`<div class="chat-bubble" data-message-id="retained">retained</div>`,
+        },
+      ];
+      const next: TestContentRow[] = [
+        {
+          kind: "content",
+          key: "expanded-row",
+          content: html`<div class="chat-bubble" data-message-id="older">older</div>
+            <div class="chat-bubble" data-message-id="retained">retained</div>`,
+        },
+      ];
+      const { container, session, transcript, renderRows } = await mountTestTranscript(
+        "touch-map",
+        initial,
+      );
+      try {
+        session.syncMessageRows(
+          new Map([["retained", "retained-row"]]),
+          new Map([["retained", "retained-row"]]),
+        );
+        renderRows(initial);
+        container.dispatchEvent(new Event("touchstart"));
+        if (idleBeforeRelease) {
+          // The finger can remain down after native offset notifications settle.
+          vi.useFakeTimers();
+          container.scrollTop = 10;
+          container.dispatchEvent(new Event("scroll"));
+          await vi.advanceTimersByTimeAsync(200);
+        }
+        session.syncMessageRows(
+          new Map([
+            ["older", "expanded-row"],
+            ["retained", "expanded-row"],
+          ]),
+          new Map([
+            ["older", "expanded-row"],
+            ["retained", "expanded-row"],
+          ]),
+        );
+        renderRows(next);
+        expect(transcriptRows(container).map((row) => row.dataset.virtualRowKey)).toEqual([
+          "retained-row",
+        ]);
+        expect(container.textContent).not.toContain("older");
+        expect(session.activeMessageId(["retained"])).toBe("retained");
+        expect(session.activeMessageId(["older"])).toBeNull();
+        container.dispatchEvent(new Event("touchend"));
+        renderRows(next);
+        expect(transcriptRows(container).map((row) => row.dataset.virtualRowKey)).toEqual([
+          "expanded-row",
+        ]);
+        expect(container.textContent).toContain("older");
+        expect(session.activeMessageId(["retained"])).toBe("retained");
+        expect(session.activeMessageId(["older"])).toBe("older");
+      } finally {
+        transcript.hostDisconnected();
+        if (idleBeforeRelease) {
+          vi.useRealTimers();
+        }
+      }
+    },
+  );
+
   it("does not teardown an MCP row retained by an append", async () => {
     const initialRows = [
       { kind: "content" as const, key: "app", content: html`<mcp-app-view></mcp-app-view>` },
@@ -217,7 +294,44 @@ describe("chat transcript controller", () => {
     expect(app.parentElement?.parentElement).toBe(rowParent);
   });
 
+  it.each([false, true])(
+    "coalesces end geometry across commits and retires disconnected work=%s",
+    async (disconnect) => {
+      const flushFrames = stubAnimationFrames();
+      const { container, transcript } = await mountTestTranscript("coalesced-end", [
+        { kind: "content", key: "reply", content: html`<div>Reply</div>` },
+      ]);
+      try {
+        Object.defineProperties(container, {
+          clientHeight: { configurable: true, value: 600 },
+          scrollHeight: { configurable: true, value: 1200 },
+        });
+        container.scrollTop = 600;
+        flushFrames();
+        transcript.hostUpdated();
+        flushFrames();
+        const readHeight = vi.fn(() => 1200);
+        Object.defineProperty(container, "scrollHeight", {
+          configurable: true,
+          get: readHeight,
+        });
+        for (let index = 0; index < 4; index++) {
+          transcript.hostUpdated();
+        }
+        expect(readHeight).not.toHaveBeenCalled();
+        if (disconnect) {
+          transcript.hostDisconnected();
+        }
+        flushFrames();
+        expect(readHeight).toHaveBeenCalledTimes(disconnect ? 0 : 1);
+      } finally {
+        transcript.hostDisconnected();
+      }
+    },
+  );
+
   it("reconciles an implicit end anchor when committed content has no scroll range", () => {
+    const flushFrames = stubAnimationFrames();
     const transcript = createTestTranscript();
     const container = document.body.appendChild(document.createElement("div"));
     const messages = Array.from({ length: 18 }, (_, index) => ({
@@ -237,6 +351,7 @@ describe("chat transcript controller", () => {
     transcript.hostConnected();
     transcript.scrollToEnd({ source: "auto" });
     transcript.hostUpdated();
+    flushFrames();
     render(renderChatThread(props, transcript), container);
     expect(transcriptRows(container)[0]?.dataset.index).toBe("0");
     expect(container.textContent).toContain("message 0");
@@ -267,6 +382,10 @@ describe("chat transcript controller", () => {
     const container = document.body.appendChild(document.createElement("div"));
     const props = threadProps("pane-short-scroll", "agent:main:session-a");
     render(renderChatThread(props, transcript), container);
+    Object.defineProperty(container.querySelector(".chat-thread")!, "clientHeight", {
+      configurable: true,
+      value: 600,
+    });
     transcript.hostConnected();
     transcript.hostUpdated();
     const onSettled = vi.fn();
@@ -338,11 +457,7 @@ describe("chat transcript controller", () => {
     async ({ behavior, resizeBefore, deltaY, observerLate }) => {
       const flushFrames = stubAnimationFrames();
       transcriptDomState.measuredRowHeight = 120;
-      const rows: TestContentRow[] = Array.from({ length: 40 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: html`<div>row ${index}</div>`,
-      }));
+      const rows = numberedContentRows(40);
       const { container, renderRows, transcript } = await mountTestTranscript(
         `pane-${behavior}-${resizeBefore}-${deltaY}-${observerLate}-resize`,
         rows,
@@ -421,11 +536,7 @@ describe("chat transcript controller", () => {
   );
 
   it("keeps a smooth latest command through an idle observer delivery before reaching its target", async () => {
-    const rows: TestContentRow[] = Array.from({ length: 40 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: html`<div>row ${index}</div>`,
-    }));
+    const rows = numberedContentRows(40);
     const { container, transcript } = await mountTestTranscript("idle-latest", rows);
     Object.defineProperties(container, {
       clientHeight: { configurable: true, value: 600 },
@@ -480,7 +591,7 @@ describe("chat transcript controller", () => {
     const viewportChanged = vi.fn();
     const main = new ChatTranscriptController(host, { onViewportResize: viewportChanged });
     const detail = new ChatTranscriptController(host);
-    // Task tabs may precede main chat in DOM order; neither observer nor
+    // Another pane may precede main chat in DOM order; neither observer nor
     // scroll commands may rediscover the first thread under the shared host.
     const detailPanel = host.appendChild(document.createElement("div"));
     const mainPanel = host.appendChild(document.createElement("div"));
@@ -488,16 +599,7 @@ describe("chat transcript controller", () => {
     const detailProps = threadProps("pane-geometry-detail", "agent:main:geometry-detail");
     const renderTranscripts = () => {
       render(renderChatThread(mainProps, main), mainPanel);
-      render(
-        renderReadOnlyTranscript({
-          chat: detailProps,
-          messages: detailProps.messages,
-          paneId: detailProps.paneId,
-          sessionKey: detailProps.sessionKey,
-          transcript: detail,
-        }),
-        detailPanel,
-      );
+      render(renderChatThread(detailProps, detail), detailPanel);
       main.hostUpdated();
       detail.hostUpdated();
     };
@@ -571,13 +673,13 @@ describe("chat transcript controller", () => {
           requestUpdate: vi.fn(),
           updateComplete: Promise.resolve(true),
         },
-        { onViewportResize, onReaderScroll: () => handleChatScrollTakeover(policy) },
+        {
+          onViewportResize,
+          canFollowEnd: () => !policy.chatFollowLocked,
+          onReaderScroll: (towardEnd) => handleChatScrollTakeover(policy, towardEnd),
+        },
       );
-      const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: html`<div>row ${index}</div>`,
-      }));
+      const rows = numberedContentRows(12);
       const { container } = await mountTestTranscript(`height-resize-${locked}`, rows, transcript);
       try {
         const total = transcriptSize(container);
@@ -631,11 +733,7 @@ describe("chat transcript controller", () => {
 
   it("keeps a reader above the padded real end stationary when a rendered row grows", async () => {
     transcriptDomState.measuredRowHeight = 120;
-    const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: html`<div>row ${index}</div>`,
-    }));
+    const rows = numberedContentRows(12);
     const { container, renderRows, transcript } = await mountTestTranscript(
       "padded-row-resize",
       rows,
@@ -754,17 +852,28 @@ describe("chat transcript controller", () => {
     }
   });
 
-  it.each([0, 8, 50])(
-    "follows appended typing only within 8px of the real end (distance=%s)",
-    async (distance) => {
-      const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-        kind: "content",
-        key: `row:${index}`,
-        content: html`<div>row ${index}</div>`,
-      }));
+  it.each([
+    { distance: 0, followEnabled: true },
+    { distance: 8, followEnabled: true },
+    { distance: 50, followEnabled: true },
+    { distance: 0, followEnabled: false },
+    { distance: 8, followEnabled: false },
+  ])(
+    "follows appended typing only when permitted near the real end ($distance, $followEnabled)",
+    async ({ distance, followEnabled }) => {
+      const rows = numberedContentRows(12);
       const { container, renderRows, transcript } = await mountTestTranscript(
         `typing-distance-${distance}`,
         rows,
+        new ChatTranscriptController(
+          {
+            addController: () => undefined,
+            removeController: () => undefined,
+            requestUpdate: () => undefined,
+            updateComplete: Promise.resolve(true),
+          },
+          { canFollowEnd: () => followEnabled },
+        ),
       );
       try {
         const total = transcriptSize(container);
@@ -784,7 +893,7 @@ describe("chat transcript controller", () => {
           ...rows,
           { kind: "content", key: "presence:typing", content: html`<div>Typing</div>` },
         ]);
-        if (distance <= 8) {
+        if (followEnabled && distance <= 8) {
           expect(scrollTo).toHaveBeenCalledWith({ top: total + 84 - 600, behavior: "auto" });
         } else {
           expect(scrollTo).not.toHaveBeenCalled();
@@ -798,11 +907,7 @@ describe("chat transcript controller", () => {
 
   it("cancels typing follow before later geometry can retarget the reader", async () => {
     const flushFrames = stubAnimationFrames();
-    const rows: TestContentRow[] = Array.from({ length: 12 }, (_, index) => ({
-      kind: "content",
-      key: `row:${index}`,
-      content: html`<div>row ${index}</div>`,
-    }));
+    const rows = numberedContentRows(12);
     const { container, renderRows, transcript } = await mountTestTranscript(
       "typing-interrupt",
       rows,
@@ -844,71 +949,6 @@ describe("chat transcript controller", () => {
       transcript.hostDisconnected();
     }
   });
-
-  it.each(["none", "idle at end", "wheel", "new reveal"] as const)(
-    "keeps only the current deferred message reveal after %s",
-    async (interruption) => {
-      const update = createDeferred<boolean>();
-      const transcript = new ChatTranscriptController({
-        addController: vi.fn(),
-        removeController: vi.fn(),
-        requestUpdate: vi.fn(),
-        updateComplete: update.promise,
-      });
-      const rows: TestContentRow[] = ["first", "second"].map((id) => ({
-        kind: "content",
-        key: id,
-        content: html`<div class="chat-bubble" data-entry-id=${id}>${id}</div>`,
-      }));
-      const { container, session } = await mountTestTranscript(
-        `reveal-${interruption}`,
-        rows,
-        transcript,
-      );
-      try {
-        Object.defineProperties(container, {
-          clientHeight: { configurable: true, value: 600 },
-          scrollHeight: { configurable: true, value: interruption === "idle at end" ? 600 : 2000 },
-        });
-        const scrollTo = vi.fn();
-        container.scrollTo = scrollTo;
-        const bubbles = [...container.querySelectorAll<HTMLElement>(".chat-bubble")];
-        const reveals = bubbles.map((bubble) => (bubble.scrollIntoView = vi.fn()));
-        session.syncMessageRows(
-          new Map([
-            ["first", "first"],
-            ["second", "second"],
-          ]),
-        );
-        if (interruption === "idle at end") {
-          vi.useFakeTimers();
-        }
-        expect(transcript.revealMessage("first")).toBe(true);
-        scrollTo.mockClear();
-        if (interruption === "wheel") {
-          container.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
-          expect.soft(scrollTo).toHaveBeenCalledExactlyOnceWith({
-            top: container.scrollTop,
-            behavior: "instant",
-          });
-        } else if (interruption === "idle at end") {
-          container.dispatchEvent(new Event("scroll"));
-          vi.advanceTimersByTime(150);
-        } else if (interruption === "new reveal") {
-          expect(transcript.revealMessage("second")).toBe(true);
-        }
-        update.resolve(true);
-        await update.promise;
-        expect(reveals[0]).toHaveBeenCalledTimes(
-          ["none", "idle at end"].includes(interruption) ? 1 : 0,
-        );
-        expect(reveals[1]).toHaveBeenCalledTimes(interruption === "new reveal" ? 1 : 0);
-      } finally {
-        transcript.hostDisconnected();
-        vi.useRealTimers();
-      }
-    },
-  );
 
   it("re-attaches the virtualizer when a foreign host re-stamps the transcript", async () => {
     const transcript = createTestTranscript();
@@ -955,22 +995,32 @@ describe("chat transcript controller", () => {
     transcript.hostConnected();
     transcript.hostUpdated();
     await flushDeferredRowPrune();
+    // Commit initial row measurements before recording the visible extent.
+    render(renderChatThread(props, transcript), container);
+    transcript.hostUpdated();
     const scrollElement = container.querySelector<HTMLElement>(".chat-thread");
     expect(scrollElement).not.toBeNull();
     expect(transcriptRows(container).length).toBeGreaterThan(0);
 
-    // A pane cache or face switch hiding the transcript reports a 0x0 rect.
-    // It must not become the virtualizer's viewport (an empty range renders a
-    // blank transcript) nor count as a width change that wipes measurements.
+    // Hiding reports zero sizes for both the viewport and its connected rows.
+    // Neither observation may replace the last measurable transcript geometry.
+    const visibleSize = transcriptSize(container);
+    Object.defineProperty(scrollElement!, "clientHeight", { configurable: true, value: 0 });
     for (const observer of resizeObservers) {
       if (observer.observes(scrollElement!)) {
         observer.emit(0, 0);
+      }
+      for (const row of transcriptRows(container)) {
+        if (observer.observes(row)) {
+          observer.emitTarget(row, 0, 0);
+        }
       }
     }
     render(renderChatThread(props, transcript), container);
     transcript.hostUpdated();
 
     expect(transcriptRows(container).length).toBeGreaterThan(0);
+    expect(transcriptSize(container)).toBe(visibleSize);
     transcript.hostDisconnected();
   });
 });

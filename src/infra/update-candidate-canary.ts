@@ -586,6 +586,7 @@ export async function validateUpdateCandidateCanary(params: {
         signal: params.signal,
         assertCurrent: params.assertCurrent,
         hasExited: running.hasExited,
+        getExitReason: running.firstStderrLine,
         env,
         stateDir: params.stateDir,
         onEndpoint: (endpoint) => {

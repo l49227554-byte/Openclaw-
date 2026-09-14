@@ -397,6 +397,17 @@ describe("chutes plugin OAuth", () => {
     expect(timeoutSpy).toHaveBeenCalledWith(30_000);
   });
 
+  it("refuses a guarded refresh before credential HTTP on the legacy transport", async () => {
+    const fetchFn = vi.fn();
+    await expect(
+      refreshChutesOAuthCredential(createStoredCredential(), {
+        fetchFn,
+        assertCurrent: () => undefined,
+      }),
+    ).rejects.toThrow("does not support guarded token requests");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("times out token refresh requests", async () => {
     const timeoutSpy = useImmediateOAuthDeadline();
     const fetchFn = vi.fn(

@@ -233,8 +233,13 @@ async function exchangeChutesCodeForTokens(params: {
 /** Refreshes a stored Chutes OAuth credential through the provider token endpoint. */
 export async function refreshChutesOAuthCredential(
   credential: OAuthCredential,
-  options: { fetchFn?: typeof fetch; now?: number } = {},
+  options: { fetchFn?: typeof fetch; now?: number; assertCurrent?: () => void } = {},
 ): Promise<OAuthCredential> {
+  // The legacy fetch transport cannot revalidate authority after DNS preparation.
+  // Ordinary refresh remains supported; never silently discard a host constraint.
+  if (options.assertCurrent) {
+    throw new Error("Chutes OAuth refresh does not support guarded token requests.");
+  }
   const refreshToken = normalizeOptionalString(credential.refresh);
   if (!refreshToken) {
     throw new Error("Chutes OAuth credential is missing refresh token");

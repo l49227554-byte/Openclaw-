@@ -131,7 +131,13 @@ describe("Codex command RPC helpers", () => {
         agentDir,
         config,
         preparedAuth,
-        startOptions: { transport: "stdio", homeScope: "agent" },
+        startOptions: {
+          transport: "stdio",
+          homeScope: "agent",
+          command: "codex",
+          args: ["app-server"],
+          headers: {},
+        },
       },
     );
     expect(requestCodexAppServerJsonMock).toHaveBeenCalledWith(

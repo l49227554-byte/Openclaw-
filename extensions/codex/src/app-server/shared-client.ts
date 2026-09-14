@@ -138,6 +138,7 @@ async function prepareCodexAppServerClient(options?: CodexAppServerClientOptions
     ? AbortSignal.any([lifetime.controller.signal, options.abandonSignal])
     : lifetime.controller.signal;
   const assertCurrent = () => {
+    options?.assertCurrent?.();
     if (abandonSignal.aborted) {
       throw new CodexAppServerStartupError("aborted", "codex app-server initialize aborted");
     }
@@ -745,6 +746,7 @@ async function acquireSharedCodexAppServerClient(
         ? { expectedRuntimeArtifact: options.expectedRuntimeArtifact }
         : {}),
       abandonSignal: entry.startupAbort.signal,
+      assertCurrent: options?.assertCurrent,
       config: options?.config,
     }));
   try {
@@ -761,6 +763,7 @@ async function acquireSharedCodexAppServerClient(
       abandonSignal,
       "codex app-server authentication timed out",
     );
+    assertCurrent();
     if (entry.closeError) {
       throw entry.closeError;
     }

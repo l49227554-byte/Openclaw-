@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { findNormalizedProviderValue } from "openclaw/plugin-sdk/provider-auth";
+import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
 import { resolveCodexAppServerPreparedAuthProfileSnapshot } from "./app-server/auth-bridge.js";
 import {
   resolveCodexAppServerAuthProfileId,
@@ -67,6 +69,21 @@ export async function prepareCodexCatalogClientOptions(params: {
     }
   };
   if (!profileId) {
+    const isOpenAi = (provider: string) =>
+      resolveProviderIdForAuth(provider, { config: options.config, storedCredential: true }) ===
+      "openai";
+    const explicitOrder =
+      findNormalizedProviderValue(store.order, "openai") ??
+      findNormalizedProviderValue(options.config?.auth?.order, "openai");
+    if (
+      explicitOrder !== undefined ||
+      Object.values(options.config?.auth?.profiles ?? {}).some((profile) =>
+        isOpenAi(profile.provider),
+      ) ||
+      Object.values(store.profiles).some((profile) => isOpenAi(profile.provider))
+    ) {
+      throw new Error("Codex catalog source has no usable managed OpenAI authentication.");
+    }
     // Discovery does not opt a native-only store into managed authentication.
     return { ...options, authProfileId: null, assertCurrent };
   }

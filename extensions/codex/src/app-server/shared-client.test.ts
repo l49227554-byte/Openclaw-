@@ -474,6 +474,35 @@ describe("shared Codex app-server client", () => {
     expect(JSON.stringify(identity)).not.toContain("super-secret-value");
   });
 
+  it("rejects revoked source authority during initialize before managed login", async () => {
+    const harness = createClientHarness();
+    vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
+    let current = true;
+    const acquire = getLeasedSharedCodexAppServerClient({
+      agentDir: "/tmp/catalog-source",
+      preparedAuth: { kind: "api-key", apiKey: "synthetic-source" },
+      startOptions: {
+        transport: "stdio",
+        command: "codex",
+        args: ["app-server"],
+        headers: {},
+        homeScope: "agent",
+      },
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("source revoked");
+        }
+      },
+      timeoutMs: 1000,
+    });
+    const rejected = expect(acquire).rejects.toThrow("source revoked");
+    await harness.waitForWrite(0);
+    current = false;
+    await sendInitializeResult(harness, `codex-cli/${CODEX_APP_SERVER_VERSION}`);
+    await rejected;
+    expect(mocks.applyCodexAppServerAuthProfile).not.toHaveBeenCalled();
+  });
+
   it("does not resolve startup context for a pre-aborted acquire", async () => {
     const abortController = new AbortController();
     abortController.abort();

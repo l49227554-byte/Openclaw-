@@ -101,6 +101,36 @@ async function fixture() {
 }
 
 describe("managed catalog source authentication", () => {
+  it.each(["direct", "pinned"] as const)(
+    "rejects an expired configured managed profile through %s",
+    async (mode) => {
+      const f = await fixture();
+      const source = f.factory
+        .homesForAgent("beta")
+        .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+      auth.stores.set(f.dirs.alpha!, {
+        version: 1,
+        order: { openai: ["openai:expired"] },
+        profiles: {
+          "openai:expired": {
+            type: "token",
+            provider: "openai",
+            token: "synthetic-expired",
+            expires: Date.now() - 1000,
+          },
+        },
+      });
+      const control = f.factory.forRequest("beta", source);
+      await expect(
+        mode === "pinned"
+          ? control.withPinnedConnection((pinned) => pinned.readThread("source-thread"))
+          : control.readThread("source-thread"),
+      ).rejects.toThrow("no usable managed OpenAI authentication");
+      expect(commandRpcMocks.codexControlRequest).not.toHaveBeenCalled();
+      expect(pinnedConnectionMocks.getClient).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])("uses real source policy with inherited auth=%s", async (inherited) => {
     const f = await fixture();
     auth.useRealStore = true;

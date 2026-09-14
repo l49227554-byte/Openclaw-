@@ -9,7 +9,6 @@ import type {
   UsersListModelAccountsResult,
   UsersSelfResult,
 } from "../../../packages/gateway-protocol/src/schema/users.js";
-import { stripAnsi } from "../../../packages/terminal-core/src/ansi.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   buildMinimalGatewayHelloOkPayload,
@@ -533,14 +532,13 @@ describe("personal model account CLI over an identified Gateway connection", () 
     },
   );
 
-  it("renders a real device-code note before exact ACK, polls progress, and keeps the protected answer on one socket", async () => {
+  it("renders device progress and opens each destination once without acknowledging the code", async () => {
     const redirectInput =
       "http://localhost:1455/auth/callback?code=synthetic-private-code&state=synthetic-state";
     mocks.password.mockResolvedValue(redirectInput);
     const output = runtime();
     const verificationUrl = "https://auth.example/device";
     const code = "ABCD-1234";
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const session = new WizardSession(async (prompter) => {
       await prompter.openUrl?.(verificationUrl);
       await prompter.deviceCode?.({
@@ -550,37 +548,27 @@ describe("personal model account CLI over an identified Gateway connection", () 
         message: "Enter this one-time code on the provider's sign-in page.",
       });
     });
-    let noteAcknowledged = false;
-    let renderedAtAck = "";
+    let polls = 0;
+    let renderedProgress = "";
     try {
       const deviceStep = (await session.next()).step;
       if (!deviceStep) {
         throw new Error("Expected the WizardSession device-code step.");
       }
       await withGateway(
-        async ({ method, params }) => {
+        async ({ method }) => {
           if (method === "users.authConnect.start") {
             return startResult();
           }
           if (method === "users.authConnect.status") {
-            return {
-              status: "pending",
-              step: noteAcknowledged ? inputStep : deviceStep,
-            };
+            polls += 1;
+            if (polls <= 2) {
+              return { status: "pending", step: deviceStep };
+            }
+            renderedProgress = output.error.mock.calls.map((args) => args.join(" ")).join("\n");
+            return { status: "pending", step: inputStep };
           }
           if (method === "users.authConnect.answer") {
-            if (params.stepId === deviceStep.id) {
-              renderedAtAck = stripAnsi(
-                stderr.mock.calls.map(([chunk]) => String(chunk)).join(""),
-              ).replace(/[│\s]+/gu, " ");
-              await session.answer(deviceStep.id, undefined);
-              await session.whenSettled();
-              noteAcknowledged = true;
-              return {
-                status: "pending",
-                step: { id: "preparing", type: "progress", message: "Preparing browser sign-in" },
-              };
-            }
             return connected;
           }
           return undefined;
@@ -594,7 +582,6 @@ describe("personal model account CLI over an identified Gateway connection", () 
               .filter(({ method }) => method === "users.authConnect.answer")
               .map(({ params }) => params),
           ).toEqual([
-            { profileId: PROFILE_ID, connectId: "operation-one", stepId: deviceStep.id },
             {
               profileId: PROFILE_ID,
               connectId: "operation-one",
@@ -605,12 +592,13 @@ describe("personal model account CLI over an identified Gateway connection", () 
           expect(mocks.openUrl).toHaveBeenCalledTimes(2);
           expect(mocks.openUrl).toHaveBeenNthCalledWith(1, verificationUrl);
           expect(mocks.openUrl).toHaveBeenNthCalledWith(2, inputStep.externalUrl);
-          expect(renderedAtAck).toContain(`Code: ${code}`);
-          expect(renderedAtAck).toContain("Code expires in 15 minutes.");
-          expect(renderedAtAck).toContain(
+          expect(renderedProgress).toContain(verificationUrl);
+          expect(renderedProgress).toContain(`Code: ${code}`);
+          expect(renderedProgress).toContain("Code expires in 15 minutes.");
+          expect(renderedProgress).toContain(
             "Enter this one-time code on the provider's sign-in page.",
           );
-          expect(renderedAtAck).toContain(DEVICE_CODE_PHISHING_WARNING);
+          expect(renderedProgress).toContain(DEVICE_CODE_PHISHING_WARNING);
           expect(requests.some(({ method }) => method === "users.authConnect.cancel")).toBe(false);
           expectJsonOutput(output, {
             profileId: PROFILE_ID,

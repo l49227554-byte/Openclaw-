@@ -124,8 +124,10 @@ function createWizardSessionPrompter(session: WizardSession): WizardPrompter {
       expiresInMinutes?: number;
       message?: string;
     }): Promise<void> {
+      const externalUrl = session.consumeExternalUrl(true);
       const fallbackMessage = [
         params.message ?? "Enter this one-time code on the provider's sign-in page.",
+        ...(externalUrl ? [externalUrl] : []),
         `Code: ${params.code}`,
         ...(params.expiresInMinutes ? [`Code expires in ${params.expiresInMinutes} minutes.`] : []),
         // Device-code phishing works by getting the victim to enter the attacker's

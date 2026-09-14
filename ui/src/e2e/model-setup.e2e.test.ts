@@ -635,8 +635,8 @@ suite.define(() => {
           });
         }
 
-        await page.getByRole("radio", { name: /Local only/u }).check();
-        await page.getByRole("button", { name: "Continue" }).click();
+        await page.getByRole("button", { name: "Ollama mode", exact: true }).click();
+        await page.getByRole("option", { name: /Local only/u }).click();
         const baseUrl = page.getByLabel("Ollama base URL");
         await expect.poll(() => baseUrl.inputValue()).toBe("http://127.0.0.1:11434");
 

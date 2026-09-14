@@ -260,6 +260,7 @@ describe("WizardSession", () => {
       title: "Provider sign-in",
       message: [
         "Enter this one-time code in your browser.",
+        "https://provider.example/device",
         "Code: ABCD-1234",
         "Code expires in 15 minutes.",
         DEVICE_CODE_PHISHING_WARNING,

@@ -59,6 +59,7 @@ type WizardSession = {
   sessionId: string;
   authChoice: string;
   authKind?: ProviderLoginOption["kind"];
+  notes: string[];
   reservedWindow?: WindowProxy | null;
   openedUrl?: string;
   externalInputTimer?: ReturnType<typeof setTimeout>;
@@ -68,6 +69,7 @@ type WizardSession = {
   retired?: boolean;
   retirementGeneration: number;
   terminalResult?: ModelSetupWizardResult;
+  cancellationRequested?: boolean;
   cancellationPromise?: Promise<WizardStatusResult>;
   inputClosurePromise?: Promise<WizardStatusResult>;
   abortController: AbortController;
@@ -186,6 +188,7 @@ export class ModelSetupWizardRunner {
       retirementGeneration: this.retirementGeneration,
       authChoice,
       authKind: this.pendingSignIn?.kind,
+      notes: [],
       reservedWindow: this.pendingSignIn?.window,
       abortController: new AbortController(),
       startMethod,
@@ -284,6 +287,7 @@ export class ModelSetupWizardRunner {
       this.close();
       return "cancelled";
     }
+    session.cancellationRequested = true;
     let result: WizardStatusResult | undefined;
     try {
       result = await this.sendCancellation(session);
@@ -328,6 +332,7 @@ export class ModelSetupWizardRunner {
     // Protected preparation may decline cancellation. Keep the admitted wizard
     // and its outstanding next request so the same auth flow can reach a checkpoint.
     if (result?.status === "running") {
+      session.cancellationRequested = false;
       return "running";
     }
     return undefined;
@@ -418,6 +423,9 @@ export class ModelSetupWizardRunner {
         result.step?.type === "note" &&
         (session.authKind === "oauth" || session.authKind === "device-code")
       ) {
+        if (result.step.message) {
+          session.notes.push(result.step.message);
+        }
         this.openSignInUrl(session, result.step.externalUrl);
         nextAnswer = { stepId: result.step.id };
         continue;
@@ -453,17 +461,42 @@ export class ModelSetupWizardRunner {
       this.close();
       return null;
     }
-    if (result.done && result.status === "cancelled" && session.cancellationPromise) {
+    if (result.done && result.status === "cancelled" && session.cancellationRequested) {
       this.close();
       return null;
     }
-    const next = wizardStateFromResult(
+    let next = wizardStateFromResult(
       authChoice,
       result,
       result.status === "cancelled"
         ? this.options.cancelledMessage()
         : this.options.requestFailedMessage(),
     );
+    if (
+      next.phase === "step" &&
+      session.authKind === "oauth" &&
+      next.step.type === "text" &&
+      next.step.externalUrl
+    ) {
+      next = { ...next, externalAuthInput: true };
+    }
+    if (session.notes.length) {
+      if (next.phase === "error") {
+        next = { ...next, message: [next.message, ...session.notes].join("\n\n") };
+      } else if (
+        next.phase === "step" &&
+        next.step.executor !== "gateway" &&
+        !next.step.externalUrl
+      ) {
+        next = {
+          ...next,
+          step: {
+            ...next.step,
+            message: [next.step.message, ...session.notes].filter(Boolean).join("\n\n"),
+          },
+        };
+      }
+    }
     clearTimeout(session.externalInputTimer);
     if (result.done) {
       session.reservedWindow?.close();
@@ -472,7 +505,7 @@ export class ModelSetupWizardRunner {
     this.setState(next);
     if (next.phase === "step") {
       this.openSignInUrl(session, next.step.externalUrl);
-      if (session.authKind === "oauth" && next.step.type === "text" && next.step.externalUrl) {
+      if (next.externalAuthInput) {
         this.watchExternalInput(session, next);
       } else if (next.step.executor !== "gateway") {
         session.reservedWindow?.close();
@@ -559,7 +592,7 @@ export class ModelSetupWizardRunner {
     const message = sessionExpired
       ? this.options.sessionExpiredMessage()
       : formatUiError(error, this.options.requestFailedMessage());
-    this.setState({ phase: "error", message });
+    this.setState({ phase: "error", message: [message, ...session.notes].join("\n\n") });
   }
 
   private async cancelSession(session: WizardSession): Promise<WizardStatusResult | undefined> {

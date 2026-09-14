@@ -27,6 +27,7 @@ type WizardStepControlsProps = {
   busyLabel?: string;
   confirmAffirmativeLabel?: string;
   leadingAction?: TemplateResult;
+  externalAuthInput?: boolean;
   sensitiveRevealed?: boolean;
   onToggleSensitiveVisibility?: () => void;
 };
@@ -251,7 +252,7 @@ function renderTextStep(props: WizardStepControlsProps) {
             props.presentation !== "channels" &&
             props.onValueChange((event.currentTarget as HTMLInputElement).value)}
         />`;
-  return html`
+  const form = html`
     <form
       class="wizard-step__form"
       @submit=${(event: Event) => {
@@ -269,10 +270,25 @@ function renderTextStep(props: WizardStepControlsProps) {
             </div>`
           : nothing
       }
-      ${renderExternalStepInfo(step)} ${input}
-      ${renderAnswerButton(props, t("modelSetup.wizard.submit"))}
+      ${props.externalAuthInput ? nothing : renderExternalStepInfo(step)} ${input}
+      ${renderAnswerButton(
+        props.externalAuthInput ? { ...props, leadingAction: undefined } : props,
+        t("modelSetup.wizard.submit"),
+      )}
     </form>
   `;
+  return props.externalAuthInput
+    ? html`
+        ${renderExternalStepInfo(step)}
+        <details class="wizard-step__manual-entry">
+          <summary class="muted">${t("modelSetup.wizard.manualEntry")}</summary>
+          ${form}
+        </details>
+        <div class="wizard-step__actions wizard-step__actions--split">
+          ${props.leadingAction ?? nothing}
+        </div>
+      `
+    : form;
 }
 
 function renderOptionsStep(props: WizardStepControlsProps) {

@@ -2609,6 +2609,7 @@ export const en: TranslationMap & {
       copy: "Copy",
       copyCode: "Copy code",
       copyLink: "Copy link",
+      manualEntry: "Use manual entry",
       browserInstructions: "Complete sign-in in your browser, then return here.",
       waiting: "Waiting for sign-in…",
       deviceCodeWarning:

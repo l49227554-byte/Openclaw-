@@ -1019,7 +1019,6 @@ export type ModelsAuthLoginFlowResult = {
 };
 
 export type ModelsAuthLoginFlowOptions = LoginOptions & {
-  showScopeNote?: boolean;
   ownerPluginId?: string;
   credentialOnly?: boolean;
   assertCurrent?: () => void;
@@ -1087,6 +1086,19 @@ function maybeLogOpenAICodexNativeSearchTip(runtime: RuntimeEnv, providerId: str
 export async function runModelsAuthLoginFlowCore(
   opts: ModelsAuthLoginFlowOptions,
 ): Promise<ModelsAuthLoginFlowResult> {
+  return runModelsAuthLoginFlow(opts, true);
+}
+
+export async function runModelsAuthLoginFlowForGateway(
+  opts: ModelsAuthLoginFlowOptions,
+): Promise<ModelsAuthLoginFlowResult> {
+  return runModelsAuthLoginFlow(opts, false);
+}
+
+async function runModelsAuthLoginFlow(
+  opts: ModelsAuthLoginFlowOptions,
+  showScopeNote: boolean,
+): Promise<ModelsAuthLoginFlowResult> {
   const requestedProviderId = opts.provider
     ? normalizeManualAuthProvider(opts.provider)
     : undefined;
@@ -1126,7 +1138,7 @@ export async function runModelsAuthLoginFlowCore(
   } else if (requestedProviderId && !requestedProvider) {
     requestedProvider = resolveRequestedLoginProviderOrThrow(authProviders, requestedProviderId);
   }
-  if (opts.showScopeNote !== false) {
+  if (showScopeNote) {
     await prompter.note(
       [
         "Scope: System / agent",
@@ -1313,7 +1325,6 @@ export async function modelsAuthLoginCommand(opts: LoginOptions, runtime: Runtim
     ...opts,
     runtime,
     prompter: createClackPrompter(),
-    showScopeNote: true,
   });
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

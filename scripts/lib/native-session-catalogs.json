@@ -22,5 +22,10 @@
       "codex.terminal.resume.v1",
       "codex.cli.sessions.list"
     ]
+  },
+  {
+    "pluginId": "xai",
+    "label": "Grok Build",
+    "description": "Local Grok Build sessions stored on this Gateway."
   }
 ]

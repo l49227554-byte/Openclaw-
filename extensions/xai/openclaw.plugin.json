@@ -6,7 +6,8 @@
     "configRepair": true
   },
   "activation": {
-    "onStartup": false
+    "onStartup": false,
+    "onConfigPaths": ["plugins.entries.xai.config.sessionCatalog.enabled"]
   },
   "enabledByDefault": true,
   "providers": ["xai"],
@@ -155,6 +156,10 @@
   },
   "syntheticAuthRefs": ["xai"],
   "setup": {
+    "nativeSessionCatalog": {
+      "label": "Grok Build",
+      "description": "Local Grok Build sessions stored on this Gateway."
+    },
     "providers": [
       {
         "id": "xai",
@@ -268,6 +273,10 @@
     "codeExecution.timeoutSeconds": {
       "label": "Code Execution Timeout",
       "help": "Timeout in seconds for code_execution requests."
+    },
+    "sessionCatalog.enabled": {
+      "label": "Grok Build Session Catalog",
+      "help": "Show local Grok Build sessions from this Gateway in the sessions sidebar. Grok transcript access stays local and is read-only."
     }
   },
   "contracts": {
@@ -384,6 +393,16 @@
           },
           "timeoutSeconds": {
             "type": "number"
+          }
+        }
+      },
+      "sessionCatalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
           }
         }
       }

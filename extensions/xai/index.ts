@@ -10,6 +10,7 @@ import {
   buildMissingCodeExecutionApiKeyPayload,
   createCodeExecutionToolDefinition,
 } from "./code-execution-tool-shared.js";
+import { registerGrokSessionCatalog } from "./grok-session-catalog-registration.js";
 import {
   createLazyXaiRealtimeTranscriptionProvider,
   createLazyXaiRealtimeVoiceProvider,
@@ -310,6 +311,7 @@ export default defineSingleProviderPluginEntry({
     classifyFailoverReason: ({ errorMessage }) => classifyXaiFailoverReason(errorMessage),
   }),
   register(api) {
+    registerGrokSessionCatalog(api);
     api.registerWebSearchProvider(createXaiWebSearchProvider());
     api.registerMediaUnderstandingProvider(createLazyXaiMediaUnderstandingProvider());
     api.registerVideoGenerationProvider(createLazyXaiVideoGenerationProvider());

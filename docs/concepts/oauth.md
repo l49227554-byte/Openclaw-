@@ -188,6 +188,12 @@ Profiles store an `expires` timestamp. At runtime:
 
 The refresh flow is automatic; you generally do not need to manage tokens manually.
 
+OpenAI token exchange and refresh honor the operator's `HTTP_PROXY`/`HTTPS_PROXY`
+and `NO_PROXY` policy. In proxy-only hosted runtimes, the proxy resolves the fixed
+`auth.openai.com` destination; direct requests retain DNS pinning when no proxy
+applies. Browser and other local service routing are unchanged. This behavior
+backports [upstream #131161](https://github.com/openclaw/openclaw/pull/131161).
+
 ## Multiple accounts (profiles) + routing
 
 Two patterns:

@@ -644,8 +644,13 @@ export function runAgentAttempt(params: {
   const sessionAuthProfileSource = resolveCollapsedSessionAuthPinSource(params.sessionEntry);
   // An explicit session choice owns the conversation. Otherwise the profile
   // bound to the configured model replaces a stale automatic session choice.
-  const selectedAuthProfile =
-    sessionAuthProfileId && sessionAuthProfileSource !== "auto"
+  const runAuthProfileId =
+    params.providerOverride === params.originalProvider
+      ? params.opts.authProfileId?.trim()
+      : undefined;
+  const selectedAuthProfile = runAuthProfileId
+    ? { id: runAuthProfileId, source: "user" as const }
+    : sessionAuthProfileId && sessionAuthProfileSource !== "auto"
       ? { id: sessionAuthProfileId, source: sessionAuthProfileSource }
       : params.configuredAuthProfileId?.trim()
         ? { id: params.configuredAuthProfileId.trim(), source: "user" as const }
@@ -1192,6 +1197,7 @@ export function runAgentAttempt(params: {
             cleanupBundleMcpOnRunEnd: params.opts.cleanupBundleMcpOnRunEnd,
             cleanupCliLiveSessionOnRunEnd: params.opts.cleanupCliLiveSessionOnRunEnd,
             oneShotCliRun: params.opts.oneShotCliRun,
+            outputJsonSchema: params.opts.outputJsonSchema,
             userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
             contextEngineLogicalTurnLease: params.contextEngineLogicalTurnLease,
             onContextEngineTurnCandidate: params.onContextEngineTurnCandidate,

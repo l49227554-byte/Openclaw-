@@ -251,6 +251,10 @@ function describeStateSchemaMigration(migration: OpenClawStateDatabaseSchemaMigr
       return "Skill Workshop ownership → per-agent directory containment";
     case "prepared-worker-ownership-v17":
       return "prepared workers → one-use capacity and fixed workspace ownership";
+    case "supervised-workflow-custody-v18":
+      return "supervised workflows → durable operations and controller acceptance";
+    case "supervised-attempt-custody-v19":
+      return "model attempts → physical resource custody and atomic candidate acceptance";
     case "operator-approvals-system-agent":
       return "operator approvals → OpenClaw system changes";
     case "session-watch-cursor-provenance-v4":

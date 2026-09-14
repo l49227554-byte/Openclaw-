@@ -62,15 +62,16 @@ function createDeps(agentId = "main") {
 }
 
 describe("runGatewayConversationSend", () => {
-  it.each([false, true])(
-    "admits the initial writable lookup before sending (aborted=%s)",
-    async (aborted) => {
+  it.each(["none", "cancelled", "source-revoked"])(
+    "admits the initial writable lookup before sending (interruption=%s)",
+    async (interruption) => {
       const deps = createDeps();
       const scope = resolveConversationRegistryScope({ agentId: "main", config: deps.config });
       const writer = holdConversationWriterForTest(scope);
       await writer.entered;
       const controller = new AbortController();
-      const reason = new Error("conversation cancelled while waiting");
+      const reason = new Error("conversation authority changed while waiting");
+      let sourceCurrent = true;
       const sent = runGatewayConversationSend(
         {
           config: deps.config,
@@ -80,6 +81,11 @@ describe("runGatewayConversationSend", () => {
           conversationRef: conversation.conversationRef,
           message: "hello",
           signal: controller.signal,
+          assertSourceCurrent: () => {
+            if (!sourceCurrent) {
+              throw reason;
+            }
+          },
         },
         deps,
       );
@@ -92,11 +98,13 @@ describe("runGatewayConversationSend", () => {
         expect(deps.getOperation.mock.calls.length).toBe(0);
         expect(deps.beginOperation.mock.calls.length).toBe(0);
         expect(deps.runMessageAction).not.toHaveBeenCalled();
-        if (aborted) {
+        if (interruption === "cancelled") {
           controller.abort(reason);
+        } else if (interruption === "source-revoked") {
+          sourceCurrent = false;
         }
         await writer.release();
-        if (aborted) {
+        if (interruption !== "none") {
           expect(await outcome).toEqual({ error: reason });
           expect(deps.beginOperation.mock.calls.length).toBe(0);
           expect(deps.runMessageAction).not.toHaveBeenCalled();

@@ -1,6 +1,9 @@
 // Core gateway method descriptors keep handler names, auth scopes, startup availability, and write policy in one table.
 import type { OperatorScope } from "../operator-scopes.js";
-import { isCoreGatewayMethodProfileDependent } from "./core-profile-access.js";
+import {
+  toCoreGatewayMethodDescriptorInput,
+  type CoreGatewayMethodSpec,
+} from "./core-descriptor-input.js";
 import {
   DYNAMIC_GATEWAY_METHOD_SCOPE,
   NODE_GATEWAY_METHOD_SCOPE,
@@ -8,18 +11,6 @@ import {
   type GatewayMethodHandler,
   type GatewayMethodScope,
 } from "./descriptor.js";
-
-type CoreGatewayMethodSpec = {
-  name: string;
-  family?: string;
-  scope: GatewayMethodScope;
-  since?: string;
-  advertise?: false;
-  startup?: true;
-  controlPlaneWrite?: true;
-  compatibilityRestored?: true;
-  description?: string;
-};
 
 type CoreGatewayMethodMetadata = Pick<CoreGatewayMethodSpec, "name" | "scope" | "since">;
 type CoreGatewayMethodPolicy = Pick<
@@ -677,6 +668,10 @@ const CORE_GATEWAY_METHOD_SPECS = [
   ["computer.status", "computer", "operator.read", "2026.9"],
   ["computer.invoke", "computer", "operator.write", "2026.9"],
   ["sessions.activitySummary.ensure", "session-activity-summary", "operator.write", "2026.9"],
+  ["tasks.supervision.list", "tasks", "operator.read", "2026.9"],
+  ["tasks.supervision.artifact", "tasks", "operator.read", "2026.9"],
+  ["tasks.supervision.get", "tasks", "operator.read", "2026.9"],
+  ["tasks.supervision.control", "tasks", "operator.write", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];
 
 export type CoreGatewayHandlerFamily = Exclude<(typeof CORE_GATEWAY_METHOD_SPECS)[number][1], null>;
@@ -768,18 +763,7 @@ export function createCoreGatewayMethodDescriptors(
     if (!handler) {
       continue;
     }
-    descriptors.push({
-      name: spec.name,
-      handler,
-      owner: { kind: "core", area: "gateway" },
-      scope: spec.scope,
-      profileAccess: isCoreGatewayMethodProfileDependent(spec.name) ? "required" : "independent",
-      ...(spec.since ? { since: spec.since } : {}),
-      ...(spec.advertise === false ? { advertise: false } : {}),
-      ...(spec.startup === true ? { startup: "unavailable-until-sidecars" } : {}),
-      ...(spec.controlPlaneWrite === true ? { controlPlaneWrite: true } : {}),
-      ...(spec.description ? { description: spec.description } : {}),
-    });
+    descriptors.push(toCoreGatewayMethodDescriptorInput(spec, handler));
   }
   for (const name of Object.keys(handlers)) {
     if (!CORE_GATEWAY_METHOD_SPEC_BY_NAME.has(name)) {

@@ -10,9 +10,9 @@ import {
   installationTargetEnv,
   LOCAL_INSTALLATION_TARGET_UNSUPPORTED,
 } from "../../infra/installation-target-context.js";
+import { requiresOwnedRuntimeProcess } from "../../infra/owned-runtime-process-context.js";
 import { compareValidSemver } from "../../infra/semver.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
-import type { CliBackendThinkingLevel } from "../../plugins/cli-backend.types.js";
 import { applySkillEnvOverridesFromSnapshot } from "../../skills/runtime/env-overrides.js";
 import {
   fingerprintCliRuntimeArtifact,
@@ -66,12 +66,6 @@ import { cliBackendLog, CLI_BACKEND_LOG_OUTPUT_ENV } from "./log.js";
 import { createClaudeCliModelCallDiagnostics } from "./model-call-diagnostics.js";
 import { composeCliPromptContext } from "./prompt-context.js";
 import type { PreparedCliRunContext } from "./types.js";
-
-function normalizeCliBackendThinkingLevel(
-  level: PreparedCliRunContext["params"]["thinkLevel"],
-): CliBackendThinkingLevel | undefined {
-  return level === "ultra" ? "max" : level;
-}
 
 function exactToolAvailabilityError(params: {
   code: "unsupported" | "runtime-unavailable";
@@ -149,6 +143,11 @@ export async function executePreparedCliRun(
   const backend = context.preparedBackend.backend;
   const executionTarget = context.executionTarget;
   const localProcessEnv = installationTargetEnv(getInstallationTarget());
+  if (requiresOwnedRuntimeProcess() && executionTarget.kind === "node") {
+    throw new Error(
+      "Supervised execution requires an owned local CLI process; node placement is unsupported",
+    );
+  }
   if (localProcessEnv && executionTarget.kind === "node") {
     throw new Error(LOCAL_INSTALLATION_TARGET_UNSUPPORTED);
   }
@@ -504,7 +503,7 @@ export async function executePreparedCliRun(
           provider: params.provider,
           modelId: context.modelId,
           authProfileId: context.effectiveAuthProfileId,
-          thinkingLevel: normalizeCliBackendThinkingLevel(params.thinkLevel),
+          thinkingLevel: params.thinkLevel === "ultra" ? "max" : params.thinkLevel,
           fastMode:
             params.fastMode === undefined
               ? undefined

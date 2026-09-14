@@ -26,6 +26,7 @@ import { recordAgentCleanupFailure } from "../run-cleanup-timeout.js";
 import { CliAuthProfilePreparationError } from "./auth-profile-preparation-error.js";
 import { runCliCleanup } from "./cleanup.js";
 import { resolveCliSessionId } from "./cli-run-recovery.js";
+import { resolveCliRunResultTextMeta } from "./cli-run-settlement-meta.js";
 import { hashCliReseedPrompt } from "./reseed-envelope.js";
 import type { ClaudeCliRunDiagnosticLifecycle } from "./run-diagnostics.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./types.js";
@@ -569,13 +570,7 @@ export function buildCliRunResult(params: {
     payloads: payloadsWithToolMedia,
     meta: {
       durationMs: Date.now() - context.started,
-      ...(output.finalPromptText ? { finalPromptText: output.finalPromptText } : {}),
-      ...(finalAssistantVisibleText || rawText
-        ? {
-            ...(finalAssistantVisibleText ? { finalAssistantVisibleText } : {}),
-            ...(rawText ? { finalAssistantRawText: rawText } : {}),
-          }
-        : {}),
+      ...resolveCliRunResultTextMeta({ output, finalAssistantVisibleText, rawText }),
       systemPromptReport: context.systemPromptReport,
       ...(terminalInterruption
         ? {

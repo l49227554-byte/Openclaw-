@@ -1,7 +1,7 @@
 // Command path policy tests cover allowed CLI command path shapes and lazy imports.
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
-import type { CliCommandCatalogEntry, CliCommandPathPolicy } from "./command-catalog.js";
+import type { CliCommandCatalogEntry, CliCommandPathPolicy } from "./command-catalog-types.js";
 import {
   resolveCliCommandPathPolicy,
   resolveCliNetworkProxyPolicy,
@@ -747,5 +747,13 @@ describe("command-path-policy", () => {
     expect(
       resolveCliNetworkProxyPolicy(["node", "openclaw", "gateway", "status", "--token", "secret"]),
     ).toBe("bypass");
+  });
+});
+
+// Executing supervised tasks is not a passive task-status query.
+it.each(["run", "work"])("bootstraps configured policy hooks for supervised %s", (action) => {
+  expectResolvedPolicy(["tasks", "supervise", action], {
+    loadPlugins: "always",
+    networkProxy: "default",
   });
 });

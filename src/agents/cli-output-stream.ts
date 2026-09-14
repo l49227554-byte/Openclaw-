@@ -448,6 +448,14 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
       output = {
         ...result,
         text,
+        // Keep conversational display preservation separate from the producer's
+        // terminal result. Protocol consumers must not extract JSON from prose.
+        ...(claudeStreamJson &&
+        !stoppedTurn &&
+        parsed.subtype === "success" &&
+        (params.captureTerminalResultText || text !== result.text)
+          ? { terminalResultText: result.text }
+          : {}),
         ...(syntheticNoResponse
           ? {
               errorText: CLAUDE_SYNTHETIC_NO_RESPONSE_ERROR,

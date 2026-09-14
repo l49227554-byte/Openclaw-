@@ -392,7 +392,7 @@ export function createCodexAppServerAgentHarness(
       return escalated;
     },
     runIsolatedCompletionV2: async (params) => {
-      if (params.authorization.owner === "host") {
+      if (params.authorization.owner === "host" && !params.ownedLocalProcessRequired) {
         const { runHostPreparedIsolatedCompletion } =
           await import("openclaw/plugin-sdk/simple-completion-runtime");
         return runHostPreparedIsolatedCompletion(params);

@@ -67,7 +67,7 @@ export type SessionRestartRecoveryState = {
   restartRecoveryRequesterAccountId?: string;
   restartRecoveryRequesterSenderId?: string;
   restartRecoverySameChannelThreadRequired?: true;
-  restartRecoverySourceIngress?: "channel" | "control-ui" | "internal";
+  restartRecoverySourceIngress?: "channel" | "control-ui" | "local-cli" | "internal";
   restartRecoverySourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   restartRecoveryTerminalDeliveryEvidence?: RestartRecoveryTerminalDeliveryEvidence[];
   restartRecoveryTerminalRunIds?: string[];

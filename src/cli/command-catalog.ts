@@ -1,64 +1,7 @@
 // Declarative CLI command catalog for startup policy and fast-path routing.
 import { hasFlag } from "./argv.js";
-
-export type CliCommandPluginLoadPolicy =
-  | "never"
-  | "always"
-  | "text-only"
-  | ((ctx: { argv: string[]; commandPath: string[]; jsonOutputMode: boolean }) => boolean);
-type CliConfigGuardMode = "run" | "skip" | "validate" | "when-suppressed";
-type CliConfigGuardPolicy =
-  | CliConfigGuardMode
-  | ((ctx: { argv: string[]; commandPath: string[] }) => CliConfigGuardMode);
-export type CliPluginRegistryScope =
-  | "all"
-  | "channels"
-  | "configured-channels"
-  | "memory"
-  | "sandbox-backends"
-  | "sandbox-management";
-export type CliNetworkProxyPolicy = "default" | "bypass";
-type CliNetworkProxyPolicyResolver =
-  | CliNetworkProxyPolicy
-  | ((ctx: { argv: string[]; commandPath: string[] }) => CliNetworkProxyPolicy);
-type CliRoutedCommandId =
-  | "health"
-  | "status"
-  | "gateway-health"
-  | "gateway-status"
-  | "sessions"
-  | "agents-list"
-  | "config-get"
-  | "config-unset"
-  | "models-list"
-  | "models-status"
-  | "tasks-list"
-  | "tasks-audit"
-  | "channels-list"
-  | "channels-status"
-  | "plugins-list";
-
-export type CliCommandPathPolicy = {
-  configGuard: CliConfigGuardPolicy;
-  stateStoreGuard: "run" | "skip";
-  loadPlugins: CliCommandPluginLoadPolicy;
-  pluginRegistry: {
-    scope: CliPluginRegistryScope;
-  };
-  ownsProtocolStdout: boolean;
-  hideBanner: boolean;
-  ensureCliPath: boolean;
-  networkProxy: CliNetworkProxyPolicyResolver;
-};
-
-export type CliCommandCatalogEntry = {
-  commandPath: readonly string[];
-  exact?: boolean;
-  policy?: Partial<CliCommandPathPolicy>;
-  route?: {
-    id: CliRoutedCommandId;
-  };
-};
+import { supervisedTaskCommandEntries } from "./command-catalog-supervision.js";
+import type { CliCommandCatalogEntry, CliCommandPathPolicy } from "./command-catalog-types.js";
 
 function hasCliOption(argv: readonly string[], name: string): boolean {
   for (const arg of argv.slice(2)) {
@@ -403,6 +346,7 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
     },
     route: { id: "tasks-list" },
   },
+  ...supervisedTaskCommandEntries,
   {
     // This unregistered root is reserved so plugin registration cannot claim it;
     // the catalog entry preserves its startup policy.

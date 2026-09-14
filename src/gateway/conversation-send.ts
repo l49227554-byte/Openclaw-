@@ -47,9 +47,12 @@ export async function runGatewayConversationSend(
     conversationRef: string;
     message: string;
     signal?: AbortSignal;
+    /** Internal durable source owner; never reconstructed from a public request field. */
+    assertSourceCurrent?: () => void;
   },
   deps: ConversationSendDeps = defaultDeps,
 ): Promise<ConversationSendResult> {
+  params.assertSourceCurrent?.();
   const scope = resolveConversationRegistryScope(params);
   try {
     const operation: ConversationDeliveryRecord | undefined = await runConversationDatabaseWrite(
@@ -95,6 +98,7 @@ export async function runGatewayConversationSend(
         operationKind: "send",
         routeFingerprint,
         assertCurrent: () => {
+          params.assertSourceCurrent?.();
           params.signal?.throwIfAborted();
           assertConversationDeliveryAttemptAuthorized({
             config: params.readCurrentConfig?.() ?? currentConfig,

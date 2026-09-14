@@ -28,6 +28,7 @@ import {
 } from "../task-session-access.js";
 import { taskHistoryHandler } from "./task-history.js";
 import { mapTaskSummary } from "./task-summary.js";
+import { supervisionHandlers } from "./tasks-supervision.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -135,6 +136,7 @@ function invalidTaskListCursor(
 // Control UI task methods expose the stable gateway protocol shape; helpers
 // above keep runtime registry details out of the wire result.
 export const tasksHandlers: GatewayRequestHandlers = {
+  ...supervisionHandlers,
   "tasks.list": async ({ params, respond, context, client }) => {
     if (typeof params.cursor === "string" && params.cursor.length > TASKS_LIST_CURSOR_MAX_LENGTH) {
       invalidTaskListCursor(respond);

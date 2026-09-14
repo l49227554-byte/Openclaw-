@@ -87,7 +87,11 @@ describe("runCodexIsolatedCompletion", () => {
   });
 
   it("uses native authorization on a ring-zero configured-transport turn", async () => {
-    const params = { ...createParams(), assertCurrent: vi.fn() };
+    const params = {
+      ...createParams(),
+      assertCurrent: vi.fn(),
+      ownedLocalProcessRequired: true as const,
+    };
 
     await expect(runCodexIsolatedCompletion(params, {})).resolves.toEqual({
       assistant: expect.objectContaining({
@@ -118,6 +122,7 @@ describe("runCodexIsolatedCompletion", () => {
         profile: "openai:test",
         authRequirement: "subscription",
         isolation: "configured-transport",
+        ownedLocalProcessRequired: true,
         assertCurrent: params.assertCurrent,
         requireNoExternalCapabilities: true,
         developerInstructions: "Name the conversation.",
@@ -201,4 +206,60 @@ describe("runCodexIsolatedCompletion", () => {
     await expect(runCodexIsolatedCompletion(params, {})).rejects.toThrow("harness-owned");
     expect(mocks.runBoundedTurn).not.toHaveBeenCalled();
   });
+
+  it.each([
+    "valid",
+    "missing-key",
+    "oauth",
+    "custom-url",
+    "headers",
+    "model-mismatch",
+    "native-home",
+  ])(
+    "preserves the prepared host API-key route in a required local process: %s",
+    async (variant) => {
+      const params = createParams();
+      params.ownedLocalProcessRequired = true;
+      params.authorization = {
+        owner: "host",
+        model: {
+          id: variant === "model-mismatch" ? "other" : params.modelId,
+          name: "test",
+          provider: "openai",
+          api: "openai-responses",
+          baseUrl:
+            variant === "custom-url" ? "https://example.invalid/v1" : "https://api.openai.com/v1",
+          reasoning: false,
+          input: ["text"],
+          maxTokens: 100,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          ...(variant === "headers" ? { headers: { "X-Test": "synthetic" } } : {}),
+        },
+        auth: {
+          mode: variant === "oauth" ? "oauth" : "api-key",
+          source: "test",
+          ...(variant !== "missing-key" ? { apiKey: "synthetic-platform-key" } : {}),
+        },
+      };
+      const options =
+        variant === "native-home" ? { pluginConfig: { appServer: { homeScope: "user" } } } : {};
+      if (variant !== "valid") {
+        await expect(runCodexIsolatedCompletion(params, options)).rejects.toThrow();
+        expect(mocks.runBoundedTurn).not.toHaveBeenCalled();
+      } else {
+        await expect(runCodexIsolatedCompletion(params, options)).resolves.toMatchObject({
+          assistant: { role: "assistant" },
+        });
+        expect(mocks.runBoundedTurn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            preparedAuth: { kind: "api-key", apiKey: "synthetic-platform-key" },
+            authRequirement: "api-key",
+            ownedLocalProcessRequired: true,
+            requireNoExternalCapabilities: true,
+          }),
+        );
+        expect(mocks.resolveAuthHandoff).not.toHaveBeenCalled();
+      }
+    },
+  );
 });

@@ -9,6 +9,26 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../gateway/desktop/computer.worker",
     distWorkerPath: "gateway/desktop/computer.worker.js",
   },
+  supervisedReview: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-review-process",
+    distWorkerPath: "tasks/supervised-review-process.js",
+  },
+  supervisedAttempt: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-attempt-process",
+    distWorkerPath: "tasks/supervised-attempt-process.js",
+  },
+  supervisedCommand: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-command-process",
+    distWorkerPath: "tasks/supervised-command-process.js",
+  },
+  supervisedOperation: {
+    currentModuleUrl,
+    sourceWorkerName: "../tasks/supervised-operation-process",
+    distWorkerPath: "tasks/supervised-operation-process.js",
+  },
   imageProcessor: {
     currentModuleUrl,
     sourceWorkerName: "../media/image-processor.worker",

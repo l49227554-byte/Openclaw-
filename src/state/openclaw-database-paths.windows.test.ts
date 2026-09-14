@@ -50,6 +50,33 @@ function createDeepStateEnv(): NodeJS.ProcessEnv {
 
 describe("OpenClaw database paths on Windows", () => {
   it.runIf(process.platform === "win32")(
+    "registers a reopened native filename as the same relative inventory row",
+    () => {
+      const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-native-registration-") };
+      const options = { agentId: "main", env };
+      const first = openOpenClawAgentDatabase(options);
+      const nativeFilename = first.db.location();
+      expect(nativeFilename).toBe(path.toNamespacedPath(first.path));
+      if (nativeFilename === null) {
+        throw new Error("Expected a file-backed database");
+      }
+      closeOpenClawAgentDatabasesForTest();
+      openOpenClawAgentDatabase({ ...options, path: nativeFilename });
+      const state = openOpenClawStateDatabase({ env });
+      expect(state.db.prepare("SELECT agent_id, path FROM agent_databases").all()).toEqual([
+        { agent_id: "main", path: path.join("agents", "main", "agent", "openclaw-agent.sqlite") },
+      ]);
+
+      const external = path.join(tempDirs.make("openclaw-native-external-"), "agent.sqlite");
+      const externalNative = path.toNamespacedPath(external);
+      openOpenClawAgentDatabase({ agentId: "external", env, path: externalNative });
+      expect(
+        state.db.prepare("SELECT path FROM agent_databases WHERE agent_id = 'external'").get(),
+      ).toEqual({ path: externalNative });
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
     "opens, preflights, compacts, and reopens canonical databases beyond MAX_PATH",
     async () => {
       const env = createDeepStateEnv();

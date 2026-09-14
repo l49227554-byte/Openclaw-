@@ -584,6 +584,48 @@ class ChatControllerTranscriptCacheTest {
         controller.messages.value.map { it.content.single().text },
       )
       assertTrue(controller.messagesFromCache.value)
+      assertFalse(controller.transcriptPresented.value)
+    }
+
+  @Test
+  fun switchingBackPublishesTheOwnedRecentTranscriptSynchronously() =
+    runTest {
+      val cache = FakeTranscriptCache()
+      val controller =
+        createCachedController(cache) { method, params ->
+          when (method) {
+            "chat.history" -> {
+              if (params.orEmpty().contains("\"sessionKey\":\"other\"")) {
+                historyResponse("session-other", listOf(ReplayHistoryMessage("assistant", "other history", 2L)))
+              } else {
+                historyResponse("session-main", listOf(ReplayHistoryMessage("assistant", "main history", 1L)))
+              }
+            }
+
+            else -> {
+              emptyChatGatewayResponse(method)
+            }
+          }
+        }
+
+      controller.load("main")
+      advanceUntilIdle()
+      controller.switchSession("other", ownerAgentId = "main")
+      advanceUntilIdle()
+      assertEquals(listOf("other history"), controller.messages.value.map { it.content.single().text })
+
+      controller.switchSession("main", ownerAgentId = "other")
+      assertTrue(controller.messages.value.isEmpty())
+
+      controller.switchSession("main", ownerAgentId = "main")
+
+      assertEquals(listOf("main history"), controller.messages.value.map { it.content.single().text })
+      assertTrue(controller.messagesFromCache.value)
+      assertTrue(controller.transcriptPresented.value)
+
+      advanceUntilIdle()
+      assertEquals(listOf("main history"), controller.messages.value.map { it.content.single().text })
+      assertFalse(controller.messagesFromCache.value)
     }
 
   @Test

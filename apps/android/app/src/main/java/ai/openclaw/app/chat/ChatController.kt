@@ -78,6 +78,7 @@ private const val WEAR_AGENT_PULSE_SWARM_FETCH_LIMIT = WEAR_AGENT_PULSE_SWARM_MA
 private const val WEAR_AGENT_PULSE_DIRECT_CHILDREN_GROUP = "__wear_agent_pulse_direct_children__"
 private const val SUBAGENT_ACTIVITY_RETENTION_MS = 60_000L
 private const val MAX_RETAINED_TERMINAL_SUBAGENT_TASKS = 100
+private const val MAX_RECENT_TRANSCRIPTS = 8
 private const val SESSION_EDITOR_MAX_BASE64_CHARS = ((OUTBOX_MAX_COMMAND_ATTACHMENT_BYTES + 2) / 3) * 4
 private val MANAGED_MEDIA_PATH_REGEX =
   Regex("^/api/chat/media/outgoing/[^/]+/([0-9a-fA-F-]{36})/full(?:\\?.*)?$")
@@ -408,6 +409,10 @@ class ChatController internal constructor(
   // Guarded by gatewayScopeApplyLock; stable gateway keys retain choices across reconnects.
   private val lastSelectedChatSessionByOwner = mutableMapOf<ChatAgentSessionSelectionOwner, RememberedChatSession>()
 
+  // Guarded by gatewayScopeApplyLock. Keeps recent immutable render input ready for synchronous
+  // conversation switches; Room remains the cold-start cache.
+  private val recentConversations = LinkedHashMap<ChatComposerOwner, RecentConversationSnapshot>()
+
   private val _sessionKey = MutableStateFlow("main")
   val sessionKey: StateFlow<String> = _sessionKey.asStateFlow()
 
@@ -425,14 +430,25 @@ class ChatController internal constructor(
   private val _transcriptAnchor = MutableStateFlow<ChatTranscriptAnchorState?>(null)
   val transcriptAnchor: StateFlow<ChatTranscriptAnchorState?> = _transcriptAnchor.asStateFlow()
 
-  // True while the transcript shown came from the offline cache and no live history replaced it yet.
+  // True while the transcript shown came from a memory or offline cache and no live history replaced it yet.
   private val _messagesFromCache = MutableStateFlow(false)
   val messagesFromCache: StateFlow<Boolean> = _messagesFromCache.asStateFlow()
+
+  // True once the active transcript has been presented, including synchronous snapshots.
+  private val _transcriptPresented = MutableStateFlow(false)
+  val transcriptPresented: StateFlow<Boolean> = _transcriptPresented.asStateFlow()
 
   private data class LiveHistoryMarker(
     val sessionKey: String,
     val sessionId: String?,
     val generation: Long,
+  )
+
+  private data class RecentConversationSnapshot(
+    val messages: List<ChatMessage>,
+    val transcriptReady: Boolean,
+    val progressCard: ChatProgressCard?,
+    val progressCardScopeKey: String?,
   )
 
   private data class PendingRunProjection(
@@ -1145,6 +1161,7 @@ class ChatController internal constructor(
     val gateway = gatewayId.trim().takeIf { it.isNotEmpty() } ?: return
     synchronized(gatewayScopeApplyLock) {
       lastSelectedChatSessionByOwner.keys.removeAll { it.gatewayStableId == gateway }
+      recentConversations.keys.removeAll { it.gatewayStableId == gateway }
     }
     synchronized(defaultAgentPersistenceRevisions) {
       defaultAgentPersistenceRevisions[gateway] = (defaultAgentPersistenceRevisions[gateway] ?: 0L) + 1L
@@ -3209,6 +3226,27 @@ class ChatController internal constructor(
       synchronized(gatewayScopeApplyLock) {
         val generation = historyLoadGeneration.incrementAndGet()
         val changed = _sessionKey.value != key || _sessionOwnerAgentId.value != owner
+        val previousOwner = currentChatComposerRoutingOwner()
+        val transcriptReady = !_historyLoading.value || _messages.value.isNotEmpty()
+        if (changed && (transcriptReady || _progressCard.value != null)) {
+          previousOwner?.let {
+            rememberRecentConversation(
+              owner = it,
+              messages = _messages.value,
+              transcriptReady = transcriptReady,
+              progressCard = _progressCard.value,
+              progressCardScopeKey = progressCardScopeKey,
+            )
+          }
+        }
+        val targetOwner =
+          resolveChatComposerRoutingOwner(
+            gatewayStableId = currentCacheScope()?.gatewayId,
+            gatewayDefaultAgentId = owner ?: effectiveDefaultAgentId(),
+            sessionKey = key,
+            mainSessionKey = appliedMainSessionKey,
+          )
+        val recentConversation = if (changed && markLoading) targetOwner?.let(::recentConversation) else null
         if (changed) chatSelectionGeneration.update { it + 1 }
         _sessionKey.value = key
         _sessionOwnerAgentId.value = owner
@@ -3217,8 +3255,9 @@ class ChatController internal constructor(
           lane.reconciliation?.pending?.isCompleted == true &&
             (settingsKey.gatewayScope != currentCacheScope() || settingsKey.ownerAgentId != resolveAgentIdForSessionKey(key))
         }
-        _messages.value = emptyList()
-        _messagesFromCache.value = false
+        _messages.value = recentConversation?.messages.orEmpty()
+        _messagesFromCache.value = recentConversation?.transcriptReady == true
+        _transcriptPresented.value = recentConversation?.transcriptReady == true
         if (changed) {
           resetSwarmProgress(key)
           sessionBranchesRefreshGeneration.incrementAndGet()
@@ -3229,6 +3268,10 @@ class ChatController internal constructor(
           _sessionBranchSwitching.value = false
           clearSubagentActivities()
           clearProgressCard()
+          recentConversation?.let {
+            progressCardScopeKey = it.progressCardScopeKey
+            _progressCard.value = it.progressCard
+          }
         }
         val activeAgentId = resolveAgentIdForSessionKey(key)
         publishSessions(
@@ -3538,6 +3581,38 @@ class ChatController internal constructor(
       sessionKey = _sessionKey.value,
       mainSessionKey = appliedMainSessionKey,
     )
+
+  private fun rememberRecentConversation(
+    owner: ChatComposerOwner,
+    messages: List<ChatMessage>,
+    transcriptReady: Boolean,
+    progressCard: ChatProgressCard?,
+    progressCardScopeKey: String?,
+  ) {
+    recentConversations.remove(owner)
+    recentConversations[owner] =
+      RecentConversationSnapshot(
+        messages = messages.takeLast(MAX_CACHED_MESSAGES_PER_SESSION),
+        transcriptReady = transcriptReady,
+        progressCard = progressCard,
+        progressCardScopeKey = progressCardScopeKey,
+      )
+    while (recentConversations.size > MAX_RECENT_TRANSCRIPTS) {
+      recentConversations.remove(recentConversations.keys.first())
+    }
+  }
+
+  private fun recentConversation(owner: ChatComposerOwner): RecentConversationSnapshot? {
+    val conversation = recentConversations.remove(owner) ?: return null
+    recentConversations[owner] = conversation
+    return conversation
+  }
+
+  internal fun markTranscriptPresented(selectionGeneration: Long) {
+    synchronized(gatewayScopeApplyLock) {
+      if (selectionGeneration == chatSelectionGeneration.value) _transcriptPresented.value = true
+    }
+  }
 
   private fun currentSelectedSession(): ChatSessionEntry? = _sessions.value.firstOrNull { it.key == _sessionKey.value }
 
@@ -8279,6 +8354,9 @@ class ChatController internal constructor(
     synchronized(gatewayScopeApplyLock) {
       val owner = ChatAgentSessionSelectionOwner(cacheScope?.gatewayId, ownerAgentId)
       if (lastSelectedChatSessionByOwner[owner]?.key == sessionKey) lastSelectedChatSessionByOwner.remove(owner)
+      recentConversations.keys.removeAll {
+        it.gatewayStableId == cacheScope?.gatewayId && it.agentId == ownerAgentId && it.sessionKey == sessionKey
+      }
     }
     if (cacheScope == null) return
     onSessionDeleted(

@@ -164,7 +164,7 @@ fun ShellScreen(
         if (!permanentSidebar) drawerScope.launch { sidebarDrawerState.open() }
       }
       val closeSidebar: () -> Unit = {
-        if (!permanentSidebar) drawerScope.launch { sidebarDrawerState.close() }
+        if (!permanentSidebar) drawerScope.launch { sidebarDrawerState.snapTo(DrawerValue.Closed) }
       }
       val requestedHomeDestination by viewModel.requestedHomeDestination.collectAsState()
       val runtimeInitialized by viewModel.runtimeInitialized.collectAsState()
@@ -279,9 +279,16 @@ fun ShellScreen(
                 closeSidebar()
               },
               onSelectSession = { session ->
-                viewModel.switchChatSession(session.key, session.ownerAgentId)
-                nav.selectTab(Tab.Chat)
-                closeSidebar()
+                if (permanentSidebar) {
+                  viewModel.switchChatSession(session.key, session.ownerAgentId)
+                  nav.selectTab(Tab.Chat)
+                } else {
+                  drawerScope.launch {
+                    sidebarDrawerState.snapTo(DrawerValue.Closed)
+                    viewModel.switchChatSession(session.key, session.ownerAgentId)
+                    nav.selectTab(Tab.Chat)
+                  }
+                }
               },
               onSelectCatalogSession = { session ->
                 viewModel.continueSessionCatalogEntry(session) { continued ->

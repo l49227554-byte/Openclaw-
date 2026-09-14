@@ -18,10 +18,6 @@ import { hashConfigRaw } from "../config/io.read-helpers.js";
 import { materializeRuntimeConfig } from "../config/materialize.js";
 import { applyMergePatch, createMergePatch } from "../config/merge-patch.js";
 import { normalizeAgentModelRefForConfig } from "../config/model-input.js";
-import {
-  attachRuntimeConfigWriteApplication,
-  createRuntimeConfigWriteApplication,
-} from "../config/runtime-write-application.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
@@ -32,7 +28,6 @@ import { createPluginCache } from "../plugins/plugin-cache.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
-import { captureGatewayRootWorkAdmissionContinuationScope } from "../process/gateway-work-admission.js";
 import { resolveUserPath } from "../utils.js";
 import { createPluginCapabilityConsentPrompter } from "../wizard/plugin-capability-consent.js";
 import { WizardCancelledError, WizardNavigationError } from "../wizard/prompts.js";
@@ -73,6 +68,12 @@ import {
   stageProviderAutoCandidate,
   stageSavedAuthCandidate,
 } from "./setup-inference-credentials.js";
+import {
+  commitSetupInferenceActivation,
+  captureSetupInferenceFileUndo,
+  setupConfigPatchConflicts,
+  type SetupInferenceConfigTarget,
+} from "./setup-inference-transition.js";
 import {
   loadSetupInferencePluginGeneration,
   revalidateStableSetupInferenceOwner,
@@ -292,29 +293,25 @@ async function stageCandidate(ctx: StageContext): Promise<StagedCandidate | Stag
   }
 }
 
-function patchConflicts(base: unknown, current: unknown, patch: unknown): boolean {
-  if (!isRecord(patch)) {
-    return !isDeepStrictEqual(base, current);
-  }
-  if (isRecord(base) !== isRecord(current)) {
-    return true;
-  }
-  if (!isRecord(base) && !isRecord(current) && !isDeepStrictEqual(base, current)) {
-    return true;
-  }
-  const before = isRecord(base) ? base : {};
-  const now = isRecord(current) ? current : {};
-  return Object.entries(patch).some(([key, change]) =>
-    patchConflicts(before[key], now[key], change),
-  );
-}
-
 /** Save credentials once, confirm the candidate in memory, then commit its config. */
 export async function activateSetupInference(
   params: ActivateSetupInferenceParams,
 ): Promise<ActivateSetupInferenceResult> {
   try {
-    const result = await activateCandidate(params);
+    const result = await activateCandidate({
+      ...params,
+      onActivationCompletion: params.onActivationCompletion
+        ? (complete) =>
+            params.onActivationCompletion?.(async () => {
+              try {
+                return await complete();
+              } catch (error) {
+                // oxlint-disable-next-line preserve-caught-error -- A deferred failure can contain the submitted setup secret.
+                throw new Error(await redactSetupInferenceError(error, params.apiKey));
+              }
+            })
+        : undefined,
+    });
     return result.ok
       ? {
           ...result,
@@ -575,7 +572,7 @@ async function verifyAndActivateCandidate(
     const sourceConfig = currentSnapshot.sourceConfig;
     if (
       !sameDefaultInferenceRoute(await project(config, sourceConfig), baselineRoute) ||
-      patchConflicts(source, sourceConfig, createMergePatch(source, sourceCandidate))
+      setupConfigPatchConflicts(source, sourceConfig, createMergePatch(source, sourceCandidate))
     ) {
       throw new SetupInferenceOwnerDriftError(
         "Connection settings changed during verification. Choose the saved sign-in to test the current connection.",
@@ -604,82 +601,85 @@ async function verifyAndActivateCandidate(
       }),
     );
   };
-  let gatewayRestartRequired = false;
-  if (!isDeepStrictEqual(sourceCandidate, source)) {
-    const application = params.onRuntimeApplication
-      ? createRuntimeConfigWriteApplication(captureGatewayRootWorkAdmissionContinuationScope()?.run)
-      : undefined;
-    if (application) {
-      params.onRuntimeApplication?.(application);
+  const activateCredential = async (assertCurrent: () => void) => {
+    if (!staged.authProfileId || !savedCredential?.setup) {
+      return undefined;
     }
-    const transform =
-      deps.transformConfigWithPendingPluginInstalls ??
-      (await import("../plugins/install-record-commit.js"))
-        .transformConfigWithPendingPluginInstalls;
-    let commitStarted = false;
-    try {
-      const committed = await transform({
-        base: "source",
-        writeOptions: attachRuntimeConfigWriteApplication(
-          { assertCurrent: () => throwIfSetupInferenceCancelled(params) },
-          application,
-        ),
-        transform: async (current, context) => {
-          await ctx.beforePersistentEffect();
-          await revalidate(context.snapshot);
-          throwIfSetupInferenceCancelled(params);
-          params.onCommitStarted?.(current);
-          commitStarted = true;
-          return { nextConfig: buildCandidate(current) };
-        },
-      });
-      gatewayRestartRequired = committed.followUp.requiresRestart;
-    } catch (error) {
-      if (commitStarted) {
-        throw new SetupInferenceActivationIndeterminateError(
-          `Credentials are saved, but the config update could not be confirmed. Check Model Setup before retrying. ${formatErrorMessage(error)}`,
+    const profileId = staged.authProfileId;
+    return await activatePreparedSetupCredential(
+      ctx,
+      profileId,
+      savedCredential,
+      runtimeCredential,
+      async () => {
+        const latest = await readSnapshot();
+        const current = latest.runtimeConfig ?? latest.config;
+        if (
+          !sameDefaultInferenceRoute(await project(current, latest.sourceConfig), verifiedRoute)
+        ) {
+          throw new SetupInferenceOwnerDriftError(
+            "The connection changed before credential activation. Test the saved sign-in again.",
+          );
+        }
+        await withGeneration(() =>
+          revalidateStableSetupInferenceOwner({
+            route,
+            auth: turn.auth,
+            stagedOwnerPluginArtifacts: artifacts,
+            deps,
+          }),
         );
-      }
-      throw error;
-    }
+      },
+      assertCurrent,
+    );
+  };
+  if (!isDeepStrictEqual(sourceCandidate, source) || savedCredential?.setup) {
+    const configTarget: SetupInferenceConfigTarget = {
+      read: async () => ({
+        config: (await readSnapshot()).sourceConfig,
+        write: configTarget.write,
+      }),
+      write: async (_candidate, { writeOptions, captureUndo }) => {
+        const transform =
+          deps.transformConfigWithPendingPluginInstalls ??
+          (await import("../plugins/install-record-commit.js"))
+            .transformConfigWithPendingPluginInstalls;
+        const committed = await transform({
+          base: "source",
+          writeOptions,
+          transform: async (current, context) => {
+            await ctx.beforePersistentEffect();
+            await revalidate(context.snapshot);
+            throwIfSetupInferenceCancelled(params);
+            params.onCommitStarted?.(current);
+            const nextConfig = buildCandidate(current);
+            captureUndo(
+              captureSetupInferenceFileUndo(
+                {
+                  ...context.snapshot,
+                  sourceConfig: stripPendingPluginInstallRecords(context.snapshot.sourceConfig),
+                },
+                stripPendingPluginInstallRecords(nextConfig),
+              ),
+            );
+            return { nextConfig };
+          },
+        });
+        return committed.nextConfig;
+      },
+    };
+    await commitSetupInferenceActivation({
+      preserveWorkingConnection: Boolean(
+        savedCredential?.setup?.replacement || baselineRoute.route,
+      ),
+      assertCurrent: () => throwIfSetupInferenceCancelled(params),
+      activate: activateCredential,
+      deferCompletion: params.onActivationCompletion,
+      configTarget,
+      config: sourceCandidate,
+    });
   } else {
     await revalidate(await readSnapshot());
-  }
-  if (staged.authProfileId && savedCredential?.setup) {
-    const profileId = staged.authProfileId;
-    const activate = () =>
-      activatePreparedSetupCredential(
-        ctx,
-        profileId,
-        savedCredential,
-        runtimeCredential,
-        async () => {
-          const latest = await readSnapshot();
-          const current = latest.runtimeConfig ?? latest.config;
-          if (
-            !sameDefaultInferenceRoute(await project(current, latest.sourceConfig), verifiedRoute)
-          ) {
-            throw new SetupInferenceOwnerDriftError(
-              "The connection changed before credential activation. Test the saved sign-in again.",
-            );
-          }
-          await withGeneration(() =>
-            revalidateStableSetupInferenceOwner({
-              route,
-              auth: turn.auth,
-              stagedOwnerPluginArtifacts: artifacts,
-              deps,
-            }),
-          );
-        },
-      );
-    if (params.surface === "cli" || !gatewayRestartRequired) {
-      if (params.onCredentialActivation) {
-        params.onCredentialActivation(activate);
-      } else {
-        await activate();
-      }
-    }
   }
   const lines = [`Inference verified: ${staged.modelRef}`];
   if (params.surface === "gateway" && params.recordSetupAudit !== false) {
@@ -687,14 +687,14 @@ async function verifyAndActivateCandidate(
     try {
       await appendSystemAgentAuditEntry({
         operation: "openclaw.setup",
-        summary: "Verified and configured AI access through OpenClaw setup",
+        summary: "Verified an AI access candidate through OpenClaw setup",
         configPath: after?.path ?? snapshot.path,
         configHashBefore: hashConfigRaw(snapshot.raw),
         configHashAfter: after ? hashConfigRaw(after.raw) : null,
         details: { modelRef: staged.modelRef, inferenceKind: params.kind },
       });
     } catch (error) {
-      const warning = `Inference setup completed, but OpenClaw could not record its audit entry: ${formatErrorMessage(error)}`;
+      const warning = `Inference was verified, but OpenClaw could not record its audit entry: ${formatErrorMessage(error)}`;
       params.runtime.error?.(warning);
       lines.push(warning);
     }
@@ -704,8 +704,5 @@ async function verifyAndActivateCandidate(
     modelRef: staged.modelRef,
     latencyMs: turn.latencyMs,
     lines,
-    ...(params.surface === "gateway" && gatewayRestartRequired
-      ? { gatewayRestartRequired: true as const }
-      : {}),
   };
 }

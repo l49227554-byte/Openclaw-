@@ -11,6 +11,8 @@ import { resolveApiKeyForProfile } from "../agents/auth-profiles/oauth.js";
 import { resolveAuthProfileOrder } from "../agents/auth-profiles/order.js";
 import { resolveAuthProfilePortability } from "../agents/auth-profiles/portability.js";
 import { loadAuthProfileStoreWithoutExternalProfiles } from "../agents/auth-profiles/store-runtime.js";
+import type { ApiKeyCredential } from "../agents/auth-profiles/types.js";
+import { upsertAuthProfileWithLock } from "../agents/auth-profiles/upsert-with-lock.js";
 import { fingerprintResolvedProviderAuth } from "../agents/execution-auth-binding.js";
 import { resolveApiKeyForProviderCore } from "../agents/model-auth.js";
 import { resolveModelRuntimePolicy } from "../agents/model-runtime-policy.js";
@@ -35,6 +37,7 @@ import { listSystemAgentAuditEntriesForTests } from "./audit.test-support.js";
 import { resolveSystemAgentConfiguredRouteFromConfig } from "./inference-route.js";
 import { activateSetupInference } from "./setup-inference-activate.js";
 import type { ActivateSetupInferenceDeps } from "./setup-inference-core.js";
+import * as credentialActivation from "./setup-inference-credential-access.js";
 import { saveSetupCredential } from "./setup-inference-credentials.js";
 import { detectSetupInference } from "./setup-inference-detect.js";
 import { createSystemAgentPluginMetadataTestSnapshot } from "./system-agent.test-helpers.js";
@@ -63,6 +66,8 @@ async function fixture(
     addProviderDuringLogin?: boolean;
     fresh?: boolean;
     surface?: "cli" | "gateway";
+    secretRef?: boolean;
+    signal?: AbortSignal;
   } = {},
 ) {
   const root = tempDirs.make("setup-activation-");
@@ -73,6 +78,14 @@ async function fixture(
   vi.stubEnv("OPENCLAW_HOME", root);
   vi.stubEnv("OPENAI_API_KEY", "");
   vi.stubEnv("ANTHROPIC_API_KEY", "");
+  vi.stubEnv("SETUP_ACTIVATION_FIXTURE_KEY", credential.key);
+  const selectedCredential: ApiKeyCredential = options.secretRef
+    ? {
+        type: "api_key",
+        provider: "openai",
+        keyRef: { source: "env", provider: "default", id: "SETUP_ACTIVATION_FIXTURE_KEY" },
+      }
+    : credential;
   const config: OpenClawConfig = {
     gateway: { mode: "local" },
     plugins: { slots: { memory: "none" } },
@@ -131,7 +144,7 @@ async function fixture(
       : { appGuidedAuth: "oauth" as const }),
   };
   const login = vi.fn(async () => ({
-    profiles: options.profiles ?? [{ profileId: "openai:fixture", credential }],
+    profiles: options.profiles ?? [{ profileId: "openai:fixture", credential: selectedCredential }],
     defaultModel: modelRef,
     ...(options.addProviderDuringLogin ? { configPatch: { models: providerModels } } : {}),
   }));
@@ -167,7 +180,11 @@ async function fixture(
     );
   const readProfile = () =>
     Object.entries(loadAuthProfileStoreWithoutExternalProfiles(agentDir).profiles).find(
-      ([, value]) => value.type === "api_key" && value.key === credential.key,
+      ([, value]) =>
+        value.type === "api_key" &&
+        (options.secretRef
+          ? value.keyRef?.id === "SETUP_ACTIVATION_FIXTURE_KEY"
+          : value.key === credential.key),
     );
   const reply = async (params: RunParams) => {
     const stored = readProfile();
@@ -238,6 +255,7 @@ async function fixture(
         runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
         prompter: activationConfirmed ? undefined : prompter,
         activationConfirmed,
+        signal: options.signal,
         deps,
       }),
     );
@@ -281,6 +299,66 @@ async function fixture(
 }
 
 describe("setup activation credentials and configuration", () => {
+  it.each(["abort", "replacement"] as const)(
+    "does not promote a SecretRef when %s revokes final activation revalidation",
+    async (revocation) => {
+      const controller = new AbortController();
+      const setup = await fixture({ secretRef: true, signal: controller.signal });
+      const activatePrepared = credentialActivation.activatePreparedSetupCredential;
+      const revoked = vi.fn();
+      vi.spyOn(credentialActivation, "activatePreparedSetupCredential").mockImplementation(
+        (ctx, profileId, source, runtimeCredential, revalidate, assertCurrent) =>
+          activatePrepared(
+            ctx,
+            profileId,
+            source,
+            runtimeCredential,
+            async () => {
+              await revalidate();
+              expect(
+                loadAuthProfileStoreWithoutExternalProfiles(setup.agentDir).profiles[profileId]
+                  ?.setup,
+              ).toBeDefined();
+              if (revocation === "abort") {
+                controller.abort();
+              } else {
+                expect(
+                  await upsertAuthProfileWithLock({
+                    agentDir: setup.agentDir,
+                    profileId,
+                    credential: {
+                      ...source,
+                      type: "api_key",
+                      keyRef: {
+                        source: "env",
+                        provider: "default",
+                        id: "UNREAD_REPLACEMENT_FIXTURE",
+                      },
+                    },
+                  }),
+                ).not.toBeNull();
+                expect(
+                  await upsertAuthProfileWithLock({
+                    agentDir: setup.agentDir,
+                    profileId,
+                    credential: source,
+                  }),
+                ).not.toBeNull();
+              }
+              revoked();
+            },
+            assertCurrent,
+          ),
+      );
+      const result = await setup.activate();
+      expect(revoked).toHaveBeenCalledOnce();
+      expect(result, await setup.diagnostics(result)).toMatchObject({ ok: false });
+      expect(setup.readProfile()?.[1].setup).toBeDefined();
+      expect(setup.readProfile()?.[1]).not.toHaveProperty("key");
+      expect(setup.run).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each([false, true])(
     "preserves first-team provisioning across provider activation (rejected: %s)",
     async (rejected) => {

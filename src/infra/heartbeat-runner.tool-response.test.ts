@@ -638,7 +638,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
       const cfg = createConfig({ tmpDir, storePath });
       await seedTelegramSession(storePath, cfg);
       replySpy.mockImplementation(async (context) =>
-        String(context?.Body ?? "").includes(SILENT_REPLY_TOKEN)
+        (context?.Body ?? "").includes(SILENT_REPLY_TOKEN)
           ? { text: SILENT_REPLY_TOKEN }
           : { text: "Heartbeat wake with nothing to report." },
       );

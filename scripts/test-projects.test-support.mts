@@ -4362,6 +4362,9 @@ export function buildFullSuiteVitestRunPlans(args: string[], cwd = process.cwd()
           );
           chunks = splitTargetChunks(targets, chunkCount);
         } else if (config === UNIT_SRC_VITEST_CONFIG) {
+          // The 600+ file process can run for 20 minutes and has produced late,
+          // non-reproducible mock-transform failures under Bun. Bound the worker
+          // lifetime while preserving the complete file inventory.
           const targets = listUnitSrcFullSuiteTestTargets(cwd);
           const chunkCount = Math.ceil(targets.length / FULL_SUITE_UNIT_SRC_TEST_TARGET_CHUNK_SIZE);
           chunks = splitTargetChunks(targets, chunkCount);

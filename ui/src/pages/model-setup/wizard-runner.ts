@@ -3,9 +3,18 @@ import type {
   WizardStatusResult,
 } from "../../../../packages/gateway-protocol/src/schema/wizard.ts";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import type { SystemAgentSetupActivateParams, WizardNextResult } from "../../api/types.ts";
+import type {
+  ProviderLoginOption,
+  SystemAgentSetupActivateParams,
+  WizardNextResult,
+} from "../../api/types.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { isSetupAdmissionBusyError, isWizardNotFoundError } from "../../lib/gateway-errors.ts";
+import {
+  openExternalUrlSafe,
+  reserveExternalWindowForDeferredNavigation,
+  resolveSafeExternalUrl,
+} from "../../lib/open-external-url.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import {
   MODEL_SETUP_AUTH_START_TIMEOUT_MS,
@@ -35,6 +44,7 @@ type WizardRunnerOptions = {
   getClient: () => GatewayBrowserClient | null;
   getAgentId: () => string | null;
   onChange: (state: ModelSetupWizardState) => void;
+  onBackgroundCompletion?: (completion: ModelSetupWizardCompletion) => Promise<void>;
   onStart?: (
     method: ModelSetupWizardStartMethod,
     activation?: SystemAgentSetupActivateParams,
@@ -48,6 +58,11 @@ type WizardSession = {
   client: GatewayBrowserClient;
   sessionId: string;
   authChoice: string;
+  authKind?: ProviderLoginOption["kind"];
+  reservedWindow?: WindowProxy | null;
+  openedUrl?: string;
+  externalInputTimer?: ReturnType<typeof setTimeout>;
+  externalInputRequest?: Promise<ModelSetupWizardCompletion | null>;
   admitted?: boolean;
   suspended?: boolean;
   retired?: boolean;
@@ -65,8 +80,20 @@ export class ModelSetupWizardRunner {
   private currentState: ModelSetupWizardState = { phase: "idle" };
   private session: WizardSession | null = null;
   private retirementGeneration = 0;
+  private pendingSignIn:
+    | { kind: ProviderLoginOption["kind"]; window: WindowProxy | null }
+    | undefined;
 
   constructor(private readonly options: WizardRunnerOptions) {}
+
+  prepareSignIn(kind: ProviderLoginOption["kind"] | "install" | "custom"): void {
+    this.pendingSignIn?.window?.close();
+    const browser = kind === "oauth" || kind === "device-code";
+    this.pendingSignIn = {
+      kind: browser ? kind : "secret",
+      window: browser ? reserveExternalWindowForDeferredNavigation() : null,
+    };
+  }
 
   get state(): ModelSetupWizardState {
     return this.currentState;
@@ -158,11 +185,14 @@ export class ModelSetupWizardRunner {
       sessionId: generateUUID(),
       retirementGeneration: this.retirementGeneration,
       authChoice,
+      authKind: this.pendingSignIn?.kind,
+      reservedWindow: this.pendingSignIn?.window,
       abortController: new AbortController(),
       startMethod,
       activationTargetId,
       onTerminalResult: this.options.onStart?.(startMethod, "kind" in params ? params : undefined),
     };
+    this.pendingSignIn = undefined;
     this.session = session;
     this.setState({ phase: "starting", authChoice });
     try {
@@ -219,13 +249,25 @@ export class ModelSetupWizardRunner {
     try {
       return await this.requestNext(session, state.authChoice, answer);
     } catch (error) {
+      const pending = session.externalInputRequest;
+      if (pending) {
+        session.externalInputRequest = undefined;
+        const completion = await pending;
+        if (completion || session !== this.session) {
+          return completion;
+        }
+      }
       this.handleError(error, session);
       return null;
     }
   }
 
   async cancel(options: { settleActiveRequest?: boolean } = {}): Promise<void> {
+    this.pendingSignIn?.window?.close();
+    this.pendingSignIn = undefined;
     const session = this.session;
+    session?.reservedWindow?.close();
+    clearTimeout(session?.externalInputTimer);
     if (!options.settleActiveRequest) {
       session?.abortController.abort();
     }
@@ -297,13 +339,17 @@ export class ModelSetupWizardRunner {
     if (options.retireOwner) {
       this.retirementGeneration += 1;
     }
+    this.pendingSignIn?.window?.close();
+    this.pendingSignIn = undefined;
+    this.session?.reservedWindow?.close();
+    clearTimeout(this.session?.externalInputTimer);
     this.session?.abortController.abort();
     this.session = null;
     this.setState({ phase: "idle" });
   }
 
   fail(message: string): void {
-    this.session = null;
+    this.close();
     this.setState({ phase: "error", message });
   }
 
@@ -347,6 +393,7 @@ export class ModelSetupWizardRunner {
     session: WizardSession,
     authChoice: string,
     answer?: { stepId: string; value?: unknown },
+    acceptResult?: () => boolean,
   ): Promise<ModelSetupWizardCompletion | null> {
     if (session.suspended || this.isRetired(session)) {
       return null;
@@ -354,12 +401,27 @@ export class ModelSetupWizardRunner {
     const { client, sessionId, abortController } = session;
     const signal = abortController.signal;
     let nextAnswer = answer;
+    let acceptsFirstResult = acceptResult;
     while (true) {
       const result = await client.request<WizardNextResult>(
         "wizard.next",
         { sessionId, ...(nextAnswer ? { answer: nextAnswer } : {}) },
         { timeoutMs: MODEL_SETUP_WIZARD_NEXT_TIMEOUT_MS, signal },
       );
+      if (acceptsFirstResult && !acceptsFirstResult() && !result.done) {
+        return null;
+      }
+      acceptsFirstResult = undefined;
+      if (
+        session === this.session &&
+        !result.done &&
+        result.step?.type === "note" &&
+        (session.authKind === "oauth" || session.authKind === "device-code")
+      ) {
+        this.openSignInUrl(session, result.step.externalUrl);
+        nextAnswer = { stepId: result.step.id };
+        continue;
+      }
       const completion = this.applyResult(session, authChoice, result);
       if (session !== this.session || completion) {
         return completion;
@@ -391,6 +453,10 @@ export class ModelSetupWizardRunner {
       this.close();
       return null;
     }
+    if (result.done && result.status === "cancelled" && session.cancellationPromise) {
+      this.close();
+      return null;
+    }
     const next = wizardStateFromResult(
       authChoice,
       result,
@@ -398,10 +464,21 @@ export class ModelSetupWizardRunner {
         ? this.options.cancelledMessage()
         : this.options.requestFailedMessage(),
     );
+    clearTimeout(session.externalInputTimer);
     if (result.done) {
+      session.reservedWindow?.close();
       this.session = null;
     }
     this.setState(next);
+    if (next.phase === "step") {
+      this.openSignInUrl(session, next.step.externalUrl);
+      if (session.authKind === "oauth" && next.step.type === "text" && next.step.externalUrl) {
+        this.watchExternalInput(session, next);
+      } else if (next.step.executor !== "gateway") {
+        session.reservedWindow?.close();
+        session.reservedWindow = null;
+      }
+    }
     if (!result.done || result.status !== "done") {
       return null;
     }
@@ -414,10 +491,65 @@ export class ModelSetupWizardRunner {
     };
   }
 
+  private openSignInUrl(session: WizardSession, url: string | undefined): void {
+    if (!url || session.openedUrl === url) {
+      return;
+    }
+    const safeUrl = resolveSafeExternalUrl(url, window.location.href);
+    if (!safeUrl) {
+      return;
+    }
+    if (session.reservedWindow && !session.reservedWindow.closed) {
+      session.reservedWindow.location.replace(safeUrl);
+      session.reservedWindow = null;
+    } else {
+      openExternalUrlSafe(safeUrl);
+    }
+    session.openedUrl = url;
+  }
+
+  private watchExternalInput(session: WizardSession, state: ModelSetupWizardState): void {
+    // Only the browser callback can settle this input without an answer. One
+    // wizard read per second stops as soon as this exact presentation changes.
+    const poll = async () => {
+      const current = () =>
+        session === this.session && this.currentState === state && !session.suspended;
+      if (!current()) {
+        return;
+      }
+      try {
+        const request = this.requestNext(session, session.authChoice, undefined, current);
+        session.externalInputRequest = request;
+        const completion = await request;
+        if (session.externalInputRequest !== request) {
+          return;
+        }
+        session.externalInputRequest = undefined;
+        if (completion) {
+          const completedState = this.currentState;
+          const isCurrent = completion.isCurrent;
+          await this.options.onBackgroundCompletion?.({
+            ...completion,
+            isCurrent: () => this.currentState === completedState && isCurrent?.() !== false,
+          });
+        }
+      } catch (error) {
+        if (current()) {
+          this.handleError(error, session);
+        }
+      }
+    };
+    session.externalInputTimer = setTimeout(() => {
+      void poll();
+    }, 1000);
+  }
+
   private handleError(error: unknown, session: WizardSession): void {
     if (session !== this.session || session.suspended) {
       return;
     }
+    clearTimeout(session.externalInputTimer);
+    session.reservedWindow?.close();
     this.session = null;
     session.abortController.abort();
     const sessionExpired = isWizardNotFoundError(error);
@@ -492,6 +624,7 @@ export class ModelSetupWizardRunner {
   }
 
   private setState(state: ModelSetupWizardState): void {
+    clearTimeout(this.session?.externalInputTimer);
     this.currentState = state;
     this.options.onChange(state);
   }

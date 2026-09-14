@@ -125,6 +125,7 @@ export const modelsAuthLoginHandlers: GatewayRequestHandlers = {
               method: choice.methodId,
               ownerPluginId: choice.pluginId,
               credentialOnly: true,
+              showScopeNote: false,
               onModelAccessRequested: (request) => {
                 modelAccess = request;
               },

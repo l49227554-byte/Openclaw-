@@ -1019,6 +1019,7 @@ export type ModelsAuthLoginFlowResult = {
 };
 
 export type ModelsAuthLoginFlowOptions = LoginOptions & {
+  showScopeNote?: boolean;
   ownerPluginId?: string;
   credentialOnly?: boolean;
   assertCurrent?: () => void;
@@ -1125,15 +1126,17 @@ export async function runModelsAuthLoginFlowCore(
   } else if (requestedProviderId && !requestedProvider) {
     requestedProvider = resolveRequestedLoginProviderOrThrow(authProviders, requestedProviderId);
   }
-  await prompter.note(
-    [
-      "Scope: System / agent",
-      `Agent: ${context.agentId}`,
-      "Location: the machine running OpenClaw",
-      `For personal model accounts on a Gateway, run ${formatCliCommand("openclaw models accounts login --help")}.`,
-    ].join("\n"),
-    "Provider sign-in",
-  );
+  if (opts.showScopeNote !== false) {
+    await prompter.note(
+      [
+        "Scope: System / agent",
+        `Agent: ${context.agentId}`,
+        "Location: the machine running OpenClaw",
+        `For personal model accounts on a Gateway, run ${formatCliCommand("openclaw models accounts login --help")}.`,
+      ].join("\n"),
+      "Provider sign-in",
+    );
+  }
   const selectedProvider =
     requestedProvider ??
     (await prompter
@@ -1310,6 +1313,7 @@ export async function modelsAuthLoginCommand(opts: LoginOptions, runtime: Runtim
     ...opts,
     runtime,
     prompter: createClackPrompter(),
+    showScopeNote: true,
   });
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

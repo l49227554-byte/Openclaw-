@@ -27,8 +27,11 @@ import {
 import type { SessionActionHost, SessionActionRow } from "./session-organizer-batch-mutations.ts";
 import { rememberSessionGroup, type SessionGroupActionHost } from "./session-organizer-catalog.ts";
 import type { SessionOrganizerControllerHost } from "./session-organizer-controller.ts";
-import { recoverPendingOfflineDeviceWorkspace } from "./session-organizer-workspace-recovery.runtime.ts";
 import type { SessionOwnerOption } from "./session-owner-chip.ts";
+import {
+  formatBatchSessionRemovalError,
+  withSessionWorkspaceRecovery,
+} from "./session-workspace-recovery.runtime.ts";
 
 export type { SessionActionHost, SessionActionRow } from "./session-organizer-batch-mutations.ts";
 // The controller loads this module as a single namespace, so the catalog
@@ -45,7 +48,7 @@ export async function patchSession(
   session: SessionActionRow,
   patch: SidebarSessionPatch,
   scope: SidebarSessionMutationScope,
-  refresh: { deferListRefresh?: boolean; workspaceRecoveryAttempted?: boolean } = {},
+  refresh: { deferListRefresh?: boolean } = {},
 ): Promise<SidebarSessionMutationResult> {
   if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
     return "stale";
@@ -70,11 +73,22 @@ export async function patchSession(
     return "failed";
   }
   try {
-    const patched = await scope.sessions.patch(session.key, patch, {
-      agentId,
-      ...(session.sessionId ? { expectedSessionId: session.sessionId } : {}),
-      ...(refresh.deferListRefresh ? { deferListRefresh: true } : {}),
-    });
+    const request = () =>
+      scope.sessions.patch(session.key, patch, {
+        agentId,
+        ...(session.sessionId ? { expectedSessionId: session.sessionId } : {}),
+        ...(refresh.deferListRefresh ? { deferListRefresh: true } : {}),
+      });
+    const patched =
+      patch.archived === true
+        ? await withSessionWorkspaceRecovery({
+            action: "archive",
+            session: { ...session, agentId },
+            scope,
+            isCurrent: () => host.sessionData.isSessionMutationScopeCurrent(scope),
+            request,
+          })
+        : await request();
     if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
       return "stale";
     }
@@ -101,18 +115,6 @@ export async function patchSession(
   } catch (error) {
     if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
       return "stale";
-    }
-    if (patch.archived === true && refresh.workspaceRecoveryAttempted !== true) {
-      const recovery = await recoverPendingOfflineDeviceWorkspace({ error, host, scope, session });
-      if (recovery === "recovered") {
-        return await patchSession(host, session, patch, scope, {
-          ...refresh,
-          workspaceRecoveryAttempted: true,
-        });
-      }
-      if (recovery !== "unhandled") {
-        return recovery === "stale" ? "stale" : "failed";
-      }
     }
     host.sessionData.publishSessionMutationError(scope, error);
     return "failed";
@@ -363,7 +365,10 @@ export async function deleteSessionsBatch(
       }
     }
     if (result.errors.length > 0) {
-      host.sessionData.publishSessionMutationError(scope, result.errors.join("; "));
+      host.sessionData.publishSessionMutationError(
+        scope,
+        result.errors.map(({ error }) => formatBatchSessionRemovalError(error)).join("; "),
+      );
     }
   } catch (error) {
     host.sessionData.publishSessionMutationError(scope, error);
@@ -641,31 +646,17 @@ export async function deleteSession(
   ) {
     return;
   }
-  const requestDelete = () => scope.sessions.delete(session.key, deleteParams);
-  let outcome: Awaited<ReturnType<typeof requestDelete>>;
   try {
-    outcome = await requestDelete();
-  } catch (error) {
-    const recovery = await recoverPendingOfflineDeviceWorkspace({ error, host, scope, session });
-    if (recovery === "stale") {
+    const outcome = await withSessionWorkspaceRecovery({
+      action: "delete",
+      session: { ...session, agentId },
+      scope,
+      isCurrent: () => host.sessionData.isSessionMutationScopeCurrent(scope),
+      request: () => scope.sessions.delete(session.key, deleteParams),
+    });
+    if (!outcome) {
       return;
     }
-    if (recovery !== "recovered") {
-      if (recovery === "unhandled") {
-        host.sessionData.publishSessionMutationError(scope, error);
-      }
-      return;
-    }
-    try {
-      outcome = await requestDelete();
-    } catch (retryError) {
-      if (host.sessionData.isSessionMutationScopeCurrent(scope)) {
-        host.sessionData.publishSessionMutationError(scope, retryError);
-      }
-      return;
-    }
-  }
-  try {
     if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
       if (outcome.worktreePreserved) {
         showToast({ message: formatPreservedWorktreesNotice([outcome.worktreePreserved]) });

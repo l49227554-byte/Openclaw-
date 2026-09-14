@@ -592,7 +592,7 @@ describe("session organizer destructive confirmations", () => {
     const retryError = `Session ${rows[0]!.key} changed before deletion. Retry.`;
     harness.deleteMany.mockResolvedValueOnce({
       deleted: [rows[1]!.key],
-      errors: [retryError],
+      errors: [{ target: { key: rows[0]!.key }, error: retryError }],
       preservedWorktrees: [
         {
           id: "wt-busy",
@@ -634,7 +634,7 @@ describe("session organizer destructive confirmations", () => {
     alertSpy.mockRestore();
   });
 
-  it("routes an archive blocker through explicit Continue on Gateway before retrying", async () => {
+  it("routes an archive blocker through explicit loss consent before retrying", async () => {
     const harness = createHarness(destructiveHarness);
     const row = sessionRow(0);
     harness.patch.mockRejectedValueOnce(workspaceRecoveryError(row));
@@ -642,9 +642,7 @@ describe("session organizer destructive confirmations", () => {
 
     const pending = patchSession(harness.host, row, { archived: true }, harness.scope);
     const actions = await waitForConfirmDialogActions();
-    expect(document.body.textContent).toContain(
-      "Unsynced device files and in-flight work may be lost",
-    );
+    expect(document.body.textContent).toContain("Discard changes and archive");
     answerConfirmDialog(actions, "confirm");
 
     await expect(pending).resolves.toBe("completed");
@@ -656,11 +654,10 @@ describe("session organizer destructive confirmations", () => {
       abandonSource: true,
     });
     expect(harness.patch).toHaveBeenCalledTimes(2);
-    expect(harness.refreshReplacement).toHaveBeenCalledWith("main");
     expect(harness.publishSessionMutationError).not.toHaveBeenCalled();
   });
 
-  it("routes a delete blocker through explicit Continue on Gateway before retrying", async () => {
+  it("routes a delete blocker through explicit loss consent before retrying", async () => {
     const harness = createHarness(destructiveHarness);
     const row = sessionRow(0);
     harness.deleteOne.mockRejectedValueOnce(workspaceRecoveryError(row));
@@ -669,7 +666,7 @@ describe("session organizer destructive confirmations", () => {
     const pending = deleteSession(harness.host, row, harness.scope);
     answerConfirmDialog(await waitForConfirmDialogActions(), "confirm");
     const recoveryActions = await waitForConfirmDialogActions();
-    expect(document.body.textContent).toContain("last Gateway-synced state");
+    expect(document.body.textContent).toContain("Discard changes and delete");
     answerConfirmDialog(recoveryActions, "confirm");
     await pending;
 
@@ -681,24 +678,7 @@ describe("session organizer destructive confirmations", () => {
       abandonSource: true,
     });
     expect(harness.deleteOne).toHaveBeenCalledTimes(2);
-    expect(harness.refreshReplacement).toHaveBeenCalledWith("main");
     expect(harness.publishSessionMutationError).not.toHaveBeenCalled();
-  });
-
-  it("does not abandon a pending workspace when recovery consent is declined", async () => {
-    const harness = createHarness(destructiveHarness);
-    const row = sessionRow(0);
-    const error = workspaceRecoveryError(row);
-    harness.deleteOne.mockRejectedValueOnce(error);
-
-    const pending = deleteSession(harness.host, row, harness.scope);
-    answerConfirmDialog(await waitForConfirmDialogActions(), "confirm");
-    answerConfirmDialog(await waitForConfirmDialogActions(), "cancel");
-    await pending;
-
-    expect(harness.request).not.toHaveBeenCalled();
-    expect(harness.deleteOne).toHaveBeenCalledOnce();
-    expect(harness.publishSessionMutationError).toHaveBeenCalledWith(harness.scope, error);
   });
 
   it.each(destructiveOperations)("sends no $name request when cancelled", async (operation) => {

@@ -7,10 +7,7 @@ import type { ApplicationPlacementStartup } from "../../app/session-placement-st
 import { requestCloudWorkerStop } from "../../components/cloud-worker-stop.runtime.ts";
 import { resolveCloudWorkerStopAction } from "../../components/cloud-worker-stop.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
-import {
-  confirmContinueSessionOnGateway,
-  requestContinueSessionOnGateway,
-} from "../../components/session-placement-recovery.runtime.ts";
+import { confirmContinueSessionOnGateway } from "../../components/session-placement-recovery.runtime.ts";
 import { t } from "../../i18n/index.ts";
 import { readSessionMethodAccess } from "../../lib/session-method-access.ts";
 import type { SessionCapability } from "../../lib/sessions/session-capability.ts";
@@ -141,29 +138,17 @@ export async function moveChatPanePlacement(params: {
   }
   params.onMovingChange(params.row.key);
   try {
-    if (abandonSource) {
-      await requestContinueSessionOnGateway({
-        client,
-        key: params.row.key,
-        ...(agentId ? { agentId } : {}),
-        expected: {
-          generation: placement.generation,
-          environmentId: placement.environmentId,
-          ownerEpoch: placement.activeOwnerEpoch,
-        },
-      });
-    } else {
-      await client.request("sessions.move", {
-        key: params.row.key,
-        ...(agentId ? { agentId } : {}),
-        expected: {
-          generation: placement.generation,
-          environmentId: placement.environmentId,
-          ownerEpoch: placement.activeOwnerEpoch,
-        },
-        target,
-      });
-    }
+    await client.request("sessions.move", {
+      key: params.row.key,
+      ...(agentId ? { agentId } : {}),
+      expected: {
+        generation: placement.generation,
+        environmentId: placement.environmentId,
+        ownerEpoch: placement.activeOwnerEpoch,
+      },
+      target,
+      ...(abandonSource ? { abandonSource: true } : {}),
+    });
     if (params.isCurrent(client, params.connectionGeneration)) {
       await params.refreshReplacement(agentId);
     }

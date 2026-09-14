@@ -232,18 +232,22 @@ export function guardSessionManager(
         runtimeMessage: withProvenance,
         ...(prepared ? { preparedMessage: prepared } : {}),
       });
-      if (merged !== withProvenance) {
+      // The active model input retains the runtime image blocks, but the session
+      // manager must retain the prepared reference projection for subsequent turns.
+      const retained =
+        prepared && merged.role === "user" ? { ...merged, content: prepared.content } : merged;
+      if (retained !== withProvenance) {
         queuedUserTurnTranscriptRecorder = recorder;
         if (!runtimeContext) {
           pendingPreparedUserTurnMessage = undefined;
         }
       }
-      if (message.role === "user" && merged.role === "user") {
+      if (message.role === "user" && retained.role === "user") {
         // Persistence callbacks may be re-entrant. Correlate through the exact
         // transformed object instead of a mutable latest-message slot.
-        runtimeUserMessageByPersistedMessage.set(merged, message);
+        runtimeUserMessageByPersistedMessage.set(retained, message);
       }
-      return merged;
+      return retained;
     },
     transformToolResultForPersistence: transform,
     allowSyntheticToolResults: opts?.allowSyntheticToolResults,

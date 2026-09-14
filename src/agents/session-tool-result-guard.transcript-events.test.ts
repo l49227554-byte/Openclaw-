@@ -86,6 +86,37 @@ describe("guardSessionManager transcript updates", () => {
     ]);
   });
 
+  it("retains the prepared media projection without changing active model input", () => {
+    const sm = SessionManager.inMemory();
+    const runtimeMessage = {
+      role: "user" as const,
+      content: [
+        { type: "text", text: "describe this" },
+        { type: "image", data: "raw-image-data", mimeType: "image/png" },
+      ],
+      timestamp: 123,
+    };
+    const preparedUserTurnMessage = {
+      role: "user" as const,
+      content: "describe this",
+      timestamp: 123,
+      __openclaw: {
+        media: [{ path: "/tmp/image.png", contentType: "image/png" }],
+        mediaImageLayout: { slots: [{ kind: "inline" as const, factIndex: 0 }] },
+      },
+    };
+    const guarded = guardSessionManager(sm, { preparedUserTurnMessage });
+
+    guarded.appendMessage(runtimeMessage as Parameters<typeof guarded.appendMessage>[0]);
+
+    const retained = sm.getEntries().find((entry) => entry.type === "message");
+    expect(runtimeMessage.content).toContainEqual(
+      expect.objectContaining({ type: "image", data: "raw-image-data" }),
+    );
+    expect(retained).toMatchObject({ message: preparedUserTurnMessage });
+    expect(JSON.stringify(retained)).not.toContain("raw-image-data");
+  });
+
   it("consumes a steered source under its own custody and does not repeat its approval hook", async () => {
     const { root, target, sessionEntry } = await openPersistedSessionManager();
     const recorderTarget = { ...target, sessionEntry };

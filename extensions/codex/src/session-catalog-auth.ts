@@ -81,6 +81,23 @@ export async function prepareCodexCatalogClientOptions(params: {
   };
   const preparedSource = sourceCredentialFingerprint(selectedCredential);
   let sourceGeneration = selectedCredential;
+  const assertNativeFallbackAllowed = (currentStore: typeof store) => {
+    const isOpenAi = (provider: string) =>
+      resolveProviderIdForAuth(provider, { config: options.config, storedCredential: true }) ===
+      "openai";
+    const explicitOrder =
+      findNormalizedProviderValue(currentStore.order, "openai") ??
+      findNormalizedProviderValue(options.config?.auth?.order, "openai");
+    if (
+      explicitOrder !== undefined ||
+      Object.values(options.config?.auth?.profiles ?? {}).some((profile) =>
+        isOpenAi(profile.provider),
+      ) ||
+      Object.values(currentStore.profiles).some((profile) => isOpenAi(profile.provider))
+    ) {
+      throw new Error("Codex catalog source has no usable managed OpenAI authentication.");
+    }
+  };
   const readCurrentCredential = (allowPendingRefresh = false) => {
     assertHomeCurrent();
     const currentStore = resolveCodexAppServerAuthProfileStore({
@@ -117,6 +134,9 @@ export async function prepareCodexCatalogClientOptions(params: {
         "Codex catalog source authentication changed; refresh the catalog before retrying.",
       );
     }
+    if (!profileId) {
+      assertNativeFallbackAllowed(currentStore);
+    }
     sourceGeneration = currentCredential;
     return currentCredential;
   };
@@ -131,21 +151,7 @@ export async function prepareCodexCatalogClientOptions(params: {
     }
   };
   if (!profileId) {
-    const isOpenAi = (provider: string) =>
-      resolveProviderIdForAuth(provider, { config: options.config, storedCredential: true }) ===
-      "openai";
-    const explicitOrder =
-      findNormalizedProviderValue(store.order, "openai") ??
-      findNormalizedProviderValue(options.config?.auth?.order, "openai");
-    if (
-      explicitOrder !== undefined ||
-      Object.values(options.config?.auth?.profiles ?? {}).some((profile) =>
-        isOpenAi(profile.provider),
-      ) ||
-      Object.values(store.profiles).some((profile) => isOpenAi(profile.provider))
-    ) {
-      throw new Error("Codex catalog source has no usable managed OpenAI authentication.");
-    }
+    assertNativeFallbackAllowed(store);
     // Discovery does not opt a native-only store into managed authentication.
     return { ...options, authProfileId: null, assertCurrent, assertAuthSourceCurrent };
   }

@@ -28,6 +28,7 @@ const CODEX_CONFIG_TOML_FILENAME = "config.toml";
 /** Cloud/system config can redirect reviews after local home/profile checks have passed. */
 export async function assertCodexModelBackedReviewerEffectiveConfig(params: {
   client: CodexConfigReadClient;
+  assertCurrent?: () => void;
   approvalsReviewer: string;
   cwd: string;
   signal?: AbortSignal;
@@ -40,6 +41,7 @@ export async function assertCodexModelBackedReviewerEffectiveConfig(params: {
   }
   const response = await readCodexEffectiveConfig(params.client, params.cwd, {
     signal: params.signal,
+    ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
   });
   const effectiveConfig = response.config;
   const modelProvider = effectiveConfig.model_provider;

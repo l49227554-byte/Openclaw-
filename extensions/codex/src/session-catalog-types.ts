@@ -66,6 +66,8 @@ export type CodexSessionCatalogPageParams = {
 export type CodexSessionCatalogControl = {
   /** Available only inside the exact physical client's pinned catalog lease. */
   forkContext?: {
+    /** Revalidate retained source authority at every fork request write. */
+    assertCurrent?: () => void;
     client: import("./app-server/client.js").CodexAppServerClient;
     appServer: CodexAppServerRuntimeOptions;
     pluginConfig: unknown;

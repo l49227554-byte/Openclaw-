@@ -238,6 +238,55 @@ describe("managed catalog source authentication", () => {
     },
   );
 
+  it.each(["read", "archive", "fork"] as const)(
+    "rejects an ineligible managed profile added to a retained native lease before %s",
+    async (operation) => {
+      const f = await fixture();
+      const source = f.factory
+        .homesForAgent("beta")
+        .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+      auth.stores.delete(f.dirs.alpha!);
+      await f.factory.forRequest("beta", source).withPinnedConnection(async (pinned) => {
+        pinned.forkContext!.assertCurrent!();
+        auth.stores.set(f.dirs.alpha!, {
+          version: 1,
+          profiles: {
+            "openai:expired": {
+              type: "token",
+              provider: "openai",
+              token: "synthetic-expired",
+              expires: Date.now() - 1000,
+            },
+          },
+        });
+        if (operation === "fork") {
+          expect(() => pinned.forkContext!.assertCurrent!()).toThrow(
+            "no usable managed OpenAI authentication",
+          );
+        } else {
+          await expect(
+            operation === "read" ? pinned.readThread("thread") : pinned.archiveThread("thread"),
+          ).rejects.toThrow("no usable managed OpenAI authentication");
+        }
+        expect(pinnedConnectionMocks.request).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it("carries retained managed source authority into canonical fork preparation", async () => {
+    const f = await fixture();
+    const source = f.factory
+      .homesForAgent("beta")
+      .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+    await f.factory.forRequest("beta", source).withPinnedConnection(async (pinned) => {
+      pinned.forkContext!.assertCurrent!();
+      await Promise.resolve();
+      auth.stores.delete(f.dirs.alpha!);
+      expect(() => pinned.forkContext!.assertCurrent!()).toThrow("authentication changed");
+      expect(pinnedConnectionMocks.request).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(["remove", "replace"] as const)(
     "rejects %s of prepared credentials before I/O",
     async (change) => {

@@ -138,6 +138,7 @@ export async function forkCanonicalCodexSession(params: {
           });
           const assertCurrent = () => {
             initialization.assertCurrent();
+            context.assertCurrent?.();
             if (ownership && !subscriptionReleased) {
               ownership.assertCurrent();
             }
@@ -261,6 +262,7 @@ export async function forkCanonicalCodexSession(params: {
           assertCurrent();
           await checkCodexThreadAppAvailability({
             client: context.client,
+            assertCurrent,
             threadId: freshThreadId,
             appIds: prepared.provisionalAppIds,
           });

@@ -561,6 +561,7 @@ export function createCodexSessionCatalogControl(params: {
           createCodexSessionCatalogControlFromRequests({
             forkContext: agentDir
               ? {
+                  assertCurrent: assertAuthorityCurrent,
                   client,
                   appServer: runtime,
                   pluginConfig,

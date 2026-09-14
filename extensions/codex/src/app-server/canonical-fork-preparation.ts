@@ -62,7 +62,10 @@ export async function prepareCanonicalCodexFork(params: {
   dynamicTools: CodexDynamicToolSpec[];
 }) {
   const { created, initialization, config, context } = params;
-  const assertCurrent = initialization.assertCurrent;
+  const assertCurrent = () => {
+    initialization.assertCurrent();
+    context.assertCurrent?.();
+  };
   assertCurrent();
   if (!initialization.prepareNativeToolPolicy) {
     throw new Error(
@@ -114,6 +117,7 @@ export async function prepareCanonicalCodexFork(params: {
   const dynamicTools = params.dynamicTools;
   const nativeProviderWebSearchSupport = await resolveCodexProviderWebSearchSupportForClient({
     client: context.client,
+    assertCurrent,
     timeoutMs: appServer.requestTimeoutMs,
     modelProviderOverride: params.modelProvider,
     signal: AbortSignal.timeout(appServer.requestTimeoutMs),
@@ -179,7 +183,7 @@ export async function prepareCanonicalCodexFork(params: {
           ) {
             throw new Error("Codex plugin setup is required before native fork preparation.");
           }
-          const response = await context.client.request(method, requestParams);
+          const response = await context.client.request(method, requestParams, { assertCurrent });
           assertCurrent();
           return response;
         },
@@ -193,6 +197,7 @@ export async function prepareCanonicalCodexFork(params: {
   }
   const nativeSkillIsolation = await resolveCodexNativeSkillIsolation({
     client: context.client,
+    assertCurrent,
     cwd,
     codexHome: appServer.start.env?.CODEX_HOME,
     home: appServer.start.env?.HOME,
@@ -215,11 +220,12 @@ export async function prepareCanonicalCodexFork(params: {
   });
   const events = resolveCodexNativeHookRelayEvents({ appServer });
   if (events.includes("pre_tool_use") && relay.shouldRelayEvent("pre_tool_use")) {
-    await assertCodexNativeHookRelayAllowed(context.client);
+    await assertCodexNativeHookRelayAllowed(context.client, undefined, assertCurrent);
     assertCurrent();
   }
   await assertCodexModelBackedReviewerEffectiveConfig({
     client: context.client,
+    assertCurrent,
     approvalsReviewer: appServer.approvalsReviewer,
     cwd,
   });

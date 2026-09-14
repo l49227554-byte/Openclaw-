@@ -52,6 +52,7 @@ class CodexPluginThreadAppAttestationError extends Error {
 /** Reads the existing runtime snapshot with the started thread's effective app policy. */
 export async function checkCodexThreadAppAvailability(params: {
   client: CodexAppServerClient;
+  assertCurrent?: () => void;
   threadId: string;
   appIds: readonly string[];
   signal?: AbortSignal;
@@ -66,7 +67,10 @@ export async function checkCodexThreadAppAvailability(params: {
     response = await params.client.request(
       "app/installed",
       { threadId: params.threadId, forceRefresh: false },
-      { signal: params.signal },
+      {
+        signal: params.signal,
+        ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
+      },
     );
   } catch (error) {
     params.signal?.throwIfAborted();

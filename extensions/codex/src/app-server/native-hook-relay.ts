@@ -74,11 +74,15 @@ export type CodexNativeHookRelay = ReturnType<typeof registerNativeHookRelayForB
 export async function assertCodexNativeHookRelayAllowed(
   client: Pick<CodexAppServerClient, "request">,
   signal?: AbortSignal,
+  assertCurrent?: () => void,
 ): Promise<void> {
   let attestation = nativeHookPolicyByClient.get(client);
   if (!attestation) {
     attestation = client
-      .request("configRequirements/read", undefined, { signal })
+      .request("configRequirements/read", undefined, {
+        signal,
+        ...(assertCurrent ? { assertCurrent } : {}),
+      })
       .then((response) => {
         if (!isJsonObject(response) || !Object.hasOwn(response, "requirements")) {
           throw new Error("Codex configRequirements/read returned an invalid hook policy response");

@@ -744,6 +744,8 @@ export class CodexAppServerClient {
           message,
           (error) => rejectPending(error),
           () => {
+            // Serialization can invoke getters/toJSON; revalidate at the actual write.
+            options.assertCurrent?.();
             mayHaveWritten = true;
             onWriteStateChange?.(true);
           },

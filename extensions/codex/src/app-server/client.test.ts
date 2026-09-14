@@ -310,6 +310,33 @@ describe("CodexAppServerClient", () => {
     expect(harness.writes).toHaveLength(1);
   });
 
+  it("rejects source revocation during request serialization before physical I/O", async () => {
+    const harness = createClientHarness();
+    clients.push(harness.client);
+    let current = true;
+    const error = new Error("catalog source revoked");
+    await expect(
+      harness.client.request(
+        "plugin/list",
+        {
+          toJSON() {
+            current = false;
+            return {};
+          },
+        },
+        {
+          assertCurrent: () => {
+            if (!current) {
+              throw error;
+            }
+          },
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(harness.writes).toHaveLength(0);
+    expect(harness.client.getCloseError()).toBeUndefined();
+  });
+
   it("keeps the shared client when ownership expires after an overload rejection", async () => {
     vi.useFakeTimers();
     const harness = createClientHarness();

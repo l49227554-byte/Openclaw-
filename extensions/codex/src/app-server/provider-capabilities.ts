@@ -22,6 +22,7 @@ function resolveOverriddenProviderWebSearchSupport(
 
 async function readConfiguredProviderWebSearchSupport(params: {
   client: CodexAppServerClient;
+  assertCurrent?: () => void;
   timeoutMs: number;
   signal: AbortSignal;
 }): Promise<CodexNativeWebSearchSupport> {
@@ -31,6 +32,7 @@ async function readConfiguredProviderWebSearchSupport(params: {
     {
       timeoutMs: params.timeoutMs,
       signal: params.signal,
+      ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
     },
   );
   return response.webSearch ? "supported" : "unsupported";
@@ -38,6 +40,7 @@ async function readConfiguredProviderWebSearchSupport(params: {
 
 export async function resolveCodexProviderWebSearchSupportForClient(params: {
   client: CodexAppServerClient;
+  assertCurrent?: () => void;
   timeoutMs: number;
   modelProviderOverride: string | undefined;
   signal: AbortSignal;

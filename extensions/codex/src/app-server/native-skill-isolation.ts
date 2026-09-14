@@ -194,6 +194,7 @@ async function collectPersonalSkillRealPaths(
 /** Resolves the native user-scope skills that an isolated OpenClaw thread must disable. */
 export async function resolveCodexNativeSkillIsolation(params: {
   client: CodexAppServerClient;
+  assertCurrent?: () => void;
   codexHome?: string;
   cwd: string;
   home?: string;
@@ -242,7 +243,10 @@ async function resolveUncachedCodexNativeSkillIsolation(
   const response = await params.client.request(
     "skills/list",
     { cwds: [params.cwd], forceReload: true },
-    { signal: params.signal },
+    {
+      signal: params.signal,
+      ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
+    },
   );
   const effectiveHome =
     params.home?.trim() ||

@@ -120,7 +120,7 @@ describe("setup activation reload ownership", () => {
         initialSnapshotValid: initial.valid,
         initialSnapshotIssues: initial.issues,
         testDebounceMs: 0,
-        readSnapshot: readConfigFileSnapshot,
+        readSnapshot: () => readConfigFileSnapshot(),
         watchPath: state.configPath,
         readPluginInstallRecords: async () => ({}),
         initialPluginInstallRecords: {},

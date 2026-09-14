@@ -1375,8 +1375,8 @@ impl DesktopState {
                             app.state::<native_browser_bridge::NativeBrowserBridgeState>();
                         // The bridge scopes the whole dashboard, not just this session.
                         if let Some(script) = bridge.select(app, &base, false)? {
-                            if let Err(error) =
-                                replace_main_webview(app, target, Some(script), None)
+                            if let Err(error) = replace_main_webview(app, base, Some(script), None)
+                                .and_then(|_| self.navigate_locked(app, target, false))
                             {
                                 bridge.clear(app);
                                 return match replace_main_webview(app, recovery, None, None) {
@@ -1705,9 +1705,9 @@ impl DesktopState {
         dashboard: bool,
     ) -> Result<(), String> {
         let windows = app.state::<gateway_windows::GatewayWindows>();
+        let base = Url::parse(target).map_err(|_| "Dashboard returned an invalid URL.")?;
         if dashboard {
-            let url = Url::parse(target).map_err(|_| "Dashboard returned an invalid URL.")?;
-            if !windows.primary_selected(app, &url, None, gateway_ws::GatewayOwnership::Local)? {
+            if !windows.primary_selected(app, &base, None, gateway_ws::GatewayOwnership::Local)? {
                 return Ok(());
             }
         } else if !windows.main_is_primary(app) {
@@ -1717,22 +1717,22 @@ impl DesktopState {
         let onboarding_was_pending = dashboard && navigation.onboarding_pending;
         let bridge = app.state::<native_browser_bridge::NativeBrowserBridgeState>();
         let bridge_script = if dashboard {
-            let base =
-                Url::parse(target).map_err(|_| "Dashboard returned an invalid URL.".to_string())?;
             bridge.select(app, &base, false)?
         } else {
             bridge.clear(app);
             None
         };
-        let url = if dashboard {
-            navigation.prepare_dashboard_url(target)?
+        let result = if dashboard {
+            let initial_url = navigation.prepare_dashboard_url(target)?;
+            if let Some(script) = bridge_script {
+                // The first page must not narrow authority to its onboarding or session path.
+                replace_main_webview(app, base, Some(script), None)
+                    .and_then(|_| self.navigate_locked(app, initial_url, false))
+            } else {
+                self.navigate_locked(app, initial_url, false)
+            }
         } else {
-            Url::parse(target).map_err(|_| "Dashboard returned an invalid URL.".to_string())?
-        };
-        let result = if bridge_script.is_some() || !dashboard {
-            replace_main_webview(app, url, bridge_script, None).map(|_| ())
-        } else {
-            self.navigate_locked(app, url, false)
+            replace_main_webview(app, base, None, None).map(|_| ())
         };
         if let Err(error) = result {
             bridge.clear(app);

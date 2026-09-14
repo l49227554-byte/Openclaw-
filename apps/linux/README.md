@@ -183,6 +183,11 @@ The driver owns its temporary HOME and Secret Service. It verifies that ordinary
 window selection leaves the Primary configuration unchanged. The Linux App
 workflow runs this scenario and retains its screenshots and results.
 
+Use `--gateway-onboarding` in place of `--gateway-switch` to exercise local
+installation with a synthetic installer, leave Model Setup, and verify native
+window controls and Gateway actions under a non-root Gateway path. This scenario
+uses the same isolated fixtures and also runs in the Linux App workflow.
+
 ## First-run setup
 
 The welcome screen explains what OpenClaw can do and asks where your assistant

@@ -3141,6 +3141,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createPluginsVitestConfig({}),
         createTasksVitestConfig({}),
         createToolingVitestConfig({}),
+        createWizardVitestConfig({}),
       ].flatMap(listMatchedTestFiles),
     );
     for (const file of databaseWorkerCoreTestFiles) {

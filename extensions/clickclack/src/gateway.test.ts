@@ -102,7 +102,7 @@ function createBacklogEvent(
   index: number,
   type = "channel.updated",
   messageIndex = index,
-): ClickClackEvent {
+): ClickClackEvent & { seq: number } {
   const isMessageEvent =
     type === "message.created" || type === "thread.reply_created" || type === "message.updated";
   return {
@@ -113,9 +113,7 @@ function createBacklogEvent(
     channel_id: "chan-1",
     seq: index,
     created_at: "2026-01-01T00:00:00.000Z",
-    payload: isMessageEvent
-      ? { message_id: `msg-${messageIndex}`, author_id: "human-1" }
-      : undefined,
+    payload: isMessageEvent ? { message_id: `msg-${messageIndex}`, author_id: "human-1" } : {},
   };
 }
 

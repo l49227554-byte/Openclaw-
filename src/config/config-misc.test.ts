@@ -782,12 +782,13 @@ describe("mcp.apps.enabled", () => {
 });
 
 describe("plugins.entries.*.subagent", () => {
-  it("accepts trusted subagent override settings", () => {
+  it("accepts subagent run consent and trusted override settings", () => {
     const result = OpenClawSchema.safeParse({
       plugins: {
         entries: {
           "voice-call": {
             subagent: {
+              allowRun: true,
               allowModelOverride: true,
               allowedModels: ["anthropic/claude-haiku-4-5"],
             },
@@ -804,6 +805,7 @@ describe("plugins.entries.*.subagent", () => {
         entries: {
           "voice-call": {
             subagent: {
+              allowRun: "yes",
               allowModelOverride: "yes",
               allowedModels: [1],
             },

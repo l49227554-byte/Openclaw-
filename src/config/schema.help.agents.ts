@@ -41,7 +41,9 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
   "plugins.entries.*.hooks.timeouts":
     "Per-hook timeout overrides in milliseconds keyed by typed hook name, capped at 600000. Use narrow overrides for known slow hooks such as before_prompt_build or agent_end instead of raising every hook timeout.",
   "plugins.entries.*.subagent":
-    "Per-plugin subagent runtime controls for model override trust and allowlists. Keep this unset unless a plugin must explicitly steer subagent model selection.",
+    "Per-plugin subagent runtime controls for run consent, model override trust, and allowlists. Keep this unset unless a plugin requires these privileges.",
+  "plugins.entries.*.subagent.allowRun":
+    "Consent to this plugin's manifest-declared subagent.run runtime capability. Both declaration and consent are required; this does not grant general Gateway or operator access.",
   "plugins.entries.*.subagent.allowModelOverride":
     "Explicitly allows this plugin to request provider/model overrides in background subagent runs. Keep false unless the plugin is trusted to steer model selection.",
   "plugins.entries.*.subagent.allowedModels":

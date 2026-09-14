@@ -122,6 +122,15 @@ Start agent work in the background: hook-dispatched turns for external content, 
     `waitForRun(...)` returns the canonical Gateway wait result. `status` is `"ok"`, `"error"`, `"timeout"`, or `"pending"`; pending is a normal nonterminal observation, not an exception. Optional `error`, `startedAt`, `endedAt`, `stopReason`, `livenessState`, `yielded`, `pendingError`, `timeoutPhase`, `providerStarted`, and `terminalReply` metadata is preserved so callers can distinguish observation timeouts from terminal outcomes. `timeoutMs` bounds the wait call; it does not cancel the run.
 
     <Warning>
+    Delegating a run from an `auth: "plugin"` HTTP route requires both a manifest
+    declaration of `contracts.runtimeCapabilities: ["subagent.run"]` and operator
+    consent via `plugins.entries.<id>.subagent.allowRun: true`. Existing
+    Gateway-authorized and background callers retain their normal authority. This
+    narrow entitlement does not grant generic Gateway or operator access. The
+    delegated turn is attributed to the host system rather than a human operator,
+    including when Gateway roles are enabled; agent access, session ownership,
+    model/tool policy, and commit-time entitlement revocation remain authoritative.
+
     Outside an authorized Gateway request, model overrides require operator opt-in via `plugins.entries.<id>.subagent.allowModelOverride: true` in config. Plugins without that opt-in can use the configured model, but override requests are rejected.
     </Warning>
 

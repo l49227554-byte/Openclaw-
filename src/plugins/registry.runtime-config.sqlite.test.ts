@@ -6,10 +6,106 @@ import { withTempHome } from "../plugin-sdk/test-env.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { createPluginRecord } from "./loader-records.js";
 import { createRuntimeTestRegistry } from "./registry-runtime.test-helpers.js";
+import { withPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
 import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
 describe("plugin registry SQLite session ownership", () => {
+  it("requires both a manifest declaration and operator consent for subagent.run", async () => {
+    await withTempHome(async () => {
+      const subagent = {
+        complete: vi.fn(async () => ({ text: "completed" })),
+        run: vi.fn(async () => ({ runId: "entitled-run" })),
+        waitForRun: vi.fn(async () => ({ status: "ok" as const })),
+        getSessionMessages: vi.fn(async () => ({ messages: [] })),
+        deleteSession: vi.fn(async () => {}),
+      } satisfies PluginRuntime["subagent"];
+      let config = { agents: { list: [{ id: "main", default: true }] } } as OpenClawConfig;
+      const runtime = createPluginRuntime({ subagent });
+      runtime.config = { ...runtime.config, current: () => config };
+      const pluginRegistry = createRuntimeTestRegistry(runtime);
+      const createApi = (id: string, declared: boolean) =>
+        pluginRegistry.createApi(
+          createPluginRecord({
+            id,
+            source: `/plugins/${id}/index.js`,
+            origin: "global",
+            enabled: true,
+            configSchema: false,
+            ...(declared ? { contracts: { runtimeCapabilities: ["subagent.run"] } } : {}),
+          }),
+          { config },
+        );
+      const manifestOnly = createApi("manifest-only", true);
+      const consentOnly = createApi("consent-only", false);
+      const entitled = createApi("entitled", true);
+
+      config = {
+        ...config,
+        plugins: {
+          entries: {
+            "consent-only": { subagent: { allowRun: true } },
+            entitled: { subagent: { allowRun: true } },
+          },
+        },
+      };
+      const params = { sessionKey: "agent:main:subagent:entitlement", message: "start" };
+      const delegatedRun = (api: ReturnType<typeof createApi>) =>
+        withPluginRuntimeGatewayRequestScope(
+          { pluginSubagentDelegationAllowed: true, isWebchatConnect: () => false },
+          () => api.runtime.subagent.run(params),
+        );
+      await expect(delegatedRun(manifestOnly)).rejects.toThrow(
+        "requires manifest runtimeCapabilities",
+      );
+      await expect(delegatedRun(consentOnly)).rejects.toThrow(
+        "requires manifest runtimeCapabilities",
+      );
+      await expect(delegatedRun(entitled)).resolves.toEqual({
+        runId: "entitled-run",
+      });
+      expect(subagent.run).toHaveBeenCalledOnce();
+
+      config = {
+        ...config,
+        plugins: { entries: { entitled: { subagent: { allowRun: false } } } },
+      };
+      await expect(delegatedRun(entitled)).rejects.toThrow("requires manifest runtimeCapabilities");
+      expect(subagent.run).toHaveBeenCalledOnce();
+
+      config = {
+        ...config,
+        plugins: {
+          entries: {
+            ENTITLED: { subagent: { allowRun: true } },
+            entitled: { subagent: { allowRun: false } },
+          },
+        },
+      };
+      await expect(delegatedRun(entitled)).rejects.toThrow("requires manifest runtimeCapabilities");
+      expect(subagent.run).toHaveBeenCalledOnce();
+
+      config = {
+        ...config,
+        plugins: {
+          entries: {
+            ENTITLED: { subagent: { allowRun: false } },
+            entitled: { subagent: { allowRun: true } },
+          },
+        },
+      };
+      await expect(delegatedRun(entitled)).resolves.toEqual({
+        runId: "entitled-run",
+      });
+      expect(subagent.run).toHaveBeenCalledTimes(2);
+
+      await expect(manifestOnly.runtime.subagent.run(params)).resolves.toEqual({
+        runId: "entitled-run",
+      });
+      expect(subagent.run).toHaveBeenCalledTimes(3);
+    });
+  });
+
   it("does not read runtime config before a logical session requires it", () => {
     const runtime = createPluginRuntime();
     const readConfig = vi.fn(() => {
@@ -25,6 +121,7 @@ describe("plugin registry SQLite session ownership", () => {
     await withTempHome(async () => {
       const config = {
         agents: { list: [{ id: "researcher", default: true }] },
+        plugins: { entries: { workboard: { subagent: { allowRun: true } } } },
       } as OpenClawConfig;
       const subagent = {
         complete: vi.fn(async () => ({ text: "completed" })),
@@ -43,6 +140,7 @@ describe("plugin registry SQLite session ownership", () => {
         origin: "bundled",
         enabled: true,
         configSchema: false,
+        contracts: { runtimeCapabilities: ["subagent.run"] },
       });
       const api = pluginRegistry.createApi(record, { config });
       const ownerRecord = createPluginRecord({
@@ -100,7 +198,10 @@ describe("plugin registry SQLite session ownership", () => {
           },
         );
         const pending = api.runtime.subagent.run({ sessionKey, message: "continue" });
-        runtimeConfig = { agents: { list: [{ id: "replacement", default: true }] } };
+        runtimeConfig = {
+          agents: { list: [{ id: "replacement", default: true }] },
+          plugins: { entries: { workboard: { subagent: { allowRun: true } } } },
+        };
         await expect(pending).rejects.toThrow('owned by plugin "harness-owner"');
         expect(subagent.run).toHaveBeenCalledOnce();
       } finally {

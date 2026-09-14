@@ -190,6 +190,38 @@ describe("plugin HTTP route runtime scopes", () => {
     expectMissingWriteScopeFailure({ res, setHeader, end, log });
   });
 
+  it("marks only plugin-auth routes as eligible for explicit subagent delegation", async () => {
+    const observed: Array<boolean | undefined> = [];
+    const handler = createPluginRequestHandler({
+      routes: [
+        createRoute({
+          path: "/delegated-run",
+          auth: "plugin",
+          handler: async () => {
+            observed.push(getPluginRuntimeGatewayRequestScope()?.pluginSubagentDelegationAllowed);
+            return true;
+          },
+        }),
+        createRoute({
+          path: "/authorized-run",
+          auth: "gateway",
+          handler: async () => {
+            observed.push(getPluginRuntimeGatewayRequestScope()?.pluginSubagentDelegationAllowed);
+            return true;
+          },
+        }),
+      ],
+    });
+
+    await dispatchPluginRequest(handler, {
+      path: "/delegated-run",
+      authContext: { gatewayAuthSatisfied: false },
+    });
+    await dispatchTrustedGatewayRequest(handler, "/authorized-run");
+
+    expect(observed).toEqual([true, undefined]);
+  });
+
   it("preserves write-capable runtime helpers on gateway-auth routes", async () => {
     const { handled, res, log } = await invokeRoute({
       path: "/secure-hook",

@@ -219,6 +219,7 @@ export function buildPluginCapabilitySummary(params: {
       ...(subagent
         ? {
             subagent: {
+              ...(subagent.allowRun !== undefined ? { allowRun: subagent.allowRun } : {}),
               ...(subagent.allowModelOverride !== undefined
                 ? { allowModelOverride: subagent.allowModelOverride }
                 : {}),

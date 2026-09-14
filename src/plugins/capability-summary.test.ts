@@ -146,6 +146,7 @@ describe("plugin capability summaries", () => {
       usageProviders: ["usage"],
       migrationProviders: ["migration"],
       gatewayMethodDispatch: ["gateway-method"],
+      runtimeCapabilities: ["subagent.run"],
       tools: ["tool"],
     } satisfies Required<PluginManifestContracts>;
 

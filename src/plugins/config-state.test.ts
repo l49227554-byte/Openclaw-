@@ -129,10 +129,12 @@ describe("normalizePluginsConfig", () => {
     {
       name: "normalizes plugin subagent override policy settings",
       subagent: {
+        allowRun: true,
         allowModelOverride: true,
         allowedModels: [" anthropic/claude-sonnet-4-6 ", "", "openai/gpt-5.5"],
       },
       expected: {
+        allowRun: true,
         allowModelOverride: true,
         hasAllowedModelsConfig: true,
         allowedModels: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.5"],

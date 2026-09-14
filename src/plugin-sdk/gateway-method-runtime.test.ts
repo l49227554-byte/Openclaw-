@@ -33,6 +33,22 @@ describe("plugin-sdk/gateway-method-runtime", () => {
     expect(dispatchGatewayMethodInProcessRaw).not.toHaveBeenCalled();
   });
 
+  it("does not treat subagent.run entitlement as generic Gateway authority", async () => {
+    await expect(
+      withPluginRuntimeGatewayRequestScope(
+        {
+          pluginId: "subagent-only",
+          assertSubagentRunAuthorized: () => {},
+          isWebchatConnect: () => false,
+        },
+        () => dispatchGatewayMethod("health", {}),
+      ),
+    ).rejects.toThrow(
+      'contracts.gatewayMethodDispatch: ["authenticated-request"] for plugin "subagent-only"',
+    );
+    expect(dispatchGatewayMethodInProcessRaw).not.toHaveBeenCalled();
+  });
+
   it("dispatches through the scoped client for entitled plugin HTTP routes", async () => {
     dispatchGatewayMethodInProcessRaw.mockResolvedValueOnce({ ok: true, payload: { ok: true } });
 

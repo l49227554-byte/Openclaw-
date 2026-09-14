@@ -1005,6 +1005,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "plugins.entries.*.hooks.timeouts": "Plugin Hook Timeout Overrides",
   "plugins.entries.*.subagent": "Plugin Subagent Policy",
   "plugins.entries.*.subagent.allowModelOverride": "Allow Plugin Subagent Model Override",
+  "plugins.entries.*.subagent.allowRun": "Allow Plugin Subagent Run",
   "plugins.entries.*.subagent.allowedModels": "Plugin Subagent Allowed Models",
   "plugins.entries.*.llm": "Plugin LLM Policy",
   "plugins.entries.*.llm.allowModelOverride": "Allow Plugin LLM Model Override",

@@ -27,6 +27,7 @@ export type NormalizedPluginsConfig = {
         timeouts?: Record<string, number>;
       };
       subagent?: {
+        allowRun?: boolean;
         allowModelOverride?: boolean;
         allowedModels?: string[];
         hasAllowedModelsConfig?: boolean;
@@ -125,6 +126,7 @@ function normalizePluginEntries(
     const subagentRaw = entry.subagent;
     const subagent = isRecord(subagentRaw)
       ? {
+          allowRun: subagentRaw.allowRun,
           allowModelOverride: subagentRaw.allowModelOverride,
           hasAllowedModelsConfig: Array.isArray(subagentRaw.allowedModels),
           allowedModels: Array.isArray(subagentRaw.allowedModels)
@@ -134,10 +136,12 @@ function normalizePluginEntries(
       : undefined;
     const normalizedSubagent =
       subagent &&
-      (typeof subagent.allowModelOverride === "boolean" ||
+      (typeof subagent.allowRun === "boolean" ||
+        typeof subagent.allowModelOverride === "boolean" ||
         subagent.hasAllowedModelsConfig ||
         (Array.isArray(subagent.allowedModels) && subagent.allowedModels.length > 0))
         ? {
+            ...(typeof subagent.allowRun === "boolean" ? { allowRun: subagent.allowRun } : {}),
             ...(typeof subagent.allowModelOverride === "boolean"
               ? { allowModelOverride: subagent.allowModelOverride }
               : {}),

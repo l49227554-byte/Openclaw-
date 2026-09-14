@@ -144,6 +144,7 @@ function createPluginRouteRuntimeScope(params: {
       : {}),
     ...(params.gatewayRequestContext ? { context: params.gatewayRequestContext } : {}),
     client: runtimeClient,
+    ...(params.route.auth === "plugin" ? { pluginSubagentDelegationAllowed: true } : {}),
     isWebchatConnect: () => false,
     ...(params.route.pluginId ? { pluginId: params.route.pluginId } : {}),
     ...(params.route.source ? { pluginSource: params.route.source } : {}),

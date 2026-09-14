@@ -531,6 +531,8 @@ export type PluginManifestContracts = {
   usageProviders?: string[];
   migrationProviders?: string[];
   gatewayMethodDispatch?: string[];
+  /** Privileged host-runtime operations requested by this plugin. */
+  runtimeCapabilities?: Array<"subagent.run">;
   tools?: string[];
 };
 

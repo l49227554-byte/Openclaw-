@@ -157,6 +157,8 @@ export const PluginEntrySchema = z.strictObject({
     .optional(),
   subagent: z
     .strictObject({
+      /** Consent to this plugin's manifest-declared subagent.run runtime capability. */
+      allowRun: z.boolean().optional(),
       /** Explicitly allow this plugin to request per-run provider/model overrides for subagent runs. */
       allowModelOverride: z.boolean().optional(),
       /**

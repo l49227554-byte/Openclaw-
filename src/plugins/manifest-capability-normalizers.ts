@@ -417,6 +417,15 @@ export function normalizeManifestContracts(value: unknown): PluginManifestContra
   const contracts: PluginManifestContracts = {};
   for (const key of PLUGIN_MANIFEST_CONTRACT_KEYS) {
     const entries = normalizeTrimmedStringList(value[key]);
+    if (key === "runtimeCapabilities") {
+      const runtimeCapabilities = entries.filter(
+        (entry): entry is "subagent.run" => entry === "subagent.run",
+      );
+      if (runtimeCapabilities.length > 0) {
+        contracts.runtimeCapabilities = runtimeCapabilities;
+      }
+      continue;
+    }
     if (entries.length > 0) {
       contracts[key] = entries;
     }

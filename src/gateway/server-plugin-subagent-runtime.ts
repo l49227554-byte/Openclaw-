@@ -16,7 +16,7 @@ import { resolvePluginSubagentCompletionRequester } from "../plugins/runtime/sub
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import type { PluginOrigin } from "../plugins/types.js";
 import { createBackgroundWorkOwner } from "../process/background-work.js";
-import { ADMIN_SCOPE } from "./operator-scopes.js";
+import { ADMIN_SCOPE, WRITE_SCOPE } from "./operator-scopes.js";
 import type { GatewayContextResolver, GatewayRequestOptions } from "./server-methods/types.js";
 import {
   dispatchGatewayMethodInProcess,
@@ -314,6 +314,14 @@ export function createGatewaySubagentRuntime(
         params.completionDelivery,
       );
       const scope = getPluginRuntimeGatewayRequestScope();
+      const delegatedPluginRun = scope?.pluginSubagentDelegationAllowed === true;
+      const assertSubagentRunAuthorized = delegatedPluginRun
+        ? scope?.assertSubagentRunAuthorized
+        : undefined;
+      if (delegatedPluginRun && !assertSubagentRunAuthorized) {
+        throw new Error("Plugin subagent delegation requires a current entitlement owner.");
+      }
+      assertSubagentRunAuthorized?.();
       const pluginId =
         typeof scope?.pluginId === "string" && scope.pluginId.trim()
           ? scope.pluginId.trim()
@@ -395,8 +403,17 @@ export function createGatewaySubagentRuntime(
         },
         {
           allowSyntheticModelOverride,
-          sessionMutationCommitGuard,
+          sessionMutationCommitGuard:
+            assertSubagentRunAuthorized || sessionMutationCommitGuard
+              ? () => {
+                  assertSubagentRunAuthorized?.();
+                  sessionMutationCommitGuard?.();
+                }
+              : undefined,
           agentRunTracking: "plugin_subagent",
+          ...(assertSubagentRunAuthorized
+            ? { forceSyntheticClient: true, syntheticScopes: [WRITE_SCOPE] }
+            : {}),
           ...(!scope?.client ? { operatorRoleActor: { kind: "system" as const } } : {}),
           ...(pluginId ? { pluginRuntimeOwnerId: pluginId } : {}),
           ...(pluginSubagentRequester ? { pluginSubagentRequester } : {}),

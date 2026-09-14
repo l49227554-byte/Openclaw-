@@ -365,6 +365,15 @@ function mergeManifestContracts(
   const contracts: PluginManifestContracts = {};
   for (const key of PLUGIN_MANIFEST_CONTRACT_KEYS) {
     const merged = mergeContractLists(manifestContracts?.[key], catalogContracts[key]);
+    if (key === "runtimeCapabilities") {
+      const runtimeCapabilities = merged?.filter(
+        (entry): entry is "subagent.run" => entry === "subagent.run",
+      );
+      if (runtimeCapabilities && runtimeCapabilities.length > 0) {
+        contracts.runtimeCapabilities = runtimeCapabilities;
+      }
+      continue;
+    }
     if (merged) {
       contracts[key] = merged;
     }

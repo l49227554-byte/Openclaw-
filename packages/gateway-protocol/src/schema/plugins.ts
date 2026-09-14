@@ -310,6 +310,7 @@ export const PluginOperatorGrantsSchema = closedObject({
   ),
   subagent: Type.Optional(
     closedObject({
+      allowRun: Type.Optional(Type.Boolean()),
       allowModelOverride: Type.Optional(Type.Boolean()),
       allowedModels: Type.Optional(Type.Array(NonEmptyString)),
     }),

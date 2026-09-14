@@ -2498,10 +2498,20 @@ class ChatControllerModelSelectionTest {
           }
         }
 
-      repeat(3) {
-        controller.handleGatewayEvent("health", null)
-        advanceUntilIdle()
-      }
+      controller.handleGatewayEvent(
+        "sessions.changed",
+        """{"sessionKey":"main","agentId":"main","phase":"message","session":{"key":"main","modelProvider":"openai","model":"gpt-5.6-sol"}}""",
+      )
+      controller.handleGatewayEvent("health", null)
+      advanceUntilIdle()
+      assertNull(controller.selectedModelLabel.value)
+
+      controller.handleGatewayEvent("health", null)
+      advanceUntilIdle()
+      assertEquals("gpt-5.6-sol", controller.selectedModelLabel.value)
+
+      controller.handleGatewayEvent("health", null)
+      advanceUntilIdle()
 
       assertEquals(2, metadataRequests)
       assertTrue(controller.modelCatalog.value.isEmpty())
@@ -2509,7 +2519,27 @@ class ChatControllerModelSelectionTest {
     }
 
   @Test
-  fun provisionalEmptyCatalogKeepsFriendlyLabelUntilTheRetryIsAccepted() =
+  fun metadataFailureAllowsTheRawIdFallback() =
+    runTest {
+      val controller =
+        createScriptedChatController {
+          respond("chat.metadata") { error("metadata unavailable") }
+        }
+
+      controller.handleGatewayEvent(
+        "sessions.changed",
+        """{"sessionKey":"main","agentId":"main","phase":"message","session":{"key":"main","modelProvider":"openai","model":"gpt-5.6-sol"}}""",
+      )
+      assertNull(controller.selectedModelLabel.value)
+
+      controller.handleGatewayEvent("health", null)
+      advanceUntilIdle()
+
+      assertEquals("gpt-5.6-sol", controller.selectedModelLabel.value)
+    }
+
+  @Test
+  fun emptyCatalogDoesNotDiscardACachedFriendlyLabel() =
     runTest {
       var metadataRequests = 0
       val controller =
@@ -2530,17 +2560,65 @@ class ChatControllerModelSelectionTest {
         "sessions.changed",
         """{"sessionKey":"main","agentId":"main","phase":"message","session":{"key":"main","modelProvider":"openai","model":"gpt-5.6-sol"}}""",
       )
-      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
+      assertEquals("GPT-5.6 Sol", controller.selectedModelLabel.value)
 
       controller.handleGatewayEvent("chat.metadata.changed", "{}")
       advanceUntilIdle()
-      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
+      assertEquals("GPT-5.6 Sol", controller.selectedModelLabel.value)
 
       controller.handleGatewayEvent("health", null)
       advanceUntilIdle()
       assertEquals(3, metadataRequests)
-      assertNull(controller.selectedModelDisplayName.value)
       assertEquals("openai/gpt-5.6-sol", controller.selectedModelRef.value)
+      assertEquals("GPT-5.6 Sol", controller.selectedModelLabel.value)
+    }
+
+  @Test
+  fun restoredRawFallbackWaitsForTheCurrentSessionScopedLookup() =
+    runTest {
+      val restoredMainMetadata = CompletableDeferred<String>()
+      var mainMetadataRequests = 0
+      val controller =
+        createScriptedChatController {
+          gatewayAdvertisesCapability = { it == "session-scoped-chat-metadata" }
+          respond("chat.history") { paramsJson ->
+            val sessionKey =
+              (json.parseToJsonElement(paramsJson.orEmpty()) as JsonObject)["sessionKey"]
+                .let { it as JsonPrimitive }
+                .content
+            val model = if (sessionKey == "main") "gpt-5.6-sol" else "gpt-5.6-luna"
+            """{"sessionId":"session-$sessionKey","messages":[],"sessionInfo":{"key":"$sessionKey","modelProvider":"openai","model":"$model"}}"""
+          }
+          respond("chat.metadata") { paramsJson ->
+            val sessionKey =
+              (json.parseToJsonElement(paramsJson.orEmpty()) as JsonObject)["sessionKey"]
+                .let { it as JsonPrimitive }
+                .content
+            if (sessionKey == "main") {
+              mainMetadataRequests += 1
+              if (mainMetadataRequests < 3) """{"commands":[],"models":[]}""" else restoredMainMetadata.await()
+            } else {
+              """{"commands":[],"models":[{"id":"gpt-5.6-luna","name":"GPT-5.6 Luna","provider":"openai"}]}"""
+            }
+          }
+        }
+
+      controller.load("main")
+      advanceUntilIdle()
+      controller.handleGatewayEvent("health", null)
+      advanceUntilIdle()
+      assertEquals("gpt-5.6-sol", controller.selectedModelLabel.value)
+
+      controller.switchSession("other", ownerAgentId = "main")
+      advanceUntilIdle()
+      assertEquals("GPT-5.6 Luna", controller.selectedModelLabel.value)
+
+      controller.switchSession("main", ownerAgentId = "main")
+      runCurrent()
+      assertNull(controller.selectedModelLabel.value)
+
+      restoredMainMetadata.complete("""{"commands":[],"models":[]}""")
+      advanceUntilIdle()
     }
 
   @Test

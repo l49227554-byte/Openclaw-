@@ -392,7 +392,7 @@ internal fun ChatScreen(
   val modelFavorites by viewModel.modelFavorites.collectAsState()
   val modelRecents by viewModel.modelRecents.collectAsState()
   val selectedModelRef by viewModel.chatSelectedModelRef.collectAsState()
-  val selectedModelDisplayName by viewModel.chatSelectedModelDisplayName.collectAsState()
+  val selectedModelPresentationLabel by viewModel.chatSelectedModelLabel.collectAsState()
   val pendingSessionSettingsKeys by viewModel.chatPendingSessionSettingsKeys.collectAsState()
   val micEnabled by viewModel.micEnabled.collectAsState()
   val micIsListening by viewModel.micIsListening.collectAsState()
@@ -614,7 +614,7 @@ internal fun ChatScreen(
     if (modelSelectionLocked) {
       if (activeSession.agentRuntimeId == "codex") nativeString("Native Codex model") else nativeString("Locked session model")
     } else {
-      selectedChatModelLabel(selectedModelRef, selectedModelDisplayName)
+      selectedModelPresentationLabel
     }
   val modelUnavailableReason =
     selectedChatModelSendBlockingReason(

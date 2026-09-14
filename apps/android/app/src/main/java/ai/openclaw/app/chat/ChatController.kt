@@ -25,6 +25,7 @@ import ai.openclaw.app.parseGatewayModels
 import ai.openclaw.app.resolveAgentIdFromMainSessionKey
 import ai.openclaw.app.ui.chat.chatModelSendBlocked
 import ai.openclaw.app.ui.chat.selectedChatModelDisplayName
+import ai.openclaw.app.ui.chat.selectedChatModelLabel
 import ai.openclaw.app.ui.chat.thinkingSupportedForSelection
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -530,8 +531,9 @@ class ChatController internal constructor(
   private val _selectedModelRef = MutableStateFlow<String?>(null)
   val selectedModelRef: StateFlow<String?> = _selectedModelRef.asStateFlow()
 
-  private val _selectedModelDisplayName = MutableStateFlow<String?>(null)
-  val selectedModelDisplayName: StateFlow<String?> = _selectedModelDisplayName.asStateFlow()
+  private val _selectedModelLabel = MutableStateFlow<String?>(null)
+  val selectedModelLabel: StateFlow<String?> = _selectedModelLabel.asStateFlow()
+  private var selectedModelDisplayName: String? = null
 
   private val _modelCatalog = MutableStateFlow<List<GatewayModelSummary>>(emptyList())
   val modelCatalog: StateFlow<List<GatewayModelSummary>> = _modelCatalog.asStateFlow()
@@ -3241,7 +3243,7 @@ class ChatController internal constructor(
               progressCard = _progressCard.value,
               progressCardScopeKey = progressCardScopeKey,
               selectedModelRef = _selectedModelRef.value,
-              selectedModelDisplayName = _selectedModelDisplayName.value,
+              selectedModelDisplayName = selectedModelDisplayName,
             )
           }
         }
@@ -3299,12 +3301,20 @@ class ChatController internal constructor(
         }
         val listedModelRef = _sessions.value.firstOrNull { it.key == key }?.providerQualifiedModelRef()
         val selectedModelRef = listedModelRef ?: recentConversation?.selectedModelRef
+        val recentModelMatches = recentConversation?.selectedModelRef == selectedModelRef
+        val catalogDisplayName = selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
         _selectedModelRef.value = selectedModelRef
-        _selectedModelDisplayName.value =
+        selectedModelDisplayName =
           recentConversation
             ?.selectedModelDisplayName
-            ?.takeIf { recentConversation.selectedModelRef == selectedModelRef }
-            ?: selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
+            ?.takeIf { recentModelMatches }
+            ?: catalogDisplayName
+        _selectedModelLabel.value =
+          selectedChatModelLabel(
+            selectedModelRef = selectedModelRef,
+            displayName = selectedModelDisplayName,
+            resolutionComplete = chatMetadataLoadState == ChatMetadataLoadState.Loaded,
+          )
         updateErrorText(null)
         _healthOk.value = false
         clearLiveHistoryMarker()
@@ -5217,7 +5227,13 @@ class ChatController internal constructor(
               else -> ChatMetadataLoadState.RetryEmptyCatalog
             }
           if (models.isNotEmpty() || nextLoadState == ChatMetadataLoadState.Loaded) {
-            _selectedModelDisplayName.value = selectedChatModelDisplayName(_selectedModelRef.value, models)
+            selectedChatModelDisplayName(_selectedModelRef.value, models)?.let { selectedModelDisplayName = it }
+            _selectedModelLabel.value =
+              selectedChatModelLabel(
+                selectedModelRef = _selectedModelRef.value,
+                displayName = selectedModelDisplayName,
+                resolutionComplete = true,
+              )
           }
           chatMetadataLoadState = nextLoadState
           synchronized(swarmLock) { swarmEnabled = metadataSwarmEnabled }
@@ -5237,10 +5253,15 @@ class ChatController internal constructor(
           requestCacheScope == currentCacheScope() &&
           metadataScope == currentChatMetadataScope() &&
           requestSelection != null &&
-          isCurrentSessionAction(requestSelection) &&
-          _errorText.value == null
+          isCurrentSessionAction(requestSelection)
         ) {
-          updateLocalizedErrorText(chatMetadataRefreshError)
+          _selectedModelLabel.value =
+            selectedChatModelLabel(
+              selectedModelRef = _selectedModelRef.value,
+              displayName = selectedModelDisplayName,
+              resolutionComplete = true,
+            )
+          if (_errorText.value == null) updateLocalizedErrorText(chatMetadataRefreshError)
         }
       }
     }
@@ -8116,12 +8137,17 @@ class ChatController internal constructor(
     val lane = pendingSettingsMutations[sessionSettingsKey(_sessionKey.value)]
     val previousModelRef = _selectedModelRef.value
     val selectedModelRef = entry?.providerQualifiedModelRef()
+    val catalogDisplayName = selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
     _selectedModelRef.value = selectedModelRef
-    _selectedModelDisplayName.value =
-      selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
-        ?: _selectedModelDisplayName.value.takeIf {
-          selectedModelRef == previousModelRef && chatMetadataLoadState != ChatMetadataLoadState.Loaded
-        }
+    if (selectedModelRef != previousModelRef || catalogDisplayName != null) {
+      selectedModelDisplayName = catalogDisplayName
+    }
+    _selectedModelLabel.value =
+      selectedChatModelLabel(
+        selectedModelRef = selectedModelRef,
+        displayName = selectedModelDisplayName,
+        resolutionComplete = chatMetadataLoadState == ChatMetadataLoadState.Loaded,
+      )
     applyThinkingMetadata(entry, lane?.confirmedThinkingLevel ?: _thinkingLevel.value)
     lane?.confirmedThinkingLevel = _thinkingLevel.value
     // An unsent successor is still the latest local choice. Once dispatched,

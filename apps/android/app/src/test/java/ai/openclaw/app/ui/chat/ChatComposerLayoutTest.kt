@@ -3886,7 +3886,7 @@ class ChatComposerLayoutTest {
   }
 
   @Test
-  fun unknownComposerModelUsesAnIndeterminateIndicator() {
+  fun unresolvedComposerModelUsesAnIndicatorUntilIdFallbackIsAllowed() {
     showChat()
     @Suppress("UNCHECKED_CAST")
     val selectedModelRef =
@@ -3895,7 +3895,17 @@ class ChatComposerLayoutTest {
         .apply { isAccessible = true }
         .get(controller) as MutableStateFlow<String?>
 
-    composeRule.runOnIdle { selectedModelRef.value = null }
+    @Suppress("UNCHECKED_CAST")
+    val selectedModelLabel =
+      ChatController::class.java
+        .getDeclaredField("_selectedModelLabel")
+        .apply { isAccessible = true }
+        .get(controller) as MutableStateFlow<String?>
+
+    composeRule.runOnIdle {
+      selectedModelRef.value = "openai/gpt-5.6-sol"
+      selectedModelLabel.value = null
+    }
 
     val indicator =
       composeRule.onNode(
@@ -3909,6 +3919,12 @@ class ChatComposerLayoutTest {
         androidx.compose.ui.semantics.ProgressBarRangeInfo.Indeterminate,
       ),
     )
+    composeRule.onNodeWithText("gpt-5.6-sol", useUnmergedTree = true).assertDoesNotExist()
+
+    composeRule.runOnIdle { selectedModelLabel.value = "gpt-5.6-sol" }
+
+    composeRule.onNodeWithText("gpt-5.6-sol", useUnmergedTree = true).assertIsDisplayed()
+    indicator.assertDoesNotExist()
   }
 
   @Test

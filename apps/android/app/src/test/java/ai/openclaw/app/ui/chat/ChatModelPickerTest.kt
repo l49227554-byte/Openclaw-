@@ -18,13 +18,14 @@ class ChatModelPickerTest {
   }
 
   @Test
-  fun modelPresentationUsesFriendlyNameThenRawIdAndLeavesUnknownLoading() {
+  fun modelPresentationUsesTheRawIdOnlyAfterResolutionCompletes() {
     val catalog = listOf(model(id = "gpt-5.6-sol", provider = "openai", name = "GPT-5.6 Sol"))
 
     assertEquals("GPT-5.6 Sol", selectedChatModelDisplayName("openai/gpt-5.6-sol", catalog))
-    assertEquals("GPT-5.6 Sol", selectedChatModelLabel("openai/gpt-5.6-sol", "GPT-5.6 Sol"))
-    assertEquals("gpt-5.6-sol", selectedChatModelLabel("openai/gpt-5.6-sol", null))
-    assertEquals(null, selectedChatModelLabel(null, null))
+    assertEquals("GPT-5.6 Sol", selectedChatModelLabel("openai/gpt-5.6-sol", "GPT-5.6 Sol", false))
+    assertEquals(null, selectedChatModelLabel("openai/gpt-5.6-sol", null, false))
+    assertEquals("gpt-5.6-sol", selectedChatModelLabel("openai/gpt-5.6-sol", null, true))
+    assertEquals(null, selectedChatModelLabel(null, null, true))
   }
 
   @Test

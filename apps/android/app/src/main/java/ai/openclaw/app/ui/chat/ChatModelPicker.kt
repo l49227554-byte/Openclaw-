@@ -39,9 +39,11 @@ internal fun selectedChatModelDisplayName(
 internal fun selectedChatModelLabel(
   selectedModelRef: String?,
   displayName: String?,
+  resolutionComplete: Boolean,
 ): String? {
   val selected = selectedModelRef?.trim()?.takeIf(String::isNotEmpty) ?: return null
-  return displayName?.trim()?.takeIf(String::isNotEmpty) ?: selected.substringAfterLast('/')
+  return displayName?.trim()?.takeIf(String::isNotEmpty)
+    ?: selected.substringAfterLast('/').takeIf { resolutionComplete }
 }
 
 internal fun thinkingSupportedForSelection(

@@ -614,7 +614,7 @@ class ChatControllerTranscriptCacheTest {
 
       controller.load("main")
       advanceUntilIdle()
-      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
+      assertEquals("GPT-5.6 Sol", controller.selectedModelLabel.value)
       controller.switchSession("other", ownerAgentId = "main")
       advanceUntilIdle()
       assertEquals(listOf("other history"), controller.messages.value.map { it.content.single().text })
@@ -626,7 +626,7 @@ class ChatControllerTranscriptCacheTest {
 
       assertEquals(listOf("main history"), controller.messages.value.map { it.content.single().text })
       assertEquals("openai/gpt-5.6-sol", controller.selectedModelRef.value)
-      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
+      assertEquals("GPT-5.6 Sol", controller.selectedModelLabel.value)
       assertTrue(controller.messagesFromCache.value)
       assertTrue(controller.transcriptPresented.value)
 

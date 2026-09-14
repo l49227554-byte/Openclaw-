@@ -88,6 +88,8 @@ function verifyUploadedArtifact(
 
 // The deployed request deadline is a fixed production value, so the timeout boundary is
 // driven directly by sourcing the helper and passing short deadlines for the fixture.
+// Sourcing runs under /bin/bash: the script's macOS Bash 5.3+ guard re-execs only when
+// it is executed by a modern Bash, so the system shell keeps the helpers in-process.
 function runDeadlineHelper(params: {
   env: NodeJS.ProcessEnv;
   killGrace?: string;
@@ -95,7 +97,7 @@ function runDeadlineHelper(params: {
   timeoutMs?: number;
 }) {
   return spawnSync(
-    "bash",
+    "/bin/bash",
     [
       "-c",
       'source "$1"; shift; gh_api_get_with_retry "$@"',
@@ -455,7 +457,7 @@ describe("shared Docker image artifacts", () => {
     const fixture = createFixture();
     try {
       const applied = spawnSync(
-        "bash",
+        "/bin/bash",
         [
           "-c",
           'source "$1"; shift; gh_api_get_with_retry "$@"',

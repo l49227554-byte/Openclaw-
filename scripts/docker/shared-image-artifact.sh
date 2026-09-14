@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Bash 5.3+ can deadlock writing heredoc pipes on macOS before the reader starts.
-# Sourced callers only drive the pure helpers, so they never re-exec.
-if [[ "${BASH_SOURCE[0]}" == "$0" && ${OSTYPE:-} == darwin* && $BASH != /bin/bash ]] &&
-  ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
+if [[ ${OSTYPE:-} == darwin* && $BASH != /bin/bash ]] && ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
   exec /bin/bash "$0" "$@"
 fi
 set -euo pipefail

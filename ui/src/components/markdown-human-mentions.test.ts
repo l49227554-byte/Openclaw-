@@ -76,6 +76,85 @@ describe("explicit human mention Markdown", () => {
     },
   );
 
+  it("preserves backticks contained entirely in a selected person label", () => {
+    const label = "@Ada `One`";
+    const source = "Hello " + label;
+    const fragment = htmlFragment(
+      toSanitizedMarkdownHtml(source, { humanMentions: [selected(source, label)] }),
+    );
+    expect(fragment.querySelector("openclaw-person-reference")?.textContent).toBe(label);
+    expect(fragment.querySelector("code")).toBeNull();
+    expect(fragment.textContent?.trim()).toBe(source);
+  });
+
+  it.each([
+    ["[@Ada]\n\n[@Ada]: /person", 0],
+    ["[@Ada][]\n\n[@Ada]: /person", 0],
+    ["[label][@Ada]\n\n[@Ada]: /person", 0],
+    ["[Person @Ada]\n\n[Person @Ada]: /person", 0],
+    ["[@Ada]\n\n[@Ada]: /person", 1],
+    ["[@Ada]\n\n[@Ada]: /person\n[@Ada]: /other", 1],
+  ] as const)(
+    "preserves reference links when a selected span masks a label: %s (%s)",
+    (source, occurrence) => {
+      const start =
+        occurrence === 0
+          ? source.indexOf("@Ada")
+          : source.indexOf("@Ada", source.indexOf("@Ada") + 1);
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml(source, {
+          humanMentions: [selected(source, "@Ada", "profile-ada", start)],
+        }),
+      );
+      expect(fragment.querySelector("a")?.getAttribute("href")).toBe("/person");
+      expect(fragment.querySelector("openclaw-person-reference")).toBeNull();
+      expect(fragment.textContent).not.toContain("openclawhumanmention");
+    },
+  );
+
+  it("resolves a reference label containing multiple selected people", () => {
+    const source = "[@Ada @Bob][]\n\n[@Ada @Bob]: /people";
+    const fragment = htmlFragment(
+      toSanitizedMarkdownHtml(source, {
+        humanMentions: [selected(source, "@Ada"), selected(source, "@Bob", "profile-bob")],
+      }),
+    );
+    expect(fragment.querySelector("a")?.getAttribute("href")).toBe("/people");
+    expect(fragment.querySelector("a")?.textContent).toBe("@Ada @Bob");
+    expect(fragment.querySelector("openclaw-person-reference")).toBeNull();
+  });
+
+  it("keeps a selected person control inside brackets that are not a reference link", () => {
+    const source = "[Hello @Ada]";
+    const fragment = htmlFragment(
+      toSanitizedMarkdownHtml(source, {
+        humanMentions: [selected(source, "@Ada")],
+      }),
+    );
+    expect(fragment.querySelector("openclaw-person-reference")?.textContent).toBe("@Ada");
+    expect(fragment.textContent?.trim()).toBe(source);
+  });
+
+  it("preserves reference-style images", () => {
+    const source = "![@Ada][]\n\n[@Ada]: https://example.test/person.png";
+    expect(toSanitizedMarkdownHtml(source, { humanMentions: [selected(source, "@Ada")] })).toBe(
+      toSanitizedMarkdownHtml(source),
+    );
+  });
+
+  it.each([
+    "[@Ada]\n\n[OPENCLAWHUMANMENTION0X0END]: /literal\n\n@Ada",
+    "[OPENCLAWHUMANMENTION0X0END]\n\n[@Ada]: /person\n\n@Ada",
+  ])("does not alias authored reference labels to a generated marker: %s", (source) => {
+    const fragment = htmlFragment(
+      toSanitizedMarkdownHtml(source, {
+        humanMentions: [selected(source, "@Ada", "profile-ada", source.lastIndexOf("@Ada"))],
+      }),
+    );
+    expect(fragment.querySelector("a")).toBeNull();
+    expect(fragment.querySelectorAll("openclaw-person-reference")).toHaveLength(1);
+  });
+
   it("does not trust raw custom element markup or infer identity from plain names", () => {
     const source =
       '@Ada <openclaw-person-reference profile-id="secret" label="@Ada">@Ada</openclaw-person-reference>';

@@ -587,7 +587,11 @@ export function toSanitizedMarkdownHtml(
   const renderOptions = normalizeMarkdownRenderOptions(options);
   const prepared =
     renderOptions.mode === "document" || markdownLocal.length <= MARKDOWN_PARSE_LIMIT
-      ? prepareMarkdownHumanMentions(markdownLocal, renderOptions.humanMentions)
+      ? prepareMarkdownHumanMentions(
+          markdownLocal,
+          renderOptions.humanMentions,
+          markdownParser.utils.normalizeReference,
+        )
       : { source: markdownLocal, tokens: [] };
   renderOptions.humanMentionTokens = prepared.tokens;
   const renderInput = normalizeMarkdownLineBreaks(

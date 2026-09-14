@@ -53,6 +53,8 @@ type FixtureOptions = {
   trusted?: boolean;
   requesterAccountId?: string;
   currentProvider?: string;
+  currentChatType?: "channel" | "direct";
+  currentMessagingTarget?: string;
   rawTarget?: string;
   configure?: (cfg: OpenClawConfig) => void;
 };
@@ -149,7 +151,10 @@ async function withReadFixture(
       const toolContext = {
         currentChannelProvider: options.currentProvider ?? "mattermost",
         currentChannelId: `channel:${CURRENT}`,
-        currentChatType: "channel" as const,
+        currentChatType: options.currentChatType ?? ("channel" as const),
+        ...(options.currentMessagingTarget
+          ? { currentMessagingTarget: options.currentMessagingTarget }
+          : {}),
       };
       const sessionKey = `agent:main:mattermost:channel:${CURRENT}`;
       const operationalRunInstance = createOperationalRunInstanceRef("mattermost-read-fixture");
@@ -228,6 +233,18 @@ async function withReadFixture(
 }
 
 describe("Mattermost registered message reads", () => {
+  it("reads the current DM by its native channel while sends target its user", async () => {
+    await withReadFixture(
+      { currentChatType: "direct", currentMessagingTarget: "user:cccccccccccccccccccccccccc" },
+      async ({ read, requests }) => {
+        await expect(read(CURRENT)).resolves.toMatchObject({
+          details: { ok: true, channelId: CURRENT, messages: [{ id: POST.id }] },
+        });
+        expect(requests).toEqual([postsPath(CURRENT)]);
+      },
+    );
+  });
+
   it.each([false, true])(
     "retains caller authority through directory resolution (revoke=%s)",
     async (revokeDuringResolution) => {

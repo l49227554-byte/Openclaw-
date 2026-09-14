@@ -238,19 +238,17 @@ export function createSessionDeletions(host: DeletionHost) {
         const unstarted = [...records.keys()].filter(
           (candidate) => !candidate.operation && owns(candidate),
         );
-        for (const candidate of unstarted) {
-          rollback(candidate);
-        }
         if (unstarted.length > 0) {
           const error = new Error(
             t("sessionsView.deleteSessionsStale", { count: String(targets.length) }),
           );
-          reportError(error.message);
           for (const candidate of unstarted) {
+            rollback(candidate);
             for (const target of records.get(candidate)!.values()) {
               result.errors.push({ target, error });
             }
           }
+          reportError(error.message);
         }
         break;
       }

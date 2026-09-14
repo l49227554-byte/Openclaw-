@@ -227,6 +227,7 @@ export async function prepareSessionLifecycleDrain(
       const pending = placements?.listPendingWorkspaceResults?.(params.sessionId)[0];
       if (
         pending &&
+        pending.workspaceAcceptedAtMs === null &&
         isCurrentWorkerWorkspacePendingResultOwner(placement, pending) &&
         params.context.workerPlacementRunnerAvailabilityReader?.read(placement)?.status ===
           "offline"

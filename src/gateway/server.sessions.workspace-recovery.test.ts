@@ -33,6 +33,7 @@ afterEach(() => {
 
 type RecoveryScenario =
   | "offline runner"
+  | "accepted result on offline runner"
   | "available runner"
   | "unknown runner"
   | "stale pending generation"
@@ -67,6 +68,9 @@ async function seedPendingWorkspace(scenario: RecoveryScenario) {
     },
   });
   placements.markWorkspaceResultPending(claim);
+  if (scenario === "accepted result on offline runner") {
+    placements.acceptWorkspaceResult(claim);
+  }
   placements.handoffWorkspaceResultRecovery(claim);
   const staleFields = {
     "stale pending generation": { placement_generation: claim.placementGeneration - 1 },
@@ -164,6 +168,7 @@ describe.each([
   });
 
   test.each([
+    "accepted result on offline runner",
     "available runner",
     "unknown runner",
     "stale pending generation",

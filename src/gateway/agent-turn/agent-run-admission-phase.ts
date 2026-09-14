@@ -4,7 +4,6 @@ import {
   createOperationalRunInstanceRef,
   type OperationalRunInstanceRef,
 } from "../../agents/admitted-run-context.js";
-import { AGENT_RUN_TERMINAL_RETRY_GRACE_MS } from "../../agents/agent-run-terminal-outcome.js";
 import {
   clearEmbeddedAgentRunAbortabilityForRunId,
   isEmbeddedAgentRunAbortableForRunId,
@@ -594,17 +593,7 @@ export async function prepareAgentRunDispatch(params: {
       assertCompletionCurrent: () => assertInputOwnerCurrent(true),
       abortSignal: activeRunAbort.controller.signal,
       getAbortStopReason: () => activeRunAbort.entry?.abortStopReason ?? "rpc",
-      deferTimeoutCompletion: (settle) => {
-        const entry = activeRunAbort.entry;
-        if (!entry || params.context.chatAbortControllers.get(params.runId) !== entry) {
-          return false;
-        }
-        entry.pendingTimeoutCompletion = {
-          expiresAtMs: Date.now() + AGENT_RUN_TERMINAL_RETRY_GRACE_MS,
-          settle,
-        };
-        return true;
-      },
+      deferTimeoutCompletion: activeRunAbort.deferTimeoutCompletion,
       privateCompletion: params.privateCompletion,
       request: params.request,
       cfg: params.cfg,

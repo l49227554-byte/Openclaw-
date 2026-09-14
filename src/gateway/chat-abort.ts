@@ -7,6 +7,7 @@ import {
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
+import { AGENT_RUN_TERMINAL_RETRY_GRACE_MS } from "../agents/agent-run-terminal-outcome.js";
 import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { isAbortRequestText } from "../auto-reply/reply/abort-primitives.js";
@@ -92,6 +93,7 @@ export function projectInFlightRunSnapshot(params: {
 type RegisteredChatAbortController = {
   controller: AbortController;
   markExecutionStarted: () => boolean;
+  deferTimeoutCompletion: (settle: () => void) => boolean;
   bindAgentRunDelegatedAuthority: (authority: AgentRunDelegatedAuthority) => void;
   cleanup: () => void;
 } & (
@@ -266,6 +268,7 @@ export function registerChatAbortController(params: {
     return {
       controller,
       registered: false,
+      deferTimeoutCompletion: () => false,
       markExecutionStarted,
       bindAgentRunDelegatedAuthority,
       cleanup,
@@ -304,6 +307,16 @@ export function registerChatAbortController(params: {
     controller,
     registered: true,
     entry,
+    deferTimeoutCompletion: (settle) => {
+      if (params.chatAbortControllers.get(params.runId) !== entry) {
+        return false;
+      }
+      entry.pendingTimeoutCompletion = {
+        expiresAtMs: Date.now() + AGENT_RUN_TERMINAL_RETRY_GRACE_MS,
+        settle,
+      };
+      return true;
+    },
     markExecutionStarted,
     bindAgentRunDelegatedAuthority,
     cleanup,

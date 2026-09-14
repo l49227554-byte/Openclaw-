@@ -17,10 +17,13 @@ import {
   resolveTokenExpiryState,
   type AuthCredentialReasonCode,
 } from "./credential-state.js";
-import { isPendingOAuthRefreshFence } from "./oauth-refresh-marker.js";
+import {
+  isPendingOAuthRefreshFence,
+  isPendingOAuthRefreshForCredential,
+} from "./oauth-refresh-marker.js";
 import { dedupeProfileIds } from "./profile-list.js";
 import { isSetupCredentialAccessible } from "./setup-access.js";
-import type { AuthProfileCredential, AuthProfileStore } from "./types.js";
+import type { AuthProfileCredential, AuthProfileStore, OAuthCredential } from "./types.js";
 import {
   clearExpiredCooldowns,
   isProfileInCooldown,
@@ -38,7 +41,27 @@ export type AuthProfileEligibilityReasonCode =
 type AuthProfileEligibility = {
   eligible: boolean;
   reasonCode: AuthProfileEligibilityReasonCode;
+  /** Previously authorized material represented by an exact pending claim, not a usable token. */
+  continuationCredential?: OAuthCredential;
 };
+
+type OAuthRefreshContinuation = {
+  profileId: string;
+  credential: OAuthCredential;
+};
+
+function resolveOAuthRefreshContinuationCredential(
+  store: AuthProfileStore,
+  continuation: OAuthRefreshContinuation | undefined,
+): OAuthCredential | undefined {
+  if (!continuation) {
+    return undefined;
+  }
+  const fence = store.profiles[continuation.profileId];
+  return fence?.type === "oauth" && isPendingOAuthRefreshForCredential({ ...continuation, fence })
+    ? continuation.credential
+    : undefined;
+}
 
 function isAuthProfileRuntimeSettlementCandidate(params: {
   credential: AuthProfileCredential | undefined;
@@ -159,12 +182,18 @@ export function resolveAuthProfileEligibility(params: {
   now?: number;
   /** Runtime resolvers may observe a durable pending refresh through settlement. */
   includePendingOAuthRefresh?: boolean;
+  /** Continue only this exact previously authorized generation; never broadens live authority. */
+  oauthRefreshContinuation?: OAuthRefreshContinuation;
 }): AuthProfileEligibility {
   const providerAuthKey = resolveProviderIdForAuth(params.provider, {
     config: params.cfg,
     ...params.authAliasLookupParams,
   });
-  const cred = params.store.profiles[params.profileId];
+  const continuationCredential =
+    params.oauthRefreshContinuation?.profileId === params.profileId
+      ? resolveOAuthRefreshContinuationCredential(params.store, params.oauthRefreshContinuation)
+      : undefined;
+  const cred = continuationCredential ?? params.store.profiles[params.profileId];
   if (!cred) {
     if (
       isConfiguredAwsSdkAuthProfileForProvider({
@@ -218,10 +247,16 @@ export function resolveAuthProfileEligibility(params: {
     isAuthProfileRuntimeSettlementCandidate({
       credential: cred,
       eligibility: credentialEligibility,
-      includePendingOAuthRefresh: params.includePendingOAuthRefresh,
+      includePendingOAuthRefresh: params.oauthRefreshContinuation
+        ? false
+        : params.includePendingOAuthRefresh,
     })
   ) {
-    return { eligible: true, reasonCode: "ok" };
+    return {
+      eligible: true,
+      reasonCode: "ok",
+      ...(continuationCredential ? { continuationCredential } : {}),
+    };
   }
   return {
     eligible: false,
@@ -244,6 +279,8 @@ type ResolveAuthProfileOrderParams = {
   readinessMode?: "execution" | "read-only";
   /** Runtime resolvers may observe a durable pending refresh through settlement. */
   includePendingOAuthRefresh?: boolean;
+  /** Continue only this exact previously authorized generation; never broadens live authority. */
+  oauthRefreshContinuation?: OAuthRefreshContinuation;
 };
 
 export type AuthProfileOrderResolution = {
@@ -292,7 +329,23 @@ export function resolveExplicitAuthOrderSelection(params: {
 export function resolveAuthProfileOrderWithMetadata(
   params: ResolveAuthProfileOrderParams,
 ): AuthProfileOrderResolution {
-  const { cfg, store, provider, preferredProfile, forModel } = params;
+  const { cfg, provider, preferredProfile, forModel } = params;
+  const continuationCredential = resolveOAuthRefreshContinuationCredential(
+    params.store,
+    params.oauthRefreshContinuation,
+  );
+  // Ordering, eligibility, and expiry ranking consume one auth-owner projection.
+  // The durable store remains an inert fence until the refresh owner settles it.
+  const store =
+    continuationCredential && params.oauthRefreshContinuation
+      ? {
+          ...params.store,
+          profiles: {
+            ...params.store.profiles,
+            [params.oauthRefreshContinuation.profileId]: continuationCredential,
+          },
+        }
+      : params.store;
   const providerKey = normalizeProviderId(provider);
   const providerAuthKey = resolveProviderIdForAuth(provider, {
     config: cfg,
@@ -343,7 +396,9 @@ export function resolveAuthProfileOrderWithMetadata(
       provider,
       profileId,
       now,
-      includePendingOAuthRefresh: params.includePendingOAuthRefresh,
+      includePendingOAuthRefresh: params.oauthRefreshContinuation
+        ? false
+        : params.includePendingOAuthRefresh,
     });
     return (
       eligibility.eligible ||

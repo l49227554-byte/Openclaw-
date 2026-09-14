@@ -123,6 +123,91 @@ describe("resolveAuthProfileOrder", () => {
     ).toEqual([]);
   });
 
+  it("keeps exact pending continuation in the auth owner without changing the stored fence", () => {
+    const profileId = "openai:continuing";
+    const credential = {
+      type: "oauth" as const,
+      provider: "openai",
+      access: "authorized-access",
+      refresh: "authorized-refresh",
+      expires: Date.now() + 600_000,
+      accountId: "account-a",
+    };
+    const fence = createOAuthRefreshFence({ profileId, credential });
+    const store: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        [profileId]: fence,
+        "openai:peer": { ...credential, access: "peer-access", refresh: "peer-refresh" },
+      },
+      usageStats: { [profileId]: { lastUsed: 1 }, "openai:peer": { lastUsed: 2 } },
+    };
+    const params = {
+      store,
+      provider: "openai",
+      oauthRefreshContinuation: { profileId, credential },
+    };
+    expect(resolveAuthProfileEligibility({ ...params, profileId })).toEqual({
+      eligible: true,
+      reasonCode: "ok",
+      continuationCredential: credential,
+    });
+    // Rank the authorized generation, not the inert fence's expired timestamp.
+    expect(resolveAuthProfileOrder(params)).toEqual([profileId, "openai:peer"]);
+    expect(store.profiles[profileId]).toBe(fence);
+    expect(resolveAuthProfileOrder({ store, provider: "openai" })).toEqual(["openai:peer"]);
+    expect(resolveAuthProfileEligibility({ store, provider: "openai", profileId })).toEqual({
+      eligible: false,
+      reasonCode: "expired",
+    });
+    expect(
+      resolveAuthProfileOrder({
+        ...params,
+        cfg: { auth: { order: { openai: ["openai:peer"] } } },
+      }),
+    ).toEqual(["openai:peer"]);
+    expect(
+      resolveAuthProfileEligibility({
+        ...params,
+        profileId,
+        cfg: { auth: { profiles: { [profileId]: { provider: "openai", mode: "api_key" } } } },
+      }),
+    ).toEqual({ eligible: false, reasonCode: "mode_mismatch" });
+  });
+
+  it("denies failed, replaced, or mismatched pending generations even with broad continuation enabled", () => {
+    const profileId = "openai:continuing";
+    const credential = {
+      type: "oauth" as const,
+      provider: "openai",
+      access: "authorized-access",
+      refresh: "authorized-refresh",
+      expires: Date.now() + 600_000,
+      accountId: "account-a",
+    };
+    const fence = createOAuthRefreshFence({ profileId, credential });
+    for (const candidate of [
+      createFailedOAuthRefreshFence(fence),
+      { ...fence, accountId: "account-b" },
+      { ...fence, provider: "anthropic" },
+      createOAuthRefreshFence({ profileId, credential: { ...credential, access: "other-access" } }),
+      createOAuthRefreshFence({
+        profileId,
+        credential: { ...credential, refresh: "other-refresh" },
+      }),
+      createOAuthRefreshFence({ profileId: "openai:other", credential }),
+    ]) {
+      const params = {
+        store: { version: 1 as const, profiles: { [profileId]: candidate } },
+        provider: "openai",
+        includePendingOAuthRefresh: true,
+        oauthRefreshContinuation: { profileId, credential },
+      };
+      expect(resolveAuthProfileEligibility({ ...params, profileId }).eligible).toBe(false);
+      expect(resolveAuthProfileOrder(params)).toEqual([]);
+    }
+  });
+
   it("accepts aliased provider credentials from manifest metadata", async () => {
     const store: AuthProfileStore = {
       version: 1,

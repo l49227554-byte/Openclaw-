@@ -127,6 +127,23 @@ before loading the provider or rejecting credential settlement afterward does no
 prevent unauthorized use of a refresh token. Ordinary unguarded refresh callers
 retain their existing behavior.
 
+## Pending refresh continuation
+
+The existing `resolveAuthProfileEligibility` and `resolveAuthProfileOrder` helpers
+accept `oauthRefreshContinuation: { profileId, credential }` for a previously
+authorized OAuth generation. The auth owner recognizes only its exact pending
+claim, including token-generation digests and principal metadata, and applies the
+normal configuration, selection, cooldown, and expiry-ranking rules. Failed or
+replaced claims do not qualify. This exact continuation takes precedence over the
+broader `includePendingOAuthRefresh` option.
+
+Eligibility returns `continuationCredential` only for an eligible exact pending
+claim. This is the caller's previously authorized material, not a refreshed usable
+token. Use it only to validate continuity while the auth owner settles refresh;
+continue checking live source/configuration authority. Ordinary reads omit this
+option and still reject pending markers. Plugins must not parse refresh markers
+or substitute credentials into their own selection stores.
+
 ## Walkthrough
 
 <Steps>

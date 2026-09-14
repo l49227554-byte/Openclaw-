@@ -384,5 +384,3 @@ export {
   listUsableProviderAuthProfileIds,
   resolveProviderAuthProfileApiKey,
 } from "../plugins/provider-auth-availability.js";
-
-export { isPendingOAuthRefreshForCredential } from "../agents/auth-profiles/oauth-refresh-marker.js";

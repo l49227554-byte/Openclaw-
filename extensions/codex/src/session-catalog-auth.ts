@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import type { AuthProfileCredential } from "openclaw/plugin-sdk/agent-runtime";
+import {
+  resolveAuthProfileEligibility,
+  type AuthProfileCredential,
+} from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   findNormalizedProviderValue,
-  isPendingOAuthRefreshForCredential,
+  resolveAuthProfileOrder,
   resolveOpenAICodexAuthIdentity,
 } from "openclaw/plugin-sdk/provider-auth";
 import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
@@ -85,31 +88,29 @@ export async function prepareCodexCatalogClientOptions(params: {
       config: options.config,
     });
     let currentCredential = profileId ? currentStore.profiles[profileId] : undefined;
-    // The auth owner temporarily replaces a claimed generation with an inert fence.
-    // Check selection using its exact previously authorized credential, never the marker.
-    if (
-      allowPendingRefresh &&
-      profileId &&
-      sourceGeneration?.type === "oauth" &&
-      currentCredential?.type === "oauth" &&
-      isPendingOAuthRefreshForCredential({
-        profileId,
-        credential: sourceGeneration,
-        fence: currentCredential,
-      })
-    ) {
-      currentCredential = sourceGeneration;
+    const oauthRefreshContinuation =
+      allowPendingRefresh && profileId && sourceGeneration?.type === "oauth"
+        ? { profileId, credential: sourceGeneration }
+        : undefined;
+    // The auth owner recognizes exact continuation; catalog code never interprets markers.
+    if (oauthRefreshContinuation) {
+      const eligibility = resolveAuthProfileEligibility({
+        store: currentStore,
+        cfg: options.config,
+        provider: "openai",
+        profileId: oauthRefreshContinuation.profileId,
+        oauthRefreshContinuation,
+      });
+      currentCredential = eligibility.continuationCredential ?? currentCredential;
     }
-    const selectionStore = {
-      ...currentStore,
-      profiles: {
-        ...currentStore.profiles,
-        ...(profileId && currentCredential ? { [profileId]: currentCredential } : {}),
-      },
-    };
+    const currentProfileId = resolveAuthProfileOrder({
+      store: currentStore,
+      cfg: options.config,
+      provider: "openai",
+      oauthRefreshContinuation,
+    })[0]?.trim();
     if (
-      resolveCodexAppServerAuthProfileId({ store: selectionStore, config: options.config }) !==
-        profileId ||
+      currentProfileId !== profileId ||
       sourceCredentialFingerprint(currentCredential) !== preparedSource
     ) {
       throw new Error(

@@ -81,8 +81,13 @@ function normalizePreference(value: unknown): NewSessionPreference | null {
   const model = normalizeOptionalString(record.model);
   const thinkingLevel = normalizeOptionalString(record.thinkingLevel);
   const worktree = typeof record.worktree === "boolean" ? record.worktree : undefined;
+  // Preserve the legacy source choice before Git discovery can clear worktree availability.
   const freshWorkspace =
-    typeof record.freshWorkspace === "boolean" ? record.freshWorkspace : undefined;
+    typeof record.freshWorkspace === "boolean"
+      ? record.freshWorkspace
+      : worktree === true
+        ? false
+        : undefined;
   const where = normalizeWhere(record.where);
   if (
     !workspace &&

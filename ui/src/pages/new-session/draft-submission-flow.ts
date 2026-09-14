@@ -25,11 +25,8 @@ import { prepareBackgroundSessionCompletion } from "./background-session-notice.
 import { NewSessionCapabilityController } from "./capability-controller.ts";
 import * as catalog from "./catalog-target.ts";
 import { NewSessionComposerTextareaController } from "./composer.ts";
-import {
-  buildSelectedSessionCreateParams,
-  type DraftSessionCreateOverrides,
-  type NewSessionVisibility,
-} from "./create-params.ts";
+import type { DraftSessionCreateOverrides, NewSessionVisibility } from "./create-params.ts";
+import { buildSelectedSessionCreateParams } from "./draft-create-params.ts";
 import type { DraftGatewayState } from "./draft-gateway-state.ts";
 import { NewSessionDraftPersistence } from "./draft-persistence.ts";
 import type { DraftPlaceState } from "./draft-place-state.ts";

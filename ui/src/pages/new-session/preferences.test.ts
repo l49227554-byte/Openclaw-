@@ -7,6 +7,7 @@ import {
   loadNewSessionPreference,
   patchNewSessionPreference,
   replaceBrowserPreference,
+  resolveNewSessionFolderPreference,
 } from "./preferences.ts";
 
 describe("new-session browser preferences", () => {
@@ -21,6 +22,7 @@ describe("new-session browser preferences", () => {
       where: { kind: "cloud", id: "build-fleet" },
       projectId: "openclaw",
       worktree: true,
+      freshWorkspace: false,
       baseRef: "main",
       worktreeName: "picker-redesign",
       model: "openai/gpt-5.6-sol",
@@ -33,6 +35,7 @@ describe("new-session browser preferences", () => {
       where: { kind: "cloud", id: "build-fleet" },
       projectId: "openclaw",
       worktree: true,
+      freshWorkspace: false,
       baseRef: "main",
       worktreeName: "picker-redesign",
       model: "openai/gpt-5.6-sol",
@@ -40,6 +43,33 @@ describe("new-session browser preferences", () => {
     });
     expect(loadNewSessionPreference("ws://one.example", "research")).toBeNull();
     expect(loadNewSessionPreference("ws://two.example", "main")).toBeNull();
+  });
+
+  it("keeps a legacy cloud source after unavailable Git clears the stored worktree flag", () => {
+    const gatewayUrl = "ws://one.example";
+    const legacyPreference = {
+      workspace: "/workspace",
+      folder: "/workspace",
+      where: { kind: "cloud", id: "build-fleet" },
+      worktree: true,
+    };
+    patchNewSessionPreference(gatewayUrl, "main", { folder: "/workspace" });
+    const key = localStorage.key(0);
+    expect(key).not.toBeNull();
+    localStorage.setItem(key ?? "", JSON.stringify({ agents: { main: legacyPreference } }));
+
+    const firstLoad = loadNewSessionPreference(gatewayUrl, "main");
+    expect(resolveNewSessionFolderPreference(firstLoad, "/workspace").freshWorkspace).toBe(false);
+    patchNewSessionPreference(gatewayUrl, "main", { worktree: false });
+
+    const secondLoad = loadNewSessionPreference(gatewayUrl, "main");
+    expect(secondLoad).toMatchObject({ ...legacyPreference, worktree: false });
+    expect(resolveNewSessionFolderPreference(secondLoad, "/workspace").freshWorkspace).toBe(false);
+    patchNewSessionPreference(gatewayUrl, "main", { worktree: true, freshWorkspace: true });
+    expect(
+      resolveNewSessionFolderPreference(loadNewSessionPreference(gatewayUrl, "main"), "/workspace")
+        .freshWorkspace,
+    ).toBe(true);
   });
 
   it("merges changes and drops malformed persisted fields", () => {

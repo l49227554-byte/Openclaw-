@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as commandExec from "../../process/exec.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import * as stateLease from "../../state/openclaw-state-lease.js";
 import { requireGit, runGit } from "./git.js";
 import { getRegistryWorktree } from "./registry.js";
 import { ManagedWorktreeService, SNAPSHOT_RETENTION_MS } from "./service.js";
@@ -189,6 +190,17 @@ describe("empty managed workspaces", () => {
     );
     await service.remove({ id: created.id, reason: "archive-again" });
     now += SNAPSHOT_RETENTION_MS + 1;
+    const unavailableLease = vi
+      .spyOn(stateLease, "withOpenClawStateLease")
+      .mockRejectedValue(new Error("allocation lease unavailable"));
+    expect((await service.gc()).snapshotsPruned).toBe(0);
+    expect(fsSync.existsSync(created.repoRoot)).toBe(true);
+    const retained = getRegistryWorktree(env, created.id);
+    expect(retained?.snapshotRef).toBeDefined();
+    expect(await requireGit(created.repoRoot, ["show", `${retained!.snapshotRef}:draft.txt`])).toBe(
+      "Restorable work",
+    );
+    unavailableLease.mockRestore();
     expect((await service.gc()).snapshotsPruned).toBe(1);
     expect(fsSync.existsSync(created.repoRoot)).toBe(false);
     expect(fsSync.existsSync(path.dirname(created.repoRoot))).toBe(false);

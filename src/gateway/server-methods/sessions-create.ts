@@ -41,6 +41,7 @@ import {
   prepareSessionWorktree,
   resolveSessionWorktreeBase,
   resolveSpawnParentWorktreeSource,
+  validateSessionWorktreeSelection,
 } from "../session-worktree-preparation.js";
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
 import { createAgentRuntimeAuthorityGuard } from "./agent-runtime-authority.js";
@@ -87,25 +88,9 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     }
     const p = params;
     const emptyWorkspace = p.worktreeSource === "empty";
-    if (
-      emptyWorkspace &&
-      (p.worktree !== true ||
-        p.cwd ||
-        p.projectId ||
-        p.projectGitUrl ||
-        p.repository ||
-        p.catalogId ||
-        p.execNode ||
-        p.worktreeBaseRef)
-    ) {
-      respond(
-        false,
-        undefined,
-        errorShape(
-          ErrorCodes.INVALID_REQUEST,
-          "sessions.create worktreeSource=empty requires worktree=true and cannot include another workspace source, catalog, execNode, or worktreeBaseRef",
-        ),
-      );
+    const worktreeSelectionError = validateSessionWorktreeSelection(p);
+    if (worktreeSelectionError) {
+      respond(false, undefined, worktreeSelectionError);
       return;
     }
     const parentSessionKey = normalizeOptionalString(p.parentSessionKey);
@@ -319,27 +304,8 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       }
       requestedCwd = containment.path;
     }
-    if (requestedExecNode && p.worktree === true) {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "sessions.create worktree cannot target execNode"),
-      );
-      return;
-    }
     const worktreeBaseRef = normalizeOptionalString(p.worktreeBaseRef);
     const requestedWorktreeName = normalizeOptionalString(p.worktreeName);
-    if ((worktreeBaseRef || requestedWorktreeName) && p.worktree !== true) {
-      respond(
-        false,
-        undefined,
-        errorShape(
-          ErrorCodes.INVALID_REQUEST,
-          "sessions.create worktreeBaseRef/worktreeName require worktree=true",
-        ),
-      );
-      return;
-    }
     const explicitSessionLabel = normalizeOptionalString(p.label);
     const preparedDisplayName = normalizeOptionalString(p.displayName);
     const titleAgentId = explicitlyRequestedAgent.agentId;

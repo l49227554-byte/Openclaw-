@@ -126,14 +126,11 @@ export async function ensureEmptyWorktreeSource(params: {
   return sourceRoot;
 }
 
-/** Called under the allocation lease after failed creation or final snapshot expiry. */
-export async function removeUnusedEmptyWorktreeSource(params: {
+export async function resolveEmptyWorktreeSourceRoot(params: {
   env: NodeJS.ProcessEnv;
-  record: Pick<ManagedWorktreeRecord, "repoRoot" | "ownerKind" | "ownerId"> & { id?: string };
-  signal?: AbortSignal;
-  commitGuard: () => void;
-}): Promise<void> {
-  const { env, record, commitGuard } = params;
+  record: Pick<ManagedWorktreeRecord, "repoRoot" | "ownerKind" | "ownerId">;
+}): Promise<string | undefined> {
+  const { env, record } = params;
   if (
     record.ownerKind !== "session" ||
     !record.ownerId ||
@@ -143,9 +140,22 @@ export async function removeUnusedEmptyWorktreeSource(params: {
   }
   const ownerRoot = path.join(await fs.realpath(sourceParent(env)), sourceName(record.ownerId));
   const expected = path.join(ownerRoot, "workspace");
-  if (path.relative(expected, record.repoRoot) !== "" || !(await worktreePathExists(expected))) {
+  return path.relative(expected, record.repoRoot) === "" ? expected : undefined;
+}
+
+/** Called under the allocation lease after failed creation or final snapshot expiry. */
+export async function removeUnusedEmptyWorktreeSource(params: {
+  env: NodeJS.ProcessEnv;
+  record: Pick<ManagedWorktreeRecord, "repoRoot" | "ownerKind" | "ownerId"> & { id?: string };
+  signal?: AbortSignal;
+  commitGuard: () => void;
+}): Promise<void> {
+  const { env, record, commitGuard } = params;
+  const expected = await resolveEmptyWorktreeSourceRoot(params);
+  if (!expected || !(await worktreePathExists(expected))) {
     return;
   }
+  const ownerRoot = path.dirname(expected);
   const otherRecords = listRegistryWorktrees(env).filter(
     (other) => other.id !== record.id && path.relative(expected, other.repoRoot) === "",
   );

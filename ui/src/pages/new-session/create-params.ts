@@ -3,7 +3,6 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import type { SessionCreateParams } from "../../lib/sessions/create.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
-import type { DraftPlaceState } from "./draft-place-state.ts";
 
 const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -39,30 +38,6 @@ export function canStartSessionAsDraft(params: {
 export function isWorktreeNameValid(value: string): boolean {
   const name = value.trim();
   return !name || WORKTREE_NAME_PATTERN.test(name);
-}
-
-export function buildSelectedSessionCreateParams(
-  place: DraftPlaceState,
-  params: DraftSessionCreateSelection,
-): SessionCreateParams {
-  return buildDraftSessionCreateParams({
-    ...params,
-    deferInitialTurn: place.remotePlacement,
-    agentId: place.agentId,
-    model: place.modelControl.modelForSubmission(),
-    contextWindow: place.modelControl.contextWindow,
-    thinkingLevel: place.modelControl.thinkingLevel,
-    fastMode: place.modelControl.fastMode,
-    projectId: place.browser.remoteProject?.projectId ?? place.browser.projectId,
-    projectGitUrl: place.browser.remoteProject?.cloneUrl,
-    repository: place.remoteRepository,
-    worktree: place.worktree,
-    worktreeSource: place.freshWorkspace ? "empty" : undefined,
-    baseRef: place.baseRef,
-    worktreeName: place.worktreeName,
-    cwd: place.folder,
-    workspace: place.workspacePath(),
-  });
 }
 
 /** Maps the new-session draft selections onto additive sessions.create params. */

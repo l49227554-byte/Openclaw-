@@ -27,7 +27,11 @@ import {
   collectWorktreeTemplates,
   WORKTREE_TEMPLATE_DIRECTORY,
 } from "./checkout.js";
-import { ensureEmptyWorktreeSource, removeUnusedEmptyWorktreeSource } from "./empty-source.js";
+import {
+  ensureEmptyWorktreeSource,
+  removeUnusedEmptyWorktreeSource,
+  resolveEmptyWorktreeSourceRoot,
+} from "./empty-source.js";
 import { WorktreeRepositoryError } from "./errors.js";
 import { lockState, lockWorktreeForProcess, unlockWorktree } from "./git-lock.js";
 import {
@@ -1356,7 +1360,8 @@ export class ManagedWorktreeService {
         continue;
       }
       try {
-        await this.withAllocationLease({}, async (guard) => {
+        const emptySource = await resolveEmptyWorktreeSourceRoot({ env: this.env, record });
+        const pruneSnapshot = async (guard: WorktreeMutationGuard = {}) => {
           const current = getRegistryWorktree(this.env, record.id);
           if (
             !current ||
@@ -1365,12 +1370,14 @@ export class ManagedWorktreeService {
           ) {
             return;
           }
-          await removeUnusedEmptyWorktreeSource({
-            env: this.env,
-            record: current,
-            signal: guard.signal,
-            commitGuard: () => guard.commitGuard?.(),
-          });
+          if (emptySource) {
+            await removeUnusedEmptyWorktreeSource({
+              env: this.env,
+              record: current,
+              signal: guard.signal,
+              commitGuard: () => guard.commitGuard?.(),
+            });
+          }
           if (current.snapshotRef && (await worktreePathExists(current.repoRoot))) {
             await requireGit(current.repoRoot, ["update-ref", "-d", current.snapshotRef], {
               signal: guard.signal,
@@ -1380,7 +1387,14 @@ export class ManagedWorktreeService {
           guard.commitGuard?.();
           deleteRegistryWorktree(this.env, current.id);
           snapshotsPruned += 1;
-        });
+        };
+        // Only owned source deletion must serialize against checkout allocation.
+        // Ordinary snapshot expiry must still work when allocation is unavailable.
+        if (emptySource) {
+          await this.withAllocationLease({}, pruneSnapshot);
+        } else {
+          await pruneSnapshot();
+        }
       } catch (error) {
         log.warn(`snapshot retention failed for ${record.id}: ${String(error)}`);
       }

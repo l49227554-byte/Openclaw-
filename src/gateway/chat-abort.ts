@@ -228,6 +228,7 @@ export function registerChatAbortController(params: {
         releaseAgentRunDelegatedAuthority(entry.agentRunDelegatedAuthority);
       }
       entry.registrationCleanupRequested = true;
+      entry.pendingTimeoutCompletion = undefined;
       // Terminal event handling owns final removal once the event has been
       // observed. Runs that never emitted a terminal event still clean up here.
       if (entry.projectSessionTerminalPending === true) {
@@ -576,6 +577,19 @@ export function removeChatAbortControllerEntry(
   const entry = entries.get(runId);
   if (!entry || (expectedEntry && entry !== expectedEntry)) {
     return false;
+  }
+  const pending = entry.pendingTimeoutCompletion;
+  if (pending) {
+    if (isFutureDateTimestampMs(pending.expiresAtMs, { nowMs: Date.now() })) {
+      return false;
+    }
+    // Orphan cleanup must record the known timeout before revoking this exact
+    // receipt owner. A late producer then reuses that receipt, never rewrites it.
+    entry.pendingTimeoutCompletion = undefined;
+    pending.settle();
+    if (entries.get(runId) !== entry) {
+      return false;
+    }
   }
   entries.delete(runId);
   try {

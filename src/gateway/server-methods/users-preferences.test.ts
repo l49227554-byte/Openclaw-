@@ -1,9 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { GatewayErrorDetailCodes } from "../../../packages/gateway-protocol/src/index.js";
+import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { handleGatewayRequest } from "../server-methods.js";
+import { identifiedClient, sessionSharingTestContext } from "./sessions-sharing.test-support.js";
 import type { GatewayClient } from "./types.js";
 import { usersHandlers } from "./users.js";
 
@@ -32,6 +35,77 @@ async function invokePreferenceMethod(
 
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
+});
+
+test("preference keys do not become session targets on multi-agent gateways", async () => {
+  const state = await createOpenClawTestState({
+    layout: "state-only",
+    prefix: "users-prefs-targets-",
+  });
+  try {
+    const profile = ensureProfileForEmail("preferences-reader@example.test");
+    const client = identifiedClient(profile.id);
+    const context = sessionSharingTestContext(vi.fn(), {
+      agents: { ownership: "explicit", entries: { main: {}, other: {} } },
+      gateway: {
+        roles: {
+          default: "reader",
+          definitions: {
+            reader: {
+              agents: "*",
+              scopes: ["operator.read", "operator.write"],
+              sessions: { others: "none" },
+            },
+          },
+        },
+      },
+    });
+    const request = async (method: string, params: Record<string, unknown>) => {
+      const respond = vi.fn();
+      await handleGatewayRequest({
+        req: { type: "req", id: "preferences-targets", method, params },
+        respond,
+        client,
+        context,
+        isWebchatConnect: () => false,
+      });
+      return respond;
+    };
+    const entries = { "ui.theme": "dark", "agent:main:incognito:preference": "personal" };
+    expect(await request("users.prefs.set", { entries })).toHaveBeenCalledWith(
+      true,
+      {
+        status: "ok",
+      },
+      undefined,
+    );
+    for (const [key, value] of Object.entries(entries)) {
+      expect(await request("users.prefs.get", { keys: [key] })).toHaveBeenCalledWith(
+        true,
+        {
+          status: "ok",
+          entries: { [key]: value },
+        },
+        undefined,
+      );
+    }
+    const sessionKey = "agent:main:foreign";
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey },
+      {
+        sessionId: "foreign-session",
+        updatedAt: 1,
+        createdActor: { type: "human", source: "profile", id: "another-profile" },
+      },
+    );
+    expect(await request("sessions.preview", { keys: [sessionKey] })).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+  } finally {
+    await state.cleanup();
+  }
 });
 
 test("users.prefs remains self-scoped across durable identities", async () => {

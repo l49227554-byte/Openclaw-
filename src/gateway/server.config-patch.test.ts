@@ -222,6 +222,8 @@ async function getCurrentConfigObject() {
     raw?: string | null;
     valid?: boolean;
     hash?: string;
+    configRevisionHash?: string;
+    appliedConfigHash?: string | null;
     path?: string;
     config?: Record<string, unknown>;
     sourceConfig?: Record<string, unknown>;
@@ -231,6 +233,8 @@ async function getCurrentConfigObject() {
   expect(typeof current.payload?.path).toBe("string");
   return {
     hash: String(current.payload?.hash),
+    configRevisionHash: current.payload?.configRevisionHash,
+    appliedConfigHash: current.payload?.appliedConfigHash,
     path: String(current.payload?.path),
     raw: current.payload?.raw,
     valid: current.payload?.valid,
@@ -440,7 +444,6 @@ describe("gateway config methods", () => {
         .toEqual({
           level: "info",
         });
-      await expect.poll(() => getRuntimeConfig().logging?.level).toBe("info");
       const draft = await getCurrentConfigObject();
       const raw = JSON.stringify(
         method === "config.patch"
@@ -454,12 +457,23 @@ describe("gateway config methods", () => {
       expect(stale.ok).toBe(false);
       expect(stale.error?.message).toContain("config changed since last load");
       expect(JSON.parse(await fs.readFile(includePath, "utf8"))).toEqual({ level: "warn" });
-      await expect.poll(getConfigHash).not.toBe(draft.hash);
-      // Disk revisions are visible before the watcher finishes runtime env publication.
-      await expect.poll(() => getRuntimeConfig().logging?.level).toBe("warn");
+      // Persisted revisions can become visible before their runtime environment is published.
+      let reloaded = draft;
+      await expect
+        .poll(async () => {
+          reloaded = await getCurrentConfigObject();
+          return {
+            logging: reloaded.config.logging,
+            applied:
+              Boolean(reloaded.configRevisionHash) &&
+              reloaded.appliedConfigHash === reloaded.configRevisionHash,
+          };
+        })
+        .toEqual({ logging: { level: "warn" }, applied: true });
+      expect(reloaded.hash).not.toBe(draft.hash);
       const fresh = await rpcReq<{ hash: string }>(requireClient(), method, {
         raw,
-        baseHash: await getConfigHash(),
+        baseHash: reloaded.hash,
       });
       expect(fresh.ok, fresh.error?.message).toBe(true);
       expect(JSON.parse(await fs.readFile(includePath, "utf8"))).toEqual({ level: "debug" });

@@ -57,10 +57,16 @@ describe("test runtime prerequisites", () => {
     ["tooling config", ["test/vitest/vitest.tooling.config.ts"], "private-qa"],
     ["QA config", ["test/vitest/vitest.extension-qa.config.ts"], "private-qa"],
     [
+      "Codex history Worker",
+      ["extensions/codex/src/app-server/session-history.test.ts"],
+      "runtime",
+    ],
+    [
       "sticker provider runtime",
       ["extensions/telegram/src/sticker-cache.selection.test.ts"],
       "runtime",
     ],
+    ["Telegram polling runtime", ["extensions/telegram/src/polling-session.test.ts"], "runtime"],
     ["Telegram config", ["test/vitest/vitest.extension-telegram.config.ts"], "runtime"],
     ["ordinary Telegram test", ["extensions/telegram/src/sequential-key.test.ts"], undefined],
     ["all plugins", ["extensions"], "private-qa"],
@@ -109,6 +115,8 @@ describe("test runtime prerequisites", () => {
     ["models.list native catalog", ["test/plugins/codex-model-catalog.gateway.test.ts"], "runtime"],
     ["native package setup SDK", ["test/plugin-npm-runtime-build.test.ts"], "runtime"],
     ["native Linux node SDK", ["src/node-host/linux-node-plugin.integration.test.ts"], "runtime"],
+    ["native memory CLI SDK", ["src/entry.memory-json.test.ts"], "runtime"],
+    ["ordinary entry unit", ["src/entry.run-main.test.ts"], undefined],
     [
       "native catalog worker SDK",
       ["src/agents/prepared-model-catalog-worker.integration.test.ts"],
@@ -244,8 +252,10 @@ describe("test runtime prerequisites", () => {
     ["contracts-channel-config", ["src/channels/plugins/contracts/**"], undefined],
     ["contracts-channel-session", ["src/channels/plugins/contracts/**"], undefined],
     ["contracts-channel-registry", ["src/channels/plugins/contracts/**"], undefined],
-    ["unit", ["src/node-host/**"], undefined],
-    ["unit-src", ["src/node-host/**"], undefined],
+    ["unit", ["src/node-host/**"], "runtime"],
+    ["unit-src", ["src/node-host/**"], "runtime"],
+    ["unit", ["src/node-host/**", "src/entry.memory-json.test.ts"], undefined],
+    ["unit-src", ["src/node-host/**", "src/entry.memory-json.test.ts"], undefined],
     ["extensions", ["deepinfra/**"], "runtime"],
     ["extensions", ["deepinfra/**", "google-meet/**"], undefined],
     ["tooling", ["test/**"], undefined],
@@ -297,7 +307,21 @@ describe("test runtime prerequisites", () => {
     ["gateway", ["gateway-*.test.ts"], "runtime"],
     ["gateway", ["server*.test.ts"], "runtime"],
     ["tooling", ["**/gateway-codex-delivery-cache.test.ts"], "runtime"],
-    ["extension-telegram", ["**/sticker-cache.selection.test.ts"], undefined],
+    [
+      "extension-telegram",
+      ["**/polling-session.test.ts", "**/sticker-cache.selection.test.ts"],
+      undefined,
+    ],
+    [
+      "extension-codex-app-server-support",
+      [
+        "**/event-projector.verbose-hooks.test.ts",
+        "**/session-history.test.ts",
+        "**/settled-turn-finalizer.native.test.ts",
+        "**/transcript-mirror*.test.ts",
+      ],
+      undefined,
+    ],
   ] as const)("keeps %s selection scoped after excluding %s", (project, exclude, expected) => {
     const selections = resolveVitestRuntimeCliSelections(
       `test/vitest/vitest.${project}.config.ts`,
@@ -1044,6 +1068,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/ci-platform-checkout.test.ts",
         "src/scripts/ci-changed-scope.git-owner.test.ts",
         "test/scripts/ci-workflow-guards.test.ts",
+        "test/scripts/qa-profile-run-status.test.ts",
       ],
     });
     for (const target of ["ci-git-owner", "ci-linux-git", "ci-platform-checkout"]) {
@@ -2217,7 +2242,7 @@ describe("scripts/test-projects changed-target routing", () => {
     );
   });
 
-  it.each(["src/plugin-state", "src/plugin-sdk", "src/agents", "test/plugins"])(
+  it.each(["src/plugin-state", "src/plugin-sdk", "src/agents", "src/commands", "test/plugins"])(
     "retains database worker ownership for directory and glob target %s",
     (directory) => {
       const expected = databaseWorkerCoreTestFiles.filter((file) =>
@@ -2813,6 +2838,14 @@ describe("scripts/test-projects changed-target routing", () => {
       "test/vitest/vitest.utils.config.ts",
     ]);
     expect(buildVitestRunPlans(["src/commands"], process.cwd())).toEqual([
+      {
+        config: "test/vitest/vitest.infra.config.ts",
+        forwardedArgs: [],
+        includePatterns: databaseWorkerCoreTestFiles.filter((file) =>
+          file.startsWith("src/commands/"),
+        ),
+        watchMode: false,
+      },
       {
         config: "test/vitest/vitest.commands-light.config.ts",
         forwardedArgs: [],
@@ -4293,9 +4326,17 @@ describe("scripts/test-projects changed-target routing", () => {
     ]);
   });
 
-  it("routes the full commands test root to both command shards", () => {
+  it("routes the full commands test root to its command and database owners", () => {
     expect(findUnmatchedExplicitTestTargets(["src/commands"])).toEqual([]);
     expect(buildVitestRunPlans(["src/commands"], process.cwd())).toEqual([
+      {
+        config: "test/vitest/vitest.infra.config.ts",
+        forwardedArgs: [],
+        includePatterns: databaseWorkerCoreTestFiles.filter((file) =>
+          file.startsWith("src/commands/"),
+        ),
+        watchMode: false,
+      },
       {
         config: "test/vitest/vitest.commands-light.config.ts",
         forwardedArgs: [],

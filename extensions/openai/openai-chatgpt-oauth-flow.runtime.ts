@@ -334,6 +334,9 @@ export async function loginOpenAICodex(options: {
 /**
  * Refresh OpenAI Codex OAuth token
  */
-export async function refreshOpenAICodexToken(refreshToken: string): Promise<OAuthCredentials> {
-  return resolveOpenAICredentials(await refreshOpenAIAccessToken(refreshToken));
+export async function refreshOpenAICodexToken(
+  refreshToken: string,
+  options?: Parameters<typeof refreshOpenAIAccessToken>[1],
+): Promise<OAuthCredentials> {
+  return resolveOpenAICredentials(await refreshOpenAIAccessToken(refreshToken, options));
 }

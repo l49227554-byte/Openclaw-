@@ -1103,6 +1103,7 @@ async function resolveOAuthCredentialForCodexAppServer(
     params.assertCurrent?.();
     const refreshedRuntimeCredential = await refreshOAuthCredentialForRuntime({
       credential: overlaidOAuthCredential,
+      ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
     });
     if (!refreshedRuntimeCredential?.access?.trim()) {
       throw new Error(
@@ -1228,7 +1229,10 @@ async function resolveScopedOAuthCredential(params: {
       return credential;
     }
     params.assertCurrent?.();
-    const refreshed = await refreshOAuthCredentialForRuntime({ credential });
+    const refreshed = await refreshOAuthCredentialForRuntime({
+      credential,
+      ...(params.assertCurrent ? { assertCurrent: params.assertCurrent } : {}),
+    });
     if (!refreshed?.access?.trim()) {
       throw new Error(
         `Codex app-server auth profile "${params.profileId}" could not refresh. Sign in again with OpenClaw, then retry.`,

@@ -195,13 +195,14 @@ type SecretDefaults = NonNullable<OpenClawConfig["secrets"]>["defaults"];
 
 async function refreshOAuthCredential(
   credential: OAuthCredential,
-  context: { cfg?: OpenClawConfig } = {},
+  context: { cfg?: OpenClawConfig; assertCurrent?: () => void } = {},
 ): Promise<OAuthCredentials | null> {
   const pluginResult = await resolveProviderOAuthCredentialWithPlugin({
     provider: credential.provider,
     config: context.cfg,
     credential,
     refresh: true,
+    assertCurrent: context.assertCurrent,
   });
   if (pluginResult.status === "available") {
     return pluginResult.credential;
@@ -241,8 +242,12 @@ async function canRefreshOAuthCredential(
 export async function refreshOAuthCredentialForRuntime(params: {
   credential: OAuthCredential;
   cfg?: OpenClawConfig;
+  assertCurrent?: () => void;
 }): Promise<OAuthCredential | null> {
-  const refreshed = await refreshOAuthCredential(params.credential, { cfg: params.cfg });
+  const refreshed = await refreshOAuthCredential(params.credential, {
+    cfg: params.cfg,
+    assertCurrent: params.assertCurrent,
+  });
   return refreshed
     ? {
         ...params.credential,

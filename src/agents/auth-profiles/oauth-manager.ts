@@ -70,7 +70,7 @@ type OAuthManagerAdapter = {
   ) => Promise<string>;
   refreshCredential: (
     credential: OAuthCredential,
-    context: { cfg?: OpenClawConfig; agentDir?: string },
+    context: { cfg?: OpenClawConfig; agentDir?: string; assertCurrent?: () => void },
   ) => Promise<OAuthCredentials | null>;
   canRefreshCredential: (
     credential: OAuthCredential,
@@ -1193,6 +1193,9 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
         refreshed = await adapter.refreshCredential(claim.credential, {
           cfg: params.cfg,
           agentDir: params.agentDir,
+          ...(params.validateCredential
+            ? { assertCurrent: () => params.validateCredential?.(claim.credential) }
+            : {}),
         });
       } catch (error) {
         return await settleFailure({ error });

@@ -468,10 +468,14 @@ function buildOpenAICodexAuthConfigPatch(): NonNullable<ProviderAuthResult["conf
   };
 }
 
-async function refreshOpenAICodexOAuthCredential(cred: OAuthCredential) {
+async function refreshOpenAICodexOAuthCredential(
+  cred: OAuthCredential,
+  options?: Parameters<NonNullable<ProviderPlugin["refreshOAuth"]>>[1],
+) {
   try {
     const { refreshOpenAICodexToken } = await import("./openai-chatgpt-provider.runtime.js");
-    const refreshed = await refreshOpenAICodexToken(cred.refresh);
+    options?.assertCurrent?.();
+    const refreshed = await refreshOpenAICodexToken(cred.refresh, options);
     const identity = resolveOpenAICodexAuthIdentity({
       access: refreshed.access,
       email: cred.email,
@@ -694,7 +698,7 @@ export function buildOpenAICodexProviderHooks(): Pick<
     },
     resolveUsageAuth: resolveOpenAIUsageAuth,
     fetchUsageSnapshot: fetchOpenAIUsage,
-    refreshOAuth: async (cred) => await refreshOpenAICodexOAuthCredential(cred),
+    refreshOAuth: async (cred, options) => await refreshOpenAICodexOAuthCredential(cred, options),
     augmentModelCatalog: (ctx) => {
       const gpt54Template = findCatalogTemplate({
         entries: ctx.entries,

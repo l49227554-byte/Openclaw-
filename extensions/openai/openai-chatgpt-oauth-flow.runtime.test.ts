@@ -492,6 +492,78 @@ describe("OpenAI Codex OAuth flow", () => {
     }
   });
 
+  it.each([false, true])(
+    "checks refresh authority after real DNS preparation (revoked=%s)",
+    async (revoke) => {
+      const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/ssrf-runtime")>(
+        "openclaw/plugin-sdk/ssrf-runtime",
+      );
+      const held = createDeferred<void>();
+      const release = createDeferred<void>();
+      let current = true;
+      const sendToken = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              access_token: fakeJwt({
+                "https://api.openai.com/auth": { chatgpt_account_id: "account" },
+              }),
+              refresh_token: "rotated-refresh",
+              expires_in: 60,
+            }),
+          ),
+      );
+      ssrfMocks.fetchWithSsrFGuard.mockImplementation(
+        async (params: Parameters<typeof actual.fetchWithSsrFGuard>[0]) =>
+          await actual.fetchWithSsrFGuard({
+            ...params,
+            mode: "strict",
+            dispatcherPolicy: { mode: "direct" },
+            capture: false,
+            fetchImpl: sendToken,
+            lookupFn: async () => {
+              held.resolve();
+              await release.promise;
+              return [{ address: "93.184.216.34", family: 4 }];
+            },
+          }),
+      );
+      const outcome = buildOpenAIProvider().refreshOAuth!(
+        {
+          type: "oauth",
+          provider: "openai",
+          access: "old-access",
+          refresh: "old-refresh",
+          expires: 1,
+        },
+        {
+          assertCurrent: () => {
+            if (!current) {
+              throw new Error("source revoked during DNS");
+            }
+          },
+        },
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        await held.promise;
+        current = !revoke;
+      } finally {
+        release.resolve();
+      }
+      const result = await outcome;
+      if (revoke) {
+        expect(result).toHaveProperty("error");
+        expect(sendToken).not.toHaveBeenCalled();
+      } else {
+        expect(result).toMatchObject({ value: { refresh: "rotated-refresh" } });
+        expect(sendToken).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
   it("times out token exchange requests", async () => {
     ssrfMocks.fetchWithSsrFGuard.mockRejectedValueOnce(timeoutError());
 

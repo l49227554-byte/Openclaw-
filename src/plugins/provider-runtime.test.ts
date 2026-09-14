@@ -511,6 +511,41 @@ describe("provider-runtime", () => {
     expect(refreshOAuth).toHaveBeenCalledOnce();
   });
 
+  it("carries bound refresh authority through the provider runtime", async () => {
+    let current = true;
+    const sendToken = vi.fn();
+    const refreshOAuth = vi.fn(async (credential, options?: { assertCurrent?: () => void }) => {
+      await Promise.resolve();
+      current = false;
+      options?.assertCurrent?.();
+      sendToken();
+      return credential;
+    });
+    resolvePluginProvidersMock.mockReturnValue([
+      { id: "plugin-oauth", label: "Plugin OAuth", auth: [], refreshOAuth },
+    ]);
+    await expect(
+      resolveProviderOAuthCredentialWithPlugin({
+        provider: "plugin-oauth",
+        credential: {
+          type: "oauth",
+          provider: "plugin-oauth",
+          access: "old-access",
+          refresh: "refresh",
+          expires: 1,
+        },
+        refresh: true,
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("source revoked");
+          }
+        },
+      }),
+    ).rejects.toThrow("source revoked");
+    expect(refreshOAuth).toHaveBeenCalledOnce();
+    expect(sendToken).not.toHaveBeenCalled();
+  });
+
   it("distinguishes an owned but unavailable OAuth provider", async () => {
     resolveOwningPluginIdsForProviderMock.mockReturnValue(["plugin-oauth"]);
     resolvePluginProvidersMock.mockReturnValue([]);

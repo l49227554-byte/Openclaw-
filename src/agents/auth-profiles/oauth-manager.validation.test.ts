@@ -58,7 +58,13 @@ afterEach(async () => {
 });
 
 describe("createOAuthManager credential validation", () => {
-  it.each(["eligibility", "claim-write", "refresh-start", "settlement-write"] as const)(
+  it.each([
+    "eligibility",
+    "claim-write",
+    "refresh-start",
+    "provider-preparation",
+    "settlement-write",
+  ] as const)(
     "rejects source revocation during %s before the next credential effect",
     async (boundary) => {
       await withMainAgentDir("oauth-manager-revocation-", async (mainAgentDir) => {
@@ -98,11 +104,22 @@ describe("createOAuthManager credential validation", () => {
             return result;
           },
         );
-        const refreshCredential = vi.fn(async () => ({
-          access: "rotated-access",
-          refresh: "rotated-refresh",
-          expires: Date.now() + 600_000,
-        }));
+        const providerRequest = vi.fn();
+        const refreshCredential = vi.fn(
+          async (_credential: OAuthCredential, context: { assertCurrent?: () => void }) => {
+            if (boundary === "provider-preparation") {
+              await Promise.resolve();
+              current = false;
+            }
+            context.assertCurrent?.();
+            providerRequest();
+            return {
+              access: "rotated-access",
+              refresh: "rotated-refresh",
+              expires: Date.now() + 600_000,
+            };
+          },
+        );
         const manager = createOAuthManager({
           buildApiKey: async (_provider, value) => value.access,
           canRefreshCredential: async () => {
@@ -129,7 +146,10 @@ describe("createOAuthManager credential validation", () => {
             },
           }),
         ).rejects.toThrow("source revoked");
-        expect(refreshCredential).toHaveBeenCalledTimes(boundary === "settlement-write" ? 1 : 0);
+        expect(refreshCredential).toHaveBeenCalledTimes(
+          boundary === "settlement-write" || boundary === "provider-preparation" ? 1 : 0,
+        );
+        expect(providerRequest).toHaveBeenCalledTimes(boundary === "settlement-write" ? 1 : 0);
         expect(committedAccess).not.toContain("rotated-access");
         if (boundary === "eligibility" || boundary === "claim-write") {
           expect(committedAccess).toEqual([]);

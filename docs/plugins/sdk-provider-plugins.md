@@ -117,6 +117,16 @@ current config. The original login callback does not authorize a later command.
 Let the shared owner report the visibility outcome:
 a saved policy is not proof that the running Gateway applied it.
 
+## OAuth refresh authority
+
+`refreshOAuth(credential, options)` receives an optional, closure-bound
+`options.assertCurrent` when the caller has a live authority constraint. Forward
+that callback through asynchronous provider preparation to the transport's final
+synchronous pre-request check, including after DNS and before redirects. A check
+before loading the provider or rejecting credential settlement afterward does not
+prevent unauthorized use of a refresh token. Ordinary unguarded refresh callers
+retain their existing behavior.
+
 ## Walkthrough
 
 <Steps>

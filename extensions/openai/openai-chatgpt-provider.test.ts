@@ -30,6 +30,29 @@ describe("OpenAI provider Codex transport hooks", () => {
     loginOpenAICodexDeviceCodeMock.mockReset();
   });
 
+  it("rejects refresh authority revoked while the provider runtime import is pending", async () => {
+    let current = true;
+    const outcome = buildOpenAIProvider().refreshOAuth!(
+      {
+        type: "oauth",
+        provider: "openai",
+        access: "old-access",
+        refresh: "old-refresh",
+        expires: 1,
+      },
+      {
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("source revoked during provider loading");
+          }
+        },
+      },
+    );
+    current = false;
+    await expect(outcome).rejects.toThrow("source revoked during provider loading");
+    expect(refreshOpenAICodexTokenMock).not.toHaveBeenCalled();
+  });
+
   it("exposes ChatGPT OAuth on the canonical OpenAI provider", () => {
     const provider = buildOpenAIProvider();
 

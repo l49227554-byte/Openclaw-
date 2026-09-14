@@ -702,6 +702,7 @@ export async function resolveProviderOAuthCredentialWithPlugin(
   params: ProviderRuntimeLookup & {
     credential: OAuthCredential;
     refresh: boolean;
+    assertCurrent?: () => void;
   },
 ) {
   const ownership = resolveProviderRefOwnership(params);
@@ -717,7 +718,11 @@ export async function resolveProviderOAuthCredentialWithPlugin(
     if (!refreshOAuth) {
       return { status: "unhandled" } as const;
     }
-    credential = await refreshOAuth(params.credential);
+    params.assertCurrent?.();
+    credential = await refreshOAuth(
+      params.credential,
+      params.assertCurrent ? { assertCurrent: params.assertCurrent } : undefined,
+    );
   }
   if (!credential) {
     return { status: "unhandled" } as const;

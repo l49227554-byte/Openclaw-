@@ -591,7 +591,11 @@ export type ProviderPlugin = {
    * the provider needs custom refresh-failure behavior that should stay out of
    * core auth-profile code.
    */
-  refreshOAuth?: (cred: OAuthCredential) => Promise<OAuthCredential>;
+  refreshOAuth?: (
+    cred: OAuthCredential,
+    /** Revalidate caller authority after preparation and immediately before token HTTP I/O. */
+    options?: { assertCurrent?: () => void },
+  ) => Promise<OAuthCredential>;
   /**
    * Provider-owned auth-doctor hint.
    *

@@ -201,7 +201,7 @@ async function startClickClackTestServer(): Promise<ClickClackTestServer> {
     missingMessageIds,
     emitThreadReplyEvent: async (messageId: string, payload: Record<string, string> = {}) => {
       await vi.waitFor(() => expect(sockets.size).toBe(1));
-      const frame = JSON.stringify({
+      const createdFrame = JSON.stringify({
         id: "evt-1",
         cursor: "cursor-1",
         type: "thread.reply_created",
@@ -216,8 +216,19 @@ async function startClickClackTestServer(): Promise<ClickClackTestServer> {
           ...payload,
         },
       });
+      const updatedFrame = JSON.stringify({
+        id: "evt-2",
+        cursor: "cursor-2",
+        type: "message.updated",
+        workspace_id: "wsp_1",
+        channel_id: "chn_1",
+        seq: 2,
+        created_at: "2026-01-01T00:00:00.100Z",
+        payload: { message_id: messageId, author_id: "usr_human" },
+      });
       for (const socket of sockets) {
-        socket.send(frame);
+        socket.send(createdFrame);
+        socket.send(updatedFrame);
       }
     },
     close: async () => {

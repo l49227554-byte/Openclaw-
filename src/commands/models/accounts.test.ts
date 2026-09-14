@@ -539,9 +539,9 @@ describe("personal model account CLI over an identified Gateway connection", () 
     const output = runtime();
     const verificationUrl = "https://auth.example/device";
     const code = "ABCD-1234";
-    const progressUpdated = createDeferredCore<void>();
-    const continueToInput = createDeferredCore<void>();
-    const inputReady = createDeferredCore<void>();
+    const progressUpdated = createDeferredCore();
+    const continueToInput = createDeferredCore();
+    const inputReady = createDeferredCore();
     const session = new WizardSession(async (prompter) => {
       const progress = prompter.progress("Starting provider sign-in");
       await prompter.openUrl?.(verificationUrl);

@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { expectDefined } from "@openclaw/normalization-core";
 import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewaySessionRow, SessionsListResult } from "../../../api/types.ts";
@@ -19,19 +20,11 @@ import {
 } from "./chat-transcript.test-support.ts";
 
 function requireElement(container: ParentNode, selector: string): HTMLElement {
-  const element = container.querySelector<HTMLElement>(selector);
-  if (!element) {
-    throw new Error(`expected ${selector}`);
-  }
-  return element;
+  return expectDefined(container.querySelector<HTMLElement>(selector), selector);
 }
 
 function requireClosest(element: Element, selector: string): HTMLElement {
-  const closest = element.closest<HTMLElement>(selector);
-  if (!closest) {
-    throw new Error(`expected closest ${selector}`);
-  }
-  return closest;
+  return expectDefined(element.closest<HTMLElement>(selector), `closest ${selector}`);
 }
 
 function touchPointerUp(element: Element): void {
@@ -904,14 +897,18 @@ describe("chat transcript rendering", () => {
     transcript.hostDisconnected();
   });
 
-  it.each(["Enter", " "])("opens focused transcript file links with %j", async (key) => {
+  it.each(["click", "Enter", " "])("opens focused transcript file links with %j", async (key) => {
     const transcript = createTestTranscript();
     const onOpenWorkspaceFile = vi.fn();
     const onHistoryIntent = vi.fn();
     const container = document.body.appendChild(document.createElement("div"));
     const props = {
       ...threadProps("pane-file-link", "agent:main:main", [
-        { role: "assistant", content: "Inspect `src/chat.ts:17`", timestamp: 1_000 },
+        {
+          role: "assistant",
+          content: "Inspect [index.md](qa-caf%C3%A9/index.md:17)",
+          timestamp: 1_000,
+        },
       ]),
       onOpenWorkspaceFile,
       onHistoryIntent,
@@ -924,11 +921,15 @@ describe("chat transcript rendering", () => {
     const link = container.querySelector<HTMLAnchorElement>("a.markdown-file-link");
     link?.focus();
     expect(document.activeElement).toBe(link);
-    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-    link?.dispatchEvent(event);
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(onOpenWorkspaceFile).toHaveBeenCalledWith({ path: "src/chat.ts", line: 17 });
+    expect(link?.hasAttribute("href")).toBe(false);
+    if (key === "click") {
+      link?.click();
+    } else {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      link?.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(onOpenWorkspaceFile).toHaveBeenCalledWith({ path: "qa-café/index.md", line: 17 });
     expect(onHistoryIntent).not.toHaveBeenCalled();
     transcript.hostDisconnected();
   });

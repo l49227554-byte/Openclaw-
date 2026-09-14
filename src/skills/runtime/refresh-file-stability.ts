@@ -17,7 +17,7 @@ function readFileStabilitySnapshot(filePath: string): FileStabilitySnapshot | un
   }
 }
 
-export async function waitForStableSkillFile(
+async function waitForStableSkillFile(
   filePath: string,
   stabilityMs: number,
   watcher: FSWatcher,
@@ -58,4 +58,49 @@ export async function waitForStableSkillFile(
     previousRevision = nextRevision;
     stableForMs = 0;
   }
+}
+
+export function createRawSkillFileScheduler({
+  watcher,
+  stabilityMs,
+  schedule,
+  onError,
+}: {
+  watcher: FSWatcher;
+  stabilityMs: number;
+  schedule: (filePath: string) => void;
+  onError: (filePath: string, error: unknown) => void;
+}) {
+  const pendingRawFiles = new Map<string, { revision: number }>();
+  return (changedPath: string) => {
+    if (watcher.closed) {
+      return;
+    }
+    const pending = pendingRawFiles.get(changedPath);
+    if (pending) {
+      pending.revision += 1;
+      return;
+    }
+    const current = { revision: 0 };
+    pendingRawFiles.set(changedPath, current);
+    void (async () => {
+      try {
+        while (!watcher.closed) {
+          let sampledRevision = current.revision;
+          await waitForStableSkillFile(changedPath, stabilityMs, watcher, () => {
+            sampledRevision = current.revision;
+            return sampledRevision;
+          }).catch((err: unknown) => onError(changedPath, err));
+          // A raw event can arrive after the final sample but before this continuation.
+          if (current.revision !== sampledRevision) {
+            continue;
+          }
+          schedule(changedPath);
+          return;
+        }
+      } finally {
+        pendingRawFiles.delete(changedPath);
+      }
+    })();
+  };
 }

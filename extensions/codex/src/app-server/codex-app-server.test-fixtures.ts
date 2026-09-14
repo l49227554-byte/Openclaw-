@@ -3,7 +3,11 @@ import type { CodexAppServerClient } from "./client.js";
 import type { CodexServerNotification, RpcRequest } from "./protocol.js";
 import { CODEX_APP_SERVER_VERSION } from "./version.js";
 
-type ServerRequestHandler = (request: RpcRequest, signal: AbortSignal) => unknown;
+type ServerRequestHandler = (
+  request: RpcRequest,
+  signal: AbortSignal,
+  guardResponse: (assertCurrent: () => void) => void,
+) => unknown;
 type NotificationHandler = (notification: CodexServerNotification) => Promise<void> | void;
 
 export function codexTestTurnIds(threadId = "thread-1", turnId = "turn-1") {
@@ -118,9 +122,11 @@ export function createFakeCodexAppServerClient(
       );
     },
     async handleServerRequest(serverRequest: RpcRequest, signal = new AbortController().signal) {
+      const responseGuards: Array<() => void> = [];
       for (const handler of requestHandlers) {
-        const result = await handler(serverRequest, signal);
+        const result = await handler(serverRequest, signal, (guard) => responseGuards.push(guard));
         if (result !== undefined) {
+          for (const guard of responseGuards) guard();
           return result;
         }
       }

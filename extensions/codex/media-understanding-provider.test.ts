@@ -137,15 +137,21 @@ function createFakeClient(options?: {
       const approvals: Promise<void>[] = [];
       if (options?.approvalRequestMethod) {
         for (const handler of requestHandlers) {
+          const responseGuards: Array<() => void> = [];
           approvals.push(
             Promise.resolve(
-              handler({
-                id: "approval-1",
-                method: options.approvalRequestMethod,
-                params: { threadId: "thread-1", turnId: "turn-1" },
-              }),
+              handler(
+                {
+                  id: "approval-1",
+                  method: options.approvalRequestMethod,
+                  params: { threadId: "thread-1", turnId: "turn-1" },
+                },
+                undefined,
+                (guard) => responseGuards.push(guard),
+              ),
             ).then((response) => {
               if (response !== undefined) {
+                for (const guard of responseGuards) guard();
                 approvalResponses.push(response);
               }
             }),

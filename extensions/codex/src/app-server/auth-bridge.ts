@@ -217,7 +217,9 @@ export async function resolveCodexAppServerPreparedAuthProfileSnapshot(params: {
   authProfileStore?: AuthProfileStore;
   agentDir?: string;
   config?: AuthProfileOrderConfig;
+  assertCurrent?: () => void;
 }): Promise<CodexAppServerPreparedAuthProfileSnapshot | undefined> {
+  params.assertCurrent?.();
   const agentDir = params.agentDir?.trim() || resolveDefaultAgentDir(params.config ?? {});
   const store = resolveCodexAppServerAuthProfileStore({
     agentDir,
@@ -242,7 +244,9 @@ export async function resolveCodexAppServerPreparedAuthProfileSnapshot(params: {
     authProfileId: profileId,
     authProfileStore: store,
     config: params.config,
+    assertCurrent: params.assertCurrent,
   });
+  params.assertCurrent?.();
   if (!loginParams) {
     return undefined;
   }

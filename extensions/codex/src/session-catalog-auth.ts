@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import type { AuthProfileCredential } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   findNormalizedProviderValue,
   resolveOpenAICodexAuthIdentity,
-  type AuthProfileCredential,
 } from "openclaw/plugin-sdk/provider-auth";
 import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
 import { resolveCodexAppServerPreparedAuthProfileSnapshot } from "./app-server/auth-bridge.js";
@@ -22,15 +22,18 @@ export async function prepareCodexCatalogClientOptions(params: {
   agentDir: string | undefined;
   sourceAgentDir?: string;
   sourceHomeId?: string;
+  assertSourceCurrent?: () => void;
   config: OpenClawConfig | undefined;
   startOptions: CodexAppServerStartOptions;
 }): Promise<CodexAppServerClientOptions> {
-  const { sourceAgentDir, sourceHomeId, ...options } = params;
+  const { sourceAgentDir, sourceHomeId, assertSourceCurrent, ...options } = params;
+  assertSourceCurrent?.();
   if (!sourceAgentDir) {
     return { ...options, authProfileId: null };
   }
   const home = canonicalCodexCatalogHome(resolveCodexAppServerHomeDir(sourceAgentDir));
   const assertHomeCurrent = () => {
+    assertSourceCurrent?.();
     if (
       options.startOptions.transport !== "stdio" ||
       !fs.statSync(home).isDirectory() ||
@@ -125,6 +128,7 @@ export async function prepareCodexCatalogClientOptions(params: {
     authProfileId: profileId,
     authProfileStore: store,
     config: options.config,
+    assertCurrent: assertAuthSourceCurrent,
   });
   if (!snapshot) {
     throw new Error("Codex catalog source has no usable managed OpenAI authentication.");

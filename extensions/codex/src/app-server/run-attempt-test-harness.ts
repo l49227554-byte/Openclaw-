@@ -174,9 +174,9 @@ export function multiplexCodexTestClientHandlers(client: CodexAppServerClient): 
       [...notificationHandlers].map((handler) => Promise.resolve(handler(notification))),
     );
   });
-  addRequestHandler(async (request) => {
+  addRequestHandler(async (request, signal, guardResponse) => {
     for (const handler of requestHandlers) {
-      const result = await handler(request);
+      const result = await handler(request, signal, guardResponse);
       if (result !== undefined) {
         return result;
       }

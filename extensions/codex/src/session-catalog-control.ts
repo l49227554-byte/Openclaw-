@@ -466,7 +466,10 @@ export function createCodexSessionCatalogControl(params: {
         const { codexControlRequest } = await import("./command-rpc.js");
         const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
         assertSourceCurrent();
-        const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
+        const clientOptions = await prepareCodexCatalogClientOptions({
+          ...requestOptions,
+          assertSourceCurrent,
+        });
         const assertAuthSourceCurrent = () => {
           assertSourceCurrent();
           clientOptions.assertAuthSourceCurrent?.();
@@ -510,7 +513,10 @@ export function createCodexSessionCatalogControl(params: {
       const { requestCodexAppServerClientJson } = await import("./app-server/request.js");
       const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
       assertSourceCurrent();
-      const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
+      const clientOptions = await prepareCodexCatalogClientOptions({
+        ...requestOptions,
+        assertSourceCurrent,
+      });
       const assertAuthSourceCurrent = () => {
         assertSourceCurrent();
         clientOptions.assertAuthSourceCurrent?.();

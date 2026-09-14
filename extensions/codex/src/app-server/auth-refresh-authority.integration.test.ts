@@ -7,6 +7,7 @@ import {
   type AuthProfileCredential,
   type OAuthCredential,
 } from "openclaw/plugin-sdk/agent-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import {
   createPluginRegistry,
@@ -20,11 +21,13 @@ import {
 import { upsertAuthProfile } from "openclaw/plugin-sdk/provider-auth";
 import { withEnvAsync, withStateDirEnv } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
+import { createCodexSessionCatalogControl } from "../session-catalog-control.js";
 import { fingerprintTokenAuthProfileCacheKey } from "./auth-cache-key.js";
 import {
   ensureCodexAppServerClientRuntime,
   recordCodexAppServerAuthHandoff,
 } from "./client-runtime.js";
+import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config-runtime.js";
 import { createClientHarness } from "./test-support.js";
 
 const PROFILE_ID = "openai:work";
@@ -180,6 +183,71 @@ async function withAuthRefreshHarness(
 }
 
 describe("Codex app-server auth refresh authority", () => {
+  it.each(["direct", "pinned"] as const)(
+    "fences initial %s catalog preparation when its source is revoked during OAuth refresh",
+    async (mode) => {
+      let config: OpenClawConfig = {};
+      const refreshOAuth = vi.fn(async (credential: OAuthCredential) => {
+        config = { agents: { ownership: "explicit", list: [{ id: "route" }] } };
+        return {
+          ...credential,
+          access: "revoked-preparation",
+          refresh: "revoked-preparation-refresh",
+          expires: Date.now() + 60_000,
+        };
+      });
+      await withAuthRefreshHarness(refreshOAuth, async ({ agentDir }) => {
+        upsertAuthProfile({
+          agentDir,
+          profileId: PROFILE_ID,
+          credential: {
+            type: "oauth",
+            provider: "openai",
+            access: INITIAL_ACCESS,
+            refresh: "initial-refresh",
+            expires: Date.now() - 60_000,
+            accountId: ACCOUNT_ID,
+          },
+        });
+        clearRuntimeAuthProfileStoreSnapshots();
+        const home = path.join(agentDir, "codex-home");
+        fs.mkdirSync(home, { recursive: true });
+        config = {
+          agents: {
+            ownership: "explicit",
+            list: [
+              { id: "source", agentDir },
+              { id: "route", agentDir: path.join(agentDir, "route") },
+            ],
+          },
+        };
+        const factory = createCodexSessionCatalogControl({
+          config,
+          getRuntimeConfig: () => config,
+          getPluginConfig: () => ({}),
+          resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
+        });
+        const source = factory
+          .homesForAgent("route")
+          .find((entry) => entry.sourceAgentDir === agentDir);
+        expect(source).toBeDefined();
+        const control = factory.forRequest("route", source!);
+        const run = vi.fn();
+        await expect(
+          mode === "direct" ? control.readThread("thread") : control.withPinnedConnection!(run),
+        ).rejects.toThrow();
+        expect(run).not.toHaveBeenCalled();
+        expect(refreshOAuth).toHaveBeenCalledTimes(1);
+        clearRuntimeAuthProfileStoreSnapshots();
+        const persisted = loadAuthProfileStoreForSecretsRuntime(agentDir).profiles[PROFILE_ID];
+        expect(persisted).toMatchObject({
+          access: expect.stringMatching(/^openclaw-oauth-refresh-fence:v1:.*:failed:access:/),
+        });
+        expect(JSON.stringify(persisted)).not.toContain("revoked-preparation");
+      });
+    },
+  );
+
   it.each([
     { name: "is deleted", credential: undefined },
     {

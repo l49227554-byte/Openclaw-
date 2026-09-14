@@ -12,11 +12,16 @@ import { waitForGatewayHealthyRestart } from "../cli/daemon-cli/restart-health.j
 import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
 import { LOOPBACK_PORT_PROBE_HOSTS, probePortUsage } from "../infra/ports-probe.js";
 import { isPidDefinitelyDead } from "../shared/pid-alive.js";
+import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { getFreePort } from "../test-utils/ports.js";
 import { withTimeout } from "../utils/with-timeout.js";
 import { probeLaunchAgentState } from "./launchd-runtime.js";
+import {
+  assertNoLaunchdFixtureStateLeases,
+  buildLaunchdSettlementProbe,
+} from "./launchd-settlement.test-helpers.js";
 import {
   installLaunchAgent,
   readLaunchAgentRuntime,
@@ -323,6 +328,8 @@ describeLaunchdIntegration("launchd integration", () => {
       const configPath = path.join(stateDir, "openclaw.json");
       const scriptPath = path.join(fixtureHome, "probe.cjs");
       const eventsPath = path.join(fixtureHome, "events.jsonl");
+      const releasePath = path.join(fixtureHome, "release-first-exit");
+      const configContents = JSON.stringify({ gateway: { port, bind: "loopback" } });
       const custodyPath = path.join(fixtureHome, "custody.json");
       const target = `${resolveGuiDomain()}/${label}`;
       const launchEnv: GatewayServiceEnv = {
@@ -357,7 +364,7 @@ describeLaunchdIntegration("launchd integration", () => {
             const event: unknown = JSON.parse(line);
             if (
               !isRecord(event) ||
-              (event.event !== "start" && event.event !== "listen") ||
+              (event.event !== "start" && event.event !== "listen" && event.event !== "exit") ||
               typeof event.ordinal !== "number" ||
               !Number.isInteger(event.ordinal) ||
               event.ordinal < 1 ||
@@ -370,35 +377,27 @@ describeLaunchdIntegration("launchd integration", () => {
             return { event: event.event, ordinal: event.ordinal, pid: event.pid };
           });
       const assertNoOwnerLease = async () => {
-        expect(readGatewayOwnerLease({ env: launchEnv, port })).toBeUndefined();
-        await expect(fs.stat(resolveOpenClawStateSqlitePath(launchEnv))).rejects.toMatchObject({
-          code: "ENOENT",
-        });
+        expect(readGatewayOwnerLease({ env: launchEnv })).toBeUndefined();
+        // Probe-host config reads record config-health metadata. A SQLite file is
+        // not an owner lease; reject every lease row, including other ports/scopes.
+        withExistingOpenClawStateDatabaseReadOnly(
+          ({ db }) => assertNoLaunchdFixtureStateLeases(db),
+          { env: launchEnv },
+        );
+        await expect(fs.readFile(configPath, "utf8")).resolves.toBe(configContents);
       };
 
       await withEnvAsync(launchEnv, async () => {
         try {
           await fs.mkdir(stateDir);
-          await fs.writeFile(configPath, JSON.stringify({ gateway: { port, bind: "loopback" } }), {
+          await fs.writeFile(configPath, configContents, {
             flag: "wx",
             mode: 0o600,
           });
           await fs.writeFile(eventsPath, "", { flag: "wx", mode: 0o600 });
           await fs.writeFile(
             scriptPath,
-            [
-              'const fs = require("node:fs");',
-              `const eventsPath = ${JSON.stringify(eventsPath)};`,
-              'const events = fs.readFileSync(eventsPath, "utf8").split("\\n").filter(Boolean).map(JSON.parse);',
-              'const ordinal = events.filter((event) => event.event === "start").length + 1;',
-              'const record = (event) => fs.appendFileSync(eventsPath, JSON.stringify({ event, ordinal, pid: process.pid }) + "\\n");',
-              'record("start");',
-              "if (ordinal < 3) process.exit(0);",
-              "if (ordinal !== 3) process.exit(1);",
-              'require("node:net").createServer((socket) => socket.end())',
-              `  .listen(${port}, "127.0.0.1", () => record("listen"));`,
-              "",
-            ].join("\n"),
+            buildLaunchdSettlementProbe({ eventsPath, releasePath, port }),
             { flag: "wx", mode: 0o600 },
           );
           signal.throwIfAborted();
@@ -406,6 +405,9 @@ describeLaunchdIntegration("launchd integration", () => {
           await expect(fs.lstat(plistPath)).rejects.toMatchObject({ code: "ENOENT" });
           await expect(probePortUsage(port, LOOPBACK_PORT_PROBE_HOSTS)).resolves.toBe("free");
           await assertNoOwnerLease();
+          await expect(fs.stat(resolveOpenClawStateSqlitePath(launchEnv))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
           // Publish custody only after admission, before launchd can outlive Vitest.
           await fs.writeFile(
             custodyPath,
@@ -416,6 +418,7 @@ describeLaunchdIntegration("launchd integration", () => {
               plistPath,
               scriptPath,
               eventsPath,
+              releasePath,
               fixtureHome,
               executorPid: process.pid,
               resourceRoot: resourceOwner.root,
@@ -448,6 +451,11 @@ describeLaunchdIntegration("launchd integration", () => {
             },
             async readRuntime(...args) {
               const runtime = await service.readRuntime(...args);
+              if (runtimes.length === 20) {
+                // Align the second immediate exit's native throttle window with
+                // the old grace boundary. Do not change the returned observation.
+                await fs.writeFile(releasePath, "", { flag: "wx", mode: 0o600 });
+              }
               // With default 500 ms polling the old predicate admitted attempt 20,
               // then exited on six stopped/free samples. Do not infer this from PIDs.
               const stoppedFree =
@@ -482,6 +490,9 @@ describeLaunchdIntegration("launchd integration", () => {
           const events = await readEvents();
           const starts = events.filter((event) => event.event === "start");
           expect(starts.map((event) => event.ordinal)).toEqual([1, 2, 3]);
+          expect(events.filter((event) => event.event === "exit")).toEqual(
+            starts.slice(0, 2).map(({ ordinal, pid }) => ({ event: "exit", ordinal, pid })),
+          );
           const finalPid = starts[2]?.pid;
           expect(events.filter((event) => event.event === "listen")).toEqual([
             { event: "listen", ordinal: 3, pid: finalPid },
@@ -522,6 +533,7 @@ describeLaunchdIntegration("launchd integration", () => {
                 })
                 .toBe(true);
               await expect(probePortUsage(port, LOOPBACK_PORT_PROBE_HOSTS)).resolves.toBe("free");
+              await expect(fs.lstat(plistPath)).rejects.toMatchObject({ code: "ENOENT" });
               await assertNoOwnerLease();
             } catch (error) {
               failures.push(error);

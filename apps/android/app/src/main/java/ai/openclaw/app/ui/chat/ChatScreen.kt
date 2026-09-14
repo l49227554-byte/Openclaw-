@@ -392,6 +392,7 @@ internal fun ChatScreen(
   val modelFavorites by viewModel.modelFavorites.collectAsState()
   val modelRecents by viewModel.modelRecents.collectAsState()
   val selectedModelRef by viewModel.chatSelectedModelRef.collectAsState()
+  val selectedModelDisplayName by viewModel.chatSelectedModelDisplayName.collectAsState()
   val pendingSessionSettingsKeys by viewModel.chatPendingSessionSettingsKeys.collectAsState()
   val micEnabled by viewModel.micEnabled.collectAsState()
   val micIsListening by viewModel.micIsListening.collectAsState()
@@ -613,10 +614,7 @@ internal fun ChatScreen(
     if (modelSelectionLocked) {
       if (activeSession.agentRuntimeId == "codex") nativeString("Native Codex model") else nativeString("Locked session model")
     } else {
-      selectedModelRef?.let { selected ->
-        modelCatalog.firstOrNull { it.providerQualifiedRef() == selected }?.name?.takeIf { it.isNotBlank() }
-          ?: selected.substringAfterLast('/')
-      } ?: nativeString("Model")
+      selectedChatModelLabel(selectedModelRef, selectedModelDisplayName)
     }
   val modelUnavailableReason =
     selectedChatModelSendBlockingReason(
@@ -1225,7 +1223,7 @@ internal fun ChatScreen(
         admitPermissions = ::admitPermissions,
         sections = modelSections,
         favorites = modelFavorites.toSet(),
-        selectedModelLabel = selectedModelLabel,
+        selectedModelLabel = selectedModelLabel ?: nativeString("Model"),
         modelSelectionLocked = modelSelectionLocked,
         contextUsage = contextUsage,
         messages = messages,
@@ -3103,7 +3101,7 @@ private fun ChatComposer(
   fastMode: Boolean,
   fastModeEnabled: Boolean,
   contextUsage: ChatContextUsage,
-  selectedModelLabel: String,
+  selectedModelLabel: String?,
   modelPickerEnabled: Boolean,
   healthOk: Boolean,
   gatewayOffline: Boolean,
@@ -4157,7 +4155,7 @@ private fun ChatInputPill(
   hasContent: Boolean,
   sendEnabled: Boolean,
   onSend: () -> Unit,
-  selectedModelLabel: String,
+  selectedModelLabel: String?,
   modelPickerEnabled: Boolean,
   onOpenModelPicker: () -> Unit,
   thinkingLevel: String,
@@ -4499,7 +4497,7 @@ internal fun chatThinkingChipStateDescription(
 
 @Composable
 private fun ChatComposerModelPicker(
-  label: String,
+  label: String?,
   contextUsage: ChatContextUsage,
   enabled: Boolean,
   onClick: () -> Unit,
@@ -4521,13 +4519,21 @@ private fun ChatComposerModelPicker(
     contentColor = if (enabled) ClawTheme.colors.textMuted else ClawTheme.colors.textSubtle,
   ) {
     Box(modifier = Modifier.padding(horizontal = 4.dp), contentAlignment = Alignment.CenterStart) {
-      Text(
-        text = label,
-        style = ClawTheme.type.caption,
-        // Android supports middle ellipsis only on one line; keep both ends of the model name visible.
-        maxLines = 1,
-        overflow = TextOverflow.MiddleEllipsis,
-      )
+      if (label == null) {
+        CircularProgressIndicator(
+          modifier = Modifier.size(14.dp),
+          strokeWidth = 1.5.dp,
+          color = LocalContentColor.current,
+        )
+      } else {
+        Text(
+          text = label,
+          style = ClawTheme.type.caption,
+          // Android supports middle ellipsis only on one line; keep both ends of the model name visible.
+          maxLines = 1,
+          overflow = TextOverflow.MiddleEllipsis,
+        )
+      }
     }
   }
 }

@@ -24,6 +24,7 @@ import ai.openclaw.app.i18n.verbatimText
 import ai.openclaw.app.parseGatewayModels
 import ai.openclaw.app.resolveAgentIdFromMainSessionKey
 import ai.openclaw.app.ui.chat.chatModelSendBlocked
+import ai.openclaw.app.ui.chat.selectedChatModelDisplayName
 import ai.openclaw.app.ui.chat.thinkingSupportedForSelection
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -447,6 +448,8 @@ class ChatController internal constructor(
     val transcriptReady: Boolean,
     val progressCard: ChatProgressCard?,
     val progressCardScopeKey: String?,
+    val selectedModelRef: String?,
+    val selectedModelDisplayName: String?,
   )
 
   private data class PendingRunProjection(
@@ -526,6 +529,9 @@ class ChatController internal constructor(
 
   private val _selectedModelRef = MutableStateFlow<String?>(null)
   val selectedModelRef: StateFlow<String?> = _selectedModelRef.asStateFlow()
+
+  private val _selectedModelDisplayName = MutableStateFlow<String?>(null)
+  val selectedModelDisplayName: StateFlow<String?> = _selectedModelDisplayName.asStateFlow()
 
   private val _modelCatalog = MutableStateFlow<List<GatewayModelSummary>>(emptyList())
   val modelCatalog: StateFlow<List<GatewayModelSummary>> = _modelCatalog.asStateFlow()
@@ -3234,6 +3240,8 @@ class ChatController internal constructor(
               transcriptReady = transcriptReady,
               progressCard = _progressCard.value,
               progressCardScopeKey = progressCardScopeKey,
+              selectedModelRef = _selectedModelRef.value,
+              selectedModelDisplayName = _selectedModelDisplayName.value,
             )
           }
         }
@@ -3282,7 +3290,6 @@ class ChatController internal constructor(
           ),
         )
         applyThinkingMetadata(_sessions.value.firstOrNull { it.key == key })
-        _selectedModelRef.value = null
         lastHandledTerminalRunId = null
         val nextMetadataScope = currentChatMetadataScope()
         if (chatMetadataScope != nextMetadataScope) {
@@ -3290,6 +3297,14 @@ class ChatController internal constructor(
           clearChatMetadata(nextMetadataScope)
           disableSwarmProgress(key)
         }
+        val listedModelRef = _sessions.value.firstOrNull { it.key == key }?.providerQualifiedModelRef()
+        val selectedModelRef = listedModelRef ?: recentConversation?.selectedModelRef
+        _selectedModelRef.value = selectedModelRef
+        _selectedModelDisplayName.value =
+          recentConversation
+            ?.selectedModelDisplayName
+            ?.takeIf { recentConversation.selectedModelRef == selectedModelRef }
+            ?: selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
         updateErrorText(null)
         _healthOk.value = false
         clearLiveHistoryMarker()
@@ -3586,6 +3601,8 @@ class ChatController internal constructor(
     transcriptReady: Boolean,
     progressCard: ChatProgressCard?,
     progressCardScopeKey: String?,
+    selectedModelRef: String?,
+    selectedModelDisplayName: String?,
   ) {
     recentConversations.remove(owner)
     recentConversations[owner] =
@@ -3594,6 +3611,8 @@ class ChatController internal constructor(
         transcriptReady = transcriptReady,
         progressCard = progressCard,
         progressCardScopeKey = progressCardScopeKey,
+        selectedModelRef = selectedModelRef,
+        selectedModelDisplayName = selectedModelDisplayName,
       )
     while (recentConversations.size > MAX_RECENT_TRANSCRIPTS) {
       recentConversations.remove(recentConversations.keys.first())
@@ -5191,12 +5210,16 @@ class ChatController internal constructor(
           _modelCatalog.value = models
           // chat.metadata cannot distinguish a valid empty catalog from its timeout fallback.
           // Retry one empty response, then accept empty so health events cannot poll forever.
-          chatMetadataLoadState =
+          val nextLoadState =
             when {
               models.isNotEmpty() -> ChatMetadataLoadState.Loaded
               chatMetadataLoadState == ChatMetadataLoadState.RetryEmptyCatalog -> ChatMetadataLoadState.Loaded
               else -> ChatMetadataLoadState.RetryEmptyCatalog
             }
+          if (models.isNotEmpty() || nextLoadState == ChatMetadataLoadState.Loaded) {
+            _selectedModelDisplayName.value = selectedChatModelDisplayName(_selectedModelRef.value, models)
+          }
+          chatMetadataLoadState = nextLoadState
           synchronized(swarmLock) { swarmEnabled = metadataSwarmEnabled }
           shouldRefreshSwarm = metadataSwarmEnabled
           shouldDisableSwarm = !metadataSwarmEnabled
@@ -8091,7 +8114,14 @@ class ChatController internal constructor(
 
   private fun publishSelectedSessionSettings(entry: ChatSessionEntry?) {
     val lane = pendingSettingsMutations[sessionSettingsKey(_sessionKey.value)]
-    _selectedModelRef.value = entry?.providerQualifiedModelRef()
+    val previousModelRef = _selectedModelRef.value
+    val selectedModelRef = entry?.providerQualifiedModelRef()
+    _selectedModelRef.value = selectedModelRef
+    _selectedModelDisplayName.value =
+      selectedChatModelDisplayName(selectedModelRef, _modelCatalog.value)
+        ?: _selectedModelDisplayName.value.takeIf {
+          selectedModelRef == previousModelRef && chatMetadataLoadState != ChatMetadataLoadState.Loaded
+        }
     applyThinkingMetadata(entry, lane?.confirmedThinkingLevel ?: _thinkingLevel.value)
     lane?.confirmedThinkingLevel = _thinkingLevel.value
     // An unsent successor is still the latest local choice. Once dispatched,

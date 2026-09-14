@@ -24,6 +24,26 @@ internal fun GatewayModelSummary.providerQualifiedRef(): String {
   return if (id.startsWith(providerPrefix)) id else "$providerPrefix$id"
 }
 
+internal fun selectedChatModelDisplayName(
+  selectedModelRef: String?,
+  catalog: List<GatewayModelSummary>,
+): String? {
+  val selected = selectedModelRef?.trim()?.takeIf(String::isNotEmpty) ?: return null
+  return catalog
+    .firstOrNull { it.providerQualifiedRef() == selected }
+    ?.name
+    ?.trim()
+    ?.takeIf(String::isNotEmpty)
+}
+
+internal fun selectedChatModelLabel(
+  selectedModelRef: String?,
+  displayName: String?,
+): String? {
+  val selected = selectedModelRef?.trim()?.takeIf(String::isNotEmpty) ?: return null
+  return displayName?.trim()?.takeIf(String::isNotEmpty) ?: selected.substringAfterLast('/')
+}
+
 internal fun thinkingSupportedForSelection(
   selectedModelRef: String?,
   catalog: List<GatewayModelSummary>,

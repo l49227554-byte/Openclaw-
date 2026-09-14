@@ -18,6 +18,16 @@ class ChatModelPickerTest {
   }
 
   @Test
+  fun modelPresentationUsesFriendlyNameThenRawIdAndLeavesUnknownLoading() {
+    val catalog = listOf(model(id = "gpt-5.6-sol", provider = "openai", name = "GPT-5.6 Sol"))
+
+    assertEquals("GPT-5.6 Sol", selectedChatModelDisplayName("openai/gpt-5.6-sol", catalog))
+    assertEquals("GPT-5.6 Sol", selectedChatModelLabel("openai/gpt-5.6-sol", "GPT-5.6 Sol"))
+    assertEquals("gpt-5.6-sol", selectedChatModelLabel("openai/gpt-5.6-sol", null))
+    assertEquals(null, selectedChatModelLabel(null, null))
+  }
+
+  @Test
   fun sectionsPreservePinAndRecentOrderAndKeepRemainingCatalogOrder() {
     val catalog =
       listOf(
@@ -205,13 +215,14 @@ class ChatModelPickerTest {
   private fun model(
     id: String,
     provider: String,
+    name: String = id.substringAfterLast('/'),
     supportsReasoning: Boolean = false,
     available: Boolean? = true,
     reason: GatewayModelUnavailableReason? = null,
   ): GatewayModelSummary =
     GatewayModelSummary(
       id = id,
-      name = id.substringAfterLast('/'),
+      name = name,
       provider = provider,
       available = available,
       unavailableReason = reason,

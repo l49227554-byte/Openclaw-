@@ -2509,6 +2509,41 @@ class ChatControllerModelSelectionTest {
     }
 
   @Test
+  fun provisionalEmptyCatalogKeepsFriendlyLabelUntilTheRetryIsAccepted() =
+    runTest {
+      var metadataRequests = 0
+      val controller =
+        createScriptedChatController {
+          respond("chat.metadata") {
+            metadataRequests += 1
+            if (metadataRequests == 1) {
+              """{"commands":[],"models":[{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","provider":"openai"}]}"""
+            } else {
+              """{"commands":[],"models":[]}"""
+            }
+          }
+        }
+
+      controller.handleGatewayEvent("health", null)
+      advanceUntilIdle()
+      controller.handleGatewayEvent(
+        "sessions.changed",
+        """{"sessionKey":"main","agentId":"main","phase":"message","session":{"key":"main","modelProvider":"openai","model":"gpt-5.6-sol"}}""",
+      )
+      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
+
+      controller.handleGatewayEvent("chat.metadata.changed", "{}")
+      advanceUntilIdle()
+      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
+
+      controller.handleGatewayEvent("health", null)
+      advanceUntilIdle()
+      assertEquals(3, metadataRequests)
+      assertNull(controller.selectedModelDisplayName.value)
+      assertEquals("openai/gpt-5.6-sol", controller.selectedModelRef.value)
+    }
+
+  @Test
   fun unsupportedReasoningSendsOffWithoutChangingStoredLevelAndRestoresAfterFlip() =
     runTest {
       val sentThinkingLevels = mutableListOf<String>()

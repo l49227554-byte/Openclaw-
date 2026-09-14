@@ -3886,6 +3886,32 @@ class ChatComposerLayoutTest {
   }
 
   @Test
+  fun unknownComposerModelUsesAnIndeterminateIndicator() {
+    showChat()
+    @Suppress("UNCHECKED_CAST")
+    val selectedModelRef =
+      ChatController::class.java
+        .getDeclaredField("_selectedModelRef")
+        .apply { isAccessible = true }
+        .get(controller) as MutableStateFlow<String?>
+
+    composeRule.runOnIdle { selectedModelRef.value = null }
+
+    val indicator =
+      composeRule.onNode(
+        SemanticsMatcher.keyIsDefined(SemanticsProperties.ProgressBarRangeInfo) and
+          hasAnyAncestor(hasContentDescription(nativeString("Model"))),
+        useUnmergedTree = true,
+      )
+    indicator.assert(
+      SemanticsMatcher.expectValue(
+        SemanticsProperties.ProgressBarRangeInfo,
+        androidx.compose.ui.semantics.ProgressBarRangeInfo.Indeterminate,
+      ),
+    )
+  }
+
+  @Test
   fun textDraftKeepsDisabledSendWhileAnotherAdmissionIsPending() {
     assertDraftKeepsDisabledSendWhileAdmissionIsPending(text = "Still writing the next message")
   }

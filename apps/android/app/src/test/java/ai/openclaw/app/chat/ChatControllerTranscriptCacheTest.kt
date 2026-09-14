@@ -596,10 +596,14 @@ class ChatControllerTranscriptCacheTest {
           when (method) {
             "chat.history" -> {
               if (params.orEmpty().contains("\"sessionKey\":\"other\"")) {
-                historyResponse("session-other", listOf(ReplayHistoryMessage("assistant", "other history", 2L)))
+                """{"sessionId":"session-other","messages":[{"role":"assistant","content":"other history","timestamp":2}],"sessionInfo":{"key":"other","modelProvider":"anthropic","model":"claude-opus-4"}}"""
               } else {
-                historyResponse("session-main", listOf(ReplayHistoryMessage("assistant", "main history", 1L)))
+                """{"sessionId":"session-main","messages":[{"role":"assistant","content":"main history","timestamp":1}],"sessionInfo":{"key":"main","modelProvider":"openai","model":"gpt-5.6-sol"}}"""
               }
+            }
+
+            "chat.metadata" -> {
+              """{"commands":[],"models":[{"id":"gpt-5.6-sol","name":"GPT-5.6 Sol","provider":"openai"},{"id":"claude-opus-4","name":"Claude Opus 4","provider":"anthropic"}]}"""
             }
 
             else -> {
@@ -610,6 +614,7 @@ class ChatControllerTranscriptCacheTest {
 
       controller.load("main")
       advanceUntilIdle()
+      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
       controller.switchSession("other", ownerAgentId = "main")
       advanceUntilIdle()
       assertEquals(listOf("other history"), controller.messages.value.map { it.content.single().text })
@@ -620,6 +625,8 @@ class ChatControllerTranscriptCacheTest {
       controller.switchSession("main", ownerAgentId = "main")
 
       assertEquals(listOf("main history"), controller.messages.value.map { it.content.single().text })
+      assertEquals("openai/gpt-5.6-sol", controller.selectedModelRef.value)
+      assertEquals("GPT-5.6 Sol", controller.selectedModelDisplayName.value)
       assertTrue(controller.messagesFromCache.value)
       assertTrue(controller.transcriptPresented.value)
 

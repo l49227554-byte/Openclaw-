@@ -34,9 +34,9 @@ import { prepareSessionWorkerPlacementRetirement } from "../worker-environments/
 import { emitSessionsChanged } from "./session-change-event.js";
 import {
   prepareSessionLifecycleDrain,
+  SessionLifecycleWorkspaceRecoveryError,
   type SessionLifecycleDrain,
 } from "./sessions-lifecycle-drain.js";
-import { SessionLifecycleWorkspaceRecoveryError } from "./sessions-lifecycle-recovery.js";
 import {
   loadAccessorSessionEntryForGatewayTarget,
   loadSessionsRuntimeModule,

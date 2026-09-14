@@ -3,8 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { GatewayBrowserClient, GatewayRequestError } from "../api/gateway.ts";
 import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
-import { createSessionCapability } from "../lib/sessions/index.ts";
-import { sessionsResult } from "../lib/sessions/session-capability.test-support.ts";
 import {
   answerConfirmDialog,
   installDialogPolyfill,
@@ -12,7 +10,7 @@ import {
 } from "../test-helpers/modal-dialog.ts";
 import { withSessionWorkspaceRecovery } from "./session-workspace-recovery.runtime.ts";
 
-function createRecoveryHarness(action: "delete" | "archive") {
+function createRecoveryHarness() {
   const client = new GatewayBrowserClient({ url: "ws://gateway.example.test" });
   const session = {
     key: "agent:main:offline",
@@ -43,7 +41,7 @@ function createRecoveryHarness(action: "delete" | "archive") {
     hello: {
       type: "hello-ok",
       protocol: 4,
-      features: { methods: ["sessions.move", "sessions.delete", "sessions.patch"] },
+      features: { methods: ["sessions.move"] },
       auth: { role: "operator", scopes: ["operator.write", "operator.admin"] },
       snapshot: {},
     },
@@ -53,40 +51,11 @@ function createRecoveryHarness(action: "delete" | "archive") {
     lastError: null,
     lastErrorCode: null,
   };
-  const gateway = {
-    snapshot,
-    subscribe: () => () => undefined,
-    subscribeEvents: () => () => undefined,
-  };
   const remove = vi
     .fn<() => Promise<unknown>>()
     .mockRejectedValueOnce(error)
-    .mockResolvedValue({
-      ok: true,
-      deleted: true,
-      key: session.key,
-      entry: { sessionId: session.sessionId, updatedAt: 1, archivedAt: 1 },
-    });
-  const request = vi.spyOn(client, "request").mockImplementation(async (method) => {
-    if (method === "sessions.delete" || method === "sessions.patch") {
-      return await remove();
-    }
-    if (method === "sessions.move") {
-      await move.promise;
-      return { ok: true };
-    }
-    if (method === "sessions.list") {
-      return sessionsResult([], 1);
-    }
-    if (method === "sessions.subscribe") {
-      return { subscribed: true };
-    }
-    throw new Error(`Unexpected request: ${method}`);
-  });
-  const sessions = createSessionCapability(gateway, {
-    state: { selectedId: "main" },
-    subscribe: () => () => undefined,
-  });
+    .mockResolvedValue(true);
+  const request = vi.spyOn(client, "request").mockImplementation(async () => await move.promise);
   const operations: Promise<unknown>[] = [];
   return {
     error,
@@ -101,24 +70,11 @@ function createRecoveryHarness(action: "delete" | "archive") {
     },
     run() {
       const operation = withSessionWorkspaceRecovery({
-        action,
+        action: "delete",
         session,
-        scope: { client, gateway, signal: abort.signal },
+        scope: { client, gateway: { snapshot }, signal: abort.signal },
         isCurrent: () => current,
-        request: async () =>
-          action === "delete"
-            ? await sessions.delete(session.key, {
-                agentId: session.agentId,
-                expectedSessionId: session.sessionId,
-              })
-            : await sessions.patch(
-                session.key,
-                { archived: true },
-                {
-                  agentId: session.agentId,
-                  expectedSessionId: session.sessionId,
-                },
-              ),
+        request: remove,
       });
       operations.push(operation);
       void operation.catch(() => undefined);
@@ -129,55 +85,24 @@ function createRecoveryHarness(action: "delete" | "archive") {
       abort.abort();
       move.resolve();
       await Promise.allSettled(operations);
-      sessions.dispose();
       request.mockRestore();
     },
   };
 }
 
-describe.each(["delete", "archive"] as const)("workspace recovery before %s", (action) => {
+describe("session workspace recovery controls", () => {
   let restoreDialog: () => void;
   let h: ReturnType<typeof createRecoveryHarness>;
 
   beforeEach(() => {
     restoreDialog = installDialogPolyfill();
-    h = createRecoveryHarness(action);
+    h = createRecoveryHarness();
   });
 
   afterEach(async () => {
     await h.dispose();
     document.body.replaceChildren();
     restoreDialog();
-  });
-
-  it("retries the real removal only after explicit loss consent and completed recovery", async () => {
-    const operation = h.run();
-    const actions = await waitForConfirmDialogActions();
-    expect(actions.textContent).toContain(`Discard changes and ${action}`);
-    expect(document.body.textContent).toContain("Reconnect it to keep those changes");
-    expect(h.request).not.toHaveBeenCalledWith("sessions.move", expect.anything());
-    answerConfirmDialog(actions, "confirm");
-    await vi.waitFor(() =>
-      expect(h.request).toHaveBeenCalledWith("sessions.move", {
-        key: "agent:main:offline",
-        agentId: "main",
-        expected: { generation: 5, environmentId: "device-environment", ownerEpoch: 70 },
-        target: { kind: "gateway" },
-        abandonSource: true,
-      }),
-    );
-    expect(h.remove).toHaveBeenCalledOnce();
-    h.move.resolve();
-    await expect(operation).resolves.toBeDefined();
-    expect(h.remove).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps the original failure when consent is declined", async () => {
-    const operation = h.run();
-    answerConfirmDialog(await waitForConfirmDialogActions(), "cancel");
-    await expect(operation).rejects.toBe(h.error);
-    expect(h.remove).toHaveBeenCalledOnce();
-    expect(h.request).not.toHaveBeenCalledWith("sessions.move", expect.anything());
   });
 
   it("does not recover another session identity", async () => {

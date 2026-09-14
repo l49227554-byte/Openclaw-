@@ -1,4 +1,5 @@
 import { asProtocolRecord } from "./protocol-value-normalization.js";
+import type { SessionMoveExpectedSource } from "./schema/session-placement.js";
 
 /** Display projection for an assistant failure without visible reply content. */
 export const GATEWAY_ASSISTANT_ERROR_FALLBACK_TEXT =
@@ -118,11 +119,7 @@ export type SessionWorkspaceRecoveryRequiredErrorDetails = {
   cause: "device_offline";
   recoveryAction: "continue_on_gateway";
   sessionId: string;
-  source: {
-    generation: number;
-    environmentId: string;
-    ownerEpoch: number;
-  };
+  source: SessionMoveExpectedSource;
 };
 
 /** Structured details emitted by method-level failures. */
@@ -171,9 +168,8 @@ export function readSessionWorkspaceRecoveryRequiredError(
   const record = asProtocolRecord(error);
   const details = asProtocolRecord(record?.details);
   const source = asProtocolRecord(details?.source);
-  const gatewayCode = typeof record?.gatewayCode === "string" ? record.gatewayCode : record?.code;
   if (
-    gatewayCode !== ErrorCodes.UNAVAILABLE ||
+    record?.code !== ErrorCodes.UNAVAILABLE ||
     details?.code !== GatewayErrorDetailCodes.SESSION_WORKSPACE_RECOVERY_REQUIRED ||
     details.cause !== "device_offline" ||
     details.recoveryAction !== "continue_on_gateway" ||

@@ -2,9 +2,12 @@ import { readSessionWorkspaceRecoveryRequiredError } from "../../../packages/gat
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
 import { t } from "../i18n/index.ts";
+import { registerSessionPlacementEnglish } from "../i18n/locales/en-session-placement.ts";
 import { formatUiError } from "../lib/format-error.ts";
 import { readSessionMethodAccess } from "../lib/session-method-access.ts";
-import { confirmContinueSessionOnGateway } from "./session-placement-recovery.runtime.ts";
+import { showConfirmDialog } from "./confirm-dialog.ts";
+
+registerSessionPlacementEnglish();
 
 export function formatBatchSessionRemovalError(error: unknown): string {
   const message = formatUiError(error);
@@ -25,53 +28,55 @@ export async function withSessionWorkspaceRecovery<T>(params: {
   isCurrent: () => boolean;
   request: () => Promise<T>;
 }): Promise<T | undefined> {
-  if (!params.isCurrent()) {
-    return undefined;
-  }
-  try {
-    return await params.request();
-  } catch (error) {
-    if (!params.isCurrent()) {
-      return undefined;
-    }
-    const details = readSessionWorkspaceRecoveryRequiredError(error);
-    if (!details || details.sessionId !== params.session.sessionId) {
-      throw error;
-    }
-    const move = {
-      key: params.session.key,
-      ...(params.session.agentId ? { agentId: params.session.agentId } : {}),
-      expected: details.source,
-      target: { kind: "gateway" as const },
-      abandonSource: true,
-    };
-    const authorize = () => {
-      const access = readSessionMethodAccess(params.scope.gateway.snapshot, {
-        method: "sessions.move",
-        params: move,
-        requiredScope: "operator.write",
-      });
-      if (!access.allowed) {
-        throw new Error(access.reason, { cause: error });
+  let recovered = false;
+  while (params.isCurrent()) {
+    try {
+      return await params.request();
+    } catch (error) {
+      if (!params.isCurrent()) {
+        return undefined;
       }
-    };
-    authorize();
-    const confirmed = await confirmContinueSessionOnGateway({
-      label: params.session.label,
-      action: params.action,
-      signal: params.scope.signal,
-    });
-    if (!params.isCurrent()) {
-      return undefined;
+      const details = readSessionWorkspaceRecoveryRequiredError(error);
+      if (recovered || !details || details.sessionId !== params.session.sessionId) {
+        throw error;
+      }
+      const move = {
+        key: params.session.key,
+        ...(params.session.agentId ? { agentId: params.session.agentId } : {}),
+        expected: details.source,
+        target: { kind: "gateway" as const },
+        abandonSource: true,
+      };
+      const authorize = () => {
+        const access = readSessionMethodAccess(params.scope.gateway.snapshot, {
+          method: "sessions.move",
+          params: move,
+          requiredScope: "operator.write",
+        });
+        if (!access.allowed) {
+          throw new Error(access.reason, { cause: error });
+        }
+      };
+      authorize();
+      const action = params.action === "delete" ? "Delete" : "Archive";
+      const confirmed = await showConfirmDialog({
+        message: t(`sessionsView.discardWorkspace${action}Confirm`, {
+          session: params.session.label,
+        }),
+        confirmLabel: t(`sessionsView.discardWorkspace${action}Action`),
+        danger: true,
+        signal: params.scope.signal,
+      });
+      if (!params.isCurrent()) {
+        return undefined;
+      }
+      if (!confirmed) {
+        throw error;
+      }
+      authorize();
+      await params.scope.client.request("sessions.move", move);
+      recovered = true;
     }
-    if (!confirmed) {
-      throw error;
-    }
-    authorize();
-    await params.scope.client.request("sessions.move", move);
-    if (!params.isCurrent()) {
-      return undefined;
-    }
-    return await params.request();
   }
+  return undefined;
 }

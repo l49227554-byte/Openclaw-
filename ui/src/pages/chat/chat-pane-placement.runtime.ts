@@ -7,7 +7,6 @@ import type { ApplicationPlacementStartup } from "../../app/session-placement-st
 import { requestCloudWorkerStop } from "../../components/cloud-worker-stop.runtime.ts";
 import { resolveCloudWorkerStopAction } from "../../components/cloud-worker-stop.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
-import { confirmContinueSessionOnGateway } from "../../components/session-placement-recovery.runtime.ts";
 import { t } from "../../i18n/index.ts";
 import { readSessionMethodAccess } from "../../lib/session-method-access.ts";
 import type { SessionCapability } from "../../lib/sessions/session-capability.ts";
@@ -117,8 +116,12 @@ export async function moveChatPanePlacement(params: {
     placement.runner?.kind === "device" && placement.runner.status === "offline";
   let target: SessionMoveTarget | null;
   if (abandonSource) {
-    const confirmed = await confirmContinueSessionOnGateway({
-      label: params.row.label || params.row.key,
+    const confirmed = await showConfirmDialog({
+      message: t("sessionsView.continueOnGatewayConfirm", {
+        session: params.row.label || params.row.key,
+      }),
+      confirmLabel: t("sessionsView.continueOnGatewayAction"),
+      danger: true,
     });
     target = confirmed ? { kind: "gateway" } : null;
   } else {

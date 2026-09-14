@@ -34,9 +34,9 @@ import {
 } from "../worker-environments/session-placement-lifecycle.js";
 import {
   prepareSessionLifecycleDrain,
+  SessionLifecycleWorkspaceRecoveryError,
   type SessionLifecycleDrain,
 } from "./sessions-lifecycle-drain.js";
-import { SessionLifecycleWorkspaceRecoveryError } from "./sessions-lifecycle-recovery.js";
 import {
   sessionChangedError as archiveChangedError,
   unexpectedPatchError,

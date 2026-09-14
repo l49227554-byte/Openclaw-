@@ -749,13 +749,13 @@ describe("ClickClack gateway", () => {
     await run;
   });
 
-  it("waits for all separate legacy attachment updates before hydrating", async () => {
+  it("waits when the first legacy fetch contains only one of two attachments", async () => {
     vi.useFakeTimers();
     try {
       const socket = new FakeSocket();
       mocks.client.websocket.mockReturnValue(socket);
       mocks.client.message
-        .mockResolvedValueOnce(createHydratedMessage())
+        .mockResolvedValueOnce(createHydratedMessage(["upl-first"]))
         .mockResolvedValueOnce(createHydratedMessage(["upl-first", "upl-second"]));
       const abort = new AbortController();
       const run = startClickClackGatewayAccount(createGatewayContext(abort.signal));
@@ -791,20 +791,44 @@ describe("ClickClack gateway", () => {
     }
   });
 
-  it("dispatches an atomically attached message without the legacy grace", async () => {
+  it("caps repeated legacy update resets so the following cursor can advance", async () => {
     vi.useFakeTimers();
     try {
-      const socket = new FakeSocket();
-      mocks.client.websocket.mockReturnValue(socket);
+      const firstSocket = new FakeSocket();
+      const secondSocket = new FakeSocket();
+      mocks.client.websocket.mockReturnValueOnce(firstSocket).mockReturnValueOnce(secondSocket);
+      mocks.client.message
+        .mockResolvedValueOnce(createHydratedMessage(["upl-first"]))
+        .mockResolvedValueOnce(createHydratedMessage(["upl-first", "upl-second"]))
+        .mockResolvedValueOnce({
+          ...createHydratedMessage(),
+          id: "msg-6",
+          thread_root_id: "msg-6",
+        });
       const abort = new AbortController();
       const run = startClickClackGatewayAccount(createGatewayContext(abort.signal));
 
       await vi.advanceTimersByTimeAsync(0);
-      emitMessageEvent(socket, 1, {}, { emitAttachmentUpdate: false });
-      await vi.advanceTimersByTimeAsync(0);
+      emitMessageEvent(firstSocket, 1, {}, { emitAttachmentUpdate: false });
+      for (const index of [2, 3, 4, 5]) {
+        await vi.advanceTimersByTimeAsync(1_000);
+        emitGatewayEvent(firstSocket, createBacklogEvent(index, "message.updated", 1));
+      }
+      emitGatewayEvent(firstSocket, createBacklogEvent(6, "message.created"));
+      firstSocket.emit("close");
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(mocks.handleClickClackInbound).not.toHaveBeenCalled();
+      expect(mocks.client.websocket).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(2);
 
       expect(mocks.handleClickClackInbound).toHaveBeenCalledOnce();
-      expect(vi.getTimerCount()).toBe(0);
+      expect(mocks.client.websocket).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(501);
+
+      expect(mocks.handleClickClackInbound).toHaveBeenCalledTimes(2);
+      expect(mocks.client.websocket).toHaveBeenCalledTimes(2);
+      expect(mocks.client.websocket).toHaveBeenLastCalledWith("workspace-1", "cursor-6");
       abort.abort();
       await run;
     } finally {

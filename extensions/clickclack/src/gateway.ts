@@ -32,6 +32,7 @@ const CLICKCLACK_EVENT_PAGE_LIMIT = 500;
 // Current servers attach uploads before message.created. Older servers emit one
 // message.updated per linked upload, so finalize only after a bounded quiet window.
 const CLICKCLACK_ATTACHMENT_LINK_GRACE_MS = 1_500;
+const CLICKCLACK_ATTACHMENT_LINK_MAX_WAIT_MS = 5_000;
 const CLICKCLACK_PENDING_MESSAGE_LIMIT = 512;
 const CLICKCLACK_COMPLETED_MESSAGE_LIMIT = 1_024;
 
@@ -102,15 +103,16 @@ function createMessageEventCoalescer(params: {
   const createPending = (event: ClickClackEvent, messageId: string): PendingMessageEvent => {
     let released = false;
     let resolveReady: () => void = () => undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let quietTimer: ReturnType<typeof setTimeout> | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const ready = new Promise<void>((resolve) => {
       resolveReady = resolve;
     });
     const startTimer = () => {
-      if (timer) {
-        clearTimeout(timer);
+      if (quietTimer) {
+        clearTimeout(quietTimer);
       }
-      timer = setTimeout(() => pending.release(), CLICKCLACK_ATTACHMENT_LINK_GRACE_MS);
+      quietTimer = setTimeout(() => pending.release(), CLICKCLACK_ATTACHMENT_LINK_GRACE_MS);
     };
     const pending: PendingMessageEvent = {
       event,
@@ -118,6 +120,9 @@ function createMessageEventCoalescer(params: {
       ready,
       sawUpdate: false,
       noteUpdate: () => {
+        if (released) {
+          return;
+        }
         pending.sawUpdate = true;
         startTimer();
       },
@@ -126,14 +131,19 @@ function createMessageEventCoalescer(params: {
           return;
         }
         released = true;
-        if (timer) {
-          clearTimeout(timer);
-          timer = undefined;
+        if (quietTimer) {
+          clearTimeout(quietTimer);
+          quietTimer = undefined;
+        }
+        if (deadlineTimer) {
+          clearTimeout(deadlineTimer);
+          deadlineTimer = undefined;
         }
         resolveReady();
       },
     };
     startTimer();
+    deadlineTimer = setTimeout(pending.release, CLICKCLACK_ATTACHMENT_LINK_MAX_WAIT_MS);
     return pending;
   };
 
@@ -250,10 +260,10 @@ async function processEvent(params: {
   log?: { info: (message: string) => void; warn?: (message: string) => void };
 }): Promise<number | undefined> {
   if (!isCreatedMessageEvent(params.event)) {
-    return;
+    return undefined;
   }
   if (params.abortSignal.aborted || payloadString(params.event, "author_id") === params.botUserId) {
-    return;
+    return undefined;
   }
   const correlationId = eventCorrelationId(params.event);
   // The event body is only a routing hint. Re-fetch the authoritative message
@@ -274,22 +284,22 @@ async function processEvent(params: {
       `[${params.account.accountId}] skipped unreadable ClickClack message before agent dispatch: ` +
         `type=${params.event.type} messageId=${payloadString(params.event, "message_id") || "unknown"}`,
     );
-    return;
+    return undefined;
   }
-  if ((message.attachments?.length ?? 0) === 0) {
-    const sawLegacyUpdate = await params.waitForLegacyUpdates();
-    if (params.abortSignal.aborted) {
-      return;
-    }
-    if (sawLegacyUpdate) {
-      message = await resolveEventMessage({ client: messageClient, event: params.event });
-      if (!message) {
-        return;
-      }
+  // A nonempty fetch can still be a partial legacy attachment set. Only the
+  // event quiet window, bounded by its independent deadline, marks completion.
+  const sawLegacyUpdate = await params.waitForLegacyUpdates();
+  if (params.abortSignal.aborted) {
+    return undefined;
+  }
+  if (sawLegacyUpdate) {
+    message = await resolveEventMessage({ client: messageClient, event: params.event });
+    if (!message) {
+      return undefined;
     }
   }
   if (params.abortSignal.aborted || message.author_id === params.botUserId) {
-    return;
+    return undefined;
   }
   const access = await resolveClickClackInboundAccess({
     account: params.account,
@@ -298,7 +308,7 @@ async function processEvent(params: {
   });
   // Account shutdown can race either awaited lookup; retired generations must never start a turn.
   if (params.abortSignal.aborted) {
-    return;
+    return undefined;
   }
   if (!access.shouldDispatch) {
     params.log?.info(
@@ -309,7 +319,7 @@ async function processEvent(params: {
         `hasAnyMention=${access.mentionFacts.hasAnyMention ?? "unknown"} ` +
         `commandAuthorized=${access.commandAuthorized}`,
     );
-    return;
+    return undefined;
   }
   await handleClickClackInbound({
     account: params.account,

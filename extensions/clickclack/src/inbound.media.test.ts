@@ -223,7 +223,12 @@ describe("ClickClack inbound media", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) =>
-        String(input).endsWith("/upl_image")
+        (typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url
+        ).endsWith("/upl_image")
           ? new Response("gone", { status: 404 })
           : new Response(Uint8Array.from([137, 80, 78, 71])),
       ),

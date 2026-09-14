@@ -501,7 +501,7 @@ function* planSuspiciousConfigRead(
               lastObservedSuspiciousSignature: suspiciousSignature,
             }),
           async: (health) =>
-            health.update(
+            health.updateAfterFileCommit(
               {
                 lastObservedSuspiciousSignature: suspiciousSignature,
               },

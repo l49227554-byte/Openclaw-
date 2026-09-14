@@ -13,6 +13,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import * as configAudit from "./io.audit.js";
 import { listConfigAuditRecordsForTests } from "./io.audit.test-support.js";
 import {
   readConfigHealthStateFromStore,
@@ -503,6 +504,52 @@ describe("config observe recovery", () => {
       expectSuspiciousMatching(observeEvents[0], /^size-drop-vs-last-good:/);
       expectSuspiciousIncludes(observeEvents[0], "gateway-mode-missing-vs-last-good");
       await expect(listClobberFiles(configPath)).resolves.toHaveLength(1);
+    });
+  });
+
+  it("rereads a committed backup after its audit closes health admission", async () => {
+    await withSuiteHome(async (home) => {
+      const { io, configPath, warn } = createTestConfigIO(home);
+      const auditPath = path.join(home, ".openclaw", "logs", "config-audit.jsonl");
+      await seedConfigBackup(configPath, largeRecoverableCoreConfig);
+      const backupRaw = await fsp.readFile(`${configPath}.bak`, "utf-8");
+      await writeConfigRaw(configPath, { meta: { lastTouchedVersion: "2026.5.28" } });
+      const append = configAudit.appendConfigAuditRecord;
+      let closedAfterRestore = false;
+      const audit = vi
+        .spyOn(configAudit, "appendConfigAuditRecord")
+        .mockImplementation(async (params) => {
+          await append(params);
+          const record = "record" in params ? params.record : params;
+          if (
+            !closedAfterRestore &&
+            record.event === "config.observe" &&
+            record.restoredFromBackup
+          ) {
+            expect(await fsp.readFile(configPath, "utf-8")).toBe(backupRaw);
+            closedAfterRestore = true;
+            await closeOpenClawStateDatabaseAsync();
+          }
+        });
+      try {
+        const snapshot = await io.readConfigFileSnapshot({ recoverSuspicious: true });
+        expect(closedAfterRestore).toBe(true);
+        expect(snapshot.valid).toBe(true);
+        expect(snapshot.raw).toBe(backupRaw);
+        expect(snapshot.config.gateway?.mode).toBe("local");
+        expect(snapshot.config.gateway?.trustedProxies).toEqual(
+          largeRecoverableCoreConfig.gateway.trustedProxies,
+        );
+        expect(await fsp.readFile(configPath, "utf-8")).toBe(backupRaw);
+        expectWarnContaining(warn, "Config health-state write failed:");
+        const events = await readObserveEvents(auditPath);
+        expect(events).toHaveLength(1);
+        expect(events[0]?.restoredFromBackup).toBe(true);
+        await closeOpenClawStateDatabaseAsync();
+        expect((await io.readConfigFileSnapshot({ recoverSuspicious: true })).raw).toBe(backupRaw);
+      } finally {
+        audit.mockRestore();
+      }
     });
   });
 

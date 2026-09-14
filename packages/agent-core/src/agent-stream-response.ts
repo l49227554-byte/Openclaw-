@@ -1,3 +1,4 @@
+import { isResponsesOutputLimitToolCallError } from "@openclaw/ai/diagnostics";
 import { replaceCompactionReplayOwnerContent } from "@openclaw/ai/transports";
 import type {
   AssistantMessage,
@@ -154,7 +155,11 @@ export async function streamAgentResponse(
     ? AbortSignal.any([signal, executionAbort.signal])
     : executionAbort.signal;
   const abortFailedResponse = (message?: AssistantMessage) => {
-    if (message?.stopReason === "error" || message?.stopReason === "aborted") {
+    if (
+      message &&
+      (message.stopReason === "error" || message.stopReason === "aborted") &&
+      !isResponsesOutputLimitToolCallError(message)
+    ) {
       executionAbort.abort(new Error(message.errorMessage ?? "Model response interrupted"));
     }
   };
@@ -360,7 +365,7 @@ export async function streamAgentResponse(
         return await finalizeAssistantMessage();
 
         async function finalizeAssistantMessage(terminal?: AssistantMessage) {
-          // Fence queued side effects before result hooks or transcript persistence can yield.
+          // Output-limit recovery drains admitted tools; other failures fence queued starts.
           abortFailedResponse(terminal);
           const result = await response.result();
           abortFailedResponse(result);

@@ -1,6 +1,7 @@
 // Keep the runtime class on the public package specifier so OpenClaw and
 // external consumers share one constructor identity.
 import { EventStream as LlmEventStream } from "@openclaw/ai/event-stream";
+import { PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE } from "@openclaw/llm-core";
 import type {
   AssistantMessage,
   EventStream,
@@ -377,25 +378,15 @@ async function runLoop(
       );
       const { message } = streamed;
 
-      if (message.stopReason === "error" || message.stopReason === "aborted") {
-        await emit({
-          type: "turn_end",
-          message,
-          toolResults: streamed.batches.flatMap((batch) => batch.messages),
-        });
-        if (message.stopReason === "aborted" && signal?.aborted && !isTurnHandoffAbort(signal)) {
-          await appendInterruptedTurnMessage(newMessages, emit);
-        }
-        await emit({ type: "agent_end", messages: newMessages });
-        return newMessages;
-      }
-
-      const remainingToolCalls = message.content.filter(
-        (item): item is AgentToolCall =>
-          item.type === "toolCall" &&
-          !streamed.executedIds.has(item.id) &&
-          (message.stopReason === "toolUse" || item.async === true),
-      );
+      const providerFailed = message.stopReason === "error" || message.stopReason === "aborted";
+      const remainingToolCalls = providerFailed
+        ? []
+        : message.content.filter(
+            (item): item is AgentToolCall =>
+              item.type === "toolCall" &&
+              !streamed.executedIds.has(item.id) &&
+              (message.stopReason === "toolUse" || item.async === true),
+          );
       const terminalToolBatch =
         remainingToolCalls.length > 0
           ? await executeToolCalls(
@@ -443,17 +434,21 @@ async function runLoop(
       if (executedToolBatch?.fatal) {
         throw executedToolBatch.fatal.error;
       }
-      if (await stopIfAborted()) {
+      if (message.stopReason !== "aborted" && (await stopIfAborted())) {
         return newMessages;
       }
-      if (executedToolBatch?.terminateRun) {
+      const terminatedAfterProviderFailure =
+        message.stopReason === "error" && executedToolBatch?.terminate === true;
+      if (executedToolBatch?.terminateRun || terminatedAfterProviderFailure) {
+        const terminalText = executedToolBatch?.terminateRun
+          ? TOOL_LOOP_RECOVERY_TERMINATED_MESSAGE
+          : "The tool batch ended intentionally after the provider response failed; no continuation was started.";
         const terminalMessage = {
-          ...createFailureMessage(
-            config.model,
-            new Error(TOOL_LOOP_RECOVERY_TERMINATED_MESSAGE),
-            false,
-          ),
-          content: [{ type: "text" as const, text: TOOL_LOOP_RECOVERY_TERMINATED_MESSAGE }],
+          ...createFailureMessage(config.model, new Error(terminalText), false),
+          ...(terminatedAfterProviderFailure
+            ? { errorCode: PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE }
+            : {}),
+          content: [{ type: "text" as const, text: terminalText }],
         };
         state.context.messages.push(terminalMessage);
         newMessages.push(terminalMessage);
@@ -463,6 +458,14 @@ async function runLoop(
         await emit({ type: "message_end", message: terminalMessage });
         await emit({ type: "turn_end", message: terminalMessage, toolResults: [] });
         turnOpen = false;
+        await emit({ type: "agent_end", messages: newMessages });
+        return newMessages;
+      }
+
+      if (providerFailed) {
+        if (message.stopReason === "aborted" && signal?.aborted && !isTurnHandoffAbort(signal)) {
+          await appendInterruptedTurnMessage(newMessages, emit);
+        }
         await emit({ type: "agent_end", messages: newMessages });
         return newMessages;
       }

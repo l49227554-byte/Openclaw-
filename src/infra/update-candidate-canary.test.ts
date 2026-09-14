@@ -28,6 +28,7 @@ import {
   POST_CORE_UPDATE_RESULT_PATH_ENV,
   POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV,
 } from "./update-post-core-context.js";
+import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { updateRunStepsFromResultStep, updateRunWarningMessages } from "./update-run-step.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
@@ -692,24 +693,26 @@ describe("update candidate canary", () => {
     await expect(fs.access(rehearsal.stateDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it.each(["lint", "startup", "multiline", "envelope", "compact"])(
+  it.each(["lint", "startup", "startup-multiline", "multiline", "envelope", "compact"])(
     "retains the CLI reason when %s exits before its report",
     async (scenario) => {
-      const phase = scenario === "startup" ? "startup" : "lint";
+      const phase = scenario.startsWith("startup") ? "startup" : "lint";
       const spawnNormally = mocks.spawn.getMockImplementation()!;
       mocks.spawn.mockImplementation((command, args: string[], options) => {
         if (!(phase === "lint" ? args.includes("--lint") : args.includes("--update-canary"))) {
           return spawnNormally(command, args, options);
         }
+        const error = scenario.endsWith("multiline")
+          ? createInvalidConfigError(
+              "/fixture/openclaw.json",
+              `- gateway.port: invalid ${"x".repeat(160)} token=synthetic-secret\n- gateway.host: unknown`,
+            )
+          : new Error("Unable to resolve health API token=synthetic-secret");
+        if (scenario === "startup-multiline") {
+          throw error;
+        }
         const child = new FakeChild(nextPid++);
         queueMicrotask(() => {
-          const error =
-            scenario === "multiline"
-              ? createInvalidConfigError(
-                  "/fixture/openclaw.json",
-                  `- gateway.port: invalid ${"x".repeat(160)} token=synthetic-secret\n- gateway.host: unknown`,
-                )
-              : new Error("Unable to resolve health API token=synthetic-secret");
           if (["envelope", "compact"].includes(scenario)) {
             child.stdout.write(
               JSON.stringify(
@@ -739,18 +742,24 @@ describe("update candidate canary", () => {
       expect(result).toMatchObject({ status: "error", phase });
       const failed = result.steps.at(-1)!;
       expect(failed.failureFacts?.[0]?.message).toContain(
-        scenario === "multiline" ? "Invalid config" : "Unable to resolve health API",
+        scenario.endsWith("multiline") ? "Invalid config" : "Unable to resolve health API",
       );
-      if (["multiline", "envelope", "compact"].includes(scenario)) {
+      if (scenario !== "lint") {
         const output = renderSteps([failed]);
-        if (scenario === "multiline") {
+        if (scenario.endsWith("multiline")) {
           expect(output).toContain("gateway.port: invalid");
           expect(output).toContain("gateway.host: unknown");
           expect(updateRunStepsFromResultStep(failed).at(-1)?.detail).toContain(
-            "gateway.port: invalid",
+            scenario === "multiline" ? "gateway.port: invalid" : "gateway.host: unknown",
           );
         } else {
-          expect(output.match(/Unable to resolve health API/gu)).toHaveLength(1);
+          const report = renderUpdateRunReport(
+            updateRunReportInputFromResult({ ...result, mode: "git", root }),
+          );
+          for (const text of [output, report.markdown]) {
+            expect(text.match(/Unable to resolve health API/gu)).toHaveLength(1);
+          }
+          expect(result.logTail.join("\n")).toContain("Unable to resolve health API");
         }
       }
       expect(JSON.stringify(result)).not.toContain("synthetic-secret");

@@ -160,6 +160,7 @@ export async function validateUpdateCandidateCanary(params: {
         .map((line) => line.slice(-512)),
     );
     logTail.splice(0, Math.max(0, logTail.length - 40));
+    return safe;
   };
   const launch = (entry: string, args: string[]) => {
     params.assertCurrent?.();
@@ -622,8 +623,9 @@ export async function validateUpdateCandidateCanary(params: {
       steps,
     };
   } catch (error) {
-    capture(
-      `${phase}: ${error instanceof Error ? error.message : String(error)} (${Date.now() - started}ms)`,
+    const durationMs = Date.now() - started;
+    const failureLine = capture(
+      `${phase}: ${error instanceof Error ? error.message : String(error)} (${durationMs}ms)`,
     );
     let failed = steps.at(-1);
     if (!failed || failed.exitCode === 0 || failed.advisory) {
@@ -639,7 +641,6 @@ export async function validateUpdateCandidateCanary(params: {
       };
       steps.push(failed);
     }
-    failed.stderrTail = logTail.join("\n");
     if (error instanceof UpdateSnapshotCapacityError) {
       failed.snapshotCapacity = error.capacity;
     }
@@ -654,6 +655,11 @@ export async function validateUpdateCandidateCanary(params: {
         env,
       ),
     ];
+    // Keep the aggregate log, but do not replay a complete fact as generated timing metadata.
+    const repeatsFact = failed.failureFacts.some(
+      (fact) => failureLine === `${phase}: ${fact.message} (${durationMs}ms)`,
+    );
+    failed.stderrTail = logTail.slice(0, repeatsFact ? -1 : undefined).join("\n");
     params.onStep?.(failed);
     return {
       status: "error",

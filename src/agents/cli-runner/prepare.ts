@@ -1885,6 +1885,8 @@ async function prepareCliRunContextWithinReadFence(
       backendId: backendResolved.id,
       execute: preparedExecution?.execute,
     });
+    // Node placement owns its login; gateway-side credentials do not describe that account.
+    const authMode = executionTarget.kind === "node" ? "cli" : (authCredential?.type ?? "cli");
     const promptToolNamesHash =
       bundleMcpEnabled && mcpLoopbackRuntime
         ? hashCliSessionText(JSON.stringify(promptTools.map((tool) => tool.name).toSorted()))
@@ -2267,6 +2269,7 @@ async function prepareCliRunContextWithinReadFence(
         params: preparedParams,
         bindQuestionAnswerAuthority,
         effectiveAuthProfileId,
+        authMode,
         ...(authStore ? { authProfileStore: authStore } : {}),
         agentDir,
         started,
@@ -2421,6 +2424,7 @@ async function prepareCliRunContextWithinReadFence(
       params: preparedParams,
       bindQuestionAnswerAuthority,
       effectiveAuthProfileId,
+      authMode,
       ...(authStore ? { authProfileStore: authStore } : {}),
       agentDir,
       started,

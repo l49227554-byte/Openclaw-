@@ -35,7 +35,10 @@ it.skipIf(process.platform === "win32")(
           "--import",
           path.resolve("scripts/tsx.mjs"),
           fileURLToPath(
-            new URL("./transport-process-blocked-command.test-support.mjs", import.meta.url),
+            new URL(
+              "./test-support/transport-process-blocked-command.test-support.mjs",
+              import.meta.url,
+            ),
           ),
         ],
         { timeout: 10_000 },
@@ -65,7 +68,10 @@ it.skipIf(process.platform === "win32")(
           "--import",
           path.resolve("scripts/tsx.mjs"),
           fileURLToPath(
-            new URL("./transport-process-starvation.test-support.mjs", import.meta.url),
+            new URL(
+              "./test-support/transport-process-starvation.test-support.mjs",
+              import.meta.url,
+            ),
           ),
           ...(process.platform === "linux" ? [] : ["--fixture-procfs"]),
         ],

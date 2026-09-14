@@ -18,7 +18,7 @@ import { promisify } from "node:util";
 import {
   readCodexAppServerProcessCommand,
   readCodexAppServerProcessSnapshot,
-} from "./transport-process-snapshot.ts";
+} from "../transport-process-snapshot.ts";
 
 const actualPlatform = process.platform;
 const fixtureProcfs = process.argv.includes("--fixture-procfs");
@@ -104,7 +104,7 @@ try {
         platform: actualPlatform,
         procfs: fixtureProcfs ? "fixture" : "kernel",
         sourceSha256: createHash("sha256")
-          .update(readFileSync(new URL("./transport-process-snapshot.ts", import.meta.url)))
+          .update(readFileSync(new URL("../transport-process-snapshot.ts", import.meta.url)))
           .digest("hex"),
         startupDeadlineMs: 10_000,
         blockedFilesystemWorkerMs: 10_500,

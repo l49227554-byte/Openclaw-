@@ -6,7 +6,7 @@ import path from "node:path";
 import {
   ProcessInspectionError,
   readCodexAppServerProcessCommand,
-} from "./transport-process-snapshot.ts";
+} from "../transport-process-snapshot.ts";
 
 const scratch = mkdtempSync(path.join(os.tmpdir(), "codex-blocked-command-"));
 const fifo = path.join(scratch, "cmdline");

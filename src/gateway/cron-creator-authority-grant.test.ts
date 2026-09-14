@@ -30,7 +30,7 @@ function createManagementFixture(controlUiAdmin = true) {
   const scope = createCronCreatorAuthorityRunScope(
     runId,
     { kind: "local" },
-    controlUiAdmin ? true : undefined,
+    controlUiAdmin ? { source: "control-ui-admin" } : undefined,
     () => continuationCurrent,
   );
   const operation = new AbortController();
@@ -142,7 +142,8 @@ describe("cron creator authority grants", () => {
 });
 
 describe("cron management authority grants", () => {
-  const denied = /Retry from a fresh authenticated Control UI administrator turn/;
+  const denied =
+    /Retry from a fresh authenticated configured channel owner or Control UI administrator turn/;
 
   it("retains a redeemed queued operation until its exact run closes, without permitting replay", async () => {
     const fixture = createManagementFixture();

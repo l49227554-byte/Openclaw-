@@ -1,10 +1,7 @@
 import type { LookupAddress } from "node:dns";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  createMatrixGuardedFetch,
-  performMatrixRequest,
-} from "../extensions/matrix/src/matrix/sdk/transport.js";
+import { MatrixClient } from "../extensions/matrix/test-api.js";
 import { withChannelReadAuthority } from "../src/shared/channel-read-authority.js";
 
 const { lookup } = vi.hoisted(() => ({
@@ -24,6 +21,27 @@ const DNS_ANSWER: LookupAddress[] = [{ address: "127.0.0.1", family: 4 }];
 const CLOSED_AUTHORITY = "Channel read authority is no longer active.";
 const TRANSPORTS = ["performMatrixRequest JSON", "performMatrixRequest raw", "SDK fetch"] as const;
 
+class TransportMatrixClient extends MatrixClient {
+  async readTransport(transport: (typeof TRANSPORTS)[number], path: string): Promise<unknown> {
+    if (transport === "SDK fetch") {
+      // The SDK adapter invokes the fetch installed by MatrixClientBase.
+      const response = await this.client.http.fetch(`${HOMESERVER}${path}`);
+      return await response.text();
+    }
+    if (transport === "performMatrixRequest raw") {
+      const buffer = await this.httpClient.requestRaw({
+        method: "GET",
+        endpoint: path,
+        timeoutMs: 5000,
+      });
+      return buffer.toString("utf8");
+    }
+    return await this.doRequest("GET", path);
+  }
+}
+
+const clients = new Set<TransportMatrixClient>();
+
 function stubRuntimeFetch(fetchImpl: typeof fetch, close?: () => Promise<void>): void {
   vi.stubGlobal(TEST_UNDICI_RUNTIME_DEPS_KEY, {
     Agent: class MockAgent {
@@ -35,30 +53,15 @@ function stubRuntimeFetch(fetchImpl: typeof fetch, close?: () => Promise<void>):
   });
 }
 
-function createReader(
-  transport: (typeof TRANSPORTS)[number],
-  signal?: AbortSignal,
-): (path: string) => Promise<string> {
-  if (transport === "SDK fetch") {
-    const guardedFetch = createMatrixGuardedFetch({
-      ssrfPolicy: { allowPrivateNetwork: true },
-      signal,
-    });
-    return async (path) => (await guardedFetch(`${HOMESERVER}${path}`)).text();
-  }
-  const raw = transport === "performMatrixRequest raw";
-  return async (path) => {
-    const result = await performMatrixRequest({
-      homeserver: HOMESERVER,
-      accessToken: "fixture-token",
-      method: "GET",
-      endpoint: path,
-      timeoutMs: 5000,
-      ssrfPolicy: { allowPrivateNetwork: true },
-      raw,
-      signal,
-    });
-    return raw ? result.buffer.toString("utf8") : result.text;
+function createReader(transport: (typeof TRANSPORTS)[number]) {
+  const client = new TransportMatrixClient(HOMESERVER, "fixture-token", {
+    localTimeoutMs: 5000,
+    ssrfPolicy: { allowPrivateNetwork: true },
+  });
+  clients.add(client);
+  return {
+    client,
+    read: (path: string) => client.readTransport(transport, path),
   };
 }
 
@@ -68,15 +71,21 @@ beforeEach(() => {
   lookup.mockResolvedValue(DNS_ANSWER);
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
+afterEach(async () => {
+  const ownedClients = [...clients];
+  clients.clear();
+  try {
+    await Promise.all(ownedClients.map((client) => client.stopWithoutPersist()));
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 describe.each(TRANSPORTS)("%s read authority", (transport) => {
   it("returns an allowed read while its host scope is active", async () => {
     const runtimeFetch = vi.fn<typeof fetch>(async () => new Response(PAYLOAD));
     stubRuntimeFetch(runtimeFetch);
-    const read = createReader(transport);
+    const { read } = createReader(transport);
 
     await expect(
       withChannelReadAuthority(
@@ -105,7 +114,7 @@ describe.each(TRANSPORTS)("%s read authority", (transport) => {
       return dnsResult.promise;
     });
     stubRuntimeFetch(runtimeFetch);
-    const read = createReader(transport);
+    const { read } = createReader(transport);
 
     // Return the pending transport promise without awaiting it so the host scope
     // closes here; its own result fence cannot make a broken transport pass.
@@ -147,7 +156,7 @@ describe.each(TRANSPORTS)("%s read authority", (transport) => {
     );
     const runtimeFetch = vi.fn<typeof fetch>(async () => new Response(stream));
     stubRuntimeFetch(runtimeFetch);
-    const read = createReader(transport);
+    const { read } = createReader(transport);
 
     const pending = await withChannelReadAuthority(
       () => undefined,
@@ -173,15 +182,16 @@ describe.each(TRANSPORTS)("%s read authority", (transport) => {
     });
     const runtimeFetch = vi.fn<typeof fetch>(async () => new Response(PAYLOAD));
     stubRuntimeFetch(runtimeFetch);
-    const controller = new AbortController();
-    const read = createReader(transport, controller.signal);
+    const { client, read } = createReader(transport);
 
     await withChannelReadAuthority(
       () => undefined,
       async () => {
-        const rejected = expect(read(READ_PATH)).rejects.toThrow("client retired");
+        const rejected = expect(read(READ_PATH)).rejects.toThrow(
+          "Matrix client generation is no longer active.",
+        );
         await dnsStarted.promise;
-        controller.abort(new Error("client retired"));
+        await client.stopWithoutPersist();
         dnsResult.resolve(DNS_ANSWER);
         await rejected;
       },
@@ -197,7 +207,7 @@ describe.each(TRANSPORTS)("%s read authority", (transport) => {
       cleanupStarted.resolve();
       await finishCleanup.promise;
     });
-    const read = createReader(transport);
+    const { read } = createReader(transport);
 
     const pending = await withChannelReadAuthority(
       () => undefined,
@@ -227,7 +237,7 @@ it("reuses an SDK fetch without poisoning a valid read or reviving its closed fi
   const first = await withChannelReadAuthority(
     () => undefined,
     async () => {
-      const read = createReader("SDK fetch");
+      const { read } = createReader("SDK fetch");
       const result = Promise.allSettled([read(`${READ_PATH}?limit=1`)]);
       await dnsStarted.promise;
       return { read, result };

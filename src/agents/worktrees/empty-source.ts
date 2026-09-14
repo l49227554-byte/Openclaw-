@@ -136,7 +136,7 @@ export async function resolveEmptyWorktreeSourceRoot(params: {
     !record.ownerId ||
     !(await worktreePathExists(sourceParent(env)))
   ) {
-    return;
+    return undefined;
   }
   const ownerRoot = path.join(await fs.realpath(sourceParent(env)), sourceName(record.ownerId));
   const expected = path.join(ownerRoot, "workspace");

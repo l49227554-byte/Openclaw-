@@ -464,11 +464,10 @@ export class ManagedWorktreeService {
             });
           });
         } catch (cleanupError) {
-          throw new Error(
+          throw new AggregateError(
+            [error, cleanupError],
             `${String(error)}\nEmpty workspace cleanup failed: ${String(cleanupError)}`,
-            {
-              cause: error,
-            },
+            { cause: cleanupError },
           );
         }
       }

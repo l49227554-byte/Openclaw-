@@ -1,5 +1,6 @@
 import { isResponsesOutputLimitToolCallError } from "@openclaw/ai/diagnostics";
 import { replaceCompactionReplayOwnerContent } from "@openclaw/ai/transports";
+import { PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE } from "@openclaw/llm-core";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -369,11 +370,21 @@ export async function streamAgentResponse(
           abortFailedResponse(terminal);
           const result = await response.result();
           abortFailedResponse(result);
+          const outputLimit = isResponsesOutputLimitToolCallError(result);
+          if (outputLimit) {
+            // Record one provider terminal, with its original usage, after tool outcomes settle.
+            await executions;
+          }
           const finalMessage = prepareAssistantMessage(
             ensureToolTurnIdentity(
               removeNonExecutableToolCalls({
                 ...remainingFragment(result),
                 ...(streamedTurnId ? { turnId: streamedTurnId } : {}),
+                ...(outputLimit && signal?.aborted
+                  ? { stopReason: "aborted" }
+                  : outputLimit && batches.length > 0 && batches.every((batch) => batch.terminate)
+                    ? { errorCode: PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE }
+                    : {}),
               }),
             ),
           );

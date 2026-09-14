@@ -1,7 +1,6 @@
 // Keep the runtime class on the public package specifier so OpenClaw and
 // external consumers share one constructor identity.
 import { EventStream as LlmEventStream } from "@openclaw/ai/event-stream";
-import { PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE } from "@openclaw/llm-core";
 import type {
   AssistantMessage,
   EventStream,
@@ -434,21 +433,24 @@ async function runLoop(
       if (executedToolBatch?.fatal) {
         throw executedToolBatch.fatal.error;
       }
-      if (message.stopReason !== "aborted" && (await stopIfAborted())) {
+      if (message.stopReason === "aborted") {
+        if (signal?.aborted && !isTurnHandoffAbort(signal)) {
+          await appendInterruptedTurnMessage(newMessages, emit);
+        }
+        await emit({ type: "agent_end", messages: newMessages });
         return newMessages;
       }
-      const terminatedAfterProviderFailure =
-        message.stopReason === "error" && executedToolBatch?.terminate === true;
-      if (executedToolBatch?.terminateRun || terminatedAfterProviderFailure) {
-        const terminalText = executedToolBatch?.terminateRun
-          ? TOOL_LOOP_RECOVERY_TERMINATED_MESSAGE
-          : "The tool batch ended intentionally after the provider response failed; no continuation was started.";
+      if (await stopIfAborted()) {
+        return newMessages;
+      }
+      if (executedToolBatch?.terminateRun) {
         const terminalMessage = {
-          ...createFailureMessage(config.model, new Error(terminalText), false),
-          ...(terminatedAfterProviderFailure
-            ? { errorCode: PROVIDER_FAILURE_WITH_OUTPUT_ERROR_CODE }
-            : {}),
-          content: [{ type: "text" as const, text: terminalText }],
+          ...createFailureMessage(
+            config.model,
+            new Error(TOOL_LOOP_RECOVERY_TERMINATED_MESSAGE),
+            false,
+          ),
+          content: [{ type: "text" as const, text: TOOL_LOOP_RECOVERY_TERMINATED_MESSAGE }],
         };
         state.context.messages.push(terminalMessage);
         newMessages.push(terminalMessage);
@@ -463,9 +465,6 @@ async function runLoop(
       }
 
       if (providerFailed) {
-        if (message.stopReason === "aborted" && signal?.aborted && !isTurnHandoffAbort(signal)) {
-          await appendInterruptedTurnMessage(newMessages, emit);
-        }
         await emit({ type: "agent_end", messages: newMessages });
         return newMessages;
       }

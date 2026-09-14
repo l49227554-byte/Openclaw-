@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import {
   createAssistantMessageEventStream,
   type Context,
@@ -145,8 +146,9 @@ it.each([
 it.each(["recover", "exhaust", "cancel", "cancel-retry", "terminate"])(
   "settles same-response tools before %s",
   async (mode) => {
-    const started = createDeferred();
-    const finish = createDeferred();
+    let started = createDeferred();
+    let finish = createDeferred();
+    const providerFailures = [createDeferred(), createDeferred()] as const;
     const requests: Context[] = [];
     const events: AgentSessionEvent[] = [];
     const execute = vi.fn(async (_id: string, _args: unknown, signal?: AbortSignal) => {
@@ -170,6 +172,8 @@ it.each(["recover", "exhaust", "cancel", "cancel-retry", "terminate"])(
             createAssistant(model, [{ type: "text", text: "Recovered using saved result." }]),
           );
         }
+        started = createDeferred();
+        finish = createDeferred();
         const stream = createAssistantMessageEventStream();
         const output = createAssistant(model, []);
         stream.push({ type: "start", partial: output });
@@ -220,7 +224,10 @@ it.each(["recover", "exhaust", "cancel", "cancel-retry", "terminate"])(
           };
         })();
         void processResponsesStream(providerEvents, output, stream, model, options).catch(
-          (error: unknown) => failTransportStream({ stream, output, error }),
+          (error: unknown) => {
+            failTransportStream({ stream, output, error });
+            providerFailures[requestNumber === 1 ? 0 : 1].resolve();
+          },
         );
         return stream;
       },
@@ -240,32 +247,33 @@ it.each(["recover", "exhaust", "cancel", "cancel-retry", "terminate"])(
         },
       ],
     });
-    session.subscribe((event) => {
-      events.push(event);
-      if (
-        event.type === "message_end" &&
-        event.message.role === "assistant" &&
-        event.message.stopReason === "error"
-      ) {
-        if (requests.length === 1) {
-          expect(events.some((item) => item.type === "auto_retry_start")).toBe(false);
-        }
-        if (mode === "cancel" || (mode === "cancel-retry" && requests.length === 2)) {
+    session.subscribe((event) => events.push(event));
+    const pending = session.prompt("Record once and report the result.");
+    try {
+      const failureCount = mode === "exhaust" || mode === "cancel-retry" ? 2 : 1;
+      for (const [index, failure] of providerFailures.slice(0, failureCount).entries()) {
+        await failure.promise;
+        await setImmediate();
+        expect(requests).toHaveLength(index + 1);
+        expect(events.filter((event) => event.type === "auto_retry_start")).toHaveLength(index);
+        expect(
+          events.filter(
+            (event) =>
+              event.type === "message_end" &&
+              event.message.role === "assistant" &&
+              event.message.stopReason === "error",
+          ),
+        ).toHaveLength(index);
+        if (mode === "cancel" || (mode === "cancel-retry" && index === 1)) {
           void session.abort();
         }
         finish.resolve();
       }
-    });
-    try {
-      await session.prompt("Record once and report the result.");
+      await pending;
       expect(execute).toHaveBeenCalledTimes(mode === "exhaust" || mode === "cancel-retry" ? 2 : 1);
       expect(requests).toHaveLength(mode === "cancel" || mode === "terminate" ? 1 : 2);
       if (mode !== "recover") {
-        if (mode === "terminate") {
-          expect(session.getLastAssistantText()).toContain("no continuation was started");
-        } else {
-          expect(session.getLastAssistantText()).toBeUndefined();
-        }
+        expect(session.getLastAssistantText()).toBeUndefined();
         expect(events.filter((event) => event.type === "auto_retry_end")).toEqual(
           mode === "exhaust" || mode === "cancel-retry"
             ? [expect.objectContaining({ success: false, attempt: 1 })]
@@ -285,15 +293,30 @@ it.each(["recover", "exhaust", "cancel", "cancel-retry", "terminate"])(
       expect(events.filter((event) => event.type === "auto_retry_end")).toMatchObject([
         { success: true, attempt: 1 },
       ]);
-      expect(
-        sessionManager
-          .getBranch()
-          .filter((entry) => entry.type === "message")
-          .map((entry) => entry.message.role),
-      ).toEqual(["user", "assistant", "assistant", "toolResult", "assistant"]);
+      const recordedFailures = sessionManager
+        .getBranch()
+        .flatMap((entry) =>
+          entry.type === "message" &&
+          entry.message.role === "assistant" &&
+          entry.message.stopReason === "error"
+            ? [entry.message]
+            : [],
+        );
+      expect(recordedFailures).toMatchObject([
+        {
+          errorCode: "incomplete_tool_call",
+          diagnostics: [
+            {
+              type: "openai_responses_terminal",
+              details: { incompleteReason: "max_output_tokens" },
+            },
+          ],
+        },
+      ]);
     } finally {
       finish.resolve();
       await session.abort();
+      await pending;
     }
   },
 );

@@ -397,10 +397,15 @@ class GatewaySwitchFixture(GatewayFixture):
         wait("Edit Gateway", "heading")
         for method in ("token", "password"):
             select_auth(method)
-            entry = wait(f"Gateway {method} (optional)", ("entry", "text", "password text"), predicate=lambda node:
+            # WebKitGTK exposes password placeholders as text; reveal to read the actual value.
+            click("Show credential")
+            entry = wait(f"Gateway {method} (optional)", ("entry", "text"), predicate=lambda node:
                          node.get_state_set().contains(Atspi.StateType.EDITABLE) and in_active_window(node))
             if Atspi.Text.get_text(entry.get_text_iface(), 0, -1):
                 raise RuntimeError("The editor exposed a saved credential")
+            click("Hide credential")
+            wait(f"Gateway {method} (optional)", "password text", predicate=lambda node:
+                 node.get_state_set().contains(Atspi.StateType.EDITABLE) and in_active_window(node))
         click("Back to Gateways")
         wait("Manage Gateways", "heading")
         record("saved credential is not disclosed by the editor")

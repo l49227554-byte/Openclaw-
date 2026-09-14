@@ -3,6 +3,15 @@ import type { z } from "zod";
 import type { UpdateRunRecordSchema } from "./update-run-schema.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
+export function hasRepeatedCliError(
+  step: Pick<UpdateStepResult, "failureFacts" | "stderrTail">,
+): boolean {
+  return Boolean(
+    step.failureFacts?.length &&
+    /^\[openclaw\] (?:The CLI command failed\.|Reason: )/mu.test(step.stderrTail ?? ""),
+  );
+}
+
 /** A bounded diagnostic excerpt for a failed update step, never its command log or cwd. */
 export function summarizeUpdateStepFailure(
   step: Pick<
@@ -10,9 +19,6 @@ export function summarizeUpdateStepFailure(
     "name" | "exitCode" | "termination" | "stdoutTail" | "stderrTail" | "failureFacts"
   >,
 ): string {
-  const repeatsCliError =
-    step.failureFacts?.length &&
-    /^\[openclaw\] (?:The CLI command failed\.|Reason: )/mu.test(step.stderrTail ?? "");
   // Schema refusals lead with the cause, followed by documentation and generic recovery advice.
   const excerpts =
     step.name === "database-schema-preflight"
@@ -21,7 +27,7 @@ export function summarizeUpdateStepFailure(
           sliceUtf16Safe(tail?.trim().split(/\r?\n/u).at(-1) ?? "", -120),
         );
   return truncateUtf16Safe(
-    [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...(repeatsCliError ? [] : excerpts)]
+    [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...(hasRepeatedCliError(step) ? [] : excerpts)]
       .filter(Boolean)
       .join("; "),
     300,

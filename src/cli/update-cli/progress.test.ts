@@ -214,6 +214,18 @@ describe("update progress", () => {
     const report = log.mock.calls.flat().join("\n");
     expect(report.match(/Unable to load plugin/gu)).toHaveLength(1);
     expect(report).not.toContain("Help: openclaw --help");
+    log.mockClear();
+    presentation.progress.onStepComplete?.({
+      ...failed,
+      stdoutTail: undefined,
+      stderrTail: undefined,
+    });
+    expect(
+      log.mock.calls
+        .flat()
+        .join("\n")
+        .match(/Unable to load plugin/gu),
+    ).toHaveLength(1);
   });
 
   it("follows restart verification after step progress stops and flushes before the final report", async () => {

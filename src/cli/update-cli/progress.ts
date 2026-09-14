@@ -5,7 +5,11 @@ import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { formatDurationPrecise } from "../../infra/format-time/format-duration.ts";
 import { formatUpdateFailureFact } from "../../infra/update-failure-facts-format.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
-import type { UpdateRunPhase, UpdateRunRecord } from "../../infra/update-run-record.js";
+import {
+  hasRepeatedCliError,
+  type UpdateRunPhase,
+  type UpdateRunRecord,
+} from "../../infra/update-run-record.js";
 import {
   renderUpdateRunReport,
   updateRunReportInputFromResult,
@@ -197,7 +201,9 @@ function printStep(step: DisplayStep): void {
     for (const fact of step.failureFacts) {
       defaultRuntime.log(`    ${theme.error(formatUpdateFailureFact(fact))}`);
     }
-    return;
+    if (hasRepeatedCliError(step)) {
+      return;
+    }
   }
   // Build tools often report failures on stdout. Keep the final diagnostic from
   // each stream, so npm's stderr footer cannot hide the actual build error.

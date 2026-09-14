@@ -1,9 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { defaultRuntime } from "../runtime.js";
 import * as diskSpace from "./disk-space.js";
 import * as readiness from "./update-candidate-canary-readiness.test-support.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
@@ -842,6 +844,18 @@ describe("update candidate canary", () => {
       });
       expect(result.status).toBe(failure === "readiness" ? "ok" : "error");
       expect(result.phase).toBe(failure);
+      if (failure === "plugins") {
+        const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+        const presentation = createUpdateProgress(true);
+        onTestFinished(() => {
+          presentation.dispose();
+          log.mockRestore();
+        });
+        for (const step of result.steps) {
+          presentation.progress.onStepComplete?.(step);
+        }
+        expect(log.mock.calls.flat().join("\n")).toContain("incompatible plugin");
+      }
       if (failure === "readiness") {
         readiness.expectCanaryReadinessWarning(result.steps.at(-1), "readyz", 503);
       }

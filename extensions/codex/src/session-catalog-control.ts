@@ -467,6 +467,10 @@ export function createCodexSessionCatalogControl(params: {
         const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
         assertSourceCurrent();
         const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
+        const assertAuthSourceCurrent = () => {
+          assertSourceCurrent();
+          clientOptions.assertAuthSourceCurrent?.();
+        };
         const assertAuthorityCurrent = () => {
           assertSourceCurrent();
           clientOptions.assertCurrent?.();
@@ -476,6 +480,7 @@ export function createCodexSessionCatalogControl(params: {
         return await codexControlRequest(pluginConfig, method, requestParams, {
           ...clientOptions,
           assertCurrent: assertAuthorityCurrent,
+          ...(source?.sourceAgentDir ? { assertAuthSourceCurrent } : {}),
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         });
       },
@@ -506,6 +511,10 @@ export function createCodexSessionCatalogControl(params: {
       const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
       assertSourceCurrent();
       const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
+      const assertAuthSourceCurrent = () => {
+        assertSourceCurrent();
+        clientOptions.assertAuthSourceCurrent?.();
+      };
       const assertAuthorityCurrent = () => {
         assertSourceCurrent();
         clientOptions.assertCurrent?.();
@@ -514,6 +523,7 @@ export function createCodexSessionCatalogControl(params: {
       const client = await getLeasedSharedCodexAppServerClient({
         ...clientOptions,
         assertCurrent: assertAuthorityCurrent,
+        ...(source?.sourceAgentDir ? { assertAuthSourceCurrent } : {}),
         timeoutMs: runtime.requestTimeoutMs,
       });
       try {

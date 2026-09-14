@@ -295,6 +295,90 @@ describe("managed catalog source authentication", () => {
     expect(() => options.assertCurrent()).toThrow("authentication changed");
   });
 
+  it.each(["direct", "pinned"] as const)(
+    "keeps %s refresh authority valid across OAuth rotation",
+    async (mode) => {
+      const f = await fixture();
+      auth.stores.set(f.dirs.alpha!, {
+        version: 1,
+        profiles: {
+          "openai:alpha": {
+            type: "oauth",
+            provider: "openai",
+            access: "synthetic-access",
+            refresh: "synthetic-refresh",
+            expires: Date.now() + 3600000,
+            accountId: "synthetic-account",
+            email: "source@example.invalid",
+          },
+        },
+      });
+      const source = f.factory
+        .homesForAgent("beta")
+        .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+      const control = f.factory.forRequest("beta", source);
+      if (mode === "pinned") {
+        await control.withPinnedConnection((pinned) => pinned.readThread("thread"));
+      } else {
+        await control.readThread("thread");
+      }
+      const options =
+        mode === "pinned"
+          ? pinnedConnectionMocks.getClient.mock.calls.at(-1)?.[0]
+          : commandRpcMocks.codexControlRequest.mock.calls.at(-1)?.[3];
+      expect(options.assertAuthSourceCurrent).toBeTypeOf("function");
+      const credential = auth.stores.get(f.dirs.alpha!)!.profiles["openai:alpha"]!;
+      expect(credential.type).toBe("oauth");
+      if (credential.type !== "oauth") {
+        throw new Error("expected OAuth fixture");
+      }
+      credential.access = "synthetic-rotated-access";
+      credential.refresh = "synthetic-rotated-refresh";
+      credential.expires += 3600000;
+      expect(() => options.assertAuthSourceCurrent()).not.toThrow();
+      expect(() => options.assertCurrent()).toThrow("authentication changed");
+      credential.accountId = "synthetic-other-account";
+      expect(() => options.assertAuthSourceCurrent()).toThrow("authentication changed");
+    },
+  );
+
+  it.each([false, true])(
+    "rejects token-claim workspace replacement with explicit account=%s",
+    async (explicit) => {
+      const f = await fixture();
+      const token = (accountId: string, nonce: string) =>
+        [
+          Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
+          Buffer.from(
+            JSON.stringify({
+              "https://api.openai.com/auth": { chatgpt_account_id: accountId },
+              nonce,
+            }),
+          ).toString("base64url"),
+          "synthetic-signature",
+        ].join(".");
+      const credential = {
+        type: "oauth" as const,
+        provider: "openai",
+        access: token("synthetic-account", "first"),
+        refresh: "synthetic-refresh",
+        expires: Date.now() + 3600000,
+        email: "source@example.invalid",
+        ...(explicit ? { accountId: "synthetic-account" } : {}),
+      };
+      auth.stores.set(f.dirs.alpha!, { version: 1, profiles: { "openai:alpha": credential } });
+      const source = f.factory
+        .homesForAgent("beta")
+        .find((home) => home.sourceAgentDir === f.dirs.alpha)!;
+      await f.factory.forRequest("beta", source).readThread("thread");
+      const options = commandRpcMocks.codexControlRequest.mock.calls.at(-1)?.[3];
+      credential.access = token("synthetic-account", "rotated");
+      expect(() => options.assertAuthSourceCurrent()).not.toThrow();
+      credential.access = token("synthetic-other-account", "replacement");
+      expect(() => options.assertAuthSourceCurrent()).toThrow("authentication changed");
+    },
+  );
+
   it("keeps native and arbitrary homes native without reading managed credentials", async () => {
     const f = await fixture();
     for (const source of f.factory.homesForAgent("beta").filter((home) => !home.sourceAgentDir)) {

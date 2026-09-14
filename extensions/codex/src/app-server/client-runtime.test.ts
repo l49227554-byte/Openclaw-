@@ -103,6 +103,7 @@ describe("Codex app-server client runtime", () => {
     expect(mocks.refreshAuth).toHaveBeenCalledWith({
       ...context,
       config: updatedContext.config,
+      assertCurrent: expect.any(Function),
     });
     expect(mocks.mergeRateLimitUpdate).toHaveBeenCalledWith(harness.client, {
       rateLimits: { primary: { usedPercent: 12 } },
@@ -114,6 +115,65 @@ describe("Codex app-server client runtime", () => {
       }),
     );
   });
+
+  it.each(["before refresh", "during refresh", "before response", "during serialization"])(
+    "fences revoked source authority %s without publishing tokens",
+    async (boundary) => {
+      const harness = createClientHarness();
+      clients.push(harness.client);
+      let authorized = boundary !== "before refresh";
+      const retired = vi.fn();
+      if (boundary === "before response" || boundary === "during serialization") {
+        const addRequestHandler = harness.client.addRequestHandler.bind(harness.client);
+        vi.spyOn(harness.client, "addRequestHandler").mockImplementation((handler) =>
+          addRequestHandler(async (...args) => {
+            const result = await handler(...args);
+            if (boundary === "during serialization" && result && typeof result === "object") {
+              Object.defineProperty(result, "accessToken", {
+                enumerable: true,
+                get: () => {
+                  authorized = false;
+                  return "revoked-at-serialization";
+                },
+              });
+            } else {
+              authorized = false;
+            }
+            return result;
+          }),
+        );
+      }
+      if (boundary === "during refresh") {
+        mocks.refreshAuth.mockImplementationOnce(async () => {
+          authorized = false;
+          return { accessToken: "revoked-access", chatgptAccountId: "account" };
+        });
+      }
+      ensureCodexAppServerClientRuntime(harness.client, {
+        agentDir: "/tmp/agent",
+        assertAuthSourceCurrent: () => {
+          if (!authorized) {
+            throw new Error("Catalog source authority revoked");
+          }
+        },
+        onAuthRefreshFailure: retired,
+      });
+      // A later lease cannot replace the physical client's original source authority.
+      ensureCodexAppServerClientRuntime(harness.client, {
+        agentDir: "/tmp/other-agent",
+        assertAuthSourceCurrent: () => undefined,
+      });
+      harness.send({ id: "revoked", method: "account/chatgptAuthTokens/refresh", params: {} });
+      await vi.waitFor(() => expect(harness.writes).toHaveLength(1));
+      expect(JSON.parse(harness.writes[0]!)).toMatchObject({
+        id: "revoked",
+        error: { message: "Catalog source authority revoked" },
+      });
+      expect(harness.writes[0]).not.toContain("accessToken");
+      expect(retired).toHaveBeenCalled();
+      expect(mocks.refreshAuth).toHaveBeenCalledTimes(boundary === "before refresh" ? 0 : 1);
+    },
+  );
 
   it("rejects ChatGPT refresh on a prepared API-key client", async () => {
     const harness = createClientHarness();

@@ -64,6 +64,7 @@ export type CodexControlRequestOptions = {
   startOptions?: CodexAppServerStartOptions;
   timeoutMs?: number;
   assertCurrent?: () => void;
+  assertAuthSourceCurrent?: () => void;
   beforeRequest?: (
     request: CodexAppServerScopedRequest,
     client: CodexAppServerClient,
@@ -247,6 +248,9 @@ export async function codexControlRequest(
   const controlRequestOptions = {
     timeoutMs: options.timeoutMs ?? runtime.requestTimeoutMs,
     assertCurrent: options.assertCurrent,
+    ...(options.assertAuthSourceCurrent
+      ? { assertAuthSourceCurrent: options.assertAuthSourceCurrent }
+      : {}),
     startOptions,
     config: options.config,
     sessionKey: options.sessionKey,

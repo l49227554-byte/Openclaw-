@@ -1104,6 +1104,25 @@ describe("shared Codex app-server client", () => {
     expect(fallback.process.stdin.destroyed).toBe(false);
   });
 
+  it("never lets guarded leases inherit an unguarded physical runtime", async () => {
+    const ordinary = createInitializingClientHarness("openclaw/0.149.0 (Linux; test)");
+    const guarded = createInitializingClientHarness("openclaw/0.149.0 (Linux; test)");
+    const startSpy = vi
+      .spyOn(CodexAppServerClient, "start")
+      .mockResolvedValueOnce(ordinary.client)
+      .mockResolvedValueOnce(guarded.client);
+    const ordinaryClient = await getLeasedSharedCodexAppServerClient({});
+    const guardedOptions = { assertAuthSourceCurrent: () => undefined };
+    const guardedClient = await getLeasedSharedCodexAppServerClient(guardedOptions);
+    const repeatedGuardedClient = await getLeasedSharedCodexAppServerClient(guardedOptions);
+    expect(guardedClient).not.toBe(ordinaryClient);
+    expect(repeatedGuardedClient).toBe(guardedClient);
+    expect(startSpy).toHaveBeenCalledTimes(2);
+    expect(releaseLeasedSharedCodexAppServerClient(ordinaryClient)).toBe(true);
+    expect(releaseLeasedSharedCodexAppServerClient(guardedClient)).toBe(true);
+    expect(releaseLeasedSharedCodexAppServerClient(repeatedGuardedClient)).toBe(true);
+  });
+
   it("keeps capture clients separate from ordinary shared clients", async () => {
     await withTempDir("openclaw-codex-capture-client-", async (root) => {
       const command = path.join(root, "codex");
@@ -1694,6 +1713,7 @@ describe("shared Codex app-server client", () => {
     await vi.waitFor(() => expect(harness.writes.length).toBeGreaterThan(priorWriteCount));
 
     expect(mocks.refreshCodexAppServerAuthTokens).toHaveBeenCalledWith({
+      assertCurrent: expect.any(Function),
       agentDir: "/tmp/openclaw-agent",
       authProfileId: "openai:scoped",
       authProfileStore: preparedAuthProfileStore,
@@ -1822,6 +1842,7 @@ describe("shared Codex app-server client", () => {
     });
     await vi.waitFor(() => expect(harness.writes.length).toBeGreaterThan(priorWriteCount));
     expect(mocks.refreshCodexAppServerAuthTokens).toHaveBeenCalledWith({
+      assertCurrent: expect.any(Function),
       agentDir: "/tmp/openclaw-agent",
       authProfileId: "openai:scoped",
       authProfileStore,
@@ -2110,6 +2131,7 @@ describe("shared Codex app-server client", () => {
     await vi.waitFor(() => expect(harness.writes.length).toBeGreaterThan(priorWriteCount));
 
     expect(mocks.refreshCodexAppServerAuthTokens).toHaveBeenCalledWith({
+      assertCurrent: expect.any(Function),
       agentDir: "/tmp/openclaw-persisted-agent",
       authProfileId: "openai:persisted",
       authHandoff,

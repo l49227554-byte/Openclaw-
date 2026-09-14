@@ -60,6 +60,7 @@ async function withAuthRefreshHarness(
     otherProviderRefresh: ReturnType<typeof vi.fn>;
     retainedStore: ReturnType<typeof loadAuthProfileStoreForSecretsRuntime>;
   }) => Promise<void>,
+  assertAuthSourceCurrent?: () => void,
 ): Promise<void> {
   await withStateDirEnv("openclaw-codex-auth-refresh-authority-", async ({ stateDir }) => {
     const bundledRoot = path.join(stateDir, "bundled");
@@ -155,6 +156,7 @@ async function withAuthRefreshHarness(
             agentDir,
             authProfileId: PROFILE_ID,
             authProfileStore: retainedStore,
+            assertAuthSourceCurrent,
           });
           recordCodexAppServerAuthHandoff(harness.client, {
             accessFingerprint: fingerprintTokenAuthProfileCacheKey(INITIAL_ACCESS),
@@ -296,6 +298,36 @@ describe("Codex app-server auth refresh authority", () => {
       expect(responses).not.toContain(INITIAL_ACCESS);
       expect(responses).not.toContain("other-account-access");
     });
+  });
+
+  it("does not persist or return a rotation after source authority is revoked", async () => {
+    let authorized = true;
+    await withAuthRefreshHarness(
+      async (credential) => {
+        authorized = false;
+        return { ...credential, access: "revoked-rotation", refresh: "revoked-refresh" };
+      },
+      async ({ agentDir, harness }) => {
+        harness.send({
+          id: "source-revoked-during-rotation",
+          method: "account/chatgptAuthTokens/refresh",
+          params: { reason: "unauthorized", previousAccountId: ACCOUNT_ID },
+        });
+        const response = await waitForResponse(harness, "source-revoked-during-rotation");
+        expect(response.error).toBeDefined();
+        expect(response.result).toBeUndefined();
+        expect(JSON.stringify(response)).not.toContain("revoked-rotation");
+        clearRuntimeAuthProfileStoreSnapshots();
+        expect(loadAuthProfileStoreForSecretsRuntime(agentDir).profiles[PROFILE_ID]).toMatchObject({
+          access: expect.stringMatching(/^openclaw-oauth-refresh-fence:v1:.*:failed:access:/),
+        });
+      },
+      () => {
+        if (!authorized) {
+          throw new Error("Source authority revoked");
+        }
+      },
+    );
   });
 
   it("returns and persists an accepted same-account rotation", async () => {

@@ -101,6 +101,8 @@ type CodexAppServerClientStartupOptions = {
   onStartedClient?: (client: CodexAppServerClient) => void;
   onInitializedClient?: () => void;
   assertCurrent?: () => void;
+  /** Live source ownership, independent of acquisition deadlines and token rotation. */
+  assertAuthSourceCurrent?: () => void;
 };
 
 const CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE = "codex app-server initialize timed out";
@@ -329,6 +331,8 @@ export type CodexAppServerClientOptions = {
   abandonSignal?: AbortSignal;
   /** Caller authority for startup of an isolated, caller-owned client. */
   assertCurrent?: () => void;
+  /** Live source ownership, independent of acquisition deadlines and token rotation. */
+  assertAuthSourceCurrent?: () => void;
 };
 
 /** Factory used by attempt startup and side turns to acquire a leased client. */
@@ -670,6 +674,8 @@ async function acquireSharedCodexAppServerClient(
   })}\0auth-requirement:${authRequirement ?? "native"}${
     desktopGeneration ? `\0desktop-generation:${desktopGeneration.epoch}` : ""
   }`;
+  // Guarded catalog leases must not inherit a runtime installed without source authority.
+  const authorityKey = `${baseKey}\0auth-source:${options?.assertAuthSourceCurrent ? "guarded" : "ordinary"}`;
   // Capture turns cannot inherit a normal client whose loaded bytes predate the
   // filesystem snapshot. Keep their physical process generation separate.
   const runtimeArtifactMode =
@@ -682,8 +688,8 @@ async function acquireSharedCodexAppServerClient(
         .digest("hex")
     : "mint";
   const key = runtimeArtifactMode
-    ? `${baseKey}\0runtime-artifact:capture-v1:${expectedRuntimeArtifactKey}`
-    : baseKey;
+    ? `${authorityKey}\0runtime-artifact:capture-v1:${expectedRuntimeArtifactKey}`
+    : authorityKey;
   let entry = getOrCreateSharedClientEntry(state, key);
   const existingClient = entry.client;
   const existingGeneration = existingClient
@@ -747,6 +753,7 @@ async function acquireSharedCodexAppServerClient(
         : {}),
       abandonSignal: entry.startupAbort.signal,
       assertCurrent: options?.assertCurrent,
+      assertAuthSourceCurrent: options?.assertAuthSourceCurrent,
       config: options?.config,
     }));
   try {
@@ -944,6 +951,7 @@ export async function createIsolatedCodexAppServerClient(
       timeoutMs: resolveRemainingAcquireTimeout(timeoutMs, startedAt),
       abandonSignal,
       assertCurrent: options?.assertCurrent,
+      assertAuthSourceCurrent: options?.assertAuthSourceCurrent,
       onStartedClient: (client) => {
         trackIsolatedCodexAppServerClient(client);
         options?.onStartedClient?.(client);
@@ -1150,6 +1158,7 @@ async function startInitializedCodexAppServerClient(
         authMode: params.preparedAuth?.kind === "api-key" ? "prepared-api-key" : "profile",
         ...(params.authProfileStore ? { authProfileStore: params.authProfileStore } : {}),
         config: params.config,
+        assertAuthSourceCurrent: params.assertAuthSourceCurrent,
         onAuthRefreshFailure: () => retireSharedCodexAppServerClientIfCurrent(client),
       });
 

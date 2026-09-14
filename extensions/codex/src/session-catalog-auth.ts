@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { findNormalizedProviderValue } from "openclaw/plugin-sdk/provider-auth";
+import {
+  findNormalizedProviderValue,
+  resolveOpenAICodexAuthIdentity,
+  type AuthProfileCredential,
+} from "openclaw/plugin-sdk/provider-auth";
 import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
 import { resolveCodexAppServerPreparedAuthProfileSnapshot } from "./app-server/auth-bridge.js";
 import {
@@ -48,21 +52,50 @@ export async function prepareCodexCatalogClientOptions(params: {
     createHash("sha256")
       .update(JSON.stringify(value) ?? "")
       .digest("hex");
-  const preparedCredential = credentialFingerprint(
-    profileId ? store.profiles[profileId] : undefined,
-  );
-  const assertCurrent = () => {
+  const selectedCredential = profileId ? store.profiles[profileId] : undefined;
+  const preparedCredential = credentialFingerprint(selectedCredential);
+  // OAuth token material rotates under the existing auth owner. Runtime refresh authority
+  // binds its source and principal, not the access token captured by one catalog request.
+  const sourceCredentialFingerprint = (credential: AuthProfileCredential | undefined) => {
+    if (credential?.type !== "oauth") {
+      return credentialFingerprint(credential);
+    }
+    const identity = resolveOpenAICodexAuthIdentity(credential);
+    const tokenIdentity = resolveOpenAICodexAuthIdentity({ access: credential.access });
+    return credentialFingerprint({
+      type: credential.type,
+      provider: credential.provider,
+      accountId: identity.accountId,
+      tokenAccountId: tokenIdentity.accountId ?? identity.accountId,
+      principal: identity.profileName,
+      clientId: credential.clientId,
+      oauthRef: credential.oauthRef,
+    });
+  };
+  const preparedSource = sourceCredentialFingerprint(selectedCredential);
+  const readCurrentCredential = () => {
     assertHomeCurrent();
     const currentStore = resolveCodexAppServerAuthProfileStore({
       agentDir: sourceAgentDir,
       config: options.config,
     });
+    const currentCredential = profileId ? currentStore.profiles[profileId] : undefined;
     if (
       resolveCodexAppServerAuthProfileId({ store: currentStore, config: options.config }) !==
         profileId ||
-      credentialFingerprint(profileId ? currentStore.profiles[profileId] : undefined) !==
-        preparedCredential
+      sourceCredentialFingerprint(currentCredential) !== preparedSource
     ) {
+      throw new Error(
+        "Codex catalog source authentication changed; refresh the catalog before retrying.",
+      );
+    }
+    return currentCredential;
+  };
+  const assertAuthSourceCurrent = () => {
+    readCurrentCredential();
+  };
+  const assertCurrent = () => {
+    if (credentialFingerprint(readCurrentCredential()) !== preparedCredential) {
       throw new Error(
         "Codex catalog source authentication changed; refresh the catalog before retrying.",
       );
@@ -85,7 +118,7 @@ export async function prepareCodexCatalogClientOptions(params: {
       throw new Error("Codex catalog source has no usable managed OpenAI authentication.");
     }
     // Discovery does not opt a native-only store into managed authentication.
-    return { ...options, authProfileId: null, assertCurrent };
+    return { ...options, authProfileId: null, assertCurrent, assertAuthSourceCurrent };
   }
   const snapshot = await resolveCodexAppServerPreparedAuthProfileSnapshot({
     agentDir: sourceAgentDir,
@@ -100,6 +133,7 @@ export async function prepareCodexCatalogClientOptions(params: {
   return {
     ...options,
     assertCurrent,
+    assertAuthSourceCurrent,
     agentDir: sourceAgentDir,
     startOptions: {
       ...options.startOptions,

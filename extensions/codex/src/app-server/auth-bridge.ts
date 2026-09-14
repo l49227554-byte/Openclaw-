@@ -808,7 +808,9 @@ export async function refreshCodexAppServerAuthTokens(params: {
   authHandoff?: CodexAppServerAuthHandoff;
   previousAccountId?: string | null;
   config?: AuthProfileOrderConfig;
+  assertCurrent?: () => void;
 }): Promise<CodexChatgptAuthTokensRefreshResponse> {
+  params.assertCurrent?.();
   const previousAccountId = params.previousAccountId?.trim();
   const handoffAccountId = params.authHandoff?.chatgptAccountId.trim();
   if (previousAccountId && handoffAccountId && previousAccountId !== handoffAccountId) {
@@ -840,6 +842,7 @@ export async function refreshCodexAppServerAuthTokens(params: {
     ...params,
     forceOAuthRefresh: true,
   });
+  params.assertCurrent?.();
   if (!loginParams || loginParams.type !== "chatgptAuthTokens") {
     throw new Error(
       "Codex app-server ChatGPT token refresh requires an OAuth auth profile. Sign in with `openclaw models auth login --provider openai`, select that profile, then retry.",
@@ -869,6 +872,7 @@ async function resolveCodexAppServerAuthProfileLoginParamsInternal(params: {
   authHandoff?: CodexAppServerAuthHandoff;
   previousAccountId?: string | null;
   forceOAuthRefresh?: boolean;
+  assertCurrent?: () => void;
   config?: AuthProfileOrderConfig;
 }): Promise<CodexLoginAccountParams | undefined> {
   const store = resolveCodexAppServerAuthProfileStore({
@@ -901,6 +905,7 @@ async function resolveCodexAppServerAuthProfileLoginParamsInternal(params: {
     store,
     preferStoreCredential: Boolean(params.authProfileStore?.profiles[profileId]),
     forceOAuthRefresh: params.forceOAuthRefresh === true,
+    assertCurrent: params.assertCurrent,
     authHandoff: params.authHandoff,
     previousAccountId: params.previousAccountId,
     config: params.config,
@@ -944,6 +949,7 @@ async function resolveLoginParamsForCredential(
     store: AuthProfileStore;
     preferStoreCredential: boolean;
     forceOAuthRefresh: boolean;
+    assertCurrent?: () => void;
     authHandoff?: CodexAppServerAuthHandoff;
     previousAccountId?: string | null;
     config?: AuthProfileOrderConfig;
@@ -984,6 +990,7 @@ async function resolveLoginParamsForCredential(
     store: params.store,
     preferStoreCredential: params.preferStoreCredential,
     forceRefresh: params.forceOAuthRefresh,
+    assertCurrent: params.assertCurrent,
     authHandoff: params.authHandoff,
     previousAccountId: params.previousAccountId,
     config: params.config,
@@ -1002,6 +1009,7 @@ async function resolveOAuthCredentialForCodexAppServer(
     store: AuthProfileStore;
     preferStoreCredential: boolean;
     forceRefresh: boolean;
+    assertCurrent?: () => void;
     authHandoff?: CodexAppServerAuthHandoff;
     previousAccountId?: string | null;
     config?: AuthProfileOrderConfig;
@@ -1080,6 +1088,7 @@ async function resolveOAuthCredentialForCodexAppServer(
       profileId,
       credential: overlaidOAuthCredential,
       forceRefresh: params.forceRefresh && !reuseCompletedRotation,
+      assertCurrent: params.assertCurrent,
       expectedAccountId,
     });
   }
@@ -1087,6 +1096,7 @@ async function resolveOAuthCredentialForCodexAppServer(
     if (reuseCompletedRotation) {
       return overlaidOAuthCredential;
     }
+    params.assertCurrent?.();
     const refreshedRuntimeCredential = await refreshOAuthCredentialForRuntime({
       credential: overlaidOAuthCredential,
     });
@@ -1096,9 +1106,11 @@ async function resolveOAuthCredentialForCodexAppServer(
       );
     }
     assertCodexOAuthRefreshWorkspace(profileId, refreshedRuntimeCredential, expectedAccountId);
+    params.assertCurrent?.();
     store.profiles[profileId] = refreshedRuntimeCredential;
     return refreshedRuntimeCredential;
   }
+  params.assertCurrent?.();
   const resolved = await resolveApiKeyForProfile({
     store,
     profileId,
@@ -1106,12 +1118,10 @@ async function resolveOAuthCredentialForCodexAppServer(
     forceRefresh:
       params.forceRefresh && Boolean(persistedOAuthCredential) && !reuseCompletedRotation,
     allowProfileFallback: false,
-    ...(expectedAccountId
-      ? {
-          validateOAuthCredential: (candidate: OAuthCredential) =>
-            assertCodexOAuthRefreshWorkspace(profileId, candidate, expectedAccountId),
-        }
-      : {}),
+    validateOAuthCredential: (candidate: OAuthCredential) => {
+      params.assertCurrent?.();
+      assertCodexOAuthRefreshWorkspace(profileId, candidate, expectedAccountId);
+    },
   });
   if (
     !resolved ||
@@ -1192,6 +1202,7 @@ async function resolveScopedOAuthCredential(params: {
   profileId: string;
   credential: OAuthCredential;
   forceRefresh: boolean;
+  assertCurrent?: () => void;
   expectedAccountId?: string;
 }): Promise<OAuthCredential> {
   const existingRefresh = scopedOAuthRefreshQueues.get(params.store)?.get(params.profileId);
@@ -1212,6 +1223,7 @@ async function resolveScopedOAuthCredential(params: {
     if (!params.forceRefresh && hasUsableOAuthCredential(credential)) {
       return credential;
     }
+    params.assertCurrent?.();
     const refreshed = await refreshOAuthCredentialForRuntime({ credential });
     if (!refreshed?.access?.trim()) {
       throw new Error(
@@ -1224,6 +1236,7 @@ async function resolveScopedOAuthCredential(params: {
         `Codex app-server auth profile "${params.profileId}" changed while refreshing. Retry with the newly selected OpenAI profile.`,
       );
     }
+    params.assertCurrent?.();
     params.store.profiles[params.profileId] = refreshed;
     return refreshed;
   })();

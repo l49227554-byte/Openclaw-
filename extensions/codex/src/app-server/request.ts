@@ -64,6 +64,7 @@ type CodexAppServerJsonClientOptions = Pick<
   | "authProfileStore"
   | "authBindingFingerprint"
   | "preparedAuth"
+  | "assertAuthSourceCurrent"
   | "authRequirement"
   | "agentDir"
   | "config"
@@ -288,6 +289,7 @@ export async function withCodexAppServerJsonClient<T>(
             config: params.config,
             abandonSignal: timeoutController.signal,
             assertCurrent: params.assertCurrent,
+            assertAuthSourceCurrent: params.assertAuthSourceCurrent,
           });
           let scopeActive = true;
           const assertCurrent = () => {

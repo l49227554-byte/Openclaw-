@@ -195,7 +195,8 @@ export function isCodexAppServerConnectionClosedError(error: unknown): boolean {
 
 type CodexServerRequestHandler = (
   request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  guardResponse: (assertCurrent: () => void) => void,
 ) => Promise<JsonValue | undefined> | JsonValue | undefined;
 
 /** Notification handler registered on a Codex app-server client. */
@@ -1003,12 +1004,22 @@ export class CodexAppServerClient {
     request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
   ): Promise<void> {
     try {
-      const result = await this.runServerRequestHandlers(request);
+      const responseGuards: Array<() => void> = [];
+      const result = await this.runServerRequestHandlers(request, responseGuards);
+      const assertResponseCurrent = () => {
+        for (const assertCurrent of responseGuards) {
+          assertCurrent();
+        }
+      };
       if (result !== undefined) {
-        this.writeMessage({ id: request.id, result });
+        this.writeMessage({ id: request.id, result }, undefined, assertResponseCurrent);
         return;
       }
-      this.writeMessage({ id: request.id, result: defaultServerRequestResponse(request) });
+      this.writeMessage(
+        { id: request.id, result: defaultServerRequestResponse(request) },
+        undefined,
+        assertResponseCurrent,
+      );
     } catch (error) {
       const message = coerceErrorMessage(error);
       embeddedAgentLog.warn("codex app-server server request handler failed", {
@@ -1028,10 +1039,15 @@ export class CodexAppServerClient {
 
   private async runServerRequestHandlers(
     request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
+    responseGuards: Array<() => void>,
   ): Promise<JsonValue | undefined> {
     const controller = new AbortController();
     if (request.method !== "item/tool/call") {
-      return await this.runServerRequestHandlersWithoutTimeout(request, controller.signal);
+      return await this.runServerRequestHandlersWithoutTimeout(
+        request,
+        controller.signal,
+        responseGuards,
+      );
     }
     const timeoutMs = resolveDynamicToolServerRequestTimeoutMs(
       readCodexDynamicToolCallParams(request.params),
@@ -1041,7 +1057,7 @@ export class CodexAppServerClient {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        this.runServerRequestHandlersWithoutTimeout(request, controller.signal),
+        this.runServerRequestHandlersWithoutTimeout(request, controller.signal, responseGuards),
         new Promise<JsonValue>((resolve) => {
           timeout = setTimeout(() => {
             embeddedAgentLog.warn("codex app-server server request timed out", {
@@ -1065,12 +1081,15 @@ export class CodexAppServerClient {
   private async runServerRequestHandlersWithoutTimeout(
     request: Required<Pick<RpcRequest, "id" | "method">> & { params?: JsonValue },
     signal: AbortSignal,
+    responseGuards: Array<() => void>,
   ): Promise<JsonValue | undefined> {
     for (const handler of this.requestHandlers) {
       if (signal.aborted) {
         return undefined;
       }
-      const result = await handler(request, signal);
+      const result = await handler(request, signal, (assertCurrent) =>
+        responseGuards.push(assertCurrent),
+      );
       if (result !== undefined) {
         return result;
       }

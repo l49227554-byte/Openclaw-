@@ -123,6 +123,7 @@ describe("Codex command RPC helpers", () => {
 
   it("forwards prepared source credentials for catalog control without selecting route auth", async () => {
     const preparedAuth = { kind: "api-key" as const, apiKey: "synthetic-source-key" };
+    const assertAuthSourceCurrent = vi.fn();
     await codexControlRequest(
       {},
       "thread/list",
@@ -131,6 +132,7 @@ describe("Codex command RPC helpers", () => {
         agentDir,
         config,
         preparedAuth,
+        assertAuthSourceCurrent,
         startOptions: {
           transport: "stdio",
           homeScope: "agent",
@@ -141,7 +143,7 @@ describe("Codex command RPC helpers", () => {
       },
     );
     expect(requestCodexAppServerJsonMock).toHaveBeenCalledWith(
-      expect.objectContaining({ preparedAuth, agentDir }),
+      expect.objectContaining({ preparedAuth, agentDir, assertAuthSourceCurrent }),
     );
     expect(requestCodexAppServerJsonMock.mock.calls[0]?.[0].authProfileId).toBeUndefined();
   });

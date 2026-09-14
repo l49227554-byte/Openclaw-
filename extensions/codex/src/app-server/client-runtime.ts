@@ -14,6 +14,7 @@ import { withTimeout } from "./timeout.js";
 type ClientRuntimeContext = CodexAppServerAuthProfileLookup & {
   authMode?: "prepared-api-key" | "profile";
   onAuthRefreshFailure?: () => void;
+  assertAuthSourceCurrent?: () => void;
 };
 
 type ClientRuntime = {
@@ -197,7 +198,7 @@ export function ensureCodexAppServerClientRuntime(
     runtime.sessionMetadata.clear();
     runtime.workspaceReferences.clear();
   });
-  client.addRequestHandler(async (request) => {
+  client.addRequestHandler(async (request, _signal, guardResponse) => {
     if (request.method !== "account/chatgptAuthTokens/refresh") {
       return undefined;
     }
@@ -212,10 +213,27 @@ export function ensureCodexAppServerClientRuntime(
         ? request.params.previousAccountId.trim() || undefined
         : undefined;
     const authHandoff = runtime.authHandoff;
+    const assertRefreshCurrent = () => {
+      if (runtime.closed) {
+        throw new Error("Codex app-server client closed during ChatGPT token refresh.");
+      }
+      runtime.context.assertAuthSourceCurrent?.();
+    };
+    // The handler result crosses async dispatch before the credential-bearing wire write.
+    guardResponse(() => {
+      try {
+        assertRefreshCurrent();
+      } catch (error) {
+        runtime.context.onAuthRefreshFailure?.();
+        throw error;
+      }
+    });
     try {
+      assertRefreshCurrent();
       const tokens = await withTimeout(
         refreshCodexAppServerAuthTokens({
           agentDir: runtime.context.agentDir,
+          assertCurrent: assertRefreshCurrent,
           authProfileId: runtime.context.authProfileId,
           ...(authHandoff ? { authHandoff } : {}),
           ...(previousAccountId ? { previousAccountId } : {}),
@@ -232,9 +250,7 @@ export function ensureCodexAppServerClientRuntime(
           "ChatGPT workspace changed during Codex token refresh. Retry to start a client for the selected workspace.",
         );
       }
-      if (runtime.closed) {
-        throw new Error("Codex app-server client closed during ChatGPT token refresh.");
-      }
+      assertRefreshCurrent();
       runtime.authHandoff = {
         accessFingerprint: fingerprintTokenAuthProfileCacheKey(tokens.accessToken),
         chatgptAccountId: tokens.chatgptAccountId,

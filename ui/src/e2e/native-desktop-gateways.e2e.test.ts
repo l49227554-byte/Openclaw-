@@ -359,6 +359,8 @@ suite.define(() => {
     "keeps the editor usable at $width × $height and preserves a failed-save draft",
     async (viewport) => {
       await suite.withPage({ viewport }, async ({ page }) => {
+        const token = page.getByLabel("Gateway token (optional)", { exact: true });
+        const password = page.getByLabel("Gateway password (optional)", { exact: true });
         await serveCompanion(page);
         await page.addInitScript(() => {
           Object.assign(window, {
@@ -390,9 +392,7 @@ suite.define(() => {
         ).toBe(true);
         expect(await page.getByRole("button", { name: "Cancel", exact: true }).count()).toBe(0);
         expect(await page.getByLabel("Authentication", { exact: true }).isVisible()).toBe(true);
-        expect(await page.getByLabel("Gateway token (optional)", { exact: true }).isVisible()).toBe(
-          true,
-        );
+        expect(await token.isVisible()).toBe(true);
         expect(
           await page.getByLabel("TLS fingerprint (optional)", { exact: true }).isVisible(),
         ).toBe(false);
@@ -419,7 +419,7 @@ suite.define(() => {
         await page
           .getByLabel("TLS fingerprint (optional)", { exact: true })
           .fill("fixture-fingerprint");
-        await page.getByLabel("Gateway token (optional)", { exact: true }).fill("draft-token");
+        await token.fill("draft-token");
         await page.getByRole("button", { name: "Save Gateway", exact: true }).click();
         const error = page.getByRole("alert").filter({ hasText: "Could not save Gateway" });
         await error.waitFor();
@@ -433,15 +433,9 @@ suite.define(() => {
         expect(
           await page.getByLabel("TLS fingerprint (optional)", { exact: true }).inputValue(),
         ).toBe("fixture-fingerprint");
-        expect(
-          await page.getByLabel("Gateway token (optional)", { exact: true }).inputValue(),
-        ).toBe("draft-token");
-        expect(await page.getByLabel("Gateway token (optional)", { exact: true }).isEnabled()).toBe(
-          true,
-        );
-        expect(
-          await page.getByLabel("Gateway password (optional)", { exact: true }).isDisabled(),
-        ).toBe(true);
+        expect(await token.inputValue()).toBe("draft-token");
+        expect(await token.isEnabled()).toBe(true);
+        expect(await password.isDisabled()).toBe(true);
         expect(
           await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
         ).toBe(true);
@@ -456,12 +450,8 @@ suite.define(() => {
         expect(await page.getByLabel("Connection type", { exact: true }).inputValue()).toBe(
           "direct",
         );
-        expect(
-          await page.getByLabel("Gateway token (optional)", { exact: true }).inputValue(),
-        ).toBe("");
-        expect(
-          await page.getByLabel("Gateway token (optional)", { exact: true }).getAttribute("type"),
-        ).toBe("password");
+        expect(await token.inputValue()).toBe("");
+        expect(await token.getAttribute("type")).toBe("password");
         expect(await error.isVisible()).toBe(false);
       });
     },
@@ -469,6 +459,8 @@ suite.define(() => {
 
   it("manages profiles offline without displaying stored credentials and confirms removal", async () => {
     await suite.withPage({ viewport: { width: 980, height: 980 } }, async ({ page }) => {
+      const token = page.getByLabel("Gateway token (optional)", { exact: true });
+      const password = page.getByLabel("Gateway password (optional)", { exact: true });
       const parent = process.env.OPENCLAW_UI_RAIL_PROOF_DIR?.trim();
       const proof = parent
         ? createControlUiE2eArtifactDir("desktop-gateway-manager", parent)
@@ -565,28 +557,16 @@ suite.define(() => {
           .evaluate((element) => element === document.activeElement),
       ).toBe(true);
       expect(await page.getByLabel("Authentication", { exact: true }).inputValue()).toBe("token");
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).inputValue()).toBe(
-        "",
-      );
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).inputValue(),
-      ).toBe("");
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).isVisible()).toBe(
-        true,
-      );
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).isVisible(),
-      ).toBe(false);
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).isDisabled(),
-      ).toBe(true);
+      expect(await token.inputValue()).toBe("");
+      expect(await password.inputValue()).toBe("");
+      expect(await token.isVisible()).toBe(true);
+      expect(await password.isVisible()).toBe(false);
+      expect(await password.isDisabled()).toBe(true);
       await page.getByText(/Saved credentials stay hidden/).waitFor();
       await capture(page, proof, "edit-saved-gateway.png");
-      await page.getByLabel("Gateway token (optional)", { exact: true }).fill("unsaved-token");
+      await token.fill("unsaved-token");
       await page.getByRole("button", { name: "Show credential", exact: true }).click();
-      expect(
-        await page.getByLabel("Gateway token (optional)", { exact: true }).getAttribute("type"),
-      ).toBe("text");
+      expect(await token.getAttribute("type")).toBe("text");
       await page.getByRole("button", { name: "Back to Gateways", exact: true }).click();
       expect(await page.locator("#gateway-editor").isVisible()).toBe(false);
       expect(
@@ -595,12 +575,8 @@ suite.define(() => {
           .evaluate((element) => element === document.activeElement),
       ).toBe(true);
       await page.getByRole("button", { name: "Edit Studio", exact: true }).click();
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).inputValue()).toBe(
-        "",
-      );
-      expect(
-        await page.getByLabel("Gateway token (optional)", { exact: true }).getAttribute("type"),
-      ).toBe("password");
+      expect(await token.inputValue()).toBe("");
+      expect(await token.getAttribute("type")).toBe("password");
       expect(
         await page.getByRole("button", { name: "Show credential", exact: true }).isVisible(),
       ).toBe(true);
@@ -640,43 +616,23 @@ suite.define(() => {
         },
       });
       await page.getByRole("button", { name: "Edit Home studio", exact: true }).click();
-      await page.getByLabel("Gateway token (optional)", { exact: true }).fill("fixture-token");
+      await token.fill("fixture-token");
       await page.getByRole("button", { name: "Show credential", exact: true }).click();
       await page.getByLabel("Authentication", { exact: true }).selectOption("password");
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).inputValue()).toBe(
-        "",
-      );
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).isVisible()).toBe(
-        false,
-      );
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).isDisabled()).toBe(
-        true,
-      );
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).isVisible(),
-      ).toBe(true);
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).isEnabled(),
-      ).toBe(true);
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).getAttribute("type"),
-      ).toBe("password");
-      await page
-        .getByLabel("Gateway password (optional)", { exact: true })
-        .fill("fixture-password");
+      expect(await token.inputValue()).toBe("");
+      expect(await token.isVisible()).toBe(false);
+      expect(await token.isDisabled()).toBe(true);
+      expect(await password.isVisible()).toBe(true);
+      expect(await password.isEnabled()).toBe(true);
+      expect(await password.getAttribute("type")).toBe("password");
+      await password.fill("fixture-password");
       await page.getByRole("button", { name: "Show credential", exact: true }).click();
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).getAttribute("type"),
-      ).toBe("text");
+      expect(await password.getAttribute("type")).toBe("text");
       await page.getByRole("button", { name: "Hide credential", exact: true }).click();
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).getAttribute("type"),
-      ).toBe("password");
+      expect(await password.getAttribute("type")).toBe("password");
       await page.getByLabel("Authentication", { exact: true }).selectOption("token");
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).inputValue(),
-      ).toBe("");
-      await page.getByLabel("Gateway token (optional)", { exact: true }).fill("replacement-token");
+      expect(await password.inputValue()).toBe("");
+      await token.fill("replacement-token");
       await page.getByRole("button", { name: "Save Gateway", exact: true }).click();
       await page.getByRole("status").filter({ hasText: "Saved Home studio" }).waitFor();
       expect((await requests()).findLast((message) => message.action === "save")).toMatchObject({
@@ -684,15 +640,9 @@ suite.define(() => {
         connection: { token: "replacement-token", password: null },
       });
       await page.getByRole("button", { name: "Edit Home studio", exact: true }).click();
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).inputValue()).toBe(
-        "",
-      );
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).inputValue(),
-      ).toBe("");
-      expect(
-        await page.getByLabel("Gateway token (optional)", { exact: true }).getAttribute("type"),
-      ).toBe("password");
+      expect(await token.inputValue()).toBe("");
+      expect(await password.inputValue()).toBe("");
+      expect(await token.getAttribute("type")).toBe("password");
       await page.getByLabel("Authentication", { exact: true }).selectOption("password");
       await page.getByRole("button", { name: "Save Gateway", exact: true }).click();
       await page.getByRole("status").filter({ hasText: "Saved Home studio" }).waitFor();
@@ -705,9 +655,7 @@ suite.define(() => {
       await page.getByLabel("SSH target", { exact: true }).fill("operator@workshop.example.test");
       await page.getByLabel("Gateway port", { exact: true }).fill("19789");
       await page.getByLabel("Authentication", { exact: true }).selectOption("password");
-      await page
-        .getByLabel("Gateway password (optional)", { exact: true })
-        .fill("fixture-password");
+      await password.fill("fixture-password");
       await page.getByRole("button", { name: "Save Gateway", exact: true }).click();
       await page.getByRole("button", { name: "Edit Workshop", exact: true }).waitFor();
       await capture(page, proof, "saved-gateways.png");
@@ -727,12 +675,8 @@ suite.define(() => {
       expect(await page.getByLabel("Authentication", { exact: true }).inputValue()).toBe(
         "password",
       );
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).isVisible(),
-      ).toBe(true);
-      expect(
-        await page.getByLabel("Gateway password (optional)", { exact: true }).inputValue(),
-      ).toBe("");
+      expect(await password.isVisible()).toBe(true);
+      expect(await password.inputValue()).toBe("");
       await page.getByRole("button", { name: "Back to Gateways", exact: true }).click();
       await page.getByRole("button", { name: "Remove Workshop", exact: true }).click();
       await page.getByRole("dialog").waitFor();
@@ -805,7 +749,7 @@ suite.define(() => {
         "moved-studio",
       );
       await page.getByRole("button", { name: "Edit My draft", exact: true }).click();
-      await page.getByLabel("Gateway token (optional)", { exact: true }).fill("draft-token");
+      await token.fill("draft-token");
       await page.evaluate(() => {
         (Reflect.get(window, "profileCatalog") as Array<Record<string, unknown>>).splice(0);
         window.dispatchEvent(
@@ -817,9 +761,7 @@ suite.define(() => {
       await page.getByRole("status").filter({ hasText: "removed" }).waitFor();
       await page.getByRole("heading", { name: "Add Gateway", exact: true }).waitFor();
       expect(await page.getByLabel("Name", { exact: true }).inputValue()).toBe("My draft");
-      expect(await page.getByLabel("Gateway token (optional)", { exact: true }).inputValue()).toBe(
-        "draft-token",
-      );
+      expect(await token.inputValue()).toBe("draft-token");
       expect(await page.getByRole("button", { name: "Open My draft", exact: true }).count()).toBe(
         0,
       );

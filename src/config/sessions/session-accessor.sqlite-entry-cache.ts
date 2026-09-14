@@ -1,10 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync, iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { readSqliteDataVersion } from "../../infra/node-sqlite.js";
-import {
-  deferOpenClawAgentPostCommitPublication,
-  type OpenClawAgentDatabase,
-} from "../../state/openclaw-agent-db.js";
+import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
+import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { hasSqliteSessionOwnerColumns } from "./session-accessor.sqlite-owner-projection.js";
@@ -299,7 +297,14 @@ export function readSessionEntryCache(
 }
 
 function publishTrackedCacheUpdate(database: OpenClawAgentDatabase, publish: () => void): void {
-  if (deferOpenClawAgentPostCommitPublication(database, publish)) {
+  // Committed cache state must settle before observers can reenter with newer writes.
+  if (
+    stageSqliteTransactionState(database.db, {
+      stage: () => {},
+      rollback: () => {},
+      commit: publish,
+    })
+  ) {
     return;
   }
   if (database.db.isTransaction) {

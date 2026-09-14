@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   closeOpenClawAgentDatabasesForTest,
+  deferOpenClawAgentPostCommitPublication,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
@@ -35,6 +36,67 @@ const remote = (id: string, domain = "workspace"): SessionParticipantIdentity =>
 afterEach(() => closeOpenClawAgentDatabasesForTest());
 
 describe("SQLite session participants", () => {
+  it.each(["participant", "entry", "external-entry"] as const)(
+    "keeps a reentrant observer's newer cached state after an outer %s write",
+    async (kind) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:reentrant" };
+        await upsertSessionEntryCore(scope, {
+          sessionId: "reentrant",
+          updatedAt: 1,
+          label: "a",
+        });
+        recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
+        const read = () =>
+          listSessionEntriesCore({ ...scope, projection: "list" }).find(
+            (row) => row.sessionKey === scope.sessionKey,
+          )?.entry;
+        read();
+        const write = (label: string, time: number, external = false) => {
+          if (kind === "participant") {
+            recordSessionParticipant(scope, { identity: profile(label), promptedAt: time });
+          } else if (external) {
+            const database = new DatabaseSync(openOpenClawAgentDatabase(scope).path);
+            try {
+              database
+                .prepare(
+                  "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.label', ?, '$.updatedAt', ?), updated_at = ? WHERE session_key = ?",
+                )
+                .run(label, time, time, scope.sessionKey);
+            } finally {
+              database.close();
+            }
+          } else {
+            runOpenClawAgentWriteTransaction((database) => {
+              writeSessionEntry(database, scope.sessionKey, {
+                sessionId: "reentrant",
+                updatedAt: time,
+                label,
+              });
+            }, scope);
+          }
+        };
+        const expected =
+          kind === "participant"
+            ? {
+                participants: ["a", "b", "c"].map((id) => ({ identity: profile(id) })),
+                participantCount: 3,
+              }
+            : { label: "c", updatedAt: 30 };
+        let observed: ReturnType<typeof read>;
+        runOpenClawAgentWriteTransaction((database) => {
+          deferOpenClawAgentPostCommitPublication(database, () => {
+            write("c", 30, kind === "external-entry");
+            observed = read();
+          });
+          write("b", 20);
+        }, scope);
+        expect(observed).toMatchObject(expected);
+        expect(read()).toMatchObject(expected);
+      });
+    },
+  );
+
   it("reinstalls participant tracking after first-use schema rollback and immediate retry", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const scope = { agentId: "main", env: state.env };
@@ -124,23 +186,32 @@ describe("SQLite session participants", () => {
     },
   );
 
-  it("retains the committed participant projection after an outer transaction rolls back", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:rollback" };
-      await upsertSessionEntryCore(scope, { sessionId: "rollback", updatedAt: 1 });
-      recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
-      const read = () => listSessionEntriesCore({ ...scope, projection: "list" });
-      const before = read();
-      expect(() =>
-        runOpenClawAgentWriteTransaction(() => {
-          recordSessionParticipant(scope, { identity: profile("b"), promptedAt: 20 });
-          throw new Error("rollback participant");
-        }, scope),
-      ).toThrow("rollback participant");
-      expect(read()).toEqual(before);
-      expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toHaveLength(1);
-    });
-  });
+  it.each(["outer", "nested"])(
+    "retains committed participants after an %s transaction rollback",
+    async (kind) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const scope = { agentId: "main", env: state.env, sessionKey: "agent:main:rollback" };
+        await upsertSessionEntryCore(scope, { sessionId: "rollback", updatedAt: 1 });
+        recordSessionParticipant(scope, { identity: profile("a"), promptedAt: 10 });
+        const read = () => listSessionEntriesCore({ ...scope, projection: "list" });
+        const before = read();
+        const attempt = () =>
+          runOpenClawAgentWriteTransaction(() => {
+            recordSessionParticipant(scope, { identity: profile("b"), promptedAt: 20 });
+            throw new Error("rollback participant");
+          }, scope);
+        if (kind === "nested") {
+          runOpenClawAgentWriteTransaction(() => {
+            expect(attempt).toThrow("rollback participant");
+          }, scope);
+        } else {
+          expect(attempt).toThrow("rollback participant");
+        }
+        expect(read()).toEqual(before);
+        expect(listSessionParticipantsReadOnly(scope).get(scope.sessionKey)).toHaveLength(1);
+      });
+    },
+  );
 
   it("keeps cache projection errors from rolling back a recorded participant", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {

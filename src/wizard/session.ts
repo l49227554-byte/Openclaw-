@@ -269,7 +269,7 @@ export class WizardSession {
   private expiryPending = false;
   private settled = false;
   private pendingExternalUrl: string | undefined;
-  private devicePresentation: Pick<WizardStep, "title" | "deviceCode"> = {};
+  private devicePresentation: Pick<WizardStep, "title" | "deviceCode" | "message"> = {};
   private externalUrlImmediate: ReturnType<typeof setImmediate> | undefined;
   private answerDeferred = new Map<
     string,
@@ -480,7 +480,7 @@ export class WizardSession {
     clearImmediate(this.externalUrlImmediate);
     this.externalUrlImmediate = undefined;
     if (presentation) {
-      this.devicePresentation = presentation;
+      this.devicePresentation = { ...presentation, message };
       // Keep the code as the first unread event, ahead of later polling updates.
       this.progressSteps = [];
     }
@@ -488,7 +488,11 @@ export class WizardSession {
       ...this.devicePresentation,
       id: randomUUID(),
       type: "progress",
-      message,
+      // Snapshot clients can miss the first event and render only this text.
+      message:
+        !presentation && this.devicePresentation.message
+          ? `${this.devicePresentation.message}\n\n${message}`
+          : message,
       executor: "gateway",
       ...(this.pendingExternalUrl ? { externalUrl: this.pendingExternalUrl } : {}),
     };

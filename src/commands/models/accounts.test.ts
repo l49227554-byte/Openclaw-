@@ -21,7 +21,7 @@ import { ExitError } from "../../runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { DEVICE_CODE_PHISHING_WARNING } from "../../wizard/prompts.js";
-import { WizardSession } from "../../wizard/session.js";
+import { sanitizeWizardStepForClient, WizardSession } from "../../wizard/session.js";
 import {
   modelsAccountsClearDefaultCommand,
   modelsAccountsLoginCommand,
@@ -532,14 +532,18 @@ describe("personal model account CLI over an identified Gateway connection", () 
     },
   );
 
-  it("renders device progress and opens each destination once without acknowledging the code", async () => {
+  it("renders the latest device progress snapshot and opens each destination once without acknowledging the code", async () => {
     const redirectInput =
       "http://localhost:1455/auth/callback?code=synthetic-private-code&state=synthetic-state";
     mocks.password.mockResolvedValue(redirectInput);
     const output = runtime();
     const verificationUrl = "https://auth.example/device";
     const code = "ABCD-1234";
+    const progressUpdated = createDeferredCore<void>();
+    const continueToInput = createDeferredCore<void>();
+    const inputReady = createDeferredCore<void>();
     const session = new WizardSession(async (prompter) => {
+      const progress = prompter.progress("Starting provider sign-in");
       await prompter.openUrl?.(verificationUrl);
       await prompter.deviceCode?.({
         title: "Provider device sign-in",
@@ -547,34 +551,55 @@ describe("personal model account CLI over an identified Gateway connection", () 
         expiresInMinutes: 15,
         message: "Enter this one-time code on the provider's sign-in page.",
       });
+      progress.update("Waiting for the initial provider poll");
+      progress.update("Waiting for provider approval");
+      progressUpdated.resolve();
+      await continueToInput.promise;
+      await prompter.openUrl?.(inputStep.externalUrl);
+      const input = prompter.text({ message: inputStep.message, sensitive: true });
+      inputReady.resolve();
+      await input;
     });
     let polls = 0;
     let renderedProgress = "";
+    let inputStepId: string | undefined;
     try {
-      const deviceStep = (await session.next()).step;
-      if (!deviceStep) {
-        throw new Error("Expected the WizardSession device-code step.");
-      }
       await withGateway(
-        async ({ method }) => {
+        async ({ method, params }) => {
           if (method === "users.authConnect.start") {
             return startResult();
           }
           if (method === "users.authConnect.status") {
+            await progressUpdated.promise;
             polls += 1;
-            if (polls <= 2) {
-              return { status: "pending", step: deviceStep };
+            if (polls === 3) {
+              renderedProgress = output.error.mock.calls.map((args) => args.join(" ")).join("\n");
+              continueToInput.resolve();
+              await inputReady.promise;
             }
-            renderedProgress = output.error.mock.calls.map((args) => args.join(" ")).join("\n");
-            return { status: "pending", step: inputStep };
+            const step = session.getCurrentStep();
+            if (!step) {
+              throw new Error("Expected the current WizardSession step.");
+            }
+            if (step.type === "text") {
+              inputStepId = step.id;
+            }
+            return { status: "pending", step: sanitizeWizardStepForClient(step) };
           }
           if (method === "users.authConnect.answer") {
+            if (typeof params.stepId !== "string") {
+              throw new Error("Expected an exact wizard step ID.");
+            }
+            await session.answer(params.stepId, params.value);
+            await session.whenSettled();
             return connected;
           }
           return undefined;
         },
         async ({ port, requests, connections }) => {
           await modelsAccountsLoginCommand({ port, provider: "openai", json: true }, output);
+          expect(session.getStatus()).toBe("done");
+          expect(inputStepId).toEqual(expect.any(String));
           expect(connections).toHaveLength(1);
           expect(new Set(requests.map(({ socket }) => socket)).size).toBe(1);
           expect(
@@ -585,7 +610,7 @@ describe("personal model account CLI over an identified Gateway connection", () 
             {
               profileId: PROFILE_ID,
               connectId: "operation-one",
-              stepId: inputStep.id,
+              stepId: inputStepId,
               value: redirectInput,
             },
           ]);
@@ -599,6 +624,8 @@ describe("personal model account CLI over an identified Gateway connection", () 
             "Enter this one-time code on the provider's sign-in page.",
           );
           expect(renderedProgress).toContain(DEVICE_CODE_PHISHING_WARNING);
+          expect(renderedProgress).toContain("Waiting for provider approval");
+          expect(renderedProgress).not.toContain("Waiting for the initial provider poll");
           expect(requests.some(({ method }) => method === "users.authConnect.cancel")).toBe(false);
           expectJsonOutput(output, {
             profileId: PROFILE_ID,
@@ -616,6 +643,7 @@ describe("personal model account CLI over an identified Gateway connection", () 
       );
     } finally {
       session.cancel();
+      continueToInput.resolve();
       await session.whenSettled();
     }
   });

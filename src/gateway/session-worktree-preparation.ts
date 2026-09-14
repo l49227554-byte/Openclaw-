@@ -108,7 +108,7 @@ export async function resolveSessionWorktreeBase(
 export async function prepareSessionWorktree(params: {
   cfg: OpenClawConfig;
   target: Parameters<PrepareGatewaySessionLifecycle>[0];
-  workspace: string;
+  workspace: string | { kind: "empty" };
   name?: string;
   baseRef?: string;
   checkoutCommit?: string;
@@ -118,10 +118,13 @@ export async function prepareSessionWorktree(params: {
   commitGuard?: () => void;
   onProgress?: CreateManagedWorktreeParams["onProgress"];
 }): ReturnType<PrepareGatewaySessionLifecycle> {
-  const { target, workspace, commitGuard } = params;
+  const { target, commitGuard } = params;
   try {
     commitGuard?.();
-    if (target.sandboxRequired) {
+    const workspace = typeof params.workspace === "string" ? params.workspace : undefined;
+    // The empty source contributes no host files; caller-selected sources still
+    // require the inherited workspace containment check.
+    if (target.sandboxRequired && workspace) {
       const root = prepareSessionCreateFilesystemRoot({
         cfg: params.cfg,
         enforceSandboxContainment: true,
@@ -135,7 +138,9 @@ export async function prepareSessionWorktree(params: {
         return root;
       }
     }
-    const repository = await managedWorktrees.resolveRepositoryPaths(workspace);
+    const repository = workspace
+      ? await managedWorktrees.resolveRepositoryPaths(workspace)
+      : undefined;
     commitGuard?.();
     const boundId = normalizeOptionalString(target.entry?.worktree?.id);
     let existing = boundId ? managedWorktrees.findLiveById(boundId) : undefined;
@@ -154,7 +159,7 @@ export async function prepareSessionWorktree(params: {
       }
     }
     if (existing && existingDirectory) {
-      if (existing.repoRoot !== repository.canonicalRoot) {
+      if (repository && existing.repoRoot !== repository.canonicalRoot) {
         return err(
           errorShape(
             ErrorCodes.INVALID_REQUEST,
@@ -176,19 +181,24 @@ export async function prepareSessionWorktree(params: {
       }
     }
     commitGuard?.();
-    const worktree = await managedWorktrees.create({
-      repoRoot: workspace,
-      ownerKind: "session",
+    const createParams = {
+      ownerKind: "session" as const,
       ownerId: target.key,
       name: params.name,
       suggestedName: slugifyWorktreeTitle(params.label ?? ""),
-      baseRef: params.baseRef,
-      checkoutCommit: params.checkoutCommit,
-      runSetupScript: params.runSetupScript,
       signal: params.signal,
       commitGuard,
       onProgress: params.onProgress,
-    });
+    };
+    const worktree = workspace
+      ? await managedWorktrees.create({
+          ...createParams,
+          repoRoot: workspace,
+          baseRef: params.baseRef,
+          checkoutCommit: params.checkoutCommit,
+          runSetupScript: params.runSetupScript,
+        })
+      : await managedWorktrees.createEmpty(createParams);
     const rollback = existingDirectory
       ? undefined
       : async () => {
@@ -202,7 +212,10 @@ export async function prepareSessionWorktree(params: {
       commitGuard?.();
       // A nested source workspace keeps its relative cwd inside the new checkout.
       let spawnedCwd = worktree.path;
-      const relative = path.relative(repository.sourceRoot, fs.realpathSync(workspace));
+      const relative =
+        repository && workspace
+          ? path.relative(repository.sourceRoot, fs.realpathSync(workspace))
+          : "";
       if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
         spawnedCwd = path.join(worktree.path, relative);
         fs.mkdirSync(spawnedCwd, { recursive: true });
@@ -214,7 +227,7 @@ export async function prepareSessionWorktree(params: {
           id: worktree.id,
           branch: worktree.branch,
           repoRoot: worktree.repoRoot,
-          canonicalWorkspaceDir: workspace,
+          canonicalWorkspaceDir: workspace ?? worktree.repoRoot,
         },
         ...(rollback ? { rollback } : {}),
       });

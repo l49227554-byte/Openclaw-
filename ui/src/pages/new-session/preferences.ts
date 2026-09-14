@@ -34,11 +34,31 @@ export type NewSessionPreference = {
   where?: NewSessionWhere;
   projectId?: string;
   worktree?: boolean;
+  freshWorkspace?: boolean;
   baseRef?: string;
   worktreeName?: string;
   model?: string;
   thinkingLevel?: string;
 };
+
+export function resolveNewSessionFolderPreference(
+  preference: NewSessionPreference | null,
+  workspace: string,
+) {
+  const storedFolder = preference?.folder ?? "";
+  const workspaceMoved =
+    Boolean(storedFolder) &&
+    storedFolder === preference?.workspace &&
+    preference.workspace !== workspace;
+  const folder = storedFolder && !workspaceMoved ? storedFolder : workspace;
+  return {
+    folder,
+    workspaceMoved,
+    freshWorkspace:
+      preference?.freshWorkspace ??
+      !(preference?.worktree === true || preference?.projectId || (folder && folder !== workspace)),
+  };
+}
 
 type PersistedPreferences = {
   agents?: Record<string, NewSessionPreference>;
@@ -61,6 +81,8 @@ function normalizePreference(value: unknown): NewSessionPreference | null {
   const model = normalizeOptionalString(record.model);
   const thinkingLevel = normalizeOptionalString(record.thinkingLevel);
   const worktree = typeof record.worktree === "boolean" ? record.worktree : undefined;
+  const freshWorkspace =
+    typeof record.freshWorkspace === "boolean" ? record.freshWorkspace : undefined;
   const where = normalizeWhere(record.where);
   if (
     !workspace &&
@@ -68,6 +90,7 @@ function normalizePreference(value: unknown): NewSessionPreference | null {
     !where &&
     !projectId &&
     worktree === undefined &&
+    freshWorkspace === undefined &&
     !baseRef &&
     !worktreeName &&
     !model &&
@@ -81,6 +104,7 @@ function normalizePreference(value: unknown): NewSessionPreference | null {
     ...(where ? { where } : {}),
     ...(projectId ? { projectId } : {}),
     ...(worktree !== undefined ? { worktree } : {}),
+    ...(freshWorkspace !== undefined ? { freshWorkspace } : {}),
     ...(baseRef ? { baseRef } : {}),
     ...(worktreeName ? { worktreeName } : {}),
     ...(model ? { model } : {}),

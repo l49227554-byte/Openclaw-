@@ -3,6 +3,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import type { SessionCreateParams } from "../../lib/sessions/create.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
+import type { DraftPlaceState } from "./draft-place-state.ts";
 
 const WORKTREE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -40,6 +41,30 @@ export function isWorktreeNameValid(value: string): boolean {
   return !name || WORKTREE_NAME_PATTERN.test(name);
 }
 
+export function buildSelectedSessionCreateParams(
+  place: DraftPlaceState,
+  params: DraftSessionCreateSelection,
+): SessionCreateParams {
+  return buildDraftSessionCreateParams({
+    ...params,
+    deferInitialTurn: place.remotePlacement,
+    agentId: place.agentId,
+    model: place.modelControl.modelForSubmission(),
+    contextWindow: place.modelControl.contextWindow,
+    thinkingLevel: place.modelControl.thinkingLevel,
+    fastMode: place.modelControl.fastMode,
+    projectId: place.browser.remoteProject?.projectId ?? place.browser.projectId,
+    projectGitUrl: place.browser.remoteProject?.cloneUrl,
+    repository: place.remoteRepository,
+    worktree: place.worktree,
+    worktreeSource: place.freshWorkspace ? "empty" : undefined,
+    baseRef: place.baseRef,
+    worktreeName: place.worktreeName,
+    cwd: place.folder,
+    workspace: place.workspacePath(),
+  });
+}
+
 /** Maps the new-session draft selections onto additive sessions.create params. */
 export function buildDraftSessionCreateParams(draft: {
   key?: string;
@@ -60,6 +85,7 @@ export function buildDraftSessionCreateParams(draft: {
   projectGitUrl?: string;
   repository?: SessionCreateParams["repository"];
   worktree: boolean;
+  worktreeSource?: SessionCreateParams["worktreeSource"];
   baseRef?: string;
   worktreeName?: string;
   cwd?: string;
@@ -79,16 +105,21 @@ export function buildDraftSessionCreateParams(draft: {
     draft.deferInitialTurn && draft.visibility !== "incognito"
       ? truncateUtf16Safe(draft.message.trim(), 1_000)
       : undefined;
-  const repository = draft.repository;
-  const projectId = repository ? undefined : normalizeOptionalString(draft.projectId);
+  const emptyWorkspace = draft.worktreeSource === "empty";
+  const repository = emptyWorkspace ? undefined : draft.repository;
+  const projectId =
+    emptyWorkspace || repository ? undefined : normalizeOptionalString(draft.projectId);
   const projectGitUrl =
+    !emptyWorkspace &&
     !repository &&
     !projectId &&
     (message.trim() || (!draft.deferInitialTurn && draft.attachments?.length))
       ? normalizeOptionalString(draft.projectGitUrl)
       : undefined;
   const customFolder =
-    !repository && !projectId && !projectGitUrl && cwd && cwd !== workspace ? cwd : undefined;
+    !emptyWorkspace && !repository && !projectId && !projectGitUrl && cwd && cwd !== workspace
+      ? cwd
+      : undefined;
   return {
     ...(normalizeOptionalString(draft.key) ? { key: normalizeOptionalString(draft.key) } : {}),
     agentId: normalizeAgentId(draft.agentId),
@@ -117,7 +148,8 @@ export function buildDraftSessionCreateParams(draft: {
     ...(projectGitUrl ? { projectGitUrl } : {}),
     ...(repository ? { repository: { ...repository } } : {}),
     ...(customFolder ? { cwd: customFolder } : {}),
-    ...(draft.worktree && !repository
+    ...(emptyWorkspace ? { worktree: true, worktreeSource: "empty" as const } : {}),
+    ...(draft.worktree && !repository && !emptyWorkspace
       ? {
           worktree: true,
           // Passing the base explicitly also skips the create-time origin fetch.

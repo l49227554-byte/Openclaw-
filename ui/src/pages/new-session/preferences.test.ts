@@ -44,11 +44,15 @@ describe("new-session browser preferences", () => {
 
   it("merges changes and drops malformed persisted fields", () => {
     patchNewSessionPreference("ws://one.example", "main", { folder: "/first" });
-    patchNewSessionPreference("ws://one.example", "main", { worktree: false });
+    patchNewSessionPreference("ws://one.example", "main", {
+      worktree: false,
+      freshWorkspace: false,
+    });
 
     expect(loadNewSessionPreference("ws://one.example", "main")).toEqual({
       folder: "/first",
       worktree: false,
+      freshWorkspace: false,
     });
 
     const key = localStorage.key(0);
@@ -63,6 +67,7 @@ describe("new-session browser preferences", () => {
             projectId: {},
             model: [],
             worktree: "yes",
+            freshWorkspace: "yes",
           },
         },
       }),
@@ -71,10 +76,14 @@ describe("new-session browser preferences", () => {
   });
 
   it("round-trips normalized browser preferences through identity keys", () => {
-    patchNewSessionPreference("ws://one.example", "Main", { folder: "/local", worktree: true });
+    patchNewSessionPreference("ws://one.example", "Main", {
+      folder: "/local",
+      worktree: true,
+      freshWorkspace: true,
+    });
     const browser = loadBrowserPreferences("ws://one.example");
     expect(encodeIdentityPreferences(browser)).toEqual({
-      "new-session.v1:main": { folder: "/local", worktree: true },
+      "new-session.v1:main": { folder: "/local", worktree: true, freshWorkspace: true },
     });
     expect(
       decodeIdentityPreferences({

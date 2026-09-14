@@ -25,7 +25,11 @@ import { prepareBackgroundSessionCompletion } from "./background-session-notice.
 import { NewSessionCapabilityController } from "./capability-controller.ts";
 import * as catalog from "./catalog-target.ts";
 import { NewSessionComposerTextareaController } from "./composer.ts";
-import type { DraftSessionCreateOverrides, NewSessionVisibility } from "./create-params.ts";
+import {
+  buildSelectedSessionCreateParams,
+  type DraftSessionCreateOverrides,
+  type NewSessionVisibility,
+} from "./create-params.ts";
 import type { DraftGatewayState } from "./draft-gateway-state.ts";
 import { NewSessionDraftPersistence } from "./draft-persistence.ts";
 import type { DraftPlaceState } from "./draft-place-state.ts";
@@ -49,7 +53,6 @@ import {
   PAGE_RENDERED_GATES,
   readNewSessionSubmissionAccess,
   requiresNewSessionModelSetup,
-  resolveCloudPlacementDisabledReason,
   resolveNewSessionSubmitBlock,
   type NewSessionSubmitBlock,
 } from "./submit-gates.ts";
@@ -222,7 +225,7 @@ export class DraftSubmissionFlow {
   }
 
   private buildDraftSessionCreateParams(options: DraftSessionCreateOverrides = {}) {
-    return this.place.buildSessionCreateParams({
+    return buildSelectedSessionCreateParams(this.place, {
       ...options,
       message: options.message ?? "",
       toolOverrides: this.capabilities.toolOverrides,
@@ -287,7 +290,6 @@ export class DraftSubmissionFlow {
       requiresModelSetup: () => this.requiresModelSetup(),
       submissionAccess: () => this.submissionAccess(),
       placementTargetForSubmission: () => this.placement().target,
-      cloudDisabledReason: () => this.cloudDisabledReason(),
       cloudRuntimeUnsupportedReason: () =>
         this.place.modelControl.cloudRuntimeUnsupportedReason(
           this.gateway.cloudProfiles.find((profile) => profile.id === this.place.cloudProfileId),
@@ -303,8 +305,6 @@ export class DraftSubmissionFlow {
       pendingPlacement: this.pendingPlacement,
     });
   }
-
-  cloudDisabledReason = () => resolveCloudPlacementDisabledReason(this.place);
 
   invalidate(outcomeUnknown: SubmissionOutcomeReason | null = null) {
     this.submitRequestToken += 1;

@@ -98,6 +98,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/zalo/src/outbound-media.test.ts",
   "extensions/zalouser/doctor-contract-api.test.ts",
   "extensions/imessage/src/approval-reactions.persistence.test.ts",
+  "extensions/imessage/src/send.sqlite.test.ts",
 ];
 
 export function isDatabaseWorkerExtensionRoot(root) {

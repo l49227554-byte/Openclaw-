@@ -406,6 +406,7 @@ describe("doctor state integrity oauth dir checks", () => {
     };
     const confirmRuntimeRepair = await runStateIntegrity(cfg);
     expect(hasRepairPromptMessage(confirmRuntimeRepair, "Create OAuth dir at")).toBe(true);
+    expect(stateIntegrityText()).toContain("CRITICAL: OAuth dir missing");
   });
 
   it("does not require the oauth dir for a pairing channel with no registered plugin", async () => {

@@ -1,6 +1,7 @@
 import { render } from "lit";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderForwardedAttribution } from "../pages/chat/components/chat-forwarded-attribution.ts";
+import { renderMessageGroup } from "../pages/chat/components/chat-message-group.ts";
 import "../styles/base.css";
 import "../styles/chat/text.css";
 import "../styles/sidebar-markdown.css";
@@ -126,4 +127,32 @@ describe("session link presentation", () => {
       expect(host.scrollWidth).toBeLessThanOrEqual(host.clientWidth);
     },
   );
+
+  it("contains ordinary reply attribution with an unbroken sender name", () => {
+    const host = document.createElement("div");
+    host.id = "session-link-proof";
+    host.style.width = "240px";
+    document.body.append(host);
+    const name = "AlexandriaMorganWorkspaceReviewCoordinator";
+    render(
+      renderMessageGroup(
+        {
+          kind: "group",
+          key: "reply-attribution",
+          role: "assistant",
+          replyToSender: { id: "morgan", name },
+          messages: [{ key: "reply", message: { role: "assistant", content: "Ready." } }],
+          visibleContent: "text",
+          timestamp: 0,
+          isStreaming: false,
+        },
+        { showReasoning: true, showToolCalls: true, avatarPlacement: "none" },
+      ),
+      host,
+    );
+    const attribution = host.querySelector<HTMLElement>(".chat-reply-attribution")!;
+    expect(attribution.scrollWidth).toBeLessThanOrEqual(attribution.clientWidth);
+    expect(attribution.textContent?.trim()).toBe(name);
+    expect(attribution.getAttribute("aria-label")).toBe(`Replying to ${name}`);
+  });
 });

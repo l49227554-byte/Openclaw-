@@ -9,7 +9,10 @@ import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runt
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { closeCodexStartupClientBestEffort } from "./app-server/attempt-client-cleanup.js";
 import { prepareCodexAppServerAuthBinding } from "./app-server/auth-binding.js";
-import { resolveCodexAppServerPreparedAuthHandoff } from "./app-server/auth-bridge.js";
+import {
+  resolveCodexAppServerPreparedAuthHandoff,
+  type CodexAppServerPreparedAuth,
+} from "./app-server/auth-bridge.js";
 import {
   resolveCodexAppServerAuthProfileId,
   resolveCodexAppServerAuthProfileStore,
@@ -49,6 +52,7 @@ type AuthProfileOrderConfig = Parameters<
 >[0]["config"];
 
 export type CodexControlRequestOptions = {
+  preparedAuth?: CodexAppServerPreparedAuth;
   config?: AuthProfileOrderConfig;
   authProfileId?: string | null;
   agentId?: string;
@@ -227,11 +231,18 @@ export async function codexControlRequest(
     ? resolveCodexSupervisionAppServerRuntimeOptions({ pluginConfig })
     : resolveCodexAppServerRuntimeOptions({ pluginConfig });
   const startOptions = options.startOptions ?? runtime.start;
+  if (options.preparedAuth && (options.onResponse || options.authProfileId !== undefined)) {
+    throw new Error(
+      "Prepared control auth cannot replace session authority or select another profile.",
+    );
+  }
   const auth = options.onResponse
     ? await prepareCodexControlSessionAuth(options, startOptions)
     : {
         authProfileId: options.authProfileId ?? undefined,
-        clientOptions: { authProfileId: options.authProfileId },
+        clientOptions: options.preparedAuth
+          ? { preparedAuth: options.preparedAuth }
+          : { authProfileId: options.authProfileId },
       };
   const controlRequestOptions = {
     timeoutMs: options.timeoutMs ?? runtime.requestTimeoutMs,

@@ -31,6 +31,7 @@ type CatalogHomeCandidate = {
   codexHome: string;
   label: string;
   usesProcessHomeFallback?: boolean;
+  sourceAgentDir?: string;
 };
 
 function existingCatalogHomeCandidates(value: string, label?: string): CatalogHomeCandidate[] {
@@ -76,6 +77,14 @@ function resolveCodexCatalogHomes(params: {
       usesProcessHomeFallback: primaryUsesProcessHomeFallback,
     },
   ];
+  // Explicit/native sources win over auto-discovery, including canonical aliases.
+  const nativeHomes = new Set([
+    primaryCodexHome,
+    processUserHome,
+    ...configuredHomes.map((entry) =>
+      canonicalCodexCatalogHome(typeof entry === "string" ? entry : entry.path),
+    ),
+  ]);
 
   if (base.start.transport === "stdio") {
     candidates.push({
@@ -86,13 +95,26 @@ function resolveCodexCatalogHomes(params: {
     const agentIds = listAgentIds(config).toSorted((left, right) =>
       left === ownerAgentId ? -1 : right === ownerAgentId ? 1 : left.localeCompare(right),
     );
+    const managedCandidates = agentIds.flatMap((agentId) => {
+      const sourceAgentDir = resolveAgentDir(config, agentId, env);
+      return existingCatalogHomeCandidates(
+        resolveCodexAppServerHomeDir(sourceAgentDir),
+        agentId,
+      ).map((candidate) => Object.assign(candidate, { sourceAgentDir }));
+    });
+    const ownerCounts = new Map<string, number>();
+    for (const candidate of managedCandidates) {
+      ownerCounts.set(candidate.codexHome, (ownerCounts.get(candidate.codexHome) ?? 0) + 1);
+    }
     candidates.push(
-      ...agentIds.flatMap((agentId) =>
-        existingCatalogHomeCandidates(
-          resolveCodexAppServerHomeDir(resolveAgentDir(config, agentId, env)),
-          agentId,
-        ),
-      ),
+      ...managedCandidates.flatMap((candidate) => {
+        if (nativeHomes.has(candidate.codexHome)) {
+          const { sourceAgentDir: _, ...native } = candidate;
+          return [native];
+        }
+        // Never choose one agent's credentials by enumeration order for a shared alias.
+        return ownerCounts.get(candidate.codexHome) === 1 ? [candidate] : [];
+      }),
       ...configuredHomes.flatMap((entry) => {
         const { path: home, label } = typeof entry === "string" ? { path: entry } : entry;
         return existingCatalogHomeCandidates(home, label);
@@ -116,6 +138,7 @@ function resolveCodexCatalogHomes(params: {
         : `${CODEX_LOCAL_SESSION_HOST_ID}:${sourceHomeId}`,
       label: candidate.label,
       agentDir: ownerAgentDir,
+      ...(candidate.sourceAgentDir ? { sourceAgentDir: candidate.sourceAgentDir } : {}),
       appServer: primary
         ? base
         : {
@@ -142,7 +165,7 @@ type CodexCatalogHomeResolver = {
   forAgent(agentId: string): readonly CodexCatalogHome[];
   forNode(agentId?: string): Pick<
     CodexCatalogHome,
-    "appServer" | "localSessionsRoot" | "sourceHomeId"
+    "appServer" | "localSessionsRoot" | "sourceHomeId" | "sourceAgentDir"
   > & {
     codexHome: string;
     agentId?: string;

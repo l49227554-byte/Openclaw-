@@ -121,6 +121,40 @@ describe("Codex command RPC helpers", () => {
     replaceRuntimeAuthProfileStoreSnapshots([{ agentDir, store }]);
   }
 
+  it("forwards prepared source credentials for catalog control without selecting route auth", async () => {
+    const preparedAuth = { kind: "api-key" as const, apiKey: "synthetic-source-key" };
+    await codexControlRequest(
+      {},
+      "thread/list",
+      {},
+      {
+        agentDir,
+        config,
+        preparedAuth,
+        startOptions: { transport: "stdio", homeScope: "agent" },
+      },
+    );
+    expect(requestCodexAppServerJsonMock).toHaveBeenCalledWith(
+      expect.objectContaining({ preparedAuth, agentDir }),
+    );
+    expect(requestCodexAppServerJsonMock.mock.calls[0]?.[0].authProfileId).toBeUndefined();
+  });
+
+  it("does not let prepared control credentials replace admitted session auth", async () => {
+    await expect(
+      codexControlRequest(
+        {},
+        "thread/list",
+        {},
+        {
+          preparedAuth: { kind: "api-key", apiKey: "synthetic-source-key" },
+          onResponse: async () => undefined,
+        },
+      ),
+    ).rejects.toThrow("cannot replace session authority");
+    expect(requestCodexAppServerJsonMock).not.toHaveBeenCalled();
+  });
+
   function resume(options: Partial<CodexControlRequestOptions> = {}) {
     return codexControlRequest(
       {},

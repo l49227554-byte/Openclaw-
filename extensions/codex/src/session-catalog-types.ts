@@ -16,6 +16,8 @@ export type CodexCatalogHome = {
   hostId: string;
   label: string;
   agentDir: string;
+  /** Verified credential owner for an auto-discovered managed home, not its route owner. */
+  sourceAgentDir?: string;
   appServer: CodexAppServerRuntimeOptions;
   /** Trusted local root for rollout provenance reads; absent for remote app-server connections. */
   localSessionsRoot?: string;

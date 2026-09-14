@@ -102,10 +102,20 @@ Set `appServer.homeScope: "user"` explicitly if the harness should share native
 Codex state too. Supervision honors explicit `appServer` connection settings
 instead of replacing them with its local user-home default.
 
-Catalog reads use the selected store's native Codex authentication, including
-when that store is under an OpenClaw agent directory. Browsing stored sessions
-does not require importing a native credential into OpenClaw. Ordinary managed
-agent runs retain their own credential-import and authentication requirements.
+Supplemental stores discovered under a uniquely identified OpenClaw agent directory
+use that source agent's effective managed OpenAI authentication, including normal
+shared-profile inheritance. The selected route agent
+remains the owner of catalog actions; its credentials are not substituted for the
+source agent's. Missing or unusable effective source authentication fails closed. Managed
+authentication is handed to an ephemeral App Server credential store, without
+rewriting the source's native `auth.json`. Normal managed-provider token refresh
+still belongs to OpenClaw's existing authentication lifecycle.
+
+The primary supervision store, native user store, remote connections, and explicitly
+configured additional stores retain native authentication. Explicit/native paths
+win over managed auto-discovery, including canonical aliases. Ambiguous managed
+homes shared by multiple configured agents are not auto-discovered. Ordinary
+managed agent runs retain their existing authentication requirements.
 
 A Gateway-local Chat adopted from the **Codex** sidebar group is not an ordinary harness session.
 Its private supervision binding uses the supervision connection for source

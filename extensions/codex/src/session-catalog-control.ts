@@ -49,6 +49,8 @@ const CODEX_SESSION_CATALOG_LIST_CACHE_MAX_ENTRIES = 32;
 
 type CodexCatalogRequestOptions = {
   agentDir: string | undefined;
+  sourceAgentDir?: string;
+  sourceHomeId?: string;
   config: OpenClawConfig | undefined;
   startOptions: CodexAppServerStartOptions;
 };
@@ -56,7 +58,7 @@ type CodexCatalogRequestOptions = {
 type CodexCatalogControlSource = Pick<
   CodexCatalogHome,
   "appServer" | "localSessionsRoot" | "sourceHomeId"
-> & { agentDir?: string };
+> & { agentDir?: string; sourceAgentDir?: string };
 
 type CodexCatalogPageCacheEntry = {
   expiresAt: number;
@@ -381,9 +383,26 @@ export function createCodexSessionCatalogControl(params: {
     const agentDir =
       source?.agentDir ?? (agentId ? resolveAgentDir(runtimeConfig ?? {}, agentId) : undefined);
     const resolvedStartOptions = source?.appServer.start ?? startOptions;
+    const sourceOwnership = source?.sourceAgentDir
+      ? { sourceAgentDir: source.sourceAgentDir, sourceHomeId: source.sourceHomeId }
+      : {};
+    if (
+      source?.sourceAgentDir &&
+      (!agentId ||
+        !homeResolver
+          .forAgent(agentId)
+          .some(
+            (home) =>
+              home.sourceHomeId === source.sourceHomeId &&
+              home.sourceAgentDir === source.sourceAgentDir,
+          ))
+    ) {
+      throw new CatalogParamsError("Codex catalog source ownership changed; refresh the catalog.");
+    }
     if (!runtimeConfig) {
       return {
         agentDir,
+        ...sourceOwnership,
         config: undefined,
         startOptions: structuredClone(resolvedStartOptions),
       };
@@ -398,6 +417,7 @@ export function createCodexSessionCatalogControl(params: {
     }
     const resolved = {
       agentDir,
+      ...sourceOwnership,
       config: structuredClone(runtimeConfig),
       startOptions: structuredClone(resolvedStartOptions),
     };
@@ -419,9 +439,10 @@ export function createCodexSessionCatalogControl(params: {
       runtime.requestTimeoutMs,
       async (method, requestParams, timeoutMs, assertCurrent) => {
         const { codexControlRequest } = await import("./command-rpc.js");
+        const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
+        const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
         return await codexControlRequest(pluginConfig, method, requestParams, {
-          ...requestOptions,
-          authProfileId: null,
+          ...clientOptions,
           assertCurrent,
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
         });
@@ -438,11 +459,8 @@ export function createCodexSessionCatalogControl(params: {
     ) => {
       const pluginConfig = getPluginConfig();
       const runtime = source?.appServer ?? params.resolveRuntimeOptions({ pluginConfig });
-      const {
-        agentDir,
-        config: runtimeConfig,
-        startOptions,
-      } = resolveRequestOptions(runtime.start, agentId, source);
+      const requestOptions = resolveRequestOptions(runtime.start, agentId, source);
+      const { agentDir, config: runtimeConfig } = requestOptions;
       // Capture the request's config/home before loading execution; imports must
       // not let a concurrent reload move this pinned operation to another owner.
       const {
@@ -452,11 +470,10 @@ export function createCodexSessionCatalogControl(params: {
       } = await import("./app-server/shared-client.js");
       const { resolveCodexAppServerClientInstanceId } = await import("./app-server/client.js");
       const { requestCodexAppServerClientJson } = await import("./app-server/request.js");
+      const { prepareCodexCatalogClientOptions } = await import("./session-catalog-auth.js");
+      const clientOptions = await prepareCodexCatalogClientOptions(requestOptions);
       const client = await getLeasedSharedCodexAppServerClient({
-        agentDir,
-        config: runtimeConfig,
-        startOptions,
-        authProfileId: null,
+        ...clientOptions,
         timeoutMs: runtime.requestTimeoutMs,
       });
       try {

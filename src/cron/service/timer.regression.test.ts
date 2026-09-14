@@ -521,14 +521,7 @@ describe("cron service timer regressions", () => {
       expect(cancelResult.cancelled).toBe(true);
       expect(abortObserved).toBe(true);
 
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        if (timerSettled) {
-          break;
-        }
-        await vi.advanceTimersByTimeAsync(0);
-        await Promise.resolve();
-      }
-      expect(timerSettled).toBe(true);
+      await vi.waitFor(() => expect(timerSettled).toBe(true), { interval: 0 });
       await timerPromise;
 
       const finalTask = listTaskRecords().find((entry) => entry.taskId === task.taskId);
@@ -711,14 +704,7 @@ describe("cron service timer regressions", () => {
       expect(cancelled).toBe(true);
       expect(observedAbortSignal?.aborted).toBe(true);
 
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        if (timerSettled) {
-          break;
-        }
-        await vi.advanceTimersByTimeAsync(0);
-        await Promise.resolve();
-      }
-      expect(timerSettled).toBe(true);
+      await vi.waitFor(() => expect(timerSettled).toBe(true), { interval: 0 });
       await timerPromise;
 
       expect(cleanupTimedOutAgentRun).not.toHaveBeenCalled();
@@ -1300,15 +1286,9 @@ describe("cron service timer regressions", () => {
       const timerPromise = onTimer(state);
       try {
         const runId = `cron:main-session-cancel-boundary:${scheduledAt}`;
-        for (
-          let attempt = 0;
-          attempt < 10 && requestHeartbeatAndWait.mock.calls.length === 0;
-          attempt += 1
-        ) {
-          await vi.advanceTimersByTimeAsync(0);
-          await Promise.resolve();
-        }
-        expect(requestHeartbeatAndWait).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(requestHeartbeatAndWait).toHaveBeenCalledTimes(1), {
+          interval: 0,
+        });
 
         const task = findCronTaskByBaseRunId(runId);
         if (!task) {
@@ -1431,14 +1411,7 @@ describe("cron service timer regressions", () => {
       expect(cancelResult.cancelled).toBe(true);
       expect(abortObserved).toBe(true);
 
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        if (timerSettled) {
-          break;
-        }
-        await vi.advanceTimersByTimeAsync(0);
-        await Promise.resolve();
-      }
-      expect(timerSettled).toBe(true);
+      await vi.waitFor(() => expect(timerSettled).toBe(true), { interval: 0 });
       await timerPromise;
       expect(listTaskRecords().find((entry) => entry.taskId === task.taskId)?.status).toBe(
         "cancelled",
@@ -1500,15 +1473,9 @@ describe("cron service timer regressions", () => {
 
     const timerPromise = onTimer(state);
     try {
-      for (
-        let attempt = 0;
-        attempt < 10 && requestHeartbeatAndWait.mock.calls.length === 0;
-        attempt += 1
-      ) {
-        await vi.advanceTimersByTimeAsync(0);
-        await Promise.resolve();
-      }
-      expect(requestHeartbeatAndWait).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(requestHeartbeatAndWait).toHaveBeenCalledTimes(1), {
+        interval: 0,
+      });
 
       expect(isCronJobActive(cronJob.id)).toBe(true);
       advanceCronActiveJobGeneration();

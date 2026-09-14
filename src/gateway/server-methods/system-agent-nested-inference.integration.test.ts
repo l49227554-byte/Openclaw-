@@ -223,62 +223,84 @@ async function createConversation() {
         }),
       config,
     );
-  return { captured, invoke, observed, respond, executeOperation };
+  const greet = () =>
+    metadata.run(
+      () =>
+        engine.planGreeting({
+          overview,
+          facts: {
+            updateAvailable: null,
+            channelHealth: { available: true, degraded: [] },
+            recentExternalEdit: false,
+            auditSequence: 0,
+          },
+          timeoutMs: 20_000,
+        }),
+      config,
+    );
+  return { captured, invoke, greet, observed, respond, executeOperation };
 }
 
 describe("system-agent nested inference through real Gateway admission", () => {
-  it("completes while its parent occupies the only main slot", async () => {
-    const conversation = await createConversation();
-    expect(getCommandLaneSnapshot(CommandLane.Main).maxConcurrent).toBe(1);
-    const releaseParent = createDeferred();
-    const handlerStarted = createDeferred();
-    let handler: Promise<unknown> | undefined;
-    const parent = enqueueCommandInLane(CommandLane.Main, async () => {
-      handler = Promise.resolve(conversation.invoke());
-      handlerStarted.resolve();
-      await Promise.race([handler, releaseParent.promise]);
-    });
-    await handlerStarted.promise;
-    if (!handler) {
-      throw new Error("gateway handler did not start");
-    }
-    try {
-      const observation = await withTestTimeout(
-        conversation.observed.promise,
-        2_000,
-        "fixture did not reach the real runner admission boundary",
-      );
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
+  it.each(["chat", "greeting"] as const)(
+    "completes %s while its parent occupies the only main slot",
+    async (entry) => {
+      const conversation = await createConversation();
+      expect(getCommandLaneSnapshot(CommandLane.Main).maxConcurrent).toBe(1);
+      const releaseParent = createDeferred();
+      const handlerStarted = createDeferred();
+      let handler: Promise<unknown> | undefined;
+      const parent = enqueueCommandInLane(CommandLane.Main, async () => {
+        handler = Promise.resolve(entry === "chat" ? conversation.invoke() : conversation.greet());
+        handlerStarted.resolve();
+        await Promise.race([handler, releaseParent.promise]);
       });
-      const snapshot = {
-        observation,
-        main: getCommandLaneSnapshot(CommandLane.Main),
-        inference: getCommandLaneSnapshot(CommandLane.SystemAgentInference),
-        dispatchCount: dispatch.mock.calls.length,
-      };
-      // The repair changes this from waiting/queued-on-main to dispatched on
-      // the dedicated inference lane while main remains occupied.
-      expect(observation, JSON.stringify(snapshot)).toBe("dispatched");
-      expect(snapshot.main.queuedCount).toBe(0);
-      expect(snapshot.inference.queuedCount).toBe(0);
-      expect(snapshot.dispatchCount).toBe(1);
-      expect(conversation.captured.mainActiveAtDispatch).toBe(1);
-      expect(conversation.captured.inferenceActiveAtDispatch).toBe(1);
-      await parent;
-      expect(conversation.respond).toHaveBeenCalledExactlyOnceWith(
-        true,
-        expect.objectContaining({ reply: RESPONSE_TEXT, action: "none" }),
-        undefined,
-      );
-      expect(conversation.executeOperation).not.toHaveBeenCalled();
-      expect(
-        listCommandLaneTotals().filter((lane) => lane.activeCount || lane.queuedCount),
-      ).toEqual([]);
-    } finally {
-      releaseParent.resolve();
-      await parent;
-      await handler;
-    }
-  });
+      await handlerStarted.promise;
+      if (!handler) {
+        throw new Error("gateway handler did not start");
+      }
+      try {
+        const observation = await withTestTimeout(
+          conversation.observed.promise,
+          2_000,
+          "fixture did not reach the real runner admission boundary",
+        );
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        const snapshot = {
+          observation,
+          main: getCommandLaneSnapshot(CommandLane.Main),
+          inference: getCommandLaneSnapshot(CommandLane.SystemAgentInference),
+          dispatchCount: dispatch.mock.calls.length,
+        };
+        // The repair changes this from waiting/queued-on-main to dispatched on
+        // the dedicated inference lane while main remains occupied.
+        expect(observation, JSON.stringify(snapshot)).toBe("dispatched");
+        expect(snapshot.main.queuedCount).toBe(0);
+        expect(snapshot.inference.queuedCount).toBe(0);
+        expect(snapshot.dispatchCount).toBe(1);
+        expect(conversation.captured.mainActiveAtDispatch).toBe(1);
+        expect(conversation.captured.inferenceActiveAtDispatch).toBe(1);
+        await parent;
+        if (entry === "chat") {
+          expect(conversation.respond).toHaveBeenCalledExactlyOnceWith(
+            true,
+            expect.objectContaining({ reply: RESPONSE_TEXT, action: "none" }),
+            undefined,
+          );
+        } else {
+          expect(await handler).toMatchObject({ text: RESPONSE_TEXT });
+        }
+        expect(conversation.executeOperation).not.toHaveBeenCalled();
+        expect(
+          listCommandLaneTotals().filter((lane) => lane.activeCount || lane.queuedCount),
+        ).toEqual([]);
+      } finally {
+        releaseParent.resolve();
+        await parent;
+        await handler;
+      }
+    },
+  );
 });

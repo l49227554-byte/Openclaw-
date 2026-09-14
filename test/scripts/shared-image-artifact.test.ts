@@ -86,19 +86,67 @@ function verifyUploadedArtifact(
   );
 }
 
+// The deployed request deadline is a fixed production value, so the timeout boundary is
+// driven directly by sourcing the helper and passing short deadlines for the fixture.
+function runDeadlineHelper(params: {
+  env: NodeJS.ProcessEnv;
+  killGrace?: string;
+  requestTimeout?: string;
+  timeoutMs?: number;
+}) {
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      'source "$1"; shift; gh_api_get_with_retry "$@"',
+      "shared-image-artifact-deadline",
+      HELPER,
+      "Docker E2E image artifact metadata",
+      `repos/openclaw/openclaw/actions/artifacts/${ARTIFACT_ID}`,
+      "retry-fresh-artifact",
+      params.requestTimeout ?? "1s",
+      params.killGrace ?? "1s",
+    ],
+    {
+      encoding: "utf8",
+      env: params.env,
+      timeout: params.timeoutMs,
+    },
+  );
+}
+
 function createFixture() {
   const root = mkdtempSync(join(tmpdir(), "openclaw-shared-image-artifact-"));
   const bin = join(root, "bin");
+  const timeoutShimDir = join(root, "bin-timeout-shim");
   const artifactDir = join(root, "artifact");
   const dockerLog = join(root, "docker.log");
   const ghLog = join(root, "gh.log");
   const ghState = join(root, "gh-state");
   const sleepLog = join(root, "sleep.log");
+  const timeoutLog = join(root, "timeout.log");
   mkdirSync(bin);
+  mkdirSync(timeoutShimDir);
   mkdirSync(ghState);
   writeFileSync(dockerLog, "");
   writeFileSync(ghLog, "");
   writeFileSync(sleepLog, "");
+  writeFileSync(timeoutLog, "");
+
+  // Records the deadline the helper applies and runs the wrapped command without
+  // waiting, so the fixed production bounds stay assertable in a fast test.
+  writeExecutable(
+    join(timeoutShimDir, "timeout"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "$FAKE_TIMEOUT_LOG"
+while [[ "$1" == --* ]]; do
+  shift
+done
+shift
+exec "$@"
+`,
+  );
 
   writeExecutable(
     join(bin, "docker"),
@@ -306,6 +354,7 @@ done
     FAKE_GH_LOG: ghLog,
     FAKE_GH_STATE: ghState,
     FAKE_SLEEP_LOG: sleepLog,
+    FAKE_TIMEOUT_LOG: timeoutLog,
     GH_TOKEN: "test-token",
     GITHUB_REPOSITORY: "openclaw/openclaw",
     GITHUB_RUN_ATTEMPT: "2",
@@ -314,7 +363,7 @@ done
     RUNNER_TEMP: root,
     OPENCLAW_SHARED_IMAGE_PACKAGE_SHA256: PACKAGE_SHA256,
   };
-  return { artifactDir, dockerLog, env, ghLog, root, sleepLog };
+  return { artifactDir, dockerLog, env, ghLog, root, sleepLog, timeoutLog, timeoutShimDir };
 }
 
 function expectedArchiveEnv(fixture: ReturnType<typeof createFixture>): NodeJS.ProcessEnv {
@@ -402,25 +451,55 @@ describe("shared Docker image artifacts", () => {
     }
   });
 
+  it("applies the fixed production request deadline and kill grace by default", () => {
+    const fixture = createFixture();
+    try {
+      const applied = spawnSync(
+        "bash",
+        [
+          "-c",
+          'source "$1"; shift; gh_api_get_with_retry "$@"',
+          "shared-image-artifact-deadline",
+          HELPER,
+          "Docker E2E image artifact metadata",
+          `repos/openclaw/openclaw/actions/artifacts/${ARTIFACT_ID}`,
+          "retry-fresh-artifact",
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...fixture.env,
+            PATH: `${fixture.timeoutShimDir}:${fixture.env.PATH ?? ""}`,
+          },
+        },
+      );
+      expect(applied.status, `${applied.stdout}\n${applied.stderr}`).toBe(0);
+      expect(readFileSync(fixture.timeoutLog, "utf8")).toBe(
+        `--signal=TERM --kill-after=10s 30s gh api --method GET repos/openclaw/openclaw/actions/artifacts/${ARTIFACT_ID}\n`,
+      );
+      expect(applied.stdout).toContain(`"id":${ARTIFACT_ID}`);
+    } finally {
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
   it("retries a stalled gh api request past the request deadline and then succeeds", () => {
     const fixture = createFixture();
     try {
-      const verified = verifyUploadedArtifact(fixture, {
-        env: {
-          FAKE_GH_ARTIFACT_HANGS: "1",
-          OPENCLAW_GH_API_GET_REQUEST_TIMEOUT: "1s",
-        },
+      const verified = runDeadlineHelper({
+        env: { ...fixture.env, FAKE_GH_ARTIFACT_HANGS: "1" },
         timeoutMs: 20_000,
       });
       expect(verified.error).toBeUndefined();
       expect(verified.status, `${verified.stdout}\n${verified.stderr}`).toBe(0);
+      expect(verified.stdout).toContain(`"id":${ARTIFACT_ID}`);
       expect(verified.stderr).toContain("request deadline");
       expect(verified.stderr).toContain(
         "artifact metadata GitHub API GET failed transiently on attempt 1/3; retrying in 2s",
       );
+      expect(readFileSync(fixture.sleepLog, "utf8")).toBe("2\n");
       const calls = readFileSync(fixture.ghLog, "utf8");
       expect(calls.match(/actions\/artifacts/g)).toHaveLength(2);
-      expect(calls.match(/actions\/runs/g)).toHaveLength(1);
     } finally {
       rmSync(fixture.root, { force: true, recursive: true });
     }
@@ -429,12 +508,11 @@ describe("shared Docker image artifacts", () => {
   it("retries a TERM-resistant stalled gh api request after KILL escalation and then succeeds", () => {
     const fixture = createFixture();
     try {
-      const verified = verifyUploadedArtifact(fixture, {
+      const verified = runDeadlineHelper({
         env: {
+          ...fixture.env,
           FAKE_GH_ARTIFACT_HANGS: "1",
           FAKE_GH_ARTIFACT_TERM_RESISTANT: "1",
-          OPENCLAW_GH_API_GET_REQUEST_TIMEOUT: "1s",
-          OPENCLAW_GH_API_GET_REQUEST_KILL_GRACE: "1s",
         },
         timeoutMs: 30_000,
       });
@@ -452,20 +530,16 @@ describe("shared Docker image artifacts", () => {
       );
       const calls = readFileSync(fixture.ghLog, "utf8");
       expect(calls.match(/actions\/artifacts/g)).toHaveLength(2);
-      expect(calls.match(/actions\/runs/g)).toHaveLength(1);
     } finally {
       rmSync(fixture.root, { force: true, recursive: true });
     }
   });
 
-  it("fails verify-upload when every gh api request stalls past the deadline", () => {
+  it("fails after every gh api request stalls past the request deadline", () => {
     const fixture = createFixture();
     try {
-      const failed = verifyUploadedArtifact(fixture, {
-        env: {
-          FAKE_GH_ARTIFACT_HANGS: "3",
-          OPENCLAW_GH_API_GET_REQUEST_TIMEOUT: "1s",
-        },
+      const failed = runDeadlineHelper({
+        env: { ...fixture.env, FAKE_GH_ARTIFACT_HANGS: "3" },
         timeoutMs: 20_000,
       });
       expect(failed.error).toBeUndefined();
@@ -474,33 +548,6 @@ describe("shared Docker image artifacts", () => {
       expect(failed.stderr).toContain("GitHub API GET failed after 3 attempt(s)");
       const calls = readFileSync(fixture.ghLog, "utf8");
       expect(calls.match(/actions\/artifacts/g)).toHaveLength(3);
-      expect(calls).not.toContain("actions/runs");
-    } finally {
-      rmSync(fixture.root, { force: true, recursive: true });
-    }
-  });
-
-  it.each([
-    {
-      name: "a zero request timeout",
-      env: { OPENCLAW_GH_API_GET_REQUEST_TIMEOUT: "0" },
-    },
-    {
-      name: "a zero-suffixed request timeout",
-      env: { OPENCLAW_GH_API_GET_REQUEST_TIMEOUT: "0s" },
-    },
-    {
-      name: "a zero kill grace",
-      env: { OPENCLAW_GH_API_GET_REQUEST_KILL_GRACE: "0s" },
-    },
-  ])("rejects $name because GNU timeout would disable the deadline", ({ env }) => {
-    const fixture = createFixture();
-    try {
-      const failed = verifyUploadedArtifact(fixture, { env });
-      expect(failed.error).toBeUndefined();
-      expect(failed.status).toBe(1);
-      expect(failed.stderr).toContain("must be a positive GNU timeout duration");
-      expect(readFileSync(fixture.ghLog, "utf8")).toBe("");
     } finally {
       rmSync(fixture.root, { force: true, recursive: true });
     }

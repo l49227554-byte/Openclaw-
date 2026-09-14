@@ -8,6 +8,18 @@ import type { SystemInfoResult } from "../../../../packages/gateway-protocol/src
 import { subtitleForRoute, titleForRoute } from "../../app-navigation.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
 import {
+  createGatewayProfile,
+  loadGatewayRegistryForGateway,
+  removeGatewayProfile,
+  renameGatewayProfile,
+  selectGatewayProfile,
+  upsertGatewayProfile,
+  GatewayRegistryPersistenceError,
+  type GatewayRegistry,
+} from "../../app/gateway-registry.ts";
+import { isNativeEmbedHost, isNativeWebChromeHost } from "../../app/native-web-chrome.ts";
+import {
+  loadGatewaySessionSelection,
   loadSettings,
   resolveGatewayCredentialsForUrlEdit,
   type UiSettings,
@@ -16,6 +28,7 @@ import type { GatewayStatusSample } from "../../components/gateway-vitals.ts";
 import { renderLearnMoreLink } from "../../components/settings-ui.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import type { SparklineSample } from "../../components/sparkline-tile.ts";
+import { t } from "../../i18n/index.ts";
 import { isMissingOperatorReadScopeError } from "../../lib/gateway-errors.ts";
 import {
   GatewayPageController,
@@ -41,6 +54,14 @@ export class ConnectionPage extends OpenClawLightDomElement {
   @state() private settings: UiSettings = loadSettings();
   @state() private password = "";
   @state() private gatewaySecretVisible = false;
+  @state() private gatewayRegistry: GatewayRegistry = loadGatewayRegistryForGateway(
+    this.settings.gatewayUrl,
+  );
+  @state() private gatewayRegistryError = "";
+  @state() private newGatewayName = "";
+  @state() private newGatewayUrl = "";
+  @state() private renamingGatewayId: string | null = null;
+  @state() private renamingGatewayName = "";
   @state() private systemInfo: SystemInfoResult | null = null;
   @state() private systemInfoUnavailable = false;
   @state() private systemInfoLoading = false;
@@ -280,6 +301,9 @@ export class ConnectionPage extends OpenClawLightDomElement {
   private resetConnectionDraft() {
     const { gatewayUrl, token, password } = this.context.gateway.connection;
     this.settings = { ...this.settings, gatewayUrl, token };
+    this.gatewayRegistry = loadGatewayRegistryForGateway(gatewayUrl);
+    this.renamingGatewayId = null;
+    this.renamingGatewayName = "";
     this.password = password;
     this.resetSensitiveUi();
   }
@@ -295,6 +319,129 @@ export class ConnectionPage extends OpenClawLightDomElement {
     this.context.gateway.setSessionKey(this.settings.sessionKey);
     this.resetSessionDraft();
     this.sessionSaved = true;
+  }
+
+  private addGateway() {
+    const profile = createGatewayProfile({ name: this.newGatewayName, url: this.newGatewayUrl });
+    if (!profile) {
+      this.gatewayRegistryError = t("connection.registry.invalidUrl");
+      return;
+    }
+    const hadProfile = this.gatewayRegistry.gateways.some((gateway) => gateway.id === profile.id);
+    try {
+      this.gatewayRegistry = upsertGatewayProfile(profile, { select: true });
+    } catch (error) {
+      if (error instanceof GatewayRegistryPersistenceError) {
+        this.gatewayRegistryError = t("connection.registry.persistence");
+        return;
+      }
+      throw error;
+    }
+    if (
+      !hadProfile &&
+      !this.gatewayRegistry.gateways.some((gateway) => gateway.id === profile.id)
+    ) {
+      this.gatewayRegistryError = t("connection.registry.capacity");
+      return;
+    }
+    this.gatewayRegistryError = "";
+    this.newGatewayName = "";
+    this.newGatewayUrl = "";
+    this.context.gateway.connect({
+      gatewayUrl: profile.url,
+      sessionKey: loadGatewaySessionSelection(profile.url).sessionKey,
+    });
+  }
+
+  private selectGateway(id: string) {
+    const profile = this.gatewayRegistry.gateways.find((gateway) => gateway.id === id);
+    if (!profile) {
+      return;
+    }
+    try {
+      this.gatewayRegistry = selectGatewayProfile(id);
+    } catch (error) {
+      if (error instanceof GatewayRegistryPersistenceError) {
+        this.gatewayRegistryError = t("connection.registry.persistence");
+        return;
+      }
+      throw error;
+    }
+    this.gatewayRegistryError = "";
+    this.context.gateway.connect({
+      gatewayUrl: profile.url,
+      sessionKey: loadGatewaySessionSelection(profile.url).sessionKey,
+    });
+  }
+
+  private beginRenameGateway(id: string) {
+    const profile = this.gatewayRegistry.gateways.find((gateway) => gateway.id === id);
+    if (!profile) {
+      return;
+    }
+    this.gatewayRegistryError = "";
+    this.renamingGatewayId = id;
+    this.renamingGatewayName = profile.name;
+  }
+
+  private cancelRenameGateway() {
+    this.renamingGatewayId = null;
+    this.renamingGatewayName = "";
+  }
+
+  private saveGatewayName() {
+    const id = this.renamingGatewayId;
+    if (!id) {
+      return;
+    }
+    try {
+      renameGatewayProfile(id, this.renamingGatewayName);
+      this.gatewayRegistry = loadGatewayRegistryForGateway(
+        this.context.gateway.connection.gatewayUrl,
+      );
+    } catch (error) {
+      if (error instanceof GatewayRegistryPersistenceError) {
+        this.gatewayRegistryError = t("connection.registry.persistence");
+        return;
+      }
+      throw error;
+    }
+    this.gatewayRegistryError = "";
+    this.cancelRenameGateway();
+  }
+
+  private removeGateway(id: string) {
+    const profile = this.gatewayRegistry.gateways.find((gateway) => gateway.id === id);
+    if (!profile || this.gatewayRegistry.gateways.length <= 1) {
+      return;
+    }
+    if (!window.confirm(t("connection.registry.removeConfirm", { name: profile.name }))) {
+      return;
+    }
+    const wasActive = this.gatewayRegistry.activeGatewayId === id;
+    try {
+      // Use the removal projection itself. Reloading with the still-mounted
+      // URL would re-add the profile that was just deleted as a fallback.
+      this.gatewayRegistry = removeGatewayProfile(id);
+    } catch (error) {
+      if (error instanceof GatewayRegistryPersistenceError) {
+        this.gatewayRegistryError = t("connection.registry.persistence");
+        return;
+      }
+      throw error;
+    }
+    if (wasActive && this.gatewayRegistry.activeGatewayId) {
+      const nextProfile = this.gatewayRegistry.gateways.find(
+        (gateway) => gateway.id === this.gatewayRegistry.activeGatewayId,
+      );
+      if (nextProfile) {
+        this.gatewayRegistryError = "";
+        this.context.gateway.connect({
+          gatewayUrl: nextProfile.url,
+          sessionKey: loadGatewaySessionSelection(nextProfile.url).sessionKey,
+        });
+      }
+    }
   }
 
   private connect() {
@@ -329,6 +476,13 @@ export class ConnectionPage extends OpenClawLightDomElement {
     const body = renderConnection({
       phase: gateway.phase,
       hello: gateway.hello,
+      gatewayRegistry:
+        isNativeEmbedHost() || isNativeWebChromeHost() ? undefined : this.gatewayRegistry,
+      newGatewayName: this.newGatewayName,
+      newGatewayUrl: this.newGatewayUrl,
+      gatewayRegistryError: this.gatewayRegistryError,
+      renamingGatewayId: this.renamingGatewayId,
+      renamingGatewayName: this.renamingGatewayName,
       settings: this.settings,
       liveGatewayUrl: live.gatewayUrl,
       secret: this.settings.token || this.password,
@@ -350,6 +504,15 @@ export class ConnectionPage extends OpenClawLightDomElement {
         this.password = "";
         this.updateConnection({ token });
       },
+      onNewGatewayNameChange: (name) => (this.newGatewayName = name),
+      onNewGatewayUrlChange: (url) => (this.newGatewayUrl = url),
+      onAddGateway: () => this.addGateway(),
+      onSelectGateway: (id) => this.selectGateway(id),
+      onBeginRenameGateway: (id) => this.beginRenameGateway(id),
+      onRenamingGatewayNameChange: (name) => (this.renamingGatewayName = name),
+      onSaveGatewayName: () => this.saveGatewayName(),
+      onCancelRenameGateway: () => this.cancelRenameGateway(),
+      onRemoveGateway: (id) => this.removeGateway(id),
       onSessionKeyChange: (sessionKey) => {
         this.sessionSaved = false;
         this.settings = {

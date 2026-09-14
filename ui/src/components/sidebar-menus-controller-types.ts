@@ -4,6 +4,7 @@ import type { AgentIdentityResult } from "../api/types.ts";
 import type { NavigationRouteId, SidebarZoneEntry } from "../app-navigation.ts";
 import type { RouteId } from "../app-route-paths.ts";
 import type { ApplicationContext, ApplicationNavigationOptions } from "../app/context.ts";
+import type { GatewayRegistry } from "../app/gateway-registry.ts";
 import type { ThemeMode } from "../app/theme.ts";
 import type { CatalogProjectGrouping } from "../lib/sessions/catalog-project-grouping.ts";
 import type { SidebarSessionsGrouping } from "../lib/sessions/grouping.ts";
@@ -36,12 +37,15 @@ export interface SidebarMenusControllerHost
   readonly offline: boolean;
   readonly enabledRouteIds?: readonly NavigationRouteId[];
   readonly gatewayVersion: string | null;
+  readonly gatewayRegistry: GatewayRegistry;
   readonly onNavigate?: (
     routeId: NavigationRouteId,
     options?: ApplicationNavigationOptions,
   ) => void;
   readonly onPairMobile?: () => void;
   readonly onRetryConnect?: () => void;
+  readonly onSelectGateway?: (id: string) => void;
+  readonly onManageGateways?: () => void;
   readonly onUpdateSidebarEntries?: (entries: string[]) => void;
   readonly onPreloadRoute?: (routeId: NavigationRouteId) => Promise<void>;
   sidebarAgentsMode: "chip" | "roster";

@@ -6,6 +6,7 @@ import type { AgentIdentityResult } from "../api/types.ts";
 import { titleForRoute, type NavigationRouteId } from "../app-navigation.ts";
 import { pathForAgentPanel } from "../app-route-paths.ts";
 import type { ApplicationNavigationOptions } from "../app/context.ts";
+import type { GatewayRegistry } from "../app/gateway-registry.ts";
 import { nativeGatewaysCapability } from "../app/native-gateways.runtime.ts";
 import type { ThemeMode } from "../app/theme.ts";
 import { t } from "../i18n/index.ts";
@@ -33,6 +34,12 @@ import {
   trackDropdownKeyboardDismissal,
 } from "./web-awesome.ts";
 
+export type GatewayMenuHost = {
+  readonly gatewayRegistry: GatewayRegistry;
+  readonly onSelectGateway?: (id: string) => void;
+  readonly onManageGateways?: () => void;
+};
+
 // External rows of the footer identity menu. Docs-first: public docs pages over
 // raw GitHub, matching the ClawSweeper docs-link policy for user-facing copy.
 const IDENTITY_MENU_LINKS: ReadonlyArray<{
@@ -57,6 +64,7 @@ const IDENTITY_MENU_LINKS: ReadonlyArray<{
 const AGENT_VALUE_PREFIX = "agent:";
 const COMMAND_VALUE_PREFIX = "command:";
 const LINK_VALUE_PREFIX = "link:";
+const GATEWAY_VALUE_PREFIX = "gateway:";
 const sidebarMenuTypeahead = new WeakMap<
   HTMLElement,
   { query: string; timeout: ReturnType<typeof setTimeout> }
@@ -215,6 +223,9 @@ type SidebarIdentityMenuParams = {
   onNavigate: (routeId: NavigationRouteId, options?: ApplicationNavigationOptions) => void;
   onPairMobile: () => void;
   onRetryConnect?: () => void;
+  gatewayRegistry: GatewayRegistry;
+  onSelectGateway: (id: string) => void;
+  onManageGateways: () => void;
 };
 
 function sidebarAgentMenuRows(params: {
@@ -321,6 +332,50 @@ function renderSidebarHelpMenu() {
       <span class="sidebar-customize-menu__text">${t("agentChip.help")}</span>
       ${renderIdentityMenuHelpSubmenu()}
     </wa-dropdown-item>
+  `;
+}
+
+function renderGatewayMenuRows(params: SidebarIdentityMenuParams) {
+  if (params.gatewayRegistry.gateways.length === 0) {
+    return nothing;
+  }
+  return html`
+    <div class="sidebar-identity-menu__gateway-heading">
+      ${t("connection.registry.switchTitle")}
+    </div>
+    ${params.gatewayRegistry.gateways.map((gateway) => {
+      const active = gateway.id === params.gatewayRegistry.activeGatewayId;
+      return html`
+        <wa-dropdown-item
+          class="sidebar-customize-menu__item sidebar-identity-menu__gateway ${
+            active ? "sidebar-identity-menu__gateway--active" : ""
+          }"
+          value=${`${GATEWAY_VALUE_PREFIX}${encodeURIComponent(gateway.id)}`}
+          type="checkbox"
+          role="menuitemradio"
+          aria-checked=${String(active)}
+          ${ref((element) => syncDropdownItemRadio(element, active))}
+        >
+          <span slot="icon" class="nav-item__icon" aria-hidden="true">${icons.server}</span>
+          <span class="sidebar-identity-menu__gateway-copy">
+            <span class="sidebar-identity-menu__gateway-name" title=${gateway.name}
+              >${gateway.name}</span
+            >
+            <span class="sidebar-identity-menu__gateway-url" title=${gateway.url}
+              >${gateway.url}</span
+            >
+          </span>
+        </wa-dropdown-item>
+      `;
+    })}
+    <wa-dropdown-item
+      class="sidebar-customize-menu__item sidebar-identity-menu__manage-gateways"
+      value="command:manage-gateways"
+    >
+      <span slot="icon" class="nav-item__icon" aria-hidden="true">${icons.settings}</span>
+      <span class="sidebar-customize-menu__text">${t("connection.registry.manage")}</span>
+    </wa-dropdown-item>
+    <div class="sidebar-customize-menu__separator" role="separator"></div>
   `;
 }
 
@@ -573,15 +628,19 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
         }
         params.onClose(false);
         const capability = nativeGatewaysCapability();
-        if (value.startsWith("gateway:")) {
-          const id = decodeURIComponent(value.slice("gateway:".length));
-          if (id !== capability?.snapshot?.currentId) {
-            capability?.select(id);
-          }
-          return;
-        }
         if (value.startsWith(LINK_VALUE_PREFIX)) {
           openExternalUrlSafe(decodeURIComponent(value.slice(LINK_VALUE_PREFIX.length)));
+          return;
+        }
+        if (value.startsWith(GATEWAY_VALUE_PREFIX)) {
+          const id = decodeURIComponent(value.slice(GATEWAY_VALUE_PREFIX.length));
+          if (capability?.snapshot?.gateways.some((gateway) => gateway.id === id)) {
+            if (id !== capability.snapshot?.currentId) {
+              capability?.select(id);
+            }
+          } else {
+            params.onSelectGateway(id);
+          }
           return;
         }
         switch (value) {
@@ -617,6 +676,9 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
             break;
           case `${COMMAND_VALUE_PREFIX}retry-connect`:
             params.onRetryConnect?.();
+            break;
+          case `${COMMAND_VALUE_PREFIX}manage-gateways`:
+            params.onManageGateways();
             break;
         }
       }}
@@ -655,6 +717,7 @@ export function renderSidebarIdentityMenu(params: SidebarIdentityMenuParams) {
       </wa-dropdown-item>
       <div class="sidebar-customize-menu__separator" role="separator"></div>
       ${renderIdentityGateways(params.onClose)}
+      ${nativeGatewaysCapability() ? nothing : renderGatewayMenuRows(params)}
       <wa-dropdown-item class="sidebar-customize-menu__item" value="command:settings">
         <span slot="icon" class="nav-item__icon" aria-hidden="true">${icons.settings}</span>
         <span class="sidebar-customize-menu__text">${t("nav.settings")}</span>

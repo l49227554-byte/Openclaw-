@@ -93,6 +93,33 @@ describe("createApplicationGateway authentication diagnostics", () => {
     },
   );
 
+  it("sends an owned migrated token at the outgoing connection boundary and retires its legacy slot", () => {
+    const target = "wss://gateway.example/rpc?account=personal";
+    const origin = "wss://gateway.example/rpc";
+    localStorage.setItem(
+      `openclaw.control.settings.v1:${origin}`,
+      JSON.stringify({ gatewayUrl: target, sessionKey: "main", lastActiveSessionKey: "main" }),
+    );
+    sessionStorage.setItem(`openclaw.control.token.v1:${origin}`, "legacy-personal-token");
+
+    const migrated = createStore({ settings: loadSettings(target) });
+    try {
+      expect(migrated.gateway.connection.token).toBe("legacy-personal-token");
+      migrated.gateway.start();
+      expect(migrated.current().opts.url).toBe(target);
+      expect(migrated.current().opts.token).toBe("legacy-personal-token");
+
+      migrated.current().opts.onHello?.({ ...HELLO, snapshot: { authMode: "token" } });
+
+      expect(sessionStorage.getItem(`openclaw.control.token.v1:${origin}`)).toBeNull();
+      expect(sessionStorage.getItem(`openclaw.control.token.v1:${target}`)).toBe(
+        "legacy-personal-token",
+      );
+    } finally {
+      migrated.gateway.stop();
+    }
+  });
+
   function rejectStaleBuild() {
     store.current().opts.onClose?.({
       code: 1008,

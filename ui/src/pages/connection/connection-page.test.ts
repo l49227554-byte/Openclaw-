@@ -78,6 +78,16 @@ function control(page: ConnectionPage, selector: string) {
   return element;
 }
 
+function buttonByText(page: ConnectionPage, label: string) {
+  const button = [...page.querySelectorAll<HTMLButtonElement>("button")].find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  if (!button) {
+    throw new Error(`Missing Connection button: ${label}`);
+  }
+  return button;
+}
+
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
@@ -358,7 +368,7 @@ describe("ConnectionPage credentials", () => {
     editInput(page, "Gateway URL", "wss://other-gateway.example/openclaw");
     await settleLitElement(page);
     expect(control(page, 'input[aria-label="Gateway secret"]').value).toBe("");
-    control(page, "button.btn.primary").click();
+    buttonByText(page, "Apply and reconnect").click();
     expect(connect).toHaveBeenCalledWith(
       expect.objectContaining({
         gatewayUrl: "wss://other-gateway.example/openclaw",
@@ -392,7 +402,7 @@ describe("ConnectionPage credentials", () => {
       expect(secret().value).toBe("");
       editInput(page, "Gateway secret", "edited-secret");
       await settleLitElement(page);
-      control(page, "button.btn.primary").click();
+      buttonByText(page, "Apply and reconnect").click();
       expect(connect).toHaveBeenLastCalledWith(
         expect.objectContaining({ token: "edited-secret", password: "" }),
       );

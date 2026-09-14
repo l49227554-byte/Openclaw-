@@ -2,6 +2,7 @@ import { consume } from "@lit/context";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
+import { isSettingsTakeover } from "../app-navigation.ts";
 import type { RouteId } from "../app-route-paths.ts";
 import { chatInputOwnerForContext } from "../app/chat-input-owner.ts";
 import { applicationContext, type ApplicationContext } from "../app/context.ts";
@@ -111,7 +112,7 @@ export class OpenClawAssistantPanel extends OpenClawLightDomElement {
     );
     window.addEventListener(CUSTODIAN_PANEL_TOGGLE_EVENT, this.onToggleRequest);
     window.addEventListener(HOME_PANEL_TOGGLE_EVENT, this.onToggleRequest);
-    this.dockLayout.setSuppressed(this.suppressed);
+    this.dockLayout.setSuppressed(this.restoreSuppressed);
   }
 
   override disconnectedCallback(): void {
@@ -150,7 +151,7 @@ export class OpenClawAssistantPanel extends OpenClawLightDomElement {
         hello: this.context.gateway.snapshot.hello,
       };
     }
-    this.dockLayout.setSuppressed(this.suppressed);
+    this.dockLayout.setSuppressed(this.restoreSuppressed);
     if (
       this.minimizeRequestId > 0 &&
       this.minimizeRequestId !== this.handledMinimizeRequestId &&
@@ -294,9 +295,16 @@ export class OpenClawAssistantPanel extends OpenClawLightDomElement {
     }
   }
 
+  private get restoreSuppressed(): boolean {
+    // Home follows the visible Settings context; automatic diagnostic restores yield to it.
+    return (
+      this.suppressed || (this.destination === "custodian" && isSettingsTakeover(this.pageRouteId))
+    );
+  }
+
   private openDestination(destination: AssistantDestination): void {
     this.destination = destination;
-    this.dockLayout.setSuppressed(this.suppressed);
+    this.dockLayout.setSuppressed(this.restoreSuppressed);
     if (this.available) {
       // Keep explicit open intent even when the same Home conversation owns the page.
       this.setOpen(true);

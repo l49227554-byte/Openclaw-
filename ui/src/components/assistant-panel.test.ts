@@ -489,6 +489,32 @@ describe("assistant panel", () => {
     expect(panel.assistantPanelOpen).toBe(false);
   });
 
+  it("suppresses automatic Ask OpenClaw restores in Settings while keeping explicit opens usable", async () => {
+    const { panel } = await mountPanel();
+    panel.custodianSuppressed = false;
+    await panel.updateComplete;
+    window.dispatchEvent(new CustomEvent(CUSTODIAN_PANEL_TOGGLE_EVENT));
+    await panel.updateComplete;
+    expect(panel.assistantPanelOpen).toBe(true);
+
+    panel.pageRouteId = "updates";
+    await panel.updateComplete;
+    expect(panel.assistantPanelOpen).toBe(false);
+    window.dispatchEvent(new CustomEvent(CUSTODIAN_PANEL_TOGGLE_EVENT));
+    await panel.updateComplete;
+    expect(panel.assistantPanelOpen).toBe(true);
+
+    panel.remove();
+    const { panel: restored } = await mountPanel();
+    restored.custodianSuppressed = false;
+    restored.pageRouteId = "updates";
+    await restored.updateComplete;
+    expect(restored.assistantPanelOpen).toBe(false);
+    restored.pageRouteId = "agents-home";
+    await restored.updateComplete;
+    expect(restored.assistantPanelOpen).toBe(true);
+  });
+
   it.each(["right", "bottom"])("drags only passive header chrome when docked %s", async (dock) => {
     const { panel } = await mountPanel();
     panel.custodianSuppressed = false;

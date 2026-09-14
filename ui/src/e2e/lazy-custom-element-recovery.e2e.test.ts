@@ -494,7 +494,6 @@ suite.define(() => {
     await suite.withPage(
       { locale: "en-US", serviceWorkers: "block", viewport },
       async ({ page }) => {
-        const testCase = dockedCases[0];
         // Home preloads Chat styles before importing its body. Delay that dependency
         // so a warm stylesheet cannot conceal missing eager frame styles.
         const held = await holdModuleResponse(
@@ -503,7 +502,7 @@ suite.define(() => {
         );
         try {
           const composer = await installDockedScenario(page, "right", "new");
-          await testCase.open(page);
+          await page.locator(".sidebar-footer-bar__home").click();
           await held.request;
           if (captureUiProof) {
             await page.screenshot({
@@ -527,8 +526,8 @@ suite.define(() => {
             );
           }
           await composer.fill("Keep working while Home loads");
-          await testCase.close(page).click();
-          await testCase.frame(page).waitFor({ state: "hidden" });
+          await page.getByRole("button", { name: "Close assistant sidebar", exact: true }).click();
+          await page.locator(".assistant-panel").waitFor({ state: "hidden" });
           expect(await composer.inputValue()).toBe("Keep working while Home loads");
         } finally {
           held.release();

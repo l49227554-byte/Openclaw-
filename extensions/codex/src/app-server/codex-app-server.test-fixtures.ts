@@ -126,7 +126,9 @@ export function createFakeCodexAppServerClient(
       for (const handler of requestHandlers) {
         const result = await handler(serverRequest, signal, (guard) => responseGuards.push(guard));
         if (result !== undefined) {
-          for (const guard of responseGuards) guard();
+          for (const guard of responseGuards) {
+            guard();
+          }
           return result;
         }
       }

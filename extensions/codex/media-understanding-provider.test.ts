@@ -151,7 +151,9 @@ function createFakeClient(options?: {
               ),
             ).then((response) => {
               if (response !== undefined) {
-                for (const guard of responseGuards) guard();
+                for (const guard of responseGuards) {
+                  guard();
+                }
                 approvalResponses.push(response);
               }
             }),

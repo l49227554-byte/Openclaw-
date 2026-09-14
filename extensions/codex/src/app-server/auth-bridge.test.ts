@@ -1552,15 +1552,16 @@ describe("bridgeCodexAppServerStartOptions", () => {
 
   it("does not record native login auth after post-response lifecycle retirement", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-codex-app-server-"));
+    let current = true;
     const harness = createClientHarness({
       onWrite: (line, send) => {
         const message = JSON.parse(line) as { id?: string | number };
         if (message.id !== undefined) {
           send({ id: message.id, result: { type: "chatgptAuthTokens" } });
+          current = false;
         }
       },
     });
-    let checks = 0;
     try {
       upsertAuthProfile({
         agentDir,
@@ -1581,8 +1582,7 @@ describe("bridgeCodexAppServerStartOptions", () => {
           agentDir,
           authProfileId: "openai:work",
           assertCurrent: () => {
-            checks += 1;
-            if (checks > 2) {
+            if (!current) {
               throw new Error("login owner retired");
             }
           },

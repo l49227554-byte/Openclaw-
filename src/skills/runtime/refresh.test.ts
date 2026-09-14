@@ -290,7 +290,7 @@ describe("ensureSkillsWatcher", () => {
     ]);
   });
 
-  it("waits for raw SKILL.md files to stabilize before refreshing", async () => {
+  it("coalesces raw SKILL.md bursts while renewing stability for unchanged metadata", async () => {
     vi.useFakeTimers();
     const workspaceDir = await createFixtureDirectory("watch-stable");
     const skillDir = path.join(workspaceDir, "skills", "demo");
@@ -307,21 +307,84 @@ describe("ensureSkillsWatcher", () => {
       config: { skills: { load: {} } },
     });
 
+    const watcher = watchForSkillRoot(path.join(workspaceDir, "skills")).watcher;
+    const stat = vi.spyOn(fsSync, "statSync");
+    const emitRaw = () => watcher.emit("raw", "change", "SKILL.md", { watchedPath: skillDir });
     seen.length = 0;
-    watchForSkillRoot(path.join(workspaceDir, "skills")).watcher.emit("raw", "change", "SKILL.md", {
-      watchedPath: skillDir,
-    });
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(250);
+    emitRaw();
+    await vi.advanceTimersByTimeAsync(249);
+    // Raw events can renew a write without a different size or filesystem timestamp.
+    for (let event = 0; event < 32; event += 1) {
+      emitRaw();
+    }
+    await vi.advanceTimersByTimeAsync(499);
     expect(seen).toEqual([]);
 
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(102);
     expect(seen).toEqual([
       {
         workspaceDir,
         reason: "watch",
         changedPath: skillFile,
       },
+    ]);
+    // The burst must not multiply filesystem polling by the number of events.
+    expect(stat.mock.calls.filter(([file]) => file === skillFile).length).toBeLessThanOrEqual(10);
+  });
+
+  it("stabilizes a recreated skill when raw events arrive before the missing-file continuation", async () => {
+    vi.useFakeTimers();
+    const skillDir = await createFixtureDirectory("workspace/skills/recreated");
+    const skillFile = path.join(skillDir, "SKILL.md");
+    const seen: SkillsChangeEvent[] = [];
+    refreshModule.registerSkillsChangeListener((change) => seen.push(change));
+    refreshModule.ensureSkillsWatcher({ workspaceDir: fixtureWorkspaceDir });
+    const watcher = watchForSkillRoot(path.join(fixtureWorkspaceDir, "skills")).watcher;
+    seen.length = 0;
+
+    watcher.emit("raw", "rename", "SKILL.md", { watchedPath: skillDir });
+    // Keep recreation in this turn, after the missing stat and before its caller resumes.
+    fsSync.writeFileSync(skillFile, "recreated skill content");
+    watcher.emit("raw", "change", "SKILL.md", { watchedPath: skillDir });
+    await vi.advanceTimersByTimeAsync(499);
+    expect(seen).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen).toEqual([
+      { workspaceDir: fixtureWorkspaceDir, reason: "watch", changedPath: skillFile },
+    ]);
+  });
+
+  it("refreshes a stable skill while another file in the same watcher keeps changing", async () => {
+    vi.useFakeTimers();
+    const firstDir = await createFixtureDirectory("workspace/skills/first");
+    const secondDir = await createFixtureDirectory("workspace/skills/second");
+    const firstFile = path.join(firstDir, "SKILL.md");
+    const secondFile = path.join(secondDir, "SKILL.md");
+    await fs.writeFile(firstFile, "stable skill");
+    await fs.writeFile(secondFile, "changing skill");
+    const seen: SkillsChangeEvent[] = [];
+    refreshModule.registerSkillsChangeListener((change) => seen.push(change));
+    refreshModule.ensureSkillsWatcher({ workspaceDir: fixtureWorkspaceDir });
+    const watcher = watchForSkillRoot(path.join(fixtureWorkspaceDir, "skills")).watcher;
+    seen.length = 0;
+    watcher.emit("raw", "change", "SKILL.md", { watchedPath: firstDir });
+    watcher.emit("raw", "change", "SKILL.md", { watchedPath: secondDir });
+
+    for (let write = 0; write < 6; write += 1) {
+      await fs.appendFile(secondFile, " still writing");
+      watcher.emit("raw", "change", "SKILL.md", { watchedPath: secondDir });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    const firstChange = {
+      workspaceDir: fixtureWorkspaceDir,
+      reason: "watch",
+      changedPath: firstFile,
+    };
+    expect(seen).toEqual([firstChange]);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(seen).toEqual([
+      firstChange,
+      { workspaceDir: fixtureWorkspaceDir, reason: "watch", changedPath: secondFile },
     ]);
   });
 
@@ -353,6 +416,34 @@ describe("ensureSkillsWatcher", () => {
       postCloseReads: stat.mock.calls.filter(([file]) => file === skillFile).length,
       pendingTimers: vi.getTimerCount(),
     }).toEqual({ postCloseReads: 0, pendingTimers: 0 });
+  });
+
+  it("lets a replacement watcher refresh a file while retired raw polling settles", async () => {
+    vi.useFakeTimers();
+    const skillDir = await createFixtureDirectory("workspace/skills/replaced");
+    const skillFile = path.join(skillDir, "SKILL.md");
+    await fs.writeFile(skillFile, "replacement skill content");
+    const seen: SkillsChangeEvent[] = [];
+    refreshModule.registerSkillsChangeListener((change) => seen.push(change));
+    const params = { workspaceDir: fixtureWorkspaceDir };
+    refreshModule.ensureSkillsWatcher(params);
+    const previous = watchForSkillRoot(path.join(fixtureWorkspaceDir, "skills")).watcher;
+    previous.emit("raw", "change", "SKILL.md", { watchedPath: skillDir });
+    await refreshModule.closeSkillsWatchers();
+    refreshModule.ensureSkillsWatcher(params);
+    const replacement = watchForSkillRoot(path.join(fixtureWorkspaceDir, "skills")).watcher;
+    expect(replacement).not.toBe(previous);
+    expect(previous.closed).toBe(true);
+    seen.length = 0;
+
+    replacement.emit("raw", "change", "SKILL.md", { watchedPath: skillDir });
+    await vi.advanceTimersByTimeAsync(499);
+    expect(seen).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(seen).toEqual([
+      { workspaceDir: fixtureWorkspaceDir, reason: "watch", changedPath: skillFile },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.runIf(process.platform !== "win32")(

@@ -21,10 +21,12 @@ export async function waitForStableSkillFile(
   filePath: string,
   stabilityMs: number,
   watcher: FSWatcher,
+  readRevision: () => number,
 ): Promise<void> {
   if (watcher.closed || stabilityMs <= 0) {
     return;
   }
+  let previousRevision = readRevision();
   let previous = readFileStabilitySnapshot(filePath);
   if (!previous) {
     return;
@@ -36,15 +38,24 @@ export async function waitForStableSkillFile(
       setTimeout(resolve, delayMs);
     });
     // Closing a watcher retires raw polling, even while the file keeps changing.
-    const next = watcher.closed ? undefined : readFileStabilitySnapshot(filePath);
+    if (watcher.closed) {
+      return;
+    }
+    const nextRevision = readRevision();
+    const next = readFileStabilitySnapshot(filePath);
     if (!next) {
       return;
     }
-    if (next.size === previous.size && next.mtimeMs === previous.mtimeMs) {
+    if (
+      nextRevision === previousRevision &&
+      next.size === previous.size &&
+      next.mtimeMs === previous.mtimeMs
+    ) {
       stableForMs += delayMs;
       continue;
     }
     previous = next;
+    previousRevision = nextRevision;
     stableForMs = 0;
   }
 }

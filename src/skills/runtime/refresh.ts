@@ -511,12 +511,39 @@ function createSkillsPathWatcher(target: WatchTarget): SkillsPathWatchState {
       }
     }, SKILLS_WATCH_DEBOUNCE_MS);
   };
+  const pendingRawFiles = new Map<string, { revision: number }>();
   const scheduleRawSkillFile = (changedPath: string) => {
-    void waitForStableSkillFile(changedPath, SKILLS_WATCH_DEBOUNCE_MS, watcher)
-      .catch((err: unknown) => {
-        log.warn(`skills watcher stability check failed (${changedPath}): ${String(err)}`);
-      })
-      .then(() => schedule(changedPath));
+    if (watcher.closed) {
+      return;
+    }
+    const pending = pendingRawFiles.get(changedPath);
+    if (pending) {
+      pending.revision += 1;
+      return;
+    }
+    const current = { revision: 0 };
+    pendingRawFiles.set(changedPath, current);
+    void (async () => {
+      try {
+        while (!watcher.closed) {
+          let sampledRevision = current.revision;
+          await waitForStableSkillFile(changedPath, SKILLS_WATCH_DEBOUNCE_MS, watcher, () => {
+            sampledRevision = current.revision;
+            return sampledRevision;
+          }).catch((err: unknown) => {
+            log.warn(`skills watcher stability check failed (${changedPath}): ${String(err)}`);
+          });
+          // A raw event can arrive after the final sample but before this continuation.
+          if (current.revision !== sampledRevision) {
+            continue;
+          }
+          schedule(changedPath);
+          return;
+        }
+      } finally {
+        pendingRawFiles.delete(changedPath);
+      }
+    })();
   };
 
   // ignoreInitial suppresses writes discovered before native watches are ready.

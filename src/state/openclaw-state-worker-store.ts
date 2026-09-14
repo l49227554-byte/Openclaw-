@@ -22,6 +22,7 @@ import type {
   OpenClawStateWorkerOperations,
   OpenClawStateWorkerInspectionOperations,
 } from "./openclaw-state-worker-contract.js";
+import { hydrateOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
 
 type StoreOperations = OpenClawStateWorkerOperations & OpenClawStateWorkerInspectionOperations;
 type Store = SqliteWorkerStore<StoreOperations>;
@@ -201,30 +202,43 @@ export async function executeOpenClawStateWorker<Key extends keyof OpenClawState
 export function runOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
-  options: { existingOnly: true },
+  options: { existingOnly: true; assertCurrent?: () => void },
 ): Promise<T | undefined>;
 export function runOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
+  options?: { existingOnly?: false; assertCurrent?: () => void },
 ): Promise<T>;
 export async function runOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,
-  options?: { existingOnly: true },
+  options?: { existingOnly?: boolean; assertCurrent?: () => void },
 ): Promise<T | undefined> {
-  const failure = await getOpenClawStateDatabaseTerminalFailureAsync(context);
-  if (failure) {
-    throw failure;
-  }
-  const store = await owner().open(context, options?.existingOnly);
-  context.admission.assertCurrent();
-  if (!store) {
-    if (options?.existingOnly) {
-      return undefined;
+  try {
+    context.admission.assertCurrent();
+    options?.assertCurrent?.();
+    const failure = await getOpenClawStateDatabaseTerminalFailureAsync(context);
+    if (failure) {
+      throw failure;
     }
-    throw new Error("Canonical shared-state worker did not open its database");
+    context.admission.assertCurrent();
+    options?.assertCurrent?.();
+    const store = await owner().open(context, options?.existingOnly);
+    context.admission.assertCurrent();
+    if (!store) {
+      if (options?.existingOnly) {
+        return undefined;
+      }
+      throw new Error("Canonical shared-state worker did not open its database");
+    }
+    options?.assertCurrent?.();
+    return await runWithOpenClawStateWorkerStore(store, context, operation, options?.assertCurrent);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw hydrateOpenClawStateWorkerError(error);
+    }
+    throw error;
   }
-  return runWithOpenClawStateWorkerStore(store, context, operation);
 }
 
 /** Inspect the existing file without recursively admitting a domain operation. */
@@ -235,28 +249,42 @@ export async function inspectOpenClawStateDatabase(
     input: OpenClawStateWorkerInspectionOperations["database.generationMatches"]["input"];
   },
 ): Promise<boolean | undefined> {
-  const store = await owner().open(context, true);
-  context.admission.assertCurrent();
-  if (!store) {
-    return undefined;
+  try {
+    const store = await owner().open(context, true);
+    context.admission.assertCurrent();
+    if (!store) {
+      return undefined;
+    }
+    return await runWithOpenClawStateWorkerStore(store, context, (scope) =>
+      scope.execute({
+        type: "database.generationMatches",
+        input: command.input,
+      }),
+    );
+  } catch (error) {
+    if (error instanceof Error) {
+      throw hydrateOpenClawStateWorkerError(error);
+    }
+    throw error;
   }
-  return runWithOpenClawStateWorkerStore(store, context, (scope) =>
-    scope.execute({
-      type: "database.generationMatches",
-      input: command.input,
-    }),
-  );
 }
 
 async function runWithOpenClawStateWorkerStore<T>(
   store: Store,
   context: OpenClawStateWorkerContext,
   operation: (scope: Pick<Store, "execute">) => Promise<T>,
+  assertCurrent?: () => void,
 ): Promise<T> {
   const { admission } = context;
   try {
-    return await runSqliteWorkerStoreOperation<StoreOperations, T>(store, operation, context, () =>
-      admission.assertCurrent(),
+    return await runSqliteWorkerStoreOperation<StoreOperations, T>(
+      store,
+      operation,
+      context,
+      () => {
+        admission.assertCurrent();
+        assertCurrent?.();
+      },
     );
   } catch (error) {
     if (!isSqliteWorkerStoreAvailable(store)) {

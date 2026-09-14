@@ -34,7 +34,10 @@ import {
 } from "../plugins/install-root-context.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db-cache.js";
-import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
+import {
+  withArtifactPreservingStateReads,
+  withDisposableOpenClawStateReads,
+} from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { isPostCoreConvergencePass, isUpdateDoctorLintPass } from "./doctor/shared/update-phase.js";
 
@@ -306,19 +309,19 @@ async function withReadOnlyPluginStateSnapshot<T>(
   run: (pluginMetadataEnv: NodeJS.ProcessEnv) => Promise<T>,
 ): Promise<T> {
   const sourceDatabasePath = resolveOpenClawStateSqlitePath(sourceEnv);
-  let cleanup: () => boolean;
+  let cleanup: () => Promise<boolean>;
   let privateRoot: string;
   let prepared: ReturnType<typeof prepareSqliteReadOnlyLocationSync> | undefined;
   try {
     if (fs.existsSync(sourceDatabasePath)) {
       prepared = prepareSqliteReadOnlyLocationSync(sourceDatabasePath);
       privateRoot = path.dirname(prepared.location);
-      cleanup = prepared.cleanup;
+      cleanup = prepared.cleanupAsync;
     } else {
       privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-doctor-lint-state-"));
-      cleanup = () => {
+      cleanup = async () => {
         try {
-          fs.rmSync(privateRoot, { force: true, recursive: true });
+          await fs.promises.rm(privateRoot, { force: true, recursive: true });
           return true;
         } catch {
           return false;
@@ -352,15 +355,15 @@ async function withReadOnlyPluginStateSnapshot<T>(
         }
       }
       const installRoots = resolvePluginInstallRoots(sourceEnv);
-      // Global readers and OAuth refresh/challenge writers share the private state view.
+      // Global readers and local inspector writes share the private state view.
+      // Runtime schema checks defer OAuth probes: external rotation cannot be snapshotted.
       outcome = {
         ok: true,
-        value: await withPluginInstallRoots(
-          { ...installRoots, stateDir: privateStateDir },
-          async () => {
+        value: await withDisposableOpenClawStateReads(privateDatabasePath, () =>
+          withPluginInstallRoots({ ...installRoots, stateDir: privateStateDir }, async () => {
             runStarted = true;
             return await run(privateEnv);
-          },
+          }),
         ),
       };
     } catch (error) {
@@ -370,7 +373,7 @@ async function withReadOnlyPluginStateSnapshot<T>(
       // Inspectors can cache private writers. Retire only this snapshot's handle
       // before restoring the ambient state or deleting files; failed retirement retains files.
       await closeOpenClawStateDatabaseByPathAsync(privateDatabasePath);
-      if (!cleanup()) {
+      if (!(await cleanup())) {
         throw new Error("Temporary doctor lint state snapshot cleanup did not complete.");
       }
     } catch (error) {

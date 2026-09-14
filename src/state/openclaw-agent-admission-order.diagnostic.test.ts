@@ -6,6 +6,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as sqlite from "../infra/node-sqlite.js";
+import { readSqliteIntegrityFileIdentity } from "../infra/sqlite-file-generation.js";
 import * as integrityWorker from "../infra/sqlite-integrity-worker.js";
 import * as pidAlive from "../shared/pid-alive.js";
 import * as agentLeases from "./openclaw-agent-db-lease.js";
@@ -170,13 +171,13 @@ describe("physical-open admission ordering", () => {
     expect(ordinaryWrite(options)).toEqual({ n: 1 });
   });
 
-  it("trusts a live cached handle but rejects the same FK violation after physical reopen", () => {
+  it("trusts a live cached handle but rejects the same FK violation after disposal", () => {
     const { options, pathname, writer } = seed();
     const first = openOpenClawAgentDatabase(options);
     corruptForeignKey(writer);
     expect(openOpenClawAgentDatabase(options)).toBe(first);
     expect(ordinaryWrite(options)).toEqual({ n: 1 });
-    expect(closeOpenClawAgentDatabaseByPath(pathname)).toBe(true);
+    expect(disposeOpenClawAgentDatabaseByPath(pathname, { env: options.env })).toBe(true);
     expect(() => openOpenClawAgentDatabase(options)).toThrow(/foreign_key_check failed/);
   });
 
@@ -279,7 +280,8 @@ describe("asynchronous canonical admission", () => {
         worker.send(
           {
             pathname,
-            identity: integrityWorker.readSqliteIntegrityFileIdentity(pathname),
+            databaseLabel: pathname,
+            identity: readSqliteIntegrityFileIdentity(pathname),
             busyTimeoutMs: 5000,
           } satisfies integrityWorker.SqliteIntegrityWorkerInput,
           (error) => {
@@ -627,10 +629,10 @@ describe("asynchronous canonical admission", () => {
     ).toEqual({ n: 0 });
   });
 
-  it("rechecks corruption on async physical reopen", async () => {
+  it("rechecks corruption after async handle disposal", async () => {
     const { options, pathname, writer } = seed();
     await openOpenClawAgentDatabaseAsync(options);
-    expect(closeOpenClawAgentDatabaseByPath(pathname)).toBe(true);
+    expect(disposeOpenClawAgentDatabaseByPath(pathname, { env: options.env })).toBe(true);
     corruptForeignKey(writer);
     await expect(openOpenClawAgentDatabaseAsync(options)).rejects.toThrow(
       /foreign_key_check failed/,

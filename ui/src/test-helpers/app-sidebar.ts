@@ -28,6 +28,7 @@ import {
   type SessionListOptions,
 } from "../lib/sessions/index.ts";
 import { reconcileSessionHistory } from "../lib/sessions/reconcile.ts";
+import { createSessionArchiveState } from "../lib/sessions/session-archive-state.ts";
 import {
   createSidebarContextLifecycle,
   disposeSidebarContextLifecycles,
@@ -105,10 +106,6 @@ export type SidebarLifecycleState = HTMLElement & {
   onToggleSidebar?: () => void;
   onOpenNewSession?: (agentId: string, target?: { catalogId: string }) => void;
   variant: "panel" | "drawer";
-};
-
-export type LobsterPetElement = HTMLElement & {
-  runOutcome: "ok" | "error" | "aborted";
 };
 
 export type TestSessionMenu = HTMLElement & {
@@ -244,22 +241,19 @@ export function successfulSessionPatch(key: string) {
   };
 }
 
-export function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 export function createSessionsHarness(agentId: string, keys: string[]) {
   let state = createSessionState(agentId, keys);
   let canonicalListRevision = 1;
   const listeners = new Set<(next: SessionState) => void>();
   const pullRequestSummaries = new Map<string, SessionCatalogPullRequestSummary>();
-  const archiveVisibilityByKey = new Map<string, "pending" | "archived">();
+  const archiveState = createSessionArchiveState(
+    (key) => state.result?.sessions.find((row) => row.key === key),
+    () => {
+      for (const listener of listeners) {
+        listener(state);
+      }
+    },
+  );
   const groupsPut = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const groupsRename = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const groupsDelete = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
@@ -370,19 +364,8 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     groupsDelete,
     create,
     patch,
-    archiveVisibility: (key: string) => archiveVisibilityByKey.get(key),
-    setArchivePending(key: string, pending: boolean) {
-      if (pending) {
-        archiveVisibilityByKey.set(key, "pending");
-      } else if (state.result?.sessions.find((row) => row.key === key)?.archived) {
-        archiveVisibilityByKey.set(key, "archived");
-      } else {
-        archiveVisibilityByKey.delete(key);
-      }
-      for (const listener of listeners) {
-        listener(state);
-      }
-    },
+    archiveVisibility: archiveState.visibility,
+    beginArchive: archiveState.beginPending,
     assignOwner,
     patchMany,
     deletionState: () => undefined,
@@ -392,6 +375,7 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     listSnapshot(scope: Parameters<SessionCapability["listSnapshot"]>[0]) {
       if (
         (!scope.archivedFilter || scope.archivedFilter === "active") &&
+        !scope.spawnedBy &&
         !scope.ownerId &&
         !scope.involvingMe
       ) {
@@ -410,9 +394,12 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     ) {
       return scopedSessions!.subscribeList(scope, listener);
     },
+    observeList: (...args: Parameters<SessionCapability["observeList"]>) =>
+      scopedSessions!.observeList(...args),
     refreshList(options: Parameters<SessionCapability["refreshList"]>[0]) {
       if (
         (!options?.archivedFilter || options.archivedFilter === "active") &&
+        !options?.spawnedBy &&
         !options?.ownerId &&
         !options?.involvingMe
       ) {
@@ -465,7 +452,7 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
           const { archived, ...options } = (params ?? {}) as SessionListOptions & {
             archived?: true | "all";
           };
-          if (!archived && !options.ownerId && !options.involvingMe) {
+          if (!archived && !options.spawnedBy && !options.ownerId && !options.involvingMe) {
             return state.result as T;
           }
           return (await list({
@@ -517,8 +504,8 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     publish,
     publishList(statePatch: Partial<SessionState>) {
       for (const row of statePatch.result?.sessions ?? []) {
-        if (row.archived !== true && archiveVisibilityByKey.get(row.key) === "archived") {
-          archiveVisibilityByKey.delete(row.key);
+        if (row.archived === true || archiveState.visibility(row.key) === "archived") {
+          archiveState.observe(row.key, row.archived === true, row);
         }
       }
       canonicalListRevision += 1;
@@ -560,11 +547,12 @@ export function createContext(
     ensureList: async (): Promise<AgentsListResult | null> => agents.state.agentsList,
     subscribe: () => () => undefined,
   };
-  const { theme, agentSelection } = createSidebarContextLifecycle(gateway, agents, selectedAgentId);
-  sidebarSessionGatewayBindings.get(sessions)?.(gateway, agentSelection);
+  const lifecycle = createSidebarContextLifecycle(gateway, agents, selectedAgentId);
+  sidebarSessionGatewayBindings.get(sessions)?.(gateway, lifecycle.agentSelection);
   return {
     config: createApplicationConfigCapability({ resourceBasePath: "" }),
     gateway,
+    ...lifecycle,
     sessions,
     plugins: {
       registrations: () => [],
@@ -575,8 +563,6 @@ export function createContext(
     placementStartup: { pause: vi.fn<ApplicationContext["placementStartup"]["pause"]>() },
     agents,
     agentIdentity,
-    agentSelection,
-    theme,
     scopeUpgrade: hiddenScopeUpgradeCapability,
     overlays: {
       snapshot: { approvalQueue },

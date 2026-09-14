@@ -11,7 +11,6 @@ export {
   readMissingScopeError,
   readMissingScopeErrorDetails,
   readSkillProposalRevisionChangedError,
-  readSessionWorkspaceRecoveryRequiredError,
 } from "./gateway-error-details.js";
 export type {
   CronJobNotFoundErrorDetails,
@@ -42,3 +41,5 @@ export {
   errorShape,
   missingScopeErrorShape,
 } from "./schema/error-codes.js";
+
+export { readSessionWorkspaceRecoveryRequiredError } from "./session-workspace-recovery-error-details.js";

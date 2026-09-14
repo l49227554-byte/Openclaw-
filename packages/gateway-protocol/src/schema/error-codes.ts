@@ -35,7 +35,6 @@ export {
   readMissingScopeErrorDetails,
   buildSkillProposalRevisionChangedErrorDetails,
   readSkillProposalRevisionChangedError,
-  readSessionWorkspaceRecoveryRequiredError,
 } from "../gateway-error-details.js";
 
 export const CronJobNotFoundErrorDetailsSchema = closedObject({
@@ -160,3 +159,5 @@ export function missingScopeErrorShape(params: {
   const details = buildMissingScopeErrorDetails(params);
   return errorShape(ErrorCodes.FORBIDDEN, `missing scope: ${params.missingScope}`, { details });
 }
+
+export { readSessionWorkspaceRecoveryRequiredError } from "../session-workspace-recovery-error-details.js";

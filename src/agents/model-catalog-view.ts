@@ -447,6 +447,7 @@ export async function loadPreparedModelCatalogView(
         defaultProvider: DEFAULT_PROVIDER,
         defaultModel: resolveAgentEffectiveModelPrimary(params.cfg, params.agentId),
         snapshot,
+        includePickerRuntimes: true,
         pluginRegistry: params.pluginRegistry,
         isCurrent: params.isCurrent,
         observationConfig: params.observationConfig,

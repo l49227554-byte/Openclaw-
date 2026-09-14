@@ -6,6 +6,7 @@ import type {
   SessionsListResult,
 } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
+import { resolveModelRuntimeEntry, type ModelRuntimeEntry } from "../model-runtime-choice.ts";
 import {
   buildCatalogDisplayLookup,
   buildChatModelOptionFromLookup,
@@ -56,7 +57,7 @@ export type ChatFastModeSelectState = {
 
 export type ChatFastModeTarget = Pick<
   GatewaySessionRow,
-  "effectiveFastMode" | "fastMode" | "model" | "modelProvider"
+  "effectiveFastMode" | "fastMode" | "model" | "modelProvider" | "agentRuntime"
 >;
 
 type ChatFastModeSelectStateInput = {
@@ -209,10 +210,13 @@ export function resolveChatModelUnavailableReason(
 }
 
 export function chatModelUnavailableMessage(
-  reason: ModelCatalogEntry["unavailableReason"],
+  reason: ModelRuntimeEntry["unavailableReason"],
 ): string | undefined {
   if (reason === "missing-auth") {
     return t("modelSetup.missingAuth");
+  }
+  if (reason === "unsupported-runtime") {
+    return t("chat.modelControls.runtimeUnavailable");
   }
   return reason === "auth-failed"
     ? `${t("modelSetup.failure.auth")}. ${t("modelSetup.failureGuidance.auth")}`
@@ -391,7 +395,12 @@ export function resolveChatFastModeSelectState(
             buildQualifiedChatModelValue(entry.id, entry.provider),
           ) === selectedValue,
       )
-      .map((entry) => entry.supportsFastMode),
+      .map((entry) => {
+        const runtimeEntry = entry.runtimeChoices?.length
+          ? resolveModelRuntimeEntry(entry, activeRow?.agentRuntime?.id)
+          : entry;
+        return (runtimeEntry ?? entry).supportsFastMode;
+      }),
   );
   const selectedSupport = applicability.size === 1 ? [...applicability][0] : undefined;
   const requestSupported = selectedSupport ?? isChatFastModeProviderSupported(effectiveProvider);

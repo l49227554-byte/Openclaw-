@@ -488,6 +488,7 @@ export function buildGatewaySessionRow(params: {
         ? "inherited"
         : resolveSessionModelOverrideSource(entry),
     modelSelectionLocked: entry?.modelSelectionLocked,
+    runtimeSelectionLocked: thinkingProjection.runtimeSelectionLocked,
     agentRuntime: projectWorkerPlacementAgentRuntime(thinkingProjection.agentRuntime),
     contextTokens,
     contextBudgetStatus: resolveProjectedSessionContextBudgetStatus({

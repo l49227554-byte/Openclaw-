@@ -20,12 +20,15 @@ import {
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
-  resolveAllowedModelRef,
   resolveDefaultModelForAgent,
   resolveSubagentConfiguredModelSelection,
 } from "../agents/model-selection.js";
 import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import { normalizeGroupActivation } from "../auto-reply/group-activation.js";
+import {
+  applyModelRuntimeDirective,
+  resolveModelRuntimeDirective,
+} from "../auto-reply/reply/directive-handling.model-runtime.js";
 import {
   formatThinkingLevels,
   isThinkingLevelSupported,
@@ -76,6 +79,7 @@ import {
 } from "../sessions/session-agent-status.js";
 import { isUserModelAuthProfileId } from "../state/user-model-account-id.js";
 import type { UserModelAccountSelection } from "./model-account-authority.js";
+import { resolveSessionPatchModelSelection } from "./server-methods/sessions-patch-model-selection.js";
 import {
   isAgentSessionModelPatchOrigin,
   snapshotAgentModelFallback,
@@ -87,40 +91,6 @@ import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-poli
 
 function invalid(message: string): { ok: false; error: ErrorShape } {
   return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, message) };
-}
-
-export function resolveSessionPatchModelSelection(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  catalog: ModelCatalogEntry[];
-  raw: string;
-  defaultProvider: string;
-  defaultModel: string;
-  subagentModelHint?: string;
-}):
-  | { ok: true; provider: string; model: string; profile?: string; isDefault: boolean }
-  | { ok: false; error: string } {
-  const { model: modelWithoutProfile, profile } = splitTrailingAuthProfile(params.raw);
-  const resolved = resolveAllowedModelRef({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    catalog: params.catalog,
-    raw: modelWithoutProfile,
-    defaultProvider: params.defaultProvider,
-    defaultModel: params.subagentModelHint ?? params.defaultModel,
-  });
-  if ("error" in resolved) {
-    return { ok: false, error: resolved.error };
-  }
-  return {
-    ok: true,
-    provider: resolved.ref.provider,
-    model: resolved.ref.model,
-    ...(profile ? { profile } : {}),
-    // A concrete model request is a pin even when it currently equals the
-    // configured default. Only the explicit null patch represents Default.
-    isDefault: false,
-  };
 }
 
 type SessionPatchProjectionParams = {
@@ -217,8 +187,14 @@ function* projectSessionPatchSteps(
       return invalid(`expectedSessionId required for session lifecycle patch: ${storeKey}`);
     }
   }
-  if ("model" in patch && isModelSelectionLocked(params.existingEntry)) {
+  if (
+    ("model" in patch || "agentRuntime" in patch) &&
+    isModelSelectionLocked(params.existingEntry)
+  ) {
     return invalid(MODEL_SELECTION_LOCKED_MESSAGE);
+  }
+  if (typeof patch.agentRuntime === "string" && typeof patch.model !== "string") {
+    return invalid("agentRuntime requires an explicit canonical provider/model selection");
   }
   const now = Date.now();
   const parsedAgent = parseAgentSessionKey(storeKey);
@@ -543,6 +519,15 @@ function* projectSessionPatchSteps(
       next.permissionMode = patch.permissionMode;
     }
   }
+  if (
+    "agentRuntime" in patch &&
+    readAcpSessionMetaForEntry({ sessionKey: storeKey, agentId: sessionAgentId, entry: existing })
+  ) {
+    return invalid("Runtime selection is owned by this ACP session.");
+  }
+  if (patch.agentRuntime === null) {
+    applyModelRuntimeDirective(next, { kind: "clear" });
+  }
   if ("model" in patch) {
     const agentModelFallback = isAgentSessionModelPatchOrigin()
       ? next.modelFallback?.source === "agent-patch"
@@ -586,6 +571,27 @@ function* projectSessionPatchSteps(
       selection = resolved;
     }
     if (selection) {
+      if (typeof patch.agentRuntime === "string") {
+        if (
+          splitTrailingAuthProfile(raw ?? "").model !== `${selection.provider}/${selection.model}`
+        ) {
+          return invalid("agentRuntime requires an explicit canonical provider/model selection");
+        }
+        const runtime = resolveModelRuntimeDirective({
+          cfg,
+          provider: selection.provider,
+          rawRuntime: patch.agentRuntime,
+          sessionEntry: next,
+        });
+        if (runtime.kind !== "set" || runtime.runtime !== patch.agentRuntime) {
+          return invalid(
+            runtime.kind === "invalid"
+              ? runtime.errorText
+              : "Use a canonical agentRuntime id, or null to follow configured routing",
+          );
+        }
+        applyModelRuntimeDirective(next, runtime);
+      }
       if (selection.profile && isUserModelAuthProfileId(selection.profile)) {
         if (params.personalModelSelection?.authProfileId !== selection.profile) {
           return {
@@ -645,7 +651,7 @@ function* projectSessionPatchSteps(
     }
   }
 
-  if ("thinkingLevel" in patch || "model" in patch) {
+  if ("thinkingLevel" in patch || "model" in patch || "agentRuntime" in patch) {
     const effectiveProvider = next.providerOverride ?? resolvedDefault.provider;
     const effectiveModel = next.modelOverride ?? resolvedDefault.model;
     const thinkingLevel = normalizeThinkLevel(next.thinkingLevel);
@@ -729,6 +735,13 @@ function* projectSessionPatchSteps(
       }
       next.groupActivation = normalized;
     }
+  }
+
+  if ("agentRuntime" in patch && existing?.agentRuntimeOverride !== next.agentRuntimeOverride) {
+    delete next.contextTokens;
+    delete next.contextTokensSource;
+    delete next.contextBudgetStatus;
+    next.liveModelSwitchPending = true;
   }
 
   // Fresh rows and placeholder aliases have no running model to replace. Model

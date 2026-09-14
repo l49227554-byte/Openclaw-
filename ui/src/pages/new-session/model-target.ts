@@ -4,29 +4,71 @@ import {
   normalizeChatModelProviderId,
   resolvePreferredServerChatModelValue,
 } from "../../lib/chat/model-ref.ts";
+import { resolveChatModelUnavailableReason } from "../../lib/chat/model-select-state.ts";
 import {
   normalizeThinkingOptionValue,
   resolveThinkingProfileForSession,
   type ChatThinkingTarget,
 } from "../../lib/chat/thinking.ts";
+import {
+  resolveModelRuntimeEntry,
+  type ModelRuntimeEntry,
+} from "../../lib/model-runtime-choice.ts";
 
 type DraftModelTarget = {
-  entry?: ModelCatalogEntry;
+  entry?: ModelRuntimeEntry;
   model: string;
   provider: string | null;
 };
 
+export function resolveDraftContextWindowTarget(
+  entry: ModelRuntimeEntry | undefined,
+  contextWindow: string,
+) {
+  const selected = contextWindow || entry?.contextWindowDefault;
+  return entry?.contextWindows && selected
+    ? {
+        contextWindow: selected,
+        contextWindows: entry.contextWindows,
+        ...(entry.contextWindowDefault ? { contextWindowDefault: entry.contextWindowDefault } : {}),
+      }
+    : undefined;
+}
+
 export function resolveDraftThinkingTarget(
   target: DraftModelTarget | null,
   agent?: GatewayAgentRow,
+  thinkingLevel?: string,
 ): ChatThinkingTarget {
   return {
     model: target?.model ?? agent?.model?.primary,
     modelProvider: target?.provider ?? undefined,
     agentRuntime: agent?.agentRuntime ?? target?.entry?.agentRuntime,
-    thinkingLevels: agent?.thinkingLevels,
+    thinkingLevels: agent?.thinkingLevels ?? target?.entry?.thinkingLevels,
     thinkingOptions: agent?.thinkingOptions,
-    thinkingDefault: agent?.thinkingDefault,
+    thinkingDefault: agent?.thinkingDefault ?? target?.entry?.thinkingDefault,
+    thinkingLevel: thinkingLevel || undefined,
+  };
+}
+
+export function resolveDraftThinkingDefaults(
+  target: DraftModelTarget | null,
+  agent: GatewayAgentRow | undefined,
+  defaults: SessionsListResult["defaults"] | undefined,
+  catalog: ModelCatalogEntry[],
+) {
+  const profile = resolveThinkingProfileForSession(
+    resolveDraftThinkingTarget(target, agent),
+    defaults,
+    catalog,
+  );
+  return {
+    modelProvider: target?.provider ?? null,
+    model: target?.model ?? null,
+    contextTokens: defaults?.contextTokens ?? null,
+    agentRuntime: profile?.agentRuntime,
+    thinkingLevels: profile?.thinkingLevels,
+    thinkingDefault: profile?.thinkingDefault,
   };
 }
 
@@ -34,6 +76,7 @@ export function resolveDraftModelTarget(
   model: string | null | undefined,
   provider: string | null | undefined,
   catalog: ModelCatalogEntry[],
+  agentRuntime?: string,
 ): DraftModelTarget | null {
   const value = resolvePreferredServerChatModelValue(model, provider, catalog);
   if (!value) {
@@ -46,7 +89,7 @@ export function resolveDraftModelTarget(
   );
   if (entry) {
     return {
-      entry,
+      entry: resolveModelRuntimeEntry(entry, agentRuntime),
       model: entry.id,
       provider: normalizeChatModelProviderId(entry.provider) || null,
     };
@@ -64,16 +107,58 @@ export function resolveDraftModelTarget(
   };
 }
 
+export function resolveDraftModelUnavailableReason(params: {
+  model: string | undefined;
+  agentRuntime?: string;
+  catalog: ModelCatalogEntry[];
+}): ModelRuntimeEntry["unavailableReason"] {
+  return params.agentRuntime
+    ? resolveDraftModelTarget(params.model, undefined, params.catalog, params.agentRuntime)?.entry
+        ?.unavailableReason
+    : resolveChatModelUnavailableReason(params.model, undefined, params.catalog);
+}
+
+export function resolveDraftAgentRuntime(params: {
+  model: string;
+  agentRuntime?: string;
+  agent?: GatewayAgentRow;
+  defaults?: SessionsListResult["defaults"];
+  catalog: ModelCatalogEntry[];
+}): ModelRuntimeEntry["agentRuntime"] {
+  let runtime: ModelRuntimeEntry["agentRuntime"];
+  if (params.model) {
+    // Explicit models without runtime metadata cannot borrow their agent's default runtime.
+    runtime = resolveDraftModelTarget(params.model, undefined, params.catalog, params.agentRuntime)
+      ?.entry?.agentRuntime;
+  } else {
+    const agentDefaultModel = params.agent?.model?.primary;
+    const target = resolveDraftModelTarget(
+      agentDefaultModel ?? params.defaults?.model,
+      agentDefaultModel ? undefined : params.defaults?.modelProvider,
+      params.catalog,
+    );
+    runtime =
+      target?.entry?.agentRuntime ?? params.agent?.agentRuntime ?? params.defaults?.agentRuntime;
+  }
+  const runtimeId = runtime?.id.trim();
+  // Unresolved policies leave placement eligibility to the Gateway dispatch owner.
+  if (!runtime || !runtimeId || runtimeId === "auto" || runtimeId === "default") {
+    return undefined;
+  }
+  return runtimeId === runtime.id ? runtime : { ...runtime, id: runtimeId };
+}
+
 export function reconcileDraftModelSelection(params: {
   model: string;
+  agentRuntime?: string;
   thinkingLevel: string;
   agent?: GatewayAgentRow;
   defaults?: SessionsListResult["defaults"];
   catalog: ModelCatalogEntry[];
-}): { model: string; thinkingLevel: string; repaired: boolean } {
+}): { model: string; agentRuntime?: string; thinkingLevel: string; repaired: boolean } {
   const requestedModel = params.model.trim();
   const selectedTarget = requestedModel
-    ? resolveDraftModelTarget(requestedModel, undefined, params.catalog)
+    ? resolveDraftModelTarget(requestedModel, undefined, params.catalog, params.agentRuntime)
     : null;
   if (requestedModel && (!selectedTarget?.entry || selectedTarget.entry.available === false)) {
     return { model: "", thinkingLevel: "", repaired: true };
@@ -81,8 +166,10 @@ export function reconcileDraftModelSelection(params: {
   const selected = selectedTarget?.entry
     ? buildQualifiedChatModelValue(selectedTarget.entry.id, selectedTarget.entry.provider)
     : "";
+  const runtimeSelection =
+    selected && params.agentRuntime ? { agentRuntime: params.agentRuntime } : {};
   if (!params.thinkingLevel) {
-    return { model: selected, thinkingLevel: "", repaired: false };
+    return { model: selected, ...runtimeSelection, thinkingLevel: "", repaired: false };
   }
   const agentDefaultModel = params.agent?.model?.primary;
   const defaultTarget = selected
@@ -107,7 +194,12 @@ export function reconcileDraftModelSelection(params: {
     (level) => normalizeThinkingOptionValue(level.id) === normalizedThinking,
   );
   if (targetEntry?.reasoning === false || (authoritativeLevels !== undefined && !supported)) {
-    return { model: selected, thinkingLevel: "", repaired: true };
+    return { model: selected, ...runtimeSelection, thinkingLevel: "", repaired: true };
   }
-  return { model: selected, thinkingLevel: params.thinkingLevel, repaired: false };
+  return {
+    model: selected,
+    ...runtimeSelection,
+    thinkingLevel: params.thinkingLevel,
+    repaired: false,
+  };
 }

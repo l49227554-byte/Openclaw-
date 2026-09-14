@@ -29,7 +29,11 @@ export function* applySessionContextWindowPatch(params: {
       delete params.next.contextBudgetStatus;
     }
   }
-  if (!("contextWindow" in params.patch) && !("model" in params.patch)) {
+  if (
+    !("contextWindow" in params.patch) &&
+    !("model" in params.patch) &&
+    !("agentRuntime" in params.patch)
+  ) {
     return { ok: true };
   }
   const selected = normalizeOptionalString(params.next.contextWindow);

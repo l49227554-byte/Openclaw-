@@ -31,6 +31,7 @@ import {
   writeUpdatePostInstallDoctorResult,
 } from "./update-doctor-result.js";
 import { resolveUpdateFinalizationTimeoutMs } from "./update-finalization-budget.js";
+import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import {
   createManagedUpdateRequesterAuthority,
   UpdateRequesterRevokedError,
@@ -102,9 +103,9 @@ async function finalizeMigratedUpdate(): Promise<void> {
     if (!admissionEnv) {
       throw new Error("Grantless finalization requires its captured update environment.");
     }
-    // v2026.9.3 update-command-migrated.ts:149–195 sends captured handoff/run
-    // metadata without a grant and puts result.json under all three temp selectors.
-    // Its managed parent waits with the installation lease still held.
+    // v2026.9.3 update-command-migrated.ts:149–195 sends this grantless handoff.
+    // Its captured meta.root is the lease key; activation can retarget that path.
+    // Only the same installation borrows the waiting parent's lease.
     const meta = input.params.controlPlaneUpdateSentinelMeta;
     const runId = input.params.opts.run?.runId ?? "";
     const scratch = path.dirname(input.resultPath);
@@ -115,6 +116,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
       meta?.runId === runId &&
       meta.handoffId &&
       meta.root &&
+      meta.root === resolveUpdateInstallRoot(input.params.result.root ?? input.params.root) &&
       path.basename(scratch).startsWith("openclaw-update-migrated-") &&
       path.basename(input.resultPath) === "result.json" &&
       ["TMPDIR", "TMP", "TEMP"].every(

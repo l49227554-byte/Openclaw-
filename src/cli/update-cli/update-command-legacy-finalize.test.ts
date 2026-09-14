@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { createVitestResourceOwner } from "../../../scripts/lib/vitest-resource-ownership.mts";
 import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
@@ -57,6 +57,8 @@ const scenarios = [
   "grantless-scratch-owned-incumbent",
   "grantless-scratch-owned-parent-git",
   "grantless-scratch-owned-parent-npm",
+  "grantless-scratch-owned-parent-pnpm-root-move",
+  "grantless-scratch-owned-parent-git-root-switch",
   "grantless-scratch-owned-parent-wrong-handoff",
   "grantless-scratch-owned-parent-wrong-run",
   "grantless-scratch-owned-parent-wrong-root",
@@ -79,6 +81,18 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
     signal.throwIfAborted();
     const scratch = fs.realpathSync(fixture.createTempDir("legacy-native-finalize-"));
     const root = fs.realpathSync(process.cwd());
+    const switchedRoot = scenario.endsWith("-git-root-switch");
+    const movedRoot = switchedRoot || scenario.endsWith("-pnpm-root-move");
+    const parentRoot = movedRoot ? path.join(scratch, "previous-installation") : root;
+    const candidateRoot = movedRoot ? path.join(scratch, "candidate-installation") : root;
+    if (movedRoot) {
+      fs.mkdirSync(parentRoot);
+      fs.mkdirSync(candidateRoot);
+      fs.writeFileSync(
+        path.join(candidateRoot, "package.json"),
+        JSON.stringify({ name: "openclaw", version: "2026.9.4", type: "module" }),
+      );
+    }
     const configPath = path.join(scratch, "openclaw.json");
     const scratchEnvironment = scenario.includes("-scratch");
     const ownedEnvironment = scenario.includes("-owned");
@@ -141,7 +155,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
         : scratch;
       const databasePath = path.join(leaseDirectory, "managed-update-handoffs.sqlite");
       const store = createManagedHandoffLeaseStore({ databasePath, serviceManagerEnv: env });
-      const acquired = store.acquire(root, randomUUID(), { kind: "update" });
+      const acquired = store.acquire(parentRoot, randomUUID(), { kind: "update" });
       if (acquired.kind !== "acquired") {
         throw new Error("Missing original owner");
       }
@@ -151,7 +165,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
       };
       // Exact v2026.9.4 producer format (3a9d69db): real UUID child registration,
       // parent row and private input, with no later lineage or database-pin fields.
-      const child = store.acquire(`${root}/.openclaw-update-child-${randomUUID()}`, runId, {
+      const child = store.acquire(`${parentRoot}/.openclaw-update-child-${randomUUID()}`, runId, {
         kind: "update",
       });
       if (child.kind !== "acquired") {
@@ -173,13 +187,30 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
       // Both receiver imports share the same graph and service-authority scope.
       const owner = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.nativeExecutor);
       const exec = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.nativeExec).href;
+      const receiverUrl = movedRoot
+        ? pathToFileURL(path.join(candidateRoot, `native-receiver${path.extname(owner.pathname)}`))
+        : owner;
+      if (movedRoot) {
+        // Keep the receiver's real package-root check, sharing its dependencies
+        // with the effect owner so both use the same authority scope.
+        fs.copyFileSync(fileURLToPath(owner), fileURLToPath(receiverUrl));
+      }
       fs.writeFileSync(
         entry,
         `
       ${owner.pathname.endsWith(".ts") ? `await import(${JSON.stringify(loader)});` : ""}
       const fs=await import("node:fs");
       const {DatabaseSync}=await import("node:sqlite");
-      const {runGatewayServiceUpdateCommand}=await import(${JSON.stringify(owner.href)});
+      ${
+        movedRoot
+          ? `const {registerHooks}=await import("node:module");
+      registerHooks({resolve(specifier,context,nextResolve){
+        return nextResolve(specifier,context.parentURL===${JSON.stringify(receiverUrl.href)}
+          ? {...context,parentURL:${JSON.stringify(owner.href)}} : context);
+      }});`
+          : ""
+      }
+      const {runGatewayServiceUpdateCommand}=await import(${JSON.stringify(receiverUrl.href)});
       const {execFileUtf8}=await import(${JSON.stringify(exec)});
       const mode=process.argv[process.argv.indexOf("--update-executor")+1];
       await runGatewayServiceUpdateCommand(mode,"restart",async()=>{
@@ -223,15 +254,24 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
         expect(store.release(bound)).toBe(true);
         expect(store.release(acquired.lease)).toBe(true);
       }
+      if (switchedRoot) {
+        // The shipped package-to-Git publisher retargets the old package path.
+        fs.renameSync(parentRoot, path.join(scratch, "retained-installation"));
+        fs.symlinkSync(
+          candidateRoot,
+          parentRoot,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+      }
       const input = {
         ...(grantless ? {} : { executor }),
         bufferedSteps: [],
         resultPath: path.join(legacyParent ? workerTemp : scratch, "result.json"),
         params: {
-          root,
+          root: parentRoot,
           ...(ownedEnvironment ? { ownedManagedUpdateEnv: originalEnvironment } : {}),
           mutationStarted: true,
-          installKindChanged: false,
+          installKindChanged: switchedRoot,
           configSnapshot: snapshot,
           requestedChannel: null,
           storedChannel: "stable",
@@ -241,7 +281,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           opts: { json: true, yes: true, run: { runId, env } },
           result: {
             status: "ok",
-            mode: scenario.endsWith("-git") ? "git" : "npm",
+            mode: switchedRoot || scenario.endsWith("-git") ? "git" : movedRoot ? "pnpm" : "npm",
             ...(legacyParent
               ? {
                   before: {
@@ -249,7 +289,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
                   },
                 }
               : {}),
-            root,
+            root: candidateRoot,
             steps: [],
             durationMs: 0,
           },
@@ -261,7 +301,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
                   : acquired.lease.owner,
                 root: scenario.endsWith("-wrong-root")
                   ? path.join(root, "other-installation")
-                  : root,
+                  : parentRoot,
               }
             : null,
           preUpdatePluginInstallRecords: {},
@@ -339,7 +379,7 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
         expect(JSON.parse(fs.readFileSync(input.resultPath, "utf8")), details).toMatchObject({
           exitCode: 0,
           terminalRunId: runId,
-          result: { status: "ok" },
+          result: { status: "ok", root: candidateRoot, runId },
         });
         expect(fs.readFileSync(path.join(scratch, "native-effect"), "utf8")).toBe("restarted");
         const receiver = JSON.parse(fs.readFileSync(path.join(scratch, "receiver-pid"), "utf8"));
@@ -356,7 +396,8 @@ function runLegacyFinalizationScenario(scenario: (typeof scenarios)[number], sig
           expect(store.release(bound)).toBe(true);
           expect(store.release(acquired.lease)).toBe(true);
         }
-        expect(store.read(root).kind).toBe("absent");
+        expect(store.read(parentRoot).kind).toBe("absent");
+        expect(store.read(candidateRoot).kind).toBe("absent");
       }
       if (scratchEnvironment) {
         // Neither healthy completion nor refusal may create a worker-private

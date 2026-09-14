@@ -399,7 +399,7 @@ export async function withUpdateCommandExecutor<T>(
               if (
                 found.kind !== "current" ||
                 parent.runId !== runId ||
-                resolveUpdateInstallRoot(parent.root) !== key ||
+                parent.root !== key ||
                 found.lease.owner !== parent.handoffId ||
                 found.lease.version !== 2 ||
                 found.lease.action.kind !== "update" ||

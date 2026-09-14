@@ -29,8 +29,8 @@ import type {
 } from "./types.js";
 
 const CLICKCLACK_EVENT_PAGE_LIMIT = 500;
-// AttachUpload emits message.updated after linking an already-uploaded file.
-// Keep creates pending long enough for that event while bounding plain-text latency.
+// Current servers attach uploads before message.created. Older servers emit one
+// message.updated per linked upload, so finalize only after a bounded quiet window.
 const CLICKCLACK_ATTACHMENT_LINK_GRACE_MS = 1_500;
 const CLICKCLACK_PENDING_MESSAGE_LIMIT = 512;
 const CLICKCLACK_COMPLETED_MESSAGE_LIMIT = 1_024;
@@ -69,27 +69,33 @@ type PendingMessageEvent = {
   event: ClickClackEvent;
   messageId: string;
   ready: Promise<void>;
+  sawUpdate: boolean;
+  noteUpdate: () => void;
   release: () => void;
 };
 
 function createMessageEventCoalescer(params: {
   abortSignal: AbortSignal;
   botUserId: string;
-  processCreatedEvent: (event: ClickClackEvent) => Promise<void>;
+  processCreatedEvent: (
+    event: ClickClackEvent,
+    waitForLegacyUpdates: () => Promise<boolean>,
+  ) => Promise<number | undefined>;
+  inspectLateUpdate: (event: ClickClackEvent, attachmentCount: number) => Promise<void>;
 }) {
   const pendingByMessageId = new Map<string, PendingMessageEvent>();
   const pendingByEvent = new WeakMap<ClickClackEvent, PendingMessageEvent>();
-  const completedMessageIds = new Set<string>();
+  const completedMessages = new Map<string, number>();
 
-  const rememberCompleted = (messageId: string) => {
-    completedMessageIds.delete(messageId);
-    completedMessageIds.add(messageId);
-    while (completedMessageIds.size > CLICKCLACK_COMPLETED_MESSAGE_LIMIT) {
-      const oldestMessageId = completedMessageIds.values().next().value;
+  const rememberCompleted = (messageId: string, attachmentCount: number) => {
+    completedMessages.delete(messageId);
+    completedMessages.set(messageId, attachmentCount);
+    while (completedMessages.size > CLICKCLACK_COMPLETED_MESSAGE_LIMIT) {
+      const oldestMessageId = completedMessages.keys().next().value;
       if (oldestMessageId === undefined) {
         break;
       }
-      completedMessageIds.delete(oldestMessageId);
+      completedMessages.delete(oldestMessageId);
     }
   };
 
@@ -100,10 +106,21 @@ function createMessageEventCoalescer(params: {
     const ready = new Promise<void>((resolve) => {
       resolveReady = resolve;
     });
+    const startTimer = () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(() => pending.release(), CLICKCLACK_ATTACHMENT_LINK_GRACE_MS);
+    };
     const pending: PendingMessageEvent = {
       event,
       messageId,
       ready,
+      sawUpdate: false,
+      noteUpdate: () => {
+        pending.sawUpdate = true;
+        startTimer();
+      },
       release: () => {
         if (released) {
           return;
@@ -116,7 +133,7 @@ function createMessageEventCoalescer(params: {
         resolveReady();
       },
     };
-    timer = setTimeout(pending.release, CLICKCLACK_ATTACHMENT_LINK_GRACE_MS);
+    startTimer();
     return pending;
   };
 
@@ -126,7 +143,11 @@ function createMessageEventCoalescer(params: {
       return;
     }
     if (event.type === "message.updated") {
-      pendingByMessageId.get(messageId)?.release();
+      const pending = pendingByMessageId.get(messageId);
+      if (pending) {
+        pendingByEvent.set(event, pending);
+        pending.noteUpdate();
+      }
       return;
     }
     if (!isCreatedMessageEvent(event)) {
@@ -135,7 +156,7 @@ function createMessageEventCoalescer(params: {
     if (payloadString(event, "author_id") === params.botUserId) {
       return;
     }
-    if (completedMessageIds.has(messageId)) {
+    if (completedMessages.has(messageId)) {
       return;
     }
     const existing = pendingByMessageId.get(messageId);
@@ -156,27 +177,32 @@ function createMessageEventCoalescer(params: {
   };
 
   const process = async (event: ClickClackEvent) => {
+    const messageId = payloadString(event, "message_id");
     if (!isCreatedMessageEvent(event)) {
+      if (event.type === "message.updated" && messageId && !pendingByEvent.has(event)) {
+        const attachmentCount = completedMessages.get(messageId);
+        if (attachmentCount !== undefined) {
+          await params.inspectLateUpdate(event, attachmentCount);
+        }
+      }
       return;
     }
-    const messageId = payloadString(event, "message_id");
-    if (messageId && completedMessageIds.has(messageId)) {
+    if (messageId && completedMessages.has(messageId)) {
       return;
     }
     observe(event);
     const pending = pendingByEvent.get(event);
     if (!pending) {
-      await params.processCreatedEvent(event);
+      await params.processCreatedEvent(event, async () => false);
       return;
     }
     try {
-      await pending.ready;
-      if (params.abortSignal.aborted) {
-        return;
-      }
-      await params.processCreatedEvent(pending.event);
-      if (!params.abortSignal.aborted) {
-        rememberCompleted(messageId);
+      const attachmentCount = await params.processCreatedEvent(pending.event, async () => {
+        await pending.ready;
+        return pending.sawUpdate;
+      });
+      if (!params.abortSignal.aborted && attachmentCount !== undefined) {
+        rememberCompleted(messageId, attachmentCount);
       }
     } finally {
       if (pendingByMessageId.get(messageId) === pending) {
@@ -219,9 +245,10 @@ async function processEvent(params: {
   client: ReturnType<typeof createClickClackClient>;
   event: ClickClackEvent;
   botUserId: string;
+  waitForLegacyUpdates: () => Promise<boolean>;
   buildContext?: typeof buildChannelInboundEventContext;
   log?: { info: (message: string) => void; warn?: (message: string) => void };
-}) {
+}): Promise<number | undefined> {
   if (!isCreatedMessageEvent(params.event)) {
     return;
   }
@@ -238,7 +265,7 @@ async function processEvent(params: {
         correlationId,
       })
     : params.client;
-  const message = await resolveEventMessage({
+  let message = await resolveEventMessage({
     client: messageClient,
     event: params.event,
   });
@@ -248,6 +275,18 @@ async function processEvent(params: {
         `type=${params.event.type} messageId=${payloadString(params.event, "message_id") || "unknown"}`,
     );
     return;
+  }
+  if ((message.attachments?.length ?? 0) === 0) {
+    const sawLegacyUpdate = await params.waitForLegacyUpdates();
+    if (params.abortSignal.aborted) {
+      return;
+    }
+    if (sawLegacyUpdate) {
+      message = await resolveEventMessage({ client: messageClient, event: params.event });
+      if (!message) {
+        return;
+      }
+    }
   }
   if (params.abortSignal.aborted || message.author_id === params.botUserId) {
     return;
@@ -277,9 +316,29 @@ async function processEvent(params: {
     config: params.config,
     message,
     access,
+    abortSignal: params.abortSignal,
     buildContext: params.buildContext,
     ...(correlationId ? { correlationId } : {}),
   });
+  return message.attachments?.length ?? 0;
+}
+
+async function inspectLateAttachmentUpdate(params: {
+  client: ReturnType<typeof createClickClackClient>;
+  event: ClickClackEvent;
+  attachmentCount: number;
+  accountId: string;
+  log?: { warn?: (message: string) => void };
+}) {
+  const message = await resolveEventMessage({ client: params.client, event: params.event });
+  const currentCount = message?.attachments?.length ?? 0;
+  if (currentCount > params.attachmentCount) {
+    params.log?.warn?.(
+      `[${params.accountId}] ClickClack attachment linked after the bounded legacy window; ` +
+        `messageId=${payloadString(params.event, "message_id")} ` +
+        `processed=${params.attachmentCount} current=${currentCount}`,
+    );
+  }
 }
 
 async function drainEventBacklog(params: {
@@ -297,8 +356,8 @@ async function drainEventBacklog(params: {
       limit: CLICKCLACK_EVENT_PAGE_LIMIT,
     });
     const events = page.events;
-    // Observation is non-dispatching: it only lets a later update in this page
-    // release the matching create before ordered cursor processing reaches it.
+    // Observation is non-dispatching: it groups every update in this page with
+    // its create before ordered cursor processing reaches it.
     for (const event of events) {
       params.observeEvent(event);
     }
@@ -344,7 +403,7 @@ export async function startClickClackGatewayAccount(
   const coalescer = createMessageEventCoalescer({
     abortSignal: ctx.abortSignal,
     botUserId: account.botUserId,
-    processCreatedEvent: (event) =>
+    processCreatedEvent: (event, waitForLegacyUpdates) =>
       processEvent({
         abortSignal: ctx.abortSignal,
         account,
@@ -352,8 +411,17 @@ export async function startClickClackGatewayAccount(
         client,
         event,
         botUserId: account.botUserId,
+        waitForLegacyUpdates,
         buildContext: (ctx.channelRuntime as PluginRuntime["channel"] | undefined)?.inbound
           .buildContext,
+        log: ctx.log,
+      }),
+    inspectLateUpdate: (event, attachmentCount) =>
+      inspectLateAttachmentUpdate({
+        client,
+        event,
+        attachmentCount,
+        accountId: account.accountId,
         log: ctx.log,
       }),
   });
@@ -466,8 +534,8 @@ export async function startClickClackGatewayAccount(
             ctx.log?.warn?.(`[${account.accountId}] skipped malformed ClickClack websocket event`);
             return;
           }
-          // Observe updates before the ordered queue so they can release the
-          // matching create without allowing the update itself to start a turn.
+          // Observe updates before the ordered queue so every legacy attachment
+          // link extends the matching create's bounded quiet window.
           coalescer.observe(event);
           // Preserve server event order and commit each cursor only after its
           // handler succeeds, so reconnect backlog can retry a failed event.

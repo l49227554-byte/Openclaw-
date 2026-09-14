@@ -1,5 +1,6 @@
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { buildAgentSessionKey, resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -204,5 +205,91 @@ describe("ClickClack inbound media", () => {
         height: 480,
       }),
     ]);
+  });
+
+  it("keeps permanent upload failures local to the attachment", async () => {
+    const runtime = createRuntime();
+    setClickClackRuntime(runtime);
+    const message = createMessage("inspect what is available");
+    const firstAttachment = message.attachments?.[0];
+    if (!firstAttachment) {
+      throw new Error("expected attachment fixture");
+    }
+    message.attachments?.push({
+      ...firstAttachment,
+      id: "upl_available",
+      filename: "available.png",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith("/upl_image")
+          ? new Response("gone", { status: 404 })
+          : new Response(Uint8Array.from([137, 80, 78, 71])),
+      ),
+    );
+    saveResponseMediaMock.mockResolvedValue({
+      path: "/tmp/openclaw-media/inbound/available.png",
+      size: 4,
+      contentType: "image/png",
+    });
+
+    await handleClickClackInbound({ account: createAccount(), config: {}, message });
+
+    expect(saveResponseMediaMock).toHaveBeenCalledOnce();
+    const ctxPayload = vi.mocked(runtime.channel.inbound.dispatch).mock.calls[0]?.[0].ctxPayload;
+    expect(ctxPayload?.BodyForAgent).toContain(
+      "[ClickClack attachment unavailable: diagram.png could not be retrieved]",
+    );
+    expect(ctxPayload?.media).toEqual([
+      expect.objectContaining({ fileName: "available.png", kind: "image" }),
+    ]);
+  });
+
+  it("keeps transient upload failures retryable", async () => {
+    const runtime = createRuntime();
+    setClickClackRuntime(runtime);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("retry", { status: 503 })),
+    );
+
+    await expect(
+      handleClickClackInbound({
+        account: createAccount(),
+        config: {},
+        message: createMessage("inspect this"),
+      }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(runtime.channel.inbound.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("does not publish progress or dispatch after shutdown during staging", async () => {
+    const runtime = createRuntime();
+    setClickClackRuntime(runtime);
+    const staged = createDeferred<{
+      path: string;
+      size: number;
+      contentType: string;
+    }>();
+    saveResponseMediaMock.mockReturnValue(staged.promise);
+    const fetchMock = vi.fn(async () => new Response(Uint8Array.from([137, 80, 78, 71])));
+    vi.stubGlobal("fetch", fetchMock);
+    const abort = new AbortController();
+    const account = { ...createAccount(), nativeProgress: true };
+
+    const pending = handleClickClackInbound({
+      account,
+      config: {},
+      message: createMessage("inspect this"),
+      abortSignal: abort.signal,
+    });
+    await vi.waitFor(() => expect(saveResponseMediaMock).toHaveBeenCalledOnce());
+    abort.abort();
+    staged.resolve({ path: "/tmp/staged.png", size: 4, contentType: "image/png" });
+    await pending;
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(runtime.channel.inbound.dispatch).not.toHaveBeenCalled();
   });
 });

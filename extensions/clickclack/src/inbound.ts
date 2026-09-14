@@ -18,7 +18,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { MediaFetchError, saveResponseMedia } from "openclaw/plugin-sdk/media-runtime";
 import { resolveClickClackInboundAccess, type ClickClackInboundAccess } from "./access.js";
 import { createClickClackActivityPublisher, type ClickClackActivityPublisher } from "./activity.js";
-import { createClickClackClient } from "./http-client.js";
+import { ClickClackHttpError, createClickClackClient } from "./http-client.js";
 import { sendClickClackText } from "./outbound.js";
 import {
   createClickClackAgentProgressPublisher,
@@ -43,6 +43,7 @@ async function materializeInboundMedia(params: {
   config: CoreConfig;
   message: ClickClackMessage;
   correlationId?: string;
+  abortSignal?: AbortSignal;
 }) {
   const attachments = params.message.attachments ?? [];
   if (attachments.length === 0) {
@@ -64,43 +65,59 @@ async function materializeInboundMedia(params: {
   const mediaInputs = [];
   const notices: string[] = [];
   for (const attachment of attachments.slice(0, CLICKCLACK_MAX_INBOUND_ATTACHMENTS)) {
+    if (params.abortSignal?.aborted) {
+      throw params.abortSignal.reason ?? new Error("ClickClack attachment staging aborted");
+    }
     if (attachment.byte_size > maxBytes) {
       notices.push(
         `[ClickClack attachment unavailable: ${attachment.filename} exceeds the configured media limit]`,
       );
       continue;
     }
-    const response = await client.downloadUpload(attachment.id);
-    let saved: Awaited<ReturnType<typeof saveResponseMedia>>;
     try {
-      saved = await saveResponseMedia(response, {
-        sourceUrl: `${params.account.apiEndpoint}/api/uploads/${encodeURIComponent(attachment.id)}`,
-        filePathHint: attachment.filename,
-        fallbackContentType: attachment.content_type,
-        originalFilename: attachment.filename,
-        maxBytes,
-        readIdleTimeoutMs: CLICKCLACK_MEDIA_READ_IDLE_TIMEOUT_MS,
+      const saved = await client.consumeUpload({
+        uploadId: attachment.id,
+        signal: params.abortSignal,
+        consume: (response) =>
+          saveResponseMedia(response, {
+            sourceUrl: `${params.account.apiEndpoint}/api/uploads/${encodeURIComponent(attachment.id)}`,
+            filePathHint: attachment.filename,
+            fallbackContentType: attachment.content_type,
+            originalFilename: attachment.filename,
+            maxBytes,
+            readIdleTimeoutMs: CLICKCLACK_MEDIA_READ_IDLE_TIMEOUT_MS,
+          }),
+      });
+      mediaInputs.push({
+        path: saved.path,
+        url: saved.path,
+        contentType: saved.contentType ?? attachment.content_type,
+        fileName: attachment.filename,
+        width: attachment.width,
+        height: attachment.height,
+        durationMs: attachment.duration_ms,
       });
     } catch (error) {
-      if (!(error instanceof MediaFetchError) || error.code !== "max_bytes") {
+      const permanentHttpFailure =
+        error instanceof ClickClackHttpError &&
+        error.status >= 400 &&
+        error.status < 500 &&
+        error.status !== 408 &&
+        error.status !== 425 &&
+        error.status !== 429;
+      if (
+        !(error instanceof MediaFetchError && error.code === "max_bytes") &&
+        !permanentHttpFailure
+      ) {
         throw error;
       }
       notices.push(
-        `[ClickClack attachment unavailable: ${attachment.filename} exceeds the configured media limit]`,
+        permanentHttpFailure
+          ? `[ClickClack attachment unavailable: ${attachment.filename} could not be retrieved]`
+          : `[ClickClack attachment unavailable: ${attachment.filename} exceeds the configured media limit]`,
       );
       continue;
-    } finally {
-      await response.body?.cancel().catch(() => undefined);
     }
-    mediaInputs.push({
-      path: saved.path,
-      url: saved.path,
-      contentType: saved.contentType ?? attachment.content_type,
-      fileName: attachment.filename,
-      width: attachment.width,
-      height: attachment.height,
-      durationMs: attachment.duration_ms,
-    });
   }
   if (attachments.length > CLICKCLACK_MAX_INBOUND_ATTACHMENTS) {
     notices.push(
@@ -199,6 +216,7 @@ export async function handleClickClackInbound(params: {
   message: ClickClackMessage;
   access?: ClickClackInboundAccess;
   correlationId?: string;
+  abortSignal?: AbortSignal;
   buildContext?: typeof buildChannelInboundEventContext;
 }) {
   const runtime = getClickClackRuntime();
@@ -218,6 +236,9 @@ export async function handleClickClackInbound(params: {
     return;
   }
   const { discussionRoute, isDirect, route, target } = access.preparedRoute;
+  if (params.abortSignal?.aborted) {
+    return;
+  }
   const progress = params.account.nativeProgress
     ? createClickClackAgentProgressPublisher({
         client: createClickClackClient({
@@ -256,6 +277,9 @@ export async function handleClickClackInbound(params: {
         return;
       }
     }
+    if (params.abortSignal?.aborted) {
+      return;
+    }
     progress?.start();
     try {
       await dispatchModelReply({
@@ -276,7 +300,11 @@ export async function handleClickClackInbound(params: {
     config: params.config,
     message,
     correlationId: params.correlationId,
+    abortSignal: params.abortSignal,
   });
+  if (params.abortSignal?.aborted) {
+    return;
+  }
   // Durable activity rows (streamed commentary + tool progress) are a
   // per-account opt-in: they need a ClickClack bot token carrying the
   // agent_activity:write scope. Publishing is best-effort and must never
@@ -389,6 +417,9 @@ export async function handleClickClackInbound(params: {
         }
       : {}),
   };
+  if (params.abortSignal?.aborted) {
+    return;
+  }
   progress?.start();
   const dispatch = () =>
     runtime.channel.inbound.dispatch({

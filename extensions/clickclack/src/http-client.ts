@@ -59,6 +59,7 @@ const CLICKCLACK_INBOUND_JSON_LIMIT_BYTES = 16 * 1024 * 1024;
 // never upgrades, pinning the monitor reconnect loop.
 const CLICKCLACK_WEBSOCKET_HANDSHAKE_TIMEOUT_MS = 30_000;
 const CLICKCLACK_EPHEMERAL_REQUEST_TIMEOUT_MS = 15_000;
+const CLICKCLACK_UPLOAD_RESPONSE_TIMEOUT_MS = 30_000;
 const CLICKCLACK_MESSAGE_PAGE_LIMIT = 200;
 const CLICKCLACK_DISCUSSION_ROOT_PAGE_LIMIT = 8;
 const CLICKCLACK_DISCUSSION_THREAD_REQUEST_LIMIT = 24;
@@ -182,21 +183,49 @@ export function createClickClackClient(options: ClientOptions) {
     }
   }
 
-  async function download(path: string): Promise<Response> {
+  async function consumeUpload<T>(params: {
+    uploadId: string;
+    consume: (response: Response) => Promise<T>;
+    signal?: AbortSignal;
+  }): Promise<T> {
     const requestHeaders = new Headers(headers);
+    requestHeaders.set("Accept", "*/*");
     if (correlationId) {
       requestHeaders.set(CLICKCLACK_CORRELATION_ID_HEADER, correlationId);
     }
-    const response = await fetcher(`${baseUrl}${path}`, { headers: requestHeaders });
-    if (!response.ok) {
-      const detail = await readResponseTextLimited(response, CLICKCLACK_ERROR_BODY_LIMIT_BYTES);
-      throw new ClickClackHttpError(
-        response.status,
-        redactToolPayloadText(detail),
-        new Headers(response.headers),
-      );
+    const controller = new AbortController();
+    const abort = () => controller.abort(params.signal?.reason);
+    if (params.signal?.aborted) {
+      abort();
+    } else {
+      params.signal?.addEventListener("abort", abort, { once: true });
     }
-    return response;
+    const timeout = setTimeout(() => controller.abort(), CLICKCLACK_UPLOAD_RESPONSE_TIMEOUT_MS);
+    let response: Response | undefined;
+    try {
+      response = await fetcher(`${baseUrl}/api/uploads/${encodeURIComponent(params.uploadId)}`, {
+        headers: requestHeaders,
+        redirect: "error",
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!response.ok) {
+        const detail = await readResponseTextLimited(
+          response,
+          CLICKCLACK_ERROR_BODY_LIMIT_BYTES,
+        ).catch(() => response?.statusText || "upload request failed");
+        throw new ClickClackHttpError(
+          response.status,
+          redactToolPayloadText(detail),
+          new Headers(response.headers),
+        );
+      }
+      return await params.consume(response);
+    } finally {
+      clearTimeout(timeout);
+      params.signal?.removeEventListener("abort", abort);
+      await response?.body?.cancel().catch(() => undefined);
+    }
   }
 
   async function fetchEventPage(
@@ -520,8 +549,7 @@ export function createClickClackClient(options: ClientOptions) {
         body: JSON.stringify({ upload_id: uploadId }),
       });
     },
-    downloadUpload: async (uploadId: string): Promise<Response> =>
-      await download(`/api/uploads/${encodeURIComponent(uploadId)}`),
+    consumeUpload,
     /**
      * POSTs a durable agent activity row (agent_commentary / agent_tool)
      * through the normal message create path. Requires a bot token carrying

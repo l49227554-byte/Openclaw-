@@ -313,7 +313,9 @@ describe("ClickClack gateway thread reply resolution", () => {
     const ctx = startGateway();
 
     await testServer.emitThreadReplyEvent("msg-101");
-    await vi.waitFor(() => expect(mocks.handleClickClackInbound).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mocks.handleClickClackInbound).toHaveBeenCalledTimes(1), {
+      timeout: 2_500,
+    });
 
     expect(mocks.handleClickClackInbound).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -331,7 +333,9 @@ describe("ClickClack gateway thread reply resolution", () => {
       direct_conversation_id: "dmc_1",
       root_message_id: "msg_dm_root",
     });
-    await vi.waitFor(() => expect(mocks.handleClickClackInbound).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mocks.handleClickClackInbound).toHaveBeenCalledTimes(1), {
+      timeout: 2_500,
+    });
 
     expect(mocks.handleClickClackInbound).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -134,6 +134,31 @@ function emitMessageEvent(
   }
 }
 
+function createHydratedMessage(attachmentIds: string[] = []) {
+  return {
+    id: "msg-1",
+    workspace_id: "workspace-1",
+    channel_id: "chan-1",
+    author_id: "human-1",
+    thread_root_id: "msg-1",
+    body: "inspect this",
+    body_format: "markdown" as const,
+    created_at: "2026-01-01T00:00:00.000Z",
+    attachments: attachmentIds.map((id) => ({
+      id,
+      workspace_id: "workspace-1",
+      owner_id: "human-1",
+      filename: `${id}.png`,
+      content_type: "image/png",
+      byte_size: 4,
+      width: 0,
+      height: 0,
+      duration_ms: 0,
+      created_at: "2026-01-01T00:00:00.000Z",
+    })),
+  };
+}
+
 describe("ClickClack gateway", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -153,14 +178,8 @@ describe("ClickClack gateway", () => {
     });
     mocks.resolveWorkspaceId.mockResolvedValue("workspace-1");
     mocks.client.message.mockResolvedValue({
-      id: "msg-1",
-      workspace_id: "workspace-1",
-      channel_id: "chan-1",
-      author_id: "human-1",
-      thread_root_id: "msg-1",
+      ...createHydratedMessage(["upl-atomic"]),
       body: "hello",
-      body_format: "markdown",
-      created_at: "2026-01-01T00:00:00.000Z",
       author: {
         id: "human-1",
         kind: "human",
@@ -682,6 +701,7 @@ describe("ClickClack gateway", () => {
       body: "coordinate",
       body_format: "markdown",
       created_at: "2026-01-01T00:00:00.000Z",
+      attachments: createHydratedMessage(["upl-atomic"]).attachments,
       author: {
         id: "other-bot",
         kind: "bot",
@@ -729,11 +749,14 @@ describe("ClickClack gateway", () => {
     await run;
   });
 
-  it("waits for delayed attachment linkage before hydrating a created message", async () => {
+  it("waits for all separate legacy attachment updates before hydrating", async () => {
     vi.useFakeTimers();
     try {
       const socket = new FakeSocket();
       mocks.client.websocket.mockReturnValue(socket);
+      mocks.client.message
+        .mockResolvedValueOnce(createHydratedMessage())
+        .mockResolvedValueOnce(createHydratedMessage(["upl-first", "upl-second"]));
       const abort = new AbortController();
       const run = startClickClackGatewayAccount(createGatewayContext(abort.signal));
 
@@ -741,39 +764,22 @@ describe("ClickClack gateway", () => {
       expect(mocks.client.websocket).toHaveBeenCalledOnce();
       emitMessageEvent(socket, 1, {}, { emitAttachmentUpdate: false });
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(mocks.client.message).not.toHaveBeenCalled();
-      mocks.client.message.mockResolvedValueOnce({
-        id: "msg-1",
-        workspace_id: "workspace-1",
-        channel_id: "chan-1",
-        author_id: "human-1",
-        thread_root_id: "msg-1",
-        body: "inspect this",
-        body_format: "markdown",
-        created_at: "2026-01-01T00:00:00.000Z",
-        attachments: [
-          {
-            id: "upl-delayed",
-            workspace_id: "workspace-1",
-            owner_id: "human-1",
-            filename: "diagram.png",
-            content_type: "image/png",
-            byte_size: 4,
-            width: 0,
-            height: 0,
-            duration_ms: 0,
-            created_at: "2026-01-01T00:00:00.000Z",
-          },
-        ],
-      });
+      expect(mocks.client.message).toHaveBeenCalledOnce();
       emitGatewayEvent(socket, createBacklogEvent(1, "message.updated"));
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1_000);
+      emitGatewayEvent(socket, createBacklogEvent(2, "message.updated", 1));
+      await vi.advanceTimersByTimeAsync(1_499);
+      expect(mocks.handleClickClackInbound).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
 
       expect(mocks.handleClickClackInbound).toHaveBeenCalledOnce();
       expect(mocks.handleClickClackInbound).toHaveBeenCalledWith(
         expect.objectContaining({
           message: expect.objectContaining({
-            attachments: [expect.objectContaining({ id: "upl-delayed" })],
+            attachments: [
+              expect.objectContaining({ id: "upl-first" }),
+              expect.objectContaining({ id: "upl-second" }),
+            ],
           }),
         }),
       );
@@ -785,9 +791,31 @@ describe("ClickClack gateway", () => {
     }
   });
 
+  it("dispatches an atomically attached message without the legacy grace", async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      mocks.client.websocket.mockReturnValue(socket);
+      const abort = new AbortController();
+      const run = startClickClackGatewayAccount(createGatewayContext(abort.signal));
+
+      await vi.advanceTimersByTimeAsync(0);
+      emitMessageEvent(socket, 1, {}, { emitAttachmentUpdate: false });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mocks.handleClickClackInbound).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      abort.abort();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("dispatches a plain-text message after the bounded attachment grace", async () => {
     const socket = new FakeSocket();
     mocks.client.websocket.mockReturnValue(socket);
+    mocks.client.message.mockResolvedValue(createHydratedMessage());
     const abort = new AbortController();
     const run = startClickClackGatewayAccount(createGatewayContext(abort.signal));
 
@@ -804,11 +832,15 @@ describe("ClickClack gateway", () => {
     await run;
   });
 
-  it("does not turn unrelated or later message updates into additional turns", async () => {
+  it("surfaces an attachment linked after the bounded legacy window", async () => {
     const socket = new FakeSocket();
     mocks.client.websocket.mockReturnValue(socket);
+    mocks.client.message
+      .mockResolvedValueOnce(createHydratedMessage(["upl-first"]))
+      .mockResolvedValueOnce(createHydratedMessage(["upl-first", "upl-late"]));
     const abort = new AbortController();
-    const run = startClickClackGatewayAccount(createGatewayContext(abort.signal));
+    const ctx = createGatewayContext(abort.signal);
+    const run = startClickClackGatewayAccount(ctx);
 
     await waitForGatewayState(() => expect(mocks.client.websocket).toHaveBeenCalledTimes(1));
     emitGatewayEvent(socket, createBacklogEvent(99, "message.updated"));
@@ -819,8 +851,12 @@ describe("ClickClack gateway", () => {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
-    expect(mocks.client.message).toHaveBeenCalledOnce();
+    expect(mocks.client.message).toHaveBeenCalledTimes(2);
     expect(mocks.handleClickClackInbound).toHaveBeenCalledOnce();
+    expect(ctx.log?.warn).toHaveBeenCalledWith(
+      "[default] ClickClack attachment linked after the bounded legacy window; " +
+        "messageId=msg-1 processed=1 current=2",
+    );
 
     abort.abort();
     await run;
@@ -831,6 +867,7 @@ describe("ClickClack gateway", () => {
     try {
       const socket = new FakeSocket();
       mocks.client.websocket.mockReturnValue(socket);
+      mocks.client.message.mockResolvedValue(createHydratedMessage());
       const abort = new AbortController();
       const run = startClickClackGatewayAccount(createGatewayContext(abort.signal));
 
@@ -844,7 +881,7 @@ describe("ClickClack gateway", () => {
       await run;
 
       expect(vi.getTimerCount()).toBe(0);
-      expect(mocks.client.message).not.toHaveBeenCalled();
+      expect(mocks.client.message).toHaveBeenCalledOnce();
       expect(mocks.handleClickClackInbound).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();

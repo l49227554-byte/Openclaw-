@@ -632,7 +632,7 @@ describe("renderAgents", () => {
 });
 
 describe("renderAgentChannels", () => {
-  function renderChannelStatus(accounts: ChannelAccountSnapshot[]) {
+  function renderChannelsState(overrides: Partial<Parameters<typeof renderAgentChannels>[0]> = {}) {
     const container = document.createElement("div");
     render(
       renderAgentChannels({
@@ -646,22 +646,31 @@ describe("renderAgentChannels", () => {
           isDefault: true,
         },
         configForm: null,
-        snapshot: {
-          ts: Date.now(),
-          channelOrder: ["discord"],
-          channelLabels: { discord: "Discord" },
-          channels: {},
-          channelAccounts: { discord: accounts },
-          channelDefaultAccountId: { discord: "default" },
-        },
+        snapshot: null,
         loading: false,
         error: null,
-        lastSuccess: Date.now(),
+        lastSuccess: null,
         onRefresh: () => undefined,
         onSelectPanel: () => undefined,
+        ...overrides,
       }),
       container,
     );
+    return container;
+  }
+
+  function renderChannelStatus(accounts: ChannelAccountSnapshot[]) {
+    const container = renderChannelsState({
+      snapshot: {
+        ts: Date.now(),
+        channelOrder: ["discord"],
+        channelLabels: { discord: "Discord" },
+        channels: {},
+        channelAccounts: { discord: accounts },
+        channelDefaultAccountId: { discord: "default" },
+      },
+      lastSuccess: Date.now(),
+    });
     const row = Array.from(container.querySelectorAll(".settings-row")).find(
       (candidate) => candidate.querySelector(".settings-row__title")?.textContent === "Discord",
     );
@@ -701,8 +710,56 @@ describe("renderAgentChannels", () => {
       label: "3/4 connected",
     });
   });
-});
 
+  it("shows loading copy instead of an empty inventory while the first read is pending", () => {
+    const container = renderChannelsState({ loading: true });
+    expect(
+      container.querySelector('[data-test-id="agent-channels-loading"]')?.textContent,
+    ).toContain("Loading channel status");
+    expect(container.querySelector(".settings-empty")).toBeNull();
+  });
+
+  it("shows a retryable failure instead of an empty inventory when the first read fails", () => {
+    const container = renderChannelsState({ error: "boom" });
+    expect(container.querySelector('[data-test-id="agent-channels-error"]')?.textContent).toContain(
+      "Could not load channel status",
+    );
+    expect(container.querySelector(".settings-empty")).toBeNull();
+  });
+
+  it("reserves the empty inventory copy for a successful empty snapshot", () => {
+    const container = renderChannelsState({
+      snapshot: {
+        ts: Date.now(),
+        channelOrder: [],
+        channelLabels: {},
+        channels: {},
+        channelAccounts: {},
+        channelDefaultAccountId: {},
+      },
+    });
+    expect(container.querySelector(".settings-empty")?.textContent).toContain("No channels found");
+    expect(container.querySelector('[data-test-id="agent-channels-loading"]')).toBeNull();
+    expect(container.querySelector('[data-test-id="agent-channels-error"]')).toBeNull();
+  });
+
+  it("keeps known rows with refresh progress on a cached refresh", () => {
+    const container = renderChannelsState({
+      snapshot: {
+        ts: Date.now(),
+        channelOrder: ["discord"],
+        channelLabels: { discord: "Discord" },
+        channels: {},
+        channelAccounts: { discord: [] },
+        channelDefaultAccountId: { discord: "default" },
+      },
+      loading: true,
+    });
+    expect(container.textContent).toContain("Discord");
+    expect(container.querySelector('[data-test-id="agent-channels-loading"]')).toBeNull();
+    expect(container.querySelector(".settings-empty")).toBeNull();
+  });
+});
 describe("renderAgentFiles", () => {
   it("does not accept another file selection while a file request is loading", () => {
     const container = document.createElement("div");

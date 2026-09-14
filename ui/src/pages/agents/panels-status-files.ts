@@ -184,10 +184,29 @@ export function renderAgentChannels(params: {
       t("agents.context.configurationSubtitle"),
       params.onSelectPanel,
     )}
-    ${params.error ? html`<div class="callout danger">${params.error}</div>` : nothing}
     ${
-      !params.snapshot
-        ? html`<div class="callout info">${t("agents.channels.loadHint")}</div>`
+      params.error
+        ? html`<div
+            class="callout danger"
+            role=${params.snapshot ? nothing : "alert"}
+            data-test-id=${params.snapshot ? nothing : "agent-channels-error"}
+          >
+            ${params.snapshot ? nothing : `${t("agents.channels.loadError")} `}${params.error}
+          </div>`
+        : nothing
+    }
+    ${
+      !params.snapshot && !params.error
+        ? params.loading
+          ? html`<div
+              class="callout info"
+              role="status"
+              aria-live="polite"
+              data-test-id="agent-channels-loading"
+            >
+              ${t("agents.channels.loading")}
+            </div>`
+          : html`<div class="callout info">${t("agents.channels.loadHint")}</div>`
         : nothing
     }
     ${renderSettingsSection(
@@ -201,7 +220,7 @@ export function renderAgentChannels(params: {
           </button>
         `,
       },
-      entries.length === 0
+      params.snapshot && entries.length === 0
         ? renderSettingsEmpty(t("agents.channels.empty"))
         : entries.map((entry) => {
             const summary = summarizeChannelAccounts(entry.accounts);

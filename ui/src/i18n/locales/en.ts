@@ -1592,6 +1592,8 @@ export const en: TranslationMap & {
       subtitle: "Gateway-wide channel status snapshot.",
       lastRefresh: "Last refresh: {time}",
       loadHint: "Load channels to see live status.",
+      loading: "Loading channel status…",
+      loadError: "Could not load channel status.",
       empty: "No channels found.",
       connectedCount: "{connected}/{total} connected",
       noAccounts: "no accounts",

@@ -408,6 +408,20 @@ describe("doctor state integrity oauth dir checks", () => {
     expect(hasRepairPromptMessage(confirmRuntimeRepair, "Create OAuth dir at")).toBe(true);
   });
 
+  it("does not require the oauth dir for a pairing channel with no registered plugin", async () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        icenter: {
+          enabled: true,
+          dmPolicy: "pairing",
+        },
+      },
+    };
+    const confirmRuntimeRepair = await runStateIntegrity(cfg);
+    expect(hasRepairPromptMessage(confirmRuntimeRepair, "Create OAuth dir at")).toBe(false);
+    expect(stateIntegrityText()).not.toContain("CRITICAL: OAuth dir missing");
+  });
+
   it("prompts for oauth dir when OPENCLAW_OAUTH_DIR is explicitly configured", async () => {
     process.env.OPENCLAW_OAUTH_DIR = path.join(tempHome, ".oauth");
     const cfg: OpenClawConfig = {};

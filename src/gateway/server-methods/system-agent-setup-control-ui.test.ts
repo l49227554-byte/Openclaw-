@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 import "../../../ui/src/test-helpers/lit-warnings.setup.ts";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import braveManifest from "../../../extensions/brave/openclaw.plugin.json" with { type: "json" };
 import { i18n } from "../../../ui/src/i18n/index.ts";
 import { createFirstRunContext } from "../../../ui/src/pages/model-setup/model-setup-first-run.test-support.ts";
 import { ModelSetupPage } from "../../../ui/src/pages/model-setup/model-setup-page.ts";
@@ -11,9 +11,16 @@ import { waitForFast } from "../../../ui/src/test-helpers/wait-for.ts";
 import { applyWizardMetadata } from "../../commands/onboard-helpers.js";
 import { createConfigFileSnapshot } from "../../config/io.snapshot-shared.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { loadPluginManifest } from "../../plugins/manifest.js";
 import { initializeNativeSessionCatalogPreferences } from "../../plugins/native-session-catalog-config.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { systemAgentHandlers } from "./system-agent.js";
+
+const braveManifestResult = loadPluginManifest(path.resolve("extensions/brave"));
+if (!braveManifestResult.ok) {
+  throw new Error(braveManifestResult.error);
+}
+const braveManifest = braveManifestResult.manifest;
 
 const fixture = vi.hoisted(() => ({
   config: {} as OpenClawConfig,
@@ -39,7 +46,11 @@ vi.mock("../../config/config.js", async (importOriginal) => ({
     pluginMetadataSnapshot: createPluginMetadataSnapshotFixture({
       plugins: fixture.providerCapabilities
         ? [
-            braveManifest,
+            {
+              id: braveManifest.id,
+              setup: braveManifest.setup,
+              contracts: braveManifest.contracts,
+            },
             {
               id: "legacy-model",
               setup: { providers: [{ id: "legacy-model", authMethods: ["api-key"] }] },

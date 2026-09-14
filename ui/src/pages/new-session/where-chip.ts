@@ -18,6 +18,7 @@ import {
 } from "./device-placement.ts";
 import {
   cloudMachinesForOs,
+  defaultCloudMachine,
   defaultCloudOs,
   type DraftCloudProfile,
   type DraftEnvironment,
@@ -73,7 +74,7 @@ export function resolveWhereChip(params: {
     const selectedOsId = params.os || defaultOs;
     const operatingSystems = profile?.operatingSystems ?? [];
     const cloudMachines = profile ? cloudMachinesForOs(profile, selectedOsId) : [];
-    const defaultMachine = cloudMachines.find((machine) => machine.default === true);
+    const defaultMachine = profile ? defaultCloudMachine(profile, selectedOsId) : undefined;
     const selectedMachine = params.machineClass
       ? cloudMachines.find((machine) => machine.id === params.machineClass)
       : defaultMachine;
@@ -148,6 +149,19 @@ function environmentDeviceIcon(device?: DevicePlacementOption) {
   return html`<span class="new-session-page__device-icon" data-form=${form}>${icon}</span>`;
 }
 
+function renderEnvironmentSkeletons(section: "devices" | "cloud") {
+  return html`<div
+    class="new-session-page__environment-skeletons"
+    role="status"
+    aria-label=${t("common.loading")}
+    aria-busy="true"
+    data-section=${section}
+  >
+    <span class="skeleton new-session-page__environment-skeleton-row" aria-hidden="true"></span>
+    <span class="skeleton new-session-page__environment-skeleton-row" aria-hidden="true"></span>
+  </div>`;
+}
+
 export function renderWhereChip(params: {
   autoPlacementMode?: "least-busy" | "eligible-order";
   state: WhereChipState;
@@ -166,6 +180,7 @@ export function renderWhereChip(params: {
   popoverOpen: boolean;
   popoverHiding: boolean;
   isAdmin: boolean;
+  catalogLoading?: boolean;
   onGuardTransition: (event: MouseEvent) => void;
   onPopoverShow: () => void;
   onPopoverHide: () => void;
@@ -247,6 +262,8 @@ export function renderWhereChip(params: {
     );
   const busy = params.submitting || params.pendingPlacement;
   const destinationDisabled = busy;
+  const showDeviceSkeletons = params.catalogLoading && devices.length === 0;
+  const showCloudSkeletons = params.isAdmin && params.catalogLoading && cloudProfiles.length === 0;
   let cleanupScrollFade: (() => void) | undefined;
   const bindScrollFade = (element: Element | undefined) => {
     cleanupScrollFade?.();
@@ -458,14 +475,15 @@ export function renderWhereChip(params: {
                 );
               },
             )}
+            ${showDeviceSkeletons ? renderEnvironmentSkeletons("devices") : nothing}
             ${
-              cloudProfiles.length || showMissingCloud
+              cloudProfiles.length || showMissingCloud || showCloudSkeletons
                 ? html`<div
                     class="new-session-page__environment-heading new-session-page__devices-heading"
                   >
                     <span>${t("newSession.cloud")}</span>
                     ${
-                      params.isAdmin
+                      params.isAdmin && !showCloudSkeletons
                         ? html`<button
                             type="button"
                             class="new-session-page__connect-device"
@@ -496,6 +514,7 @@ export function renderWhereChip(params: {
               profileDisabledReason: params.cloudProfileDisabledReason,
               onSelect: params.onSelectCloudProfile,
             })}
+            ${showCloudSkeletons ? renderEnvironmentSkeletons("cloud") : nothing}
             ${
               showMissingCloud
                 ? renderSessionMenuItem(
@@ -515,7 +534,12 @@ export function renderWhereChip(params: {
                 : nothing
             }
             ${
-              !showLocal && devices.length === 0 && cloudProfiles.length === 0 && !showMissingCloud
+              !showLocal &&
+              devices.length === 0 &&
+              cloudProfiles.length === 0 &&
+              !showMissingCloud &&
+              !showDeviceSkeletons &&
+              !showCloudSkeletons
                 ? html`<div class="new-session-page__environment-empty" role="status">
                     ${t("newSession.environmentSearchEmpty")}
                   </div>`

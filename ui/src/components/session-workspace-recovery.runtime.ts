@@ -26,13 +26,13 @@ export async function withSessionWorkspaceRecovery<T>(params: {
   request: () => Promise<T>;
 }): Promise<T | undefined> {
   if (!params.isCurrent()) {
-    return;
+    return undefined;
   }
   try {
     return await params.request();
   } catch (error) {
     if (!params.isCurrent()) {
-      return;
+      return undefined;
     }
     const details = readSessionWorkspaceRecoveryRequiredError(error);
     if (!details || details.sessionId !== params.session.sessionId) {
@@ -62,7 +62,7 @@ export async function withSessionWorkspaceRecovery<T>(params: {
       signal: params.scope.signal,
     });
     if (!params.isCurrent()) {
-      return;
+      return undefined;
     }
     if (!confirmed) {
       throw error;
@@ -70,7 +70,7 @@ export async function withSessionWorkspaceRecovery<T>(params: {
     authorize();
     await params.scope.client.request("sessions.move", move);
     if (!params.isCurrent()) {
-      return;
+      return undefined;
     }
     return await params.request();
   }

@@ -1,25 +1,28 @@
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mattermostPlugin } from "../extensions/mattermost/channel-plugin-api.js";
-import { createOperationalRunInstanceRef } from "../src/agents/admitted-run-context.js";
-import { wrapToolWithGatewayCallerIdentity } from "../src/agents/tools/gateway-caller-context.js";
-import { createMessageTool } from "../src/agents/tools/message-tool-execution.js";
-import { dispatchChannelMessageAction } from "../src/channels/plugins/message-action-dispatch.js";
-import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../src/config/config.js";
-import type { OpenClawConfig } from "../src/config/types.js";
+import { createOperationalRunInstanceRef } from "../../../agents/admitted-run-context.js";
+import { wrapToolWithGatewayCallerIdentity } from "../../../agents/tools/gateway-caller-context.js";
+import { createMessageTool } from "../../../agents/tools/message-tool-execution.js";
+import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../../config/config.js";
+import type { OpenClawConfig } from "../../../config/types.js";
 import {
   mintMessageActionTurnCapability,
   revokeMessageActionTurnCapability,
-} from "../src/gateway/message-action-turn-capability.js";
+} from "../../../gateway/message-action-turn-capability.js";
 import {
   claimAgentRunDelegatedAuthority,
   releaseAgentRunDelegatedAuthority,
   validateAgentRunDelegatedAuthority,
-} from "../src/infra/agent-run-registry.js";
-import { createPluginRegistry } from "../src/plugins/registry.js";
-import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../src/plugins/runtime.js";
-import type { PluginRuntime } from "../src/plugins/runtime/types.js";
-import { createPluginRecord } from "../src/plugins/status.test-fixtures.js";
+} from "../../../infra/agent-run-registry.js";
+import { createPluginRegistry } from "../../../plugins/registry.js";
+import {
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "../../../plugins/runtime.js";
+import type { PluginRuntime } from "../../../plugins/runtime/types.js";
+import { createPluginRecord } from "../../../plugins/status.test-fixtures.js";
+import { dispatchChannelMessageAction } from "../message-action-dispatch.js";
+import { getBundledChannelPluginAsync } from "./test-helpers/bundled-channel-plugin-loader.js";
 
 const preparation = vi.hoisted(() => ({ afterLookup: undefined as (() => void) | undefined }));
 vi.mock("node:dns/promises", async (original) => {
@@ -69,6 +72,11 @@ async function withReadFixture(
     beforeResponse: (hook: (path: string) => number | undefined) => void;
   }) => Promise<void>,
 ) {
+  const mattermostPlugin = await getBundledChannelPluginAsync("mattermost");
+  const actions = mattermostPlugin?.actions;
+  if (!mattermostPlugin || !actions) {
+    throw new Error("Mattermost message actions are unavailable");
+  }
   const owner = createPluginRegistry({
     logger: { info() {}, warn() {}, error() {}, debug() {} },
     runtime: {} as PluginRuntime,
@@ -81,10 +89,6 @@ async function withReadFixture(
     origin: options.origin ?? "global",
     trustedOfficialInstall: options.trusted ?? true,
   });
-  const actions = mattermostPlugin.actions;
-  if (!actions) {
-    throw new Error("Mattermost message actions are unavailable");
-  }
   owner.registry.plugins.push(record);
   owner.createApi(record, { config: {}, registrationMode: "full" }).registerChannel({
     plugin: {

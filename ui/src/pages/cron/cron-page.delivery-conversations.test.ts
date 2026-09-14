@@ -633,7 +633,12 @@ describe("CronPage lifecycle", () => {
     gateway.emitSnapshot({ phase: "connected" });
     await waitForCronPage(() => expect(modelRequestCount).toBe(1));
     gateway.emitSnapshot({ phase: "stopped" });
-    gateway.emitSnapshot({ phase: "connected" });
+    // A real reconnect arrives with a new Gateway client; the model catalog cache is
+    // scoped per client, so reusing the first client would replay its pending read.
+    gateway.emitSnapshot({
+      phase: "connected",
+      client: { request } as unknown as GatewayBrowserClient,
+    });
     await waitForCronPage(() => expect(page.cronModelSuggestions).toEqual(["fresh/model"]));
 
     staleModels.resolve({ models: [{ id: "stale/model" }] });

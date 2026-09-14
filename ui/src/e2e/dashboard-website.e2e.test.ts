@@ -173,10 +173,10 @@ suite.define(() => {
         expect(await content.getByRole("textbox", { name: "Status note" }).inputValue()).toBe(
           "Keep this note",
         );
-        // The restored split clips this tall iframe; reveal its outer scroll
-        // position before sending a pointer gesture into the inner document.
-        await frame.scrollIntoViewIfNeeded();
-        await content.getByRole("link", { name: "View details" }).click();
+        // Settle the target's nested scroll separately from its pointer gesture.
+        const detailsLink = content.getByRole("link", { name: "View details" });
+        await detailsLink.scrollIntoViewIfNeeded();
+        await detailsLink.click();
         await content.getByRole("heading", { name: "Service details" }).waitFor();
         const opened = context.waitForEvent("page");
         await page.getByRole("link", { name: "Open website", exact: true }).click();

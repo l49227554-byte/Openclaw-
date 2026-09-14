@@ -18,6 +18,7 @@ export function createEmbeddedRunContextRecoveryState() {
     lastContextBudgetStatus: undefined as EmbeddedAgentMeta["contextBudgetStatus"],
     overflowCompactionAttempts: 0,
     timeoutCompactionAttempts: 0,
+    toolCallRejectionContinuations: 0,
     toolResultTruncationAttempted: false,
     observeContextAccounting(event: EmbeddedContextAccountingEvent) {
       // Producer order, not terminal usage copies, determines the current context.

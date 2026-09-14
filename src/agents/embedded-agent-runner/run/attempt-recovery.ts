@@ -26,7 +26,12 @@ import type { createEmbeddedRunContextRecoveryState } from "./context-recovery-s
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
 import type { createEmbeddedRunFailoverRetryController } from "./failover-retry-controller.js";
 import { buildErrorAgentMeta } from "./helpers.js";
-import { resolveSettledToolBatchEvidence } from "./incomplete-turn-recovery.js";
+import {
+  isPreDispatchToolCallRejection,
+  MAX_TOOL_CALL_REJECTION_CONTINUATIONS,
+  resolveSettledToolBatchEvidence,
+  shouldContinueTranscriptAfterToolCallRejection,
+} from "./incomplete-turn-recovery.js";
 import { recoverEmbeddedRunOverflow } from "./overflow-context-recovery.js";
 import { handleEmbeddedPromptFailure } from "./prompt-failure.js";
 import type { prepareAndDispatchEmbeddedRunAttempt } from "./run-attempt-dispatch.js";
@@ -360,6 +365,46 @@ export async function recoverEmbeddedRunAttempt(input: {
       includeToolFailureInstruction: Boolean(attempt.lastToolError),
     });
     return retry({ lastRetryFailoverReason: failureReason });
+  }
+  // A tool call rejected before dispatch after committed tool effects: the
+  // original-prompt resubmit is closed, but the transcript through the last
+  // settled tool result is valid, so continue it instead of surfacing the error.
+  if (
+    shouldContinueTranscriptAfterToolCallRejection({
+      attempt,
+      assistant: attemptAssistant,
+      aborted: aborted || externalAbort || signalOwnedInterruption || terminalInterrupted,
+      timedOut: timedOut || idleTimedOut,
+      promptError: Boolean(promptError),
+      continuations: input.contextRecoveryState.toolCallRejectionContinuations,
+    })
+  ) {
+    runInput.laneController.throwIfAborted();
+    input.contextRecoveryState.toolCallRejectionContinuations += 1;
+    log.warn(
+      `[tool-call-rejection-continue] provider rejected a tool call before dispatch after ` +
+        `${attempt.toolMetas.length} settled tool call(s); continuing the current transcript ` +
+        `attempt=${input.contextRecoveryState.toolCallRejectionContinuations}/${MAX_TOOL_CALL_REJECTION_CONTINUATIONS} ` +
+        `provider=${activeErrorContext.provider} model=${activeErrorContext.model} ` +
+        `runId=${params.runId} sessionId=${params.sessionId}`,
+    );
+    sessionPromptState.markOwnedTranscriptRetry();
+    sessionPromptState.continueFromCurrentTranscript({
+      includeToolFailureInstruction: Boolean(attempt.lastToolError),
+    });
+    return retry();
+  }
+  if (
+    !currentAttemptReplaySafe &&
+    isPreDispatchToolCallRejection(attemptAssistant) &&
+    input.contextRecoveryState.toolCallRejectionContinuations >=
+      MAX_TOOL_CALL_REJECTION_CONTINUATIONS
+  ) {
+    log.warn(
+      `[tool-call-rejection-continue] continuation budget exhausted ` +
+        `attempts=${input.contextRecoveryState.toolCallRejectionContinuations}/${MAX_TOOL_CALL_REJECTION_CONTINUATIONS} ` +
+        `runId=${params.runId} sessionId=${params.sessionId} — surfacing error`,
+    );
   }
   if (!currentAttemptReplaySafe && !canContinueSettledMidTurnOverflow) {
     return { action: "proceed" };

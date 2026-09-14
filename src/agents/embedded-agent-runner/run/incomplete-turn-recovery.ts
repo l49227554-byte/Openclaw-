@@ -33,12 +33,31 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 // surfacing the existing incomplete-turn error path.
 export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
 export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 1;
+// Mirrors the original-prompt resubmit budget for rejections that arrive after
+// committed tool effects, where only the current transcript may be continued.
+export const MAX_TOOL_CALL_REJECTION_CONTINUATIONS = 3;
 const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch. Tools are unavailable in this step: it is a text-only pass, so reply with plain text and do not attempt any tool call.";
+
+/**
+ * A provider-completed tool call that the transport rejected before dispatch.
+ * The rejected call never executed and was dropped at the transport boundary.
+ */
+export function isPreDispatchToolCallRejection(
+  assistant: EmbeddedRunAttemptResult["lastAssistant"] | null | undefined,
+): boolean {
+  return Boolean(
+    assistant &&
+    assistant.stopReason === "error" &&
+    !isTerminalAssistantError(assistant) &&
+    (assistant.errorCode === MALFORMED_TOOL_CALL_ARGUMENTS_ERROR_CODE ||
+      isPreDispatchToolCallRejectionMessage(assistant.errorMessage)),
+  );
+}
 
 export function shouldRetrySilentErrorAssistantTurn(params: {
   attempt: Pick<
@@ -82,14 +101,56 @@ export function shouldRetrySilentErrorAssistantTurn(params: {
   }
   if (content.length === 0) {
     // Rejected arguments can consume tokens without output; the preceding guards own replay safety.
-    return (
-      !hasPositiveOutputTokenUsage(assistant) ||
-      assistant.errorCode === MALFORMED_TOOL_CALL_ARGUMENTS_ERROR_CODE ||
-      isPreDispatchToolCallRejectionMessage(assistant.errorMessage)
-    );
+    return !hasPositiveOutputTokenUsage(assistant) || isPreDispatchToolCallRejection(assistant);
   }
 
   return hasOnlyAssistantReasoningContent(assistant);
+}
+
+/**
+ * Continue the current transcript after a pre-dispatch tool-call rejection that
+ * followed committed tool effects. The transcript is valid through the last
+ * settled tool result, so the model can re-issue the call without replaying the
+ * original prompt. Replay-safe rejections keep the resubmit path above; anything
+ * with unsettled, asynchronous, or turn-ending tool work still surfaces the error.
+ */
+export function shouldContinueTranscriptAfterToolCallRejection(params: {
+  attempt: IncompleteTurnAttempt;
+  assistant: EmbeddedRunAttemptResult["lastAssistant"] | null | undefined;
+  aborted: boolean;
+  timedOut: boolean;
+  promptError: boolean;
+  continuations: number;
+}): boolean {
+  const { attempt, assistant } = params;
+  if (
+    params.aborted ||
+    params.timedOut ||
+    params.promptError ||
+    params.continuations >= MAX_TOOL_CALL_REJECTION_CONTINUATIONS ||
+    !isPreDispatchToolCallRejection(assistant)
+  ) {
+    return false;
+  }
+  if (shouldRetrySilentErrorAssistantTurn({ attempt, assistant })) {
+    return false;
+  }
+  if (
+    attempt.terminal.kind === "failed" ||
+    attempt.clientToolCalls ||
+    attempt.yieldDetected ||
+    attempt.didSendDeterministicApprovalPrompt ||
+    hasAcceptedSessionSpawn(attempt.acceptedSessionSpawns) ||
+    hasAsyncActivity(attempt.toolMetas)
+  ) {
+    return false;
+  }
+  const settledEvidence = resolveSettledToolBatchEvidence(attempt);
+  return (
+    settledEvidence.allToolsProvenSettled &&
+    !settledEvidence.intentionalTermination &&
+    !settledEvidence.hasUnsettledToolError
+  );
 }
 
 function shouldSkipNonVisibleTurnRetry(params: {

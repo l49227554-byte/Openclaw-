@@ -7,7 +7,10 @@ import {
 } from "../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import {
   DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
+  isPreDispatchToolCallRejection,
+  MAX_TOOL_CALL_REJECTION_CONTINUATIONS,
   resolveEmptyResponseRetryInstruction,
+  shouldContinueTranscriptAfterToolCallRejection,
   shouldRetrySilentErrorAssistantTurn,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./run/incomplete-turn-recovery.js";
@@ -333,6 +336,92 @@ describe("incomplete-turn error recovery", () => {
         assistant,
       }),
     ).toBe(false);
+  });
+
+  it("recognizes a pre-dispatch tool-call rejection by code or exact message", () => {
+    expect(
+      isPreDispatchToolCallRejection(
+        makeLastAssistant({ stopReason: "error", errorCode: "malformed_tool_call_arguments" }),
+      ),
+    ).toBe(true);
+    expect(
+      isPreDispatchToolCallRejection(
+        makeLastAssistant({
+          stopReason: "error",
+          errorMessage: "Provider completed tool call with malformed JSON arguments",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isPreDispatchToolCallRejection(
+        makeLastAssistant({ stopReason: "stop", errorCode: "malformed_tool_call_arguments" }),
+      ),
+    ).toBe(false);
+    expect(
+      isPreDispatchToolCallRejection(
+        makeLastAssistant({ stopReason: "error", errorMessage: "invalid request: bad schema" }),
+      ),
+    ).toBe(false);
+    expect(isPreDispatchToolCallRejection(undefined)).toBe(false);
+  });
+
+  it("continues the transcript after a rejection only when the resubmit is closed by settled effects", () => {
+    const assistant = makeLastAssistant({
+      stopReason: "error",
+      errorCode: "malformed_tool_call_arguments",
+      errorMessage: "Provider completed tool call with malformed JSON arguments",
+      content: [],
+      usage: { input: 640, output: 1329, totalTokens: 1969 },
+    });
+    const toolAssistant = makeLastAssistant({
+      stopReason: "toolUse",
+      content: [{ type: "toolCall", id: "call_write", name: "write", arguments: {} }],
+    });
+    const settledWriteBatch: Partial<EmbeddedRunAttemptResult> = {
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+      messagesSnapshot: [
+        { role: "user", content: "write my note" },
+        toolAssistant,
+        { role: "toolResult", toolCallId: "call_write", toolName: "write" },
+        assistant,
+      ] as never,
+      toolMetas: [{ toolCallId: "call_write", toolName: "write", replaySafe: false }] as never,
+      itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
+    };
+    const params = (attemptOverrides: Partial<EmbeddedRunAttemptResult>, continuations = 0) => ({
+      attempt: makeAttemptResult({ ...settledWriteBatch, ...attemptOverrides }),
+      assistant,
+      aborted: false,
+      timedOut: false,
+      promptError: false,
+      continuations,
+    });
+
+    expect(shouldContinueTranscriptAfterToolCallRejection(params({}))).toBe(true);
+    // A replay-safe batch keeps the original-prompt resubmit path instead.
+    expect(
+      shouldContinueTranscriptAfterToolCallRejection(
+        params({
+          toolMetas: [{ toolCallId: "call_write", toolName: "read", replaySafe: true }] as never,
+          currentAttemptReplayMetadata: { replaySafe: true, hadPotentialSideEffects: false },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      shouldContinueTranscriptAfterToolCallRejection(
+        params({}, MAX_TOOL_CALL_REJECTION_CONTINUATIONS),
+      ),
+    ).toBe(false);
+    expect(
+      shouldContinueTranscriptAfterToolCallRejection(
+        params({ itemLifecycle: { startedCount: 1, completedCount: 0, activeCount: 1 } }),
+      ),
+    ).toBe(false);
+    expect(shouldContinueTranscriptAfterToolCallRejection({ ...params({}), aborted: true })).toBe(
+      false,
+    );
   });
 
   it("does not retry errored thinking-only turns after side effects", () => {

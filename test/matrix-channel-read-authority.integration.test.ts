@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../extensions/matrix/api.js";
 import { registerMatrixFullRuntime } from "../extensions/matrix/index.js";
-import { setMatrixRuntime } from "../extensions/matrix/runtime-setter-api.js";
+import { setMatrixRuntime } from "../extensions/matrix/test-api.js";
 import { createOperationalRunInstanceRef } from "../src/agents/admitted-run-context.js";
 import { dispatchChannelMessageAction } from "../src/channels/plugins/message-action-dispatch.js";
 import type { ChannelMessageActionAdapter } from "../src/channels/plugins/types.core.js";

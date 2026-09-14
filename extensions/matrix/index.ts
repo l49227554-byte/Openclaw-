@@ -5,7 +5,7 @@ import {
 } from "openclaw/plugin-sdk/channel-entry-contract";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { registerMatrixCliMetadata } from "./cli-metadata.js";
-import { setMatrixRuntimeLifecycle } from "./src/runtime.js";
+import { setMatrixRuntimeLifecycle } from "./runtime-setter-api.js";
 import { registerMatrixSubagentHooks } from "./subagent-hooks-api.js";
 
 const loadMatrixHandlersRuntimeModule = createLazyRuntimeModule(

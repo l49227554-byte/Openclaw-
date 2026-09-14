@@ -29,6 +29,7 @@ import {
   POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV,
 } from "./update-post-core-context.js";
 import { updateRunStepsFromResultStep, updateRunWarningMessages } from "./update-run-step.js";
+import type { UpdateStepResult } from "./update-runner-types.js";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), snapshot: vi.fn(), signal: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -59,6 +60,19 @@ let databasePath: string | undefined;
 
 function canaryStateOptions(timeoutMs?: number) {
   return { root, stateDir: root, config: {}, env: {}, timeoutMs };
+}
+
+function renderSteps(steps: UpdateStepResult[]) {
+  const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+  const presentation = createUpdateProgress(true);
+  onTestFinished(() => {
+    presentation.dispose();
+    log.mockRestore();
+  });
+  for (const [index, step] of steps.entries()) {
+    presentation.progress.onStepComplete?.({ ...step, index, total: steps.length });
+  }
+  return log.mock.calls.flat().join("\n");
 }
 
 beforeEach(async () => {
@@ -689,40 +703,31 @@ describe("update candidate canary", () => {
         }
         const child = new FakeChild(nextPid++);
         queueMicrotask(() => {
-          if (["multiline", "envelope", "compact"].includes(scenario)) {
-            const error =
-              scenario === "multiline"
-                ? createInvalidConfigError(
-                    "/fixture/openclaw.json",
-                    `- gateway.port: invalid ${"x".repeat(160)} token=synthetic-secret\n- gateway.host: unknown`,
-                  )
-                : new Error("Unable to resolve health API");
-            if (scenario !== "multiline") {
-              child.stdout.write(
-                JSON.stringify(
-                  formatCliJsonFailure(error, { argv: [], env: {} }),
-                  null,
-                  scenario === "compact" ? undefined : 2,
-                ) + "\n",
-              );
-            }
-            child.stderr.write(
-              formatCliFailureLines({
-                title: "The CLI command failed.",
-                error,
-                env: {},
-              }).join("\n") + "\n",
+          const error =
+            scenario === "multiline"
+              ? createInvalidConfigError(
+                  "/fixture/openclaw.json",
+                  `- gateway.port: invalid ${"x".repeat(160)} token=synthetic-secret\n- gateway.host: unknown`,
+                )
+              : new Error("Unable to resolve health API token=synthetic-secret");
+          if (["envelope", "compact"].includes(scenario)) {
+            child.stdout.write(
+              JSON.stringify(
+                formatCliJsonFailure(error, { argv: [], env: {} }),
+                null,
+                scenario === "compact" ? undefined : 2,
+              ) + "\n",
             );
-            child.emit("close", 1);
-            return;
           }
-          child.stderr.write("[openclaw] The CLI command failed.\n");
           child.stderr.write(
-            "[openclaw] Reason: Unable to resolve health API token=synthetic-secret\n",
+            formatCliFailureLines({ title: "The CLI command failed.", error, env: {} }).join("\n") +
+              "\n",
           );
-          child.stderr.write(
-            Array.from({ length: 60 }, (_, index) => `cleanup ${index}\n`).join(""),
-          );
+          if (scenario === "lint" || scenario === "startup") {
+            child.stderr.write(
+              Array.from({ length: 60 }, (_, index) => `cleanup ${index}\n`).join(""),
+            );
+          }
           child.emit("close", 1);
         });
         return child;
@@ -737,14 +742,7 @@ describe("update candidate canary", () => {
         scenario === "multiline" ? "Invalid config" : "Unable to resolve health API",
       );
       if (["multiline", "envelope", "compact"].includes(scenario)) {
-        const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
-        const presentation = createUpdateProgress(true);
-        onTestFinished(() => {
-          presentation.dispose();
-          log.mockRestore();
-        });
-        presentation.progress.onStepComplete?.({ ...failed, index: 0, total: 1 });
-        const output = log.mock.calls.flat().join("\n");
+        const output = renderSteps([failed]);
         if (scenario === "multiline") {
           expect(output).toContain("gateway.port: invalid");
           expect(output).toContain("gateway.host: unknown");
@@ -857,16 +855,7 @@ describe("update candidate canary", () => {
       expect(result.status).toBe(failure === "readiness" ? "ok" : "error");
       expect(result.phase).toBe(failure);
       if (failure === "plugins") {
-        const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
-        const presentation = createUpdateProgress(true);
-        onTestFinished(() => {
-          presentation.dispose();
-          log.mockRestore();
-        });
-        for (const [index, step] of result.steps.entries()) {
-          presentation.progress.onStepComplete?.({ ...step, index, total: result.steps.length });
-        }
-        expect(log.mock.calls.flat().join("\n")).toContain("incompatible plugin");
+        expect(renderSteps(result.steps)).toContain("incompatible plugin");
       }
       if (failure === "readiness") {
         readiness.expectCanaryReadinessWarning(result.steps.at(-1), "readyz", 503);

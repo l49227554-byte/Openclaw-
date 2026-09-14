@@ -4,6 +4,7 @@ import type { AuthProfileCredential } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   findNormalizedProviderValue,
+  isPendingOAuthRefreshForCredential,
   resolveOpenAICodexAuthIdentity,
 } from "openclaw/plugin-sdk/provider-auth";
 import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
@@ -76,15 +77,38 @@ export async function prepareCodexCatalogClientOptions(params: {
     });
   };
   const preparedSource = sourceCredentialFingerprint(selectedCredential);
-  const readCurrentCredential = () => {
+  let sourceGeneration = selectedCredential;
+  const readCurrentCredential = (allowPendingRefresh = false) => {
     assertHomeCurrent();
     const currentStore = resolveCodexAppServerAuthProfileStore({
       agentDir: sourceAgentDir,
       config: options.config,
     });
-    const currentCredential = profileId ? currentStore.profiles[profileId] : undefined;
+    let currentCredential = profileId ? currentStore.profiles[profileId] : undefined;
+    // The auth owner temporarily replaces a claimed generation with an inert fence.
+    // Check selection using its exact previously authorized credential, never the marker.
     if (
-      resolveCodexAppServerAuthProfileId({ store: currentStore, config: options.config }) !==
+      allowPendingRefresh &&
+      profileId &&
+      sourceGeneration?.type === "oauth" &&
+      currentCredential?.type === "oauth" &&
+      isPendingOAuthRefreshForCredential({
+        profileId,
+        credential: sourceGeneration,
+        fence: currentCredential,
+      })
+    ) {
+      currentCredential = sourceGeneration;
+    }
+    const selectionStore = {
+      ...currentStore,
+      profiles: {
+        ...currentStore.profiles,
+        ...(profileId && currentCredential ? { [profileId]: currentCredential } : {}),
+      },
+    };
+    if (
+      resolveCodexAppServerAuthProfileId({ store: selectionStore, config: options.config }) !==
         profileId ||
       sourceCredentialFingerprint(currentCredential) !== preparedSource
     ) {
@@ -92,10 +116,11 @@ export async function prepareCodexCatalogClientOptions(params: {
         "Codex catalog source authentication changed; refresh the catalog before retrying.",
       );
     }
+    sourceGeneration = currentCredential;
     return currentCredential;
   };
   const assertAuthSourceCurrent = () => {
-    readCurrentCredential();
+    readCurrentCredential(true);
   };
   const assertCurrent = () => {
     if (credentialFingerprint(readCurrentCredential()) !== preparedCredential) {

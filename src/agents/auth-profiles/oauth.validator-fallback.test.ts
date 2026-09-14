@@ -129,9 +129,13 @@ describe("resolveApiKeyForProfile fallback credential validation", () => {
         });
         expect(result?.profileId).toBe(fallbackProfileId);
       }
-      expect(validateOAuthCredential).toHaveBeenCalledTimes(2);
-      expect(validateOAuthCredential).toHaveBeenNthCalledWith(1, legacyCredential);
-      expect(validateOAuthCredential).toHaveBeenNthCalledWith(2, fallbackCredential);
+      expect(validateOAuthCredential.mock.calls).toEqual([
+        [legacyCredential], // Initial authority.
+        [legacyCredential], // After provider eligibility.
+        [legacyCredential], // Atomic claim write.
+        [legacyCredential], // Provider refresh initiation.
+        [fallbackCredential],
+      ]);
       expect(refreshProviderOAuthCredentialWithPluginMock).toHaveBeenCalledOnce();
       expect(
         ensureAuthProfileStoreWithoutExternalProfiles(mainAgentDir).profiles[fallbackProfileId],

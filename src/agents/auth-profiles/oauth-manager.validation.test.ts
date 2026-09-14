@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { testing as externalAuthTesting } from "./external-auth.test-support.js";
@@ -11,6 +11,7 @@ import {
   ensureAuthProfileStoreWithoutExternalProfiles,
   saveAuthProfileStore,
 } from "./store-runtime.js";
+import * as storeRuntime from "./store-runtime.js";
 import type { OAuthCredential } from "./types.js";
 
 function createCredential(overrides: Partial<OAuthCredential> = {}): OAuthCredential {
@@ -49,6 +50,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   externalAuthTesting.resetResolveExternalAuthProfilesForTest();
   clearRuntimeAuthProfileStoreSnapshots();
   closeOpenClawStateDatabaseForTest();
@@ -56,6 +58,89 @@ afterEach(async () => {
 });
 
 describe("createOAuthManager credential validation", () => {
+  it.each(["eligibility", "claim-write", "refresh-start", "settlement-write"] as const)(
+    "rejects source revocation during %s before the next credential effect",
+    async (boundary) => {
+      await withMainAgentDir("oauth-manager-revocation-", async (mainAgentDir) => {
+        const profileId = "openai:oauth";
+        const credential = createCredential({ expires: 1 });
+        saveAuthProfileStore({ version: 1, profiles: { [profileId]: credential } }, mainAgentDir, {
+          filterExternalAuthProfiles: false,
+        });
+        let current = true;
+        let writes = 0;
+        const committedAccess: Array<string | undefined> = [];
+        const originalUpdate = storeRuntime.updateAuthProfileStoreWithLock;
+        vi.spyOn(storeRuntime, "updateAuthProfileStoreWithLock").mockImplementation(
+          async (params) => {
+            writes += 1;
+            const operation = writes;
+            const result = await originalUpdate({
+              ...params,
+              updater: (store) => {
+                if (
+                  (boundary === "claim-write" && operation === 1) ||
+                  (boundary === "settlement-write" && operation === 2)
+                ) {
+                  current = false;
+                }
+                const changed = params.updater(store);
+                if (changed) {
+                  const value = store.profiles[profileId];
+                  committedAccess.push(value?.type === "oauth" ? value.access : undefined);
+                }
+                return changed;
+              },
+            });
+            if (boundary === "refresh-start" && operation === 1) {
+              current = false;
+            }
+            return result;
+          },
+        );
+        const refreshCredential = vi.fn(async () => ({
+          access: "rotated-access",
+          refresh: "rotated-refresh",
+          expires: Date.now() + 600_000,
+        }));
+        const manager = createOAuthManager({
+          buildApiKey: async (_provider, value) => value.access,
+          canRefreshCredential: async () => {
+            await Promise.resolve();
+            if (boundary === "eligibility") {
+              current = false;
+            }
+            return true;
+          },
+          refreshCredential,
+          readBootstrapCredential: () => null,
+        });
+        await expect(
+          manager.resolveOAuthAccess({
+            store: ensureAuthProfileStoreWithoutExternalProfiles(mainAgentDir),
+            profileId,
+            credential,
+            agentDir: mainAgentDir,
+            forceRefresh: true,
+            validateCredential: () => {
+              if (!current) {
+                throw new Error("source revoked");
+              }
+            },
+          }),
+        ).rejects.toThrow("source revoked");
+        expect(refreshCredential).toHaveBeenCalledTimes(boundary === "settlement-write" ? 1 : 0);
+        expect(committedAccess).not.toContain("rotated-access");
+        if (boundary === "eligibility" || boundary === "claim-write") {
+          expect(committedAccess).toEqual([]);
+        }
+        expect(
+          ensureAuthProfileStoreWithoutExternalProfiles(mainAgentDir).profiles[profileId],
+        ).not.toMatchObject({ access: "rotated-access" });
+      });
+    },
+  );
+
   it("validates a refreshed credential before persisting it", async () => {
     await withMainAgentDir("oauth-manager-refresh-validator-", async (mainAgentDir) => {
       const profileId = "openai:oauth";

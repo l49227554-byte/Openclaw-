@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { saveAuthProfileStore } from "openclaw/plugin-sdk/agent-runtime";
 import type { AuthProfileStore } from "openclaw/plugin-sdk/provider-auth";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -337,6 +338,40 @@ describe("managed catalog source authentication", () => {
       credential.expires += 3600000;
       expect(() => options.assertAuthSourceCurrent()).not.toThrow();
       expect(() => options.assertCurrent()).toThrow("authentication changed");
+      const marker = (kind: "access" | "refresh") => {
+        const digest = createHash("sha256")
+          .update(
+            JSON.stringify([
+              "openclaw.oauth-refresh-generation",
+              1,
+              "openai:alpha",
+              "openai",
+              kind,
+              credential[kind],
+            ]),
+          )
+          .digest("hex");
+        return `openclaw-oauth-refresh-fence:v1:${"a".repeat(32)}:${kind}:${digest}`;
+      };
+      const pending = {
+        ...credential,
+        access: marker("access"),
+        refresh: marker("refresh"),
+        expires: 1,
+      };
+      const store = auth.stores.get(f.dirs.alpha!)!;
+      store.profiles["openai:alpha"] = pending;
+      expect(() => options.assertAuthSourceCurrent()).not.toThrow();
+      expect(() => options.assertCurrent()).toThrow("authentication changed");
+      store.profiles["openai:alpha"] = { ...pending, accountId: "synthetic-other-account" };
+      expect(() => options.assertAuthSourceCurrent()).toThrow("authentication changed");
+      store.profiles["openai:alpha"] = {
+        ...pending,
+        access: pending.access.replace(":access:", ":failed:access:"),
+        refresh: pending.refresh.replace(":refresh:", ":failed:refresh:"),
+      };
+      expect(() => options.assertAuthSourceCurrent()).toThrow("authentication changed");
+      store.profiles["openai:alpha"] = credential;
       credential.accountId = "synthetic-other-account";
       expect(() => options.assertAuthSourceCurrent()).toThrow("authentication changed");
     },

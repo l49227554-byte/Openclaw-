@@ -1,4 +1,5 @@
 import { hash, randomBytes } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { OAuthCredential } from "./types.js";
 
 const OAUTH_REFRESH_FENCE_PREFIX = "openclaw-oauth-refresh-fence:v1:";
@@ -139,4 +140,39 @@ export function isSameOAuthRefreshGeneration(params: {
     (leftFence?.refreshDigest ?? refreshDigest(params.left)) ===
     (rightFence?.refreshDigest ?? refreshDigest(params.right))
   );
+}
+
+/** Recognize only a pending fence for the exact previously authorized credential. */
+export function isPendingOAuthRefreshForCredential(params: {
+  profileId: string;
+  credential: OAuthCredential;
+  fence: OAuthCredential;
+}): boolean {
+  const parsed = parseOAuthRefreshFence(params.fence);
+  if (!parsed || parsed.state !== "pending") {
+    return false;
+  }
+  for (const kind of ["access", "refresh"] as const) {
+    if (
+      parsed[kind === "access" ? "accessDigest" : "refreshDigest"] !==
+      buildOAuthRefreshSecretDigest({
+        profileId: params.profileId,
+        provider: params.credential.provider,
+        kind,
+        secret: params.credential[kind],
+      })
+    ) {
+      return false;
+    }
+  }
+  const expected = {
+    ...params.credential,
+    access: params.fence.access,
+    refresh: params.fence.refresh,
+    expires: 1,
+  };
+  delete expected.idToken;
+  delete expected.oauthRef;
+  delete expected.copyToAgents;
+  return isDeepStrictEqual(params.fence, expected);
 }

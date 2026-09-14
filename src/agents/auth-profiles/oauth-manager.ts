@@ -543,6 +543,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     generation: OAuthCredential;
     fence: OAuthCredential;
     refreshed: OAuthCredential;
+    validateCredential?: (credential: OAuthCredential) => void;
   }): Promise<{ credential: OAuthCredential; persisted: boolean } | null> {
     const current = loadStoredOAuthRefreshStore(params.agentDir, params.profileId).profiles[
       params.profileId
@@ -552,6 +553,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
       !isExactOAuthCredential(current, params.fence) &&
       isSafeOAuthPostClaimSettlement(params.generation, current)
     ) {
+      params.validateCredential?.(current);
       return { credential: current, persisted: false };
     }
     let credential: OAuthCredential | null = null;
@@ -565,6 +567,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
           return false;
         }
         if (isExactOAuthCredential(existing, params.fence)) {
+          params.validateCredential?.(params.refreshed);
           store.profiles[params.profileId] = { ...params.refreshed };
           credential = params.refreshed;
           persisted = true;
@@ -848,6 +851,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             return { kind: "unavailable" };
           }
 
+          params.validateCredential?.(credentialToRefresh);
           const fence = createOAuthRefreshFence({
             profileId: params.profileId,
             credential: credentialToRefresh,
@@ -863,6 +867,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               ) {
                 return false;
               }
+              params.validateCredential?.(credentialToRefresh);
               authoritative.profiles[params.profileId] = fence;
               claimed = true;
               return true;
@@ -1184,6 +1189,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     const settlement = (async (): Promise<ResolvedOAuthAccess | null> => {
       let refreshed: OAuthCredentials | null;
       try {
+        params.validateCredential?.(claim.credential);
         refreshed = await adapter.refreshCredential(claim.credential, {
           cfg: params.cfg,
           agentDir: params.agentDir,
@@ -1236,6 +1242,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               generation: claim.credential,
               fence: claim.fence,
               refreshed: rotated,
+              validateCredential: params.validateCredential,
             });
             if (!claimSettlement) {
               return null;

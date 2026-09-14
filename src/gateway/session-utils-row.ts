@@ -278,6 +278,7 @@ export function buildGatewaySessionRow(params: {
     sessionKey: acpSessionKey,
     entry,
     modelCatalog: thinkingModelCatalog,
+    modelCatalogRouteVariants: preparedCatalog?.routeVariants,
     rowContext,
     providerPolicySource: preparedCatalog?.pluginRegistry ?? (lightweight ? "active" : undefined),
   });

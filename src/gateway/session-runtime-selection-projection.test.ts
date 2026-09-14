@@ -122,7 +122,10 @@ describe("session runtime selection ownership projection", () => {
                 existingEntry: entry,
                 isLabelInUse: () => false,
                 patch: { key, ...patch },
-                loadGatewayModelCatalog: async () => catalog,
+                loadGatewayModelCatalogSnapshot: async () => ({
+                  entries: catalog,
+                  routeVariants: catalog,
+                }),
               });
             expect(await project({ model: "openai/gpt-5.6-luna" })).toMatchObject({
               ok: true,

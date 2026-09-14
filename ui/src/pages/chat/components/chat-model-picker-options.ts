@@ -7,8 +7,11 @@ import {
 } from "../../../components/provider-icon.ts";
 import "../../../components/tooltip.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerModelControlsEnglish } from "../../../i18n/locales/en-model-controls.ts";
 import { formatContextTokenCapacity } from "../../../lib/format.ts";
 import type { ModelRuntimeEntry } from "../../../lib/model-runtime-choice.ts";
+
+registerModelControlsEnglish();
 
 export type ChatModelPickerOption = {
   agentRuntimeId?: string;

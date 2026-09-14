@@ -2,6 +2,7 @@
 // aliases, model catalog validation, and rejected invalid patch payloads.
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { SessionCreatedActor } from "../../packages/gateway-protocol/src/index.js";
+import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { contextBudgetStatusFixture } from "../config/sessions/context-budget.test-support.js";
@@ -19,10 +20,20 @@ async function applySessionsPatchToStore(
   params: Omit<
     Parameters<typeof projectSessionsPatchEntry>[0],
     "existingEntry" | "isLabelInUse"
-  > & { store: Record<string, SessionEntry> },
+  > & {
+    store: Record<string, SessionEntry>;
+    loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
+  },
 ) {
+  const load = params.loadGatewayModelCatalog;
   const projected = await projectSessionsPatchEntry({
     ...params,
+    loadGatewayModelCatalogSnapshot: load
+      ? async () => {
+          const entries = await load();
+          return { entries, routeVariants: entries };
+        }
+      : undefined,
     existingEntry: params.store[params.storeKey],
     isLabelInUse: (label) =>
       Object.entries(params.store).some(

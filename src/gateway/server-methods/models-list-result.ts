@@ -22,6 +22,7 @@ import {
 import { createPreparedModelCatalogProviderNormalizer } from "../../agents/model-catalog-provider-normalizer.js";
 import {
   createModelCatalogView,
+  selectModelCatalogRuntimeEntry,
   loadPreparedModelCatalogView,
 } from "../../agents/model-catalog-view.js";
 import {
@@ -110,7 +111,20 @@ export function createGatewayAgentModelCatalogProjector(params: ModelCatalogDeci
         view.logicalEntries.map(async (entry) => {
           const routeVariants = view.variantsOf(entry) ?? [entry];
           const evaluation = evaluateNative(entry, await evaluateEntry(entry, routeVariants));
-          return view.project(entry, evaluation).runtimeEntry;
+          const runtimeId =
+            resolveCatalogDecisionRuntime({
+              cfg: params.cfg,
+              agentId: params.agentId,
+              entry,
+              evaluation,
+              pluginRegistry: params.pluginRegistry,
+            })?.id ?? "openclaw";
+          const selected = selectModelCatalogRuntimeEntry({ entry, routeVariants, runtimeId });
+          return createModelCatalogView({
+            cfg: params.cfg,
+            catalog: [selected.entry],
+            routeVariants: selected.variants,
+          }).project(selected.entry, evaluation).runtimeEntry;
         }),
       ));
     },

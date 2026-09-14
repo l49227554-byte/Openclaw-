@@ -6,6 +6,7 @@ import type {
   SessionsListResult,
 } from "../../../api/types.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerModelControlsEnglish } from "../../../i18n/locales/en-model-controls.ts";
 import {
   normalizeChatModelProviderId,
   resolvePreferredServerChatModelValue,
@@ -41,6 +42,8 @@ import {
   type ChatModelCatalogState,
   type ChatModelProviderAuth,
 } from "./chat-model-picker.ts";
+
+registerModelControlsEnglish();
 
 export type { ChatModelCatalogState } from "./chat-model-picker.ts";
 

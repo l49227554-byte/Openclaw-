@@ -38,16 +38,18 @@ export function resolveDraftContextWindowTarget(
 export function resolveDraftThinkingTarget(
   target: DraftModelTarget | null,
   agent?: GatewayAgentRow,
-  thinkingLevel?: string,
+  selection?: { thinkingLevel?: string; agentRuntime?: string },
 ): ChatThinkingTarget {
+  // Keep configured-base metadata in the catalog so it cannot hide Gateway defaults.
+  const runtimeEntry = selection?.agentRuntime ? target?.entry : undefined;
   return {
     model: target?.model ?? agent?.model?.primary,
     modelProvider: target?.provider ?? undefined,
     agentRuntime: agent?.agentRuntime ?? target?.entry?.agentRuntime,
-    thinkingLevels: agent?.thinkingLevels ?? target?.entry?.thinkingLevels,
+    thinkingLevels: agent?.thinkingLevels ?? runtimeEntry?.thinkingLevels,
     thinkingOptions: agent?.thinkingOptions,
-    thinkingDefault: agent?.thinkingDefault ?? target?.entry?.thinkingDefault,
-    thinkingLevel: thinkingLevel || undefined,
+    thinkingDefault: agent?.thinkingDefault ?? runtimeEntry?.thinkingDefault,
+    thinkingLevel: selection?.thinkingLevel || undefined,
   };
 }
 
@@ -184,6 +186,7 @@ export function reconcileDraftModelSelection(params: {
     resolveDraftThinkingTarget(
       selectedTarget ?? defaultTarget,
       selected ? undefined : params.agent,
+      { agentRuntime: params.agentRuntime },
     ),
     selected ? undefined : params.defaults,
     params.catalog,

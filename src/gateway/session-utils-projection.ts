@@ -7,6 +7,7 @@ import {
 import { resolveCurrentSessionAgentRuntimeMetadata } from "../agents/agent-runtime-metadata.js";
 import { readSessionRuntimeOwnership } from "../agents/harness/session-runtime-ownership.js";
 import { findModelCatalogEntry } from "../agents/model-catalog-lookup.js";
+import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import {
   resolveSessionModelIdentityRef,
@@ -41,6 +42,10 @@ export function buildSessionListRowMetadataContext(params: {
     ModelCatalogEntry[],
     Map<string, ModelCatalogEntry | undefined>
   >();
+  const runtimeEntries = new WeakMap<
+    readonly ModelCatalogEntry[],
+    Map<string, ReturnType<typeof selectModelCatalogRuntimeEntry>>
+  >();
   return {
     subagentRuns: buildSubagentSessionListReadIndex(params.now),
     selectedModelByOverrideRef: new Map(),
@@ -56,6 +61,20 @@ export function buildSessionListRowMetadataContext(params: {
         entries.set(key, findModelCatalogEntry(catalog, query));
       }
       return entries.get(key);
+    },
+    selectModelCatalogRuntimeEntry: (selection) => {
+      let entries = runtimeEntries.get(selection.routeVariants);
+      if (!entries) {
+        entries = new Map();
+        runtimeEntries.set(selection.routeVariants, entries);
+      }
+      const key = `${selection.runtimeId}\0${createSessionRowModelCacheKey(selection.entry.provider, selection.entry.id)}`;
+      let selected = entries.get(key);
+      if (!selected) {
+        selected = selectModelCatalogRuntimeEntry(selection);
+        entries.set(key, selected);
+      }
+      return selected;
     },
     displayModelIdentityByKey: new Map(),
     modelCostConfigByModelRef: new Map(),

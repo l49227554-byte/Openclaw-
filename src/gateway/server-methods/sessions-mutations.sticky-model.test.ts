@@ -76,6 +76,7 @@ vi.mock("../../logging/subsystem.js", async () => {
 
 import { createGatewaySession } from "../session-create-service.js";
 import { sessionMutationHandlers } from "./sessions-mutations.js";
+import { registerSessionRuntimeWindowTests } from "./sessions-mutations.runtime-windows.test-support.js";
 
 const defaultAgents: AgentConfig[] = [
   { id: "main", default: true },
@@ -105,19 +106,31 @@ type TestClient = GatewayClient & { connId: string; invalidated: boolean };
 type TestContext = Pick<
   GatewayRequestContext,
   | "getRuntimeConfig"
-  | "loadGatewayModelCatalog"
+  | "loadGatewayModelCatalogSnapshot"
   | "broadcastToConnIds"
   | "getSessionEventSubscriberConnIds"
   | "chatAbortControllers"
   | "getClientConnIds"
 >;
 
+function catalogSnapshot(entries = modelCatalog) {
+  return {
+    entries,
+    routeVariants: entries,
+    agentId: "main",
+    agentDir: openClawTestState.agentDir("main"),
+    workspaceDir: openClawTestState.workspaceDir,
+    config: cfg,
+    catalogComplete: true,
+  };
+}
+
 function context(clients = new Set<TestClient>()) {
   return {
     getRuntimeConfig: () => cfg,
-    loadGatewayModelCatalog: vi.fn<GatewayRequestContext["loadGatewayModelCatalog"]>(
-      async () => modelCatalog,
-    ),
+    loadGatewayModelCatalogSnapshot: vi.fn<
+      GatewayRequestContext["loadGatewayModelCatalogSnapshot"]
+    >(async () => catalogSnapshot()),
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set<string>(),
     chatAbortControllers: new Map(),
@@ -499,7 +512,7 @@ describe("sessions.patch personal model-account ownership", () => {
 
       expect(response[0]).toBe(false);
       expect(response[2]).toMatchObject({ code: "FORBIDDEN" });
-      expect(requestContext.loadGatewayModelCatalog).not.toHaveBeenCalled();
+      expect(requestContext.loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
       expect(readCredential).not.toHaveBeenCalled();
       expect(loadSessionEntry({ agentId: "main", sessionKey })).toEqual(before);
       expect(effects.mutateConfigFileWithRetry).not.toHaveBeenCalled();
@@ -524,8 +537,8 @@ describe("sessions.patch personal model-account ownership", () => {
       const caller = personClient(accountOwnerId);
       const connections = new Set([caller]);
       const requestContext = context(connections);
-      const catalog = createDeferredCore<ModelCatalogEntry[]>();
-      requestContext.loadGatewayModelCatalog.mockReturnValueOnce(catalog.promise);
+      const catalog = createDeferredCore<ReturnType<typeof catalogSnapshot>>();
+      requestContext.loadGatewayModelCatalogSnapshot.mockReturnValueOnce(catalog.promise);
       const readCredential = vi.spyOn(userModelAccounts, "readUserModelAuthProfile");
       const pending = patchSession(
         {
@@ -539,7 +552,7 @@ describe("sessions.patch personal model-account ownership", () => {
       );
       try {
         await vi.waitFor(() =>
-          expect(requestContext.loadGatewayModelCatalog).toHaveBeenCalledOnce(),
+          expect(requestContext.loadGatewayModelCatalogSnapshot).toHaveBeenCalledOnce(),
         );
         if (loss === "invalidated") {
           caller.invalidated = true;
@@ -549,7 +562,7 @@ describe("sessions.patch personal model-account ownership", () => {
           writer.scopes = ["operator.read"];
         }
       } finally {
-        catalog.resolve(modelCatalog);
+        catalog.resolve(catalogSnapshot());
       }
       const response = await pending;
 
@@ -856,7 +869,7 @@ describe("explicit session model runtimes", () => {
       agentRuntime: "codex",
       commandSource: "test",
       operatorRoleActor: { kind: "system" as const },
-      loadGatewayModelCatalog: async () => modelCatalog,
+      loadGatewayModelCatalogSnapshot: async () => catalogSnapshot(),
     };
     const result = await createGatewaySession(options);
     expect(result).toMatchObject({
@@ -912,9 +925,16 @@ describe("explicit session model runtimes", () => {
         agentRuntime: "codex",
         commandSource: "test",
         operatorRoleActor: { kind: "system" },
-        loadGatewayModelCatalog: async () => modelCatalog,
+        loadGatewayModelCatalogSnapshot: async () => catalogSnapshot(),
       }),
     ).toMatchObject({ ok: false, error: { message: "Refresh the model catalog." } });
     expect(loadSessionEntry({ agentId: "main", sessionKey })).toBeUndefined();
   });
+});
+
+registerSessionRuntimeWindowTests({
+  getConfig: () => cfg,
+  getState: () => openClawTestState,
+  patchSession: (request, scopes, requestContext) =>
+    patchSession(request, scopes, { ...context(), ...requestContext }),
 });

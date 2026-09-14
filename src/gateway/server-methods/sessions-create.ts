@@ -609,7 +609,8 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       creation: sessionCreation,
       authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
       armSessionDiffBaselineCapture: !repository,
-      loadGatewayModelCatalog: () => context.loadGatewayModelCatalog({ agentId: sessionAgentId }),
+      loadGatewayModelCatalogSnapshot: () =>
+        context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }),
       commitGuard,
       afterCreate: async (session) => {
         const { key, agentId } = session;

@@ -24,8 +24,9 @@ import {
   normalizeInheritedToolDenylist,
 } from "../agents/inherited-tool-deny.js";
 import { resolveModelProviderAuthConfig } from "../agents/model-auth-provider-route.js";
+import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
 import { findModelCatalogEntry } from "../agents/model-catalog.js";
-import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
+import type { ModelCatalogSnapshot } from "../agents/model-catalog.types.js";
 import { resolveModelContextWindowProfile } from "../agents/model-context-window.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
@@ -33,6 +34,7 @@ import {
   resolveSubagentConfiguredModelSelection,
 } from "../agents/model-selection.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
+import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import {
   forkSessionFromParentWithDecision,
   MODEL_SELECTION_LOCKED_PARENT_FORK_MESSAGE,
@@ -142,7 +144,7 @@ async function existingSessionSelectionWouldChange(params: {
   defaultModel: string;
   defaultProvider: string;
   existingEntry: SessionEntry;
-  loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
+  loadGatewayModelCatalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
   requestedModel?: string;
   requestedAgentRuntime?: string;
   requestedContextWindow?: string;
@@ -186,17 +188,17 @@ async function existingSessionSelectionWouldChange(params: {
   if (!requestedModel) {
     return false;
   }
-  if (!params.loadGatewayModelCatalog) {
+  if (!params.loadGatewayModelCatalogSnapshot) {
     // Public/TUI model selection paths provide the catalog loader used by the
     // patch resolver. Without it, an existing-row model request cannot prove
     // it is a no-op, so non-admin callers must not reach the mutation path.
     return true;
   }
-  const catalog = await params.loadGatewayModelCatalog();
+  const catalog = await params.loadGatewayModelCatalogSnapshot();
   const resolved = resolveSessionPatchModelSelection({
     cfg: params.cfg,
     agentId: params.agentId,
-    catalog,
+    catalog: catalog.entries,
     raw: requestedModel,
     defaultProvider: params.defaultProvider,
     defaultModel: params.defaultModel,
@@ -215,7 +217,7 @@ async function existingSessionSelectionWouldChange(params: {
     const resolvedSubagentDefault = resolveSessionPatchModelSelection({
       cfg: params.cfg,
       agentId: params.agentId,
-      catalog,
+      catalog: catalog.entries,
       raw: params.subagentModelHint,
       defaultProvider: params.defaultProvider,
       defaultModel: params.defaultModel,
@@ -359,7 +361,7 @@ export async function createGatewaySession(params: {
   emitCommandHooks?: boolean;
   resetMainWhenUnspecified?: boolean;
   commandSource: string;
-  loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
+  loadGatewayModelCatalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
   /** Trusted in-process initializer; never populated from public Gateway params. */
   initialEntry?: TrustedInitialSessionEntry;
   /** Keep a new ordinary session unusable until afterCreate succeeds, or roll it back. */
@@ -1081,8 +1083,8 @@ export async function createGatewaySession(params: {
     );
     const runtimeCwd = spawnedCwd ?? sessionRoot;
 
-    const loadModelCatalog = params.loadGatewayModelCatalog;
-    let preparedModelCatalog: ModelCatalogEntry[] | undefined;
+    const loadModelCatalog = params.loadGatewayModelCatalogSnapshot;
+    let preparedModelCatalog: ModelCatalogSnapshot | undefined;
     const created = await createSessionEntryWithTranscript<ErrorShape>(
       {
         agentId: target.agentId,
@@ -1208,7 +1210,7 @@ export async function createGatewaySession(params: {
             defaultModel: gateDefaultModel.model,
             defaultProvider: gateDefaultModel.provider,
             existingEntry,
-            loadGatewayModelCatalog: params.loadGatewayModelCatalog,
+            loadGatewayModelCatalogSnapshot: params.loadGatewayModelCatalogSnapshot,
             requestedModel,
             requestedAgentRuntime: params.agentRuntime,
             requestedContextWindow,
@@ -1256,7 +1258,7 @@ export async function createGatewaySession(params: {
             ...(requestedToolOverrides ? { toolOverrides: params.toolOverrides } : {}),
             ...(params.permissionMode ? { permissionMode: params.permissionMode } : {}),
           },
-          loadGatewayModelCatalog: loadModelCatalog
+          loadGatewayModelCatalogSnapshot: loadModelCatalog
             ? async () => {
                 preparedModelCatalog = await loadModelCatalog();
                 return preparedModelCatalog;
@@ -1502,13 +1504,28 @@ export async function createGatewaySession(params: {
           };
         }
         const childModel = resolveSessionModelRef(params.cfg, entry, target.agentId);
-        const childCatalog = params.loadGatewayModelCatalog
-          ? await params.loadGatewayModelCatalog()
-          : [];
-        const childCatalogEntry = findModelCatalogEntry(childCatalog, {
+        const childCatalog = params.loadGatewayModelCatalogSnapshot
+          ? await params.loadGatewayModelCatalogSnapshot()
+          : undefined;
+        const childLogicalEntry = findModelCatalogEntry(childCatalog?.entries ?? [], {
           provider: childModel.provider,
           modelId: childModel.model,
         });
+        const childCatalogEntry =
+          childLogicalEntry && childCatalog
+            ? selectModelCatalogRuntimeEntry({
+                entry: childLogicalEntry,
+                routeVariants: childCatalog.routeVariants,
+                runtimeId: resolveEffectiveAgentRuntime({
+                  cfg: params.cfg,
+                  agentId: target.agentId,
+                  provider: childModel.provider,
+                  modelId: childModel.model,
+                  sessionKey: target.canonicalKey,
+                  sessionEntry: entry,
+                }),
+              }).entry
+            : undefined;
         const childContextWindow = resolveModelContextWindowProfile({
           catalogEntry: childCatalogEntry,
           selected: entry.contextWindow,
@@ -1609,7 +1626,7 @@ export async function createGatewaySession(params: {
         patch: { key: target.canonicalKey, agentRuntime: params.agentRuntime },
         sessionKey: target.canonicalKey,
         agentId: target.agentId,
-        catalog: preparedModelCatalog,
+        catalog: preparedModelCatalog?.entries,
       });
     }
     if (createdNewEntry) {

@@ -8,6 +8,7 @@ import { resolveAgentConfig, resolveSessionAgentId } from "../agents/agent-scope
 import { resolveCliRuntimeCanonicalProvider } from "../agents/cli-backends.js";
 import { resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
+import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
 import {
   findModelCatalogEntry,
   type ModelCatalogEntry,
@@ -239,6 +240,7 @@ type GatewaySessionThinkingProjectionParams = {
   sessionKey: string;
   entry?: SessionEntry;
   modelCatalog?: ModelCatalogEntry[];
+  modelCatalogRouteVariants?: readonly ModelCatalogEntry[];
   rowContext?: SessionListRowContext;
   providerPolicySource?: ThinkingProviderPolicySource;
 };
@@ -249,7 +251,7 @@ export function resolveGatewaySessionThinkingProjectionInternal(
   const { acpMeta, agentRuntime, runtimeSelectionLocked } =
     resolveGatewaySessionRuntimeProjection(params);
   // ACP owns runtime selection, but context-window projection still needs model metadata.
-  const catalogEntry = params.modelCatalog
+  const logicalEntry = params.modelCatalog
     ? (params.rowContext?.findModelCatalogEntry ?? findModelCatalogEntry)(params.modelCatalog, {
         provider: params.provider,
         modelId: params.model,
@@ -261,19 +263,29 @@ export function resolveGatewaySessionThinkingProjectionInternal(
         cfg: params.cfg,
         provider: params.provider,
         modelId: params.model,
-        modelApi: catalogEntry?.api,
-        modelBaseUrl: catalogEntry?.baseUrl,
+        modelApi: logicalEntry?.api,
+        modelBaseUrl: logicalEntry?.baseUrl,
         agentScope: { kind: "prepared", agentId: params.agentId },
         sessionKey: params.sessionKey,
         sessionEntry: params.entry,
       });
+  const catalogEntry =
+    logicalEntry && params.modelCatalogRouteVariants
+      ? (params.rowContext?.selectModelCatalogRuntimeEntry ?? selectModelCatalogRuntimeEntry)({
+          entry: logicalEntry,
+          routeVariants: params.modelCatalogRouteVariants,
+          runtimeId: thinkingRuntime,
+        }).entry
+      : logicalEntry;
+  const runtimeCatalog =
+    catalogEntry && params.modelCatalogRouteVariants ? [catalogEntry] : params.modelCatalog;
   const metadata = resolveGatewayModelThinkingProfile({
     cfg: params.cfg,
     agentId: params.agentId,
     provider: params.provider,
     model: params.model,
     agentRuntime: thinkingRuntime,
-    modelCatalog: params.modelCatalog,
+    modelCatalog: runtimeCatalog,
     rowContext: params.rowContext,
     providerPolicySource: params.providerPolicySource,
   });
@@ -283,7 +295,7 @@ export function resolveGatewaySessionThinkingProjectionInternal(
         provider: params.provider,
         model: params.model,
         level: storedThinkingLevel,
-        modelCatalog: params.modelCatalog,
+        modelCatalog: runtimeCatalog,
         agentRuntime: thinkingRuntime,
         providerPolicySource: params.providerPolicySource,
         rowContext: params.rowContext,
@@ -651,6 +663,7 @@ export function projectSessionPatchResult(params: {
   cfg: OpenClawConfig;
   entry: SessionEntry;
   modelCatalog?: ModelCatalogEntry[];
+  modelCatalogRouteVariants?: readonly ModelCatalogEntry[];
   storePath: string;
   targetAgentId: string;
 }): SessionsPatchResult {
@@ -674,6 +687,7 @@ export function projectSessionPatchResult(params: {
     sessionKey: params.canonicalKey,
     entry: params.entry,
     modelCatalog,
+    modelCatalogRouteVariants: params.modelCatalogRouteVariants,
   });
   const contextWindow = resolveModelContextWindowProfile({
     catalogEntry: thinking.catalogEntry,

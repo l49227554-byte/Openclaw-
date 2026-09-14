@@ -47,6 +47,58 @@ const models: ModelCatalogEntry[] = [
 ];
 
 describe("new-session runtime choice", () => {
+  it.each([
+    { selection: "inherited", model: undefined, agentRuntime: undefined, expected: "High" },
+    {
+      selection: "saved base model",
+      model: "openai/gpt-5.6-sol",
+      agentRuntime: undefined,
+      expected: "High",
+    },
+    {
+      selection: "explicit alternate",
+      model: "openai/gpt-5.6-sol",
+      agentRuntime: "codex",
+      expected: "Low",
+    },
+  ])(
+    "keeps thinking-default ownership for $selection",
+    async ({ model, agentRuntime, expected }) => {
+      const levels = [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+      ];
+      const { context } = contextWith([
+        {
+          ...models[0]!,
+          thinkingLevels: levels,
+          thinkingDefault: undefined,
+          runtimeChoices: [
+            { ...models[0]!.runtimeChoices![0]!, thinkingLevels: levels, thinkingDefault: "low" },
+          ],
+        },
+      ]);
+      Object.assign(context.sessions.state.result!.defaults, {
+        model: "gpt-5.6-sol",
+        thinkingLevels: levels,
+        thinkingDefault: "high",
+      });
+      const control = new NewSessionModelControl(() => undefined);
+      control.load(context, "main", true, { agent, preference: { model, agentRuntime } });
+      try {
+        await vi.waitFor(() =>
+          expect(
+            renderControl(control, context, "main", agent)
+              .querySelector('[data-chat-thinking-select="true"]')
+              ?.getAttribute("title"),
+          ).toBe(expected),
+        );
+      } finally {
+        control.reset();
+      }
+    },
+  );
+
   it("keeps the same-name runtime choice through preferences and create while using its own capabilities", async () => {
     const { context } = contextWith(models);
     const gatewayUrl = "ws://runtime-choice.example";

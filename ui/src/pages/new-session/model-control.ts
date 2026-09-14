@@ -1,8 +1,5 @@
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "@openclaw/gateway-client/browser";
-import type {
-  ChatAccountSelection,
-  UserModelAccount,
-} from "../../../../packages/gateway-protocol/src/index.ts";
+import type { ChatAccountSelection, UserModelAccount } from "@openclaw/gateway-protocol";
 import type {
   FastMode,
   GatewayAgentRow,
@@ -12,6 +9,7 @@ import type {
 import type { ApplicationContext } from "../../app/context.ts";
 import { hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { t } from "../../i18n/index.ts";
+import { registerModelControlsEnglish } from "../../i18n/locales/en-model-controls.ts";
 import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import {
   isChatFastModeProviderSupported,
@@ -47,6 +45,8 @@ import {
   resolveDraftThinkingTarget,
 } from "./model-target.ts";
 import type { NewSessionPreference } from "./preferences.ts";
+
+registerModelControlsEnglish();
 
 type NewSessionMetadataClient = NonNullable<ApplicationContext["gateway"]["snapshot"]["client"]>;
 type NewSessionMetadataState = ChatModelCatalogState & {
@@ -653,7 +653,7 @@ export class NewSessionModelControl {
       sessionsResult: agentDefaultsAvailable ? sourceResult : null,
       stream: null,
       thinkingDefaults,
-      thinkingSession: resolveDraftThinkingTarget(selectedTarget, undefined, this.thinkingLevel),
+      thinkingSession: resolveDraftThinkingTarget(selectedTarget, undefined, this),
       onModelSelect: (value, _sessionKey, agentRuntime) => {
         this.selectionGeneration += 1;
         this.restoringPreference = false;

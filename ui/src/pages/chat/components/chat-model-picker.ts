@@ -9,6 +9,7 @@ import {
   renderProviderBrandIcon,
 } from "../../../components/provider-icon.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerModelControlsEnglish } from "../../../i18n/locales/en-model-controls.ts";
 import type { ModelProviderAuthLabel as ChatModelProviderAuth } from "../../../lib/model-provider-auth-label.ts";
 import {
   type ChatContextWindowControlParams,
@@ -38,6 +39,8 @@ import {
   updateModelSearch,
 } from "./chat-model-picker-search.ts";
 import { handleChatComposerDetailsToggle, syncChatPickerOverlay } from "./chat-picker-overlay.ts";
+
+registerModelControlsEnglish();
 
 export type { ChatModelCatalogState } from "./chat-model-catalog-state.ts";
 

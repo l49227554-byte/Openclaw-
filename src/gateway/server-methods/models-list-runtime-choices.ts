@@ -9,7 +9,10 @@ import {
   resolveCatalogDecisionRuntime,
   type createModelCatalogDecisions,
 } from "../../agents/model-catalog-decisions.js";
-import { createModelCatalogView } from "../../agents/model-catalog-view.js";
+import {
+  createModelCatalogView,
+  selectModelCatalogRuntimeEntry,
+} from "../../agents/model-catalog-view.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { resolveCompatibleAgentRuntimeForProvider } from "../../agents/session-runtime-compat.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -61,16 +64,11 @@ export async function prepareModelPickerRuntimeChoices(params: {
             runtime: runtimeId,
             cfg,
           }) === runtimeId;
-        const runtimeVariants = variants
-          .filter((variant) => !variant.nativeRuntime || variant.nativeRuntime === runtimeId)
-          .toSorted(
-            (a, b) => Number(b.nativeRuntime === runtimeId) - Number(a.nativeRuntime === runtimeId),
-          );
-        const runtimeEntry = runtimeVariants[0] ?? {
-          id: entry.id,
-          name: entry.name,
-          provider: entry.provider,
-        };
+        const { entry: runtimeEntry, variants: runtimeVariants } = selectModelCatalogRuntimeEntry({
+          entry,
+          routeVariants: variants,
+          runtimeId,
+        });
         const runtimeView = createModelCatalogView({
           cfg,
           catalog: [runtimeEntry],

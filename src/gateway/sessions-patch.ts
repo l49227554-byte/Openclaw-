@@ -17,7 +17,7 @@ import {
   requiresAgentHarnessPluginSelection,
   resolveAgentHarnessOwnerPluginIds,
 } from "../agents/harness/runtime-plugin-load-plan.js";
-import type { ModelCatalogEntry } from "../agents/model-catalog.js";
+import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../agents/model-catalog.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
   resolveDefaultModelForAgent,
@@ -120,7 +120,7 @@ type SessionPatchPreparation =
   | { kind: "complete"; result: SessionPatchProjectionResult }
   | {
       kind: "model-catalog";
-      finish: (catalog: ModelCatalogEntry[] | undefined) => SessionPatchProjectionResult;
+      finish: (catalog: ModelCatalogSnapshot | undefined) => SessionPatchProjectionResult;
     };
 
 /** Stop at the first actual catalog use without committing or acquiring runtime effects. */
@@ -147,23 +147,23 @@ export function prepareSessionsPatchEntry(
 /** Project a validated gateway session patch for one session entry. */
 export async function projectSessionsPatchEntry(
   params: SessionPatchProjectionParams & {
-    loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
+    loadGatewayModelCatalogSnapshot?: () => Promise<ModelCatalogSnapshot>;
   },
 ): Promise<SessionPatchProjectionResult> {
   const preparation = prepareSessionsPatchEntry(params);
   if (preparation.kind === "complete") {
     return preparation.result;
   }
-  if (!params.loadGatewayModelCatalog) {
+  if (!params.loadGatewayModelCatalogSnapshot) {
     return preparation.finish(undefined);
   }
-  const catalog = await params.loadGatewayModelCatalog();
-  return preparation.finish(Array.isArray(catalog) ? catalog : []);
+  const catalog = await params.loadGatewayModelCatalogSnapshot();
+  return preparation.finish(catalog);
 }
 
 function* projectSessionPatchSteps(
   params: SessionPatchProjectionParams,
-): Generator<void, SessionPatchProjectionResult, ModelCatalogEntry[] | undefined> {
+): Generator<void, SessionPatchProjectionResult, ModelCatalogSnapshot | undefined> {
   const { cfg, storeKey, patch, creation } = params;
   if ("execSecurity" in patch || "execAsk" in patch) {
     return invalid(
@@ -230,18 +230,18 @@ function* projectSessionPatchSteps(
       })
     );
   };
-  let loadedModelCatalog: ModelCatalogEntry[] | undefined;
+  let loadedModelCatalog: ModelCatalogSnapshot | undefined;
   let catalogPrepared = false;
   function* loadPreparedModelCatalogForPatch(): Generator<
     void,
     ModelCatalogEntry[] | undefined,
-    ModelCatalogEntry[] | undefined
+    ModelCatalogSnapshot | undefined
   > {
     if (!catalogPrepared) {
       loadedModelCatalog = yield;
       catalogPrepared = true;
     }
-    return loadedModelCatalog;
+    return loadedModelCatalog?.entries;
   }
 
   const existing =
@@ -690,6 +690,8 @@ function* projectSessionPatchSteps(
     defaultModel: resolvedDefault.model,
     defaultProvider: resolvedDefault.provider,
     loadModelCatalog: loadPreparedModelCatalogForPatch,
+    runtimeId: resolveThinkingRuntime,
+    routeVariants: () => loadedModelCatalog?.routeVariants,
     next,
     patch,
   });

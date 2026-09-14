@@ -6,6 +6,7 @@ import type {
   SessionsListResult,
 } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
+import { registerModelControlsEnglish } from "../../i18n/locales/en-model-controls.ts";
 import { resolveModelRuntimeEntry, type ModelRuntimeEntry } from "../model-runtime-choice.ts";
 import {
   buildCatalogDisplayLookup,
@@ -16,6 +17,8 @@ import {
   normalizeChatModelOverrideValue,
   resolvePreferredServerChatModelValue,
 } from "./model-ref.ts";
+
+registerModelControlsEnglish();
 
 type ChatModelSelectStateInput = {
   activeSession?: GatewaySessionRow;

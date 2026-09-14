@@ -266,7 +266,7 @@ export async function executeSessionPatchMutations(params: {
   }
 
   const catalogs = createSessionPatchCatalogPreparation(
-    (agentId) => params.context.loadGatewayModelCatalog({ agentId }),
+    (agentId) => params.context.loadGatewayModelCatalogSnapshot({ agentId }),
     params.diagnostics,
   );
 
@@ -285,7 +285,7 @@ export async function executeSessionPatchMutations(params: {
                 cfg,
                 commitGuard: params.targets[target.index]!.commitGuard,
                 context: params.context,
-                loadGatewayModelCatalog: () => catalogs.load(target.targetAgentId),
+                loadGatewayModelCatalogSnapshot: () => catalogs.load(target.targetAgentId),
                 personalModelSelection,
                 ...(pluginOwnerId ? { pluginOwnerId } : {}),
                 target,
@@ -657,7 +657,7 @@ export async function executeSessionPatchMutations(params: {
                         patch: target.fullPatch,
                         sessionKey: target.canonicalKey,
                         agentId: target.targetAgentId,
-                        catalog: await catalogs.available(target.targetAgentId),
+                        catalog: (await catalogs.available(target.targetAgentId))?.entries,
                       });
                     }
                     const afterCommit = archiveTransitions.get(target.index)?.afterCommit;

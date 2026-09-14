@@ -265,7 +265,10 @@ vi.mock("./legacy-inherited-auth-dir.js", async (importOriginal) => ({
   resolveLegacyInheritedAuthDir: () => agentScopeMocks.resolveDefaultAgentDir(),
 }));
 
-vi.mock("./auth-profiles/runtime-materializations.js", () => ({
+vi.mock("./auth-profiles/runtime-materializations.js", async (importOriginal) => ({
+  clearRuntimeAuthMaterializationsAtDatabasePath: (
+    await importOriginal<typeof import("./auth-profiles/runtime-materializations.js")>()
+  ).clearRuntimeAuthMaterializationsAtDatabasePath,
   getPreparedRuntimeAuthMaterializations: () =>
     preparedModelRuntimeMocks.preparedAuthMaterializations,
   registerRuntimeAuthMaterializationMutationListener: (

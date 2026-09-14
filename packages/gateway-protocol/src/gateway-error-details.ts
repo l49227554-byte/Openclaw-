@@ -1,4 +1,4 @@
-import { asProtocolRecord } from "./protocol-value-normalization.js";
+import { asProtocolRecord, isNonEmptyProtocolString } from "./protocol-value-normalization.js";
 import type { SessionMoveExpectedSource } from "./schema/session-placement.js";
 
 /** Display projection for an assistant failure without visible reply content. */
@@ -173,13 +173,11 @@ export function readSessionWorkspaceRecoveryRequiredError(
     details?.code !== GatewayErrorDetailCodes.SESSION_WORKSPACE_RECOVERY_REQUIRED ||
     details.cause !== "device_offline" ||
     details.recoveryAction !== "continue_on_gateway" ||
-    typeof details.sessionId !== "string" ||
-    details.sessionId.length === 0 ||
+    !isNonEmptyProtocolString(details.sessionId) ||
     typeof source?.generation !== "number" ||
     !Number.isSafeInteger(source.generation) ||
     source.generation < 0 ||
-    typeof source.environmentId !== "string" ||
-    source.environmentId.length === 0 ||
+    !isNonEmptyProtocolString(source.environmentId) ||
     typeof source.ownerEpoch !== "number" ||
     !Number.isSafeInteger(source.ownerEpoch) ||
     source.ownerEpoch < 1
@@ -187,9 +185,9 @@ export function readSessionWorkspaceRecoveryRequiredError(
     return null;
   }
   return {
-    code: GatewayErrorDetailCodes.SESSION_WORKSPACE_RECOVERY_REQUIRED,
-    cause: "device_offline",
-    recoveryAction: "continue_on_gateway",
+    code: details.code,
+    cause: details.cause,
+    recoveryAction: details.recoveryAction,
     sessionId: details.sessionId,
     source: {
       generation: source.generation,

@@ -219,7 +219,7 @@ describe("agent harness model catalog", () => {
       } else {
         expect(result.entries).toEqual([observed]);
         expect(result.routeVariants).toEqual([observed]);
-        expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+        expect(onError).toHaveBeenCalledExactlyOnceWith(failure, ["fixture"]);
         expect(onDiscoveryCompleted).toHaveBeenCalledExactlyOnceWith([observed]);
       }
     },

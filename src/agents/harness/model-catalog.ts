@@ -137,7 +137,7 @@ export async function augmentModelCatalogWithAgentHarness(params: {
   includesProvider?: (provider: string) => boolean;
   onDiscoveryStarted?: (provider: string) => void;
   onDiscoveryCompleted?: (rows: readonly ModelCatalogEntry[]) => void;
-  onError?: (error: unknown) => void;
+  onError?: (error: unknown, providers?: readonly string[]) => void;
 }): Promise<ModelCatalogSnapshot> {
   const prepared = params.preparedSnapshot ?? params.snapshot;
   const runtimeProviders = new Map<string, Set<string>>();
@@ -257,7 +257,7 @@ export async function augmentModelCatalogWithAgentHarness(params: {
       ) {
         return params.snapshot;
       }
-      params.onError?.(error);
+      params.onError?.(error, [...providers]);
       continue;
     }
     if (
@@ -320,7 +320,7 @@ export function augmentPreparedModelCatalogWithAgentHarness(params: {
   includesProvider?: (provider: string) => boolean;
   onDiscoveryStarted?: (provider: string) => void;
   onDiscoveryCompleted?: (rows: readonly ModelCatalogEntry[]) => void;
-  onError?: (error: unknown) => void;
+  onError?: (error: unknown, providers?: readonly string[]) => void;
 }): Promise<ModelCatalogSnapshot> {
   const agentId = params.input.agentId ?? resolveDefaultAgentId(params.input.config);
   return augmentModelCatalogWithAgentHarness({

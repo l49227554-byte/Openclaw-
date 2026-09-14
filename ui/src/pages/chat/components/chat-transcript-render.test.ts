@@ -855,7 +855,7 @@ describe("chat transcript rendering", () => {
         {
           ...followUp,
           __openclaw: {
-            ...followUp.__openclaw,
+            ...followUp["__openclaw"],
             replyToPreview: { text: "The original answer", senderLabel: "Molty" },
           },
         },

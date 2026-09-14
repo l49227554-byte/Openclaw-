@@ -3,28 +3,35 @@
  * The synthetic dispatch seam is reached only after real lane admission.
  */
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { runEmbeddedAgent } from "../../agents/embedded-agent-runner/run-orchestrator.js";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
-import type { OpenClawConfig } from "../../config/types.js";
-import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../process/command-queue.js";
+import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.js";
+import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
+import {
+  enqueueCommandInLane,
+  getCommandLaneSnapshot,
+  listCommandLaneTotals,
+} from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { CommandLane } from "../../process/lanes.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
-import type { SystemAgentSession } from "../../system-agent/agent-turn.js";
 import { runSystemAgentTurnWithDeps } from "../../system-agent/agent-turn.test-support.js";
 import { SystemAgentChatEngine } from "../../system-agent/chat-engine.js";
+import type { SystemAgentOverview } from "../../system-agent/overview.js";
 import {
   createSystemAgentPluginMetadataTestSnapshot,
   createSystemAgentVerifiedInferenceTestFixture,
   type SystemAgentPluginMetadataTestSnapshot,
 } from "../../system-agent/system-agent.test-helpers.js";
+import { withLocalGatewayRequestScope } from "../local-request-context.js";
 import { systemAgentHandlers, type SystemAgentChatSession } from "./system-agent.js";
-import type { GatewayClient, GatewayRequestContext } from "./types.js";
+import type { GatewayClient } from "./types.js";
 
 const RESPONSE_TEXT = "Synthetic expert response; no action was executed.";
 const dispatch = vi.hoisted(() =>
@@ -52,10 +59,15 @@ vi.mock("../../agents/harness/runtime-plugin.js", async (importOriginal) => ({
   ),
 }));
 
-const client = {
+const client: GatewayClient = {
   connId: "nested-inference-test-connection",
-  connect: { device: { id: "nested-inference-test-device" }, role: "operator" },
-} as GatewayClient;
+  connect: {
+    minProtocol: 4,
+    maxProtocol: 4,
+    client: { id: "cli", version: "test", platform: "test", mode: "cli" },
+    role: "operator",
+  },
+};
 let metadata: SystemAgentPluginMetadataTestSnapshot;
 const engines: SystemAgentChatEngine[] = [];
 
@@ -97,7 +109,7 @@ async function createConversation() {
     () => createSystemAgentVerifiedInferenceTestFixture(config),
     config,
   );
-  const readConfigFileSnapshot = async () => ({
+  const readConfigFileSnapshot = async (): Promise<ConfigFileSnapshot> => ({
     exists: true,
     valid: true,
     path: path.join(root, "synthetic-config.json"),
@@ -105,12 +117,15 @@ async function createConversation() {
     config,
     runtimeConfig: config,
     sourceConfig: config,
+    raw: JSON.stringify(config),
+    parsed: config,
+    resolved: config,
     issues: [],
+    warnings: [],
+    legacyIssues: [],
   });
   const observed = createDeferred<"waiting" | "dispatched">();
   const captured: {
-    runner?: RunEmbeddedAgentParams;
-    session?: SystemAgentSession;
     mainActiveAtDispatch?: number;
     inferenceActiveAtDispatch?: number;
   } = {};
@@ -119,44 +134,59 @@ async function createConversation() {
     captured.inferenceActiveAtDispatch = getCommandLaneSnapshot(
       CommandLane.SystemAgentInference,
     ).activeCount;
-    await params.preparedRunAdmission!.admit("embedded");
+    await expectDefined(params.preparedRunAdmission, "prepared admission").admit("embedded");
     observed.resolve("dispatched");
     return completedResult();
+  });
+  const overview: SystemAgentOverview = {
+    config: {
+      path: path.join(root, "synthetic-config.json"),
+      exists: true,
+      valid: true,
+      issues: [],
+      hash: "synthetic-config-hash",
+    },
+    agents: [],
+    defaultAgentId: "main",
+    defaultModel: "openai/gpt-5.5",
+    tools: {
+      codex: { command: "codex", found: false },
+      claude: { command: "claude", found: false },
+      gemini: { command: "gemini", found: false },
+      apiKeys: { openai: false, anthropic: false },
+    },
+    gateway: { url: "ws://127.0.0.1:18789", source: "test", reachable: false },
+    references: {
+      docsUrl: "https://docs.openclaw.ai",
+      sourceUrl: "https://github.com/openclaw/openclaw",
+    },
+  };
+  const deps = {
+    ...proof.deps,
+    readConfigFileSnapshot,
+    loadOverview: async () => overview,
+    runEmbeddedAgent: async (runnerParams: RunEmbeddedAgentParams) =>
+      await runEmbeddedAgent({
+        ...runnerParams,
+        onLaneWait: (wait) => {
+          if (wait.waiting) {
+            observed.resolve("waiting");
+          }
+        },
+      }),
+  };
+  const executeOperation = vi.fn(async () => {
+    throw new Error("external operation");
   });
   const engine = new SystemAgentChatEngine(
     {
       surface: "gateway",
       verifiedInference: proof.binding,
       operatorApprovalOnly: true,
-      deps: {
-        ...proof.deps,
-        readConfigFileSnapshot: readConfigFileSnapshot as never,
-        loadOverview: async () => ({ defaultModel: "openai/gpt-5.5" }) as never,
-      },
-      runAgentTurn: async (params) => {
-        captured.session = params.session;
-        return await runSystemAgentTurnWithDeps(params, {
-          ...proof.deps,
-          readConfigFileSnapshot: readConfigFileSnapshot as never,
-          runEmbeddedAgent: async (runnerParams) => {
-            captured.runner = runnerParams;
-            return await runEmbeddedAgent({
-              ...runnerParams,
-              onLaneWait: (wait) => {
-                if (wait.waiting) {
-                  observed.resolve("waiting");
-                }
-              },
-            });
-          },
-        });
-      },
+      deps,
+      runAgentTurn: (params) => runSystemAgentTurnWithDeps(params, deps),
     },
-    {
-      executeOperation: vi.fn(async () => {
-        throw new Error("external operation");
-      }),
-    },
+    { executeOperation },
   );
   engines.push(engine);
   const sessionId = "nested-inference-integration-conversation";
@@ -167,7 +197,7 @@ async function createConversation() {
         engine,
         welcome: "Synthetic welcome",
         lastUsedAt: 1,
-        ownerKey: "device:nested-inference-test-device",
+        ownerKey: "connection:nested-inference-test-connection",
       },
     ],
   ]);
@@ -175,15 +205,25 @@ async function createConversation() {
   const invoke = () =>
     metadata.run(
       () =>
-        systemAgentHandlers["openclaw.chat"]!({
-          params: { sessionId, message: "What is the next setup step?" },
-          client,
-          context: { systemAgentSessions: sessions } as unknown as GatewayRequestContext,
-          respond,
-        } as never),
+        withLocalGatewayRequestScope({ deps: {}, getRuntimeConfig: () => config }, () => {
+          const context = expectDefined(
+            getPluginRuntimeGatewayRequestScope()?.context,
+            "local Gateway context",
+          );
+          context.systemAgentSessions = sessions;
+          const params = { sessionId, message: "What is the next setup step?" };
+          return systemAgentHandlers["openclaw.chat"]!({
+            req: { type: "req", id: "nested-inference", method: "openclaw.chat", params },
+            params,
+            client,
+            context,
+            isWebchatConnect: () => false,
+            respond,
+          });
+        }),
       config,
     );
-  return { captured, invoke, observed, respond };
+  return { captured, invoke, observed, respond, executeOperation };
 }
 
 describe("system-agent nested inference through real Gateway admission", () => {
@@ -192,7 +232,7 @@ describe("system-agent nested inference through real Gateway admission", () => {
     expect(getCommandLaneSnapshot(CommandLane.Main).maxConcurrent).toBe(1);
     const releaseParent = createDeferred();
     const handlerStarted = createDeferred();
-    let handler: Promise<void> | undefined;
+    let handler: Promise<unknown> | undefined;
     const parent = enqueueCommandInLane(CommandLane.Main, async () => {
       handler = Promise.resolve(conversation.invoke());
       handlerStarted.resolve();
@@ -225,6 +265,16 @@ describe("system-agent nested inference through real Gateway admission", () => {
       expect(snapshot.dispatchCount).toBe(1);
       expect(conversation.captured.mainActiveAtDispatch).toBe(1);
       expect(conversation.captured.inferenceActiveAtDispatch).toBe(1);
+      await parent;
+      expect(conversation.respond).toHaveBeenCalledExactlyOnceWith(
+        true,
+        expect.objectContaining({ reply: RESPONSE_TEXT, action: "none" }),
+        undefined,
+      );
+      expect(conversation.executeOperation).not.toHaveBeenCalled();
+      expect(
+        listCommandLaneTotals().filter((lane) => lane.activeCount || lane.queuedCount),
+      ).toEqual([]);
     } finally {
       releaseParent.resolve();
       await parent;

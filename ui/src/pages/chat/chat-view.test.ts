@@ -1427,6 +1427,8 @@ describe("retained input navigation", () => {
 
       props.selectedSession = {
         ...props.selectedSession,
+        key: sessionKey,
+        kind: "direct",
         placement: {
           state: "active",
           ...timing,

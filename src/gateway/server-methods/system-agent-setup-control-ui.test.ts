@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import "../../../ui/src/test-helpers/lit-warnings.setup.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import braveManifest from "../../../extensions/brave/openclaw.plugin.json" with { type: "json" };
 import { i18n } from "../../../ui/src/i18n/index.ts";
 import { createFirstRunContext } from "../../../ui/src/pages/model-setup/model-setup-first-run.test-support.ts";
 import { ModelSetupPage } from "../../../ui/src/pages/model-setup/model-setup-page.ts";
@@ -38,10 +39,10 @@ vi.mock("../../config/config.js", async (importOriginal) => ({
     pluginMetadataSnapshot: createPluginMetadataSnapshotFixture({
       plugins: fixture.providerCapabilities
         ? [
+            braveManifest,
             {
-              id: "search-only",
-              setup: { providers: [{ id: "search-only", authMethods: ["api-key"] }] },
-              contracts: { webSearchProviders: ["search-only"] },
+              id: "legacy-model",
+              setup: { providers: [{ id: "legacy-model", authMethods: ["api-key"] }] },
             },
             {
               id: "mixed",
@@ -49,7 +50,7 @@ vi.mock("../../config/config.js", async (importOriginal) => ({
               setup: {
                 providers: [
                   { id: "mixed-model", authMethods: ["api-key"] },
-                  { id: "mixed-search", authMethods: ["api-key"] },
+                  { id: "mixed-search", envVars: ["MIXED_SEARCH_API_KEY"] },
                 ],
               },
               contracts: { webSearchProviders: ["mixed-search"] },
@@ -179,7 +180,8 @@ describe("selected-agent Gateway detection and Model Setup consent", () => {
       }
       if (fixture.providerCapabilities) {
         expect(page.querySelector('[data-auth-choice="mixed-model-api-key"]')).not.toBeNull();
-        expect(page.querySelector('[data-auth-choice="search-only-api-key"]')).toBeNull();
+        expect(page.querySelector('[data-auth-choice="legacy-model-api-key"]')).not.toBeNull();
+        expect(page.querySelector('[data-auth-choice="brave-api-key"]')).toBeNull();
         expect(page.querySelector('[data-auth-choice="mixed-search-api-key"]')).toBeNull();
       }
       page.querySelector<HTMLButtonElement>('[data-auth-choice="custom-api-key"] button')!.click();

@@ -204,7 +204,6 @@ describe("provider auth choice manifest helpers", () => {
       {
         id: "descriptor",
         origin: "bundled",
-        providers: ["descriptor"],
         setup: { providers: [{ id: "descriptor", authMethods: ["oauth"] }] },
       },
     ]);
@@ -490,7 +489,6 @@ describe("provider auth choice manifest helpers", () => {
         id: "demo-provider",
         name: "Demo Provider",
         origin: "global",
-        providers: ["demo-provider"],
         setup: {
           providers: [
             {
@@ -530,7 +528,6 @@ describe("provider auth choice manifest helpers", () => {
       {
         id: "evil-provider",
         origin: "workspace",
-        providers: ["evil-provider"],
         setup: {
           providers: [
             {
@@ -570,7 +567,6 @@ describe("provider auth choice manifest helpers", () => {
       {
         id: "no-runtime-provider",
         origin: "global",
-        providers: ["no-runtime-provider"],
         setup: {
           providers: [
             {
@@ -598,7 +594,6 @@ describe("provider auth choice manifest helpers", () => {
       {
         id: "runtime-provider",
         origin: "global",
-        providers: ["runtime-provider"],
         setupSource: "/plugins/runtime-provider/setup-entry.cjs",
         setup: {
           providers: [
@@ -619,7 +614,6 @@ describe("provider auth choice manifest helpers", () => {
       {
         id: "explicit-provider",
         origin: "global",
-        providers: ["explicit-provider"],
         providerAuthChoices: [
           {
             provider: "explicit-provider",

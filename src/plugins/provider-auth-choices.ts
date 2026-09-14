@@ -134,7 +134,7 @@ function listSetupProviderAuthChoiceCandidates(plugin: PluginManifestRecord) {
   );
   return (plugin.setup?.providers ?? []).flatMap((provider) => {
     const providerId = normalizeManifestAuthDescriptorId(provider.id);
-    if (!plugin.providers.includes(providerId)) {
+    if (!providerId) {
       return [];
     }
     return (provider.authMethods ?? [])

@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResolvedClickClackAccount } from "./types.js";
+import type { ClickClackEvent, ResolvedClickClackAccount } from "./types.js";
 
 class FakeSocket extends EventEmitter {
   emitErrorOnClose = false;
@@ -98,7 +98,11 @@ function createGatewayContext(
   };
 }
 
-function createBacklogEvent(index: number, type = "channel.updated", messageIndex = index) {
+function createBacklogEvent(
+  index: number,
+  type = "channel.updated",
+  messageIndex = index,
+): ClickClackEvent {
   const isMessageEvent =
     type === "message.created" || type === "thread.reply_created" || type === "message.updated";
   return {

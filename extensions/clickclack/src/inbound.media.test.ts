@@ -189,6 +189,9 @@ describe("ClickClack inbound media", () => {
       }),
     );
     const ctxPayload = vi.mocked(runtime.channel.inbound.dispatch).mock.calls[0]?.[0].ctxPayload;
+    if (!ctxPayload) {
+      throw new Error("expected inbound dispatch context");
+    }
     expect(ctxPayload.BodyForAgent).toBe(messageBody);
     expect(ctxPayload.media).toEqual([
       expect.objectContaining({

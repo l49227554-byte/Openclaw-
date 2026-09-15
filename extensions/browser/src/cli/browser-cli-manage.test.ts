@@ -26,7 +26,7 @@ describe("browser manage output", () => {
 
   beforeEach(() => {
     previousExitCode = process.exitCode;
-    process.exitCode = undefined;
+    process.exitCode = 0;
     getBrowserManageCallBrowserRequestMock().mockClear();
     getBrowserCliRuntimeCapture().resetRuntimeCapture();
     getBrowserCliRuntime().exit.mockClear();
@@ -34,7 +34,7 @@ describe("browser manage output", () => {
   });
 
   afterEach(() => {
-    process.exitCode = previousExitCode;
+    process.exitCode = previousExitCode ?? 0;
   });
 
   it("shows chrome-mcp transport for existing-session status without fake CDP fields", async () => {
@@ -490,41 +490,203 @@ describe("browser manage output", () => {
     expect(getBrowserManageCallBrowserRequestMock()).not.toHaveBeenCalled();
   });
 
+  it("prints authenticated extension drift from the canonical browser doctor report", async () => {
+    getBrowserManageCallBrowserRequestMock().mockImplementation(async (_opts: unknown, req) => {
+      if (req.path === "/doctor") {
+        return {
+          ok: true,
+          checks: [
+            {
+              id: "extension-version",
+              label: "Chrome extension version",
+              status: "warn",
+              summary: "running 2.0.0; bundled 2.2.0 (mismatch)",
+              fixHint: "Reload the OpenClaw extension.",
+            },
+          ],
+          status: {
+            enabled: true,
+            profile: "chrome",
+            driver: "extension",
+            transport: "extension",
+            running: true,
+            cdpReady: true,
+          },
+        };
+      }
+      if (req.path === "/profiles") {
+        return { profiles: [{ name: "chrome", running: true }] };
+      }
+      if (req.path === "/tabs") {
+        return { running: true, tabs: [] };
+      }
+      throw new Error(`unexpected browser route: ${req.path}`);
+    });
+
+    const program = createBrowserManageProgram();
+    await program.parseAsync(["browser", "--browser-profile", "chrome", "doctor"], {
+      from: "user",
+    });
+
+    expect(lastRuntimeLog()).toContain(
+      "WARN extension-version: running 2.0.0; bundled 2.2.0 (mismatch); Reload the OpenClaw extension.",
+    );
+    expect(process.exitCode).toBe(0);
+    expect(getBrowserManageCallBrowserRequestMock().mock.calls[0]?.[1]).toMatchObject({
+      path: "/doctor",
+      query: { profile: "chrome" },
+    });
+  });
+
+  it("keeps unavailable extension version evidence informational and nonfatal", async () => {
+    getBrowserManageCallBrowserRequestMock().mockImplementation(async (_opts: unknown, req) => {
+      if (req.path === "/doctor") {
+        return {
+          checks: [
+            {
+              id: "extension-version",
+              label: "Chrome extension version",
+              status: "info",
+              summary: "version data unavailable",
+            },
+          ],
+          status: {
+            enabled: true,
+            profile: "chrome",
+            transport: "extension",
+            running: true,
+          },
+        };
+      }
+      return req.path === "/profiles"
+        ? { profiles: [{ name: "chrome", running: true }] }
+        : { running: true, tabs: [] };
+    });
+
+    const program = createBrowserManageProgram();
+    await program.parseAsync(["browser", "--browser-profile", "chrome", "doctor"], {
+      from: "user",
+    });
+
+    expect(lastRuntimeLog()).toContain("INFO extension-version: version data unavailable");
+    expect(lastRuntimeLog()).not.toContain("WARN extension-version");
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("preserves one nonfatal JSON report for confirmed extension version drift", async () => {
+    getBrowserManageCallBrowserRequestMock().mockImplementation(async (_opts: unknown, req) => {
+      if (req.path === "/doctor") {
+        return {
+          checks: [
+            {
+              id: "extension-version",
+              label: "Chrome extension version",
+              status: "warn",
+              summary: "running 2.0.0; bundled 2.2.0 (mismatch)",
+              fixHint: "Reload the OpenClaw extension.",
+            },
+          ],
+          status: {
+            enabled: true,
+            profile: "chrome",
+            transport: "extension",
+            running: true,
+          },
+        };
+      }
+      return req.path === "/profiles"
+        ? { profiles: [{ name: "chrome", running: true }] }
+        : { running: true, tabs: [] };
+    });
+
+    const program = createBrowserManageProgram();
+    await program.parseAsync(["browser", "--json", "doctor"], { from: "user" });
+
+    expect(parseSingleRuntimeJson()).toMatchObject({
+      ok: true,
+      checks: expect.arrayContaining([
+        expect.objectContaining({ name: "extension-version", ok: true, warning: true }),
+      ]),
+    });
+    expect(getBrowserCliRuntime().writeJson).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("runs exactly one deep snapshot after consuming the canonical doctor report", async () => {
+    getBrowserManageCallBrowserRequestMock().mockImplementation(async (_opts: unknown, req) => {
+      if (req.path === "/doctor") {
+        return {
+          checks: [],
+          status: {
+            enabled: true,
+            profile: "chrome",
+            transport: "extension",
+            running: true,
+          },
+        };
+      }
+      if (req.path === "/profiles") {
+        return { profiles: [{ name: "chrome", running: true }] };
+      }
+      if (req.path === "/tabs") {
+        return { running: true, tabs: [] };
+      }
+      if (req.path === "/snapshot") {
+        return { ok: true, format: "aria", nodes: [{ role: "document" }] };
+      }
+      throw new Error(`unexpected browser route: ${req.path}`);
+    });
+
+    const program = createBrowserManageProgram();
+    await program.parseAsync(["browser", "--browser-profile", "chrome", "doctor", "--deep"], {
+      from: "user",
+    });
+
+    expect(lastRuntimeLog()).toContain("OK live-snapshot: 1 nodes/lines");
+    const snapshotCalls = getBrowserManageCallBrowserRequestMock().mock.calls.filter(
+      ([, request]) => request.path === "/snapshot",
+    );
+    expect(snapshotCalls).toHaveLength(1);
+  });
+
   it("prints a readable browser doctor report", async () => {
     getBrowserManageCallBrowserRequestMock().mockImplementation(async (_opts: unknown, req) => {
-      if (req.path === "/") {
+      if (req.path === "/doctor") {
         return {
-          enabled: true,
-          profile: "openclaw",
-          driver: "openclaw",
-          transport: "cdp",
-          running: true,
-          cdpReady: true,
-          cdpHttp: true,
-          pid: 4321,
-          cdpPort: 18792,
-          cdpUrl: "http://127.0.0.1:18792",
-          chosenBrowser: "chrome",
-          userDataDir: null,
-          color: "#00AA00",
-          headless: false,
-          noSandbox: false,
-          executablePath: null,
-          attachOnly: false,
-          graphics: {
-            status: "available",
-            observedAt: 123,
-            acceleration: "software",
-            renderer: "ANGLE (Google, SwiftShader Device)",
-            vendor: "Google Inc.",
-            version: "OpenGL ES 3.0",
-            backend: "(gl=angle,angle=swiftshader)",
-            devices: [],
-            featureStatus: {},
-            disabledFeatures: [],
-            driverBugWorkarounds: [],
-            videoDecoding: [],
-            videoEncoding: [],
+          checks: [],
+          status: {
+            enabled: true,
+            profile: "openclaw",
+            driver: "openclaw",
+            transport: "cdp",
+            running: true,
+            cdpReady: true,
+            cdpHttp: true,
+            pid: 4321,
+            cdpPort: 18792,
+            cdpUrl: "http://127.0.0.1:18792",
+            chosenBrowser: "chrome",
+            userDataDir: null,
+            color: "#00AA00",
+            headless: false,
+            noSandbox: false,
+            executablePath: null,
+            attachOnly: false,
+            graphics: {
+              status: "available",
+              observedAt: 123,
+              acceleration: "software",
+              renderer: "ANGLE (Google, SwiftShader Device)",
+              vendor: "Google Inc.",
+              version: "OpenGL ES 3.0",
+              backend: "(gl=angle,angle=swiftshader)",
+              devices: [],
+              featureStatus: {},
+              disabledFeatures: [],
+              driverBugWorkarounds: [],
+              videoDecoding: [],
+              videoEncoding: [],
+            },
           },
         };
       }
@@ -557,17 +719,20 @@ describe("browser manage output", () => {
     expect(output).toContain("OK tabs: 1 visible, use tab reference t1");
     expect(getBrowserCliRuntime().writeJson).not.toHaveBeenCalled();
     expect(getBrowserCliRuntime().exit).not.toHaveBeenCalled();
-    expect(process.exitCode).toBeUndefined();
+    expect(process.exitCode).toBe(0);
   });
 
   it("prints one complete JSON browser doctor failure before setting exit status", async () => {
     getBrowserManageCallBrowserRequestMock().mockImplementation(async (_opts: unknown, req) => {
-      if (req.path === "/") {
+      if (req.path === "/doctor") {
         return {
-          enabled: false,
-          profile: "openclaw",
-          transport: "cdp",
-          running: false,
+          checks: [],
+          status: {
+            enabled: false,
+            profile: "openclaw",
+            transport: "cdp",
+            running: false,
+          },
         };
       }
       if (req.path === "/profiles") {
@@ -596,12 +761,15 @@ describe("browser manage output", () => {
 
   it("prints one JSON browser doctor report and succeeds when every check passes", async () => {
     getBrowserManageCallBrowserRequestMock().mockImplementation(async (_opts: unknown, req) => {
-      if (req.path === "/") {
+      if (req.path === "/doctor") {
         return {
-          enabled: true,
-          profile: "openclaw",
-          transport: "cdp",
-          running: true,
+          checks: [],
+          status: {
+            enabled: true,
+            profile: "openclaw",
+            transport: "cdp",
+            running: true,
+          },
         };
       }
       if (req.path === "/profiles") {
@@ -620,7 +788,7 @@ describe("browser manage output", () => {
     expect(getBrowserCliRuntimeCapture().runtimeErrors).toEqual([]);
     expect(getBrowserCliRuntime().writeJson).toHaveBeenCalledTimes(1);
     expect(getBrowserCliRuntime().exit).not.toHaveBeenCalled();
-    expect(process.exitCode).toBeUndefined();
+    expect(process.exitCode).toBe(0);
   });
 
   it("prints a readable browser doctor failure when gateway auth SecretRefs are unavailable", async () => {
@@ -642,5 +810,40 @@ describe("browser manage output", () => {
     expect(getBrowserCliRuntime().writeJson).not.toHaveBeenCalled();
     expect(getBrowserCliRuntime().exit).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
+  });
+
+  it.each([
+    { deleted: false, json: false },
+    { deleted: true, json: false },
+    { deleted: false, json: true },
+    { deleted: true, json: true },
+  ])("reports profile deletion with deleted=$deleted and json=$json", async ({ deleted, json }) => {
+    const result = { ok: true, profile: "proof-retained", deleted };
+    getBrowserManageCallBrowserRequestMock().mockResolvedValueOnce(result);
+
+    const program = createBrowserManageProgram();
+    await program.parseAsync(
+      ["browser", ...(json ? ["--json"] : []), "delete-profile", "--name", result.profile],
+      { from: "user" },
+    );
+
+    expect(getBrowserManageCallBrowserRequestMock()).toHaveBeenCalledWith(expect.anything(), {
+      method: "DELETE",
+      path: "/profiles/proof-retained",
+    });
+    if (json) {
+      expect(parseSingleRuntimeJson()).toEqual(result);
+      expect(getBrowserCliRuntime().writeJson).toHaveBeenCalledTimes(1);
+    } else {
+      expect(lastRuntimeLog()).toBe(
+        deleted
+          ? '🦞 Deleted profile "proof-retained" (user data removed)'
+          : '🦞 Deleted profile "proof-retained" (user data removal not confirmed)',
+      );
+      expect(getBrowserCliRuntime().writeJson).not.toHaveBeenCalled();
+    }
+    expect(getBrowserCliRuntimeCapture().runtimeErrors).toEqual([]);
+    expect(getBrowserCliRuntime().exit).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
   });
 });

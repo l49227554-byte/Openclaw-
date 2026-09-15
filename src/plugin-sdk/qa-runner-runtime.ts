@@ -3,7 +3,7 @@ import type { Command } from "commander";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
 import {
   loadBundledPluginManifestRegistry,
-  loadPluginManifestRegistry,
+  loadPluginManifestRegistryCore,
 } from "../plugins/manifest-registry.js";
 import type { OpenClawConfig } from "./config-contracts.js";
 import {
@@ -19,6 +19,7 @@ import type {
 } from "./qa-channel-protocol.js";
 
 type QaRunnerTransportPolicy = {
+  directMessageOnly?: true;
   requireGroupMention?: true;
   senderAllowlist?: readonly string[];
   topLevelReplies?: true;
@@ -82,6 +83,7 @@ type QaRunnerCredentialHost = {
 };
 
 type QaRunnerTransportFlowPreparationInput = {
+  signal?: AbortSignal;
   config: Record<string, unknown>;
   scenarioId: string;
   scenarioTitle: string;
@@ -93,7 +95,7 @@ type QaRunnerTransportFlowPreparationInput = {
     call: (
       method: string,
       params?: unknown,
-      options?: { expectFinal?: boolean; timeoutMs?: number },
+      options?: { deadlineMs?: number; expectFinal?: boolean; timeoutMs?: number },
     ) => Promise<unknown>;
     restartAfterStateMutation?: (
       mutateState: (context: {
@@ -121,6 +123,7 @@ type QaRunnerTransportAdapterDefinition = {
   requiredPluginIds: readonly string[];
   supportedActions: readonly ("delete" | "edit" | "react" | "thread-create")[];
   assertTransportHealthy?: () => void;
+  describeTransportState?: () => string;
   resetTransport?: () => void | Promise<void>;
   sendInbound: (input: QaBusInboundMessageInput) => Promise<QaBusMessage>;
   sendNativeCommand?: (
@@ -182,6 +185,8 @@ type QaRunnerTransportAdapterDefinition = {
 
 type QaRunnerTransportFactory = {
   id: string;
+  /** Enables module-backed scenarios; every created adapter must implement `prepareFlow`. */
+  supportsModuleFlows?: true;
   /** Each create() call owns isolated runtime state and may run concurrently. */
   isolatesInstances?: boolean;
   matches: (context: { channelId: string; driver: string }) => boolean;
@@ -204,6 +209,7 @@ export type QaRunnerCliRegistration = {
 
 /** Normalized options passed from live-transport QA CLIs into lane runners. */
 export type LiveTransportQaCommandOptions = {
+  concurrency?: number;
   repoRoot?: string;
   outputDir?: string;
   providerMode?: string;
@@ -237,6 +243,7 @@ export type LiveTransportQaSuiteCommandOptions = {
 };
 
 type LiveTransportQaCommanderOptions = {
+  concurrency?: number;
   repoRoot?: string;
   outputDir?: string;
   providerMode?: string;
@@ -266,6 +273,10 @@ export type LiveTransportQaCredentialCliOptions = {
 /** Declarative command metadata and runner used to install a live-transport QA CLI. */
 export type LiveTransportQaCliRegistrationOptions = {
   commandName: string;
+  concurrency?: {
+    help: string;
+    parse: (value: string) => number;
+  };
   credentialFileHelp?: string;
   credentialOptions?: LiveTransportQaCredentialCliOptions;
   defaultProviderMode: string;
@@ -296,28 +307,6 @@ function collectLiveTransportQaStringOption(value: string, previous: string[]) {
   return trimmed ? [...previous, trimmed] : previous;
 }
 
-function mapLiveTransportQaCommanderOptions(
-  opts: LiveTransportQaCommanderOptions,
-): LiveTransportQaCommandOptions {
-  return {
-    repoRoot: opts.repoRoot,
-    outputDir: opts.outputDir,
-    providerMode: opts.providerMode,
-    primaryModel: opts.model,
-    alternateModel: opts.altModel,
-    fastMode: opts.fast,
-    allowFailures: opts.allowFailures,
-    failFast: opts.failFast,
-    profile: opts.profile,
-    scenarioIds: opts.scenario,
-    listScenarios: opts.listScenarios,
-    sutAccountId: opts.sutAccount,
-    credentialFile: opts.credentialFile,
-    credentialSource: opts.credentialSource,
-    credentialRole: opts.credentialRole,
-  };
-}
-
 function registerLiveTransportQaCli(
   params: LiveTransportQaCliRegistrationOptions & {
     qa: Command;
@@ -333,7 +322,11 @@ function registerLiveTransportQaCli(
     .option("--model <ref>", "Primary provider/model ref")
     .option("--alt-model <ref>", "Alternate provider/model ref")
     .option("--scenario <id>", params.scenarioHelp, collectLiveTransportQaStringOption, [])
-    .option("--fast", "Enable provider fast mode where supported", false);
+    .option("--fast", "Enable provider fast mode where supported");
+
+  if (params.concurrency) {
+    command.option("--concurrency <count>", params.concurrency.help, params.concurrency.parse);
+  }
 
   if (params.allowFailuresHelp) {
     command.option("--allow-failures", params.allowFailuresHelp, false);
@@ -369,7 +362,28 @@ function registerLiveTransportQaCli(
   }
 
   command.action(async (opts: LiveTransportQaCommanderOptions) => {
-    await params.run(mapLiveTransportQaCommanderOptions(opts));
+    // The collector drops blanks; explicit selection must not broaden into a default run.
+    if (command.getOptionValueSource("scenario") === "cli" && opts.scenario?.length === 0) {
+      throw new Error("--scenario must name at least one non-empty scenario id.");
+    }
+    await params.run({
+      concurrency: opts.concurrency,
+      repoRoot: opts.repoRoot,
+      outputDir: opts.outputDir,
+      providerMode: opts.providerMode,
+      primaryModel: opts.model,
+      alternateModel: opts.altModel,
+      fastMode: opts.fast,
+      allowFailures: opts.allowFailures,
+      failFast: opts.failFast,
+      profile: opts.profile,
+      scenarioIds: opts.scenario,
+      listScenarios: opts.listScenarios,
+      sutAccountId: opts.sutAccount,
+      credentialFile: opts.credentialFile,
+      credentialSource: opts.credentialSource,
+      credentialRole: opts.credentialRole,
+    });
   });
 }
 
@@ -404,7 +418,13 @@ type QaRuntimeSurface = {
       preferredLiveModel?: string;
     },
   ) => string;
-  startQaLiveLaneGateway: (...args: unknown[]) => Promise<unknown>;
+  createQaLiveLaneGateway: () => {
+    start: (...args: unknown[]) => Promise<unknown>;
+    stop: () => Promise<{
+      process: "never-spawned" | "confirmed-stopped" | "unconfirmed";
+      errors: unknown[];
+    }>;
+  };
   runLiveTransportQaSuiteCommand: (params: LiveTransportQaSuiteCommandOptions) => Promise<unknown>;
 };
 
@@ -483,7 +503,9 @@ function listDeclaredQaRunnerPlugins(
 > {
   // Private QA is a source-checkout harness. Its command tree must be derived
   // from repo-owned manifests before Commander pre-action hooks can run.
-  const registry = env ? loadBundledPluginManifestRegistry({ env }) : loadPluginManifestRegistry();
+  const registry = env
+    ? loadBundledPluginManifestRegistry({ env })
+    : loadPluginManifestRegistryCore();
   return registry.plugins
     .filter(
       (
@@ -593,9 +615,13 @@ export function listQaRunnerCliContributions(): readonly QaRunnerCliContribution
         );
       }
       const adapterFactory = registration.adapterFactory;
+      const supportsModuleFlows: unknown = adapterFactory
+        ? Reflect.get(adapterFactory, "supportsModuleFlows")
+        : undefined;
       if (
         adapterFactory &&
         (adapterFactory.id !== runner.commandName ||
+          (supportsModuleFlows !== undefined && supportsModuleFlows !== true) ||
           (adapterFactory.isolatesInstances !== undefined &&
             typeof adapterFactory.isolatesInstances !== "boolean") ||
           typeof adapterFactory.matches !== "function" ||

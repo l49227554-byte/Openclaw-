@@ -9,6 +9,7 @@ describe("plugins cli lazy runtime boundary", () => {
 
   afterEach(() => {
     vi.doUnmock("./plugins-cli.runtime.js");
+    vi.doUnmock("./plugins-authoring-command.js");
     vi.resetModules();
   });
 
@@ -44,6 +45,29 @@ describe("plugins cli lazy runtime boundary", () => {
     );
     expect(runtimeLoaded).not.toHaveBeenCalled();
   });
+
+  it.each(["enable", "install", "update", "reload"])(
+    "parses --accept-capabilities on the %s command without loading runtime",
+    async (commandName) => {
+      const runtimeLoaded = vi.fn();
+      vi.doMock("./plugins-cli.runtime.js", () => {
+        runtimeLoaded();
+        return {};
+      });
+      const { registerPluginsCli } = await import("./plugins-cli.js");
+      const program = new Command();
+      registerPluginsCli(program);
+      const plugins = program.commands.find((command) => command.name() === "plugins");
+      const command = plugins?.commands.find((entry) => entry.name() === commandName);
+      if (!command) {
+        throw new Error(`missing plugins ${commandName} command`);
+      }
+
+      expect(command.parseOptions(["--accept-capabilities"]).unknown).toEqual([]);
+      expect(command.opts()).toEqual(expect.objectContaining({ acceptCapabilities: true }));
+      expect(runtimeLoaded).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     {
@@ -86,6 +110,21 @@ describe("plugins cli lazy runtime boundary", () => {
     }
   });
 
+  it("dispatches plugin reload with consent and JSON options", async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("./plugins-cli.runtime.js", () => ({ runPluginsReloadCommand: reload }));
+    const { registerPluginsCli } = await import("./plugins-cli.js");
+    const program = new Command();
+    registerPluginsCli(program);
+    await program.parseAsync(["plugins", "reload", "demo", "--accept-capabilities", "--json"], {
+      from: "user",
+    });
+    expect(reload).toHaveBeenCalledWith(
+      "demo",
+      expect.objectContaining({ acceptCapabilities: true, json: true }),
+    );
+  });
+
   it("loads the plugins runtime for runtime-backed actions", async () => {
     const runPluginsRegistryCommand = vi.fn().mockResolvedValue(undefined);
     const runtimeLoaded = vi.fn();
@@ -111,6 +150,25 @@ describe("plugins cli lazy runtime boundary", () => {
 
     expect(runtimeLoaded).toHaveBeenCalledTimes(1);
     expect(runPluginsRegistryCommand).toHaveBeenCalledWith(expect.objectContaining({ json: true }));
+  });
+
+  it("forwards JSON mode to plugin doctor and validation actions", async () => {
+    const runPluginsDoctorCommand = vi.fn().mockResolvedValue(undefined);
+    const runPluginsValidateCommand = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("./plugins-cli.runtime.js", () => ({ runPluginsDoctorCommand }));
+    vi.doMock("./plugins-authoring-command.js", () => ({ runPluginsValidateCommand }));
+
+    const { registerPluginsCli } = await import("./plugins-cli.js");
+    const doctorProgram = new Command();
+    registerPluginsCli(doctorProgram);
+    await doctorProgram.parseAsync(["plugins", "doctor", "--json"], { from: "user" });
+
+    const validateProgram = new Command();
+    registerPluginsCli(validateProgram);
+    await validateProgram.parseAsync(["plugins", "validate", "--json"], { from: "user" });
+
+    expect(runPluginsDoctorCommand).toHaveBeenCalledWith(expect.objectContaining({ json: true }));
+    expect(runPluginsValidateCommand).toHaveBeenCalledWith(expect.objectContaining({ json: true }));
   });
 
   it("loads the plugins runtime for marketplace entries", async () => {

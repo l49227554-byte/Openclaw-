@@ -7,23 +7,23 @@ import { describe, expect, it, vi } from "vitest";
 import {
   appendBoundedWatchLog,
   buildTimedWatchCommand,
+  calculateDistRuntimeByteGrowth,
   collectGatewayWatchFindings,
   hasGatewayReadyLog,
   parseArgs,
   resolveTimedWatchShell,
   runTimedWatch,
-  readNonNegativeInteger,
   shouldReportDuplicateDistRuntimeRegression,
   shouldRefreshBuildStampForRestoredArtifacts,
   stopTimedWatchChild,
   updateWatchBuildDetection,
   WATCH_LOG_CAPTURE_MAX_CHARS,
   writeBuildAndRuntimePostBuildStamps,
-} from "../../scripts/check-gateway-watch-regression.mjs";
+} from "../../scripts/check-gateway-watch-regression.mts";
 import {
   BUILD_STAMP_FILE,
   RUNTIME_POSTBUILD_STAMP_FILE,
-} from "../../scripts/lib/local-build-metadata-paths.mjs";
+} from "../../scripts/lib/local-build-metadata-paths.mts";
 
 describe("check-gateway-watch-regression", () => {
   it("accepts package-manager argument separators before script options", () => {
@@ -34,8 +34,6 @@ describe("check-gateway-watch-regression", () => {
   });
 
   it("parses timing and growth limits as strict non-negative integers", () => {
-    expect(readNonNegativeInteger("0", "limit")).toBe(0);
-    expect(readNonNegativeInteger(" 42 ", "limit")).toBe(42);
     expect(
       parseArgs([
         "--window-ms",
@@ -69,21 +67,15 @@ describe("check-gateway-watch-regression", () => {
       windowMs: 0,
     });
 
-    expect(() => readNonNegativeInteger("1.5", "limit")).toThrow(
-      "limit must be a non-negative integer",
-    );
-    expect(() => readNonNegativeInteger("1e3", "limit")).toThrow(
-      "limit must be a non-negative integer",
-    );
-    expect(() => readNonNegativeInteger("-1", "limit")).toThrow(
-      "limit must be a non-negative integer",
-    );
-    expect(() => readNonNegativeInteger("9007199254740992", "limit")).toThrow(
-      "limit must be a safe integer",
-    );
-    expect(() => parseArgs(["--window-ms", "soon"])).toThrow(
-      "--window-ms must be a non-negative integer",
-    );
+    for (const [value, message] of [
+      ["1.5", "--window-ms must be a non-negative integer"],
+      ["1e3", "--window-ms must be a non-negative integer"],
+      ["-1", "--window-ms must be a non-negative integer"],
+      ["9007199254740992", "--window-ms must be a safe integer"],
+      ["soon", "--window-ms must be a non-negative integer"],
+    ] as const) {
+      expect(() => parseArgs(["--window-ms", value])).toThrow(message);
+    }
   });
 
   it("recognizes current and legacy gateway ready logs", () => {
@@ -95,6 +87,36 @@ describe("check-gateway-watch-regression", () => {
     expect(hasGatewayReadyLog("[gateway] starting HTTP server...")).toBe(false);
   });
 
+  it("detects byte growth in existing dist-runtime paths", () => {
+    const distRuntimeByteGrowth = calculateDistRuntimeByteGrowth(100, 2_097_253);
+    const findings = collectGatewayWatchFindings({
+      cpuMs: 0,
+      distRuntimeByteGrowth,
+      distRuntimeFileGrowth: 0,
+      removedPaths: 0,
+      options: {
+        cpuFailMs: 8000,
+        cpuWarnMs: 1000,
+        distRuntimeByteGrowthMax: 2 * 1024 * 1024,
+        distRuntimeFileGrowthMax: 200,
+        windowMs: 10_000,
+      },
+      watchBuildReason: null,
+      watchResult: {
+        idleCpuMs: 0,
+        readyBeforeWindow: true,
+        spawnError: null,
+        timingFileMissing: false,
+      },
+      watchTriggeredBuild: false,
+    });
+
+    expect(distRuntimeByteGrowth).toBe(2_097_153);
+    expect(findings.failures).toContain(
+      "dist-runtime apparent byte growth 2097153 exceeded max 2097152",
+    );
+  });
+
   it("bounds in-memory watch output capture while keeping the newest logs", () => {
     const first = appendBoundedWatchLog("abc", "def", 8);
     expect(first).toEqual({ text: "abcdef", truncated: false });
@@ -104,6 +126,38 @@ describe("check-gateway-watch-regression", () => {
     expect(second.text).toHaveLength(8);
     expect(WATCH_LOG_CAPTURE_MAX_CHARS).toBeGreaterThan(1024);
   });
+
+  it.each([
+    { reason: "missing_bundled_plugin_dist_entry", removedPaths: 0 },
+    { reason: null, removedPaths: 2932 },
+    { reason: "dirty_watched_tree", removedPaths: 0 },
+  ])(
+    "rejects prebuilt artifact mutation: $reason / $removedPaths removed",
+    ({ reason, removedPaths }) => {
+      const findings = collectGatewayWatchFindings({
+        cpuMs: 0,
+        distRuntimeByteGrowth: -1024,
+        distRuntimeFileGrowth: 0,
+        removedPaths,
+        options: parseArgs(["--skip-build"]),
+        watchBuildReason: reason,
+        watchTriggeredBuild: reason !== null,
+        watchResult: {
+          idleCpuMs: 0,
+          readyBeforeWindow: true,
+          spawnError: null,
+          timingFileMissing: false,
+        },
+      });
+      expect(findings.failures).toEqual([
+        removedPaths > 0
+          ? "gateway:watch removed 2932 prebuilt artifact paths"
+          : reason === "dirty_watched_tree"
+            ? "gateway:watch invalid local run: dirty watched source tree forced a rebuild during the watch window"
+            : "gateway:watch unexpectedly rebuilt prebuilt artifacts (missing_bundled_plugin_dist_entry)",
+      ]);
+    },
+  );
 
   it("keeps build-regression detection after diagnostic logs truncate", () => {
     const detected = updateWatchBuildDetection(
@@ -174,6 +228,7 @@ describe("check-gateway-watch-regression", () => {
       cpuMs: 0,
       distRuntimeByteGrowth: 0,
       distRuntimeFileGrowth: 0,
+      removedPaths: 0,
       options: {
         cpuFailMs: 8000,
         cpuWarnMs: 1000,
@@ -202,6 +257,7 @@ describe("check-gateway-watch-regression", () => {
       cpuMs: 0,
       distRuntimeByteGrowth: 0,
       distRuntimeFileGrowth: 0,
+      removedPaths: 0,
       options: {
         cpuFailMs: 8000,
         cpuWarnMs: 1000,
@@ -233,6 +289,7 @@ describe("check-gateway-watch-regression", () => {
       cpuMs: 0,
       distRuntimeByteGrowth: 0,
       distRuntimeFileGrowth: 0,
+      removedPaths: 0,
       options: {
         cpuFailMs: 8000,
         cpuWarnMs: 1000,
@@ -460,108 +517,65 @@ describe("check-gateway-watch-regression", () => {
     }
   });
 
-  it("records a ready gateway watch exit during the settle window as unplanned", async () => {
-    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-watch-output-"));
-    const child = new EventEmitter() as EventEmitter & {
-      stderr: EventEmitter;
-      stdout: EventEmitter;
-    };
-    child.stderr = new EventEmitter();
-    child.stdout = new EventEmitter();
-    const stopChild = vi.fn(async () => ({ code: null, signal: "SIGTERM" }));
-    const sleep = vi.fn(
-      () =>
-        new Promise<never>(() => {
-          process.nextTick(() => {
-            child.emit("exit", 0, null);
-          });
-        }),
-    );
-    const spawn = vi.fn(() => {
-      fs.writeFileSync(path.join(outputDir, "watch.pid"), "1234\n", "utf8");
-      return child;
-    });
-
-    try {
-      const result = await runTimedWatch(
-        {
-          readySettleMs: 10_000,
-          readyTimeoutMs: 30_000,
-          sigkillGraceMs: 1,
-          windowMs: 10_000,
-        },
-        outputDir,
-        {
-          allocateLoopbackPort: async () => 19042,
-          spawn,
-          sleep,
-          stopTimedWatchChild: stopChild,
-          waitForGatewayReady: async () => true,
-        },
+  it.each([
+    { phase: "settle", readySettleMs: 10_000 },
+    { phase: "idle", readySettleMs: 0 },
+  ])(
+    "records a ready gateway watch exit during the $phase window as unplanned",
+    async ({ phase, readySettleMs }) => {
+      const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-watch-output-"));
+      const child = new EventEmitter() as EventEmitter & {
+        stderr: EventEmitter;
+        stdout: EventEmitter;
+      };
+      child.stderr = new EventEmitter();
+      child.stdout = new EventEmitter();
+      const stopChild = vi.fn(async () => ({ code: null, signal: "SIGTERM" }));
+      const sleep = vi.fn(
+        () =>
+          new Promise<never>(() => {
+            process.nextTick(() => {
+              child.emit("exit", 0, null);
+            });
+          }),
       );
+      const readProcessTreeCpuMs = phase === "idle" ? vi.fn(() => 12) : undefined;
+      const spawn = vi.fn(() => {
+        fs.writeFileSync(path.join(outputDir, "watch.pid"), "1234\n", "utf8");
+        return child;
+      });
 
-      expect(result.exit).toEqual({ code: 0, signal: null });
-      expect(result.exitedBeforeReady).toBe(false);
-      expect(result.exitedBeforeStop).toBe(true);
-      expect(result.readyBeforeWindow).toBe(true);
-      expect(result.idleCpuMs).toBeNull();
-      expect(stopChild).not.toHaveBeenCalled();
-    } finally {
-      fs.rmSync(outputDir, { recursive: true, force: true });
-    }
-  });
+      try {
+        const result = await runTimedWatch(
+          {
+            readySettleMs,
+            readyTimeoutMs: 30_000,
+            sigkillGraceMs: 1,
+            windowMs: 10_000,
+          },
+          outputDir,
+          {
+            allocateLoopbackPort: async () => 19042,
+            ...(readProcessTreeCpuMs ? { readProcessTreeCpuMs } : {}),
+            spawn,
+            sleep,
+            stopTimedWatchChild: stopChild,
+            waitForGatewayReady: async () => true,
+          },
+        );
 
-  it("records a ready gateway watch exit during the idle window as unplanned", async () => {
-    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-gateway-watch-output-"));
-    const child = new EventEmitter() as EventEmitter & {
-      stderr: EventEmitter;
-      stdout: EventEmitter;
-    };
-    child.stderr = new EventEmitter();
-    child.stdout = new EventEmitter();
-    const stopChild = vi.fn(async () => ({ code: null, signal: "SIGTERM" }));
-    const sleep = vi.fn(
-      () =>
-        new Promise<never>(() => {
-          process.nextTick(() => {
-            child.emit("exit", 0, null);
-          });
-        }),
-    );
-    const readProcessTreeCpuMs = vi.fn(() => 12);
-    const spawn = vi.fn(() => {
-      fs.writeFileSync(path.join(outputDir, "watch.pid"), "1234\n", "utf8");
-      return child;
-    });
-
-    try {
-      const result = await runTimedWatch(
-        {
-          readySettleMs: 0,
-          readyTimeoutMs: 30_000,
-          sigkillGraceMs: 1,
-          windowMs: 10_000,
-        },
-        outputDir,
-        {
-          allocateLoopbackPort: async () => 19042,
-          readProcessTreeCpuMs,
-          spawn,
-          sleep,
-          stopTimedWatchChild: stopChild,
-          waitForGatewayReady: async () => true,
-        },
-      );
-
-      expect(result.exit).toEqual({ code: 0, signal: null });
-      expect(result.exitedBeforeReady).toBe(false);
-      expect(result.exitedBeforeStop).toBe(true);
-      expect(result.readyBeforeWindow).toBe(true);
-      expect(result.idleCpuMs).toBeNull();
-      expect(readProcessTreeCpuMs).toHaveBeenCalledOnce();
-      expect(stopChild).not.toHaveBeenCalled();
-    } finally {
-      fs.rmSync(outputDir, { recursive: true, force: true });
-    }
-  });
+        expect(result.exit).toEqual({ code: 0, signal: null });
+        expect(result.exitedBeforeReady).toBe(false);
+        expect(result.exitedBeforeStop).toBe(true);
+        expect(result.readyBeforeWindow).toBe(true);
+        expect(result.idleCpuMs).toBeNull();
+        if (readProcessTreeCpuMs) {
+          expect(readProcessTreeCpuMs).toHaveBeenCalledOnce();
+        }
+        expect(stopChild).not.toHaveBeenCalled();
+      } finally {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+    },
+  );
 });

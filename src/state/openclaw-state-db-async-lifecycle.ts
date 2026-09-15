@@ -55,6 +55,7 @@ type SchemaDelegateFactory = (
 ) => ReturnType<typeof tryCreateGatewaySchemaFenceDelegate>;
 
 export type OpenClawDatabaseMaintenanceScope = {
+  readonly ownsSchemaMaintenance: boolean;
   assertAdmission(): void;
   run<T>(operation: () => T): T;
   track<T>(operation: Promise<T>): Promise<T>;
@@ -133,10 +134,14 @@ function commonMaintenanceAncestor(
   return undefined;
 }
 
-/** Associate lexical maintenance work with exact resources, never all files beneath a root. */
+/** Associate lexical database work with exact resources, never all files beneath a root. */
 export function createOpenClawDatabaseMaintenanceScope(
-  createSchemaFenceDelegate: SchemaDelegateFactory,
+  createSchemaFenceDelegate?: SchemaDelegateFactory,
 ): OpenClawDatabaseMaintenanceScope {
+  const parent = getOpenClawDatabaseMaintenanceScope();
+  const schemaDelegateFactory =
+    createSchemaFenceDelegate ??
+    (parent?.ownsSchemaMaintenance ? parent.createSchemaFenceDelegate : undefined);
   const pending = new Set<Promise<unknown>>();
   const resources = new Map<object, MaintenanceResource>();
   let closed = false;
@@ -147,6 +152,7 @@ export function createOpenClawDatabaseMaintenanceScope(
     }
   };
   const scope: OpenClawDatabaseMaintenanceScope = {
+    ownsSchemaMaintenance: schemaDelegateFactory !== undefined,
     assertAdmission() {
       assertOpen();
       const inherited = maintenanceResources.current.getStore();
@@ -193,7 +199,7 @@ export function createOpenClawDatabaseMaintenanceScope(
     },
     createSchemaFenceDelegate(params) {
       assertOpen();
-      return createSchemaFenceDelegate(params);
+      return schemaDelegateFactory?.(params);
     },
     close() {
       return (closing ??= maintenanceResources.current
@@ -243,7 +249,6 @@ export function createOpenClawDatabaseMaintenanceScope(
         }));
     },
   };
-  const parent = getOpenClawDatabaseMaintenanceScope();
   if (parent) {
     maintenanceResources.parents.set(scope, parent);
   }

@@ -11,6 +11,7 @@ import { storeChatComposerMemoryFallback } from "./chat-composer-memory-fallback
 import { loadChatBranches, retireChatBranchRequests } from "./chat-history-branches.ts";
 import { getChatHistoryLoadState, isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
 import { loadChatHistory } from "./chat-history.ts";
+import { QUEUED_EDIT_RETENTION_CHANGE_EVENT } from "./chat-page-retained-sessions.ts";
 import { ChatPaneBoard } from "./chat-pane-board.ts";
 import {
   consumePaneSessionHandoff,
@@ -39,6 +40,20 @@ const COMPOSER_PREFILL_ATTENTION_CLASS = "agent-chat__input--prefill-attention";
 
 /** Owns foreground resources and composer state that follow one retained presentation. */
 export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
+  private retainedQueuedEdit = false;
+
+  get hasQueuedMessageEdit(): boolean {
+    return Boolean(this.state?.chatQueuedEdit);
+  }
+
+  protected syncQueuedEditRetention(): void {
+    const retained = this.hasQueuedMessageEdit;
+    if (retained !== this.retainedQueuedEdit) {
+      this.retainedQueuedEdit = retained;
+      this.dispatchEvent(new Event(QUEUED_EDIT_RETENTION_CHANGE_EVENT, { bubbles: true }));
+    }
+  }
+
   protected abstract syncActiveBindings(): void;
   protected abstract activateComposerPresentation(): void;
 
@@ -67,6 +82,7 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
         ) {
           return false;
         }
+        this.onFocusPane?.(this.paneId);
         this.context.navigate("chat", target.options);
         return true;
       },

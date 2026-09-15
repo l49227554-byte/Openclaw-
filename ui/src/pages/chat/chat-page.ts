@@ -86,6 +86,7 @@ export class ChatPage extends OpenClawLightDomElement implements SessionSplitHos
     context: () => this.context,
     presented: () => this.presented,
     layout: () => this.layout ?? this.classicLayout(),
+    narrow: () => this.narrow,
     selectReplacement: (paneId, sourceSessionKey, sessionKey) => {
       this.handlePaneSessionChange(paneId, sourceSessionKey, sessionKey);
     },
@@ -191,7 +192,7 @@ export class ChatPage extends OpenClawLightDomElement implements SessionSplitHos
       });
       this.syncRouteToActivePane();
       this.syncRouteBindings();
-      this.retainedSessions.settleRoute(data.sessionKey);
+      this.retainedSessions.settleRoute();
     }
     if (data && routeHandoffRendered) {
       queueMicrotask(() => {

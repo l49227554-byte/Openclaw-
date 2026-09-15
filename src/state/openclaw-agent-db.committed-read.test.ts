@@ -290,9 +290,11 @@ describe("committed agent database reads", () => {
         expect(second.db.isOpen).toBe(false);
       };
       if (kind === "cold") {
+        openOpenClawAgentDatabase({ agentId: "other", env });
         closeOpenClawAgentDatabaseByPath(owner.path);
+        const cachedWriters = listOpenClawAgentDatabasesForTest();
         read();
-        expect(listOpenClawAgentDatabasesForTest()).toHaveLength(0);
+        expect(listOpenClawAgentDatabasesForTest()).toEqual(cachedWriters);
       } else {
         inWriterTransaction(owner.db, read);
       }

@@ -10,6 +10,7 @@ type GitOutput = (
 /** Picks the merge base used for branch-relative session diffs. */
 export async function resolveSessionDiffBase(params: {
   branch: string | undefined;
+  head: string;
   gitOut: GitOutput;
   root: string;
 }): Promise<{ base: string; baseRef: string }> {
@@ -21,14 +22,14 @@ export async function resolveSessionDiffBase(params: {
   const remoteDefault = defaultRef?.trim() || null;
   const defaultShort = remoteDefault?.replace(/^origin\//, "");
   if (remoteDefault && defaultShort && params.branch && params.branch !== defaultShort) {
-    const mergeBase = await params.gitOut(params.root, ["merge-base", remoteDefault, "HEAD"]);
+    const mergeBase = await params.gitOut(params.root, ["merge-base", remoteDefault, params.head]);
     if (mergeBase?.trim()) {
       return { base: mergeBase.trim(), baseRef: defaultShort };
     }
   }
   // Plain clones without origin/HEAD still get a branch-relative diff.
   if (params.branch && params.branch !== "main" && params.branch !== "master") {
-    for (const candidate of ["main", "master"]) {
+    for (const candidate of ["main", "master", "origin/main", "origin/master"]) {
       const verified = await params.gitOut(params.root, [
         "rev-parse",
         "--verify",
@@ -36,14 +37,18 @@ export async function resolveSessionDiffBase(params: {
         candidate,
       ]);
       if (verified?.trim()) {
-        const mergeBase = await params.gitOut(params.root, ["merge-base", candidate, "HEAD"]);
+        const mergeBase = await params.gitOut(params.root, [
+          "merge-base",
+          verified.trim(),
+          params.head,
+        ]);
         if (mergeBase?.trim()) {
           return { base: mergeBase.trim(), baseRef: candidate };
         }
       }
     }
   }
-  return { base: "HEAD", baseRef: "HEAD" };
+  return { base: params.head, baseRef: "HEAD" };
 }
 
 /** Resolves the repository-format-specific empty tree without writing it. */
@@ -88,7 +93,7 @@ export async function loadSessionDiffBranchMetadata(params: {
   if (params.base === "HEAD" || params.base === params.head) {
     return {};
   }
-  const range = `${params.base}..HEAD`;
+  const range = `${params.base}..${params.head}`;
   const [aheadText, commitsText, mergeBaseText] = await Promise.all([
     params.gitOut(params.root, ["rev-list", "--count", range]),
     params.gitOut(params.root, ["log", "--max-count=50", "--format=%h%x00%s", range, "--"]),

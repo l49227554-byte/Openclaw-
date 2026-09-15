@@ -4,7 +4,10 @@ import type { QueueMode } from "../../../../packages/gateway-protocol/src/schema
 import type { AutoFallbackPrimaryProbe } from "../../../agents/agent-scope.js";
 import type { ExecToolDefaults } from "../../../agents/bash-tools.js";
 import type { CliSessionBindingFacts } from "../../../agents/cli-runner/types.js";
-import type { CurrentInboundPromptContext } from "../../../agents/embedded-agent-runner/run/params.js";
+import type {
+  CurrentInboundPromptContext,
+  RunEmbeddedAgentParams,
+} from "../../../agents/embedded-agent-runner/run/params.js";
 import type { ModelFallbackRouteResolution } from "../../../agents/model-fallback.types.js";
 import type { ScheduledToolPolicyContext } from "../../../agents/scheduled-tool-policy.js";
 import type { TrustedSubagentCompletionHandoff } from "../../../agents/subagents/announce/subagent-announce-handoff.js";
@@ -16,6 +19,7 @@ import type { SessionEntry, SessionToolOverrides } from "../../../config/session
 import type { ReplyToMode } from "../../../config/types.base.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { GroupToolPolicyConfig } from "../../../config/types.tools.js";
+import type { GatewayUiCommandTarget } from "../../../gateway/ui-command-target.types.js";
 import type { MediaFact } from "../../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js";
 import type { PluginHookChannelContext } from "../../../plugins/hook-types.js";
@@ -23,16 +27,24 @@ import type { RuntimePluginToolGrant } from "../../../plugins/runtime/tool-grant
 import type { InputProvenance } from "../../../sessions/input-provenance.js";
 import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import type { ExplicitSkillSelection, SkillSnapshot } from "../../../skills/types.js";
+import type { SkillWorkshopProposalRevisionConstraint } from "../../../skills/workshop/types.js";
 import type {
   QueuedReplyDeliveryCorrelation,
   SourceReplyDeliveryMode,
   TaskSuggestionDeliveryMode,
   TurnAdoptionLifecycle,
 } from "../../get-reply-options.types.js";
+import type { ReplyPayload } from "../../reply-payload.js";
 import type { OriginatingChannelType } from "../../templating.js";
 import type { ThinkingCatalogEntry } from "../../thinking.js";
-import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "../directives.js";
-import { releaseRecentQueueMessageId } from "./recent-message-ids.js";
+import type {
+  ElevatedLevel,
+  ReasoningLevel,
+  ThinkLevel,
+  TraceLevel,
+  VerboseLevel,
+} from "../directives.js";
+import type { ReplyOperationRunState } from "../reply-operation-run-state.js";
 
 export type QueueDropPolicy = "old" | "new" | "summarize";
 
@@ -52,7 +64,7 @@ export type ResolveQueueSettingsParams = {
   pluginDebounceMs?: number;
 };
 
-export type QueueDedupeMode = "message-id" | "prompt" | "none";
+export type QueueDedupeMode = "message-id" | "none";
 
 type QueueInsertPosition = "tail" | "front";
 
@@ -62,6 +74,29 @@ export type EnqueueFollowupRunOptions = {
 };
 
 export type FollowupQueueDisposition = "queue-cap" | "queue-cap-old" | "queue-cap-new";
+
+export type QueuedFollowupReplyBatch = {
+  kind: "queued-followup";
+  runId: string;
+  originatingChannel: string | undefined;
+  payloads: ReplyPayload[];
+  completion:
+    | { kind: "progress" }
+    | { kind: "completed"; stopReason?: string; allowCanvasOnly?: true }
+    | { kind: "failed"; error: string; stopReason?: string; errorKind?: "timeout" }
+    | { kind: "aborted"; stopReason?: string };
+};
+
+export type QueuedFollowupReplyDelivery = ((
+  batch: QueuedFollowupReplyBatch,
+) => Promise<void> | void) & {
+  ownsCompletion?: (originatingChannel: string | undefined) => boolean;
+  createSourceRetry?: () => QueuedFollowupReplyDelivery;
+};
+
+type QueuedFollowupReplyDisposition =
+  | { kind: "deliver"; deliver: QueuedFollowupReplyDelivery }
+  | { kind: "drop"; reason: "source-unavailable" };
 
 export class FollowupRunDeferredError extends Error {
   constructor(message = "Follow-up run deferred") {
@@ -98,8 +133,12 @@ export type FollowupRun = {
   deliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
   /** Canonical ownership lifecycle for durable ingress / reply-lane transfer. */
   turnAdoptionLifecycle?: TurnAdoptionLifecycle;
+  /** @internal Source execution receipts retained across queued collect batches. */
+  replyOperationRunStates?: ReplyOperationRunState[];
   /** Records terminal queue-cap outcomes at the queue owner before lifecycle cleanup. */
   onQueueDisposition?: (disposition: FollowupQueueDisposition) => void;
+  /** Keep delivery bound to the source that owned admission, not later runner defaults. */
+  queuedFollowupReplyDisposition?: QueuedFollowupReplyDisposition;
   /** Provider message ID, when available (for deduplication). */
   messageId?: string;
   summaryLine?: string;
@@ -111,6 +150,7 @@ export type FollowupRun = {
   /** The current-turn hook already ran before this steer became a fallback. */
   /** Pending same-turn acceptance while this item remains parked in FIFO order. */
   steerPending?: {
+    phase: "waiting" | "injecting";
     predecessor: Promise<boolean>;
     settle: (accepted: boolean) => void;
   };
@@ -156,9 +196,11 @@ export type FollowupRun = {
     runtimePolicySessionKey?: string;
     messageProvider?: string;
     clientCaps?: string[];
+    gatewayUiCommandTarget?: GatewayUiCommandTarget;
     toolBindings?: Readonly<Record<string, unknown>>;
     chatType?: ChatType;
     agentAccountId?: string;
+    conversationRoutePeerId?: string;
     conversationToolPolicy?: GroupToolPolicyConfig;
     groupId?: string;
     groupChannel?: string;
@@ -173,11 +215,15 @@ export type FollowupRun = {
     senderE164?: string;
     senderIsOwner?: boolean;
     traceAuthorized?: boolean;
+    /** Inline choice stays on this run; omission follows the live session preference. */
+    traceLevelOverride?: TraceLevel;
     approvalReviewerDeviceId?: string;
     sessionFile: string;
     workspaceDir: string;
     /** Task working directory for runtime execution. Defaults to workspaceDir. */
     cwd?: string;
+    permissionMode?: SessionEntry["permissionMode"];
+    sessionRoot?: string;
     config: OpenClawConfig;
     toolOverrides?: SessionToolOverrides;
     skillsSnapshot?: SkillSnapshot;
@@ -195,11 +241,15 @@ export type FollowupRun = {
     /** Prepared model metadata reused when fallbacks revalidate the immutable thinking request. */
     thinkingCatalog?: ThinkingCatalogEntry[];
     thinkLevel?: ThinkLevel;
+    /** Original turn request; model retargeting changes only the effective thinkLevel. */
+    readonly thinkLevelOverride?: ThinkLevel | "default";
     fastMode?: FastMode;
     fastModeAutoOnSeconds?: number;
     fastModeOverride?: boolean;
     fastModeAutoOnSecondsOverride?: boolean;
     verboseLevel?: VerboseLevel;
+    /** Explicit turn choice; absent queued replies follow live session verbosity. */
+    verboseLevelOverride?: VerboseLevel;
     reasoningLevel?: ReasoningLevel;
     elevatedLevel?: ElevatedLevel;
     execOverrides?: Pick<ExecToolDefaults, "host" | "security" | "ask" | "node" | "nodeCwd">;
@@ -227,8 +277,12 @@ export type FollowupRun = {
     skipProviderRuntimeHints?: boolean;
     silentExpected?: boolean;
     allowEmptyAssistantReplyAsSilent?: boolean;
+    terminalReplyExpectation?: RunEmbeddedAgentParams["terminalReplyExpectation"];
     suppressNextUserMessagePersistence?: boolean;
     suppressTranscriptOnlyAssistantPersistence?: boolean;
+    /** Gateway-private optimistic-concurrency constraint for an operator-requested proposal revision. */
+    skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
+    skillLibraryAuthoring?: import("../../../skills/library/authoring.js").SkillLibraryAuthoringCapability;
   };
 };
 
@@ -253,8 +307,42 @@ const admittingTurnAdoptionLifecycles = new WeakMap<TurnAdoptionLifecycle, Promi
 const retiredTurnAdoptionCancellationLifecycles = new WeakSet<TurnAdoptionLifecycle>();
 const completedTurnAdoptionLifecycles = new WeakSet<TurnAdoptionLifecycle>();
 const completedTurnAdoptionLifecycleCallbacks = new WeakSet<TurnAdoptionLifecycle>();
+const deferredHeartbeatStops = new WeakMap<TurnAdoptionLifecycle, () => void>();
 
 type FollowupLifecycleRun = Pick<FollowupRun, "steerPending" | "turnAdoptionLifecycle">;
+
+function startFollowupRunDeferredHeartbeat(lifecycle: TurnAdoptionLifecycle): void {
+  const intervalMs = lifecycle.deferredHeartbeatIntervalMs;
+  const heartbeat = lifecycle.onDeferredHeartbeat;
+  if (
+    !heartbeat ||
+    intervalMs === undefined ||
+    !Number.isFinite(intervalMs) ||
+    intervalMs <= 0 ||
+    lifecycle.abortSignal?.aborted ||
+    admittedTurnAdoptionLifecycles.has(lifecycle) ||
+    completedTurnAdoptionLifecycles.has(lifecycle)
+  ) {
+    return;
+  }
+  const pulse = () => {
+    try {
+      heartbeat();
+    } catch {
+      // Leave recovery to the ingress watchdog when its liveness callback fails.
+      deferredHeartbeatStops.get(lifecycle)?.();
+    }
+  };
+  const timer = setInterval(pulse, intervalMs).unref();
+  const stop = () => {
+    clearInterval(timer);
+    lifecycle.abortSignal?.removeEventListener("abort", stop);
+    deferredHeartbeatStops.delete(lifecycle);
+  };
+  deferredHeartbeatStops.set(lifecycle, stop);
+  lifecycle.abortSignal?.addEventListener("abort", stop, { once: true });
+  pulse();
+}
 
 export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
   const lifecycle = run.turnAdoptionLifecycle;
@@ -263,6 +351,7 @@ export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
       return false;
     }
     enqueuedTurnAdoptionLifecycles.add(lifecycle);
+    startFollowupRunDeferredHeartbeat(lifecycle);
   }
   return true;
 }
@@ -294,6 +383,7 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
     if (!admittedTurnAdoptionLifecycles.has(lifecycle)) {
       await lifecycle.onAdopted();
       admittedTurnAdoptionLifecycles.add(lifecycle);
+      deferredHeartbeatStops.get(lifecycle)?.();
     }
   });
 
@@ -305,7 +395,10 @@ export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Prom
   }
 }
 
-export function completeFollowupRunLifecycle(run: FollowupLifecycleRun): void {
+export function completeFollowupRunLifecycle(
+  run: FollowupLifecycleRun,
+  disposition?: "consumed",
+): void {
   run.steerPending?.settle(false);
   const lifecycle = run.turnAdoptionLifecycle;
 
@@ -317,11 +410,7 @@ export function completeFollowupRunLifecycle(run: FollowupLifecycleRun): void {
     // Async onAbandoned work must contain its own rejections; core guarantees a
     // non-rejecting promise. onSettled must still run after a synchronous throw.
     try {
-      if (!admittedTurnAdoptionLifecycles.has(lifecycle)) {
-        // The queue is relinquishing an un-admitted message: free its dedupe
-        // identity so the abandonment-triggered ingress retry can re-enqueue
-        // instead of being rejected as a recent duplicate and falsely completed.
-        releaseRecentQueueMessageId(run);
+      if (disposition !== "consumed" && !admittedTurnAdoptionLifecycles.has(lifecycle)) {
         lifecycle.onAbandoned?.();
       }
     } finally {
@@ -330,6 +419,7 @@ export function completeFollowupRunLifecycle(run: FollowupLifecycleRun): void {
   };
 
   if (lifecycle && !completedTurnAdoptionLifecycles.has(lifecycle)) {
+    deferredHeartbeatStops.get(lifecycle)?.();
     completedTurnAdoptionLifecycles.add(lifecycle);
   }
 

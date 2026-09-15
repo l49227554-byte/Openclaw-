@@ -29,13 +29,14 @@ import {
 import { hasControlCommand } from "openclaw/plugin-sdk/command-auth-native";
 import type { DmPolicy, GroupPolicy, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveChannelContextVisibilityMode } from "openclaw/plugin-sdk/context-visibility-runtime";
+import type { ConfiguredBindingRouteResult } from "openclaw/plugin-sdk/conversation-runtime";
 import { createChannelHistoryWindow, type HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import type { FinalizedMsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
-import { resolveIMessageAccount } from "../accounts.js";
+import { resolveIMessageDirectChatService } from "../chat-context.js";
 import { resolveIMessageConversationRoute } from "../conversation-route.js";
 import {
   isKnownFromMeIMessageMessageId,
@@ -46,6 +47,7 @@ import {
   isAllowedIMessageReplyContextSender,
   normalizeIMessageHandle,
   parseIMessageAllowTarget,
+  type IMessageService,
 } from "../targets.js";
 import type { IMessageDmHistoryContext } from "./dm-history.js";
 import {
@@ -181,7 +183,9 @@ function describeReplyContext(message: IMessagePayload): IMessageReplyContext | 
   if (!body) {
     return null;
   }
-  const id = normalizeReplyField(message.reply_to_id);
+  const id =
+    normalizeReplyField(message.thread_originator_guid) ??
+    normalizeReplyField(message.reply_to_guid);
   const sender = normalizeReplyField(message.reply_to_sender);
   return { body, id, sender };
 }
@@ -360,6 +364,7 @@ type IMessageInboundDispatchDecision = {
   sender: string;
   senderNormalized: string;
   route: ReturnType<typeof resolveAgentRoute>;
+  bindingResolution: ConfiguredBindingRouteResult["bindingResolution"];
   bodyText: string;
   agentBodyText?: string;
   createdAt?: number;
@@ -539,7 +544,7 @@ export async function resolveIMessageInboundDecision(params: {
   const groupAllowFromForAccess = isGroup
     ? groupAllowFromWithLegacyChatTargets
     : params.groupAllowFrom;
-  const route = resolveIMessageConversationRoute({
+  const { route, bindingResolution } = resolveIMessageConversationRoute({
     cfg: params.cfg,
     accountId: params.accountId,
     isGroup,
@@ -878,6 +883,7 @@ export async function resolveIMessageInboundDecision(params: {
     sender,
     senderNormalized,
     route,
+    bindingResolution,
     bodyText,
     createdAt,
     replyContext: filteredReplyContext,
@@ -891,6 +897,7 @@ export async function resolveIMessageInboundDecision(params: {
 
 export async function buildIMessageInboundContext(params: {
   cfg: OpenClawConfig;
+  accountService: IMessageService | undefined;
   decision: IMessageInboundDispatchDecision;
   message: IMessagePayload;
   envelopeOptions?: EnvelopeFormatOptions;
@@ -941,12 +948,21 @@ export async function buildIMessageInboundContext(params: {
       }]\n${decision.replyContext.body}\n[/Replying]`
     : "";
 
+  const senderDisplayName = normalizeNonEmpty(params.message.sender_name ?? "");
+  const directConversationName =
+    senderDisplayName ??
+    normalizeNonEmpty(params.message.chat_name ?? "") ??
+    decision.senderNormalized;
+  const conversationName = decision.isGroup
+    ? (normalizeNonEmpty(params.message.chat_name ?? "") ?? undefined)
+    : directConversationName;
+
   const fromLabel = formatInboundFromLabel({
     isGroup: decision.isGroup,
     groupLabel: params.message.chat_name ?? undefined,
     groupId: chatId !== undefined ? String(chatId) : "unknown",
     groupFallback: "Group",
-    directLabel: decision.senderNormalized,
+    directLabel: directConversationName,
     directId: decision.sender,
   });
 
@@ -956,7 +972,7 @@ export async function buildIMessageInboundContext(params: {
     timestamp: decision.createdAt,
     body: `${decision.agentBodyText ?? decision.bodyText}${replySuffix}`,
     chatType: decision.isGroup ? "group" : "direct",
-    sender: { name: decision.senderNormalized, id: decision.sender },
+    sender: { name: senderDisplayName ?? decision.senderNormalized, id: decision.sender },
     previousTimestamp: params.previousTimestamp,
     envelope: envelopeOptions,
   });
@@ -984,17 +1000,21 @@ export async function buildIMessageInboundContext(params: {
     });
   }
 
+  const directService =
+    resolveIMessageDirectChatService(params.accountService, decision.chatGuid) ?? "auto";
   const imessageTo = decision.isGroup
     ? chatTarget || `imessage:${decision.sender}`
-    : buildDirectIMessageReplyTarget({
-        cfg: params.cfg,
-        accountId: decision.route.accountId,
-        sender: decision.sender,
-      });
-  // Async follow-ups can resume from the stored origin instead of the immediate
-  // reply target. Keep direct SMS origins service-qualified the same way as To,
-  // or the final resumed message can fall back to imessage:<phone>.
+    : `${directService}:${decision.sender}`;
+  // Async follow-ups need a service-qualified durable origin. Immediate direct replies use the
+  // provider's exact chat ID instead, so service auto-detection cannot erase the current binding.
   const imessageFrom = decision.isGroup ? `imessage:group:${chatId ?? "unknown"}` : imessageTo;
+  const replyTarget = decision.isGroup
+    ? imessageTo
+    : chatId != null
+      ? `chat_id:${chatId}`
+      : decision.chatGuid
+        ? `chat_guid:${decision.chatGuid}`
+        : imessageTo;
   const inboundHistory =
     !decision.isGroup && params.dmHistory?.inboundHistory
       ? params.dmHistory.inboundHistory
@@ -1028,12 +1048,21 @@ export async function buildIMessageInboundContext(params: {
     from: imessageFrom,
     sender: {
       id: decision.sender,
-      name: decision.senderNormalized,
+      name: senderDisplayName ?? decision.senderNormalized,
+      isSelf: params.message.is_from_me === true,
     },
     conversation: {
       kind: decision.isGroup ? "group" : "direct",
       id: chatId != null ? String(chatId) : decision.sender,
-      label: fromLabel,
+      ...(decision.isGroup && chatId == null
+        ? {}
+        : {
+            routePeer: {
+              kind: decision.isGroup ? ("group" as const) : ("direct" as const),
+              id: decision.isGroup ? String(chatId) : decision.senderNormalized,
+            },
+          }),
+      label: conversationName,
     },
     route: {
       agentId: decision.route.agentId,
@@ -1042,7 +1071,7 @@ export async function buildIMessageInboundContext(params: {
       routeSessionKey: decision.route.sessionKey,
     },
     reply: {
-      to: imessageTo,
+      to: replyTarget,
     },
     message: {
       body: combinedBody,
@@ -1107,19 +1136,6 @@ function buildIMessageEchoScope(params: {
     scopes.push(`${params.accountId}:chat_identifier:${params.chatIdentifier}`);
   }
   return scopes;
-}
-
-export function buildDirectIMessageReplyTarget(params: {
-  cfg: OpenClawConfig;
-  accountId?: string | null;
-  sender: string;
-}): string {
-  const account = resolveIMessageAccount({ cfg: params.cfg, accountId: params.accountId });
-  const configuredService = account.config.service;
-  if (configuredService === "sms") {
-    return `sms:${params.sender}`;
-  }
-  return `imessage:${params.sender}`;
 }
 
 function describeIMessageEchoDropLog(params: { messageText: string; messageId?: string }): string {

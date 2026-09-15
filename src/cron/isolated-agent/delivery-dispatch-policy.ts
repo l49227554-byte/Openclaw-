@@ -27,6 +27,7 @@ import { createCronExecutionId } from "../run-id.js";
 import { hasScheduledNextRunAtMs } from "../service/jobs-scheduling.js";
 import type { CronJob } from "../types.js";
 import type { DeliveryTargetResolution } from "./delivery-target.js";
+import { expectsSubagentFollowup, isLikelyInterimCronMessage } from "./subagent-followup-hints.js";
 
 type SuccessfulDeliveryTarget = Extract<DeliveryTargetResolution, { ok: true }>;
 
@@ -102,10 +103,79 @@ const deliverySubagentRegistryRuntimeLoader = createLazyImportLoader(
   () => import("./delivery-subagent-registry.runtime.js"),
 );
 
-export async function loadDeliverySubagentRegistryRuntime(): Promise<
-  typeof import("./delivery-subagent-registry.runtime.js")
-> {
-  return await deliverySubagentRegistryRuntimeLoader.load();
+const subagentFollowupRuntimeLoader = createLazyImportLoader(
+  () => import("./subagent-followup.runtime.js"),
+);
+
+/** Descendant-run outcome that decides which text cron delivery finalizes. */
+type DescendantSubagentFollowup = {
+  /** Descendant reply that replaces the interim cron text; undefined keeps the original. */
+  finalReply: string | undefined;
+  hasUnsettledDescendants: boolean;
+  hadDescendants: boolean;
+};
+
+/** Resolves whether descendant subagent output should replace the interim cron text. */
+export async function resolveDescendantSubagentFollowup(params: {
+  sessionKey: string;
+  runStartedAt: number;
+  timeoutMs: number;
+  deliveryBestEffort: boolean;
+  spawnOnlyHandoff: boolean;
+  initialSynthesizedText: string;
+  abortSignal?: AbortSignal;
+}): Promise<DescendantSubagentFollowup> {
+  const expectedFollowup = expectsSubagentFollowup(params.initialSynthesizedText);
+  const subagentRegistryRuntime = await deliverySubagentRegistryRuntimeLoader.load();
+  let hasUnsettledDescendants = subagentRegistryRuntime.hasDescendantRunAwaitingSettle(
+    params.sessionKey,
+  );
+  const shouldCheckCompletedDescendants =
+    !params.abortSignal?.aborted &&
+    !hasUnsettledDescendants &&
+    (params.spawnOnlyHandoff || isLikelyInterimCronMessage(params.initialSynthesizedText));
+  const needsFollowupRuntime =
+    shouldCheckCompletedDescendants || hasUnsettledDescendants || expectedFollowup;
+  const followupRuntime = needsFollowupRuntime
+    ? await subagentFollowupRuntimeLoader.load()
+    : undefined;
+  // A child may settle before delivery starts without matching the narrow
+  // follow-up hints. Its result still replaces the parent's interim text.
+  const completedDescendantReply = shouldCheckCompletedDescendants
+    ? await followupRuntime?.readDescendantSubagentFallbackReply({
+        sessionKey: params.sessionKey,
+        runStartedAt: params.runStartedAt,
+      })
+    : undefined;
+  const hadDescendants = hasUnsettledDescendants || Boolean(completedDescendantReply);
+  if (
+    (!params.deliveryBestEffort || params.spawnOnlyHandoff) &&
+    (hasUnsettledDescendants || expectedFollowup)
+  ) {
+    let finalReply = await followupRuntime?.waitForDescendantSubagentSummary({
+      sessionKey: params.sessionKey,
+      initialReply: params.initialSynthesizedText,
+      timeoutMs: params.timeoutMs,
+      observedActiveDescendants: hasUnsettledDescendants || expectedFollowup,
+      abortSignal: params.abortSignal,
+    });
+    hasUnsettledDescendants = subagentRegistryRuntime.hasDescendantRunAwaitingSettle(
+      params.sessionKey,
+    );
+    if (!params.abortSignal?.aborted && !finalReply && !hasUnsettledDescendants) {
+      finalReply = await followupRuntime?.readDescendantSubagentFallbackReply({
+        sessionKey: params.sessionKey,
+        runStartedAt: params.runStartedAt,
+      });
+    }
+    // Apply only once every descendant settled; a live run still owns the turn.
+    return {
+      finalReply: finalReply && !hasUnsettledDescendants ? finalReply : undefined,
+      hasUnsettledDescendants,
+      hadDescendants,
+    };
+  }
+  return { finalReply: completedDescendantReply, hasUnsettledDescendants, hadDescendants };
 }
 
 export async function logCronDeliveryWarn(message: string): Promise<void> {
@@ -254,8 +324,9 @@ function summarizeDirectCronDeliveryError(error: unknown): string {
 }
 
 function isTransientDirectCronDeliveryError(error: unknown): boolean {
-  if (deliveryRecovery.findPlatformMessageRejectedError(error)) {
-    return false;
+  const typedRetryability = deliveryRecovery.resolveDeliveryNotSentRetryability(error);
+  if (typedRetryability !== undefined) {
+    return typedRetryability;
   }
   const message = summarizeDirectCronDeliveryError(error);
   if (!message) {

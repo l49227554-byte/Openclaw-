@@ -2,6 +2,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
+import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import * as preparedModelCatalog from "../../agents/prepared-model-catalog.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
@@ -20,6 +21,14 @@ import type { TypingController } from "./typing.js";
 const { handleCommandsMock, buildStatusReplyMock } = vi.hoisted(() => ({
   handleCommandsMock: vi.fn(),
   buildStatusReplyMock: vi.fn(),
+}));
+
+// Runtime eligibility belongs to the published-owner tests; these cases exercise its consumers.
+vi.mock("../../agents/model-runtime-choice.js", () => ({
+  preparePublishedModelRuntimeChoice: vi.fn(async () => ({
+    kind: "ready",
+    validate: () => undefined,
+  })),
 }));
 
 vi.mock("./commands.runtime.js", () => ({
@@ -79,7 +88,14 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.stubEnv("OPENCLAW_TEST_FAST", "1");
-    vi.spyOn(preparedModelCatalog, "loadPreparedModelCatalogSnapshot").mockResolvedValue({
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => [{ id: "claude-cli", modelProvider: "anthropic" }] as never,
+      resolvePluginSetupCliBackend: () => {
+        throw new Error("native command attempted synchronous CLI setup discovery");
+      },
+    });
+    // Keep scoped thinking reads on the same catalog fixture as model selection.
+    const catalogSnapshot: ModelCatalogSnapshot = {
       entries: [
         {
           id: "gpt-5.5",
@@ -97,7 +113,13 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
         },
       ],
       routeVariants: [],
-    });
+    };
+    vi.spyOn(preparedModelCatalog, "loadPreparedModelCatalogSnapshot").mockResolvedValue(
+      catalogSnapshot,
+    );
+    vi.spyOn(preparedModelCatalog, "loadProviderScopedThinkingCatalog").mockResolvedValue(
+      catalogSnapshot.entries,
+    );
     handleCommandsMock.mockReset();
     buildStatusReplyMock.mockReset();
     buildStatusReplyMock.mockResolvedValue({ text: "selected model status" });
@@ -107,6 +129,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
     body: string,
     config?: OpenClawConfig,
     response: { shouldContinue: boolean; reply?: { text: string } } = { shouldContinue: true },
+    preparedCatalog?: ModelCatalogSnapshot,
   ) {
     handleCommandsMock.mockResolvedValue(response);
     const commandName = body.slice(1).split(/\s+/, 1)[0] ?? "";
@@ -144,6 +167,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
       agentCfg: config?.agents?.defaults,
       commandAuthorized: true,
       typing,
+      preparedModelCatalog: preparedCatalog,
     });
 
     return { result, typing, storePath: resolvedConfig.session?.store };
@@ -167,29 +191,14 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
   });
 
   it.each([
-    { command: "/queue Can you diagnose this?", expected: 'Unrecognized queue mode "Can".' },
-    { command: "/queue /think high", expected: 'Unrecognized queue mode "/think"' },
-    {
-      command: "/think about my deployment plan",
-      expected: 'Unrecognized thinking level "about".',
-    },
-    {
-      command: "/verbose explain quantum computing",
-      expected: 'Unrecognized verbose level "explain".',
-    },
-    {
-      command: "/trace banana please",
-      expected: 'Unrecognized trace level "banana".',
-    },
-    {
-      command: "/fast bananas please",
-      expected: 'Unrecognized fast mode "bananas".',
-    },
-    {
-      command: "/reasoning nonsense please",
-      expected: 'Unrecognized reasoning level "nonsense".',
-    },
-  ])("validates every native directive argument: $command", async ({ command, expected }) => {
+    ["/queue Can you diagnose this?", 'Unrecognized queue mode "Can".'],
+    ["/queue /think high", 'Unrecognized queue mode "/think"'],
+    ["/think about my deployment plan", 'Unrecognized thinking level "about".'],
+    ["/verbose explain quantum computing", 'Unrecognized verbose level "explain".'],
+    ["/trace banana please", 'Unrecognized trace level "banana".'],
+    ["/fast bananas please", 'Unrecognized fast mode "bananas".'],
+    ["/reasoning nonsense please", 'Unrecognized reasoning level "nonsense".'],
+  ])("validates every native directive argument: %s", async (command, expected) => {
     const { result } = await resolveNativeDirectiveCommand(command);
 
     expect(result).toEqual({
@@ -199,34 +208,25 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
   });
 
   it.each([
-    { command: "/queue collect please help", expected: 'Unexpected argument "please" for /queue.' },
-    { command: "/think high please", expected: 'Unexpected argument "please" for /think.' },
-    { command: "/verbose on please", expected: 'Unexpected argument "please" for /verbose.' },
-    { command: "/fast on please", expected: 'Unexpected argument "please" for /fast.' },
-    {
-      command: "/reasoning on please",
-      expected: 'Unexpected argument "please" for /reasoning.',
-    },
-    { command: "/exec host=node please", expected: 'Unexpected argument "please" for /exec.' },
-    {
-      command: "/model openai/gpt-5.5 --runtime codex --runtime acp",
-      expected: 'Unexpected argument "--runtime" for /model.',
-    },
-    {
-      command: "/model openai/gpt-5.5 -slow",
-      expected: 'Unexpected argument "-slow" for /model.',
-    },
-  ])(
-    "rejects trailing prose instead of dropping native command $command",
-    async ({ command, expected }) => {
-      const { result } = await resolveNativeDirectiveCommand(command);
+    ["/queue collect please help", 'Unexpected argument "please" for /queue.'],
+    ["/think high please", 'Unexpected argument "please" for /think.'],
+    ["/verbose on please", 'Unexpected argument "please" for /verbose.'],
+    ["/fast on please", 'Unexpected argument "please" for /fast.'],
+    ["/reasoning on please", 'Unexpected argument "please" for /reasoning.'],
+    ["/exec host=node please", 'Unexpected argument "please" for /exec.'],
+    [
+      "/model openai/gpt-5.5 --runtime codex --runtime acp",
+      'Unexpected argument "--runtime" for /model.',
+    ],
+    ["/model openai/gpt-5.5 -slow", 'Unexpected argument "-slow" for /model.'],
+  ])("rejects trailing prose instead of dropping native command %s", async (command, expected) => {
+    const { result } = await resolveNativeDirectiveCommand(command);
 
-      expect(result).toEqual({
-        handled: true,
-        reply: expect.objectContaining({ text: expected }),
-      });
-    },
-  );
+    expect(result).toEqual({
+      handled: true,
+      reply: expect.objectContaining({ text: expected }),
+    });
+  });
 
   it.each(["--runtime codex -s", "-s --runtime codex"])(
     "applies native /model runtime and session options from %s",
@@ -254,6 +254,43 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
       expect(sessionEntry).toMatchObject({ agentRuntimeOverride: "codex" });
     },
   );
+
+  it("applies native model selections using the admitted catalog without rediscovery", async () => {
+    vi.stubEnv("OPENCLAW_TEST_FAST", "0");
+    const storePath = path.join(tempDirs.make("openclaw-native-prepared-model-"), "sessions.json");
+    vi.mocked(preparedModelCatalog.loadPreparedModelCatalogSnapshot).mockRejectedValue(
+      new Error("native selection must not rediscover the prepared catalog"),
+    );
+    const { result } = await resolveNativeDirectiveCommand(
+      "/model ollama/picker-secondary -s",
+      { session: { store: storePath } },
+      { shouldContinue: true },
+      {
+        entries: [
+          {
+            provider: "ollama",
+            id: "picker-secondary",
+            name: "Picker secondary",
+            api: "ollama",
+            baseUrl: "http://127.0.0.1:11434",
+            reasoning: false,
+            contextWindow: 32768,
+          },
+        ],
+        routeVariants: [],
+      },
+    );
+
+    expect(result).toMatchObject({
+      handled: true,
+      reply: { text: expect.stringContaining("ollama/picker-secondary") },
+    });
+    expect(
+      loadExactSessionEntry({ sessionKey: "agent:main:telegram:123", storePath })?.entry,
+    ).toMatchObject({ providerOverride: "ollama", modelOverride: "picker-secondary" });
+    expect(preparedModelCatalog.loadPreparedModelCatalogSnapshot).not.toHaveBeenCalled();
+    expect(preparedModelCatalog.loadProviderScopedThinkingCatalog).not.toHaveBeenCalled();
+  });
 
   it("marks native /compact terminal replies for delivery under message_tool_only (#90185)", async () => {
     const reply = {
@@ -429,15 +466,6 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
         ("targetAgentId" in testCase ? testCase.targetAgentId : undefined) ?? "main";
       const resolvedModel = "resolvedModel" in testCase ? testCase.resolvedModel : undefined;
       const targetSessionKey = `agent:${targetAgentId}:main`;
-      if ("hasBoundCli" in testCase) {
-        cliBackendsTesting.setDepsForTest({
-          resolveRuntimeCliBackends: () =>
-            [{ id: "claude-cli", modelProvider: "anthropic" }] as never,
-          resolvePluginSetupCliBackend: () => {
-            throw new Error("approved bound CLI attempted synchronous setup discovery");
-          },
-        });
-      }
       const storePath = path.join(tempDirs.make("openclaw-native-source-"), "sessions.json");
       await replaceSessionEntry(
         { agentId: targetAgentId, sessionKey: targetSessionKey, storePath },
@@ -576,7 +604,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
     { selection: "automatic fallback", source: "auto" as const },
     { selection: "channel override", source: undefined },
   ])("preserves canonical native /status $selection", async (testCase) => {
-    vi.spyOn(preparedModelCatalog, "loadPreparedModelCatalog").mockResolvedValueOnce([]);
+    vi.spyOn(preparedModelCatalog, "readPreparedModelCatalog").mockResolvedValueOnce([]);
     const targetSessionKey = "agent:main:main";
     const storePath = path.join(tempDirs.make("openclaw-native-status-"), "sessions.json");
     await replaceSessionEntry(
@@ -960,13 +988,15 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
     } as SessionEntry);
     handleCommandsMock.mockImplementationOnce(async (params: { sessionEntry?: unknown }) => {
       const persisted = loadSessionEntry({ sessionKey, storePath });
-      expect(params.sessionEntry).toMatchObject({
+      const initialized = {
         sessionId: "session-1",
+        sessionStartedAt: 100,
         updatedAt: 100,
         lastInteractionAt: 100,
         channel: "telegram",
-      });
-      expect(persisted).toMatchObject(params.sessionEntry as object);
+      };
+      expect(params.sessionEntry).toMatchObject(initialized);
+      expect(persisted).toMatchObject(initialized);
       return { shouldContinue: false, reply: { text: "ok" } };
     });
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(100);

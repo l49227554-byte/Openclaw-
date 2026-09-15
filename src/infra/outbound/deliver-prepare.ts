@@ -19,7 +19,7 @@ import {
   type PreparedOutboundBatch,
   type PreparedOutboundBatchEntry,
 } from "./prepared-batch.js";
-import { createReplyToDeliveryPolicy } from "./reply-policy.js";
+import { createReplyToDeliveryPolicy, normalizeOutboundReplyFacts } from "./reply-policy.js";
 
 class OutboundPayloadPreparationError extends Error {
   readonly sourceIndex: number;
@@ -46,6 +46,7 @@ function throwIfPreparationAborted(
 }
 
 async function createPreparationHandler(params: DeliverOutboundPayloadsParams) {
+  const reply = normalizeOutboundReplyFacts(params);
   return await createChannelHandler({
     cfg: params.cfg,
     agentId: params.session?.agentId,
@@ -53,8 +54,8 @@ async function createPreparationHandler(params: DeliverOutboundPayloadsParams) {
     to: params.to,
     deps: params.deps,
     accountId: params.accountId,
-    replyToId: params.replyToId,
-    replyToMode: params.replyToMode,
+    replyToId: reply?.replyToId,
+    replyToMode: reply?.source === "implicit" ? reply.mode : undefined,
     formatting: params.formatting,
     threadId: params.threadId,
     identity: params.identity,
@@ -118,7 +119,7 @@ function compactPreparedPayload(payload: ReplyPayload): ReplyPayload {
  */
 export async function prepareOutboundPayloadBatch(
   params: DeliverOutboundPayloadsParams,
-  options?: { onBeforeFirstModifier?: () => void },
+  options?: { onBeforeFirstModifier?: () => Promise<void> },
 ): Promise<PreparedOutboundBatch> {
   const directiveOptions = await resolveChannelOutboundDirectiveOptions({
     cfg: params.cfg,
@@ -148,17 +149,15 @@ export async function prepareOutboundPayloadBatch(
     (hookRunner?.hasHooks("reply_payload_sending") ?? false);
   const hasMessageSendingHooks = hookRunner?.hasHooks("message_sending") ?? false;
   const hasModifyingHooks = hasReplyPayloadSendingHooks || hasMessageSendingHooks;
-  const { resolveCurrentReplyTo } = createReplyToDeliveryPolicy({
-    replyToId: params.replyToId,
-    replyToMode: params.replyToMode,
-  });
+  const { resolveCurrentReplyTo } = createReplyToDeliveryPolicy(params);
   const sessionKeyForHooks = params.mirror?.sessionKey ?? params.session?.key;
   let modifierBoundaryEntered = false;
 
   for (const { index: sourceIndex, payload } of normalized) {
     throwIfPreparationAborted(params.abortSignal, sourceIndex, payload);
     if (hasModifyingHooks && !modifierBoundaryEntered) {
-      options?.onBeforeFirstModifier?.();
+      await options?.onBeforeFirstModifier?.();
+      throwIfPreparationAborted(params.abortSignal, sourceIndex, payload);
       modifierBoundaryEntered = true;
     }
     let replyHookResult: Awaited<ReturnType<typeof applyReplyPayloadSendingHook>>;
@@ -259,8 +258,11 @@ export async function prepareOutboundPayloadBatch(
     schemaVersion: PREPARED_OUTBOUND_BATCH_SCHEMA_VERSION,
     sourcePayloadCount: params.payloads.length,
     channelNormalized: true,
-    ...(params.replyPayloadSendingHook?.runId
-      ? { runId: params.replyPayloadSendingHook.runId }
+    ...((params.runId ?? params.replyPayloadSendingHook?.runId)
+      ? { runId: params.runId ?? params.replyPayloadSendingHook?.runId }
+      : {}),
+    ...(params.executionIdentityToken
+      ? { executionIdentityToken: params.executionIdentityToken }
       : {}),
     entries,
   };

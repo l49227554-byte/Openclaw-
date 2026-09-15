@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import {
+  isSupportedOpenClawNodeVersion,
+  PROCESS_NODE_VERSION_CHECK,
+} from "../../../node-version.mjs";
+import { NODE_RELEASE_VERSION_CASES } from "../../../test/helpers/node-version-cases.js";
 import type { WorkerSshEndpoint } from "../../plugins/types.js";
 import { runCommandWithTimeout, type SpawnResult } from "../../process/exec.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
@@ -158,6 +164,58 @@ describe("bootstrapWorker", () => {
     expect(runner.calls).toHaveLength(0);
   });
 
+  it.each(["identity", "preflight", "transfer"] as const)(
+    "stops bootstrap after ownership changes during %s and cleans only its own upload",
+    async (boundary) => {
+      let current = true;
+      let commands = 0;
+      const runner = fakeRunner(
+        boundary === "identity"
+          ? []
+          : [result({ stdout: tagged("install", REMOTE_TARBALL) }), result(), result()],
+        () => {
+          commands += 1;
+          if (
+            (boundary === "preflight" && commands === 1) ||
+            (boundary === "transfer" && commands === 2)
+          ) {
+            current = false;
+          }
+        },
+      );
+      await expect(
+        bootstrapWorker(
+          { ssh: SSH, artifact: BUNDLE },
+          {
+            resolveIdentity: async () => {
+              if (boundary === "identity") {
+                current = false;
+              }
+              return resolveIdentity();
+            },
+            assertCurrent: () => {
+              if (!current) {
+                throw new Error("worker owner changed");
+              }
+            },
+            runCommand: runner.runCommand,
+          },
+        ),
+      ).rejects.toThrow("worker owner changed");
+      expect(runner.calls.map((call) => call.argv[0])).toEqual(
+        boundary === "identity"
+          ? []
+          : boundary === "preflight"
+            ? ["ssh", "ssh"]
+            : ["ssh", "scp", "ssh"],
+      );
+      if (boundary !== "identity") {
+        expect(runner.calls.at(-1)?.argv.at(-1)).toContain(OPERATION_TOKEN);
+        expect(runner.calls.at(-1)?.argv.at(-1)).toContain(BUNDLE_HASH);
+      }
+    },
+  );
+
   it("transfers and installs a fresh bundle despite terminal cleanup failure", async () => {
     const runner = fakeRunner([
       result({ stdout: tagged("install", REMOTE_TARBALL) }),
@@ -189,7 +247,7 @@ describe("bootstrapWorker", () => {
     expect(runner.calls[2]?.options.input).toContain('ln -s "$lock_identity" "$lock"');
     expect(runner.calls[2]?.options.input).toContain("worker bundle archive digest mismatch");
     expect(runner.calls[2]?.options.input).toContain(
-      'const artifactPaths = ["worker.mjs","workspace-rsync-receiver.mjs"]',
+      'const artifactPaths = ["github-exec-launcher.mjs","worker.mjs","workspace-rsync-receiver.mjs"]',
     );
     expect(runner.calls[2]?.options.input).not.toContain('npm install --prefix "$staging"');
     expect(runner.calls[2]?.options.input).toContain("worker install content does not match");
@@ -383,10 +441,22 @@ describe("bootstrapWorker", () => {
         { ssh: SSH, artifact: BUNDLE },
         { resolveIdentity, runCommand: runner.runCommand },
       ),
-    ).rejects.toThrow("Node 22.22.3+, 24.15.0+, or 25.9.0+ with WAL-reset-safe SQLite");
+    ).rejects.toThrow("Node 24.16.0+ or 26.1.0+ with WAL-reset-safe SQLite");
     expect(runner.calls).toHaveLength(2);
-    expect(runner.calls[0]?.options.input).toContain("process.versions.node");
+    expect(runner.calls[0]?.options.input).toContain(
+      `const nodeSafe = ${PROCESS_NODE_VERSION_CHECK};`,
+    );
     expect(runner.calls[0]?.options.input).toContain("SELECT sqlite_version() AS version");
+  });
+
+  it("embeds a shell-safe Node release check matching the canonical contract", () => {
+    expect(PROCESS_NODE_VERSION_CHECK).not.toContain("'");
+    for (const version of NODE_RELEASE_VERSION_CASES) {
+      const actual = runInNewContext(PROCESS_NODE_VERSION_CHECK, {
+        process: { versions: { node: version } },
+      });
+      expect(actual, version).toBe(isSupportedOpenClawNodeVersion(version));
+    }
   });
 
   it("installs only the exact npm package without transferring a tarball", async () => {
@@ -419,6 +489,9 @@ describe("bootstrapWorker", () => {
     expect(npmRunner.calls[1]?.options.input).not.toContain("npm install");
     expect(npmRunner.calls[1]?.options.input).toContain("--registry=https://registry.npmjs.org/");
     expect(npmRunner.calls[1]?.options.input).toContain("package/dist/worker/worker.mjs");
+    expect(npmRunner.calls[1]?.options.input).toContain(
+      "package/dist/worker/github-exec-launcher.mjs",
+    );
     expect(npmRunner.calls[1]?.options.input).toContain(
       "package/dist/worker/workspace-rsync-receiver.mjs",
     );
@@ -613,14 +686,15 @@ describe("bootstrapWorker", () => {
           path.join(packageRoot, "package.json"),
           `${JSON.stringify({ name: "openclaw", version: VERSION, files: ["dist/"] })}\n`,
         );
-        await fs.writeFile(path.join(packageRoot, "dist/worker/worker.mjs"), "export {};\n", {
-          mode: 0o755,
-        });
-        await fs.writeFile(
-          path.join(packageRoot, "dist/worker/workspace-rsync-receiver.mjs"),
-          "export {};\n",
-          { mode: 0o755 },
-        );
+        for (const artifact of [
+          "github-exec-launcher.mjs",
+          "worker.mjs",
+          "workspace-rsync-receiver.mjs",
+        ]) {
+          await fs.writeFile(path.join(packageRoot, "dist/worker", artifact), "export {};\n", {
+            mode: 0o755,
+          });
+        }
         const artifact = await createWorkerBundleProducer({
           packageRoot,
           cacheDir: path.join(root, "cache"),
@@ -864,14 +938,16 @@ describe("bootstrapWorker", () => {
           path.join(packageRoot, "package.json"),
           `${JSON.stringify({ name: "openclaw", version: VERSION, files: ["dist/"] })}\n`,
         );
-        await fs.writeFile(path.join(packageRoot, "dist/worker/worker.mjs"), "export {};\n", {
-          mode: 0o755,
-        });
-        await fs.writeFile(
-          path.join(packageRoot, "dist/worker/workspace-rsync-receiver.mjs"),
-          "export {};\n",
-          { mode: 0o755 },
-        );
+        const artifacts = [
+          "github-exec-launcher.mjs",
+          "worker.mjs",
+          "workspace-rsync-receiver.mjs",
+        ];
+        for (const artifact of artifacts) {
+          await fs.writeFile(path.join(packageRoot, "dist/worker", artifact), "export {};\n", {
+            mode: 0o755,
+          });
+        }
         const bundle = await createWorkerBundleProducer({
           packageRoot,
           cacheDir: path.join(root, "cache"),
@@ -892,16 +968,13 @@ describe("bootstrapWorker", () => {
         });
         const installRoot = path.join(remoteHome, ".openclaw-worker", bundle.bundleHash);
         await fs.mkdir(installRoot, { recursive: true });
-        await fs.copyFile(
-          path.join(packageRoot, "dist", "worker", "worker.mjs"),
-          path.join(installRoot, "worker.mjs"),
-        );
-        await fs.chmod(path.join(installRoot, "worker.mjs"), 0o700);
-        await fs.copyFile(
-          path.join(packageRoot, "dist", "worker", "workspace-rsync-receiver.mjs"),
-          path.join(installRoot, "workspace-rsync-receiver.mjs"),
-        );
-        await fs.chmod(path.join(installRoot, "workspace-rsync-receiver.mjs"), 0o700);
+        for (const artifactName of artifacts) {
+          await fs.copyFile(
+            path.join(packageRoot, "dist", "worker", artifactName),
+            path.join(installRoot, artifactName),
+          );
+          await fs.chmod(path.join(installRoot, artifactName), 0o700);
+        }
         await fs.writeFile(path.join(installRoot, "bootstrap-receipt.json"), `${receiptJson}\n`);
         const runCommand: WorkerBootstrapCommandRunner = async (_argv, options) => {
           const isPreflight =

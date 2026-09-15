@@ -14,8 +14,18 @@ import {
   validateQaEvidenceSummaryJson,
   type QaEvidenceStatus,
   type QaEvidenceSummaryJson,
-} from "../extensions/qa-lab/api.js";
-import type { AgentExecEnvelope } from "../src/commands/agent-exec.ts";
+} from "../extensions/qa-lab/test-api.js";
+import type { AgentExecEnvelope } from "../src/commands/agent-exec-result.ts";
+import { requireOptionArgument } from "./lib/arg-utils.mts";
+import { summarizeGatewayMatrixOutcomes } from "./lib/code-mode-matrix-comparison.ts";
+import {
+  GATEWAY_MATRIX_TASKS,
+  type GatewayMatrixTask,
+} from "./lib/code-mode-matrix-gateway-fixtures.ts";
+import type {
+  GatewayMatrixEvidence,
+  GatewayMatrixWorkload,
+} from "./lib/code-mode-matrix-gateway.ts";
 import { previewForDevToolLog, redactJsonValueForDevToolLog } from "./lib/dev-tooling-safety.ts";
 
 export { validateQaEvidenceSummaryJson };
@@ -29,7 +39,15 @@ const MAX_REPETITIONS = 10;
 const MAX_DIAGNOSTIC_CHARS = 8_000;
 
 export type CodeModeMatrixMode = "direct" | "auto" | "code";
-export type CodeModeMatrixTask = "read" | "dependent-read-write";
+const MATRIX_TASKS = [
+  "read",
+  "dependent-read-write",
+  "large-result-reduction",
+  "parallel-independent-reads",
+  "dependent-chain",
+  ...GATEWAY_MATRIX_TASKS,
+] as const;
+export type CodeModeMatrixTask = (typeof MATRIX_TASKS)[number];
 
 export type CodeModeMatrixOptions = {
   allowFailures: boolean;
@@ -40,12 +58,14 @@ export type CodeModeMatrixOptions = {
   outputDir?: string;
   repetitions: number;
   repoRoot: string;
+  runtimeDir?: string;
+  baselineResults?: string;
   tasks: CodeModeMatrixTask[];
   thinking: string;
   timeoutSeconds: number;
 };
 
-type MatrixCell = {
+export type MatrixCell = {
   id: string;
   mode: CodeModeMatrixMode;
   model: string;
@@ -59,7 +79,7 @@ type MatrixTaskFixture = {
   resultPath?: string;
 };
 
-type MatrixRuntimeEntrypoint = {
+export type MatrixRuntimeEntrypoint = {
   args: string[];
   cwd: string;
 };
@@ -70,6 +90,7 @@ type CellFailureCategory =
   | "answer_mismatch"
   | "effect_mismatch"
   | "harness_error"
+  | "interview_mismatch"
   | "model_mismatch"
   | "provider_auth"
   | "provider_billing"
@@ -111,9 +132,12 @@ export type CodeModeMatrixCellResult = {
   timestamp: string;
   toolSummary?: AgentExecEnvelope["toolSummary"];
   usage?: AgentExecEnvelope["usage"];
+  gateway?: GatewayMatrixEvidence;
+  workload?: GatewayMatrixWorkload;
 };
 
-type RunCellParams = {
+export type RunCellParams = {
+  abortSignal?: AbortSignal;
   buildSha256: string;
   cell: MatrixCell;
   gitSha: string;
@@ -150,11 +174,14 @@ Runs repeated Code Mode acceptance cells through the normal embedded agent path.
 Options:
   --model <provider/model>  Model reference; repeat for multiple models
   --mode <mode>             direct | auto | code; repeat to select modes
-  --task <task>             read | dependent-read-write; repeat to select tasks
+  --task <task>             ${MATRIX_TASKS.join(" | ")}; repeat to select tasks
+                            (default: read, dependent-read-write)
   --repetitions <n>         Runs per model/mode/task cell (default: ${DEFAULT_REPETITIONS}, max: ${MAX_REPETITIONS})
   --timeout <seconds>       Per-run agent deadline (default: ${DEFAULT_TIMEOUT_SECONDS})
   --thinking <level>        Agent thinking level (default: off)
   --output-dir <path>       Repo-relative artifact directory
+  --runtime-dir <path>      Use a clean, already-built checkout without rebuilding it
+  --baseline-results <path> Compare matching cells from an earlier results.jsonl
   --keep-state              Retain per-cell state and workspace directories
   --allow-failures          Exit zero after writing evidence even when cells fail
   --dry-run                 Write the manifest without calling models
@@ -162,14 +189,6 @@ Options:
 
 Provider credentials are read from the environment and are never written to artifacts.
 `;
-}
-
-function readOptionValue(argv: readonly string[], index: number, flag: string): string {
-  const value = argv[index + 1];
-  if (!value || value.startsWith("-")) {
-    throw new Error(`${flag} requires a value`);
-  }
-  return value;
 }
 
 function parseIntegerOption(raw: string, flag: string, max?: number): number {
@@ -199,10 +218,15 @@ function parseMode(raw: string): CodeModeMatrixMode {
 }
 
 function parseTask(raw: string): CodeModeMatrixTask {
-  if (raw === "read" || raw === "dependent-read-write") {
-    return raw;
+  const task = MATRIX_TASKS.find((candidate) => candidate === raw);
+  if (task) {
+    return task;
   }
-  throw new Error(`--task must be one of read, dependent-read-write; got ${JSON.stringify(raw)}`);
+  throw new Error(`--task must be one of ${MATRIX_TASKS.join(", ")}; got ${JSON.stringify(raw)}`);
+}
+
+function isGatewayTask(task: CodeModeMatrixTask): task is GatewayMatrixTask {
+  return GATEWAY_MATRIX_TASKS.some((candidate) => candidate === task);
 }
 
 export function parseCodeModeMatrixOptions(
@@ -216,6 +240,8 @@ export function parseCodeModeMatrixOptions(
   let dryRun = false;
   let keepState = false;
   let outputDir: string | undefined;
+  let runtimeDir: string | undefined;
+  let baselineResults: string | undefined;
   let repetitions = DEFAULT_REPETITIONS;
   let thinking = "off";
   let timeoutSeconds = DEFAULT_TIMEOUT_SECONDS;
@@ -230,7 +256,7 @@ export function parseCodeModeMatrixOptions(
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--model") {
-      const value = readOptionValue(argv, index, arg).trim();
+      const value = requireOptionArgument(argv, index, arg).trim();
       if (!value.includes("/")) {
         throw new Error(
           `--model must use a provider/model reference; got ${JSON.stringify(value)}`,
@@ -241,36 +267,51 @@ export function parseCodeModeMatrixOptions(
       continue;
     }
     if (arg === "--mode") {
-      collectUnique(modes, parseMode(readOptionValue(argv, index, arg)), arg);
+      collectUnique(modes, parseMode(requireOptionArgument(argv, index, arg)), arg);
       index += 1;
       continue;
     }
     if (arg === "--task") {
-      collectUnique(tasks, parseTask(readOptionValue(argv, index, arg)), arg);
+      collectUnique(tasks, parseTask(requireOptionArgument(argv, index, arg)), arg);
       index += 1;
       continue;
     }
     if (arg === "--repetitions") {
       recordOnce(arg);
-      repetitions = parseIntegerOption(readOptionValue(argv, index, arg), arg, MAX_REPETITIONS);
+      repetitions = parseIntegerOption(
+        requireOptionArgument(argv, index, arg),
+        arg,
+        MAX_REPETITIONS,
+      );
       index += 1;
       continue;
     }
     if (arg === "--timeout") {
       recordOnce(arg);
-      timeoutSeconds = parseIntegerOption(readOptionValue(argv, index, arg), arg);
+      timeoutSeconds = parseIntegerOption(requireOptionArgument(argv, index, arg), arg);
       index += 1;
       continue;
     }
     if (arg === "--thinking") {
       recordOnce(arg);
-      thinking = readOptionValue(argv, index, arg).trim();
+      thinking = requireOptionArgument(argv, index, arg).trim();
       index += 1;
       continue;
     }
     if (arg === "--output-dir") {
       recordOnce(arg);
-      outputDir = readOptionValue(argv, index, arg);
+      outputDir = requireOptionArgument(argv, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--runtime-dir" || arg === "--baseline-results") {
+      recordOnce(arg);
+      const value = path.resolve(cwd, requireOptionArgument(argv, index, arg));
+      if (arg === "--runtime-dir") {
+        runtimeDir = value;
+      } else {
+        baselineResults = value;
+      }
       index += 1;
       continue;
     }
@@ -298,6 +339,19 @@ export function parseCodeModeMatrixOptions(
   if (models.length === 0) {
     throw new Error("At least one --model <provider/model> is required");
   }
+  if (tasks.some(isGatewayTask)) {
+    if (modes.length !== 1 || modes[0] !== "code") {
+      throw new Error("Gateway interview tasks require --mode code.");
+    }
+    if (models.some((model) => !model.startsWith("openai/"))) {
+      throw new Error("Gateway interview tasks currently require explicit OpenAI models.");
+    }
+  }
+  if (baselineResults && (tasks.length === 0 || tasks.some((task) => !isGatewayTask(task)))) {
+    throw new Error(
+      "--baseline-results requires Gateway interview tasks with fixed workload fingerprints.",
+    );
+  }
   return {
     allowFailures,
     dryRun,
@@ -307,6 +361,8 @@ export function parseCodeModeMatrixOptions(
     outputDir,
     repetitions,
     repoRoot: path.resolve(cwd),
+    ...(runtimeDir ? { runtimeDir } : {}),
+    ...(baselineResults ? { baselineResults } : {}),
     tasks: tasks.length > 0 ? tasks : ["read", "dependent-read-write"],
     thinking,
     timeoutSeconds,
@@ -551,29 +607,92 @@ function verificationCode(cell: MatrixCell): string {
   return `CM-${createHash("sha256").update(cell.id).digest("hex").slice(0, 12).toUpperCase()}`;
 }
 
-async function prepareTaskFixture(workspace: string, cell: MatrixCell): Promise<MatrixTaskFixture> {
+function taskFixture(cell: MatrixCell): MatrixTaskFixture & { files: Record<string, string> } {
   const expected = verificationCode(cell);
-  await fs.mkdir(workspace, { recursive: true });
-  await fs.writeFile(
-    path.join(workspace, "facts.txt"),
-    `project=openclaw\nverification_code=${expected}\n`,
-    "utf8",
-  );
+  const facts = { "facts.txt": `project=openclaw\nverification_code=${expected}\n` };
   if (cell.task === "read") {
     return {
       expected,
+      files: facts,
       prompt:
         "Read facts.txt using tools. Reply with only the verification_code value, with no prose or formatting.",
     };
   }
-  const resultPath = path.join(workspace, "result.txt");
-  await fs.rm(resultPath, { force: true });
+  if (cell.task === "dependent-read-write") {
+    return {
+      expected,
+      files: facts,
+      prompt:
+        "Read facts.txt using tools. Write only its verification_code value to result.txt, then read result.txt and reply with only that value. Do not guess or skip verification.",
+      resultPath: "result.txt",
+    };
+  }
+  // Extended tasks use identical inputs across models/modes for each repetition.
+  const code = verificationCode({ ...cell, id: `${cell.task}-${cell.repetition}` });
+  const finish =
+    " Write only the answer to result.txt, read it back, and reply with only that answer, with no prose or formatting. Use file tools, not shell commands.";
+  if (cell.task === "large-result-reduction") {
+    const rows = Array.from({ length: 512 }, (_, index) => ({
+      id: index + 1,
+      region: index % 3 === 0 ? "west" : "east",
+      units: (index % 7) + 1,
+      unitPriceCents: 100 + (index % 23),
+      note: "irrelevant-detail-".repeat(4),
+    }));
+    const selected = rows.filter((row) => row.region === "east" && row.units >= 4);
+    return {
+      expected: `${code}:${selected.length}:${selected.reduce((total, row) => total + row.units * row.unitPriceCents, 0)}`,
+      files: {
+        "rules.json": JSON.stringify({ region: "east", minUnits: 4, verificationCode: code }),
+        "orders.jsonl": rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+      },
+      prompt:
+        "Read rules.json and all of orders.jsonl using tools, following read continuations when truncated. Select orders matching rules.region with units >= rules.minUnits. Compute their count and sum of units * unitPriceCents. The answer is verificationCode:count:sum, using rules.verificationCode and integer decimal numbers. Do not emit the raw orders." +
+        finish,
+      resultPath: "result.txt",
+    };
+  }
+  if (cell.task === "parallel-independent-reads") {
+    const names = ["north", "south", "west"];
+    const values = names.map((name, index) => `${code}-${index + 1}-${name}`);
+    return {
+      expected: values.join("|"),
+      files: Object.fromEntries(
+        names.map((name, index) => [`${name}.json`, JSON.stringify({ value: values[index] })]),
+      ),
+      prompt:
+        "Read north.json, south.json, and west.json using independent tool calls. Run the reads in parallel when the tool surface supports it; in Code Mode use Promise.all. Join their value fields in north, south, west order with | (not completion order)." +
+        finish,
+      resultPath: "result.txt",
+    };
+  }
+  const route = `route-${code.slice(3, 9)}.json`;
+  const payload = `payload-${code.slice(9)}.json`;
   return {
-    expected,
+    expected: code,
+    files: {
+      "start.json": JSON.stringify({ next: route }),
+      [route]: JSON.stringify({ next: payload }),
+      [payload]: JSON.stringify({ value: code }),
+    },
     prompt:
-      "Read facts.txt using tools. Write only its verification_code value to result.txt, then read result.txt and reply with only that value. Do not guess or skip verification.",
-    resultPath,
+      "Read start.json using tools. Its next field names the next file; read that file and follow its next field to the payload file. The answer is the payload's value. Await each read before choosing the next path; do not list the directory or guess paths." +
+      finish,
+    resultPath: "result.txt",
   };
+}
+
+async function prepareTaskFixture(workspace: string, cell: MatrixCell): Promise<MatrixTaskFixture> {
+  const { files, ...fixture } = taskFixture(cell);
+  await fs.mkdir(workspace, { recursive: true });
+  for (const [name, content] of Object.entries(files)) {
+    await fs.writeFile(path.join(workspace, name), content, "utf8");
+  }
+  if (fixture.resultPath) {
+    fixture.resultPath = path.join(workspace, fixture.resultPath);
+    await fs.rm(fixture.resultPath, { force: true });
+  }
+  return fixture;
 }
 
 async function readGitSha(repoRoot: string): Promise<string> {
@@ -965,6 +1084,7 @@ async function executeAgentExec(params: {
       env,
       maxBuffer: 4 * 1024 * 1024,
       timeout: (params.matrix.timeoutSeconds + 30) * 1_000,
+      signal: params.matrix.abortSignal,
     });
     const parsed = parseAgentExecOutput(stdout);
     return {
@@ -1014,6 +1134,13 @@ async function executeAgentExec(params: {
 }
 
 async function runMatrixCell(params: RunCellParams): Promise<CodeModeMatrixCellResult> {
+  if (isGatewayTask(params.cell.task)) {
+    const { runGatewayMatrixCell } = await import("./lib/code-mode-matrix-gateway.ts");
+    return await runGatewayMatrixCell({
+      ...params,
+      cell: { ...params.cell, task: params.cell.task },
+    });
+  }
   const retainedRoot = path.join(params.outputDir, "state", params.cell.id);
   if (params.keepState) {
     await fs.rm(retainedRoot, { force: true, recursive: true });
@@ -1101,7 +1228,7 @@ function harnessFailureResult(
     diagnostics: message,
     elapsedMs,
     error: { kind: "harness_error", message },
-    expected: verificationCode(cell),
+    expected: isGatewayTask(cell.task) ? "Gateway task result" : taskFixture(cell).expected,
     failureCategory: "harness_error",
     final: "",
     gitSha: provenance.gitSha,
@@ -1127,6 +1254,17 @@ function harnessFailureResult(
   };
 }
 
+function summarizeMetric(values: (number | undefined)[]) {
+  const samples = values
+    .filter((value): value is number => value !== undefined)
+    .toSorted((a, b) => a - b);
+  return {
+    samples: samples.length,
+    total: samples.length > 0 ? samples.reduce((total, value) => total + value, 0) : null,
+    p50: samples[Math.floor(samples.length / 2)] ?? null,
+  };
+}
+
 function summarizeResults(results: CodeModeMatrixCellResult[]) {
   const groups = new Map<
     string,
@@ -1138,6 +1276,7 @@ function summarizeResults(results: CodeModeMatrixCellResult[]) {
       passed: number;
       total: number;
       wallMs: number[];
+      results: CodeModeMatrixCellResult[];
     }
   >();
   for (const result of results) {
@@ -1150,7 +1289,9 @@ function summarizeResults(results: CodeModeMatrixCellResult[]) {
       passed: 0,
       total: 0,
       wallMs: [],
+      results: [],
     };
+    group.results.push(result);
     group.total += 1;
     group.wallMs.push(result.elapsedMs);
     if (result.passed) {
@@ -1171,7 +1312,7 @@ function summarizeResults(results: CodeModeMatrixCellResult[]) {
   return [...groups.entries()].map(([key, group]) => {
     const [model, mode, task] = key.split("\0");
     const sortedWallMs = group.wallMs.toSorted((a, b) => a - b);
-    return {
+    const summary = {
       codeModeEngaged: group.codeModeEngaged,
       failed: group.failed,
       failures: group.failures,
@@ -1180,11 +1321,36 @@ function summarizeResults(results: CodeModeMatrixCellResult[]) {
       model,
       eventualPassed: group.passed > 0,
       p50WallMs: sortedWallMs[Math.floor(sortedWallMs.length / 2)] ?? 0,
+      metrics: {
+        assistantTurns: summarizeMetric(group.results.map((result) => result.assistantTurns)),
+        outerToolCalls: summarizeMetric(
+          group.results.map((result) => result.toolSummary?.calls ?? result.gateway?.outerCalls),
+        ),
+        bridgeSearchCalls: summarizeMetric(
+          group.results.map((result) => result.bridgeCalls?.search),
+        ),
+        bridgeDescribeCalls: summarizeMetric(
+          group.results.map((result) => result.bridgeCalls?.describe),
+        ),
+        bridgeToolCalls: summarizeMetric(group.results.map((result) => result.bridgeCalls?.call)),
+        costUsd: summarizeMetric(group.results.map((result) => result.costUsd)),
+        gatewayUpstreamCalls: summarizeMetric(
+          group.results.map((result) => result.gateway?.upstreamCalls),
+        ),
+        gatewayTaskElapsedMs: summarizeMetric(
+          group.results.map((result) => result.gateway?.taskElapsedMs),
+        ),
+        inputTokens: summarizeMetric(group.results.map((result) => result.usage?.input)),
+        outputTokens: summarizeMetric(group.results.map((result) => result.usage?.output)),
+      },
       passRate: group.total === 0 ? 0 : group.passed / group.total,
       passed: group.passed,
       task,
       total: group.total,
     };
+    return group.results.some((result) => result.workload)
+      ? Object.assign(summary, { gatewayOutcomes: summarizeGatewayMatrixOutcomes(group.results) })
+      : summary;
   });
 }
 
@@ -1283,31 +1449,57 @@ export async function runCodeModeModelMatrix(
 ): Promise<{ exitCode: number; outputDir: string; summary: unknown }> {
   const now = deps.now?.() ?? new Date();
   const outputDir = resolveCodeModeMatrixOutputDir(options.repoRoot, options.outputDir, now);
+  const runtimeRepoRoot = options.runtimeDir ?? options.repoRoot;
   const sourceIdentity = deps.readSourceIdentity
-    ? await deps.readSourceIdentity(options.repoRoot)
+    ? await deps.readSourceIdentity(runtimeRepoRoot)
     : deps.readGitSha
       ? {
-          gitSha: await deps.readGitSha(options.repoRoot),
+          gitSha: await deps.readGitSha(runtimeRepoRoot),
           sourceDirty: false,
           sourcePatchSha256: null,
         }
-      : await readSourceIdentity(options.repoRoot);
+      : await readSourceIdentity(runtimeRepoRoot);
+  if (options.runtimeDir && sourceIdentity.sourceDirty) {
+    throw new Error("--runtime-dir must identify a clean committed checkout.");
+  }
   const cells = buildCells(options);
   await assertOutputOutsideGitMetadata(options.repoRoot, outputDir);
-  if (!options.dryRun) {
+  if (!options.dryRun && !options.runtimeDir) {
     await (deps.buildCliArtifacts ?? buildMatrixCliArtifacts)(options.repoRoot);
+  }
+  if (!options.dryRun && options.runtimeDir) {
+    for (const stamp of [".buildstamp", ".runtime-postbuildstamp"]) {
+      const value: unknown = JSON.parse(
+        await fs.readFile(path.join(runtimeRepoRoot, "dist", stamp), "utf8"),
+      );
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !("head" in value) ||
+        value.head !== sourceIdentity.gitSha
+      ) {
+        throw new Error(
+          `Frozen runtime ${stamp} does not match its committed source; rebuild it first.`,
+        );
+      }
+    }
   }
   // Build first so its output set is complete, then reserve evidence storage
   // before hashing. Dry runs also write evidence, so every run needs isolation.
   await assertOutputOutsideRuntimeArtifacts(options.repoRoot, outputDir);
+  if (options.runtimeDir) {
+    await assertOutputOutsideRuntimeArtifacts(runtimeRepoRoot, outputDir);
+  }
   await reserveCodeModeMatrixOutputDir(options.repoRoot, outputDir);
   const buildSha256 = options.dryRun
     ? null
-    : await (deps.readBuildSha256 ?? hashRuntimeArtifacts)(options.repoRoot);
+    : await (deps.readBuildSha256 ?? hashRuntimeArtifacts)(runtimeRepoRoot);
   const manifest = {
     schemaVersion: MATRIX_SCHEMA_VERSION,
     generatedAt: now.toISOString(),
     source: SOURCE_PATH,
+    ...(options.runtimeDir ? { harness: await readSourceIdentity(options.repoRoot) } : {}),
+    ...(options.runtimeDir ? { runtimeDir: runtimeRepoRoot } : {}),
     ...sourceIdentity,
     buildSha256,
     models: options.models,
@@ -1337,25 +1529,39 @@ export async function runCodeModeModelMatrix(
   const runtimeRoot = deps.runCell
     ? undefined
     : await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-code-mode-runtime-"));
+  const abortController = new AbortController();
+  const interrupt = () => abortController.abort(new Error("Code Mode matrix interrupted"));
+  process.once("SIGINT", interrupt);
+  process.once("SIGTERM", interrupt);
   try {
     const runtime = runtimeRoot
-      ? await prepareRuntimeEntrypoint(options.repoRoot, runtimeRoot)
+      ? await prepareRuntimeEntrypoint(runtimeRepoRoot, runtimeRoot)
       : undefined;
     const results: CodeModeMatrixCellResult[] = [];
     const resultsPath = path.join(outputDir, "results.jsonl");
     await fs.writeFile(resultsPath, "", "utf8");
     const executeCell = deps.runCell ?? runMatrixCell;
     for (const cell of cells) {
+      abortController.signal.throwIfAborted();
+      const workload = isGatewayTask(cell.task)
+        ? (await import("./lib/code-mode-matrix-gateway.ts")).createGatewayMatrixWorkload(
+            cell.task,
+            cell.repetition,
+            options.thinking,
+            options.timeoutSeconds,
+          )
+        : undefined;
       let result: CodeModeMatrixCellResult;
       const cellStartedAt = Date.now();
       try {
         result = await executeCell({
+          abortSignal: abortController.signal,
           buildSha256: buildSha256 ?? "dry-run",
           cell,
           gitSha: sourceIdentity.gitSha,
           keepState: options.keepState,
           outputDir,
-          repoRoot: options.repoRoot,
+          repoRoot: runtimeRepoRoot,
           runtime,
           sourceDirty: sourceIdentity.sourceDirty,
           sourcePatchSha256: sourceIdentity.sourcePatchSha256,
@@ -1373,6 +1579,9 @@ export async function runCodeModeModelMatrix(
           error,
         );
       }
+      if (workload) {
+        result.workload = workload;
+      }
       results.push(result);
       await fs.appendFile(
         resultsPath,
@@ -1381,6 +1590,15 @@ export async function runCodeModeModelMatrix(
       );
       const label = result.passed ? "PASS" : `FAIL ${result.failureCategory ?? "unknown"}`;
       console.log(`[code-mode-matrix] ${label} ${result.id} ${result.elapsedMs}ms`);
+    }
+    abortController.signal.throwIfAborted();
+    if (options.runtimeDir && !deps.runCell) {
+      const finalIdentity = await readSourceIdentity(runtimeRepoRoot);
+      if (finalIdentity.sourceDirty || finalIdentity.gitSha !== sourceIdentity.gitSha) {
+        throw new Error(
+          "Frozen runtime changed during the benchmark; per-cell evidence is retained but cannot establish a fixed-source comparison.",
+        );
+      }
     }
 
     const groups = summarizeResults(results);
@@ -1402,9 +1620,20 @@ export async function runCodeModeModelMatrix(
         firstPassPassed,
         eventualPassed,
       },
+      ...(results.some((result) => result.workload)
+        ? { gatewayOutcomes: summarizeGatewayMatrixOutcomes(results) }
+        : {}),
       groups,
     };
     await writeJson(path.join(outputDir, "summary.json"), summary);
+    if (options.baselineResults) {
+      const { compareCodeModeMatrixResultsFile } =
+        await import("./lib/code-mode-matrix-comparison.ts");
+      await writeJson(
+        path.join(outputDir, "comparison.json"),
+        await compareCodeModeMatrixResultsFile(options.baselineResults, results),
+      );
+    }
     await writeJson(
       path.join(outputDir, QA_EVIDENCE_FILENAME),
       buildCodeModeMatrixEvidence({
@@ -1419,6 +1648,8 @@ export async function runCodeModeModelMatrix(
       summary,
     };
   } finally {
+    process.off("SIGINT", interrupt);
+    process.off("SIGTERM", interrupt);
     if (runtimeRoot) {
       await fs.rm(runtimeRoot, { force: true, recursive: true });
     }

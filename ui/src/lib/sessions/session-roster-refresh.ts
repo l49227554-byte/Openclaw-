@@ -1,9 +1,15 @@
+import { createDeferredCore } from "../../../../src/shared/deferred.js";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { formatUiError } from "../format-error.ts";
+import { isGatewayAvailable } from "../gateway-availability.ts";
 import { createSessionEventRefreshCoordinator } from "./event-refresh-coordinator.ts";
-import { appendSessionResults, reconcileRosterPresentationMetadata } from "./reconcile.ts";
+import {
+  appendSessionResults,
+  preserveCurrentSessionRow,
+  reconcileRosterPresentationMetadata,
+} from "./reconcile.ts";
 import type {
-  SessionConnectionOwner,
+  SessionConnectionScope,
   SessionGateway,
   SessionListOptions,
   SessionListScope,
@@ -11,89 +17,91 @@ import type {
   SessionRefreshOptions,
   SessionState,
 } from "./session-capability.ts";
+import { normalizeAgentId } from "./session-key.ts";
 import {
-  areUiSessionKeysEquivalent,
-  normalizeAgentId,
-  parseAgentSessionKey,
-  resolveUiSelectedGlobalAgentId,
-  uiSessionRowMatchesSelectedChat,
-} from "./session-key.ts";
+  completeSessionRefreshWaiters,
+  coalesceSessionRefresh,
+  isForegroundReplacement,
+  isPrimarySessionListQuery,
+  isSameSessionListQuery,
+  prepareSessionRefreshOptions,
+  retainSessionPaginationWindow,
+  sessionListAgentMatcher,
+  sessionListEventMatcher,
+  type ManagedSessionList,
+  type QueuedSessionRefresh,
+} from "./session-list-query.ts";
 import {
-  buildSessionListParams,
-  DEFAULT_SESSION_LIST_QUERY,
-  requestSessionList,
-  requestSessionListParams,
-} from "./session-requests.ts";
+  createSessionManagedListRefresh,
+  publishManagedList,
+  type SessionListRefreshHost,
+} from "./session-managed-list-refresh.ts";
+import { normalizeManagedSessionListQuery, requestSessionList } from "./session-requests.ts";
+import { createSessionRosterObservations } from "./session-roster-observations.ts";
 
-type SessionRosterRefreshHost = {
-  connection: SessionConnectionOwner;
-  snapshot: () => SessionGateway["snapshot"];
-  readState: () => SessionState;
+type SessionRosterRefreshHost = SessionListRefreshHost & {
   publish: (state: SessionState, errorSource?: "session-observer" | "operation") => void;
   observerError: () => string | null;
-  decorate: (result: SessionsListResult | null) => SessionsListResult | null;
-  onCanonicalList: (result: SessionsListResult | null) => void;
+  onCanonicalList: (
+    result: SessionsListResult | null,
+    requestRevision: number,
+    agentId?: string,
+    observed?: SessionsListResult | null,
+  ) => void;
 };
 
-type ManagedSessionListRefresh = {
-  append: boolean;
-  offset?: number;
-};
-
-type ManagedSessionListQuery = Readonly<Record<string, unknown>> & { readonly limit: number };
-
-type ManagedSessionList = {
-  key: string;
-  query: ManagedSessionListQuery;
-  retainedLimit: number;
-  connectionEpoch: number | null;
-  snapshot: SessionListSnapshot;
-  listeners: Set<(snapshot: SessionListSnapshot) => void>;
-  coordinator: ReturnType<typeof createSessionEventRefreshCoordinator>;
-  pending: Promise<void> | null;
-  queued: ManagedSessionListRefresh | null;
-};
-
-function normalizeManagedSessionListQuery(options: SessionListOptions): ManagedSessionListQuery {
-  const { offset: _offset, append: _append, ...queryOptions } = options;
-  const limit =
-    typeof options.limit === "number" && options.limit > 0
-      ? Math.floor(options.limit)
-      : DEFAULT_SESSION_LIST_QUERY.limit;
-  return Object.freeze({ ...buildSessionListParams({ ...queryOptions, limit }), limit });
-}
-
-function managedSessionListAgentId(entry: ManagedSessionList): string | undefined {
-  return typeof entry.query.agentId === "string" ? entry.query.agentId : undefined;
-}
-
-function isPrimarySessionListQuery(options: SessionListScope): boolean {
-  const query = normalizeManagedSessionListQuery(options);
-  return (
-    query.archived === undefined &&
-    !query.spawnedBy &&
-    !query.boardFace &&
-    !query.activeMinutes &&
-    !query.search &&
-    !query.creatorId &&
-    query.includeGlobal === true &&
-    query.includeUnknown === true &&
-    query.configuredAgentsOnly === true
-  );
-}
+export type SessionRefreshOutcome =
+  | { status: "refreshed" | "stale" }
+  | { status: "failed"; error: string };
 
 export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
-  let inFlight: Promise<void> | null = null;
-  let queuedExplicitRefresh: SessionRefreshOptions | null = null;
+  let gatewayAvailable = isGatewayAvailable(host.snapshot());
+  let requestRevision = 0;
+  const eventRevisions = new WeakMap<
+    object,
+    {
+      revision: number;
+      scope: SessionConnectionScope | null;
+      lists: ReadonlySet<ManagedSessionList>;
+    }
+  >();
+  const captureEvent = (payload: unknown) => {
+    if (!payload || typeof payload !== "object") {
+      return { revision: requestRevision, scope: host.connection.capture() };
+    }
+    const previous = eventRevisions.get(payload);
+    if (previous !== undefined) {
+      return previous;
+    }
+    const observation = {
+      revision: ++requestRevision,
+      scope: host.connection.capture(),
+      lists: new Set([...managedLists.values()].filter(sessionListEventMatcher(payload))),
+    };
+    eventRevisions.set(payload, observation);
+    return observation;
+  };
+  // A queued foreground replacement owns publication; older loads may only finish for callers.
+  let foregroundPublicationGeneration = 0;
+  let inFlight: Promise<SessionsListResult | null> | null = null;
+  let refreshOutcomeRevision = 0;
+  let lastRefreshOutcome: SessionRefreshOutcome = { status: "stale" };
+  let queuedRefresh: QueuedSessionRefresh | null = null;
   let eventRefreshQueued = false;
   let lastListOptions: SessionListOptions = {};
-  let hasForegroundListOptions = false;
-  let hasSeededListOptions = false;
+  let primaryList: { scope: SessionListScope } = { scope: {} };
+  let listOptionsSource: "none" | "seeded" | "foreground" = "none";
+  const observesPageLifecycle =
+    typeof document !== "undefined" && typeof globalThis.addEventListener === "function";
+  let pageActive = !observesPageLifecycle || document.visibilityState !== "hidden";
   const managedLists = new Map<string, ManagedSessionList>();
-
-  const publishManagedList = (entry: ManagedSessionList, snapshot: SessionListSnapshot): void => {
-    entry.snapshot = snapshot;
-    entry.listeners.forEach((listener) => listener(snapshot));
+  const observations = createSessionRosterObservations(host, managedLists);
+  const retireForegroundRefresh = () => {
+    observations.reset();
+    foregroundPublicationGeneration += 1;
+    inFlight = null;
+    queuedRefresh?.completions.forEach(({ complete }) => complete(null));
+    queuedRefresh = null;
   };
 
   const managedList = (scope: SessionListScope): ManagedSessionList => {
@@ -106,16 +114,15 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     const entry: ManagedSessionList = {
       key,
       query,
+      scope: Object.freeze({ ...scope }),
       retainedLimit: query.limit,
       connectionEpoch: null,
       snapshot: { result: null, agentId: null, loading: false, error: null },
       listeners: new Set(),
       coordinator: createSessionEventRefreshCoordinator({
-        canRefresh: () =>
-          managedLists.get(key) === entry &&
-          entry.listeners.size > 0 &&
-          host.connection.capture() !== null,
-        refresh: () => refreshManagedList(entry, { append: false }),
+        active: false,
+        refresh: () =>
+          refreshManagedList(entry, { append: false, invalidated: true, background: true }),
       }),
       pending: null,
       queued: null,
@@ -124,83 +131,69 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     return entry;
   };
 
-  const refreshManagedList = (
+  const subscribeManagedList = (
     entry: ManagedSessionList,
-    refresh: ManagedSessionListRefresh,
-  ): Promise<void> => {
-    const scope = host.connection.capture();
-    if (!scope) {
-      return Promise.resolve();
-    }
-    if (entry.pending) {
-      if (!refresh.append) {
-        entry.queued = refresh;
+    listener: (snapshot: SessionListSnapshot) => void,
+  ) => {
+    const subscribed = (snapshot: SessionListSnapshot) => listener(snapshot);
+    entry.listeners.add(subscribed);
+    entry.coordinator.setActive(pageActive);
+    return () => {
+      entry.listeners.delete(subscribed);
+      if (entry.listeners.size > 0 || managedLists.get(entry.key) !== entry) {
+        return;
       }
-      return entry.pending;
-    }
-    if (refresh.append && !entry.snapshot.result) {
-      return Promise.resolve();
-    }
-    if (!refresh.append) {
-      entry.coordinator.absorb();
-    }
-    const isCurrent = () =>
-      managedLists.get(entry.key) === entry && host.connection.isCurrent(scope);
-    const drain = async () => {
-      let next: ManagedSessionListRefresh | null = refresh;
-      while (next && isCurrent()) {
-        const requestParams = {
-          ...entry.query,
-          limit: next.append ? entry.query.limit : entry.retainedLimit,
-          ...(next.append && next.offset !== undefined ? { offset: next.offset } : {}),
-        };
-        publishManagedList(entry, { ...entry.snapshot, loading: true, error: null });
-        try {
-          const result = await requestSessionListParams(scope.client, requestParams);
-          if (!isCurrent()) {
-            return;
-          }
-          const previous = entry.snapshot.result;
-          const nextResult =
-            result && next.append && requestParams.offset && previous
-              ? appendSessionResults(previous, result)
-              : reconcileRosterPresentationMetadata(result, previous);
-          const decorated = host.decorate(nextResult);
-          if (decorated) {
-            entry.retainedLimit = Math.max(entry.retainedLimit, decorated.sessions.length);
-          }
-          entry.connectionEpoch = scope.epoch;
-          publishManagedList(entry, {
-            result: decorated,
-            agentId: managedSessionListAgentId(entry) ?? null,
-            loading: false,
-            error: null,
-          });
-        } catch (error) {
-          if (!isCurrent()) {
-            return;
-          }
-          publishManagedList(entry, {
-            ...entry.snapshot,
-            loading: false,
-            error: formatUiError(error),
-          });
+      // Keep invalidation dormant until observed again, without runnable queued work.
+      entry.coordinator.setActive(false, entry.queued !== null);
+      entry.queued = null;
+      const release = () => {
+        if (entry.listeners.size === 0 && managedLists.get(entry.key) === entry) {
+          entry.coordinator.dispose();
+          managedLists.delete(entry.key);
         }
-        if (!isCurrent()) {
-          return;
-        }
-        next = entry.queued;
-        entry.queued = null;
+      };
+      // Route replacement may briefly remove every subscriber while this query still owns a request.
+      if (entry.pending) {
+        void entry.pending.finally(release);
+      } else {
+        release();
       }
     };
-    const pending = drain().finally(() => {
-      if (entry.pending === pending) {
-        entry.pending = null;
-      }
-    });
-    entry.pending = pending;
-    return pending;
   };
+
+  const scheduleManagedLists = (
+    matches: (entry: ManagedSessionList) => boolean,
+    excludedKey?: string,
+  ) => {
+    for (const entry of managedLists.values()) {
+      if (entry.key !== excludedKey && matches(entry)) {
+        entry.coordinator.schedule();
+      }
+    }
+  };
+
+  const invalidateManagedLists = (
+    agentId?: string | null,
+    row?: Pick<
+      GatewaySessionRow,
+      "key" | "agentId" | "controlOwnerSessionKey" | "parentSessionKey" | "spawnedBy"
+    >,
+    sourceListScope?: SessionListScope,
+  ) => {
+    const matches = sessionListEventMatcher({ agentId, session: row });
+    const sourceKey =
+      sourceListScope && JSON.stringify(normalizeManagedSessionListQuery(sourceListScope));
+    // Adopting a query's accepted row into the primary roster cannot make
+    // that supplying query stale. Other membership projections still refresh.
+    scheduleManagedLists(matches, sourceKey);
+  };
+
+  const refreshManagedList = createSessionManagedListRefresh(host, {
+    managedLists,
+    observations,
+    nextRevision: () => ++requestRevision,
+    isPageActive: () => pageActive,
+  });
 
   const list = async (options: SessionListOptions = {}): Promise<SessionsListResult | null> => {
     const scope = host.connection.capture();
@@ -208,8 +201,13 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       return null;
     }
     try {
+      const issuedRevision = ++requestRevision;
       const result = await requestSessionList(scope.client, options);
-      return host.connection.isCurrent(scope) ? host.decorate(result ?? null) : null;
+      return host.connection.isCurrent(scope)
+        ? host.decorate(host.reconcileList(result ?? null, issuedRevision, options.agentId), {
+            scope: options,
+          })
+        : null;
     } catch (error) {
       if (!host.connection.isCurrent(scope)) {
         return null;
@@ -218,24 +216,29 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     }
   };
 
-  const load = async (options: SessionRefreshOptions) => {
+  const load = async (
+    options: SessionRefreshOptions,
+    bootstrap = false,
+    isErrorCurrent?: () => boolean,
+  ): Promise<SessionsListResult | null> => {
     const scope = host.connection.capture();
     if (!scope) {
-      return;
+      return null;
     }
+    const publicationGeneration = foregroundPublicationGeneration;
+    const isCurrent = () =>
+      host.connection.isCurrent(scope) && publicationGeneration === foregroundPublicationGeneration;
     const { append = false, force: _force, backgroundHydrate = false, ...requestOptions } = options;
-    // Every canonical roster replaces visible session names, so omitted title
-    // enrichment must inherit the UI default instead of publishing fallback ids.
-    requestOptions.includeDerivedTitles ??= true;
     const durableListOptions: SessionListOptions = { ...requestOptions };
     // Pagination is request-local; replacements retain filters but restart at page one.
     delete durableListOptions.offset;
     if (!backgroundHydrate) {
       lastListOptions = durableListOptions;
-      hasForegroundListOptions = true;
-    } else if (!hasForegroundListOptions && !hasSeededListOptions) {
+      listOptionsSource = "foreground";
+    } else if (bootstrap || listOptionsSource === "none") {
+      // Reconnect may select a different agent; later event refreshes must use that query.
       lastListOptions = durableListOptions;
-      hasSeededListOptions = true;
+      listOptionsSource = "seeded";
     }
     if (!backgroundHydrate) {
       const error = host.observerError();
@@ -245,88 +248,107 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       );
     }
     try {
-      const result = await requestSessionList(scope.client, requestOptions);
-      if (!host.connection.isCurrent(scope)) {
-        return;
+      const issuedRevision = ++requestRevision;
+      let result = await requestSessionList(scope.client, requestOptions);
+      if (!isCurrent()) {
+        return null;
       }
+      result = host.reconcileList(result, issuedRevision, requestOptions.agentId);
       const currentState = host.readState();
+      const mergeWithCurrent =
+        !currentState.resultCached && append && typeof requestOptions.offset === "number";
+      const currentResult = currentState.resultCached ? null : currentState.result;
+      const presented = reconcileRosterPresentationMetadata(result, currentResult);
+      observations.inherit(presented, result, currentResult, requestOptions.agentId);
+      const observed = observations.accept(
+        presented,
+        currentState.result,
+        null,
+        requestOptions.agentId,
+        currentState.agentId,
+      );
       let nextResult =
-        result && append && requestOptions.offset && currentState.result
-          ? appendSessionResults(currentState.result, result)
-          : reconcileRosterPresentationMetadata(result, currentState.result);
+        observed && mergeWithCurrent && currentResult
+          ? appendSessionResults(currentResult, observed)
+          : observed;
       if (append && nextResult && !backgroundHydrate) {
-        // Canonical event refreshes must retain all previously appended visible pages.
-        lastListOptions = {
-          ...durableListOptions,
-          limit: Math.max(
-            durableListOptions.limit ?? DEFAULT_SESSION_LIST_QUERY.limit,
-            nextResult.sessions.length,
-          ),
-        };
+        lastListOptions = retainSessionPaginationWindow(
+          durableListOptions,
+          requestOptions.offset,
+          result,
+          nextResult,
+          host.snapshot(),
+        );
       }
       if (nextResult) {
-        const snapshot = host.snapshot();
-        const currentKey = snapshot.sessionKey?.trim();
-        if (currentKey) {
-          const currentAgentId = normalizeAgentId(
-            parseAgentSessionKey(currentKey)?.agentId ?? resolveUiSelectedGlobalAgentId(snapshot),
-          );
-          const exactPreviousCurrentRow = currentState.result?.sessions.find((row) =>
-            areUiSessionKeysEquivalent(row.key, currentKey),
-          );
-          const previousCurrentRow =
-            exactPreviousCurrentRow ??
-            (currentState.agentId === currentAgentId
-              ? currentState.result?.sessions.find((row) =>
-                  uiSessionRowMatchesSelectedChat(snapshot, row.key, currentKey),
-                )
-              : undefined);
-          const nextContainsCurrentRow = exactPreviousCurrentRow
-            ? nextResult.sessions.some((row) => areUiSessionKeysEquivalent(row.key, currentKey))
-            : nextResult.sessions.some((row) =>
-                uiSessionRowMatchesSelectedChat(snapshot, row.key, currentKey),
-              );
-          if (
-            previousCurrentRow &&
-            (backgroundHydrate || previousCurrentRow.archived === true) &&
-            !nextContainsCurrentRow
-          ) {
-            const sessions = [...nextResult.sessions, previousCurrentRow];
-            nextResult = { ...nextResult, count: sessions.length, sessions };
-          }
-        }
+        nextResult = preserveCurrentSessionRow(
+          nextResult,
+          {
+            agentId: currentState.agentId,
+            result: currentState.resultCached
+              ? {
+                  sessions:
+                    currentState.result?.sessions.filter((row) =>
+                      observations.hasLiveObservation(row),
+                    ) ?? [],
+                }
+              : currentState.result,
+          },
+          host.snapshot(),
+          backgroundHydrate,
+        );
       }
-      nextResult = host.decorate(nextResult);
-      host.onCanonicalList(nextResult);
+      // Append extends this window; a different query replaces its rollback owner.
+      if (!isSameSessionListQuery(primaryList.scope, durableListOptions, mergeWithCurrent)) {
+        primaryList = { scope: durableListOptions };
+      }
+      primaryList.scope = append ? lastListOptions : durableListOptions;
+      nextResult = host.decorate(nextResult, primaryList);
+      const notifyObserved = observations.stageObservedRows(
+        result?.sessions ?? [],
+        scope,
+        requestOptions.agentId,
+        issuedRevision,
+        false,
+      );
+      host.onCanonicalList(nextResult, issuedRevision, requestOptions.agentId, result);
       const state = host.readState();
       const error = host.observerError();
       host.publish(
         {
+          ...state,
           result: nextResult,
+          resultCached: false,
           agentId: requestOptions.agentId?.trim() ? normalizeAgentId(requestOptions.agentId) : null,
-          modelOverrides: state.modelOverrides,
           loading: backgroundHydrate ? state.loading : false,
           error,
           deletedSessions: [],
-          groups: state.groups,
-          groupSettings: state.groupSettings,
-          sectionOrder: state.sectionOrder,
         },
         error ? "session-observer" : undefined,
       );
+      notifyObserved();
+      lastRefreshOutcome = { status: "refreshed" };
+      refreshOutcomeRevision += 1;
+      return result;
     } catch (error) {
-      if (host.connection.isCurrent(scope)) {
+      const message = formatUiError(error);
+      const ownsError = isErrorCurrent?.() !== false;
+      if (isCurrent()) {
         const state = host.readState();
         host.publish(
           {
             ...state,
             loading: backgroundHydrate ? state.loading : false,
-            error: formatUiError(error),
+            error: ownsError ? message : state.error,
             deletedSessions: [],
           },
-          "operation",
+          ownsError ? "operation" : undefined,
         );
       }
+      lastRefreshOutcome =
+        isCurrent() && ownsError ? { status: "failed", error: message } : { status: "stale" };
+      refreshOutcomeRevision += 1;
+      return null;
     }
   };
 
@@ -335,107 +357,201 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     eventRefreshQueued = false;
   };
 
-  const takeNextQueuedRefresh = (): SessionRefreshOptions | null => {
-    const explicitRefresh = queuedExplicitRefresh;
-    queuedExplicitRefresh = null;
-    if (explicitRefresh) {
-      // Replacement absorbs earlier events; append still needs its trailing replacement.
-      if (explicitRefresh.append !== true) {
-        absorbPendingEventRefresh();
-      }
-      return explicitRefresh;
-    }
-    if (!eventRefreshQueued) {
-      return null;
-    }
-    eventRefreshQueued = false;
-    return { ...lastListOptions, force: true };
-  };
-
-  const drainRefreshQueue = async (options: SessionRefreshOptions) => {
+  const startRefresh = (
+    options: SessionRefreshOptions,
+    bootstrap = false,
+    isErrorCurrent?: () => boolean,
+  ): Promise<SessionsListResult | null> => {
     const scope = host.connection.capture();
     if (!scope) {
-      return;
+      return Promise.resolve(null);
     }
-    let next: SessionRefreshOptions | null = options;
-    while (next) {
-      await load(next);
-      if (!host.connection.isCurrent(scope)) {
+    const queued =
+      !isForegroundReplacement(options) && typeof queuedRefresh?.intent === "function"
+        ? null
+        : queuedRefresh;
+    if (queued) {
+      queuedRefresh = null;
+    }
+    const snapshot = host.snapshot();
+    const prepared = prepareSessionRefreshOptions(options, snapshot);
+    // Claim inFlight before load publishes; each caller awaits its own load, never later events.
+    const completion = createDeferredCore<SessionsListResult | null>();
+    const request = completion.promise.finally(() => {
+      if (inFlight !== request) {
         return;
       }
-      next = takeNextQueuedRefresh();
-    }
-  };
-
-  const startRefresh = (options: SessionRefreshOptions) => {
-    const request = drainRefreshQueue(options).finally(() => {
-      if (inFlight === request) {
-        inFlight = null;
+      inFlight = null;
+      const successor = queuedRefresh;
+      if (successor) {
+        if (successor.intent !== "explicit") {
+          void host.background(successor, drainQueuedRefresh);
+        } else {
+          void drainQueuedRefresh();
+        }
+      } else if (eventRefreshQueued && pageActive && host.connection.isCurrent(scope)) {
+        void host.background(request, refreshFromEvent);
       }
     });
     inFlight = request;
+    completion.resolve(load(prepared, bootstrap, isErrorCurrent));
+    if (queued) {
+      completeSessionRefreshWaiters(queued, prepared, request, snapshot);
+    }
     return request;
   };
 
-  const refresh = (options: SessionRefreshOptions = {}): Promise<void> => {
-    if (!host.connection.capture()) {
-      return Promise.resolve();
+  const drainQueuedRefresh = () => {
+    const queued = queuedRefresh;
+    if (inFlight || !queued) {
+      return Promise.resolve(null);
     }
-    if (inFlight) {
-      queuedExplicitRefresh = options;
-      return inFlight;
+    const options =
+      typeof queued.intent === "function" ? replacementOptions(queued.intent()) : queued.options;
+    if (!options.append) {
+      absorbPendingEventRefresh();
+    }
+    return startRefresh(options, queued.bootstrap, queued.isErrorCurrent);
+  };
+
+  const refreshInternal = (
+    options: SessionRefreshOptions,
+    bootstrap: boolean,
+    isErrorCurrent?: () => boolean,
+    intent: QueuedSessionRefresh["intent"] = "explicit",
+  ): Promise<SessionsListResult | null> => {
+    if (!host.connection.capture()) {
+      return Promise.resolve(null);
+    }
+    const foregroundReplacement = isForegroundReplacement(options);
+    if (inFlight || intent !== "explicit") {
+      if (foregroundReplacement) {
+        foregroundPublicationGeneration += 1;
+      }
+      const completion = createDeferredCore<SessionsListResult | null>();
+      queuedRefresh = coalesceSessionRefresh(queuedRefresh, {
+        options,
+        isErrorCurrent,
+        intent,
+        bootstrap,
+        completions: [{ options, complete: completion.resolve }],
+      });
+      if (!inFlight) {
+        void host.background(queuedRefresh, drainQueuedRefresh);
+      }
+      return completion.promise;
     }
     const hasListOverrides = Object.entries(options).some(
       ([key, value]) => key !== "force" && key !== "backgroundHydrate" && value !== undefined,
     );
     if (host.readState().result && !options.force && !hasListOverrides) {
-      return Promise.resolve();
+      return Promise.resolve(host.readState().result);
+    }
+    if (foregroundReplacement) {
+      foregroundPublicationGeneration += 1;
     }
     if (options.append !== true) {
       absorbPendingEventRefresh();
     }
-    return startRefresh(options);
+    return startRefresh(options, bootstrap, isErrorCurrent);
   };
 
-  const refreshFromEvent = () => {
-    if (!host.connection.capture()) {
-      return Promise.resolve();
+  const refresh = async (options: SessionRefreshOptions = {}): Promise<void> => {
+    await refreshInternal(options, false);
+  };
+
+  const refreshFromEvent = async (): Promise<void> => {
+    if (!eventRefreshQueued || queuedRefresh || !host.connection.capture()) {
+      return;
     }
     if (inFlight) {
-      eventRefreshQueued = true;
-      return inFlight;
+      await inFlight;
+      return;
     }
-    return startRefresh({ ...lastListOptions, force: true });
+    eventRefreshQueued = false;
+    await startRefresh({ ...lastListOptions, force: true });
   };
 
   const eventRefreshCoordinator = createSessionEventRefreshCoordinator({
-    canRefresh: () => host.connection.capture() !== null,
-    refresh: refreshFromEvent,
+    active: pageActive,
+    refresh: () => {
+      eventRefreshQueued = true;
+      return inFlight
+        ? refreshFromEvent()
+        : host.background(eventRefreshCoordinator, refreshFromEvent);
+    },
   });
-  const flushEventRefresh = () => eventRefreshCoordinator.flush();
 
-  const handleVisibilityChange = () => {
-    if (document.visibilityState === "hidden") {
-      flushEventRefresh();
+  const handlePageLifecycle = (event: Event) => {
+    const markDirty = event.type === "pagehide";
+    pageActive = !markDirty && document.visibilityState !== "hidden";
+    eventRefreshCoordinator.setActive(pageActive, markDirty || inFlight !== null);
+    for (const entry of managedLists.values()) {
+      if (entry.listeners.size > 0) {
+        entry.coordinator.setActive(pageActive, markDirty || entry.pending !== null);
+      }
     }
   };
-  const observesPageLifecycle =
-    typeof document !== "undefined" && typeof globalThis.addEventListener === "function";
+
+  const updatePageLifecycleListeners = (add: boolean) => {
+    const method = add ? "addEventListener" : "removeEventListener";
+    document[method]("visibilitychange", handlePageLifecycle);
+    globalThis[method]("pagehide", handlePageLifecycle);
+    globalThis[method]("pageshow", handlePageLifecycle);
+  };
   if (observesPageLifecycle) {
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    globalThis.addEventListener("pagehide", flushEventRefresh);
+    updatePageLifecycleListeners(true);
   }
 
-  const refreshReplacement = (agentId?: string | null): Promise<void> => {
+  const replacementOptions = (agentId?: string | null): SessionRefreshOptions => {
     const options = { ...lastListOptions };
-    const normalizedAgentId = agentId?.trim();
-    if (normalizedAgentId) {
-      options.agentId = normalizedAgentId;
+    if (agentId?.trim()) {
+      options.agentId = agentId.trim();
     }
-    return refresh({ ...options, force: true });
+    return { ...options, force: true };
   };
-
+  const refreshReplacementOwned = (agentId?: string | null, isErrorCurrent?: () => boolean) =>
+    refreshInternal(replacementOptions(agentId), false, isErrorCurrent);
+  const refreshReplacementResult = (
+    agentId?: string | null,
+    isErrorCurrent?: () => boolean,
+  ): Promise<SessionRefreshOutcome> => {
+    const previousOutcomeRevision = refreshOutcomeRevision;
+    return refreshReplacementOwned(agentId, isErrorCurrent).then(() =>
+      refreshOutcomeRevision > previousOutcomeRevision ? lastRefreshOutcome : { status: "stale" },
+    );
+  };
   return {
+    observeGateway(snapshot: SessionGateway["snapshot"], connectionChanged: boolean) {
+      const available = isGatewayAvailable(snapshot);
+      if (available && !gatewayAvailable && !connectionChanged) {
+        invalidateManagedLists();
+      }
+      gatewayAvailable = available;
+    },
+    captureReconciliation: () => observations.captureReconciliation(++requestRevision),
+    copyRow: observations.copyRow,
+    inheritRow: observations.inheritRow,
+    registerRow: observations.registerRow,
+    currentRow: observations.currentRow,
+    mergeRows: observations.mergeRows,
+    rowRevision: observations.rowRevision,
+    hasLiveObservation: observations.hasLiveObservation,
+    isCurrentRow: observations.isCurrentRow,
+    inherit: observations.inherit,
+    observeReadRow: observations.observeReadRow,
+    bindOwner: observations.bindOwner,
+    observeEvent: observations.observeEvent,
+    stageObservedRows: observations.stageObservedRows,
+    stageManagedResults: observations.stageManagedResults,
+    stageRunTerminal: observations.stageRunTerminal,
+    projectFields: observations.projectFields,
+    projectRows: observations.projectRows,
+    captureEvent,
+    primaryList: () => primaryList,
+    get requestRevision() {
+      return requestRevision;
+    },
     list,
     listSnapshot(scope: SessionListScope): SessionListSnapshot {
       if (isPrimarySessionListQuery(scope)) {
@@ -452,14 +568,45 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       );
     },
     subscribeList(scope: SessionListScope, listener: (snapshot: SessionListSnapshot) => void) {
+      return subscribeManagedList(managedList(scope), listener);
+    },
+    observeList: (scope: SessionListScope, listener: (snapshot: SessionListSnapshot) => void) => {
       const entry = managedList(scope);
-      entry.listeners.add(listener);
-      return () => {
-        entry.listeners.delete(listener);
-        if (entry.listeners.size === 0 && managedLists.get(entry.key) === entry) {
-          entry.coordinator.dispose();
-          managedLists.delete(entry.key);
+      const unsubscribe = subscribeManagedList(entry, listener);
+      let disposed = false;
+      const check = () => {
+        if (disposed || managedLists.get(entry.key) !== entry) {
+          throw new Error("This session query has been disposed.");
         }
+      };
+      try {
+        listener(entry.snapshot);
+      } catch (error) {
+        unsubscribe();
+        throw error;
+      }
+      return {
+        async refresh() {
+          check();
+          const connection = host.connection.capture();
+          if (!connection) {
+            throw new Error("The session query is unavailable while disconnected. Try again.");
+          }
+          await refreshManagedList(entry, { append: false, invalidated: true });
+          check();
+          if (!host.connection.isCurrent(connection)) {
+            throw new Error("The session query connection changed. Try again.");
+          }
+          if (entry.snapshot.error) {
+            throw new Error(entry.snapshot.error);
+          }
+        },
+        dispose() {
+          if (!disposed) {
+            disposed = true;
+            unsubscribe();
+          }
+        },
       };
     },
     refreshList(options: SessionRefreshOptions = {}): Promise<void> {
@@ -469,6 +616,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       const entry = managedList(options);
       return refreshManagedList(entry, {
         append: options.append === true,
+        ...(options.force === true && options.append !== true ? { invalidated: true } : {}),
         ...(options.offset !== undefined ? { offset: options.offset } : {}),
       });
     },
@@ -481,66 +629,65 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       await Promise.all(
         [...managedLists.values()]
           .filter((entry) => entry.listeners.size > 0 && entry.connectionEpoch !== scope.epoch)
-          .map((entry) => refreshManagedList(entry, { append: false })),
+          .map((entry) => refreshManagedList(entry, { append: false, background: true })),
       );
     },
     refresh,
-    refreshReplacement,
-    /** The row as currently published. The archived/all sidebars render their
-     * own snapshot, so a displayed row can be absent from the primary state.
-     * Lists refresh independently, so when both hold the row the primary one
-     * wins rather than guessing which snapshot the caller was looking at. */
-    publishedRow(key: string): GatewaySessionRow | undefined {
-      const primary = host.readState().result?.sessions.find((row) => row.key === key);
-      if (primary) {
-        return primary;
-      }
-      for (const entry of managedLists.values()) {
-        const row = entry.snapshot.result?.sessions.find((candidate) => candidate.key === key);
-        if (row) {
-          return row;
-        }
-      }
-      return undefined;
+    bootstrap: (options: SessionRefreshOptions) =>
+      refreshInternal(options, true, undefined, "automatic"),
+    refreshAutomatic: (options: SessionRefreshOptions) =>
+      refreshInternal(options, false, undefined, "automatic"),
+    refreshReplacement: refreshReplacementOwned,
+    refreshSelection(selectedAgent: () => string | null) {
+      return refreshInternal(replacementOptions(selectedAgent()), false, undefined, selectedAgent);
     },
+    refreshReplacementResult,
+    publishedRow: observations.publishedRow,
     /** Republishes every held list through `decorate` so a UI-owned overlay
      * reaches the archived/all snapshots too, not just the primary state. */
     redecorateLists() {
       const state = host.readState();
-      const result = host.decorate(state.result);
+      const result = host.decorate(state.result, primaryList);
+      const staged = observations.stageManagedResults(
+        host.connection.capture(),
+        (entry) => entry.snapshot.result,
+      );
       if (result !== state.result) {
         host.publish({ ...state, result });
       }
       for (const entry of managedLists.values()) {
-        const decorated = host.decorate(entry.snapshot.result);
+        const decorated = host.decorate(entry.snapshot.result, entry);
         if (decorated !== entry.snapshot.result) {
           publishManagedList(entry, { ...entry.snapshot, result: decorated });
         }
       }
-    },
-    setCreatorFilter(creatorId: string | null) {
-      const options = { ...lastListOptions, creatorId: creatorId?.trim() || undefined };
-      delete options.offset;
-      return refresh({ ...options, force: true });
+      staged.notify();
     },
     lastOptions: () => lastListOptions,
-    scheduleEvent(options: { agentId?: string | null; filtered?: boolean } = {}) {
-      eventRefreshCoordinator.schedule();
-      if (options.filtered === false) {
-        return;
+    // Gateway-owned membership filters require an authoritative list refresh.
+    canApplyPrimarySnapshot: () => isPrimarySessionListQuery(lastListOptions),
+    invalidateManagedLists,
+    scheduleEvent(
+      this: void,
+      options: { agentId?: string | null; primarySnapshotApplied?: boolean; event?: unknown } = {},
+    ) {
+      const matchesAgent = sessionListAgentMatcher(options.agentId);
+      if (!options.primarySnapshotApplied && matchesAgent(lastListOptions.agentId)) {
+        eventRefreshCoordinator.schedule();
       }
-      const agentId = options.agentId ? normalizeAgentId(options.agentId) : null;
-      for (const entry of managedLists.values()) {
-        const queryAgentId = managedSessionListAgentId(entry);
-        if (!agentId || !queryAgentId || normalizeAgentId(queryAgentId) === agentId) {
-          entry.coordinator.schedule();
-        }
+      const event = options.event;
+      const affected =
+        event && typeof event === "object" ? eventRevisions.get(event)?.lists : undefined;
+      if (affected) {
+        scheduleManagedLists((entry) => affected.has(entry));
+      } else {
+        invalidateManagedLists(options.agentId);
       }
     },
     reset() {
+      retireForegroundRefresh();
+      primaryList = { scope: primaryList.scope };
       eventRefreshCoordinator.reset();
-      inFlight = null;
-      queuedExplicitRefresh = null;
       eventRefreshQueued = false;
       for (const entry of managedLists.values()) {
         entry.coordinator.reset();
@@ -556,16 +703,11 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       }
     },
     dispose() {
-      // Flush before disposal so page-exit events start the trailing canonical list.
-      flushEventRefresh();
+      retireForegroundRefresh();
       eventRefreshCoordinator.dispose();
       if (observesPageLifecycle) {
-        document.removeEventListener("visibilitychange", handleVisibilityChange);
-        globalThis.removeEventListener("pagehide", flushEventRefresh);
+        updatePageLifecycleListeners(false);
       }
-      inFlight = null;
-      queuedExplicitRefresh = null;
-      eventRefreshQueued = false;
       for (const entry of managedLists.values()) {
         entry.coordinator.dispose();
         entry.listeners.clear();

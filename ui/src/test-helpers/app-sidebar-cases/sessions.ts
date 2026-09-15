@@ -8,7 +8,6 @@ import {
   createSessions,
   createSessionsHarness,
   createSessionState,
-  type LobsterPetElement,
   mountSidebar,
   type TestSessionMenu,
   TWO_AGENTS,
@@ -53,7 +52,7 @@ describe("AppSidebar session pagination", () => {
     expect(sidebar.querySelector(".sidebar-session-pagination")).toBeNull();
   });
 
-  it("shows a newly discovered session above the created-sort pagination boundary", async () => {
+  it("keeps visible sessions when a newer session enters the created-sort page", async () => {
     const olderKeys = Array.from({ length: 10 }, (_, index) => `agent:main:older-${index}`);
     const gateway = createGateway({} as GatewayBrowserClient);
     const sessions = createSessionsHarness("main", olderKeys);
@@ -77,9 +76,9 @@ describe("AppSidebar session pagination", () => {
         sidebar.querySelectorAll<HTMLElement>("[data-session-key]"),
         (row) => row.dataset.sessionKey,
       ),
-    ).toEqual(["agent:main:external-new", ...olderKeys.slice(0, 9)]);
-    expect(sidebar.querySelectorAll(".sidebar-recent-session")).toHaveLength(10);
-    expect(sidebar.querySelector('button[aria-label="Show more"]')).not.toBeNull();
+    ).toEqual(["agent:main:external-new", ...olderKeys]);
+    expect(sidebar.querySelectorAll(".sidebar-recent-session")).toHaveLength(11);
+    expect(sidebar.querySelector('button[aria-label="Show more"]')).toBeNull();
   });
 
   it("reveals sessions ten at a time and offers Collapse after thirty", async () => {
@@ -125,50 +124,6 @@ describe("AppSidebar session pagination", () => {
     expect(button("Show more")).not.toBeNull();
     expect(button("Collapse")).toBeNull();
   });
-});
-
-describe("AppSidebar lobster outcome wiring", () => {
-  it.each([
-    ["panel", "failed", "error"],
-    ["panel", "killed", "aborted"],
-    ["drawer", "failed", "error"],
-    ["drawer", "killed", "aborted"],
-  ] as const)(
-    "passes the %s variant's latest %s session outcome",
-    async (variant, status, expectedOutcome) => {
-      const client = {} as GatewayBrowserClient;
-      const gateway = createGateway(client);
-      const sessions = createSessionsHarness("main", ["agent:main:main"]);
-      const { sidebar } = await mountSidebar(gateway, sessions.sessions, variant);
-      const terminalState = createSessionState("main", ["agent:main:main"]);
-      const result = terminalState.result;
-      if (!result) {
-        throw new Error("expected terminal session result");
-      }
-      const row = result.sessions[0];
-      if (!row) {
-        throw new Error("expected terminal session row");
-      }
-
-      sessions.publishList({
-        result: {
-          ...result,
-          sessions: [
-            {
-              ...row,
-              status,
-              endedAt: 100,
-            },
-          ],
-        },
-        agentId: terminalState.agentId,
-      });
-      await sidebar.updateComplete;
-
-      const pet = sidebar.querySelector<LobsterPetElement>("openclaw-lobster-pet");
-      expect(pet?.runOutcome).toBe(expectedOutcome);
-    },
-  );
 });
 
 describe("AppSidebar session source lifecycle", () => {
@@ -244,7 +199,7 @@ describe("AppSidebar session source lifecycle", () => {
     );
   });
 
-  it("resets cached rows and creation order when the sessions source changes", async () => {
+  it("resets per-agent cached results when the sessions source changes", async () => {
     const client = {} as GatewayBrowserClient;
     const gateway = createGateway(client);
     const { provider, sidebar } = await mountSidebar(
@@ -252,21 +207,13 @@ describe("AppSidebar session source lifecycle", () => {
       createSessions("first", ["first-a", "first-b"]),
     );
 
-    expect(Object.keys(sidebar.sessionData.sessionRowsByAgent)).toEqual(["first"]);
-    expect([...sidebar.sessionData.sessionCreatedOrder]).toEqual([
-      ["first-a", 0],
-      ["first-b", 1],
-    ]);
+    expect(Object.keys(sidebar.sessionData.sessionResultsByAgent)).toEqual(["first"]);
 
     // The Gateway and its client stay unchanged while the sessions capability is replaced.
     provider.setContext(createContext(gateway, createSessions("second", ["second-b", "second-a"])));
     await sidebar.updateComplete;
 
-    expect(Object.keys(sidebar.sessionData.sessionRowsByAgent)).toEqual(["second"]);
-    expect([...sidebar.sessionData.sessionCreatedOrder]).toEqual([
-      ["second-b", 0],
-      ["second-a", 1],
-    ]);
+    expect(Object.keys(sidebar.sessionData.sessionResultsByAgent)).toEqual(["second"]);
     expect(sidebar.sessionData.sessionsAgentId).toBe("second");
     expect(sidebar.sessionData.sessionsResult?.sessions.map((row) => row.key)).toEqual([
       "second-b",
@@ -278,6 +225,9 @@ describe("AppSidebar session source lifecycle", () => {
     const client = {} as GatewayBrowserClient;
     const gateway = createGatewayHarness(client);
     const sessions = createSessionsHarness("main", ["main-a", "main-b"]);
+    if (sessions.sessions.state.result) {
+      sessions.sessions.state.result.owners = [{ type: "human", id: "profile-ada", label: "Ada" }];
+    }
     const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
     const cachedResult = sidebar.sessionData.sessionsResult;
 
@@ -287,8 +237,10 @@ describe("AppSidebar session source lifecycle", () => {
 
     expect(sidebar.sessionData.sessionsResult).toBe(cachedResult);
     expect(sidebar.sessionData.sessionsAgentId).toBe("main");
-    expect(Object.keys(sidebar.sessionData.sessionRowsByAgent)).toEqual(["main"]);
-    expect([...sidebar.sessionData.sessionCreatedOrder.keys()]).toEqual(["main-a", "main-b"]);
+    expect(Object.keys(sidebar.sessionData.sessionResultsByAgent)).toEqual(["main"]);
+    expect(sidebar.sessionData.sessionResultsByAgent.main?.owners).toEqual([
+      { type: "human", id: "profile-ada", label: "Ada" },
+    ]);
 
     gateway.publish({ phase: "connected" });
     const partial = createSessionState("main", ["main-a"]);
@@ -300,7 +252,7 @@ describe("AppSidebar session source lifecycle", () => {
       "main-a",
       "main-b",
     ]);
-    expect(sidebar.sessionData.sessionRowsByAgent.main?.map((row) => row.key)).toEqual([
+    expect(sidebar.sessionData.sessionResultsByAgent.main?.sessions.map((row) => row.key)).toEqual([
       "main-a",
       "main-b",
     ]);
@@ -313,11 +265,61 @@ describe("AppSidebar session source lifecycle", () => {
     expect(sidebar.sessionData.sessionsAgentId).toBe("main");
   });
 
-  it("clears every cached session view when the Gateway client is replaced", async () => {
+  it("keeps pinned session views while the Gateway client is replaced", async () => {
+    const key = "agent:main:pinned";
     const firstClient = {} as GatewayBrowserClient;
     const gateway = createGatewayHarness(firstClient);
+    const sessions = createSessionsHarness("main", [key]);
+    const pinned = sessions.sessions.state.result?.sessions[0];
+    if (!pinned) {
+      throw new Error("expected pinned session row");
+    }
+    pinned.pinned = true;
+    pinned.pinnedAt = 1;
+    const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
+    sidebar.sidebarEntries = [`session:${key}`];
+    await sidebar.updateComplete;
+    const cachedResult = sidebar.sessionData.sessionsResult;
+    const pinnedEntry = () =>
+      sidebar.querySelector(`[data-sidebar-entry="session:${key}"] [data-session-key="${key}"]`);
+
+    expect(pinnedEntry()).not.toBeNull();
+
+    gateway.publish({
+      client: {} as GatewayBrowserClient,
+      phase: "reconnecting",
+    });
+    sessions.publish({ result: null, agentId: null, loading: false });
+    await sidebar.updateComplete;
+
+    expect(sidebar.sessionData.sessionsResult).toBe(cachedResult);
+    expect(sidebar.sessionData.sessionsAgentId).toBe("main");
+    expect(sidebar.sessionData.sessionResultsByAgent.main).toBe(cachedResult);
+    expect(pinnedEntry()).not.toBeNull();
+
+    gateway.publish({ phase: "connected" });
+    const unpinned = createSessionState("main", [key]);
+    sessions.publish({ result: unpinned.result, agentId: unpinned.agentId });
+    await sidebar.updateComplete;
+    expect(pinnedEntry()).not.toBeNull();
+
+    sessions.publishList({ result: unpinned.result, agentId: unpinned.agentId });
+    await sidebar.updateComplete;
+    expect(pinnedEntry()).toBeNull();
+  });
+
+  it("clears cached session views when the Gateway connection changes", async () => {
+    const gateway = createGatewayHarness({} as GatewayBrowserClient);
     const sessions = createSessionsHarness("main", ["main-a"]);
     const { sidebar } = await mountSidebar(gateway.gateway, sessions.sessions);
+    Object.defineProperty(gateway.gateway, "connection", {
+      configurable: true,
+      value: { ...gateway.gateway.connection, gatewayUrl: "ws://replacement.test" },
+    });
+    Object.defineProperty(gateway.gateway, "connectionRevision", {
+      configurable: true,
+      value: 1,
+    });
 
     gateway.publish({
       client: {} as GatewayBrowserClient,
@@ -327,8 +329,7 @@ describe("AppSidebar session source lifecycle", () => {
 
     expect(sidebar.sessionData.sessionsResult).toBeNull();
     expect(sidebar.sessionData.sessionsAgentId).toBeNull();
-    expect(sidebar.sessionData.sessionRowsByAgent).toEqual({});
-    expect(sidebar.sessionData.sessionCreatedOrder.size).toBe(0);
+    expect(sidebar.sessionData.sessionResultsByAgent).toEqual({});
   });
 
   it("clears every cached session view when the Gateway source is replaced", async () => {
@@ -343,8 +344,7 @@ describe("AppSidebar session source lifecycle", () => {
 
     expect(sidebar.sessionData.sessionsResult).toBeNull();
     expect(sidebar.sessionData.sessionsAgentId).toBeNull();
-    expect(sidebar.sessionData.sessionRowsByAgent).toEqual({});
-    expect(sidebar.sessionData.sessionCreatedOrder.size).toBe(0);
+    expect(sidebar.sessionData.sessionResultsByAgent).toEqual({});
   });
 });
 
@@ -382,7 +382,7 @@ describe("AppSidebar session accessibility", () => {
     const row = sidebar.querySelector(`[data-session-key="${key}"]`);
     const tree = row?.closest(".sidebar-session-tree");
     const link = row?.querySelector<HTMLAnchorElement>(".sidebar-recent-session__link");
-    expect(list?.getAttribute("aria-label")).toBe("Sessions");
+    expect(list?.getAttribute("aria-label")).toBe("Other");
     expect(tree?.parentElement).toBe(list);
     expect(tree?.getAttribute("role")).toBe("listitem");
     expect(row?.hasAttribute("role")).toBe(false);
@@ -394,19 +394,17 @@ describe("AppSidebar session accessibility", () => {
     expect(link?.getAttribute("aria-current")).toBe("page");
     const lead = link?.querySelector(".sidebar-session-indicator");
     expect(lead).not.toBeNull();
-    expect(lead?.childElementCount).toBe(0);
+    expect(lead?.childElementCount).toBe(1);
     expect(link?.querySelector(".sidebar-recent-session__text")).not.toBeNull();
-    const rowState = row?.querySelector(".session-row-state");
-    expect(rowState?.getAttribute("role")).toBe("img");
-    expect(rowState?.getAttribute("aria-label")).toBe("Unread");
-    expect(rowState?.querySelector(".session-unread-dot")).not.toBeNull();
+    const unread = lead?.querySelector(".session-unread-dot");
+    expect(unread?.getAttribute("role")).toBe("img");
+    expect(unread?.getAttribute("aria-label")).toBe("Unread");
+    expect(row?.querySelector(".session-row-state")).toBeNull();
     expect(link?.querySelector(".sidebar-recent-session__name")?.textContent).toBe(
       "Quarterly launch plan",
     );
-    expect(link?.getAttribute("title")).toBe("Quarterly launch plan · now · Unread");
-    expect(link?.getAttribute("aria-describedby")).toBe(
-      `sidebar-session-state-${encodeURIComponent(key)}`,
-    );
+    expect(link?.hasAttribute("title")).toBe(false);
+    expect(link?.hasAttribute("aria-describedby")).toBe(false);
     expect(row?.querySelector(".session-row-trail")).toBeNull();
   });
 });

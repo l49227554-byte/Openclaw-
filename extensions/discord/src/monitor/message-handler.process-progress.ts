@@ -1,3 +1,4 @@
+import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { StatusReactionController } from "openclaw/plugin-sdk/channel-feedback";
 // Discord plugin module owns progress-window state and agent-event rendering.
 import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
@@ -9,23 +10,6 @@ type ReplyOptions = Omit<GetReplyOptions, "onBlockReply">;
 type CallbackPayload<K extends keyof ReplyOptions> =
   NonNullable<ReplyOptions[K]> extends (...args: infer Args) => unknown ? Args[0] : never;
 type DraftPreview = ReturnType<typeof createDiscordDraftPreviewController>;
-
-function isProcessAborted(abortSignal?: AbortSignal): boolean {
-  return Boolean(abortSignal?.aborted);
-}
-
-function isFailedProgress(payload: {
-  phase?: string;
-  status?: string;
-  exitCode?: number | null;
-}): boolean {
-  return (
-    payload.phase === "error" ||
-    payload.status === "failed" ||
-    payload.status === "error" ||
-    (typeof payload.exitCode === "number" && payload.exitCode !== 0)
-  );
-}
 
 export function createDiscordMessageProgressRuntime(params: {
   ctx: DiscordMessagePreflightContext;
@@ -44,10 +28,7 @@ export function createDiscordMessageProgressRuntime(params: {
   const { cfg, route, abortSignal } = ctx;
   // Reasoning delivery follows the session /reasoning level, not streaming config.
   const reasoningLevel = ((): "on" | "stream" | "off" => {
-    const normalizedAgentId = (route.agentId ?? "").trim().toLowerCase() || "main";
-    const agentEntryDefault = cfg.agents?.list?.find(
-      (entry) => ((entry?.id ?? "").trim().toLowerCase() || "main") === normalizedAgentId,
-    )?.reasoningDefault;
+    const agentEntryDefault = resolveAgentConfig(cfg, route.agentId ?? "main")?.reasoningDefault;
     const cfgDefault = agentEntryDefault ?? cfg.agents?.defaults?.reasoningDefault;
     const configDefault: "on" | "stream" | "off" =
       cfgDefault === "on" || cfgDefault === "stream" ? cfgDefault : "off";
@@ -89,7 +70,7 @@ export function createDiscordMessageProgressRuntime(params: {
       : undefined,
     onReasoningEnd: draftPreview.draftStream
       ? () => {
-          handleAssistantMessageBoundary();
+          draftPreview.resetReasoningProgress();
           return false;
         }
       : undefined,
@@ -126,7 +107,7 @@ export function createDiscordMessageProgressRuntime(params: {
     },
     onNarrationUpdate: draftPreview.narrationProgressEnabled
       ? async (payload) => {
-          if (isProcessAborted(abortSignal) || shouldYieldDraftCommentary()) {
+          if (abortSignal?.aborted || shouldYieldDraftCommentary()) {
             return;
           }
           await draftPreview.pushNarrationProgress(payload.text);
@@ -150,7 +131,7 @@ export function createDiscordMessageProgressRuntime(params: {
     },
     streamReasoningInNonStreamModes: reasoningWindowEnabled,
     onToolStart: async (payload) => {
-      if (isProcessAborted(abortSignal)) {
+      if (abortSignal?.aborted) {
         return false;
       }
       await params.reactions.maybeBindToToolReaction(payload);
@@ -158,9 +139,6 @@ export function createDiscordMessageProgressRuntime(params: {
       return await draftPreview.pushToolEvent(payload);
     },
     onItemEvent: async (payload) => {
-      if (isFailedProgress(payload)) {
-        return false;
-      }
       if (payload.kind === "preamble") {
         if (shouldYieldDraftCommentary()) {
           return undefined;
@@ -173,6 +151,7 @@ export function createDiscordMessageProgressRuntime(params: {
       if (payload.phase === "update") {
         return await draftPreview.pushPlanProgress(payload.steps, {
           explanation: payload.explanation,
+          explanationFormat: payload.explanationFormat,
         });
       }
       return false;
@@ -181,22 +160,19 @@ export function createDiscordMessageProgressRuntime(params: {
       return await draftPreview.pushApprovalEvent(payload);
     },
     onCommandOutput: async (payload) => {
-      if (isFailedProgress(payload)) {
-        return false;
-      }
       return await draftPreview.pushCommandOutputEvent(payload);
     },
     onPatchSummary: async (payload) => {
       return await draftPreview.pushPatchEvent(payload);
     },
     onCompactionStart: async () => {
-      if (!isProcessAborted(abortSignal)) {
+      if (!abortSignal?.aborted) {
         await params.reactions.controller.setCompacting();
       }
       return false;
     },
     onCompactionEnd: async () => {
-      if (!isProcessAborted(abortSignal)) {
+      if (!abortSignal?.aborted) {
         params.reactions.controller.cancelPending();
         await params.reactions.controller.setThinking();
       }

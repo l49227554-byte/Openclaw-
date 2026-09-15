@@ -1,6 +1,11 @@
 // Shared root CLI failure formatting with debug stack gating and recovery hints.
+import { isGatewayTransportError } from "../gateway/transport-error.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { formatErrorMessage, formatUncaughtError } from "../infra/errors.js";
+import {
+  UpdateSchemaRefusalError,
+  type UpdateSchemaRefusalDatabase,
+} from "../state/openclaw-update-schema-refusal.js";
 import { formatCliCommand } from "./command-format.js";
 
 type FormatCliFailureOptions = {
@@ -15,13 +20,36 @@ type CliFailureDebugOptions = Pick<FormatCliFailureOptions, "argv" | "env">;
 
 export type CliJsonFailure = {
   ok: false;
+  runId?: string;
+  origin?: "gateway";
   error: {
     type: "cli_error";
     message: string;
+    code?: string;
+    databases?: readonly UpdateSchemaRefusalDatabase[];
+    updaterVersion?: string;
+    targetVersion?: string;
+    commands?: readonly string[];
   };
 };
 
-export class CliParseError extends Error {
+export type CliGatewayRunFailure = { runId: string; origin: "gateway" };
+
+const gatewayRunFailures = new WeakMap<Error, CliGatewayRunFailure>();
+
+/** Agent dispatch supplies observed Gateway IDs; error identity and human output stay intact. */
+export function recordCliGatewayRunFailure(error: unknown, runId: string | undefined): void {
+  if (error instanceof Error && runId) {
+    gatewayRunFailures.set(error, { runId, origin: "gateway" });
+  }
+}
+
+/** Human diagnostics (agent transport-loss hint) read back the run identity recorded at dispatch. */
+export function readCliGatewayRunFailure(error: unknown): CliGatewayRunFailure | undefined {
+  return error instanceof Error ? gatewayRunFailures.get(error) : undefined;
+}
+
+export class ExpectedCliError extends Error {
   readonly humanOutput: string;
   readonly humanOutputWritten: boolean;
   readonly machineOutput: string;
@@ -33,11 +61,78 @@ export class CliParseError extends Error {
     machineOutput: string;
   }) {
     super(params.message);
-    this.name = "CliParseError";
+    this.name = "ExpectedCliError";
     this.humanOutput = params.humanOutput;
     this.humanOutputWritten = params.humanOutputWritten ?? false;
     this.machineOutput = params.machineOutput;
   }
+}
+
+export function isGatewayCredentialsCliError(
+  error: unknown,
+): error is Error & { method: string; configPath: string } {
+  // Keep the root failure renderer lean; importing gateway/call would pull the
+  // transport and config stack into every CLI startup path.
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return (
+    error.name === "GatewayCredentialsRequiredError" &&
+    "method" in error &&
+    typeof error.method === "string" &&
+    "configPath" in error &&
+    typeof error.configPath === "string"
+  );
+}
+
+function isGatewayExplicitAuthCliError(error: unknown): error is Error {
+  // Same lean structural classification as the credentials preflight above: the
+  // producer message already carries the complete --url/--token remedy.
+  return error instanceof Error && error.name === "GatewayExplicitAuthRequiredError";
+}
+
+function isAgentSelectionCliError(error: unknown): error is Error {
+  // Multi-agent selection refusals (src/agents/agent-scope-config.ts) already name
+  // the surface and its --agent remedy; crash framing would send operators to a
+  // stack trace and `openclaw doctor` for a missing flag.
+  return error instanceof Error && error.name === "AgentSelectionRequiredError";
+}
+
+function isImmutableConfigCliError(error: unknown): error is Error {
+  // Config write-guard refusals (src/config/config-write-guard.ts) already carry the
+  // redeploy remedy; crash framing would point operators at a stack trace and
+  // `openclaw doctor`, which cannot lift an externally managed config.
+  return (
+    error instanceof Error &&
+    (error.name === "ConfigReadOnlyError" || error.name === "NixModeConfigMutationError")
+  );
+}
+
+export function isExpectedCliError(error: unknown): error is Error {
+  return (
+    error instanceof ExpectedCliError ||
+    isGatewayCredentialsCliError(error) ||
+    isGatewayExplicitAuthCliError(error) ||
+    isImmutableConfigCliError(error) ||
+    isAgentSelectionCliError(error) ||
+    isGatewayTransportError(error)
+  );
+}
+
+export function rethrowExpectedCliError(error: unknown): void {
+  if (isExpectedCliError(error)) {
+    throw error;
+  }
+}
+
+function resolveExpectedCliOutput(error: Error) {
+  return error instanceof ExpectedCliError
+    ? error
+    : {
+        humanOutput: error.message,
+        humanOutputWritten: false,
+        machineOutput: error.message,
+      };
 }
 
 /** Canonical machine-readable failure envelope for CLI-owned errors. */
@@ -45,15 +140,24 @@ export function formatCliJsonFailure(
   error: unknown,
   options: CliFailureDebugOptions = {},
 ): CliJsonFailure {
-  const message =
-    error instanceof CliParseError
-      ? formatErrorMessage(error.machineOutput.trimEnd())
-      : formatCliOperatorError(error, options);
+  const message = isExpectedCliError(error)
+    ? formatErrorMessage(resolveExpectedCliOutput(error).machineOutput.trimEnd())
+    : formatCliOperatorError(error, options);
   return {
     ok: false,
+    ...readCliGatewayRunFailure(error),
     error: {
       type: "cli_error",
       message,
+      ...(error instanceof UpdateSchemaRefusalError
+        ? {
+            code: error.code,
+            databases: error.databases,
+            updaterVersion: error.updaterVersion,
+            targetVersion: error.targetVersion,
+            commands: error.commands,
+          }
+        : {}),
     },
   };
 }
@@ -97,8 +201,9 @@ function pushPrefixed(out: string[], value: string): void {
 }
 
 export function formatCliFailureLines(options: FormatCliFailureOptions): string[] {
-  if (options.error instanceof CliParseError) {
-    return options.error.humanOutputWritten ? [] : options.error.humanOutput.trimEnd().split("\n");
+  if (isExpectedCliError(options.error)) {
+    const output = resolveExpectedCliOutput(options.error);
+    return output.humanOutputWritten ? [] : output.humanOutput.trimEnd().split("\n");
   }
 
   // Default output stays terse; causes and stack traces require explicit debug intent.

@@ -131,7 +131,12 @@ export function createCodexAttemptLifecycleController(
     state.lifecycleStarted = true;
   };
   const emitLifecycleTerminal = (data: Record<string, unknown> & { phase: "end" | "error" }) => {
-    if (!state.lifecycleStarted || state.lifecycleTerminalEmitted) {
+    if (
+      !state.lifecycleStarted ||
+      state.lifecycleTerminalEmitted ||
+      state.permissionChangeRestart ||
+      params.pluginRuntimeRefreshPending?.()
+    ) {
       return;
     }
     void emitCodexAppServerEvent(params, {

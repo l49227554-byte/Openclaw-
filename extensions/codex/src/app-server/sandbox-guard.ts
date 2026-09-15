@@ -2,7 +2,9 @@
  * Blocks direct Codex app-server requests that would bypass OpenClaw sandbox or
  * node-exec routing guarantees.
  */
+import { tryResolveDefaultAgentId } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import { resolveSandboxRuntimeStatus, type SandboxContext } from "openclaw/plugin-sdk/sandbox";
 import { isCodexRemoteExecPlacementSandbox } from "./config-parsing.js";
 import {
@@ -26,6 +28,7 @@ const DIRECT_METHOD_POLICIES = new Map<string, DirectMethodPolicy>([
   ["config/read", "allowed-control-plane"],
   ["config/value/write", "allowed-control-plane"],
   ["environment/add", "allowed-control-plane"],
+  ["experimentalFeature/list", "allowed-control-plane"],
   ["experimentalFeature/enablement/set", "allowed-control-plane"],
   ["feedback/upload", "allowed-control-plane"],
   ["hooks/list", "allowed-control-plane"],
@@ -149,6 +152,7 @@ export function resolveCodexNativeSandboxBlock(params: {
   config?: OpenClawConfig;
   sessionKey?: string;
   sessionId?: string;
+  agentId?: string;
   sandbox?: Pick<SandboxContext, "enabled"> | null;
   sandboxEnvironmentSelected?: boolean;
   surface: string;
@@ -163,9 +167,18 @@ export function resolveCodexNativeSandboxBlock(params: {
   if (isCodexRemoteExecPlacementSandbox(params.sandbox) || params.sandbox?.enabled === true) {
     return formatCodexNativeSandboxBlock({ surface: params.surface });
   }
+  const sandboxAgentId =
+    parseAgentSessionKey(sessionKey)?.agentId ??
+    params.agentId ??
+    tryResolveDefaultAgentId(params.config ?? {});
+  if (!sandboxAgentId) {
+    return undefined;
+  }
   const runtime = resolveSandboxRuntimeStatus({
     cfg: params.config,
     sessionKey,
+    agentId: sandboxAgentId,
+    classificationAgentId: sandboxAgentId,
   });
   if (!runtime.sandboxed) {
     return undefined;

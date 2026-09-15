@@ -9,11 +9,11 @@ import {
   resolveSendableOutboundReplyParts,
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload";
+import { retryAsync } from "openclaw/plugin-sdk/retry-runtime";
+import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { sleep } from "openclaw/plugin-sdk/text-utility-runtime";
 import { loadWebMedia } from "openclaw/plugin-sdk/web-media";
 import type { MarkdownTableMode, MSTeamsReplyStyle, OpenClawConfig } from "../runtime-api.js";
-import { AI_GENERATED_ENTITY } from "./ai-entity.js";
 import type { MSTeamsAccessTokenProvider } from "./attachments/types.js";
 import type { MSTeamsSdkCloudOptions } from "./cloud.js";
 import type { StoredConversationReference } from "./conversation-store.js";
@@ -27,7 +27,7 @@ import {
   uploadAndShareSharePoint,
 } from "./graph-upload.js";
 import { extractFilename, extractMessageId, getMimeType, isLocalPath } from "./media-helpers.js";
-import { parseMentions } from "./mentions.js";
+import { buildMSTeamsMessageActivity } from "./message-activity.js";
 import { setPendingUploadActivityId } from "./pending-uploads.js";
 import { withRevokedProxyFallback } from "./revoked-context.js";
 import { getMSTeamsRuntime } from "./runtime.js";
@@ -204,15 +204,11 @@ function computeRetryDelayMs(
   classification: ReturnType<typeof classifyMSTeamsSendError>,
   opts: Required<MSTeamsSendRetryOptions>,
 ): number {
-  if (classification.retryAfterMs != null) {
+  if (classification.kind === "replay-safe" && classification.retryAfterMs != null) {
     return clampMs(classification.retryAfterMs, opts.maxDelayMs);
   }
   const exponential = opts.baseDelayMs * 2 ** Math.max(0, attempt - 1);
   return clampMs(exponential, opts.maxDelayMs);
-}
-
-function shouldRetry(classification: ReturnType<typeof classifyMSTeamsSendError>): boolean {
-  return classification.kind === "throttled" || classification.kind === "transient";
 }
 
 export function renderReplyPayloadsToMessages(
@@ -283,23 +279,12 @@ async function buildActivity(
   mediaMaxBytes?: number,
   options?: { feedbackLoopEnabled?: boolean },
 ): Promise<Record<string, unknown>> {
-  const activity: Record<string, unknown> = { type: "message" };
+  const activity: Record<string, unknown> = buildMSTeamsMessageActivity(msg.text);
 
   // Mark as AI-generated so Teams renders the "AI generated" badge.
   activity.channelData = {
     feedbackLoopEnabled: options?.feedbackLoopEnabled ?? false,
   };
-
-  if (msg.text) {
-    // Parse mentions from text (format: @[Name](id))
-    const { text: formattedText, entities } = parseMentions(msg.text);
-    activity.text = formattedText;
-
-    // Start with mention entities (if any) + AI-generated entity
-    activity.entities = [...(entities.length > 0 ? entities : []), AI_GENERATED_ENTITY];
-  } else {
-    activity.entities = [AI_GENERATED_ENTITY];
-  }
 
   if (msg.mediaUrl) {
     let contentUrl = msg.mediaUrl;
@@ -428,34 +413,25 @@ export async function sendMSTeamsMessages(params: {
       return await sendOnce();
     }
 
-    for (const attempt of Array.from(
-      { length: retryOptions.maxAttempts },
-      (_, index) => index + 1,
-    )) {
-      try {
-        return await sendOnce();
-      } catch (err) {
-        const classification = classifyMSTeamsSendError(err);
-        const canRetry = attempt < retryOptions.maxAttempts && shouldRetry(classification);
-        if (!canRetry) {
-          throw err;
-        }
-
-        const delayMs = computeRetryDelayMs(attempt, classification, retryOptions);
-        const nextAttempt = attempt + 1;
+    return await retryAsync(sendOnce, {
+      attempts: retryOptions.maxAttempts,
+      minDelayMs: 0,
+      maxDelayMs: retryOptions.maxDelayMs,
+      shouldRetry: (err) => classifyMSTeamsSendError(err).kind === "replay-safe",
+      delayMs: ({ attempt, err }) =>
+        computeRetryDelayMs(attempt, classifyMSTeamsSendError(err), retryOptions),
+      onRetry: ({ attempt, err, delayMs }) => {
         params.onRetry?.({
           messageIndex: meta.messageIndex,
           messageCount: meta.messageCount,
-          nextAttempt,
+          nextAttempt: attempt + 1,
           maxAttempts: retryOptions.maxAttempts,
           delayMs,
-          classification,
+          classification: classifyMSTeamsSendError(err),
         });
-
-        await sleep(delayMs);
-      }
-    }
-    throw new Error("unreachable Teams send retry loop exit");
+      },
+      sleep: (delayMs) => sleepWithAbort(delayMs),
+    });
   };
 
   let providerDispatchStarted = false;
@@ -464,12 +440,15 @@ export async function sendMSTeamsMessages(params: {
     message: MSTeamsRenderedMessage,
     messageIndex: number,
   ): Promise<string> => {
+    let activity: Record<string, unknown> | undefined;
     let pendingUploadId: string | undefined;
     let response: unknown;
     try {
       response = await sendWithRetry(
         async () => {
-          const activity = await buildActivity(
+          // Retry failed preparation, but keep its successful I/O and SharePoint work
+          // out of subsequent provider retries.
+          activity ??= await buildActivity(
             message,
             params.conversationRef,
             params.tokenProvider,
@@ -478,14 +457,11 @@ export async function sendMSTeamsMessages(params: {
             { feedbackLoopEnabled: params.feedbackLoopEnabled },
           );
 
-          // Extract and strip the internal-only pending upload tag before sending.
-          pendingUploadId =
+          pendingUploadId ??=
             typeof activity["_pendingUploadId"] === "string"
               ? activity["_pendingUploadId"]
               : undefined;
-          if (pendingUploadId) {
-            delete activity["_pendingUploadId"];
-          }
+          delete activity["_pendingUploadId"];
 
           providerDispatchStarted = true;
           return await sendFn(activity);

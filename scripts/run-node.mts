@@ -11,25 +11,23 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import {
-  collectBundledPluginBuildEntries,
-  NON_PACKAGED_BUNDLED_PLUGIN_DIRS,
-} from "./lib/bundled-plugin-build-entries.mjs";
+import { collectSourceCheckoutPluginBuildEntries } from "./lib/bundled-plugin-build-entries.mjs";
 import {
   BUNDLED_PLUGIN_PATH_PREFIX,
   BUNDLED_PLUGIN_ROOT_DIR,
 } from "./lib/bundled-plugin-paths.mjs";
+import { withDistArtifactOwnership } from "./lib/dist-artifact-ownership.mts";
 import {
   BUILD_STAMP_FILE,
   RUNTIME_POSTBUILD_STAMP_FILE,
   resolveGitHead,
-  writeBuildStamp as writeDistBuildStamp,
   writeRuntimePostBuildStamp as writeDistRuntimePostBuildStamp,
 } from "./lib/local-build-metadata.mts";
 import { sleep } from "./lib/sleep.mjs";
 import {
   discoverStaticExtensionAssets,
   listStaticExtensionAssetSources,
+  shouldCopyStaticExtensionAssets,
 } from "./lib/static-extension-assets.mts";
 import {
   extensionRestartMetadataFiles,
@@ -112,7 +110,9 @@ type RunNodeLogDeps = Pick<RunNodeDeps, "env" | "stderr"> &
 type RunNodeLockDeps = Pick<RunNodeDeps, "cwd" | "env" | "fs" | "process" | "stderr"> & {
   args: readonly string[];
 };
-type BundledPluginBuildEntry = ReturnType<typeof collectBundledPluginBuildEntries>[number] & {
+type BundledPluginBuildEntry = ReturnType<
+  typeof collectSourceCheckoutPluginBuildEntries
+>[number] & {
   hasManifest: boolean;
 };
 type BuildRequirement = { shouldBuild: boolean; reason: keyof typeof BUILD_REASON_LABELS };
@@ -125,6 +125,7 @@ type SpawnedProcessResult = {
   exitSignal: NodeJS.Signals | null;
   forwardedSignal: NodeJS.Signals | null;
 };
+type RunNodeExit = number | NodeJS.Signals;
 
 function asRunNodeChild(value: unknown): RunNodeChild {
   if (!value || typeof value !== "object" || !("on" in value) || typeof value.on !== "function") {
@@ -135,20 +136,14 @@ function asRunNodeChild(value: unknown): RunNodeChild {
 
 export { runNodeWatchedPaths };
 
-const buildScript = "scripts/tsdown-build.mts";
-const bundledPluginAssetsScript = "scripts/bundled-plugin-assets.mts";
-const compilerArgs = ["--import", "tsx", buildScript, "--no-clean"];
-const bundledPluginAssetBuildArgs = [
-  "--import",
-  "tsx",
-  bundledPluginAssetsScript,
-  "--phase",
-  "build",
-];
+const runtimeBuildArgs = ["--import", "tsx", "scripts/build-all.mts", "qaRuntime"];
 const RUN_NODE_SIGNAL_FORCE_KILL_AFTER_MS = 5_000;
 
 const runtimePostBuildWatchedPaths = [
+  "scripts/check-built-plugin-control-plane-modules.mts",
   "scripts/copy-bundled-plugin-metadata.mjs",
+  "scripts/copy-bundled-plugin-metadata.mts",
+  "scripts/copy-hook-metadata.ts",
   "scripts/lib",
   "scripts/lib/local-build-metadata.mts",
   "scripts/lib/local-build-metadata-paths.mts",
@@ -156,9 +151,13 @@ const runtimePostBuildWatchedPaths = [
   "scripts/runtime-postbuild-stamp.mts",
   "scripts/runtime-postbuild-shared.mjs",
   "scripts/runtime-postbuild.mjs",
+  "scripts/runtime-postbuild.mts",
   "scripts/stage-bundled-plugin-runtime.mjs",
+  "scripts/stage-bundled-plugin-runtime.mts",
   "scripts/windows-cmd-helpers.mjs",
+  "scripts/write-build-info.ts",
   "scripts/write-official-channel-catalog.mjs",
+  "scripts/write-official-channel-catalog.mts",
   BUNDLED_PLUGIN_ROOT_DIR,
 ];
 const runtimePostBuildScriptPaths = new Set(
@@ -178,14 +177,10 @@ const resolvePrivateQaRequiredDistEntries = (distRoot: string) => [
   path.join(distRoot, "plugin-sdk", "qa-lab.js"),
   path.join(distRoot, "plugin-sdk", "qa-runtime.js"),
 ];
-const shouldRequireBundledPluginRuntimeOutput = (
-  pluginId: string,
-  env: NodeJS.ProcessEnv = process.env,
-) => env.OPENCLAW_BUILD_PRIVATE_QA === "1" || !NON_PACKAGED_BUNDLED_PLUGIN_DIRS.has(pluginId);
-
 const isExcludedSource = (filePath: string, sourceRoot: string, sourceRootName: string) => {
   const relativePath = normalizePath(path.relative(sourceRoot, filePath));
-  if (relativePath.startsWith("..")) {
+  // A basename starting with ".." still belongs to the source root.
+  if (relativePath === ".." || relativePath.startsWith("../")) {
     return false;
   }
   return !isBuildRelevantRunNodePath(path.posix.join(sourceRootName, relativePath));
@@ -237,7 +232,16 @@ const readGitStatus = (deps: RunNodeRequirementDeps, paths: string[] = runNodeWa
   try {
     const result = deps.spawnSync(
       "git",
-      ["status", "--porcelain", "--untracked-files=normal", "--", ...paths],
+      // NUL framing preserves filenames; separate delete/add records keep both rename sides.
+      [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--no-renames",
+        "--untracked-files=normal",
+        "--",
+        ...paths,
+      ],
       {
         cwd: deps.cwd,
         encoding: "utf8",
@@ -255,9 +259,8 @@ const readGitStatus = (deps: RunNodeRequirementDeps, paths: string[] = runNodeWa
 
 const parseGitStatusPaths = (output: string) =>
   output
-    .split("\n")
-    .flatMap((line) => line.slice(3).split(" -> "))
-    .map((entry) => normalizePath(entry.trim()))
+    .split("\0")
+    .map((entry) => entry.slice(3))
     .filter(Boolean);
 
 const hasDirtySourceTree = (deps: RunNodeRequirementDeps) => {
@@ -265,17 +268,15 @@ const hasDirtySourceTree = (deps: RunNodeRequirementDeps) => {
   if (output === null) {
     return null;
   }
-  return parseGitStatusPaths(output).some((repoPath) => {
-    const normalizedPath = normalizePath(repoPath).replace(/^\.\/+/, "");
-    return (
-      isBuildRelevantRunNodePath(normalizedPath) ||
-      isDirtyBundledPluginPackageEntryChangeWithoutBuiltOutputs(normalizedPath, deps)
-    );
-  });
+  return parseGitStatusPaths(output).some(
+    (repoPath) =>
+      isBuildRelevantRunNodePath(repoPath) ||
+      isDirtyBundledPluginPackageEntryChangeWithoutBuiltOutputs(repoPath, deps),
+  );
 };
 
 const isRuntimePostBuildRelevantPath = (repoPath: string) => {
-  const normalizedPath = normalizePath(repoPath).replace(/^\.\/+/, "");
+  const normalizedPath = normalizePath(repoPath);
   if (runtimePostBuildStaticAssetPaths.has(normalizedPath)) {
     return true;
   }
@@ -326,6 +327,23 @@ const readBuildStamp = (deps: RunNodeRequirementDeps) => readJsonStamp(deps.buil
 
 const readRuntimePostBuildStamp = (deps: RunNodeRuntimeRequirementDeps) => {
   return readJsonStamp(deps.runtimePostBuildStampPath, deps);
+};
+
+const isImmutableGitDeployment = (deps: RunNodeRequirementDeps) => {
+  try {
+    const deployment = JSON.parse(
+      deps.fs.readFileSync(path.join(deps.cwd, "deployment.json"), "utf8"),
+    );
+    // Deployment ownership outranks source-checkout freshness. A mismatched
+    // checkout must fail closed instead of repairing manager-owned artifacts.
+    return (
+      deployment?.kind === "git" &&
+      typeof deployment.sourceHead === "string" &&
+      deployment.sourceHead.trim().length > 0
+    );
+  } catch {
+    return false;
+  }
 };
 
 const hasSourceMtimeChanged = (stampMtime: number, deps: RunNodeRequirementDeps) => {
@@ -388,19 +406,20 @@ const collectRunNodeBundledPluginBuildEntries = (deps: RunNodeRequirementDeps) =
   if (!deps.fs.existsSync(path.join(deps.cwd, BUNDLED_PLUGIN_ROOT_DIR))) {
     return [];
   }
-  return collectBundledPluginBuildEntries({ cwd: deps.cwd, env: deps.env });
+  return collectSourceCheckoutPluginBuildEntries({ cwd: deps.cwd, env: deps.env });
 };
 
 const resolveBuiltBundledPluginRuntimeEntryPath = (
   distRoot: string,
   pluginId: string,
   sourceEntry: string,
+  runtimeExtension: string,
 ) =>
   path.join(
     distRoot,
     "extensions",
     pluginId,
-    sourceEntry.replace(/^\.\//, "").replace(/\.[^.]+$/u, ".js"),
+    sourceEntry.replace(/^\.\//, "").replace(/\.[^.]+$/u, runtimeExtension),
   );
 
 const listBundledPluginRuntimeEntryPaths = (
@@ -410,7 +429,12 @@ const listBundledPluginRuntimeEntryPaths = (
   const distRoot = deps.distRoot;
   return pluginEntry.sourceEntries
     .map((sourceEntry) =>
-      resolveBuiltBundledPluginRuntimeEntryPath(distRoot, pluginEntry.id, sourceEntry),
+      resolveBuiltBundledPluginRuntimeEntryPath(
+        distRoot,
+        pluginEntry.id,
+        sourceEntry,
+        pluginEntry.runtimeExtension,
+      ),
     )
     .toSorted((left, right) => left.localeCompare(right));
 };
@@ -423,7 +447,7 @@ const isDirtyBundledPluginPackageEntryChangeWithoutBuiltOutputs = (
     return false;
   }
   const [, pluginId] = normalizedPath.split("/");
-  if (!pluginId || !shouldRequireBundledPluginRuntimeOutput(pluginId, deps.env)) {
+  if (!pluginId) {
     return false;
   }
   const pluginEntry = collectRunNodeBundledPluginBuildEntries(deps).find(
@@ -438,37 +462,20 @@ const isDirtyBundledPluginPackageEntryChangeWithoutBuiltOutputs = (
 };
 
 const hasMissingBuiltBundledPluginRuntimeEntryOutput = (deps: RunNodeRequirementDeps) => {
-  return collectRunNodeBundledPluginBuildEntries(deps)
-    .filter(({ id }) => shouldRequireBundledPluginRuntimeOutput(id, deps.env))
-    .some((pluginEntry) => {
-      const entryPaths = listBundledPluginRuntimeEntryPaths(pluginEntry, deps);
-      return entryPaths.some((filePath) => !deps.fs.existsSync(filePath));
-    });
+  return collectRunNodeBundledPluginBuildEntries(deps).some((pluginEntry) => {
+    const entryPaths = listBundledPluginRuntimeEntryPaths(pluginEntry, deps);
+    return entryPaths.some((filePath) => !deps.fs.existsSync(filePath));
+  });
 };
 
 const listBuiltBundledPluginEntries = (deps: RunNodeRequirementDeps) => {
   return collectRunNodeBundledPluginBuildEntries(deps)
-    .filter(({ id }) => shouldRequireBundledPluginRuntimeOutput(id, deps.env))
     .filter((pluginEntry) =>
       listBundledPluginRuntimeEntryPaths(pluginEntry, deps).some((filePath) =>
         deps.fs.existsSync(filePath),
       ),
     )
     .toSorted((left, right) => left.id.localeCompare(right.id));
-};
-
-const listBuiltBundledPluginRuntimeOverlayDirs = (deps: RunNodeRequirementDeps) => {
-  const distExtensionsRoot = path.join(deps.distRoot, "extensions");
-  let entries;
-  try {
-    entries = deps.fs.readdirSync(distExtensionsRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  return entries
-    .filter((entry) => entry.isDirectory() && entry.name !== "node_modules")
-    .map((entry) => entry.name)
-    .toSorted((left, right) => left.localeCompare(right));
 };
 
 const listRequiredBundledPluginMetadataOutputs = (
@@ -487,9 +494,10 @@ const listRequiredBundledPluginMetadataOutputs = (
     return requiredPaths;
   });
 
-const listRuntimeOverlaySourcePaths = (sourceDir: string, deps: RunNodeRequirementDeps) => {
-  const paths: string[] = [];
-  const queue = [sourceDir];
+const hasMissingBundledPluginRuntimeOverlayOutput = (deps: RunNodeRequirementDeps) => {
+  const distExtensionsRoot = path.join(deps.distRoot, "extensions");
+  const runtimeExtensionsRoot = path.join(deps.cwd, "dist-runtime", "extensions");
+  const queue = [distExtensionsRoot];
   while (queue.length > 0) {
     const current = queue.pop();
     if (!current) {
@@ -510,26 +518,18 @@ const listRuntimeOverlaySourcePaths = (sourceDir: string, deps: RunNodeRequireme
         queue.push(entryPath);
         continue;
       }
-      if (entry.isFile() || entry.isSymbolicLink()) {
-        paths.push(entryPath);
+      if (current !== distExtensionsRoot && (entry.isFile() || entry.isSymbolicLink())) {
+        const runtimePath = path.join(
+          runtimeExtensionsRoot,
+          path.relative(distExtensionsRoot, entryPath),
+        );
+        if (statMtime(runtimePath, deps.fs) == null) {
+          return true;
+        }
       }
     }
   }
-  return paths.toSorted((left, right) => left.localeCompare(right));
-};
-
-const listRequiredBundledPluginRuntimeOverlayOutputs = (deps: RunNodeRequirementDeps) => {
-  const distRoot = deps.distRoot;
-  const runtimeRoot = path.join(deps.cwd, "dist-runtime");
-  const runtimePaths: string[] = [];
-  for (const pluginId of listBuiltBundledPluginRuntimeOverlayDirs(deps)) {
-    const distPluginDir = path.join(distRoot, "extensions", pluginId);
-    const runtimePluginDir = path.join(runtimeRoot, "extensions", pluginId);
-    for (const sourcePath of listRuntimeOverlaySourcePaths(distPluginDir, deps)) {
-      runtimePaths.push(path.join(runtimePluginDir, path.relative(distPluginDir, sourcePath)));
-    }
-  }
-  return [...new Set(runtimePaths)].toSorted((left, right) => left.localeCompare(right));
+  return false;
 };
 
 const isSafePluginSdkSubpathSegment = (subpath: string) =>
@@ -588,7 +588,7 @@ const listRequiredOpenClawExtensionAliasOutputs = (deps: RunNodeRequirementDeps)
 };
 
 const listRequiredStaticExtensionAssetOutputs = (deps: RunNodeRequirementDeps) => {
-  if (deps.env.OPENCLAW_RUNTIME_POSTBUILD_STATIC_ASSETS === "0") {
+  if (!shouldCopyStaticExtensionAssets({ env: deps.env })) {
     return [];
   }
   const distRoot = deps.distRoot;
@@ -613,22 +613,21 @@ const listRequiredCoreRuntimePostBuildOutputs = (deps: RunNodeRequirementDeps) =
     path.join(deps.cwd, normalizePath(relativePath)),
   );
 
-/** Lists runtime postbuild outputs that must exist before the dev CLI starts. */
-const listRequiredRuntimePostBuildOutputs = (deps: RunNodeRequirementDeps) => {
+const hasMissingRequiredRuntimePostBuildOutput = (deps: RunNodeRequirementDeps) => {
   const builtPluginEntries = listBuiltBundledPluginEntries(deps);
-  return [
-    ...listRequiredCoreRuntimePostBuildOutputs(deps),
-    ...listRequiredOpenClawExtensionAliasOutputs(deps),
-    ...listRequiredStaticExtensionAssetOutputs(deps),
-    ...listRequiredBundledPluginMetadataOutputs(builtPluginEntries, deps),
-    ...listRequiredBundledPluginRuntimeOverlayOutputs(deps),
+  // Keep discovery failures ahead of missing-output checks.
+  const requiredOutputGroups = [
+    listRequiredCoreRuntimePostBuildOutputs(deps),
+    listRequiredOpenClawExtensionAliasOutputs(deps),
+    listRequiredStaticExtensionAssetOutputs(deps),
+    listRequiredBundledPluginMetadataOutputs(builtPluginEntries, deps),
   ];
-};
-
-const hasMissingRequiredRuntimePostBuildOutput = (deps: RunNodeRequirementDeps) =>
-  listRequiredRuntimePostBuildOutputs(deps).some(
-    (filePath) => statMtime(filePath, deps.fs) == null,
+  return (
+    requiredOutputGroups.some((outputs) =>
+      outputs.some((filePath) => statMtime(filePath, deps.fs) == null),
+    ) || hasMissingBundledPluginRuntimeOverlayOutput(deps)
   );
+};
 
 /** Decides whether source changes require a new dev build. */
 export const resolveBuildRequirement = (deps: RunNodeRequirementDeps): BuildRequirement => {
@@ -651,13 +650,6 @@ export const resolveBuildRequirement = (deps: RunNodeRequirementDeps): BuildRequ
     return { shouldBuild: true, reason: "missing_dist_entry" };
   }
 
-  for (const filePath of deps.configFiles) {
-    const mtime = statMtime(filePath, deps.fs);
-    if (mtime != null && mtime > stamp.mtime) {
-      return { shouldBuild: true, reason: "config_newer" };
-    }
-  }
-
   const currentHead = resolveGitHead(deps);
   if (currentHead && !stamp.head) {
     return { shouldBuild: true, reason: "build_stamp_missing_head" };
@@ -675,6 +667,13 @@ export const resolveBuildRequirement = (deps: RunNodeRequirementDeps): BuildRequ
         return { shouldBuild: true, reason: "missing_bundled_plugin_dist_entry" };
       }
       return { shouldBuild: false, reason: "clean" };
+    }
+  }
+
+  for (const filePath of deps.configFiles) {
+    const mtime = statMtime(filePath, deps.fs);
+    if (mtime != null && mtime > stamp.mtime) {
+      return { shouldBuild: true, reason: "config_newer" };
     }
   }
 
@@ -771,10 +770,25 @@ const formatBuildReason = (reason: BuildRequirement["reason"]) => BUILD_REASON_L
 const formatRuntimePostBuildReason = (reason: RuntimePostBuildRequirement["reason"]) =>
   RUNTIME_POSTBUILD_REASON_LABELS[reason];
 
+const refuseImmutableDeploymentMutation = async (
+  deps: RunNodeDeps,
+  artifactKind: "build" | "runtime",
+  reason: string,
+) => {
+  const message =
+    `[openclaw] Cannot regenerate ${artifactKind} artifacts in an immutable deployment (${reason}). ` +
+    "Replace this deployment with a complete release, then use its installed `openclaw` command or run `node openclaw.mjs ...` from that release.\n";
+  deps.stderr.write(message);
+  deps.outputTee?.write(message);
+  return await closeRunNodeOutputTee(deps, 1);
+};
+
 const SIGNAL_EXIT_CODES = {
+  SIGHUP: 129,
   SIGINT: 130,
   SIGTERM: 143,
 };
+const FORWARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
 const isSignalKey = (signal: NodeJS.Signals): signal is keyof typeof SIGNAL_EXIT_CODES =>
   Object.hasOwn(SIGNAL_EXIT_CODES, signal);
@@ -1102,11 +1116,8 @@ const waitForSpawnedProcess = async (childProcess: RunNodeChild, deps: RunNodeDe
     if (forceKillTimer) {
       clearTimeout(forceKillTimer);
     }
-    if (onSigInt) {
-      deps.process.off("SIGINT", onSigInt);
-    }
-    if (onSigTerm) {
-      deps.process.off("SIGTERM", onSigTerm);
+    for (const [signal, handler] of signalHandlers) {
+      deps.process.off(signal, handler);
     }
   };
 
@@ -1122,15 +1133,12 @@ const waitForSpawnedProcess = async (childProcess: RunNodeChild, deps: RunNodeDe
     }, RUN_NODE_SIGNAL_FORCE_KILL_AFTER_MS);
   };
 
-  const onSigInt = () => {
-    forwardSignal("SIGINT");
-  };
-  const onSigTerm = () => {
-    forwardSignal("SIGTERM");
-  };
-
-  deps.process.on("SIGINT", onSigInt);
-  deps.process.on("SIGTERM", onSigTerm);
+  const signalHandlers = FORWARDED_SIGNALS.map(
+    (signal) => [signal, () => forwardSignal(signal)] as const,
+  );
+  for (const [signal, handler] of signalHandlers) {
+    deps.process.on(signal, handler);
+  }
 
   try {
     return await new Promise<SpawnedProcessResult>((resolve) => {
@@ -1147,28 +1155,28 @@ const waitForSpawnedProcess = async (childProcess: RunNodeChild, deps: RunNodeDe
         settle({ exitCode: 1, exitSignal: null, forwardedSignal });
       };
       const handleExit = (exitCode: number | null, exitSignal: NodeJS.Signals | null) => {
-        if (forwardedSignal && !cleanedForwardedSignalGroup) {
+        if ((forwardedSignal || exitSignal) && !cleanedForwardedSignalGroup) {
           cleanedForwardedSignalGroup = true;
           signalSpawnedProcess(childProcess, "SIGKILL", useProcessGroup, deps);
         }
         settle({ exitCode, exitSignal, forwardedSignal });
       };
-      if ("once" in childProcess) {
-        childProcess.on("error", handleError);
-        childProcess.on("exit", handleExit);
-      } else {
-        childProcess.on("error", handleError);
-        childProcess.on("exit", handleExit);
-      }
+      childProcess.on("error", handleError);
+      childProcess.on("exit", handleExit);
     });
   } finally {
     cleanupSignals();
   }
 };
 
-const getInterruptedSpawnExitCode = (res: SpawnedProcessResult) => {
+const getInterruptedSpawnOutcome = (
+  res: SpawnedProcessResult,
+  platform: NodeJS.Platform,
+): RunNodeExit | null => {
   if (res.exitSignal) {
-    return getSignalExitCode(res.exitSignal);
+    // The child did not acknowledge completion. A numeric exit could let the
+    // watch parent retry after the owner of detached workers has disappeared.
+    return platform === "win32" ? getSignalExitCode(res.exitSignal) : res.exitSignal;
   }
   if (res.forwardedSignal) {
     return getSignalExitCode(res.forwardedSignal);
@@ -1188,9 +1196,9 @@ const runNodeChild = async (deps: RunNodeDeps, args: string[]) => {
   );
   pipeSpawnedOutput(nodeProcess, deps);
   const res = await waitForSpawnedProcess(nodeProcess, deps);
-  const interruptedExitCode = getInterruptedSpawnExitCode(res);
-  if (interruptedExitCode !== null) {
-    return interruptedExitCode;
+  const interrupted = getInterruptedSpawnOutcome(res, deps.platform);
+  if (interrupted !== null) {
+    return interrupted;
   }
   return res.exitCode ?? 1;
 };
@@ -1286,7 +1294,7 @@ const createSyncIoTraceStderrFilter = (deps: RunNodeDeps) => {
   };
 };
 
-const closeRunNodeOutputTee = async (deps: RunNodeDeps, exitCode: number) => {
+const closeRunNodeOutputTee = async (deps: RunNodeDeps, exitCode: RunNodeExit) => {
   if (!deps.outputTee) {
     return exitCode;
   }
@@ -1396,12 +1404,14 @@ export const acquireRunNodeBuildLock = async (deps: RunNodeLockDeps): Promise<()
       };
       const onSignal = () => removeLockDir();
       const onExit = () => removeLockDir();
-      deps.process.on("SIGINT", onSignal);
-      deps.process.on("SIGTERM", onSignal);
+      for (const signal of FORWARDED_SIGNALS) {
+        deps.process.on(signal, onSignal);
+      }
       deps.process.on("exit", onExit);
       return () => {
-        deps.process.off("SIGINT", onSignal);
-        deps.process.off("SIGTERM", onSignal);
+        for (const signal of FORWARDED_SIGNALS) {
+          deps.process.off(signal, onSignal);
+        }
         deps.process.off("exit", onExit);
         removeLockDir();
       };
@@ -1453,26 +1463,17 @@ const writeRuntimePostBuildStamp = (deps: RunNodeDeps) => {
   }
 };
 
-const syncRuntimeArtifactsAndStamp = async (deps: RunNodeDeps) => {
-  const synced = await syncRuntimeArtifacts(deps);
-  if (synced) {
-    writeRuntimePostBuildStamp(deps);
-  }
-  return synced;
-};
-
-const writeBuildStamp = (deps: RunNodeDeps) => {
-  try {
-    writeDistBuildStamp({
-      cwd: deps.cwd,
-      fs: deps.fs,
-      spawnSync: deps.spawnSync,
-    });
-  } catch (error) {
-    // Best-effort stamp; still allow the runner to start.
-    logRunner(`Failed to write build stamp: ${getErrorMessage(error)}`, deps);
-  }
-};
+const syncRuntimeArtifactsAndStamp = async (deps: RunNodeDeps) =>
+  withDistArtifactOwnership(deps.cwd, async () => {
+    if (!resolveRuntimePostBuildRequirement(deps).shouldSync) {
+      return true;
+    }
+    const synced = await syncRuntimeArtifacts(deps);
+    if (synced) {
+      writeRuntimePostBuildStamp(deps);
+    }
+    return synced;
+  });
 
 const shouldSkipWatchRuntimeSync = (deps: RunNodeDeps, requirement: RuntimePostBuildRequirement) =>
   deps.env.OPENCLAW_WATCH_MODE === "1" &&
@@ -1549,6 +1550,8 @@ function createRunNodeDeps(params: RunNodeMainParams) {
   const cwd = params.cwd ?? process.cwd();
   const distRoot = path.join(cwd, "dist");
   const env = params.env ? { ...params.env } : { ...process.env };
+  // Select this checkout's plugins over tracked installs without changing source/dist loading.
+  env.OPENCLAW_DEV_SOURCE_ROOT ??= cwd;
   const mutableState: RunNodeMutableState = {
     outputTee: null,
     runNodeProgress: undefined,
@@ -1581,7 +1584,7 @@ function createRunNodeDeps(params: RunNodeMainParams) {
 }
 
 /** Runs the dev build/watch loop and keeps the child CLI in sync with changes. */
-export async function runNodeMain(params: RunNodeMainParams = {}): Promise<number> {
+export async function runNodeMain(params: RunNodeMainParams = {}): Promise<RunNodeExit> {
   const deps = createRunNodeDeps(params);
   if (deps.args[0] === "qa") {
     deps.env.OPENCLAW_BUILD_PRIVATE_QA = "1";
@@ -1591,12 +1594,20 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<numbe
   deps.outputTee = createRunNodeOutputTee(deps);
 
   try {
-    let exitCode = 1;
+    let exitCode: RunNodeExit = 1;
     if (shouldFastPathExistingDistForGatewayClient(deps)) {
       exitCode = await runOpenClaw(deps);
       return await closeRunNodeOutputTee(deps, exitCode);
     }
     const buildRequirement = resolveBuildRequirement(deps);
+    const immutableDeployment = isImmutableGitDeployment(deps);
+    if (immutableDeployment && buildRequirement.shouldBuild) {
+      return await refuseImmutableDeploymentMutation(
+        deps,
+        "build",
+        formatBuildReason(buildRequirement.reason),
+      );
+    }
     const qaReportScript = resolveQaReportSourceScript(deps, buildRequirement);
     if (qaReportScript) {
       const reportName = qaReportScript === "qa-parity-report.ts" ? "parity" : "coverage";
@@ -1609,6 +1620,13 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<numbe
     }
     if (!buildRequirement.shouldBuild) {
       const runtimePostBuildRequirement = resolveRuntimePostBuildRequirement(deps);
+      if (immutableDeployment && runtimePostBuildRequirement.shouldSync) {
+        return await refuseImmutableDeploymentMutation(
+          deps,
+          "runtime",
+          formatRuntimePostBuildReason(runtimePostBuildRequirement.reason),
+        );
+      }
       if (
         runtimePostBuildRequirement.shouldSync &&
         !shouldSkipWatchRuntimeSync(deps, runtimePostBuildRequirement)
@@ -1653,63 +1671,22 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<numbe
         `Building TypeScript (dist is stale: ${lockedBuildRequirement.reason} - ${formatBuildReason(lockedBuildRequirement.reason)}).`,
         deps,
       );
-      logRunner("Building bundled plugin assets.", deps);
-      const buildCmd = deps.execPath;
-      const compileExitCode = await withRunNodeProgress(
-        deps,
-        "Building local CLI artifacts",
-        async () => {
-          const assetBuild = asRunNodeChild(
-            deps.spawn(buildCmd, bundledPluginAssetBuildArgs, {
-              cwd: deps.cwd,
-              detached: shouldUseRunNodeChildProcessGroup(deps),
-              env: deps.env,
-              stdio: ["inherit", "pipe", "pipe"],
-            }),
-          );
-          pipeSpawnedOutput(assetBuild, deps, { stdoutTarget: "stderr" });
-          const assetBuildRes = await waitForSpawnedProcess(assetBuild, deps);
-          const assetBuildInterruptedExitCode = getInterruptedSpawnExitCode(assetBuildRes);
-          if (assetBuildInterruptedExitCode !== null) {
-            return assetBuildInterruptedExitCode;
-          }
-          if (assetBuildRes.exitCode !== 0 && assetBuildRes.exitCode !== null) {
-            return assetBuildRes.exitCode;
-          }
-
-          const build = asRunNodeChild(
-            deps.spawn(buildCmd, compilerArgs, {
-              cwd: deps.cwd,
-              detached: shouldUseRunNodeChildProcessGroup(deps),
-              env: {
-                ...deps.env,
-                [RUN_NODE_SKIP_DTS_BUILD_ENV]: deps.env[RUN_NODE_SKIP_DTS_BUILD_ENV] ?? "1",
-              },
-              stdio: ["inherit", "pipe", "pipe"],
-            }),
-          );
-          pipeSpawnedOutput(build, deps, { stdoutTarget: "stderr" });
-
-          const buildRes = await waitForSpawnedProcess(build, deps);
-          const interruptedExitCode = getInterruptedSpawnExitCode(buildRes);
-          if (interruptedExitCode !== null) {
-            return interruptedExitCode;
-          }
-          if (buildRes.exitCode !== 0 && buildRes.exitCode !== null) {
-            return buildRes.exitCode;
-          }
-          return 0;
-        },
-      );
-      if (compileExitCode !== 0) {
-        return compileExitCode;
-      }
-      if (!(await syncRuntimeArtifacts(deps))) {
-        return 1;
-      }
-      writeBuildStamp(deps);
-      writeRuntimePostBuildStamp(deps);
-      return 0;
+      return await withRunNodeProgress(deps, "Building local CLI artifacts", async () => {
+        const build = asRunNodeChild(
+          deps.spawn(deps.execPath, runtimeBuildArgs, {
+            cwd: deps.cwd,
+            detached: shouldUseRunNodeChildProcessGroup(deps),
+            env: {
+              ...deps.env,
+              [RUN_NODE_SKIP_DTS_BUILD_ENV]: deps.env[RUN_NODE_SKIP_DTS_BUILD_ENV] ?? "1",
+            },
+            stdio: ["inherit", "pipe", "pipe"],
+          }),
+        );
+        pipeSpawnedOutput(build, deps, { stdoutTarget: "stderr" });
+        const result = await waitForSpawnedProcess(build, deps);
+        return getInterruptedSpawnOutcome(result, deps.platform) ?? result.exitCode ?? 1;
+      });
     });
     if (buildExitCode !== 0) {
       return await closeRunNodeOutputTee(deps, buildExitCode);
@@ -1724,7 +1701,13 @@ export async function runNodeMain(params: RunNodeMainParams = {}): Promise<numbe
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   void runNodeMain()
-    .then((code) => process.exit(code))
+    .then((outcome) => {
+      if (typeof outcome === "string") {
+        process.kill(process.pid, outcome);
+        return;
+      }
+      process.exit(outcome);
+    })
     .catch((err: unknown) => {
       console.error(err);
       process.exit(1);

@@ -4,20 +4,22 @@ import { isDeepStrictEqual } from "node:util";
 import {
   listAgentIds,
   resolveAgentDir,
-  resolveSessionAgentIds,
+  resolveSessionAgentIdsStrict,
 } from "openclaw/plugin-sdk/agent-scope-runtime";
+import {
+  canonicalPathFromExistingAncestor,
+  isPathInside,
+} from "openclaw/plugin-sdk/file-access-runtime";
 import { withFileLock, type FileLockOptions } from "openclaw/plugin-sdk/file-lock";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
   archiveLegacyStateSource,
   legacyStateFileExists,
   type PluginDoctorStateMigration,
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
-import {
-  canonicalPathFromExistingAncestor,
-  isPathInside,
-  pathExists,
-} from "openclaw/plugin-sdk/security-runtime";
+import { pathExists } from "openclaw/plugin-sdk/security-runtime";
+import { resolveStorePath } from "openclaw/plugin-sdk/session-store-paths";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
@@ -96,9 +98,6 @@ type MigratedBindingRow =
     };
 
 async function collectSessionSurfaces(params: MigrationEnvironment): Promise<SessionSurface[]> {
-  // Doctor enumeration cold-loads this closure; session-store-runtime pulls the
-  // session-accessor/kysely graph, so it stays behind lazy imports in async bodies.
-  const { resolveStorePath } = await import("openclaw/plugin-sdk/session-store-runtime");
   const surfaces = new Map<string, SessionSurface>();
   const stateRoot = await canonicalPathFromExistingAncestor(params.stateDir);
   const add = async (
@@ -130,7 +129,7 @@ async function collectSessionSurfaces(params: MigrationEnvironment): Promise<Ses
     if (!entry.isDirectory() || entry.isSymbolicLink()) {
       continue;
     }
-    const agentId = resolveSessionAgentIds({
+    const agentId = resolveSessionAgentIdsStrict({
       agentId: entry.name,
       config: params.config,
     }).sessionAgentId;
@@ -317,7 +316,6 @@ async function collectBindingOwners(
   surfaces: SessionSurface[],
   params: MigrationEnvironment,
 ): Promise<BindingOwnerCollection> {
-  const { resolveStorePath } = await import("openclaw/plugin-sdk/session-store-runtime");
   const sourcePaths = new Set(
     await Promise.all(
       sources.map((source) => canonicalPathFromExistingAncestor(source.transcriptPath)),
@@ -423,36 +421,39 @@ async function resolveLegacySessionFileLocator(
   return candidate;
 }
 
-function resolveLegacyBindingOwnerAgentId(params: {
+function tryResolveLegacyBindingOwnerAgentId(params: {
   sessionKey: string;
   config: MigrationEnvironment["config"];
   storeAgentIds?: Set<string>;
-}): string {
+}): string | undefined {
   if (params.sessionKey.trim().toLowerCase().startsWith("agent:")) {
-    return resolveSessionAgentIds({
+    return resolveSessionAgentIdsStrict({
       sessionKey: params.sessionKey,
       config: params.config,
     }).sessionAgentId;
   }
   const storeAgentId = params.storeAgentIds?.size === 1 ? [...params.storeAgentIds][0] : undefined;
-  return resolveSessionAgentIds({
-    sessionKey: params.sessionKey,
-    config: params.config,
-    ...(storeAgentId ? { agentId: storeAgentId } : {}),
-  }).sessionAgentId;
-}
-
-function tryResolveLegacyBindingOwnerAgentId(
-  params: Parameters<typeof resolveLegacyBindingOwnerAgentId>[0],
-): string | undefined {
-  try {
-    return resolveLegacyBindingOwnerAgentId(params);
-  } catch (error) {
-    if ((error as { code?: unknown }).code === "AGENT_SELECTION_REQUIRED") {
-      return undefined;
+  const configuredAgentId = params.config.agents?.defaults?.systemAgent?.agentId?.trim();
+  const systemAgentId =
+    !storeAgentId && configuredAgentId ? normalizeAgentId(configuredAgentId) : undefined;
+  const fallbackAgentIds =
+    systemAgentId && listAgentIds(params.config).includes(systemAgentId)
+      ? [undefined, systemAgentId]
+      : [undefined];
+  for (const fallbackAgentId of fallbackAgentIds) {
+    try {
+      return resolveSessionAgentIdsStrict({
+        sessionKey: params.sessionKey,
+        config: params.config,
+        ...(storeAgentId ? { agentId: storeAgentId } : fallbackAgentId ? { fallbackAgentId } : {}),
+      }).sessionAgentId;
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "AGENT_SELECTION_REQUIRED") {
+        throw error;
+      }
     }
-    throw error;
   }
+  return undefined;
 }
 
 function copyBindingForSession(stored: MigratedBindingRow, sessionId: string): MigratedBindingRow {
@@ -820,76 +821,70 @@ function isSafeLegacySessionId(value: unknown): value is string {
   );
 }
 
-export const stateMigrations: PluginDoctorStateMigration[] = [
-  {
-    id: "codex-app-server-sidecars-to-plugin-state",
-    label: "Codex app-server thread bindings",
-    async detectLegacyState(params) {
-      const { sources } = await collectLegacyBindingSources(params, { firstOnly: true });
-      return sources.length > 0
-        ? {
-            preview: [
-              `- Codex app-server bindings: legacy sidecar -> plugin state (${CODEX_APP_SERVER_BINDING_NAMESPACE})`,
-            ],
-          }
-        : null;
-    },
-    async migrateLegacyState(params) {
-      const changes: string[] = [];
-      const warnings: string[] = [];
-      const notices: string[] = [];
-      const { sources, surfaces } = await collectLegacyBindingSources(params);
-      if (sources.length === 0) {
-        return { changes, warnings };
+export async function detectLegacySessionBindingSidecars(params: MigrationParams) {
+  const { sources } = await collectLegacyBindingSources(params, { firstOnly: true });
+  return sources.length > 0
+    ? {
+        preview: [
+          `- Codex app-server bindings: legacy sidecar -> plugin state (${CODEX_APP_SERVER_BINDING_NAMESPACE})`,
+        ],
       }
-      const ownerCollection = await collectBindingOwners(sources, surfaces, params);
-      if (ownerCollection.failures.length > 0) {
-        warnings.push(
-          `Left ${sources.length} Codex binding sidecar(s) in place because session ownership is indeterminate: ${ownerCollection.failures.join("; ")}`,
-        );
-        return { changes, warnings };
-      }
-      const store = params.context.openPluginStateKeyedStore<MigratedBindingRow>({
-        namespace: CODEX_APP_SERVER_BINDING_NAMESPACE,
-        maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
-        overflowPolicy: "reject-new",
-      });
-      let migrated = 0;
-      let partialImports = 0;
-      for (const source of sources) {
-        const candidates =
-          ownerCollection.owners.get(
-            await canonicalPathFromExistingAncestor(source.transcriptPath),
-          ) ?? [];
-        const result = await migrateSource(source, candidates, params, store);
-        if (result.warning) {
-          warnings.push(result.warning);
-        }
-        if (result.notice) {
-          notices.push(result.notice);
-        }
-        if (result.archived) {
-          migrated++;
-        } else {
-          partialImports += result.importedKeys;
-        }
-      }
-      if (migrated > 0) {
-        changes.push(
-          `Migrated ${migrated} Codex app-server binding sidecar(s) to plugin state and archived the legacy sources`,
-        );
-      }
-      if (partialImports > 0) {
-        changes.push(
-          `Migrated ${partialImports} safe Codex app-server binding row(s) to plugin state; retained legacy sidecars needing review`,
-        );
-      }
-      return {
-        changes,
-        warnings,
-        ...(notices.length > 0 ? { notices } : {}),
-      };
-    },
-  },
-];
+    : null;
+}
+
+export async function migrateLegacySessionBindingSidecars(params: MigrationParams) {
+  const changes: string[] = [];
+  const warnings: string[] = [];
+  const notices: string[] = [];
+  const { sources, surfaces } = await collectLegacyBindingSources(params);
+  if (sources.length === 0) {
+    return { changes, warnings };
+  }
+  const ownerCollection = await collectBindingOwners(sources, surfaces, params);
+  if (ownerCollection.failures.length > 0) {
+    warnings.push(
+      `Left ${sources.length} Codex binding sidecar(s) in place because session ownership is indeterminate: ${ownerCollection.failures.join("; ")}`,
+    );
+    return { changes, warnings };
+  }
+  const store = params.context.openPluginStateKeyedStore<MigratedBindingRow>({
+    namespace: CODEX_APP_SERVER_BINDING_NAMESPACE,
+    maxEntries: CODEX_APP_SERVER_BINDING_MAX_ENTRIES,
+    overflowPolicy: "reject-new",
+  });
+  let migrated = 0;
+  let partialImports = 0;
+  for (const source of sources) {
+    const candidates =
+      ownerCollection.owners.get(await canonicalPathFromExistingAncestor(source.transcriptPath)) ??
+      [];
+    const result = await migrateSource(source, candidates, params, store);
+    if (result.warning) {
+      warnings.push(result.warning);
+    }
+    if (result.notice) {
+      notices.push(result.notice);
+    }
+    if (result.archived) {
+      migrated++;
+    } else {
+      partialImports += result.importedKeys;
+    }
+  }
+  if (migrated > 0) {
+    changes.push(
+      `Migrated ${migrated} Codex app-server binding sidecar(s) to plugin state and archived the legacy sources`,
+    );
+  }
+  if (partialImports > 0) {
+    changes.push(
+      `Migrated ${partialImports} safe Codex app-server binding row(s) to plugin state; retained legacy sidecars needing review`,
+    );
+  }
+  return {
+    changes,
+    warnings,
+    ...(notices.length > 0 ? { notices } : {}),
+  };
+}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

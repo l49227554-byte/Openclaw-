@@ -1,5 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
-// Directive tag helpers parse inline directive tags from user text.
+import { truncateCodePoints } from "@openclaw/normalization-core/code-points";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { findCodeRegions, isInsideCode } from "../shared/text/code-regions.js";
 
@@ -19,11 +19,16 @@ type InlineDirectiveParseOptions = {
   stripReplyTags?: boolean;
 };
 
+// TRANSITIONAL(marker-retirement): inline reply/audio markers are the last text
+// adapter for automatic-mode replies. Delete this parser family when the
+// messages.visibleReplies default flips to "message_tool" (structured fields own
+// delivery intent; persisted transcripts already carry openclawDelivery facts).
 const AUDIO_TAG_RE = /\[\[\s*audio_as_voice\s*\]\]/gi;
 const REPLY_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*([^\]\n]+))\s*\]\]/gi;
 const INLINE_DIRECTIVE_TAG_WITH_PADDING_RE =
-  /\s*(?:\[\[\s*audio_as_voice\s*\]\]|\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\])\s*/gi;
+  /(?:\s*(?:\[\[\s*audio_as_voice\s*\]\]|\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\])\s*|^[\t ]*\[\[\s*(?:reply_to_current(?:[\t ]*\](?!\])|(?=[\t ]+\S)|[\t ]*$)|reply_to\s*:\s*(?:[^\]\r\n]*\](?!\])|[\t ]*$))[\t ]*)/iuy;
 const MAX_REPLY_DIRECTIVE_ID_LENGTH = 256;
+const UNSAFE_REPLY_DIRECTIVE_CHARS_RE = /[\p{Cc}[\]]/gu;
 const NO_INLINE_DIRECTIVES = {
   audioAsVoice: false,
   replyToCurrent: false,
@@ -52,8 +57,9 @@ export function replaceOutsideCodeRegions(
   regex: RegExp,
   replacement: (match: string, captures: unknown[], offset: number, source: string) => string,
 ): string {
-  const codeRegions = text.includes("[[") ? findCodeRegions(text) : [];
+  let codeRegions: ReturnType<typeof findCodeRegions> | undefined;
   return text.replace(regex, (...args: unknown[]) => {
+    codeRegions ??= text.includes("[[") ? findCodeRegions(text) : [];
     const match = String(args[0]);
     const offset = args.at(-2);
     return typeof offset === "number" && isInsideCode(offset + match.indexOf("[["), codeRegions)
@@ -63,13 +69,12 @@ export function replaceOutsideCodeRegions(
 }
 
 function normalizeDirectiveWhitespace(text: string): string {
-  // Extract → normalize prose → restore:
-  // Stash every code block (fenced ``` / ~~~ and indent-code 4-space/tab)
-  // under a sentinel-delimited placeholder so the prose regexes never touch them.
+  // Stash canonical code regions before normalizing prose. Indented code also
+  // occurs inside Markdown containers without any backtick or tilde delimiter.
   const blockSentinel = createBlockSentinel(text);
   const blockPlaceholderRe = new RegExp(`${blockSentinel}(\\d+)${blockSentinel}`, "g");
   const blocks: string[] = [];
-  const codeRegions = text.includes("`") || text.includes("~~~") ? findCodeRegions(text) : [];
+  const codeRegions = findCodeRegions(text);
   let masked = "";
   let cursor = 0;
   // The canonical scanner keeps false closers, indented closers, and open fences intact.
@@ -78,10 +83,7 @@ function normalizeDirectiveWhitespace(text: string): string {
     masked += `${text.slice(cursor, span.start)}${blockSentinel}${blocks.length - 1}${blockSentinel}`;
     cursor = span.end;
   }
-  masked = `${masked}${text.slice(cursor)}`.replace(/(?:(?:^|\n)(?:    |\t)[^\n]*)+/gm, (block) => {
-    blocks.push(block);
-    return `${blockSentinel}${blocks.length - 1}${blockSentinel}`;
-  });
+  masked += text.slice(cursor);
 
   const normalized = masked
     .replace(/\r\n/g, "\n")
@@ -102,17 +104,6 @@ type StripInlineDirectiveTagsResult = {
   changed: boolean;
 };
 
-type MessageTextPart = {
-  type: "text";
-  text: string;
-} & Record<string, unknown>;
-
-type MessagePart = Record<string, unknown> | null | undefined;
-
-export type DisplayMessageWithContent = {
-  content?: unknown;
-} & Record<string, unknown>;
-
 export function stripInlineDirectiveTagsForDisplay(text: string): StripInlineDirectiveTagsResult {
   if (!text) {
     return { text, changed: false };
@@ -125,96 +116,59 @@ export function stripInlineDirectiveTagsForDisplay(text: string): StripInlineDir
   };
 }
 
-function stripUnsafeReplyDirectiveChars(value: string): string {
-  const chars: string[] = [];
-  for (const ch of value) {
-    const code = ch.charCodeAt(0);
-    if (
-      (code >= 0 && code <= 31) ||
-      code === 127 ||
-      (code >= 0x80 && code <= 0x9f) ||
-      ch === "[" ||
-      ch === "]"
-    ) {
-      continue;
-    }
-    chars.push(ch);
-  }
-  return chars.join("");
-}
-
 export function sanitizeReplyDirectiveId(rawReplyToId?: string): string | undefined {
   const trimmed = rawReplyToId?.trim();
   if (!trimmed) {
     return undefined;
   }
-  const sanitized = stripUnsafeReplyDirectiveChars(trimmed).trim();
+  const sanitized = trimmed.replace(UNSAFE_REPLY_DIRECTIVE_CHARS_RE, "").trim();
   if (!sanitized) {
     return undefined;
   }
-  const chars = Array.from(sanitized);
-  if (chars.length > MAX_REPLY_DIRECTIVE_ID_LENGTH) {
-    return chars.slice(0, MAX_REPLY_DIRECTIVE_ID_LENGTH).join("");
-  }
-  return sanitized;
+  // UTF-16 length is an upper bound on the number of code points.
+  return sanitized.length <= MAX_REPLY_DIRECTIVE_ID_LENGTH
+    ? sanitized
+    : truncateCodePoints(sanitized, MAX_REPLY_DIRECTIVE_ID_LENGTH);
 }
 
 export function stripInlineDirectiveTagsForDelivery(text: string): StripInlineDirectiveTagsResult {
-  if (!text) {
+  if (!text.includes("[[")) {
     return { text, changed: false };
   }
-  const stripped = replaceOutsideCodeRegions(text, INLINE_DIRECTIVE_TAG_WITH_PADDING_RE, () => " ");
-  const changed = stripped !== text;
-  return {
-    text: changed ? stripped.trim() : text,
-    changed,
-  };
-}
-
-function isMessageTextPart(part: MessagePart): part is MessageTextPart {
-  return Boolean(part) && part?.type === "text" && typeof part.text === "string";
-}
-
-/**
- * Strips inline directive tags from text content while preserving message shape.
- * Empty post-strip text stays empty-string to preserve caller semantics.
- * Returns the input message reference (including the original content array) when
- * no text part changed, and reuses unchanged text-part references in mixed content,
- * so identity-equality consumers avoid spurious churn.
- */
-export function stripInlineDirectiveTagsFromMessageForDisplay(
-  message: DisplayMessageWithContent | undefined,
-): DisplayMessageWithContent | undefined {
-  if (!message) {
-    return message;
-  }
-  if (!Array.isArray(message.content)) {
-    return message;
-  }
-  let cleaned: unknown[] | undefined;
-  for (let i = 0; i < message.content.length; i++) {
-    const part = message.content[i];
-    let next: unknown = part;
-    if (part && typeof part === "object" && isMessageTextPart(part as MessagePart)) {
-      const record = part as MessageTextPart;
-      const stripped = stripInlineDirectiveTagsForDisplay(record.text);
-      if (stripped.changed) {
-        next = { ...record, text: stripped.text };
-      }
+  // Only malformed prefixes at the absolute message start are control text; keep
+  // the regex non-multiline while code-region scanning preserves literal examples.
+  let codeRegions: ReturnType<typeof findCodeRegions> | undefined;
+  const parts: string[] = [];
+  let cursor = 0;
+  let searchFrom = 0;
+  // A preserved code match still owns its padding; later directives must not consume it.
+  let previousMatchEnd = 0;
+  while (searchFrom < text.length) {
+    const marker = text.indexOf("[[", searchFrom);
+    if (marker < 0) {
+      break;
     }
-    if (next === part) {
-      cleaned?.push(part);
+    // Inspect padding only at a marker; retrying from every blank line is quadratic.
+    let start = marker;
+    while (start > previousMatchEnd && /\s/u.test(text.charAt(start - 1))) {
+      start -= 1;
+    }
+    INLINE_DIRECTIVE_TAG_WITH_PADDING_RE.lastIndex = start;
+    const match = INLINE_DIRECTIVE_TAG_WITH_PADDING_RE.exec(text);
+    searchFrom = match ? INLINE_DIRECTIVE_TAG_WITH_PADDING_RE.lastIndex : marker + 1;
+    if (!match) {
       continue;
     }
-    if (!cleaned) {
-      cleaned = message.content.slice(0, i);
+    previousMatchEnd = searchFrom;
+    if (isInsideCode(marker, (codeRegions ??= findCodeRegions(text)))) {
+      continue;
     }
-    cleaned.push(next);
+    parts.push(text.slice(cursor, start), match[0].includes("]]") ? " " : "");
+    cursor = searchFrom;
   }
-  if (!cleaned) {
-    return message;
-  }
-  return { ...message, content: cleaned };
+  return cursor === 0
+    ? { text, changed: false }
+    : { text: [...parts, text.slice(cursor)].join("").trim(), changed: true };
 }
 
 export function parseInlineDirectives(

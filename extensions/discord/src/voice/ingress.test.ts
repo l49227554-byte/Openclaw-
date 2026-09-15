@@ -13,8 +13,10 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
-  agentCommandFromIngress: mocks.agentCommandFromIngress,
+vi.mock("../runtime.js", () => ({
+  getDiscordRuntime: () => ({
+    agent: { runCommandFromIngress: mocks.agentCommandFromIngress },
+  }),
 }));
 
 import { runDiscordVoiceAgentTurn } from "./ingress.js";
@@ -24,6 +26,8 @@ describe("Discord voice ingress execution correlation", () => {
     const entry = {
       guildId: "guild-1",
       channelId: "channel-1",
+      captureOnly: false,
+      sessionLifecycle: { status: "active" },
       route: { agentId: "main", sessionKey: "agent:main:discord:channel:channel-1" },
     };
     const shared = {
@@ -53,4 +57,45 @@ describe("Discord voice ingress execution correlation", () => {
       expect(input).not.toHaveProperty("runId");
     }
   });
+
+  it.each([
+    { owner: true, state: "active", captureOnly: false },
+    { owner: false, state: "active", captureOnly: false },
+    { owner: false, state: "stopped", captureOnly: false },
+    { owner: false, state: "active", captureOnly: true },
+  ] as const)(
+    "dispatches only active conversational ingress (owner=$owner, state=$state, captureOnly=$captureOnly)",
+    async ({ owner, state, captureOnly }) => {
+      const callsBefore = mocks.agentCommandFromIngress.mock.calls.length;
+      const result = await runDiscordVoiceAgentTurn({
+        entry: {
+          guildId: "guild-1",
+          channelId: "channel-1",
+          captureOnly,
+          sessionLifecycle:
+            state === "active" ? { status: state } : { status: state, reason: "left" },
+          route: { agentId: "main", sessionKey: "agent:main:discord:channel:channel-1" },
+        } as never,
+        accountId: "work",
+        userId: owner ? "owner-1" : "guest-1",
+        message: "run the tool",
+        cfg: {} as never,
+        discordConfig: {} as never,
+        runtime: { log: vi.fn(), error: vi.fn() } as never,
+        context: { senderIsOwner: owner, speakerLabel: owner ? "Owner" : "Guest" },
+        fetchGuildName: vi.fn(async () => "Guild"),
+        speakerContext: {} as never,
+      });
+
+      if (captureOnly || state !== "active") {
+        expect(result).toBeNull();
+        expect(mocks.agentCommandFromIngress).toHaveBeenCalledTimes(callsBefore);
+        return;
+      }
+      expect(mocks.agentCommandFromIngress).toHaveBeenLastCalledWith(
+        expect.objectContaining({ messageChannel: "discord", senderIsOwner: owner }),
+        expect.anything(),
+      );
+    },
+  );
 });

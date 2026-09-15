@@ -3,37 +3,15 @@
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { i18n, t } from "../../i18n/index.ts";
+import { createComposerProps } from "./chat-composer.test-support.ts";
 import { renderChatComposer, resetChatComposerState } from "./components/chat-composer.ts";
 
 type ComposerProps = Parameters<typeof renderChatComposer>[0];
 
-function props(overrides: Partial<ComposerProps> = {}): ComposerProps {
-  return {
-    paneId: crypto.randomUUID(),
-    sessionKey: "main",
-    currentAgentId: "main",
-    connected: true,
-    canSend: true,
-    disabledReason: null,
-    sending: false,
-    messages: [],
-    stream: null,
-    queue: [],
-    draft: "",
-    sessions: null,
-    assistantName: "OpenClaw",
-    onDraftChange: vi.fn(),
-    onSend: vi.fn(),
-    onQueueRemove: vi.fn(),
-    onNewSession: vi.fn(),
-    ...overrides,
-  };
-}
-
 function renderComposer(overrides: Partial<ComposerProps> = {}): HTMLElement {
   const container = document.createElement("div");
   document.body.append(container);
-  render(renderChatComposer(props(overrides)), container);
+  render(renderChatComposer(createComposerProps(overrides)), container);
   return container;
 }
 
@@ -95,13 +73,6 @@ describe("chat composer pointer activation", () => {
     const stopPointerDown = primaryPointerDown();
     stop.dispatchEvent(stopPointerDown);
     expect(stopPointerDown.defaultPrevented).toBe(true);
-
-    const shell = sendContainer.querySelector<HTMLElement>(".agent-chat__composer-shell")!;
-    shell.style.marginBottom = "14px";
-    sendInput.focus();
-    const stableLayoutPointerDown = primaryPointerDown();
-    send.dispatchEvent(stableLayoutPointerDown);
-    expect(stableLayoutPointerDown.defaultPrevented).toBe(false);
 
     const unrelatedInput = document.createElement("input");
     document.body.append(unrelatedInput);

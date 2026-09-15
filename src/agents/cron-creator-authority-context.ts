@@ -3,15 +3,21 @@ import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-policy.js";
 import {
+  CRON_MANAGEMENT_METHODS,
   createCronCreatorAuthorityRunScope,
   mintCronCreatorAuthorityGrant,
   revokeCronCreatorAuthorityRunScope,
   type CronCreatorAuthorityRunScope,
 } from "../gateway/cron-creator-authority-grant.js";
+import {
+  getAgentRunContext,
+  validateAgentRunDelegatedAuthority,
+} from "../infra/agent-run-registry.js";
 import type {
   CronCreatorToolAuthorityMaterialization,
   CronToolOptions,
 } from "./tools/cron-tool.types.js";
+import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 type CronCreatorAuthorityResolver = NonNullable<CronToolOptions["resolveCreatorToolAuthority"]>;
 type CronCreatorAuthorityMaterializer = (options?: {
@@ -29,16 +35,123 @@ export type CronCreatorAuthorityCapability = CronCreatorAuthorityRunScope;
 export function createCronCreatorAuthorityCapability(
   runId: string,
   callerOrigin: CronScheduledToolCallerOrigin = { kind: "unknown" },
+  controlUiAdmin?: true,
+  isCurrent?: () => boolean,
 ): CronCreatorAuthorityCapability | undefined {
   const normalizedRunId = runId.trim();
   return normalizedRunId
-    ? createCronCreatorAuthorityRunScope(normalizedRunId, callerOrigin)
+    ? createCronCreatorAuthorityRunScope(normalizedRunId, callerOrigin, controlUiAdmin, isCurrent)
     : undefined;
 }
 
 const activeCronCreatorAuthority = new AsyncLocalStorage<CronCreatorAuthorityRunScope>();
 const activeCronCreatorAuthorityResolver =
   new AsyncLocalStorage<CronCreatorAuthorityResolverScope>();
+
+/** Retain the exact scope for callbacks invoked outside their creation context. */
+export function bindRequesterYieldCronAuthority(
+  runId: string | undefined,
+): (<T>(run: () => T) => T) | undefined {
+  const scope = activeCronCreatorAuthority.getStore();
+  const authority = getGatewayToolCallerIdentity()?.approvalAuthority;
+  if (
+    !scope?.controlUiAdmin ||
+    scope.runId !== runId ||
+    !authority ||
+    authority.operationalRunInstance.runId !== runId
+  ) {
+    return undefined;
+  }
+  return <T>(run: () => T): T => {
+    const caller = getGatewayToolCallerIdentity()?.approvalAuthority;
+    if (
+      !scope.active ||
+      scope.signal.aborted ||
+      caller?.operationalRunInstance.instanceId !== authority.operationalRunInstance.instanceId ||
+      !validateAgentRunDelegatedAuthority(authority)
+    ) {
+      return activeCronCreatorAuthority.exit(run);
+    }
+    return activeCronCreatorAuthority.run(scope, run);
+  };
+}
+
+/** Capture only a live Control UI management entitlement before its requester yields. */
+export function captureActiveControlUiCronAuthority(params: {
+  runId: string;
+  sessionKey: string;
+  agentId: string;
+}): { sessionId: string; lifecycleGeneration: string; isActive: () => boolean } | undefined {
+  const scope = activeCronCreatorAuthority.getStore();
+  const caller = getGatewayToolCallerIdentity();
+  const authority = caller?.approvalAuthority;
+  const context = getAgentRunContext(params.runId);
+  const sessionId = context?.sessionId;
+  if (
+    !scope?.controlUiAdmin ||
+    scope.runId !== params.runId ||
+    caller?.sessionKey !== params.sessionKey ||
+    caller.agentId !== params.agentId ||
+    context?.sessionKey !== params.sessionKey ||
+    context.agentId !== params.agentId ||
+    !sessionId ||
+    !authority ||
+    authority.operationalRunInstance.runId !== params.runId
+  ) {
+    return undefined;
+  }
+  const isActive = () => {
+    try {
+      return (
+        scope.active &&
+        !scope.signal.aborted &&
+        scope.isCurrent?.() !== false &&
+        !caller.approvalSignals?.some((signal) => signal.aborted) &&
+        caller.approvalAuthorityCheck?.() !== false &&
+        getAgentRunContext(params.runId) === context &&
+        validateAgentRunDelegatedAuthority(authority)
+      );
+    } catch {
+      return false;
+    }
+  };
+  return isActive()
+    ? { sessionId, lifecycleGeneration: authority.lifecycleGeneration, isActive }
+    : undefined;
+}
+
+/** Bind at tool construction, never rediscover authority from model arguments or routes. */
+export function bindCronManagementGrant(runId: string | undefined) {
+  const scope = activeCronCreatorAuthority.getStore();
+  const authority = getGatewayToolCallerIdentity()?.approvalAuthority;
+  if (
+    !scope?.controlUiAdmin ||
+    !scope.active ||
+    scope.signal.aborted ||
+    scope.isCurrent?.() === false ||
+    scope.runId !== runId ||
+    !authority ||
+    authority.operationalRunInstance.runId !== runId ||
+    !validateAgentRunDelegatedAuthority(authority)
+  ) {
+    return undefined;
+  }
+  const managementOnly = scope.callerOrigin.kind === "unknown";
+  return {
+    managementOnly,
+    mint: (method: string, signal?: AbortSignal) => {
+      if (!CRON_MANAGEMENT_METHODS.some((allowed) => allowed === method)) {
+        if (managementOnly) {
+          throw new Error(
+            "This Control UI turn can only list, get, update, run, or remove automations. Use the Automations page for other actions.",
+          );
+        }
+        return undefined;
+      }
+      return mintCronCreatorAuthorityGrant(scope, signal, undefined, { method, authority });
+    },
+  };
+}
 
 export function shouldAdmitFreshChannelOwnerCronAuthority(params: {
   senderIsOwner: boolean;
@@ -98,7 +211,12 @@ function bindCronCreatorAuthorityResolver(params: {
 }): CronCreatorAuthorityResolver | undefined {
   const normalizedRunId = params.runId?.trim();
   const authority = params.capability;
-  if (!normalizedRunId || authority?.active !== true || authority.runId !== normalizedRunId) {
+  if (
+    !normalizedRunId ||
+    authority?.active !== true ||
+    authority.runId !== normalizedRunId ||
+    (authority.controlUiAdmin && authority.callerOrigin.kind === "unknown")
+  ) {
     return undefined;
   }
   return async (options) => {

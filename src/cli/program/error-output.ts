@@ -4,7 +4,7 @@ import { formatDocsLink } from "../../../packages/terminal-core/src/links.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { getCommandPathWithRootOptions } from "../argv.js";
 import { formatCliCommand } from "../command-format.js";
-import { CliParseError } from "../failure-output.js";
+import { ExpectedCliError } from "../failure-output.js";
 import { formatCliCommandSuggestions } from "./command-suggestions.js";
 
 type FormatCliParseErrorOptions = {
@@ -80,14 +80,14 @@ export function createCliParseError(
   raw: string,
   options: FormatCliParseErrorOptions = {},
   errorOptions: { humanOutputWritten?: boolean } = {},
-): CliParseError {
+): ExpectedCliError {
   const message = stripCommanderErrorPrefix(raw);
   const unknownCommand = message.match(/^unknown command ['"`](.+?)['"`]/i);
   if (unknownCommand) {
     const command = unknownCommand[1] ?? "";
     const commandPath = options.commandPath ?? [];
     const humanOutput = formatCliUnknownCommandOutput(command, options);
-    return new CliParseError({
+    return new ExpectedCliError({
       message: formatUnknownCommandMessage(command, commandPath),
       humanOutput,
       humanOutputWritten: errorOptions.humanOutputWritten,
@@ -95,7 +95,7 @@ export function createCliParseError(
     });
   }
   const humanOutput = formatCliParseErrorOutput(raw, options);
-  return new CliParseError({
+  return new ExpectedCliError({
     message,
     humanOutput,
     humanOutputWritten: errorOptions.humanOutputWritten,
@@ -106,14 +106,40 @@ export function createCliParseError(
 export function createCliUnknownCommandError(
   command: string,
   options: FormatCliParseErrorOptions = {},
-): CliParseError {
+): ExpectedCliError {
   const commandPath = options.commandPath ?? [];
   const humanOutput = formatCliUnknownCommandOutput(command, options);
-  return new CliParseError({
+  return new ExpectedCliError({
     message: formatUnknownCommandMessage(command, commandPath),
     humanOutput,
     machineOutput: formatCliMachineOutput(humanOutput),
   });
+}
+
+function formatOrdinaryCliParseErrorMessage(message: string): string {
+  const unknownOption = message.match(/^unknown option ['"`](.+?)['"`]/i);
+  if (unknownOption) {
+    const option = unknownOption[1] ?? "";
+    return `OpenClaw does not recognize option ${quote(option)}.`;
+  }
+
+  const missingArgument = message.match(/^missing required argument ['"`](.+?)['"`]/i);
+  if (missingArgument) {
+    const argument = missingArgument[1] ?? "";
+    return `Missing required argument ${quote(argument)}.`;
+  }
+
+  const missingOption = message.match(/^required option ['"`](.+?)['"`] not specified/i);
+  if (missingOption) {
+    const option = missingOption[1] ?? "";
+    return `Missing required option ${quote(option)}.`;
+  }
+
+  if (/^too many arguments\b/i.test(message)) {
+    return "Too many arguments for this command.";
+  }
+
+  return `OpenClaw could not parse this command: ${message}`;
 }
 
 /** Convert Commander parse errors into OpenClaw-specific help and docs guidance. */
@@ -127,45 +153,7 @@ export function formatCliParseErrorOutput(
     return formatCliUnknownCommandOutput(unknownCommand[1] ?? "", options);
   }
 
-  const unknownOption = message.match(/^unknown option ['"`](.+?)['"`]/i);
-  if (unknownOption) {
-    const option = unknownOption[1] ?? "";
-    const output = `OpenClaw does not recognize option ${quote(option)}.`;
-    return lines(
-      theme.error(output),
-      formatHelpHint(options.argv, { commandPath: options.commandPath }),
-    );
-  }
-
-  const missingArgument = message.match(/^missing required argument ['"`](.+?)['"`]/i);
-  if (missingArgument) {
-    const argument = missingArgument[1] ?? "";
-    const output = `Missing required argument ${quote(argument)}.`;
-    return lines(
-      theme.error(output),
-      formatHelpHint(options.argv, { commandPath: options.commandPath }),
-    );
-  }
-
-  const missingOption = message.match(/^required option ['"`](.+?)['"`] not specified/i);
-  if (missingOption) {
-    const option = missingOption[1] ?? "";
-    const output = `Missing required option ${quote(option)}.`;
-    return lines(
-      theme.error(output),
-      formatHelpHint(options.argv, { commandPath: options.commandPath }),
-    );
-  }
-
-  if (/^too many arguments\b/i.test(message)) {
-    const output = "Too many arguments for this command.";
-    return lines(
-      theme.error(output),
-      formatHelpHint(options.argv, { commandPath: options.commandPath }),
-    );
-  }
-
-  const output = `OpenClaw could not parse this command: ${message}`;
+  const output = formatOrdinaryCliParseErrorMessage(message);
   return lines(
     theme.error(output),
     formatHelpHint(options.argv, { commandPath: options.commandPath }),

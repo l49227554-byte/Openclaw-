@@ -1,7 +1,10 @@
 // Audits config paths and values for diagnostics and safety checks.
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { createSqliteAuditRecordStore } from "../infra/sqlite-audit-record-store.js";
+import {
+  createSqliteAuditRecordStore,
+  registerSqliteAuditRecordAsync,
+} from "../infra/sqlite-audit-record-store.js";
 import { redactSecrets } from "../logging/redact.js";
 import { resolveConfigAuditStoreEnv } from "./config-journal-snapshot.js";
 import type { ConfigWriteAuditOrigin } from "./io.types.js";
@@ -658,6 +661,21 @@ function openConfigAuditStore(env: NodeJS.ProcessEnv) {
   });
 }
 
+/** Reads a bounded newest-first audit window for Doctor provenance checks. */
+export function readRecentConfigAuditRecords(params: {
+  env: NodeJS.ProcessEnv;
+  homedir: () => string;
+  limit: number;
+}): ConfigAuditRecord[] {
+  try {
+    return openConfigAuditStore(resolveConfigAuditStoreEnv(params))
+      .latest({ limit: params.limit })
+      .map(({ value }) => value);
+  } catch {
+    return [];
+  }
+}
+
 function configAuditEntryKey(record: ConfigAuditRecord): string {
   return `${record.ts}:${record.event}:${randomUUID()}`;
 }
@@ -671,15 +689,24 @@ export function sanitizeConfigAuditRecord(record: ConfigAuditRecord): ConfigAudi
   return redactSecrets(sanitized);
 }
 
-export async function appendConfigAuditRecord(params: ConfigAuditAppendParams): Promise<void> {
+export async function appendConfigAuditRecord(
+  params: ConfigAuditAppendParams,
+  assertCurrent?: () => void,
+): Promise<void> {
+  assertCurrent?.();
   try {
     const record = sanitizeConfigAuditRecord(resolveConfigAuditAppendRecord(params));
-    openConfigAuditStore(resolveConfigAuditStoreEnv(params)).register(
-      configAuditEntryKey(record),
-      record,
-      Date.parse(record.ts),
+    await registerSqliteAuditRecordAsync(
+      {
+        scope: CONFIG_AUDIT_SCOPE,
+        maxEntries: CONFIG_AUDIT_MAX_ENTRIES,
+        env: resolveConfigAuditStoreEnv(params),
+        assertCurrent,
+      },
+      { key: configAuditEntryKey(record), value: record, createdAt: Date.parse(record.ts) },
     );
   } catch {
+    assertCurrent?.();
     // best-effort
   }
 }

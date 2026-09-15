@@ -12,7 +12,7 @@ import {
   validateCronRunsParams,
   validateCronUpdateParams,
 } from "./index.js";
-import { CronJobSchema, CronRunLogEntrySchema } from "./schema/cron.js";
+import { CronAddResultSchema, CronJobSchema, CronRunLogEntrySchema } from "./schema/cron.js";
 
 /**
  * Cron validator regressions for public scheduler RPC payloads.
@@ -47,6 +47,27 @@ function expectCases(
 describe("cron protocol validators", () => {
   it("accepts minimal add params", () => {
     expectCases(validateCronAddParams, true, [minimalAddParams]);
+  });
+
+  it("accepts create results with a dry-run delivery preview", () => {
+    const job = {
+      ...minimalAddParams,
+      id: "job-1",
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 2,
+      state: {},
+    };
+    const deliveryPreview = {
+      label: "announce -> last",
+      detail: "last -> no route, will fail-closed",
+    };
+    expect(Value.Check(CronAddResultSchema, job)).toBe(true);
+    expect(Value.Check(CronAddResultSchema, { ...job, deliveryPreview })).toBe(true);
+    expect(Value.Check(CronAddResultSchema, { created: true, job, deliveryPreview })).toBe(true);
+    expect(
+      Value.Check(CronAddResultSchema, { ...job, deliveryPreview: { label: "announce" } }),
+    ).toBe(false);
   });
 
   it("reports auto-disable state without accepting it in writable patches", () => {
@@ -98,6 +119,33 @@ describe("cron protocol validators", () => {
       Value.Check(CronRunLogEntrySchema, {
         ...entry,
         delivery: { ...entry.delivery, unsupported: true },
+      }),
+    ).toBe(false);
+  });
+
+  it.each(["succeeded", "failed", "unknown"] as const)(
+    "accepts additive cron completion status %s",
+    (completionStatus) => {
+      expect(
+        Value.Check(CronRunLogEntrySchema, {
+          ts: 1,
+          jobId: "job-1",
+          action: "finished",
+          status: "ok",
+          completionStatus,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it("rejects unknown cron completion status values", () => {
+    expect(
+      Value.Check(CronRunLogEntrySchema, {
+        ts: 1,
+        jobId: "job-1",
+        action: "finished",
+        status: "ok",
+        completionStatus: "partial",
       }),
     ).toBe(false);
   });
@@ -355,6 +403,7 @@ describe("cron protocol validators", () => {
     expectCases(validateCronRunParams, true, [
       { id: "job-1", mode: "force", expectedProcessInstanceId: "process-1" },
       { jobId: "job-2", mode: "due" },
+      { jobId: "job-3", mode: "if-enabled" },
     ]);
     expectCases(validateCronRunParams, false, [{ id: "job-1", expectedProcessInstanceId: "" }]);
   });
@@ -369,6 +418,7 @@ describe("cron protocol validators", () => {
         enabled: "all",
         scheduleKind: "cron",
         lastRunStatus: "unknown",
+        trigger: "conditional",
         sortBy: "nextRunAtMs",
         sortDir: "asc",
         agentId: "ops",
@@ -381,6 +431,7 @@ describe("cron protocol validators", () => {
       { agentId: "" },
       { scheduleKind: "yearly" },
       { lastRunStatus: "pending" },
+      { trigger: "configured" },
     ]);
   });
 

@@ -3,6 +3,7 @@
  *
  * Reads child session output, detects waiting states, and formats completion findings for announcements.
  */
+import { formatCompactTokenCount } from "@openclaw/normalization-core";
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
@@ -10,23 +11,23 @@ import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/se
 import { resolveFreshSessionTotalTokens } from "../../../config/sessions/types.js";
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { formatDurationCompact } from "../../../infra/format-time/format-duration.js";
-import {
-  buildAgentRunTerminalOutcomeFromWaitResult,
-  classifyAgentRunTerminalOutcome,
-} from "../../agent-run-terminal-outcome.js";
+import { buildAgentRunTerminalOutcomeFromWaitResult } from "../../agent-run-terminal-outcome.js";
 import { wrapPromptDataBlock } from "../../sanitize-for-prompt.js";
-import { extractStoredAssistantText, sanitizeTextContent } from "../../tools/chat-history-text.js";
+import { extractStoredAssistantText } from "../../tools/chat-history-text.js";
+import { isAnnounceSkip } from "../../tools/sessions-send-tokens.js";
+import { resolveSubagentCompletionResultText } from "../completion/subagent-completion-result.js";
 import {
-  isAnnounceSkip,
-  selectDeliverableSessionsReply,
-} from "../../tools/sessions-send-tokens.js";
-import { compareSubagentRunGeneration } from "../registry/subagent-run-generation.js";
+  SUBAGENT_ENDED_REASON_KILLED,
+  type SubagentLifecycleEndedReason,
+} from "../registry/subagent-lifecycle-events.js";
+import { recordLatestSubagentRun } from "../registry/subagent-run-generation.js";
+import { classifySubagentTerminalOutcome } from "../subagent-terminal-outcome.js";
 import {
   captureSubagentCompletionReplyUsing,
   readLatestSubagentOutputWithRetryUsing,
 } from "./subagent-announce-capture.js";
 import {
-  callGateway,
+  callSubagentLifecycleGateway,
   getRuntimeConfig,
   readSubagentSessionEntry,
   readSessionMessagesAsync,
@@ -48,7 +49,7 @@ const ASSISTANT_TOOL_CALL_BLOCK_TYPES = new Set([
   "function_call",
 ]);
 type SubagentAnnounceOutputDeps = {
-  callGateway: typeof callGateway;
+  callGateway: typeof callSubagentLifecycleGateway;
   getRuntimeConfig: typeof getRuntimeConfig;
   readSubagentSessionEntry: typeof readSubagentSessionEntry;
   readSessionMessagesAsync: typeof readSessionMessagesAsync;
@@ -57,7 +58,7 @@ type SubagentAnnounceOutputDeps = {
 };
 
 const defaultSubagentAnnounceOutputDeps: SubagentAnnounceOutputDeps = {
-  callGateway,
+  callGateway: callSubagentLifecycleGateway,
   getRuntimeConfig,
   readSubagentSessionEntry,
   readSessionMessagesAsync,
@@ -121,21 +122,6 @@ export function withSubagentOutcomeTiming(
   return { ...outcome, ...nextTiming };
 }
 
-function extractSubagentAssistantText(message: unknown): string {
-  if (!message || typeof message !== "object") {
-    return "";
-  }
-  const role = (message as { role?: unknown }).role;
-  if (role !== "assistant") {
-    return "";
-  }
-  const content = (message as { content?: unknown }).content;
-  if (typeof content === "string") {
-    return sanitizeTextContent(content);
-  }
-  return extractStoredAssistantText(message) ?? "";
-}
-
 function countAssistantToolCalls(message: unknown): number {
   if (!message || typeof message !== "object") {
     return 0;
@@ -188,10 +174,20 @@ function summarizeSubagentOutputHistory(messages: Array<unknown>): SubagentOutpu
         previousAssistantCalledYield = true;
         continue;
       }
-      const text = extractSubagentAssistantText(message).trim();
+      const toolCallCount = countAssistantToolCalls(message);
+      if (toolCallCount > 0) {
+        // Any assistant tool call proves this was an intermediate turn. Do not
+        // retain commentary from this message or an earlier assistant message
+        // as the run's final result if execution ends before the next reply.
+        snapshot.latestAssistantText = undefined;
+        snapshot.latestSilentText = undefined;
+        snapshot.latestToolCallCount = (snapshot.latestToolCallCount ?? 0) + toolCallCount;
+        snapshot.waitingForContinuation = false;
+        previousAssistantCalledYield = false;
+        continue;
+      }
+      const text = extractStoredAssistantText(message)?.trim();
       if (!text) {
-        snapshot.latestToolCallCount =
-          (snapshot.latestToolCallCount ?? 0) + countAssistantToolCalls(message);
         snapshot.waitingForContinuation = false;
         previousAssistantCalledYield = false;
         continue;
@@ -346,10 +342,24 @@ export function applySubagentWaitOutcome(params: {
   // primary normalizers, so apply the canonical classification here instead
   // of re-enumerating reason groups.
   if (terminalOutcome) {
-    switch (classifyAgentRunTerminalOutcome(terminalOutcome)) {
-      case "timeout":
-        outcome = { status: "timeout" };
+    // Keep main's subagent-specific classifier: it preserves explicit
+    // restart/aborted stop reasons as cancellation while still letting real
+    // provider timeouts through (openclaw#125407).
+    switch (classifySubagentTerminalOutcome(terminalOutcome)) {
+      case "timeout": {
+        // A run that failed inside the lifecycle error retry grace window is
+        // surfaced to waiters as a timeout carrying the failure text and
+        // `pendingError: true` (see createPendingErrorTimeoutSnapshot). Keep
+        // that cause so the announce can report why the child died instead of
+        // a bare "timed out". Genuine budget timeouts have no pendingError and
+        // stay unchanged.
+        const pendingErrorText =
+          params.wait?.pendingError === true ? (terminalOutcome.error ?? waitError) : undefined;
+        outcome = pendingErrorText
+          ? { status: "timeout", error: pendingErrorText }
+          : { status: "timeout" };
         break;
+      }
       case "cancellation":
         outcome = { status: "error", error: "subagent run terminated" };
         break;
@@ -385,36 +395,32 @@ export async function captureSubagentCompletionReply(
   });
 }
 
-function describeSubagentOutcome(outcome?: SubagentRunOutcome): string {
+function describeSubagentOutcome(child: ChildCompletionRow): string {
+  const outcome = child.execution.outcome;
+  if (child.endedReason === SUBAGENT_ENDED_REASON_KILLED) {
+    const error = outcome?.error?.trim();
+    return error ? `cancelled: ${error}` : "cancelled";
+  }
   if (!outcome) {
     return "unknown";
   }
   if (outcome.status === "ok") {
     return "ok";
   }
-  if (outcome.status === "timeout") {
-    return "timeout";
-  }
-  if (outcome.status === "error") {
-    return outcome.error?.trim() ? `error: ${outcome.error.trim()}` : "error";
+  if (outcome.status === "timeout" || outcome.status === "error") {
+    const error = outcome.error?.trim();
+    return error ? `${outcome.status}: ${error}` : outcome.status;
   }
   return "unknown";
 }
 
 function formatChildResultData(resultText?: string | null): string {
-  const text = resultText?.trim() || "(no output)";
-  const boundedText =
-    text.length > MAX_CHILD_COMPLETION_RESULT_CHARS
-      ? `${truncateUtf16Safe(
-          text,
-          MAX_CHILD_COMPLETION_RESULT_CHARS - CHILD_RESULT_TRUNCATION_NOTICE.length,
-        )}${CHILD_RESULT_TRUNCATION_NOTICE}`
-      : text;
   return (
     wrapPromptDataBlock({
       label: "Child result",
-      text: boundedText,
-      maxChars: MAX_CHILD_COMPLETION_RESULT_CHARS,
+      text: resultText?.trim() || "(no output)",
+      maxEscapedChars: MAX_CHILD_COMPLETION_RESULT_CHARS,
+      truncationMarker: CHILD_RESULT_TRUNCATION_NOTICE,
     }) || "Child result: (no output)"
   );
 }
@@ -430,14 +436,12 @@ type ChildCompletionExecution = { endedAt?: number; outcome?: SubagentRunOutcome
 type ChildCompletionRow = {
   childSessionKey: string;
   task: string;
+  taskName?: string;
   label?: string;
   createdAt: number;
   execution: ChildCompletionExecution;
-  frozenResultText?: string | null;
-  completion?: {
-    resultText?: string | null;
-    fallbackResultText?: string | null;
-  };
+  endedReason?: SubagentLifecycleEndedReason;
+  completion?: Parameters<typeof resolveSubagentCompletionResultText>[0]["completion"];
 };
 
 type ChildCompletionSection = {
@@ -446,21 +450,12 @@ type ChildCompletionSection = {
   actionable: boolean;
 };
 
-function selectChildCompletionResultText(child: ChildCompletionRow): string | undefined {
-  const primary = child.completion?.resultText;
-  const fallback = child.completion?.fallbackResultText ?? child.frozenResultText;
-  if (child.execution.outcome?.status === "ok") {
-    return selectDeliverableSessionsReply(primary, fallback);
-  }
-  return (primary ?? fallback)?.trim() || undefined;
-}
-
 function hasCapturedChildCompletionReply(child: ChildCompletionRow): boolean {
-  return [
-    child.completion?.resultText,
-    child.completion?.fallbackResultText,
-    child.frozenResultText,
-  ].some((value) => Boolean(value?.trim()));
+  return Boolean(
+    child.completion?.terminalReply ||
+    child.completion?.resultText?.trim() ||
+    child.completion?.fallbackResultText?.trim(),
+  );
 }
 
 export function buildChildCompletionFindings(
@@ -488,8 +483,8 @@ export function buildChildCompletionFindings(
 
   const sections: ChildCompletionSection[] = [];
   for (const [index, child] of sorted.entries()) {
-    const resultText = selectChildCompletionResultText(child);
-    const outcome = describeSubagentOutcome(child.execution.outcome);
+    const resultText = resolveSubagentCompletionResultText(child);
+    const outcome = describeSubagentOutcome(child);
     if (
       child.execution.outcome?.status === "ok" &&
       !resultText &&
@@ -498,6 +493,7 @@ export function buildChildCompletionFindings(
       continue;
     }
     const title =
+      child.taskName?.trim() ||
       child.label?.trim() ||
       child.task.trim() ||
       child.childSessionKey.trim() ||
@@ -507,7 +503,12 @@ export function buildChildCompletionFindings(
       index: displayIndex,
       actionable: child.execution.outcome?.status !== "ok",
       text: [
-        `${displayIndex}. ${truncateChildCompletionField(title)}`,
+        wrapPromptDataBlock({
+          label: `${displayIndex}. Child task`,
+          text: title,
+          maxEscapedChars: MAX_CHILD_COMPLETION_FIELD_CHARS,
+          truncationMarker: "…",
+        }),
         `status: ${truncateChildCompletionField(outcome)}`,
         formatChildResultData(resultText),
       ].join("\n"),
@@ -560,48 +561,24 @@ export function buildChildCompletionFindings(
   );
 }
 
-export function dedupeLatestChildCompletionRows(
-  children: Array<{
-    runId: string;
-    childSessionKey: string;
-    task: string;
-    label?: string;
-    generation?: number;
-    createdAt: number;
-    execution: ChildCompletionExecution;
-    frozenResultText?: string | null;
-    completion?: {
-      resultText?: string | null;
-      fallbackResultText?: string | null;
-    };
-  }>,
-) {
+export function dedupeLatestChildCompletionRows<
+  T extends ChildCompletionRow & { runId: string; generation?: number },
+>(children: T[]): T[] {
   const latestByChildSessionKey = new Map<string, (typeof children)[number]>();
   for (const child of children) {
-    const existing = latestByChildSessionKey.get(child.childSessionKey);
-    if (!existing || compareSubagentRunGeneration(child, existing) > 0) {
-      latestByChildSessionKey.set(child.childSessionKey, child);
-    }
+    recordLatestSubagentRun(latestByChildSessionKey, child.childSessionKey, child);
   }
   return [...latestByChildSessionKey.values()];
 }
 
-export function filterCurrentDirectChildCompletionRows(
-  children: Array<{
+export function filterCurrentDirectChildCompletionRows<
+  T extends ChildCompletionRow & {
     runId: string;
-    childSessionKey: string;
     requesterSessionKey: string;
     requesterAgentId?: string;
-    task: string;
-    label?: string;
-    createdAt: number;
-    execution: ChildCompletionExecution;
-    frozenResultText?: string | null;
-    completion?: {
-      resultText?: string | null;
-      fallbackResultText?: string | null;
-    };
-  }>,
+  },
+>(
+  children: T[],
   params: {
     requesterSessionKey: string;
     requesterAgentId?: string;
@@ -614,7 +591,7 @@ export function filterCurrentDirectChildCompletionRows(
       | null
       | undefined;
   },
-) {
+): T[] {
   if (typeof params.getLatestSubagentRunByChildSessionKey !== "function") {
     return children;
   }
@@ -635,19 +612,7 @@ function formatTokenCount(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return "0";
   }
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}m`;
-  }
-  if (value >= 1_000) {
-    const formattedThousands = (value / 1_000).toFixed(1);
-    // Keep the compact stats unit scheme stable when one-decimal rounding
-    // reaches the next unit, e.g. 999_999 -> 1000.0k.
-    if (Number(formattedThousands) >= 1_000) {
-      return `${(value / 1_000_000).toFixed(1)}m`;
-    }
-    return `${formattedThousands}k`;
-  }
-  return String(Math.round(value));
+  return formatCompactTokenCount(value);
 }
 
 export async function buildCompactAnnounceStatsLine(params: {
@@ -663,11 +628,11 @@ export async function buildCompactAnnounceStatsLine(params: {
   let entry = subagentAnnounceOutputDeps.readSubagentSessionEntry(storePath, params.sessionKey);
   const tokenWaitAttempts = isFastTestMode() ? 1 : 3;
   for (let attempt = 0; attempt < tokenWaitAttempts; attempt += 1) {
-    const hasTokenData =
+    if (
       typeof entry?.inputTokens === "number" ||
       typeof entry?.outputTokens === "number" ||
-      resolveFreshSessionTotalTokens(entry) !== undefined;
-    if (hasTokenData) {
+      resolveFreshSessionTotalTokens(entry) !== undefined
+    ) {
       break;
     }
     if (!isFastTestMode()) {
@@ -678,9 +643,10 @@ export async function buildCompactAnnounceStatsLine(params: {
     entry = subagentAnnounceOutputDeps.readSubagentSessionEntry(storePath, params.sessionKey);
   }
 
-  const input = typeof entry?.inputTokens === "number" ? entry.inputTokens : 0;
-  const output = typeof entry?.outputTokens === "number" ? entry.outputTokens : 0;
-  const ioTotal = input + output;
+  const input = entry?.inputTokens;
+  const output = entry?.outputTokens;
+  const hasDirectionalUsage = typeof input === "number" || typeof output === "number";
+  const ioTotal = (input ?? 0) + (output ?? 0);
   const promptCache = resolveFreshSessionTotalTokens(entry);
   const runtimeMs =
     typeof params.startedAt === "number" && typeof params.endedAt === "number"
@@ -689,9 +655,13 @@ export async function buildCompactAnnounceStatsLine(params: {
 
   const parts = [
     `runtime ${formatDurationCompact(runtimeMs) ?? "n/a"}`,
-    `tokens ${formatTokenCount(ioTotal)} (in ${formatTokenCount(input)} / out ${formatTokenCount(output)})`,
+    hasDirectionalUsage
+      ? `tokens ${formatTokenCount(ioTotal)} (in ${formatTokenCount(input)} / out ${formatTokenCount(output)})`
+      : promptCache === undefined
+        ? "tokens unknown"
+        : `tokens ${formatTokenCount(promptCache)} prompt/cache`,
   ];
-  if (typeof promptCache === "number" && promptCache > ioTotal) {
+  if (hasDirectionalUsage && typeof promptCache === "number" && promptCache > ioTotal) {
     parts.push(`prompt/cache ${formatTokenCount(promptCache)}`);
   }
   return `Stats: ${parts.join(" • ")}`;

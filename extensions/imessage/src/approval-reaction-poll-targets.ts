@@ -1,3 +1,4 @@
+import type { ChannelApprovalKind } from "openclaw/plugin-sdk/approval-handler-runtime";
 // Imessage plugin module owns persisted approval reaction poll targets.
 import { readApprovalReactionDecisionList } from "openclaw/plugin-sdk/approval-reaction-runtime";
 import type { ExecApprovalReplyDecision } from "openclaw/plugin-sdk/approval-reply-runtime";
@@ -13,9 +14,9 @@ import {
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   normalizeConversationKey,
-  normalizeIMessageGuid,
   type IMessageApprovalConversationKey,
 } from "./approval-target-keys.js";
+import { normalizeIMessageGuid } from "./message-guid.js";
 import { getOptionalIMessageRuntime } from "./runtime.js";
 
 const PERSISTENT_POLL_TARGET_NAMESPACE = "imessage.approval-reaction-poll-targets";
@@ -27,7 +28,7 @@ export type PendingIMessageApprovalReactionPollTarget = {
   conversation: IMessageApprovalConversationKey;
   messageId: string;
   approvalId: string;
-  approvalKind: "exec" | "plugin";
+  approvalKind: ChannelApprovalKind;
   allowedDecisions: readonly ExecApprovalReplyDecision[];
   expiresAtMs: number;
 };
@@ -42,7 +43,7 @@ function prunePendingReactionPollTargets(nowMs = Date.now()): void {
   }
 }
 
-function resolvePendingReactionPollExpiry(
+export function resolveIMessageApprovalReactionPollExpiry(
   ttlMs: number | undefined,
 ): { ttlMs: number; expiresAtMs: number } | undefined {
   const nowMs = asDateTimestampMs(Date.now());
@@ -163,20 +164,17 @@ function readPersistedPollTarget(value: unknown): PendingIMessageApprovalReactio
   };
 }
 
-export function recordIMessageApprovalReactionPollTarget(params: {
+export async function recordIMessageApprovalReactionPollTarget(params: {
   keys: readonly string[];
   accountId: string;
   conversation: IMessageApprovalConversationKey;
   messageId: string;
   approvalId: string;
-  approvalKind: "exec" | "plugin";
+  approvalKind: ChannelApprovalKind;
   allowedDecisions: readonly ExecApprovalReplyDecision[];
-  ttlMs?: number;
-}): { ttlMs: number; expiresAtMs: number } | null {
-  const expiry = resolvePendingReactionPollExpiry(params.ttlMs);
-  if (!expiry || params.keys.length === 0) {
-    return null;
-  }
+  expiry: { ttlMs: number; expiresAtMs: number };
+}): Promise<void> {
+  const { expiry } = params;
   const target: PendingIMessageApprovalReactionPollTarget = {
     accountId: params.accountId,
     conversation: params.conversation,
@@ -187,22 +185,33 @@ export function recordIMessageApprovalReactionPollTarget(params: {
     expiresAtMs: expiry.expiresAtMs,
   };
   const store = getPendingReactionPollTargetStore();
+  const writes: Promise<void>[] = [];
   for (const key of params.keys) {
     pendingReactionPollTargets.set(key, target);
-    void store
-      ?.register(key, target, { ttlMs: expiry.ttlMs })
-      .catch(disablePendingReactionPollTargetStore);
+    if (store) {
+      writes.push(
+        store
+          .register(key, target, { ttlMs: expiry.ttlMs })
+          .catch(disablePendingReactionPollTargetStore),
+      );
+    }
   }
   prunePendingReactionPollTargets();
-  return expiry;
+  await Promise.all(writes);
 }
 
-export function deleteIMessageApprovalReactionPollTargets(keys: readonly string[]): void {
+export async function deleteIMessageApprovalReactionPollTargets(
+  keys: readonly string[],
+): Promise<void> {
   const store = getPendingReactionPollTargetStore();
+  const deletions: Promise<boolean | void>[] = [];
   for (const key of keys) {
     pendingReactionPollTargets.delete(key);
-    void store?.delete(key).catch(disablePendingReactionPollTargetStore);
+    if (store) {
+      deletions.push(store.delete(key).catch(disablePendingReactionPollTargetStore));
+    }
   }
+  await Promise.all(deletions);
 }
 
 export async function listPendingIMessageApprovalReactionPollTargets(params: {

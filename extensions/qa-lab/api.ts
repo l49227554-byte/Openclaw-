@@ -33,6 +33,7 @@ export {
   type QaEvidenceSummaryJson,
   validateQaEvidenceSummaryJson,
 } from "./src/evidence-summary.js";
+export { splitQaModelRef } from "./src/model-selection.js";
 export type { QaProviderMode } from "./src/providers/index.js";
 export {
   type QaLabLatestReport,
@@ -103,7 +104,9 @@ export {
   type QaGatewayChildListeningContext,
   type QaGatewayChildCommand,
   type QaGatewayChildStateMutationContext,
-  startQaGatewayChild,
+  createQaGatewayChild,
+  type QaGatewayChild,
+  type QaGatewayStopResult,
 } from "./src/gateway-child.js";
 export {
   buildQaSuiteSummaryJson,

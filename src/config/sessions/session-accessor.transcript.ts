@@ -1,9 +1,11 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core";
+import { persistCompactionBoundaryWithSessionEntrySync } from "./session-accessor.sqlite-compaction.js";
 import { readTranscriptRawDelta } from "./session-accessor.sqlite-delta.js";
 import { resolveSessionKeyBySessionId as resolveTranscriptSessionKeyBySessionId } from "./session-accessor.sqlite-entry.js";
 import { publishTranscriptUpdate } from "./session-accessor.sqlite-events.js";
 import {
   findTranscriptEvent,
+  hasSessionTranscriptMessage,
   inspectTranscriptEventsSync,
   loadLatestAssistantText as readLatestTranscriptAssistantText,
   loadTranscriptEventRowsAfterSeqSync,
@@ -11,9 +13,22 @@ import {
   loadTranscriptEventsSync,
   loadTranscriptHeaderSync,
   loadTranscriptTailEventsSync,
+  readTranscriptMutationAtSync,
+  readTranscriptExportSnapshotReadOnlySync,
+  readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
+  validatePreparedAssistantAppendSync,
   readTranscriptEventAtSeqSync,
+  readTranscriptIdentityByEventId,
 } from "./session-accessor.sqlite-read.js";
+import {
+  loadTranscriptSuffixEventsBoundedSync,
+  readPreviousIndexedTranscriptEventSync,
+} from "./session-accessor.sqlite-suffix-read.js";
+import {
+  rewriteAssistantTranscriptMessageForRun,
+  rewriteTranscriptMessageAtAnchor,
+} from "./session-accessor.sqlite-transcript-message-rewrite.js";
 import {
   appendTranscriptEvent,
   appendTranscriptEventSync,
@@ -21,6 +36,8 @@ import {
   appendTranscriptMessageSync,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
+  replaceSessionWithBranchedTranscript,
+  replaceTranscriptSuffixEventsSync,
   rewriteTranscriptEventRowsExact,
   trimTranscriptForManualCompact,
   withTranscriptWriteLock,
@@ -43,20 +60,33 @@ export {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
   findTranscriptEvent,
+  hasSessionTranscriptMessage,
   inspectTranscriptEventsSync,
   loadTranscriptEventRowsAfterSeqSync,
   loadTranscriptEvents,
   loadTranscriptEventsSync,
   loadTranscriptHeaderSync,
   loadTranscriptTailEventsSync,
+  loadTranscriptSuffixEventsBoundedSync,
+  persistCompactionBoundaryWithSessionEntrySync,
   publishTranscriptUpdate,
   readLatestTranscriptAssistantText,
   readTranscriptEventAtSeqSync,
+  readPreviousIndexedTranscriptEventSync,
+  readTranscriptIdentityByEventId,
   readTranscriptRawDelta,
+  readTranscriptMutationAtSync,
+  readTranscriptExportSnapshotReadOnlySync,
+  readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
+  validatePreparedAssistantAppendSync,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
+  replaceSessionWithBranchedTranscript,
+  replaceTranscriptSuffixEventsSync,
   rewriteTranscriptEventRowsExact,
+  rewriteTranscriptMessageAtAnchor,
+  rewriteAssistantTranscriptMessageForRun,
   resolveTranscriptSessionKeyBySessionId,
   withTranscriptWriteLock,
   withTranscriptWriteTransaction,
@@ -72,13 +102,13 @@ export async function preflightSessionTranscriptForManualCompact(
   scope: SessionTranscriptRuntimeScope,
   params: { maxLines: number; sessionFile?: string },
 ): Promise<SessionTranscriptManualTrimPreflightResult> {
-  const events = await loadTranscriptEvents(scope).catch(() => []);
-  if (events.length === 0) {
+  const eventCount = readTranscriptStatsSync(scope).eventCount;
+  if (eventCount === 0) {
     return { compacted: false, reason: "no transcript" };
   }
 
   const maxLines = Math.max(1, Math.floor(params.maxLines));
-  return events.length > maxLines ? { compacted: true } : { compacted: false, kept: events.length };
+  return eventCount > maxLines ? { compacted: true } : { compacted: false, kept: eventCount };
 }
 
 export async function trimSessionTranscriptForManualCompact(
@@ -116,7 +146,7 @@ export async function trimSessionTranscriptForManualCompact(
     return declined;
   }
 
-  return { archived: trimmed.archivedPath, compacted: true, kept: trimmed.kept };
+  return { compacted: true, kept: trimmed.kept };
 }
 
 function parseManualCompactTranscriptRecord(line: string): Record<string, unknown> | null {

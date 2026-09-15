@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import { expectedNoQueuedReplyResult } from "./reply/dispatch-result-expectations.test-support.js";
 import type { ReplyDispatchBeforeDeliver } from "./reply/reply-dispatcher.js";
 import type { ReplyDispatchBeforeDeliverOptions } from "./reply/reply-dispatcher.types.js";
 import { buildTestCtx } from "./reply/test-ctx.js";
@@ -33,6 +34,38 @@ function queuedFinalResult() {
   return {
     queuedFinal: true,
     counts: { tool: 0, block: 0, final: 1 },
+  };
+}
+
+function settledFinalResult() {
+  return {
+    ...queuedFinalResult(),
+    settledReceipt: {
+      counts: {
+        tool: {
+          delivered: 0,
+          deliveredNotVisible: 0,
+          cancelled: 0,
+          failedBeforeSend: 0,
+          failedAfterSend: 0,
+        },
+        block: {
+          delivered: 0,
+          deliveredNotVisible: 0,
+          cancelled: 0,
+          failedBeforeSend: 0,
+          failedAfterSend: 0,
+        },
+        final: {
+          delivered: 1,
+          deliveredNotVisible: 0,
+          cancelled: 0,
+          failedBeforeSend: 0,
+          failedAfterSend: 0,
+        },
+      },
+      anyVisibleDelivered: true,
+    },
   };
 }
 
@@ -125,14 +158,8 @@ describe("foreground reply delivery order", () => {
     releaseOlderFinal.resolve();
     const [olderResult, newerResult] = await Promise.all([olderDispatch, newerDispatch]);
 
-    expect(newerResult).toEqual({
-      queuedFinal: true,
-      counts: { tool: 0, block: 0, final: 1 },
-    });
-    expect(olderResult).toEqual({
-      queuedFinal: true,
-      counts: { tool: 0, block: 0, final: 1 },
-    });
+    expect(newerResult).toEqual(settledFinalResult());
+    expect(olderResult).toEqual(settledFinalResult());
     expect(deliveries).toEqual([
       { kind: "final", text: "old final" },
       { kind: "final", text: "new final" },
@@ -250,11 +277,11 @@ describe("foreground reply delivery order", () => {
       await vi.advanceTimersByTimeAsync(20_000);
       expect(deliveries).toEqual([]);
       releaseOlderHook.resolve({ text: "older final" });
-      await expect(olderDispatch).resolves.toEqual(queuedFinalResult());
+      await expect(olderDispatch).resolves.toEqual(settledFinalResult());
       await hookStarted.promise;
       await vi.advanceTimersByTimeAsync(16_000);
 
-      await expect(newerDispatch).resolves.toEqual(queuedFinalResult());
+      await expect(newerDispatch).resolves.toEqual(settledFinalResult());
       expect(deliveries).toEqual([
         { kind: "final", text: "older final" },
         { kind: "final", text: "newer final" },
@@ -312,11 +339,10 @@ describe("foreground reply delivery order", () => {
     await newerStarted.promise;
     releaseOlderFinal.resolve();
 
-    await expect(olderDispatch).resolves.toEqual(queuedFinalResult());
-    await expect(newerDispatch).resolves.toEqual({
-      queuedFinal: false,
-      counts: { tool: 0, block: 0, final: 0 },
-    });
+    await expect(olderDispatch).resolves.toEqual(settledFinalResult());
+    const newerResult = await newerDispatch;
+    expect(newerResult).toMatchObject(expectedNoQueuedReplyResult());
+    expect(newerResult.settledReceipt?.anyVisibleDelivered).toBe(false);
     expect(deliveries).toEqual([{ kind: "final", text: "old final" }]);
   });
 
@@ -412,7 +438,7 @@ describe("foreground reply delivery order", () => {
 
     releaseOlderFailure.resolve();
     await expect(olderDispatch).rejects.toBe(error);
-    await expect(newerDispatch).resolves.toEqual(queuedFinalResult());
+    await expect(newerDispatch).resolves.toEqual(settledFinalResult());
     expect(deliveries).toEqual([{ kind: "final", text: "newer final" }]);
   });
 
@@ -458,16 +484,10 @@ describe("foreground reply delivery order", () => {
       }),
       deliveries,
     );
-    await expect(secondDispatch).resolves.toEqual({
-      queuedFinal: true,
-      counts: { tool: 0, block: 0, final: 1 },
-    });
+    await expect(secondDispatch).resolves.toEqual(settledFinalResult());
 
     releaseFirstFinal.resolve();
-    await expect(firstDispatch).resolves.toEqual({
-      queuedFinal: true,
-      counts: { tool: 0, block: 0, final: 1 },
-    });
+    await expect(firstDispatch).resolves.toEqual(settledFinalResult());
     expect(deliveries).toEqual([
       { kind: "final", text: "second chat final" },
       { kind: "final", text: "first chat final" },

@@ -4,9 +4,9 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
+import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-entry-cache.js";
-import { coerceSqliteNumber } from "./session-accessor.sqlite-normalize.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import {
@@ -14,12 +14,49 @@ import {
   assertCanonicalSessionKeyWriteMatchesDatabase,
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
-import { deleteSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
+import {
+  assertSessionTranscriptHot,
+  readSessionColdTranscript,
+} from "./session-cold-storage-state.js";
 import {
   foldedSessionKeyAliasCandidates,
   normalizeStoreSessionKey,
   resolveDeliveryProvenCanonicalSessionKey,
 } from "./store-entry.js";
+
+export type SessionTranscriptContextVersion = {
+  generation: string | null;
+  rawSeq: number | null;
+  updatedAt: number | null;
+};
+
+export function readTranscriptContextVersionInTransaction(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+) {
+  const db = getSessionKysely(database.db);
+  const cold = readSessionColdTranscript(database.db, sessionId);
+  const version = executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("transcript_events")
+      .select((eb) => [
+        eb.fn.max<number | null>("seq").as("rawSeq"),
+        eb
+          .selectFrom("transcript_rewrite_watermarks")
+          .select("generation")
+          .where("session_id", "=", sessionId)
+          .as("generation"),
+        eb
+          .selectFrom("session_windows")
+          .select("transcript_updated_at")
+          .where("session_id", "=", sessionId)
+          .as("updatedAt"),
+      ])
+      .where("session_id", "=", sessionId),
+  )!;
+  return cold ? { ...version, rawSeq: cold.last_seq } : version;
+}
 
 function createTranscriptGeneration(): string {
   return randomUUID().replaceAll("-", "");
@@ -44,7 +81,7 @@ export function readTranscriptGenerationInTransaction(
 export function ensureTranscriptGenerationInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
-): string {
+): void {
   const db = getSessionKysely(database.db);
   const generation = createTranscriptGeneration();
   executeSqliteQuerySync(
@@ -54,7 +91,6 @@ export function ensureTranscriptGenerationInTransaction(
       .values({ session_id: sessionId, generation, updated_at: Date.now() })
       .onConflict((conflict) => conflict.column("session_id").doNothing()),
   );
-  return readTranscriptGenerationInTransaction(database, sessionId) ?? generation;
 }
 
 /** Rotate the watermark in the same transaction as destructive transcript replacement. */
@@ -204,6 +240,7 @@ export function ensureTranscriptSessionRoot(
 }
 
 export function readNextTranscriptSeq(database: OpenClawAgentDatabase, sessionId: string): number {
+  assertSessionTranscriptHot(database.db, sessionId);
   const db = getSessionKysely(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
@@ -213,7 +250,7 @@ export function readNextTranscriptSeq(database: OpenClawAgentDatabase, sessionId
       .where("session_id", "=", sessionId),
   );
   const maxSeq =
-    row?.max_seq === null || row?.max_seq === undefined ? -1 : coerceSqliteNumber(row.max_seq);
+    row?.max_seq === null || row?.max_seq === undefined ? -1 : sqliteNumber(row.max_seq);
   return maxSeq + 1;
 }
 
@@ -281,6 +318,7 @@ export function deleteTranscriptEventsInTransaction(
   database: OpenClawAgentDatabase,
   sessionId: string,
 ): boolean {
+  assertSessionTranscriptHot(database.db, sessionId);
   const db = getSessionKysely(database.db);
   executeSqliteQuerySync(
     database.db,
@@ -290,7 +328,5 @@ export function deleteTranscriptEventsInTransaction(
     database.db,
     db.deleteFrom("transcript_events").where("session_id", "=", sessionId),
   );
-  // FTS rows have no FK onto transcript_events; clear them in this transaction.
-  deleteSessionTranscriptIndexInTransaction(database.db, sessionId);
   return (result.numAffectedRows ?? 0n) > 0n;
 }

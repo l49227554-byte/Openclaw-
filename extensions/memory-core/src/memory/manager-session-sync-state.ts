@@ -57,7 +57,7 @@ export function resolveMemorySessionStartupState(params: {
       dirtyFiles.push(file.absPath);
       continue;
     }
-    // File mtimes and SQLite session updatedAt values can move backward after
+    // File mtimes and SQLite transcript mutation times can move backward after
     // restore/reset. The downstream content-hash gate suppresses unchanged rewrites.
     if (file.size !== indexedSize || file.mtimeMs !== indexedMtimeMs) {
       dirtyFiles.push(file.absPath);

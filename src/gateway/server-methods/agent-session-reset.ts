@@ -10,6 +10,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveAgentDeliveryPlanWithSessionRoute } from "../../infra/outbound/agent-delivery.js";
 import { defaultRuntime } from "../../runtime.js";
+import { arxiUserCopy } from "../../shared/arxi-user-copy.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
 import { performGatewaySessionReset } from "../session-reset-service.js";
@@ -56,7 +57,10 @@ export async function runSessionResetFromAgent(params: {
 }
 
 export function sessionResetAckText(reason: "new" | "reset"): string {
-  return reason === "new" ? "✅ New session started." : "✅ Session reset.";
+  return arxiUserCopy(
+    reason === "new" ? "✅ New session started." : "✅ Session reset.",
+    "Готово, начнём заново.",
+  );
 }
 
 export function buildBareSessionResetResult(params: {

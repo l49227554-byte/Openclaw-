@@ -284,7 +284,7 @@ describe("OpenAI browser Talk catalog defaults", () => {
             );
           }
         } finally {
-          session.stop();
+          void session.stop();
         }
       });
     },

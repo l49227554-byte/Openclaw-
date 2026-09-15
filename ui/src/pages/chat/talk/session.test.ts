@@ -132,7 +132,7 @@ describe("RealtimeTalkSession", () => {
         }),
         requestTimeoutOptions,
       );
-      session.stop();
+      void session.stop();
     },
   );
 
@@ -237,7 +237,7 @@ describe("RealtimeTalkSession", () => {
       expect(request.mock.calls.filter(([method]) => method === "talk.client.close")).toHaveLength(
         1,
       );
-      session.stop();
+      void session.stop();
     },
   );
 
@@ -295,7 +295,7 @@ describe("RealtimeTalkSession", () => {
     const session = new RealtimeTalkSession({ request } as never, "main");
 
     await session.start();
-    session.stop();
+    void session.stop();
 
     expect(relayInstances).toHaveLength(1);
     expect(relayStart).toHaveBeenCalledTimes(1);
@@ -335,7 +335,7 @@ describe("RealtimeTalkSession", () => {
         requestTimeoutOptions,
       ),
     );
-    session.stop();
+    void session.stop();
     create.resolve({
       provider: "openai",
       transport: "gateway-relay",
@@ -375,7 +375,7 @@ describe("RealtimeTalkSession", () => {
 
     const firstStart = session.start();
     await vi.waitFor(() => expect(creates).toHaveLength(1));
-    session.stop();
+    void session.stop();
     const secondStart = session.start();
     await vi.waitFor(() => expect(creates).toHaveLength(2));
     creates[1]!.resolve({
@@ -413,7 +413,7 @@ describe("RealtimeTalkSession", () => {
     );
     expect(webRtcInstances).toHaveLength(1);
     expect(webRtcStart).toHaveBeenCalledTimes(1);
-    session.stop();
+    void session.stop();
   });
 
   it("falls back to talk.session.create when gateway-relay is rejected by talk.client.create", async () => {
@@ -547,7 +547,7 @@ describe("RealtimeTalkSession", () => {
     const session = new RealtimeTalkSession({ request } as never, "main");
 
     await session.start();
-    session.stop();
+    void session.stop();
 
     expect(webRtcInstances).toHaveLength(1);
     expect(webRtcStart).toHaveBeenCalledTimes(1);
@@ -647,7 +647,7 @@ describe("RealtimeTalkSession", () => {
 
     await session.switchCamera("back-camera");
     expect(webRtcSwitchCamera).toHaveBeenCalledWith("back-camera");
-    session.stop();
+    void session.stop();
   });
 
   it("applies a Settings camera selection to an active video session", async () => {
@@ -676,7 +676,7 @@ describe("RealtimeTalkSession", () => {
     await switchActiveRealtimeTalkCameras("back-camera");
 
     expect(webRtcSwitchCamera).toHaveBeenCalledWith("back-camera");
-    session.stop();
+    void session.stop();
   });
 
   it("tracks a pending camera enable without retaining a stopped session", async () => {
@@ -712,7 +712,7 @@ describe("RealtimeTalkSession", () => {
     await switchActiveRealtimeTalkCameras("back-camera");
     expect(webRtcSwitchCamera).toHaveBeenCalledOnce();
 
-    session.stop();
+    void session.stop();
     resolveEnable(undefined);
     await enabling;
     await switchActiveRealtimeTalkCameras("desk-camera");
@@ -888,7 +888,7 @@ describe("RealtimeTalkSession", () => {
       await vi.waitFor(() =>
         expect(request.mock.calls.some(([method]) => method === pendingMethod)).toBe(true),
       );
-      session.stop();
+      void session.stop();
       if (restart) {
         await session.start();
       }
@@ -902,7 +902,7 @@ describe("RealtimeTalkSession", () => {
       expect(request.mock.calls.some(([method]) => method === "talk.session.create")).toBe(false);
       expect(error).toBe(clientError);
       expect(session.getVoiceSessionId()).toBe(restart ? "replacement" : undefined);
-      session.stop();
+      void session.stop();
     },
   );
 

@@ -313,7 +313,7 @@ export function retireUncommittedRealtimeTalkTransport(params: {
   owner: ClientVoiceSessionOwner;
   closeVoiceSession: () => void;
 }): void {
-  params.nextTransport?.stop({ emitClosed: false });
+  void params.nextTransport?.stop({ emitClosed: false });
   if (params.transport === "gateway-relay" && params.nextTransport) {
     // The relay transport owns server close once constructed; release browser ownership.
     params.owner.release();

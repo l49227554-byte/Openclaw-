@@ -135,7 +135,7 @@ describe("RealtimeTalkSession lifecycle", () => {
       ).toHaveLength(1);
     } finally {
       saved.resolve();
-      session.stop();
+      void session.stop();
     }
   });
 
@@ -171,7 +171,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
       await vi.advanceTimersByTimeAsync(500);
       await vi.waitFor(() => expect(transcriptEntryIds).toEqual(["1", "1", "2"]));
-      session.stop();
+      void session.stop();
       await vi.runAllTimersAsync();
     } finally {
       vi.useRealTimers();
@@ -217,7 +217,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     }
     expect(transportMock.webRtcStops[0]).toHaveBeenCalledOnce();
     expect(transportMock.webRtcStops[1]).not.toHaveBeenCalled();
-    session.stop();
+    void session.stop();
     await vi.waitFor(() =>
       expect(request.mock.calls.filter(([method]) => method === "talk.client.close")).toHaveLength(
         2,
@@ -252,7 +252,7 @@ describe("RealtimeTalkSession lifecycle", () => {
       ),
     );
     expect(request.mock.calls.some(([method]) => method === "talk.client.transcript")).toBe(false);
-    session.stop();
+    void session.stop();
   });
 
   it("retires both relays when restart activation throws", async () => {
@@ -282,7 +282,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
     expect(transportMock.relayStops[0]).toHaveBeenCalledOnce();
     expect(transportMock.relayStops[1]).toHaveBeenCalledOnce();
-    session.stop();
+    void session.stop();
     expect(transportMock.relayStops[0]).toHaveBeenCalledOnce();
   });
 
@@ -306,7 +306,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     const session = new RealtimeTalkSession({ request } as never, "agent:main:main");
     await session.start();
     transportMock.relayActivate.mockImplementationOnce(() => {
-      session.stop();
+      void session.stop();
       throw new Error("activation stopped");
     });
 
@@ -315,7 +315,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     expect(transportMock.relayStops[0]).toHaveBeenCalledOnce();
     expect(transportMock.relayStops[0]).toHaveBeenCalledWith();
     expect(transportMock.relayStops[1]).toHaveBeenCalledOnce();
-    session.stop();
+    void session.stop();
     expect(transportMock.relayStops[0]).toHaveBeenCalledOnce();
     expect(transportMock.relayStops[1]).toHaveBeenCalledOnce();
   });
@@ -356,7 +356,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
     firstReplacementStart.resolve("ready");
     await firstReplacement;
-    session.stop();
+    void session.stop();
   });
 
   it("does not supersede an admitted restart when its predecessor is still draining", async () => {
@@ -422,7 +422,7 @@ describe("RealtimeTalkSession lifecycle", () => {
         voiceSessionId: "voice-admission-2",
         clientSecret: "fixture-secret",
       });
-      session.stop();
+      void session.stop();
       await replacement;
     }
   });
@@ -464,7 +464,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
     const recovered = new RealtimeTalkSession(client, "agent:main:main");
     await recovered.start();
-    recovered.stop();
+    void recovered.stop();
   });
 
   it("rejects a terminal failure during initial transport setup", async () => {
@@ -522,7 +522,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     existingContext.callbacks.onTranscript?.({ role: "user", text: "during restart", final: true });
     expect(transcriptEntryIds).toEqual(["1"]);
 
-    session.stop();
+    void session.stop();
     replacementStart.reject(new Error("replacement failed after stop"));
     await expect(replacing).rejects.toThrow("replacement failed after stop");
 
@@ -540,7 +540,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
     const recovered = new RealtimeTalkSession(client, "agent:main:main");
     await recovered.start();
-    recovered.stop();
+    void recovered.stop();
   });
 
   it("surfaces transcript failure after three attempts", async () => {
@@ -580,7 +580,7 @@ describe("RealtimeTalkSession lifecycle", () => {
         request.mock.calls.filter(([method]) => method === "talk.client.transcript"),
       ).toHaveLength(3);
       expect(warn).toHaveBeenCalled();
-      session.stop();
+      void session.stop();
       await vi.runAllTimersAsync();
     } finally {
       warn.mockRestore();
@@ -609,7 +609,7 @@ describe("RealtimeTalkSession lifecycle", () => {
       const session = new RealtimeTalkSession({ request } as never, "agent:main:main");
       await session.start();
 
-      session.stop();
+      void session.stop();
       await vi.runAllTimersAsync();
 
       expect(closeAttempts).toBe(3);
@@ -658,7 +658,7 @@ describe("RealtimeTalkSession lifecycle", () => {
       ],
     ]);
     finishClose?.();
-    session.stop();
+    void session.stop();
     await Promise.resolve();
   });
 
@@ -695,9 +695,9 @@ describe("RealtimeTalkSession lifecycle", () => {
     expect(transportMock.webRtcStops[0]).not.toHaveBeenCalled();
     expect(transportMock.webRtcStops[1]).not.toHaveBeenCalled();
     expect(createCount).toBe(2);
-    first.stop();
+    void first.stop();
     await vi.waitFor(() => expect(closes).toHaveLength(1));
-    second.stop();
+    void second.stop();
     await vi.waitFor(() => expect(closes).toHaveLength(2));
 
     await expect(third.start()).rejects.toThrow(
@@ -711,7 +711,7 @@ describe("RealtimeTalkSession lifecycle", () => {
       expect(createCount).toBe(3);
     });
 
-    third.stop();
+    void third.stop();
     await vi.waitFor(() => expect(closes).toHaveLength(3));
     closes[1]?.resolve();
     closes[2]?.resolve();
@@ -754,7 +754,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
       for (const session of draining) {
         await session.start();
-        session.stop();
+        void session.stop();
         await Promise.resolve();
       }
       expect(closeSignals).toHaveLength(16);
@@ -776,7 +776,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
       await recovered.start();
       expect(createCount).toBe(17);
-      recovered.stop();
+      void recovered.stop();
       await vi.advanceTimersByTimeAsync(60_000);
     } finally {
       vi.useRealTimers();
@@ -832,7 +832,7 @@ describe("RealtimeTalkSession lifecycle", () => {
 
       failCreate = false;
       await third.start();
-      third.stop();
+      void third.stop();
     } finally {
       vi.useRealTimers();
     }
@@ -854,7 +854,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     await session.start();
     const context = transcriptContext(transportMock.webRtcContexts);
 
-    session.stop();
+    void session.stop();
     context.callbacks.onTranscript?.({ role: "user", text: "too late", final: true });
     await Promise.resolve();
 
@@ -884,7 +884,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     await session.start();
     const previousContext = transcriptContext(transportMock.webRtcContexts);
 
-    session.stop();
+    void session.stop();
     await session.start();
     onTalkEvent.mockClear();
     previousContext.callbacks.onTranscript?.({
@@ -910,7 +910,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     expect(onTalkEvent).not.toHaveBeenCalled();
     expect(session.getVoiceSessionId()).toBe("voice-2");
     expect(request.mock.calls.some(([method]) => method === "talk.client.transcript")).toBe(false);
-    session.stop();
+    void session.stop();
   });
 
   it("does not report Gateway relay transcripts through the client RPC", async () => {
@@ -938,7 +938,7 @@ describe("RealtimeTalkSession lifecycle", () => {
     await Promise.resolve();
 
     expect(request.mock.calls.some(([method]) => method === "talk.client.transcript")).toBe(false);
-    session.stop();
+    void session.stop();
     await Promise.resolve();
     expect(request.mock.calls.some(([method]) => method === "talk.client.close")).toBe(false);
   });

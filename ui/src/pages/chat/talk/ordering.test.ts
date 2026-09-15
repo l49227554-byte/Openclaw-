@@ -64,7 +64,10 @@ function final(peer: Peer, id: string, role: "user" | "assistant", text: string)
   });
 }
 
-function createCall(onTranscript?: (entry: RealtimeTalkTranscript) => void) {
+function createCall(
+  onTranscript?: (entry: RealtimeTalkTranscript) => void,
+  expectedCloseError?: Error,
+) {
   let conversation = createRealtimeTalkConversationState();
   let nextVoiceSession = 0;
   const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -97,7 +100,9 @@ function createCall(onTranscript?: (entry: RealtimeTalkTranscript) => void) {
     },
     { transport: "webrtc" },
   );
-  onTestFinished(() => session.stop());
+  onTestFinished(() =>
+    expectedCloseError ? expect(session.stop()).rejects.toBe(expectedCloseError) : session.stop(),
+  );
   return {
     session,
     request,
@@ -110,8 +115,8 @@ function createCall(onTranscript?: (entry: RealtimeTalkTranscript) => void) {
   };
 }
 
-async function start() {
-  const call = createCall();
+async function start(expectedCloseError?: Error) {
+  const call = createCall(undefined, expectedCloseError);
   await call.session.start();
   return { ...call, peer: Peer.instances.at(-1)! };
 }
@@ -185,7 +190,7 @@ describe("browser Talk provider item ordering", () => {
         "transcript.done",
       );
       expect(call.writes()).toEqual([]);
-      call.session.stop();
+      void call.session.stop();
       await waitForFast(() => expect(call.requests.at(-1)?.method).toBe("talk.client.close"));
       expect(call.writes()).toEqual([]);
     },
@@ -276,7 +281,7 @@ describe("browser Talk provider item ordering", () => {
           "question after setup",
           "answer during setup",
         ]);
-        call.session.stop();
+        void call.session.stop();
       } else {
         if (outcome === "failure") {
           setup.reject(new Error("SDP rejected"));
@@ -286,7 +291,7 @@ describe("browser Talk provider item ordering", () => {
             Peer.setupBlock = undefined;
             await call.session.start();
           } else {
-            call.session.stop();
+            void call.session.stop();
           }
           setup.resolve();
           await starting;
@@ -336,7 +341,7 @@ describe("browser Talk provider item ordering", () => {
       { role: "user", text: "a long question" },
       { role: "assistant", text: "answer" },
     ]);
-    call.session.stop();
+    void call.session.stop();
   });
 
   it("keeps overlapping turns and identical speech tied to their exact items", async () => {
@@ -362,7 +367,7 @@ describe("browser Talk provider item ordering", () => {
       "yes",
       "second answer",
     ]);
-    call.session.stop();
+    void call.session.stop();
   });
 
   it.each(["speech", "non-speech"])(
@@ -423,7 +428,7 @@ describe("browser Talk provider item ordering", () => {
     final(call.peer, "a1", "assistant", "known answer");
     expect(call.peer.close).not.toHaveBeenCalled();
     expect(call.writes()).toEqual([]);
-    call.session.stop();
+    void call.session.stop();
     await waitForFast(() => expect(call.requests.at(-1)?.method).toBe("talk.client.close"));
     expect(call.writes().map(({ params }) => params.text)).toEqual(["known answer", "next answer"]);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("unfinished transcript"));
@@ -434,8 +439,8 @@ describe("browser Talk provider item ordering", () => {
   });
 
   it("reports a failed predecessor save while its accepted successor still awaits ASR", async () => {
-    const call = await start();
     const error = new Error("transcript store unavailable");
+    const call = await start(error);
     call.request
       .mockRejectedValueOnce(error)
       .mockRejectedValueOnce(error)
@@ -452,7 +457,7 @@ describe("browser Talk provider item ordering", () => {
     expect(call.peer.close).not.toHaveBeenCalled();
     vi.useRealTimers();
     final(call.peer, "u2", "user", "second question");
-    call.session.stop();
+    void call.session.stop();
     await waitForFast(() => expect(call.requests.at(-1)?.method).toBe("talk.client.close"));
     expect(call.writes().map(({ params }) => params.text)).toEqual(["second question"]);
     expect(call.onStatus.mock.calls.filter(([status]) => status === "error")).toHaveLength(1);
@@ -519,7 +524,7 @@ describe("browser Talk provider item ordering", () => {
       item(call.peer, "u2", "user", "a1");
       final(call.peer, "u2", "user", "next question");
       await waitForFast(() => expect(call.writes()).toHaveLength(2));
-      call.session.stop();
+      void call.session.stop();
     },
   );
 
@@ -614,7 +619,7 @@ describe("browser Talk provider item ordering", () => {
   it("persists a keyed final before a consumer synchronously stops the call", async () => {
     const call = createCall((entry) => {
       if (entry.final) {
-        call.session.stop();
+        void call.session.stop();
       }
     });
     await call.session.start();
@@ -635,7 +640,7 @@ describe("browser Talk provider item ordering", () => {
     item(call.peer, "a1", "assistant", "u1");
     final(call.peer, "a1", "assistant", "known answer");
     expect(call.writes()).toEqual([]);
-    call.session.stop();
+    void call.session.stop();
     await waitForFast(() => expect(call.requests.at(-1)?.method).toBe("talk.client.close"));
     expect(
       call.requests

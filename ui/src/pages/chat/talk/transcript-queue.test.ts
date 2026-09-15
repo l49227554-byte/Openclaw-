@@ -89,7 +89,7 @@ describe("RealtimeTalkSession transcript queue", () => {
     await context.flushTranscriptWrites?.();
 
     expect(transcriptEntryIds).toEqual(Array.from({ length: 41 }, (_, index) => String(index + 1)));
-    session.stop();
+    void session.stop();
   });
 
   it("stops once when stalled transcript persistence exceeds its bounded queue", async () => {
@@ -173,7 +173,7 @@ describe("RealtimeTalkSession transcript queue", () => {
       expect(warn).toHaveBeenCalledTimes(2);
 
       onTranscript({ role: "user", text: "too late", final: true });
-      session.stop();
+      void session.stop();
       await Promise.resolve();
       expect(transcriptEntryIds).toHaveLength(43);
       expect(transportMock.stop).toHaveBeenCalledOnce();
@@ -235,7 +235,7 @@ describe("RealtimeTalkSession transcript queue", () => {
       for (let index = 0; index < 40; index += 1) {
         handleTranscript({ role: "assistant", text: `queued-${index}`, final: true });
       }
-      session.stop();
+      void session.stop();
 
       expect(transcriptSignals).toHaveLength(1);
       expect(transcriptSignals[0]?.aborted).toBe(false);

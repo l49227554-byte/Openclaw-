@@ -86,7 +86,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const session of sessions.splice(0)) {
-    session.stop();
+    void session.stop();
   }
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -131,7 +131,7 @@ describe("Realtime Talk microphone preparation", () => {
         },
       });
       expect(transports[0]?.context.input.stream).toBe(media.stream);
-      session.stop();
+      void session.stop();
       expect(media.track.stop).toHaveBeenCalledOnce();
     },
   );
@@ -160,7 +160,7 @@ describe("Realtime Talk microphone preparation", () => {
     const starting = session.start();
     void starting.catch(() => undefined);
     await waitForFast(() => expect(getUserMedia).toHaveBeenCalledOnce());
-    session.stop();
+    void session.stop();
     await expect(starting).resolves.toBeUndefined();
     permission.resolve(media.stream);
     await waitForFast(() => expect(media.track.stop).toHaveBeenCalledOnce());

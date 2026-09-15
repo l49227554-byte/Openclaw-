@@ -90,7 +90,9 @@ describe("conversation completion through the real delivery queue", () => {
     const stateDir = fixtures.tmpDir();
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     const scope = resolveConversationRegistryScope({ agentId: "main", config: {} });
-    onTestFinished(() => closeOpenClawAgentDatabaseByPath(scope.storePath));
+    onTestFinished(() => {
+      closeOpenClawAgentDatabaseByPath(scope.storePath);
+    });
     registerConversationAddresses(scope, [
       { ...conversation, deliveryTarget: conversation.target },
     ]);

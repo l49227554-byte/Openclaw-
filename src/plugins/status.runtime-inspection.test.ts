@@ -10,6 +10,7 @@ import { runPluginsInspectCommand } from "../cli/plugins-inspect-command.js";
 import * as configRuntime from "../config/config.js";
 import { readConfigFileSnapshotForWrite, writeConfigFile } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as startupMaintenance from "../infra/startup-maintenance-required.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -45,6 +46,7 @@ import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.
 import { applySlotSelectionForPlugin } from "./slot-selection.js";
 import * as statusSnapshot from "./status-snapshot.js";
 import { withPluginDiagnosticsReportForInspection, withPluginDiagnosticsReport } from "./status.js";
+import { summarizeClassifierErrors } from "./status.test-helpers.js";
 import type { OpenClawPluginService } from "./types.js";
 
 describe("plugin runtime inspection", () => {
@@ -861,6 +863,16 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
     const before = process.listenerCount(event);
     for (const name of [id, "all"]) {
       const configRead = vi.spyOn(configRuntime, "readConfigFileSnapshot");
+      const classify = startupMaintenance.findStartupMaintenanceRequiredError;
+      const classifierErrors: unknown[] = [];
+      const classifier = vi
+        .spyOn(startupMaintenance, "findStartupMaintenanceRequiredError")
+        .mockImplementation((error) => {
+          if (classifierErrors.length < 10) {
+            classifierErrors.push(error);
+          }
+          return classify(error);
+        });
       try {
         const result = await handlePluginsCommand(
           buildPluginsCommandParams({
@@ -918,6 +930,8 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
             valid: snapshot?.valid,
             exists: snapshot?.exists,
             matchesWrittenFixture: snapshot?.raw === `${JSON.stringify(config, null, 2)}\n`,
+            // The classifier also handles config-health errors, not only snapshot errors.
+            classifierErrors: summarizeClassifierErrors(classifierErrors),
             issueCount: snapshot?.issues.length,
             issues: snapshot?.issues.slice(0, 10).map((issue) => ({
               path: issuePaths.has(issue.path) ? issue.path : "<other path>",
@@ -930,6 +944,7 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
         }
         throw error;
       } finally {
+        classifier.mockRestore();
         configRead.mockRestore();
       }
     }

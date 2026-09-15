@@ -72,6 +72,10 @@ import {
 } from "../../tts/tts.js";
 import { getVoiceProviderConfig, providerMatchesId } from "../../tts/voice-models.js";
 import { ADMIN_SCOPE, READ_SCOPE, TALK_SECRETS_SCOPE } from "../operator-scopes.js";
+import {
+  supportsTalkTranscriptionCommandHints,
+  TALK_TRANSCRIPTION_COMMAND_HINTS,
+} from "../talk-transcription-command-hints.js";
 import { formatForLog } from "../ws-log.js";
 import { respondUnavailable } from "./response.js";
 import { inferSpeechMimeType } from "./speech-mime.js";
@@ -84,7 +88,7 @@ import {
   listTalkTranscriptionProviders,
   resolveConfiguredRealtimeTranscriptionProvider,
 } from "./talk-shared.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import type { GatewayClient, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 type TalkSpeakReason =
@@ -250,7 +254,11 @@ function buildTalkTtsConfig(
   };
 }
 
-function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
+function buildTalkCatalog(
+  config: OpenClawConfig,
+  params: TalkCatalogParams,
+  client: GatewayClient | null,
+) {
   // Reject ambiguous ownership before provider discovery loads unrelated plugins.
   const realtimeAgentId = resolveTalkSessionAgentId(config);
   const talkResolved = resolveActiveTalkProviderConfig(config.talk);
@@ -467,6 +475,18 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
         }
         if (provider.voices) {
           entry.voices = [...provider.voices];
+        }
+        if (
+          entry.configured &&
+          supportsTalkTranscriptionCommandHints(client, {
+            mode: "realtime",
+            transport: realtimeConfig.transport ?? "webrtc",
+            providerId: provider.id,
+            providerConfig,
+            model: provider.defaultModel,
+          })
+        ) {
+          entry.transcriptionCommandHints = TALK_TRANSCRIPTION_COMMAND_HINTS;
         }
         if (capabilities?.voices) {
           entry.activeVoices = [...capabilities.voices];
@@ -850,14 +870,14 @@ function stripUnresolvedSecretApiKeyFromRecord(
 export const talkHandlers: GatewayRequestHandlers = {
   ...talkSessionHandlers,
   ...talkClientHandlers,
-  "talk.catalog": async ({ params, respond, context }) => {
+  "talk.catalog": async ({ params, respond, context, client }) => {
     const catalogParams = params ?? {};
     if (!assertValidParams(catalogParams, validateTalkCatalogParams, "talk.catalog", respond)) {
       return;
     }
 
     try {
-      respond(true, buildTalkCatalog(context.getRuntimeConfig(), catalogParams), undefined);
+      respond(true, buildTalkCatalog(context.getRuntimeConfig(), catalogParams, client), undefined);
     } catch (err) {
       respond(
         false,

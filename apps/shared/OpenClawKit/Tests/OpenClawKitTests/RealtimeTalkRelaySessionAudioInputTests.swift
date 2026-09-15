@@ -5,6 +5,74 @@ import Testing
 
 @MainActor
 struct RealtimeTalkRelaySessionAudioInputTests {
+    @Test(arguments: [false, true], [false, true])
+    func `cleaned duplex delivers the interruption to server VAD without cancelling input`(
+        serverVAD: Bool,
+        suppressDuringOutput: Bool) async throws
+    {
+        let requests = RealtimeRelayStartupRequestLog()
+        let inputObserved = RealtimeRelayTestSignal<Void>()
+        let capture = TestRealtimeTalkAudioCapture()
+        capture.usesServerVADForBargeIn = serverVAD
+        capture.suppressesInputDuringOutput = suppressDuringOutput
+        let session = RealtimeTalkRelaySession(
+            transport: RealtimeTalkRelayTransport(
+                subscribeServerEvents: { _ in AsyncStream { $0.finish() } },
+                request: { method, params, _ in
+                    await requests.record(method: method, params: params)
+                    return Data("{\"ok\":true}".utf8)
+                }),
+            options: .init(sessionKey: "main", provider: nil, model: nil, voice: nil),
+            audioCapture: capture,
+            pcmPlayer: DrainingPCMStreamingAudioPlayer(),
+            onStatus: { _ in },
+            onSpeakingChanged: { _ in },
+            onInputLevel: { _ in inputObserved.send(()) })
+        session._test_setRelaySessionId("relay-1")
+        session._test_prepareAudioSender(relaySessionId: "relay-1")
+        try session._test_startMicrophonePump()
+        defer { session.stop() }
+        await session._test_handleGatewayEvent(outputAudioEvent(turnId: "turn-1"))
+        await session._test_handleGatewayEvent(playbackMarkEvent("interrupted-playback"))
+
+        // Use the capture callback: local RMS cancellation otherwise drops this very frame.
+        let timestamp = ProcessInfo.processInfo.systemUptime * 1000 + 1000
+        let interruption = Data([0x34, 0x12])
+        capture.emit(RealtimeTalkAudioFrame(data: interruption, timestampMs: timestamp, rms: 0.5))
+        _ = try await inputObserved.next("interruption input frame")
+        if suppressDuringOutput {
+            #expect(await requests.snapshot().isEmpty)
+        } else {
+            try await requests.waitForRequestCount(1)
+            let first = try #require(await requests.snapshot().first)
+            if !serverVAD {
+                #expect(first.method == "talk.session.cancelOutput")
+                #expect(first.params?["reason"]?.stringValue == "barge-in")
+                #expect(!session._test_isOutputPlaying())
+                return
+            }
+            try #require(first.method == "talk.session.appendAudio")
+            #expect(first.params?["audioBase64"]?.stringValue == interruption.base64EncodedString())
+        }
+        #expect(session._test_isOutputPlaying())
+
+        let initialAppends = suppressDuringOutput ? 0 : 1
+        await session._test_handleGatewayEvent(outputClearEvent(talkEventType: "output_audio.clear"))
+        try await requests.waitForRequestCount(initialAppends + 1)
+        #expect(!session._test_isOutputPlaying())
+        #expect(capture.isStarted)
+        capture.emit(RealtimeTalkAudioFrame(data: Data([0x78, 0x56]), timestampMs: timestamp + 20, rms: 0.2))
+        try await requests.waitForRequestCount(initialAppends + 2)
+        let recorded = await requests.snapshot()
+        let expected = (suppressDuringOutput ? [] : ["talk.session.appendAudio"]) + [
+            "talk.session.acknowledgeMark",
+            "talk.session.appendAudio",
+        ]
+        #expect(recorded.map(\.method) == expected)
+        #expect(recorded[initialAppends].params?["markName"]?.stringValue == "interrupted-playback")
+        #expect(capture.startCount == 1)
+    }
+
     @Test func `input pause and resume are idempotent and keep relay alive`() throws {
         let audioCapture = TestRealtimeTalkAudioCapture()
         let session = RealtimeTalkRelaySession(

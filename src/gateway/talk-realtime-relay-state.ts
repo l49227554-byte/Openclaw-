@@ -239,6 +239,7 @@ export type CreateTalkRealtimeRelaySessionParams = {
   sessionTarget: PreparedTalkSessionTarget;
   voice?: string;
   language?: string;
+  transcriptionPrompt?: string;
   forceAgentConsultOnFinalTranscript?: boolean;
 };
 

@@ -52,6 +52,7 @@ public enum RealtimeTalkPCM16Encoder {
 @MainActor
 public protocol RealtimeTalkAudioCapturing: AnyObject {
     var suppressesInputDuringOutput: Bool { get }
+    var usesServerVADForBargeIn: Bool { get }
 
     func start(
         targetSampleRate: Double,
@@ -59,6 +60,12 @@ public protocol RealtimeTalkAudioCapturing: AnyObject {
         onFailure: @escaping @MainActor (String) -> Void) throws
 
     func stop()
+}
+
+extension RealtimeTalkAudioCapturing {
+    public var usesServerVADForBargeIn: Bool {
+        false
+    }
 }
 
 public struct RealtimeTalkRelayTransport: Sendable {
@@ -179,12 +186,20 @@ public final class RealtimeTalkRelaySession {
         public let provider: String?
         public let model: String?
         public let voice: String?
+        public let localStopPhrases: [String]?
 
-        public init(sessionKey: String, provider: String?, model: String?, voice: String?) {
+        public init(
+            sessionKey: String,
+            provider: String?,
+            model: String?,
+            voice: String?,
+            localStopPhrases: [String]? = nil)
+        {
             self.sessionKey = sessionKey
             self.provider = provider
             self.model = model
             self.voice = voice
+            self.localStopPhrases = localStopPhrases
         }
     }
 
@@ -337,7 +352,7 @@ public final class RealtimeTalkRelaySession {
         }
         self.startEventPump(stream: eventStream, lifecycleGeneration: lifecycleGeneration)
         do {
-            let result = try await self.createRelaySession()
+            let result = try await self.createRelaySession(lifecycleGeneration: lifecycleGeneration)
             let createdRelaySessionId = self.nonEmpty(result.relaysessionid)
             let statusAfterCreate = await self.lifecycleStatus(lifecycleGeneration)
             if statusAfterCreate != .current {
@@ -491,7 +506,7 @@ public final class RealtimeTalkRelaySession {
         }
     }
 
-    private func createRelaySession() async throws -> TalkSessionCreateResult {
+    private func createRelaySession(lifecycleGeneration: UInt64) async throws -> TalkSessionCreateResult {
         var payload: [String: AnyCodable] = [
             "sessionKey": AnyCodable(self.options.sessionKey),
             "mode": AnyCodable("realtime"),
@@ -506,6 +521,31 @@ public final class RealtimeTalkRelaySession {
         }
         if let voice = self.nonEmpty(self.options.voice) {
             payload["voice"] = AnyCodable(voice)
+        }
+        if self.options.provider == "openai", self.options.model == "gpt-realtime-2.1",
+           let phrases = self.options.localStopPhrases, RealtimeTalkTranscriptionHints.accepts(phrases)
+        {
+            // This transport belongs to the same physical socket as session creation.
+            // Older gateways and failed discovery retain the existing create request.
+            let catalog = try? await self.transport.request(
+                "talk.catalog",
+                ["provider": AnyCodable("openai"), "model": AnyCodable("gpt-realtime-2.1")],
+                3000)
+            switch await self.lifecycleStatus(lifecycleGeneration) {
+            case .current: break
+            case .cancelledLocally: throw CancellationError()
+            case .routeLost: throw Self.gatewayRouteLostError()
+            }
+            if let startupIssue {
+                throw Self.startupFailureError(startupIssue)
+            }
+            if let catalog, RealtimeTalkTranscriptionHints.isSupported(catalog: catalog) {
+                payload["transcriptionHints"] = AnyCodable([
+                    "version": AnyCodable(1),
+                    "kind": AnyCodable("local-stop-phrases"),
+                    "phrases": AnyCodable(phrases),
+                ])
+            }
         }
         let response = try await self.transport.request("talk.session.create", payload, 20000)
         return try JSONDecoder().decode(TalkSessionCreateResult.self, from: response)
@@ -1442,7 +1482,9 @@ extension RealtimeTalkRelaySession {
                     timestampMs: timestampMs)
                 return nil
             }
-            if rms >= Self.bargeInRmsThreshold {
+            // Echo-controlled duplex must deliver the triggering speech to server VAD.
+            // Local cancellation fences microphone input while the turn is retired.
+            if !self.audioCapture.usesServerVADForBargeIn, rms >= Self.bargeInRmsThreshold {
                 self.handleInputLevelDuringOutput(rms, timestampMs: timestampMs)
             }
         }

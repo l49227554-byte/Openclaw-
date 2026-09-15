@@ -2,6 +2,7 @@ import { sql } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
+  prepareSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
 import type { TranscriptReadWindow } from "../../sessions/transcript-read-window.js";
 import {
@@ -47,64 +48,59 @@ export function resolveVisibleHistoryProjection(
   const visibleMessages = resolveVisibleMessagePositions(projection);
   const latestResetRawSeq = resolveTranscriptBoundaryWindow(projection)?.boundarySeq ?? null;
   const db = getActiveTranscriptKysely(projection.database);
-  const lastMessagePosition = db
-    .selectFrom("session_transcript_active_events")
-    .select("active_position")
-    .where("session_id", "=", projection.resolved.sessionId)
-    .where("message_position", "is not", null)
-    .orderBy("message_position", "desc")
-    .limit(1);
+  const identity = db
+    .selectFrom("transcript_event_identities")
+    .select(["session_id", "event_id", "seq", "event_type"])
+    .modifyEnd(
+      // Whole-session reads select marker types; reset windows join their bounded active rows.
+      /* kysely-allow-raw: preserve selective canonical index access after ANALYZE. */
+      visibleMessages.boundaryActivePosition === undefined
+        ? sql`INDEXED BY idx_agent_transcript_event_sequence`
+        : sql`INDEXED BY idx_agent_transcript_event_identity_sequence`,
+    )
+    .as("identity");
+  // Statistics can otherwise favor scanning every message to avoid sorting a few markers.
+  // The zero-based sequence/count bound permits at most one inactive row;
+  // short branches must not scan a much larger stored marker history.
+  const query =
+    visibleMessages.boundaryActivePosition === undefined &&
+    projection.state.activeEventCount >= projection.state.indexedSeq
+      ? db
+          .selectFrom(identity)
+          .crossJoin("session_transcript_active_events as active")
+          .crossJoin("transcript_events as event")
+          .whereRef("identity.session_id", "=", "active.session_id")
+          .whereRef("identity.seq", "=", "active.event_seq")
+          .whereRef("event.session_id", "=", "active.session_id")
+          .whereRef("event.seq", "=", "active.event_seq")
+      : db
+          .selectFrom("session_transcript_active_events as active")
+          .innerJoin(identity, (join) =>
+            join
+              .onRef("identity.session_id", "=", "active.session_id")
+              .onRef("identity.seq", "=", "active.event_seq"),
+          )
+          .innerJoin("transcript_events as event", (join) =>
+            join
+              .onRef("event.session_id", "=", "active.session_id")
+              .onRef("event.seq", "=", "active.event_seq"),
+          );
   const rows = executeSqliteQuerySync(
     projection.database.db,
-    db
-      .selectFrom("session_transcript_active_events as active")
-      .innerJoin(
-        db
-          .selectFrom("transcript_event_identities")
-          .select(["session_id", "event_id", "seq", "event_type"])
-          .modifyEnd(
-            // Whole-session reads select marker types; reset windows join their bounded active rows.
-            /* kysely-allow-raw: preserve selective canonical index access after ANALYZE. */
-            visibleMessages.boundaryActivePosition === undefined
-              ? sql`INDEXED BY idx_agent_transcript_event_sequence`
-              : sql`INDEXED BY idx_agent_transcript_event_identity_sequence`,
-          )
-          .as("identity"),
-        (join) =>
-          join
-            .onRef("identity.session_id", "=", "active.session_id")
-            .onRef("identity.seq", "=", "active.event_seq"),
-      )
-      .innerJoin("transcript_events as event", (join) =>
+    query
+      .leftJoin("session_transcript_active_events as following", (join) =>
         join
-          .onRef("event.session_id", "=", "active.session_id")
-          .onRef("event.seq", "=", "active.event_seq"),
+          .onRef("following.session_id", "=", "active.session_id")
+          .on((eb) => eb("following.active_position", "=", eb("active.active_position", "+", 1))),
       )
       .select([
+        "active.active_position",
+        "following.message_position as following_message_position",
         "identity.event_id",
         "identity.seq",
         /* kysely-allow-raw: history byte caps include each event's JSONL newline. */
         sql<number>`OCTET_LENGTH(event.event_json) + 1`.as("serialized_bytes"),
       ])
-      .select((eb) =>
-        eb
-          .case()
-          // Resolve the last message once so trailing markers cannot rescan an empty suffix.
-          .when("active.active_position", "<", lastMessagePosition)
-          .then(
-            eb
-              .selectFrom("session_transcript_active_events as next")
-              .select("next.message_position")
-              .whereRef("next.session_id", "=", "active.session_id")
-              .whereRef("next.active_position", ">", "active.active_position")
-              .where("next.message_position", "is not", null)
-              .orderBy("next.active_position", "asc")
-              .limit(1),
-          )
-          .else(null)
-          .end()
-          .as("next_message_position"),
-      )
       .where("active.session_id", "=", projection.resolved.sessionId)
       .where((eb) => {
         const type = eb.ref("identity.event_type");
@@ -128,10 +124,38 @@ export function resolveVisibleHistoryProjection(
       })
       .orderBy("active.active_position", "asc"),
   ).rows;
+  const readNextMessage = prepareSqliteQuerySync<
+    number,
+    { active_position: number; message_position: number | null }
+  >(projection.database.db, (parameter) =>
+    db
+      .selectFrom("session_transcript_active_events")
+      .select(["active_position", "message_position"])
+      .where("session_id", "=", projection.resolved.sessionId)
+      .where(
+        "active_position",
+        ">",
+        parameter((position) => position),
+      )
+      .where("message_position", "is not", null)
+      .orderBy("active_position", "asc")
+      .limit(1),
+  );
+  let nextMessage: { active_position: number; message_position: number | null } | undefined;
+  let searched = false;
   const boundaries = rows.map((row, index): VisibleHistoryBoundary => {
+    let nextMessagePosition = row.following_message_position;
+    if (nextMessagePosition === null) {
+      // Ordered markers share the next message until its position is crossed.
+      // Scan each intervening gap once, including an exhausted trailing gap.
+      if (!searched || (nextMessage && nextMessage.active_position < row.active_position)) {
+        nextMessage = readNextMessage(row.active_position).rows[0];
+        searched = true;
+      }
+      nextMessagePosition = nextMessage?.message_position ?? projection.state.activeMessageCount;
+    }
     // Kept messages precede the latest reset; later markers share its logical window.
     // Rebase raw positions so discarded messages cannot shift those markers.
-    const nextMessagePosition = row.next_message_position ?? projection.state.activeMessageCount;
     const messagePosition =
       visibleMessages.kept.length + Math.max(0, nextMessagePosition - visibleMessages.postStart);
     return {

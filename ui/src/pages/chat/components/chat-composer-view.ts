@@ -1,3 +1,4 @@
+import "../../../styles/chat/composer-surface.css";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { html, nothing, type TemplateResult } from "lit";
 import { guard } from "lit/directives/guard.js";
@@ -287,6 +288,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
           props.collapseTaskProgress,
           {
             activeRunId: props.runId,
+            readingHistory: props.readingHistory,
             completedRunId: props.runStatus?.phase === "done" ? props.runStatus.runId : null,
           },
         )}

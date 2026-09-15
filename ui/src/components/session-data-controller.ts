@@ -28,6 +28,7 @@ import type {
 import { createPanelRefreshStatus, type PanelRefreshStatus } from "./panel-refresh-status.ts";
 import {
   applySessionCatalogContinuation,
+  archiveSessionCatalog as archiveSessionCatalogData,
   applySessionCatalogHostEvent as applySessionCatalogHostEventToData,
   applySessionCatalogPresence as applySessionCatalogPresenceToData,
   invalidateSessionCatalogs as invalidateSessionCatalogData,
@@ -66,6 +67,7 @@ type ChildSessionQuery = {
 /** Gateway-backed session-list and external-catalog data ownership. */
 export class SessionDataController implements ReactiveController, SessionCatalogDataOwner {
   sessionCatalogs: SessionCatalog[] = [];
+  readonly pendingCatalogArchives = new Set<string>();
   sessionCatalogRefreshStatus: PanelRefreshStatus = createPanelRefreshStatus();
   loadingMoreSessionCatalogIds: ReadonlySet<string> = new Set();
   visibleSessionLimits = new Map<string, number>();
@@ -246,6 +248,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
 
   retireSessionCatalogData(): void {
     this.sessionScopeGeneration += 1;
+    this.pendingCatalogArchives.clear();
     this.sessionsLoading = false;
     this.loadingMoreSessionCatalogIds = new Set();
     this.sessionCatalogLive.clear();
@@ -311,7 +314,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       context?.gateway.snapshot.phase === "connected" &&
       hasSidebarListFilter(this.host)
     ) {
-      this.scheduleSidebarSessions();
+      void this.scheduleSidebarSessions();
     }
   }
 
@@ -333,9 +336,9 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     scheduleSessionCatalogRefresh(this, event.type === "visibilitychange");
   };
 
-  invalidateSessionCatalogs(): void {
-    invalidateSessionCatalogData(this);
-  }
+  invalidateSessionCatalogs = () => invalidateSessionCatalogData(this);
+
+  archiveSessionCatalog = archiveSessionCatalogData.bind(null, this);
 
   refreshSessionCatalogs = (): Promise<void> => refreshSessionCatalogData(this);
 
@@ -422,10 +425,11 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     }
     this.updateSessions(sessions);
     if (this.context?.gateway.snapshot.phase === "connected") {
-      // Group catalog hydration is idempotent per connection.
-      void sessions.groupsLoad();
+      void this.context.connectionBootstrap.run(sessions.groupsLoad, () => sessions.groupsLoad(), {
+        background: true,
+      });
       if (sourceChanged && hasSidebarListFilter(this.host)) {
-        this.scheduleSidebarSessions();
+        void this.scheduleSidebarSessions();
       }
     }
   }
@@ -477,7 +481,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
       this.retireSessionCatalogData();
     }
     if (connected && this.sessionsSource && hasSidebarListFilter(this.host)) {
-      this.scheduleSidebarSessions();
+      void this.scheduleSidebarSessions();
     }
   }
 
@@ -530,9 +534,9 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     return refreshSidebarSessionList(this, agentId);
   }
 
-  private scheduleSidebarSessions(): void {
+  scheduleSidebarSessions(): Promise<void> {
     this.bindFilteredSessions(this.host.expandedAgentId());
-    scheduleFilteredSidebarSessions(this, () => this.unsubscribeFilteredSessions);
+    return scheduleFilteredSidebarSessions(this, () => this.unsubscribeFilteredSessions);
   }
 
   loadMoreSidebarSessions(): Promise<void> {

@@ -23,6 +23,7 @@ import {
 import { startSessionUpstreamMonitor } from "../sessions/session-upstream-monitor.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
 import {
   fenceScheduledGatewayContextResolver,
@@ -313,6 +314,7 @@ function startPendingSessionDeliveryRuntime(params: {
   maxEnqueuedAt: number;
   resolveGatewayContext?: GatewayContextResolver;
 }): () => Promise<void> {
+  const queueContext = captureOpenClawStateWorkerContext();
   const controller = new AbortController();
   const { signal } = controller;
   let recovery: Promise<void> | undefined;
@@ -333,11 +335,12 @@ function startPendingSessionDeliveryRuntime(params: {
         }
         const logRecovery = params.log.child("session-delivery-recovery");
         stopRuntime = startSessionDeliveryRuntime({
-          deliver: (entry, context = {}) =>
+          queueContext,
+          deliver: (entry, { queueContext: deliveryContext }) =>
             deliverQueuedSessionDelivery({
               deps: params.deps,
               entry,
-              ...(context.stateDir !== undefined ? { stateDir: context.stateDir } : {}),
+              queueContext: deliveryContext,
               ...(params.resolveGatewayContext
                 ? { resolveGatewayContext: params.resolveGatewayContext }
                 : {}),
@@ -348,6 +351,7 @@ function startPendingSessionDeliveryRuntime(params: {
         try {
           await recoverPendingRestartContinuationDeliveries({
             deps: params.deps,
+            queueContext,
             log: logRecovery,
             maxEnqueuedAt: params.maxEnqueuedAt,
             ...(params.resolveGatewayContext

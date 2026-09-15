@@ -441,7 +441,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
 
     const postUpdateRoot = params.result.root ?? params.root;
     const convergePlugins = async (beforeDoctor?: () => Promise<void>) => {
-      const pluginParams = { ...params, beforeDoctor, beforePersistentEffect: assertCurrent };
+      const pluginParams = { ...params, beforeDoctor, assertCurrent };
       const convergence = await convergeUpdatePlugins(pluginParams);
       if (convergence.resultWithPostUpdate.status === "error") {
         triageAllowed = !convergence.cancelled;
@@ -674,6 +674,7 @@ export async function finishUpdate(params: FinishUpdateParams): Promise<UpdateRu
     if (params.installKindChanged && resultWithPostUpdate.mode !== "git") {
       const retirement = await retireStandaloneGitWrapper({
         previousRoot: params.previousInstallRoot ?? params.root,
+        assertCurrent,
       });
       if (retirement.error) {
         defaultRuntime.error(retirement.error);

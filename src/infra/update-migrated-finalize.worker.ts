@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { finishUpdateRun } from "../cli/daemon-cli.js";
 import { retainCliProcessJobUntilExit, withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
 import type { UpdateCommandOptions } from "../cli/update-cli/shared.js";
@@ -29,13 +30,14 @@ import {
   recordUpdateDoctorConfigWriteRefusal,
   writeUpdatePostInstallDoctorResult,
 } from "./update-doctor-result.js";
+import { resolveUpdateFinalizationTimeoutMs } from "./update-finalization-budget.js";
+import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import {
   createManagedUpdateRequesterAuthority,
   UpdateRequesterRevokedError,
 } from "./update-requester-authority.js";
 import { adoptUpdateRun, getUpdateRun, recordUpdateRunStep } from "./update-run-ledger.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
-import { resolveUpdateFinalizationTimeoutMs } from "./update-run-timeouts.js";
 
 async function finalizeMigratedUpdate(): Promise<void> {
   // Validation imports this whole candidate graph before activation. The helper
@@ -74,6 +76,13 @@ async function finalizeMigratedUpdate(): Promise<void> {
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
     );
   }
+  const activationTimeoutMs =
+    input.params.opts.run?.activationTimeoutMs ??
+    (await resolveUpdateFinalizationTimeoutMs(input.params.updateStepTimeoutMs, {
+      env: input.params.ownedManagedUpdateEnv ?? input.params.opts.run?.env,
+      databases: input.params.schemaVersions,
+      pluginCount: Object.keys(input.params.preUpdatePluginInstallRecords).length,
+    }));
   const finalized = await withUpdateCommandTerminalResult(async (registerRun) => {
     if (input.executor) {
       return await withDelegatedUpdateCommandExecutor(
@@ -82,7 +91,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
         input.params.result.root ?? input.params.root,
         async (fence) => finalizeInput(input, fence, registerRun),
         {
-          activationTimeoutMs: resolveUpdateFinalizationTimeoutMs(input.params.updateStepTimeoutMs),
+          activationTimeoutMs,
         },
       );
     }
@@ -94,6 +103,27 @@ async function finalizeMigratedUpdate(): Promise<void> {
     if (!admissionEnv) {
       throw new Error("Grantless finalization requires its captured update environment.");
     }
+    // v2026.9.3 update-command-migrated.ts:149–195 sends this grantless handoff.
+    // Its captured meta.root is the lease key; activation can retarget that path.
+    // Only the same installation borrows the waiting parent's lease.
+    const meta = input.params.controlPlaneUpdateSentinelMeta;
+    const runId = input.params.opts.run?.runId ?? "";
+    const scratch = path.dirname(input.resultPath);
+    const legacyManagedParent =
+      input.params.result.before?.version === "2026.9.3" &&
+      admissionEnv.OPENCLAW_UPDATE_RUN_HANDOFF === "1" &&
+      admissionEnv.OPENCLAW_UPDATE_RUN_ID === runId &&
+      meta?.runId === runId &&
+      meta.handoffId &&
+      meta.root &&
+      meta.root === resolveUpdateInstallRoot(input.params.result.root ?? input.params.root) &&
+      path.basename(scratch).startsWith("openclaw-update-migrated-") &&
+      path.basename(input.resultPath) === "result.json" &&
+      ["TMPDIR", "TMP", "TEMP"].every(
+        (name) => resolveEnvironmentValue(process.env, name) === scratch,
+      )
+        ? { runId, handoffId: meta.handoffId, root: meta.root }
+        : undefined;
     for (const name of ["TMPDIR", "TMP", "TEMP"] as const) {
       const value = resolveEnvironmentValue(admissionEnv, name);
       if (value === undefined) {
@@ -102,14 +132,16 @@ async function finalizeMigratedUpdate(): Promise<void> {
         process.env[name] = value;
       }
     }
-    // Acquire before adopting the run or making effects. Missing newer grants
-    // still cannot bypass a live original or descendant in that same domain.
-    return await withUpdateCommandExecutor(input.params.opts.run?.runId ?? "", async (executor) => {
-      const fence = await executor.enter(input.params.result.root ?? input.params.root, {
-        activationTimeoutMs: resolveUpdateFinalizationTimeoutMs(input.params.updateStepTimeoutMs),
-      });
-      return await finalizeInput(input, fence, registerRun);
-    });
+    return await withUpdateCommandExecutor(
+      runId,
+      async (executor) => {
+        const fence = await executor.enter(input.params.result.root ?? input.params.root, {
+          activationTimeoutMs,
+        });
+        return await finalizeInput(input, fence, registerRun);
+      },
+      legacyManagedParent ? { legacyManagedParent } : undefined,
+    );
   }, input.params.opts);
   const terminal = getUpdateRun(finalized.run.runId, { env: finalized.run.env });
   if (!terminal || terminal.status === "running") {

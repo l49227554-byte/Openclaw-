@@ -26,6 +26,23 @@ the old Gateway serves, then activates and verifies the update.
 openclaw update
 ```
 
+<Note>
+On FreeBSD, OpenClaw 2026.9.4 can stop before staging an update with
+`managed handoff process start identity is unavailable`. Changing the target or
+adding `--no-restart` cannot repair the installed updater.
+
+For a pkg or Ports installation, update through pkg or Ports; do not overwrite
+its files with npm. For an npm-owned installation, use the
+[manual package-manager procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun)
+from a separate shell, with the same owning npm, installation prefix, and
+Gateway state/configuration. Select a published version whose release notes
+include the FreeBSD fixes; changes on `main` are not a published release.
+
+Stop and start the Gateway through its actual supervisor or foreground process
+owner around the manual replacement. This recovery does not add CLI-managed
+FreeBSD rc.d service updates.
+</Note>
+
 An already-installed registry package version or Git target SHA still runs plugin maintenance, repairs eligible old OpenClaw release pins, and restarts a running managed Gateway only when plugins change and `--no-restart` is not set; unchanged runs finish as `skipped` / `already-current`.
 
 Plugin maintenance does not fail an otherwise successful core update. If a plugin
@@ -56,6 +73,12 @@ It preserves non-secret Gateway auth settings such as `gateway.auth.rateLimit`
 for policy checks, while using a temporary token and disabling Tailscale identity
 authentication.
 The activated Gateway retains your normal listener settings.
+The canary verifies the copied plugin payloads without downloading replacements.
+It warns when plugin refresh is deferred; live update finalization owns that
+refresh, so a slow registry cannot consume the canary's startup budget.
+This candidate-side behavior also applies when the installed updater is 2026.9.3.
+That older updater still caps the entire validation sequence at five minutes;
+its `--timeout` option cannot increase this cap.
 
 Package updates also check npm availability for enabled configured plugins before
 stopping the serving Gateway or replacing the installed core. Registry targets
@@ -190,6 +213,17 @@ transactional updaters from 2026.9.3 onward keep their existing behavior. The
 fallback does not undo an earlier migration; if the database is already newer
 than the restored package, install a compatible target and finish Doctor before
 starting the Gateway.
+
+For a Git checkout updated by 2026.9.2, a Doctor refusal before state writes
+prints source recovery commands when the checkout's reflog identifies the
+previous commit unambiguously. Wait for the updater to exit, then follow the
+printed checkout, `pnpm install`, `pnpm build`, and service-start guidance from
+an independent shell. If the previous commit cannot be verified, Doctor points
+you to the reflog instead. A refusal after state repairs keeps the migration
+owner's instructions: restoring source alone does not restore state.
+These diagnostics also enter the warning log, subject to normal logging settings
+and rotation. After resolving the refusal cause, retry the update. Once the
+upgrade succeeds, subsequent updates validate the candidate before activation.
 
 ### From chat
 

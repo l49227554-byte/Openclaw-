@@ -4,6 +4,7 @@ import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { MessagePort } from "node:worker_threads";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
 import { sha256HexPrefixCore } from "./crypto-digest.js";
 import {
@@ -23,16 +24,13 @@ import {
   acquireDelegatedLifecycleCoordinator,
 } from "./state-database-coordinator-delegate.js";
 
-const heldCoordinators = new Map<
-  string,
-  {
-    coordinator: SqliteCoordinatorLease;
-    references: number;
-    keepAlive: boolean;
-    gatewayOwners: number;
-    gatewayDelegates: Set<Int32Array>;
-  }
->();
+type HeldCoordinator = {
+  coordinator: SqliteCoordinatorLease;
+  references: number;
+  keepAlive: boolean;
+  gatewayOwners: number;
+  gatewayDelegates: Set<Int32Array>;
+};
 
 type SourceReadScope = {
   active: boolean;
@@ -42,16 +40,26 @@ type SourceReadScope = {
   snapshot?: () => Promise<PreparedSqliteReadOnlyLocation>;
   snapshots?: Promise<unknown>[];
 };
-const sourceReadScopes = new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>();
-const canonicalWriteScopes = new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>();
 export type StateDatabaseCoordinatorRuntime = Readonly<{
   directory: string;
   keepAlive: boolean;
 }>;
-const coordinatorRuntimeDirectories = new AsyncLocalStorage<StateDatabaseCoordinatorRuntime>();
-const gatewaySchemaScopes = new AsyncLocalStorage<
-  ReadonlyMap<string, { active: boolean; assertCurrent: () => void }>
->();
+// Retained brokers and freshly loaded callers must borrow the same live owners and scopes.
+const {
+  heldCoordinators,
+  sourceReadScopes,
+  canonicalWriteScopes,
+  coordinatorRuntimeDirectories,
+  gatewaySchemaScopes,
+} = resolveGlobalSingleton(Symbol.for("openclaw.stateDatabaseCoordinator"), () => ({
+  heldCoordinators: new Map<string, HeldCoordinator>(),
+  sourceReadScopes: new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>(),
+  canonicalWriteScopes: new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>(),
+  coordinatorRuntimeDirectories: new AsyncLocalStorage<StateDatabaseCoordinatorRuntime>(),
+  gatewaySchemaScopes: new AsyncLocalStorage<
+    ReadonlyMap<string, { active: boolean; assertCurrent: () => void }>
+  >(),
+}));
 
 type CoordinatorFamily = "gateway-lifecycle" | "state-lifecycle" | "state-handles";
 type CoordinatorOptions = {
@@ -70,22 +78,36 @@ type StateDatabaseCoordinatorLease = {
   release: () => void;
 };
 
-export class StateDatabaseCoordinatorContentionError extends SqliteCoordinatorError {
-  constructor(readonly family: CoordinatorFamily) {
-    super(`another OpenClaw process owns ${family}`);
-    this.name = "StateDatabaseCoordinatorContentionError";
-  }
-}
+export const StateDatabaseCoordinatorContentionError = resolveGlobalSingleton(
+  Symbol.for("openclaw.stateDatabaseCoordinatorContentionError"),
+  () =>
+    class CoordinatorContentionError extends SqliteCoordinatorError {
+      constructor(readonly family: CoordinatorFamily) {
+        super(`another OpenClaw process owns ${family}`);
+        this.name = "StateDatabaseCoordinatorContentionError";
+      }
+    },
+);
+export type StateDatabaseCoordinatorContentionError = InstanceType<
+  typeof StateDatabaseCoordinatorContentionError
+>;
 
-export class StateSchemaMutationConflictError extends SqliteCoordinatorError {
-  constructor(databasePath: string, cause: unknown) {
-    super(
-      `OpenClaw refused shared state schema mutation at ${databasePath} because another Gateway owns that state directory. Stop that Gateway or perform the update through its managed restart path, then retry.`,
-      cause,
-    );
-    this.name = "StateSchemaMutationConflictError";
-  }
-}
+export const StateSchemaMutationConflictError = resolveGlobalSingleton(
+  Symbol.for("openclaw.stateSchemaMutationConflictError"),
+  () =>
+    class SchemaMutationConflictError extends SqliteCoordinatorError {
+      constructor(databasePath: string, cause: unknown) {
+        super(
+          `OpenClaw refused shared state schema mutation at ${databasePath} because another Gateway owns that state directory. Stop that Gateway or perform the update through its managed restart path, then retry.`,
+          cause,
+        );
+        this.name = "StateSchemaMutationConflictError";
+      }
+    },
+);
+export type StateSchemaMutationConflictError = InstanceType<
+  typeof StateSchemaMutationConflictError
+>;
 
 export function resolveStateLifecycleRuntimeDirectory(): string {
   const captured = coordinatorRuntimeDirectories.getStore();
@@ -265,6 +287,38 @@ export function acquireGatewayLifecycleCoordinator(params: CoordinatorOptions) {
   return acquireLifecycleCoordinator("gateway-lifecycle", params, { gatewayOwner: true });
 }
 
+/** Maintenance lends schema access only to jobs admitted through its lexical resource scope. */
+export function acquireGatewayMaintenanceCoordinator(params: CoordinatorOptions) {
+  const lease = acquireLifecycleCoordinator("gateway-lifecycle", params);
+  return {
+    ...lease,
+    get closed() {
+      return lease.closed;
+    },
+    createSchemaFenceDelegate(this: void, target: GatewaySchemaFenceDelegateParams) {
+      if (resolveGatewaySchemaFencePath(target) !== lease.path) {
+        return undefined;
+      }
+      if (lease.closed) {
+        throw new SqliteCoordinatorError("Gateway maintenance coordinator is closed");
+      }
+      const retained = acquireLifecycleCoordinator("gateway-lifecycle", {
+        ...target,
+        coordinatorPath: lease.path,
+      });
+      const live = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+      Atomics.store(live, 0, 1);
+      return createCoordinatorDelegate(
+        { actorId: target.actorId, coordinatorPath: lease.path },
+        live,
+        retained,
+        () => Atomics.store(live, 0, 0),
+        "Gateway maintenance schema delegate",
+      );
+    },
+  };
+}
+
 type GatewaySchemaFenceDelegateParams = Pick<
   CoordinatorOptions,
   "databasePath" | "runtimeDirectory" | "uid"
@@ -278,6 +332,15 @@ function resolveGatewaySchemaFencePath(
     runtimeDirectory: params.runtimeDirectory ?? resolveStateLifecycleRuntimeDirectory(),
     uid: params.uid ?? (typeof process.getuid === "function" ? process.getuid() : undefined),
   });
+}
+
+/** Legacy cleanup must exclude new admission without borrowing a process-local owner. */
+export function tryAcquireGatewayLifecycleCleanupCoordinator(
+  params: Pick<CoordinatorOptions, "databasePath" | "runtimeDirectory" | "uid">,
+): SqliteCoordinatorLease | null {
+  const pathname = resolveGatewaySchemaFencePath(params);
+  ensurePrivateSqliteCoordinatorDirectory(path.dirname(pathname), "gateway-lifecycle coordinator");
+  return tryAcquireExclusiveSqliteCoordinator(pathname, { busyTimeoutMs: 0 });
 }
 
 /** The broker owns this pin until backend close acknowledges or worker exit joins. */

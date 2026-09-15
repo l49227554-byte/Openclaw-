@@ -46,6 +46,59 @@ Tideclaw alpha builds are a separate internal prerelease track (npm dist-tag `al
 - If a beta tag has been pushed or published and needs a fix, maintainers cut the next `-beta.N` tag instead of deleting or recreating the old one
 - Detailed release procedure, approvals, credentials, and recovery notes are maintainer-only
 
+## Linux companion publication
+
+Regular stable publication requests Linux bundles automatically after GitHub
+activation. A successful request is not completed Linux publication. Verify the
+versioned AppImage, Debian package, signatures, and checksums independently;
+pending Linux work does not block npm, Docker, GitHub finalization, or stable
+main closeout.
+
+The Linux publisher writes immutable `OpenClaw-<version>-linux.json` evidence
+beside the bundles. It binds the source tag/SHA, original release ID, trusted
+tooling SHA, updater key, and exact asset identities. Complete public bundles
+are verified and reused rather than rebuilt. Asset completeness is separate
+from unfinished channel publication.
+
+One post-build publisher advances the fixed `linux-stable` control release's
+`latest.json` only forward, then mirrors those exact bytes onto the latest
+Gateway release. An authorized Linux publication creates the control release
+as prerelease/non-latest when absent; ordinary PR validation never creates it.
+Conflicting state, or missing canonical metadata on an existing channel, fails
+closed; it never grants permission to overwrite arbitrary metadata.
+
+Before activating a new Gateway release, the existing carry step preserves the
+previous usable Linux manifest's original version, signature, and download URL.
+After finalization and readback, a bounded detached mirror-only request catches
+up that legacy endpoint without keeping the core release waiting for the
+metadata queue. Dispatch acceptance is not mirror success. Cancellation, queue
+overflow, timeout, and readback failures are visible degraded outcomes requiring
+reconciliation, not reasons to roll back core publication.
+
+Every asset or release-note mutation revalidates the live executing writer and
+its original validated publication request after preparatory reads. A canceled
+or superseded attempt stops before its next write, including between deletion
+and replacement. Partial state remains available for investigation.
+
+An interrupted deletion of canonical `latest.json` requires explicit
+release-owner reconciliation; normal publication refuses to guess a version
+floor. Retain the last verified canonical manifest and all intervening
+publication evidence. Under exclusive metadata-writer ownership, reread the
+channel release ID, tag/SHA, inventory, and canonical absence, then prove that
+the selected immutable manifest is not older than any intervening valid
+publication. Verify its source and asset identities, restore those exact bytes,
+and read back both canonical and legacy endpoints. Stop on ambiguity; a supplied
+version/hash or current Gateway `latest` alone is not Linux forward-order proof.
+
+This tooling does not activate a new shipped endpoint or download link.
+Existing clients retain `releases/latest/download/latest.json`. A later
+`linux-stable` client cutover requires separate release approval, qualified
+signed artifacts, and an installed-old-client migration proof. An old client
+cannot acquire a corrected version comparator before its current comparator
+offers the update; verify the chosen version is newer under that shipped
+comparator. Local tests, unsigned packaging, and metadata readback do not prove
+that migration.
+
 ## Release changelog artifacts
 
 `CHANGELOG.md` is the generated release index. Each release has one complete
@@ -331,6 +384,12 @@ Source admission validates committed metadata before selected producers start.
 It is not registry eligibility, product-validation success, or publication
 authority. Nonpublish work explicitly selects `diagnostic`,
 `main-qualification`, or `postpublish-confidence` without a publication selection.
+Fresh publish tooling additionally collects and retains selected public-registry
+observations before fanout. The checklist and evidence verification authenticate
+that original admission and compare their actual operands without repeating the
+FRV observation sweep. Publishers retain their live registry planning, trust
+checks, and final readbacks. Supported bootstrap routes still require downstream
+owner authorization; admission does not grant it.
 
 An explicit stable or full release request includes macOS publication unless the operator limits its scope. That authorization carries through macOS validation, signing, notarization, promotion, and verification without a separate macOS consent step. Follow the current owner-configured environment policy and retain all enforced rules and exact-source artifact checks.
 
@@ -382,6 +441,21 @@ For beta, stable, and full profiles, Linux (`ubuntu`) cross-OS lanes gate npm pu
 10. On a failed publish attempt, keep the Release SHA unchanged unless the failure proves a product or changelog defect. Resume successful immutable children and artifacts; never rebuild or republish a package version that already succeeded. An app failure is an independent recovery task: retain its summary and evidence, and recover that platform without rerunning npm or keeping the GitHub release drafted.
 11. For stable, publish through `OpenClaw Release Publish` after Full Release Validation and candidate evidence pass, reusing the successful preflight artifact via `preflight_run_id`. Plugin npm publication gates core npm; ClawHub runs in parallel. The GitHub release finalizes after npm and Docker evidence passes. Run macOS through the validation, preflight, and publish workflows in `openclaw/releases`; its `.zip`, `.dmg`, `.dSYM.zip`, and signed `appcast.xml` retain their own verification requirements. Windows Hub and Android also attach their verified assets independently. Android dispatch starts after core npm succeeds and may finish after the GitHub release becomes public. Supply both optional Windows inputs to schedule promotion after GitHub publication, or use the [manual recovery command](#regular-release-publish-automation) later. App approval, build, signing, promotion, or failure never delays npm or the GitHub release.
 12. After publish, run the npm post-publish verifier, optional standalone published-npm Telegram E2E when you need post-publish channel proof, dist-tag promotion when needed, and verify the generated GitHub release page. Announce the published surfaces accurately, then complete [Stable main closeout](#stable-main-closeout), recording pending apps explicitly. App workflows can finish afterward; verify their assets and the macOS appcast before announcing those platforms complete.
+
+Regular stable GitHub activation automatically requests the Linux AppImage and
+Debian package through `Linux App Release Request` on `main`, for both the
+legacy publisher and `OpenClaw Release Button`. Request acceptance does not mean
+the assets have published; verify the independent `Linux App Release` run and
+its signed updater manifest. Before advancing GitHub latest, the publisher
+preserves the previous Linux update while the new build is pending. Complete
+same-tag Linux assets are reused on retries; partial assets require targeted
+recovery without replacing published bytes. Alpha and beta prereleases, and
+extended-stable publication, do not inherit this Linux request.
+
+After Linux assets publish, rebuild `openclaw.ai` through its website deployment
+owner: desktop download data is resolved at build time. Verify the deployed Apps
+card's version and both Linux download URLs before calling the website handoff
+complete.
 
 ## Stable main closeout
 

@@ -11,8 +11,7 @@ import { t } from "../../i18n/index.ts";
 import { normalizeAgentLabel } from "../../lib/agents/display.ts";
 import { currentConfigObject } from "../../lib/config/config-state-model.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
-import { subscribeModelCatalogCache } from "../../lib/model-catalog-cache.ts";
-import { peekModelCatalog, subscribeModelCatalogChanges } from "../../lib/model-catalog-store.ts";
+import * as modelCatalog from "../../lib/model-catalog-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
@@ -193,9 +192,10 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
   private readonly subscriptions = new SubscriptionsController(this)
     .effect(
       () => this.context?.gateway,
-      (gateway) => subscribeModelCatalogChanges(gateway, () => void this.refresh("publication")),
+      (gateway) =>
+        modelCatalog.subscribeModelCatalogChanges(gateway, () => void this.refresh("publication")),
     )
-    .watch(() => this.context?.gateway.snapshot.client, subscribeModelCatalogCache)
+    .watch(() => this.context?.gateway.snapshot.client, modelCatalog.subscribeModelCatalogCache)
     .watch(
       () => this.context?.runtimeConfig,
       (runtimeConfig, notify) => runtimeConfig.subscribe(notify),
@@ -593,7 +593,6 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
       key: "defaults",
       raw: buildDefaultsPatch(defaults),
       note: t("modelProviders.notes.defaultModel"),
-      success: t("modelProviders.defaults.saved"),
       replacePaths: DEFAULT_MODELS_REPLACE_PATHS,
     });
     // Keep the draft when fresh provider data is unavailable after commit.
@@ -619,7 +618,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     const config = readModelProviderConfig(configObject);
     const catalog =
       gatewaySnapshot.client && this.selectedAgentId
-        ? peekModelCatalog(
+        ? modelCatalog.peekModelCatalog(
             gatewaySnapshot.client,
             { agentId: this.selectedAgentId },
             { allowStale: true },

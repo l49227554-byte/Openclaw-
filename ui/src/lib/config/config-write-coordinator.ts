@@ -42,9 +42,8 @@ type ConfigWriteCoordinatorContext = {
   state: RuntimeConfigState;
   gateway: RuntimeConfigGateway;
   publish: () => void;
-  run: <T>(task: () => Promise<T>) => Promise<T>;
+  run: <T>(task: () => Promise<T>, loadKey?: "config" | "schema") => Promise<T>;
   mutate: (task: () => void) => void;
-  trackLoad: (key: "config" | "schema", promise: Promise<unknown>) => Promise<void>;
   resetLoads: () => void;
   resetConfigLoad: () => void;
   refreshConnectionState: (beforeApplySnapshot?: () => void) => Promise<boolean>;
@@ -66,7 +65,6 @@ export function createConfigWriteCoordinator({
   publish,
   run,
   mutate,
-  trackLoad,
   resetLoads,
   resetConfigLoad,
   refreshConnectionState,
@@ -300,6 +298,8 @@ export function createConfigWriteCoordinator({
   const drainPendingWrites = async (flushScheduledDraft = false): Promise<void> => {
     while (true) {
       if (flushScheduledDraft) {
+        // A debounce timer is pending persisted intent. Flush it into a tracked
+        // flight before draining so external writers cannot race the draft.
         flushScheduledAutoSave();
       }
       const flight = inFlight;
@@ -322,8 +322,7 @@ export function createConfigWriteCoordinator({
       }
     }
   };
-  // Discard barrier shared by discardDraft and refresh({discardPendingChanges}):
-  // settle pending writes with trailing saves suppressed so a late completion
+  // Settle pending writes with trailing saves suppressed so a late completion
   // cannot trail the just-discarded bytes back to disk.
   const drainWritesForDiscard = async (): Promise<void> => {
     cancelScheduledAutoSave();
@@ -536,18 +535,10 @@ export function createConfigWriteCoordinator({
     scheduleAutoSave();
   };
   const writes: ConfigWriteCoordinator = {
-    prepareDiscard: drainWritesForDiscard,
     patchForm: (path, value) => mutateDraft(() => updateConfigFormValue(state, path, value)),
     removeFormValue: (path) => mutateDraft(() => removeConfigFormValue(state, path)),
     setRaw: (value) => mutateDraft(() => updateConfigRawValue(state, value)),
-    resetDraft: () => {
-      patches.clear();
-      cancelScheduledAutoSave();
-      mutate(() => resetConfigPendingChanges(state));
-      clearAutoSaveDraftConnection();
-      reconcileAppliedRefresh();
-    },
-    discardDraft: async () => {
+    discardDraft: async (options) => {
       // Settle pending writes first (with trailing saves suppressed — the
       // draft is being thrown away, not re-written) so a late ack cannot
       // re-dirty or trail-write over the discard.
@@ -555,9 +546,11 @@ export function createConfigWriteCoordinator({
       if (state.connected && state.client) {
         cancelAppliedRefresh();
         try {
-          const loaded = run(() => loadConfig(state, { discardPendingChanges: true }));
-          await trackLoad("config", loaded);
-          if (await loaded) {
+          const loaded = await run(
+            () => loadConfig(state, { discardPendingChanges: true }),
+            "config",
+          );
+          if (loaded) {
             clearAutoSaveDraftConnection();
           }
         } finally {
@@ -565,7 +558,7 @@ export function createConfigWriteCoordinator({
         }
         return;
       }
-      if (state.configRecoveryError !== null) {
+      if (options?.reloadOnly || state.configRecoveryError !== null) {
         return;
       }
       // Offline: a network refresh would silently no-op and strand the
@@ -601,13 +594,7 @@ export function createConfigWriteCoordinator({
         scheduleAutoSave();
       }
     },
-    waitForPendingWrites: () => {
-      // A debounce timer represents pending persisted intent too. Convert it
-      // into a tracked flight before draining so external writers cannot race
-      // the draft simply because the user clicked again within 800 ms.
-      flushScheduledAutoSave();
-      return drainPendingWrites(true);
-    },
+    waitForPendingWrites: () => drainPendingWrites(true),
     save: (options = {}) => {
       const canDispatch = () =>
         canDispatchConfigMutation("config.set") && (options.canDispatch?.() ?? true);
@@ -733,11 +720,7 @@ export function createConfigWriteCoordinator({
               mutationConnectionEpoch,
               task,
               options,
-              async () => {
-                const refresh = run(() => refreshConfigAfterMutation(state));
-                void trackLoad("config", refresh);
-                return await refresh;
-              },
+              () => run(() => refreshConfigAfterMutation(state), "config"),
               onSubmitted,
             ),
           (recoveryError) => ({

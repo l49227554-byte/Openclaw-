@@ -276,16 +276,24 @@ export async function loadSessionLogs(params: {
   const resolveCost = createUsageCostResolver({ config: params.config, agentDir });
 
   for await (const parsed of readTranscriptRecordsBestEffort(sessionFile)) {
+    let role: SessionLogEntry["role"];
+    let content: string;
     try {
       const message = parsed.message as Record<string, unknown> | undefined;
       if (!message) {
         continue;
       }
 
-      const role = message.role as string | undefined;
-      if (role !== "user" && role !== "assistant" && role !== "tool" && role !== "toolResult") {
+      const recordRole = message.role as string | undefined;
+      if (
+        recordRole !== "user" &&
+        recordRole !== "assistant" &&
+        recordRole !== "tool" &&
+        recordRole !== "toolResult"
+      ) {
         continue;
       }
+      role = recordRole;
 
       const contentParts: string[] = [];
       const rawToolName = message.toolName ?? message.tool_name ?? message.name ?? message.tool;
@@ -346,7 +354,7 @@ export async function loadSessionLogs(params: {
       }
 
       const rawText = contentParts.join("\n");
-      let content =
+      content =
         role === "user"
           ? stripUserEnvelopeForDisplay(rawText).trim()
           : stripInboundMetadata(rawText.trim());
@@ -359,27 +367,28 @@ export async function loadSessionLogs(params: {
       if (content.length > maxLen) {
         content = truncateUtf16Safe(content, maxLen) + "…";
       }
-
-      // Logs share pricing and timestamp interpretation with summaries and charts.
-      // Recomputing here can turn unknown prices into zero or ignore tiered rates.
-      const entry = await parseUsageCostTranscriptEntryAsync(parsed, resolveCost, params.config);
-      const usage = role === "assistant" ? entry?.usage : undefined;
-
-      logs.push({
-        timestamp: entry?.timestamp?.getTime() ?? 0,
-        role,
-        content,
-        tokens: usage ? computeUsageTokenTotals(usage).totalTokens : undefined,
-        cost: usage ? entry?.costTotal : undefined,
-      });
-      // Timestamps can arrive out of order, so keep a bounded sorted window instead
-      // of relying on transcript append order or retaining the whole file.
-      if (boundedLimit && logs.length > retentionLimit) {
-        logs.sort((a, b) => a.timestamp - b.timestamp);
-        logs.splice(0, logs.length - limit);
-      }
     } catch {
-      // Ignore malformed lines
+      // Ignore malformed records.
+      continue;
+    }
+
+    // Logs share pricing and timestamp interpretation with summaries and charts.
+    // Recomputing here can turn unknown prices into zero or ignore tiered rates.
+    const entry = await parseUsageCostTranscriptEntryAsync(parsed, resolveCost, params.config);
+    const usage = role === "assistant" ? entry?.usage : undefined;
+
+    logs.push({
+      timestamp: entry?.timestamp?.getTime() ?? 0,
+      role,
+      content,
+      tokens: usage ? computeUsageTokenTotals(usage).totalTokens : undefined,
+      cost: usage ? entry?.costTotal : undefined,
+    });
+    // Timestamps can arrive out of order, so keep a bounded sorted window instead
+    // of relying on transcript append order or retaining the whole file.
+    if (boundedLimit && logs.length > retentionLimit) {
+      logs.sort((a, b) => a.timestamp - b.timestamp);
+      logs.splice(0, logs.length - limit);
     }
   }
 

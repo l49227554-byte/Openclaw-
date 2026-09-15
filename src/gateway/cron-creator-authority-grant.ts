@@ -36,6 +36,8 @@ export type CronCreatorAuthorityRunScope = {
   readonly signal: AbortSignal;
   readonly grantTokens: Set<string>;
   readonly managementEntitlement?: CronManagementEntitlement;
+  /** @deprecated Read managementEntitlement. Harness source compatibility lasts through 2026-10-12. */
+  readonly controlUiAdmin?: true;
   readonly isCurrent?: () => boolean;
   active: boolean;
   abort: () => void;
@@ -73,6 +75,9 @@ export function createCronCreatorAuthorityRunScope(
     signal: abortController.signal,
     grantTokens: new Set(),
     ...(managementEntitlement ? { managementEntitlement } : {}),
+    get controlUiAdmin(): true | undefined {
+      return managementEntitlement?.source === "control-ui-admin" ? true : undefined;
+    },
     ...(isCurrent ? { isCurrent } : {}),
     active: true,
     abort: () => abortController.abort(expiredAuthorityError()),

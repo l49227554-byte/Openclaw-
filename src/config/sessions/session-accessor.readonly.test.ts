@@ -110,7 +110,7 @@ describe("session accessor readonly listing", () => {
         }
         expect(retained?.isOpen).toBe(false);
         const [descendant] = await Promise.all(descendants);
-        expect(descendant).not.toBe(retained);
+        expect(Object.is(descendant, retained)).toBe(false);
         expect(descendant?.isOpen).toBe(false);
         expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
       } finally {

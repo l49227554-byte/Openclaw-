@@ -58,7 +58,7 @@ async function startCdpFixture(
       sockets.delete(socket);
     });
   });
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on("upgrade", (request, socket, head) => {
     socket.once("close", () => disconnected.handshake.resolve());
     releaseUpgrade = () =>

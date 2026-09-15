@@ -90,14 +90,15 @@ class PluginSurfaceDirective extends AsyncDirective {
     // Built-in renderers remain synchronous and do not create a component for
     // every transcript row. Only a selected replacement owns a DOM mount.
     return this.runtime?.selectedReplacement(surface)
-      ? html`${replacementCompanion}<openclaw-plugin-view
-            ?data-plugin-composer=${surface === "composer"}
-            .surface=${surface}
-            .props=${props}
-            .defaultView=${defaultView}
-            .defaultHost=${this.host}
-            .presented=${presented}
-          ></openclaw-plugin-view>`
+      ? html`<openclaw-plugin-view
+          ?data-plugin-composer=${surface === "composer"}
+          .surface=${surface}
+          .props=${props}
+          .defaultView=${defaultView}
+          .replacementCompanion=${replacementCompanion}
+          .defaultHost=${this.host}
+          .presented=${presented}
+        ></openclaw-plugin-view>`
       : defaultView;
   }
 }

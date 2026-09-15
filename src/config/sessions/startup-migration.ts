@@ -107,7 +107,15 @@ export function assertSessionStoreMigrationComplete(params: {
     const sourceSha256 = createHash("sha256").update(source.bytes).digest("hex");
     // Empty indexes may have unindexed history: retain the existing requirement
     // for every named owner's verified receipt rather than infer ownership here.
-    const required = new Set<SourceOwner>(source.entries.length === 0 ? owners.values() : []);
+    // Owners without a database can never hold a replayable receipt (receipts bind
+    // the database identity, which a later-created database would invalidate), and
+    // a zero-record source has nothing to replay for them. Requiring their receipt
+    // deadlocks startup: doctor refuses to create a database just for the receipt.
+    const required = new Set<SourceOwner>(
+      source.entries.length === 0
+        ? [...owners.values()].filter(({ destination }) => fs.existsSync(destination))
+        : [],
+    );
     for (const { sessionKey } of source.entries) {
       const matches = [...owners.values()].filter(
         ({ target }) =>

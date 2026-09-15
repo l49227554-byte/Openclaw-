@@ -555,6 +555,43 @@ describe("session sources needed by deferred plugin migrations", () => {
     },
   );
 
+  it("lets startup proceed for an empty index when the owner has no database yet", async () => {
+    await withOpenClawTestState({ label: "deferred-empty-index-no-db" }, async (state) => {
+      const cfg: OpenClawConfig = { agents: { entries: { main: { default: true } } } };
+      const directory = state.sessionsDir("main");
+      fs.mkdirSync(directory, { recursive: true });
+      const storePath = path.join(directory, "sessions.json");
+      fs.writeFileSync(storePath, "{}");
+      recordDeferredPluginMigrations({
+        env: state.env,
+        pending: [
+          {
+            pluginId: "fixture-plugin",
+            reason: "Plugin is unavailable.",
+            command: "openclaw doctor --fix",
+          },
+        ],
+      });
+      // No owner can hold a replayable receipt without a database, and a
+      // zero-record source has nothing to replay: startup must not demand one.
+      expect(() => assertSessionStoreMigrationComplete({ cfg, env: state.env })).not.toThrow();
+      const report = await runDoctorSessionSqlite({
+        cfg,
+        env: state.env,
+        allAgents: true,
+        mode: "import",
+      });
+      expect(report.totals.importedEntries).toBe(0);
+      expect(() => assertSessionStoreMigrationComplete({ cfg, env: state.env })).not.toThrow();
+      const sqlitePath = resolveSqliteTargetFromSessionStorePath(storePath, {
+        agentId: "main",
+        env: state.env,
+      }).path;
+      expect(fs.existsSync(sqlitePath)).toBe(false);
+      expect(fs.readFileSync(storePath, "utf8")).toBe("{}");
+    });
+  });
+
   it.each(["unimported-owner", "unassigned", "retired-owner", "malformed", "unreadable"] as const)(
     "keeps readiness blocked for a retained source with %s state",
     async (kind) => {

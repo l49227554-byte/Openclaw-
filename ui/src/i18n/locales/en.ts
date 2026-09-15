@@ -2526,8 +2526,6 @@ export const en: TranslationMap & {
       verify: "Set up & verify",
       install: "Review & install",
       custom: "Set up endpoint",
-      signIn: "Sign in",
-      pair: "Pair",
       more: "More sign-in options",
     },
     prepare: {

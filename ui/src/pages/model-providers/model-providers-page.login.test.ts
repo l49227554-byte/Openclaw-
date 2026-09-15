@@ -313,7 +313,7 @@ describe("Models provider login", () => {
   );
 
   it.each(["error", "input"] as const)(
-    "shows the next %s without replaying skipped notes as terminal errors",
+    "keeps recovery guidance in the next %s without replaying it in the ordinary alert",
     async (outcome) => {
       vi.spyOn(window, "open").mockReturnValue(null);
       const { context, request } = loginHarness();
@@ -355,9 +355,12 @@ describe("Models provider login", () => {
       );
       if (outcome === "error") {
         expect(page.querySelector("[role=alert]")?.textContent).not.toContain(guidance);
-        expect(page.querySelector("openclaw-modal-dialog")?.textContent).not.toContain(guidance);
-        expect(page.querySelector("details")?.textContent).toContain(
-          "Certificate validation failed.",
+        const details = page.querySelector<HTMLDetailsElement>("openclaw-modal-dialog details")!;
+        expect(details.open).toBe(false);
+        details.querySelector("summary")!.click();
+        expect(details.open).toBe(true);
+        expect(details.querySelector("p")?.textContent).toBe(
+          ["Certificate validation failed.", guidance].join("\n\n"),
         );
       }
       expect(page.querySelector("openclaw-modal-dialog")?.textContent).toContain(

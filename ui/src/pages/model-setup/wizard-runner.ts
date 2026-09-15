@@ -487,7 +487,13 @@ export class ModelSetupWizardRunner {
       next = { ...next, externalAuthInput: true };
     }
     if (session.notes.length) {
-      if (next.phase === "step" && next.step.executor !== "gateway" && !next.step.externalUrl) {
+      if (next.phase === "error") {
+        next = { ...next, message: [next.message, ...session.notes].join("\n\n") };
+      } else if (
+        next.phase === "step" &&
+        next.step.executor !== "gateway" &&
+        !next.step.externalUrl
+      ) {
         next = {
           ...next,
           step: {
@@ -592,7 +598,7 @@ export class ModelSetupWizardRunner {
     const message = sessionExpired
       ? this.options.sessionExpiredMessage()
       : formatUiError(error, this.options.requestFailedMessage());
-    this.setState({ phase: "error", message });
+    this.setState({ phase: "error", message: [message, ...session.notes].join("\n\n") });
   }
 
   private async cancelSession(session: WizardSession): Promise<WizardStatusResult | undefined> {

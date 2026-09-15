@@ -1228,7 +1228,6 @@ async function sendSubagentAnnounceDirectly(params: {
         path: "direct",
         reason: "message_tool_delivery_missing",
         error: "completion agent did not use the message tool for message-tool-only delivery",
-        disposition: "permanent_failure",
       };
     }
     const hasVisibleCompletionReply = Boolean(

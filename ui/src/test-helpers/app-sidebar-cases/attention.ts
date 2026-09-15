@@ -471,6 +471,9 @@ describe("AppSidebar session attention", () => {
     sidebar.sidebarAgentsMode = "roster";
     await waitForFast(() => {
       expect(
+        sidebar.querySelector(`openclaw-sidebar-agent-roster [data-session-key="${parentKey}"]`),
+      ).not.toBeNull();
+      expect(
         parentRow()
           ?.querySelector('[data-session-attention="error"]')
           ?.closest('[role="img"]')
@@ -482,8 +485,10 @@ describe("AppSidebar session attention", () => {
       row.key === failedKey ? Object.assign({}, row, { lastReadAt: 2 }) : row,
     );
     setRows(sessionsHarness, result.sessions);
-    await sidebar.updateComplete;
-    expect(parentRow().querySelector('[data-session-attention="error"]')).toBeNull();
+    await waitForFast(() => {
+      expect(parentRow()).not.toBeNull();
+      expect(parentRow().querySelector('[data-session-attention="error"]')).toBeNull();
+    });
   });
 
   it("shows attention again when a later failure follows a read", async () => {

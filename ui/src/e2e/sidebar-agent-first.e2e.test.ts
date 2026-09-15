@@ -185,7 +185,7 @@ suite.define(() => {
             .toBe(1);
           expect(
             await group.locator(".sidebar-agent-roster__signals wa-tooltip[open]").textContent(),
-          ).toContain("Run failed: Geometry mismatch");
+          ).toContain("Child session Review failed checks failed: Geometry mismatch");
           const attentionBounds = (await attention.boundingBox())!;
           const actionBounds = (await group
             .locator(".sidebar-agent-roster__actions")

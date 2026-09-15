@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import { resolveAgentDir } from "../agents/agent-scope.js";
 import {
   AuthProfileMigrationRequiredError,
@@ -132,7 +132,9 @@ it.each(["fixture", "unrelated"])(
     );
     cfg.agents!.defaults!.model = `fixture/test-model@${profileId}`;
     cfg.auth = { profiles: { [profileId]: { provider: "fixture", mode: "api_key" } } };
-    delete cfg.models!.providers!.fixture.apiKey;
+    const provider = cfg.models?.providers?.fixture;
+    assert(provider);
+    delete provider.apiKey;
     await fs.writeFile(configPath, JSON.stringify(cfg));
     const snapshot = await readSnapshot();
     const route = await resolveSystemAgentConfiguredRouteFromConfig(

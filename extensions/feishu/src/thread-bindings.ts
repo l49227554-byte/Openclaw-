@@ -232,7 +232,7 @@ export function createFeishuThreadBindingManager(params: {
               })),
         label: normalizeOptionalString(metadata?.label) ?? previous?.label,
         boundBy: normalizeOptionalString(metadata?.boundBy) ?? previous?.boundBy,
-        boundAt: now,
+        boundAt: Math.max(now, (existingLocal?.boundAt ?? -1) + 1),
         lastActivityAt: now,
         metadata: targetMetadata,
       };
@@ -295,6 +295,7 @@ export function createFeishuThreadBindingManager(params: {
   const sessionBindingAdapter: SessionBindingAdapter = {
     channel: "feishu",
     accountId,
+    supportsConditionalUnbind: true,
     capabilities: {
       placements: ["current"],
     },
@@ -332,6 +333,25 @@ export function createFeishuThreadBindingManager(params: {
       }
     },
     unbind: async (input) => {
+      if (input.shouldUnbind) {
+        const conversationId = resolveThreadBindingConversationIdFromBindingId({
+          accountId,
+          bindingId: input.bindingId,
+        });
+        const binding = conversationId ? manager.getByConversationId(conversationId) : null;
+        const records = input.targetSessionKey?.trim()
+          ? manager.listBySessionKey(input.targetSessionKey.trim())
+          : binding
+            ? [binding]
+            : [];
+        return records.flatMap((record) => {
+          if (!input.shouldUnbind?.(toSessionBindingRecord(record, bindingTimeouts))) {
+            return [];
+          }
+          const removed = manager.unbindConversation(record.conversationId);
+          return removed ? [toSessionBindingRecord(removed, bindingTimeouts)] : [];
+        });
+      }
       if (input.targetSessionKey?.trim()) {
         return manager
           .unbindBySessionKey(input.targetSessionKey.trim())

@@ -2641,11 +2641,10 @@ describe("cron service timer regressions", () => {
       await timerRun;
       await vi.waitFor(() => {
         expect(secondScheduledStarted).toHaveBeenCalledWith(secondScheduledJob.id);
+        expect(requireJob(state, secondScheduledJob.id).state.runningAtMs).toBeUndefined();
       });
 
-      const second = requireJob(state, secondScheduledJob.id);
       expect(onIsolatedAgentSetupTimeout).toHaveBeenCalledTimes(1);
-      expect(second.state.runningAtMs).toBeUndefined();
     } finally {
       stop(state);
       runnerResult.resolve({ status: "ok", summary: "done" });

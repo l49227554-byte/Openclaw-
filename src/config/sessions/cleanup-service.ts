@@ -1,15 +1,23 @@
 import fs from "node:fs";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
+import { toErrorObject } from "../../infra/errors.js";
+import type { SessionBindingRecord } from "../../infra/outbound/session-binding.types.js";
 import { getLogger } from "../../logging/logger.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import type { createAgentDeletionDatabaseCleanup } from "../../state/agent-deletion-cleanup.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import {
+  assertCleanupBindingsAvailable,
+  captureCleanupBindings,
+  unbindCommittedCleanupBindings,
+} from "./cleanup-bindings.js";
 import {
   createSessionsCleanupFailure,
   SessionsCleanupFailureError,
   type SessionCleanupSummary,
   type SessionsCleanupFailure,
 } from "./cleanup-result.js";
+import { resolveCleanupSqlitePath } from "./cleanup-target.js";
 import {
   pruneUnreferencedSessionArtifacts,
   resolveSessionArtifactCanonicalPathsForEntry,
@@ -81,11 +89,6 @@ type SessionsCleanupRunResult = {
   }>;
   appliedSummaries: SessionCleanupSummary[];
 } & ({ failure?: never } | { failure: SessionsCleanupFailure });
-
-function resolveCleanupSqlitePath(target: SessionStoreTarget): string {
-  return resolveSqliteTargetFromSessionStorePath(target.storePath, { agentId: target.agentId })
-    .path;
-}
 
 function loadCleanupSessionStore(
   target: SessionStoreTarget,
@@ -456,6 +459,8 @@ export async function runSessionsCleanup(params: {
   opts: SessionsCleanupOptions;
   targets?: SessionStoreTarget[];
   reclamationMode?: "worker" | "in-process";
+  /** Offline callers cannot inventory all persisted channel-owned binding stores. */
+  bindingCleanupMode?: "runtime" | "offline";
 }): Promise<SessionsCleanupRunResult> {
   const { cfg, opts } = params;
   const maintenance = resolveMaintenanceConfig();
@@ -492,6 +497,7 @@ export async function runSessionsCleanup(params: {
         failingTarget = target;
         failingTargetLifecycleCommitted = false;
         const missingRemovals: SessionEntryLifecycleRemoval[] = [];
+        const missingBindings = new Map<string, SessionBindingRecord[]>();
         const dmScopeRetiredRemovals: SessionEntryLifecycleRemoval[] = [];
         if (opts.fixMissing || opts.fixDmScope) {
           const applyStore = loadCleanupSessionStore(target, { createIfMissing: true });
@@ -500,6 +506,7 @@ export async function runSessionsCleanup(params: {
               store: applyStore,
               target,
               onPruned: (sessionKey, entry, inspection) => {
+                missingBindings.set(sessionKey, captureCleanupBindings(cfg, target, sessionKey));
                 missingRemovals.push({
                   sessionKey,
                   expectedEntry: structuredClone(entry),
@@ -529,12 +536,20 @@ export async function runSessionsCleanup(params: {
           ...missingRemovals,
           ...dmScopeRetiredRemovals,
         ];
+        assertCleanupBindingsAvailable({
+          cfg,
+          target,
+          offline: params.bindingCleanupMode === "offline",
+          hasMissingRemovals: missingRemovals.length > 0,
+          bindings: missingBindings,
+        });
         // Let queued I/O run between preview/repair work and the synchronous commit.
         await yieldToEventLoop();
         const lifecycleResult = await applySessionEntryLifecycleMutation({
           agentId: target.agentId,
           storePath: target.storePath,
           removals,
+          captureArtifactCleanupError: true,
           activeSessionKey: opts.activeKey,
           maintenanceOverride: {
             ...maintenance,
@@ -544,6 +559,19 @@ export async function runSessionsCleanup(params: {
             failingTargetLifecycleCommitted = true;
           },
         });
+        const removedSessionKeys = new Set(lifecycleResult.removedSessionKeys);
+        await unbindCommittedCleanupBindings({
+          cfg,
+          target,
+          removedSessionKeys,
+          bindings: missingBindings,
+        });
+        if (lifecycleResult.artifactCleanupError) {
+          throw toErrorObject(
+            lifecycleResult.artifactCleanupError,
+            "Session artifact cleanup failed",
+          );
+        }
         await yieldToEventLoop();
         const postApplyStore = loadCleanupSessionStore(target, { createIfMissing: true });
         const appliedUnreferencedArtifacts =
@@ -555,7 +583,6 @@ export async function runSessionsCleanup(params: {
                 olderThanMs: maintenance.pruneAfterMs,
                 dryRun: false,
               });
-        const removedSessionKeys = new Set(lifecycleResult.removedSessionKeys);
         const unreferencedArtifacts =
           mode === "warn"
             ? {

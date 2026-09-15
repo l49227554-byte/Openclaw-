@@ -317,6 +317,12 @@ sent through the Gateway so it shares the same session-store writer as runtime
 traffic. Use `--store <path>` for explicit offline repair of a SQLite database or
 legacy store selector.
 
+Applying `--fix-missing` to a configured agent store requires the Gateway so
+persisted channel bindings can be checked. Explicit `--store` cleanup and a
+Gateway-unavailable fallback fail before removing missing-session entries from
+that store. Start the Gateway and retry with `--agent <id> --fix-missing` without
+`--store`. Dry runs and cleanup of unrelated custom stores remain available offline.
+
 When the selected store's parent directory is named `agent`, transcript artifacts
 live in the sibling `sessions` directory. This also applies to custom paths:
 `/backup/agent/sessions.json` selects `/backup/agent/openclaw-agent.sqlite`, whose

@@ -550,6 +550,7 @@ export async function createMatrixThreadBindingManager(params: {
   const sessionBindingAdapter: SessionBindingAdapter = {
     channel: "matrix",
     accountId: params.accountId,
+    supportsConditionalUnbind: true,
     capabilities: { placements: ["current", "child"], bindSupported: true, unbindSupported: true },
     bind: async (input) => {
       const conversationId = input.conversation.conversationId.trim();
@@ -594,7 +595,13 @@ export async function createMatrixThreadBindingManager(params: {
           resolveSessionAgentIdStrict({ config: params.cfg, sessionKey: targetSessionKey }),
         label: normalizeOptionalString(input.metadata?.label) || undefined,
         boundBy: normalizeOptionalString(input.metadata?.boundBy) || "system",
-        boundAt: now,
+        boundAt: Math.max(
+          now,
+          (manager.getByConversation({
+            conversationId: boundConversationId,
+            parentConversationId: boundParentConversationId,
+          })?.boundAt ?? -1) + 1,
+        ),
         lastActivityAt: now,
         idleTimeoutMs: defaults.idleTimeoutMs,
         maxAgeMs: defaults.maxAgeMs,
@@ -637,6 +644,9 @@ export async function createMatrixThreadBindingManager(params: {
     unbind: async (input) => {
       const removed = await unbindRecords(
         listBindingsForAccount(params.accountId).filter((record) => {
+          if (input.shouldUnbind && !input.shouldUnbind(toSessionBindingRecord(record, defaults))) {
+            return false;
+          }
           if (input.bindingId?.trim()) {
             return resolveBindingKey(record) === input.bindingId.trim();
           }

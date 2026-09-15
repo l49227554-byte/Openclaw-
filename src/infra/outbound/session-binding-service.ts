@@ -74,6 +74,8 @@ export type SessionBindingAdapter = {
   channel: string;
   accountId: string;
   capabilities?: SessionBindingAdapterCapabilities;
+  /** Opt in only when unbind honors shouldUnbind at every mutation boundary. */
+  supportsConditionalUnbind?: boolean;
   bind?: (input: SessionBindingBindInput) => Promise<SessionBindingRecord | null>;
   listBySession: (targetSessionKey: string) => SessionBindingRecord[];
   resolveByConversation: (ref: ConversationRef) => SessionBindingRecord | null;
@@ -200,6 +202,29 @@ function getActiveRegisteredAdapters(scope?: SessionBindingScope): SessionBindin
   return [...ADAPTERS_BY_CHANNEL_ACCOUNT.values()]
     .map((registrations) => registrations.at(-1)?.normalizedAdapter ?? null)
     .filter((adapter): adapter is SessionBindingAdapter => Boolean(adapter));
+}
+
+/** Verify the owner before destructive cleanup, and again at unbind after awaited work. */
+export function assertSessionBindingCleanupAvailable(scope: SessionBindingScope): void {
+  const adapter = resolveAdapterForChannelAccount(scope);
+  if (adapter) {
+    if (adapter.unbind && adapter.supportsConditionalUnbind) {
+      return;
+    }
+    throw new SessionBindingError(
+      "BINDING_CAPABILITY_UNSUPPORTED",
+      `Session binding adapter does not support conditional cleanup for ${scope.channel}:${scope.accountId}`,
+      scope,
+    );
+  }
+  if (getGenericCurrentConversationBindingCapabilities(scope)?.unbindSupported) {
+    return;
+  }
+  throw new SessionBindingError(
+    "BINDING_ADAPTER_UNAVAILABLE",
+    `Session binding owner is unavailable for conditional cleanup for ${scope.channel}:${scope.accountId}`,
+    scope,
+  );
 }
 
 function dedupeBindings(records: SessionBindingRecord[]): SessionBindingRecord[] {
@@ -354,9 +379,19 @@ function createDefaultSessionBindingService(): SessionBindingService {
       }
     },
     unbind: async (input) => {
+      if (input.shouldUnbind && input.scope) {
+        assertSessionBindingCleanupAvailable(input.scope);
+      }
       const removed: SessionBindingRecord[] = [];
       const adapters = getActiveRegisteredAdapters(input.scope);
       for (const adapter of adapters) {
+        if (input.shouldUnbind && (!adapter.unbind || !adapter.supportsConditionalUnbind)) {
+          throw new SessionBindingError(
+            "BINDING_CAPABILITY_UNSUPPORTED",
+            `Session binding adapter does not support conditional cleanup for ${adapter.channel}:${adapter.accountId}`,
+            { channel: adapter.channel, accountId: adapter.accountId },
+          );
+        }
         if (!adapter.unbind) {
           continue;
         }

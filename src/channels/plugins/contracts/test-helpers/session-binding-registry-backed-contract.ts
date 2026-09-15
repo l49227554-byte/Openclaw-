@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../../../config/config.js";
 import {
   testing as sessionBindingTesting,
+  getSessionBindingService,
   type SessionBindingRecord,
 } from "../../../../infra/outbound/session-binding-service.js";
 import type { SessionBindingCapabilities } from "../../../../infra/outbound/session-binding.types.js";
@@ -53,6 +54,20 @@ function installSessionBindingContractSuite(params: {
       expect(typeof binding.conversation.conversationId).toBe("string");
       expect(["active", "ending", "ended"]).toContain(binding.status);
       expect(typeof binding.boundAt).toBe("number");
+      const service = getSessionBindingService();
+      await expect(
+        service.unbind({
+          bindingId: binding.bindingId,
+          scope: binding.conversation,
+          reason: "contract-conditional-cleanup",
+          shouldUnbind: () => false,
+        }),
+      ).resolves.toEqual([]);
+      expect(service.resolveByConversation(binding.conversation)).toMatchObject({
+        bindingId: binding.bindingId,
+        targetSessionKey: binding.targetSessionKey,
+        boundAt: binding.boundAt,
+      });
       await params.unbindAndVerify(binding);
     } finally {
       await params.cleanup();

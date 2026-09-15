@@ -184,7 +184,7 @@ function fromSessionBindingInput(params: {
     agentId: normalizeOptionalString(metadata.agentId) ?? previous?.agentId,
     label: normalizeOptionalString(metadata.label) ?? previous?.label,
     boundBy: normalizeOptionalString(metadata.boundBy) ?? previous?.boundBy,
-    boundAt: now,
+    boundAt: Math.max(now, (existing?.boundAt ?? -1) + 1),
     lastActivityAt: now,
     metadata: {
       ...previous?.metadata,
@@ -511,6 +511,7 @@ export function createTelegramThreadBindingManager(params: {
   const sessionBindingAdapter: SessionBindingAdapter = {
     channel: "telegram",
     accountId,
+    supportsConditionalUnbind: true,
     capabilities: {
       placements: ["current", "child"],
     },
@@ -644,6 +645,30 @@ export function createTelegramThreadBindingManager(params: {
       manager.touchConversation(conversationId, at);
     },
     unbind: async (input) => {
+      if (input.shouldUnbind) {
+        const conversationId = resolveThreadBindingConversationIdFromBindingId({
+          accountId,
+          bindingId: input.bindingId,
+        });
+        const binding = conversationId ? manager.getByConversationId(conversationId) : null;
+        const records = input.targetSessionKey?.trim()
+          ? manager.listBySessionKey(input.targetSessionKey.trim())
+          : binding
+            ? [binding]
+            : [];
+        return records.flatMap((record) => {
+          if (!input.shouldUnbind?.(toSessionBindingRecord(record, { idleTimeoutMs, maxAgeMs }))) {
+            return [];
+          }
+          const removed = manager.unbindConversation({
+            conversationId: record.conversationId,
+            reason: input.reason,
+            sendFarewell: false,
+            throwOnPersistError: true,
+          });
+          return removed ? [toSessionBindingRecord(removed, { idleTimeoutMs, maxAgeMs })] : [];
+        });
+      }
       if (input.targetSessionKey?.trim()) {
         const removed = manager.unbindBySessionKey({
           targetSessionKey: input.targetSessionKey,

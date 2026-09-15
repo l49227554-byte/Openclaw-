@@ -6,14 +6,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSqliteVecExtension } from "../../packages/memory-host-sdk/src/engine-storage.js";
 import { formatCliOperatorError } from "../cli/failure-output.js";
 import { backupGitCreateCommand, backupGitLogCommand } from "../commands/backup-git.js";
-import { readBackupFreshness } from "../commands/backup-health.js";
 import { createTestRuntime } from "../commands/test-runtime-config-helpers.js";
 import { executeGitCommand, requireGitCommand as requireGit } from "../infra/git-exec.js";
-import { writeConfigMachineState } from "../state/config-machine-state.js";
+import { readBackupRunFreshness } from "../state/backup-run-records.js";
+import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {
   closeOpenClawStateDatabaseForTest,
+  closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -76,6 +77,21 @@ vi.mock("./local-repository.js", async (importOriginal) => {
 
 const roots: string[] = [];
 
+async function withBackupStateEnv<T>(
+  values: Parameters<typeof withEnvAsync>[0],
+  run: () => Promise<T>,
+): Promise<T> {
+  return await withEnvAsync(values, async () => {
+    await using state = {
+      run,
+      async [Symbol.asyncDispose]() {
+        await closeOpenClawStateDatabaseAsync();
+      },
+    };
+    return await state.run();
+  });
+}
+
 async function tempRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-git-backup-test-"));
   roots.push(root);
@@ -83,6 +99,7 @@ async function tempRoot(): Promise<string> {
 }
 
 afterEach(async () => {
+  await closeOpenClawStateDatabaseAsync();
   mocks.logDiagnostic = undefined;
   mocks.pushDiagnostic = undefined;
   mocks.snapshotRepositoryError = undefined;
@@ -336,7 +353,7 @@ describe("Git-backed SQLite snapshots", () => {
     closeOpenClawAgentDatabaseByPath(agentDatabase.path);
     await fs.writeFile(configPath, JSON.stringify({ agents: { entries: { main: { agentDir } } } }));
 
-    await withEnvAsync(
+    await withBackupStateEnv(
       { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_CONFIG_PATH: configPath },
       async () => {
         for (const { scope, selection } of [
@@ -503,6 +520,27 @@ describe("Git-backed SQLite snapshots", () => {
     });
   });
 
+  it.skipIf(process.platform !== "win32")(
+    "initializes and reads history when Windows Git emits MSYS paths",
+    async () => {
+      const root = await tempRoot();
+      const stateDir = path.join(root, "state");
+      const repositoryPath = path.join(root, "repository");
+      await fs.mkdir(stateDir);
+
+      await initializeGitBackupRepository({ repositoryPath, stateDir });
+      await requireGit(repositoryPath, ["config", "user.name", "OpenClaw Backup Test"]);
+      await requireGit(repositoryPath, ["config", "user.email", "backup@example.invalid"]);
+      await fs.writeFile(path.join(repositoryPath, "README.md"), "backup\n");
+      await requireGit(repositoryPath, ["add", "README.md"]);
+      await requireGit(repositoryPath, ["commit", "-m", "backup history"]);
+
+      await expect(readGitBackupLog({ repositoryPath, limit: 1 })).resolves.toEqual([
+        expect.objectContaining({ message: "backup history" }),
+      ]);
+    },
+  );
+
   it("uses a commit-scoped fallback identity when Git has no configured email", async () => {
     const root = await tempRoot();
     const { stateDir, database } = createStateDatabaseFixture(root);
@@ -555,7 +593,7 @@ describe("Git-backed SQLite snapshots", () => {
     await requireGit(repositoryPath, ["config", "user.name", "OpenClaw Backup Test"]);
     await requireGit(repositoryPath, ["config", "user.email", "backup@example.invalid"]);
 
-    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+    await withBackupStateEnv({ OPENCLAW_STATE_DIR: stateDir }, async () => {
       const runtime = createTestRuntime();
       const result = await backupGitCreateCommand(runtime, {
         repository: repositoryPath,
@@ -579,7 +617,7 @@ describe("Git-backed SQLite snapshots", () => {
         `Warning: Git backup committed, but push failed: ${result.pushWarning}`,
       );
 
-      const persisted = readBackupFreshness(process.env).latest?.error;
+      const persisted = (await readBackupRunFreshness(process.env)).latest?.error;
       expect(persisted).toBe(result.pushWarning);
     });
   });
@@ -656,6 +694,50 @@ describe("Git-backed SQLite snapshots", () => {
     expect(output).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
   });
 
+  it("rejects a truncated Git history record with bounded redacted diagnostics", async () => {
+    const repositoryPath = await tempRoot();
+    await requireGit(repositoryPath, ["init"]);
+    const tree = await requireGit(repositoryPath, ["hash-object", "-w", "-t", "tree", "--stdin"], {
+      input: "",
+    });
+    const secret = ["synthetic", "history", "password"].join("-");
+    const remote = `https://synthetic:${secret}@example.invalid/history`;
+    const commit = await requireGit(
+      repositoryPath,
+      [
+        "-c",
+        "user.name=OpenClaw Backup Test",
+        "-c",
+        "user.email=backup@example.invalid",
+        "commit-tree",
+        tree,
+      ],
+      { input: `openclaw backup ${"x".repeat(17 * 1024 * 1024)} ${remote}\n` },
+    );
+    await fs.writeFile(path.join(repositoryPath, ".git", "HEAD"), `${commit}\n`);
+
+    const outcome = await readGitBackupLog({ repositoryPath, limit: 1 }).then(
+      (entries) => ({
+        kind: "returned",
+        entries: entries.map((entry) => ({
+          commitBytes: Buffer.byteLength(entry.commit),
+          date: entry.date,
+          messageBytes: Buffer.byteLength(entry.message),
+        })),
+      }),
+      (error: unknown) => ({
+        kind: "error",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    expect(outcome).toEqual({ kind: "error", message: expect.stringContaining("output-limit") });
+    if ("message" in outcome) {
+      expect(outcome.message.length).toBeLessThanOrEqual(1_200);
+      expect(outcome.message).toContain("https://***:***@example.invalid/history");
+      expect(outcome.message).not.toContain(secret);
+    }
+  });
+
   it("does not treat a symbolic HEAD with a missing object as an empty log", async () => {
     const root = await tempRoot();
     const repositoryPath = path.join(root, "broken-repository");
@@ -692,7 +774,7 @@ describe("Git-backed SQLite snapshots", () => {
 
     const warning =
       "repository history contains non-backup commits; use a dedicated backup repository";
-    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+    await withBackupStateEnv({ OPENCLAW_STATE_DIR: stateDir }, async () => {
       const result = await backupGitCreateCommand(createTestRuntime(), {
         repository: repositoryPath,
         global: true,
@@ -702,7 +784,7 @@ describe("Git-backed SQLite snapshots", () => {
 
       expect(result).toMatchObject({ noChanges: false, pushed: false, pushWarning: warning });
       expect(result.commit).toMatch(/^[a-f0-9]{40}$/u);
-      expect(readBackupFreshness(process.env)).toMatchObject({
+      expect(await readBackupRunFreshness(process.env)).toMatchObject({
         latest: { status: "ok", kind: "git", pushFailed: true, error: warning },
         latestOk: { status: "ok", kind: "git", pushFailed: true, error: warning },
       });

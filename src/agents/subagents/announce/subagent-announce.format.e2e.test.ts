@@ -33,6 +33,7 @@ import {
 } from "../../announce-idempotency.js";
 import * as embeddedRuns from "../../embedded-agent-runner/runs.js";
 import { FailoverError } from "../../failover-error.js";
+import { textAssistant } from "../../test-helpers/sparse-transcript.test-support.js";
 import { testing as subagentAnnounceDeliveryTesting } from "./subagent-announce-delivery.test-support.js";
 import { runSubagentAnnounceDispatch } from "./subagent-announce-dispatch.js";
 import { testing as subagentAnnounceOutputTesting } from "./subagent-announce-output.test-support.js";
@@ -562,10 +563,10 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("Stats:");
     expect(msg).toContain("A completed subagent task is ready for parent review.");
     expect(msg).toContain(
-      "Review/verify the result above before deciding whether the original task is done.",
+      "This completion ends one child run, not necessarily the original user request.",
     );
     expect(msg).toContain(
-      "If additional action is required, continue the task or record a follow-up; otherwise send a truthful user-facing update.",
+      "Reviews, failed checks, and other in-scope fixable blockers require continued work",
     );
     expect(msg).toContain("Keep this internal context private");
     expect(call?.params?.internalEvents?.[0]?.type).toBe("task_completion");
@@ -651,12 +652,7 @@ describe("subagent announce formatting", () => {
       }
       if (typed.method === "chat.history") {
         return {
-          messages: [
-            {
-              role: "assistant",
-              content: [{ type: "text", text: "Worker executed successfully" }],
-            },
-          ],
+          messages: [textAssistant("Worker executed successfully")],
         };
       }
       if (typed.method === "sessions.delete") {
@@ -715,10 +711,7 @@ describe("subagent announce formatting", () => {
     async (testCase) => {
       chatHistoryMock.mockResolvedValueOnce({
         messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "" }],
-          },
+          textAssistant(""),
           {
             role: testCase.role,
             content: [{ type: "text", text: testCase.toolOutput }],
@@ -750,10 +743,7 @@ describe("subagent announce formatting", () => {
           role: "tool",
           content: [{ type: "text", text: "tool output line" }],
         },
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "assistant final line" }],
-        },
+        textAssistant("assistant final line"),
       ],
     });
     readLatestAssistantReplyMock.mockResolvedValue("");
@@ -804,7 +794,10 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("session_id: child-session-usage");
     expect(msg).toContain("A completed subagent task is ready for parent review.");
     expect(msg).toContain(
-      "If additional action is required, continue the task or record a follow-up; otherwise send a truthful user-facing update.",
+      "This completion ends one child run, not necessarily the original user request.",
+    );
+    expect(msg).toContain(
+      "Reviews, failed checks, and other in-scope fixable blockers require continued work",
     );
     expect(msg).toContain(
       `Reply ONLY: ${SILENT_REPLY_TOKEN} if this exact result was already delivered to the user in this same turn.`,
@@ -2235,10 +2228,7 @@ describe("subagent announce formatting", () => {
           role: "toolResult",
           content: [{ type: "text", text: "old tool output" }],
         },
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "assistant completion text" }],
-        },
+        textAssistant("assistant completion text"),
       ],
     });
     readLatestAssistantReplyMock.mockResolvedValue("");
@@ -2265,10 +2255,7 @@ describe("subagent announce formatting", () => {
   it("does not fall back to latest tool output for completion-mode when assistant output is empty", async () => {
     chatHistoryMock.mockResolvedValueOnce({
       messages: [
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "" }],
-        },
+        textAssistant(""),
         {
           role: "toolResult",
           content: [{ type: "text", text: "tool output only" }],
@@ -2852,7 +2839,7 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("current result from child a");
     expect(msg).toContain("result from child b");
     expect(msg).not.toContain("stale result from child a");
-    expect(msg.match(/1\. child-a/g)?.length ?? 0).toBe(1);
+    expect(msg.match(/current result from child a/g)).toHaveLength(1);
   });
 
   it("does not announce a direct child that moved to a newer parent", async () => {
@@ -2922,85 +2909,90 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("old parent fallback reply");
   });
 
-  it("wakes an ended orchestrator run with settled child results before any upward announce", async () => {
-    sessionStore = {
-      "agent:main:subagent:parent": {
-        sessionId: "session-parent",
-      },
-    };
+  it.each([0, 600, undefined])(
+    "wakes an ended orchestrator with its %s-second budget before upward announce",
+    async (runTimeoutSeconds) => {
+      sessionStore = {
+        "agent:main:subagent:parent": {
+          sessionId: "session-parent",
+        },
+      };
 
-    subagentRegistryMock.countPendingDescendantRuns.mockReturnValue(0);
-    subagentRegistryMock.listSubagentRunsForRequester.mockImplementation(
-      (sessionKey: string, scope?: { requesterRunId?: string }) => {
-        if (sessionKey !== "agent:main:subagent:parent") {
-          return [];
-        }
-        if (scope?.requesterRunId !== "run-parent-phase-1") {
-          return [];
-        }
-        return [
-          {
-            runId: "run-child-a",
-            childSessionKey: "agent:main:subagent:parent:subagent:a",
-            requesterSessionKey: "agent:main:subagent:parent",
-            requesterDisplayKey: "parent",
-            task: "child task a",
-            label: "child-a",
-            cleanup: "keep",
-            createdAt: 10,
-            execution: { endedAt: 20, outcome: { status: "ok" } },
-            cleanupCompletedAt: 21,
-            completion: { required: true, resultText: "result from child a" },
-          },
-          {
-            runId: "run-child-b",
-            childSessionKey: "agent:main:subagent:parent:subagent:b",
-            requesterSessionKey: "agent:main:subagent:parent",
-            requesterDisplayKey: "parent",
-            task: "child task b",
-            label: "child-b",
-            cleanup: "keep",
-            createdAt: 11,
-            execution: { endedAt: 21, outcome: { status: "ok" } },
-            cleanupCompletedAt: 22,
-            completion: { required: true, resultText: "result from child b" },
-          },
-        ];
-      },
-    );
+      subagentRegistryMock.countPendingDescendantRuns.mockReturnValue(0);
+      subagentRegistryMock.listSubagentRunsForRequester.mockImplementation(
+        (sessionKey: string, scope?: { requesterRunId?: string }) => {
+          if (sessionKey !== "agent:main:subagent:parent") {
+            return [];
+          }
+          if (scope?.requesterRunId !== "run-parent-phase-1") {
+            return [];
+          }
+          return [
+            {
+              runId: "run-child-a",
+              childSessionKey: "agent:main:subagent:parent:subagent:a",
+              requesterSessionKey: "agent:main:subagent:parent",
+              requesterDisplayKey: "parent",
+              task: "child task a",
+              label: "child-a",
+              cleanup: "keep",
+              createdAt: 10,
+              execution: { endedAt: 20, outcome: { status: "ok" } },
+              cleanupCompletedAt: 21,
+              completion: { required: true, resultText: "result from child a" },
+            },
+            {
+              runId: "run-child-b",
+              childSessionKey: "agent:main:subagent:parent:subagent:b",
+              requesterSessionKey: "agent:main:subagent:parent",
+              requesterDisplayKey: "parent",
+              task: "child task b",
+              label: "child-b",
+              cleanup: "keep",
+              createdAt: 11,
+              execution: { endedAt: 21, outcome: { status: "ok" } },
+              cleanupCompletedAt: 22,
+              completion: { required: true, resultText: "result from child b" },
+            },
+          ];
+        },
+      );
 
-    agentSpy.mockResolvedValueOnce(visibleAgentResponse("run-parent-phase-2"));
-    const lifecycleGeneration = getAgentEventLifecycleGeneration();
+      agentSpy.mockResolvedValueOnce(visibleAgentResponse("run-parent-phase-2"));
+      const lifecycleGeneration = getAgentEventLifecycleGeneration();
 
-    const didAnnounce = await runSubagentAnnounceFlow({
-      childSessionKey: "agent:main:subagent:parent",
-      childRunId: "run-parent-phase-1",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
-      ...defaultOutcomeAnnounce,
-      expectsCompletionMessage: true,
-      wakeOnDescendantSettle: true,
-      roundOneReply: "waiting for children",
-    });
+      const didAnnounce = await runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:parent",
+        childRunId: "run-parent-phase-1",
+        runTimeoutSeconds,
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        ...defaultOutcomeAnnounce,
+        expectsCompletionMessage: true,
+        wakeOnDescendantSettle: true,
+        roundOneReply: "waiting for children",
+      });
 
-    expect(didAnnounce).toBe("delivered");
-    expect(agentSpy).toHaveBeenCalledTimes(1);
-    const call = getAgentCall() as {
-      params?: { sessionKey?: string; message?: string };
-    };
-    expect(call?.params?.sessionKey).toBe("agent:main:subagent:parent");
-    const message = call?.params?.message ?? "";
-    expect(message).toContain("All pending descendants for that run have now settled");
-    expect(message).toContain("result from child a");
-    expect(message).toContain("result from child b");
-    expect(subagentRegistryMock.replaceSubagentRunAfterSteer).toHaveBeenCalledWith({
-      previousRunId: "run-parent-phase-1",
-      nextRunId: "run-parent-phase-2",
-      lifecycleGeneration,
-      preserveFrozenResultFallback: true,
-      task: expect.stringContaining("All pending descendants for that run have now settled"),
-    });
-  });
+      expect(didAnnounce).toBe("delivered");
+      expect(agentSpy).toHaveBeenCalledTimes(1);
+      const call = getAgentCall() as {
+        params?: { sessionKey?: string; message?: string; timeout?: number };
+      };
+      expect(call?.params?.sessionKey).toBe("agent:main:subagent:parent");
+      expect(call?.params?.timeout).toBe(runTimeoutSeconds ?? 0);
+      const message = call?.params?.message ?? "";
+      expect(message).toContain("All pending descendants for that run have now settled");
+      expect(message).toContain("result from child a");
+      expect(message).toContain("result from child b");
+      expect(subagentRegistryMock.replaceSubagentRunAfterSteer).toHaveBeenCalledWith({
+        previousRunId: "run-parent-phase-1",
+        nextRunId: "run-parent-phase-2",
+        lifecycleGeneration,
+        preserveFrozenResultFallback: true,
+        task: expect.stringContaining("All pending descendants for that run have now settled"),
+      });
+    },
+  );
 
   it("terminates an accepted descendant wake after completion delivery closes", async () => {
     sessionStore = {

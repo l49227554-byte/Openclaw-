@@ -17,7 +17,20 @@ const SYSTEM_SYSTEMD_UNIT_DIRS = [
 ] as const;
 
 /** Proves service absence without interpreting failed manager commands as absence. */
-export async function isSystemdServiceAbsent(env: GatewayServiceEnv): Promise<boolean> {
+export async function isSystemdServiceAbsent(
+  env: GatewayServiceEnv,
+  opts?: { timeoutMs?: number; strictCommandAbsent?: true },
+): Promise<boolean> {
+  if (opts?.strictCommandAbsent) {
+    // The caller just proved user-unit absence without loading it. System
+    // ownership needs its own live manager and complete unit-path inspection.
+    await assertNoSystemSystemdOwnership(
+      `${resolveSystemdServiceName(env)}.service`,
+      opts.timeoutMs,
+      { requireLoaded: true },
+    );
+    return (await findInstalledSystemdGatewayScope(env)) === null;
+  }
   if (
     env.DBUS_SESSION_BUS_ADDRESS ||
     env.DBUS_SYSTEM_BUS_ADDRESS ||
@@ -292,10 +305,10 @@ export function formatDuelingScopesWarning(
   const { user, system } = installation;
   // Deliberately no copy-paste removal command: this formatter has no ownership
   // evidence, and blindly deleting the user unit can remove the only working
-  // gateway. `doctor --fix` decides that behind the active+enabled probe.
+  // gateway. Guided Doctor decides that behind the active+enabled probe.
   return (
     `detected BOTH a user-scope (${user.unitPath}) and a system-scope (${system.unitPath}) ` +
     `gateway unit bound to port ${port}; they will SIGTERM each other in a restart loop. ` +
-    `Run \`openclaw doctor --fix\` to resolve which unit should own this gateway.`
+    `Run \`openclaw doctor\` interactively to inspect both scopes and review supported cleanup.`
   );
 }

@@ -18,6 +18,7 @@ import { REALTIME_VOICE_AGENT_CONSULT_TOOL } from "../../talk/agent-consult-tool
 import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../talk/agent-run-control-shared.js";
 import { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import { ensureClientVoiceAgentSessionEntry } from "../../talk/client-voice-session.js";
+import { projectInternalRealtimeVoicePublicConfig } from "../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProvider } from "../../talk/provider-resolver.js";
 import { resolveSandboxedSessionCreation } from "../operator-role-policy.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
@@ -275,6 +276,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           agentId,
           defaultModel: realtimeConfig.model,
           surface: "gateway-relay",
+          autoRespondToAudio: realtimeConfig.consultRouting !== "force-agent-consult",
         });
         const relayLaunch = resolveTalkRealtimeGatewayRelayLaunch({
           ...resolution,
@@ -286,6 +288,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           // GPT-Live delegates natively; forced transcript consults are a GA-model mode.
           return respondInvalidRequest(respond, relayLaunch.error);
         }
+        const capabilities = resolution.capabilities;
+        const controlSource =
+          capabilities?.handlesAgentConsult === true ? "delegation" : "transcript";
         const providerInstructions = await resolveTalkRealtimeProviderInstructions({
           config: runtimeConfig,
           agentId,
@@ -313,11 +318,19 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           context,
           connId,
           cfg: runtimeConfig,
-          consultAuthority: resolveTalkAgentConsultAuthority(client?.connect?.scopes),
+          consultAuthority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
           provider: resolution.provider,
           providerConfig: relayLaunch.providerConfig,
-          instructions: buildRealtimeInstructions(providerInstructions),
-          tools: [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
+          controlSource,
+          capabilities,
+          instructions:
+            controlSource === "delegation"
+              ? (providerInstructions ?? "")
+              : buildRealtimeInstructions(providerInstructions),
+          tools:
+            controlSource === "delegation"
+              ? []
+              : [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
           model: launchOptions.model,
           sessionTarget: target,
           voice: launchOptions.voice,
@@ -330,8 +343,13 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           relaySessionId: session.relaySessionId,
           sessionTarget: target,
         });
+        const publicSession = projectInternalRealtimeVoicePublicConfig({
+          provider: resolution.provider,
+          providerConfig: relayLaunch.providerConfig,
+          config: session,
+        });
         return respondOk(respond, {
-          ...session,
+          ...publicSession,
           sessionId: session.relaySessionId,
           voiceSessionId: session.relaySessionId,
           mode,
@@ -514,6 +532,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         const result = await steerTalkRealtimeRelayAgentRun({
           relaySessionId: session.relaySessionId,
           connId,
+          authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
           sessionKey: normalizeOptionalString(params.sessionKey),
           text: params.text,
           mode: normalizeOptionalString(params.mode),
@@ -563,7 +582,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
       const session = getUnifiedTalkSession(params.sessionId);
       if (session.kind === "realtime-relay") {
         const connId = requireUnifiedTalkSessionConn(session, client?.connId);
-        stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId });
+        await stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId });
       } else if (session.kind === "transcription-relay") {
         const connId = requireUnifiedTalkSessionConn(session, client?.connId);
         stopTalkTranscriptionRelaySession({

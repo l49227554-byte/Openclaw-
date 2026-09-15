@@ -2,6 +2,7 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { ApplicationContext, ApplicationGateway } from "../app/context.ts";
 import { i18n } from "../i18n/index.ts";
@@ -9,7 +10,7 @@ import type {
   ConfigPatchBuilder,
   ConfigPatchOptions,
 } from "../lib/config/config-gateway-operations.ts";
-import { createConfigCapabilityHarness, deferred } from "../lib/config/config-test-harness.ts";
+import { createConfigCapabilityHarness } from "../lib/config/config-test-harness.ts";
 import { buildRemoveMcpServerPatch, patchMcpServers } from "../lib/config/mcp-servers.ts";
 import {
   createApplicationContextProvider,
@@ -24,6 +25,7 @@ type RuntimeConfigHarness = {
   runtimeConfig: ApplicationContext["runtimeConfig"];
   ensureLoaded: ReturnType<typeof vi.fn<() => Promise<void>>>;
   patch: ReturnType<typeof vi.fn<(options: ConfigPatchOptions) => Promise<boolean>>>;
+  refresh: ReturnType<typeof vi.fn<() => Promise<void>>>;
 };
 
 function createGateway(options: { connected?: boolean; admin?: boolean } = {}): ApplicationGateway {
@@ -62,6 +64,7 @@ function createGateway(options: { connected?: boolean; admin?: boolean } = {}): 
 function createRuntimeConfig(config: Record<string, unknown>): RuntimeConfigHarness {
   const ensureLoaded = vi.fn(async () => undefined);
   const patch = vi.fn<(options: ConfigPatchOptions) => Promise<boolean>>(async () => true);
+  const refresh = vi.fn(async () => undefined);
   const listeners = new Set<() => void>();
   const state = {
     configSnapshot: { sourceConfig: config, hash: "base" },
@@ -80,13 +83,13 @@ function createRuntimeConfig(config: Record<string, unknown>): RuntimeConfigHarn
     ensureLoaded,
     patch,
     patchFromSnapshot,
-    refresh: vi.fn(async () => undefined),
+    refresh,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
   } as unknown as ApplicationContext["runtimeConfig"];
-  return { runtimeConfig, ensureLoaded, patch };
+  return { runtimeConfig, ensureLoaded, patch, refresh };
 }
 
 async function mountCard(
@@ -97,6 +100,7 @@ async function mountCard(
   } = {},
 ): Promise<{
   card: McpServersCard;
+  context: ApplicationContext;
   provider: ApplicationContextProvider;
   harness: RuntimeConfigHarness;
 }> {
@@ -114,7 +118,7 @@ async function mountCard(
   await card.updateComplete;
   await waitForFast(() => expect(harness.ensureLoaded).toHaveBeenCalled());
   await card.updateComplete;
-  return { card, provider, harness };
+  return { card, context, provider, harness };
 }
 
 function actionButton(container: Element, label: string): HTMLButtonElement {
@@ -421,7 +425,7 @@ describe("openclaw-mcp-servers-card", () => {
       mcp: { servers: { docs: { command: "node", args: ["initial.mjs"] }, retained } },
     };
     let hash = "before";
-    const gate = deferred<void>();
+    const gate = deferred();
     const patches: unknown[] = [];
     const request = vi.fn(async (method: string, params?: unknown) => {
       if (method === "config.get") {
@@ -504,5 +508,56 @@ describe("openclaw-mcp-servers-card", () => {
     expect(controls.every((button) => button.title.includes("operator.admin"))).toBe(true);
     actionButton(card, "Disable").click();
     expect(harness.patch).not.toHaveBeenCalled();
+  });
+
+  it("retires pending mutation feedback before a retained card enters a new context", async () => {
+    const pending = deferred<boolean>();
+    const { card, context, provider, harness } = await mountCard({
+      config: { mcp: { servers: { docs: { url: "https://mcp.example.com/mcp" } } } },
+    });
+    harness.patch.mockReturnValueOnce(pending.promise);
+    actionButton(card, "Disable").click();
+    await waitForFast(() => expect(harness.patch).toHaveBeenCalledOnce());
+
+    card.remove();
+    const replacement = createRuntimeConfig({
+      mcp: { servers: { local: { command: "node" } } },
+    });
+    provider.setContext({
+      ...context,
+      runtimeConfig: replacement.runtimeConfig,
+    });
+    provider.append(card);
+    await waitForFast(() => expect(card.querySelector('[data-mcp-name="local"]')).not.toBeNull());
+
+    pending.resolve(true);
+    await waitForFast(() => expect(harness.refresh).toHaveBeenCalledOnce());
+    await card.updateComplete;
+
+    expect(card.querySelector('[role="alert"], [role="status"]')).toBeNull();
+    expect(actionButton(card, "Disable").disabled).toBe(false);
+  });
+
+  it("ignores a load error from before a retained card reconnected", async () => {
+    const staleLoad = deferred();
+    const { card, context, provider } = await mountCard();
+    const replacement = createRuntimeConfig({
+      mcp: { servers: { local: { command: "node" } } },
+    });
+    replacement.ensureLoaded.mockReturnValueOnce(staleLoad.promise);
+
+    card.remove();
+    provider.setContext({ ...context, runtimeConfig: replacement.runtimeConfig });
+    provider.append(card);
+    await waitForFast(() => expect(replacement.ensureLoaded).toHaveBeenCalledOnce());
+
+    card.remove();
+    provider.append(card);
+    staleLoad.reject(new Error("stale load failure"));
+    await staleLoad.promise.catch(() => undefined);
+    await card.updateComplete;
+
+    expect(card.querySelector('[role="alert"]')).toBeNull();
+    expect(card.querySelector('[data-mcp-name="local"]')).not.toBeNull();
   });
 });

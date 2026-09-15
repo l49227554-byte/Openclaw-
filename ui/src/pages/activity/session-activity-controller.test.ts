@@ -23,11 +23,15 @@ it("keeps the same-query snapshot during invalidation and clears it on person ch
   const filters = { personId: "former", time: "all" as const, query: "" };
   controller.load(client, filters);
   await vi.waitFor(() => expect(controller.result).toEqual(result));
-  controller.load(client, filters, true);
+  controller.load(client, filters, "refresh");
   expect(controller.result).toEqual(result);
   expect(request).toHaveBeenLastCalledWith(
     "sessions.list",
-    expect.objectContaining({ involvingProfileId: "former", includePeople: true }),
+    expect.objectContaining({
+      involvingProfileId: "former",
+      includePeople: true,
+      sortBy: "activity",
+    }),
     expect.anything(),
   );
   controller.load(client, { ...filters, personId: "other" });
@@ -69,7 +73,7 @@ it("holds a trailing Activity refresh through page hiding and retires it on disc
     controller.load(client, filters);
     await vi.advanceTimersByTimeAsync(0);
     request.mockReturnValueOnce(pending);
-    controller.load(client, filters, true);
+    controller.load(client, filters, "refresh");
     controller.invalidate();
     await vi.advanceTimersByTimeAsync(200);
     visibilityState = "hidden";

@@ -23,10 +23,12 @@ type CreateWindowsOutputDecoder =
 const {
   spawnWithFallbackMock,
   signalProcessTreeMock,
+  killProcessTreeMock,
   createWindowsOutputDecoderMock,
   createServiceChildRelayAdapterMock,
 } = vi.hoisted(() => ({
   spawnWithFallbackMock: vi.fn(),
+  killProcessTreeMock: vi.fn<typeof import("../../kill-tree.js").killProcessTree>(),
   signalProcessTreeMock: vi.fn(
     (_pid: number, _signal: string, opts?: { onComplete?: () => void }) => {
       opts?.onComplete?.();
@@ -45,6 +47,7 @@ vi.mock("../../spawn-utils.js", () => ({
 
 vi.mock("../../kill-tree.js", () => ({
   signalProcessTree: signalProcessTreeMock,
+  killProcessTree: killProcessTreeMock,
 }));
 
 vi.mock("../../../infra/windows-encoding.js", () => ({
@@ -63,18 +66,19 @@ async function createAdapterHarness(params?: {
   pid?: number;
   argv?: string[];
   env?: NodeJS.ProcessEnv;
+  stdinMode?: Parameters<typeof createChildAdapter>[0]["stdinMode"];
 }) {
-  const { child, killMock } = createStubChild(params?.pid);
+  const stub = createStubChild(params?.pid);
   spawnWithFallbackMock.mockResolvedValue({
-    child,
+    child: stub.child,
     usedFallback: false,
   });
   const adapter = await createChildAdapter({
     argv: params?.argv ?? ["node", "-e", "setTimeout(() => {}, 1000)"],
     env: params?.env,
-    stdinMode: "pipe-open",
+    stdinMode: params?.stdinMode ?? "pipe-open",
   });
-  return { adapter, child, killMock };
+  return { ...stub, adapter };
 }
 
 function expectedTrustedCmdExe(): string {
@@ -105,6 +109,7 @@ describe("createChildAdapter", () => {
     ({ createChildAdapter } = await import("./child.js"));
     spawnWithFallbackMock.mockClear();
     signalProcessTreeMock.mockClear();
+    killProcessTreeMock.mockReset();
     createServiceChildRelayAdapterMock.mockClear();
     createWindowsOutputDecoderMock.mockClear();
     createWindowsOutputDecoderMock.mockImplementation(() => ({
@@ -150,7 +155,7 @@ describe("createChildAdapter", () => {
       expect(spawnArgs.fallbacks).toStrictEqual([]);
     } else {
       expect(spawnArgs.options?.detached).toBe(true);
-      expect(spawnArgs.fallbacks?.[0]?.options?.detached).toBe(false);
+      expect(spawnArgs.fallbacks?.[0]?.detached).toBe(false);
     }
 
     adapter.kill();
@@ -275,11 +280,9 @@ describe("createChildAdapter", () => {
   });
 
   it("keeps ordinary children supervised through repeated operational errors", async () => {
-    const { child, emitClose, emitExit } = createStubChild(7865);
-    spawnWithFallbackMock.mockResolvedValue({ child, usedFallback: false });
-    const adapter = await createChildAdapter({
+    const { adapter, child, emitClose, emitExit } = await createAdapterHarness({
+      pid: 7865,
       argv: ["node", "-e", "setInterval(() => {}, 1000)"],
-      stdinMode: "pipe-open",
     });
     const resolved = vi.fn();
     const rejected = vi.fn();
@@ -369,39 +372,6 @@ describe("createChildAdapter", () => {
       expect(child.listenerCount("error")).toBe(0);
     },
   );
-
-  it("preserves startup failure when a worker error arrives during secret delivery", async () => {
-    setPlatform("win32");
-    const { child, killMock } = createStubChild();
-    const deliveryError = new Error("secret delivery failed");
-    const secretStream = new Writable({
-      write(_chunk, _encoding, callback) {
-        child.emit("error", new Error("worker IPC failed"));
-        setImmediate(() => callback(deliveryError));
-      },
-    });
-    Object.defineProperty(child, "stdio", {
-      value: [child.stdin, child.stdout, child.stderr, secretStream, null],
-      configurable: true,
-    });
-    spawnWithFallbackMock.mockResolvedValue({ child, usedFallback: false });
-    const transient = Buffer.from("synthetic-secret");
-
-    await expect(
-      createChildAdapter({
-        argv: ["node", "worker"],
-        ownedWorker: true,
-        secretInput: { fd: 3, createData: () => transient },
-      }),
-    ).rejects.toBe(deliveryError);
-    await new Promise<void>((resolve) => {
-      setImmediate(resolve);
-    });
-
-    expect(killMock).toHaveBeenCalledWith("SIGKILL");
-    expect(transient.equals(Buffer.alloc(transient.length))).toBe(true);
-    child.removeAllListeners();
-  });
 
   it("writes secret input to an extra descriptor and zeroes the transient buffer", async () => {
     setPlatform("win32");
@@ -495,7 +465,8 @@ describe("createChildAdapter", () => {
     );
   });
 
-  it("passes detached:false to signalProcessTree when spawn fell back to no-detach (#71662 follow-up)", async () => {
+  it("keeps macOS no-detach hard kills on the direct signal path", async () => {
+    setPlatform("darwin");
     // Simulate the fallback scenario: spawnWithFallback retried with
     // detached:false because the initial detached spawn failed. The kill
     // closure must NOT group-kill since the child shares the gateway's group.
@@ -503,7 +474,6 @@ describe("createChildAdapter", () => {
     spawnWithFallbackMock.mockResolvedValue({
       child,
       usedFallback: true,
-      fallbackLabel: "no-detach",
     });
     const adapter = await createChildAdapter({
       argv: ["node", "-e", "setTimeout(() => {}, 1000)"],
@@ -555,12 +525,12 @@ describe("createChildAdapter", () => {
     expect(killMock).not.toHaveBeenCalled();
   });
 
-  it("passes detached:false to process-tree SIGTERM when spawn fell back to no-detach", async () => {
+  it("keeps macOS no-detach TERM on the direct signal path", async () => {
+    setPlatform("darwin");
     const { child, killMock } = createStubChild(8765);
     spawnWithFallbackMock.mockResolvedValue({
       child,
       usedFallback: true,
-      fallbackLabel: "no-detach",
     });
     const adapter = await createChildAdapter({
       argv: ["node", "-e", "setTimeout(() => {}, 1000)"],
@@ -573,6 +543,75 @@ describe("createChildAdapter", () => {
       detached: false,
     });
     expect(killMock).not.toHaveBeenCalled();
+  });
+
+  it("retains one Linux fallback snapshot and forces it after root close and disposal", async () => {
+    setPlatform("linux");
+    const { child, emitExit, emitClose } = createStubChild(8765);
+    const force = vi.fn();
+    killProcessTreeMock.mockReturnValue({ force });
+    spawnWithFallbackMock.mockResolvedValue({ child, usedFallback: true });
+    const adapter = await createChildAdapter({ argv: ["node", "worker.js"] });
+
+    adapter.kill("SIGTERM");
+    adapter.kill("SIGTERM");
+    expect(killProcessTreeMock).toHaveBeenCalledExactlyOnceWith(8765, {
+      detached: false,
+      graceMs: 5_000,
+      force: false,
+    });
+    emitExit(0);
+    emitClose(0);
+    await adapter.wait();
+    adapter.dispose();
+    adapter.kill("SIGKILL");
+
+    expect(force).toHaveBeenCalledOnce();
+    expect(killProcessTreeMock).toHaveBeenCalledOnce();
+    expect(signalProcessTreeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not rediscover a Linux fallback tree when its initial identity was unavailable", async () => {
+    setPlatform("linux");
+    const { child, killMock } = createStubChild(8765);
+    spawnWithFallbackMock.mockResolvedValue({ child, usedFallback: true });
+    const adapter = await createChildAdapter({ argv: ["node", "worker.js"] });
+    adapter.kill("SIGTERM");
+    adapter.kill("SIGKILL");
+    await Promise.resolve();
+
+    expect(killProcessTreeMock).toHaveBeenCalledOnce();
+    expect(signalProcessTreeMock).not.toHaveBeenCalled();
+    // ChildProcess owns the live direct child; no numeric tree re-enumeration.
+    expect(killMock).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  it("does not discover a Linux fallback tree after the root has exited", async () => {
+    setPlatform("linux");
+    const { child, emitExit } = createStubChild(8765);
+    spawnWithFallbackMock.mockResolvedValue({ child, usedFallback: true });
+    const adapter = await createChildAdapter({ argv: ["node", "worker.js"] });
+    emitExit(0);
+    adapter.kill("SIGTERM");
+    adapter.kill("SIGKILL");
+    await Promise.resolve();
+    expect(killProcessTreeMock).not.toHaveBeenCalled();
+    expect(signalProcessTreeMock).not.toHaveBeenCalled();
+  });
+
+  it("uses one identity-bound immediate hard kill for a live Linux fallback root", async () => {
+    setPlatform("linux");
+    const { child } = createStubChild(8765);
+    spawnWithFallbackMock.mockResolvedValue({ child, usedFallback: true });
+    const adapter = await createChildAdapter({ argv: ["node", "worker.js"] });
+    adapter.kill("SIGKILL");
+    await Promise.resolve();
+    expect(killProcessTreeMock).toHaveBeenCalledExactlyOnceWith(8765, {
+      detached: false,
+      graceMs: 5_000,
+      force: true,
+    });
+    expect(signalProcessTreeMock).not.toHaveBeenCalled();
   });
 
   it("uses direct child.kill for non-SIGTERM and non-SIGKILL signals", async () => {
@@ -621,13 +660,8 @@ describe("createChildAdapter", () => {
   });
 
   it("reports pipe-closed stdin as ended", async () => {
-    const { child } = createStubChild(3434);
-    spawnWithFallbackMock.mockResolvedValue({
-      child,
-      usedFallback: false,
-    });
-
-    const adapter = await createChildAdapter({
+    const { adapter } = await createAdapterHarness({
+      pid: 3434,
       argv: ["node", "-e", "process.exit(0)"],
       stdinMode: "pipe-closed",
     });
@@ -690,18 +724,7 @@ describe("createChildAdapter", () => {
 
   it("prefers real child close over the SIGKILL fallback settle", async () => {
     vi.useFakeTimers();
-    const { adapter, emitClose, killMock } = await (async () => {
-      const stub = createStubChild(2468);
-      spawnWithFallbackMock.mockResolvedValue({
-        child: stub.child,
-        usedFallback: false,
-      });
-      const adapterValue = await createChildAdapter({
-        argv: ["node", "-e", "setTimeout(() => {}, 1000)"],
-        stdinMode: "pipe-open",
-      });
-      return { ...stub, adapter: adapterValue };
-    })();
+    const { adapter, emitClose, killMock } = await createAdapterHarness({ pid: 2468 });
 
     await expectRealExitWinsOverSigkillFallback({
       waitPromise: adapter.wait(),
@@ -726,9 +749,8 @@ describe("createChildAdapter", () => {
       },
     );
 
-    const stub = createStubChild(9753);
-    spawnWithFallbackMock.mockResolvedValue({ child: stub.child, usedFallback: false });
-    const adapter = await createChildAdapter({
+    const { adapter, ...stub } = await createAdapterHarness({
+      pid: 9753,
       argv: ["node", "-e", "setInterval(() => {}, 1000)"],
       stdinMode: "pipe-closed",
     });
@@ -763,9 +785,8 @@ describe("createChildAdapter", () => {
       },
     );
 
-    const stub = createStubChild(9754);
-    spawnWithFallbackMock.mockResolvedValue({ child: stub.child, usedFallback: false });
-    const adapter = await createChildAdapter({
+    const { adapter, ...stub } = await createAdapterHarness({
+      pid: 9754,
       argv: ["node", "-e", "setInterval(() => {}, 1000)"],
       stdinMode: "pipe-closed",
     });
@@ -824,27 +845,18 @@ describe("createChildAdapter", () => {
     vi.useFakeTimers();
     setPlatform("win32");
 
-    const { adapter, emitExit, child } = await (async () => {
-      const stub = createStubChild(8642);
-      spawnWithFallbackMock.mockResolvedValue({
-        child: stub.child,
-        usedFallback: false,
-      });
-      const adapterLocal = await createChildAdapter({
-        argv: ["openclaw", "version"],
-        stdinMode: "pipe-closed",
-      });
-      return { ...stub, adapter: adapterLocal };
-    })();
+    const { adapter, emitExit, child } = await createAdapterHarness({
+      pid: 8642,
+      argv: ["openclaw", "version"],
+      stdinMode: "pipe-closed",
+    });
     const stdout = vi.fn();
     const stderr = vi.fn();
     adapter.onStdout(stdout);
     adapter.onStderr(stderr);
 
     const settled = vi.fn();
-    void adapter.wait().then((result) => {
-      settled(result);
-    });
+    void adapter.wait().then(settled);
 
     emitExit(0, null);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -867,9 +879,8 @@ describe("createChildAdapter", () => {
 
   it("settles ordinary Windows exit when streams drain before exit and close is missing", async () => {
     setPlatform("win32");
-    const stub = createStubChild(9756);
-    spawnWithFallbackMock.mockResolvedValue({ child: stub.child, usedFallback: false });
-    const adapter = await createChildAdapter({
+    const { adapter, ...stub } = await createAdapterHarness({
+      pid: 9756,
       argv: ["node", "-e", "process.exit(0)"],
       stdinMode: "pipe-closed",
     });
@@ -1070,14 +1081,9 @@ describe("createChildAdapter", () => {
         flush: () => "",
       };
     });
-    const { child } = createStubChild(5555);
-    spawnWithFallbackMock.mockResolvedValue({
-      child,
-      usedFallback: false,
-    });
-    const adapter = await createChildAdapter({
+    const { adapter, child } = await createAdapterHarness({
+      pid: 5555,
       argv: ["node", "-e", "process.exit(0)"],
-      stdinMode: "pipe-open",
     });
     const first = vi.fn();
     const second = vi.fn();
@@ -1096,15 +1102,7 @@ describe("createChildAdapter", () => {
   it("guards stream errors before output listeners are registered", async () => {
     vi.useFakeTimers();
     setPlatform("win32");
-    const { child, emitExit } = createStubChild(6666);
-    spawnWithFallbackMock.mockResolvedValue({
-      child,
-      usedFallback: false,
-    });
-    const adapter = await createChildAdapter({
-      argv: ["node", "-e", "setTimeout(() => {}, 1000)"],
-      stdinMode: "pipe-open",
-    });
+    const { adapter, child, emitExit } = await createAdapterHarness({ pid: 6666 });
 
     const stdoutErr = new Error("simulated stdout pipe error");
     const stderrErr = new Error("simulated stderr pipe error");

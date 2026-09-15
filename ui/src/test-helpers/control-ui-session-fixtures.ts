@@ -1,3 +1,9 @@
+import type {
+  SessionRunStatus,
+  SessionsResolveCandidate,
+  SessionsResolveResult,
+} from "../../../packages/gateway-protocol/src/index.js";
+
 export type ControlUiSessionFixture = {
   key: string;
   sessionId?: string;
@@ -44,11 +50,41 @@ export function createControlUiSessionRow(
   };
 }
 
+export function createControlUiMockSessionRow(
+  key: string,
+  label: string,
+  updatedAt: number,
+  options: { model?: string; modelProvider?: string } & Record<string, unknown> = {},
+) {
+  const { model, modelProvider, ...extra } = options;
+  return createControlUiSessionRow(key, label, updatedAt, {
+    contextTokens: 200_000,
+    model: model ?? "gpt-5-mini",
+    modelProvider: modelProvider ?? "openai",
+    ...extra,
+  });
+}
+
+export function createControlUiChatHistoryMessage(
+  role: "assistant" | "user",
+  text: string,
+  timestamp: number,
+) {
+  return {
+    content: [{ text, type: "text" }],
+    role,
+    timestamp,
+  };
+}
+
 export function createControlUiSessionFixtures(input: {
   rows: ControlUiSessionFixture[];
   mainKey: string;
 }) {
-  const records = new Map<string, { row: ControlUiSessionFixture; changed: Set<string> }>();
+  const records = new Map<
+    string,
+    { row: ControlUiSessionFixture; changed: Set<string>; lastRunEventSequence?: number }
+  >();
   const listed = new Set<string>();
   const materialized = new Set<string>();
   let materializedSequence = 0;
@@ -118,6 +154,7 @@ export function createControlUiSessionFixtures(input: {
       "icon",
       "color",
       "boardFace",
+      "boardPresentation",
       "unread",
       "toolOverrides",
     ]) {
@@ -156,6 +193,112 @@ export function createControlUiSessionFixtures(input: {
     }
     return { ok: true, key: next.key, entry: read(key) };
   };
+  type RunStatus = Extract<SessionRunStatus, "running" | "done" | "failed" | "killed">;
+  let runEventSequence = 0;
+  const trackedRuns = new Map<
+    string,
+    Map<
+      string,
+      { status: RunStatus; acknowledged: boolean; sequence: number; errorMessage?: string }
+    >
+  >();
+  const runsFor = (key: string) => {
+    let runs = trackedRuns.get(key);
+    if (!runs) {
+      runs = new Map();
+      trackedRuns.set(key, runs);
+    }
+    return runs;
+  };
+  const trackRun = (inputKey: string, runId: string, status: RunStatus, errorMessage?: string) => {
+    const key = canonicalKey(inputKey);
+    const runs = runsFor(key);
+    const previous = runs.get(runId);
+    const outcome = status === "running" ? (previous?.status ?? status) : status;
+    const diagnostic = status === "running" ? previous?.errorMessage : errorMessage;
+    const value = record(inputKey);
+    const activeRunIds = Array.isArray(value.row.activeRunIds)
+      ? value.row.activeRunIds.filter((id): id is string => typeof id === "string")
+      : [];
+    let sequence: number;
+    if (status === "running") {
+      // A send ACK consumes an earlier terminal outcome once; replay cannot revive it.
+      if (previous?.acknowledged) {
+        return;
+      }
+      sequence = previous?.sequence ?? ++runEventSequence;
+      runs.set(runId, { status: outcome, acknowledged: true, sequence, errorMessage: diagnostic });
+      // The first delayed ACK must not replay a terminal event over newer lifecycle state.
+      if (outcome !== "running" && sequence < (value.lastRunEventSequence ?? 0)) {
+        return;
+      }
+    } else {
+      if (previous && previous.status !== "running") {
+        return;
+      }
+      const acknowledged = previous?.acknowledged || activeRunIds.includes(runId);
+      sequence = ++runEventSequence;
+      runs.set(runId, { status, acknowledged, sequence, errorMessage: diagnostic });
+      // Unrelated terminal events do not mutate a row until its send ACK arrives.
+      if (!acknowledged) {
+        return;
+      }
+    }
+    const remaining =
+      outcome === "running"
+        ? [...new Set([...activeRunIds, runId])]
+        : activeRunIds.filter((id) => id !== runId);
+    const fields = {
+      activeRunIds: remaining,
+      hasActiveRun: remaining.length > 0,
+      status: remaining.length > 0 ? "running" : outcome,
+      abortedLastRun: remaining.length === 0 && outcome === "killed",
+      lastRunError: remaining.length === 0 && outcome === "failed" ? diagnostic : undefined,
+      updatedAt: Date.now(),
+    };
+    value.lastRunEventSequence = sequence;
+    value.row = { ...value.row, ...fields };
+    for (const field of Object.keys(fields)) {
+      value.changed.add(field);
+    }
+  };
+  const abortRuns = (inputKey: string, runId?: string, confirmedRunIds?: string[]) => {
+    const key = canonicalKey(inputKey);
+    const value = confirmedRunIds?.length ? record(inputKey) : records.get(key);
+    if (!value) {
+      return { aborted: false, runIds: [] as string[] };
+    }
+    const activeRunIds = Array.isArray(value.row.activeRunIds)
+      ? value.row.activeRunIds.filter((id): id is string => typeof id === "string")
+      : [];
+    // Explicit abort receipts can precede the send ACK that lists the run locally.
+    const candidates = confirmedRunIds ?? activeRunIds;
+    const runIds = runId ? candidates.filter((id) => id === runId) : candidates;
+    const aborted = runIds.length > 0 || (!runId && value.row.hasActiveRun === true);
+    if (!aborted) {
+      return { aborted: false, runIds };
+    }
+    const sequence = ++runEventSequence;
+    for (const id of runIds) {
+      runsFor(key).set(id, { status: "killed", acknowledged: true, sequence });
+    }
+    const remaining = activeRunIds.filter((id) => !runIds.includes(id));
+    const fields = {
+      activeRunIds: remaining,
+      hasActiveRun: remaining.length > 0,
+      status: remaining.length > 0 ? "running" : "killed",
+      abortedLastRun: remaining.length === 0,
+      lastRunError: undefined,
+      updatedAt: Date.now(),
+    };
+    value.lastRunEventSequence = sequence;
+    value.row = { ...value.row, ...fields };
+    // Lifecycle writes must override stale wire fixtures like other committed edits.
+    for (const field of Object.keys(fields)) {
+      value.changed.add(field);
+    }
+    return { aborted, runIds };
+  };
   const materialize = (key: string, fields: Partial<ControlUiSessionFixture>) => {
     const value = record(key);
     value.row = { ...value.row, ...fields, key: canonicalKey(key) };
@@ -189,12 +332,63 @@ export function createControlUiSessionFixtures(input: {
       ...[...materialized].filter((key) => !keys.has(key)).map(read),
     ];
   };
+  const resolve = (params: {
+    reference?: { key: string };
+    key?: string;
+    shortId?: string;
+    agentId?: string;
+  }): SessionsResolveResult => {
+    const present = (row: ControlUiSessionFixture): SessionsResolveCandidate => ({
+      key: row.key,
+      agentId:
+        typeof row.agentId === "string"
+          ? row.agentId
+          : (row.key.split(":")[1] ?? params.agentId ?? "main"),
+      ...(typeof row.displayName === "string" ? { displayName: row.displayName } : {}),
+      ...(row.boardFace === "chat" || row.boardFace === "dashboard"
+        ? { boardFace: row.boardFace }
+        : {}),
+      ...(row.boardPresentation === "split" || row.boardPresentation === "expanded"
+        ? { boardPresentation: row.boardPresentation }
+        : {}),
+    });
+    const requestedKey = params.reference?.key ?? params.key;
+    if (requestedKey) {
+      const key =
+        input.mainKey === "global" && /^agent:[^:]+:(?:main|global)$/u.test(requestedKey)
+          ? "global"
+          : canonicalKey(requestedKey);
+      return listed.has(key) ? { ok: true, ...present(read(key)) } : { ok: false };
+    }
+    // Canonical fixtures provide short-key identity; slug-specific routing scenarios
+    // declare explicit wire replies instead of cloning the Gateway's slug matcher.
+    const shortId = params.shortId?.toLowerCase();
+    const matches = shortId
+      ? [...listed]
+          .filter((key) => {
+            const tail = key.split(":").at(-1)?.replaceAll("-", "").toLowerCase() ?? "";
+            return (
+              /^[0-9a-f]{32}$/u.test(tail) &&
+              tail.startsWith(shortId) &&
+              (!params.agentId || present(read(key)).agentId === params.agentId)
+            );
+          })
+          .map((key) => present(read(key)))
+      : [];
+    const only = matches.length === 1 ? matches[0] : undefined;
+    return only
+      ? { ok: true, ...only }
+      : { ok: false, ...(matches.length ? { candidates: matches.slice(0, 10) } : {}) };
+  };
   return {
     read,
+    resolve,
     // History publishes a full row replacement. An unseeded wire-only fixture
     // has no canonical metadata to publish until its caller declares the row.
     sessionInfo: (key: string) => (listed.has(canonicalKey(key)) ? read(key) : undefined),
     patch,
+    abortRuns,
+    trackRun,
     materialize,
     list,
     materializedCount: () => materializedSequence,

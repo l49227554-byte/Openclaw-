@@ -8,7 +8,9 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import type { JsonTestResults } from "vitest/node";
 import type { VitestReportCapture } from "../scripts/lib/vitest-report-capture.mts";
+import { resolveTestNodeExecPath } from "../src/test-utils/node-process.js";
 import { runVitestShutdownCommand } from "./helpers/vitest-shutdown-command.ts";
+import { mockResolutionFixtureFiles } from "./non-isolated-runner.mock-resolution-fixtures.ts";
 import { testApiLifecycleFixtureFiles } from "./non-isolated-runner.test-api-fixtures.ts";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -291,8 +293,9 @@ it("starts from unrouted, unpatched console state", () => {
 `,
     // Native require keeps only the constructors stable across module resets.
     // Plain factory closures avoid vi.fn's separate process-lifetime mock set.
-    // Each census collects and traverses the heap, so check presence and release
-    // across files without also scanning before allocation.
+    // Each census collects and traverses the heap. Run this chain after the
+    // collection-failure pair, before unrelated fixtures grow the shared heap;
+    // keep both presence and release checks without pre-allocation scans.
     "mock-payloads.cjs": `class ManualPayload { value = "manual"; }
 class AutoPayload extends Date {}
 module.exports = { ManualPayload, AutoPayload };
@@ -300,7 +303,7 @@ module.exports = { ManualPayload, AutoPayload };
     "07-manual-dep.ts": `export function flavor() { return "real"; }
 export const untouched = "original";
 `,
-    "07-a-manual-payload.test.ts": `import { expect, it, vi } from "vitest";
+    "01-c-manual-payload.test.ts": `import { expect, it, vi } from "vitest";
 ${payloadImports}
 vi.mock("./07-manual-dep.js", () => {
   const payload = new ManualPayload();
@@ -312,7 +315,7 @@ it("creates a file-owned manual mock payload", async () => {
   expect(queryObjects(ManualPayload)).toBe(1);
 });
 `,
-    "07-b-manual-release.test.ts": `import { expect, it } from "vitest";
+    "01-d-manual-release.test.ts": `import { expect, it } from "vitest";
 ${payloadImports}
 it("releases the previous file manual mock payload", async () => {
   expect(queryObjects(ManualPayload)).toBe(0);
@@ -321,7 +324,7 @@ it("releases the previous file manual mock payload", async () => {
   expect(untouched).toBe("original");
 });
 `,
-    "07-c-manual-remock.test.ts": `import { expect, it, vi } from "vitest";
+    "01-e-manual-remock.test.ts": `import { expect, it, vi } from "vitest";
 vi.mock("./07-manual-dep.js", async (importOriginal) => ({
   ...await importOriginal(),
   flavor: () => "remocked",
@@ -334,7 +337,7 @@ it("uses a fresh partial mock after a real import", async () => {
   expect((await import("./07-manual-dep.js")).flavor()).toBe("remocked");
 });
 `,
-    "07-d-manual-real.test.ts": `import { expect, it } from "vitest";
+    "01-f-manual-real.test.ts": `import { expect, it } from "vitest";
 import { flavor, untouched } from "./07-manual-dep.js";
 it("restores real imports after the partial mock", () => {
   expect(flavor()).toBe("real");
@@ -345,7 +348,7 @@ it("restores real imports after the partial mock", () => {
 const { AutoPayload } = createRequire(import.meta.url)("./mock-payloads.cjs");
 export const payload = new AutoPayload(1234);
 `,
-    "08-a-auto-payload.test.ts": `import { expect, it, vi } from "vitest";
+    "01-g-auto-payload.test.ts": `import { expect, it, vi } from "vitest";
 ${payloadImports}
 vi.mock("./08-auto-dep.js");
 it("creates a file-owned automock payload", async () => {
@@ -354,7 +357,7 @@ it("creates a file-owned automock payload", async () => {
   expect(queryObjects(AutoPayload)).toBe(1);
 });
 `,
-    "08-b-auto-release.test.ts": `import { expect, it } from "vitest";
+    "01-h-auto-release.test.ts": `import { expect, it } from "vitest";
 ${payloadImports}
 it("releases the previous file automock payload", async () => {
   expect(queryObjects(AutoPayload)).toBe(0);
@@ -384,6 +387,7 @@ it("reloads the redirected mock after a real import", () => {
   expect(flavor).toBe("redirected");
 });
 `,
+    ...mockResolutionFixtureFiles,
     ...testApiLifecycleFixtureFiles(repoRoot),
     ...documentFocusFixtureFiles(),
   };
@@ -417,6 +421,7 @@ async function assertCompletion(
   });
   const project = {
     name: "non-isolated-runner",
+    namePrefix: "",
     root: expected.root,
     config: `${expected.root}/vitest.config.ts`,
     pool: "forks",
@@ -430,8 +435,8 @@ async function assertCompletion(
   const report: JsonTestResults = JSON.parse(await fs.readFile(expected.reportPath, "utf8"));
   expect(report.testResults.map((file) => file.name).toSorted()).toEqual(expected.files);
   expect(report).toMatchObject({
-    numTotalTests: 46,
-    numPassedTests: 45,
+    numTotalTests: 48,
+    numPassedTests: 47,
     numPendingTests: 1,
     numFailedTests: 0,
     numTodoTests: 0,
@@ -512,6 +517,7 @@ export default defineConfig({
     const reportPath = path.join(root, "report.json");
     let child!: ChildProcess;
     const result = await runVitestShutdownCommand({
+      bin: resolveTestNodeExecPath(),
       args: [
         path.join(vitestPackageDir, "vitest.mjs"),
         "run",
@@ -562,8 +568,11 @@ export default defineConfig({
     ];
     for (const [index, artifact] of [reportPath, capturePath].entries()) {
       for (const contents of [null, "{", "null", "{}"]) {
-        if (contents === null) await fs.rm(artifact);
-        else await fs.writeFile(artifact, contents);
+        if (contents === null) {
+          await fs.rm(artifact);
+        } else {
+          await fs.writeFile(artifact, contents);
+        }
         await expect(
           assertCompletion(completion, expected),
           `rejects missing/corrupt ${path.basename(artifact)}: ${contents}`,
@@ -635,15 +644,19 @@ export default defineConfig({
     ] satisfies Partial<ChildCompletion>[]) {
       faults.push([
         `abnormal child completion: ${JSON.stringify(patch)}`,
-        ({ child }) => Object.assign(child, patch),
+        ({ child: replayChild }) => Object.assign(replayChild, patch),
       ]);
     }
     const nativeReport: JsonTestResults = JSON.parse(originals[0]!);
     for (const [index, file] of nativeReport.testResults.entries()) {
-      if (!file.assertionResults.length) continue;
+      if (!file.assertionResults.length) {
+        continue;
+      }
       const name = path.basename(file.name);
       for (const status of ["pending", "skipped", "todo", "failed", "passed"] as const) {
-        if (status === file.assertionResults[0]!.status) continue;
+        if (status === file.assertionResults[0]!.status) {
+          continue;
+        }
         faults.push([
           `${name}: unexpected ${status} assertion`,
           ({ report }) => {
@@ -683,8 +696,8 @@ export default defineConfig({
       for (const phase of ["afterAll", "resource teardown"]) {
         faults.push([
           `missing ${generation} ${phase} marker`,
-          ({ child }) => {
-            child.output = child.output.replace(
+          ({ child: replayChild }) => {
+            replayChild.output = replayChild.output.replace(
               `test API lifecycle: ${generation} ${phase} passed`,
               "",
             );

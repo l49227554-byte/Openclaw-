@@ -15,15 +15,49 @@ export function extractPromotionKeys(content: string): string[] {
 }
 
 export class MemoryWriteConflictError extends Error {
-  constructor() {
-    super("MEMORY.md changed before the dreaming write could commit");
+  constructor(message = "MEMORY.md changed before the dreaming write could commit") {
+    super(message);
     this.name = "MemoryWriteConflictError";
   }
 }
 
+async function realpathMemoryPath(filePath: string): Promise<string> {
+  if (!process.versions.bun || process.platform === "win32") {
+    return await fs.realpath(filePath);
+  }
+
+  // Bun compatibility: keep this segment-wise path walk until fs.realpath preserves
+  // symlink semantics for `symlink/..`; lexical normalization can escape the target dir.
+  const parsed = path.parse(filePath);
+  let current = parsed.root || (await fs.realpath("."));
+  const relative = parsed.root ? filePath.slice(parsed.root.length) : filePath;
+  const assertDirectory = async () => {
+    await fs.stat(`${current}${path.sep}`);
+  };
+  for (const segment of relative.split(path.sep)) {
+    if (!segment) {
+      continue;
+    }
+    if (segment === ".") {
+      await assertDirectory();
+      continue;
+    }
+    if (segment === "..") {
+      await assertDirectory();
+      current = path.dirname(current);
+      continue;
+    }
+    current = await fs.realpath(path.join(current, segment));
+  }
+  if (relative.endsWith(path.sep)) {
+    await assertDirectory();
+  }
+  return current;
+}
+
 export async function resolveMemoryWritePath(filePath: string): Promise<string> {
   try {
-    return await fs.realpath(filePath);
+    return await realpathMemoryPath(filePath);
   } catch (err) {
     const hasTrailingSeparator =
       filePath.endsWith(path.sep) ||
@@ -35,7 +69,7 @@ export async function resolveMemoryWritePath(filePath: string): Promise<string> 
 
   // Canonicalize each parent before applying a relative link target. Lexical
   // normalization would change `..` semantics when an earlier component is a symlink.
-  const parentPath = await fs.realpath(path.dirname(filePath));
+  const parentPath = await realpathMemoryPath(path.dirname(filePath));
   const canonicalPath = path.join(parentPath, path.basename(filePath));
   let linkTarget: string;
   try {
@@ -74,9 +108,10 @@ async function writeExistingMemoryInPlace(params: {
   filePath: string;
   expectedContent: string;
   content: string;
+  conflictMessage?: string;
 }): Promise<boolean> {
   if ((await readMemoryContent(params.filePath)) !== params.expectedContent) {
-    throw new MemoryWriteConflictError();
+    throw new MemoryWriteConflictError(params.conflictMessage);
   }
   let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
@@ -101,7 +136,9 @@ async function writeExistingMemoryInPlace(params: {
           restored,
         );
         if (bytesWritten <= 0) {
-          throw new Error("MEMORY.md restore write made no progress", { cause: error });
+          throw new Error(`${path.basename(params.filePath)} restore write made no progress`, {
+            cause: error,
+          });
         }
         restored += bytesWritten;
       }
@@ -109,7 +146,7 @@ async function writeExistingMemoryInPlace(params: {
       await handle.sync();
     } catch (restoreError) {
       throw new Error(
-        "MEMORY.md in-place write failed and restoring the original content also failed",
+        `${path.basename(params.filePath)} in-place write failed and restoring the original content also failed`,
         { cause: restoreError },
       );
     }
@@ -123,32 +160,45 @@ export function hashMemoryContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-export async function writeMemoryContent(params: {
-  memoryPath: string;
-  memoryWritePath: string;
-  expectedHash?: string;
-  expectedContent?: string;
-  allowInPlaceFallback?: boolean;
-  content: string;
-}): Promise<void> {
-  const memoryDirMode = (await fs.stat(path.dirname(params.memoryWritePath))).mode & 0o7777;
+type MemoryContentCommit =
+  | { content: string; expectedContent?: string }
+  | { content: null; expectedContent: string };
+
+export async function commitMemoryContent(
+  params: {
+    filePath: string;
+    tempPrefix: string;
+    expectedHash?: string;
+    allowInPlaceFallback?: boolean;
+    conflictMessage?: string;
+  } & MemoryContentCommit,
+): Promise<void> {
+  if (params.content === null) {
+    if ((await readMemoryContent(params.filePath)) !== params.expectedContent) {
+      throw new MemoryWriteConflictError(params.conflictMessage);
+    }
+    // Unlink is atomic; the preimage check preserves external edits made after planning.
+    await fs.unlink(params.filePath);
+    return;
+  }
+  const memoryDirMode = (await fs.stat(path.dirname(params.filePath))).mode & 0o7777;
   try {
     await replaceFileAtomic({
-      filePath: params.memoryWritePath,
+      filePath: params.filePath,
       content: params.content,
       dirMode: memoryDirMode,
       mode: 0o600,
       preserveExistingMode: true,
-      tempPrefix: `${path.basename(params.memoryPath)}.promotion`,
+      tempPrefix: params.tempPrefix,
       syncTempFile: true,
       syncParentDir: true,
       throwOnCleanupError: true,
       beforeRename: async () => {
         if (
           params.expectedHash &&
-          hashMemoryContent(await readMemoryContent(params.memoryWritePath)) !== params.expectedHash
+          hashMemoryContent(await readMemoryContent(params.filePath)) !== params.expectedHash
         ) {
-          throw new MemoryWriteConflictError();
+          throw new MemoryWriteConflictError(params.conflictMessage);
         }
         // OpenClaw writers are serialized. The recoverable preimage covers the
         // accepted race with external editors between this check and rename.
@@ -176,9 +226,10 @@ export async function writeMemoryContent(params: {
       params.expectedContent === undefined ||
       !isAtomicReplacePermissionError(error) ||
       !(await writeExistingMemoryInPlace({
-        filePath: params.memoryWritePath,
+        filePath: params.filePath,
         expectedContent: params.expectedContent,
         content: params.content,
+        conflictMessage: params.conflictMessage,
       }))
     ) {
       throw error;

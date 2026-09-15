@@ -14,6 +14,20 @@ import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 
 type MigratedConversationEntry = Record<string, unknown>;
 
+export function dropLegacySessionTranscriptSearchSchema(db: DatabaseSync): void {
+  // The pre-landing sessions_search branch tracked JSONL file watermarks and
+  // stored session_key inside the FTS table. Both are derived caches; drop
+  // them so reconcile rebuilds the row-native index shape.
+  db.exec("DROP TABLE IF EXISTS session_transcript_files;");
+  const columns = db.prepare("PRAGMA table_info(session_transcript_fts)").all();
+  if (columns.some((row) => row.name === "session_key")) {
+    db.exec(`
+      DROP TABLE IF EXISTS session_transcript_fts;
+      DROP TABLE IF EXISTS session_transcript_index_state;
+    `);
+  }
+}
+
 function parseConversationEntry(value: unknown): MigratedConversationEntry | undefined {
   return typeof value === "string" ? safeParseJsonRecord(value) : undefined;
 }
@@ -311,6 +325,11 @@ export function ensureSessionAdditiveColumns(db: DatabaseSync): void {
 export function hasPendingSessionConversationRouteContextColumn(db: DatabaseSync): boolean {
   const columns = readSqliteTableColumns(db, "session_conversations");
   return Boolean(columns && !columns.has("route_context_json"));
+}
+
+export function hasPendingSessionProjectColumn(db: DatabaseSync): boolean {
+  const columns = readSqliteTableColumns(db, "session_nodes");
+  return Boolean(columns && !columns.has("project_id"));
 }
 
 export function hasPendingSessionTranscriptContextEligibilityColumn(db: DatabaseSync): boolean {

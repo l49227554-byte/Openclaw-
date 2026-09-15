@@ -36,7 +36,7 @@ type MentionConnection = {
   connectionRevision: number;
   profileId: string;
   gatewayInstanceId: string;
-  result: MentionsListResult | null;
+  revision: number | null;
   requiredRevision: number | null;
   dismissing: Set<string>;
   refreshRequested: boolean;
@@ -72,37 +72,45 @@ export function createMentionsCapability(
     gateway.connectionRevision === owner.connectionRevision &&
     gateway.snapshot.selfUser?.identity?.id === owner.profileId;
 
-  const applyResult = (owner: MentionConnection, result: MentionsListResult) => {
-    if (
-      !isCurrent(owner) ||
-      result.gatewayInstanceId !== owner.gatewayInstanceId ||
-      (owner.result !== null && result.revision < owner.result.revision) ||
-      (owner.requiredRevision !== null && result.revision < owner.requiredRevision)
-    ) {
-      return;
-    }
-    owner.result = result;
-    publish({ phase: "ready", items: result.items, error: null });
-  };
-
-  const handleError = (owner: MentionConnection, error: unknown) => {
+  const requestSnapshot = async (
+    owner: MentionConnection,
+    method: "mentions.list" | "mentions.dismiss",
+    params: { ids?: readonly string[] },
+  ) => {
     if (!isCurrent(owner)) {
       return;
     }
-    const accessLost =
-      error instanceof GatewayRequestError &&
-      (error.gatewayCode === "FORBIDDEN" ||
-        resolveGatewayErrorDetailCode(error) ===
-          ConnectErrorDetailCodes.AUTHENTICATED_PROFILE_UNAVAILABLE);
-    if (accessLost) {
-      // Retire in-flight reads too; an earlier success cannot restore a revoked Inbox.
-      connection = null;
+    try {
+      const result = await owner.client.request<MentionsListResult>(method, params);
+      if (
+        !isCurrent(owner) ||
+        result.gatewayInstanceId !== owner.gatewayInstanceId ||
+        (owner.revision !== null && result.revision < owner.revision) ||
+        (owner.requiredRevision !== null && result.revision < owner.requiredRevision)
+      ) {
+        return;
+      }
+      owner.revision = result.revision;
+      publish({ phase: "ready", items: result.items, error: null });
+    } catch (error) {
+      if (!isCurrent(owner)) {
+        return;
+      }
+      const accessLost =
+        error instanceof GatewayRequestError &&
+        (error.gatewayCode === "FORBIDDEN" ||
+          resolveGatewayErrorDetailCode(error) ===
+            ConnectErrorDetailCodes.AUTHENTICATED_PROFILE_UNAVAILABLE);
+      if (accessLost) {
+        // Retire in-flight reads too; an earlier success cannot restore a revoked Inbox.
+        connection = null;
+      }
+      publish({
+        phase: "error",
+        error: formatUiError(error),
+        ...(accessLost ? { items: [], dismissing: [] } : {}),
+      });
     }
-    publish({
-      phase: "error",
-      error: formatUiError(error),
-      ...(accessLost ? { items: [], dismissing: [] } : {}),
-    });
   };
 
   const refreshOwner = (owner: MentionConnection): Promise<void> => {
@@ -113,26 +121,15 @@ export function createMentionsCapability(
     if (owner.refreshPromise) {
       return owner.refreshPromise;
     }
-    const run = async () => {
-      while (isCurrent(owner) && owner.refreshRequested) {
-        owner.refreshRequested = false;
-        publish({ phase: "loading", error: null });
-        if (!isCurrent(owner)) {
-          return;
-        }
-        try {
-          const result = await owner.client.request<MentionsListResult>("mentions.list", {});
-          applyResult(owner, result);
-        } catch (error) {
-          handleError(owner, error);
-        }
-        // An invalidation during a read gets one more authoritative snapshot;
-        // revisions also fence an older read that finishes after dismissal.
-      }
-    };
     owner.refreshPromise = Promise.resolve().then(async () => {
       try {
-        await run();
+        while (isCurrent(owner) && owner.refreshRequested) {
+          owner.refreshRequested = false;
+          publish({ phase: "loading", error: null });
+          await requestSnapshot(owner, "mentions.list", {});
+          // An invalidation during a read gets one more authoritative snapshot;
+          // revisions also fence an older read that finishes after dismissal.
+        }
       } finally {
         owner.refreshPromise = null;
         if (isCurrent(owner) && owner.refreshRequested) {
@@ -141,6 +138,26 @@ export function createMentionsCapability(
       }
     });
     return owner.refreshPromise;
+  };
+
+  const refreshAutomatically = (owner: MentionConnection): Promise<void> => {
+    const hydrate = () => {
+      if (!isCurrent(owner)) {
+        return Promise.resolve();
+      }
+      if (owner.refreshPromise) {
+        return owner.refreshPromise;
+      }
+      if (
+        owner.revision !== null &&
+        (owner.requiredRevision === null || owner.revision >= owner.requiredRevision)
+      ) {
+        owner.refreshRequested = false;
+        return Promise.resolve();
+      }
+      return refreshOwner(owner);
+    };
+    return options.connectionBootstrap?.run(owner, hydrate, { background: true }) ?? hydrate();
   };
 
   const synchronize = () => {
@@ -169,7 +186,7 @@ export function createMentionsCapability(
       connectionRevision: gateway.connectionRevision,
       profileId,
       gatewayInstanceId,
-      result: null,
+      revision: null,
       requiredRevision: null,
       dismissing: new Set(),
       refreshRequested: false,
@@ -180,9 +197,7 @@ export function createMentionsCapability(
     if (!isCurrent(owner)) {
       return;
     }
-    const hydrate = () => refreshOwner(owner);
-    const bootstrapKey = `mentions:${gatewayInstanceId}:${next.hello.server?.connId}:${profileId}`;
-    void (options.connectionBootstrap?.run(bootstrapKey, hydrate) ?? hydrate());
+    void refreshAutomatically(owner);
   };
 
   // Subscribe before hydration so a commit cannot fall between the initial
@@ -198,12 +213,13 @@ export function createMentionsCapability(
       typeof payload.revision !== "number" ||
       !Number.isSafeInteger(payload.revision) ||
       payload.revision < 0 ||
-      (owner.result !== null && payload.revision <= owner.result.revision)
+      (owner.revision !== null && payload.revision <= owner.revision)
     ) {
       return;
     }
     owner.requiredRevision = Math.max(owner.requiredRevision ?? 0, payload.revision);
-    void refreshOwner(owner);
+    owner.refreshRequested = true;
+    void refreshAutomatically(owner);
   });
   const stopGateway = gateway.subscribe(synchronize);
   synchronize();
@@ -239,15 +255,7 @@ export function createMentionsCapability(
       }
       publish({ dismissing: [...owner.dismissing], error: null });
       try {
-        if (!isCurrent(owner)) {
-          return;
-        }
-        const result = await owner.client.request<MentionsListResult>("mentions.dismiss", {
-          ids: pendingIds,
-        });
-        applyResult(owner, result);
-      } catch (error) {
-        handleError(owner, error);
+        await requestSnapshot(owner, "mentions.dismiss", { ids: pendingIds });
       } finally {
         for (const id of pendingIds) {
           owner.dismissing.delete(id);

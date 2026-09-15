@@ -1,11 +1,12 @@
 // Ambient trusted caller context for model-mediated Gateway tool calls.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
-import type { CronCreatorAuthorityGrant } from "../../gateway/cron-creator-authority-grant.js";
+import type { CronCreatorAuthorityGrant } from "../../gateway/cron-creator-authority-grant.types.js";
 import type {
   GatewayContextResolver,
   GatewayRequestContext,
 } from "../../gateway/server-methods/types.js";
+import type { GatewayUiCommandTarget } from "../../gateway/ui-command-target.types.js";
 import type { WorkerSessionTurnClaim } from "../../gateway/worker-environments/placement-record.js";
 import type { WorkerTurnExecutionIdentityCapability } from "../../gateway/worker-environments/placement-turn-claim-events.js";
 import type { AgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
@@ -16,6 +17,7 @@ import {
   type OperationalRunInstanceRef,
 } from "../admitted-run-context.js";
 import { copyAgentToolMetadata } from "../agent-tool-metadata.js";
+import type { EmbeddedRunToolAuthorityBinding } from "../embedded-agent-runner/run-state.js";
 import {
   attachInternalToolExecutionPreparer,
   getInternalToolExecutionPreparer,
@@ -25,9 +27,11 @@ import type { AnyAgentTool } from "./common.js";
 type GatewayToolCallerIdentity = {
   agentId: string;
   sessionKey: string;
+  gatewayUiCommandTarget?: GatewayUiCommandTarget;
   /** Prepared requesting-tool posture; absent authority never bypasses approvals. */
   fullPermission?: boolean;
   operationalRunInstance?: OperationalRunInstanceRef;
+  embeddedRunToolAuthorityBinding?: EmbeddedRunToolAuthorityBinding;
   /** Exact run authority used to fence delegated system-agent approvals. */
   approvalAuthority?: AgentRunDelegatedAuthority;
   approvalAuthorityCheck?: () => boolean | void;
@@ -38,7 +42,7 @@ type GatewayToolCallerIdentity = {
   /** Opaque already-signed identity used only by isolated worker transports. */
   signedAgentRuntimeIdentityToken?: string;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
-  /** Synchronous host-owned fence for before-tool decision receipts. */
+  /** Synchronous host-owned fence for tool effects and decision receipts. */
   receiptAuthority?: () => boolean | void;
   /** Exact Gateway-owned worker claim; never sourced from model or RPC arguments. */
   workerTurnClaim?: WorkerSessionTurnClaim;
@@ -53,6 +57,7 @@ type GatewayToolCallerIdentity = {
   cronExecToolTarget?: { host: "gateway"; ask?: "always" };
   /** One-shot Gateway-owned proof for a freshly resolved configured-MCP cap. */
   cronCreatorAuthorityGrant?: CronCreatorAuthorityGrant;
+  cronManagementGrant?: CronCreatorAuthorityGrant;
   // Trusted run context, carried separately from model-authored tool arguments.
   turnSourceChannel?: string;
   turnSourceLocal?: true;
@@ -63,6 +68,7 @@ type GatewayToolCallerIdentity = {
 
 type GatewayToolCallerSource = {
   agentSessionKey?: string;
+  gatewayUiCommandTarget?: GatewayUiCommandTarget;
   agentChannel?: string;
   currentMessagingTarget?: string;
   currentChannelId?: string;
@@ -174,6 +180,21 @@ export function getGatewayToolCallerIdentity(): GatewayToolCallerIdentity | unde
   return gatewayToolCallerStorage.getStore();
 }
 
+/** Capture the admitted run and worker owner, independently of optional audit collection. */
+export function captureGatewayToolCallerAssertion(): (() => void) | undefined {
+  const caller = getGatewayToolCallerIdentity();
+  if (!caller?.operationalRunInstance) {
+    return undefined;
+  }
+  const isCurrent = caller.receiptAuthority;
+  const signals = caller.approvalSignals ?? [];
+  return () => {
+    if (!isCurrent || signals.some((signal) => signal.aborted) || isCurrent() === false) {
+      throw new Error("agent tool caller authority is no longer active");
+    }
+  };
+}
+
 /** Process-owned work must not retain the turn that authorized its launch. */
 export function withoutGatewayToolCallerIdentity<T>(run: () => T): T {
   return gatewayToolCallerStorage.exit(run);
@@ -191,14 +212,11 @@ export async function withGatewayToolCallerIdentity<T>(
   const inheritedRun = inherited?.operationalRunInstance;
   // Wrappers without a run inherit the admitted owner. A distinct admitted run
   // starts a new root; retaining the outer run would let child work outlive its owner.
-  const inheritedOwner =
-    !suppliedRun ||
-    (inheritedRun?.instanceId === suppliedRun.instanceId &&
-      inheritedRun.runId === suppliedRun.runId)
-      ? inherited
-      : undefined;
+  const inheritedOwner = !suppliedRun || inheritedRun === suppliedRun ? inherited : undefined;
   const operationalRunInstance =
     inheritedOwner?.operationalRunInstance ?? identity.operationalRunInstance;
+  const embeddedRunToolAuthorityBinding =
+    identity.embeddedRunToolAuthorityBinding ?? inheritedOwner?.embeddedRunToolAuthorityBinding;
   // Same-run wrappers can narrow a prepared posture, never erase a restriction.
   const fullPermission =
     inheritedOwner?.fullPermission === false || identity.fullPermission === false
@@ -233,18 +251,22 @@ export async function withGatewayToolCallerIdentity<T>(
   const cronExecToolTarget = identity.cronExecToolTarget ?? inheritedOwner?.cronExecToolTarget;
   const cronCreatorAuthorityGrant =
     identity.cronCreatorAuthorityGrant ?? inheritedOwner?.cronCreatorAuthorityGrant;
+  const cronManagementGrant = identity.cronManagementGrant ?? inheritedOwner?.cronManagementGrant;
   const turnSourceChannel = inheritedOwner?.turnSourceChannel ?? identity.turnSourceChannel?.trim();
   const turnSourceLocal = inheritedOwner?.turnSourceLocal ?? identity.turnSourceLocal;
   const turnSourceTo = inheritedOwner?.turnSourceTo ?? identity.turnSourceTo?.trim();
   const turnSourceAccountId =
     inheritedOwner?.turnSourceAccountId ?? identity.turnSourceAccountId?.trim();
   const turnSourceThreadId = inheritedOwner?.turnSourceThreadId ?? identity.turnSourceThreadId;
+  const gatewayUiCommandTarget =
+    inheritedOwner?.gatewayUiCommandTarget ?? identity.gatewayUiCommandTarget;
   return await gatewayToolCallerStorage.run(
     {
       agentId: inheritedOwner?.agentId ?? identity.agentId.trim(),
       sessionKey: inheritedOwner?.sessionKey ?? identity.sessionKey.trim(),
       ...(fullPermission !== undefined ? { fullPermission } : {}),
       ...(operationalRunInstance ? { operationalRunInstance } : {}),
+      ...(embeddedRunToolAuthorityBinding ? { embeddedRunToolAuthorityBinding } : {}),
       ...(approvalAuthority ? { approvalAuthority } : {}),
       ...(approvalAuthorityCheck ? { approvalAuthorityCheck } : {}),
       ...(identity.approvalOwnerPluginId?.trim()
@@ -257,12 +279,14 @@ export async function withGatewayToolCallerIdentity<T>(
       ...(cronToolsAllowCapture ? { cronToolsAllowCapture } : {}),
       ...(cronExecToolTarget ? { cronExecToolTarget } : {}),
       ...(cronCreatorAuthorityGrant ? { cronCreatorAuthorityGrant } : {}),
+      ...(cronManagementGrant ? { cronManagementGrant } : {}),
       ...(executionIdentityToken ? { executionIdentityToken } : {}),
       ...(receiptAuthority ? { receiptAuthority } : {}),
       ...(approvalSignals.length ? { approvalSignals } : {}),
       ...(workerTurnClaim ? { workerTurnClaim } : {}),
       ...(workerTurnExecutionIdentityCapability ? { workerTurnExecutionIdentityCapability } : {}),
       ...(gatewayContextResolver ? { gatewayContextResolver } : {}),
+      ...(gatewayUiCommandTarget ? { gatewayUiCommandTarget } : {}),
       ...(turnSourceChannel ? { turnSourceChannel } : {}),
       ...(turnSourceLocal === true ? { turnSourceLocal: true } : {}),
       ...(turnSourceTo ? { turnSourceTo } : {}),
@@ -324,6 +348,7 @@ export function createGatewayToolCallerWrapper(
       ? {
           agentId,
           sessionKey: source.agentSessionKey.trim(),
+          gatewayUiCommandTarget: source.gatewayUiCommandTarget,
           turnSourceChannel: source.agentChannel,
           turnSourceTo: source.currentMessagingTarget ?? source.currentChannelId ?? source.agentTo,
           turnSourceAccountId: source.agentAccountId,

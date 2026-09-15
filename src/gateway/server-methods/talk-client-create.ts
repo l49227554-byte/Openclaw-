@@ -24,18 +24,16 @@ import {
 import { REALTIME_VOICE_DESCRIBE_VIEW_TOOL } from "../../talk/describe-view-tool.js";
 import {
   cancelInternalRealtimeVoiceBrowserSession,
+  projectInternalRealtimeVoicePublicConfig,
   type InternalRealtimeVoiceBrowserSessionCreateRequest,
 } from "../../talk/provider-internal.js";
-import {
-  resolveConfiguredRealtimeVoiceProvider,
-  resolveRealtimeVoiceProviderCapabilities,
-} from "../../talk/provider-resolver.js";
+import { resolveConfiguredRealtimeVoiceProvider } from "../../talk/provider-resolver.js";
 import { resolveSandboxedSessionCreation } from "../operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
-import { readSessionPreviewItemsFromTranscript } from "../session-transcript-readers.js";
+import { readSessionPreviewItemsFromTranscript } from "../session-transcript-preview.js";
+import { createTalkClientAgentConsultRunner } from "../talk-client-agent-consult.js";
 import {
   boundTalkClientRealtimeInitialItems,
-  createTalkClientAgentConsultRunner,
   createTalkClientGatewayControlOwner,
   resolveTalkAgentConsultAuthority,
 } from "../talk-client-gateway-control.js";
@@ -105,6 +103,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
       normalizeOptionalLowercaseString(params.transport) ?? realtimeConfig.transport;
     const wantsCameraFrames = params.capabilities?.includes("camera-frame") === true;
     const wantsGatewayControl = params.capabilities?.includes("gateway-control-v1") === true;
+    const clientControl = wantsGatewayControl ? { owner: "gateway" as const } : undefined;
     if (wantsGatewayControl && wantsCameraFrames) {
       rejectTalkClientRequest(
         respond,
@@ -149,15 +148,10 @@ export const createTalkClient: GatewayRequestHandler = async ({
       agentId,
       defaultModel: realtimeConfig.model,
       surface: "browser-session",
+      requiredCapabilities: { supportsVideoFrames: wantsCameraFrames },
+      clientControl,
     });
-    const providerCapabilities = resolveRealtimeVoiceProviderCapabilities({
-      provider: resolution.provider,
-      providerConfig: resolution.providerConfig,
-      cfg: runtimeConfig,
-      agentId,
-      model: launchOptions.model,
-      surface: "browser-session",
-    });
+    const providerCapabilities = resolution.capabilities;
     if (wantsGatewayControl && providerCapabilities?.supportsGatewayControl !== true) {
       rejectTalkClientRequest(
         respond,
@@ -184,25 +178,37 @@ export const createTalkClient: GatewayRequestHandler = async ({
     sessionMutationAuthorization?.assertCurrent();
     if (resolution.provider.createBrowserSession && transport !== "gateway-relay") {
       const agentSessionId = resolveClientVoiceAgentSessionId(sessionTarget);
+      const { readRestoredSessionTranscript } =
+        await import("../../config/sessions/session-cold-storage-read.js");
       const initialItems = agentSessionId
-        ? boundTalkClientRealtimeInitialItems(
-            readSessionPreviewItemsFromTranscript(
-              {
-                ...sessionTarget,
-                sessionId: agentSessionId,
-              },
-              REALTIME_VOICE_CONTEXT_MAX_ITEMS,
-              REALTIME_VOICE_CONTEXT_MAX_ITEM_CHARS,
-            ).filter(
-              (
-                item,
-              ): item is {
-                role: "user" | "assistant";
-                text: string;
-              } => item.role === "user" || item.role === "assistant",
-            ),
+        ? await readRestoredSessionTranscript(
+            { ...sessionTarget, sessionId: agentSessionId },
+            () => {
+              sessionMutationAuthorization?.assertCurrent();
+              return boundTalkClientRealtimeInitialItems(
+                readSessionPreviewItemsFromTranscript(
+                  {
+                    ...sessionTarget,
+                    sessionId: agentSessionId,
+                  },
+                  REALTIME_VOICE_CONTEXT_MAX_ITEMS,
+                  REALTIME_VOICE_CONTEXT_MAX_ITEM_CHARS,
+                  "model-context",
+                ).filter(
+                  (
+                    item,
+                  ): item is {
+                    role: "user" | "assistant";
+                    text: string;
+                  } => item.role === "user" || item.role === "assistant",
+                ),
+              );
+            },
           )
         : [];
+      sessionMutationAuthorization?.assertCurrent();
+      const controlSource =
+        providerCapabilities?.handlesAgentConsult === true ? "delegation" : "transcript";
       const tools =
         providerCapabilities?.supportsToolCalls === false
           ? []
@@ -211,7 +217,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         tools.push(REALTIME_VOICE_DESCRIBE_VIEW_TOOL);
       }
       const instructions =
-        providerCapabilities?.handlesAgentConsult === true
+        controlSource === "delegation"
           ? normalizeOptionalString(providerInstructions)
           : buildRealtimeInstructions(providerInstructions);
       const requestedVoiceSessionId = normalizeOptionalString(params.voiceSessionId);
@@ -238,7 +244,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         context,
         sessionTarget: target,
         ...(ownerConnId ? { ownerConnId } : {}),
-        authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes),
+        authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes, client),
         getVoiceSessionId: () => activeVoiceSessionId,
         initialItems,
       });
@@ -246,6 +252,8 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ? createTalkClientGatewayControlOwner({
             voiceSessionId: activeVoiceSessionId!,
             providerId: resolution.provider.id,
+            controlSource,
+            supportsToolCalls: providerCapabilities?.supportsToolCalls,
             sessionTarget: target,
             connId: ownerConnId!,
             context,
@@ -257,8 +265,11 @@ export const createTalkClient: GatewayRequestHandler = async ({
                 throw new Error("Realtime voice client disconnected");
               }
             },
-            runAgentConsult: consultRunner.runArgs,
-            appendTranscript: ({ entryId, role, text }) =>
+            runToolAgentConsult: consultRunner.runArgs,
+            runAgentConsult: consultRunner.runOwnedArgs,
+            getToolAuthorityOverlay: (source) =>
+              consultRunner.getToolAuthorityOverlay(undefined, source),
+            appendTranscript: ({ entryId, role, text, confirmation }) =>
               appendClientVoiceTranscript({
                 agentId,
                 sessionKey,
@@ -267,6 +278,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
                 entryId,
                 role,
                 text,
+                confirmation,
                 config: runtimeConfig,
               }),
             flushTranscript: () =>
@@ -291,6 +303,13 @@ export const createTalkClient: GatewayRequestHandler = async ({
             },
           })
         : undefined;
+      // Native delegation can use lifecycle callbacks without negotiated control.
+      // Keep the ownership claim and its required binding in one request variant.
+      const controlRequest = gatewayControlOwner
+        ? clientControl
+          ? { clientControl, gatewayControl: gatewayControlOwner.control }
+          : { gatewayControl: gatewayControlOwner.control }
+        : {};
       const browserSessionRequest: InternalRealtimeVoiceBrowserSessionCreateRequest = {
         cfg: runtimeConfig,
         agentId,
@@ -300,7 +319,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         instructions,
         initialItems,
         runAgentConsult: gatewayControlOwner?.runAgentConsult ?? consultRunner.runPrompt,
-        ...(gatewayControlOwner ? { gatewayControl: gatewayControlOwner.control } : {}),
+        ...controlRequest,
         ...(tools.length > 0 ? { tools } : {}),
         ...launchOptions,
       };
@@ -388,9 +407,13 @@ export const createTalkClient: GatewayRequestHandler = async ({
           respond(
             true,
             {
-              ...session,
+              ...projectInternalRealtimeVoicePublicConfig({
+                provider: resolution.provider,
+                providerConfig: resolution.providerConfig,
+                config: session,
+              }),
               voiceSessionId,
-              ...(wantsGatewayControl ? { clientControl: { owner: "gateway" as const } } : {}),
+              ...(clientControl ? { clientControl } : {}),
             },
             undefined,
           );

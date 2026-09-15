@@ -11,20 +11,13 @@ import {
 import type { ChannelPlugin } from "./types.plugin.js";
 import type { ChannelId } from "./types.public.js";
 
-export const listChannelPlugins = () => listLoadedChannelPlugins() as ChannelPlugin[];
+export const listChannelPlugins = (): ChannelPlugin[] => listLoadedChannelPlugins();
 
 /**
  * Returns a loaded channel plugin without falling back to bundled metadata.
  */
 export function getLoadedChannelPlugin(id: ChannelId): ChannelPlugin | undefined {
-  return getLoadedChannelPluginById(id) as ChannelPlugin | undefined;
-}
-
-/**
- * Returns the package/install origin for a loaded channel plugin.
- */
-export function getLoadedChannelPluginOrigin(id: ChannelId): string | undefined {
-  return normalizeOptionalString(getLoadedChannelPluginEntryById(id)?.origin);
+  return getLoadedChannelPluginById(id);
 }
 
 /**
@@ -34,6 +27,7 @@ export function resolveChannelPluginRegistration(id: ChannelId):
   | {
       plugin: ChannelPlugin;
       origin?: string;
+      captureReadAuthority?: () => (() => boolean) | undefined;
       resolveChannelRuntime?: NonNullable<
         ReturnType<typeof getLoadedChannelPluginEntryById>
       >["resolveChannelRuntime"];
@@ -46,9 +40,10 @@ export function resolveChannelPluginRegistration(id: ChannelId):
   // Resolve implementation and provenance together. Loaded overrides win and
   // must never borrow bundled authority from the fallback with the same id.
   const scopedRegistry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
-  const loadedEntry =
-    (scopedRegistry ? getLoadedChannelPluginEntryById(resolvedId, scopedRegistry) : undefined) ??
-    getLoadedChannelPluginEntryById(resolvedId);
+  const scopedEntry = scopedRegistry
+    ? getLoadedChannelPluginEntryById(resolvedId, scopedRegistry)
+    : undefined;
+  const loadedEntry = scopedEntry ?? getLoadedChannelPluginEntryById(resolvedId);
   if (loadedEntry) {
     const origin = normalizeOptionalString(loadedEntry.origin) ?? undefined;
     return {
@@ -57,6 +52,10 @@ export function resolveChannelPluginRegistration(id: ChannelId):
         ? { resolveChannelRuntime: loadedEntry.resolveChannelRuntime }
         : {}),
       ...(origin ? { origin } : {}),
+      // An explicit scope cannot borrow an official grant from a root fallback.
+      ...((!scopedRegistry || scopedEntry) && loadedEntry.captureReadAuthority
+        ? { captureReadAuthority: loadedEntry.captureReadAuthority }
+        : {}),
     };
   }
   const plugin = getBundledChannelPlugin(resolvedId);

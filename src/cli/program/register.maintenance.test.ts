@@ -1,6 +1,7 @@
 // Register maintenance tests cover maintenance command registration in the CLI program.
 import { Command } from "commander";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as nodeSqlite from "../../../node-sqlite.mjs";
 import { ExitError } from "../../runtime.js";
 import { registerMaintenanceCommands } from "./register.maintenance.js";
 
@@ -89,6 +90,10 @@ function jsonFailure(message: string) {
 }
 
 describe("registerMaintenanceCommands doctor action", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
   async function runMaintenanceCli(args: string[]) {
     const program = new Command();
     registerMaintenanceCommands(program);
@@ -104,6 +109,20 @@ describe("registerMaintenanceCommands doctor action", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each(["22.23.2", "26.0.0"])("keeps plain doctor read-only on Node %s", async (node) => {
+    vi.stubGlobal("process", { ...process, versions: { ...process.versions, node } });
+    const capabilities = await nodeSqlite.detectCurrentSqliteCapabilities();
+    vi.spyOn(nodeSqlite, "detectCurrentSqliteCapabilities").mockResolvedValue({
+      ...capabilities,
+      text: false,
+    });
+    runDoctorLintCli.mockResolvedValue(1);
+    await runMaintenanceCli(["doctor"]);
+    expect(runDoctorLintCli).toHaveBeenCalledOnce();
+    expect(doctorCommand).not.toHaveBeenCalled();
+    expect(runtime.exit).toHaveBeenCalledWith(1);
   });
 
   it("exits with code 0 after successful doctor run", async () => {
@@ -169,15 +188,32 @@ describe("registerMaintenanceCommands doctor action", () => {
     expect(runtime.exit).toHaveBeenCalledWith(2);
   });
 
-  it("maps --fix to repair=true", async () => {
+  it.each([
+    { args: [], repair: false, force: false, yes: false },
+    { args: ["--fix"], repair: true, force: false, yes: false },
+    { args: ["--force"], repair: false, force: true, yes: false },
+    { args: ["--fix", "--force"], repair: true, force: true, yes: false },
+    { args: ["--repair", "--force"], repair: true, force: true, yes: false },
+    { args: ["--yes", "--force"], repair: false, force: true, yes: true },
+  ])("forwards repair and force independently for $args", async ({ args, repair, force, yes }) => {
     doctorCommand.mockResolvedValue(undefined);
 
-    await runMaintenanceCli(["doctor", "--fix"]);
+    await runMaintenanceCli(["doctor", ...args]);
 
     expect(doctorCommand).toHaveBeenCalledTimes(1);
     const [runtimeArg, options] = commandCall(doctorCommand);
     expect(runtimeArg).toBe(runtime);
-    expect(options.repair).toBe(true);
+    expect(options).toMatchObject({ repair, force, yes });
+  });
+
+  it("explains the force option without promising service rewrites during repair", () => {
+    const program = new Command();
+    registerMaintenanceCommands(program);
+    const doctor = program.commands.find((command) => command.name() === "doctor");
+    const help = doctor?.helpInformation().replace(/\s+/gu, " ");
+
+    expect(help).toContain("Allow aggressive repair choices");
+    expect(help).toContain("(with --fix, preserves service definitions)");
   });
 
   it("passes session sqlite options to doctor command", async () => {
@@ -329,6 +365,76 @@ describe("registerMaintenanceCommands doctor action", () => {
       expect(runtime.exit).toHaveBeenCalledWith(2);
     },
   );
+
+  it.each([
+    ["lint and post-upgrade", ["--lint", "--post-upgrade"]],
+    ["session and post-upgrade", ["--session-sqlite", "inspect", "--post-upgrade"]],
+    ["session and repair", ["--session-sqlite", "import", "--fix"]],
+    ["session and repair alias", ["--session-sqlite", "inspect", "--repair"]],
+    ["session and forced repair", ["--session-sqlite", "inspect", "--force"]],
+    ["session and gateway token", ["--session-sqlite", "inspect", "--generate-gateway-token"]],
+    ["post-upgrade and repair", ["--post-upgrade", "--fix"]],
+    ["post-upgrade and gateway token", ["--post-upgrade", "--generate-gateway-token"]],
+  ])("rejects %s before either operation runs", async (_label, args) => {
+    await runMaintenanceCli(["doctor", ...args, "--json"]);
+
+    expect(doctorCommand).not.toHaveBeenCalled();
+    expect(runDoctorLintCli).not.toHaveBeenCalled();
+    expect(runtime.writeJson).toHaveBeenCalledWith(
+      jsonFailure(
+        "doctor operations are mutually exclusive: choose one of --lint, --fix/--repair, --post-upgrade, --state-sqlite, or --session-sqlite.",
+      ),
+    );
+    expect(runtime.error).not.toHaveBeenCalled();
+    expect(runtime.exit).toHaveBeenCalledWith(2);
+  });
+
+  it.each(DOCTOR_SESSION_SQLITE_MODES.filter((mode) => mode !== "recover"))(
+    "rejects GitHub issue creation for session SQLite %s",
+    async (mode) => {
+      await runMaintenanceCli(["doctor", "--session-sqlite", mode, "--github-issue", "--json"]);
+
+      expect(doctorCommand).not.toHaveBeenCalled();
+      expect(runDoctorLintCli).not.toHaveBeenCalled();
+      expect(runtime.writeJson).toHaveBeenCalledWith(
+        jsonFailure("--github-issue requires --session-sqlite recover."),
+      );
+      expect(runtime.exit).toHaveBeenCalledWith(2);
+    },
+  );
+
+  it("preserves standalone post-upgrade diagnostics", async () => {
+    doctorCommand.mockResolvedValue(undefined);
+
+    await runMaintenanceCli(["doctor", "--post-upgrade", "--json"]);
+
+    expect(doctorCommand).toHaveBeenCalledWith(
+      runtime,
+      expect.objectContaining({ postUpgrade: true, json: true }),
+    );
+    expect(runDoctorLintCli).not.toHaveBeenCalled();
+    expect(runtime.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("redacts credentials in lint failure output", async () => {
+    const token = "sk-abcdefghijklmnopqrstuv";
+    runDoctorLintCli.mockRejectedValueOnce(
+      new Error(`lint failed: Authorization: Bearer ${token}`),
+    );
+
+    await runMaintenanceCli(["doctor", "--lint", "--json"]);
+
+    expect(runtime.writeJson).toHaveBeenCalledWith({
+      ok: false,
+      error: {
+        type: "cli_error",
+        message: expect.stringContaining("lint failed: Authorization: Bearer"),
+      },
+    });
+    expect(JSON.stringify(runtime.writeJson.mock.calls)).not.toContain(token);
+    expect(runtime.error).not.toHaveBeenCalled();
+    expect(runtime.exit).toHaveBeenCalledWith(2);
+  });
 
   it("runs doctor lint mode without invoking repair doctor", async () => {
     runDoctorLintCli.mockResolvedValue(1);

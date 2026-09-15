@@ -1,6 +1,7 @@
-import type {
-  SessionCatalogHost,
-  SessionCatalogSession,
+import {
+  GATEWAY_OWNER_PROFILE_ID,
+  type SessionCatalogHost,
+  type SessionCatalogSession,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -21,7 +22,11 @@ import type { GatewayClient } from "./types.js";
 type SessionCatalogVisibility = { cacheKey: string } & (
   | { kind: "unrestricted" }
   | { kind: "restricted-unprofiled" }
-  | { kind: "restricted-owner"; isCreator: ReturnType<typeof prepareSessionCreatorProfile> }
+  | {
+      kind: "restricted-owner";
+      others: "none" | undefined;
+      isCreator: ReturnType<typeof prepareSessionCreatorProfile>;
+    }
   | {
       kind: "restricted-shared";
       others: "view" | "suggest" | "write";
@@ -36,7 +41,8 @@ export function resolveSessionCatalogVisibility(
   const scopes = Array.isArray(client?.connect?.scopes) ? client.connect.scopes : [];
   const admin = authorizeOperatorScopesForRequiredScope(ADMIN_SCOPE, scopes).allowed;
   const multipleIdentities = hasMultipleSessionSharingIdentities();
-  const profileId = client?.authenticatedUserProfile?.profileId;
+  const attachedProfileId = client?.authenticatedUserProfile?.profileId;
+  const profileId = attachedProfileId === GATEWAY_OWNER_PROFILE_ID ? undefined : attachedProfileId;
   const others = admin ? undefined : operatorSessionCap(client, config);
   const profileAliases = profileId ? readUserProfileAliases(profileId) : undefined;
   const cacheKey = JSON.stringify({
@@ -56,7 +62,16 @@ export function resolveSessionCatalogVisibility(
   const isCreator = prepareSessionCreatorProfile(profileId, profileAliases);
   return others && others !== "none"
     ? { cacheKey, kind: "restricted-shared", others, isCreator }
-    : { cacheKey, kind: "restricted-owner", isCreator };
+    : { cacheKey, kind: "restricted-owner", others, isCreator };
+}
+
+export function isPublishedCatalogVisible(visibility: SessionCatalogVisibility): boolean {
+  // No role cap keeps adopted catalogs owner-only, but does not restrict publications.
+  return (
+    visibility.kind === "unrestricted" ||
+    visibility.kind === "restricted-shared" ||
+    (visibility.kind === "restricted-owner" && visibility.others === undefined)
+  );
 }
 
 function visibleCatalogSessionEntry(params: {
@@ -90,6 +105,9 @@ export function filterSessionCatalogHost(
   if (visibility.kind === "unrestricted" || params.audience === "gateway-operators") {
     return host;
   }
+  if (params.audience === "session-viewers") {
+    return isPublishedCatalogVisible(visibility) ? host : { ...host, sessions: [] };
+  }
   if (visibility.kind === "restricted-unprofiled") {
     return { ...host, sessions: [] };
   }
@@ -120,6 +138,9 @@ export async function isSessionCatalogThreadVisible(params: {
   let visibility = resolveSessionCatalogVisibility(params.client, config);
   if (visibility.kind === "unrestricted") {
     return true;
+  }
+  if (params.audience === "session-viewers" && params.access === "read") {
+    return isPublishedCatalogVisible(visibility);
   }
   if (visibility.kind === "restricted-unprofiled" && params.audience !== "gateway-operators") {
     return false;
@@ -160,7 +181,7 @@ export async function isSessionCatalogThreadVisible(params: {
     });
     const instances = new Map();
     planningEntries.captureHostInstances(host, instances);
-    const projected = requestEntries.projectHostSessions(host, instances);
+    const projected = requestEntries.projectHostSessions(host, instances, params.audience);
     const session = projected.sessions.find(
       (candidate) =>
         candidate.threadId === params.threadId &&

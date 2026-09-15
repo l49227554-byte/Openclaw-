@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import {
+  consumeRequesterFinalAttachment,
+  registerRequesterFinalAttachment,
+} from "../requester-final-attachment.js";
 import {
   markRequesterTurnYieldedInRuns,
   settleRequesterTurnAfterSessionSpawns,
@@ -26,7 +31,11 @@ function makeRun(runId: string, requesterTurnYielded = true): SubagentRunRecord 
 }
 
 function accepted(entry: SubagentRunRecord) {
-  return { runId: entry.runId, childSessionKey: entry.childSessionKey };
+  return {
+    runId: entry.runId,
+    childSessionKey: entry.childSessionKey,
+    expectsCompletionMessage: entry.expectsCompletionMessage,
+  };
 }
 
 describe("settleRequesterTurnAfterSessionSpawns", () => {
@@ -78,6 +87,125 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
     expect(first.requesterTurnRunId).toBeUndefined();
     expect(schedule).toHaveBeenCalledOnce();
   });
+
+  it("promotes the requester attachment only after durable settlement", () => {
+    const entry = makeRun("run-child");
+    entry.requesterAgentId = "main";
+    const append = vi.fn(() => true);
+    registerRequesterFinalAttachment({
+      requesterAgentId: "main",
+      requesterSessionKey: REQUESTER,
+      requesterSessionId: "session-main",
+      requesterTurnRunId: REQUESTER_TURN,
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      timeoutMs: 60_000,
+      append,
+    });
+    const persistOrThrow = vi.fn(() => {
+      expect(
+        consumeRequesterFinalAttachment({
+          requesterAgentId: "main",
+          requesterSessionKey: REQUESTER,
+          requesterSessionId: "session-main",
+          batchRunIds: [entry.runId],
+          rearmGeneration: 1,
+          text: "too early",
+        }),
+      ).toBe("missing");
+    });
+
+    expect(
+      settleRequesterTurnAfterSessionSpawns({
+        requesterSessionKey: REQUESTER,
+        requesterAgentId: "main",
+        requesterTurnRunId: REQUESTER_TURN,
+        requesterYielded: true,
+        acceptedSessionSpawns: [accepted(entry)],
+        runs: new Map([[entry.runId, entry]]),
+        persistOrThrow,
+        schedule: vi.fn(),
+      }),
+    ).toBe(true);
+    expect(
+      consumeRequesterFinalAttachment({
+        requesterAgentId: "main",
+        requesterSessionKey: REQUESTER,
+        requesterSessionId: "session-main",
+        batchRunIds: [entry.runId],
+        rearmGeneration: 1,
+        text: "settled",
+      }),
+    ).toBe("appended");
+    expect(append).toHaveBeenCalledExactlyOnceWith("settled");
+  });
+
+  it("does not promote requester attachment when durable settlement fails", () => {
+    const entry = makeRun("run-child-failed");
+    entry.requesterAgentId = "main";
+    const append = vi.fn(() => true);
+    registerRequesterFinalAttachment({
+      requesterAgentId: "main",
+      requesterSessionKey: REQUESTER,
+      requesterSessionId: "session-main",
+      requesterTurnRunId: REQUESTER_TURN,
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      timeoutMs: 60_000,
+      append,
+    });
+
+    expect(() =>
+      settleRequesterTurnAfterSessionSpawns({
+        requesterSessionKey: REQUESTER,
+        requesterAgentId: "main",
+        requesterTurnRunId: REQUESTER_TURN,
+        requesterYielded: true,
+        acceptedSessionSpawns: [accepted(entry)],
+        runs: new Map([[entry.runId, entry]]),
+        persistOrThrow: () => {
+          throw new Error("persist failed");
+        },
+        schedule: vi.fn(),
+      }),
+    ).toThrow("persist failed");
+    expect(
+      consumeRequesterFinalAttachment({
+        requesterAgentId: "main",
+        requesterSessionKey: REQUESTER,
+        requesterSessionId: "session-main",
+        batchRunIds: [entry.runId],
+        rearmGeneration: 1,
+        text: "must not append",
+      }),
+    ).toBe("missing");
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "does not transfer a partial accepted completion batch (yielded: %s)",
+    (requesterYielded) => {
+      const first = makeRun("run-a");
+      const missing = makeRun("run-b");
+      const runs = new Map([[first.runId, first]]);
+      const before = structuredClone(runs);
+      const persistOrThrow = vi.fn();
+      const schedule = vi.fn();
+
+      expect(
+        settleRequesterTurnAfterSessionSpawns({
+          requesterSessionKey: REQUESTER,
+          requesterTurnRunId: REQUESTER_TURN,
+          requesterYielded,
+          acceptedSessionSpawns: [accepted(first), accepted(missing)],
+          runs,
+          persistOrThrow,
+          schedule,
+        }),
+      ).toBe(false);
+      expect(runs).toEqual(before);
+      expect(persistOrThrow).not.toHaveBeenCalled();
+      expect(schedule).not.toHaveBeenCalled();
+    },
+  );
 
   it("retires a completed yielded batch whose requester already produced its final", () => {
     const entry = makeRun("run-child");
@@ -185,7 +313,9 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
         requesterSessionKey: REQUESTER,
         requesterTurnRunId: REQUESTER_TURN,
         requesterYielded: true,
-        acceptedSessionSpawns: [{ runId: originalRunId, childSessionKey: sessionKey }],
+        acceptedSessionSpawns: [
+          { runId: originalRunId, childSessionKey: sessionKey, expectsCompletionMessage: true },
+        ],
         runs,
         persistOrThrow,
         schedule,
@@ -194,7 +324,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
     expect(persistOrThrow).toHaveBeenCalledTimes(expected ? 2 : 1);
     if (expected) {
       expect(entry.requesterSettleWake?.batchRunIds).toEqual([entry.runId]);
-      expect(schedule).toHaveBeenCalledExactlyOnceWith(entry.runId, entry);
+      expect(schedule).toHaveBeenCalledExactlyOnceWith(entry.runId, entry, "settle");
     } else {
       expect(entry.requesterSettleWake).toBeUndefined();
       expect(entry.requesterTurnRunId).toBe(REQUESTER_TURN);
@@ -248,7 +378,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
       afterRequesterYield: true,
     });
     expect(entry.delivery?.disposition).toBe("intentional_non_delivery");
-    expect(schedule).toHaveBeenCalledExactlyOnceWith(entry.runId, entry);
+    expect(schedule).toHaveBeenCalledExactlyOnceWith(entry.runId, entry, "settle");
   });
 
   it("persists a mixed delivered and in-progress yielded batch before scheduling", () => {
@@ -288,7 +418,7 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
     expect(beta.requesterTurnRunId).toBeUndefined();
     expect(beta.delivery?.disposition).toBe("intentional_non_delivery");
     expect(calls).toEqual(["persist", "schedule"]);
-    expect(schedule).toHaveBeenCalledExactlyOnceWith(alpha.runId, alpha);
+    expect(schedule).toHaveBeenCalledExactlyOnceWith(alpha.runId, alpha, "settle");
   });
 
   it.each([true, false])(
@@ -335,10 +465,10 @@ describe("settleRequesterTurnAfterSessionSpawns", () => {
           batchRunIds: [completion.runId],
           afterRequesterYield: true,
         });
-        expect(schedule).toHaveBeenCalledExactlyOnceWith(completion.runId, completion);
+        expect(schedule).toHaveBeenCalledExactlyOnceWith(completion.runId, completion, "settle");
       } else {
         expect(completion.requesterSettleWake).toBeUndefined();
-        expect(schedule).toHaveBeenCalledExactlyOnceWith(completion.runId, completion);
+        expect(schedule).toHaveBeenCalledExactlyOnceWith(completion.runId, completion, "settle");
       }
       expect(inline.requesterTurnRunId).toBe(REQUESTER_TURN);
       expect(inline.requesterTurnYielded).toBeUndefined();

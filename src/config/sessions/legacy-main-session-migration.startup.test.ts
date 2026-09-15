@@ -8,18 +8,27 @@ import {
   markPluginRegistryRetired,
 } from "../../plugins/registry-lifecycle.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { loadSessionEntry, replaceSessionEntry } from "./session-accessor.js";
 import { runSessionStartupMigration } from "./startup-migration.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-});
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeOpenClawAgentDatabasesAsync();
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 it("rejects startup when session-store discovery fails", async () => {
   const stateDir = tempDirs.make("openclaw-startup-discovery-");
@@ -83,17 +92,19 @@ it("runs the armed startup engine even when no legacy session directory remains"
     ownerAgentId: "ops",
     warnings: [],
   }));
-  const databases = await runSessionStartupMigration({
+  const handoffDatabase = vi.fn(async () => {});
+  await runSessionStartupMigration({
     cfg,
     env,
     log: { info: vi.fn(), warn: vi.fn() },
+    handoffDatabase,
     deps: {
       migrateLegacyMainSessionKeys: migrate,
       resolveAllAgentSessionStoreTargetsSync: vi.fn(() => []),
     },
   });
 
-  expect(databases).toEqual([]);
+  expect(handoffDatabase).not.toHaveBeenCalled();
   expect(migrate).toHaveBeenCalledWith({ cfg, env, mode: "automatic" });
 });
 
@@ -128,8 +139,8 @@ it.each([false, true])(
         expect(original).toMatchObject(input);
         expect(fs.existsSync(destinationPath)).toBe(false);
         const log = { info: vi.fn(), warn: vi.fn() };
-        const runMigration = () => runSessionStartupMigration({ cfg, env, log });
-        let databases: Awaited<ReturnType<typeof runMigration>>;
+        const handoffDatabase = vi.fn(async () => {});
+        const runMigration = () => runSessionStartupMigration({ cfg, env, log, handoffDatabase });
         if (sourceCleanupFails) {
           const registry = createEmptyPluginRegistry();
           registry.agentHarnesses.push({
@@ -149,7 +160,7 @@ it.each([false, true])(
           });
           markPluginRegistryActive(registry);
           try {
-            databases = await withPluginRuntimeRegistryScope(registry, runMigration);
+            await withPluginRuntimeRegistryScope(registry, runMigration);
           } finally {
             markPluginRegistryRetired(registry);
           }
@@ -161,10 +172,10 @@ it.each([false, true])(
           log.warn.mockClear();
           await runMigration();
         } else {
-          databases = await runMigration();
+          await runMigration();
         }
 
-        expect(databases).toContainEqual(
+        expect(handoffDatabase).toHaveBeenCalledWith(
           expect.objectContaining({ agentId: "ops", path: destinationPath }),
         );
         expect(loadSessionEntry(sourceScope)).toBeUndefined();

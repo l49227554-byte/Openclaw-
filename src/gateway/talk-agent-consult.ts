@@ -6,6 +6,10 @@ import {
   errorShape,
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
+import {
+  getCommandSenderAuthority,
+  withCommandSenderAuthority,
+} from "../auto-reply/command-sender-authority.js";
 import { normalizeTalkSection } from "../config/talk.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
@@ -76,7 +80,10 @@ export async function startTalkRealtimeAgentConsult(
   }
   const idempotencyKey = `talk-${params.callId}-${randomUUID()}`;
   const normalizedTalk = normalizeTalkSection(request.context.getRuntimeConfig().talk);
-  const authority = resolveTalkAgentConsultAuthority(request.client?.connect?.scopes);
+  const authority = resolveTalkAgentConsultAuthority(
+    request.client?.connect?.scopes,
+    request.client,
+  );
   let acknowledgedRunId: string | undefined;
   const chatResponse = await new Promise<
     { ok: true; result: unknown } | { ok: false; error: ErrorShape } | undefined
@@ -84,6 +91,19 @@ export async function startTalkRealtimeAgentConsult(
     let acknowledged = false;
     const chatSendOptions = {
       ...request,
+      client:
+        request.client && authority.replyCaller
+          ? withCommandSenderAuthority(
+              {
+                ...request.client,
+                connect: {
+                  ...request.client.connect,
+                  caps: authority.replyCaller.GatewayClientCaps,
+                },
+              },
+              getCommandSenderAuthority(authority.replyCaller),
+            )
+          : request.client,
       req: {
         type: "req",
         id: `${request.req.id}:talk-tool-call`,

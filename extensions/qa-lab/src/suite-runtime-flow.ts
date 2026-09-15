@@ -21,11 +21,7 @@ import * as modelSwitchEval from "./model-switch-eval.js";
 import * as runtimeToolFixture from "./runtime-tool-fixture.js";
 import type { QaSeedScenarioWithSource } from "./scenario-catalog.js";
 import { runScenarioFlow } from "./scenario-flow-runner.js";
-import {
-  createQaScenarioRuntimeApi,
-  type QaScenarioRuntimeDeps,
-  type QaScenarioRuntimeEnv,
-} from "./scenario-runtime-api.js";
+import { createQaScenarioRuntimeApi, type QaScenarioRuntimeEnv } from "./scenario-runtime-api.js";
 import * as suiteRuntimeAgent from "./suite-runtime-agent.js";
 import * as suiteRuntimeGateway from "./suite-runtime-gateway.js";
 import * as suiteRuntimeTransport from "./suite-runtime-transport.js";
@@ -101,6 +97,7 @@ export async function runQaSuiteScenarioSteps(
 ): Promise<QaSuiteScenarioResult> {
   const stepResults: QaSuiteScenarioResult["steps"] = [];
   let timing: QaSuiteScenarioResult["timing"];
+  let rttMeasurement: QaSuiteScenarioResult["rttMeasurement"];
   for (const step of steps) {
     try {
       if (process.env.OPENCLAW_QA_DEBUG === "1") {
@@ -111,6 +108,13 @@ export async function runQaSuiteScenarioSteps(
       if (outcome?.timing) {
         timing ??= {};
         Object.assign(timing, outcome.timing);
+      }
+      if (outcome?.rttMeasurement) {
+        rttMeasurement = outcome.rttMeasurement;
+      }
+      if (rttMeasurement) {
+        timing ??= {};
+        timing.rttMs = rttMeasurement.finalMatchedReplyRttMs;
       }
       if (process.env.OPENCLAW_QA_DEBUG === "1") {
         console.error(`[qa-suite] pass scenario="${name}" step="${step.name}"`);
@@ -130,6 +134,7 @@ export async function runQaSuiteScenarioSteps(
           steps: stepResults,
           details,
           ...(timing ? { timing } : {}),
+          ...(rttMeasurement ? { rttMeasurement } : {}),
         };
       }
       if (process.env.OPENCLAW_QA_DEBUG === "1") {
@@ -142,10 +147,17 @@ export async function runQaSuiteScenarioSteps(
         steps: stepResults,
         details,
         ...(timing ? { timing } : {}),
+        ...(rttMeasurement ? { rttMeasurement } : {}),
       };
     }
   }
-  return { name, status: "pass", steps: stepResults, ...(timing ? { timing } : {}) };
+  return {
+    name,
+    status: "pass",
+    steps: stepResults,
+    ...(timing ? { timing } : {}),
+    ...(rttMeasurement ? { rttMeasurement } : {}),
+  };
 }
 
 type QaSuiteScenarioDepsParams = {
@@ -172,7 +184,10 @@ type QaSuiteScenarioFlowApiParams = QaSuiteScenarioDepsParams & {
   };
 };
 
-function createQaSuiteScenarioDeps(params: QaSuiteScenarioDepsParams) {
+function createQaSuiteScenarioDeps(
+  params: QaSuiteScenarioDepsParams,
+  webOpenPage: ReturnType<typeof webRuntime.createQaWebPageOpener>,
+) {
   const waitForAccountOutboundMessage: typeof suiteRuntimeTransport.waitForOutboundMessage = (
     state,
     predicate,
@@ -183,6 +198,33 @@ function createQaSuiteScenarioDeps(params: QaSuiteScenarioDepsParams) {
       ...options,
       accountId: params.env.transport.accountId,
     });
+  const markLogs = params.env.gateway.markLogs;
+  const readLogsSince = params.env.gateway.readLogsSince;
+  let monotonicGatewayLogs =
+    typeof markLogs === "function" && typeof readLogsSince === "function"
+      ? { mark: markLogs, readSince: readLogsSince }
+      : undefined;
+  const isValidGatewayLogMark = (mark: number | undefined): mark is number =>
+    Number.isSafeInteger(mark) && (mark ?? -1) >= 0;
+  const fullLegacyGatewayLogSnapshotMark = -1;
+  const readGatewayLogs = (mark?: number) => {
+    if (monotonicGatewayLogs && isValidGatewayLogMark(mark)) {
+      return monotonicGatewayLogs.readSince(mark);
+    }
+    return params.env.gateway.logs?.() ?? "";
+  };
+  const readGatewayLogsForSentinels = (options?: Parameters<typeof scanGatewayLogSentinels>[1]) => {
+    if (monotonicGatewayLogs && isValidGatewayLogMark(options?.since)) {
+      return {
+        logs: monotonicGatewayLogs.readSince(options.since),
+        options: { ...options, since: 0 },
+      };
+    }
+    return {
+      logs: params.env.gateway.logs?.(),
+      options: { ...options, since: 0 },
+    };
+  };
   return {
     ...qaSuiteScenarioIdentityDeps,
     runScenario: params.runScenario,
@@ -192,24 +234,31 @@ function createQaSuiteScenarioDeps(params: QaSuiteScenarioDepsParams) {
     browserOpenTab: browserRuntime.qaBrowserOpenTab,
     browserSnapshot: browserRuntime.qaBrowserSnapshot,
     browserAct: browserRuntime.qaBrowserAct,
-    webOpenPage: async (webParams: Parameters<typeof webRuntime.qaWebOpenPage>[0]) => {
-      const opened = await webRuntime.qaWebOpenPage({
-        ...webParams,
-        repoRoot: params.env.repoRoot,
-      });
-      params.env.webSessionIds.add(opened.pageId);
-      return opened;
-    },
+    webOpenPage,
     webWait: webRuntime.qaWebWait,
     webType: webRuntime.qaWebType,
     webSnapshot: webRuntime.qaWebSnapshot,
     webEvaluate: webRuntime.qaWebEvaluate,
-    readGatewayLogs: () => params.env.gateway.logs?.() ?? "",
-    markGatewayLogCursor: () => (params.env.gateway.logs?.() ?? "").length,
-    scanGatewayLogSentinels: (options?: Parameters<typeof scanGatewayLogSentinels>[1]) =>
-      scanGatewayLogSentinels(params.env.gateway.logs?.(), options),
-    assertNoGatewayLogSentinels: (options?: Parameters<typeof assertNoGatewayLogSentinels>[1]) =>
-      assertNoGatewayLogSentinels(params.env.gateway.logs?.(), options),
+    readGatewayLogs,
+    markGatewayLogCursor: () => {
+      if (monotonicGatewayLogs) {
+        const mark = monotonicGatewayLogs.mark();
+        if (isValidGatewayLogMark(mark)) {
+          return mark;
+        }
+        monotonicGatewayLogs = undefined;
+        return fullLegacyGatewayLogSnapshotMark;
+      }
+      return fullLegacyGatewayLogSnapshotMark;
+    },
+    scanGatewayLogSentinels: (options?: Parameters<typeof scanGatewayLogSentinels>[1]) => {
+      const input = readGatewayLogsForSentinels(options);
+      return scanGatewayLogSentinels(input.logs, input.options);
+    },
+    assertNoGatewayLogSentinels: (options?: Parameters<typeof assertNoGatewayLogSentinels>[1]) => {
+      const input = readGatewayLogsForSentinels(options);
+      return assertNoGatewayLogSentinels(input.logs, input.options);
+    },
     runRuntimeToolFixture: async (
       envArg: QaSuiteScenarioFlowEnv,
       configArg: Record<string, unknown>,
@@ -235,28 +284,29 @@ function createQaSuiteScenarioDeps(params: QaSuiteScenarioDepsParams) {
         : null;
     },
     splitModelRef: params.splitModelRef,
-  } satisfies QaScenarioRuntimeDeps;
+  };
 }
 
 function createQaSuiteScenarioFlowApi(
   params: QaSuiteScenarioFlowApiParams & { signal: AbortSignal },
 ) {
-  return {
+  const createWebPageOpener = (signal?: AbortSignal) => {
+    const open = webRuntime.createQaWebPageOpener(params.env.webSessionIds, signal);
+    return (webParams: Parameters<typeof webRuntime.qaWebOpenPage>[0]) =>
+      open({ ...webParams, repoRoot: params.env.repoRoot });
+  };
+  const api = {
     ...createQaScenarioRuntimeApi({
       env: params.env,
       scenario: params.scenario,
-      deps: createQaSuiteScenarioDeps({
-        env: params.env,
-        runScenario: params.runScenario,
-        splitModelRef: params.splitModelRef,
-        formatErrorMessage: params.formatErrorMessage,
-        liveTurnTimeoutMs: params.liveTurnTimeoutMs,
-        resolveQaLiveTurnTimeoutMs: params.resolveQaLiveTurnTimeoutMs,
-      }),
+      deps: createQaSuiteScenarioDeps(params, createWebPageOpener(params.signal)),
       constants: params.constants,
     }),
     signal: params.signal,
   };
+  // DSL finally actions may need a new page after the scenario deadline.
+  // They share the suite owner and seal, but not the expired acquisition signal.
+  return { api, cleanupApi: { ...api, webOpenPage: createWebPageOpener() } };
 }
 
 function createQaScenarioDeadline(timeoutMs?: number) {
@@ -361,7 +411,7 @@ export async function runQaSuiteScenarioDefinition(params: QaSuiteScenarioFlowAp
   const vars: Record<string, unknown> = {};
   const deadline = createQaScenarioDeadline(params.scenario.execution.timeoutMs);
   try {
-    const api = createQaSuiteScenarioFlowApi({
+    const { api, cleanupApi } = createQaSuiteScenarioFlowApi({
       ...params,
       signal: deadline.signal,
       runScenario: createQaSuiteScenarioStepRunner(params.env, params.scenario, vars, deadline, {
@@ -371,6 +421,7 @@ export async function runQaSuiteScenarioDefinition(params: QaSuiteScenarioFlowAp
     });
     return await runScenarioFlow({
       api,
+      cleanupApi,
       flow: params.scenario.execution.flow,
       scenarioTitle: params.scenario.title,
       vars,

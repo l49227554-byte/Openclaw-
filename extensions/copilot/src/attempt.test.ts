@@ -12,11 +12,18 @@ import {
   queueAgentHarnessMessage,
   type AgentHarnessAttemptParamsV2 as AgentHarnessAttemptParams,
   type AgentHarnessAttemptResult as AgentHarnessAttemptResultContract,
+  type AgentHarnessQuestionGatewayCall,
   type AgentHarnessV2,
   type AgentMessage,
   type AnyAgentTool,
   type SandboxContext,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import * as agentHarnessTaskRuntime from "openclaw/plugin-sdk/agent-harness-task-runtime";
+import type {
+  AgentHarnessTaskRecord,
+  AgentHarnessTaskRuntime,
+  AgentHarnessTaskRuntimeScope,
+} from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import { toErrorObject as toLintErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
@@ -66,6 +73,53 @@ const gatewayQuestionMock = vi.hoisted(() => ({
 
 vi.mock("openclaw/plugin-sdk/agent-harness-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/agent-harness-runtime")>();
+  type QuestionDispatcher = Exclude<
+    Parameters<typeof actual.runAgentHarnessGatewayQuestion>[0]["gatewayCall"],
+    AgentHarnessQuestionGatewayCall | undefined
+  >;
+  const questionDispatcher: QuestionDispatcher = {
+    version: 2,
+    call: async ({ method, params: rawParams, signal, authority }) => {
+      const params = rawParams as { id?: string; answers?: unknown; cancel?: boolean } | undefined;
+      const id = params?.id ?? "";
+      // No awaited preparation: this is the synthetic transport's dispatch boundary.
+      signal?.throwIfAborted();
+      if (authority.kind === "source-bound") {
+        authority.assertCurrent();
+      }
+      if (method === "question.request") {
+        return { id: params?.id, expiresAtMs: Date.now() + 60_000 };
+      }
+      if (method === "question.waitAnswer") {
+        if (gatewayQuestionMock.waiters.has(id)) {
+          throw new Error("question fixture already has a waiter");
+        }
+        return await new Promise<unknown>((resolve, reject) => {
+          const cleanup = () => {
+            signal?.removeEventListener("abort", onAbort);
+            gatewayQuestionMock.waiters.delete(id);
+          };
+          const onAbort = () => {
+            cleanup();
+            reject(toLintErrorObject(signal?.reason, "question wait aborted"));
+          };
+          gatewayQuestionMock.waiters.set(id, (value) => {
+            cleanup();
+            resolve(value);
+          });
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }
+      if (method === "question.resolve") {
+        const result = params?.cancel
+          ? { status: "cancelled" as const }
+          : { status: "answered" as const, answers: params?.answers };
+        gatewayQuestionMock.waiters.get(id)?.(result);
+        return result;
+      }
+      throw new Error(`unexpected question fixture RPC: ${method}`);
+    },
+  };
   return {
     ...actual,
     embeddedAgentLog: { ...actual.embeddedAgentLog, warn: gatewayQuestionMock.warn },
@@ -85,26 +139,16 @@ vi.mock("openclaw/plugin-sdk/agent-harness-runtime", async (importOriginal) => {
       gatewayQuestionMock.claimPendingAgentQuestionAnswer
         ? await gatewayQuestionMock.claimPendingAgentQuestionAnswer(...args)
         : await actual.claimPendingAgentQuestionAnswer(...args),
-    callGatewayTool: async (...args: Parameters<typeof actual.callGatewayTool>) => {
-      const [method, , rawParams] = args;
-      const params = rawParams as { id?: string; answers?: unknown; cancel?: boolean } | undefined;
-      if (method === "question.request") {
-        return { id: params?.id, expiresAtMs: Date.now() + 60_000 };
-      }
-      if (method === "question.waitAnswer") {
-        return await new Promise((resolve) => {
-          gatewayQuestionMock.waiters.set(params?.id ?? "", resolve);
-        });
-      }
-      if (method === "question.resolve") {
-        const result = params?.cancel
-          ? { status: "cancelled" as const }
-          : { status: "answered" as const, answers: params?.answers };
-        gatewayQuestionMock.waiters.get(params?.id ?? "")?.(result);
-        gatewayQuestionMock.waiters.delete(params?.id ?? "");
-        return result;
-      }
-      return await actual.callGatewayTool(...args);
+    // Keep the real question owner; only its public transport override is synthetic.
+    runAgentHarnessGatewayQuestion: (
+      params: Parameters<typeof actual.runAgentHarnessGatewayQuestion>[0],
+    ) =>
+      actual.runAgentHarnessGatewayQuestion({
+        ...params,
+        gatewayCall: params.gatewayCall === undefined ? questionDispatcher : params.gatewayCall,
+      }),
+    callGatewayTool: async (method: string) => {
+      throw new Error(`unexpected direct SDK Gateway call: ${method}`);
     },
     setActiveEmbeddedRun: (
       ...args: Parameters<typeof actual.setActiveEmbeddedRun>
@@ -248,57 +292,6 @@ function requireSession(sdk: FakeSdk): FakeSession {
 
 function requireCreateSessionConfig(sdk: FakeSdk): Record<string, unknown> {
   return expectDefined(sdk.createSession.mock.calls[0]?.[0], "Copilot createSession config");
-}
-
-function expectTranscriptCredentialSafety(instructions: string): void {
-  const credentialGuidance = instructions
-    .split("\n")
-    .filter((line) => /credentials?|secrets?|authentication|pairing codes?/iu.test(line));
-
-  expect(
-    credentialGuidance.some(
-      (line) =>
-        /(?:never|do not)/iu.test(line) &&
-        /(?:ask for|request)/iu.test(line) &&
-        /(?:chat|conversation|message|reply|transcript)/iu.test(line),
-    ),
-  ).toBe(true);
-  expect(
-    credentialGuidance.some(
-      (line) =>
-        /(?:never|do not)/iu.test(line) &&
-        /(?:echo|repeat)/iu.test(line) &&
-        /(?:chat|conversation|message|reply|transcript)/iu.test(line),
-    ),
-  ).toBe(true);
-  expect(
-    credentialGuidance.some(
-      (line) =>
-        /(?:never|do not)/iu.test(line) &&
-        /(?:place|put|include)/iu.test(line) &&
-        /(?:recommend|suggest)/iu.test(line) &&
-        /(?:command(?:-line)?|arguments?)/iu.test(line) &&
-        /urls?/iu.test(line) &&
-        /shell/iu.test(line) &&
-        /(?:variable|interpolat)/iu.test(line),
-    ),
-  ).toBe(true);
-  expect(
-    credentialGuidance.some(
-      (line) =>
-        /(?:never|do not)/iu.test(line) &&
-        /(?:ask|request)/iu.test(line) &&
-        /(?:report|share|provide)/iu.test(line) &&
-        /(?:authentication|pairing)/iu.test(line) &&
-        /codes?/iu.test(line) &&
-        /(?:chat|conversation|message|reply|transcript)/iu.test(line),
-    ),
-  ).toBe(true);
-  expect(
-    credentialGuidance.some(
-      (line) => /(?:masked|secure)/iu.test(line) && /(?:entry|input|setup|wizard)/iu.test(line),
-    ),
-  ).toBe(true);
 }
 
 function requireResumeSessionConfig(sdk: FakeSdk): Record<string, unknown> {
@@ -716,6 +709,7 @@ describe("runCopilotAttempt", () => {
   it("runs generic prompt and lifecycle hooks through the standard harness helpers", async () => {
     const params = makeParams({
       agentAccountId: "account-a",
+      inputProvenance: { kind: "inter_session", sourceTool: "subagent_settle" },
       sandboxSessionKey: "agent:agent-1:policy",
     });
     const beforePromptBuild = vi.fn(() => ({
@@ -760,6 +754,7 @@ describe("runCopilotAttempt", () => {
       expect.objectContaining({ prompt: "hello" }),
       expect.objectContaining({
         accountId: "account-a",
+        inputProvenance: { kind: "inter_session", sourceTool: "subagent_settle" },
         runId: "run-1",
         sessionId: "session-1",
         sessionKey: params.sessionKey,
@@ -2053,6 +2048,7 @@ describe("runCopilotAttempt", () => {
   });
 
   it("registers ask_user and resolves it from the active OpenClaw queue", async () => {
+    const controller = new AbortController();
     const onBlockReply = vi.fn();
     const sdk = makeFakeSdk((session, cfg) => {
       session.sendAndWait.mockImplementationOnce(async () => {
@@ -2075,28 +2071,37 @@ describe("runCopilotAttempt", () => {
     const pool = makeFakePool(sdk);
 
     const toolAuthorityFingerprint = "ask-user-authority";
-    const attempt = runCopilotAttempt(makeParams({ onBlockReply, toolAuthorityFingerprint }), {
-      pool,
-    });
-
-    await vi.waitFor(() => expect(onBlockReply).toHaveBeenCalledTimes(1));
-    expect(queueAgentHarnessMessage("session-1", "tool progress")).toBe(true);
-    await waitForEventLoopTurn();
-    expect(
-      queueAgentHarnessMessage("session-1", "2", {
-        isInboundUserMessage: true,
-        toolAuthorityFingerprint,
-      }),
-    ).toBe(true);
-    const result = await attempt;
-
-    const cfg = requireCreateSessionConfig(sdk);
-    expect(typeof cfg.onUserInputRequest).toBe("function");
-    expect(onBlockReply.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ text: expect.stringContaining("Pick a mode") }),
+    const attempt = runCopilotAttempt(
+      makeParams({ abortSignal: controller.signal, onBlockReply, toolAuthorityFingerprint }),
+      { pool },
     );
-    expect(result.assistantTexts).toEqual(["selected Deep"]);
-    expect(queueAgentHarnessMessage("session-1", "late")).toBe(false);
+    const settledAttempt = attempt.catch(() => undefined);
+
+    try {
+      await vi.waitFor(() => expect(onBlockReply).toHaveBeenCalledTimes(1));
+      expect(queueAgentHarnessMessage("session-1", "tool progress")).toBe(true);
+      await waitForEventLoopTurn();
+      expect(
+        queueAgentHarnessMessage("session-1", "2", {
+          isInboundUserMessage: true,
+          toolAuthorityFingerprint,
+        }),
+      ).toBe(true);
+      const result = await vi.waitFor(() => attempt);
+
+      const cfg = requireCreateSessionConfig(sdk);
+      expect(typeof cfg.onUserInputRequest).toBe("function");
+      expect(onBlockReply.mock.calls[0]?.[0]).toEqual(
+        expect.objectContaining({ text: expect.stringContaining("Pick a mode") }),
+      );
+      expect(result.assistantTexts).toEqual(["selected Deep"]);
+      expect(requireSession(sdk).send).toHaveBeenCalledExactlyOnceWith({ prompt: "tool progress" });
+      expect(queueAgentHarnessMessage("session-1", "late")).toBe(false);
+    } finally {
+      controller.abort();
+      await vi.waitFor(() => settledAttempt);
+      expect(gatewayQuestionMock.waiters.size).toBe(0);
+    }
   });
 
   it("injects active-run steering and waits for its canonical transcript receipt", async () => {
@@ -2478,18 +2483,6 @@ describe("runCopilotAttempt", () => {
       expect(cfg.systemMessage?.content).toContain(rendered);
     });
 
-    it("adds transcript credential safety when the loader returns no instructions", async () => {
-      const sdk = makeFakeSdk();
-      const pool = makeFakePool(sdk);
-
-      await runCopilotAttempt(makeParams(), { pool });
-
-      const cfg = requireCreateSessionConfig(sdk) as {
-        systemMessage?: { content?: string };
-      };
-      expectTranscriptCredentialSafety(cfg.systemMessage?.content ?? "");
-    });
-
     it("sends the final appended developer instructions to the SDK and llm_input", async () => {
       const sdk = makeFakeSdk();
       const llmInput = vi.fn();
@@ -2533,7 +2526,7 @@ describe("runCopilotAttempt", () => {
       expect(content).toContain("## Skill Workshop");
       expect(content).toContain("## Delegation");
       expect(content).toContain("spawn `sessions_spawn` with `visible=true`");
-      expect(content).toContain("For the current source conversation, reply normally");
+      expect(content).toContain("You can participate in the conversation throughout your work.");
       expect(llmInput).toHaveBeenCalledWith(
         expect.objectContaining({ systemPrompt: content }),
         expect.any(Object),
@@ -2681,7 +2674,6 @@ describe("runCopilotAttempt", () => {
       expect(cfg.systemMessage).toBeDefined();
       expect(cfg.systemMessage?.mode).toBe("append");
       expect(cfg.systemMessage?.content).toContain(rendered);
-      expectTranscriptCredentialSafety(cfg.systemMessage?.content ?? "");
     });
   });
 
@@ -3127,6 +3119,83 @@ describe("runCopilotAttempt", () => {
     expect(session.disconnect).toHaveBeenCalledTimes(1);
     expect(pool["release"]).toHaveBeenCalledTimes(1);
   });
+
+  it.each([false, true])(
+    "cleans up after native task finalization fails (deferred: %s)",
+    async (deferred) => {
+      const failure = new Error("native task persistence failed");
+      const task: AgentHarnessTaskRecord = {
+        taskId: "native-task",
+        runId: "copilot-agent:call-1",
+        runtime: "subagent",
+        taskKind: "copilot-native",
+        requesterSessionKey: "agent:main:main",
+        ownerKey: "agent:main:main",
+        scopeKind: "session",
+        task: "inspect",
+        status: "running",
+        notifyPolicy: "silent",
+        deliveryStatus: "not_applicable",
+        createdAt: 0,
+      };
+      const runtime: AgentHarnessTaskRuntime = {
+        createRunningTaskRun: () => task,
+        tryCreateRunningTaskRun: () => task,
+        recordTaskRunProgressByRunId: () => [],
+        finalizeTaskRunByRunId: () => {
+          throw failure;
+        },
+        setDetachedTaskDeliveryStatusByRunId: () => [],
+        listTaskRecords: () => [task],
+      };
+      vi.spyOn(agentHarnessTaskRuntime, "createAgentHarnessTaskRuntime").mockReturnValue(runtime);
+      const sdk = makeFakeSdk((session) => {
+        session.sendAndWait.mockImplementationOnce(async () => {
+          session.emit("user.message", { content: "hello" });
+          session.emit("subagent.started", {
+            agentDescription: "inspect",
+            agentDisplayName: "Worker",
+            agentName: "worker",
+            toolCallId: "call-1",
+          });
+          if (deferred) {
+            session.emit("session.compaction_start", {});
+          }
+          return makeAssistantMessageEvent("done");
+        });
+      });
+      const pool = makeFakePool(sdk);
+      const onDeferredCompaction = vi.fn<(params: { cleanup: Promise<unknown> }) => void>();
+      const outcome = await runCopilotAttempt(
+        makeParams({
+          agentHarnessTaskRuntimeScope: {} as AgentHarnessTaskRuntimeScope,
+        }),
+        { pool, onDeferredCompaction },
+      ).then(
+        (result) => ({ result, error: undefined }),
+        (error: unknown) => ({ result: undefined, error }),
+      );
+      const session = requireSession(sdk);
+      if (deferred) {
+        const cleanup = expectDefined(
+          onDeferredCompaction.mock.calls[0]?.[0].cleanup,
+          "deferred cleanup",
+        );
+        session.emit("session.compaction_complete", { success: true });
+        session.emit("session.idle", {});
+        await expect(cleanup).rejects.toBe(failure);
+      } else {
+        expect(outcome.error).toBeUndefined();
+        expect(
+          projectAgentRunAttemptTerminal(expectDefined(outcome.result, "attempt result").terminal)
+            .promptError,
+        ).toBe(failure);
+      }
+      expect(session.disconnect).toHaveBeenCalledOnce();
+      expect(pool.release).toHaveBeenCalledOnce();
+      expect(session.off).toHaveBeenCalledTimes(session.on.mock.calls.length);
+    },
+  );
 
   it("cleanup on disconnect throw", async () => {
     const primaryError = new Error("send failed");

@@ -25,6 +25,7 @@ type ConfigTag = (typeof TAG_ORDER)[number];
 
 const TAG_OVERRIDES: Record<string, ConfigTag[]> = {
   worktreeRoot: ["storage", "advanced"],
+  worktreeAcceleration: ["performance", "storage", "advanced"],
   cloudWorkers: ["network", "automation"],
   "gateway.roles": ["security", "auth", "access", "advanced"],
   "gateway.auth.token": ["security", "auth", "access", "network"],
@@ -34,7 +35,6 @@ const TAG_OVERRIDES: Record<string, ConfigTag[]> = {
   "gateway.controlUi.allowExternalEmbedUrls": ["security", "access", "network", "advanced"],
   "gateway.controlUi.automaticallyFetchFavicons": ["security", "network", "advanced"],
   "gateway.controlUi.communityInvite": ["advanced"],
-  "gateway.controlUi.toolTitles": ["advanced"],
   "gateway.controlUi.github.token": ["security", "auth", "network", "advanced"],
   "gateway.controlUi.sessionObserver": ["advanced"],
   "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback": [

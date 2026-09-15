@@ -418,9 +418,15 @@ describe("existing-session browser routes", () => {
     expect(response.statusCode).toBe(200);
     expect(routeState.profileCtx.closeTab).toHaveBeenCalledWith("7", {
       exactTargetId: true,
-      signal: ctrl.signal,
-      timeoutMs: undefined,
+      signal: expect.any(AbortSignal),
+      timeoutMs: 60_000,
     });
+    const reason = new Error("caller cancelled");
+    ctrl.abort(reason);
+    expect(routeState.profileCtx.closeTab).toHaveBeenCalledWith(
+      "7",
+      expect.objectContaining({ signal: expect.objectContaining({ aborted: true, reason }) }),
+    );
   });
 
   it("allows existing-session snapshots under the default SSRF policy object", async () => {
@@ -552,6 +558,27 @@ describe("existing-session browser routes", () => {
     expect(chromeMcpMocks.fillChromeMcpElement).not.toHaveBeenCalled();
   });
 
+  it("explains unsupported focused paste without forwarding or echoing its text", async () => {
+    const response = createBrowserRouteResponse();
+    await getActPostHandler()?.(
+      {
+        params: {},
+        query: {},
+        body: { kind: "insertText", text: "synthetic-password-paste" },
+      },
+      response.res,
+    );
+
+    expect(response.statusCode).toBe(501);
+    expect(response.body).toMatchObject({
+      code: "ACT_EXISTING_SESSION_UNSUPPORTED",
+      error: expect.stringContaining("Paste is not supported for existing-session"),
+    });
+    expect(JSON.stringify(response.body)).not.toContain("synthetic-password-paste");
+    expect(chromeMcpMocks.fillChromeMcpElement).not.toHaveBeenCalled();
+    expect(chromeMcpMocks.evaluateChromeMcpScript).not.toHaveBeenCalled();
+  });
+
   it("fails closed for existing-session dialogId responses", async () => {
     const handler = getDialogHookPostHandler();
     const response = createBrowserRouteResponse();
@@ -629,7 +656,10 @@ describe("existing-session browser routes", () => {
     expect(clickParams.uid).toBe("btn-1");
     expect(clickParams.doubleClick).toBe(false);
     expect(clickParams.timeoutMs).toBe(1234);
-    expect(clickParams.signal).toBe(ctrl.signal);
+    expect(clickParams.signal).toBeInstanceOf(AbortSignal);
+    const reason = new Error("caller cancelled");
+    ctrl.abort(reason);
+    expect(clickParams.signal).toMatchObject({ aborted: true, reason });
   });
 
   it("supports coordinate clicks for existing-session profiles", async () => {

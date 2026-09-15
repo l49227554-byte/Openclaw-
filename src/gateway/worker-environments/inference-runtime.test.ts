@@ -214,6 +214,8 @@ function setup(
     allowGatewaySubagentBinding: true,
     workspaceDir: WORKSPACE,
     config,
+    observationConfig: config,
+    isCurrent: () => true,
     authModes: {},
     metadataSnapshot: createEmptyPluginMetadataSnapshot(WORKSPACE),
     pluginRegistry: options.pluginRegistry ?? createEmptyPluginRegistry(),
@@ -257,7 +259,7 @@ function setup(
     entry.authProfileOverride
       ? {
           profileId: entry.authProfileOverride,
-          source: entry.authProfileOverrideSource ?? "user",
+          source: entry.authProfileOverrideSource === "auto" ? "auto" : "user",
           routeRequirement: undefined,
         }
       : undefined,
@@ -281,9 +283,9 @@ function setup(
   });
   const applyStreamPolicy = vi.fn<Deps["applyStreamPolicy"]>(() => {
     options.observeStage?.("policy", observedRegistry());
-    return { effectiveExtraParams: {} };
+    return { effectiveExtraParams: {}, nativeWebSearchAllowedByToolPolicy: undefined };
   });
-  const releaseRuntime = vi.fn();
+  const releaseRuntime = vi.fn(async () => {});
   const acquireRuntimeLease = vi.fn<Deps["acquireRuntimeLease"]>(async (runtimeParams) => {
     scope.agentDir = runtimeParams.agentDir;
     const leased = { ...preparedModelRuntime, agentDir: runtimeParams.agentDir };
@@ -296,7 +298,7 @@ function setup(
         pluginMetadataSnapshot: leased.metadataSnapshot,
         pluginRegistry: leased.pluginRegistry,
       },
-      release: releaseRuntime,
+      [Symbol.asyncDispose]: releaseRuntime,
     };
   });
   const dependencies = {
@@ -1053,11 +1055,8 @@ describe("worker inference provider runtime", () => {
 
   it("preserves adaptive provider policy while lowering the core stream effort", async () => {
     const runtime = setup();
-    const baseRequest = request();
-    const inferenceRequest = {
-      ...baseRequest,
-      options: { ...baseRequest.options, reasoning: "adaptive" as const },
-    };
+    const inferenceRequest = request();
+    Object.assign(inferenceRequest.options, { reasoning: "adaptive" });
 
     expect(await runtime.executor(params(inferenceRequest, vi.fn()))).toMatchObject({
       type: "done",

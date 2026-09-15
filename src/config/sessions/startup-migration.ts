@@ -1,23 +1,39 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { formatCliCommand } from "../../cli/command-format.js";
+import { readDeferredPluginMigrations } from "../../infra/deferred-plugin-migrations.js";
+import {
+  deferredPluginSessionStoreIds,
+  readDeferredPluginSessionImport,
+} from "../../infra/deferred-plugin-session-sources.js";
+import { formatDoctorStateRepairFailure } from "../../infra/state-repair-message.js";
+import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
+import { readAgentDeletionJournal } from "../../state/agent-deletion-journal.js";
 import { listOpenClawRegisteredAgentDatabases } from "../../state/openclaw-agent-db-registry.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   isOpenClawAgentDatabaseOpen,
-  openOpenClawAgentDatabase,
+  withOpenClawAgentDatabaseAsync,
   resolveOpenClawAgentSqlitePath,
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
 import { resolveStateDir } from "../paths.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { migrateLegacyMainSessionKeys } from "./legacy-main-session-migration.js";
+import {
+  isLegacySessionRecordOwnedByTarget,
+  readLegacySessionStoreEntries,
+  shouldFilterLegacySessionRecordsByTarget,
+} from "./legacy-store-inspection.js";
+import { SessionStoreMigrationRequiredError } from "./migration-required.js";
 import { resolveSqliteReadScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import {
   isCanonicalSqliteSessionMainKeyCurrent,
   setCanonicalSqliteSessionMainKey,
 } from "./session-canonical-key.js";
-import { resolveAllAgentSessionStoreTargetsSync } from "./targets.js";
+import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
+import { resolveAllAgentSessionStoreTargetsSync, resolveSessionStoreTargets } from "./targets.js";
 import { migrateManagedWorktreeCanonicalWorkspaces } from "./worktree-workspace-migration.js";
 
 export type SessionStartupMigrationLogger = Record<"info" | "warn", (message: string) => void>;
@@ -25,36 +41,128 @@ export type SessionStartupMigrationLogger = Record<"info" | "warn", (message: st
 export function assertSessionStoreMigrationComplete(params: {
   cfg: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
-  targets?: readonly { storePath: string }[];
+  targets?: readonly { agentId?: string; storePath: string }[];
+  operation?: "doctor";
 }): void {
   const env = params.env ?? process.env;
-  const targets = params.targets ?? resolveAllAgentSessionStoreTargetsSync(params.cfg, { env });
-  const legacyStore = [
-    path.join(resolveStateDir(env), "sessions", "sessions.json"),
-    ...targets.map((target) => target.storePath),
-  ].find((storePath) => !storePath.endsWith(".sqlite") && fs.existsSync(storePath));
+  const targets = (
+    params.targets ?? resolveAllAgentSessionStoreTargetsSync(params.cfg, { env })
+  ).filter(
+    (target) => !target.agentId || !readAgentDatabaseAdmissionRefusal(target.agentId, { env }),
+  );
+  const pending = readDeferredPluginMigrations({ env });
+  const legacyRootStore = path.join(resolveStateDir(env), "sessions", "sessions.json");
+  const legacyTargets = fs.existsSync(legacyRootStore)
+    ? resolveSessionStoreTargets(params.cfg, { allAgents: true }, { env }).map((target) => ({
+        agentId: target.agentId,
+        sqlitePath: resolveSqliteTargetFromSessionStorePath(target.storePath, {
+          agentId: target.agentId,
+          env,
+        }).path,
+        storePath: legacyRootStore,
+      }))
+    : [];
+  const sources: readonly { agentId?: string; storePath: string; sqlitePath?: string }[] = [
+    ...(legacyTargets.length > 0 ? legacyTargets : [{ storePath: legacyRootStore }]),
+    ...targets,
+  ];
+  const sourcesByPath = new Map<string, Array<(typeof sources)[number]>>();
+  for (const target of sources) {
+    const sourcePath = path.resolve(target.storePath);
+    sourcesByPath.set(sourcePath, [...(sourcesByPath.get(sourcePath) ?? []), target]);
+  }
+  const legacyStore = [...sourcesByPath].find(([storePath, candidates]) => {
+    if (storePath.endsWith(".sqlite") || !fs.existsSync(storePath)) {
+      return false;
+    }
+    type SourceOwner = {
+      target: { agentId: string; storePath: string; sqlitePath?: string };
+      destination: string;
+    };
+    const owners = new Map<string, SourceOwner>();
+    for (const target of candidates) {
+      if (
+        !target.agentId ||
+        deferredPluginSessionStoreIds({ target: { ...target, agentId: target.agentId }, pending })
+          .length === 0
+      ) {
+        return true;
+      }
+      const destination =
+        target.sqlitePath ??
+        resolveSqliteTargetFromSessionStorePath(target.storePath, { agentId: target.agentId, env })
+          .path;
+      owners.set(`${target.agentId}\0${destination}`, {
+        target: { ...target, agentId: target.agentId },
+        destination,
+      });
+    }
+    // A roster entry is only a possible importer. Inspect retained source ownership
+    // here, never in runtime session access, and bind parsed bytes to every receipt.
+    const issues: Array<{ code: string; message: string }> = [];
+    const source = readLegacySessionStoreEntries({ storePath }, issues);
+    if (issues.length > 0 || !source.bytes) {
+      return true;
+    }
+    const sourceSha256 = createHash("sha256").update(source.bytes).digest("hex");
+    // Empty indexes may have unindexed history: retain the existing requirement
+    // for every named owner's verified receipt rather than infer ownership here.
+    const required = new Set<SourceOwner>(source.entries.length === 0 ? owners.values() : []);
+    for (const { sessionKey } of source.entries) {
+      const matches = [...owners.values()].filter(
+        ({ target }) =>
+          !shouldFilterLegacySessionRecordsByTarget(target) ||
+          isLegacySessionRecordOwnedByTarget(params.cfg, target, sessionKey),
+      );
+      if (matches.length !== 1) {
+        return true;
+      }
+      required.add(matches[0]!);
+    }
+    return [...required].some(({ target, destination }) => {
+      const receipt = readDeferredPluginSessionImport({
+        target: { ...target, sqlitePath: destination },
+        env,
+      });
+      return (
+        !receipt ||
+        receipt.sources.find((entry) => path.resolve(entry.path) === storePath)?.identity.sha256 !==
+          sourceSha256
+      );
+    });
+  })?.[0];
   if (legacyStore) {
-    throw new Error(
-      `Legacy session store requires migration: ${legacyStore}. Run "${formatCliCommand("openclaw doctor --fix", env)}" against the same state/config before starting OpenClaw.`,
+    throw new SessionStoreMigrationRequiredError(
+      params.operation === "doctor"
+        ? formatDoctorStateRepairFailure(
+            `Legacy session store requires migration at ${legacyStore}`,
+            "Repair the retained source using the migration report's named file and validation error, preserving the original history.",
+          )
+        : `Legacy session store requires migration: ${legacyStore}. Run "${formatCliCommand("openclaw doctor --fix", env)}" against the same state/config before starting OpenClaw.`,
     );
   }
 }
 
-/** Maintains existing SQLite stores and returns their physical owners for startup reconciliation. */
+/** Maintains existing stores, optionally handing each live database to its runtime owner. */
 export async function runSessionStartupMigration(params: {
   cfg: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   log: SessionStartupMigrationLogger;
+  handoffDatabase?: (database: OpenClawAgentDatabaseOptions) => Promise<void>;
   deps?: {
     migrateLegacyMainSessionKeys?: typeof migrateLegacyMainSessionKeys;
     migrateManagedWorktreeCanonicalWorkspaces?: typeof migrateManagedWorktreeCanonicalWorkspaces;
     resolveAllAgentSessionStoreTargetsSync?: typeof resolveAllAgentSessionStoreTargetsSync;
   };
-}): Promise<OpenClawAgentDatabaseOptions[]> {
+}): Promise<void> {
   const env = params.env ?? process.env;
   const resolveTargets =
     params.deps?.resolveAllAgentSessionStoreTargetsSync ?? resolveAllAgentSessionStoreTargetsSync;
-  let targets = resolveTargets(params.cfg, { env });
+  const admittedTargets = () =>
+    resolveTargets(params.cfg, { env }).filter(
+      (target) => !readAgentDatabaseAdmissionRefusal(target.agentId, { env }),
+    );
+  let targets = admittedTargets();
   // Stable installations may still have file-backed history. Only Doctor imports it;
   // do not serve an empty SQLite history or rewrite those files during startup.
   assertSessionStoreMigrationComplete({ cfg: params.cfg, env, targets });
@@ -73,10 +181,10 @@ export async function runSessionStartupMigration(params: {
   }
   if (result.armed) {
     // A partial move can create the destination before source cleanup succeeds.
-    targets = resolveTargets(params.cfg, { env });
+    targets = admittedTargets();
   }
 
-  const databases = new Map<string, OpenClawAgentDatabaseOptions>();
+  const databases = new Set<string>();
   const migrateWorktreeSessions =
     params.deps?.migrateManagedWorktreeCanonicalWorkspaces ??
     migrateManagedWorktreeCanonicalWorkspaces;
@@ -90,31 +198,51 @@ export async function runSessionStartupMigration(params: {
     if (databases.has(databasePath) || !fs.existsSync(databasePath)) {
       continue;
     }
-    databases.set(databasePath, options);
-    const alreadyOpen = isOpenClawAgentDatabaseOpen(databasePath);
-    try {
-      if (
-        !registeredDatabases.has(`${options.agentId}\0${databasePath}`) ||
-        !isCanonicalSqliteSessionMainKeyCurrent(options, params.cfg.session?.mainKey)
-      ) {
-        const database = openOpenClawAgentDatabase(options);
-        setCanonicalSqliteSessionMainKey(database, params.cfg.session?.mainKey);
-      }
-      // Workspace metadata participates in claim matching. Preserve it during a
-      // partial move so the next attempt can finish removing the source claim.
-      if (!result.armed || result.complete) {
-        migratedWorktreeSessions += await migrateWorktreeSessions({
-          ...target,
-          cfg: params.cfg,
-          env,
-        });
-      }
-    } catch (error) {
-      params.log.warn(
-        `session: SQLite startup maintenance failed for ${target.agentId}; continuing: ${String(error)}`,
+    databases.add(databasePath);
+    // Retained stores remain discoverable, but only deletion cleanup may write them.
+    // Check the physical owner so surviving shared stores still reach their runtime.
+    const deletion = readAgentDeletionJournal(options.agentId, { env });
+    if (deletion) {
+      params.log.info(
+        `session: skipping deleted agent database for ${options.agentId} (${deletion.cleanupCompleted ? "cleanup complete" : "cleanup pending; retry agent deletion"})`,
       );
+      continue;
+    }
+    const alreadyOpen = isOpenClawAgentDatabaseOpen(databasePath);
+    let handedOff = false;
+    try {
+      try {
+        const mainKey = params.cfg.session?.mainKey;
+        if (
+          !registeredDatabases.has(`${options.agentId}\0${databasePath}`) ||
+          !isCanonicalSqliteSessionMainKeyCurrent(options, mainKey)
+        ) {
+          await withOpenClawAgentDatabaseAsync(options, (database) =>
+            setCanonicalSqliteSessionMainKey(database, mainKey),
+          );
+        }
+        // Workspace metadata participates in claim matching. Preserve it during a
+        // partial move so the next attempt can finish removing the source claim.
+        if (!result.armed || result.complete) {
+          migratedWorktreeSessions += await migrateWorktreeSessions({
+            ...target,
+            cfg: params.cfg,
+            env,
+          });
+        }
+      } catch (error) {
+        params.log.warn(
+          `session: SQLite startup maintenance failed for ${target.agentId}; continuing: ${String(error)}`,
+        );
+      }
+      if (params.handoffDatabase) {
+        // Runtime readiness failures must propagate; only successful handoff
+        // transfers the cold connection beyond this maintenance operation.
+        await params.handoffDatabase(options);
+        handedOff = true;
+      }
     } finally {
-      if (!alreadyOpen && isOpenClawAgentDatabaseOpen(databasePath)) {
+      if (!alreadyOpen && !handedOff && isOpenClawAgentDatabaseOpen(databasePath)) {
         closeOpenClawAgentDatabaseByPath(databasePath);
       }
     }
@@ -124,5 +252,4 @@ export async function runSessionStartupMigration(params: {
       `session: recorded canonical workspaces for ${migratedWorktreeSessions} managed-worktree session(s)`,
     );
   }
-  return [...databases.values()];
 }

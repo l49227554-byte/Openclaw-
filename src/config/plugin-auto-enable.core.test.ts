@@ -4,6 +4,8 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { setCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata.test-support.js";
 import type { PluginCandidate, PluginDiscoveryResult } from "../plugins/discovery.js";
+import { loadPluginManifest } from "../plugins/manifest.js";
+import { initializeNativeSessionCatalogPreferences } from "../plugins/native-session-catalog-config.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import {
   applyPluginAutoEnable,
@@ -68,6 +70,20 @@ vi.mock("../plugins/setup-registry.js", () => ({
 
 const env = makeIsolatedEnv();
 const emptyDiscovery: PluginDiscoveryResult = { candidates: [], diagnostics: [] };
+const codexManifestResult = loadPluginManifest(path.join(process.cwd(), "extensions", "codex"));
+if (!codexManifestResult.ok) {
+  throw new Error(codexManifestResult.error);
+}
+const codexManifest = codexManifestResult.manifest;
+const nativeCatalogRegistry = makeRegistry([
+  {
+    id: codexManifest.id,
+    channels: [],
+    origin: "bundled",
+    contracts: codexManifest.contracts,
+    configSchema: codexManifest.configSchema,
+  },
+]);
 
 function makeBundledChannelCandidate(params: {
   pluginId: string;
@@ -94,6 +110,57 @@ afterEach(() => {
 });
 
 describe("applyPluginAutoEnable core", () => {
+  it.each<[string, string[] | undefined]>([
+    ["absent", undefined],
+    ["empty", []],
+    ["restrictive", ["existing"]],
+  ])("keeps first-write catalog opt-outs inactive with plugins.allow %s", (_name, allow) => {
+    const config = initializeNativeSessionCatalogPreferences({
+      plugins: allow === undefined ? {} : { allow },
+    });
+    const result = applyPluginAutoEnable({
+      config,
+      env,
+      manifestRegistry: nativeCatalogRegistry,
+    });
+    expect(result.config).toEqual(config);
+    expect(result.changes).toEqual([]);
+  });
+
+  it("retains explicit plugin selection alongside a first-write catalog opt-out", () => {
+    const config = initializeNativeSessionCatalogPreferences({
+      plugins: { allow: ["existing"], entries: { codex: { enabled: true } } },
+    });
+    const result = applyPluginAutoEnable({
+      config,
+      env,
+      manifestRegistry: nativeCatalogRegistry,
+    });
+    expect(result.config.plugins?.allow).toEqual(["existing", "codex"]);
+    expect(result.config.plugins?.entries).toEqual(config.plugins?.entries);
+  });
+
+  it.each([{ appServer: { transport: "stdio" } }, { codexDynamicToolsLoading: "direct" }])(
+    "retains authored tool config alongside a first-write catalog opt-out: %j",
+    (pluginConfig) => {
+      const config = initializeNativeSessionCatalogPreferences({
+        plugins: { allow: ["existing"], entries: { codex: { config: pluginConfig } } },
+      });
+      const result = applyPluginAutoEnable({
+        config,
+        env,
+        manifestRegistry: nativeCatalogRegistry,
+      });
+
+      expect(result.config.plugins?.allow).toEqual(["existing", "codex"]);
+      expect(result.config.plugins?.entries?.codex).toEqual({
+        ...config.plugins?.entries?.codex,
+        enabled: true,
+      });
+      expect(result.changes).toEqual(["codex tool configured, enabled automatically."]);
+    },
+  );
+
   it("detects typed channel-configured candidates", () => {
     const candidates = detectPluginAutoEnableCandidates({
       config: {
@@ -618,6 +685,71 @@ describe("applyPluginAutoEnable core", () => {
       "google/gemini-3-pro-image-preview model configured, enabled automatically.",
       "minimax/MiniMax-Hailuo-2.3 model configured, enabled automatically.",
     ]);
+  });
+
+  it("bounds repeated model-candidate preference checks without changing plugin precedence", () => {
+    let denyChecks = 0;
+    const deny = new Proxy(["blocked"], {
+      get(target, property, receiver) {
+        if (property === "includes") {
+          return (pluginId: string) => {
+            denyChecks += 1;
+            return target.includes(pluginId);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const config: OpenClawConfig = {
+      agents: {
+        ownership: "explicit",
+        entries: Object.fromEntries(
+          Array.from({ length: 128 }, (_, index) => [
+            `agent-${index}`,
+            {
+              model: {
+                primary: `secondary/model-${index}`,
+                fallbacks: [`primary/model-${index}`, `blocked/model-${index}`],
+              },
+            },
+          ]),
+        ),
+      },
+      plugins: { deny },
+    };
+    expect(validateConfigObject(config).ok).toBe(true);
+    denyChecks = 0;
+
+    const result = applyPluginAutoEnable({
+      config,
+      env,
+      manifestRegistry: makeRegistry([
+        { id: "primary", channels: [], providers: ["primary"] },
+        {
+          id: "secondary",
+          channels: [],
+          providers: ["secondary"],
+          channelConfigs: {
+            secondary: { schema: {}, preferOver: ["primary"] },
+          },
+        },
+        {
+          id: "blocked",
+          channels: [],
+          providers: ["blocked"],
+          channelConfigs: {
+            blocked: { schema: {}, preferOver: ["secondary"] },
+          },
+        },
+      ]),
+    });
+
+    expect(denyChecks).toBeLessThanOrEqual(6);
+    expect(result.config.plugins?.entries?.primary?.enabled).toBe(false);
+    expect(result.config.plugins?.entries?.secondary?.enabled).toBe(true);
+    expect(result.config.plugins?.entries?.blocked).toBeUndefined();
+    expect(result.changes).toEqual(["secondary/model-0 model configured, enabled automatically."]);
+    expect(result.autoEnabledReasons.secondary).toEqual(["secondary/model-0 model configured"]);
   });
 
   it("does not auto-enable Codex when only the OpenAI plugin is explicitly enabled", () => {

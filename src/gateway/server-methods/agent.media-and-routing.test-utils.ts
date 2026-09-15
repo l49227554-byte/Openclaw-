@@ -47,56 +47,11 @@ import {
   describe0AfterEach0,
 } from "./agent.test-harness.js";
 import { expectSubagentFollowupReactivation } from "./subagent-followup.test-helpers.js";
-import type { GatewayRequestContext } from "./types.js";
 
 const mocks = getAgentTestMocks();
 
 describe("gateway agent handler", () => {
   afterEach(describe0AfterEach0);
-
-  it("recovers a failed session when its SQLite transcript exists", async () => {
-    const now = Date.parse("2026-05-18T09:49:00.000Z");
-    vi.useFakeTimers({ toFake: ["Date"] });
-    setDateOnlyFakeClockActive(true);
-    vi.setSystemTime(now);
-
-    await withTestDir({ prefix: "openclaw-gateway-failed-default-session-file-" }, async (root) => {
-      const sessionsDir = `${root}/sessions`;
-      await fs.mkdir(sessionsDir, { recursive: true });
-      mocks.readTranscriptStatsSync.mockReturnValue({ eventCount: 1, maxSeq: 1, sizeBytes: 32 });
-      const failedEntryWithDefaultTranscript = {
-        sessionId: "failed-present-default-session-id",
-        status: "failed",
-        startedAt: now - 1_000,
-        endedAt: now,
-        runtimeMs: 1_000,
-        abortedLastRun: true,
-        updatedAt: now,
-        sessionStartedAt: now,
-        lastInteractionAt: now,
-      };
-      mocks.loadSessionEntry.mockReturnValue({
-        cfg: {},
-        storePath: `${sessionsDir}/sessions.json`,
-        entry: failedEntryWithDefaultTranscript,
-        canonicalKey: "agent:main:main",
-      });
-
-      const capturedEntry = await runMainAgentAndCaptureEntry(
-        "test-idem-failed-present-default-transcript",
-      );
-
-      const call = await waitForAgentCommandCall<{ sessionId?: string }>();
-      expect(call.sessionId).toBe("failed-present-default-session-id");
-      expect(capturedEntry?.sessionId).toBe("failed-present-default-session-id");
-      expect(capturedEntry?.status).toBeUndefined();
-      expect(capturedEntry?.startedAt).toBeUndefined();
-      expect(capturedEntry?.endedAt).toBeUndefined();
-      expect(capturedEntry?.runtimeMs).toBeUndefined();
-      expect(capturedEntry?.abortedLastRun).toBeUndefined();
-      expectSqliteSessionFileMarkerForEntry(capturedEntry);
-    });
-  });
 
   it.each([
     {
@@ -104,24 +59,20 @@ describe("gateway agent handler", () => {
       sessionKey: "agent:main:telegram:group:stale-failed",
       sessionId: "stale-failed-session-id",
       configureTranscript: async () => {
-        mocks.readTranscriptStatsSync.mockReturnValue({ eventCount: 1, maxSeq: 1, sizeBytes: 32 });
+        mocks.hasSessionTranscriptEventsSync.mockReturnValue(true);
         return {};
       },
-      expectsSqliteStats: true,
+      expectsSqlitePresence: true,
     },
     {
       name: "SQLite transcript marker",
       sessionKey: "agent:main:telegram:group:stale-failed-sqlite",
       sessionId: "stale-failed-sqlite-session-id",
       configureTranscript: async (params: { sessionId: string; storePath: string }) => {
-        mocks.readTranscriptStatsSync.mockReturnValue({
-          eventCount: 1,
-          maxSeq: 1,
-          sizeBytes: 32,
-        });
+        mocks.hasSessionTranscriptEventsSync.mockReturnValue(true);
         return { sessionFile: `sqlite:main:${params.sessionId}:${params.storePath}` };
       },
-      expectsSqliteStats: true,
+      expectsSqlitePresence: true,
     },
   ])("recovers a stale failed session when its $name exists", async (scenario) => {
     const now = Date.parse("2026-05-18T09:49:30.000Z");
@@ -178,8 +129,8 @@ describe("gateway agent handler", () => {
 
       const call = await waitForAgentCommandCall<{ sessionId?: string }>();
       expect(call.sessionId).toBe(scenario.sessionId);
-      if (scenario.expectsSqliteStats) {
-        expect(mocks.readTranscriptStatsSync).toHaveBeenCalledWith({
+      if (scenario.expectsSqlitePresence) {
+        expect(mocks.hasSessionTranscriptEventsSync).toHaveBeenCalledWith({
           agentId: "main",
           sessionId: scenario.sessionId,
           sessionKey: scenario.sessionKey,
@@ -187,7 +138,7 @@ describe("gateway agent handler", () => {
           sessionEntry: failedEntryWithStaleActivity,
         });
       } else {
-        expect(mocks.readTranscriptStatsSync).not.toHaveBeenCalled();
+        expect(mocks.hasSessionTranscriptEventsSync).not.toHaveBeenCalled();
       }
       expect(capturedEntry?.sessionId).toBe(scenario.sessionId);
       expect(capturedEntry?.status).toBeUndefined();
@@ -208,7 +159,7 @@ describe("gateway agent handler", () => {
     await withTestDir({ prefix: "openclaw-gateway-failed-session-file-" }, async (root) => {
       const sessionsDir = `${root}/sessions`;
       await fs.mkdir(sessionsDir, { recursive: true });
-      mocks.readTranscriptStatsSync.mockReturnValue({ eventCount: 1, maxSeq: 1, sizeBytes: 32 });
+      mocks.hasSessionTranscriptEventsSync.mockReturnValue(true);
       const failedEntryWithResolvedTranscript = {
         sessionId: "failed-present-session-id",
         status: "failed",
@@ -934,7 +885,7 @@ describe("gateway agent handler", () => {
     await withTestDir({ prefix: "openclaw-gateway-terminal-recovery-" }, async (root) => {
       const sessionsDir = `${root}/sessions`;
       await fs.mkdir(sessionsDir, { recursive: true });
-      mocks.readTranscriptStatsSync.mockReturnValue({ eventCount: 1, maxSeq: 1, sizeBytes: 32 });
+      mocks.hasSessionTranscriptEventsSync.mockReturnValue(true);
       mocks.loadSessionEntry.mockReturnValue({
         cfg: {},
         storePath: `${sessionsDir}/sessions.json`,
@@ -1190,14 +1141,10 @@ describe("gateway agent handler", () => {
       {
         respond,
         context: {
-          dedupe: new Map(),
-          addChatRun: vi.fn(),
-          chatAbortControllers: new Map(),
-          logGateway: { info: vi.fn(), error: vi.fn() },
+          ...makeContext(),
           broadcastToConnIds,
           getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
-          getRuntimeConfig: () => mocks.loadConfigReturn,
-        } as unknown as GatewayRequestContext,
+        },
       },
     );
 
@@ -1279,14 +1226,10 @@ describe("gateway agent handler", () => {
       },
       {
         context: {
-          dedupe: new Map(),
-          addChatRun: vi.fn(),
-          chatAbortControllers: new Map(),
-          logGateway: { info: vi.fn(), error: vi.fn() },
+          ...makeContext(),
           broadcastToConnIds,
           getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
-          getRuntimeConfig: () => mocks.loadConfigReturn,
-        } as unknown as GatewayRequestContext,
+        },
       },
     );
 

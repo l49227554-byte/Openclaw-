@@ -9,6 +9,7 @@ import {
   resolveToolExecutionErrorKind,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { copyInternalToolResultState } from "openclaw/plugin-sdk/agent-harness-tool-runtime";
 import {
   hasPendingInternalDiagnosticEvent,
   type DiagnosticEventPayload,
@@ -173,6 +174,10 @@ export async function handleDynamicToolCallWithTimeout(params: {
     const terminalResolution = params.observeToolTerminal?.({
       toolCallId: params.call.callId,
       toolName: params.call.tool,
+      result: copyInternalToolResultState(response, {
+        ...response,
+        details: response.transcriptDetails,
+      }),
       arguments:
         response.executedArguments ?? executionSnapshot?.executedArguments ?? params.call.arguments,
       ...(params.toolMeta ? { meta: params.toolMeta } : {}),
@@ -209,8 +214,9 @@ export async function handleDynamicToolCallWithTimeout(params: {
     try {
       params.onAgentToolResult?.(event);
     } catch (error) {
+      const message = formatToolExecutionErrorMessage(error, "Unknown error");
       embeddedAgentLog.warn(
-        `onAgentToolResult handler failed: tool=${params.call.tool} error=${String(error)}`,
+        `onAgentToolResult handler failed: tool=${params.call.tool} error=${message}`,
       );
     }
   };
@@ -632,10 +638,6 @@ function readConfiguredDynamicToolTimeoutMs(
           CODEX_DYNAMIC_IMAGE_TOOL_TIMEOUT_MS,
       ),
     );
-  }
-
-  if (toolName === "message") {
-    return CODEX_DYNAMIC_MESSAGE_TOOL_TIMEOUT_MS;
   }
 
   return undefined;

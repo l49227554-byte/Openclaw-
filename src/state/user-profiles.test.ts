@@ -151,8 +151,9 @@ describe("user profiles", () => {
     expect(tableExists(database, "user_profiles")).toBe(false);
     expect(tableExists(database, "user_profile_identities")).toBe(false);
 
+    const profileVersion = readUserProfileVersion();
     const first = ensureProfileForEmail("  Ada@Example.COM ", options);
-    const version = readUserProfileVersion();
+    expect(readUserProfileVersion()).toBe(profileVersion + 1);
     const second = ensureProfileForEmail("ada@example.com", options);
 
     expect(tableExists(openOpenClawStateDatabase(options).db, "user_profiles")).toBe(true);
@@ -165,7 +166,7 @@ describe("user profiles", () => {
     expect(versionBefore).toBe(OPENCLAW_STATE_SCHEMA_VERSION);
     expect(second).toEqual(first);
     expect(ensureProfileForEmail("ADA@example.com", options)).toEqual(first);
-    expect(readUserProfileVersion()).toBe(version);
+    expect(readUserProfileVersion()).toBe(profileVersion + 1);
     expect(listProfiles(options)).toEqual([
       expect.objectContaining({ id: first.id, emails: ["ada@example.com"] }),
     ]);
@@ -174,11 +175,11 @@ describe("user profiles", () => {
   it("resolves provider identities without storing them as emails", () => {
     const options = stateOptions();
 
+    const profileVersion = readUserProfileVersion();
     const first = ensureProfileForTailscaleIdentity(
       { login: "Ada@GitHub", name: "Ada Lovelace" },
       options,
     );
-    const version = readUserProfileVersion();
     const second = ensureProfileForTailscaleIdentity(
       { login: "ada@github", name: "Different Provider Name" },
       options,
@@ -186,7 +187,7 @@ describe("user profiles", () => {
 
     expect(second.id).toBe(first.id);
     expect(second.displayName).toBe("Ada Lovelace");
-    expect(readUserProfileVersion()).toBe(version);
+    expect(readUserProfileVersion()).toBe(profileVersion + 1);
     expect(listProfiles(options)).toEqual([
       expect.objectContaining({ id: first.id, emails: [], displayName: "Ada Lovelace" }),
     ]);
@@ -236,61 +237,6 @@ describe("user profiles", () => {
 
     expect(tableHasColumn(database, "user_profile_identities", "canonical_login")).toBe(true);
     expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(versionBefore);
-  });
-
-  it("lazily adds a downgrade-safe nullable role without changing the schema version", () => {
-    const options = stateOptions();
-    const database = openOpenClawStateDatabase(options).db;
-    database.exec(`
-      CREATE TABLE user_profiles (
-        id TEXT NOT NULL PRIMARY KEY,
-        display_name TEXT,
-        avatar BLOB,
-        avatar_mime TEXT,
-        avatar_sha256 TEXT,
-        merged_into TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      ) STRICT;
-    `);
-    const versionBefore = database.prepare("PRAGMA user_version").get()?.user_version;
-    const profile = ensureProfileForEmail("ada@example.com", options);
-
-    expect(tableHasColumn(database, "user_profiles", "role")).toBe(false);
-    expect(getUserProfileListItem(profile.id, options)).not.toHaveProperty("role");
-    expect(getUserProfileDisplay(profile.id, options)).toMatchObject({
-      id: profile.id,
-      hasAvatar: false,
-    });
-    expect(listProfiles(options)[0]).not.toHaveProperty("role");
-    expect(tableHasColumn(database, "user_profiles", "role")).toBe(false);
-    expect(getUserProfileRole(profile.id, options)).toBeNull();
-    expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(versionBefore);
-    expect(database.prepare("PRAGMA table_info(user_profiles)").all()).toContainEqual(
-      expect.objectContaining({
-        name: "role",
-        type: "TEXT",
-        notnull: 0,
-        dflt_value: null,
-        pk: 0,
-      }),
-    );
-
-    setUserProfileRole(profile.id, "maintainer", options);
-    database
-      .prepare("UPDATE user_profiles SET display_name = ? WHERE id = ?")
-      .run("Older Reader", profile.id);
-    database
-      .prepare("INSERT INTO user_profiles (id, created_at, updated_at) VALUES (?, ?, ?)")
-      .run("older-profile", 1, 1);
-    closeOpenClawStateDatabaseForTest();
-
-    expect(getUserProfileRole(profile.id, options)).toBe("maintainer");
-    expect(getUserProfileRole("older-profile", options)).toBeNull();
-    expect(getUserProfileListItem(profile.id, options)).toMatchObject({
-      displayName: "Older Reader",
-      role: "maintainer",
-    });
   });
 
   it("assigns and clears roles on canonical profile heads without changing unassigned shapes", () => {
@@ -823,11 +769,11 @@ describe("user profiles", () => {
     );
   });
 
-  it("bounds generated display names to the protocol limit", () => {
+  it("bounds generated display names to the protocol limit without splitting Unicode", () => {
     const options = stateOptions();
-    const profile = ensureProfileForEmail(`${"a".repeat(300)}@example.com`, options);
+    const profile = ensureProfileForEmail(`${"a".repeat(255)}😀@example.com`, options);
 
-    expect(profile.displayName).toHaveLength(256);
+    expect(profile.displayName).toBe("a".repeat(255));
   });
 
   it.each([

@@ -4,6 +4,11 @@ import path from "node:path";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
+import { gatewayFixtureLifetime } from "../gateway-fixture-lifetime.test-support.js";
 import type { GatewayServerHarness } from "../server.e2e-ws-harness.js";
 import { installGatewayTestHooks } from "../test-helpers.server.js";
 
@@ -36,13 +41,19 @@ export function installGatewaySessionsTestResources(
     cleanup: () =>
       runQaGatewayFixture(
         async () => {
-          const acquiredHarness = harness;
-          harness = undefined;
-          await acquiredHarness?.close();
+          await harness?.close();
         },
-        () => {
-          sharedSessionStoreDir = undefined;
+        async () => {
+          if (harness && !gatewayFixtureLifetime.canReleaseState(harness.server)) {
+            return;
+          }
+          for (const dir of tempDirs.dirs) {
+            await closeOpenClawAgentDatabasesAsync(dir);
+            closeOpenClawAgentDatabasesForTest(dir);
+          }
           tempDirs.cleanup();
+          sharedSessionStoreDir = undefined;
+          harness = undefined;
         },
       ),
   });

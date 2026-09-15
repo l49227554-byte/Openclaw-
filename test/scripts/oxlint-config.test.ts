@@ -340,7 +340,7 @@ describe("oxlint config", () => {
     const project = spawnSync(
       process.execPath,
       [
-        path.resolve("node_modules/@typescript/native-preview/bin/tsgo"),
+        path.resolve("node_modules/typescript-native/bin/tsc"),
         "--showConfig",
         "--project",
         "extensions/tsconfig.json",
@@ -398,7 +398,6 @@ describe("oxlint config", () => {
     expect(ignorePatterns).toEqual([
       "dist/",
       "dist-runtime/",
-      "docs/_layouts/",
       ".agents/skills/autoreview/tests/fixtures/**",
       "test/fixtures/oxlint-boundary-guards/**",
       "**/a2ui.bundle.js",

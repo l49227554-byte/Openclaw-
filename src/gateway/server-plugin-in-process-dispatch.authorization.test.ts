@@ -8,6 +8,7 @@ import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/version.js
 import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -37,6 +38,7 @@ vi.mock("./agent-turn/agent-turn-service.js", () => ({
 
 function createContext(): GatewayRequestContext {
   const context = {
+    trackExecution: trackAsyncWork,
     dedupe: new Map(),
     getRuntimeConfig: () => ({}),
     logGateway: { error: vi.fn(), warn: vi.fn() },
@@ -544,10 +546,7 @@ describe("typed in-process agent authorization", () => {
 
   it("rejects retained tool authority after its owning invocation has completed", async () => {
     const owner = createOperatorClient({ profileId: "expired-owner", scopes: ["operator.read"] });
-    let releaseDispatch!: () => void;
-    const dispatchGate = new Promise<void>((resolve) => {
-      releaseDispatch = resolve;
-    });
+    const { promise: dispatchGate, resolve: releaseDispatch } = createDeferredCore();
     let retained: Promise<unknown> | undefined;
 
     await withOperatorToolGatewayAuthority(

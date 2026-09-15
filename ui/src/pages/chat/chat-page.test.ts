@@ -5,22 +5,13 @@ import { expectDefined } from "@openclaw/normalization-core";
 import type { RouteLocation } from "@openclaw/uirouter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const nativeGateways = vi.hoisted(() => ({ current: null as NativeGatewaysCapability | null }));
-
 // Keep this complete mock in the dedicated unit-mock-registry project.
 vi.mock("./chat-pane.ts", () => ({}));
-vi.mock("../../app/native-gateways.runtime.ts", () => ({
-  nativeGatewaysCapability: () => nativeGateways.current,
-}));
 
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient, GatewayHelloOk } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/gateway.ts";
-import type {
-  NativeGatewaysCapability,
-  NativeGatewaysSnapshot,
-} from "../../app/native-gateways.runtime.ts";
 import { loadSettings } from "../../app/settings.ts";
 import { UI_COMMAND_EVENT } from "../../components/panel-toggle-contract.ts";
 import {
@@ -31,6 +22,7 @@ import {
 import { SESSION_DRAG_MIME } from "../../lib/sessions/drag.ts";
 import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
+import { createChatPageSessions } from "./chat-page.test-support.ts";
 import { ChatPage } from "./chat-page.ts";
 import { loadChatRoute } from "./route-loader.ts";
 
@@ -59,8 +51,6 @@ type RenderedPane = HTMLElement & {
   paneTitle: string;
   narrow: boolean;
   mergedChrome: boolean;
-  nativeGateways: NativeGatewaysCapability | null;
-  gatewaysSnapshot: NativeGatewaysSnapshot | null;
   onOpenSplitView?: () => void;
   onClosePane?: (paneId: string) => void;
   onFaceChange?: (paneId: string, sessionKey: string, face: "chat" | "dashboard") => void;
@@ -75,7 +65,7 @@ function createSessionTitleSource() {
   } = { result: null };
   return {
     sessions: {
-      canonicalListRevision: 0,
+      ...createChatPageSessions(),
       state,
       subscribe(listener: () => void) {
         listeners.add(listener);
@@ -158,7 +148,7 @@ function setNavigationContext(page: ChatPage) {
   };
   const context = {
     basePath: "",
-    sessions: { state: { result: null }, subscribe: () => () => undefined, patch },
+    sessions: { ...createChatPageSessions(), patch },
     agents: { state: { agentsList: { defaultId: "main", mainKey: "main" } } },
     gateway: {
       snapshot: { hello: null },
@@ -201,6 +191,7 @@ function setViewerPresenceContext(page: ChatPage) {
     connection: { gatewayUrl: "ws://example.test", token: "", bootstrapToken: "", password: "" },
     connectionRevision: 0,
     eventLog: [],
+    eventLogRevision: 0,
     connect: vi.fn(),
     setSessionKey: vi.fn(),
     start: vi.fn(),
@@ -212,6 +203,9 @@ function setViewerPresenceContext(page: ChatPage) {
     subscribeEventLog: () => () => {},
     subscribeEvents: () => () => {},
   };
+  Object.assign(navigation.context, {
+    sessions: createChatPageSessions(navigation.context.gateway),
+  });
   return { ...navigation, request };
 }
 
@@ -233,7 +227,6 @@ function stubMatchMedia(matches: boolean) {
 
 describe("chat page split layout host", () => {
   beforeEach(() => {
-    nativeGateways.current = null;
     vi.stubGlobal("localStorage", createStorageMock());
     vi.stubGlobal("sessionStorage", createStorageMock());
     localStorage.clear();
@@ -279,33 +272,6 @@ describe("chat page split layout host", () => {
     expect(typeof itemAt(panes, 0, "rendered pane").onOpenSplitView).toBe("function");
   });
 
-  it("passes the chat-owned gateway capability only to the rightmost pane", async () => {
-    const gatewaySnapshot: NativeGatewaysSnapshot = {
-      gateways: [],
-      currentId: "primary",
-    };
-    nativeGateways.current = {
-      snapshot: gatewaySnapshot,
-      subscribe: () => () => undefined,
-      select: vi.fn(),
-      openWindow: vi.fn(),
-      setPrimary: vi.fn(),
-      openSettings: vi.fn(),
-    };
-    const page = new ChatPage();
-    page.data = { sessionKey: "main" };
-    document.body.append(page);
-    setLayout(page, createSplitLayout("main"));
-    await page.updateComplete;
-
-    const panes = [...page.querySelectorAll<RenderedPane>("openclaw-chat-pane")];
-    expect(panes).toHaveLength(2);
-    expect(panes[0]?.nativeGateways).toBeNull();
-    expect(panes[0]?.gatewaysSnapshot).toBeNull();
-    expect(panes[1]?.nativeGateways).toBe(nativeGateways.current);
-    expect(panes[1]?.gatewaysSnapshot).toBe(gatewaySnapshot);
-  });
-
   it("passes merged chrome from the shared mobile-nav query", async () => {
     stubMatchMedia(true);
     const page = new ChatPage();
@@ -316,7 +282,9 @@ describe("chat page split layout host", () => {
     const pane = itemAt(page.querySelectorAll<RenderedPane>("openclaw-chat-pane"), 0, "pane");
     expect(pane.mergedChrome).toBe(true);
     expect(matchMedia).toHaveBeenCalledWith("(max-width: 1099px)");
-    expect(matchMedia).toHaveBeenCalledWith("(max-width: 1100px)");
+    expect(matchMedia).toHaveBeenCalledWith(
+      "(max-width: 900px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape)",
+    );
   });
 
   it("retains the classic pane element while split view opens and closes", async () => {

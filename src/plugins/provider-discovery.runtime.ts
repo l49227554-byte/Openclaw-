@@ -6,14 +6,16 @@ import { planEffectiveModelCatalogRows } from "../model-catalog/index.js";
 import { shouldRejectHardlinkedPluginFiles } from "./hardlink-policy.js";
 import { loadManifestMetadataSnapshot } from "./manifest-contract-eligibility.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
+import { getPluginMetadataSnapshotCache, withPluginCache } from "./plugin-cache.js";
 import { withProfile } from "./plugin-load-profile.js";
 import type { PluginMetadataRegistryView } from "./plugin-metadata-snapshot.types.js";
-import { getCachedPluginModuleLoader, preparePluginModule } from "./plugin-module-loader-cache.js";
+import { preparePluginModule } from "./plugin-module-loader-cache.js";
 import { resolvePluginRuntimeArtifact } from "./plugin-runtime-artifact-resolution.js";
 import {
   prefersBuiltPluginArtifacts,
   resolvePluginRuntimeArtifactPreference,
 } from "./plugin-runtime-artifact-selection.js";
+import { getPluginSetupModuleLoader } from "./plugin-setup-module.js";
 import { buildEffectiveManifestProviderConfig } from "./provider-catalog.js";
 import type {
   ProviderDiscoveryPlan,
@@ -65,7 +67,7 @@ function normalizeDiscoveryModule(value: ProviderDiscoveryModule): ProviderPlugi
   return [];
 }
 
-function loadProviderDiscoveryModule(manifest: PluginManifestRecord): ProviderDiscoveryModule {
+function loadProviderDiscoveryProviders(manifest: PluginManifestRecord): ProviderPlugin[] {
   const registry = getPluginRuntimeGenerationRegistry();
   const loadContext = getPluginRuntimeLoadContext(registry);
   // Lightweight entries share the prepared registry's artifact policy, but must
@@ -99,18 +101,17 @@ function loadProviderDiscoveryModule(manifest: PluginManifestRecord): ProviderDi
         }),
       }).modulePath
     : source;
-  const moduleLoader = getCachedPluginModuleLoader({
-    modulePath,
-    rootDir,
-    importerUrl: import.meta.url,
-    loaderFilename: import.meta.url,
-    preferBuiltDist: true,
+  const moduleLoader = getPluginSetupModuleLoader(manifest, modulePath, rootDir);
+  return moduleLoader.initialize(() => {
+    const loaded = withProfile(
+      { pluginId: manifest.id, source: modulePath },
+      "provider-discovery-entry",
+      () => moduleLoader(modulePath) as ProviderDiscoveryModule,
+    );
+    return normalizeDiscoveryModule(loaded).map((provider) =>
+      Object.assign({}, provider, { pluginId: manifest.id, pluginRoot: rootDir }),
+    );
   });
-  return withProfile(
-    { pluginId: manifest.id, source: modulePath },
-    "provider-discovery-entry",
-    () => moduleLoader(modulePath) as ProviderDiscoveryModule,
-  );
 }
 
 function hasLiveProviderDiscoveryHook(provider: ProviderPlugin): boolean {
@@ -257,10 +258,10 @@ function resolveProviderDiscoveryEntryPlugins(params: {
   const providers: ProviderPlugin[] = [];
   for (const manifest of entryRecords) {
     try {
-      const moduleExport = loadProviderDiscoveryModule(manifest);
+      // Deferred discovery fills and retires with its snapshot, even outside the producer's scope.
       providers.push(
-        ...normalizeDiscoveryModule(moduleExport).map((provider) =>
-          Object.assign({}, provider, { pluginId: manifest.id }),
+        ...withPluginCache(getPluginMetadataSnapshotCache(metadataSnapshot), () =>
+          loadProviderDiscoveryProviders(manifest),
         ),
       );
     } catch {
@@ -294,7 +295,8 @@ export function planPluginDiscoveryRuntime(
     (provider) =>
       hasProviderCatalogHook(provider) ||
       (params.includeSyntheticAuthProviders === true &&
-        typeof provider.resolveSyntheticAuth === "function"),
+        (typeof provider.resolveSyntheticAuth === "function" ||
+          typeof provider.prepareSyntheticAuth === "function")),
   );
   const runtimeEntryProviders = resolveRuntimeEntryProviders(entryResult);
   if (params.discoveryEntriesOnly === true) {

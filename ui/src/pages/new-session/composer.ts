@@ -7,6 +7,7 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { icons } from "../../components/icons.ts";
 import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
 import { t } from "../../i18n/index.ts";
+import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import "../../components/tooltip.ts";
 import type { ChatAttachment, HumanMention } from "../../lib/chat/chat-types.ts";
 import { updateHumanMentions, type HumanMentionInput } from "../../lib/chat/human-mentions.ts";
@@ -15,6 +16,7 @@ import {
   createChatAttachmentDropHandlers,
   handleChatAttachmentPaste,
   renderAttachmentPreview,
+  renderAttachmentReadStatus,
   renderChatAttachmentInputs,
 } from "../chat/components/chat-attachments.ts";
 import {
@@ -30,13 +32,11 @@ import {
   type HumanMentionDirectory,
   type HumanMentionMenuHost,
 } from "../chat/components/chat-composer-mention-menu.ts";
+import { resolveComposerMenus } from "../chat/components/chat-composer-menus.ts";
 import type { ChatComposerPlusMenuView } from "../chat/components/chat-composer-plus-menu.ts";
 import {
   createSkillMenuState,
-  getActiveSkillMenuOptionId,
-  getActiveSkillMenuOptionLabel,
   handleSkillMenuKeydown,
-  isSkillMenuVisible,
   renderSkillMenu,
   resetSkillMenuState,
   updateSkillMenu,
@@ -44,10 +44,7 @@ import {
 } from "../chat/components/chat-composer-skill-menu.ts";
 import {
   createSlashMenuState,
-  getActiveSlashMenuOptionId,
-  getActiveSlashMenuOptionLabel,
   handleSlashMenuKeydown,
-  isSlashMenuVisible,
   renderSlashMenu,
   resetSlashMenuState,
   type SlashMenuHost,
@@ -63,7 +60,10 @@ import {
 } from "./composer-capability-controls.ts";
 import type { NewSessionVisibility } from "./create-params.ts";
 
+registerNewSessionSetupEnglish();
+
 export type NewSessionComposerOptions = {
+  renderCritters: (floorEnabled: boolean) => TemplateResult | typeof nothing;
   attachmentLimits?: { maxBytes: number; maxImageBytes: number };
   attachments: ChatAttachment[];
   canSubmit: boolean;
@@ -118,25 +118,29 @@ function renderStartControl(options: NewSessionComposerOptions) {
   return html` <openclaw-tooltip content=${options.submitDisabledReason ?? startLabel}>
     <button
       type="button"
-      class="chat-send-btn new-session-page__start-submit ${reasonedBlock
-        ? "new-session-page__start-submit--blocked"
-        : ""}"
+      class="chat-send-btn new-session-page__start-submit ${
+        reasonedBlock ? "new-session-page__start-submit--blocked" : ""
+      }"
       ?disabled=${!options.canSubmit && !reasonedBlock}
       aria-disabled=${String(!options.canSubmit)}
-      aria-busy=${String(options.submitting)}
+      aria-busy=${String(options.submitting || options.pendingAttachmentReads > 0)}
       aria-label=${startLabel}
       @click=${() => submitNewSession(options)}
     >
-      ${options.submitting
-        ? icons.loader
-        : options.nativeTerminal
-          ? icons.squareTerminal
-          : icons.arrowUp}
+      ${
+        options.submitting || options.pendingAttachmentReads > 0
+          ? icons.loader
+          : options.nativeTerminal
+            ? icons.squareTerminal
+            : icons.arrowUp
+      }
     </button>
   </openclaw-tooltip>`;
 }
 
 export class NewSessionComposerTextareaController {
+  // An opening gets one cast; typing and async picker updates never reroll it.
+  readonly critterVisit = Math.random();
   private textarea: HTMLTextAreaElement | null = null;
   private placeholderFrame: number | null = null;
   private placeholderStartedAt: number | null = null;
@@ -446,7 +450,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     getTextarea: skillMenuHost.getTextarea,
     resolveArgOptions: (command) => command.argOptions ?? [],
     runCommand: () => submitNewSession(options),
-    canRunInlineCommand: () => false,
+    canRun: (inline) => !inline,
     refreshCommands: options.refreshCommands,
     commandFilter: (command) => command.executeLocal !== true,
   };
@@ -521,32 +525,23 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
         options.message,
         options.requestUpdate,
       );
-  const skillMenuVisible =
-    !options.nativeTerminal && !composerLocked && isSkillMenuVisible(skillMenuState);
-  const slashMenuVisible =
-    !options.nativeTerminal && !composerLocked && isSlashMenuVisible(slashMenuState);
-  const menuVisible = skillMenuVisible || slashMenuVisible || mentionMenu.open;
+  const {
+    skillMenuVisible,
+    slashMenuVisible,
+    menuVisible,
+    menuListboxId,
+    activeMenuOptionId,
+    activeMenuOptionLabel,
+  } = resolveComposerMenus(
+    skillMenuHost.paneId,
+    !options.nativeTerminal && !composerLocked,
+    skillMenuState,
+    slashMenuState,
+    mentionMenu,
+  );
   if (mentionMenu.open) {
     ensureChatComposerPickerDismissal();
   }
-  const menuListboxId = paneDomId(
-    skillMenuHost.paneId,
-    mentionMenu.open
-      ? "mention-menu-listbox"
-      : skillMenuVisible
-        ? "skill-menu-listbox"
-        : "slash-menu-listbox",
-  );
-  const activeMenuOptionId = mentionMenu.open
-    ? mentionMenu.activeId(skillMenuHost.paneId)
-    : skillMenuVisible
-      ? getActiveSkillMenuOptionId(skillMenuState, skillMenuHost.paneId)
-      : getActiveSlashMenuOptionId(slashMenuState, slashMenuHost.paneId);
-  const activeMenuOptionLabel = mentionMenu.open
-    ? mentionMenu.activeLabel()
-    : skillMenuVisible
-      ? getActiveSkillMenuOptionLabel(skillMenuState)
-      : getActiveSlashMenuOptionLabel(slashMenuState);
   const menuAnnouncementId = paneDomId(skillMenuHost.paneId, "active-menu-announcement");
   const ordinaryShortcut = options.requiresModifier ? "Control+Enter Meta+Enter" : "Enter";
   const backgroundShortcut = options.requiresModifier
@@ -571,34 +566,47 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
       @dragover=${attachmentDropHandlers.onDragover}
     >
       <div
-        class="agent-chat__input agent-chat__input--mobile-toolbar${options.dictationActive
-          ? " agent-chat__input--dictating"
-          : ""}"
+        class="agent-chat__input agent-chat__input--mobile-toolbar${
+          options.dictationActive ? " agent-chat__input--dictating" : ""
+        }"
         @openclaw-composer-dismiss-invocations=${() => {
           mentionMenu.close();
           options.requestUpdate();
         }}
       >
+        ${options.renderCritters(
+          !composerLocked &&
+            visibleMessage.length === 0 &&
+            options.attachments.length === 0 &&
+            options.pendingAttachmentReads === 0 &&
+            !menuVisible &&
+            !options.textareaController.capabilityMenuOpen,
+        )}
         ${mentionMenu.render(mentionMenuHost, options.requestUpdate)}
         ${options.nativeTerminal ? nothing : renderChatAttachmentInputs(attachmentProps)}
         ${renderAttachmentPreview(attachmentProps)}
+        ${renderAttachmentReadStatus(options.pendingAttachmentReads)}
         ${renderSelectedHumanMentions(options.message, options.mentions, () =>
           options.onInput(options.message, []),
         )}
         <div class="agent-chat__composer-lede">${options.dictationStatus ?? nothing}</div>
         <div class="agent-chat__composer-input-row">
           <div class="agent-chat__composer-combobox">
-            ${slashMenuVisible
-              ? renderSlashMenu(
-                  slashMenuState,
-                  slashMenuHost,
-                  options.message,
-                  options.requestUpdate,
-                )
-              : nothing}
-            ${skillMenuVisible
-              ? renderSkillMenu(skillMenuState, skillMenuHost, options.requestUpdate)
-              : nothing}
+            ${
+              slashMenuVisible
+                ? renderSlashMenu(
+                    slashMenuState,
+                    slashMenuHost,
+                    options.message,
+                    options.requestUpdate,
+                  )
+                : nothing
+            }
+            ${
+              skillMenuVisible
+                ? renderSkillMenu(skillMenuState, skillMenuHost, options.requestUpdate)
+                : nothing
+            }
             <textarea
               ${ref(options.textareaController.ref)}
               class="new-session-page__message"
@@ -683,40 +691,45 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
           <div class="agent-chat__composer-lead">
             ${options.nativeTerminal ? nothing : renderNewSessionPlusMenu(options, attachmentProps)}
             ${options.permissionControl ?? nothing}
-            ${!options.nativeTerminal && options.draftAvailable
-              ? renderNewSessionDraftVisibility(options)
-              : nothing}
+            ${
+              !options.nativeTerminal && options.draftAvailable
+                ? renderNewSessionDraftVisibility(options)
+                : nothing
+            }
             ${options.nativeTerminal ? nothing : renderNewSessionSelectionStatus(options)}
           </div>
           <div class="agent-chat__composer-trail">
             <div class="agent-chat__composer-controls">
-              ${options.modelControl && options.modelControl !== nothing
-                ? html`<div class="chat-composer-model-control">${options.modelControl}</div>`
-                : nothing}
+              ${
+                options.modelControl && options.modelControl !== nothing
+                  ? html`<div class="chat-composer-model-control">${options.modelControl}</div>`
+                  : nothing
+              }
             </div>
             <div class="agent-chat__composer-actions">
-              ${options.voiceControl ?? nothing}${options.dictationActive
-                ? nothing
-                : renderStartControl(options)}
+              ${options.voiceControl ?? nothing}${
+                options.dictationActive ? nothing : renderStartControl(options)
+              }
             </div>
           </div>
         </div>
-        ${options.pendingAttachmentReads > 0
-          ? html`<span class="sr-only" role="status">${t("newSession.readingAttachment")}</span>`
-          : nothing}
       </div>
-      ${options.blockedSubmitNotice
-        ? html`<div
-            class="new-session-page__blocked-submit agent-chat__composer-underlaps"
-            data-tone="info"
-            role="status"
-          >
-            <div class="agent-chat__composer-status-band">
-              <span class="agent-chat__composer-status-icon" aria-hidden="true">${icons.info}</span>
-              <span class="agent-chat__composer-status-text">${options.blockedSubmitNotice}</span>
-            </div>
-          </div>`
-        : nothing}
+      ${
+        options.blockedSubmitNotice
+          ? html`<div
+              class="new-session-page__blocked-submit agent-chat__composer-underlaps"
+              data-tone="info"
+              role="status"
+            >
+              <div class="agent-chat__composer-status-band">
+                <span class="agent-chat__composer-status-icon" aria-hidden="true"
+                  >${icons.info}</span
+                >
+                <span class="agent-chat__composer-status-text">${options.blockedSubmitNotice}</span>
+              </div>
+            </div>`
+          : nothing
+      }
     </div>
   `;
 }

@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-local-roots";
 import { hasPromptImageInput } from "openclaw/plugin-sdk/session-transcript-runtime";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { terminateCodexBackgroundTerminals } from "./attempt-client-cleanup.js";
 import { isTerminalTurnStatus } from "./attempt-notifications.js";
 import {
@@ -33,6 +34,7 @@ import {
 } from "./transcript-mirror.js";
 import { createCodexUserInputBridge } from "./user-input-bridge.js";
 import { buildCodexUserInput } from "./user-input.js";
+import { buildResolvedCodexUserPromptMessage } from "./user-prompt-message.js";
 
 export function activateCodexAttemptTurn(
   resources: CodexAttemptResources,
@@ -106,6 +108,7 @@ export function activateCodexAttemptTurn(
   emitExecutionPhaseOnce("turn_accepted", { phase: "turn_accepted" });
   userInputBridgeRef.current = createCodexUserInputBridge({
     paramsForRun: params,
+    onOrdinaryResponse: (response) => projectorRef.current?.recordUserInputResponse(response),
     threadId: resourceState.thread.threadId,
     turnId: activeTurnId,
     signal: runAbortController.signal,
@@ -214,6 +217,7 @@ export function activateCodexAttemptTurn(
     },
   );
   if (isTerminalTurnStatus(turn.turn.status)) {
+    projectorRef.current.settlement.terminalReceipt = turn.turn;
     state.terminalTurnNotificationQueued = true;
     deadlines.beginSettlement(Date.now());
   }
@@ -311,7 +315,7 @@ export function activateCodexAttemptTurn(
     }
   };
   const assertSteeringActive = () => {
-    params.hostCapabilities.assertActive();
+    connection.assertCurrent();
     runAbortController.signal.throwIfAborted();
     if (state.completed || state.terminalTurnNotificationQueued) {
       throw new Error("codex app-server turn is no longer accepting steering");
@@ -352,11 +356,32 @@ export function activateCodexAttemptTurn(
           `failed to hydrate ${result.failedMediaCount} structured image attachment(s) for Codex steering`,
         );
       }
-      return buildCodexUserInput(text, result.images);
+      const source = await buildResolvedCodexUserPromptMessage({
+        ...params,
+        prompt: text,
+        transcriptPrompt: text,
+        userTurnTranscriptRecorder: options.userTurnTranscriptRecorder,
+      });
+      return {
+        input: buildCodexUserInput(text, result.images),
+        message: {
+          ...source,
+          role: "user",
+          content: result.images.length ? [{ type: "text", text }, ...result.images] : text,
+          ...(result.images.length
+            ? {
+                __openclaw: {
+                  ...asOptionalRecord(Reflect.get(source, "__openclaw")),
+                  mediaImageBlockFactIndexes: result.imageFactIndexes,
+                },
+              }
+            : {}),
+        },
+      };
     },
-    beforeConfirmConsumed: async (items) => {
-      // Internal steering can own a user turn too. Commit its recorder after the
-      // preceding answers so source provenance and transcript ordering survive.
+    beforeSubmit: async (items) => {
+      // Commit preceding answers and user custody before Codex can act on the
+      // steer. Its acknowledgment and user-message echo can both arrive later.
       const transcriptItems = items.filter(
         (item) =>
           item.isInboundUserMessage === true || item.userTurnTranscriptRecorder !== undefined,
@@ -364,10 +389,13 @@ export function activateCodexAttemptTurn(
       if (transcriptItems.length === 0) {
         return;
       }
-      await promptMirrorPromise;
+      await projectionReady;
+      await notifications.drainNotificationQueue();
+      assertSteeringActive();
       const messages = activeProjector.buildSteeringTranscriptPrefix();
       if (params.sessionTarget && messages.length > 0) {
         await codexTranscriptMirrorRuntime.mirror({
+          assertCurrent: assertSteeringActive,
           agentId: sessionAgentId,
           sessionKey: contextSessionKey,
           sessionId: params.sessionId,
@@ -379,6 +407,7 @@ export function activateCodexAttemptTurn(
           runMirrorIdentityPrefix: `${activeTurnId}:`,
           config: params.config,
         });
+        assertSteeringActive();
         activeProjector.markSteeringTranscriptPersisted();
       }
       for (const item of transcriptItems) {
@@ -386,17 +415,28 @@ export function activateCodexAttemptTurn(
         if (!recorder) {
           continue;
         }
+        assertSteeringActive();
         await recorder.persistApproved();
         if (!recorder.hasPersisted()) {
-          throw new Error("Codex consumed steering before its user turn was persisted");
+          throw new Error("Codex steering requires a persisted user turn before submission");
         }
       }
     },
   });
   steeringQueueRef.current = activeSteeringQueue;
+  type InputAuthority = NonNullable<
+    Parameters<typeof claimPendingAgentQuestionAnswer>[0]["authority"]
+  >;
+  const injectionGuard = (assertCurrent?: () => void) => () => {
+    assertCurrent?.();
+    assertSteeringActive();
+    return true;
+  };
   const claimPendingUserInputAnswer = async (
     text: string,
     optionsLocal?: CodexSteeringQueueOptions,
+    assertCurrent?: () => void,
+    authorityKind: InputAuthority["kind"] = assertCurrent ? "source-bound" : "run",
   ) => {
     if (optionsLocal?.isInboundUserMessage !== true || hasPromptImageInput(optionsLocal)) {
       return false;
@@ -405,6 +445,10 @@ export function activateCodexAttemptTurn(
     return await claimPendingAgentQuestionAnswer({
       sessionKey: params.sessionKey ?? params.sessionId,
       text,
+      authority: { kind: authorityKind, assertCurrent: injectionGuard(assertCurrent) },
+      sourceRecorder: optionsLocal.userTurnTranscriptRecorder,
+      // Older supported hosts use the ordinary-question callback. Current hosts
+      // prefer the recorder owner so staged secret inputs commit before consumption.
       persist: optionsLocal.userTurnTranscriptRecorder
         ? async () => {
             await optionsLocal.userTurnTranscriptRecorder?.persistApproved();
@@ -412,13 +456,25 @@ export function activateCodexAttemptTurn(
         : undefined,
     });
   };
-  const cancelPendingUserInput = (resolvedBy: string) =>
+  const cancelPendingUserInput = (
+    resolvedBy: string,
+    assertCurrent?: () => void,
+    authorityKind: InputAuthority["kind"] = assertCurrent ? "source-bound" : "run",
+  ) =>
     cancelPendingAgentQuestionForSession({
       sessionKey: params.sessionKey ?? params.sessionId,
       resolvedBy,
+      authority: { kind: authorityKind, assertCurrent: injectionGuard(assertCurrent) },
     });
-  const queueMessage = async (text: string, optionsLocal?: CodexSteeringQueueOptions) => {
-    if (await claimPendingUserInputAnswer(text, optionsLocal)) {
+  // V1 retains backend-only authority; V2 requires a host assertion.
+  const queueMessage = async (
+    text: string,
+    optionsLocal?: CodexSteeringQueueOptions,
+    assertCurrent?: () => void,
+    authorityKind: InputAuthority["kind"] = assertCurrent ? "source-bound" : "run",
+  ) => {
+    const canClaim = injectionGuard(assertCurrent);
+    if (await claimPendingUserInputAnswer(text, optionsLocal, assertCurrent, authorityKind)) {
       // A question claim is already consumption. Closing the run during its
       // response must not turn that answer into a rejected, replayable steer.
       optionsLocal?.onQueueAccepted?.(true);
@@ -427,8 +483,12 @@ export function activateCodexAttemptTurn(
     if (optionsLocal?.isInboundUserMessage === true && hasPromptImageInput(optionsLocal)) {
       assertSteeringActive();
       try {
-        await cancelPendingUserInput("image-reply");
+        await cancelPendingUserInput("image-reply", assertCurrent, authorityKind);
       } catch (error) {
+        canClaim();
+        if (error instanceof Error && error.name === "QuestionDispatchRefusedError") {
+          throw error;
+        }
         // Cleanup failure must not drop the user's image turn.
         embeddedAgentLog.warn("failed to cancel codex gateway question before image steering", {
           error,
@@ -436,7 +496,7 @@ export function activateCodexAttemptTurn(
       }
     }
     try {
-      await activeSteeringQueue.queue(text, optionsLocal);
+      await activeSteeringQueue.queue(text, optionsLocal, injectionGuard(assertCurrent));
     } catch (error) {
       if (error instanceof CodexSteeringAcceptedUnconfirmedError) {
         return {
@@ -447,6 +507,16 @@ export function activateCodexAttemptTurn(
       throw error;
     }
     return undefined;
+  };
+  const messageInjection = {
+    version: 2 as const,
+    isAvailable: () =>
+      !state.completed &&
+      !state.terminalTurnNotificationQueued &&
+      !runAbortController.signal.aborted,
+    queueMessage,
+    claimPendingUserInputAnswer,
+    cancelPendingUserInput,
   };
   const handle = {
     kind: "embedded" as const,
@@ -477,13 +547,8 @@ export function activateCodexAttemptTurn(
     claimPendingUserInputAnswer,
     cancelPendingUserInput,
     queueMessage,
-    messageInjection: {
-      isAvailable: () =>
-        !state.completed &&
-        !state.terminalTurnNotificationQueued &&
-        !runAbortController.signal.aborted,
-      queueMessage,
-    },
+    messageInjection,
+    messageInjectionV2: messageInjection,
     isStreaming: () => !state.completed && !runAbortController.signal.aborted,
     isAborted: () => runAbortController.signal.aborted,
     isStopped: () => state.completed || runAbortController.signal.aborted,
@@ -506,8 +571,31 @@ export function activateCodexAttemptTurn(
     cancel: () => abortExplicitly("cancelled"),
     abort: () => abortExplicitly("aborted"),
   };
+  if (
+    thread.preserveNativeModel !== true &&
+    thread.connectionScope !== "supervision" &&
+    !params.expectedSessionRuntimeOwnership
+  ) {
+    const route = resourceState.turnRoute;
+    params.registerPluginRuntimeRefreshConsumer?.(
+      () =>
+        resourceState.turnRoute === route &&
+        route?.signal.aborted === false &&
+        turnRuntime.turnIdRef.current === activeTurnId &&
+        !state.completed &&
+        !state.terminalTurnNotificationQueued &&
+        !runAbortController.signal.aborted,
+    );
+  }
+  const projectionReady = bindProjection();
   params.replyOperation?.attachBackend(handle);
-  setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey, params.sessionFile);
+  setActiveEmbeddedRun(
+    params.sessionId,
+    handle,
+    params.sessionKey,
+    params.sessionFile,
+    sessionAgentId,
+  );
   const freezeRunTerminalOutcome = () => {
     if (terminalState.terminalOutcomeFrozen) {
       return;
@@ -532,7 +620,7 @@ export function activateCodexAttemptTurn(
     freezeRunTerminalOutcome,
     notifyUserMessagePersisted,
     abortListener,
-    ready: bindProjection(),
+    ready: projectionReady,
   };
 }
 

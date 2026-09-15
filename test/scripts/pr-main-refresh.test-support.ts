@@ -199,6 +199,8 @@ export function createMainRefreshFixture(directory: string) {
     authorPermission: "write",
     failFetch: false,
     failPrFetch: false,
+    prIdentityDriftAfterFetch: "" as "" | "oid" | "branch" | "repository",
+    wrongPrFetch: false,
     failDetach: false,
     failFetchAt: 0,
     pauseFetchAt: 0,
@@ -262,7 +264,11 @@ function runGit(args, input) {
     instrumentedGit,
     prelude +
       `
-if ((control.failPrFetch && args.includes('fetch') && args.includes('pull/42/head:pr-42')) ||
+const prFetch = args.includes('fetch') && args.some(arg =>
+  arg.startsWith('pull/42/head') ||
+  arg.replace(/^\\+/, '').split(':')[0] === control.metadata.headRefOid
+);
+if ((control.failPrFetch && prFetch) ||
     (control.failDetach && args[0] === 'checkout' && args[1] === '--detach')) {
   console.error('fatal: injected prepare handoff failure');
   process.exit(73);
@@ -296,6 +302,22 @@ if (args.includes('push')) {
   event({ kind: 'leased-cleanup', args });
 }
 const result = spawnSync(git, args, { stdio: 'inherit' });
+if (prFetch && result.status === 0) {
+  const prefix = args.slice(0, args.indexOf('fetch'));
+  const destination = args.at(-1).split(':')[1];
+  if (control.wrongPrFetch && destination) {
+    runGit([...prefix, 'update-ref', destination.startsWith('refs/') ? destination : 'refs/heads/' + destination,
+      ${JSON.stringify(sameTreeHead)}]);
+  }
+  if (control.prIdentityDriftAfterFetch === 'oid') {
+    control.metadata.headRefOid = ${JSON.stringify(sameTreeHead)};
+  } else if (control.prIdentityDriftAfterFetch === 'branch') {
+    control.metadata.headRefName = 'renamed';
+  } else if (control.prIdentityDriftAfterFetch === 'repository') {
+    control.metadata.headRepository.nameWithOwner = 'fixture/replacement';
+  }
+  if (control.prIdentityDriftAfterFetch) writeFileSync(controlFile, JSON.stringify(control));
+}
 if (mainFetch && result.status === 0) {
   const prefix = args.slice(0, args.indexOf('fetch'));
   const destination = args.at(-1).split(':')[1] || 'FETCH_HEAD';
@@ -347,8 +369,10 @@ if (args[0] === 'pr' && args[1] === 'view') {
   }
   const parent = runGit(['-C', origin, 'rev-parse', 'refs/heads/main']);
   const tree = runGit(['-C', origin, 'merge-tree', '--write-tree', parent, control.metadata.headRefOid]);
+  const bodyIndex = args.indexOf('--body-file');
+  const body = bodyIndex < 0 ? '' : readFileSync(args[bodyIndex + 1], 'utf8');
   const landed = runGit(['-C', origin, '-c', 'user.name=Fixture', '-c',
-    'user.email=fixture@example.invalid', 'commit-tree', tree, '-p', parent], 'Fixture squash\\n');
+    'user.email=fixture@example.invalid', 'commit-tree', tree, '-p', parent], 'Fixture squash\\n\\n' + body);
   runGit(['-C', origin, 'update-ref', 'refs/heads/main', landed, parent]);
   control.metadata.state = 'MERGED';
   control.metadata.mergeCommit = { oid: landed };
@@ -392,6 +416,13 @@ if (args[0] === 'pr' && args[1] === 'view') {
         process.exit(1);
       }
       value = { data: { viewer: { login: 'fixture' } } };
+    } else if (args.some(arg => arg.includes('viewerMergeBodyText'))) {
+      value = { data: { repository: { pullRequest: {
+        headRefOid: control.metadata.headRefOid,
+        author: { ...control.metadata.author, __typename: 'User' },
+        isMergeQueueEnabled: control.metadata.isMergeQueueEnabled,
+        viewerMergeBodyText: 'Reviewed fixture body',
+      } } } };
     } else if (args.some(arg => arg.includes('ref(qualifiedName:'))) {
       value = { data: { repository: {
         id: 'fixture-repo', nameWithOwner: 'fixture/repo', url: 'https://github.com/fixture/repo',
@@ -401,11 +432,27 @@ if (args[0] === 'pr' && args[1] === 'view') {
     } else {
       throw new Error('Unexpected GraphQL request');
     }
+  } else if (endpoint === 'repos/fixture/repo/commits/${head}') {
+    const [name, email] = runGit(['-C', origin, 'show', '-s', '--format=%an%n%ae', ${JSON.stringify(head)}]).split('\\n');
+    value = { commit: { author: { name, email } }, author: { ...control.metadata.author, type: 'User' } };
   } else if (endpoint === 'users/fixture') {
     value = { id: 123 };
+  } else if (new RegExp('^repos/fixture/repo/commits/[0-9a-f]{40}$').test(endpoint)) {
+    const [name, email] = runGit(['-C', origin, 'show', '-s', '--format=%an%n%ae',
+      endpoint.split('/').at(-1) + '^{commit}']).split('\\n');
+    // Synthetic Git authors have no linked GitHub account.
+    value = { commit: { author: { name, email } }, author: null };
   } else if (endpoint === 'repos/fixture/repo/collaborators/fixture/permission') {
     if (control.authorPermission === 'error') process.exit(1);
     value = { permission: control.authorPermission };
+  } else if (endpoint.startsWith('repos/fixture/repo/commits/')) {
+    const oid = endpoint.slice('repos/fixture/repo/commits/'.length);
+    if (!/^[0-9a-f]{40}$/.test(oid)) throw new Error('Invalid synthetic commit identity');
+    const [name, email] = runGit(['-C', origin, 'show', '-s', '--format=%an%n%ae', oid]).split('\\n');
+    value = {
+      commit: { author: { name, email } },
+      author: { login: control.metadata.author.login, type: 'User' },
+    };
   } else if (endpoint.startsWith('repos/fixture/repo/issues/42/comments')) {
     if (args.includes('POST')) {
       value = { html_url: 'https://example.invalid/pr/42#completion' };

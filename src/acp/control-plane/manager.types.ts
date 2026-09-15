@@ -50,6 +50,8 @@ export type AcpSessionResolution =
 
 /** Input required to create or resume an ACP runtime session. */
 export type AcpInitializeSessionInput = {
+  /** Ephemeral source authority; rechecked after queued work and before publication. */
+  assertActive?: () => void;
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId?: string;
@@ -58,6 +60,7 @@ export type AcpInitializeSessionInput = {
   resumeSessionId?: string;
   runtimeOptions?: Partial<AcpSessionRuntimeOptions>;
   modelExplicit?: boolean;
+  thinkingExplicit?: boolean;
   cwd?: string;
   backendId?: string;
 };
@@ -173,6 +176,7 @@ export type AcpSessionManagerDeps = {
 };
 
 export type WriteManagerSessionMeta = (params: {
+  assertCommitAllowed?: () => void;
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId: string;
@@ -226,6 +230,7 @@ export type SetManagerSessionState = (params: {
 export type WithManagerSessionActor = <T>(
   target: AcpSessionTarget,
   op: () => Promise<T>,
+  signal?: AbortSignal,
 ) => Promise<T>;
 
 export const DEFAULT_DEPS: AcpSessionManagerDeps = {

@@ -172,6 +172,21 @@ export function renderSidebarAttentionPanel(params: SidebarAttentionPanelParams)
             >
               ${t("attention.dismissShown")}
             </button>
+            <openclaw-tooltip .content=${t("attention.mentions.notifications")}>
+              <a
+                class="sidebar-brand__icon"
+                aria-label=${t("attention.mentions.notifications")}
+                href=${pathForRoute("notifications", params.context.basePath)}
+                @click=${(event: MouseEvent) => {
+                  if (!shouldHandleNavigationClick(event)) {
+                    return;
+                  }
+                  event.preventDefault();
+                  params.onNavigate("notifications");
+                }}
+                >${icons.settings}</a
+              >
+            </openclaw-tooltip>
             <button
               type="button"
               class="sidebar-brand__icon sidebar-issues-panel__mobile-close"
@@ -207,47 +222,53 @@ export function renderSidebarAttentionPanel(params: SidebarAttentionPanelParams)
             tabindex="0"
             @scroll=${params.onScroll}
           >
-            ${showMentionStatus
-              ? html`<div class="sidebar-issues-panel__mentions-note" role="status">
-                  <span
-                    >${t(
+            ${
+              showMentionStatus
+                ? html`<div class="sidebar-issues-panel__mentions-note" role="status">
+                    <span
+                      >${t(
+                        mentions.error !== null
+                          ? "attention.mentions.error"
+                          : mentions.phase === "loading"
+                            ? "attention.mentions.loading"
+                            : "attention.mentions.unavailable",
+                      )}</span
+                    >
+                    ${
                       mentions.error !== null
-                        ? "attention.mentions.error"
-                        : mentions.phase === "loading"
-                          ? "attention.mentions.loading"
-                          : "attention.mentions.unavailable",
-                    )}</span
-                  >
-                  ${mentions.error !== null
-                    ? html`<span>${mentions.error}</span>
-                        <button
-                          type="button"
-                          class="sidebar-issues-panel__action"
-                          ?disabled=${mentions.phase === "loading"}
-                          @click=${() => void params.mentions.refresh()}
-                        >
-                          ${t("attention.mentions.refresh")}
-                        </button>`
-                    : nothing}
-                </div>`
-              : nothing}
-            ${visibleEntries.length === 0 && !showMentionStatus
-              ? html`<div class="sidebar-issues-panel__empty">
-                  <span class="sidebar-issues-panel__empty-icon" aria-hidden="true"
-                    >${icons.inbox}</span
-                  >
-                  <strong
-                    >${t(
-                      mentionsTab ? "attention.mentions.emptyTitle" : "attention.emptyTitle",
-                    )}</strong
-                  >
-                  <span
-                    >${t(
-                      mentionsTab ? "attention.mentions.emptyBody" : "attention.emptyBody",
-                    )}</span
-                  >
-                </div>`
-              : nothing}
+                        ? html`<span>${mentions.error}</span>
+                            <button
+                              type="button"
+                              class="sidebar-issues-panel__action"
+                              ?disabled=${mentions.phase === "loading"}
+                              @click=${() => void params.mentions.refresh()}
+                            >
+                              ${t("attention.mentions.refresh")}
+                            </button>`
+                        : nothing
+                    }
+                  </div>`
+                : nothing
+            }
+            ${
+              visibleEntries.length === 0 && !showMentionStatus
+                ? html`<div class="sidebar-issues-panel__empty">
+                    <span class="sidebar-issues-panel__empty-icon" aria-hidden="true"
+                      >${icons.inbox}</span
+                    >
+                    <strong
+                      >${t(
+                        mentionsTab ? "attention.mentions.emptyTitle" : "attention.emptyTitle",
+                      )}</strong
+                    >
+                    <span
+                      >${t(
+                        mentionsTab ? "attention.mentions.emptyBody" : "attention.emptyBody",
+                      )}</span
+                    >
+                  </div>`
+                : nothing
+            }
             ${visibleEntries.map(renderEntry)}
           </div>
           <div
@@ -261,22 +282,13 @@ export function renderSidebarAttentionPanel(params: SidebarAttentionPanelParams)
             aria-hidden="true"
           ></div>
         </div>
-        ${mentionsTab
-          ? html`<footer class="sidebar-issues-panel__mentions-note">
-              <span>${t("attention.mentions.retention")}</span>
-              <a
-                href=${pathForRoute("notifications", params.context.basePath)}
-                @click=${(event: MouseEvent) => {
-                  if (!shouldHandleNavigationClick(event)) {
-                    return;
-                  }
-                  event.preventDefault();
-                  params.onNavigate("notifications");
-                }}
-                >${t("attention.mentions.notifications")}</a
-              >
-            </footer>`
-          : nothing}
+        ${
+          mentionsTab
+            ? html`<footer class="sidebar-issues-panel__mentions-note">
+                <span>${t("attention.mentions.retention")}</span>
+              </footer>`
+            : nothing
+        }
       </section>
     </openclaw-menu-surface>`;
 }

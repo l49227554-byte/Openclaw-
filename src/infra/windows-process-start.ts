@@ -1,13 +1,16 @@
 // Reads PID-reuse-safe Windows process start identities without workspace imports.
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { resolveDiagnosticProcessEnv, resolveEnvironmentValue } from "./process-env.ts";
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_PROCESS_START_TIMEOUT_MS = 10_000;
 const DEFAULT_WINDOWS_SYSTEM_ROOT = "C:\\Windows";
 
-function windowsSystemRoot(): string {
-  const configured = process.env.SystemRoot ?? process.env.WINDIR;
+function windowsSystemRoot(env: NodeJS.ProcessEnv): string {
+  const configured =
+    resolveEnvironmentValue(env, "SystemRoot", "win32") ??
+    resolveEnvironmentValue(env, "WINDIR", "win32");
   if (!configured) {
     return DEFAULT_WINDOWS_SYSTEM_ROOT;
   }
@@ -17,9 +20,9 @@ function windowsSystemRoot(): string {
     : DEFAULT_WINDOWS_SYSTEM_ROOT;
 }
 
-function windowsPowerShellPath(): string {
+function windowsPowerShellPath(env: NodeJS.ProcessEnv): string {
   return path.win32.join(
-    windowsSystemRoot(),
+    windowsSystemRoot(env),
     "System32",
     "WindowsPowerShell",
     "v1.0",
@@ -27,8 +30,8 @@ function windowsPowerShellPath(): string {
   );
 }
 
-function windowsWmicPath(): string {
-  return path.win32.join(windowsSystemRoot(), "System32", "wbem", "wmic.exe");
+function windowsWmicPath(env: NodeJS.ProcessEnv): string {
+  return path.win32.join(windowsSystemRoot(env), "System32", "wbem", "wmic.exe");
 }
 
 export function decodeWindowsProcessOutput(output: Buffer | string): string {
@@ -78,6 +81,7 @@ function parseWindowsProcessStartTime(raw: Buffer | string): number | null {
 export function readWindowsProcessStartTimeSync(
   pid: number,
   timeoutMs = DEFAULT_PROCESS_START_TIMEOUT_MS,
+  env: NodeJS.ProcessEnv = process.env,
 ): number | null {
   if (!Number.isInteger(pid) || pid <= 0) {
     return null;
@@ -86,15 +90,18 @@ export function readWindowsProcessStartTimeSync(
   // still keep their smaller end-to-end budget.
   const deadline = Date.now() + timeoutMs;
   const powershell = spawnSync(
-    windowsPowerShellPath(),
+    windowsPowerShellPath(env),
     [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      `$process = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction Stop; [Console]::Out.Write($process.CreationDate.ToUniversalTime().ToString("o"))`,
+      // Read the kernel timestamp without CIM module discovery consuming the
+      // caller's short ownership-query budget. Dispose the opened process handle.
+      `$process = [System.Diagnostics.Process]::GetProcessById(${pid}); try { [Console]::Out.Write($process.StartTime.ToUniversalTime().ToString("o")) } finally { $process.Dispose() }`,
     ],
     {
       encoding: "utf8",
+      env: resolveDiagnosticProcessEnv(env, "win32"),
       timeout: Math.min(timeoutMs, DEFAULT_TIMEOUT_MS),
       windowsHide: true,
     },
@@ -110,13 +117,98 @@ export function readWindowsProcessStartTimeSync(
     return null;
   }
   const wmic = spawnSync(
-    windowsWmicPath(),
+    windowsWmicPath(env),
     ["process", "where", `ProcessId=${pid}`, "get", "CreationDate", "/value"],
     {
+      env: resolveDiagnosticProcessEnv(env, "win32"),
       timeout: remainingMs,
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     },
   );
   return !wmic.error && wmic.status === 0 ? parseWindowsProcessStartTime(wmic.stdout) : null;
+}
+
+/** Read one process snapshot; a reused parent PID must not extend the ancestry. */
+export function readWindowsProcessAncestorsSync(
+  pid: number,
+  maxDepth: number,
+  timeoutMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): number[] {
+  try {
+    const result = spawnSync(
+      windowsPowerShellPath(env),
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        [
+          "ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process",
+          "-Property ProcessId,ParentProcessId,CreationDate -ErrorAction Stop | ForEach-Object {",
+          "if ($null -ne $_.CreationDate) { [pscustomobject]@{ pid = $_.ProcessId; parentPid = $_.ParentProcessId;",
+          "startedAt = $_.CreationDate.ToUniversalTime().Ticks.ToString() } } })",
+        ].join(" "),
+      ],
+      {
+        encoding: "utf8",
+        env: resolveDiagnosticProcessEnv(env, "win32"),
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+    if (result.error || result.status !== 0) {
+      return [];
+    }
+    const parsed: unknown = JSON.parse(result.stdout);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const rows: unknown[] = parsed;
+    const processes = new Map<number, { parentPid: number; startedAt: bigint }>();
+    for (const row of rows) {
+      if (
+        !row ||
+        typeof row !== "object" ||
+        !("pid" in row) ||
+        typeof row.pid !== "number" ||
+        !Number.isSafeInteger(row.pid) ||
+        row.pid <= 0 ||
+        !("parentPid" in row) ||
+        typeof row.parentPid !== "number" ||
+        !Number.isSafeInteger(row.parentPid) ||
+        row.parentPid < 0 ||
+        !("startedAt" in row) ||
+        typeof row.startedAt !== "string" ||
+        !/^[1-9]\d{0,18}$/.test(row.startedAt)
+      ) {
+        continue;
+      }
+      if (processes.has(row.pid)) {
+        return [];
+      }
+      processes.set(row.pid, { parentPid: row.parentPid, startedAt: BigInt(row.startedAt) });
+    }
+    const ancestors = new Set<number>();
+    let current = processes.get(pid);
+    for (let depth = 0; current && depth < maxDepth; depth++) {
+      const parentPid = current.parentPid;
+      const parent = processes.get(parentPid);
+      // Keep native ticks: rounding to milliseconds can accept rapid PID reuse.
+      if (
+        !parent ||
+        parentPid === pid ||
+        ancestors.has(parentPid) ||
+        parent.startedAt > current.startedAt
+      ) {
+        break;
+      }
+      ancestors.add(parentPid);
+      current = parent;
+    }
+    return [...ancestors];
+  } catch {
+    return [];
+  }
 }

@@ -133,9 +133,9 @@ function listUsageCountedSqliteTranscriptStats(
 ): UsageCostTranscriptFile[] {
   const storePath = params.storePath;
   const files: UsageCostTranscriptFile[] = [];
-  // This scan reads transcript identity/timestamps only; clone:false avoids
-  // cloning every current entry before the history projection and SQL rollups.
-  for (const instance of listSessionTranscriptInstances({ agentId, storePath, clone: false })) {
+  // Usage needs transcript identity/timestamps, not saved prompt snapshots.
+  const instances = listSessionTranscriptInstances({ agentId, storePath, projection: "list" });
+  for (const instance of instances) {
     const marker = { agentId, sessionId: instance.sessionId, storePath };
     const mtimeMs = instance.updatedAtMs;
     if (params.minMtimeMs !== undefined && mtimeMs < params.minMtimeMs) {
@@ -255,6 +255,13 @@ export async function* readTranscriptRecords(
 ): AsyncGenerator<Record<string, unknown>> {
   const marker = parseSqliteSessionFileMarker(filePath);
   if (marker) {
+    const { restoreSessionColdTranscript } =
+      await import("../config/sessions/session-cold-storage.js");
+    await restoreSessionColdTranscript({
+      agentId: marker.agentId,
+      sessionId: marker.sessionId,
+      storePath: marker.storePath,
+    });
     for (const event of loadSqliteUsageTranscriptEvents(marker)) {
       yield event;
     }
@@ -280,7 +287,10 @@ export async function* readTranscriptRecordsBestEffort(
 ): AsyncGenerator<Record<string, unknown>> {
   try {
     yield* readTranscriptRecords(filePath);
-  } catch {
+  } catch (error) {
+    if (parseSqliteSessionFileMarker(filePath)) {
+      throw error;
+    }
     // Diagnostic readers return the records available before a stream failure.
     // Durable cache scans use the strict reader so partial data is never marked fresh.
   }

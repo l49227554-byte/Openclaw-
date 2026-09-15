@@ -172,7 +172,7 @@ export default function createApplicationPlacementStartupRuntime(
     if (!isCurrent(entry)) {
       return;
     }
-    void params.sessions.refresh({ force: true, backgroundHydrate: true }).catch(() => undefined);
+    params.sessions.invalidate();
   };
 
   const pauseEntry = (
@@ -180,7 +180,11 @@ export default function createApplicationPlacementStartupRuntime(
     recovery: SessionPlacementRecovery,
     error: string,
   ) => {
-    const paused = pauseSessionPlacementRecovery(recovery, error, entry.persistRecovery);
+    const { recovery: paused } = pauseSessionPlacementRecovery(
+      recovery,
+      error,
+      entry.persistRecovery,
+    );
     entry.work = { kind: "paused", recovery: paused };
     publish();
   };
@@ -288,7 +292,8 @@ export default function createApplicationPlacementStartupRuntime(
       // Status reads must not rescan payloads or mint new attachment identities.
       attachments: restoreChatApiAttachments(input.recovery.attachments),
       persistRecovery: input.persistRecovery,
-      createdAt: input.createdAt,
+      createdAt:
+        existing?.owner.messageId === owner.messageId ? existing.createdAt : input.createdAt,
       scope,
       retainsConnection: capturePlacementStartupConnection(params.gateway, owner),
     };
@@ -388,7 +393,7 @@ export default function createApplicationPlacementStartupRuntime(
       if (!entry || !isCurrent(entry)) {
         return;
       }
-      const recovery = pauseSessionPlacementRecovery(
+      const { recovery } = pauseSessionPlacementRecovery(
         entry.work.recovery,
         error,
         entry.persistRecovery,

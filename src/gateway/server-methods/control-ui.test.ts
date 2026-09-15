@@ -6,11 +6,17 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
+import {
+  persistSessionTranscriptTurn,
+  replaceSessionEntry,
+} from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.js";
 import { SecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import type { ControlUiGitHubPreview, ControlUiSessionPreview } from "../control-ui-contract.js";
 import { ControlUiGitHubError } from "../control-ui-github-api.js";
 import { createControlUiHandlers } from "./control-ui.js";
+import { identifiedClient } from "./sessions-sharing.test-support.js";
 import type { RespondFn } from "./types.js";
 
 function requestOptions(
@@ -44,11 +50,21 @@ describe("controlUi.githubPreview", () => {
   it("uses the selected agent's Settings identity for public metadata", async () => {
     vi.stubEnv("GH_TOKEN", "");
     vi.stubEnv("GITHUB_TOKEN", "");
+    const assertSelected = vi.fn();
     const identity = {
       token: "selected-agent-github-token",
+      selection: {
+        source: "agent-override" as const,
+        profileId: `ghp_${"a".repeat(32)}`,
+        accountId: 101,
+      },
       cacheScope: "selected-agent-preview",
-      assertSelected: vi.fn(),
+      assertSelected,
       revalidate: vi.fn().mockResolvedValue(undefined),
+      start: async <T>(start: () => T): Promise<Awaited<T>> => {
+        assertSelected();
+        return await start();
+      },
     };
     const prepare = vi
       .spyOn(githubIdentity, "prepareGitHubReadIdentity")
@@ -317,6 +333,47 @@ describe("controlUi.githubPreview", () => {
 });
 
 describe("controlUi.sessionPreview", () => {
+  it("keeps the resolved owner when previewing a qualified global main alias", async () => {
+    await withOpenClawTestState({ label: "hover-global-owner" }, async () => {
+      const cfg: OpenClawConfig = {
+        session: { scope: "global" },
+        agents: { entries: { main: { default: true }, research: {} } },
+      };
+      for (const agentId of ["main", "research"]) {
+        const scope = { agentId, sessionKey: "global", sessionId: `hover-${agentId}` };
+        await replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 42 });
+        await persistSessionTranscriptTurn(scope, {
+          cwd: "/tmp",
+          updateMode: "none",
+          messages: [{ message: { role: "user", content: `Title from ${agentId}` }, now: 42 }],
+        });
+      }
+      const handler = expectDefined(
+        createControlUiHandlers()["controlUi.sessionPreview"],
+        "session preview handler",
+      );
+      for (const agentId of ["main", "research"]) {
+        const respond = vi.fn<RespondFn>();
+        await handler(
+          requestOptions({ sessionKey: `agent:${agentId}:main` }, respond, {
+            context: { getRuntimeConfig: () => cfg },
+          }),
+        );
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          expect.objectContaining({
+            status: "ok",
+            sessionKey: "global",
+            agentId,
+            derivedTitle: `Title from ${agentId}`,
+            lastMessagePreview: `Title from ${agentId}`,
+          }),
+          undefined,
+        );
+      }
+    });
+  });
+
   it("returns bounded, redacted metadata for one session", async () => {
     const secret = "sk-test-session-preview-secret-1234567890";
     const loadSessionPreview = vi.fn().mockResolvedValue({
@@ -418,10 +475,7 @@ describe("controlUi.sessionPullRequests.subscribe", () => {
   });
 
   it("acknowledges a subscription before its cold snapshots finish loading", async () => {
-    let finishHydration!: () => void;
-    const hydration = new Promise<void>((resolve) => {
-      finishHydration = resolve;
-    });
+    const { promise: hydration, resolve: finishHydration } = createDeferred();
     const replace = vi.fn(() => hydration);
     const handlers = createControlUiHandlers(vi.fn());
     const respond = vi.fn<RespondFn>();
@@ -480,6 +534,176 @@ describe("controlUi.sessionPullRequests.subscribe", () => {
     expect(respond).toHaveBeenCalledWith(false, undefined, {
       code: "INVALID_REQUEST",
       message: "invalid controlUi.sessionPullRequests.subscribe params",
+    });
+  });
+});
+
+describe("controlUi.sessionPullRequests.checks", () => {
+  const params = {
+    sessionKey: "agent:main:ci-details",
+    owner: "openclaw",
+    repo: "openclaw",
+    number: 103469,
+    headSha: "a".repeat(40),
+  };
+  const result = {
+    owner: params.owner,
+    repo: params.repo,
+    number: params.number,
+    headSha: params.headSha,
+    checks: [],
+    status: "ready" as const,
+    rateLimited: false,
+  };
+
+  it.each([
+    { ...params, headSha: "main" },
+    { ...params, owner: "../other" },
+    { ...params, number: -1 },
+    { ...params, url: "https://github.com/other/repo" },
+    { ...params, sessionKey: "" },
+  ])("rejects invalid or client-URL parameters before loading: %j", async (input) => {
+    const load = vi.fn().mockResolvedValue(result);
+    const handler = expectDefined(
+      createControlUiHandlers(undefined, undefined, load)["controlUi.sessionPullRequests.checks"],
+      "CI checks handler",
+    );
+    const respond = vi.fn<RespondFn>();
+    await handler(requestOptions(input, respond));
+    expect(load).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+  });
+
+  it("rejects unknown sessions without invoking the GitHub loader", async () => {
+    await withOpenClawTestState({ label: "ci-details-unknown" }, async () => {
+      const load = vi.fn().mockResolvedValue(result);
+      const handler = expectDefined(
+        createControlUiHandlers(undefined, undefined, load)["controlUi.sessionPullRequests.checks"],
+        "CI checks handler",
+      );
+      const respond = vi.fn<RespondFn>();
+      await handler(requestOptions(params, respond));
+      expect(load).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ code: "UNAVAILABLE" }),
+      );
+    });
+  });
+
+  it("binds the visible session generation and rechecks it before returning details", async () => {
+    await withOpenClawTestState({ label: "ci-details-generation" }, async () => {
+      const session = {
+        agentId: "main",
+        sessionKey: params.sessionKey,
+        sessionId: "ci-generation-one",
+      };
+      await replaceSessionEntry(session, {
+        sessionId: session.sessionId,
+        updatedAt: 1,
+        spawnedCwd: "/synthetic/ci",
+      });
+      const deferred = createDeferred<typeof result>();
+      const started = createDeferred();
+      const load = vi.fn(async () => {
+        started.resolve();
+        return deferred.promise;
+      });
+      const handler = expectDefined(
+        createControlUiHandlers(undefined, undefined, load)["controlUi.sessionPullRequests.checks"],
+        "CI checks handler",
+      );
+      const respond = vi.fn<RespondFn>();
+      const request = handler(requestOptions(params, respond));
+      await started.promise;
+      expect(load).toHaveBeenCalledWith(
+        expect.objectContaining({ ...params, agentId: "main" }),
+        expect.objectContaining({
+          assertCurrent: expect.any(Function),
+          sessionScope: expect.stringContaining("ci-generation-one"),
+        }),
+      );
+      await replaceSessionEntry(session, {
+        sessionId: "ci-generation-two",
+        updatedAt: 2,
+        spawnedCwd: "/synthetic/ci",
+      });
+      deferred.resolve(result);
+      await request;
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          code: "UNAVAILABLE",
+          message: "Session changed; reopen CI details",
+        }),
+      );
+    });
+  });
+
+  it.each([{ incognito: true as const }, { visibility: "draft" as const }])(
+    "does not expose a hidden session to another profile: %j",
+    async (hidden) => {
+      await withOpenClawTestState({ label: "ci-details-hidden" }, async () => {
+        await replaceSessionEntry(
+          { agentId: "main", sessionKey: params.sessionKey },
+          {
+            sessionId: "hidden-ci",
+            updatedAt: 1,
+            createdActor: { type: "human", source: "profile", id: "owner" },
+            ...hidden,
+          },
+        );
+        const load = vi.fn().mockResolvedValue(result);
+        const handler = expectDefined(
+          createControlUiHandlers(undefined, undefined, load)[
+            "controlUi.sessionPullRequests.checks"
+          ],
+          "CI checks handler",
+        );
+        const respond = vi.fn<RespondFn>();
+        await handler({ ...requestOptions(params, respond), client: identifiedClient("viewer") });
+        expect(load).not.toHaveBeenCalled();
+        expect(respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: "UNAVAILABLE" }),
+        );
+      });
+    },
+  );
+
+  it("keeps qualified global sessions bound to their resolved agent", async () => {
+    await withOpenClawTestState({ label: "ci-details-global" }, async () => {
+      const cfg: OpenClawConfig = {
+        session: { scope: "global" },
+        agents: { entries: { main: { default: true }, research: {} } },
+      };
+      await replaceSessionEntry(
+        { agentId: "research", sessionKey: "global" },
+        { sessionId: "research-ci", updatedAt: 1 },
+      );
+      const load = vi.fn().mockResolvedValue(result);
+      const handler = expectDefined(
+        createControlUiHandlers(undefined, undefined, load)["controlUi.sessionPullRequests.checks"],
+        "CI checks handler",
+      );
+      const respond = vi.fn<RespondFn>();
+      await handler(
+        requestOptions({ ...params, sessionKey: "agent:research:main" }, respond, {
+          context: { getRuntimeConfig: () => cfg },
+        }),
+      );
+      expect(load).toHaveBeenCalledWith(
+        expect.objectContaining({ agentId: "research" }),
+        expect.objectContaining({ sessionScope: expect.stringContaining("research-ci") }),
+      );
+      expect(respond).toHaveBeenCalledWith(true, result, undefined);
     });
   });
 });

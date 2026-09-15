@@ -27,6 +27,7 @@ const actions = ["list", "get", "update", "run", "remove"] as const;
 const automationName = "Telegram-created reminder";
 const updatedReminderMessage = "Complete the reminder updated from Control UI.";
 const scheduledReply = "Scheduled reminder completed.";
+const unavailableReply = "Automation management is unavailable in this conversation.";
 
 function readResult(text: string): Record<string, unknown> {
   const value: unknown = JSON.parse(text);
@@ -39,6 +40,8 @@ function readResult(text: string): Record<string, unknown> {
 async function startAutomationProvider() {
   const requests = new Map<string, Record<string, unknown>>();
   const results = new Map<string, string>();
+  const offeredTools = new Map<string, string[]>();
+  const toolCalls = new Set<string>();
   const server = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -56,14 +59,29 @@ async function startAutomationProvider() {
       const input = body.input.filter(isRecord);
       const marker = /\[automation-proof:([a-z-]+)\]/u.exec(extractLastUserText(input))?.[1];
       const args = marker ? requests.get(marker) : undefined;
+      const toolNames = Array.isArray(body.tools)
+        ? body.tools
+            .filter(isRecord)
+            .flatMap((tool) => (typeof tool.name === "string" ? [tool.name] : []))
+        : [];
+      if (marker) {
+        offeredTools.set(marker, toolNames);
+      }
       const output = extractToolOutput(input);
       if (marker && args && hasToolOutput(input)) {
         results.set(marker, output);
       }
-      const events =
-        args && !hasToolOutput(input)
-          ? buildToolCallEventsWithArgs("automations", args)
-          : buildAssistantEvents(marker && args ? `${marker}: ${output}` : scheduledReply);
+      const callAutomation = args && !hasToolOutput(input) && toolNames.includes("automations");
+      if (callAutomation && marker) {
+        toolCalls.add(marker);
+      }
+      const events = callAutomation
+        ? buildToolCallEventsWithArgs("automations", args)
+        : buildAssistantEvents(
+            marker && args
+              ? `${marker}: ${hasToolOutput(input) ? output : unavailableReply}`
+              : scheduledReply,
+          );
       if (body.stream === true) {
         response.writeHead(200, { "content-type": "text/event-stream" });
         response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
@@ -88,6 +106,8 @@ async function startAutomationProvider() {
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests,
     results,
+    offeredTools,
+    toolCalls,
     async stop() {
       server.closeAllConnections();
       await new Promise<void>((resolve) => {
@@ -154,12 +174,21 @@ suite.define(() => {
           controlUiAllowedOrigins: [new URL(suite.server.baseUrl).origin],
           mutateConfig: (cfg) => ({
             ...cfg,
-            // Both channel senders may use automation tools; neither is a Control UI administrator.
-            commands: { ...cfg.commands, ownerAllowFrom: ["telegram:100001", "telegram:100002"] },
+            // Both senders may use commands; only the creator is a configured owner.
+            commands: {
+              ...cfg.commands,
+              allowFrom: { ...cfg.commands?.allowFrom, telegram: ["100001", "100002"] },
+              ownerAllowFrom: ["telegram:100001"],
+            },
             session: { ...cfg.session, dmScope: "per-channel-peer" },
             plugins: { ...cfg.plugins, slots: { ...cfg.plugins?.slots, memory: "none" } },
             memory: { ...cfg.memory, search: { ...cfg.memory?.search, enabled: false } },
-            tools: { profile: "full", allow: ["automations"], codeMode: false, toolSearch: false },
+            tools: {
+              profile: "full",
+              allow: ["automations", "read"],
+              codeMode: false,
+              toolSearch: false,
+            },
             agents: {
               ...cfg.agents,
               entries: {
@@ -167,7 +196,7 @@ suite.define(() => {
                 qa: {
                   ...cfg.agents?.entries?.qa,
                   identity: { name: "Automation proof" },
-                  tools: { profile: "full", allow: ["automations"] },
+                  tools: { profile: "full", allow: ["automations", "read"] },
                 },
               },
             },
@@ -209,6 +238,7 @@ suite.define(() => {
         const creatorPayload = created.payload;
         expect(typeof created.id).toBe("string");
         const jobId = String(created.id);
+        const unchangedJob = await gateway.call("cron.get", { id: jobId });
         const channelResults: Record<string, string> = {};
         for (const action of actions) {
           const marker = `channel-${action}`;
@@ -227,18 +257,14 @@ suite.define(() => {
             sinceIndex: outboundIndex,
             timeoutMs: 60_000,
           });
-          const output = provider.results.get(marker) ?? "";
-          if (action === "list") {
-            expect(readResult(output).jobs).not.toEqual(
-              expect.arrayContaining([expect.objectContaining({ id: jobId })]),
-            );
-          } else {
-            expect(output).toMatch(/not found|denied|not authorized|not accessible/iu);
-            expect(output).toMatch(/list automations|Control UI|retry/iu);
-          }
-          expect(reply.text.replace(/\s+/gu, " ")).toContain(output.replace(/\s+/gu, " "));
-          channelResults[action] = action === "list" ? "hidden" : "denied visibly";
+          expect(provider.offeredTools.get(marker)).toContain("read");
+          expect(provider.offeredTools.get(marker)).not.toContain("automations");
+          expect(provider.toolCalls.has(marker)).toBe(false);
+          expect(provider.results.has(marker)).toBe(false);
+          expect(reply.text).toContain(unavailableReply);
+          channelResults[action] = "automation tool unavailable";
         }
+        expect(await gateway.call("cron.get", { id: jobId })).toEqual(unchangedJob);
 
         const sessionKey = `agent:qa:dashboard:automation-management-${randomUUID()}`;
         await gateway.call("sessions.create", {

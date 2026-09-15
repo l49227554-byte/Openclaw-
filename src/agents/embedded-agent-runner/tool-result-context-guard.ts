@@ -427,6 +427,10 @@ export function installContextEngineLoopHook(params: {
         tokenBudget:
           tokenBudget === undefined ? undefined : Math.max(1, tokenBudget - pendingTokens),
         model: modelId,
+        runtimeContext: params.getRuntimeContext?.({
+          messages: providerMessages.slice(0, historyLength),
+          prePromptMessageCount: historyLength,
+        }),
         runtimeSettings: params.runtimeSettings,
       });
       signal?.throwIfAborted();

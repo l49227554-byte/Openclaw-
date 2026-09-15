@@ -17,6 +17,7 @@ import {
   normalizeSessionProjectionRunId,
   readAssistantStreamSegmentIdentity,
   readSessionMessageIdentity,
+  sameAssistantPersistenceReceipt,
   readSessionProjectionString as readNonemptyString,
   type SessionMessageEnvelope,
   type SessionMessageIdentity,
@@ -144,6 +145,9 @@ export function isLocallyOptimisticSessionMessage(message: unknown): boolean {
   if (role !== "user" && role !== "assistant") {
     return false;
   }
+  if (readRecord(record?.openclawStreamFallback)) {
+    return false;
+  }
   const metadata = readRecord(record?.["__openclaw"]);
   return !metadata || Object.keys(metadata).every((key) => key === "idempotencyKey");
 }
@@ -153,6 +157,10 @@ function createEntry(
   options?: { envelope?: SessionMessageEnvelope; live?: boolean; pendingRunId?: string | null },
 ): SessionProjectionEntry {
   const identity = readSessionMessageIdentity(message, options?.envelope);
+  const fallback = readRecord(readRecord(message)?.openclawStreamFallback);
+  const provisionalFallback = Boolean(
+    fallback && identity?.role === "assistant" && !identity.id && identity.sequence === null,
+  );
   const inferredPendingRunId =
     options?.live !== true && isLocallyOptimisticSessionMessage(message) ? identity?.runId : null;
   const pendingRunId = normalizeSessionProjectionRunId(
@@ -161,8 +169,13 @@ function createEntry(
   return {
     message,
     identity,
-    afterSequence: options?.envelope?.afterSequence,
-    live: options?.live === true,
+    afterSequence:
+      options?.envelope?.afterSequence !== undefined
+        ? options.envelope.afterSequence
+        : provisionalFallback && typeof fallback?.afterSequence === "number"
+          ? fallback.afterSequence
+          : undefined,
+    live: options?.live === true || provisionalFallback,
     pending: pendingRunId !== null,
     pendingRunId,
   };
@@ -259,6 +272,18 @@ function entryMatches(
   }
   if (sameTranscriptIdentity(left.identity, right.identity)) {
     return true;
+  }
+  if (sameAssistantPersistenceReceipt(left.identity, right.identity)) {
+    return true;
+  }
+  if (
+    left.identity?.role === "assistant" &&
+    right.identity?.role === "assistant" &&
+    left.identity.idempotencyKey &&
+    right.identity.idempotencyKey &&
+    left.identity.idempotencyKey !== right.identity.idempotencyKey
+  ) {
+    return false;
   }
   const durableEntry = left.identity?.id ? left : right.identity?.id ? right : null;
   const provisionalEntry = durableEntry === left ? right : durableEntry === right ? left : null;
@@ -470,7 +495,12 @@ export function reconcileSessionProjectionSnapshot(
     const matches = entries.filter((entry) => entryMatches(entry, current, true));
     const run = current.identity?.runId ? runs[current.identity.runId] : undefined;
     const terminalMatch = findUniqueSnapshotTerminalMatch(current, matches, run, entries);
-    if ((matches.length === 1 && !isUnsequencedLiveTerminal(current, run)) || terminalMatch) {
+    if (
+      (matches.length === 1 &&
+        (sameAssistantPersistenceReceipt(matches[0].identity, current.identity) ||
+          !isUnsequencedLiveTerminal(current, run))) ||
+      terminalMatch
+    ) {
       if (
         terminalMatch?.inferred &&
         terminalMatch.entry.identity &&

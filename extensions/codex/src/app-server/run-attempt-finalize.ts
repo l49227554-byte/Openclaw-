@@ -665,13 +665,25 @@ export async function finalizeCodexAttempt(
     const terminalAssistantText = collectTerminalAssistantText(result);
     if (
       terminalAssistantText &&
-      (!streamState.eventEmitted || streamState.needsTerminalSnapshot) &&
-      !finalAborted &&
-      !finalPromptError
+      (assistantTranscriptIdempotencyKey ||
+        ((!streamState.eventEmitted || streamState.needsTerminalSnapshot) &&
+          !finalAborted &&
+          !finalPromptError))
     ) {
       void emitCodexAppServerEvent(params, {
         stream: "assistant",
-        data: { text: terminalAssistantText },
+        data: {
+          text: terminalAssistantText,
+          // The receipt identifies the selected persisted occurrence, which can
+          // exclude candidates streamed before a native tool or sleep boundary.
+          ...(assistantTranscriptIdempotencyKey
+            ? {
+                itemId: assistantTranscriptIdempotencyKey,
+                replace: true,
+                replaceable: true,
+              }
+            : {}),
+        },
       });
     }
     emitLifecycleTerminal(
@@ -679,10 +691,12 @@ export async function finalizeCodexAttempt(
         ? {
             phase: "error",
             error: formatErrorMessage(finalPromptError),
+            ...(assistantTranscriptIdempotencyKey ? { assistantTranscriptIdempotencyKey } : {}),
             ...buildLifecycleTerminalMeta({ aborted: finalAborted, timedOut: effectiveTimedOut }),
           }
         : {
             phase: "end",
+            ...(assistantTranscriptIdempotencyKey ? { assistantTranscriptIdempotencyKey } : {}),
             ...buildLifecycleTerminalMeta({
               aborted: finalAborted,
               timedOut: effectiveTimedOut,

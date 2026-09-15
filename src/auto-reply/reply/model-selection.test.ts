@@ -471,7 +471,7 @@ describe("createModelSelectionState catalog loading", () => {
     ["fixture/m", 64_000, true],
   ] as const)(
     "preserves literal catalog identity for %s (%i tokens, reversed=%s)",
-    async (model, contextWindow, reversed) => {
+    async (model, expectedContextWindow, reversed) => {
       // Both literal rows must survive regardless of their shared display key or order.
       const models = [
         makeConfiguredModel({ id: "m", contextWindow: 1_000_000 }),
@@ -504,7 +504,7 @@ describe("createModelSelectionState catalog loading", () => {
         preparedModelCatalog: { entries, routeVariants: entries, authoritative: true },
       });
 
-      expect(state.modelContextWindow).toBe(contextWindow);
+      expect(state.modelContextWindow).toBe(expectedContextWindow);
       expect(state.allowedModelCatalog).toEqual([
         ...models.map(({ id, contextWindow }) =>
           expect.objectContaining({ provider: "fixture", id, contextWindow }),
@@ -519,7 +519,7 @@ describe("createModelSelectionState catalog loading", () => {
           modelContextWindow: state.modelContextWindow,
           modelContextTokens: state.modelContextTokens,
         }),
-      ).toBe(contextWindow);
+      ).toBe(expectedContextWindow);
     },
   );
 

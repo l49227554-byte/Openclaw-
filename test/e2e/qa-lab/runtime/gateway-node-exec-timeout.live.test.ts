@@ -360,12 +360,11 @@ describe.skipIf(!LIVE_ENABLED)("Codex node_exec live timeout ownership", () => {
               if (!history.result) {
                 throw new Error("History omitted the completed node_exec result");
               }
-              expect(history.result.details).toMatchObject(
-                testCase.name === "process-timeout"
-                  ? { status: "failed", timedOut: true, nodeId }
-                  : { status: "completed", exitCode: 0, nodeId },
-              );
-              if (testCase.name !== "process-timeout") {
+              expect(history.result.isError).toBe(testCase.name === "process-timeout");
+              expect(textContent(history.result)).toContain(`Node: ${nodeId}`);
+              if (testCase.name === "process-timeout") {
+                expect(textContent(history.result)).toContain("Command timed out.");
+              } else {
                 const finished = await readProof(`${prefix}.finished.json`);
                 expect(finished).toMatchObject({
                   marker,

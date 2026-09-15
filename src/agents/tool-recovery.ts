@@ -17,7 +17,7 @@ export function readToolRecoveryVerificationId(args: unknown): string | undefine
 
 /** Builds an exact call identity without including the recovery declaration itself. */
 export function buildToolRecoveryFingerprint(toolName: string, args: unknown): string {
-  let callArgs = args;
+  let callArgs: unknown;
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     callArgs = args;
   } else {

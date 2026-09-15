@@ -137,12 +137,16 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
         cfg: emptyConfig,
         dispatcher: createDispatcher(),
         replyResolver: async (_ctx, opts) => {
-          if (silent) opts?.onIntentionalSilentReply?.();
+          if (silent) {
+            opts?.onIntentionalSilentReply?.();
+          }
           return undefined;
         },
       });
       expect(result.intentionalSilent === true).toBe(silent);
-      if (silent) expect(result.noVisibleReplyFallbackEligible).not.toBe(true);
+      if (silent) {
+        expect(result.noVisibleReplyFallbackEligible).not.toBe(true);
+      }
     },
   );
 

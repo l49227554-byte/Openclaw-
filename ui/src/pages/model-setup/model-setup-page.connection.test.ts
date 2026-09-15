@@ -1,10 +1,11 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, expect, it, vi } from "vitest";
+import type { WizardNextParams } from "../../../../packages/gateway-protocol/src/schema/wizard.ts";
 import { listSetupInferenceAuthOptions } from "../../../../src/system-agent/setup-inference-auth-options.js";
 import { WizardSession } from "../../../../src/wizard/session.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
-import type { ModelAuthStatusResult, WizardNextParams } from "../../api/types.ts";
+import type { ModelAuthStatusResult } from "../../api/types.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import { createContext, detection, mountPage } from "./test-helpers/page.test-support.ts";
 

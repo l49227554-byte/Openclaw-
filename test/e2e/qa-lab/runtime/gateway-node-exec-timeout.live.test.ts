@@ -406,8 +406,14 @@ describe.skipIf(!LIVE_ENABLED)("Codex node_exec live timeout ownership", () => {
           }
         },
         async () => {
+          const activeGateway = gateway;
+          if (!activeGateway) {
+            return;
+          }
           const results = await Promise.allSettled(
-            [...activeSessions].map((sessionKey) => gateway?.call("chat.abort", { sessionKey })),
+            [...activeSessions].map((sessionKey) =>
+              activeGateway.call("chat.abort", { sessionKey }),
+            ),
           );
           const failures = results.flatMap((result) =>
             result.status === "rejected" ? [result.reason] : [],

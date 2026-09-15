@@ -119,9 +119,9 @@ export function prepareEmbeddedAttemptStream(input: {
   getRunState: () => StreamRunState;
   hasDeliveredSourceReply: () => boolean;
   markSourceReplyDelivered: () => void;
+  sameChannelThreadRequired?: boolean;
   onBlockReply: EmbeddedRunAttemptParams["onBlockReply"];
   onBlockReplyFlush: EmbeddedRunAttemptParams["onBlockReplyFlush"];
-  sandboxSessionKey: string;
   builtinToolNames: ReadonlySet<string>;
   coreBuiltinToolNames?: ReadonlySet<string>;
   replaySafeToolNames: ReadonlySet<string>;
@@ -136,14 +136,13 @@ export function prepareEmbeddedAttemptStream(input: {
   const attempt = input.attempt;
   const activityScope = randomUUID();
   let nestedStartOrder = 0;
-  const hookRunner = input.hookRunner;
   let beforeAgentFinalizeRevisionReason: string | undefined;
   let beforeAgentFinalizeRevisionEntryId: string | undefined;
   let acceptingSteerMessages = true;
   let activeQueueAdmissions = 0;
   const shouldRunBeforeAgentFinalize =
     attempt.operation !== "settled-tool-finalization" &&
-    hookRunner?.hasHooks("before_agent_finalize");
+    input.hookRunner?.hasHooks("before_agent_finalize");
   const onBeforeTerminalDelivery = shouldRunBeforeAgentFinalize
     ? async (event: {
         messages: AgentMessage[];
@@ -254,7 +253,7 @@ export function prepareEmbeddedAttemptStream(input: {
                 channelContext: attempt.channelContext,
               }),
             },
-            hookRunner,
+            hookRunner: input.hookRunner,
           });
           if (outcome.action !== "revise") {
             return;
@@ -363,6 +362,7 @@ export function prepareEmbeddedAttemptStream(input: {
     currentMessagingTarget: attempt.currentMessagingTarget,
     currentAccountId: attempt.agentAccountId,
     currentThreadId: attempt.currentThreadTs,
+    sameChannelThreadRequired: input.sameChannelThreadRequired,
     currentMessageId: attempt.currentMessageId,
     replyToMode: attempt.replyToMode,
     hasRepliedRef: attempt.hasRepliedRef,

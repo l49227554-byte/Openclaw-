@@ -496,7 +496,6 @@ export async function withParkedNativeTask(
               markSourceReplyDelivered: () => {},
               onBlockReply: undefined,
               onBlockReplyFlush: undefined,
-              sandboxSessionKey: SESSION_KEY,
               builtinToolNames: new Set(),
               replaySafeToolNames: new Set(),
               trustedLocalMediaToolNames: new Set(),

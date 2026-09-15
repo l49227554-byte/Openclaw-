@@ -75,7 +75,6 @@ export function createSubscribedCodeModeHarness(params: {
     markSourceReplyDelivered: () => undefined,
     onBlockReply: params.onBlockReply,
     onBlockReplyFlush: params.onBlockReplyFlush,
-    sandboxSessionKey: sessionKey,
     builtinToolNames: new Set(),
     replaySafeToolNames: new Set(),
     trustedLocalMediaToolNames: new Set(),

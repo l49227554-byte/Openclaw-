@@ -161,7 +161,7 @@ export async function runEmbeddedAttemptExecutionPhase(
     isReplaySafeTool: (tool) => replaySafeTools.has(tool as never),
     hasDeliveredSourceReply: sessionRuntime.agentSession.hasDeliveredSourceReply,
     markSourceReplyDelivered: sessionRuntime.agentSession.markSourceReplyDelivered,
-    sandboxSessionKey: input.setup.sandboxSessionKey,
+    sameChannelThreadRequired: sessionRuntime.agentSession.sameChannelThreadRequired,
     builtinToolNames: sessionRuntime.agentSession.builtinToolNames,
     coreBuiltinToolNames: sessionRuntime.agentSession.coreBuiltinToolNames,
     trustedLocalMediaToolNames: sessionRuntime.agentSession.trustedLocalMediaToolNames,

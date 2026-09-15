@@ -92,7 +92,6 @@ function prepareCatalogExecutor(
       yieldDetected: boolean;
     };
     runAbortController?: AbortController;
-    sandboxSessionKey?: string;
     sessionKey?: string;
     replyOperation?: ReplyOperation;
     onAttemptAbort?: () => void;
@@ -101,6 +100,7 @@ function prepareCatalogExecutor(
     toolProgressDetail?: "explain" | "raw";
     onAgentEvent?: (event: { stream: string; data: Record<string, unknown> }) => void;
     trustedLocalMediaToolNames?: ReadonlySet<string>;
+    sameChannelThreadRequired?: boolean;
   },
 ) {
   const runAbortController = options?.runAbortController ?? new AbortController();
@@ -146,9 +146,9 @@ function prepareCatalogExecutor(
       })),
     hasDeliveredSourceReply: () => false,
     markSourceReplyDelivered: vi.fn(),
+    sameChannelThreadRequired: options?.sameChannelThreadRequired,
     onBlockReply: vi.fn(),
     onBlockReplyFlush: vi.fn(),
-    sandboxSessionKey: options?.sandboxSessionKey ?? "agent:main:main",
     builtinToolNames: new Set(),
     replaySafeToolNames: new Set(),
     trustedLocalMediaToolNames: options?.trustedLocalMediaToolNames ?? new Set(),
@@ -196,6 +196,16 @@ describe("prepareEmbeddedAttemptStream", () => {
     });
     mocks.runBeforeFinalizeHook.mockResolvedValue({ action: "continue" });
   });
+
+  it.each([true, false])(
+    "passes the admitted same-thread requirement (%s) to the subscription",
+    (sameChannelThreadRequired) => {
+      prepareCatalogExecutor([], { sameChannelThreadRequired });
+      expect(mocks.subscribe).toHaveBeenCalledWith(
+        expect.objectContaining({ sameChannelThreadRequired }),
+      );
+    },
+  );
 
   it("passes exact run-local media trust to the subscription", () => {
     const trustedLocalMediaToolNames = new Set(["plugin_media"]);
@@ -574,7 +584,6 @@ describe("prepareEmbeddedAttemptStream", () => {
       markSourceReplyDelivered: vi.fn(),
       onBlockReply: vi.fn(),
       onBlockReplyFlush: vi.fn(),
-      sandboxSessionKey: "agent:main:main",
       builtinToolNames: new Set(),
       replaySafeToolNames: new Set(),
       trustedLocalMediaToolNames: new Set(),
@@ -660,7 +669,6 @@ describe("prepareEmbeddedAttemptStream", () => {
       markSourceReplyDelivered: vi.fn(),
       onBlockReply: vi.fn(),
       onBlockReplyFlush: vi.fn(),
-      sandboxSessionKey: "agent:main:main",
       builtinToolNames: new Set(),
       replaySafeToolNames: new Set(),
       trustedLocalMediaToolNames: new Set(),
@@ -697,7 +705,6 @@ describe("prepareEmbeddedAttemptStream", () => {
   it("routes live events to the transcript session instead of the sandbox authority session", () => {
     prepareCatalogExecutor([], {
       sessionKey: "agent:main:internal-session-effects:companion-run",
-      sandboxSessionKey: "agent:main:main",
     });
 
     expect(mocks.subscribe).toHaveBeenCalledWith(

@@ -143,6 +143,7 @@ async function createFixture(
       hasDeliveredSourceReply: vi.fn(() => false),
       hookRunner: {},
       markSourceReplyDelivered: vi.fn(),
+      sameChannelThreadRequired: true,
       replaySafeToolNames: new Set(["read"]),
       replaySafeTools: new Set([replaySafeTool]),
       trustedLocalMediaToolNames: new Set(["read"]),
@@ -681,6 +682,7 @@ describe("runEmbeddedAttemptExecutionPhase", () => {
     expect(abortInput.abortActiveSession).toBe(fixture.abortActiveSession);
     const streamInput = mocks.prepareStream.mock.calls[0]?.[0];
     expect(streamInput.activeSession).toBe(fixture.activeSession);
+    expect(streamInput.sameChannelThreadRequired).toBe(true);
     expect(streamInput.trustedLocalMediaToolNames).toEqual(new Set(["read"]));
     expect(streamInput.onModelUsage).toBe(
       mocks.installStreamGuards.mock.results[0]?.value.onModelUsage,

@@ -291,7 +291,6 @@ describe("runCronIsolatedAgentTurn terminal lifecycle", () => {
         markSourceReplyDelivered: vi.fn(),
         onBlockReply: undefined,
         onBlockReplyFlush: undefined,
-        sandboxSessionKey: sessionKey,
         builtinToolNames: new Set(),
         replaySafeToolNames: new Set(),
         trustedLocalMediaToolNames: new Set(),

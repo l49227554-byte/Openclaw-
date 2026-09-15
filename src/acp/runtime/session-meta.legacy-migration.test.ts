@@ -1,36 +1,36 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { repairCanonicalSessionKeys } from "../../commands/doctor-session-canonical-keys.js";
+import { runDoctorSessionSqlite } from "../../commands/doctor-session-sqlite.js";
+import {
+  deleteSessionEntryLifecycle,
+  loadExactSessionEntry,
+  replaceSessionEntry,
+} from "../../config/sessions/session-accessor.js";
+import type { SessionAcpMeta } from "../../config/sessions/types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { recordDeferredPluginMigrations } from "../../infra/deferred-plugin-migrations.js";
+import { migrateLegacyAcpSessionMetadata } from "../../infra/state-migrations.session-store.js";
+import { EMPTY_LEGACY_SESSION_SURFACES } from "../../plugins/legacy-session-surfaces.types.js";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
+import {
+  withOpenClawTestState,
+  type OpenClawTestState,
+} from "../../test-utils/openclaw-test-state.js";
 import {
   listAcpSessionEntries,
   readAcpSessionMeta,
   upsertAcpSessionMeta,
   writeAcpSessionMetaForMigration,
-} from "../acp/runtime/session-meta.js";
-import { repairCanonicalSessionKeys } from "../commands/doctor-session-canonical-keys.js";
-import { runDoctorSessionSqlite } from "../commands/doctor-session-sqlite.js";
-import {
-  deleteSessionEntryLifecycle,
-  loadExactSessionEntry,
-  replaceSessionEntry,
-} from "../config/sessions/session-accessor.js";
-import type { SessionAcpMeta } from "../config/sessions/types.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
-import {
-  closeOpenClawAgentDatabasesForTest,
-  openOpenClawAgentDatabase,
-} from "../state/openclaw-agent-db.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
-import {
-  withOpenClawTestState,
-  type OpenClawTestState,
-} from "../test-utils/openclaw-test-state.js";
-import { recordDeferredPluginMigrations } from "./deferred-plugin-migrations.js";
-import { migrateLegacyAcpSessionMetadata } from "./state-migrations.session-store.js";
+} from "./session-meta.js";
 
 const SESSION_KEY = "agent:main:retained-acp";
 const SESSION_ID = "retained-acp-session";

@@ -33,6 +33,7 @@ import { normalizeSessionKeyPreservingOpaquePeerIds } from "../sessions/session-
 import { readDeferredPluginMigrations } from "./deferred-plugin-migrations.js";
 import {
   deferredPluginSessionStoreIds,
+  prepareDeferredPluginSessionImportReader,
   preserveDeferredPluginSessionSource,
 } from "./deferred-plugin-session-sources.js";
 import { readFileWindowFullySync } from "./file-read.js";
@@ -987,6 +988,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
       continue;
     }
 
+    const readVerifiedCoreImport = prepareDeferredPluginSessionImportReader({ storePath, env });
     const normalized = Object.create(null) as Record<string, SessionEntry>;
     let migrated = 0;
     let consumed = 0;
@@ -1018,6 +1020,9 @@ export async function migrateLegacyAcpSessionMetadata(params: {
         const imported = importLegacyAcpSessionMetadata({
           sourcePath: storePath,
           preserveSource,
+          cfg: params.cfg,
+          agentId: rowAgentId,
+          readVerifiedCoreImport,
           sessionKey: canonicalSessionKey,
           sessionId: normalizedEntry.sessionId,
           lifecycleRevision: normalizedEntry.lifecycleRevision,

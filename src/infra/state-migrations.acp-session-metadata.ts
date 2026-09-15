@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { stableStringify } from "@openclaw/normalization-core";
+import { selectAcpSessionRowForStoreEntry } from "../acp/runtime/session-meta-keys.js";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
+import { loadExactSessionEntryReadOnly } from "../config/sessions/session-accessor.sqlite-exact-read.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import type { prepareDeferredPluginSessionImportReader } from "./deferred-plugin-session-sources.js";
 import {
   readLegacyMigrationReceiptFromDatabase,
   recordLegacyMigrationReceipt,
@@ -17,6 +21,9 @@ type LegacyAcpMetadataInput = Omit<
 > & {
   sourcePath: string;
   preserveSource: boolean;
+  cfg: OpenClawConfig;
+  agentId: string;
+  readVerifiedCoreImport: ReturnType<typeof prepareDeferredPluginSessionImportReader>;
 };
 
 /** Retained JSON is input history, not authority to reopen a completed ACP import. */
@@ -49,7 +56,31 @@ export function importLegacyAcpSessionMetadata(params: LegacyAcpMetadataInput): 
         }
         return false;
       }
-      writeAcpSessionMetaForMigration({ ...params, sessionKey, database, now: () => now });
+      const coreTarget = params.readVerifiedCoreImport(database.db, params.agentId);
+      let imported = true;
+      if (coreTarget) {
+        const canonical = loadExactSessionEntryReadOnly({
+          agentId: params.agentId,
+          storePath: coreTarget.sqlitePath,
+          sessionKey,
+          env: params.env,
+        })?.entry;
+        imported =
+          canonical !== undefined &&
+          (params.lifecycleRevision !== undefined
+            ? canonical.lifecycleRevision === params.lifecycleRevision
+            : canonical.sessionId === params.sessionId) &&
+          !selectAcpSessionRowForStoreEntry(
+            database.db,
+            sessionKey,
+            params.agentId,
+            params.cfg,
+            canonical,
+          );
+      }
+      if (imported) {
+        writeAcpSessionMetaForMigration({ ...params, sessionKey, database, now: () => now });
+      }
       if (params.preserveSource) {
         recordLegacyMigrationReceipt(database.db, {
           sourceKey,
@@ -64,7 +95,7 @@ export function importLegacyAcpSessionMetadata(params: LegacyAcpMetadataInput): 
           now,
         });
       }
-      return true;
+      return imported;
     },
     { env: params.env },
     { operationLabel: "state.import-legacy-acp-metadata" },

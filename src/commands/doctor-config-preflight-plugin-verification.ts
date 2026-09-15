@@ -3,6 +3,7 @@ import type { ConfigSnapshotReadMeasure } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
+import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import { normalizePluginsConfig, resolveEffectiveEnableState } from "../plugins/config-state.js";
 import type { PluginPayloadSmokeFailure } from "../plugins/payload-verification.js";
 import {
@@ -93,7 +94,15 @@ export async function runDoctorPluginConvergence(params: {
   }
   const { inspectPluginMigrationAvailability } =
     await import("./doctor/shared/plugin-migration-availability.js");
-  if (shouldDeferConfiguredPluginInstallRepair(params.env)) {
+  const isUpdateRehearsal = Boolean(resolveUpdateRehearsalRoot(params.env));
+  if (isUpdateRehearsal) {
+    // Shipped drivers run this preflight inside their fixed canary deadline.
+    note(
+      "Plugin refresh deferred to live update finalization; the canary verifies copied plugin payloads without downloading replacements.",
+      "Doctor warnings",
+    );
+  }
+  if (isUpdateRehearsal || shouldDeferConfiguredPluginInstallRepair(params.env)) {
     const payloads = await verifyStartupPluginPayloads(params, plan.installRecords);
     const { pending, ...migrationInspection } = await inspectPluginMigrationAvailability({
       ...params,

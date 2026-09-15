@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import {
   MigrationArtifactSchema,
@@ -22,6 +24,7 @@ import {
   readLegacyMigrationReceiptFromDatabase,
   recordLegacyMigrationReceipt,
   resolveLegacyMigrationSourceKey,
+  type LegacyMigrationReceipt,
 } from "./state-migrations.receipts.js";
 
 type SessionImportTarget = { agentId: string; storePath: string; sqlitePath: string };
@@ -125,14 +128,15 @@ function matchesVerifiedSessionSource(
 export function readDeferredPluginSessionImport(params: {
   target: SessionImportTarget;
   env: NodeJS.ProcessEnv;
+  database?: DatabaseSync;
 }): DeferredPluginSessionImport | undefined {
-  const receipt = withExistingOpenClawStateDatabaseReadOnly(
-    ({ db }) =>
-      tableExists(db, "migration_sources")
-        ? readLegacyMigrationReceiptFromDatabase(db, sourceKey(params.target))
-        : undefined,
-    { env: params.env },
-  );
+  const read = (db: DatabaseSync) =>
+    tableExists(db, "migration_sources")
+      ? readLegacyMigrationReceiptFromDatabase(db, sourceKey(params.target))
+      : undefined;
+  const receipt = params.database
+    ? read(params.database)
+    : withExistingOpenClawStateDatabaseReadOnly(({ db }) => read(db), { env: params.env });
   if (!receipt) {
     return undefined;
   }
@@ -150,6 +154,43 @@ export function readDeferredPluginSessionImport(params: {
     }
   }
   return recorded;
+}
+
+/** Reuse verified source bytes only within one uninterrupted synchronous migration loop. */
+export function prepareDeferredPluginSessionImportReader(params: {
+  storePath: string;
+  env: NodeJS.ProcessEnv;
+}) {
+  const verified = new Map<
+    string,
+    { receipt: LegacyMigrationReceipt | null; imported: DeferredPluginSessionImport | undefined }
+  >();
+  return (database: DatabaseSync, agentId: string): SessionImportTarget | undefined => {
+    const sqlite = resolveSqliteTargetFromSessionStorePath(params.storePath, {
+      agentId,
+      env: params.env,
+    });
+    const target = { agentId, storePath: params.storePath, sqlitePath: sqlite.path };
+    const key = sourceKey(target);
+    const receipt = readLegacyMigrationReceiptFromDatabase(database, key);
+    let prepared = verified.get(key);
+    if (!prepared || !isDeepStrictEqual(prepared.receipt, receipt)) {
+      prepared = {
+        receipt,
+        imported: readDeferredPluginSessionImport({ target, env: params.env, database }),
+      };
+      verified.set(key, prepared);
+    }
+    if (!prepared.imported) {
+      return undefined;
+    }
+    if (prepared.imported.databaseIdentity !== databaseIdentity(target.sqlitePath)) {
+      throw new Error(
+        "The verified session import database changed; retained source was not replayed.",
+      );
+    }
+    return target;
+  };
 }
 
 /** Called after full core import validation, before any original can be retired. */

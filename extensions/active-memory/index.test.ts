@@ -903,10 +903,10 @@ describe("active-memory plugin", () => {
     expect(lastEmbeddedRunParams().cliBackendDispatch).toBe("subscription-auth");
   });
 
-  it("runs recall on a per-agent active-memory lane", async () => {
+  it("runs recall on a dedicated active-memory lane", async () => {
     await runPromptBuild({ prompt: "what wings should i order?" });
 
-    expect(lastEmbeddedRunParams().lane).toBe("active-memory:main");
+    expect(lastEmbeddedRunParams().lane).toBe("active-memory");
   });
 
   it("creates and removes the exact SQLite recall session around the embedded run", async () => {

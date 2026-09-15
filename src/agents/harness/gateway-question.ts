@@ -10,6 +10,8 @@ import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import type { EmbeddedRunAttemptParams } from "../embedded-agent-runner/run/types.js";
 import {
   createQuestionPromptLifetime,
+  isTerminalQuestionResolveError,
+  readQuestionRejection,
   type GatewayQuestionCall,
 } from "../tools/gateway-question-lifecycle.js";
 import {
@@ -35,10 +37,6 @@ import {
 } from "./user-input-bridge.js";
 
 const QUESTION_RPC_GRACE_MS = 10_000;
-const TERMINAL_QUESTION_ERROR_REASONS = new Set([
-  "QUESTION_ALREADY_TERMINAL",
-  "QUESTION_NOT_FOUND",
-]);
 
 type PendingAgentGatewayQuestion = {
   kind: "gateway";
@@ -82,30 +80,6 @@ const pendingAgentQuestions = resolveGlobalMap<string, PendingAgentQuestion>(
     questions.clear();
   },
 );
-
-function readQuestionRejection(error: unknown): { code: unknown; reason?: string } | undefined {
-  if (!error || typeof error !== "object") {
-    return undefined;
-  }
-  const requestError = error as { details?: unknown; name?: unknown; gatewayCode?: unknown };
-  if (requestError.name !== "GatewayClientRequestError") {
-    return undefined;
-  }
-  const details = requestError.details;
-  const reason =
-    details && typeof details === "object" && !Array.isArray(details)
-      ? (details as { reason?: unknown }).reason
-      : undefined;
-  return {
-    code: requestError.gatewayCode,
-    reason: typeof reason === "string" ? reason : undefined,
-  };
-}
-
-function isTerminalAgentQuestionError(error: unknown): boolean {
-  const reason = readQuestionRejection(error)?.reason;
-  return reason !== undefined && TERMINAL_QUESTION_ERROR_REASONS.has(reason);
-}
 
 type QuestionInputAuthority = { kind: "run" | "source-bound"; assertCurrent: () => void };
 
@@ -377,7 +351,7 @@ async function claimQuestionAnswer(
       if (reservation.wasRefused()) {
         throw error;
       }
-      if (isTerminalAgentQuestionError(error)) {
+      if (isTerminalQuestionResolveError(error)) {
         retainReservation = true;
         return false;
       }
@@ -451,7 +425,7 @@ export async function cancelPendingAgentQuestionForSession(params: {
         ...(reservation.extra ? ([reservation.extra] as const) : []),
       );
     } catch (error) {
-      if (reservation.wasRefused() || !isTerminalAgentQuestionError(error)) {
+      if (reservation.wasRefused() || !isTerminalQuestionResolveError(error)) {
         throw error;
       }
     }
@@ -617,7 +591,7 @@ async function runScopedAgentHarnessQuestion(
         { id: questionId, cancel: true, resolvedBy },
       )) as QuestionWaitAnswerResult;
     } catch (error) {
-      if (!isTerminalAgentQuestionError(error)) {
+      if (!isTerminalQuestionResolveError(error)) {
         throw error;
       }
       try {

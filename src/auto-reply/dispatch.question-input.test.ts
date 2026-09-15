@@ -331,7 +331,9 @@ describe("routed channel question input delivery order", () => {
             1_000,
             "question input was not classified",
           );
-          await new Promise<void>((resolve) => setImmediate(resolve));
+          await new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          });
           expect(deliveries).toEqual([]);
           expect(settled).not.toHaveBeenCalled();
           releaseOriginal.resolve();

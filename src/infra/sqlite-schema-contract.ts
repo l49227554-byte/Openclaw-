@@ -321,8 +321,8 @@ export function collectSqliteNamedIndexContract(
   indexName: string,
 ): SqliteIndexContract | undefined {
   const row = database
-    .prepare("SELECT name, sql, tbl_name FROM main.sqlite_schema WHERE type = 'index' AND name = ?")
-    .get(indexName) as SqliteSchemaRow | undefined;
+    .prepare("SELECT tbl_name FROM main.sqlite_schema WHERE type = 'index' AND name = ?")
+    .get(indexName);
   if (!row || typeof row.tbl_name !== "string") {
     return undefined;
   }

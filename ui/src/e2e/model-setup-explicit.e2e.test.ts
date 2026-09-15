@@ -344,7 +344,7 @@ suite.define(() => {
           if (outcome === "remote") {
             const alert = dialog.getByRole("alert");
             await alert.waitFor();
-            expect((await alert.innerText()).trim()).toBe(
+            expect((await alert.textContent())?.trim()).toBe(
               "Could not finish. Open Details to see what to do next.",
             );
             const details = dialog.locator("details");
@@ -396,7 +396,7 @@ suite.define(() => {
             } else {
               const alert = dialog.getByRole("alert");
               await alert.waitFor();
-              expect((await alert.innerText()).trim()).toBe(
+              expect((await alert.textContent())?.trim()).toBe(
                 "Could not finish. Open Details to see what to do next.",
               );
               const details = dialog.locator("details");

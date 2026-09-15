@@ -244,7 +244,7 @@ suite.define(() => {
           const dialog = page.locator("openclaw-modal-dialog");
           const alert = dialog.getByRole("alert");
           await alert.waitFor();
-          expect((await alert.innerText()).trim()).toBe(
+          expect((await alert.textContent())?.trim()).toBe(
             "Could not finish. Open Details to see what to do next.",
           );
           const details = dialog.locator("details");
@@ -273,7 +273,7 @@ suite.define(() => {
           } else {
             await signIn.click();
             await alert.waitFor();
-            expect((await alert.innerText()).trim()).toBe(
+            expect((await alert.textContent())?.trim()).toBe(
               "Could not finish. Open Details to see what to do next.",
             );
             expect(await details.getAttribute("open")).toBeNull();

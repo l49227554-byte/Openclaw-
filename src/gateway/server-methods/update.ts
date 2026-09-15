@@ -55,18 +55,16 @@ import {
   createUpdateRun,
   finishUpdateRun,
   getUpdateRun,
-  heartbeatUpdateRun,
   recordUpdateRunPhase,
   recordUpdateRunStep,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
-import { summarizeUpdateStepFailure } from "../../infra/update-run-record.js";
 import { renderUpdateRunNotice } from "../../infra/update-run-report.js";
-import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import {
   resolveUpdateInstallSurface,
   runGatewayUpdate,
   runGatewayUpdatePreflight,
+  type UpdateRunResult,
 } from "../../infra/update-runner.js";
 import { getUpdateAvailable, initializeGatewayUpdateStatus } from "../../infra/update-startup.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
@@ -83,6 +81,12 @@ import { wakeUpdateRunWatcher } from "../update-run-watcher.js";
 import { parseRestartRequestParams } from "./restart-request.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { updateReportHandler } from "./update-report.js";
+import {
+  createGatewayUpdateFailureResult,
+  createGatewayUpdateProgress,
+  recordGatewayUpdateResult,
+  type GatewayUpdateHandoff,
+} from "./update-run-evidence.js";
 import { updateStatusHandlers } from "./update-status.js";
 import { assertValidParams } from "./validation.js";
 
@@ -162,11 +166,19 @@ export const updateHandlers: GatewayRequestHandlers = {
     });
     wakeUpdateRunWatcher();
 
-    let result: Awaited<ReturnType<typeof runGatewayUpdate>>;
-    let handoff:
-      | { status: "started"; pid?: number; command: string }
-      | { status: "already-running" | "unavailable"; command: string; message: string }
-      | null = null;
+    const diagnosticStartedAt = Date.now();
+    let failureCheck = "preflight";
+    let result: UpdateRunResult = {
+      status: "error",
+      mode: "unknown",
+      before: { version: VERSION },
+      steps: [],
+      durationMs: 0,
+    };
+    const failedUpdate = (error: unknown, reason?: string): UpdateRunResult =>
+      createGatewayUpdateFailureResult(result, error, failureCheck, diagnosticStartedAt, reason);
+    let handoff: GatewayUpdateHandoff | null = null;
+    let acceptedHandoffStep: UpdateRunResult["steps"][number] | undefined;
     let managedHandoffOwner: GatewayRestartIntent["successorOwner"];
     let ackDelivered = false;
     let ackQueued = false;
@@ -229,12 +241,16 @@ export const updateHandlers: GatewayRequestHandlers = {
     try {
       const configChannel = normalizeUpdateChannel(config.update?.channel);
       const { root, status } = await initializeGatewayUpdateStatus();
+      result.root = root ?? undefined;
+      result.mode = status.installKind === "git" ? "git" : "unknown";
       const installSurface = await resolveUpdateInstallSurface({
         root,
         installKind: status.installKind,
         timeoutMs,
       });
       const installRoot = installSurface.root;
+      result.mode = installSurface.mode;
+      result.root = installRoot ?? result.root;
       const refusedUpdate = (
         outcome: "error" | "skipped",
         reason: string,
@@ -326,6 +342,7 @@ export const updateHandlers: GatewayRequestHandlers = {
           before: { version: beforeVersion ?? VERSION },
           ...(targetVersion ? { target: { version: targetVersion } } : {}),
         });
+        result.before = { version: beforeVersion ?? VERSION };
         acknowledgement = renderUpdateRunNotice(acknowledgedRun, "ack") ?? undefined;
         const ack = await notify(acknowledgedRun, "ack");
         ackDelivered = ack.delivered;
@@ -388,6 +405,7 @@ export const updateHandlers: GatewayRequestHandlers = {
           ...(adoptedPackageTargetVersion ? { tag: adoptedPackageTargetVersion } : {}),
         });
         if (supervisor) {
+          failureCheck = "managed-service";
           try {
             const beforeVersion = await readPackageVersion(installRoot);
             const startedAt = Date.now();
@@ -478,11 +496,12 @@ export const updateHandlers: GatewayRequestHandlers = {
                 : [],
               durationMs: Date.now() - startedAt,
             };
+            acceptedHandoffStep = result.steps[0];
           } catch (err) {
             context?.logGateway?.warn(
               `update.run managed-service handoff failed ${formatControlPlaneActor(actor)} error=${formatErrorMessage(err)}`,
             );
-            result = refusedUpdate("error", "managed-service-handoff-failed");
+            result = failedUpdate(err, "managed-service-handoff-failed");
           }
         } else {
           const beforeVersion = await readPackageVersion(installRoot);
@@ -517,23 +536,12 @@ export const updateHandlers: GatewayRequestHandlers = {
           return;
         }
         const driver = adoptUpdateRun(runId).origin.driver;
+        // Phase persistence can fail, so establish error attribution before writing.
+        failureCheck = "staging";
         recordUpdateRunPhase(runId, "staging");
         result = await runGatewayUpdate({
           runId,
-          progress: {
-            onHeartbeat: () => heartbeatUpdateRun(runId, driver),
-            onStepStart: (step) =>
-              recordUpdateRunStep(runId, {
-                step: step.name,
-                status: "in_progress",
-                startedAtMs: Date.now(),
-              }),
-            onStepComplete: (step) => {
-              for (const entry of updateRunStepsFromResultStep(step)) {
-                recordUpdateRunStep(runId, { ...entry, endedAtMs: Date.now() });
-              }
-            },
-          },
+          progress: createGatewayUpdateProgress(runId, driver),
           timeoutMs,
           cwd: installSurface.root,
           channel:
@@ -548,6 +556,7 @@ export const updateHandlers: GatewayRequestHandlers = {
           allowGatewayActivation: false,
         });
         // Match CLI post-core convergence so official plugins do not remain stale.
+        failureCheck = "validating";
         recordUpdateRunPhase(runId, "validating");
         const finalizeOutcome = await runPostCoreFinalizeAfterGatewayUpdate({
           result,
@@ -563,14 +572,8 @@ export const updateHandlers: GatewayRequestHandlers = {
         }
         result = foldPostCoreFinalizeIntoResult(result, finalizeOutcome);
       }
-    } catch {
-      result = {
-        status: "error",
-        mode: "unknown",
-        reason: "unexpected-error",
-        steps: [],
-        durationMs: 0,
-      };
+    } catch (error) {
+      result = failedUpdate(error);
     }
 
     result = normalizeControlPlaneUpdateResult(result);
@@ -581,37 +584,27 @@ export const updateHandlers: GatewayRequestHandlers = {
       });
       await notify(activating, "activating");
     }
-    let outcomeRun = recordUpdateRunPhase(
-      runId,
-      result.status === "ok" ? "restarting" : "requested",
-      {
-        before: result.before,
-        after: result.after,
-        ...(handoff && "message" in handoff ? { origin: { nextAction: handoff.message } } : {}),
-      },
-    );
-    for (const step of result.steps) {
-      const completed =
-        step.exitCode === 0 ||
-        step.advisory ||
-        (step.exitCode === null && result.status !== "error");
-      recordUpdateRunStep(runId, {
-        step: step.name,
-        status: completed ? "completed" : "failed",
-        ...(!completed ? { detail: summarizeUpdateStepFailure(step) } : {}),
-      });
-      for (const warning of updateRunStepsFromResultStep(step).slice(1)) {
-        recordUpdateRunStep(runId, warning);
+    let outcomeRun: ReturnType<typeof recordGatewayUpdateResult>;
+    try {
+      outcomeRun = recordGatewayUpdateResult(runId, result, handoff, acceptedHandoffStep);
+    } catch (error) {
+      // Accepted helpers still belong to this RPC until transfer. A failed write
+      // may have committed; cancel custody without retrying or rewriting the run.
+      if (managedHandoffOwner) {
+        const cancellation = await cancelManagedServiceUpdateHandoff(managedHandoffOwner).catch(
+          () => false,
+        );
+        if (cancellation !== "restored-in-process") {
+          try {
+            context?.logGateway?.warn(
+              "update.run result persistence failed; handoff cancellation is unconfirmed",
+            );
+          } catch {
+            // A broken diagnostic sink must not replace the persistence failure.
+          }
+        }
       }
-    }
-    // A managed orchestrator or the replacement Gateway owns terminal success;
-    // refusals and synchronous failures have no later process to finish the run.
-    if (result.status !== "ok" && handoff?.status !== "started") {
-      outcomeRun = finishUpdateRun(runId, {
-        status: result.status === "skipped" ? "skipped" : "failed",
-        reason: result.reason,
-        after: result.after,
-      });
+      throw error;
     }
 
     const payload: RestartSentinelPayload = buildUpdateRestartSentinelPayload({

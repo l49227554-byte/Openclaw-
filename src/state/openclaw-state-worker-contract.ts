@@ -1,3 +1,4 @@
+import type { SubagentRunReadRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
@@ -55,6 +56,10 @@ export type OpenClawStateWorkerOperations = PluginStateWorkerOperations &
   CronStoreSaveWorkerOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations & {
+    "subagents.sessionList": {
+      input: undefined;
+      output: Map<string, SubagentRunReadRecord> | undefined;
+    };
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
     "modelCatalog.remote.read": {

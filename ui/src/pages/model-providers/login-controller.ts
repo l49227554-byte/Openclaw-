@@ -21,11 +21,11 @@ type LoginControllerOptions = {
   getScope: () => {
     context: ApplicationContext;
     agentId: string | null;
-    authStatus: ModelAuthStatusResult | null;
+    authStatus?: ModelAuthStatusResult | null;
   };
   canStart: () => boolean;
   canContinue: () => boolean;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<unknown>;
 };
 
 export class ModelProviderLoginController implements ReactiveController {

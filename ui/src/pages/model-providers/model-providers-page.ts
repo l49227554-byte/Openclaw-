@@ -615,8 +615,7 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     const rosterError = agentsState.agentsList ? null : agentsState.agentsError;
     const selected = agents.find((agent) => normalizeAgentId(agent.id) === this.selectedAgentId);
     const data = this.data ?? EMPTY_MODEL_PROVIDERS_DATA;
-    const runtimeState = this.context.runtimeConfig.state;
-    const configObject = currentConfigObject(runtimeState);
+    const configObject = currentConfigObject(this.context.runtimeConfig.state);
     const config = readModelProviderConfig(configObject);
     const catalog =
       gatewaySnapshot.client && this.selectedAgentId

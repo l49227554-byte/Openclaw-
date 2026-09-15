@@ -350,7 +350,7 @@ describe("Models provider login", () => {
       await chooseLogin(page, "example-browser");
       await waitForFast(() =>
         expect(page.querySelector("openclaw-modal-dialog")?.textContent).toContain(
-          outcome === "error" ? "Sign-in could not finish." : guidance,
+          outcome === "error" ? "Could not finish. Open Details" : guidance,
         ),
       );
       if (outcome === "error") {

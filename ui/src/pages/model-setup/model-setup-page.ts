@@ -51,8 +51,6 @@ import { ModelSetupWizardRunner, type ModelSetupWizardCompletion } from "./wizar
 export type { ModelSetupRouteData } from "./first-run-setup.ts";
 export { resumeFirstRunActivation } from "./first-run-activation-receipt.ts";
 
-type Candidate = SystemAgentSetupDetectResult["candidates"][number];
-
 export class ModelSetupPage extends OpenClawLightDomElement {
   @consume({ context: applicationContext, subscribe: true })
   private context!: ApplicationContext;
@@ -101,20 +99,14 @@ export class ModelSetupPage extends OpenClawLightDomElement {
     (urls) => (this.iconUrls = urls),
   );
   private readonly login = new ModelProviderLoginController(this, {
-    getScope: () => ({
-      context: this.context,
-      agentId: this.agentSelection.state.selectedId,
-      authStatus: null,
-    }),
+    getScope: () => ({ context: this.context, agentId: this.agentSelection.state.selectedId }),
     canStart: () =>
       this.canUseSetup(this.context.gateway.snapshot.client) &&
       !this.firstRun.unresolved &&
       !this.actionsDisabled(),
     canContinue: () =>
       this.canUseSetup(this.context.gateway.snapshot.client) && !this.firstRun.unresolved,
-    refresh: async () => {
-      await this.detect();
-    },
+    refresh: () => this.detect(),
   });
   private readonly subscriptions = new SubscriptionsController(this)
     .watch(
@@ -175,14 +167,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
     }
   >(this, {
     autoRun: false,
-    args: () => {
-      const client = this.context?.gateway.snapshot.client ?? null;
-      return [
-        this.canUseSetup(client) ? client : null,
-        this.agentSelection.state.selectedId ?? null,
-        null,
-      ] as const;
-    },
+    args: () => [null, null, null],
     task: async ([client, agentId, token], { signal }) => {
       if (!client || !token) {
         return initialState;
@@ -432,13 +417,6 @@ export class ModelSetupPage extends OpenClawLightDomElement {
       this.manualApiKey = "";
     }
     this.firstRun.finishActivation(result, targetId, refreshError);
-  }
-
-  private activateCandidate(candidate: Candidate): void {
-    void this.activate(
-      { kind: candidate.kind, modelRef: candidate.modelRef },
-      activationTargetId(candidate.kind, candidate.modelRef),
-    );
   }
 
   private connectManual(): void {
@@ -711,7 +689,8 @@ export class ModelSetupPage extends OpenClawLightDomElement {
         }
       },
       onVerify: () => void this.firstRun.verify(),
-      onActivateCandidate: (candidate) => this.activateCandidate(candidate),
+      onActivateCandidate: ({ kind, modelRef }) =>
+        void this.activate({ kind, modelRef }, activationTargetId(kind, modelRef)),
       onStartAuth: (option) => {
         this.wizard.prepareSignIn(option.kind, option.label);
         this.pendingPrepareOption = null;

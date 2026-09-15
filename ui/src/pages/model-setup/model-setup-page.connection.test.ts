@@ -68,9 +68,15 @@ it.each(["connect", "setup"] as const)(
     let session: WizardSession | undefined;
     let verificationRuns = 0;
     request.mockImplementation(async (method, params) => {
-      if (method === "models.authStatus") return authStatus;
-      if (method === "config.get") return configSnapshot;
-      if (method === "openclaw.setup.detect") return setup;
+      if (method === "models.authStatus") {
+        return authStatus;
+      }
+      if (method === "config.get") {
+        return configSnapshot;
+      }
+      if (method === "openclaw.setup.detect") {
+        return setup;
+      }
       if (method === "models.authLogin" || method === "openclaw.setup.auth.start") {
         expect(method).toBe(
           operation === "connect" ? "models.authLogin" : "openclaw.setup.auth.start",
@@ -91,7 +97,9 @@ it.each(["connect", "setup"] as const)(
         return { done: false, status: "running" };
       }
       if (method === "wizard.next") {
-        if (!session) throw new Error("Expected registered wizard start");
+        if (!session) {
+          throw new Error("Expected registered wizard start");
+        }
         const answer = (params as WizardNextParams).answer;
         if (answer) {
           expect(answer.value).toBeUndefined();
@@ -175,9 +183,15 @@ it.each(["agent", "connection", "cancel"] as const)(
     const { context, client, request, runtimeConfig, snapshot } = createContext();
     const inventory = createDeferred<ModelAuthStatusResult>();
     request.mockImplementation(async (method) => {
-      if (method === "models.authStatus") return inventory.promise;
-      if (method === "openclaw.setup.detect") return setup;
-      if (method === "config.get") return configSnapshot;
+      if (method === "models.authStatus") {
+        return inventory.promise;
+      }
+      if (method === "openclaw.setup.detect") {
+        return setup;
+      }
+      if (method === "config.get") {
+        return configSnapshot;
+      }
       throw new Error(`Unexpected request: ${method}`);
     });
     try {
@@ -190,8 +204,12 @@ it.each(["agent", "connection", "cancel"] as const)(
       await waitForFast(() =>
         expect(request.mock.calls.some(([method]) => method === "models.authStatus")).toBe(true),
       );
-      if (change === "agent") context.settingsAgentSelection.state.selectedId = "other";
-      if (change === "connection") snapshot.hello = { ...snapshot.hello };
+      if (change === "agent") {
+        context.settingsAgentSelection.state.selectedId = "other";
+      }
+      if (change === "connection") {
+        snapshot.hello = { ...snapshot.hello };
+      }
       if (change === "cancel") {
         page.querySelector<HTMLButtonElement>("openclaw-modal-dialog button")!.click();
       } else {

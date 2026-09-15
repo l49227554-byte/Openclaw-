@@ -42,7 +42,10 @@ import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.
 import { applySlotSelectionForPlugin } from "./slot-selection.js";
 import * as statusSnapshot from "./status-snapshot.js";
 import { withPluginDiagnosticsReportForInspection, withPluginDiagnosticsReport } from "./status.js";
-import { createDiagnosticsFixture } from "./status.runtime-inspection.test-helpers.js";
+import {
+  classifyConfigObservationError,
+  createDiagnosticsFixture,
+} from "./status.runtime-inspection.test-helpers.js";
 import type { OpenClawPluginService } from "./types.js";
 
 describe("plugin runtime inspection", () => {
@@ -814,67 +817,6 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
       "config.snapshot.read.materialize",
       "config.snapshot.read.observe",
     ]);
-    const errorNames = [
-      "Error",
-      "TypeError",
-      "RangeError",
-      "ReferenceError",
-      "SyntaxError",
-      "AggregateError",
-    ];
-    const errorCodes = [
-      "ERR_SQLITE_ERROR",
-      "ERR_INVALID_STATE",
-      "STATE_DATABASE_READ_ADMISSION_INVALIDATED",
-      "EACCES",
-      "EPERM",
-      "ENOENT",
-      "EBUSY",
-      "EMFILE",
-      "ENFILE",
-      "ENOSPC",
-      "EROFS",
-    ];
-    const classifyError = (error: unknown) => {
-      const classified = {
-        errorName: "<other>",
-        errorCode: "<other-or-absent>",
-        messageKind: "detail-withheld",
-        stackOwners: [] as string[],
-      };
-      try {
-        const errorName = error instanceof Error ? error.name : undefined;
-        const errorCode =
-          typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
-        classified.errorName = errorNames.find((name) => name === errorName) ?? "<other>";
-        classified.errorCode = errorCodes.find((code) => code === errorCode) ?? "<other-or-absent>";
-        const message = error instanceof Error ? error.message : undefined;
-        classified.messageKind =
-          [
-            ["OpenClaw state database read admission is closed", "state-read-admission-closed"],
-            ["OpenClaw state database read admission changed", "state-read-admission-changed"],
-            ["Config health observation was superseded", "health-observation-superseded"],
-          ].find(([knownMessage]) => knownMessage === message)?.[1] ?? "detail-withheld";
-        const stack = error instanceof Error ? error.stack : undefined;
-        if (typeof stack === "string") {
-          const frames = stack.split("\n").filter((line) => /^\s+at /.test(line));
-          const stackOwners: [string, RegExp][] = [
-            ["io-observe", /[\\/]src[\\/]config[\\/]io\.observe\.(?:ts|js):\d+:\d+\)?$/],
-            ["io-health-state", /[\\/]src[\\/]config[\\/]io\.health-state\.(?:ts|js):\d+:\d+\)?$/],
-            [
-              "state-db-async-lifecycle",
-              /[\\/]src[\\/]state[\\/]openclaw-state-db-async-lifecycle\.(?:ts|js):\d+:\d+\)?$/,
-            ],
-          ];
-          classified.stackOwners = stackOwners
-            .filter(([, pattern]) => frames.some((frame) => pattern.test(frame)))
-            .map(([owner]) => owner);
-        }
-      } catch {
-        // Error getters and classification must not replace the original failure.
-      }
-      return classified;
-    };
     for (const name of [id, "all"]) {
       let lastCompletedStage = "<none>";
       let measuredFailure: { stage: string; error: unknown } | undefined;
@@ -916,12 +858,12 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
           // Observe the command's existing promise only after failure; do not warm config reads.
           const read = configRead.mock.results[0];
           let snapshot: Awaited<ReturnType<typeof readConfigSnapshot>> | undefined;
-          let readFailure: ReturnType<typeof classifyError> | undefined;
+          let readFailure: ReturnType<typeof classifyConfigObservationError> | undefined;
           try {
             snapshot = read?.type === "return" ? await read.value : undefined;
           } catch (readError) {
             // A rejected fallback observation must not hide the first observation's failure.
-            readFailure = classifyError(readError);
+            readFailure = classifyConfigObservationError(readError);
           }
           const observations = (observation?.mock.calls ?? []).flatMap(([, observed], index) =>
             observed.path === state.configPath ? [{ index, observed }] : [],
@@ -978,16 +920,19 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                 settled: settled?.type ?? "unavailable",
                 failure:
                   result?.type === "throw"
-                    ? classifyError(result.value)
+                    ? classifyConfigObservationError(result.value)
                     : settled?.type === "rejected"
-                      ? classifyError(settled.value)
+                      ? classifyConfigObservationError(settled.value)
                       : undefined,
               };
             }),
             matchesFixturePath: snapshot ? snapshot.path === state.configPath : undefined,
             lastCompletedStage,
             measuredFailure: measuredFailure
-              ? { stage: measuredFailure.stage, ...classifyError(measuredFailure.error) }
+              ? {
+                  stage: measuredFailure.stage,
+                  ...classifyConfigObservationError(measuredFailure.error),
+                }
               : { stage: "<outside measured callback>" },
             valid: snapshot?.valid,
             exists: snapshot?.exists,

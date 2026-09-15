@@ -101,6 +101,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/zalo/src/monitor.polling-lifecycle.test.ts",
   "extensions/zalo/src/outbound-media.test.ts",
   "extensions/zalouser/doctor-contract-api.test.ts",
+  "extensions/zalouser/src/zalo-js.credentials.test.ts",
   "extensions/imessage/src/approval-reactions.persistence.test.ts",
   "extensions/imessage/src/send.sqlite.test.ts",
 ];

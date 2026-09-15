@@ -82,7 +82,7 @@ export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
         ) {
           return false;
         }
-        this.onFocusPane?.(this.paneId);
+        this.onFocusPane?.(this.paneId, "review-edit");
         this.context.navigate("chat", target.options);
         return true;
       },

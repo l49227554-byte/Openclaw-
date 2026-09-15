@@ -15,14 +15,15 @@ const suite = createControlUiE2eSuite({
 });
 suite.define(() => {
   it.each([
-    { resolution: "save", split: false, cachedSplit: false, narrow: false },
-    { resolution: "cancel", split: false, cachedSplit: false, narrow: false },
-    { resolution: "save", split: true, cachedSplit: false, narrow: false },
-    { resolution: "save", split: true, cachedSplit: true, narrow: false },
-    { resolution: "save", split: true, cachedSplit: true, narrow: true },
+    { resolution: "save", split: false, cachedSplit: false, narrow: false, otherPage: false },
+    { resolution: "cancel", split: false, cachedSplit: false, narrow: false, otherPage: false },
+    { resolution: "save", split: true, cachedSplit: false, narrow: false, otherPage: false },
+    { resolution: "save", split: true, cachedSplit: true, narrow: false, otherPage: false },
+    { resolution: "save", split: true, cachedSplit: true, narrow: true, otherPage: false },
+    { resolution: "save", split: true, cachedSplit: true, narrow: false, otherPage: true },
   ] as const)(
-    "protects an edit through update recovery until $resolution (split: $split, cached: $cachedSplit, narrow: $narrow)",
-    async ({ resolution, split, cachedSplit, narrow }) => {
+    "protects an edit through update recovery until $resolution (split: $split, cached: $cachedSplit, narrow: $narrow, other page: $otherPage)",
+    async ({ resolution, split, cachedSplit, narrow, otherPage }) => {
       const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
       const page = await context.newPage();
       await page.addInitScript({ content: createControlUiMockSameOriginGatewayScript() });
@@ -125,6 +126,10 @@ suite.define(() => {
           path: `${suite.artifactDir}/${resolution}-after-update.png`,
           fullPage: true,
         });
+        if (otherPage) {
+          await page.getByRole("link", { name: "Agents", exact: true }).click();
+          await page.waitForURL((url) => url.pathname.endsWith("/agents"));
+        }
         await page.getByRole("button", { name: "Review edit", exact: true }).click();
         await page.waitForURL((url) => url.pathname === originalPathname);
         await edit.waitFor();

@@ -450,9 +450,13 @@ export class ChatPage extends OpenClawLightDomElement implements SessionSplitHos
     this.updateRoute(trimmed, true);
   }
 
-  private readonly handleFocusPane = (paneId: string) => {
+  private readonly handleFocusPane = (paneId: string, intent?: "review-edit") => {
     const layout = this.layout;
-    if (!this.presented || !layout || layout.activePaneId === paneId) {
+    if (
+      (!this.presented && intent !== "review-edit") ||
+      !layout ||
+      layout.activePaneId === paneId
+    ) {
       return;
     }
     const pane = findPane(layout, paneId)?.pane;

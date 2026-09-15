@@ -62,7 +62,8 @@ Open queued-message edits stay available when you switch conversations, even aft
 visiting enough chats to replace older cached views. Finish or cancel the edit to
 release that retained conversation.
 An open queued-message edit also blocks automatic UI reloads after a Gateway update.
-Use **Review edit** in the reload notice to return to its conversation.
+Use **Review edit** in the reload notice to return to its conversation and split,
+even after switching to another page.
 Save or cancel the edit, then use **Refresh for full capabilities** to continue.
 Explicit browser reloads do not preserve an unsaved queued-message correction.
 If another pane changes or removes that message, the edit stays open: copy your

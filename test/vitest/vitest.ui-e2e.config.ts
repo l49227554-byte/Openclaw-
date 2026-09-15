@@ -62,7 +62,6 @@ export const uiE2eRealGatewayTestFiles = [
 // These files own their server instead of leasing the global production bundle.
 // Keep any shared source-module optimizer cache under one worker.
 export const uiE2ePrivateServerTestFiles = [
-  "ui/src/e2e/chat-queue-update-reload.e2e.test.ts",
   "ui/src/e2e/agent-file-lifecycle.real-gateway.e2e.test.ts",
   "ui/src/e2e/approval-bootstrap.e2e.test.ts",
   "ui/src/e2e/browser-auth-recovery.e2e.test.ts",
@@ -73,6 +72,7 @@ export const uiE2ePrivateServerTestFiles = [
   "ui/src/e2e/chat-export-attribution.e2e.test.ts",
   "ui/src/e2e/chat-loading-performance.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-project-media.real-gateway.e2e.test.ts",
+  "ui/src/e2e/chat-queue-update-reload.e2e.test.ts",
   "ui/src/e2e/chat-stop-finished-run.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-thinking-metadata.real-gateway.e2e.test.ts",
   "ui/src/e2e/chat-tts-supplement.real-gateway.e2e.test.ts",

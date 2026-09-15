@@ -192,7 +192,7 @@ describe("scanStatusJsonFast", () => {
 
     expect(mocks.getUpdateCheckResult).toHaveBeenCalledWith(
       expect.objectContaining({
-        timeoutMs: 6500,
+        timeoutMs: 1234,
         fetchGit: false,
         includeRegistry: false,
       }),

@@ -167,14 +167,17 @@ describe("status optional Git probes", () => {
     { json: false, probe: "--show-toplevel", timeoutMs: undefined, budgetMs: 10_000 },
     { json: true, probe: "--show-toplevel", timeoutMs: undefined, budgetMs: 10_000 },
     { json: true, all: true, probe: "--show-toplevel", timeoutMs: 20_000, budgetMs: 20_000 },
-    { json: false, probe: "--show-toplevel", timeoutMs: 1000, budgetMs: 6500 },
+    { json: false, probe: "--show-toplevel", timeoutMs: 1000, budgetMs: 1000 },
+    { json: true, probe: "--show-toplevel", timeoutMs: 1000, budgetMs: 1000 },
     { json: false, probe: "--porcelain", timeoutMs: undefined, budgetMs: 10_000 },
     { json: true, probe: "--abbrev-ref", timeoutMs: undefined, budgetMs: 10_000 },
   ])(
     "keeps the report after $probe times out (JSON: $json, budget: $budgetMs)",
     async ({ probe, budgetMs, ...opts }) => {
       vi.useFakeTimers();
+      const startedAt = Date.now();
       const { output, update } = await runStatusProbe(opts, delayGitProbe(probe, null));
+      expect(Date.now() - startedAt).toBe(budgetMs);
       expect(output).toContain(`git probe did not finish within ${budgetMs / 1000} s (slow host)`);
       expect(output).not.toContain("remote reachability");
       if (opts.json) {

@@ -14,11 +14,12 @@ async function installNative(page: Page) {
     const requests: Array<{ command: string; params?: Record<string, unknown> }> = [];
     const listeners = new Map<string, (event: { payload: unknown }) => void>();
     const emit = (name: string, payload: unknown) => listeners.get(name)?.({ payload });
+    const primaryAgent = { id: "main", name: "Assistant", isDefault: true };
     const agents = [
-      { id: "main", name: "Assistant", isDefault: true },
+      primaryAgent,
       { id: "writer", name: "Writing assistant for long project names", isDefault: false },
     ];
-    let selectedAgent = agents[0];
+    let selectedAgent = primaryAgent;
     let firstConnection = true;
     Object.assign(window, {
       nativeRequests: requests,
@@ -63,9 +64,14 @@ async function installNative(page: Page) {
                 return agents;
               case "quickchat_identity":
                 return selectedAgent;
-              case "quickchat_select_agent":
-                selectedAgent = agents.find((agent) => agent.id === params?.agentId)!;
+              case "quickchat_select_agent": {
+                const requestedAgent = agents.find((agent) => agent.id === params?.agentId);
+                if (!requestedAgent) {
+                  throw new Error(`Unknown fixture agent: ${String(params?.agentId)}`);
+                }
+                selectedAgent = requestedAgent;
                 return selectedAgent;
+              }
               case "quickchat_shortcut":
               case "quickchat_set_shortcut":
                 return {
@@ -123,15 +129,25 @@ async function expectAppearance(page: Page, scheme: Scheme, surface = ".panel", 
     page.evaluate(
       ({ surfaceSelector, textSelector }) => {
         const luminance = (color: string) => {
-          const channels = color
-            .match(/[\d.]+/gu)!
-            .slice(0, 3)
-            .map(Number);
-          const linear = channels.map((channel) => {
+          const components = /^rgb\(([\d.]+),\s*([\d.]+),\s*([\d.]+)\)$/u.exec(color);
+          if (!components) {
+            throw new Error(`Expected opaque RGB color, received ${color}`);
+          }
+          const red = Number(components[1]);
+          const green = Number(components[2]);
+          const blue = Number(components[3]);
+          if (
+            [red, green, blue].some(
+              (channel) => !Number.isFinite(channel) || channel < 0 || channel > 255,
+            )
+          ) {
+            throw new Error(`Invalid RGB components: ${color}`);
+          }
+          const linear = (channel: number) => {
             const value = channel / 255;
             return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-          });
-          return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722;
+          };
+          return linear(red) * 0.2126 + linear(green) * 0.7152 + linear(blue) * 0.0722;
         };
         const background = luminance(
           getComputedStyle(document.querySelector(surfaceSelector)!).backgroundColor,

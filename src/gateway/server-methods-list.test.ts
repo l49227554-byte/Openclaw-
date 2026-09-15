@@ -209,6 +209,7 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
@@ -246,6 +247,7 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
     ]);
   });
@@ -262,6 +264,8 @@ describe("listGatewayMethods", () => {
 
   it("advertises Control UI session pull request detection", () => {
     expect(listGatewayMethods()).toContain("controlUi.sessionPullRequests.subscribe");
+    expect(listGatewayMethods()).toContain("controlUi.sessionPullRequests.checks");
+    expect(coreGatewayHandlers["controlUi.sessionPullRequests.checks"]).toBeTypeOf("function");
     expect(GATEWAY_EVENTS).toContain("controlUi.sessionPullRequests.changed");
   });
 
@@ -410,6 +414,7 @@ describe("listGatewayMethods", () => {
       "computer.status",
       "computer.invoke",
       "sessions.activitySummary.ensure",
+      "controlUi.sessionPullRequests.checks",
       "diagnostics.cpuProfile",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);

@@ -110,7 +110,10 @@ afterEach(async () => {
   clearRuntimeConfigSnapshot();
 });
 
-async function createFixture(currentContext: "channel" | "chat" | "none" = "channel") {
+async function createFixture(
+  currentContext: "channel" | "chat" | "none" = "channel",
+  origin: "bundled" | "global" = "bundled",
+) {
   const cfg: OpenClawConfig = {
     channels: {
       msteams: {
@@ -134,7 +137,11 @@ async function createFixture(currentContext: "channel" | "chat" | "none" = "chan
     runtime: {} as PluginRuntime,
     activateGlobalSideEffects: false,
   });
-  const record = createPluginRecord({ id: "msteams", origin: "bundled" });
+  const record = createPluginRecord({
+    id: "msteams",
+    origin,
+    trustedOfficialInstall: origin === "global",
+  });
   owner.registry.plugins.push(record);
   owner.createApi(record, { config: cfg, registrationMode: "full" }).registerChannel({
     plugin: { ...msteamsPlugin, status: undefined },
@@ -148,19 +155,19 @@ async function createFixture(currentContext: "channel" | "chat" | "none" = "chan
   const toolContext: ChannelThreadingToolContext | undefined =
     currentContext === "none"
       ? undefined
-      : currentContext === "chat"
-        ? {
-            currentChannelProvider: "msteams",
-            currentChannelId: currentChat,
-            currentChatType: "direct",
-          }
-        : {
-            currentChannelProvider: "msteams",
-            currentChannelId: current.channelId,
-            currentChatType: "channel",
-            currentMessagingTarget: currentTarget,
-            currentGraphChannelId: currentTarget,
-          };
+      : {
+          ...msteamsPlugin.threading!.buildToolContext!({
+            cfg,
+            accountId: "default",
+            context: {
+              To: `conversation:${currentContext === "chat" ? currentChat : current.channelId}`,
+              ChatType: currentContext === "chat" ? "direct" : "channel",
+              NativeChannelId: currentContext === "chat" ? undefined : currentTarget,
+            },
+            hasRepliedRef: { value: false },
+          }),
+          currentChannelProvider: "msteams",
+        };
   const capabilityParams = { agentId: "main", runId: operationalRunInstance.runId, sessionKey };
   const turnCapability = mintMessageActionTurnCapability({
     ...capabilityParams,
@@ -389,14 +396,21 @@ function expectGraphRequests(requests: GraphRequest[], action: Action, destinati
 
 describe.each(["tool", "gateway"] as const)("Teams %s read target selection", (route) => {
   describe.each(["search", "member-info"] as const)("%s", (action) => {
-    it("preserves explicit-current and implicit-current selection", async () => {
-      const fixture = await createFixture();
-      for (const channelId of [current.channelId, undefined]) {
-        const before = fixture.requests.length;
+    describe.each(["bundled", "global"] as const)("%s registration", (origin) => {
+      it.each([
+        { name: "omitted", channelId: undefined },
+        { name: "bare", channelId: current.channelId },
+        { name: "conversation-prefixed", channelId: `conversation:${current.channelId}` },
+        { name: "provider-prefixed", channelId: `msteams:${current.channelId}` },
+        { name: "provider alias", channelId: `teams:conversation:${current.channelId}` },
+        { name: "thread-qualified", channelId: `conversation:${current.channelId};messageid=123` },
+        { name: "Graph", channelId: currentTarget },
+      ])("reads the current channel with a $name target", async ({ channelId }) => {
+        const fixture = await createFixture("channel", origin);
         const result = await fixture.invoke(route, action, channelId ? { channelId } : {});
         expectReadResult(result, action, current);
-        expectGraphRequests(fixture.requests.slice(before), action, current);
-      }
+        expectGraphRequests(fixture.requests, action, current);
+      });
     });
 
     it("uses an explicit permitted channelId instead of the current channel", async () => {
@@ -428,6 +442,8 @@ describe.each(["tool", "gateway"] as const)("Teams %s read target selection", (r
         name: "channel paired with the wrong team",
         channelId: `${other.teamId}/${current.channelId}`,
       },
+      { name: "case-distinct conversation", channelId: "19:CURRENT@thread.tacv2" },
+      { name: "user-prefixed conversation", channelId: `user:${current.channelId}` },
     ])(
       "rejects an explicit $name instead of reading the current channel",
       async ({ channelId }) => {
@@ -438,13 +454,16 @@ describe.each(["tool", "gateway"] as const)("Teams %s read target selection", (r
       },
     );
 
-    it("rejects an unknown account before Graph access", async () => {
-      const fixture = await createFixture();
-      await expect(
-        fixture.invoke(route, action, { channelId: otherTarget, accountId: "other" }),
-      ).rejects.toThrow(/account/i);
-      expect(fixture.requests).toEqual([]);
-    });
+    it.each([current.channelId, otherTarget])(
+      "rejects an unknown account for %s",
+      async (channelId) => {
+        const fixture = await createFixture();
+        await expect(
+          fixture.invoke(route, action, { channelId, accountId: "other" }),
+        ).rejects.toThrow(/account/i);
+        expect(fixture.requests).toEqual([]);
+      },
+    );
   });
 
   it("keeps the requester-only member shortcut in the current chat", async () => {
@@ -468,6 +487,8 @@ describe.each(["search", "member-info"] as const)(
       for (const [params, destination] of [
         [{ to: currentTarget, target: otherTarget, channelId: deniedTarget }, current],
         [{ target: otherTarget, channelId: deniedTarget }, other],
+        [{ to: otherTarget, target: current.channelId, channelId: current.channelId }, other],
+        [{ target: current.channelId, channelId: otherTarget }, current],
       ] as const) {
         const before = fixture.requests.length;
         const result = await fixture.invokeAdapter(action, params);

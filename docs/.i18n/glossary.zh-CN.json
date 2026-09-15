@@ -696,6 +696,14 @@
     "target": "Prism"
   },
   {
+    "source": "Prism plugin reference",
+    "target": "Prism 插件参考"
+  },
+  {
+    "source": "prism",
+    "target": "Prism"
+  },
+  {
     "source": "Model providers",
     "target": "模型提供商"
   },

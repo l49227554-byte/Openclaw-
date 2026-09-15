@@ -11,13 +11,13 @@ title: "Prism"
 Prism provides OpenAI-compatible inference for coding agents. OpenClaw supports
 Prism through the official external `@openclaw/prism-provider` plugin.
 
-| Setting | Value |
-| --- | --- |
-| Provider | `prism` |
-| Authentication | `PRISM_API_KEY` |
-| Base URL | `https://api.prisminference.com/v1` |
-| API | `openai-completions` |
-| Default model | `prism/deepseek-v4.1-flash` |
+| Setting        | Value                               |
+| -------------- | ----------------------------------- |
+| Provider       | `prism`                             |
+| Authentication | `PRISM_API_KEY`                     |
+| Base URL       | `https://api.prisminference.com/v1` |
+| API            | `openai-completions`                |
+| Default model  | `prism/deepseek-v4.1-flash`         |
 
 ## Install
 
@@ -40,10 +40,10 @@ openclaw onboard --non-interactive --accept-risk --skip-health \
 
 ## Models
 
-| Model ref | Input | Context | Maximum output |
-| --- | --- | ---: | ---: |
-| `prism/deepseek-v4.1-flash` | text, image | 1,000,000 | 384,000 |
-| `prism/deepseek-v4-flash` | text | 1,000,000 | 384,000 |
+| Model ref                   | Input       |   Context | Maximum output |
+| --------------------------- | ----------- | --------: | -------------: |
+| `prism/deepseek-v4.1-flash` | text, image | 1,000,000 |        384,000 |
+| `prism/deepseek-v4-flash`   | text        | 1,000,000 |        384,000 |
 
 List the current plugin catalog:
 

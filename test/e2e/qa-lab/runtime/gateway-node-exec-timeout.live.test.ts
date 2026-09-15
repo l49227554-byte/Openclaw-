@@ -344,19 +344,19 @@ describe.skipIf(!LIVE_ENABLED)("Codex node_exec live timeout ownership", () => {
             if (terminal.kind === "error") {
               throw terminal.error;
             }
-            expect(terminal.value, liveGateway.logs()).toMatchObject({
-              status: testCase.name === "stop" ? "timeout" : "ok",
-              result: { meta: { agentMeta: { agentHarnessId: "codex" } } },
-            });
+            // Aborts omit result metadata; the persisted node_exec call still identifies Codex.
+            expect(terminal.value, liveGateway.logs()).toMatchObject(
+              testCase.name === "stop"
+                ? { status: "timeout", summary: "aborted", stopReason: "rpc" }
+                : { status: "ok", result: { meta: { agentMeta: { agentHarnessId: "codex" } } } },
+            );
             const history = await readCommandHistory(
               liveGateway,
               sessionKey,
               expectedArgs,
               testCase.name === "stop" ? undefined : expectedReply,
             );
-            if (testCase.name === "stop") {
-              expect(terminal.value).toMatchObject({ summary: "aborted", stopReason: "rpc" });
-            } else {
+            if (testCase.name !== "stop") {
               if (!history.result) {
                 throw new Error("History omitted the completed node_exec result");
               }

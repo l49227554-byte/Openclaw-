@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import type { DiagnosticEventMetadata } from "./diagnostic-events.js";
 
 export type DiagnosticToolExecutionLiveness = Readonly<{ deadlineAtMs?: number }>;
 export const TOOL_EXECUTION_LIVENESS_METADATA_KEY = "toolExecutionLiveness";
@@ -61,9 +60,10 @@ export function consumeToolExecutionLivenessDiagnosticEvent(
 }
 
 export function resolveToolExecutionLivenessDiagnosticMetadata(
-  metadata: DiagnosticEventMetadata & {
+  metadata: Readonly<{
+    trusted: boolean;
     [TOOL_EXECUTION_LIVENESS_METADATA_KEY]?: DiagnosticToolExecutionLiveness;
-  },
+  }>,
 ): DiagnosticToolExecutionLiveness | undefined {
-  return metadata[TOOL_EXECUTION_LIVENESS_METADATA_KEY];
+  return metadata.trusted ? metadata[TOOL_EXECUTION_LIVENESS_METADATA_KEY] : undefined;
 }

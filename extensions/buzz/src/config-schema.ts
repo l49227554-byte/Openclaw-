@@ -13,6 +13,7 @@ const BuzzGroupConfigSchema = z
     requireMention: z.boolean().optional(),
     groupPolicy: GroupPolicySchema.optional(),
     groupAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),
+    threadSessions: z.boolean().optional(),
   })
   .strict();
 
@@ -47,6 +48,7 @@ const BuzzAccountConfigSchema = z
       )
       .optional(),
     historyLimit: z.number().int().min(0).max(20).optional(),
+    threadSessions: z.boolean().optional(),
     defaultTo: z.string().optional(),
   })
   .strict();

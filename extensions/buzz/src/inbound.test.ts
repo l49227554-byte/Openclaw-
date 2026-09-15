@@ -1,5 +1,6 @@
 import {
   buildChannelInboundEventContext,
+  createChannelInboundEnvelopeBuilder,
   runPreparedInboundReply,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -37,6 +38,7 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
   return {
     ...actual,
     buildChannelInboundEventContext: vi.fn(actual.buildChannelInboundEventContext),
+    createChannelInboundEnvelopeBuilder: vi.fn(actual.createChannelInboundEnvelopeBuilder),
   };
 });
 vi.mock("openclaw/plugin-sdk/channel-ingress-runtime", async (importOriginal) => {
@@ -833,6 +835,100 @@ describe("handleBuzzInbound", () => {
       channelId: ROOM_ID,
       threadId: "event-root",
       replyToId: "event-root",
+    });
+  });
+
+  describe("thread sessions", () => {
+    const ROOM_SESSION_KEY = `agent:main:buzz:group:buzz:${ROOM_ID}`;
+    const THREAD_SESSION_KEY = `${ROOM_SESSION_KEY}:thread:event-root`;
+
+    function ingressBindingSessionKey(): string | undefined {
+      return vi.mocked(resolveStableChannelMessageIngress).mock.calls[0]?.[0].contextBinding
+        ?.sessionKey;
+    }
+
+    async function dispatchThreadReply(account: ResolvedBuzzAccount, threadId?: string) {
+      const runtime = createPluginRuntimeMock();
+      setBuzzRuntime(runtime);
+      const bus = createBus();
+      await handleBuzzInbound({
+        account,
+        cfg: {} satisfies OpenClawConfig,
+        bus,
+        message: createMessage({
+          id: "event-reply",
+          threadId,
+          mentionedPubkeys: [BOT_PUBLIC_KEY],
+        }),
+        ...createLifecycle(),
+      });
+      return { dispatch: firstDispatch(runtime), bus };
+    }
+
+    it("keeps thread replies on the room session by default", async () => {
+      const { dispatch } = await dispatchThreadReply(createAccount(), "event-root");
+
+      expect(dispatch.route.sessionKey).toBe(ROOM_SESSION_KEY);
+      expect(dispatch.ctxPayload.SessionKey).toBe(ROOM_SESSION_KEY);
+      expect(ingressBindingSessionKey()).toBe(ROOM_SESSION_KEY);
+    });
+
+    it("routes thread replies to a thread-scoped session when threadSessions is enabled", async () => {
+      const { dispatch, bus } = await dispatchThreadReply(
+        createAccount({ threadSessions: true }),
+        "event-root",
+      );
+
+      expect(dispatch.route.sessionKey).toBe(THREAD_SESSION_KEY);
+      expect(dispatch.ctxPayload.SessionKey).toBe(THREAD_SESSION_KEY);
+      expect(dispatch.ctxPayload.ParentSessionKey).toBeUndefined();
+      expect(ingressBindingSessionKey()).toBe(THREAD_SESSION_KEY);
+      expect(vi.mocked(createChannelInboundEnvelopeBuilder)).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          route: expect.objectContaining({ sessionKey: THREAD_SESSION_KEY }),
+        }),
+      );
+
+      await dispatch.delivery.deliver({ text: "threaded reply" }, { kind: "final" });
+      expect(bus.sendText).toHaveBeenCalledWith({
+        channelId: ROOM_ID,
+        text: "threaded reply",
+        threadId: "event-root",
+        replyToId: "event-root",
+      });
+    });
+
+    it("keeps top-level room messages on the room session when threadSessions is enabled", async () => {
+      const { dispatch } = await dispatchThreadReply(createAccount({ threadSessions: true }));
+
+      expect(dispatch.route.sessionKey).toBe(ROOM_SESSION_KEY);
+      expect(dispatch.ctxPayload.SessionKey).toBe(ROOM_SESSION_KEY);
+      expect(ingressBindingSessionKey()).toBe(ROOM_SESSION_KEY);
+    });
+
+    it("lets a room opt out of account-level thread sessions", async () => {
+      const { dispatch } = await dispatchThreadReply(
+        createAccount({
+          threadSessions: true,
+          groups: { [ROOM_ID]: { requireMention: true, threadSessions: false } },
+        }),
+        "event-root",
+      );
+
+      expect(dispatch.route.sessionKey).toBe(ROOM_SESSION_KEY);
+      expect(ingressBindingSessionKey()).toBe(ROOM_SESSION_KEY);
+    });
+
+    it("lets a room opt into thread sessions without an account-level setting", async () => {
+      const { dispatch } = await dispatchThreadReply(
+        createAccount({
+          groups: { [ROOM_ID]: { requireMention: true, threadSessions: true } },
+        }),
+        "event-root",
+      );
+
+      expect(dispatch.route.sessionKey).toBe(THREAD_SESSION_KEY);
+      expect(ingressBindingSessionKey()).toBe(THREAD_SESSION_KEY);
     });
   });
 

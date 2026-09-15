@@ -407,8 +407,50 @@ including replies to messages inside existing threads. Typing indicators follow
 the same placement, including heartbeat typing.
 
 This changes delivery only: inbound thread context and session identity remain
-intact. Explicit message-tool or CLI sends with a thread or reply target still
-honor that target. To restore the default, use `"all"` or remove the setting.
+intact (see [Thread sessions](#thread-sessions) to change session identity).
+Explicit message-tool or CLI sends with a thread or reply target still honor
+that target. To restore the default, use `"all"` or remove the setting.
+
+### Thread sessions
+
+By default every thread in a room shares the room session, so a long turn in one
+thread queues replies in other threads, and a new thread starts with whatever the
+room session already contains. Set `threadSessions: true` to give each Buzz thread
+its own session:
+
+```json5
+{
+  channels: {
+    buzz: {
+      threadSessions: true,
+      groups: {
+        "7c4a6d2a-2ed9-4b4e-a5e2-4d705ee9b34c": {
+          threadSessions: false,
+        },
+      },
+    },
+  },
+}
+```
+
+- The room setting wins over the account setting, and the account setting wins
+  over `channels.buzz.threadSessions`. Named accounts do not inherit the root
+  `groups` map, so set the room override under `accounts.<id>.groups`.
+- The thread is identified by its root event (the `root`-marked `e` tag, or the
+  `reply`-marked tag when no root tag is present). The session key is the room
+  session key with a `:thread:<root event id>` suffix. Top-level room messages
+  stay on the room session.
+- A new thread session starts empty. It does not copy the room transcript, and
+  [passive room context](#passive-room-context) is already scoped to the same
+  room and thread. Use the session tools to read other sessions when needed.
+- A thread session does not inherit a `/model` override set on the room session.
+  Set the model on the thread session, or in the agent defaults, when a room
+  uses a non-default model.
+- Automatic replies and typing keep the same placement as before; only the
+  session changes.
+- Each thread keeps its own session record. Turning the setting off routes new
+  thread messages back to the room session and leaves existing thread sessions
+  untouched.
 
 ## Manual configuration
 

@@ -1,6 +1,7 @@
 import { normalizeURL } from "nostr-tools/utils";
 import {
   buildChannelInboundEventContext,
+  createChannelInboundEnvelopeBuilder,
   logInboundDrop,
   resolveChannelInboundRouteEnvelope,
 } from "openclaw/plugin-sdk/channel-inbound";
@@ -8,6 +9,7 @@ import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/logging-core";
 import type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
+import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
 import type { BuzzBus } from "./buzz-bus.js";
 import type { BuzzConfigInput } from "./config-schema.js";
 import {
@@ -37,7 +39,7 @@ export async function handleBuzzInbound(params: {
   const channelId = parseBuzzTarget(message.channelId);
   const target = buildBuzzTarget(channelId);
   const textForAgent = formatBuzzMessageForAgent(message);
-  const { route, buildEnvelope } = resolveChannelInboundRouteEnvelope({
+  const { route, buildEnvelope: buildRoomEnvelope } = resolveChannelInboundRouteEnvelope({
     cfg,
     channel: "buzz",
     accountId: account.accountId,
@@ -57,6 +59,19 @@ export async function handleBuzzInbound(params: {
   const hasControlCommand =
     shouldComputeCommandAuthorized && runtime.channel.text.hasControlCommand(message.text, cfg);
   const groupConfig = account.config.groups?.[channelId];
+  // Thread sessions are opt-in per room; by default every thread shares the room session.
+  const threadSessions = groupConfig?.threadSessions ?? account.config.threadSessions ?? false;
+  const sessionKey = threadSessions
+    ? resolveThreadSessionKeys({ baseSessionKey: route.sessionKey, threadId: message.threadId })
+        .sessionKey
+    : route.sessionKey;
+  const buildEnvelope =
+    sessionKey === route.sessionKey
+      ? buildRoomEnvelope
+      : createChannelInboundEnvelopeBuilder({
+          cfg,
+          route: { agentId: route.agentId, sessionKey },
+        });
   const access = await resolveStableChannelMessageIngress({
     channelId: "buzz",
     accountId: account.accountId,
@@ -69,7 +84,7 @@ export async function handleBuzzInbound(params: {
     },
     contextBinding: {
       agentId: route.agentId,
-      sessionKey: route.sessionKey,
+      sessionKey,
       messageId: message.id,
       inboundEventKind: "user_request",
     },
@@ -159,6 +174,7 @@ export async function handleBuzzInbound(params: {
       dmScope: route.dmScope,
       accountId: route.accountId,
       routeSessionKey: route.sessionKey,
+      dispatchSessionKey: sessionKey,
     },
     reply: {
       to: target,
@@ -195,7 +211,7 @@ export async function handleBuzzInbound(params: {
     route: {
       agentId: route.agentId,
       dmScope: route.dmScope,
-      sessionKey: route.sessionKey,
+      sessionKey,
     },
     ctxPayload,
     botLoopProtection: bus.directory.isBotMember(channelId, message.senderPubkey)

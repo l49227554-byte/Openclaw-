@@ -97,6 +97,37 @@ describe("BuzzConfigSchema", () => {
     expect(parseBuzzConfig(config).success).toBe(valid);
     expectJsonSchemaValidity(`buzz.reply-mode.${replyToMode}`, config, valid);
   });
+  it.each([
+    [true, true],
+    [false, true],
+    ["on", false],
+    [1, false],
+  ])("validates threadSessions %s in runtime and JSON schemas", (threadSessions, valid) => {
+    const config = { threadSessions, groupPolicy: "allowlist" };
+    expect(parseBuzzConfig(config).success).toBe(valid);
+    expectJsonSchemaValidity(`buzz.thread-sessions.${threadSessions}`, config, valid);
+  });
+
+  it("accepts account and room thread session overrides in both config schemas", () => {
+    const config = {
+      groupPolicy: "open",
+      threadSessions: true,
+      groups: {
+        "7c4a6d2a-2ed9-4b4e-a5e2-4d705ee9b34c": { threadSessions: false },
+      },
+      accounts: { ada: { threadSessions: false } },
+    };
+
+    expect(parseBuzzConfig(config)).toMatchObject({
+      success: true,
+      data: {
+        threadSessions: true,
+        groups: { "7c4a6d2a-2ed9-4b4e-a5e2-4d705ee9b34c": { threadSessions: false } },
+        accounts: { ada: { threadSessions: false } },
+      },
+    });
+    expectJsonSchemaValidity("buzz.config-schema.thread-session-overrides", config, true);
+  });
 
   it.each([
     "ws://localhost:3000",

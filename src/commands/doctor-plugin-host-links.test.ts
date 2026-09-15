@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
-import { writePersistedInstalledPluginIndexInstallRecords } from "../plugins/installed-plugin-index-records.js";
+import { seedInstalledPluginIndex } from "../plugins/test-helpers/installed-plugin-index.js";
 import {
   detectPluginRegistryHealthIssues,
   maybeRepairPluginRegistryState,
@@ -22,10 +22,6 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
   vi.mocked(note).mockReset();
 });
-
-function makeStateDir(): string {
-  return tempDirs.make("openclaw-doctor-plugin-host-links-");
-}
 
 function createRegisteredExtensionPlugin(params: {
   stateDir: string;
@@ -79,7 +75,7 @@ async function writeInstallRecords(
   stateDir: string,
   installRecords: Record<string, PluginInstallRecord>,
 ): Promise<void> {
-  await writePersistedInstalledPluginIndexInstallRecords(installRecords, {
+  await seedInstalledPluginIndex(installRecords, {
     stateDir,
     candidates: [],
   });
@@ -103,7 +99,7 @@ describe("doctor registered npm plugin host links", () => {
   it.each(["peerDependencies", "dependencies"] as const)(
     "repairs a stale copied host for a registered extensions-root %s plugin",
     async (dependencyField) => {
-      const stateDir = makeStateDir();
+      const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
       const { packageDir, staleHostDir } = createRegisteredExtensionPlugin({
         stateDir,
         dependencyField,
@@ -121,7 +117,7 @@ describe("doctor registered npm plugin host links", () => {
   );
 
   it("reports a stale registered extensions-root host without changing it in read-only doctor", async () => {
-    const stateDir = makeStateDir();
+    const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
     const { packageDir, staleHostDir } = createRegisteredExtensionPlugin({ stateDir });
     await writeInstallRecords(stateDir, {
       email: createNpmInstallRecord("email", packageDir),
@@ -152,7 +148,7 @@ describe("doctor registered npm plugin host links", () => {
   });
 
   it("does not repair a developer-controlled path install under the extensions root", async () => {
-    const stateDir = makeStateDir();
+    const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
     const { packageDir, staleHostDir } = createRegisteredExtensionPlugin({ stateDir });
     await writeInstallRecords(stateDir, {
       email: { source: "path", installPath: packageDir },
@@ -168,7 +164,7 @@ describe("doctor registered npm plugin host links", () => {
   });
 
   it("does not repair an npm install recorded outside the operator-owned plugin roots", async () => {
-    const stateDir = makeStateDir();
+    const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
     const { packageDir, staleHostDir } = createRegisteredExtensionPlugin({
       stateDir,
       packageDir: path.join(stateDir, "external-owner", "email"),
@@ -185,7 +181,7 @@ describe("doctor registered npm plugin host links", () => {
   it.runIf(process.platform !== "win32")(
     "does not follow a registered extensions-root package symlink outside its owner root",
     async () => {
-      const stateDir = makeStateDir();
+      const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
       const outsideDir = path.join(stateDir, "external-owner", "email");
       const { staleHostDir } = createRegisteredExtensionPlugin({
         stateDir,
@@ -207,7 +203,7 @@ describe("doctor registered npm plugin host links", () => {
   it.runIf(process.platform !== "win32")(
     "does not mutate a developer-owned sibling through a registered in-root package alias",
     async () => {
-      const stateDir = makeStateDir();
+      const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
       const developerPackageDir = path.join(stateDir, "extensions", "local-project");
       const developerPlugin = createRegisteredExtensionPlugin({
         stateDir,
@@ -226,7 +222,7 @@ describe("doctor registered npm plugin host links", () => {
   );
 
   it("does not delete an unrelated copied package while repairing a registered install", async () => {
-    const stateDir = makeStateDir();
+    const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
     const { packageDir, staleHostDir } = createRegisteredExtensionPlugin({
       stateDir,
       nestedPackageName: "not-openclaw",
@@ -244,7 +240,7 @@ describe("doctor registered npm plugin host links", () => {
   });
 
   it("reports a malformed registered package and still repairs its valid sibling", async () => {
-    const stateDir = makeStateDir();
+    const stateDir = tempDirs.make("openclaw-doctor-plugin-host-links-");
     const broken = createRegisteredExtensionPlugin({ stateDir, pluginId: "broken" });
     const email = createRegisteredExtensionPlugin({ stateDir });
     fs.writeFileSync(path.join(broken.packageDir, "package.json"), "{", "utf8");

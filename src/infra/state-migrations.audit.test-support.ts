@@ -4,7 +4,7 @@ import path from "node:path";
 import { vi } from "vitest";
 import { listConfigAuditRecordsForTests } from "../config/io.audit.test-support.js";
 import { listSystemAgentAuditEntriesForTests } from "../system-agent/audit.test-support.js";
-import { withTempDir } from "../test-helpers/temp-dir.js";
+import { withTestDir } from "../test-helpers/temp-dir.js";
 import { detectLegacyAuditLogs, migrateLegacyAuditLogs } from "./state-migrations.audit-logs.js";
 
 const AUDIT_SCRUB_PATTERN = Buffer.from(" \t".repeat(16));
@@ -121,7 +121,7 @@ export class AuditMigrationFixture {
 export const withAuditMigrationFixture = (
   run: (fixture: AuditMigrationFixture) => Promise<void>,
 ): Promise<void> =>
-  withTempDir({ prefix: "openclaw-audit-migration-" }, (stateDir) =>
+  withTestDir({ prefix: "openclaw-audit-migration-" }, (stateDir) =>
     run(new AuditMigrationFixture(stateDir)),
   );
 
@@ -195,7 +195,10 @@ export async function failChmodCall(
 }
 
 export async function failSecondScrubWrite(fixture: AuditMigrationFixture) {
+  // The source inode becomes the raw archive; sibling publication writes must succeed.
+  const sourceIdentity = await fs.stat(fixture.config.source, { bigint: true });
   const prototype = await fileHandlePrototype<{
+    stat(options: { bigint: true }): Promise<{ dev: bigint; ino: bigint }>;
     write(
       buffer: Uint8Array,
       offset: number,
@@ -212,6 +215,10 @@ export async function failSecondScrubWrite(fixture: AuditMigrationFixture) {
     length: number,
     position: number | null,
   ) {
+    const identity = await this.stat({ bigint: true });
+    if (identity.dev !== sourceIdentity.dev || identity.ino !== sourceIdentity.ino) {
+      return await original.call(this, buffer, offset, length, position);
+    }
     calls += 1;
     if (calls === 1) {
       return await original.call(

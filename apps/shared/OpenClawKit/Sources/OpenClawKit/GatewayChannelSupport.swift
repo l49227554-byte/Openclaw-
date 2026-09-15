@@ -25,28 +25,6 @@ func gatewayIntValue(_ value: Any?) -> Int? {
     return nil
 }
 
-func gatewayErrorDetails(_ error: ErrorShape?) -> [String: OpenClawProtocol.AnyCodable] {
-    var details: [String: OpenClawProtocol.AnyCodable] = [:]
-    if let nested = error?.details?.value as? [String: OpenClawProtocol.AnyCodable] {
-        details.merge(nested) { _, nestedValue in nestedValue }
-    }
-    if let error {
-        if details["code"] == nil {
-            details["code"] = OpenClawProtocol.AnyCodable(error.code)
-        } else {
-            details["errorCode"] = OpenClawProtocol.AnyCodable(error.code)
-        }
-        details["message"] = OpenClawProtocol.AnyCodable(error.message)
-        if let retryable = error.retryable {
-            details["retryable"] = OpenClawProtocol.AnyCodable(retryable)
-        }
-        if let retryAfterMs = error.retryafterms {
-            details["retryAfterMs"] = OpenClawProtocol.AnyCodable(retryAfterMs)
-        }
-    }
-    return details
-}
-
 /// Bridges task cancellation into the request continuation without racing send.
 final class GatewayRequestCancellationGate: @unchecked Sendable {
     private let lock = NSLock()
@@ -66,21 +44,8 @@ final class GatewayRequestCancellationGate: @unchecked Sendable {
 }
 
 extension GatewayChannelActor {
-    nonisolated static func resolveRequestTimeoutMs(_ timeoutMs: Double?, defaultMs: Double) -> Double? {
-        timeoutMs == 0 ? nil : (timeoutMs ?? defaultMs)
-    }
-
-    nonisolated static func minimumProtocolVersion(role: String, clientMode: String) -> Int {
-        // Node RPC frames stayed compatible across v3/v4. Operator chat surfaces require v4.
-        if role == "node", clientMode == "node" {
-            return GATEWAY_MIN_NODE_PROTOCOL_VERSION
-        }
-        return GATEWAY_MIN_PROTOCOL_VERSION
-    }
-
     enum ConnectChallengeError: Error {
         case invalid
-        case timeout
     }
 
     public static let defaultOperatorConnectScopes: [String] = [
@@ -91,11 +56,6 @@ extension GatewayChannelActor {
         "operator.questions",
         "operator.pairing",
     ]
-
-    struct PendingRequest {
-        let continuation: CheckedContinuation<GatewayFrame, Error>
-        let onResponse: (@Sendable (ResponseFrame) async -> Void)?
-    }
 
     struct SelectedConnectAuth {
         let authToken: String?
@@ -111,6 +71,21 @@ extension GatewayChannelActor {
 }
 
 extension GatewayChannelActor.SelectedConnectAuth {
+    func httpResourceBearer(hello: HelloOk, role: String) -> String? {
+        if (hello.auth["role"]?.stringValue ?? role) == role,
+           let token = hello.auth["deviceToken"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty
+        {
+            return token
+        }
+        return switch self.authSource {
+        case .deviceToken: self.authDeviceToken ?? self.authToken
+        case .sharedToken: self.authToken
+        case .password: self.authPassword
+        case .bootstrapToken, .none: nil
+        }
+    }
+
     func makeAuthBinding(key: SymmetricKey?, deviceId: String?) -> GatewayAuthBinding {
         let credentialFingerprint = key.map { key in
             var values = [

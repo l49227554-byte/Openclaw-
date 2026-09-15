@@ -1,11 +1,14 @@
 /**
  * Tests talk transcription relay behavior between realtime events and clients.
  */
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "ws";
 import type { RealtimeTranscriptionProviderPlugin } from "../plugins/types.js";
 import type { RealtimeTranscriptionSessionCreateRequest } from "../realtime-transcription/provider-types.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
-import { MAX_BUFFERED_BYTES } from "./server-constants.js";
+import { MAX_BUFFERED_BYTES, WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
+import { GatewayClientRegistry } from "./server/client-registry.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import {
   cleanupTalkConnection,
@@ -13,12 +16,11 @@ import {
   rememberUnifiedTalkSession,
 } from "./talk-session-registry.js";
 import {
-  cancelTalkTranscriptionRelayTurn,
   createTalkTranscriptionRelaySession,
   sendTalkTranscriptionRelayAudio,
   stopTalkTranscriptionRelaySession,
 } from "./talk-transcription-relay.js";
-import { expectRecordFields, isRecord, requireRecord } from "./test-helpers.assertions.js";
+import { expectRecordFields, isRecord, requireGatewayRecord } from "./test-helpers.assertions.js";
 
 type BroadcastEvent = {
   event: string;
@@ -95,7 +97,7 @@ function findPayloadByType(events: BroadcastEvent[], type: string): Record<strin
     throw new Error(`expected relay event type ${type}`);
   }
   expect(event.event).toBe("talk.event");
-  return requireRecord(event.payload, `${type} payload`);
+  return requireGatewayRecord(event.payload, `${type} payload`);
 }
 
 function findPayloadByTalkEventType(
@@ -109,7 +111,7 @@ function findPayloadByTalkEventType(
   if (!event) {
     throw new Error(`expected talk event type ${type}`);
   }
-  return requireRecord(event.payload, `${type} payload`);
+  return requireGatewayRecord(event.payload, `${type} payload`);
 }
 
 function expectTalkEventFields(
@@ -236,7 +238,7 @@ describe("talk transcription gateway relay", () => {
       final: true,
     });
     for (const { payload, opts } of events) {
-      const { type } = requireRecord(payload, "transcription relay event");
+      const { type } = requireGatewayRecord(payload, "transcription relay event");
       expect(opts, `${String(type)} delivery`).toEqual({
         dropIfSlow: type === "partial" || type === "inputAudio",
       });
@@ -286,7 +288,7 @@ describe("talk transcription gateway relay", () => {
       await vi.advanceTimersByTimeAsync(1_000);
 
       const transcripts = events
-        .map((event) => requireRecord(event.payload, "transcription relay event"))
+        .map((event) => requireGatewayRecord(event.payload, "transcription relay event"))
         .filter(
           (payload) => isRecord(payload.talkEvent) && payload.talkEvent.type === "transcript.done",
         );
@@ -300,7 +302,7 @@ describe("talk transcription gateway relay", () => {
       await vi.advanceTimersByTimeAsync(4_000);
       const terminalEvents = events
         .map((event) => {
-          const payload = requireRecord(event.payload, "transcription relay event");
+          const payload = requireGatewayRecord(event.payload, "transcription relay event");
           return isRecord(payload.talkEvent) ? payload.talkEvent.type : undefined;
         })
         .filter((type) =>
@@ -347,7 +349,7 @@ describe("talk transcription gateway relay", () => {
     });
 
     const transcripts = events
-      .map((event) => requireRecord(event.payload, "transcription relay event"))
+      .map((event) => requireGatewayRecord(event.payload, "transcription relay event"))
       .filter(
         (payload) => isRecord(payload.talkEvent) && payload.talkEvent.type === "transcript.done",
       );
@@ -422,7 +424,7 @@ describe("talk transcription gateway relay", () => {
     request?.onTranscript?.("second final");
 
     const updates = events
-      .map((event) => requireRecord(event.payload, "transcription relay event"))
+      .map((event) => requireGatewayRecord(event.payload, "transcription relay event"))
       .filter((payload) => typeof payload.text === "string" && payload.text)
       .map((payload) => ({ type: payload.type, text: payload.text }));
     expect(updates).toEqual([
@@ -560,11 +562,23 @@ describe("talk transcription gateway relay", () => {
   });
 
   it("closes a backpressured owner for final transcripts while healthy owners still receive them", async () => {
-    const createSocket = () => ({
-      bufferedAmount: 0,
-      send: vi.fn<(payload: string) => void>(),
-      close: vi.fn<(code: number, reason: string) => void>(),
-    });
+    vi.useFakeTimers();
+    const createSocket = () => {
+      const socket = Object.assign(new EventEmitter(), {
+        readyState: WebSocket.OPEN as number,
+        bufferedAmount: 0,
+        send: vi.fn<(payload: string) => void>(),
+        close: vi.fn<(code: number, reason: string) => void>(),
+        terminate: vi.fn<() => void>(),
+      });
+      socket.close.mockImplementation(() => {
+        socket.readyState = WebSocket.CLOSING;
+      });
+      socket.terminate.mockImplementation(() => {
+        socket.readyState = WebSocket.CLOSING;
+      });
+      return socket;
+    };
     const slowSocket = createSocket();
     const healthySocket = createSocket();
     const createClient = (
@@ -577,7 +591,7 @@ describe("talk transcription gateway relay", () => {
         connect: { role: "operator", scopes: ["operator.read"] } as GatewayWsClient["connect"],
         usesSharedGatewayAuth: false,
       }) satisfies GatewayWsClient;
-    const clients = new Set([
+    const clients = new GatewayClientRegistry([
       createClient("conn-slow", slowSocket),
       createClient("conn-healthy", healthySocket),
     ]);
@@ -613,11 +627,14 @@ describe("talk transcription gateway relay", () => {
 
       expect(slowSocket.send).toHaveBeenCalledTimes(slowFramesBeforePartial);
       expect(slowSocket.close).not.toHaveBeenCalled();
+      expect(slowSocket.terminate).not.toHaveBeenCalled();
 
       slowRequest.onTranscript?.("slow final");
       healthyRequest.onTranscript?.("healthy final");
 
       expect(slowSocket.close).toHaveBeenCalledWith(1008, "slow consumer");
+      vi.advanceTimersByTime(WEBSOCKET_CLOSE_GRACE_MS);
+      expect(slowSocket.terminate).toHaveBeenCalledOnce();
       const healthyFrames = healthySocket.send.mock.calls.map(
         ([frame]) => JSON.parse(frame) as { event: string; payload: unknown },
       );
@@ -774,49 +791,5 @@ describe("talk transcription gateway relay", () => {
       }),
     ).toThrow("Transcription relay session expiry is outside the supported Date range");
     expect(provider.createSession).not.toHaveBeenCalled();
-  });
-
-  it("cancels an active transcription turn and closes the provider session", async () => {
-    let sttRequest: RealtimeTranscriptionSessionCreateRequest | undefined;
-    const sttSession = createSttSessionMock(async () => {
-      sttRequest?.onSpeechStart?.();
-    });
-    const { events, session } = await createStartedRelaySession(sttSession, {}, (req) => {
-      sttRequest = req;
-    });
-    sttSession.close.mockImplementationOnce(() => {
-      sttRequest?.onTranscript?.("cancelled provider transcript");
-    });
-
-    cancelTalkTranscriptionRelayTurn({
-      transcriptionSessionId: session.transcriptionSessionId,
-      connId: "conn-1",
-      reason: "barge-in",
-    });
-
-    expect(sttSession.close).toHaveBeenCalledOnce();
-    const cancelledPayload = findPayloadByTalkEventType(events, "turn.cancelled");
-    expectRecordFields(cancelledPayload, "cancelled payload", {
-      transcriptionSessionId: session.transcriptionSessionId,
-    });
-    expectTalkEventFields(cancelledPayload, {
-      type: "turn.cancelled",
-      turnId: "turn-1",
-      payload: { reason: "barge-in" },
-      final: true,
-    });
-
-    const closePayload = findPayloadByType(events, "close");
-    expectRecordFields(closePayload, "close payload", {
-      transcriptionSessionId: session.transcriptionSessionId,
-      type: "close",
-      reason: "completed",
-    });
-    expect(
-      events.some(
-        (event) =>
-          isRecord(event.payload) && event.payload.text === "cancelled provider transcript",
-      ),
-    ).toBe(false);
   });
 });

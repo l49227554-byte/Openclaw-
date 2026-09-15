@@ -17,8 +17,10 @@ import {
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
 import {
   beginSessionWorkAdmission,
+  createSessionWorkAdmissionHandoffForCurrent,
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
+import { createActiveRun } from "./server-methods/chat.abort.test-helpers.js";
 import { embeddedRunMock, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
@@ -115,6 +117,73 @@ test("sessions.delete protects the sole explicit agent's global session before c
   expect(embeddedRunMock.abortCalls).not.toContain("sole-global");
   expect(bundleMcpRuntimeMocks.disposeSessionMcpRuntime).not.toHaveBeenCalled();
   expect(browserSessionTabMocks.closeTrackedBrowserTabsForSessions).not.toHaveBeenCalled();
+});
+
+test("sessions.delete adopts a handed-off admission instead of treating it as competing work", async () => {
+  const { storePath } = await createSessionStoreDir();
+  const sessionKey = "discord:group:dev";
+  const sessionId = "sess-active";
+  await writeSessionStore({
+    entries: {
+      [sessionKey]: sessionStoreEntry(sessionId),
+    },
+  });
+  let interrupted = false;
+  const admissionLease = await beginSessionWorkAdmission({
+    scope: storePath,
+    identities: [sessionKey, sessionId],
+    assertAllowed: () => {},
+    onInterrupt: () => {
+      interrupted = true;
+    },
+  });
+  // The handoff token can only be minted from within the admission's own
+  // async context, mirroring how a chat-initiated /close retains it.
+  const handoffId = await admissionLease.run(async () =>
+    createSessionWorkAdmissionHandoffForCurrent({
+      scope: storePath,
+      identities: [sessionKey],
+    }),
+  );
+  expect(handoffId).toBeDefined();
+
+  const deleted = await directSessionReq<{ ok: true; deleted: boolean }>("sessions.delete", {
+    key: sessionKey,
+    admissionHandoffId: handoffId,
+  });
+
+  expect(deleted.ok).toBe(true);
+  expect(deleted.payload?.deleted).toBe(true);
+  // Adopting the lease keeps it out of the "competing work" check instead of
+  // blocking on, or forcibly interrupting, the initiator's own admission.
+  expect(interrupted).toBe(false);
+});
+
+test("sessions.delete does not abort the initiating chat run when exemptChatRunId matches", async () => {
+  await createSessionStoreDir();
+  const sessionKey = "discord:group:dev";
+  const sessionId = "sess-active";
+  await writeSessionStore({
+    entries: {
+      [sessionKey]: sessionStoreEntry(sessionId),
+    },
+  });
+  const initiatingRunId = "initiating-close-run";
+  const activeRun = createActiveRun(sessionKey, { sessionId, agentId: "main" });
+  const chatAbortControllers = new Map([[initiatingRunId, activeRun]]);
+
+  const deleted = await directSessionReq<{ ok: true; deleted: boolean }>(
+    "sessions.delete",
+    { key: sessionKey, exemptChatRunId: initiatingRunId },
+    { context: { chatAbortControllers } },
+  );
+
+  expect(deleted.ok).toBe(true);
+  expect(deleted.payload?.deleted).toBe(true);
+  // The exempted run must survive the delete's own session-wide abort instead
+  // of being cancelled out from under the /close turn that initiated it.
+  expect(activeRun.controller.signal.aborted).toBe(false);
+  expect(chatAbortControllers.has(initiatingRunId)).toBe(true);
 });
 
 test("sessions.delete rejects main and aborts active runs", async () => {

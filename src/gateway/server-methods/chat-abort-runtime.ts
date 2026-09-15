@@ -340,6 +340,7 @@ type SessionAbortOwnerParams = {
   sessionId?: string;
   agentId?: string;
   defaultAgentId?: string;
+  excludeRunIds?: ReadonlySet<string>;
 };
 
 /** Authoritative active, pending, or queued Gateway owner for an exact session. */
@@ -349,6 +350,7 @@ export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): bo
     agentId: params.agentId,
     defaultAgentId: params.defaultAgentId,
     requester: SESSION_LIFECYCLE_ABORT_REQUESTER,
+    excludeRunIds: params.excludeRunIds,
   };
   return (
     resolveAuthorizedRunsForSessionKeys({

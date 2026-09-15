@@ -68,6 +68,8 @@ type SessionLifecycleParams = {
   sessionKey: string;
   defaultAgentId?: string;
   lifecycleIdentities: string[];
+  /** Chat run id to exempt from the session-wide abort this drain performs. */
+  exemptChatRunId?: string;
 };
 
 export type SessionLifecycleDrain = {
@@ -104,6 +106,7 @@ function hasAuthoritativeSessionWork(
       sessionId,
       agentId: params.agentId,
       defaultAgentId: params.defaultAgentId,
+      excludeRunIds: params.exemptChatRunId ? new Set([params.exemptChatRunId]) : undefined,
     }) ||
     Boolean(
       sessionId &&
@@ -190,6 +193,7 @@ export async function prepareSessionLifecycleDrain(
           stopReason: params.action,
           requester: { isAdmin: true },
           includeProtectedRuns: true,
+          excludeRunIds: params.exemptChatRunId ? new Set([params.exemptChatRunId]) : undefined,
           onControllerTargets: (targets) => {
             controllerDrain = waitForChatAbortControllerRemoval({
               entries: params.context.chatAbortControllers,

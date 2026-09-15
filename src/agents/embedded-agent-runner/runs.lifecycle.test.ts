@@ -13,6 +13,7 @@ import {
   abortAndDrainEmbeddedAgentRun,
   clearActiveEmbeddedRun,
   getActiveEmbeddedRunSnapshot,
+  isEmbeddedAgentRunActive,
   isEmbeddedAgentRunHandleActive,
   markEmbeddedRunRecoveringTimeout,
   markActiveEmbeddedRunAbandoned,
@@ -162,6 +163,42 @@ describe("embedded-agent runner run lifecycle", () => {
 
     operation.complete();
     await expect(waitPromise).resolves.toBe(true);
+  });
+
+  it("skips waiting on a preserved reply run during lifecycle cleanup", async () => {
+    const operation = createReplyOperation({
+      sessionKey: "agent:main:close-wait",
+      sessionId: "session-close-wait",
+      resetTriggered: false,
+    });
+
+    // The initiating /close turn is still active while the delete mutation
+    // runs; waiting on it would deadlock until the timeout.
+    await expect(
+      waitForEmbeddedAgentRunEnd("session-close-wait", 50, { preserveReplyRun: true }),
+    ).resolves.toBe(true);
+
+    operation.complete();
+  });
+
+  it("excludes a preserved reply run from the final active check", () => {
+    const operation = createReplyOperation({
+      sessionKey: "agent:main:close-active-check",
+      sessionId: "session-close-active-check",
+      resetTriggered: false,
+    });
+
+    // Ordinary callers must still see the reply run as active work...
+    expect(isEmbeddedAgentRunActive("session-close-active-check")).toBe(true);
+    // ...but the initiating /close cleanup's final check must not treat its
+    // own preserved reply run as still-active work, or every command-only
+    // /close would report the session unavailable even after every genuine
+    // embedded run has drained.
+    expect(isEmbeddedAgentRunActive("session-close-active-check", { preserveReplyRun: true })).toBe(
+      false,
+    );
+
+    operation.complete();
   });
 
   it("waits for a replacement run under the same session id", async () => {

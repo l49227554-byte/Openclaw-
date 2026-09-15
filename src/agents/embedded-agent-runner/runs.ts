@@ -898,19 +898,29 @@ function revokeCompletionClaim(sessionId: string, runId?: string): void {
  *
  * - With a sessionId, aborts that single run.
  * - With no sessionId, supports targeted abort modes (for example, compacting runs only).
+ * - `preserveReplyRun` keeps a command-only reply run alive: a chat-initiated
+ *   session delete must not abort the very turn that still owes the user its
+ *   confirmation reply.
  */
-export function abortEmbeddedAgentRun(sessionId: string): boolean;
+export function abortEmbeddedAgentRun(
+  sessionId: string,
+  opts?: { preserveReplyRun?: boolean },
+): boolean;
 export function abortEmbeddedAgentRun(
   sessionId: undefined,
   opts: { mode: "all" | "compacting"; reason?: "restart" },
 ): boolean;
 export function abortEmbeddedAgentRun(
   sessionId?: string,
-  opts?: { mode?: "all" | "compacting"; reason?: "restart" },
+  opts?: { mode?: "all" | "compacting"; reason?: "restart"; preserveReplyRun?: boolean },
 ): boolean {
   if (typeof sessionId === "string" && sessionId.length > 0) {
     const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
     if (!handle) {
+      if (opts?.preserveReplyRun === true) {
+        diag.debug(`abort skipped: sessionId=${sessionId} reason=preserved_reply_run`);
+        return false;
+      }
       if (abortReplyRunBySessionId(sessionId)) {
         return true;
       }
@@ -1013,8 +1023,19 @@ export async function preemptAndDrainEmbeddedHeartbeatRun(
   return (await drainPromise) ? "drained" : "timed-out";
 }
 
-export function isEmbeddedAgentRunActive(sessionId: string): boolean {
-  const active = ACTIVE_EMBEDDED_RUNS.has(sessionId) || isReplyRunActiveForSessionId(sessionId);
+export function isEmbeddedAgentRunActive(
+  sessionId: string,
+  opts?: { preserveReplyRun?: boolean },
+): boolean {
+  // With `preserveReplyRun`, only genuine embedded runs count as active: a
+  // chat-initiated session delete runs inside its own still-active reply run,
+  // so treating that preserved run as active would keep reporting the session
+  // busy even after every non-reply run has drained. Mirrors the same option
+  // on waitForEmbeddedAgentRunEnd above.
+  const active =
+    opts?.preserveReplyRun === true
+      ? ACTIVE_EMBEDDED_RUNS.has(sessionId)
+      : ACTIVE_EMBEDDED_RUNS.has(sessionId) || isReplyRunActiveForSessionId(sessionId);
   if (active) {
     diag.debug(`run active check: sessionId=${sessionId} active=true`);
   }
@@ -1411,12 +1432,20 @@ function waitForCurrentEmbeddedAgentRunEnd(
 export async function waitForEmbeddedAgentRunEnd(
   sessionId: string,
   timeoutMs: number | null = 15_000,
+  opts?: { preserveReplyRun?: boolean },
 ): Promise<boolean> {
   if (!sessionId) {
     return true;
   }
+  // With `preserveReplyRun`, only genuine embedded runs count as active: a
+  // chat-initiated session delete runs inside its own still-active reply run,
+  // so waiting on it would deadlock the very turn driving the cleanup.
+  const isRunActive = () =>
+    opts?.preserveReplyRun === true
+      ? ACTIVE_EMBEDDED_RUNS.has(sessionId)
+      : isEmbeddedAgentRunActive(sessionId);
   const deadline = timeoutMs === null ? undefined : Date.now() + timeoutMs;
-  while (isEmbeddedAgentRunActive(sessionId)) {
+  while (isRunActive()) {
     const remainingMs = deadline === undefined ? null : deadline - Date.now();
     if (remainingMs !== null && remainingMs <= 0) {
       return false;

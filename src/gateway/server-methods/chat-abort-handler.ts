@@ -62,12 +62,39 @@ export async function handleChatAbortRequestWithLifecycle(
     sessionKey: rawSessionKey,
     runId,
     preserveSideRuns,
+    exemptRunId,
   } = params as {
     sessionKey: string;
     agentId?: string;
     runId?: string;
     preserveSideRuns?: boolean;
+    exemptRunId?: string;
   };
+  const requester = resolveChatAbortRequester(client);
+  // exemptRunId is a client-supplied RPC param with no ownership check of its
+  // own. Trust it only when the caller is admin-authorized, or when the run it
+  // names is already one this requester could abort anyway (matching owner
+  // conn/device). Otherwise a non-admin caller could exempt an arbitrary
+  // foreign run from this session-wide abort, turning what should be a real
+  // cancellation (or an outright unauthorized error) into a silent no-op for
+  // that run.
+  const exemptRunOwnerEntry = exemptRunId
+    ? (context.chatAbortControllers.get(exemptRunId) ?? context.chatQueuedTurns.get(exemptRunId))
+    : undefined;
+  const trustedExemptRunId =
+    exemptRunId &&
+    (requester.isAdmin ||
+      (exemptRunOwnerEntry &&
+        canRequesterAbortChatRun(exemptRunOwnerEntry, requester, { requireOwnerMatch: true })))
+      ? exemptRunId
+      : undefined;
+  const effectiveExcludeRunIds =
+    lifecycle.excludeRunIds || trustedExemptRunId
+      ? new Set([
+          ...(lifecycle.excludeRunIds ?? []),
+          ...(trustedExemptRunId ? [trustedExemptRunId] : []),
+        ])
+      : undefined;
   const agentIdOverride = normalizeOptionalText((params as { agentId?: string }).agentId);
   const abortCfg = context.getRuntimeConfig();
   const parsedAbortSessionKey = parseAgentSessionKey(rawSessionKey);
@@ -123,7 +150,6 @@ export async function handleChatAbortRequestWithLifecycle(
     storeAgentId: abortAgentId,
   });
   const ops = createChatAbortOps(context);
-  const requester = resolveChatAbortRequester(client);
 
   const sessionLoadOptions = { agentId: abortAgentId };
   const abortSession: Result<ReturnType<typeof loadSessionEntry>, unknown> = (() => {
@@ -161,7 +187,7 @@ export async function handleChatAbortRequestWithLifecycle(
       requester,
       assertCurrent: sessionMutationAuthorization?.assertCurrent,
       preserveSideRuns,
-      excludeRunIds: lifecycle.excludeRunIds,
+      excludeRunIds: effectiveExcludeRunIds,
       onAuthorizedAfterQueuedAbort: lifecycle.onAuthorizedAfterQueuedAbort,
       cascadeDescendants: lifecycle.cascadeDescendants,
     });

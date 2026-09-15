@@ -24,7 +24,10 @@ import {
 } from "../../routing/session-key.js";
 import { isAgentHarnessSessionKey } from "../../sessions/agent-harness-session-key.js";
 import { isModelSelectionLocked } from "../../sessions/model-overrides.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import {
+  consumeSessionWorkAdmissionHandoff,
+  runExclusiveSessionLifecycleMutation,
+} from "../../sessions/session-lifecycle-admission.js";
 import { handleSessionStateSessionDeleted } from "../../sessions/session-state-events.js";
 import { removeSessionWorktree } from "../../sessions/session-worktree-lifecycle.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
@@ -73,6 +76,25 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
     const { target, storePath } = resolveGatewaySessionTargetFromKey(key, cfg, {
       agentId: requestedAgentId,
     });
+    // A chat-initiated /close hands its own retained session-work admission to
+    // this RPC via a single-use token (see commands-delete-session.ts). Without
+    // adopting it, the drain below would treat the initiating turn's still-held
+    // admission as competing work and block until it drains, which cannot
+    // happen until this very RPC returns. Consuming it is a no-op when the
+    // token is absent, stale, or covers a different identity.
+    const admissionHandoffId = normalizeOptionalString(p.admissionHandoffId);
+    const admissionLease = admissionHandoffId
+      ? consumeSessionWorkAdmissionHandoff({
+          handoffId: admissionHandoffId,
+          scope: storePath,
+          identities: [key],
+        })
+      : undefined;
+    // Chat run id of the /close turn itself. The lifecycle drain below aborts
+    // competing runs on this session before deleting; without exempting it,
+    // that abort would terminate the initiating turn and surface an aborted
+    // state instead of the deletion success reply.
+    const exemptChatRunId = normalizeOptionalString(p.exemptChatRunId);
     const compatibilityDefaultAgentId = tryResolveAgentOperationAgentId(cfg);
     const persistedStoreOwner = resolvePersistedSessionStoreOwnerForKey(cfg, key);
     const protectedGlobalAgentId =
@@ -187,6 +209,7 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
           drain = await prepareSessionLifecycleDrain({
             action: "delete",
             authorize: assertCurrent,
+            exemptChatRunId,
             beforeCancel: () => {
               // Compare before cancellation writes its own terminal metadata.
               if (
@@ -337,13 +360,23 @@ export const sessionDeleteHandlers: GatewayRequestHandlers = {
         drain?.release();
       }
     };
-    const deletion = await deleteCurrent().catch((error: unknown) => {
-      if (!(error instanceof SessionDeletionError)) {
-        throw error;
-      }
-      respond(false, undefined, error.error);
-      return undefined;
-    });
+    // Running the whole delete under the adopted lease keeps this admission in
+    // the current async context for its entire duration, so every competing-work
+    // and interruption check below (including nested drains) treats it as the
+    // initiating stack rather than another turn's admitted work.
+    const runDeleteCurrent = () =>
+      admissionLease ? admissionLease.run(deleteCurrent) : deleteCurrent();
+    const deletion = await runDeleteCurrent()
+      .catch((error: unknown) => {
+        if (!(error instanceof SessionDeletionError)) {
+          throw error;
+        }
+        respond(false, undefined, error.error);
+        return undefined;
+      })
+      .finally(() => {
+        admissionLease?.release();
+      });
     if (!deletion) {
       return;
     }

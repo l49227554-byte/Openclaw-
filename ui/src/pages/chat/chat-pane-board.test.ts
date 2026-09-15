@@ -19,7 +19,7 @@ import { createMockBoardProvider } from "../../test-helpers/board-provider.ts";
 import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import "./chat-pane.ts";
-import type { ResolvedBoardView } from "./chat-pane-shared.ts";
+import type { ChatNewSessionResult, ResolvedBoardView } from "./chat-pane-shared.ts";
 import { createInitialChatRealtimeState } from "./chat-realtime.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import {
@@ -63,7 +63,7 @@ type TestChatPane = HTMLElement & {
   connectionGeneration: number;
   context: ApplicationContext;
   state: ChatPageHost;
-  createSession: () => Promise<boolean>;
+  createSession: () => Promise<ChatNewSessionResult>;
   paneId: string;
   presented: boolean;
   visuallyPresented: boolean;
@@ -202,6 +202,31 @@ beforeEach(() => {
   window.history.replaceState({}, "", "/");
   const settings = loadSettings();
   theme = createApplicationTheme(settings, createGatewayStoreTestStore({ settings }).gateway);
+});
+
+it("binds board reset labels to the post-reset session incarnation", async () => {
+  const sessions = {
+    reset: vi.fn().mockResolvedValue("completed"),
+    patch: vi.fn().mockResolvedValue({ ok: true }),
+  } as unknown as SessionCapability;
+  const pane = createTestPane(sessions);
+  pane.confirmConversationReset = vi.fn(async () => true);
+  Object.defineProperty(pane, "resolveBoardView", {
+    configurable: true,
+    value: () => ({ hasBoard: true }),
+  });
+  pane.state.currentSessionId = "session:new-generation";
+  pane.state.sessionsResult = {
+    sessions: [{ key: "agent:main:current", sessionId: "session:new-generation" }],
+  } as never;
+
+  await expect((pane as any).createSession({ label: "Renamed" })).resolves.toBe("completed");
+
+  expect((sessions as any).patch).toHaveBeenCalledWith(
+    "agent:main:current",
+    { label: "Renamed" },
+    expect.objectContaining({ expectedSessionId: "session:new-generation" }),
+  );
 });
 
 afterEach(() => {
@@ -479,7 +504,7 @@ describe("chat pane board shell", () => {
     expect(pane.resetConfirmationOpen).toBe(true);
     expect(sessions.create).not.toHaveBeenCalled();
     pane.settleResetConfirmation(false);
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toBe("cancelled");
     expect(sessions.create).not.toHaveBeenCalled();
   });
 
@@ -509,7 +534,7 @@ describe("chat pane board shell", () => {
     await Promise.resolve();
     pane.settleResetConfirmation(true);
 
-    await expect(pending).resolves.toBe(true);
+    await expect(pending).resolves.toBe("completed");
     expect(reset).toHaveBeenCalledWith("agent:main:current", {});
     expect(sessions.create).not.toHaveBeenCalled();
   });
@@ -535,7 +560,7 @@ describe("chat pane board shell", () => {
     } as ApplicationContext["gateway"]["snapshot"]["hello"];
     pane.settleResetConfirmation(true);
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toBe("cancelled");
     expect(reset).not.toHaveBeenCalled();
     expect(pane.state.lastError).toContain("operator.admin");
     expect(pane.state.chatError).toBe(pane.state.lastError);
@@ -555,7 +580,7 @@ describe("chat pane board shell", () => {
     pane.state.chatRunId = "run-started-during-confirmation";
     pane.settleResetConfirmation(true);
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toBe("cancelled");
     expect(reset).not.toHaveBeenCalled();
     expect(sessions.create).not.toHaveBeenCalled();
   });
@@ -573,7 +598,7 @@ describe("chat pane board shell", () => {
     pane.state.sessionKey = "agent:main:other";
     pane.updated();
 
-    await expect(pending).resolves.toBe(false);
+    await expect(pending).resolves.toBe("cancelled");
     expect(pane.resetConfirmationOpen).toBe(false);
     expect(sessions.create).not.toHaveBeenCalled();
     expect(sessions.reset).not.toHaveBeenCalled();

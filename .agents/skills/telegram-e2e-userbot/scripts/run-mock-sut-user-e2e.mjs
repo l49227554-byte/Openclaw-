@@ -85,17 +85,11 @@ export function summarizeScenarioCommand({ action, result, elapsedMs, durationMs
   };
 }
 
-export function createGatewayEnvironment({
-  baseEnv = process.env,
-  configPath,
-  stateDir,
-  sutToken,
-}) {
+export function createGatewayEnvironment({ baseEnv = process.env, configPath, stateDir }) {
   return {
     ...sanitizeChildEnvironment(baseEnv),
     OPENCLAW_CONFIG_PATH: configPath,
     OPENCLAW_STATE_DIR: stateDir,
-    TELEGRAM_BOT_TOKEN: sutToken,
     OPENAI_API_KEY: "openclaw-e2e-mock-key",
   };
 }
@@ -489,10 +483,15 @@ function writeConfig(params) {
       allow: usesClaudeCli ? ["telegram", "anthropic"] : ["telegram", "openai"],
       entries: pluginEntries,
     },
+    secrets: {
+      providers: {
+        telegram: { source: "file", path: params.credentialsPath, mode: "json" },
+      },
+    },
     channels: {
       telegram: {
         enabled: true,
-        botToken: { source: "env", provider: "default", id: "TELEGRAM_BOT_TOKEN" },
+        botToken: { source: "file", provider: "telegram", id: "/sutBotToken" },
         apiRoot: params.telegramApiRoot,
         dmPolicy: "allowlist",
         allowFrom: [params.testerId],
@@ -1087,7 +1086,6 @@ async function driveWithTelegramProxy(args, repoRoot, creds) {
     const gatewayEnv = createGatewayEnvironment({
       configPath: temp.configPath,
       stateDir: temp.stateDir,
-      sutToken: creds.sutToken,
     });
     const heldTelegramMethods = [
       ...new Set(

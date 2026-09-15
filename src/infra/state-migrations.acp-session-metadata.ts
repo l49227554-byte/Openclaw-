@@ -1,25 +1,23 @@
-import { createHash } from "node:crypto";
-import path from "node:path";
-import { stableStringify } from "@openclaw/normalization-core";
 import { selectAcpSessionRowForStoreEntry } from "../acp/runtime/session-meta-keys.js";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
-import { loadExactSessionEntryReadOnly } from "../config/sessions/session-accessor.sqlite-exact-read.js";
+import { readLegacyAcpMigrationContext } from "../config/sessions/session-accessor.sqlite-acp-provenance.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import type { prepareDeferredPluginSessionImportReader } from "./deferred-plugin-session-sources.js";
 import {
-  readLegacyMigrationReceiptFromDatabase,
-  recordLegacyMigrationReceipt,
-  resolveLegacyMigrationSourceKey,
-} from "./state-migrations.receipts.js";
-
-const RECEIPT_KIND = "deferred-plugin-acp-metadata";
+  hasLegacyAcpMigrationCompletion,
+  legacyAcpMigrationBindingMatches,
+  legacyAcpMigrationSourceKey,
+  prepareLegacyAcpMigrationSource,
+  recordLegacyAcpMigrationCompletion,
+} from "./legacy-acp-migration-source.js";
 
 type LegacyAcpMetadataInput = Omit<
   Parameters<typeof writeAcpSessionMetaForMigration>[0],
   "database" | "databasePath"
 > & {
   sourcePath: string;
+  sourceSessionKey: string;
   preserveSource: boolean;
   cfg: OpenClawConfig;
   agentId: string;
@@ -32,44 +30,24 @@ export function importLegacyAcpSessionMetadata(params: LegacyAcpMetadataInput): 
   if (!sessionKey) {
     return false;
   }
-  const sourcePath = path.resolve(params.sourcePath);
-  const binding = {
-    sessionKey,
-    sessionBinding: params.lifecycleRevision ?? params.sessionId ?? null,
-  };
-  const sourceKey = resolveLegacyMigrationSourceKey(
-    RECEIPT_KIND,
-    sourcePath,
-    stableStringify(binding),
-  );
-  const serialized = stableStringify({ ...binding, meta: params.meta });
-  const fingerprint = createHash("sha256").update(serialized).digest("hex");
+  const source = prepareLegacyAcpMigrationSource(params);
   const now = params.now?.() ?? Date.now();
   return runOpenClawStateWriteTransaction(
     (database) => {
-      const receipt = readLegacyMigrationReceiptFromDatabase(database.db, sourceKey);
-      if (receipt) {
-        if (receipt.sourceSha256 !== fingerprint) {
-          throw new Error(
-            `Retained ACP metadata changed after import in ${sourcePath}; resolve the source conflict before rerunning Doctor. Canonical metadata was not replayed.`,
-          );
-        }
+      if (hasLegacyAcpMigrationCompletion(database.db, source)) {
         return false;
       }
       const coreTarget = params.readVerifiedCoreImport(database.db, params.agentId);
       let imported = true;
       if (coreTarget) {
-        const canonical = loadExactSessionEntryReadOnly({
+        const { entry: canonical, sources } = readLegacyAcpMigrationContext({
           agentId: params.agentId,
           storePath: coreTarget.sqlitePath,
           sessionKey,
           env: params.env,
-        })?.entry;
+        });
         imported =
-          canonical !== undefined &&
-          (params.lifecycleRevision !== undefined
-            ? canonical.lifecycleRevision === params.lifecycleRevision
-            : canonical.sessionId === params.sessionId) &&
+          legacyAcpMigrationBindingMatches(source, canonical) &&
           !selectAcpSessionRowForStoreEntry(
             database.db,
             sessionKey,
@@ -77,23 +55,24 @@ export function importLegacyAcpSessionMetadata(params: LegacyAcpMetadataInput): 
             params.cfg,
             canonical,
           );
+        if (
+          imported &&
+          !sources.some(
+            (recorded) =>
+              legacyAcpMigrationSourceKey(recorded) === legacyAcpMigrationSourceKey(source) &&
+              recorded.sourceSha256 === source.sourceSha256,
+          )
+        ) {
+          throw new Error(
+            "Retained ACP import has no matching recorded source provenance; metadata was not replayed.",
+          );
+        }
       }
       if (imported) {
         writeAcpSessionMetaForMigration({ ...params, sessionKey, database, now: () => now });
       }
       if (params.preserveSource) {
-        recordLegacyMigrationReceipt(database.db, {
-          sourceKey,
-          migrationKind: RECEIPT_KIND,
-          sourcePath,
-          targetTable: "acp_sessions",
-          sourceSha256: fingerprint,
-          sourceSizeBytes: Buffer.byteLength(serialized),
-          sourceRecordCount: 1,
-          runId: sourceKey,
-          reportJson: "{}",
-          now,
-        });
+        recordLegacyAcpMigrationCompletion(database.db, source, now);
       }
       return imported;
     },

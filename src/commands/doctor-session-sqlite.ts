@@ -10,6 +10,7 @@ import { resolveStateDir } from "../config/paths.js";
 import { isPrimarySessionTranscriptFileName } from "../config/sessions/artifacts.js";
 import { importSqliteSessionRowsBatch } from "../config/sessions/session-accessor.sqlite-import.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import { normalizePersistedSessionEntryShape } from "../config/sessions/store-entry-shape.js";
 import { normalizeStoreSessionKey } from "../config/sessions/store-entry.js";
 import {
   resolveAgentSessionStoreTargetsSync,
@@ -35,6 +36,7 @@ import {
   type DeferredPluginSessionImport,
 } from "../infra/deferred-plugin-session-sources.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { prepareLegacyAcpMigrationSource } from "../infra/legacy-acp-migration-source.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeLegacySessionEntryDelivery as normalizeSessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
@@ -1290,12 +1292,26 @@ function prepareLegacySessionImport(
   record.sourceFingerprint = transcriptFingerprint;
   const result = countTranscriptEvents(record);
   const transcriptMtimeMs = readLegacyTranscriptMtimeMs(record);
+  const acpEntry = !record.historical
+    ? normalizePersistedSessionEntryShape(record.entry, { sessionKey: record.sessionKey })
+    : undefined;
   const params = {
     historicalOnly: Boolean(record.historical),
     allowMalformedRowRepair: true,
     repairLegacyTranscript: true,
     agentId: target.agentId,
     entry: record.entry,
+    ...(acpEntry?.acp
+      ? {
+          legacyAcpMigrationSource: prepareLegacyAcpMigrationSource({
+            sourcePath: target.storePath,
+            sourceSessionKey: record.sessionKey,
+            sessionId: acpEntry.sessionId,
+            lifecycleRevision: acpEntry.lifecycleRevision,
+            meta: acpEntry.acp,
+          }),
+        }
+      : {}),
     preserveExactStoredKey: true,
     sessionKey: record.sessionKey,
     storePath: target.sqlitePath ?? target.storePath,

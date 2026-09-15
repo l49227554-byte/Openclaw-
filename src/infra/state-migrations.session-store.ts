@@ -1019,6 +1019,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
         });
         const imported = importLegacyAcpSessionMetadata({
           sourcePath: storePath,
+          sourceSessionKey: sessionKey,
           preserveSource,
           cfg: params.cfg,
           agentId: rowAgentId,

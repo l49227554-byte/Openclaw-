@@ -44,10 +44,7 @@ type ChannelMessageActionReadPolicy =
     };
 
 const NO_CONVERSATION_READ = { kind: "none" } as const;
-const CONVERSATION_READ = {
-  kind: "conversation-read",
-  targetlessCache: "deny",
-} as const;
+const CONVERSATION_READ = { kind: "conversation-read", targetlessCache: "deny" } as const;
 const BUNDLED_CURRENT_CONTEXT_CACHE_READ = {
   kind: "conversation-read",
   targetlessCache: "bundled-current-context",
@@ -124,12 +121,6 @@ function resolveChannelMessageActionReadPolicy(
   return CHANNEL_MESSAGE_ACTION_READ_POLICIES[action as ChannelMessageActionName];
 }
 
-function resolveServerOwnedConversationReadOrigin(
-  value: unknown,
-): ServerOwnedConversationReadOrigin {
-  return normalizeConversationReadInvocationOrigin(value) as ServerOwnedConversationReadOrigin;
-}
-
 type MessageActionReadEnforcement =
   | { kind: "provider-owned"; pluginTrust: "bundled" | "external"; fenced: boolean }
   | {
@@ -145,6 +136,15 @@ const FENCED_PROVIDER_READ_ACTIONS = new Set<ChannelMessageActionName>([
   "list-pins",
   "thread-list",
   "channel-info",
+  "permissions",
+  "member-info",
+  "role-info",
+  "emoji-list",
+  "channel-list",
+  "voice-status",
+  "event-list",
+  "sticker-search",
+  "download-file",
 ]);
 
 function resolveMessageActionReadEnforcement(params: {
@@ -559,7 +559,9 @@ function prepareMessageActionReadContext(
     return undefined;
   }
   const action = ctx.action as ChannelMessageActionName;
-  const origin = resolveServerOwnedConversationReadOrigin(ctx.conversationReadOrigin);
+  const origin = normalizeConversationReadInvocationOrigin(
+    ctx.conversationReadOrigin,
+  ) as ServerOwnedConversationReadOrigin;
   const actionContext: ChannelMessageActionContext = {
     ...ctx,
     action,
@@ -679,10 +681,7 @@ export function prepareExternalMessageActionTargetForResolution(
   // Establish exact-current authority before that boundary, then recheck at dispatch.
   const authorizedActionContext = attachExternalCurrentTargetSibling({
     ctx: prepared.actionContext,
-    plugin: prepared.plugin,
-    origin: prepared.origin,
-    actionPolicy: prepared.actionPolicy,
-    enforcement: prepared.enforcement,
+    ...prepared,
   });
   enforceMessageActionConversationReadGate({
     ctx: authorizedActionContext,
@@ -725,17 +724,14 @@ export async function dispatchChannelMessageAction(
     return null;
   }
   return await withChannelReadAuthority(prepared.assertReadAuthorityCurrent, async () => {
-    const { actionContext, plugin, origin, actionPolicy, enforcement } = prepared;
+    const { actionContext, plugin } = prepared;
     const actions = plugin.actions;
     if (!actions?.handleAction) {
       return null;
     }
     const authorizedActionContext = attachExternalCurrentTargetSibling({
       ctx: actionContext,
-      plugin,
-      origin,
-      actionPolicy,
-      enforcement,
+      ...prepared,
     });
     enforceMessageActionConversationReadGate({
       ctx: authorizedActionContext,

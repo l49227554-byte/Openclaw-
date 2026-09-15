@@ -52,8 +52,9 @@ describe("saved terminal assistant identity", () => {
           ],
         };
         let state = createSessionProjection();
-        if (persistedFirst)
+        if (persistedFirst) {
           state = reduceSessionProjection(state, { type: "messagePersisted", message: durable });
+        }
         state = reduceSessionProjection(state, {
           type: "runTerminal",
           runId,
@@ -65,8 +66,9 @@ describe("saved terminal assistant identity", () => {
           message: terminal,
           runId,
         });
-        if (!persistedFirst)
+        if (!persistedFirst) {
           state = reduceSessionProjection(state, { type: "messagePersisted", message: durable });
+        }
         expect(state.messages).toEqual([durable]);
         state = reduceSessionProjection(state, {
           type: "snapshotLoaded",
@@ -115,7 +117,7 @@ describe("saved terminal assistant identity", () => {
       ...partial(),
       openclawStreamFallback: { source: "current", runId, afterSequence: 3 },
     };
-    let state = createSessionProjection({}, JSON.parse(JSON.stringify([fallback])));
+    let state = createSessionProjection({}, structuredClone([fallback]));
     expect(state.entries[0]).toMatchObject({
       live: true,
       pending: false,

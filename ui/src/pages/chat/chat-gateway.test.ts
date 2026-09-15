@@ -105,7 +105,9 @@ it.each(
     });
     const persist = () =>
       applySessionMessagePayload(state, { runId, message: saved }, true, { kind: "history-delta" });
-    if (persistedFirst) persist();
+    if (persistedFirst) {
+      persist();
+    }
     handleChatGatewayEvent(state, {
       runId,
       sessionKey: "main",
@@ -125,10 +127,12 @@ it.each(
       state: "error",
       errorMessage: "Outer returned failure",
     });
-    if (!persistedFirst) persist();
+    if (!persistedFirst) {
+      persist();
+    }
     expect(state.chatMessages).toEqual([user, saved]);
     expect(state.chatRunError?.summary).toBeTruthy();
-    const restored = createState({ chatMessages: JSON.parse(JSON.stringify(state.chatMessages)) });
+    const restored = createState({ chatMessages: structuredClone(state.chatMessages) });
     applySessionMessagePayload(restored, { runId, message: saved }, true, {
       kind: "history-delta",
     });
@@ -151,7 +155,7 @@ it("preserves receipt-less fallback ownership across cache before matching persi
     state: "error",
     errorMessage: "Interrupted",
   });
-  const cached = JSON.parse(JSON.stringify(state.chatMessages));
+  const cached = structuredClone(state.chatMessages);
   const restored = createState({ chatMessages: cached });
   expect(getChatSessionProjection(restored).entries[1]).toMatchObject({
     live: true,

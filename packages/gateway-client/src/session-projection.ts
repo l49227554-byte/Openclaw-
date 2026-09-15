@@ -14,6 +14,8 @@ import {
   isSessionProjectionErrorMessage,
 } from "./session-projection-message-content.js";
 import {
+  isLocallyOptimisticSessionMessage,
+  sameTranscriptIdentity,
   normalizeSessionProjectionRunId,
   readAssistantStreamSegmentIdentity,
   readSessionMessageIdentity,
@@ -34,6 +36,7 @@ export {
 } from "./session-projection-run-event.js";
 
 export {
+  isLocallyOptimisticSessionMessage,
   normalizeSessionProjectionRunId,
   readAssistantStreamSegmentIdentity,
   readSessionMessageIdentity,
@@ -138,20 +141,6 @@ export type SessionProjectionEvent = ScopedSessionProjectionEvent &
     | { type: "reconnected" }
   );
 
-/** Local turns have no durable transcript metadata beyond their own optional send key. */
-export function isLocallyOptimisticSessionMessage(message: unknown): boolean {
-  const record = readRecord(message);
-  const role = readNonemptyString(record?.role)?.toLowerCase();
-  if (role !== "user" && role !== "assistant") {
-    return false;
-  }
-  if (readRecord(record?.openclawStreamFallback)) {
-    return false;
-  }
-  const metadata = readRecord(record?.["__openclaw"]);
-  return !metadata || Object.keys(metadata).every((key) => key === "idempotencyKey");
-}
-
 function createEntry(
   message: unknown,
   options?: { envelope?: SessionMessageEnvelope; live?: boolean; pendingRunId?: string | null },
@@ -232,31 +221,6 @@ function readEventScope(event: ScopedSessionProjectionEvent): SessionProjectionS
     }
   }
   return scope;
-}
-
-function sameTranscriptIdentity(
-  left: SessionMessageIdentity | null,
-  right: SessionMessageIdentity | null,
-): boolean {
-  if (!left || !right || left.role !== right.role) {
-    return false;
-  }
-  if (left.isImported || right.isImported) {
-    if (!left.isImported || !right.isImported) {
-      return false;
-    }
-    if (left.externalSource || right.externalSource) {
-      return Boolean(left.externalSource && left.externalSource === right.externalSource);
-    }
-    // Partial provider IDs are unsafe, but a same-scope persisted sequence is authoritative.
-    return left.sequence !== null && right.sequence !== null && left.sequence === right.sequence;
-  }
-  if (left.id || right.id) {
-    // A missing durable ID cannot adopt another canonical row by sequence alone.
-    return Boolean(left.id && right.id && left.id === right.id);
-  }
-  // A run can publish several durable messages; its ID identifies ownership, not a row.
-  return left.sequence !== null && right.sequence !== null && left.sequence === right.sequence;
 }
 
 function entryMatches(
@@ -493,11 +457,12 @@ export function reconcileSessionProjectionSnapshot(
       continue;
     }
     const matches = entries.filter((entry) => entryMatches(entry, current, true));
+    const uniqueMatch = matches.length === 1 ? matches[0] : undefined;
     const run = current.identity?.runId ? runs[current.identity.runId] : undefined;
     const terminalMatch = findUniqueSnapshotTerminalMatch(current, matches, run, entries);
     if (
-      (matches.length === 1 &&
-        (sameAssistantPersistenceReceipt(matches[0].identity, current.identity) ||
+      (uniqueMatch &&
+        (sameAssistantPersistenceReceipt(uniqueMatch.identity, current.identity) ||
           !isUnsequencedLiveTerminal(current, run))) ||
       terminalMatch
     ) {

@@ -6057,7 +6057,7 @@ describe("agent event handler", () => {
     });
     const errors = chatBroadcastCalls(broadcast).filter(([, payload]) => payload.state === "error");
     expect(errors).toHaveLength(1);
-    expect(errors[0][1]).toMatchObject({
+    expect(errors[0]?.[1]).toMatchObject({
       errorMessage: "client closed",
       message: {
         role: "assistant",

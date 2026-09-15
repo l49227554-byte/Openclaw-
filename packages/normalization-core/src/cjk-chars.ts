@@ -139,6 +139,8 @@ export function estimateStringCharsWithMinimumRawWeight(
       case 5:
         supplementary += 1;
         break;
+      default:
+        break;
     }
   }
   const commonEstimate =

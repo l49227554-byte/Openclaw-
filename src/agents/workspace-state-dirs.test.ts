@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
@@ -86,28 +86,30 @@ function setup(mode: "all" | "non-main" = "all") {
 }
 
 function observeColdSessionReads() {
-  const handles = new Set<DatabaseSync>();
-  let scans = 0;
-  const prepare = DatabaseSync.prototype.prepare;
-  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
-    this: DatabaseSync,
-    sql: string,
-  ) {
-    const statement = prepare.call(this, sql);
-    if (/from\s+"session_nodes"/i.test(sql)) {
-      handles.add(this);
-      if (sql.includes('"retained_window"')) {
-        statement.iterate = new Proxy(statement.iterate, {
-          apply(iterate, receiver, args) {
-            scans += 1;
-            return Reflect.apply(iterate, receiver, args);
-          },
-        });
-      }
-    }
-    return statement;
-  });
-  return { handles, scans: () => scans };
+  const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+  const iterate = vi.spyOn(StatementSync.prototype, "iterate");
+  return {
+    get handles() {
+      return new Set(
+        prepare.mock.calls.flatMap(([sql], index) =>
+          /from\s+"session_nodes"/i.test(sql) ? [prepare.mock.contexts[index]] : [],
+        ),
+      );
+    },
+    scans: () =>
+      prepare.mock.calls.reduce((count, [sql], index) => {
+        if (!sql.includes('"retained_window"')) {
+          return count;
+        }
+        const result = prepare.mock.results[index];
+        return (
+          count +
+          iterate.mock.contexts.filter(
+            (statement) => result?.type === "return" && statement === result.value,
+          ).length
+        );
+      }, 0),
+  };
 }
 
 describe("Gateway configured workspace readiness", () => {

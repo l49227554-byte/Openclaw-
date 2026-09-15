@@ -1,9 +1,20 @@
 // Session transcript facade resolves transcript files, appends mirror messages, and reads tails.
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
+import {
+  extractToolResultMediaArtifact,
+  filterPersistedToolResultMediaUrls,
+} from "../../agents/embedded-agent-tool-media.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import type { SessionManager } from "../../agents/sessions/session-manager.js";
 import { redactTranscriptMessage } from "../../agents/transcript-redact.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { MAX_GROUNDING_PATHS } from "../../media/media-grounding-limits.js";
+import {
+  prepareManagedMediaGrounding,
+  prepareManagedMediaGroundingRoot,
+  type ManagedMediaGroundingRoot,
+} from "../../media/media-reference.js";
 import {
   normalizeAgentId,
   parseAgentSessionKey,
@@ -22,6 +33,7 @@ import {
   OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER,
   isTranscriptOnlyOpenClawAssistantMessage,
 } from "../../shared/transcript-only-openclaw-assistant.js";
+import { truncateUtf8Prefix } from "../../utils/utf8-truncate.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import {
   parseSqliteSessionFileMarker,
@@ -35,7 +47,7 @@ import {
   readActiveTranscriptEntryAnchor,
   readLatestSessionTranscriptMessageEvent,
   readLatestTranscriptAssistantText,
-  readSessionTranscriptMessageEventPage,
+  readSessionTranscriptConversationSnapshot,
   resolveSessionEntrySelection,
   updateSessionEntry,
   waitForSessionTranscriptProjection,
@@ -45,6 +57,7 @@ import {
   type TranscriptEntryAnchor,
   type TranscriptEvent,
 } from "./session-accessor.js";
+import { DEFAULT_VISIBLE_MESSAGE_MAX_MESSAGES } from "./session-accessor.sqlite-visible-cursor.js";
 import type {
   SessionLifecycleRevisionExpectation,
   SessionTranscriptTurnLifecyclePatch,
@@ -53,6 +66,7 @@ import {
   applyBeforeMessageWriteToAssistant,
   type AssistantBeforeMessageWrite,
 } from "./transcript-assistant-message.js";
+import { invalidateUngroundedMediaPrefixes } from "./transcript-grounding.js";
 import { resolveMirroredTranscriptText } from "./transcript-mirror.js";
 import {
   isWithinTranscriptWindow,
@@ -140,6 +154,9 @@ type ReadRecentSessionConversationTextParams = ReadRecentSessionConversationText
   sessionKey: string;
   storePath?: string;
 };
+
+const MAX_RECENT_TRANSCRIPT_ENTRY_BYTES = 32 * 1024,
+  MAX_RECENT_TRANSCRIPT_WINDOW_BYTES = 128 * 1024;
 
 class SessionTranscriptAgentScopeMismatchError extends Error {
   readonly code = "SESSION_TRANSCRIPT_AGENT_SCOPE_MISMATCH";
@@ -244,11 +261,11 @@ function extractRecentConversationText(
   if (upstreamUserText === null) {
     return undefined;
   }
-  const text =
+  const rawText =
     message.role === "assistant"
       ? extractAssistantPhaseText(message)
       : (upstreamUserText ?? extractFirstTextBlock(message)?.trim());
-  if (!text) {
+  if (!rawText) {
     return undefined;
   }
   const provenance =
@@ -256,9 +273,9 @@ function extractRecentConversationText(
       ? (message.provenance as { sourceChannel?: unknown })
       : undefined;
   return {
-    ...(typeof parsed.id === "string" && parsed.id ? { id: parsed.id } : {}),
+    ...(typeof parsed?.id === "string" && parsed.id ? { id: parsed.id } : {}),
     role: message.role,
-    text,
+    text: rawText,
     ...(normalizeTranscriptTimestamp(message.timestamp) !== undefined
       ? { timestamp: normalizeTranscriptTimestamp(message.timestamp) }
       : {}),
@@ -268,12 +285,38 @@ function extractRecentConversationText(
   };
 }
 
+function readTranscriptEventMessage(event: unknown): Record<string, unknown> | undefined {
+  return isRecord(event) && event.type === "message" && isRecord(event.message)
+    ? event.message
+    : undefined;
+}
+
+function readTurnGroundedMediaPaths(
+  message: Record<string, unknown>,
+  maxResults: number,
+): string[] {
+  if (message.role !== "toolResult") {
+    return [];
+  }
+  const rawToolName = typeof message.toolName === "string" ? message.toolName : undefined;
+  // Stable transcripts through v2026.7.1-2 persisted the core image tool under
+  // its former name. Normalize only this immutable history; live tools use view_image.
+  const toolName = rawToolName === "image" ? "view_image" : rawToolName;
+  return (
+    extractToolResultMediaArtifact(message, {
+      maxMediaCandidates: maxResults,
+      maxMediaUrls: maxResults,
+      acceptMediaUrl: (mediaUrl) =>
+        filterPersistedToolResultMediaUrls(toolName, [mediaUrl], message).length > 0,
+    })?.mediaUrls ?? []
+  );
+}
+
 async function readRecentUserAssistantTextFromSqliteTranscript(
   scope: SqliteSessionFileMarker,
   options: ReadRecentSessionConversationTextOptions = {},
 ): Promise<SessionRecentConversationText[]> {
   const limit = normalizeRecentTranscriptLimit(options.limit);
-  const pageSize = 250;
   try {
     const readScope = {
       agentId: scope.agentId,
@@ -281,28 +324,80 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
       storePath: scope.storePath,
     };
     const { readRestoredSessionTranscript } = await import("./session-cold-storage-read.js");
-    return await readRestoredSessionTranscript(readScope, () => {
-      const recent: SessionRecentConversationText[] = [];
-      for (let offset = 0; recent.length < limit; offset += pageSize) {
-        const page = readSessionTranscriptMessageEventPage(readScope, {
-          maxMessages: pageSize,
+    // Selection stays synchronous so a cold-storage restore can retry it; grounding is async
+    // and runs after, on the rows plus the same-turn provenance gathered with them.
+    const collected = await readRestoredSessionTranscript(readScope, () => {
+      const rows: Array<{
+        entry: SessionRecentConversationText;
+        references: string[];
+      }> = [];
+      let offset = 0;
+      while (rows.length < limit) {
+        const maxResults = Math.min(DEFAULT_VISIBLE_MESSAGE_MAX_MESSAGES, limit - rows.length);
+        const page = readSessionTranscriptConversationSnapshot(readScope, {
           offset,
+          select: (event) => {
+            const entry = extractRecentConversationText(event, options);
+            return Boolean(entry && isWithinTranscriptWindow(entry.timestamp, options));
+          },
+          maxResults,
         });
-        if (page.events.length === 0) {
-          break;
-        }
-        for (const event of page.events.toReversed()) {
-          const entry = extractRecentConversationText(event.event, options);
-          if (entry && isWithinTranscriptWindow(entry.timestamp, options)) {
-            recent.push(entry);
-            if (recent.length >= limit) {
-              break;
+        for (const row of page.toReversed()) {
+          const entry = extractRecentConversationText(row.event, options);
+          if (!entry) {
+            continue;
+          }
+          const references: string[] = [];
+          if (entry.role === "assistant") {
+            for (const preceding of row.precedingSameTurn) {
+              if (references.length >= MAX_GROUNDING_PATHS) {
+                break;
+              }
+              const message = readTranscriptEventMessage(preceding.event);
+              if (message) {
+                references.push(
+                  ...readTurnGroundedMediaPaths(message, MAX_GROUNDING_PATHS - references.length),
+                );
+              }
             }
           }
+          rows.push({ entry, references });
+          if (rows.length >= limit) {
+            break;
+          }
+        }
+        if (page.length < maxResults) {
+          break;
+        }
+        offset += page.length;
+      }
+      return rows;
+    });
+    let groundingRoot: ManagedMediaGroundingRoot | undefined;
+    const selected: SessionRecentConversationText[] = [];
+    let remainingBytes = MAX_RECENT_TRANSCRIPT_WINDOW_BYTES;
+    for (const { entry, references } of collected) {
+      if (remainingBytes <= 0) {
+        break;
+      }
+      if (entry.role === "assistant") {
+        groundingRoot ??= await prepareManagedMediaGroundingRoot();
+        const grounding = await prepareManagedMediaGrounding(groundingRoot, references);
+        entry.text = invalidateUngroundedMediaPrefixes(entry.text, grounding);
+      }
+      const text = truncateUtf8Prefix(
+        entry.text,
+        Math.min(remainingBytes, MAX_RECENT_TRANSCRIPT_ENTRY_BYTES),
+      );
+      remainingBytes -= Buffer.byteLength(text);
+      if (text) {
+        selected.push({ ...entry, text });
+        if (selected.length >= limit) {
+          break;
         }
       }
-      return recent.toReversed();
-    });
+    }
+    return selected.toReversed();
   } catch (error) {
     if (isSessionTranscriptProjectionUnavailableError(error)) {
       return [];

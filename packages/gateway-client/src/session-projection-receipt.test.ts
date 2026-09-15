@@ -28,7 +28,7 @@ describe("saved terminal assistant identity", () => {
       status: "completed",
       message: saved("other", 2),
     });
-    expect(state.runs[runId].message).toBe(empty);
+    expect(state.runs[runId]?.message).toBe(empty);
     const durable = saved("selected", 3);
     state = reduceSessionProjection(state, {
       type: "runTerminal",
@@ -36,7 +36,7 @@ describe("saved terminal assistant identity", () => {
       status: "completed",
       message: durable,
     });
-    expect(state.runs[runId].message).toBe(durable);
+    expect(state.runs[runId]?.message).toBe(durable);
   });
   it.each(["error", "timeout", "aborted", "completed"] as const)(
     "reconciles %s by receipt in either order and across cursor/full replay",

@@ -425,9 +425,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     }
     const foregroundReplacement = isForegroundReplacement(options);
     if (inFlight || intent !== "explicit") {
-      if (foregroundReplacement) {
-        foregroundPublicationGeneration += 1;
-      }
       const completion = createDeferredCore<SessionsListResult | null>();
       queuedRefresh = coalesceSessionRefresh(queuedRefresh, {
         options,
@@ -436,6 +433,10 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
         bootstrap,
         completions: [{ options, complete: completion.resolve }],
       });
+      // A rejected replacement cannot retire the writer that still owns loading completion.
+      if (foregroundReplacement && isForegroundReplacement(queuedRefresh.options)) {
+        foregroundPublicationGeneration += 1;
+      }
       if (!inFlight) {
         void host.background(queuedRefresh, drainQueuedRefresh);
       }
@@ -511,7 +512,12 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     return { ...options, force: true };
   };
   const refreshReplacementOwned = (agentId?: string | null, isErrorCurrent?: () => boolean) =>
-    refreshInternal(replacementOptions(agentId), false, isErrorCurrent);
+    refreshInternal(
+      replacementOptions(agentId),
+      false,
+      isErrorCurrent,
+      agentId?.trim() ? "explicit" : "automatic",
+    );
   const refreshReplacementResult = (
     agentId?: string | null,
     isErrorCurrent?: () => boolean,

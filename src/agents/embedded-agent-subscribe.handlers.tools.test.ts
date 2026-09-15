@@ -1214,6 +1214,31 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
     });
   });
 
+  it.each(["exec", "bash"])(
+    "keeps a changed %s command unresolved without an explicit recovery receipt",
+    async (rawToolName) => {
+      const { ctx } = createTestContext();
+
+      await recordToolCall(ctx, {
+        toolName: rawToolName,
+        toolCallId: "tool-command-failed",
+        args: { command: "python3 verify.py --strict" },
+        isError: true,
+      });
+      await recordToolCall(ctx, {
+        toolName: rawToolName,
+        toolCallId: "tool-command-without-receipt",
+        args: { command: "python3 verify.py --normalized" },
+        isError: false,
+      });
+
+      expect(ctx.state.lastToolError).toMatchObject({
+        toolName: "exec",
+        toolCallId: "tool-command-failed",
+      });
+    },
+  );
+
   it("keeps a changed exec command unresolved when the verification ID is wrong", async () => {
     const { ctx } = createTestContext();
 
@@ -1306,6 +1331,47 @@ describe("handleToolExecutionEnd mutating failure recovery", () => {
       });
     },
   );
+
+  it("keeps a running exec pending until process poll reports the session terminal", async () => {
+    const { ctx } = createTestContext();
+
+    await recordToolCall(ctx, {
+      toolName: "exec",
+      toolCallId: "tool-exec-running",
+      args: { command: "python3 slow-verification.py" },
+      isError: false,
+      result: {
+        details: {
+          status: "running",
+          sessionId: "exec-session-1",
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas).toContainEqual(
+      expect.objectContaining({
+        toolName: "exec",
+        asyncStarted: true,
+        backgroundExecSessionId: "exec-session-1",
+      }),
+    );
+
+    await recordToolCall(ctx, {
+      toolName: "process",
+      toolCallId: "tool-process-poll",
+      args: { action: "poll", sessionId: "exec-session-1" },
+      isError: false,
+      result: {
+        details: {
+          status: "completed",
+          sessionId: "exec-session-1",
+          exitCode: 0,
+        },
+      },
+    });
+
+    expect(ctx.state.toolMetas.some((toolMeta) => toolMeta.asyncStarted === true)).toBe(false);
+  });
 
   it("emits a prepared validation diagnostic without model arguments", async () => {
     const { ctx, onAgentEvent } = createTestContext();

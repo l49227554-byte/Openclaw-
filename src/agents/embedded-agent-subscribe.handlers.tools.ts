@@ -390,6 +390,26 @@ function isAsyncStartedToolResult(result: unknown): boolean {
   return details?.async === true && details.status === "started";
 }
 
+function readRunningExecSessionId(result: unknown): string | undefined {
+  const details = readToolResultDetails(result);
+  return details?.status === "running" ? readStringValue(details.sessionId) : undefined;
+}
+
+function readResolvedExecSessionId(
+  toolName: string,
+  args: Record<string, unknown>,
+  result: unknown,
+): string | undefined {
+  if (toolName !== "process" || readStringValue(args.action)?.toLowerCase() !== "poll") {
+    return undefined;
+  }
+  const details = readToolResultDetails(result);
+  if (details?.status !== "completed" && details?.status !== "failed") {
+    return undefined;
+  }
+  return readStringValue(details.sessionId);
+}
+
 function readAsyncStartedTaskIds(result: unknown): {
   asyncTaskRunId?: string;
   asyncTaskId?: string;
@@ -1334,13 +1354,28 @@ export async function handleToolExecutionEnd(
   const attemptedMutatingAction = callSummary.mutatingAction && executionStarted;
   const attemptedPotentialSideEffect = !callSummary.replaySafe && executionStarted;
   const meta = callSummary.meta;
-  const asyncStarted = !isToolError && isAsyncStartedToolResult(sanitizedResult);
+  const resolvedExecSessionId = readResolvedExecSessionId(toolName, startArgs, sanitizedResult);
+  if (resolvedExecSessionId) {
+    for (const toolMeta of ctx.state.toolMetas) {
+      if (toolMeta.backgroundExecSessionId === resolvedExecSessionId) {
+        toolMeta.asyncStarted = undefined;
+        toolMeta.backgroundExecSessionId = undefined;
+      }
+    }
+  }
+  const backgroundExecSessionId = !isToolError
+    ? readRunningExecSessionId(sanitizedResult)
+    : undefined;
+  const asyncStarted =
+    !isToolError &&
+    (backgroundExecSessionId !== undefined || isAsyncStartedToolResult(sanitizedResult));
   const asyncTaskIds = asyncStarted ? readAsyncStartedTaskIds(sanitizedResult) : {};
   ctx.state.toolMetas.push({
     toolName,
     meta,
     replaySafe: callSummary.replaySafe,
     ...(asyncStarted ? { asyncStarted: true, ...asyncTaskIds } : {}),
+    ...(backgroundExecSessionId ? { backgroundExecSessionId } : {}),
   });
   const acceptedSessionSpawn =
     toolName === "sessions_spawn" && !isToolError

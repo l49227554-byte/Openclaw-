@@ -48,6 +48,22 @@ export interface PluginCache
 
 const PLUGIN_CACHE_FACT_INVALIDATED = "PLUGIN_CACHE_FACT_INVALIDATED";
 
+/** Cached diagnostics must not retain the caller through V8's lazy stack frames. */
+export function materializePluginCacheError(failure: unknown): void {
+  let error = failure;
+  const seen = new Set<Error>();
+  while (error instanceof Error && !seen.has(error)) {
+    seen.add(error);
+    try {
+      void error.stack;
+    } catch {
+      // Preserve the original failure if a custom stack formatter throws.
+    }
+    // Bounded file readers wrap their original failure without replacing its stack.
+    error = error.cause;
+  }
+}
+
 /** Explicit fact invalidation cancels its preparation. */
 export class PluginCacheFactInvalidatedError extends Error {
   readonly code = PLUGIN_CACHE_FACT_INVALIDATED;
@@ -360,12 +376,7 @@ export function retirePluginCache(
   retained.retirement = completion.promise;
   // Abort listeners may reenter retirement or release the final generation immediately.
   retained.controller.abort();
-  // Lazy error frames otherwise retain the retiring callback's scope after cleanup.
-  try {
-    void retained.controller.signal.reason.stack;
-  } catch {
-    // A custom stack formatter must not interrupt retirement.
-  }
+  materializePluginCacheError(retained.controller.signal.reason);
   const begin = () => beginPluginCacheRetirement(cache, beforeRetire);
   void (retained.references.size ? retained.settled.promise.then(begin) : begin()).then(
     completion.resolve,

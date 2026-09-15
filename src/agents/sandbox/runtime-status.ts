@@ -11,7 +11,10 @@ import {
   resolveAgentMainSessionKey,
 } from "../../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
-import { resolveSessionEntry } from "../../config/sessions/session-accessor.sqlite-exact-read.js";
+import {
+  loadExactSessionEntryCandidatesReadOnlyBatch,
+  resolveSessionEntry,
+} from "../../config/sessions/session-accessor.sqlite-exact-read.js";
 import {
   sessionCreatorProfileId,
   type SessionCreatedActor,
@@ -88,15 +91,62 @@ function resolveComparableSessionKeyForSandbox(params: {
   });
 }
 
-/** Resolves sandbox mode, effective session scope, and tool policy for a session. */
-export function resolveSandboxRuntimeStatus(params: {
+type SandboxRuntimeStatusParams = {
   cfg?: OpenClawConfig;
   sessionKey?: string;
   agentId?: string;
   /** Independent execution identity used for sandbox mode and policy classification. */
   classificationSessionKey?: string;
   classificationAgentId?: string;
-}): {
+};
+
+/** Resolves sandbox mode, effective session scope, and tool policy for a session. */
+export function resolveSandboxRuntimeStatus(params: SandboxRuntimeStatusParams) {
+  return resolveSandboxRuntimeStatusWithRead(params, resolveSessionEntry);
+}
+
+/** Classifies durable canonical keys without admitting the same store once per session. */
+export function resolveSandboxRuntimeStatusesForPersistedSessions(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  sessionKeys: readonly string[];
+  env: NodeJS.ProcessEnv;
+}) {
+  const entries = loadExactSessionEntryCandidatesReadOnlyBatch([
+    {
+      agentId: params.agentId,
+      env: params.env,
+      storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
+        agentId: params.agentId,
+        env: params.env,
+      }),
+      projection: "list",
+      sessionKeys: params.sessionKeys.map((sessionKey) =>
+        resolveComparableSessionKeyForSandbox({ ...params, sessionKey }),
+      ),
+    },
+  ]).flatMap((result) => {
+    if (!result.ok) {
+      throw result.error;
+    }
+    return result.value;
+  });
+  const byKey = new Map(entries.map(({ sessionKey, entry }) => [sessionKey, entry]));
+  const readSession: typeof resolveSessionEntry = ({ sessionKey }) => ({
+    existing: byKey.get(sessionKey),
+    normalizedKey: sessionKey,
+    legacyKeys: [],
+  });
+  // Retained or removed entries still need the configured mode classification.
+  return params.sessionKeys.map((sessionKey) =>
+    resolveSandboxRuntimeStatusWithRead({ ...params, sessionKey }, readSession),
+  );
+}
+
+function resolveSandboxRuntimeStatusWithRead(
+  params: SandboxRuntimeStatusParams,
+  readSession: typeof resolveSessionEntry,
+): {
   agentId: string;
   sessionKey: string;
   classificationAgentId: string;
@@ -130,7 +180,7 @@ export function resolveSandboxRuntimeStatus(params: {
   });
   // Creation owns this immutable requirement; current callers and agent mode cannot relax it.
   const session = classificationSessionKey
-    ? resolveSessionEntry(
+    ? readSession(
         {
           agentId: classificationAgentId,
           clone: false,

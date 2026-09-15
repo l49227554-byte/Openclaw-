@@ -9,7 +9,7 @@ import { parseAgentSessionKey } from "../routing/session-key.js";
 import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
 import { listAgentIds, resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
 import { resolveSandboxConfigForAgent } from "./sandbox/config.js";
-import { resolveSandboxRuntimeStatus } from "./sandbox/runtime-status.js";
+import { resolveSandboxRuntimeStatusesForPersistedSessions } from "./sandbox/runtime-status.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./sandbox/shared.js";
 import { listAgentWorkspaceDirs } from "./workspace-dirs.js";
 import { assertWorkspaceStateMigrationReady } from "./workspace-legacy-state.js";
@@ -65,19 +65,23 @@ export async function listWorkspaceStateDirs(params: {
         env: params.env,
       }),
     });
-    for (const sessionKey of sessionKeys) {
+    const ownedSessionKeys = sessionKeys.filter((sessionKey) => {
       const sessionAgentId = parseAgentSessionKey(sessionKey)?.agentId;
-      if (sessionAgentId && sessionAgentId !== agentId) {
-        continue;
-      }
-      const runtime = resolveSandboxRuntimeStatus({ cfg: params.cfg, sessionKey, agentId });
+      return !sessionAgentId || sessionAgentId === agentId;
+    });
+    for (const runtime of resolveSandboxRuntimeStatusesForPersistedSessions({
+      cfg: params.cfg,
+      agentId,
+      sessionKeys: ownedSessionKeys,
+      env: params.env,
+    })) {
       if (!runtime.sandboxed) {
         continue;
       }
       const layout = resolveSandboxWorkspaceLayoutPaths({
         cfg: { ...sandbox, workspaceRoot },
         agentId,
-        rawSessionKey: sessionKey,
+        rawSessionKey: runtime.sessionKey,
         workspaceDir: resolveAgentWorkspaceDir(params.cfg, agentId, params.env),
       });
       dirs.add(layout.sandboxWorkspaceDir);

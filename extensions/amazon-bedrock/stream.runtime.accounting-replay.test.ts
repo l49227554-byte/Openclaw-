@@ -755,9 +755,9 @@ describe("Bedrock tool-result images", () => {
       const expectedImage = {
         image: { format: "png", source: { bytes: new Uint8Array(Buffer.from(png, "base64")) } },
       };
-      const placeholder = {
-        text: "Images returned by this tool are attached immediately after this result.",
-      };
+      const placeholder = (toolCallId: string) => ({
+        text: `(see attached images labeled "Images from tool result ${toolCallId}")`,
+      });
       expect(input.messages).toEqual([
         {
           role: ConversationRole.USER,
@@ -766,13 +766,16 @@ describe("Bedrock tool-result images", () => {
               toolResult: {
                 toolUseId: "call_first",
                 status: "success",
-                content: [{ text: "first result" }, placeholder],
+                content: [{ text: "first result" }, placeholder("call_first")],
               },
             },
-            expectedImage,
-            expectedImage,
-            { toolResult: { toolUseId: "call_second", status: "error", content: [placeholder] } },
-            expectedImage,
+            {
+              toolResult: {
+                toolUseId: "call_second",
+                status: "error",
+                content: [placeholder("call_second")],
+              },
+            },
             {
               toolResult: {
                 toolUseId: "call_text",
@@ -780,6 +783,11 @@ describe("Bedrock tool-result images", () => {
                 content: [{ text: "plain result" }],
               },
             },
+            { text: "Images from tool result call_first:" },
+            expectedImage,
+            expectedImage,
+            { text: "Images from tool result call_second:" },
+            expectedImage,
           ],
         },
       ]);

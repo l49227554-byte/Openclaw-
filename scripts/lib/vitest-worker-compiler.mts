@@ -16,7 +16,10 @@ import {
   verifyVitestWorkerArtifacts,
   type VitestWorkerManifest,
 } from "./vitest-worker-artifacts.mts";
-import { vitestWorkerBuildEntries } from "./vitest-worker-build-entries.mts";
+import {
+  legacyFinalizerBuildSources,
+  vitestWorkerBuildEntries,
+} from "./vitest-worker-build-entries.mts";
 import { vitestWorkerDeclarationEntries } from "./vitest-worker-declarations.mts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -177,23 +180,10 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     plugins: config.plugins,
   });
   outputPrefix = "legacy-finalizer/";
-  const preservedSources = [
-    "src/cli/update-cli/update-command-legacy-finalize.test-support.ts",
-    "src/infra/update-migrated-finalize.worker.ts",
-    "src/infra/runtime-process-entrypoints.ts",
-    "src/cli/update-cli/update-command-service-plan.ts",
-    "src/cli/update-cli/update-command-repair-service.ts",
-    "src/infra/tmp-openclaw-dir.ts",
-    "src/cli/update-cli/update-command-convergence.ts",
-    "src/cli/update-cli/update-command-restart-context.ts",
-    "src/daemon/gateway-entrypoint.ts",
-    "src/cli/update-cli/update-command-verification.ts",
-    "src/cli/update-cli/shared.ts",
-  ];
   await build({
     ...config,
     // Array entries honor root; object entries infer src/ and break import.meta paths.
-    entry: preservedSources,
+    entry: legacyFinalizerBuildSources,
     outDir: path.join(outDir, "legacy-finalizer"),
     root,
     // Load hooks forward the complete original namespaces through query imports.
@@ -204,7 +194,7 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     // Hooked service and authority owners must stay in this single preserved graph.
     plugins: commonPlugins,
   });
-  for (const source of preservedSources) {
+  for (const source of legacyFinalizerBuildSources) {
     fs.accessSync(path.join(outDir, outputPrefix, source.replace(/\.ts$/u, ".js")));
   }
   for (const name of Object.keys(entry)) {

@@ -93,15 +93,20 @@ export default definePluginEntry({
       ],
       catalog: {
         order: "simple",
-        run: (ctx) =>
-          buildOpenAICompatibleProviderCatalog({
+        run: (ctx) => {
+          // LiteLLM serves models at both /models and /v1/models, and operators
+          // configure bases with or without /v1; the shared join does not dedupe it.
+          const explicitBaseUrl = ctx.config.models?.providers?.[PROVIDER_ID]?.baseUrl ?? "";
+          const versionedBaseUrl = /\/v1\/*$/.test(explicitBaseUrl.trim());
+          return buildOpenAICompatibleProviderCatalog({
             discoveryMode: "strict",
             ctx,
             providerId: PROVIDER_ID,
             buildProvider: buildLitellmProvider,
             allowExplicitBaseUrl: true,
-            modelDiscovery: { endpointPath: "v1/models" },
-          }),
+            modelDiscovery: { endpointPath: versionedBaseUrl ? "models" : "v1/models" },
+          });
+        },
       },
       staticCatalog: {
         order: "simple",

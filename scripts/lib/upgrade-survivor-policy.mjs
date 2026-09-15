@@ -12,6 +12,8 @@ const UPGRADE_SURVIVOR_SCENARIOS = Object.freeze([
   "configured-plugin-installs",
   "missing-configured-plugin-migration",
   "custom-plugin-siblings",
+  "projects-doctor",
+  "taskflow-restoration",
   "stale-source-plugin-shadow",
   "prerelease-plugin-registry",
   "tilde-log-path",
@@ -39,7 +41,12 @@ const scenarioMinimumBaselines = new Map([
 
 // These black-box scenarios are implemented entirely by the current trusted
 // release harness and treat the selected tree only as the package under test.
-const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set(["mobile-pairing-reconnect", "abandoned-update"]);
+const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set([
+  "mobile-pairing-reconnect",
+  "abandoned-update",
+  "projects-doctor",
+  "taskflow-restoration",
+]);
 
 export function isTrustedHarnessOwnedUpgradeSurvivorScenario(scenario) {
   return TRUSTED_HARNESS_OWNED_SCENARIOS.has(scenario);
@@ -55,6 +62,8 @@ const aggregateScenarios = UPGRADE_SURVIVOR_SCENARIOS.filter(
     scenario !== "msteams-polls" &&
     scenario !== "abandoned-update" &&
     scenario !== "missing-configured-plugin-migration" &&
+    scenario !== "projects-doctor" &&
+    scenario !== "taskflow-restoration" &&
     scenario !== "mobile-pairing-reconnect" &&
     scenario !== "watchos-direct-node" &&
     scenario !== "prerelease-plugin-registry" &&
@@ -150,6 +159,9 @@ function comparePublishedReleaseVersion(a, b) {
 
 export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec) {
   const version = parsePublishedReleaseVersion(baselineSpec);
+  if (scenario === "projects-doctor" || scenario === "taskflow-restoration") {
+    return baselineSpec === "openclaw@2026.9.4";
+  }
   if (scenario === "abandoned-update" || scenario === "missing-configured-plugin-migration") {
     return baselineSpec === "openclaw@2026.9.2";
   }

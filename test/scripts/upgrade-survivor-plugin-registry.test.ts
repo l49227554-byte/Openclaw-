@@ -1,6 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -71,6 +78,12 @@ if [ "\${1:-}" = run ]; then
 fi
 previous=""
 for arg in "$@"; do
+  case "$arg" in
+    */worker-runtime.*:*)
+      mkdir -p "\${arg%%:*}/runtime"
+      printf 'synthetic state' >"\${arg%%:*}/runtime/state-marker"
+      ;;
+  esac
   if [ "$previous" = "--cidfile" ]; then
     printf 'fake-container\n' >"$arg"
   fi
@@ -108,6 +121,41 @@ done
 }
 
 describe("standalone upgrade survivor plugin registry", () => {
+  it("keeps synthetic state through inner finalization until the Docker owner joins", () => {
+    const root = tempDirs.make("worker-cell-inner-finalization-");
+    const runtime = join(root, "runtime");
+    mkdirSync(runtime);
+    const marker = join(runtime, "state-marker");
+    writeFileSync(marker, "synthetic state");
+    const source = readFileSync("scripts/e2e/lib/upgrade-survivor/run.sh", "utf8");
+    const firstPhase = source.indexOf("phase storage-preflight");
+    expect(firstPhase).toBeGreaterThan(0);
+    const runner = join(root, "inner.sh");
+    writeFileSync(
+      runner,
+      `${source.slice(0, firstPhase)}
+cleanup() { :; }
+write_summary() { :; }
+run_completed=1
+on_exit 0
+`,
+    );
+    const result = spawnSync("bash", [runner], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENCLAW_UPGRADE_SURVIVOR_BASELINE: "openclaw@2026.9.4",
+        OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "projects-doctor",
+        OPENCLAW_UPGRADE_SURVIVOR_LIVE_OPENAI: "0",
+        OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT: runtime,
+        OPENCLAW_UPGRADE_SURVIVOR_SUMMARY_JSON: join(root, "artifacts", "summary.json"),
+      },
+      timeout: 30_000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(marker, "utf8")).toBe("synthetic state");
+  });
+
   // macOS /bin/bash is 3.2; PATH may select a newer Bash. Exercise both owners.
   describe.each(process.platform === "darwin" ? ["/bin/bash", "bash"] : ["bash"])(
     "%s wrapper",
@@ -255,6 +303,43 @@ describe("standalone upgrade survivor plugin registry", () => {
     );
     expect(existsSync(packageTarball)).toBe(true);
   });
+
+  it.each(["projects-doctor", "taskflow-restoration"])(
+    "isolates each %s run from retained evidence and preserves a failed runtime",
+    (scenario) => {
+      const artifacts = tempDirs.make("worker-cell-retained-artifacts-");
+      const retained = join(artifacts, "projects-inventory.json");
+      writeFileSync(retained, "previous evidence");
+      const directories = [];
+      for (const exitCode of ["0", "42"]) {
+        const { captureDir, result } = runSurvivor({
+          OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_DIR: artifacts,
+          OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC: "openclaw@2026.9.4",
+          OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: scenario,
+          FIXTURE_RUN_EXIT: exitCode,
+        });
+        expect(result.status, result.stderr).toBe(Number(exitCode));
+        expect(existsSync(join(captureDir, "node-args"))).toBe(false);
+        const directory = result.stdout.match(/Worker survivor artifacts: ([^\n]+)/u)?.[1] ?? "";
+        expect(existsSync(directory)).toBe(true);
+        directories.push(directory);
+        const runtimes = readdirSync(directory).filter((name) =>
+          name.startsWith("worker-runtime."),
+        );
+        expect(runtimes).toHaveLength(exitCode === "0" ? 0 : 1);
+        if (exitCode !== "0") {
+          expect(result.stderr).toContain("Preserved failed synthetic worker-cell state:");
+          for (const runtime of runtimes) {
+            expect(readFileSync(join(directory, runtime, "runtime", "state-marker"), "utf8")).toBe(
+              "synthetic state",
+            );
+          }
+        }
+      }
+      expect(new Set(directories).size).toBe(2);
+      expect(readFileSync(retained, "utf8")).toBe("previous evidence");
+    },
+  );
 });
 
 describe("standalone upgrade survivor live OpenAI probe", () => {

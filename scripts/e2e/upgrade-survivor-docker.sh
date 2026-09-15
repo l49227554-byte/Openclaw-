@@ -11,6 +11,7 @@ set -euo pipefail
 PACKAGE_TGZ=""
 AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT=""
 UPGRADE_SCENARIO_STAGE=""
+WORKER_RUNTIME_HOST_ROOT=""
 run_completed="0"
 diagnostics_ready=0
 cleanup_outer() {
@@ -43,6 +44,16 @@ cleanup_outer() {
   fi
   if [ -n "$UPGRADE_SCENARIO_STAGE" ]; then
     rm -rf "$UPGRADE_SCENARIO_STAGE"
+  fi
+  if [ -n "$WORKER_RUNTIME_HOST_ROOT" ]; then
+    if [ "$exit_status" -eq 0 ] && [ "$run_completed" = "1" ]; then
+      if ! rm -rf "$WORKER_RUNTIME_HOST_ROOT"; then
+        echo "Worker-cell runtime cleanup failed: $WORKER_RUNTIME_HOST_ROOT" >&2
+        exit_status=1
+      fi
+    else
+      echo "Preserved failed synthetic worker-cell state: $WORKER_RUNTIME_HOST_ROOT" >&2
+    fi
   fi
   if [ "$exit_status" -ne 0 ]; then
     printf '[upgrade-survivor] FAILED (exit %s)\n' "$exit_status" >&2
@@ -141,6 +152,7 @@ SKIP_BUILD="${OPENCLAW_UPGRADE_SURVIVOR_E2E_SKIP_BUILD:-0}"
 DOCKER_RUN_TIMEOUT="${OPENCLAW_UPGRADE_SURVIVOR_DOCKER_RUN_TIMEOUT:-1200s}"
 BASELINE_SPEC="${OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:-}"
 SCENARIO="${OPENCLAW_UPGRADE_SURVIVOR_SCENARIO:-base}"
+SURVIVOR_RUNTIME_ROOT="${OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT:-/tmp/openclaw-upgrade-survivor-runtime}"
 if [ "$OPENCLAW_FROZEN_UPGRADE_SURVIVOR_CLAWHUB_MODE" = legacy ]; then
   legacy_clawhub_package="@openclaw/whatsapp"
   [ "$SCENARIO" = configured-plugin-installs ] && legacy_clawhub_package="@openclaw/matrix"
@@ -216,6 +228,15 @@ if [ "$SCENARIO" = "abandoned-update" ] && {
 }; then
   echo "abandoned-update requires the published baseline, auto-auth service fixture, and no live provider" >&2
   exit 1
+fi
+
+if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "taskflow-restoration" ]; then
+  if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" != "1" ] ||
+    [ "$BASELINE_SPEC" != "openclaw@2026.9.4" ] ||
+    [ "$UPDATE_RESTART_MODE" != "manual" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_OPENAI" != "0" ]; then
+    echo "$SCENARIO requires published openclaw@2026.9.4, manual restart, isolated state, and no live provider" >&2
+    exit 1
+  fi
 fi
 
 resolve_lane_artifact_suffix() {
@@ -295,6 +316,10 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
   fi
 
   mkdir -p "$ARTIFACT_DIR"
+  if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "taskflow-restoration" ]; then
+    ARTIFACT_DIR="$(mktemp -d "$ARTIFACT_DIR/worker-run.XXXXXX")"
+    echo "Worker survivor artifacts: $ARTIFACT_DIR"
+  fi
   chmod -R a+rwX "$ARTIFACT_DIR" || true
   prepare_diagnostics_capture
 
@@ -327,7 +352,14 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
     CANDIDATE_SPEC="$(normalize_npm_candidate "$CANDIDATE_RAW")"
   fi
 
-  if [ "$CANDIDATE_IS_CURRENT" = "1" ] && [ "$SCENARIO" != "custom-plugin-siblings" ] && [ -z "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
+  if { [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "taskflow-restoration" ]; } && [ "$CANDIDATE_KIND" != "tarball" ]; then
+    echo "$SCENARIO requires a frozen candidate tarball" >&2
+    exit 1
+  fi
+
+  if [ "$CANDIDATE_IS_CURRENT" = "1" ] && [ "$SCENARIO" != "custom-plugin-siblings" ] &&
+    [ "$SCENARIO" != "projects-doctor" ] && [ "$SCENARIO" != "taskflow-restoration" ] &&
+    [ -z "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
     AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT="$(
       mktemp -d "${TMPDIR:-/tmp}/openclaw-upgrade-survivor-plugin-registry.XXXXXX"
     )"
@@ -349,6 +381,16 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
 
   OPENCLAW_TEST_STATE_FUNCTION_B64="$(docker_e2e_test_state_function_b64)"
 
+  if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "taskflow-restoration" ]; then
+    WORKER_RUNTIME_HOST_ROOT="$(mktemp -d "$ARTIFACT_DIR/worker-runtime.XXXXXX")"
+    chmod a+rwx "$WORKER_RUNTIME_HOST_ROOT"
+    UPGRADE_SCENARIO_ARGS+=(
+      -v "$WORKER_RUNTIME_HOST_ROOT:$SURVIVOR_RUNTIME_ROOT"
+    )
+    # The container user creates/owns the private child, not the host mount point.
+    SURVIVOR_RUNTIME_ROOT="$SURVIVOR_RUNTIME_ROOT/runtime"
+  fi
+
   docker_e2e_build_or_reuse "$IMAGE_NAME" upgrade-survivor "$ROOT_DIR/scripts/e2e/Dockerfile" "$ROOT_DIR" "bare" "$SKIP_BUILD"
 
   echo "Running published upgrade survivor Docker E2E..."
@@ -361,7 +403,7 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
     -e OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_SPEC="$CANDIDATE_SPEC" \
     -e OPENCLAW_DOCKER_E2E_SELECTED_SHA="${OPENCLAW_DOCKER_E2E_SELECTED_SHA:-}" \
     -e OPENCLAW_UPGRADE_SURVIVOR_SCENARIO="$SCENARIO" \
-    -e OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT="${OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT:-/tmp/openclaw-upgrade-survivor-runtime}" \
+    -e OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT="$SURVIVOR_RUNTIME_ROOT" \
     -e OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE="$UPDATE_RESTART_MODE" \
     -e OPENCLAW_UPGRADE_SURVIVOR_COMMAND_TIMEOUT="$COMMAND_TIMEOUT" \
     -e OPENCLAW_UPGRADE_SURVIVOR_VOLUME_SESSIONS="${OPENCLAW_UPGRADE_SURVIVOR_VOLUME_SESSIONS:-}" \

@@ -47,7 +47,12 @@ function resolveGoogleReasoningOutputMode(
 ): "native" | "tagged" {
   if (ctx.provider === "google" || ctx.provider === "google-vertex") {
     const api = ctx.model?.api ?? ctx.modelApi;
-    if (!api || api === "google-generative-ai" || api === "google-vertex") {
+    if (
+      !api ||
+      api === "google-generative-ai" ||
+      api === "google-vertex" ||
+      api === "google-interactions"
+    ) {
       return "native";
     }
   }

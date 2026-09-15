@@ -213,6 +213,25 @@ struct ChatSourcePreviewTests {
             .represents(#require(URL(string: "https://github.com/example/project/issues/1"))) == false)
     }
 
+    @Test(arguments: [
+        "https://example.com",
+        "https://EXAMPLE.com/",
+        "https://example.com:443",
+        "https://EXAMPLE.com:443/#section",
+        "http://EXAMPLE.com:80",
+    ])
+    func `generic preview aliases match the projected source`(citation: String) throws {
+        let markdown = "[Source](\(citation))"
+        let answer = self.answer(markdown)
+        var projector = ChatSourcePreviewProjector()
+        let sources = projector.project([self.search([self.row(citation)]), answer])[answer.id] ?? []
+        let source = try #require(sources.first)
+        let genericPreview = try #require(chatFirstPreviewURL(in: markdown))
+        #expect(source.represents(genericPreview))
+        #expect(try !source.represents(#require(URL(string: "https://example.com:8443/"))))
+        #expect(try !source.represents(#require(URL(string: "https://user:password@example.com/"))))
+    }
+
     @Test func `refresh invalidates only changed transcript inputs and removes deleted sources`() {
         let answer = self.answer("[source](\(self.first))")
         let resultID = UUID()

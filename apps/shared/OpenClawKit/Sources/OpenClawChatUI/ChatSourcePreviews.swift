@@ -20,7 +20,8 @@ struct ChatSourcePreview: Identifiable, Hashable {
     }
 
     func represents(_ url: URL) -> Bool {
-        let key = ChatSourcePreviewProjector.key(url)
+        guard let canonical = ChatSourcePreviewProjector.url(url.absoluteString) else { return false }
+        let key = ChatSourcePreviewProjector.key(canonical)
         return ChatSourcePreviewProjector.key(self.url) == key ||
             self.citedURLs.contains { ChatSourcePreviewProjector.key($0) == key }
     }
@@ -320,7 +321,7 @@ struct ChatSourcePreviewProjector {
         return value
     }
 
-    private static func url(_ value: String?) -> URL? {
+    fileprivate static func url(_ value: String?) -> URL? {
         guard let value, value.utf16.count <= 2048,
               var components = URLComponents(string: value),
               let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),

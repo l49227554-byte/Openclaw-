@@ -185,7 +185,11 @@ export class ModelProvidersPage extends OpenClawLightDomElement {
     getConfig: () => this.context.runtimeConfig,
   });
   private readonly login = new ModelProviderLoginController(this, {
-    getScope: () => ({ context: this.context, agentId: this.selectedAgentId, data: this.data }),
+    getScope: () => ({
+      context: this.context,
+      agentId: this.selectedAgentId,
+      authStatus: this.data?.authStatus ?? null,
+    }),
     canStart: () => this.canMutate(),
     canContinue: () => this.mutationBlockedReason() === null,
     refresh: () => this.refresh("replacement"),

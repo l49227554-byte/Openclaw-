@@ -82,13 +82,15 @@ export class ModelSetupWizardRunner {
   private currentState: ModelSetupWizardState = { phase: "idle" };
   private session: WizardSession | null = null;
   private retirementGeneration = 0;
+  private authLabel: string | undefined;
   private pendingSignIn:
     | { kind: ProviderLoginOption["kind"]; window: WindowProxy | null }
     | undefined;
 
   constructor(private readonly options: WizardRunnerOptions) {}
 
-  prepareSignIn(kind: ProviderLoginOption["kind"] | "install" | "custom"): void {
+  prepareSignIn(kind: ProviderLoginOption["kind"] | "install" | "custom", label: string): void {
+    this.authLabel = label;
     this.pendingSignIn?.window?.close();
     const browser = kind === "oauth" || kind === "device-code";
     this.pendingSignIn = {
@@ -275,6 +277,7 @@ export class ModelSetupWizardRunner {
       session?.abortController.abort();
     }
     this.session = null;
+    this.authLabel = undefined;
     this.setState({ phase: "idle" });
     if (session) {
       await this.cancelSession(session);
@@ -350,11 +353,14 @@ export class ModelSetupWizardRunner {
     clearTimeout(this.session?.externalInputTimer);
     this.session?.abortController.abort();
     this.session = null;
+    this.authLabel = undefined;
     this.setState({ phase: "idle" });
   }
 
   fail(message: string): void {
+    const label = this.authLabel;
     this.close();
+    this.authLabel = label;
     this.setState({ phase: "error", message });
   }
 
@@ -481,13 +487,7 @@ export class ModelSetupWizardRunner {
       next = { ...next, externalAuthInput: true };
     }
     if (session.notes.length) {
-      if (next.phase === "error") {
-        next = { ...next, message: [next.message, ...session.notes].join("\n\n") };
-      } else if (
-        next.phase === "step" &&
-        next.step.executor !== "gateway" &&
-        !next.step.externalUrl
-      ) {
+      if (next.phase === "step" && next.step.executor !== "gateway" && !next.step.externalUrl) {
         next = {
           ...next,
           step: {
@@ -592,7 +592,7 @@ export class ModelSetupWizardRunner {
     const message = sessionExpired
       ? this.options.sessionExpiredMessage()
       : formatUiError(error, this.options.requestFailedMessage());
-    this.setState({ phase: "error", message: [message, ...session.notes].join("\n\n") });
+    this.setState({ phase: "error", message });
   }
 
   private async cancelSession(session: WizardSession): Promise<WizardStatusResult | undefined> {
@@ -658,6 +658,9 @@ export class ModelSetupWizardRunner {
 
   private setState(state: ModelSetupWizardState): void {
     clearTimeout(this.session?.externalInputTimer);
+    if (this.authLabel) {
+      state.authLabel = this.authLabel;
+    }
     this.currentState = state;
     this.options.onChange(state);
   }

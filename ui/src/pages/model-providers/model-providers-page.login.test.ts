@@ -313,7 +313,7 @@ describe("Models provider login", () => {
   );
 
   it.each(["error", "input"] as const)(
-    "retains provider guidance for the next %s without a note acknowledgement",
+    "shows the next %s without replaying skipped notes as terminal errors",
     async (outcome) => {
       vi.spyOn(window, "open").mockReturnValue(null);
       const { context, request } = loginHarness();
@@ -349,8 +349,17 @@ describe("Models provider login", () => {
       const page = appendPage(context);
       await chooseLogin(page, "example-browser");
       await waitForFast(() =>
-        expect(page.querySelector("openclaw-modal-dialog")?.textContent).toContain(guidance),
+        expect(page.querySelector("openclaw-modal-dialog")?.textContent).toContain(
+          outcome === "error" ? "Sign-in could not finish." : guidance,
+        ),
       );
+      if (outcome === "error") {
+        expect(page.querySelector("[role=alert]")?.textContent).not.toContain(guidance);
+        expect(page.querySelector("openclaw-modal-dialog")?.textContent).not.toContain(guidance);
+        expect(page.querySelector("details")?.textContent).toContain(
+          "Certificate validation failed.",
+        );
+      }
       expect(page.querySelector("openclaw-modal-dialog")?.textContent).toContain(
         outcome === "error" ? "Certificate validation failed." : "Enter the client ID",
       );

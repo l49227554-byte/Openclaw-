@@ -16,6 +16,7 @@ import { resolveScrollBehavior } from "../../lib/scroll-behavior.ts";
 import { readSessionDefaults } from "../../lib/sessions/session-key.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { ModelProviderLoginController } from "../model-providers/login-controller.ts";
 import {
   captureModelSetupConnection,
   modelSetupAgentSelection,
@@ -99,6 +100,22 @@ export class ModelSetupPage extends OpenClawLightDomElement {
     () => this.pageState,
     (urls) => (this.iconUrls = urls),
   );
+  private readonly login = new ModelProviderLoginController(this, {
+    getScope: () => ({
+      context: this.context,
+      agentId: this.agentSelection.state.selectedId,
+      authStatus: null,
+    }),
+    canStart: () =>
+      this.canUseSetup(this.context.gateway.snapshot.client) &&
+      !this.firstRun.unresolved &&
+      !this.actionsDisabled(),
+    canContinue: () =>
+      this.canUseSetup(this.context.gateway.snapshot.client) && !this.firstRun.unresolved,
+    refresh: async () => {
+      await this.detect();
+    },
+  });
   private readonly subscriptions = new SubscriptionsController(this)
     .watch(
       () => this.context?.gateway,
@@ -321,6 +338,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
   }
 
   private resetActivity(): void {
+    this.login.reset();
     this.wizardMutationGeneration += 1;
     this.wizardMutationActive = false;
     void this.detectTask.run([null, null, null]);
@@ -638,6 +656,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
 
   private actionsDisabled(): boolean {
     return (
+      this.login.busy ||
       this.activationState.phase === "testing" ||
       this.verifyState.phase === "checking" ||
       this.wizardMutationActive ||
@@ -661,6 +680,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
       page: this.firstRun.visiblePageState(this.verifyState.phase === "ok"),
       activation: this.activationState,
       verify: this.verifyState,
+      connection: this.login.pageActions,
       wizard: this.wizardState,
       wizardMode: this.wizardMode,
       wizardValue: this.wizardValue,
@@ -693,7 +713,7 @@ export class ModelSetupPage extends OpenClawLightDomElement {
       onVerify: () => void this.firstRun.verify(),
       onActivateCandidate: (candidate) => this.activateCandidate(candidate),
       onStartAuth: (option) => {
-        this.wizard.prepareSignIn(option.kind);
+        this.wizard.prepareSignIn(option.kind, option.label);
         this.pendingPrepareOption = null;
         this.wizardMode = "auth";
         void this.runWizardMutation(() =>

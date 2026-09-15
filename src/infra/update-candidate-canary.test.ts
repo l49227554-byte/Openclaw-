@@ -217,6 +217,15 @@ describe("update candidate canary", () => {
       const child = new FakeChild(nextPid++);
       children.set(child.pid, child);
       childEnv = options.env;
+      queueMicrotask(() => {
+        child.stderr.write(
+          formatCliFailureLines({
+            title: "The CLI command failed.",
+            error: new Error("Health unavailable\nDistinct connection detail"),
+            env: {},
+          }).join("\n") + "\n",
+        );
+      });
       now += 899;
       return child;
     });
@@ -226,6 +235,13 @@ describe("update candidate canary", () => {
       expect(result.logTail.join("\n")).toContain("deadline exceeded");
       expect(result.steps.at(-1)).toMatchObject({ exitCode: 1 });
       expect(result.steps.at(-1)?.stderrTail).toContain("deadline exceeded");
+      const detail = updateRunStepsFromResultStep(result.steps.at(-1)!).at(-1)?.detail;
+      expect(detail).toContain("Distinct connection detail");
+      expect(detail).toContain("deadline exceeded");
+      const report = renderUpdateRunReport(
+        updateRunReportInputFromResult({ ...result, mode: "git", root }),
+      );
+      expect(report.markdown).toContain("deadline exceeded");
     } finally {
       clock.mockRestore();
     }

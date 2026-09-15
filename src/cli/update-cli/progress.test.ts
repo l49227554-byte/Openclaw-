@@ -232,6 +232,24 @@ describe("update progress", () => {
       expect(log.mock.calls.flat().join("\n")).toContain("Additional diagnostic");
     }
     log.mockClear();
+    printResult(
+      {
+        ...result,
+        runId: undefined,
+        status: "error",
+        steps: [
+          {
+            ...failed,
+            cwd: "/fixture",
+            stdoutTail: "x".repeat(160),
+            stderrTail: `[openclaw] Reason: Unable to load plugin\nDistinct detail ${"y".repeat(160)}\n[openclaw] Help: openclaw --help\ndoctor: Candidate doctor failed (deadline exceeded) (1000ms)`,
+          },
+        ],
+      },
+      {},
+    );
+    expect(log.mock.calls.flat().join("\n")).toContain("deadline exceeded");
+    log.mockClear();
     presentation.progress.onStepComplete?.({
       ...failed,
       stdoutTail: undefined,

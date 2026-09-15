@@ -59,11 +59,22 @@ export function summarizeUpdateStepFailure(
   const excerpts =
     step.name === "database-schema-preflight"
       ? [(step.stderrTail?.trim() || step.stdoutTail?.trim())?.split(/\r?\n/u)[0]]
-      : diagnostics.tails.map((tail, index) =>
-          index === 1 && diagnostics.reasonDetails
-            ? truncateUtf16Safe(diagnostics.reasonDetails, 120)
-            : sliceUtf16Safe(tail.trim().split(/\r?\n/u).at(-1) ?? "", -120),
-        );
+      : diagnostics.tails.map((tail, index) => {
+          const lastLine = tail.trim().split(/\r?\n/u).at(-1) ?? "";
+          const excerpt = sliceUtf16Safe(lastLine, -120);
+          if (index !== 1 || !diagnostics.reasonDetails) {
+            return excerpt;
+          }
+          if (!lastLine || diagnostics.reasonDetails.includes(lastLine)) {
+            return truncateUtf16Safe(diagnostics.reasonDetails, 120);
+          }
+          // Preserve the final outcome inside the existing per-stream excerpt budget.
+          const details = truncateUtf16Safe(
+            diagnostics.reasonDetails,
+            Math.max(0, 120 - excerpt.length - 2),
+          );
+          return [details, excerpt].filter(Boolean).join("; ");
+        });
   return truncateUtf16Safe(
     [step.termination ?? `Exit code: ${step.exitCode ?? "unknown"}`, ...excerpts]
       .filter(Boolean)

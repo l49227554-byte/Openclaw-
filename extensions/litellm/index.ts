@@ -5,7 +5,10 @@ import {
   type OpenClawPluginApi,
   type ProviderAuthMethodNonInteractiveContext,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { normalizeOptionalSecretInput } from "openclaw/plugin-sdk/provider-auth";
+import {
+  findNormalizedProviderValue,
+  normalizeOptionalSecretInput,
+} from "openclaw/plugin-sdk/provider-auth";
 import { buildOpenAICompatibleProviderCatalog } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-entry";
 import { buildLitellmImageGenerationProvider } from "./image-generation-provider.js";
@@ -96,7 +99,8 @@ export default definePluginEntry({
         run: (ctx) => {
           // LiteLLM serves models at both /models and /v1/models, and operators
           // configure bases with or without /v1; the shared join does not dedupe it.
-          const explicitBaseUrl = ctx.config.models?.providers?.[PROVIDER_ID]?.baseUrl ?? "";
+          const explicitBaseUrl =
+            findNormalizedProviderValue(ctx.config.models?.providers, PROVIDER_ID)?.baseUrl ?? "";
           const versionedBaseUrl = /\/v1\/*$/.test(explicitBaseUrl.trim());
           return buildOpenAICompatibleProviderCatalog({
             discoveryMode: "strict",

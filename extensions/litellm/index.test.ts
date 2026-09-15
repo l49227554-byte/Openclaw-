@@ -62,7 +62,13 @@ describe("litellm plugin", () => {
       baseUrl: " https://proxy.example/litellm/v1// ",
       endpoint: "https://proxy.example/litellm/v1/models",
     },
-  ])("discovers models from the $name", async ({ baseUrl, endpoint }) => {
+    {
+      name: "versioned explicit base URL under a mixed-case provider key",
+      providerKey: "LiteLLM",
+      baseUrl: "https://litellm.example/v1",
+      endpoint: "https://litellm.example/v1/models",
+    },
+  ])("discovers models from the $name", async ({ providerKey = "litellm", baseUrl, endpoint }) => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
       input === endpoint
         ? Response.json({ object: "list", data: [{ id: "proxy-model", object: "model" }] })
@@ -77,7 +83,7 @@ describe("litellm plugin", () => {
 
     const result = await runProviderCatalog({
       provider: requireRegisteredProvider(providers, "litellm"),
-      config: baseUrl ? { models: { providers: { litellm: { baseUrl, models: [] } } } } : {},
+      config: baseUrl ? { models: { providers: { [providerKey]: { baseUrl, models: [] } } } } : {},
       env: {},
       resolveProviderApiKey: () => ({ apiKey: "LITELLM_API_KEY", discoveryApiKey: "sk-test" }),
       resolveProviderAuth: () => ({ apiKey: undefined, mode: "none", source: "none" }),

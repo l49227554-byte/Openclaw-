@@ -1277,7 +1277,8 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       const previous = f.git(["rev-parse", outcomeRef]);
       const previousRecord = f.record();
       if (replacement) {
-        writeFileSync(join(f.worktree, ".gitattributes"), "*.log text eol=lf\n");
+        // Configure the byte-filter sentinel without adding unpublished work.
+        writeFileSync(join(f.repo, ".git/info/attributes"), "*.log text eol=lf\n");
         const capture = join(f.worktree, ".local", f.captures()[0]![0]);
         writeFileSync(capture, readFileSync(capture, "utf8") + "Capture byte sentinel\r\n");
       }
@@ -1955,7 +1956,7 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     );
     // A valid retained record with criss-cross (or unrelated) source/main history.
     const previous = f.git(["rev-parse", outcomeRef]);
-    const record = { ...f.record(), head, main };
+    const record = { ...f.record(), head, localHead: head, main };
     const blob = f.git(["hash-object", "-w", "--stdin"], JSON.stringify(record));
     const tree = f.git(["mktree"], `100644 blob ${blob}\toutcome.json\n`);
     f.git(["update-ref", outcomeRef, f.commit(tree, [head, main, previous])]);

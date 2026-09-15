@@ -41,6 +41,7 @@ import { resolveIMessageConversationRoute } from "../conversation-route.js";
 import {
   isKnownFromMeIMessageMessageId,
   rememberIMessageReplyCache,
+  resolveIMessageThreadReplyToId,
 } from "../monitor-reply-cache.js";
 import {
   formatIMessageChatTarget,
@@ -64,8 +65,10 @@ type IMessageReactionNotificationMode = "off" | "own" | "all";
 
 type IMessageReplyContext = {
   id?: string;
+  fullId?: string;
   body: string;
   sender?: string;
+  threadOriginatorId?: string;
 };
 
 const normalizeNonEmpty = (value: string) => value.trim() || null;
@@ -179,15 +182,20 @@ function normalizeReplyField(value: unknown): string | undefined {
 }
 
 function describeReplyContext(message: IMessagePayload): IMessageReplyContext | null {
-  const body = normalizeReplyField(message.reply_to_text);
-  if (!body) {
-    return null;
-  }
+  const body = normalizeReplyField(message.reply_to_text) ?? "";
+  // Upstream semantics: thread_originator_guid is authoritative, then reply_to_guid.
+  // reply_to_id (PR addition) stays first as a provider-supplied short id when present.
   const id =
+    normalizeReplyField(message.reply_to_id) ??
     normalizeReplyField(message.thread_originator_guid) ??
     normalizeReplyField(message.reply_to_guid);
+  const fullId = normalizeReplyField(message.reply_to_guid);
   const sender = normalizeReplyField(message.reply_to_sender);
-  return { body, id, sender };
+  const threadOriginatorId = normalizeReplyField(message.thread_originator_guid);
+  if (!body && !id && !fullId && !sender && !threadOriginatorId) {
+    return null;
+  }
+  return { body, id, fullId, sender, threadOriginatorId };
 }
 
 function resolveInboundEchoMessageIds(message: IMessagePayload): string[] {
@@ -369,6 +377,10 @@ type IMessageInboundDispatchDecision = {
   agentBodyText?: string;
   createdAt?: number;
   replyContext: IMessageReplyContext | null;
+  replyToIdFull?: string;
+  directReplyToGuid?: string;
+  threadParentId?: string;
+  messageThreadId?: string;
   effectiveWasMentioned: boolean;
   groupRequireMention: boolean;
   commandAuthorized: boolean;
@@ -754,6 +766,18 @@ export async function resolveIMessageInboundDecision(params: {
   }
 
   const replyContext = describeReplyContext(params.message);
+  const inboundMessageGuid = normalizeReplyField(params.message.guid);
+  const threadOriginatorId = replyContext?.threadOriginatorId;
+  const threadParentId = threadOriginatorId
+    ? (replyContext?.fullId ?? inboundMessageGuid)
+    : inboundMessageGuid;
+  const rawReplyToFullId = threadOriginatorId ?? threadParentId;
+  const replyToIdFull = rawReplyToFullId
+    ? (resolveIMessageThreadReplyToId(rawReplyToFullId, {
+        chatContext: { chatId, chatGuid, chatIdentifier },
+      }) ?? rawReplyToFullId)
+    : undefined;
+  const messageThreadId = replyContext?.threadOriginatorId ?? replyToIdFull;
   const contextVisibilityMode = resolveChannelContextVisibilityMode({
     cfg: params.cfg,
     channel: "imessage",
@@ -782,7 +806,8 @@ export async function resolveIMessageInboundDecision(params: {
     replyContext
       ? {
           id: replyContext.id,
-          body: replyContext.body,
+          fullId: replyContext.fullId,
+          ...(replyContext.body ? { body: replyContext.body } : {}),
           sender: replyContext.sender,
           senderAllowed: replySenderAllowed,
         }
@@ -791,6 +816,7 @@ export async function resolveIMessageInboundDecision(params: {
   const filteredReplyContext = visibleReply
     ? {
         id: visibleReply.id,
+        fullId: visibleReply.fullId,
         body: visibleReply.body ?? "",
         sender: visibleReply.sender,
       }
@@ -887,6 +913,10 @@ export async function resolveIMessageInboundDecision(params: {
     bodyText,
     createdAt,
     replyContext: filteredReplyContext,
+    replyToIdFull,
+    directReplyToGuid: threadParentId,
+    threadParentId,
+    messageThreadId,
     effectiveWasMentioned,
     groupRequireMention: requireMention,
     commandAuthorized,
@@ -923,6 +953,8 @@ export async function buildIMessageInboundContext(params: {
   const chatTarget =
     decision.isGroup && chatId != null ? formatIMessageChatTarget(chatId) : undefined;
   const messageGuid = normalizeReplyField(params.message.guid);
+  const threadReplyToId = decision.replyToIdFull;
+  const directReplyToGuid = decision.directReplyToGuid;
   const rememberedMessage = messageGuid
     ? rememberIMessageReplyCache({
         accountId: decision.route.accountId,
@@ -931,6 +963,8 @@ export async function buildIMessageInboundContext(params: {
         chatIdentifier: decision.chatIdentifier,
         chatId: decision.chatId,
         timestamp: Date.now(),
+        ...(threadReplyToId ? { threadReplyToId } : {}),
+        ...(directReplyToGuid ? { replyToGuid: directReplyToGuid } : {}),
         isFromMe: false,
       })
     : null;
@@ -945,7 +979,7 @@ export async function buildIMessageInboundContext(params: {
   const replySuffix = decision.replyContext
     ? `\n\n[Replying to ${decision.replyContext.sender ?? "unknown sender"}${
         decision.replyContext.id ? ` id:${decision.replyContext.id}` : ""
-      }]\n${decision.replyContext.body}\n[/Replying]`
+      }]${decision.replyContext.body ? `\n${decision.replyContext.body}` : ""}\n[/Replying]`
     : "";
 
   const senderDisplayName = normalizeNonEmpty(params.message.sender_name ?? "");
@@ -1035,6 +1069,7 @@ export async function buildIMessageInboundContext(params: {
       quote: decision.replyContext
         ? {
             id: decision.replyContext.id,
+            fullId: decision.replyContext.fullId,
             body: decision.replyContext.body,
             sender: decision.replyContext.sender,
           }
@@ -1072,6 +1107,9 @@ export async function buildIMessageInboundContext(params: {
     },
     reply: {
       to: replyTarget,
+      replyToIdFull: decision.replyToIdFull,
+      messageThreadId: decision.messageThreadId,
+      threadParentId: decision.threadParentId,
     },
     message: {
       body: combinedBody,

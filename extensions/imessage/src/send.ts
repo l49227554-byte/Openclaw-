@@ -485,11 +485,13 @@ function isAttachmentCommandFallbackError(error: unknown): boolean {
 }
 
 // A threaded reply (reply_to) needs the private-API bridge transport; on an
-// AppleScript-only deployment imsg rejects it outright. Detect that specific
-// error so we can resend the message unthreaded instead of dropping it (#99638).
+// AppleScript-only deployment imsg rejects it outright, and on a CLI/dylib
+// version mismatch the dylib HARD-FAILs demanding the (now unsupported)
+// thread_originator_guid param. Detect those errors so we can resend the
+// message unthreaded instead of dropping it (#99638).
 function isThreadedReplyUnsupportedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /reply_to requires bridge transport|cannot send threaded repl|threaded repl(?:y|ies)\b.*(?:unsupported|not supported|requires|unavailable)|requires bridge transport/iu.test(
+  return /reply_to requires bridge transport|cannot send threaded repl|threaded repl(?:y|ies)\b.*(?:unsupported|not supported|requires|unavailable)|requires bridge transport|threadOriginatorGuid is required/iu.test(
     message,
   );
 }
@@ -936,6 +938,10 @@ export async function sendMessageIMessage(
     transport: sendTransport,
   };
   if (resolvedReplyToId) {
+    // imsg 0.15.x rejects thread_originator_guid as a send param and derives
+    // the thread root itself from reply_to (verified: chat.db rows come back
+    // with thread_originator_guid set by the dylib). Sending the explicit
+    // root fails the whole send with -32602, so only reply_to goes on the wire.
     params.reply_to = resolvedReplyToId;
   }
   if (formatted.ranges.length > 0) {

@@ -77,14 +77,28 @@ async function runChatAction<T>(
 export async function sendIMessageTyping(
   to: string,
   isTyping: boolean,
-  opts: ChatActionOpts,
+  opts: ChatActionOpts & { messageGuid?: string },
 ): Promise<void> {
   const { params, service } = buildChatTargetParams(to, opts);
   params.typing = isTyping;
   if (service) {
     params.service = service;
   }
-  await runChatAction<{ ok?: boolean }>("typing", params, opts);
+  try {
+    const scoped = { ...params };
+    // Thread-scoped typing for imsg builds that accept reply_to.
+    if (opts.messageGuid) {
+      scoped.reply_to = opts.messageGuid;
+    }
+    await runChatAction<{ ok?: boolean }>("typing", scoped, opts);
+  } catch (err) {
+    // imsg 0.15.x rejects reply_to on the typing RPC; typing is chat-scoped
+    // there, so retry without the param instead of failing the turn's typing.
+    if (!opts.messageGuid || !/unknown typing param: reply_to/i.test(String(err))) {
+      throw err;
+    }
+    await runChatAction<{ ok?: boolean }>("typing", params, opts);
+  }
 }
 
 export async function markIMessageChatRead(to: string, opts: ChatActionOpts): Promise<void> {

@@ -14,7 +14,6 @@ import { ensureAuthProfileStore, resolveAuthProfileOrder } from "openclaw/plugin
 import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../../index.js";
-import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import { CodexAppServerClient } from "./client.js";
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
@@ -264,7 +263,7 @@ describe("registered Codex harness model attribution", () => {
       if (outcome === "completed") {
         expect(result).toHaveProperty("terminal", { kind: "ok" });
       } else {
-        expect(readAttemptTerminal(result)).toMatchObject({ timedOut: true, aborted: true });
+        expect(result).toMatchObject({ terminal: { kind: "timeout", aborted: true } });
         expect(requests).toContainEqual({
           method: "thread/backgroundTerminals/list",
           params: { threadId: "native-thread" },

@@ -1,6 +1,5 @@
 /** Recursive spawn authority must survive the real Gateway and agent-command admission path. */
 import { expectDefined } from "@openclaw/normalization-core";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
@@ -543,7 +542,11 @@ describe("recursive spawn production boundary", () => {
     const { context, runtime, identities, readAgentRuntimeExecutionLineage } =
       await createBoundGateway(bound);
     const modelRun = createDeferred<EmbeddedAgentRunResult>();
-    runEmbeddedAgent.mockReturnValueOnce(modelRun.promise);
+    const modelRunStarted = createDeferred();
+    runEmbeddedAgent.mockImplementationOnce(() => {
+      modelRunStarted.resolve();
+      return modelRun.promise;
+    });
     let childRunId: string | undefined;
     const failures: unknown[] = [];
     try {
@@ -555,7 +558,8 @@ describe("recursive spawn production boundary", () => {
       });
       const details = result.details as { childSessionKey: string; runId: string };
       childRunId = details.runId;
-      await waitForEmbeddedRun(bound, details.runId);
+      await modelRunStarted.promise;
+      expect(runEmbeddedAgent).toHaveBeenCalledOnce();
       const embeddedRun = runEmbeddedAgent.mock.calls[0]?.[0];
       expect(embeddedRun).toMatchObject({
         runId: details.runId,

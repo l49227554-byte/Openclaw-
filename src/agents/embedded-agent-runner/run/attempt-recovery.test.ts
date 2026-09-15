@@ -143,6 +143,7 @@ async function recoverAfterTransportDrop(scenario: TransportDropScenario = {}) {
     getRuntimeAuthOwnerId: () => "embedded",
     getApiKeyInfo: () => null,
     advanceAuthProfile: vi.fn(async () => false),
+    hasRemainingAuthProfile: () => false,
   });
   if (scenario.retryAvailable === false) {
     failoverRetryController.setTransientRetryBudget(0);

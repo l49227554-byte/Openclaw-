@@ -2,6 +2,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ExecApprovalsSnapshot, ExecSecurity } from "../../lib/nodes/page-operations.ts";
 import { createDevicesViewProps } from "../../test-helpers/devices-fixtures.ts";
 import {
   renderDevicesContainer,
@@ -170,7 +171,7 @@ describe("devices exec approvals rendering", () => {
   });
 
   it("shows the selected agent's stored policy after the user edited another agent", () => {
-    const snapshot = {
+    const snapshot: ExecApprovalsSnapshot = {
       path: "/tmp/exec-approvals.json",
       exists: true,
       hash: "sha256:current",
@@ -184,7 +185,7 @@ describe("devices exec approvals rendering", () => {
     };
     const renderScope = (
       container: HTMLElement,
-      agents: Record<string, { security: string }>,
+      agents: Record<string, { security: ExecSecurity }>,
       selected: string,
     ) => {
       render(

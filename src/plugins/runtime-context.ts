@@ -64,7 +64,8 @@ export function resolvePluginRuntimeRecord(
   let first: PluginRecord | undefined;
   let count = 0;
   for (const record of records) {
-    if (!matchesSource(record)) {
+    // The completed synchronous identity pass already rejected every same-id source.
+    if ((pluginId !== undefined && record.id === pluginId) || !matchesSource(record)) {
       continue;
     }
     first ??= record;

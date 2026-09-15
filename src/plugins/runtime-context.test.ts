@@ -61,6 +61,50 @@ describe("plugin runtime record source ownership", () => {
     },
   );
 
+  it.each(["owner", ""])("checks rejected sources once for plugin id %s", async (pluginId) => {
+    const registry = createEmptyPluginRegistry();
+    const modulePath = path.resolve("runtime-owner-fixture/missing/api.js");
+    const record = createPluginRecord({
+      id: pluginId,
+      rootDir: path.resolve("runtime-owner-fixture/owner"),
+    });
+    registry.plugins.push(record);
+    const membership = vi.fn(() => false);
+    const instance = new PluginInstance(record.id, { record, registry });
+    instance.bindModuleLoader(() => ({}), membership);
+    const duplicate = createPluginRecord({ id: pluginId, rootDir: record.rootDir });
+    const duplicateMembership = vi.fn(() => false);
+    const duplicateInstance = new PluginInstance(duplicate.id, { record: duplicate, registry });
+    duplicateInstance.bindModuleLoader(() => ({}), duplicateMembership);
+    const foreign = createPluginRecord({ id: "foreign", rootDir: path.dirname(modulePath) });
+    try {
+      withPluginCache(createPluginCache(), () =>
+        withPluginRuntimeGatewayRequestScope(
+          { pluginRegistry: registry, isWebchatConnect: () => false },
+          () => {
+            const params = { pluginId, modulePath };
+            expect(resolvePluginRuntimeRecord(params)).toBeUndefined();
+            expect(membership).toHaveBeenCalledTimes(1);
+
+            membership.mockClear();
+            registry.plugins.push(duplicate, foreign);
+            if (pluginId) {
+              expect(() => resolvePluginRuntimeRecord(params)).toThrow(
+                /ambiguous runtime ownership/,
+              );
+            } else {
+              expect(resolvePluginRuntimeRecord(params)).toBe(foreign);
+            }
+            expect(membership).toHaveBeenCalledTimes(1);
+            expect(duplicateMembership).toHaveBeenCalledTimes(1);
+          },
+        ),
+      );
+    } finally {
+      await Promise.all([instance.dispose(), duplicateInstance.dispose()]);
+    }
+  });
+
   it("selects the first source-matching duplicate id through canonical root aliases", () => {
     const rootDir = path.resolve("runtime-owner-fixture/owner");
     const alias = path.resolve("runtime-owner-fixture/alias");

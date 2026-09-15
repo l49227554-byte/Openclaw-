@@ -1,23 +1,23 @@
-// Regression coverage for openclaw/openclaw#142783.
+// Coverage for openclaw/openclaw#142783.
 //
 // [Bug]: Plugin typed hooks (before_prompt_build / agent_end) stop dispatching
 // after multi-agent migration -- memory plugins dead.
 //
-// The reporter's exact deployment (memos-local-plugin registration code, full
-// 8-agent config, macOS/launchd, memos SQLite) is not in the issue, so an exact
-// end-to-end turn reproduction is impossible offline. This test instead
-// exercises the registry-resolution boundary the regression report points at:
-//   src/plugins/hook-runner-global-state.ts resolveHookRegistry()
+// Mechanism: hook dispatch returns the active plugin "generation" registry
+// EXCLUSIVELY whenever one is installed, and withPluginRuntimeGenerationScope
+// (generation-scope.ts) used to default a missing generation registry to an
+// EMPTY registry. A registry-less generation therefore hid typed hooks
+// registered at the process root -- while non-hook plugin surfaces (memory
+// prompt sections, tools, HTTP routes) kept working because they read the
+// active/root registry.
 //
-// Regression mechanism: commit 02272c345f3 made hook dispatch return the
-// active plugin "generation" registry EXCLUSIVELY whenever one is installed,
-// and withPluginRuntimeGenerationScope (generation-scope.ts) defaults a
-// missing generation registry to an EMPTY registry. A registry-less generation
-// therefore hides typed hooks registered at the process root -- even though
-// non-hook plugin surfaces (memory prompt sections, tools, HTTP routes) keep
-// working because they read the active/root registry. A globally registered
-// memory plugin that never makes it into a given generation's own registry is
-// thus "dead" for per-turn typed hooks exactly as reported.
+// The two cases must stay distinct:
+//   * a generation that CARRIES NO registry is a registry-less run; the empty
+//     registry is only a placeholder, so process-root typed hooks must keep
+//     dispatching (the regression above);
+//   * a generation that CARRIES a registry -- including an explicitly empty
+//     selection such as `plugins.enabled=false -> onlyPluginIds: []` -- is an
+//     authoritative selection and stays exclusive.
 import { afterAll, afterEach, expect, it } from "vitest";
 import {
   getGlobalHookRunner,
@@ -84,7 +84,7 @@ function loadRootRegistry() {
   return { plugin, registry, workspaceDir };
 }
 
-it("dispatches root-registered typed hooks inside generation scopes that select no plugin content (regression for #142783)", async () => {
+it("dispatches root-registered typed hooks inside registry-less generation scopes (regression for #142783)", async () => {
   useNoBundledPlugins();
   const { registry } = loadRootRegistry();
   const typedHookNames = registry.typedHooks
@@ -105,33 +105,50 @@ it("dispatches root-registered typed hooks inside generation scopes that select 
   //    globally-registered typed hook fires (pre-migration behavior).
   expect((await runHook())?.prependContext).toBe("hook-injected");
 
-  // 2) A generation scope with NO pluginRegistry installs the default EMPTY
-  //    registry (generation-scope.ts). Because that empty registry selects no
-  //    plugin content it must not silence the process-root typed hook -- this
-  //    is the regression: before the fix the exclusive empty registry hid it.
-  const scopedEmpty = await withPluginRuntimeGenerationScope(
+  // 2) A generation scope with NO pluginRegistry is the registry-less run the
+  //    reporter hit. It must not install the placeholder empty registry as the
+  //    generation selection, so the process-root typed hook keeps dispatching.
+  const scopedRegistryLess = await withPluginRuntimeGenerationScope(
     { metadataSnapshot: emptyMetadataSnapshot },
     runHook,
   );
-  expect(scopedEmpty?.prependContext).toBe("hook-injected");
+  expect(scopedRegistryLess?.prependContext).toBe("hook-injected");
 
-  // 3) An explicitly empty generation registry behaves the same: empty alone is
-  //    not an exclusive selection, so root-registered hooks still dispatch.
-  const scopedExplicitEmpty = await withPluginRuntimeGenerationScope(
-    { metadataSnapshot: emptyMetadataSnapshot, pluginRegistry: createEmptyPluginRegistry() },
-    runHook,
-  );
-  expect(scopedExplicitEmpty?.prependContext).toBe("hook-injected");
-
-  // 4) A generation scope that carries the plugin restores dispatch (unchanged).
+  // 3) A generation scope that carries the plugin registry dispatches too.
   const scopedIn = await withPluginRuntimeGenerationScope(
     { metadataSnapshot: emptyMetadataSnapshot, pluginRegistry: registry },
     runHook,
   );
   expect(scopedIn?.prependContext).toBe("hook-injected");
 
-  // 5) After the generation scope ends the root path works again.
+  // 4) After the generation scope ends the root path works again.
   expect((await runHook())?.prependContext).toBe("hook-injected");
+});
+
+it("keeps an explicitly empty generation selection exclusive", async () => {
+  useNoBundledPlugins();
+  const { registry } = loadRootRegistry();
+
+  initializeGlobalHookRunner(registry);
+  const runner = getGlobalHookRunner();
+  expect(runner).not.toBeNull();
+
+  // `plugins.enabled=false` resolves to an explicit empty selection. Empty is a
+  // decision, not a missing inheritance: the retained root registration must not
+  // execute inside this generation and receive its prompt/conversation event.
+  const explicitlyEmpty = await withPluginRuntimeGenerationScope(
+    {
+      metadataSnapshot: createPluginMetadataSnapshotFixture({ plugins: [] }),
+      pluginRegistry: createEmptyPluginRegistry(),
+    },
+    () => runner!.runBeforePromptBuild({ prompt: "p", messages: [] }, {}),
+  );
+  expect(explicitlyEmpty).toBeUndefined();
+
+  // The root registration is still intact outside that generation.
+  expect(
+    (await runner!.runBeforePromptBuild({ prompt: "p", messages: [] }, {}))?.prependContext,
+  ).toBe("hook-injected");
 });
 
 it("keeps a content-bearing generation registry exclusive so narrow selections do not inherit unrelated root hooks", async () => {

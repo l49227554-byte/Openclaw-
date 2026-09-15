@@ -9,7 +9,10 @@ import type {
 } from "./registry-types.js";
 import { getActivePluginRegistry } from "./runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
-import { getPluginRuntimeGenerationRegistry } from "./runtime/generation-scope.js";
+import {
+  getPluginRuntimeGenerationRegistry,
+  isPluginRuntimeGenerationRegistrySelected,
+} from "./runtime/generation-scope.js";
 
 type TrustedPolicyHookRunnerRegistry = GlobalHookRunnerRegistry & {
   trustedToolPolicies?: PluginTrustedToolPolicyRegistryRegistration[];
@@ -120,23 +123,16 @@ function overlayHookRegistries(
   };
 }
 
-// A generation registry only replaces the process-root hook view when it actually
-// selects plugin content. Prepared generations that carry no plugin/hook
-// contribution -- notably the default empty registry generation-scope.ts injects
-// when a run has no pluginRegistry of its own -- must not silence hooks and
-// policies registered on the process root. Otherwise globally registered typed
-// hooks (before_prompt_build / agent_end / session_start) silently stop
-// dispatching the moment any registry-less generation scope is active, while
-// non-hook surfaces that read the active registry keep working. Genuine
-// isolation probes that materialize plugin records (loaded, disabled, or failed
-// owners) still select exclusively, so fail-closed policy stays intact.
-function hasHookDispatchContent(registry: PluginRegistry): boolean {
-  return registry.plugins.length > 0 || registry.hooks.length > 0 || registry.typedHooks.length > 0;
-}
-
 function resolveHookRegistry(state: HookRunnerGlobalState): TrustedPolicyHookRunnerRegistry | null {
   const generationRegistry = getPluginRuntimeGenerationRegistry();
-  if (generationRegistry && hasHookDispatchContent(generationRegistry)) {
+  // A prepared generation -- including an explicitly empty selection such as
+  // `plugins.enabled=false` -> `onlyPluginIds: []` -- owns hook and policy
+  // dispatch exclusively. A registry-less run only carries the placeholder empty
+  // registry for provider/metadata isolation, so hook dispatch must keep falling
+  // back to the process root; otherwise globally registered typed hooks
+  // (before_prompt_build / agent_end / session_start) go silent for the whole run
+  // while non-hook surfaces keep working (#142783).
+  if (generationRegistry && isPluginRuntimeGenerationRegistrySelected()) {
     return generationRegistry;
   }
   return overlayHookRegistries(

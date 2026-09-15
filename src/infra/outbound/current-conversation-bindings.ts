@@ -299,6 +299,7 @@ export function deleteCurrentConversationBindingRecordsBySession(
   targetSessionKey: string,
   scope?: CurrentConversationBindingScope,
   genericOnly = !scope,
+  shouldUnbind?: SessionBindingUnbindInput["shouldUnbind"],
 ): SessionBindingRecord[] {
   return runOpenClawStateWriteTransaction(({ db }) => {
     const rows = listCurrentConversationBindingRowsBySession(
@@ -311,6 +312,9 @@ export function deleteCurrentConversationBindingRecordsBySession(
     for (const row of rows) {
       const record = bindingRowsToRecords([row])[0];
       if (genericOnly && !record?.bindingId.startsWith(CURRENT_BINDINGS_ID_PREFIX)) {
+        continue;
+      }
+      if (shouldUnbind && (!record || !shouldUnbind(record))) {
         continue;
       }
       deleteCurrentConversationBindingRow(db, row.binding_key);
@@ -464,7 +468,8 @@ export async function bindGenericCurrentConversation(
     targetKind: input.targetKind,
     conversation,
     status: "active",
-    boundAt: now,
+    // Distinguish a replacement from an identical bind in the same clock tick.
+    boundAt: Math.max(now, (existing?.boundAt ?? -1) + 1),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
     metadata: {
       ...(existing?.targetSessionKey === targetSessionKey &&
@@ -525,13 +530,14 @@ export function touchGenericCurrentConversationBinding(
 function unbindCurrentConversationBindingById(
   bindingId: string,
   scope?: SessionBindingScope,
+  shouldUnbind?: SessionBindingUnbindInput["shouldUnbind"],
 ): SessionBindingRecord[] {
   const conversation = bindingRefFromId(bindingId, scope);
   if (!conversation || !supportsGenericCurrentConversationBinding(conversation)) {
     return [];
   }
   const { previous, current } = updateCurrentConversationBindingRecord(conversation, (latest) =>
-    latest?.bindingId === bindingId ? null : latest,
+    latest?.bindingId === bindingId && (!shouldUnbind || shouldUnbind(latest)) ? null : latest,
   );
   return previous && !current ? [previous] : [];
 }
@@ -542,7 +548,11 @@ export async function unbindGenericCurrentConversationBindings(
 ): Promise<SessionBindingRecord[]> {
   const normalizedBindingId = input.bindingId?.trim();
   if (normalizedBindingId?.startsWith(CURRENT_BINDINGS_ID_PREFIX)) {
-    return unbindCurrentConversationBindingById(normalizedBindingId, input.scope);
+    return unbindCurrentConversationBindingById(
+      normalizedBindingId,
+      input.scope,
+      input.shouldUnbind,
+    );
   }
   const normalizedTargetSessionKey = input.targetSessionKey?.trim();
   return normalizedTargetSessionKey
@@ -550,6 +560,7 @@ export async function unbindGenericCurrentConversationBindings(
         normalizedTargetSessionKey,
         input.scope,
         true,
+        input.shouldUnbind,
       )
     : [];
 }

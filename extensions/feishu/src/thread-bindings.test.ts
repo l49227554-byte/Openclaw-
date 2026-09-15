@@ -281,7 +281,7 @@ describe("Feishu thread bindings", () => {
       vi.spyOn(Date, "now").mockReturnValue(1_700_000_100_000);
       const manager = createFeishuThreadBindingManager({ cfg: baseCfg, accountId: "default" });
 
-      manager.bindConversation({
+      const original = manager.bindConversation({
         conversationId: "oc_group_chat:topic:om_topic_root:sender:ou_sender_1",
         parentConversationId: "oc_group_chat",
         targetKind: "subagent",
@@ -299,7 +299,10 @@ describe("Feishu thread bindings", () => {
         },
       });
 
-      await getSessionBindingService().bind({
+      if (!original) {
+        throw new Error("expected initial binding");
+      }
+      const rebound = await getSessionBindingService().bind({
         targetSessionKey:
           change === "session" ? "agent:main:subagent:replacement" : "agent:main:subagent:child",
         targetKind: change === "kind" ? "session" : "subagent",
@@ -315,6 +318,7 @@ describe("Feishu thread bindings", () => {
         },
       });
 
+      expect(rebound.boundAt).toBeGreaterThan(original.boundAt);
       expect(
         getSessionBindingService().resolveByConversation({
           channel: "feishu",
@@ -333,7 +337,7 @@ describe("Feishu thread bindings", () => {
           parentConversationId: "oc_group_chat",
         },
         status: "active",
-        boundAt: 1_700_000_100_000,
+        boundAt: expect.any(Number),
         expiresAt: 1_700_086_500_000,
         metadata: {
           ...(!replace

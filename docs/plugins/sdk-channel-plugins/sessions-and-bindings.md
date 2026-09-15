@@ -137,3 +137,21 @@ agent-owned targets before resolving an agent.
 For agent-owned targets with an unscoped session key such as `global`, preserve
 `metadata.agentId` so routing keeps the binding's owner. An agent-scoped target
 key remains authoritative over conflicting metadata.
+
+### Conditional binding cleanup
+
+Session binding adapters may opt into `supportsConditionalUnbind: true` when
+their `unbind` implementation honors `input.shouldUnbind`. Evaluate this
+synchronous predicate on the current record immediately before each deletion,
+after any awaited work. A false result preserves the binding. Do not precompute
+the result before I/O or apply it to a cached replacement generation.
+
+Missing-session cleanup uses this contract only for committed removals in the
+configured agent/store. It preserves recreated session entries and replacement
+bindings. Adapters that have not opted in retain their bindings and report an
+unsupported conditional-cleanup error; ordinary explicit unbinding is unchanged.
+No database migration or new persisted binding field is required.
+
+Bundled binding owners advance `boundAt` for every replacement, even when the
+wall clock has not advanced. This preserves replacement identity for an
+otherwise identical bind in the same millisecond.

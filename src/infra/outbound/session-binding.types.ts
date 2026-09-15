@@ -69,6 +69,9 @@ export type SessionBindingUnbindInput = {
   /** Restrict removal to this owner; omit only for intentional cross-channel cleanup. */
   scope?: SessionBindingScope;
   reason: string;
+  /** Synchronous removal guard. Owners must call it on the current record immediately
+   * before deletion, after any awaited work; false preserves that record. */
+  shouldUnbind?: (current: SessionBindingRecord) => boolean;
 };
 
 /**

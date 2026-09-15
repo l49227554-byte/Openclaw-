@@ -89,6 +89,7 @@ export function createThreadBindingSessionAdapter(params: {
 
   return {
     channel: "discord",
+    supportsConditionalUnbind: true,
     accountId: params.accountId,
     capabilities: {
       placements: ["current", "child"],
@@ -176,6 +177,28 @@ export function createThreadBindingSessionAdapter(params: {
       params.manager.touchThread({ threadId, at, persist: true });
     },
     unbind: async (input) => {
+      if (input.shouldUnbind) {
+        const threadId = resolveThreadBindingConversationIdFromBindingId({
+          accountId: params.accountId,
+          bindingId: input.bindingId,
+        });
+        const binding = threadId ? params.manager.getByThreadId(threadId) : null;
+        const records = input.targetSessionKey?.trim()
+          ? params.manager.listBySessionKey(input.targetSessionKey.trim())
+          : binding
+            ? [binding]
+            : [];
+        return records.flatMap((record) => {
+          if (!input.shouldUnbind?.(serializeBinding(record))) {
+            return [];
+          }
+          const removed = params.manager.unbindThread({
+            threadId: record.threadId,
+            reason: input.reason,
+          });
+          return removed ? [serializeBinding(removed)] : [];
+        });
+      }
       if (input.targetSessionKey?.trim()) {
         const removed = params.manager.unbindBySessionKey({
           targetSessionKey: input.targetSessionKey,

@@ -216,7 +216,7 @@ export function createAccountScopedConversationBindingManager<TKind extends stri
                 })),
           label: normalizeOptionalString(input.metadata?.label) ?? existingLocal?.label,
           boundBy: normalizeOptionalString(input.metadata?.boundBy) ?? existingLocal?.boundBy,
-          boundAt: now,
+          boundAt: Math.max(now, (existing?.boundAt ?? -1) + 1),
           lastActivityAt: now,
         };
         return asSessionBindingRecord(record, metadata);
@@ -279,6 +279,7 @@ export function createAccountScopedConversationBindingManager<TKind extends stri
   const sessionBindingAdapter: SessionBindingAdapter = {
     channel: params.channel,
     accountId,
+    supportsConditionalUnbind: true,
     capabilities: {
       placements: ["current"],
     },
@@ -315,6 +316,8 @@ export function createAccountScopedConversationBindingManager<TKind extends stri
         return deleteCurrentConversationBindingRecordsBySession(
           input.targetSessionKey.trim(),
           accountScope,
+          false,
+          input.shouldUnbind,
         );
       }
       const conversationId = resolveThreadBindingConversationIdFromBindingId({
@@ -324,11 +327,11 @@ export function createAccountScopedConversationBindingManager<TKind extends stri
       if (!conversationId) {
         return [];
       }
-      const { previous } = updateCurrentConversationBindingRecord(
+      const { previous, current } = updateCurrentConversationBindingRecord(
         conversationRef(conversationId),
-        () => null,
+        (latest) => (latest && (!input.shouldUnbind || input.shouldUnbind(latest)) ? null : latest),
       );
-      return previous ? [previous] : [];
+      return previous && !current ? [previous] : [];
     },
   };
 

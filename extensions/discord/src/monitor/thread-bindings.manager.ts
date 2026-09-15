@@ -370,7 +370,7 @@ export function createThreadBindingManager(params: {
           normalizeOptionalString(bindParams.boundBy) ??
           normalizeOptionalString(previous?.boundBy) ??
           "system",
-        boundAt: now,
+        boundAt: Math.max(now, (manager.getByThreadId(threadId)?.boundAt ?? -1) + 1),
         lastActivityAt: now,
         idleTimeoutMs:
           typeof existingValue?.idleTimeoutMs === "number"

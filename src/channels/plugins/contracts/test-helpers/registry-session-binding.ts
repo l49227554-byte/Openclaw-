@@ -102,7 +102,9 @@ async function unbindAndExpectClearedSessionBinding(binding: SessionBindingRecor
   const service = getSessionBindingService();
   const removed = await service.unbind({
     bindingId: binding.bindingId,
+    scope: binding.conversation,
     reason: "contract-test",
+    shouldUnbind: () => true,
   });
   expect(removed.map((entry) => entry.bindingId)).toContain(binding.bindingId);
   expect(service.resolveByConversation(binding.conversation)).toBeNull();

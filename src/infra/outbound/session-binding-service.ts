@@ -74,6 +74,8 @@ export type SessionBindingAdapter = {
   channel: string;
   accountId: string;
   capabilities?: SessionBindingAdapterCapabilities;
+  /** Opt in only when unbind honors shouldUnbind at every mutation boundary. */
+  supportsConditionalUnbind?: boolean;
   bind?: (input: SessionBindingBindInput) => Promise<SessionBindingRecord | null>;
   listBySession: (targetSessionKey: string) => SessionBindingRecord[];
   resolveByConversation: (ref: ConversationRef) => SessionBindingRecord | null;
@@ -357,6 +359,13 @@ function createDefaultSessionBindingService(): SessionBindingService {
       const removed: SessionBindingRecord[] = [];
       const adapters = getActiveRegisteredAdapters(input.scope);
       for (const adapter of adapters) {
+        if (input.shouldUnbind && (!adapter.unbind || !adapter.supportsConditionalUnbind)) {
+          throw new SessionBindingError(
+            "BINDING_CAPABILITY_UNSUPPORTED",
+            `Session binding adapter does not support conditional cleanup for ${adapter.channel}:${adapter.accountId}`,
+            { channel: adapter.channel, accountId: adapter.accountId },
+          );
+        }
         if (!adapter.unbind) {
           continue;
         }

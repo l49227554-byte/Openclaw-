@@ -1716,6 +1716,7 @@ describe("memory index", () => {
         sources: ["sessions"],
         sessionMemory: true,
       }),
+      "cli",
     );
     let resolveActiveSync: (() => void) | undefined;
     const activeSyncGate = new Promise<void>((resolve) => {

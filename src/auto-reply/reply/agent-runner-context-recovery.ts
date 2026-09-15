@@ -6,6 +6,7 @@ import { resolveAgentConfig } from "../../agents/agent-scope-config.js";
 import { resolveContextTokensForModel } from "../../agents/context.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { isArxiConversation } from "../../shared/arxi-user-copy.js";
 import type { FollowupRun } from "./queue.js";
 
 function buildContextOverflowResetHint(): string {
@@ -160,6 +161,11 @@ export function buildContextOverflowRecoveryText(params: {
   runtimeModel?: string;
   activeSessionEntry?: SessionEntry;
 }): string {
+  if (isArxiConversation()) {
+    return params.preserveSessionMapping
+      ? "Не удалось сократить историю. Разговор сохранён; попробуй /compact или начни новый через /new."
+      : "История превысила доступный объём. Начала новый разговор — отправь запрос ещё раз.";
+  }
   const prefix = params.preserveSessionMapping
     ? "⚠️ Auto-compaction could not recover this turn. I kept this conversation mapped to the current session. Please try again, use /compact, or use /new to start a fresh session."
     : params.duringCompaction

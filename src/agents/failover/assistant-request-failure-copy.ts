@@ -1,4 +1,6 @@
+import { isArxiConversation } from "../../shared/arxi-user-copy.js";
 import type { FailoverReason } from "./signal.js";
+import { renderFailoverBaseCopy } from "./user-copy.js";
 
 type AssistantRequestFailureCopyFacts = {
   provider?: string;
@@ -30,6 +32,9 @@ const ASSISTANT_REQUEST_FAILURE_REASON = {
 export function renderAssistantRequestFailureCopy(
   facts: AssistantRequestFailureCopyFacts,
 ): string | undefined {
+  if (isArxiConversation() && (facts.provider || facts.model || facts.reason || facts.status)) {
+    return renderFailoverBaseCopy(facts.reason ?? "unknown");
+  }
   const provider = facts.provider?.trim();
   const model = facts.model?.trim();
   const target = provider && model ? `${provider}/${model}` : provider || model;

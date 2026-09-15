@@ -1,6 +1,7 @@
 import { stableStringify } from "@openclaw/normalization-core";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { arxiUserCopy, isArxiConversation } from "../../shared/arxi-user-copy.js";
 import {
   extractErrorHttpStatus,
   extractLeadingHttpStatus,
@@ -33,24 +34,37 @@ type FailoverUserCopyContext = {
 
 type FailoverBaseCopyRenderer = (context: FailoverUserCopyContext) => string | undefined;
 
-const RATE_LIMIT_ERROR_USER_MESSAGE = "⚠️ API rate limit reached. Please try again later.";
-export const AUTH_INVALID_TOKEN_USER_TEXT =
+const RATE_LIMIT_ERROR_USER_MESSAGE = arxiUserCopy(
+  "⚠️ API rate limit reached. Please try again later.",
+  "Достигнут лимит запросов. Попробуй чуть позже.",
+);
+export const AUTH_INVALID_TOKEN_USER_TEXT = arxiUserCopy(
   "Authentication failed (provider returned HTTP 401). " +
-  "Your provider token may have expired — try the request again in a moment. " +
-  "If the failure persists, re-authenticate this provider.";
-const SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT =
+    "Your provider token may have expired — try the request again in a moment. " +
+    "If the failure persists, re-authenticate this provider.",
+  "Подключение к ChatGPT больше не действует. Подключи подписку заново в настройках.",
+);
+const SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT = arxiUserCopy(
   "The selected auth profile is unavailable in this agent's OpenClaw credential store. " +
-  "Import or migrate that credential into the agent, select another configured profile, or run `openclaw configure`, then retry.";
+    "Import or migrate that credential into the agent, select another configured profile, or run `openclaw configure`, then retry.",
+  "Подключение к ChatGPT недоступно. Подключи подписку заново в настройках.",
+);
 export const renderFailoverCodeUserCopy = (code: unknown): string | undefined =>
   code === "selected_auth_profile_unavailable"
     ? SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT
     : undefined;
-const MODEL_CAPACITY_ERROR_USER_MESSAGE =
-  "⚠️ Selected model is at capacity. Try a different model, or wait and retry.";
-const OVERLOADED_ERROR_USER_MESSAGE =
-  "The AI service is temporarily overloaded. Please try again in a moment.";
-const RATE_LIMIT_RETRY_MESSAGE =
-  "⚠️ The model request was rate-limited. Please try again in a few minutes.";
+const MODEL_CAPACITY_ERROR_USER_MESSAGE = arxiUserCopy(
+  "⚠️ Selected model is at capacity. Try a different model, or wait and retry.",
+  "Сейчас слишком много запросов. Попробуй чуть позже.",
+);
+const OVERLOADED_ERROR_USER_MESSAGE = arxiUserCopy(
+  "The AI service is temporarily overloaded. Please try again in a moment.",
+  "Сервис перегружен. Попробуй через несколько минут.",
+);
+const RATE_LIMIT_RETRY_MESSAGE = arxiUserCopy(
+  "⚠️ The model request was rate-limited. Please try again in a few minutes.",
+  "Достигнут лимит запросов. Попробуй через несколько минут.",
+);
 const MODEL_CAPACITY_ERROR_RE = /\b(?:selected\s+)?model\s+(?:is\s+)?at capacity\b/i;
 const RATE_LIMIT_SPECIFIC_HINT_RE =
   /\bmin(ute)?s?\b|\bhours?\b|\bseconds?\b|\btry again in\b|\bresets?\b|\bplan\b|\bquota\b/i;
@@ -60,8 +74,10 @@ const CONTEXT_OVERFLOW_ERROR_HEAD_RE =
   /^(?:context overflow:|request_too_large\b|request size exceeds\b|request exceeds the maximum size\b|context length exceeded\b|maximum context length\b|prompt is too long\b|exceeds model context window\b)/i;
 const NON_ERROR_PROVIDER_PAYLOAD_MAX_LENGTH = 16_384;
 const NON_ERROR_PROVIDER_PAYLOAD_PREFIX_RE = /^codex\s*error(?:\s+\d{3})?[:\s-]+/i;
-export const PROVIDER_SCHEMA_REJECTION_USER_TEXT =
-  "LLM request failed: provider rejected the request schema or tool payload.";
+export const PROVIDER_SCHEMA_REJECTION_USER_TEXT = arxiUserCopy(
+  "LLM request failed: provider rejected the request schema or tool payload.",
+  "Не удалось выполнить запрос: сервис не принял его формат.",
+);
 const PROVIDER_OUTPUT_TOKEN_LIMIT_RE =
   /^['"]?max_(?:tokens|output_tokens|completion_tokens|new_tokens)['"]?\s*(?:[:=]\s*)?\(?(\d[\d,]*)\)?\s+exceeds?\b.{0,120}?\b(?:maximum|max|limit)\b(?:\s+(?:output\s+)?tokens?)?(?:\s+(?:is|of)|\s*[:=])?\s*\(?(\d[\d,]*)\)?(?:\D|$)/i;
 
@@ -71,6 +87,8 @@ export function formatBillingErrorMessage(
   model?: string,
   authMode?: string,
 ): string {
+  if (isArxiConversation())
+    return "Сервис сообщил о проблеме с оплатой или подпиской. Проверь свой аккаунт ChatGPT.";
   const providerName = provider?.trim();
   const modelName = model?.trim();
   const providerLabel =
@@ -99,7 +117,10 @@ export function renderFormatErrorCopy(raw: string): string {
   if (!value || !maximum) {
     return PROVIDER_SCHEMA_REJECTION_USER_TEXT;
   }
-  return `LLM request rejected: configured maxTokens is ${value}, above the provider maximum of ${maximum}. Lower maxTokens and try again.`;
+  return arxiUserCopy(
+    `LLM request rejected: configured maxTokens is ${value}, above the provider maximum of ${maximum}. Lower maxTokens and try again.`,
+    "Запрос превышает допустимый размер ответа. Нужно изменить настройку лимита ответа.",
+  );
 }
 
 function extractProviderRateLimitMessage(raw: string): string | undefined {
@@ -125,6 +146,7 @@ function extractProviderRateLimitMessage(raw: string): string | undefined {
 }
 
 function renderRateLimitBaseCopy(context: FailoverUserCopyContext): string {
+  if (isArxiConversation()) return RATE_LIMIT_ERROR_USER_MESSAGE;
   const raw = context.raw ?? "";
   if (MODEL_CAPACITY_ERROR_RE.test(raw)) {
     return MODEL_CAPACITY_ERROR_USER_MESSAGE;
@@ -143,22 +165,52 @@ const FAILOVER_REASON_BASE_COPY = {
       : OVERLOADED_ERROR_USER_MESSAGE,
   billing: (context) =>
     formatBillingErrorMessage(context.provider, context.model, context.authMode),
-  server_error: () => "LLM request failed: provider returned an internal error.",
-  timeout: () => "LLM request timed out.",
+  server_error: () =>
+    arxiUserCopy(
+      "LLM request failed: provider returned an internal error.",
+      "Сервис вернул ошибку. Попробуй чуть позже.",
+    ),
+  timeout: () =>
+    arxiUserCopy("LLM request timed out.", "Не дождалась ответа от сервиса. Попробуй ещё раз."),
   tls_certificate: () =>
-    "LLM request failed: TLS certificate validation rejected the provider endpoint. Check the endpoint hostname, proxy, and local certificate trust.",
+    arxiUserCopy(
+      "LLM request failed: TLS certificate validation rejected the provider endpoint. Check the endpoint hostname, proxy, and local certificate trust.",
+      "Не удалось установить защищённое соединение с сервисом.",
+    ),
   context_overflow: () =>
-    "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+    arxiUserCopy(
+      "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.",
+      "Переписка не помещается в один запрос. Попробуй /compact или начни новый разговор через /new.",
+    ),
   model_not_found: () =>
-    "The selected model was not found by the provider. Check the model id or choose a different model.",
-  session_expired: () => "The provider session expired. Start a new session and try again.",
-  empty_response: () => "The model returned an empty response. Please try again.",
-  no_error_details: () => "LLM request failed with an unknown error.",
-  unclassified: () => "LLM request failed.",
-  unknown: () => "LLM request failed with an unknown error.",
+    arxiUserCopy(
+      "The selected model was not found by the provider. Check the model id or choose a different model.",
+      "Выбранная модель недоступна. Нужно выбрать другую в настройках.",
+    ),
+  session_expired: () =>
+    arxiUserCopy(
+      "The provider session expired. Start a new session and try again.",
+      "Сессия истекла. Начни новый разговор через /new.",
+    ),
+  empty_response: () =>
+    arxiUserCopy(
+      "The model returned an empty response. Please try again.",
+      "Ответ пришёл пустым. Попробуй ещё раз.",
+    ),
+  no_error_details: () =>
+    arxiUserCopy(
+      "LLM request failed with an unknown error.",
+      "Не получилось ответить. Причину пока не удалось определить.",
+    ),
+  unclassified: () => arxiUserCopy("LLM request failed.", "Не получилось выполнить запрос."),
+  unknown: () =>
+    arxiUserCopy(
+      "LLM request failed with an unknown error.",
+      "Не получилось ответить. Причину пока не удалось определить.",
+    ),
 } satisfies Record<FailoverReason, FailoverBaseCopyRenderer>;
 
-function renderFailoverBaseCopy(
+export function renderFailoverBaseCopy(
   reason: FailoverReason,
   context: FailoverUserCopyContext = {},
 ): string | undefined {
@@ -185,7 +237,10 @@ export function formatTransportErrorCopy(raw: string): string | undefined {
     lower.includes("connection refused") ||
     lower.includes("actively refused")
   ) {
-    return "LLM request failed: connection refused by the provider endpoint.";
+    return arxiUserCopy(
+      "LLM request failed: connection refused by the provider endpoint.",
+      "Сервис отклонил соединение. Попробуй чуть позже.",
+    );
   }
   if (
     /\beconnreset\b|\beconnaborted\b|\benetreset\b|\bepipe\b/i.test(raw) ||
@@ -193,7 +248,10 @@ export function formatTransportErrorCopy(raw: string): string | undefined {
     lower.includes("connection reset") ||
     lower.includes("connection aborted")
   ) {
-    return "LLM request failed: network connection was interrupted.";
+    return arxiUserCopy(
+      "LLM request failed: network connection was interrupted.",
+      "Соединение прервалось до завершения ответа.",
+    );
   }
   if (
     /\benotfound\b|\beai_again\b/i.test(raw) ||
@@ -201,24 +259,36 @@ export function formatTransportErrorCopy(raw: string): string | undefined {
     lower.includes("no such host") ||
     lower.includes("dns")
   ) {
-    return "LLM request failed: DNS lookup for the provider endpoint failed.";
+    return arxiUserCopy(
+      "LLM request failed: DNS lookup for the provider endpoint failed.",
+      "Не удалось найти адрес сервиса.",
+    );
   }
   if (
     /\benetunreach\b|\behostunreach\b|\behostdown\b/i.test(raw) ||
     lower.includes("network is unreachable") ||
     lower.includes("host is unreachable")
   ) {
-    return "LLM request failed: the provider endpoint is unreachable from this host.";
+    return arxiUserCopy(
+      "LLM request failed: the provider endpoint is unreachable from this host.",
+      "Сервис сейчас недоступен.",
+    );
   }
   if (
     lower.includes("fetch failed") ||
     lower.includes("connection error") ||
     lower.includes("network request failed")
   ) {
-    return "LLM request failed: network connection error.";
+    return arxiUserCopy(
+      "LLM request failed: network connection error.",
+      "Не удалось соединиться с сервисом.",
+    );
   }
   if (raw.includes("网络错误") || raw.includes("网络异常") || raw.includes("连接错误")) {
-    return "LLM request failed: provider reported a network error.";
+    return arxiUserCopy(
+      "LLM request failed: provider reported a network error.",
+      "Сервис сообщил об ошибке соединения.",
+    );
   }
   return undefined;
 }
@@ -228,7 +298,10 @@ export function formatDiskSpaceErrorCopy(raw: string): string | undefined {
   return /\benospc\b/i.test(raw) ||
     lower.includes("no space left on device") ||
     lower.includes("disk full")
-    ? "OpenClaw could not write local session data because the disk is full. Free some disk space and try again."
+    ? arxiUserCopy(
+        "OpenClaw could not write local session data because the disk is full. Free some disk space and try again.",
+        "Закончилось место для сохранения переписки. Продолжить смогу после освобождения или расширения хранилища.",
+      )
     : undefined;
 }
 
@@ -310,7 +383,10 @@ export function renderSanitizedUserFacingText(
     return diskSpace;
   }
   if (/incorrect role information|roles must alternate/i.test(trimmed)) {
-    return "Message ordering conflict - please try again. If this persists, use /new to start a fresh session.";
+    return arxiUserCopy(
+      "Message ordering conflict - please try again. If this persists, use /new to start a fresh session.",
+      "Не удалось обработать порядок сообщений. Попробуй ещё раз; если повторится — /new.",
+    );
   }
   const reason = classifyFailoverReason(trimmed, { providerPlugin: null });
   const status = extractLeadingHttpStatus(trimmed);
@@ -331,13 +407,19 @@ export function renderSanitizedUserFacingText(
     return formatRawAssistantErrorForUi(trimmed);
   }
   if (isInvalidStreamingEventOrderError(trimmed)) {
-    return "LLM request failed: provider returned an invalid streaming response. Please try again.";
+    return arxiUserCopy(
+      "LLM request failed: provider returned an invalid streaming response. Please try again.",
+      "Ответ пришёл повреждённым. Попробуй ещё раз.",
+    );
   }
   if (rawPayload || (status && status.code >= 400 && reason)) {
     return formatRawAssistantErrorForUi(trimmed);
   }
   if (isStreamingJsonParseError(trimmed)) {
-    return "LLM streaming response contained a malformed fragment. Please try again.";
+    return arxiUserCopy(
+      "LLM streaming response contained a malformed fragment. Please try again.",
+      "Часть ответа пришла повреждённой. Попробуй ещё раз.",
+    );
   }
   if (ERROR_PREFIX_RE.test(trimmed)) {
     const transport = formatTransportErrorCopy(trimmed);
@@ -355,19 +437,31 @@ export function renderSanitizedUserFacingText(
   return sanitized;
 }
 
-export const GENERIC_EXTERNAL_RUN_FAILURE_TEXT =
-  "⚠️ Something went wrong while processing your request. Please try again, or use /new to start a fresh session.";
-export const HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT =
-  "⚠️ Heartbeat check failed before it could produce an update. The main chat session remains available.";
-export const PROVIDER_CONVERSATION_STATE_ERROR_USER_MESSAGE =
-  "⚠️ The model provider rejected the conversation state. Please try again, or use /new to start a fresh session.";
-const PROVIDER_RATE_LIMIT_OR_QUOTA_ERROR_USER_MESSAGE =
-  "⚠️ The model provider returned HTTP 429 before replying. This can mean rate limiting, exhausted quota, or an account balance/billing issue. Check the selected provider/model, API key, and provider billing/quota dashboard, then try again.";
-const PROVIDER_INTERNAL_ERROR_USER_MESSAGE =
-  "⚠️ The model provider returned a temporary internal error before replying. Try again in a moment, or switch to another model if it keeps happening.";
+export const GENERIC_EXTERNAL_RUN_FAILURE_TEXT = arxiUserCopy(
+  "⚠️ Something went wrong while processing your request. Please try again, or use /new to start a fresh session.",
+  "Не получилось закончить ответ. Попробуй ещё раз; если повторится — /new.",
+);
+export const HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT = arxiUserCopy(
+  "⚠️ Heartbeat check failed before it could produce an update. The main chat session remains available.",
+  "Не получилось выполнить фоновую проверку. Здесь можно продолжать разговор.",
+);
+export const PROVIDER_CONVERSATION_STATE_ERROR_USER_MESSAGE = arxiUserCopy(
+  "⚠️ The model provider rejected the conversation state. Please try again, or use /new to start a fresh session.",
+  "Не удалось продолжить этот разговор. Попробуй ещё раз; если повторится — /new.",
+);
+const PROVIDER_RATE_LIMIT_OR_QUOTA_ERROR_USER_MESSAGE = arxiUserCopy(
+  "⚠️ The model provider returned HTTP 429 before replying. This can mean rate limiting, exhausted quota, or an account balance/billing issue. Check the selected provider/model, API key, and provider billing/quota dashboard, then try again.",
+  "Сервис ограничил запросы. Проверь лимиты и состояние подписки в своём аккаунте.",
+);
+const PROVIDER_INTERNAL_ERROR_USER_MESSAGE = arxiUserCopy(
+  "⚠️ The model provider returned a temporary internal error before replying. Try again in a moment, or switch to another model if it keeps happening.",
+  "Сервис временно не отвечает. Попробуй чуть позже.",
+);
 const PROVIDER_AUTHENTICATION_ERROR_USER_MESSAGE = `⚠️ ${AUTH_INVALID_TOKEN_USER_TEXT}`;
-const PROVIDER_MODEL_UNAVAILABLE_USER_MESSAGE =
-  "⚠️ The configured model is unavailable from the provider — it may have been renamed, retired, or is not offered on this account. This needs a config update (agents.defaults.model); retrying or starting a new session won't fix it.";
+const PROVIDER_MODEL_UNAVAILABLE_USER_MESSAGE = arxiUserCopy(
+  "⚠️ The configured model is unavailable from the provider — it may have been renamed, retired, or is not offered on this account. This needs a config update (agents.defaults.model); retrying or starting a new session won't fix it.",
+  "Выбранная модель недоступна для этого аккаунта. Нужно выбрать другую в настройках.",
+);
 
 const PROVIDER_REQUEST_COPY = {
   "quota-429": PROVIDER_RATE_LIMIT_OR_QUOTA_ERROR_USER_MESSAGE,
@@ -502,15 +596,24 @@ export function renderRateLimitReplyCopy(params: {
   if (typeof expiry === "number" && expiry > nowMs) {
     const secsLeft = Math.max(1, Math.ceil((expiry - nowMs) / 1000));
     return secsLeft <= 60
-      ? `⚠️ Rate-limited — ready in ~${secsLeft}s. Please wait a moment.`
-      : `⚠️ Rate-limited — ready in ~${Math.ceil(secsLeft / 60)} min. Please try again shortly.`;
+      ? arxiUserCopy(
+          `⚠️ Rate-limited — ready in ~${secsLeft}s. Please wait a moment.`,
+          `Достигнут лимит запросов. Попробуй примерно через ${secsLeft} сек.`,
+        )
+      : arxiUserCopy(
+          `⚠️ Rate-limited — ready in ~${Math.ceil(secsLeft / 60)} min. Please try again shortly.`,
+          `Достигнут лимит запросов. Попробуй примерно через ${Math.ceil(secsLeft / 60)} мин.`,
+        );
   }
   const attemptedModels = new Set(
     attempts.map((attempt) => `${attempt.provider}/${attempt.model}`),
   );
   return attemptedModels.size > 1 &&
     attempts.every((attempt) => attempt.reason === "rate_limit" || attempt.reason === "overloaded")
-    ? "⚠️ All attempted models were rate-limited or overloaded. Please try again in a few minutes."
+    ? arxiUserCopy(
+        "⚠️ All attempted models were rate-limited or overloaded. Please try again in a few minutes.",
+        "Доступные модели перегружены или достигли лимита. Попробуй через несколько минут.",
+      )
     : RATE_LIMIT_RETRY_MESSAGE;
 }
 
@@ -547,6 +650,8 @@ export function renderMissingApiKeyReplyCopy(params?: {
   provider: string;
   providerGuidance?: boolean;
 }): string | null {
+  if (isArxiConversation())
+    return "Подключение к ChatGPT недоступно. Подключи подписку заново в настройках.";
   const provider = params?.provider.trim().toLowerCase();
   if (!provider) {
     return null;
@@ -678,6 +783,8 @@ const AUTH_PROFILE_REASON_POLICY = {
 } satisfies Record<FailoverReason, AuthProfileReasonPolicy>;
 
 export function renderAuthProfileFailoverCopy(params: AuthProfileFailureCopyParams): string {
+  if (isArxiConversation())
+    return renderFailoverBaseCopy(params.reason) ?? GENERIC_EXTERNAL_RUN_FAILURE_TEXT;
   const policy = AUTH_PROFILE_REASON_POLICY[params.reason];
   const description = params.allInCooldown
     ? AUTH_PROFILE_COOLDOWN_COPY[params.reason](params.provider)

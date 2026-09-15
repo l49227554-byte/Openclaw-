@@ -36,6 +36,7 @@ import { buildProviderAuthRecoveryHint } from "../../agents/provider-auth-recove
 import { resolveSilentReplyPolicy } from "../../config/silent-reply.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { arxiUserCopy } from "../../shared/arxi-user-copy.js";
 import { buildCodexLoginRecovery } from "../codex-login-recovery.js";
 import {
   copyReplyPayloadMetadata,
@@ -150,13 +151,22 @@ const CODEX_SESSION_GENERATION_NOT_CURRENT_RE =
 function buildCodexAppServerFailureText(message: string): string | null {
   const normalizedMessage = collapseRepeatedFailureDetail(message);
   if (CODEX_SESSION_GENERATION_NOT_CURRENT_RE.test(normalizedMessage)) {
-    return "⚠️ This Codex session changed before your message could run. Please send it again.";
+    return arxiUserCopy(
+      "⚠️ This Codex session changed before your message could run. Please send it again.",
+      "Разговор изменился до обработки сообщения. Отправь его ещё раз.",
+    );
   }
   if (CODEX_APP_SERVER_CLIENT_CLOSED_BEFORE_REPLY_RE.test(normalizedMessage)) {
-    return "⚠️ Codex app-server connection closed before this turn finished. OpenClaw retried once when the stdio turn was still replay-safe; please try again if this keeps happening.";
+    return arxiUserCopy(
+      "⚠️ Codex app-server connection closed before this turn finished. OpenClaw retried once when the stdio turn was still replay-safe; please try again if this keeps happening.",
+      "Соединение прервалось до завершения ответа. Одна безопасная повторная попытка уже сделана.",
+    );
   }
   if (CODEX_APP_SERVER_TURN_COMPLETION_IDLE_TIMEOUT_RE.test(normalizedMessage)) {
-    return "⚠️ Codex app-server stopped before confirming turn completion. OpenClaw did not replay the turn automatically because it may still be active; try again, or use /new if the session stays stuck.";
+    return arxiUserCopy(
+      "⚠️ Codex app-server stopped before confirming turn completion. OpenClaw did not replay the turn automatically because it may still be active; try again, or use /new if the session stays stuck.",
+      "Не удалось подтвердить завершение работы: она ещё может продолжаться. Автоматически повторять действие не буду.",
+    );
   }
   return null;
 }
@@ -181,7 +191,10 @@ export function buildPreflightCompactionFailureText(
   const summary = isTimeout
     ? "⚠️ Context is too large and auto-compaction timed out before it could finish."
     : "⚠️ Context is too large and auto-compaction could not recover this turn.";
-  return `${summary}${reasonSuffix} Try again, use /compact, or use /new to start a fresh session.`;
+  return arxiUserCopy(
+    `${summary}${reasonSuffix} Try again, use /compact, or use /new to start a fresh session.`,
+    "Не удалось сократить историю для следующего ответа. Попробуй /compact или начни новый разговор через /new.",
+  );
 }
 
 export function buildAuthProfileFailoverFailureText(error: unknown): string | null {
@@ -352,7 +365,10 @@ export function renderPostCompactionModelFailurePayload(payload: ReplyPayload): 
     typeof payload.text === "string"
     ? copyReplyPayloadMetadata(payload, {
         ...payload,
-        text: `⚠️ Context compaction succeeded, but the later model request still failed. ${payload.text.replace(/^⚠️\s*/u, "")}`,
+        text: arxiUserCopy(
+          `⚠️ Context compaction succeeded, but the later model request still failed. ${payload.text.replace(/^⚠️\s*/u, "")}`,
+          `Историю удалось сократить, но ответ всё ещё не получен. ${payload.text.replace(/^⚠️\s*/u, "")}`,
+        ),
       })
     : payload;
 }
@@ -401,7 +417,10 @@ export function buildEmptyInteractiveReplyPayload(params: {
   }
   return markAgentRunFailureReplyPayload({
     text: resolveExternalRunFailureTextForConversation({
-      text: "I finished the turn, but it did not produce a visible reply. Please try again, or start a new session if this keeps happening.",
+      text: arxiUserCopy(
+        "I finished the turn, but it did not produce a visible reply. Please try again, or start a new session if this keeps happening.",
+        "Ответ не появился. Попробуй ещё раз; если повторится — /new.",
+      ),
       sessionCtx: params.sessionCtx,
       isGenericRunnerFailure: true,
       cfg: params.cfg,

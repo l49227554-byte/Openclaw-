@@ -12,6 +12,7 @@ import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { arxiUserCopy } from "../../shared/arxi-user-copy.js";
 import {
   sessionDeliveryChannel,
   type DeliveryContext,
@@ -93,9 +94,11 @@ export function buildSilentFallbackFailurePayload(params: {
     return undefined;
   }
   return markReplyPayloadForSourceSuppressionDelivery({
-    text:
+    text: arxiUserCopy(
       `⚠️ I couldn't reach the configured model backend ${params.fallbackTransition.selectedModelRef}. ` +
-      `Fallback used ${params.fallbackTransition.activeModelRef}, but it produced no visible reply.`,
+        `Fallback used ${params.fallbackTransition.activeModelRef}, but it produced no visible reply.`,
+      "Основная модель недоступна, а запасная не вернула ответ.",
+    ),
     isError: true,
   });
 }

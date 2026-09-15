@@ -27,6 +27,7 @@ import { sleepWithAbort } from "../../infra/backoff.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { defaultRuntime } from "../../runtime.js";
+import { arxiUserCopy } from "../../shared/arxi-user-copy.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import { createAgentLifecycleTerminalBackstop } from "./agent-lifecycle-terminal.js";
 import { buildContextOverflowRecoveryText } from "./agent-runner-context-recovery.js";
@@ -60,8 +61,10 @@ const OVERLOAD_RETRY_BASE_DELAY_MS = 2_500;
 const OVERLOAD_RETRY_MAX_DELAY_MS = 30_000;
 const OVERLOAD_RETRY_NOTICE_AFTER_MS = 30_000;
 const OVERLOAD_RETRY_NOTICE_DELIVERY_TIMEOUT_MS = 5_000;
-const OVERLOAD_RETRY_NOTICE_TEXT =
-  "The AI service is temporarily overloaded. I’m still retrying; this may take a few minutes.";
+const OVERLOAD_RETRY_NOTICE_TEXT = arxiUserCopy(
+  "The AI service is temporarily overloaded. I’m still retrying; this may take a few minutes.",
+  "Сервис перегружен. Продолжаю попытки; это может занять несколько минут.",
+);
 
 export type OverloadRetryState = {
   retryCount: number;

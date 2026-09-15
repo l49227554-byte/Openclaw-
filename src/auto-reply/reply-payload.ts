@@ -12,6 +12,7 @@ import type {
   ReplyPayloadDelivery,
 } from "../interactive/payload.js";
 import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
+import { arxiUserCopy } from "../shared/arxi-user-copy.js";
 
 export type ReplyMediaAttachment = {
   type?: "image" | "audio" | "video" | "file";
@@ -166,9 +167,18 @@ export type ReplyDeliveryContext = {
 };
 
 const REPLY_MEDIA_FAILURE_MESSAGES: Record<ReplyMediaFailureCode, string> = {
-  "file-not-found": "File not found. Check the path and try again.",
-  "unsupported-format": "Rejected by the local attachment allowlist. Send a supported file type.",
-  "delivery-failed": "Delivery failed. Try sending this file again.",
+  "file-not-found": arxiUserCopy(
+    "File not found. Check the path and try again.",
+    "Файл не найден. Нужно выбрать его заново.",
+  ),
+  "unsupported-format": arxiUserCopy(
+    "Rejected by the local attachment allowlist. Send a supported file type.",
+    "Этот формат файла не поддерживается.",
+  ),
+  "delivery-failed": arxiUserCopy(
+    "Delivery failed. Try sending this file again.",
+    "Не удалось доставить файл.",
+  ),
 };
 
 function formatReplyMediaFailures(failures: readonly ReplyMediaFailure[]): string {

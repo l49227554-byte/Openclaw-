@@ -5,14 +5,17 @@ import {
 import { appendAssistantMessageToSessionTranscript } from "../../config/sessions/transcript.js";
 import { getGatewayRecoveryRuntime } from "../../gateway/server-recovery-runtime-context.js";
 import { findDeliveryIntentOwner } from "../../infra/outbound/delivery-queue-storage.js";
+import { arxiUserCopy } from "../../shared/arxi-user-copy.js";
 import {
   deliveryContextFromSession,
   deliveryContextKey,
   normalizeDeliveryContext,
 } from "../../utils/delivery-context.shared.js";
 
-const PENDING_DELIVERY_NOTICE =
-  "I couldn’t confirm whether my previous reply reached this chat, so I won’t resend it automatically. Please ask for any missing remainder.";
+const PENDING_DELIVERY_NOTICE = arxiUserCopy(
+  "I couldn’t confirm whether my previous reply reached this chat, so I won’t resend it automatically. Please ask for any missing remainder.",
+  "Не могу подтвердить, что прошлый ответ дошёл. Не буду дублировать его вслепую — напиши, если нужно восстановить продолжение.",
+);
 
 function noticeId(intentId: string): string {
   return `main-session-restart-recovery:pending-final:${intentId}`;

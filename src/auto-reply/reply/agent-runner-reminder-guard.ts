@@ -1,11 +1,14 @@
 /** Detects reminder commitments that were not backed by scheduled cron jobs. */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { loadCronJobsStore, resolveCronJobsStorePath } from "../../cron/store.js";
+import { arxiUserCopy } from "../../shared/arxi-user-copy.js";
 import { copyReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 
-const UNSCHEDULED_REMINDER_NOTE =
-  "Note: I did not schedule a reminder in this turn, so this will not trigger automatically.";
+const UNSCHEDULED_REMINDER_NOTE = arxiUserCopy(
+  "Note: I did not schedule a reminder in this turn, so this will not trigger automatically.",
+  "Напоминание не настроено и само не сработает.",
+);
 
 const REMINDER_COMMITMENT_PATTERNS: RegExp[] = [
   /\b(?:i\s*['’]?ll|i will)\s+(?:make sure to\s+)?(?:remind|ping|follow up|follow-up|check (?:back|on)|circle back)\b/i,

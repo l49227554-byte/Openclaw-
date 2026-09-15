@@ -42,7 +42,6 @@ describe("session goals", () => {
       storePath: fixture.storePath(),
       sessionKey,
       objective: "land the PR",
-      tokenBudget: 50,
       now: 10,
     });
 
@@ -50,7 +49,7 @@ describe("session goals", () => {
     expect(goal.status).toBe("active");
     expect(goal.tokenStart).toBe(100);
     expect(goal.tokenStartFresh).toBe(true);
-    expect(goal.tokenBudget).toBe(50);
+    expect(goal.tokenBudget).toBeUndefined();
     expect(getSessionEntry({ storePath: fixture.storePath(), sessionKey })?.goal?.id).toBe(goal.id);
   });
 
@@ -74,13 +73,12 @@ describe("session goals", () => {
     );
   });
 
-  it("accounts usage from session token snapshots and enforces budget", async () => {
+  it("tracks token usage without enforcing budget limits", async () => {
     await writeSession(100);
     await createSessionGoal({
       storePath: fixture.storePath(),
       sessionKey,
       objective: "finish task",
-      tokenBudget: 20,
       now: 10,
     });
     await upsertSessionEntry({
@@ -95,17 +93,22 @@ describe("session goals", () => {
     const snapshot = await getSessionGoal({ storePath: fixture.storePath(), sessionKey, now: 20 });
 
     expect(snapshot.goal?.tokensUsed).toBe(25);
-    expect(snapshot.goal?.status).toBe("budget_limited");
+    expect(snapshot.goal?.status).toBe("active");
   });
 
-  it("resumes budget-limited goals with a fresh budget window", async () => {
+  it("resumes blocked goals and preserves token accounting", async () => {
     await writeSession(100);
     await createSessionGoal({
       storePath: fixture.storePath(),
       sessionKey,
       objective: "finish task",
-      tokenBudget: 20,
       now: 10,
+    });
+    await updateSessionGoalStatus({
+      storePath: fixture.storePath(),
+      sessionKey,
+      status: "blocked",
+      now: 15,
     });
     await upsertSessionEntry({
       storePath: fixture.storePath(),
@@ -115,7 +118,6 @@ describe("session goals", () => {
         totalTokens: 125,
       },
     });
-    await getSessionGoal({ storePath: fixture.storePath(), sessionKey, now: 20 });
 
     const resumed = await updateSessionGoalStatus({
       storePath: fixture.storePath(),
@@ -126,13 +128,10 @@ describe("session goals", () => {
     const snapshot = await getSessionGoal({ storePath: fixture.storePath(), sessionKey, now: 40 });
 
     expect(resumed.status).toBe("active");
-    expect(resumed.tokenStart).toBe(125);
-    expect(resumed.tokensUsed).toBe(0);
     expect(snapshot.goal?.status).toBe("active");
-    expect(snapshot.goal?.tokensUsed).toBe(0);
   });
 
-  it("ignores stale token snapshots for budget accounting", async () => {
+  it("ignores stale token snapshots for usage accounting", async () => {
     await upsertSessionEntry({
       storePath: fixture.storePath(),
       sessionKey,
@@ -147,7 +146,6 @@ describe("session goals", () => {
       storePath: fixture.storePath(),
       sessionKey,
       objective: "finish task",
-      tokenBudget: 20,
       now: 10,
     });
     await upsertSessionEntry({
@@ -183,7 +181,6 @@ describe("session goals", () => {
       storePath: fixture.storePath(),
       sessionKey,
       objective: "finish task",
-      tokenBudget: 20,
       now: 10,
     });
     await upsertSessionEntry({
@@ -291,13 +288,12 @@ describe("session goals", () => {
     expect(resumed.lastStatusNote).toBe("waiting on CI");
   });
 
-  it("resumes paused goals with a fresh budget window after usage passes the budget", async () => {
+  it("resumes paused goals and preserves token tracking", async () => {
     await writeSession(0);
     await createSessionGoal({
       storePath: fixture.storePath(),
       sessionKey,
       objective: "ship",
-      tokenBudget: 20,
       now: 10,
     });
     await updateSessionGoalStatus({
@@ -323,9 +319,6 @@ describe("session goals", () => {
     });
 
     expect(resumed.status).toBe("active");
-    expect(resumed.tokenStart).toBe(100);
-    expect(resumed.tokensUsed).toBe(0);
-    expect(resumed.budgetLimitedAt).toBeUndefined();
   });
 
   it("formats a readable status summary with command hints", () => {
@@ -338,17 +331,17 @@ describe("session goals", () => {
       updatedAt: 2,
       tokenStart: 0,
       tokensUsed: 12_000,
-      tokenBudget: 30_000,
       continuationTurns: 0,
       lastStatusNote: "waiting on review",
     });
 
     expect(text).toContain("Goal\nStatus: blocked\nObjective: land the PR");
-    expect(text).toContain("Token budget: 12k/30k");
+    expect(text).toContain("Tokens used: 12k");
+    expect(text).not.toContain("Token budget");
     expect(text).toContain("Commands: /goal resume, /goal clear");
   });
 
-  it("projects display state from fresh session tokens", () => {
+  it("projects display state from fresh session tokens without budget limiting", () => {
     const goal = resolveSessionGoalDisplayState(
       {
         totalTokens: 140,
@@ -362,7 +355,6 @@ describe("session goals", () => {
           updatedAt: 1,
           tokenStart: 100,
           tokensUsed: 0,
-          tokenBudget: 40,
           continuationTurns: 0,
         },
       },
@@ -370,7 +362,7 @@ describe("session goals", () => {
     );
 
     expect(goal?.tokensUsed).toBe(40);
-    expect(goal?.status).toBe("budget_limited");
+    expect(goal?.status).toBe("active");
   });
 
   it("can project without adopting a stale baseline for read-only displays", () => {
@@ -388,7 +380,6 @@ describe("session goals", () => {
           tokenStart: 0,
           tokenStartFresh: false,
           tokensUsed: 0,
-          tokenBudget: 40,
           continuationTurns: 0,
         },
       },

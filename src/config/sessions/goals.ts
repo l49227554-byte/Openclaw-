@@ -19,7 +19,6 @@ type SessionGoalStoreOptions = {
 
 type CreateSessionGoalOptions = SessionGoalStoreOptions & {
   objective: string;
-  tokenBudget?: number;
 };
 
 type UpdateSessionGoalStatusOptions = SessionGoalStoreOptions & {
@@ -51,11 +50,6 @@ function resolveEntryGoalStartTokens(
   entry: Pick<SessionEntry, "totalTokens" | "totalTokensFresh">,
 ): number {
   return resolveEntryFreshTotalTokens(entry) ?? 0;
-}
-
-function normalizeTokenBudget(value: number | undefined): number | undefined {
-  const normalized = normalizeTokenCount(value);
-  return normalized && normalized > 0 ? normalized : undefined;
 }
 
 function cloneGoal(goal: SessionGoal): SessionGoal {
@@ -120,15 +114,6 @@ function accountGoalUsage(
     tokenStartFresh: hasFreshStart || shouldAdoptFreshStart,
     tokensUsed,
   };
-  if (
-    next.status === "active" &&
-    next.tokenBudget !== undefined &&
-    tokensUsed >= next.tokenBudget
-  ) {
-    next.status = "budget_limited";
-    next.budgetLimitedAt = now;
-    next.updatedAt = now;
-  }
   return next;
 }
 
@@ -140,10 +125,6 @@ export function formatSessionGoalStatus(goal: SessionGoal | undefined): string {
   if (!goal) {
     return "No goal for this session.\nStart one with /goal start <objective>.";
   }
-  const budget =
-    goal.tokenBudget === undefined
-      ? ""
-      : `\nToken budget: ${formatGoalTokenCount(goal.tokensUsed)}/${formatGoalTokenCount(goal.tokenBudget)}`;
   const note = goal.lastStatusNote ? `\nNote: ${goal.lastStatusNote}` : "";
   const commands = resolveGoalCommandHint(goal.status);
   return [
@@ -151,7 +132,6 @@ export function formatSessionGoalStatus(goal: SessionGoal | undefined): string {
     `Status: ${goal.status}`,
     `Objective: ${goal.objective}`,
     `Tokens used: ${formatGoalTokenCount(goal.tokensUsed)}`,
-    ...(budget ? [budget.slice(1)] : []),
     ...(note ? [note.slice(1)] : []),
     "",
     `Commands: ${commands}`,
@@ -222,7 +202,6 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
       if (entry.goal) {
         throw new Error("goal already exists");
       }
-      const tokenBudget = normalizeTokenBudget(options.tokenBudget);
       const tokenStartFresh = resolveEntryFreshTotalTokens(entry) !== undefined;
       created = {
         schemaVersion: 1,
@@ -234,7 +213,6 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
         tokenStart: resolveEntryGoalStartTokens(entry),
         tokenStartFresh,
         tokensUsed: 0,
-        ...(tokenBudget ? { tokenBudget } : {}),
         continuationTurns: 0,
       };
       return { goal: created };
@@ -264,13 +242,6 @@ export async function updateSessionGoalStatus(
       if (TERMINAL_GOAL_STATUSES.has(accounted.status) && accounted.status !== options.status) {
         throw new Error(`goal is already ${accounted.status}`);
       }
-      const resetsBudgetWindow =
-        options.status === "active" &&
-        (accounted.status === "budget_limited" ||
-          accounted.status === "usage_limited" ||
-          (accounted.tokenBudget !== undefined && accounted.tokensUsed >= accounted.tokenBudget));
-      // Resuming from a limited state starts a new budget window at the current fresh token count.
-      const freshTokenStart = resetsBudgetWindow ? resolveEntryFreshTotalTokens(entry) : undefined;
       const next: SessionGoal = {
         ...accounted,
         status: options.status,
@@ -280,21 +251,6 @@ export async function updateSessionGoalStatus(
         ...(options.status === "blocked" ? { blockedAt: now } : {}),
         ...(options.status === "complete" ? { completedAt: now } : {}),
       };
-      if (resetsBudgetWindow) {
-        next.tokenStart = freshTokenStart ?? 0;
-        next.tokenStartFresh = freshTokenStart !== undefined;
-        next.tokensUsed = 0;
-        delete next.budgetLimitedAt;
-        delete next.usageLimitedAt;
-      }
-      if (
-        next.status === "active" &&
-        next.tokenBudget !== undefined &&
-        next.tokensUsed >= next.tokenBudget
-      ) {
-        next.status = "budget_limited";
-        next.budgetLimitedAt = now;
-      }
       updated = next;
       return { goal: updated };
     },

@@ -13,7 +13,6 @@ function buildGoal(overrides: Partial<SessionGoal> = {}): SessionGoal {
     updatedAt: 2,
     tokenStart: 100,
     tokensUsed: 12_400,
-    tokenBudget: 50_000,
     continuationTurns: 0,
     ...overrides,
   };
@@ -31,15 +30,13 @@ describe("session goal formatting", () => {
   it("summarizes goal status and objective details", () => {
     const goal = buildGoal({ lastStatusNote: "Waiting for CI" });
 
-    expect(formatGoalSummary(goal)).toBe("Pursuing goal (12k/50k)");
+    expect(formatGoalSummary(goal)).toBe("Pursuing goal (12k used)");
     expect(formatGoalDetail(goal)).toBe(
-      "Pursuing goal (12k/50k): Ship the web goal indicator - Waiting for CI",
+      "Pursuing goal (12k used): Ship the web goal indicator - Waiting for CI",
     );
   });
 
-  it("uses terminal labels without a budget", () => {
-    expect(formatGoalSummary(buildGoal({ status: "complete", tokenBudget: undefined }))).toBe(
-      "Goal achieved (12k used)",
-    );
+  it("uses terminal labels for completed goals", () => {
+    expect(formatGoalSummary(buildGoal({ status: "complete" }))).toBe("Goal achieved (12k used)");
   });
 });

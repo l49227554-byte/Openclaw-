@@ -20,8 +20,6 @@ async function createStoreConfig(): Promise<{ config: OpenClawConfig; template: 
 
 describe("goal tools", () => {
   it("keeps get_goal read-only when accounting changes are projected", async () => {
-    // Budget-limited status can be derived for display without mutating the
-    // stored active goal record.
     const { config, template } = await createStoreConfig();
     const storePath = resolveStorePath(template, { agentId: "research" });
     await upsertSessionEntry({
@@ -42,7 +40,6 @@ describe("goal tools", () => {
           tokenStart: 100,
           tokenStartFresh: true,
           tokensUsed: 0,
-          tokenBudget: 20,
           continuationTurns: 0,
         },
       },
@@ -56,7 +53,7 @@ describe("goal tools", () => {
 
     const result = await tool.execute("call-1", {});
 
-    expect((result.details as { goal?: { status?: string } }).goal?.status).toBe("budget_limited");
+    expect((result.details as { goal?: { tokensUsed?: number } }).goal?.tokensUsed).toBe(25);
     expect(loadSessionStore(storePath, { skipCache: true }).global?.goal?.status).toBe("active");
   });
 

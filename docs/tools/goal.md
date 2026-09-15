@@ -116,8 +116,6 @@ Goals use a small status set:
 - `paused`: the operator paused the goal; `/goal resume` makes it active again.
 - `blocked`: the agent or operator reported a real blocker; `/goal resume`
   makes it active again when new information or state is available.
-- `budget_limited`: the configured token budget was reached; `/goal resume`
-  restarts pursuit from the same objective.
 - `usage_limited`: reserved for usage-limit stop states; `/goal resume`
   restarts pursuit when allowed.
 - `complete`: the goal was achieved. Complete goals are terminal; use
@@ -126,29 +124,24 @@ Goals use a small status set:
 `/new` and `/reset` clear the current session goal because they intentionally
 start fresh session context.
 
-## Token budgets
+## Token tracking
 
-Goals can have an optional positive token budget. The budget is stored with the
-goal and measured from the session's fresh token count at creation time. If the
-current session only has stale or unknown token usage when the goal starts,
-OpenClaw waits for the next fresh session token snapshot and uses that as the
-baseline, so tokens spent before the goal existed are not charged to the goal.
+Goals track cumulative token usage from the session's fresh token count at
+creation time. If the current session only has stale or unknown token usage when
+the goal starts, OpenClaw waits for the next fresh session token snapshot and
+uses that as the baseline, so tokens spent before the goal existed are not
+charged to the goal.
 
-When token usage reaches the budget, the goal changes to `budget_limited`. This
-does not delete the goal or erase the objective. It tells the operator and the
-agent that the goal is no longer actively being pursued until it is resumed or
-cleared.
-
-Token budgets are a session-goal guardrail, not a billing cap. Provider quota,
-cost reporting, and context-window behavior still use the normal OpenClaw
-usage and model controls.
+Token tracking is informational only — it does not limit or stop goal pursuit.
+Provider quota, cost reporting, and context-window behavior still use the normal
+OpenClaw usage and model controls.
 
 ## Model tools
 
 OpenClaw exposes three core goal tools to agent harnesses:
 
-- `get_goal`: read the current session goal, including status, objective, token
-  usage, and token budget.
+- `get_goal`: read the current session goal, including status, objective, and
+  token usage.
 - `create_goal`: create a goal only when the user, system, or developer
   instructions explicitly request one. It fails if the session already has a
   goal.
@@ -171,7 +164,7 @@ agent, session, model, run controls, and token counts.
 
 Footer examples:
 
-- `Pursuing goal (12k/50k)` for an active goal with a token budget.
+- `Pursuing goal (12k used)` for an active goal with token tracking.
 - `Goal paused (/goal resume)` for a paused goal.
 - `Goal blocked (/goal resume)` for a blocked goal.
 - `Goal hit usage limits (/goal resume)` for a usage-limited goal.

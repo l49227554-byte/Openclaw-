@@ -14,13 +14,7 @@ import { resolveStorePath } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { stringEnum } from "../schema/typebox.js";
-import {
-  type AnyAgentTool,
-  ToolInputError,
-  jsonResult,
-  readNumberParam,
-  readStringParam,
-} from "./common.js";
+import { type AnyAgentTool, ToolInputError, jsonResult, readStringParam } from "./common.js";
 
 type GoalToolOptions = {
   agentSessionKey?: string;
@@ -38,11 +32,6 @@ const CreateGoalToolSchema = Type.Object({
   objective: Type.String({
     description: "Concrete objective to pursue. Create only when explicitly requested.",
   }),
-  token_budget: Type.Optional(
-    Type.Number({
-      description: "Optional positive token budget for this goal.",
-    }),
-  ),
 });
 
 const UpdateGoalToolSchema = Type.Object({
@@ -101,15 +90,9 @@ export function createCreateGoalTool(options: GoalToolOptions): AnyAgentTool {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const objective = readStringParam(params, "objective", { required: true });
-      const tokenBudget = readNumberParam(params, "token_budget", { integer: true });
-      if (tokenBudget !== undefined && tokenBudget <= 0) {
-        // Budgets are positive limits; zero would immediately make accounting ambiguous.
-        throw new ToolInputError("token_budget must be positive");
-      }
       const goal = await createSessionGoal({
         ...resolveGoalSessionScope(options),
         objective,
-        ...(tokenBudget !== undefined ? { tokenBudget } : {}),
       });
       return jsonResult({ status: "created", goal });
     },

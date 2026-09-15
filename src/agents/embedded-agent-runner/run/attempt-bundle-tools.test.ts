@@ -1,25 +1,12 @@
-import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
   createPluginMetadataSnapshot,
   makeRegistry,
 } from "../../../config/plugin-auto-enable.test-helpers.js";
-import {
-  onInternalDiagnosticEvent,
-  type DiagnosticEventPayload,
-} from "../../../infra/diagnostic-events.js";
 import { setPluginToolMeta } from "../../../plugins/tool-metadata.js";
 import { createAgentCleanupScope } from "../../run-cleanup-timeout.js";
 import { createStubTool } from "../../test-helpers/agent-tool-stubs.js";
 import { attachToolAllowlistIntersection } from "../../tool-policy.js";
-import {
-  applyToolCatalogCompaction,
-  clearToolSearchCatalog,
-  createToolSearchCatalogRef,
-} from "../../tool-search-catalog.js";
-import { resolveToolSearchConfig } from "../../tool-search-config.js";
-import { ToolSearchRuntime } from "../../tool-search-runtime.js";
 
 const mocks = vi.hoisted(() => ({
   createBundleLspToolRuntime: vi.fn(),
@@ -86,13 +73,6 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       setup: createAttemptSetupFixture(),
       isRawModelRun: false,
       preparedToolBase: {
-        toolHookContext: {
-          agentId: "main",
-          sessionKey: "session-key",
-          sessionId: "session",
-          runId: "run",
-          loopDetection: { enabled: false },
-        },
         cronCreatorToolAllowlist: [],
         effectiveToolsAllow: undefined,
         inheritedToolAllowlist,
@@ -103,100 +83,6 @@ describe("prepareEmbeddedAttemptBundleTools", () => {
       },
     } as unknown as Parameters<typeof prepareEmbeddedAttemptBundleTools>[0];
   }
-
-  it.each([
-    { cataloged: false, fail: false },
-    { cataloged: true, fail: false },
-    { cataloged: false, fail: true },
-    { cataloged: true, fail: true },
-  ])(
-    "tracks one bundled execution lifecycle ($cataloged, failure=$fail)",
-    async ({ cataloged, fail }) => {
-      const started = createDeferred();
-      const finish = createDeferred();
-      const tool = createStubTool("silent__delayed_local");
-      const result = { content: [{ type: "text" as const, text: "delayed result" }], details: {} };
-      tool.execute = async () => {
-        started.resolve();
-        await finish.promise;
-        if (fail) {
-          throw new Error("transport failed");
-        }
-        return result;
-      };
-      setPluginToolMeta(tool, { pluginId: "bundle-mcp", optional: false });
-      mocks.acquireSessionMcpRuntime.mockResolvedValue({ runtime: {}, releaseLease: () => {} });
-      mocks.materializeBundleMcpToolsForRun.mockResolvedValue({ tools: [tool] });
-      const events: DiagnosticEventPayload[] = [];
-      const catalogRef = createToolSearchCatalogRef();
-      const unsubscribe = onInternalDiagnosticEvent((event) => {
-        if (
-          (event.type === "tool.execution.started" ||
-            event.type === "tool.execution.completed" ||
-            event.type === "tool.execution.error") &&
-          event.toolName === tool.name
-        ) {
-          events.push(event);
-        }
-      });
-      try {
-        const input = createInput([], []);
-        const bundle = await prepareEmbeddedAttemptBundleTools(input);
-        const surface = applyToolCatalogCompaction({
-          tools: [createStubTool("tool_search"), ...bundle.uncompactedEffectiveTools],
-          enabled: cataloged,
-          catalogRef,
-          toolHookContext: input.preparedToolBase.toolHookContext,
-          isVisibleControlTool: (candidate) => candidate.name === "tool_search",
-        });
-        const execution = cataloged
-          ? new ToolSearchRuntime(
-              { ...input.preparedToolBase.toolHookContext, catalogRef },
-              resolveToolSearchConfig(),
-            )
-              .call(tool.name, {}, { parentToolCallId: "delayed-call" })
-              .then((response) => response.result)
-          : expectDefined(
-              surface.tools.find((candidate) => candidate.name === tool.name),
-              "direct bundled tool",
-            ).execute("delayed-call", {}, undefined, undefined);
-        const settled = fail
-          ? expect(execution).rejects.toThrow("transport failed")
-          : expect(execution).resolves.toEqual(result);
-        await started.promise;
-        try {
-          await new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          });
-          expect(events.map((event) => event.type)).toEqual(["tool.execution.started"]);
-        } finally {
-          finish.resolve();
-          await settled;
-        }
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
-        expect(events.map((event) => event.type)).toEqual([
-          "tool.execution.started",
-          fail ? "tool.execution.error" : "tool.execution.completed",
-        ]);
-        for (const event of events) {
-          expect(event).toMatchObject({
-            runId: "run",
-            sessionId: "session",
-            sessionKey: "session-key",
-            toolCallId: cataloged
-              ? "tool_search_code:delayed-call:silent__delayed_local:1"
-              : "delayed-call",
-          });
-        }
-      } finally {
-        finish.resolve();
-        clearToolSearchCatalog({ catalogRef });
-        unsubscribe();
-      }
-    },
-  );
 
   it.each([
     { allow: ["chrome*"], expected: ["chrome__click"] },

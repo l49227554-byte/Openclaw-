@@ -22,7 +22,6 @@ import { normalizeAgentId, resolveUiSelectedSessionAgentId } from "../lib/sessio
 import { isTerminalAvailable } from "../lib/terminal-availability.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
 import { pluginTabKey, pluginTabRefFromSearch } from "../pages/plugin/route.ts";
-import { renderControlUiPluginRecovery } from "../plugins/control-ui-contributions.ts";
 import { renderPluginSurface } from "../plugins/control-ui-view.ts";
 import type { ShellRouteState } from "./app-host-route-state.ts";
 import { renderCommandPaletteLoading } from "./app-shell-command-palette-loading.ts";
@@ -37,7 +36,6 @@ import type { ApplicationContext, ApplicationNavigationOptions } from "./context
 import { resolveControlUiAuthToken } from "./control-ui-auth.ts";
 import { gatewayPresentationScope } from "./gateway-presentation-scope.ts";
 import {
-  DEBUG_OVERLAY_ELEMENT,
   isOptionalElementDefined,
   KEYBOARD_SHORTCUTS_ELEMENT,
   type LazyCustomElementRequestController,
@@ -48,6 +46,7 @@ import {
 import { isMobileNavLayout, shouldMergeChatChrome } from "./mobile-nav-layout.ts";
 import type { NativeHistoryState } from "./native-web-chrome.ts";
 import { isNativeEmbedHost, isNativeWebChromeHost } from "./native-web-chrome.ts";
+import { beginNativeWindowDragFromTopInset } from "./native-window-drag.ts";
 import {
   floatingSidebarAttentionVisible,
   navigationSurfaceIsHidden,
@@ -66,7 +65,7 @@ import {
   normalizeCatalogOpenTarget,
   normalizeChatSendShortcut,
 } from "./settings.ts";
-import { renderCollapsedAssistantToggles } from "./shell-assistant-toggles.ts";
+import { renderCollapsedHomeToggle } from "./shell-assistant-toggles.ts";
 import { createUpdateProgressWatcher } from "./update-confirmation.ts";
 
 const EMPTY_SESSION_HAS_DRAFT = () => false;
@@ -257,11 +256,12 @@ export function renderApplicationShell(host: ShellViewHost) {
   const uiSettings = context.theme.settings;
   // The new-session draft shares the chat layout: full-height pane that owns
   // its scrolling and pins the composer dock to the bottom.
-  const chatLikeRoute = sessionRoute || activeRoute === "new-session";
+  const chatLikeRoute = sessionRoute || activeRoute === "new-session" || activeRoute === "systems";
   if (!settingsTakeover && !nativeEmbed) {
     Object.assign(host.navigationSidebar, {
       basePath: context.basePath,
       activeRouteId: activeRoute,
+      router: host.runtime.router,
       activePluginTabId,
       enabledRouteIds: host.enabledRouteIds(),
       sessionKey: host.activeSessionKey,
@@ -283,8 +283,6 @@ export function renderApplicationShell(host: ShellViewHost) {
       sidebarLiveActivity: uiSettings.sidebarLiveActivity !== false,
       pinnedAgentIds: navigationSnapshot.pinnedAgentIds,
       themeMode: context.theme.mode,
-      lobsterPetVisits: uiSettings.lobsterPetVisits !== false,
-      lobsterPetSounds: uiSettings.lobsterPetSounds === true,
       gatewayVersion: config.serverVersion ?? gatewaySnapshot.hello?.server?.version ?? null,
       devGitBranch: config.devGitBranch,
       watchUpdateProgress,
@@ -308,6 +306,9 @@ export function renderApplicationShell(host: ShellViewHost) {
           presentation: nativeEmbed ? (embedSettingsRoot ? "embed-list" : "embed-page") : "sidebar",
           basePath: context.basePath,
           activeRouteId: activeRoute,
+          agents: context.agents.state.agentsList?.agents ?? [],
+          agentIdentity: context.agentIdentity,
+          settingsAgentSelection: context.settingsAgentSelection,
           activePathname: host.routeState.location?.pathname ?? "",
           activeSearch: host.routeState.location?.search ?? "",
           activeHash: host.routeState.location?.hash ?? "",
@@ -360,8 +361,10 @@ export function renderApplicationShell(host: ShellViewHost) {
           onSearchQueryChange: (nextQuery) => void host.handleSettingsSearchQueryChange(nextQuery),
           preloadTimers: host.settingsPreloadTimers,
           saveIndicator: {
-            status: runtimeConfig.configAutoSaveStatus,
-            lastError: runtimeConfig.lastError,
+            status: runtimeConfig.configRecoveryError
+              ? "recovery"
+              : runtimeConfig.configAutoSaveStatus,
+            lastError: runtimeConfig.configRecoveryError ?? runtimeConfig.lastError,
             needsApply: runtimeConfig.configNeedsApply,
             applying: runtimeConfig.configApplying,
             applyDisabled:
@@ -400,11 +403,7 @@ export function renderApplicationShell(host: ShellViewHost) {
           ></openclaw-command-palette>`
         : nothing
     }
-    ${
-      isOptionalElementDefined(DEBUG_OVERLAY_ELEMENT)
-        ? html`<openclaw-debug-overlay></openclaw-debug-overlay>`
-        : nothing
-    }
+    <openclaw-debug-overlay></openclaw-debug-overlay>
     ${
       !nativeEmbed && isOptionalElementDefined(KEYBOARD_SHORTCUTS_ELEMENT)
         ? html`<openclaw-keyboard-shortcuts-dialog
@@ -497,10 +496,7 @@ export function renderApplicationShell(host: ShellViewHost) {
                     ${icons.search}
                   </button>
                 </openclaw-tooltip>
-                ${renderCollapsedAssistantToggles({
-                  homeAvailable: homePanelAvailable,
-                  custodianAvailable: custodianPanelAvailable,
-                })}
+                ${homePanelAvailable ? renderCollapsedHomeToggle() : nothing}
               </div>
             `
           : nothing
@@ -551,6 +547,7 @@ export function renderApplicationShell(host: ShellViewHost) {
           activeRoute === "custodian" ? "content--custodian" : ""
         } ${activeRoute === "workboard" ? "content--workboard" : ""}"
         .tabIndex=${-1}
+        @mousedown=${beginNativeWindowDragFromTopInset}
         ?inert=${(!nativeEmbed && pageActionsBlocked) || (mobileNavLayout && navDrawerOpen)}
       >
         ${
@@ -639,7 +636,7 @@ export function renderApplicationShell(host: ShellViewHost) {
                 data-chat-autotype-exempt
                 .client=${gatewayConnected ? gatewaySnapshot.client : null}
                 .available=${desktopPanelAvailable}
-                .suppressed=${settingsTakeover || nativeEmbed}
+                .suppressed=${settingsTakeover || nativeEmbed || activeRoute === "systems"}
                 .basePath=${context.basePath}
               ></openclaw-desktop-panel>
             `
@@ -699,7 +696,11 @@ export function renderApplicationShell(host: ShellViewHost) {
       <openclaw-toast-host></openclaw-toast-host>
     </div>
   `;
-  return html`${renderPluginSurface(
+  // Keep plugin settings reachable when a replacement owns the workspace.
+  if (activeRoute === "plugins") {
+    return workspace;
+  }
+  return renderPluginSurface(
     "workspace",
     {
       sessionKey: host.activeSessionKey,
@@ -715,5 +716,5 @@ export function renderApplicationShell(host: ShellViewHost) {
       routeId: activeRoute,
     },
     workspace,
-  )}${renderControlUiPluginRecovery(context.plugins, activeRoute)}`;
+  );
 }

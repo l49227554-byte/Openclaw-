@@ -174,6 +174,7 @@ export function createSessionCapability(
       }
       if (previousError !== null && error === null) {
         // Observer outages do not replay events; every held query must close the gap.
+        githubPublication.invalidate();
         void roster.refreshAutomatic({
           ...roster.lastOptions(),
           backgroundHydrate: true,
@@ -388,7 +389,9 @@ export function createSessionCapability(
     }
     for (const key of terminal.sessionKeys) {
       if (key.trim()) {
-        roster.invalidateManagedLists(parseAgentSessionKey(key)?.agentId ?? terminal.agentId);
+        roster.invalidateManagedLists(parseAgentSessionKey(key)?.agentId ?? terminal.agentId, {
+          key,
+        });
       }
     }
     const previous = state.result;
@@ -557,7 +560,7 @@ export function createSessionCapability(
     const payloadAgentId = payload?.agentId;
     if (eventReason === "groups") {
       groups.invalidate();
-      void groups.load();
+      void background(groups.load, () => groups.load());
     }
     if (event.event === "session.message" && !runEnded) {
       return;
@@ -610,7 +613,7 @@ export function createSessionCapability(
     recover: operations.recover,
     patch: mutations.patch,
     archiveVisibility: mutations.archiveVisibility,
-    setArchivePending: mutations.setArchivePending,
+    beginArchive: mutations.beginArchive,
     assignOwner: mutations.assignOwner,
     retireModelOverride: mutations.retireModelOverride,
     think: thinkingClaims.get,

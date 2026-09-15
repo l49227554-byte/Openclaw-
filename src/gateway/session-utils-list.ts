@@ -20,10 +20,12 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../routing/session-key.js";
-import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
+import { isCronRunSessionKey, isSubagentSessionKey } from "../sessions/session-key-utils.js";
+import { sessionActivityTimestamp } from "../shared/session-activity-timestamp.js";
 import { SESSIONS_LIST_OWNER_LIMIT } from "../shared/session-list-limits.js";
 import type { SessionOwnerFacetIdentity } from "../shared/session-types.js";
 import { runSynchronousWork, type SynchronousWork } from "../shared/synchronous-work.js";
+import { projectActivitySummaryList } from "./session-activity-summary-list.js";
 import {
   projectSessionOwner,
   addSessionOwnerFacetIdentity,
@@ -53,10 +55,7 @@ import {
   populateSessionListAcpMetadata,
 } from "./session-utils-projection.js";
 import { buildGatewaySessionRow } from "./session-utils-row.js";
-import {
-  createSessionListSearchMatcher,
-  resolveSessionListRowContext,
-} from "./session-utils-search.js";
+import { createSessionListSearchMatcher } from "./session-utils-search.js";
 import type {
   GatewaySessionRow,
   SessionListModelCatalog,
@@ -165,6 +164,9 @@ function* filterSessionEntries(params: {
   > & { ownerEntries: SessionEntryPair[] }
 > {
   const { cfg, store, opts, now, shouldYield } = params;
+  let rowContext: SessionListRowContext | undefined;
+  const getRowContext = () =>
+    (rowContext ??= params.getRowContext?.() ?? buildSessionListRowMetadataContext({ now }));
   const includeGlobal = opts.includeGlobal === true;
   const includeUnknown = opts.includeUnknown === true;
   const spawnedBy = typeof opts.spawnedBy === "string" ? opts.spawnedBy : "";
@@ -234,6 +236,7 @@ function* filterSessionEntries(params: {
     const storeKey = target?.storeKey ?? key;
     if (
       isCronRunSessionKey(key) ||
+      (opts.excludeSubagents === true && isSubagentSessionKey(key)) ||
       (!includeGlobal && storeKey === "global") ||
       (!includeUnknown && storeKey === "unknown")
     ) {
@@ -252,12 +255,11 @@ function* filterSessionEntries(params: {
       if (storeKey === "unknown" || storeKey === "global") {
         return false;
       }
-      const filterRowContext = resolveSessionListRowContext(params);
       const keepSpawned = resolveSessionChildOwners({
         key,
         entry,
         now,
-        subagentRuns: filterRowContext?.subagentRuns,
+        subagentRuns: getRowContext().subagentRuns,
       }).includes(spawnedBy);
       if (!keepSpawned) {
         return false;
@@ -298,7 +300,7 @@ function* filterSessionEntries(params: {
         now,
         visibleEntries: candidateEntries,
         targetsBySessionKey: expectDefined(params.targetsBySessionKey, "search row owners"),
-        getRowContext: params.getRowContext,
+        getRowContext,
         projectActiveRun: params.projectActiveRun,
       })
     : undefined;
@@ -308,10 +310,12 @@ function* filterSessionEntries(params: {
       yield;
     }
     const [key, entry] = pair;
-    if (matchesSearch && !matchesSearch(key, entry)) {
-      continue;
-    }
-    if (activeCutoff !== undefined && (entry.updatedAt ?? 0) < activeCutoff) {
+    if (
+      (matchesSearch && !matchesSearch(key, entry)) ||
+      (activeCutoff !== undefined &&
+        (opts.sortBy === "activity" ? sessionActivityTimestamp(entry) : (entry.updatedAt ?? 0)) <
+          activeCutoff)
+    ) {
       continue;
     }
     const effectiveOwner = projectSessionOwner(entry, identities, cfg, configuredAgentIds)?.actor;
@@ -453,10 +457,8 @@ function* prepareSessionList(params: ListSessionsFromStoreParams, shouldYield: (
   const userProfileIdentityById = new Map<string, SessionActorProfileIdentity | undefined>();
   const configuredAgentIds = new Set(listAgentIds(cfg));
   let rowContext: SessionListRowContext | undefined;
-  const getRowContext = () => {
-    rowContext ??= buildSessionListRowMetadataContext({ now, userProfileIdentityById });
-    return rowContext;
-  };
+  const getRowContext = () =>
+    (rowContext ??= buildSessionListRowMetadataContext({ now, userProfileIdentityById }));
   const hasSpawnedByFilter = typeof opts.spawnedBy === "string" && opts.spawnedBy.length > 0;
   const filteredSessionKeys = new Set<string>();
   let hasIncognito = false;
@@ -479,9 +481,7 @@ function* prepareSessionList(params: ListSessionsFromStoreParams, shouldYield: (
     restrictProfileReferences: params.entryFilter !== undefined,
     defaultLimit: SESSIONS_LIST_DEFAULT_LIMIT,
     getRowContext:
-      hasSpawnedByFilter || Boolean(normalizeOptionalString(opts.search))
-        ? getRowContext
-        : undefined,
+      hasSpawnedByFilter || normalizeOptionalString(opts.search) ? getRowContext : undefined,
     userProfileIdentityById,
     configuredAgentIds,
     involvingActorId: params.involvingActorId,
@@ -531,6 +531,7 @@ function buildSessionsListResult(
   list: ReturnType<typeof prepareSessionList> extends SynchronousWork<infer T> ? T : never,
   sessions: GatewaySessionRow[],
 ): SessionsListResult {
+  projectActivitySummaryList(params, sessions);
   const { cfg, opts, modelCatalog } = params;
   // The defaults projection uses the same agent identity as getSessionDefaults:
   // the requested agent when scoped, otherwise the legacy compatibility agent.
@@ -654,10 +655,11 @@ export async function listSessionsFromStoreAsync(
       }
       const list = step.value;
       const sessions: GatewaySessionRow[] = [];
+      const includeTranscriptFields = list.includeDerivedTitles || list.includeLastMessage;
       const transcriptScopes = list.entries
         .slice(0, list.transcriptFieldRows)
         .flatMap(([key, entry]) => {
-          if (!entry.sessionId || (!list.includeDerivedTitles && !list.includeLastMessage)) {
+          if (!entry.sessionId || !includeTranscriptFields) {
             return [];
           }
           const target = expectDefined(targetsBySessionKey.get(key), "transcript row target");
@@ -683,52 +685,52 @@ export async function listSessionsFromStoreAsync(
         await preparationPause;
       }
       let transcriptFieldIndex = 0;
-      for (let i = 0; i < list.entries.length; i++) {
-        const [key, entry] = expectDefined(list.entries[i], "entries entry at i");
-        const target = expectDefined(targetsBySessionKey.get(key), "session row owner");
-        const includeTranscriptFields = i < list.transcriptFieldRows;
-        const row = buildGatewaySessionRow({
-          cfg,
-          storePath: target.storeTarget.storePath, // Aggregate paths are display-only.
-          store,
-          modelSource: target.modelSource,
-          key: target.storeKey ?? key,
-          entry,
-          agentId: target.agentId,
-          modelCatalog: params.modelCatalog,
-          now: list.now,
-          includeDerivedTitles: false,
-          includeLastMessage: false,
-          storeChildSessionsByKey: list.storeChildSessionsByKey,
-          rowContext: list.rowContext,
-          configuredAgentIds: list.configuredAgentIds,
-          skipTranscriptUsageFallback: true,
-          lightweightListRow: true,
+      for (let nextRowIndex = 0; nextRowIndex < list.entries.length;) {
+        // Release roster facts before a pause so resumed rows observe current entries.
+        const pause = withAgentRosterFactsBatch(cfg, () => {
+          while (nextRowIndex < list.entries.length) {
+            const i = nextRowIndex++;
+            const [key, entry] = expectDefined(list.entries[i], "entries entry at i");
+            const target = expectDefined(targetsBySessionKey.get(key), "session row owner");
+            const row = buildGatewaySessionRow({
+              cfg,
+              storePath: target.storeTarget.storePath, // Aggregate paths are display-only.
+              store,
+              modelSource: target.modelSource,
+              key: target.storeKey ?? key,
+              entry,
+              agentId: target.agentId,
+              modelCatalog: params.modelCatalog,
+              now: list.now,
+              storeChildSessionsByKey: list.storeChildSessionsByKey,
+              rowContext: list.rowContext,
+              configuredAgentIds: list.configuredAgentIds,
+              skipTranscriptUsageFallback: true,
+              lightweightListRow: true,
+            });
+            row.key = key;
+            if (entry?.sessionId && i < list.transcriptFieldRows && includeTranscriptFields) {
+              const { firstUserMessage, lastMessagePreview } = expectDefined(
+                transcriptFields[transcriptFieldIndex++],
+                "batched transcript fields at transcriptFieldIndex",
+              );
+              if (list.includeDerivedTitles) {
+                row.derivedTitle = deriveSessionTitle(entry, firstUserMessage, row.displayName);
+              }
+              if (list.includeLastMessage && lastMessagePreview) {
+                row.lastMessagePreview = lastMessagePreview;
+              }
+            }
+            sessions.push(row);
+            const rowPause = nextRowIndex < list.entries.length ? yieldIfNeeded() : undefined;
+            if (rowPause) {
+              return rowPause;
+            }
+          }
+          return undefined;
         });
-        row.key = key;
-        if (
-          entry?.sessionId &&
-          includeTranscriptFields &&
-          (list.includeDerivedTitles || list.includeLastMessage)
-        ) {
-          const fields = expectDefined(
-            transcriptFields[transcriptFieldIndex],
-            "batched transcript fields at transcriptFieldIndex",
-          );
-          transcriptFieldIndex += 1;
-          if (list.includeDerivedTitles) {
-            row.derivedTitle = deriveSessionTitle(entry, fields.firstUserMessage, row.displayName);
-          }
-          if (list.includeLastMessage && fields.lastMessagePreview) {
-            row.lastMessagePreview = fields.lastMessagePreview;
-          }
-        }
-        sessions.push(row);
-        if (i + 1 < list.entries.length) {
-          const pause = yieldIfNeeded();
-          if (pause) {
-            await pause;
-          }
+        if (pause) {
+          await pause;
         }
       }
 

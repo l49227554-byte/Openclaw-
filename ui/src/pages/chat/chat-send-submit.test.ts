@@ -253,21 +253,30 @@ describe("handleSendChat browser annotation context", () => {
     },
   );
 
-  it.each(["/side", "/btw"])(
-    "opens annotated companion intent %s without sending annotation context",
-    async (command) => {
+  it.each([
+    ["/side", ""],
+    ["/btw", ""],
+    ["/side", "explain this"],
+    ["/btw", "explain this"],
+  ])(
+    "opens companion intent %s %s without sending annotation context",
+    async (command, question) => {
       const attachment = createBrowserAnnotationAttachment("companion", "Review the page");
       const openSessionCompanion = vi.fn();
       const host = makeChatHost({
         requestHandlers: {},
         chatAttachments: [attachment],
-        chatMessage: `${command} explain this`,
+        chatMessage: `${command} ${question}`.trim(),
         openSessionCompanion,
       });
 
       await handleSendChat(host);
 
-      expect(openSessionCompanion).toHaveBeenCalledWith("explain this");
+      expect(openSessionCompanion).toHaveBeenCalledWith(question);
+      expect(host.chatMessage).toBe("");
+      expect(host.chatLocalInputHistoryBySession[host.sessionKey]?.[0]?.text).toBe(
+        `${command} ${question}`.trim(),
+      );
       expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
     },
   );
@@ -895,7 +904,8 @@ describe("handleSendChat session ownership", () => {
       expect(getChatAttachmentDataUrl(attachment)).toBe(attachmentDataUrl);
       expect(host.chatQueue).toEqual([]);
       expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
-      expect(host.chatError).toContain("connection");
+      expect(host.chatError).toBeUndefined();
+      expect(host.lastError).toBeNull();
       readiness.mockReturnValue(true);
       await handleSendChat(host);
       expect(findChatSendPayload(host)).toMatchObject({
@@ -1027,6 +1037,8 @@ describe("handleSendChat session ownership", () => {
         connected,
         chatMessage: "keep this later draft",
         chatAttachments: [attachment],
+        lastError: "Earlier request failed",
+        chatError: "Earlier request failed",
         requestHandlers: { "chat.send": { status: "started" } },
         hasPendingInitialTurn: () => true,
       });
@@ -1036,7 +1048,8 @@ describe("handleSendChat session ownership", () => {
       expect(getChatAttachmentDataUrl(attachment)).toBe(attachmentDataUrl);
       expect(host.chatQueue).toEqual([]);
       expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything());
-      expect(host.chatError).toContain("initial message");
+      expect(host.chatError).toBe("Earlier request failed");
+      expect(host.lastError).toBe("Earlier request failed");
     },
   );
 

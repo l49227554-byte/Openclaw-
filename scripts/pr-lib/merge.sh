@@ -127,6 +127,7 @@ require_clawsweeper_review() {
 # The caller uses a conditional, so every fallible evidence operation is checked.
 mainline_drift_requires_sync() (
   set -o pipefail
+  export LC_ALL=C
   local mainline_base="$1"
   local prepared_head_sha="$2"
 
@@ -202,6 +203,11 @@ merge_verify() {
   # shellcheck disable=SC1091
   source .local/prep.env || return 1
   verify_prep_branch_matches_prepared_head "$pr" "${LOCAL_PREP_HEAD_SHA:-$PREP_HEAD_SHA}" || return 1
+  # GitHub publication can preserve the tree while assigning a new commit ID.
+  local local_tree hosted_tree
+  local_tree=$(git rev-parse "${LOCAL_PREP_HEAD_SHA:-$PREP_HEAD_SHA}^{tree}") || return 1
+  hosted_tree=$(git rev-parse "$PREP_HEAD_SHA^{tree}") || return 1
+  [ "$local_tree" = "$hosted_tree" ] || { echo "Local and hosted prepared trees differ." >&2; return 1; }
 
   local json
   json=$(gh_plain pr view "$pr" --json state,isDraft,headRefOid) || return 1
@@ -220,7 +226,7 @@ merge_verify() {
     echo "Note: docs/changelog-only follow-ups reuse prior gate results automatically."
 
     mark_pr_operation_side_effects_started
-    git fetch origin "pull/$pr/head" >/dev/null 2>&1 || true
+    fetch_pr_head "$pr" "$pr_head_sha" >/dev/null 2>&1 || true
     if GIT_NO_LAZY_FETCH=1 git cat-file -e "${PREP_HEAD_SHA}^{commit}" 2>/dev/null && GIT_NO_LAZY_FETCH=1 git cat-file -e "${pr_head_sha}^{commit}" 2>/dev/null; then
       echo "HEAD delta (expected...current):"
       git log --oneline --left-right "${PREP_HEAD_SHA}...${pr_head_sha}" | sed 's/^/  /' || true
@@ -315,7 +321,7 @@ merge_verify() {
   fi
 
   refresh_main_snapshot || return 1
-  git fetch origin "pull/$pr/head:pr-$pr" --force || return 1
+  fetch_pr_head "$pr" "$PREP_HEAD_SHA" "refs/heads/pr-$pr" || return 1
   if ! git merge-base --is-ancestor "$PR_MAIN_SHA" "refs/heads/pr-$pr"; then
     echo "PR branch is behind main."
     if mainline_drift_requires_sync \
@@ -694,8 +700,10 @@ merge_run() {
   attempt=$(node -e 'process.stdout.write(require("node:crypto").randomUUID())') || return 1
   intent=$(printf '%s\n' "$MERGE_OBSERVATION" | jq -c --argjson repo "$MERGE_REPO" \
     --arg method "$merge_method" --arg route "$route" --arg attempt "$attempt" \
+    --arg localHead "${LOCAL_PREP_HEAD_SHA:-$PREP_HEAD_SHA}" \
     --argjson review "$CLAWSWEEPER_REVIEW_EVIDENCE" '
     {version:1,repo:$repo,pr:.pr.number,prId:.pr.id,base:.pr.baseRefName,head:.pr.headRefOid,
+     localHead:$localHead,
      main:.main,method:$method,route:$route,attempt:$attempt,phase:"intent",accepted:false,landed:null,
      clawsweeperReview:$review}
   ') || return 1

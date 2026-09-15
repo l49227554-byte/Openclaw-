@@ -19,6 +19,7 @@ import {
   makeQuarantinedPluginRepairConvergence,
   makeStateMigrationResult,
   queueConfigSnapshot,
+  registerStartupPluginConvergenceTests,
   stateCheckpointOptions,
   startupCheckpointOptions,
   type StartupConvergenceResult,
@@ -347,6 +348,23 @@ describe("runDoctorConfigPreflight state migration", () => {
     expect(startupMigrationLeaseRelease).toHaveBeenCalledTimes(needed ? 1 : 0);
   });
 
+  it("stops renewing before releasing a lease when the admitted checkpoint is current", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    readMigrationCheckpointStatus.mockReturnValueOnce("stale").mockReturnValue("startup-current");
+    startupMigrationLeaseRelease.mockImplementationOnce(() => {
+      expect(vi.getTimerCount()).toBe(0);
+    });
+    try {
+      await runDoctorConfigPreflight(startupCheckpointOptions);
+      expect(startupMigrationLeaseRelease).toHaveBeenCalledOnce();
+      expect(autoMigrateLegacyState).not.toHaveBeenCalled();
+      expect(recordSuccessfulStartupMigrations).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs the startup guard immediately before the first state mutation", async () => {
     const beforeStateMigrations = vi.fn<(_snapshot?: unknown) => Promise<boolean>>(
       async () => true,
@@ -563,26 +581,14 @@ describe("runDoctorConfigPreflight state migration", () => {
     expect(startupMigrationLeaseRelease).toHaveBeenCalledOnce();
   });
 
-  it("pins startup plugin convergence without re-persisting the installed record snapshot", async () => {
-    readMigrationCheckpointStatus.mockReturnValue("stale");
-    const previousHostVersion = process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION;
-    process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION = "2026.7.2-beta.7";
-
-    try {
-      await runDoctorConfigPreflight(startupCheckpointOptions);
-    } finally {
-      if (previousHostVersion === undefined) {
-        delete process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION;
-      } else {
-        process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION = previousHostVersion;
-      }
-    }
-
-    expect(runPostCorePluginConvergence).toHaveBeenCalledWith({
-      cfg: { gateway: { mode: "local", port: 19091 } },
-      env: acquireStartupMigrationLeaseWithWait.mock.calls[0]?.[0]?.env,
-      compatibilityHostVersion: "2026.7.2-beta.7",
-    });
+  registerStartupPluginConvergenceTests({
+    runDoctorConfigPreflight,
+    readMigrationCheckpointStatus,
+    runPostCorePluginConvergence,
+    runActivePluginPayloadSmokeCheck,
+    recordSuccessfulStartupMigrations,
+    note,
+    startupEnv: () => acquireStartupMigrationLeaseWithWait.mock.calls[0]?.[0]?.env,
   });
 
   it("repairs managed host links before plugin state migration", async () => {

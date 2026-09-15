@@ -3,7 +3,9 @@ import fs, { promises as fsPromises } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { resetPluginStateStoreForTests } from "../plugin-state/plugin-state-store.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
+import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.js";
 import {
   appendConfigAuditRecord,
   createConfigWriteAuditRecordBase,
@@ -114,7 +116,8 @@ describe("config io audit helpers", () => {
     await suiteRootTracker.cleanup();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
   });
 
@@ -221,15 +224,18 @@ describe("config io audit helpers", () => {
     expect(record.errorMessage).toBe("disk full");
   });
 
-  it("appends audit entries to shared SQLite state", async () => {
+  it("appends audit entries off-thread and retains them after canonical close", async () => {
     const home = await suiteRootTracker.make("append");
     const record = createRenameAuditRecord(home);
 
-    await appendConfigAuditRecord({
-      env: {} as NodeJS.ProcessEnv,
-      homedir: () => home,
-      record,
-    });
+    const mainSql = observeMainThreadSql();
+    try {
+      await appendConfigAuditRecord({ env: {}, homedir: () => home, record });
+      await closeOpenClawStateDatabaseAsync();
+      mainSql.expectIdle();
+    } finally {
+      mainSql.restore();
+    }
 
     const records = listConfigAuditRecordsForTests({
       env: {} as NodeJS.ProcessEnv,

@@ -177,6 +177,10 @@ export {
   type SessionIdentityEvidenceResult,
 } from "./session-accessor.sqlite-entry-availability.js";
 export {
+  loadSessionEntryReadOnlyInScope,
+  updateSessionLastRouteInScope,
+} from "./session-accessor.sqlite-entry.js";
+export {
   createSessionEntryWithTranscript,
   forkSessionEntryFromParentTarget,
   forkSessionFromParentTranscript,
@@ -228,10 +232,9 @@ export {
   rollbackAgentHarnessSessionEntryLifecycle,
   rollbackPluginOwnedSessionEntryLifecycle,
 } from "./session-accessor.lifecycle.js";
+export { listSessionBranches } from "./session-accessor.sqlite-branches.js";
 export {
   forkSessionAtMessage,
-  listSessionBranches,
-  resolveSessionTranscriptActiveLeafEntryId,
   rewindSessionToMessage,
   switchSessionBranch,
 } from "./session-accessor.sqlite-message-cut.js";
@@ -264,6 +267,7 @@ export {
   readTranscriptIdentityByEventId,
   readTranscriptRawDelta,
   readTranscriptMutationAtSync,
+  readTranscriptExportSnapshotReadOnlySync,
   readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   validatePreparedAssistantAppendSync,
@@ -321,7 +325,6 @@ export {
 } from "./session-accessor.sqlite-transcript-watermark.js";
 export {
   bindSessionTranscriptStoreScope,
-  resolveConcreteSessionStorePath,
   resolveSessionTranscriptDatabasePath,
   resolveSessionTranscriptReadTarget,
   resolveSessionTranscriptRuntimeTarget,

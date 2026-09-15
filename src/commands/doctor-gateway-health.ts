@@ -26,7 +26,7 @@ import type {
 import { collectChannelStatusIssues } from "../infra/channels-status-issues.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { RuntimeEnv } from "../runtime.js";
-import type { StatusSummary } from "../status/types.js";
+import type { StatusSummary } from "../status/summary.js";
 import { VERSION } from "../version.js";
 import { projectDoctorSecretRuntimeDegradations } from "./doctor-secret-runtime-degradation.js";
 import {
@@ -160,6 +160,9 @@ export async function checkGatewayHealth(params: {
     const sqliteWalWarning = formatSqliteWalHealthWarning(status.sqliteWal);
     if (sqliteWalWarning) {
       note(sqliteWalWarning, "SQLite WAL");
+    }
+    if (status.startupRecoveryWarning) {
+      note(sanitizeTerminalText(status.startupRecoveryWarning), "Startup session recovery");
     }
     const secretDegradations = projectDoctorSecretRuntimeDegradations(status);
     if (secretDegradations.length > 0) {

@@ -18,6 +18,7 @@ import {
   type PluginStateStoreOperation,
 } from "./plugin-state-store.types.js";
 
+export const MAX_PLUGIN_STATE_VALUE_BYTES = 1_048_576;
 const PLUGIN_STATE_EXPIRY_BATCH_ROWS = 1_024;
 
 type PluginStateEntriesTable = OpenClawStateKyselyDatabase["plugin_state_entries"];
@@ -183,7 +184,7 @@ const pluginStateEntryExistsQueries = new WeakMap<
   ReturnType<typeof prepareSqliteQuerySync<PluginStateEntryLookup, { entry_key: string }>>
 >();
 
-function hasPluginStateEntry(db: DatabaseSync, params: PluginStateEntryLookup): boolean {
+export function hasPluginStateEntry(db: DatabaseSync, params: PluginStateEntryLookup): boolean {
   let query = pluginStateEntryExistsQueries.get(db);
   if (!query) {
     query = prepareSqliteQuerySync<PluginStateEntryLookup, { entry_key: string }>(

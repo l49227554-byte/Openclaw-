@@ -1,4 +1,5 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core";
+import { persistCompactionBoundaryWithSessionEntrySync } from "./session-accessor.sqlite-compaction.js";
 import { readTranscriptRawDelta } from "./session-accessor.sqlite-delta.js";
 import { resolveSessionKeyBySessionId as resolveTranscriptSessionKeyBySessionId } from "./session-accessor.sqlite-entry.js";
 import { publishTranscriptUpdate } from "./session-accessor.sqlite-events.js";
@@ -13,6 +14,7 @@ import {
   loadTranscriptHeaderSync,
   loadTranscriptTailEventsSync,
   readTranscriptMutationAtSync,
+  readTranscriptExportSnapshotReadOnlySync,
   readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   validatePreparedAssistantAppendSync,
@@ -32,7 +34,6 @@ import {
   appendTranscriptEventSync,
   appendTranscriptMessage,
   appendTranscriptMessageSync,
-  persistCompactionBoundaryWithSessionEntrySync,
   replaceTranscriptEvents,
   replaceTranscriptEventsSync,
   replaceSessionWithBranchedTranscript,
@@ -75,6 +76,7 @@ export {
   readTranscriptIdentityByEventId,
   readTranscriptRawDelta,
   readTranscriptMutationAtSync,
+  readTranscriptExportSnapshotReadOnlySync,
   readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
   validatePreparedAssistantAppendSync,

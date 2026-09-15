@@ -7,14 +7,19 @@ import {
   type OpenClawTestInstance,
 } from "../../test/helpers/openclaw-test-instance.js";
 import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
-import { isLiveTestEnabled, logLiveProgress } from "../agents/live-test-helpers.js";
+import {
+  extractNonEmptyAssistantText,
+  isLiveTestEnabled,
+  logLiveProgress,
+} from "../agents/live-test-helpers.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { CronRunLogEntry } from "../cron/run-log-types.js";
 import type { CronJob } from "../cron/types.js";
 import type { Message } from "../llm/types.js";
 import { listKnownProviderAuthEnvVarNames } from "../secrets/provider-env-vars.js";
 
-const describeLive = isLiveTestEnabled() ? describe : describe.skip;
+const describeLive =
+  isLiveTestEnabled() && process.env.OPENAI_API_KEY?.trim() ? describe : describe.skip;
 const MODEL_ID = "gpt-5.6-luna";
 const MODEL_KEY = `openai/${MODEL_ID}`;
 const RUN_TIMEOUT_MS = 300_000;
@@ -32,7 +37,6 @@ describeLive("cron tool allowlists through live harnesses", () => {
   it.each(["openclaw", "codex"] as const)(
     "%s preserves empty caps and applies edited names, groups, globs, and aliases",
     async (runtime) => {
-      expect(process.env.OPENAI_API_KEY?.trim(), "OPENAI_API_KEY is required").toBeTruthy();
       const instance = await createOpenClawTestInstance({
         name: `cron-tools-${runtime}`,
         env: {
@@ -159,28 +163,34 @@ describeLive("cron tool allowlists through live harnesses", () => {
             );
             sessionKeys.add(sessionKey);
 
+            // Completed runs retire their alias; the stable row owns this transcript generation.
             const history = (await cliJson(instance, [
               "gateway",
               "call",
               "chat.history",
               "--params",
-              JSON.stringify({ sessionKey, limit: 100 }),
-            ])) as { messages: Message[]; sessionInfo: { agentRuntime?: { id: string } } };
+              JSON.stringify({ sessionKey: `agent:probe:cron:${job.id}`, limit: 100 }),
+            ])) as {
+              sessionId: string;
+              messages: Message[];
+              sessionInfo: { agentRuntime?: { id: string } };
+            };
+            expect(completed.run.sessionId).toBeTypeOf("string");
+            expect(history.sessionId).toBe(completed.run.sessionId);
             expect(history.sessionInfo.agentRuntime?.id).toBe(runtime);
             const assistants = history.messages.filter((message) => message.role === "assistant");
             const calls = assistants.flatMap((message) =>
               message.content.filter((block) => block.type === "toolCall"),
             );
             const results = history.messages.filter((message) => message.role === "toolResult");
-            expect(assistants.length).toBeGreaterThan(0);
+            expect(assistants.length, JSON.stringify(history)).toBeGreaterThan(0);
             if (cap === "") {
               expect(calls).toEqual([]);
               expect(results).toEqual([]);
               expect(JSON.stringify(assistants)).not.toContain(marker);
-              expect(assistants.flatMap((message) => message.content)).toContainEqual({
-                type: "text",
-                text: "NO_TOOLS",
-              });
+              expect(
+                extractNonEmptyAssistantText(assistants.flatMap((message) => message.content)),
+              ).toBe("NO_TOOLS");
             } else {
               const toolName = cap === "bash" ? "exec" : "read";
               const call = calls.find((entry) => entry.name === toolName);

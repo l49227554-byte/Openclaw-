@@ -143,6 +143,8 @@ export function buildGatewaySessionRow(params: {
     : undefined;
   const displayName = resolveGatewaySessionDisplayName(key, entry);
   const sessionAgentId = params.agentId;
+  const preparedCatalog =
+    params.modelCatalog instanceof Map ? params.modelCatalog.get(sessionAgentId) : undefined;
   const skipTranscriptUsage = params.skipTranscriptUsageFallback === true;
   const {
     subagentRun,
@@ -156,6 +158,7 @@ export function buildGatewaySessionRow(params: {
     agentId: sessionAgentId,
     rowContext,
     allowPluginNormalization: !lightweight,
+    manifestPlugins: preparedCatalog?.metadataSnapshot,
   });
   const freshSessionTotalTokens = asNonNegativeFiniteNumber(resolveFreshSessionTotalTokens(entry));
   const transcriptUsage = !skipTranscriptUsage
@@ -262,8 +265,6 @@ export function buildGatewaySessionRow(params: {
   const thinkingModel = rowModel ?? DEFAULT_MODEL;
   // Entries and provider policy must stay bound to the same prepared agent owner;
   // the Gateway startup registry can contain a different set of plugins.
-  const preparedCatalog =
-    params.modelCatalog instanceof Map ? params.modelCatalog.get(sessionAgentId) : undefined;
   const rowModelCatalog =
     params.modelCatalog instanceof Map ? preparedCatalog?.entries : params.modelCatalog;
   // Event/list rows must not rediscover plugin-backed configured catalog metadata.
@@ -279,6 +280,7 @@ export function buildGatewaySessionRow(params: {
     entry,
     modelCatalog: thinkingModelCatalog,
     modelCatalogRouteVariants: preparedCatalog?.routeVariants,
+    metadataSnapshot: preparedCatalog?.metadataSnapshot,
     rowContext,
     providerPolicySource: preparedCatalog?.pluginRegistry ?? (lightweight ? "active" : undefined),
   });

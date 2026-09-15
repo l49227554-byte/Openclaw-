@@ -206,6 +206,7 @@ export async function readPreparedGatewayModelCatalog(
     entries: catalog.entries,
     routeVariants: catalog.routeVariants,
     pluginRegistry: owner.pluginRegistry,
+    metadataSnapshot: owner.metadataSnapshot,
   };
 }
 

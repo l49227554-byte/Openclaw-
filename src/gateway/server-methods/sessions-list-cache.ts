@@ -90,7 +90,7 @@ function readSessionListModelCatalogFence(
     .toSorted(([left], [right]) => left.localeCompare(right))
     .map(
       ([agentId, catalog]) =>
-        `${agentId}:${readModelCatalogRevision(catalog?.entries)}:${readModelCatalogRevision(catalog?.pluginRegistry)}`,
+        `${agentId}:${readModelCatalogRevision(catalog?.entries)}:${readModelCatalogRevision(catalog?.pluginRegistry)}:${readModelCatalogRevision(catalog?.metadataSnapshot)}`,
     )
     .join(",");
 }

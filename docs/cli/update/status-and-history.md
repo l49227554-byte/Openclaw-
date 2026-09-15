@@ -14,6 +14,12 @@ Availability checks and the durable record every update leaves behind. Part of t
 Show the active update channel, git tag/branch/SHA (source checkouts only),
 update availability, and the active or most recent update report.
 
+Status also shows current pending plugin migrations and their repair commands,
+including when an older updater did not record those warnings in its run history.
+JSON exposes them as `migrationWarnings`; they clear when the plugin migration
+completes. If migration state cannot be read, `migrationWarningsError` reports
+that failure while availability and run history remain visible.
+
 ```bash
 openclaw update status
 openclaw update status --json
@@ -95,6 +101,9 @@ An unsuccessful identity check is reported as a version or build mismatch only
 when the saved observed and expected values disagree. Missing identity evidence
 is reported as unavailable, including old runs whose updater saved only
 `versionMatch: false`.
+The Control UI's version badge shows **Not verified** for unavailable identity
+evidence and **Failed** for an observed version or build mismatch. This does not
+change the recorded update outcome.
 
 For failed runs, human status, completion notices, and reviewed failure reports
 also try a read-only health request to the recorded Gateway port. A response

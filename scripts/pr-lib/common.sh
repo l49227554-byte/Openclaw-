@@ -1,3 +1,7 @@
+# Load receipt helpers for the invocation before cleanup can delete this module's worktree.
+# shellcheck source=scripts/pr-lib/merge-outcome.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/merge-outcome.sh" || return 1
+
 require_artifact() {
   local path="$1"
   if [ ! -s "$path" ]; then
@@ -482,7 +486,6 @@ require_worktree_cleanup_evidence() (
   has_worktree_merge_output "$path" || return 0
   # Keep loader state separate from an uninterrupted merge's live outcome owner.
   # Even an empty capture can be the only evidence of an earlier dispatch.
-  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/merge-outcome.sh" || return 1
   if pr=$(pr_number_from_worktree_dir "$path") &&
     merge_outcome_load_local "$pr" && [ -n "$MERGE_OUTCOME_OID" ]; then
     return 0
@@ -570,10 +573,9 @@ delete_local_branch_if_safe() {
 
 cleanup_pr_worktree() {
   local path="$1" pr branch retained=""
-  # Preserve the uninterrupted merge's receipt and load code before its worktree can disappear.
+  # Preserve the uninterrupted merge's live receipt while validating cleanup proof.
   local MERGE_OUTCOME_REF="" MERGE_OUTCOME_OID="" MERGE_OUTCOME_RECORD=""
   pr=$(pr_number_from_worktree_dir "$path") || return 1
-  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/merge-outcome.sh" || return 1
   merge_outcome_load_local "$pr" || return 1
   if [ -n "$MERGE_OUTCOME_OID" ] &&
     printf '%s\n' "$MERGE_OUTCOME_RECORD" | jq -e '.phase != "intent"' >/dev/null; then

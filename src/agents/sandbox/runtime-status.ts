@@ -3,6 +3,7 @@
  *
  * Resolves whether a session is sandboxed and explains policy blocks before tool execution.
  */
+import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatCliCommand } from "../../cli/command-format.js";
@@ -106,41 +107,44 @@ export function resolveSandboxRuntimeStatus(params: SandboxRuntimeStatusParams) 
 }
 
 /** Classifies durable canonical keys without admitting the same store once per session. */
-export function resolveSandboxRuntimeStatusesForPersistedSessions(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  sessionKeys: readonly string[];
-  env: NodeJS.ProcessEnv;
-}) {
-  const entries = loadExactSessionEntryCandidatesReadOnlyBatch([
-    {
+export function resolveSandboxRuntimeStatusesForPersistedSessions(
+  requests: readonly {
+    cfg: OpenClawConfig;
+    agentId: string;
+    sessionKeys: readonly string[];
+    env: NodeJS.ProcessEnv;
+  }[],
+) {
+  const results = loadExactSessionEntryCandidatesReadOnlyBatch(
+    requests.map((params) => ({
       agentId: params.agentId,
       env: params.env,
       storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
         agentId: params.agentId,
         env: params.env,
       }),
-      projection: "list",
+      projection: "list" as const,
       sessionKeys: params.sessionKeys.map((sessionKey) =>
         resolveComparableSessionKeyForSandbox({ ...params, sessionKey }),
       ),
-    },
-  ]).flatMap((result) => {
+    })),
+  );
+  return requests.map((params, index) => {
+    const result = expectDefined(results[index], "sandbox session read result");
     if (!result.ok) {
       throw result.error;
     }
-    return result.value;
+    const byKey = new Map(result.value.map(({ sessionKey, entry }) => [sessionKey, entry]));
+    const readSession: typeof resolveSessionEntry = ({ sessionKey }) => ({
+      existing: byKey.get(sessionKey),
+      normalizedKey: sessionKey,
+      legacyKeys: [],
+    });
+    // Retained or removed entries still need the configured mode classification.
+    return params.sessionKeys.map((sessionKey) =>
+      resolveSandboxRuntimeStatusWithRead({ ...params, sessionKey }, readSession),
+    );
   });
-  const byKey = new Map(entries.map(({ sessionKey, entry }) => [sessionKey, entry]));
-  const readSession: typeof resolveSessionEntry = ({ sessionKey }) => ({
-    existing: byKey.get(sessionKey),
-    normalizedKey: sessionKey,
-    legacyKeys: [],
-  });
-  // Retained or removed entries still need the configured mode classification.
-  return params.sessionKeys.map((sessionKey) =>
-    resolveSandboxRuntimeStatusWithRead({ ...params, sessionKey }, readSession),
-  );
 }
 
 function resolveSandboxRuntimeStatusWithRead(

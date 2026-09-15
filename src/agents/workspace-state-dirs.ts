@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { resolveStateDir } from "../config/paths.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { listSessionEntryKeysReadOnly } from "../config/sessions/session-accessor.js";
@@ -23,6 +24,12 @@ export async function listWorkspaceStateDirs(params: {
   stateDir: string;
 }): Promise<string[]> {
   const dirs = new Set(listAgentWorkspaceDirs(params.cfg, params.env));
+  const agentWorkspaces: Array<{
+    agentId: string;
+    sandbox: ReturnType<typeof resolveSandboxConfigForAgent>;
+    workspaceRoot: string;
+    sessionKeys: string[];
+  }> = [];
 
   for (const agentId of listAgentIds(params.cfg)) {
     if (readAgentDatabaseAdmissionRefusal(agentId, { env: params.env })) {
@@ -40,6 +47,40 @@ export async function listWorkspaceStateDirs(params: {
       params.env,
       params.homedir,
     );
+    // Sandbox containers may be pruned while their workspace survives. The
+    // agent-owned session store remains the durable authority for that copy.
+    const sessionKeys =
+      sandbox.scope === "session"
+        ? await listSessionEntryKeysReadOnly({
+            agentId,
+            env: params.env,
+            storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
+              agentId,
+              env: params.env,
+            }),
+          })
+        : [];
+    agentWorkspaces.push({
+      agentId,
+      sandbox,
+      workspaceRoot,
+      sessionKeys: sessionKeys.filter((sessionKey) => {
+        const sessionAgentId = parseAgentSessionKey(sessionKey)?.agentId;
+        return !sessionAgentId || sessionAgentId === agentId;
+      }),
+    });
+  }
+
+  // Empty requests retain agent/shared workspace order without reading their stores.
+  const runtimeGroups = resolveSandboxRuntimeStatusesForPersistedSessions(
+    agentWorkspaces.map(({ agentId, sessionKeys }) => ({
+      cfg: params.cfg,
+      env: params.env,
+      agentId,
+      sessionKeys,
+    })),
+  );
+  for (const [index, { agentId, sandbox, workspaceRoot }] of agentWorkspaces.entries()) {
     if (sandbox.scope === "shared") {
       dirs.add(workspaceRoot);
       continue;
@@ -55,26 +96,7 @@ export async function listWorkspaceStateDirs(params: {
       continue;
     }
 
-    // Sandbox containers may be pruned while their workspace survives. The
-    // agent-owned session store remains the durable authority for that copy.
-    const sessionKeys = await listSessionEntryKeysReadOnly({
-      agentId,
-      env: params.env,
-      storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
-        agentId,
-        env: params.env,
-      }),
-    });
-    const ownedSessionKeys = sessionKeys.filter((sessionKey) => {
-      const sessionAgentId = parseAgentSessionKey(sessionKey)?.agentId;
-      return !sessionAgentId || sessionAgentId === agentId;
-    });
-    for (const runtime of resolveSandboxRuntimeStatusesForPersistedSessions({
-      cfg: params.cfg,
-      agentId,
-      sessionKeys: ownedSessionKeys,
-      env: params.env,
-    })) {
+    for (const runtime of expectDefined(runtimeGroups[index], "sandbox runtime group")) {
       if (!runtime.sandboxed) {
         continue;
       }

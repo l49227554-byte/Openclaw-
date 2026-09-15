@@ -52,6 +52,8 @@ class SurfaceTestHost extends LitElement {
           abort: this.abort,
         },
         defaultView,
+        true,
+        html`<button class="companion-action">Retained attachment controls</button>`,
       );
     }
     return renderPluginSurface("workspace", { ...identity, routeId: "chat" }, defaultView);
@@ -118,6 +120,26 @@ afterEach(() => {
 });
 
 describe("native UI built-in delegation", () => {
+  it("keeps host controls beside a replacement and removes them when the built-in returns", async () => {
+    const replacement: ControlUiReplacement<"composer"> = {
+      id: "composer",
+      label: "Custom composer",
+      surface: "composer",
+      mount(container) {
+        container.textContent = "Custom draft";
+        return { update() {}, dispose() {} };
+      },
+    };
+    const { host, select } = mountSurface(replacement);
+    await vi.waitFor(() => expect(host.querySelector(".companion-action")).not.toBeNull());
+    expect(host.querySelector(".builtin-action")).toBeNull();
+    select();
+    await vi.waitFor(() => expect(host.querySelector(".builtin-action")).not.toBeNull());
+    expect(host.querySelector(".companion-action")).toBeNull();
+    select(replacement);
+    await vi.waitFor(() => expect(host.querySelector(".companion-action")).not.toBeNull());
+  });
+
   it.each([
     { label: "another agent", nextAgents: ["writer"] },
     { label: "the original agent after a same-turn switch", nextAgents: ["writer", "main"] },

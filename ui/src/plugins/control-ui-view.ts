@@ -15,10 +15,10 @@ class PluginSurfaceDirective extends AsyncDirective {
   private consumer?: ContextConsumer<typeof applicationContext, LitElement>;
   private runtime?: ControlUiPluginCapability;
   private unsubscribe?: () => void;
-  private args?: [ControlUiSurface, unknown, unknown, boolean];
+  private args?: [ControlUiSurface, unknown, unknown, boolean, unknown];
   private pending = false;
 
-  override update(part: ChildPart, args: [ControlUiSurface, unknown, unknown, boolean]) {
+  override update(part: ChildPart, args: [ControlUiSurface, unknown, unknown, boolean, unknown]) {
     this.args = args;
     const host = part.options?.host;
     if (host instanceof LitElement && this.host !== host) {
@@ -85,18 +85,19 @@ class PluginSurfaceDirective extends AsyncDirective {
     props: unknown,
     defaultView: unknown,
     presented: boolean,
+    replacementCompanion: unknown,
   ) {
     // Built-in renderers remain synchronous and do not create a component for
     // every transcript row. Only a selected replacement owns a DOM mount.
     return this.runtime?.selectedReplacement(surface)
-      ? html`<openclaw-plugin-view
-          ?data-plugin-composer=${surface === "composer"}
-          .surface=${surface}
-          .props=${props}
-          .defaultView=${defaultView}
-          .defaultHost=${this.host}
-          .presented=${presented}
-        ></openclaw-plugin-view>`
+      ? html`${replacementCompanion}<openclaw-plugin-view
+            ?data-plugin-composer=${surface === "composer"}
+            .surface=${surface}
+            .props=${props}
+            .defaultView=${defaultView}
+            .defaultHost=${this.host}
+            .presented=${presented}
+          ></openclaw-plugin-view>`
       : defaultView;
   }
 }
@@ -108,8 +109,9 @@ export function renderPluginSurface<S extends ControlUiSurface>(
   props: ControlUiSurfaceProps[S],
   defaultView: unknown,
   presented = true,
+  replacementCompanion: unknown = nothing,
 ) {
-  return pluginSurface(surface, props, defaultView, presented);
+  return pluginSurface(surface, props, defaultView, presented, replacementCompanion);
 }
 
 export function renderPluginContribution(

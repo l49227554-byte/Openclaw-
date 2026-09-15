@@ -97,7 +97,8 @@ export async function createStatusScanCoreBootstrap<TAgentStatus>(
     all: params.opts.all,
   });
   const statusTimeoutMs = params.opts.timeoutMs ?? 10_000;
-  const updateTimeoutMs = Math.min(params.opts.all ? 6500 : 2500, statusTimeoutMs);
+  // Local Git startup needs the full status budget, with the former --all allowance as a floor.
+  const updateTimeoutMs = Math.max(6500, statusTimeoutMs);
   const tailscaleTimeoutMs = Math.min(1200, statusTimeoutMs);
   const tailscaleDnsPromise =
     tailscaleMode === "off"

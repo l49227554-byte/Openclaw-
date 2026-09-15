@@ -456,9 +456,8 @@ describe("createModelSelectionState catalog loading", () => {
           modelContextWindow: state.modelContextWindow,
         }),
       ).toBe(expected);
-      expect(await state.resolveThinkingCatalog()).toEqual([
-        expect.objectContaining({ provider, id: "shared-model", contextTokens: expected }),
-      ]);
+      // Thinking metadata retains automatic candidates outside the manual selection policy.
+      expect(await state.resolveThinkingCatalog()).toEqual(entries);
       expect(loadModelCatalogLocal).not.toHaveBeenCalled();
       expect(catalogRuntimeMocks.loadModelCatalogSnapshot).not.toHaveBeenCalled();
       expect(loadProviderScopedThinkingCatalog).not.toHaveBeenCalled();

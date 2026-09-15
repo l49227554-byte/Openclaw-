@@ -28,6 +28,7 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
   const { build }: typeof import("tsdown") = require("tsdown");
   const inputs: Record<string, string> = {};
   const outputs: Record<string, string> = {};
+  let outputPrefix = "";
   const recordInput = (id: string) => {
     const normalized = id.replaceAll("\\", "/");
     if (!path.isAbsolute(normalized) || normalized.split("/").includes("node_modules")) {
@@ -78,6 +79,47 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     (id.startsWith("@openclaw/") || id.startsWith("openclaw/")) &&
     id !== "@openclaw/fs-safe" &&
     !id.startsWith("@openclaw/fs-safe/");
+  const commonPlugins = [
+    {
+      name: "openclaw:worker-build-inputs",
+      load(id) {
+        recordInput(id);
+        return null;
+      },
+      generateBundle(_options, bundle) {
+        const packageDirectories = new Set(Object.keys(inputs).map((id) => path.dirname(id)));
+        for (let packageDirectory of packageDirectories) {
+          while (packageDirectory.startsWith(root)) {
+            const manifest = path.join(packageDirectory, "package.json");
+            if (fs.existsSync(manifest)) {
+              recordInput(manifest);
+              break;
+            }
+            packageDirectory = path.dirname(packageDirectory);
+          }
+        }
+        for (const [name, output] of Object.entries(bundle)) {
+          outputs[outputPrefix + name] = hashVitestWorkerArtifact(
+            output.type === "chunk" ? output.code : Buffer.from(output.source),
+          );
+        }
+      },
+    },
+    {
+      ...schemaPlugin,
+      load(id) {
+        return schemaPlugin.load.call(
+          {
+            addWatchFile: (file) => {
+              recordInput(file);
+              this.addWatchFile(file);
+            },
+          },
+          id,
+        );
+      },
+    },
+  ] satisfies NonNullable<Parameters<typeof build>[0]>["plugins"];
   const config: NonNullable<Parameters<typeof build>[0]> = {
     config: false,
     cwd: root,
@@ -114,45 +156,7 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
           return null;
         },
       },
-      {
-        name: "openclaw:worker-build-inputs",
-        load(id) {
-          recordInput(id);
-          return null;
-        },
-        generateBundle(_options, bundle) {
-          const packageDirectories = new Set(Object.keys(inputs).map((id) => path.dirname(id)));
-          for (let packageDirectory of packageDirectories) {
-            while (packageDirectory.startsWith(root)) {
-              const manifest = path.join(packageDirectory, "package.json");
-              if (fs.existsSync(manifest)) {
-                recordInput(manifest);
-                break;
-              }
-              packageDirectory = path.dirname(packageDirectory);
-            }
-          }
-          for (const [name, output] of Object.entries(bundle)) {
-            outputs[name] = hashVitestWorkerArtifact(
-              output.type === "chunk" ? output.code : Buffer.from(output.source),
-            );
-          }
-        },
-      },
-      {
-        ...schemaPlugin,
-        load(id) {
-          return schemaPlugin.load.call(
-            {
-              addWatchFile: (file) => {
-                recordInput(file);
-                this.addWatchFile(file);
-              },
-            },
-            id,
-          );
-        },
-      },
+      ...commonPlugins,
     ],
   };
   await build(config);
@@ -172,6 +176,37 @@ async function compileVitestWorkerArtifacts(directory: string): Promise<void> {
     logLevel: config.logLevel,
     plugins: config.plugins,
   });
+  outputPrefix = "legacy-finalizer/";
+  const preservedSources = [
+    "src/cli/update-cli/update-command-legacy-finalize.test-support.ts",
+    "src/infra/update-migrated-finalize.worker.ts",
+    "src/infra/runtime-process-entrypoints.ts",
+    "src/cli/update-cli/update-command-service-plan.ts",
+    "src/cli/update-cli/update-command-repair-service.ts",
+    "src/infra/tmp-openclaw-dir.ts",
+    "src/cli/update-cli/update-command-convergence.ts",
+    "src/cli/update-cli/update-command-restart-context.ts",
+    "src/daemon/gateway-entrypoint.ts",
+    "src/cli/update-cli/update-command-verification.ts",
+    "src/cli/update-cli/shared.ts",
+  ];
+  await build({
+    ...config,
+    // Array entries honor root; object entries infer src/ and break import.meta paths.
+    entry: preservedSources,
+    outDir: path.join(outDir, "legacy-finalizer"),
+    root,
+    // Load hooks forward the complete original namespaces through query imports.
+    unbundle: true,
+    treeshake: false,
+    inputOptions: { preserveEntrySignatures: "strict" },
+    outputOptions: { entryFileNames: "[name].js", chunkFileNames: "[name].js" },
+    // Hooked service and authority owners must stay in this single preserved graph.
+    plugins: commonPlugins,
+  });
+  for (const source of preservedSources) {
+    fs.accessSync(path.join(outDir, outputPrefix, source.replace(/\.ts$/u, ".js")));
+  }
   for (const name of Object.keys(entry)) {
     fs.accessSync(path.join(directory, "dist", `${name}.js`));
   }

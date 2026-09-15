@@ -102,7 +102,16 @@ async function fixture(rootPath = "skills/guide") {
 
 describe("complete plugin skill bundles", () => {
   it("returns equivalent installed/catalog inventories, full text, unlinked files and visible binaries", async () => {
-    const { read, catalog, source, calls } = await fixture();
+    const { read, catalog, source, calls, skillDir } = await fixture();
+    const text = "# UTF-8 text\t\r\nλ\u007f\u0080\u009f";
+    const controls = [0x00, 0x08, 0x0b, 0x0c, 0x0e, 0x1f];
+    source.set("text.txt", Buffer.from(text));
+    for (const code of controls) {
+      source.set(`control-${code}.txt`, Buffer.from([code]));
+    }
+    for (const [name, bytes] of source) {
+      await fs.writeFile(path.join(skillDir, name), bytes);
+    }
     const installed = await read();
     expect(await catalog()).toEqual(installed);
     expect(installed.files.map((f) => f.path)).toEqual([...source.keys()].toSorted());
@@ -117,6 +126,17 @@ describe("complete plugin skill bundles", () => {
       status: "ready",
       content: "",
     });
+    expect(installed.files.find((f) => f.path === "text.txt")).toMatchObject({
+      status: "ready",
+      content: text,
+    });
+    for (const code of controls) {
+      expect(installed.files.find((f) => f.path === `control-${code}.txt`)).toEqual({
+        path: `control-${code}.txt`,
+        sizeBytes: 1,
+        status: "binary",
+      });
+    }
     expect(
       calls
         .filter((url) => url.pathname.endsWith("/file"))
@@ -257,7 +277,7 @@ describe("complete plugin skill bundles", () => {
     await expect(read()).rejects.toThrow("ambiguous");
   });
 
-  it.each(["version", "path", "duplicate", "alias"])(
+  it.each(["version", "path", "duplicate", "alias", "control", "DEL"])(
     "rejects a catalog %s mismatch before file reads",
     async (kind) => {
       const { catalog, calls } = await fixture();
@@ -269,6 +289,9 @@ describe("complete plugin skill bundles", () => {
           }
           if (kind === "path") {
             version.files[0]!.path = "skills/guide/../../outside.txt";
+          }
+          if (kind === "control" || kind === "DEL") {
+            version.files[0]!.path = `skills/guide/bad${String.fromCharCode(kind === "control" ? 0x1f : 0x7f)}.txt`;
           }
           if (kind === "duplicate") {
             version.files.push(version.files[0]!);

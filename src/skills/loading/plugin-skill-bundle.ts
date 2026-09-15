@@ -1,4 +1,5 @@
 import { TextDecoder } from "node:util";
+import { containsAsciiControlCharacter } from "@openclaw/normalization-core/string-normalization";
 import type {
   PluginSkillFile,
   PluginsSkillsReadResult,
@@ -22,9 +23,8 @@ export function validatePluginSkillPath(value: string): void {
     value.length > 512 ||
     parts.length > SKILL_LIBRARY_MAX_PATH_COMPONENTS ||
     parts.some((part) => !part || part === "." || part === "..") ||
-    // Control characters are forbidden in portable bundle paths.
-    // eslint-disable-next-line no-control-regex
-    /[\\\x00-\x1f\x7f:]/u.test(value)
+    containsAsciiControlCharacter(value) ||
+    /[\\:]/u.test(value)
   ) {
     throw new Error("Invalid plugin skill bundle path.");
   }
@@ -33,9 +33,8 @@ export function validatePluginSkillPath(value: string): void {
 export function pluginSkillFileFromBytes(filePath: string, buffer: Uint8Array): PluginSkillFile {
   try {
     const content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-    // Exclude binary controls while preserving UTF-8 text whitespace.
-    // eslint-disable-next-line no-control-regex
-    if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/u.test(content)) {
+    // UTF-8 reserves these byte values for C0 controls; TAB/LF/CR remain text whitespace.
+    if (buffer.some((byte) => byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d)) {
       throw new Error("Binary content");
     }
     return { path: filePath, sizeBytes: buffer.length, status: "ready", content };

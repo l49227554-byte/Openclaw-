@@ -96,13 +96,13 @@ describe("registered exec deadline handoff", () => {
 
   it("uses the supervisor deadline after preparation and returns its timeout as a tool result", async () => {
     const preparation = createDeferred<object>();
-    const preparing = createDeferred<void>();
+    const preparing = createDeferred();
     mocks.approve.mockImplementationOnce(() => {
       preparing.resolve();
       return preparation.promise;
     });
     const child = createAdapter();
-    const spawned = createDeferred<void>();
+    const spawned = createDeferred();
     mocks.createChildAdapter.mockImplementationOnce(async () => {
       spawned.resolve();
       return child.adapter;
@@ -140,7 +140,7 @@ describe("registered exec deadline handoff", () => {
   it("keeps timeout cleanup local and bounds a cancellation that never settles", async () => {
     const child = createAdapter();
     child.kill.mockImplementation(() => undefined);
-    const spawned = createDeferred<void>();
+    const spawned = createDeferred();
     mocks.createChildAdapter.mockImplementationOnce(async () => {
       spawned.resolve();
       return child.adapter;
@@ -169,7 +169,7 @@ describe("registered exec deadline handoff", () => {
 
   it("keeps a no-deadline exec recoverable and honors explicit cancellation", async () => {
     const child = createAdapter();
-    const spawned = createDeferred<void>();
+    const spawned = createDeferred();
     mocks.createChildAdapter.mockImplementationOnce(async () => {
       spawned.resolve();
       return child.adapter;

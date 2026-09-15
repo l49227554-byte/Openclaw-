@@ -9,10 +9,6 @@ import {
 } from "../infra/diagnostic-events.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../infra/diagnostic-llm-content.js";
 import {
-  createDiagnosticToolExecutionLiveness,
-  markToolExecutionLivenessDiagnosticEvent,
-} from "../infra/diagnostic-tool-execution-liveness.js";
-import {
   createChildDiagnosticTraceContext,
   freezeDiagnosticTraceContext,
 } from "../infra/diagnostic-trace-context.js";
@@ -42,6 +38,7 @@ import {
   resolveToolErrorDiagnostic,
   resolveToolResultTerminalDiagnostic,
   summarizeToolParams,
+  startToolExecutionLiveness,
 } from "./agent-tools.before-tool-call.diagnostics.js";
 import {
   consumeFinalClientVoiceToolConfirmation,
@@ -546,15 +543,7 @@ export function wrapToolWithBeforeToolCallHook(
       recordAdjustedParamsForToolCall(toolCallId, executeParams, ctx?.runId);
       const eventBase = buildEventBase(executeParams);
       recordToolExecutionStarted(toolCallId, ctx?.runId);
-      const liveness = createDiagnosticToolExecutionLiveness(signal);
-      if (hookOptions.emitDiagnostics) {
-        emitTrustedDiagnosticEvent(
-          markToolExecutionLivenessDiagnosticEvent(
-            { type: "tool.execution.started", ...eventBase },
-            liveness.view,
-          ),
-        );
-      }
+      const liveness = startToolExecutionLiveness(eventBase, hookOptions.emitDiagnostics, signal);
       const startedAt = Date.now();
       try {
         let result: Awaited<ReturnType<ForwardedToolExecution>>;

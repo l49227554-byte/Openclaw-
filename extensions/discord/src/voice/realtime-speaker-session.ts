@@ -221,7 +221,16 @@ export class DiscordRealtimeSpeakerSession implements VoiceRealtimeSession {
       minBargeInAudioEndMs,
       resolvedModel,
       resolvedVoice,
-    } = resolveDiscordRealtimeSpeakerConfig(this.params);
+    } = resolveDiscordRealtimeSpeakerConfig({
+      accountId: this.params.accountId,
+      agentId: this.params.entry.route.agentId,
+      cfg: this.params.cfg,
+      realtimeConfig: this.realtimeConfig,
+      isAgentProxy: isDiscordAgentProxyVoiceMode(this.params.mode),
+      bootstrapContextInstructions: this.params.bootstrapContextInstructions,
+      voiceOverride: this.params.voiceOverride,
+      conversationHistory: this.params.conversationHistory,
+    });
     this.realtimeProviderId = resolved.provider.id;
     this.selection = selection;
     const capabilities = resolved.capabilities;

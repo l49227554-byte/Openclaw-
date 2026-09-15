@@ -2,6 +2,7 @@ import {
   assertSecretOwnerAvailable,
   isSecretOwnerAvailable,
 } from "openclaw/plugin-sdk/channel-secret-owner-runtime";
+import type { DiscordAccountConfig, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   buildRealtimeVoiceSessionInstructions,
   canonicalizeRealtimeVoiceProviderId,
@@ -16,7 +17,6 @@ import {
 } from "openclaw/plugin-sdk/realtime-voice";
 import { discordRealtimeVoiceSecretOwnerId } from "../secret-config-contract.js";
 import { buildProviderConfigs, buildProviderConfigOverrides } from "./config.js";
-import type { DiscordRealtimeSessionParams } from "./realtime-speaker-session.js";
 
 function readProviderConfigString(
   config: RealtimeVoiceProviderConfig,
@@ -27,13 +27,17 @@ function readProviderConfigString(
 }
 
 /** Resolve the same provider, voice catalog, and policies for initial and replacement connections. */
-export function resolveDiscordRealtimeSpeakerConfig(
-  params: DiscordRealtimeSessionParams & {
-    voiceOverride?: string;
-    conversationHistory?: readonly RealtimeVoiceTranscriptEntry[];
-  },
-) {
-  const realtimeConfig = params.discordConfig.voice?.realtime;
+export function resolveDiscordRealtimeSpeakerConfig(params: {
+  accountId: string;
+  agentId: string;
+  cfg: OpenClawConfig;
+  realtimeConfig: NonNullable<DiscordAccountConfig["voice"]>["realtime"];
+  isAgentProxy: boolean;
+  bootstrapContextInstructions?: string;
+  voiceOverride?: string;
+  conversationHistory?: readonly RealtimeVoiceTranscriptEntry[];
+}) {
+  const { realtimeConfig, isAgentProxy } = params;
   const configuredProviderId = realtimeConfig?.provider?.trim();
   if (configuredProviderId) {
     const ownerProviderIds = new Set([configuredProviderId]);
@@ -63,11 +67,11 @@ export function resolveDiscordRealtimeSpeakerConfig(
         : {}),
     },
     cfg: params.cfg,
-    agentId: params.entry.route.agentId,
+    agentId: params.agentId,
     defaultModel: realtimeConfig?.model,
     useProviderDefaultModel: true,
     surface: "gateway-relay",
-    autoRespondToAudio: params.mode !== "agent-proxy",
+    autoRespondToAudio: !isAgentProxy,
     isProviderAvailable: (provider) =>
       isSecretOwnerAvailable(
         "capability",
@@ -110,7 +114,6 @@ export function resolveDiscordRealtimeSpeakerConfig(
     voices,
     canChange: voices.length > 0,
   };
-  const isAgentProxy = params.mode === "agent-proxy";
   const sessionPolicy = resolveRealtimeVoiceSessionPolicy({
     isAgentProxy,
     capabilities,
@@ -119,7 +122,7 @@ export function resolveDiscordRealtimeSpeakerConfig(
     requireWakeName: realtimeConfig?.requireWakeName,
     configuredWakeNames: realtimeConfig?.wakeNames,
     cfg: params.cfg,
-    agentId: params.entry.route.agentId,
+    agentId: params.agentId,
   });
   const { toolPolicy, consultPolicy, wakeNamePolicy } = sessionPolicy;
   const providerInterruptResponseOnInputAudio =

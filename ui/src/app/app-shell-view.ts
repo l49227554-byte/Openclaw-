@@ -6,10 +6,7 @@ import { icons } from "../components/icons.ts";
 import { renderLazyElementModal } from "../components/lazy-view-error.ts";
 import { renderConnectingSplash } from "../components/loading-skeleton.ts";
 import { renderNewSessionLink } from "../components/new-session-link.ts";
-import {
-  renderLazySettingsSidebar,
-  type SettingsSidebarModule,
-} from "../components/settings-sidebar-lazy.ts";
+import { renderLazySettingsSidebar } from "../components/settings-sidebar-lazy.ts";
 import type { ThemeModeChangeDetail } from "../components/theme-mode-toggle.ts";
 import { t } from "../i18n/index.ts";
 import { canCallGatewayMethod } from "../lib/gateway-methods.ts";
@@ -76,7 +73,10 @@ import { createUpdateProgressWatcher } from "./update-confirmation.ts";
 
 const EMPTY_SESSION_HAS_DRAFT = () => false;
 
-export interface ShellViewHost extends DevicePairSetupHost, DebugOverlayFrameHost {
+type SettingsSidebarHost = Parameters<typeof renderLazySettingsSidebar>[0];
+
+export interface ShellViewHost
+  extends DevicePairSetupHost, DebugOverlayFrameHost, SettingsSidebarHost {
   readonly context: ApplicationContext<RouteId> | undefined;
   readonly runtime: ApplicationRuntime | undefined;
   readonly activeSessionKey: string;
@@ -93,11 +93,7 @@ export interface ShellViewHost extends DevicePairSetupHost, DebugOverlayFrameHos
   readonly outboxStoreRuntime: OutboxStoreRuntime | null;
   readonly routeState: ShellRouteState;
   readonly settingsPreloadTimers: Map<EventTarget, ReturnType<typeof globalThis.setTimeout>>;
-  readonly settingsSidebarRenderer: SettingsSidebarModule["renderSettingsSidebar"] | null;
-  readonly settingsSidebarLoadFailed: boolean;
   readonly settingsSearchQuery: string;
-  loadSettingsSidebarRenderer(): void;
-  retrySettingsSidebarRenderer(): void;
   closeNavDrawer(options?: { restoreFocus?: boolean }): void;
   newSessionRouteAgentId(): string;
   enabledRouteIds(): readonly RouteId[];

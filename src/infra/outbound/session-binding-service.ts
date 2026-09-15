@@ -204,6 +204,29 @@ function getActiveRegisteredAdapters(scope?: SessionBindingScope): SessionBindin
     .filter((adapter): adapter is SessionBindingAdapter => Boolean(adapter));
 }
 
+/** Verify the owner before destructive cleanup, and again at unbind after awaited work. */
+export function assertSessionBindingCleanupAvailable(scope: SessionBindingScope): void {
+  const adapter = resolveAdapterForChannelAccount(scope);
+  if (adapter) {
+    if (adapter.unbind && adapter.supportsConditionalUnbind) {
+      return;
+    }
+    throw new SessionBindingError(
+      "BINDING_CAPABILITY_UNSUPPORTED",
+      `Session binding adapter does not support conditional cleanup for ${scope.channel}:${scope.accountId}`,
+      scope,
+    );
+  }
+  if (getGenericCurrentConversationBindingCapabilities(scope)?.unbindSupported) {
+    return;
+  }
+  throw new SessionBindingError(
+    "BINDING_ADAPTER_UNAVAILABLE",
+    `Session binding owner is unavailable for conditional cleanup for ${scope.channel}:${scope.accountId}`,
+    scope,
+  );
+}
+
 function dedupeBindings(records: SessionBindingRecord[]): SessionBindingRecord[] {
   const byId = new Map<string, SessionBindingRecord>();
   for (const record of records) {
@@ -356,6 +379,9 @@ function createDefaultSessionBindingService(): SessionBindingService {
       }
     },
     unbind: async (input) => {
+      if (input.shouldUnbind && input.scope) {
+        assertSessionBindingCleanupAvailable(input.scope);
+      }
       const removed: SessionBindingRecord[] = [];
       const adapters = getActiveRegisteredAdapters(input.scope);
       for (const adapter of adapters) {

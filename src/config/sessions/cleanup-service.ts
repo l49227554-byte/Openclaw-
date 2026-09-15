@@ -1,22 +1,23 @@
 import fs from "node:fs";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
-import { isDeepStrictEqual } from "node:util";
 import { toErrorObject } from "../../infra/errors.js";
-import {
-  getSessionBindingService,
-  type SessionBindingRecord,
-} from "../../infra/outbound/session-binding-service.js";
+import type { SessionBindingRecord } from "../../infra/outbound/session-binding.types.js";
 import { getLogger } from "../../logging/logger.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import type { createAgentDeletionDatabaseCleanup } from "../../state/agent-deletion-cleanup.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import {
+  assertCleanupBindingsAvailable,
+  captureCleanupBindings,
+  unbindCommittedCleanupBindings,
+} from "./cleanup-bindings.js";
 import {
   createSessionsCleanupFailure,
   SessionsCleanupFailureError,
   type SessionCleanupSummary,
   type SessionsCleanupFailure,
 } from "./cleanup-result.js";
-import { isConfiguredBindingTarget, resolveCleanupSqlitePath } from "./cleanup-target.js";
+import { resolveCleanupSqlitePath } from "./cleanup-target.js";
 import {
   pruneUnreferencedSessionArtifacts,
   resolveSessionArtifactCanonicalPathsForEntry,
@@ -26,7 +27,6 @@ import {
   applySessionEntryLifecycleMutation,
   inspectTranscriptEventsSync,
   listSessionEntriesCore,
-  loadSessionEntry,
   purgeDeletedAgentSessionEntries,
   type SessionEntryLifecycleRemoval,
 } from "./session-accessor.js";
@@ -459,6 +459,8 @@ export async function runSessionsCleanup(params: {
   opts: SessionsCleanupOptions;
   targets?: SessionStoreTarget[];
   reclamationMode?: "worker" | "in-process";
+  /** Offline callers cannot inventory all persisted channel-owned binding stores. */
+  bindingCleanupMode?: "runtime" | "offline";
 }): Promise<SessionsCleanupRunResult> {
   const { cfg, opts } = params;
   const maintenance = resolveMaintenanceConfig();
@@ -504,12 +506,7 @@ export async function runSessionsCleanup(params: {
               store: applyStore,
               target,
               onPruned: (sessionKey, entry, inspection) => {
-                if (isConfiguredBindingTarget(cfg, target, sessionKey)) {
-                  missingBindings.set(
-                    sessionKey,
-                    structuredClone(getSessionBindingService().listBySession(sessionKey)),
-                  );
-                }
+                missingBindings.set(sessionKey, captureCleanupBindings(cfg, target, sessionKey));
                 missingRemovals.push({
                   sessionKey,
                   expectedEntry: structuredClone(entry),
@@ -539,6 +536,14 @@ export async function runSessionsCleanup(params: {
           ...missingRemovals,
           ...dmScopeRetiredRemovals,
         ];
+        assertCleanupBindingsAvailable({
+          cfg,
+          target,
+          mode,
+          offline: params.bindingCleanupMode === "offline",
+          hasMissingRemovals: missingRemovals.length > 0,
+          bindings: missingBindings,
+        });
         // Let queued I/O run between preview/repair work and the synchronous commit.
         await yieldToEventLoop();
         const lifecycleResult = await applySessionEntryLifecycleMutation({
@@ -556,24 +561,12 @@ export async function runSessionsCleanup(params: {
           },
         });
         const removedSessionKeys = new Set(lifecycleResult.removedSessionKeys);
-        for (const { sessionKey } of missingRemovals) {
-          if (!removedSessionKeys.has(sessionKey)) {
-            continue;
-          }
-          for (const expected of missingBindings.get(sessionKey) ?? []) {
-            await getSessionBindingService().unbind({
-              bindingId: expected.bindingId,
-              scope: expected.conversation,
-              reason: "cleanup-missing-transcript",
-              // Adapters must evaluate this at their synchronous mutation boundary,
-              // including after any awaited work. Recreated entries and bindings win.
-              shouldUnbind: (current) =>
-                isDeepStrictEqual(current, expected) &&
-                isConfiguredBindingTarget(cfg, target, sessionKey) &&
-                !loadSessionEntry({ ...target, sessionKey }),
-            });
-          }
-        }
+        await unbindCommittedCleanupBindings({
+          cfg,
+          target,
+          removedSessionKeys,
+          bindings: missingBindings,
+        });
         if (lifecycleResult.artifactCleanupError) {
           throw toErrorObject(
             lifecycleResult.artifactCleanupError,

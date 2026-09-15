@@ -148,8 +148,10 @@ the result before I/O or apply it to a cached replacement generation.
 
 Missing-session cleanup uses this contract only for committed removals in the
 configured agent/store. It preserves recreated session entries and replacement
-bindings. Adapters that have not opted in retain their bindings and report an
-unsupported conditional-cleanup error; ordinary explicit unbinding is unchanged.
+bindings. Adapters that have not opted in retain both session entries and bindings: cleanup
+reports an unsupported conditional-cleanup error before session deletion. An owner
+that disappears after commit is reported as a partial failure, never as an empty
+binding inventory. Ordinary explicit unbinding is unchanged.
 No database migration or new persisted binding field is required.
 
 Bundled binding owners advance `boundAt` for every replacement, even when the

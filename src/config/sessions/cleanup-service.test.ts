@@ -9,6 +9,7 @@ import {
 import {
   getSessionBindingService,
   registerSessionBindingAdapter,
+  unregisterSessionBindingAdapter,
   testing,
   type SessionBindingRecord,
 } from "../../infra/outbound/session-binding-service.js";
@@ -20,6 +21,7 @@ import {
   withOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { setRetainedLegacyDefaultAgentId } from "../legacy.default-agent-owner-state.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import type { SessionEntry } from "./types.js";
 
@@ -262,6 +264,64 @@ describe("missing-session cleanup binding ownership", () => {
     });
   });
 
+  it.each(["explicit", "retained-legacy"])(
+    "checks each global binding owner with %s agent ownership",
+    async (ownership) => {
+      await withFixture(async ({ cfg, state, storePath, seed, bind }) => {
+        if (ownership === "retained-legacy") {
+          setRetainedLegacyDefaultAgentId(cfg, "main");
+        }
+        seed("global");
+        const mainBindings = await bind("global");
+        const betaStorePath = path.join(state.sessionsDir("beta"), "sessions.json");
+        replaceSessionEntrySync(
+          { storePath: betaStorePath, agentId: "beta", sessionKey: "global" },
+          { sessionId: "beta-live", updatedAt: Date.now() },
+        );
+        const betaBinding = await service.bind({
+          targetSessionKey: "global",
+          targetKind: "session",
+          metadata: { agentId: "beta" },
+          conversation: {
+            channel: "teamchat",
+            accountId: "default",
+            conversationId: "beta-global",
+          },
+        });
+        await runSessionsCleanup({ cfg, opts: { agent: "main", enforce: true, fixMissing: true } });
+        expect(loadSessionEntry({ storePath, sessionKey: "global" })).toBeUndefined();
+        const remaining = service.listBySession("global");
+        expect(remaining).toContainEqual(betaBinding);
+        for (const binding of mainBindings) {
+          expect(remaining).not.toContainEqual(binding);
+        }
+        expect(
+          loadSessionEntry({ storePath: betaStorePath, agentId: "beta", sessionKey: "global" })
+            ?.sessionId,
+        ).toBe("beta-live");
+      });
+    },
+  );
+
+  it("preserves plugin-owned targets even when their key names the selected agent", async () => {
+    await withFixture(async ({ cfg, seed }) => {
+      seed(key);
+      const binding = await service.bind({
+        targetSessionKey: key,
+        targetKind: "session",
+        metadata: {
+          pluginBindingOwner: "plugin",
+          pluginId: "custom-owner",
+          pluginRoot: "/fixture",
+          agentId: "main",
+        },
+        conversation: { channel: "teamchat", accountId: "default", conversationId: "plugin-owned" },
+      });
+      await runSessionsCleanup({ cfg, opts: { agent: "main", enforce: true, fixMissing: true } });
+      expect(service.listBySession(key)).toContainEqual(binding);
+    });
+  });
+
   it("keeps a replacement entry and its bindings when the expected entry changes before commit", async () => {
     await withFixture(async ({ cfg, storePath, seed, bind }) => {
       seed(key);
@@ -376,10 +436,32 @@ describe("missing-session cleanup binding ownership", () => {
     });
   });
 
+  it("reports an owner disappearing after commit instead of claiming binding cleanup succeeded", async () => {
+    await withFixture(async ({ cfg, seed, bind }) => {
+      seed(key);
+      const before = await bind(key);
+      race.afterCommit = () =>
+        unregisterSessionBindingAdapter({ channel: "teamchat", accountId: "default" });
+      await expect(
+        runSessionsCleanup({ cfg, opts: { agent: "main", enforce: true, fixMissing: true } }),
+      ).rejects.toThrow("owner is unavailable for conditional cleanup");
+      expect(
+        listCurrentConversationBindingRecordsBySession(key, {
+          channel: "teamchat",
+          accountId: "default",
+        }),
+      ).toEqual(
+        expect.arrayContaining(
+          before.filter((record) => record.conversation.channel === "teamchat"),
+        ),
+      );
+    });
+  });
+
   it.each(["unguarded", "read-only", "read-only-with-marker"])(
-    "reports a partial failure for a %s adapter",
+    "preserves the session before rejecting a %s adapter",
     async (kind) => {
-      await withFixture(async ({ cfg, seed, bind }) => {
+      await withFixture(async ({ cfg, storePath, seed, bind }) => {
         seed(key);
         const before = await bind(key);
         const unbind = vi.fn(async () => []);
@@ -396,6 +478,8 @@ describe("missing-session cleanup binding ownership", () => {
           runSessionsCleanup({ cfg, opts: { agent: "main", enforce: true, fixMissing: true } }),
         ).rejects.toThrow("conditional cleanup");
         expect(unbind).not.toHaveBeenCalled();
+        expect(loadSessionEntry({ storePath, sessionKey: key })).toBeDefined();
+        expect(service.listBySession(key)).toEqual(expect.arrayContaining(before));
       });
     },
   );

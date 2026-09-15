@@ -5,6 +5,7 @@ import { ExpectedCliError } from "../../cli/failure-output.js";
 import type { OpenClawConfig, replaceConfigFile } from "../../config/config.js";
 import { DEFAULT_ACCOUNT_ID } from "../../routing/session-key.js";
 import { createTestConfigSnapshot } from "../test-runtime-config-helpers.js";
+import { parseAccountSelector } from "./account-selector.js";
 import { channelsCapabilitiesCommand } from "./capabilities.js";
 
 const logs: string[] = [];
@@ -240,24 +241,6 @@ describe("channelsCapabilitiesCommand", () => {
       name: "blank agent with all channels",
       options: { channel: "all", agent: " " },
       message: "--agent must not be blank",
-      discoversChannels: false,
-    },
-    {
-      name: "blank account without a channel",
-      options: { account: "" },
-      message: "--account must not be blank",
-      discoversChannels: false,
-    },
-    {
-      name: "whitespace account without a channel",
-      options: { account: "   ", json: true },
-      message: "--account must not be blank",
-      discoversChannels: false,
-    },
-    {
-      name: "whitespace account with a channel",
-      options: { channel: "slack", account: "   " },
-      message: "--account must not be blank",
       discoversChannels: false,
     },
     {
@@ -648,5 +631,31 @@ describe("channelsCapabilitiesCommand", () => {
         "Probe: linked",
       ].join("\n"),
     ]);
+  });
+});
+
+// --account is rejected by the option parser at parse time, before the command body
+// runs, so the command no longer repeats the check. These cases cover the owner.
+describe("parseAccountSelector", () => {
+  it("passes an account id through unchanged", () => {
+    expect(parseAccountSelector("work")).toBe("work");
+  });
+
+  it("treats omission as the default account rather than an error", () => {
+    expect(parseAccountSelector(undefined)).toBeUndefined();
+  });
+
+  it("rejects an empty value, which an unset shell variable produces", () => {
+    expect(() => parseAccountSelector("")).toThrow("--account must not be blank");
+  });
+
+  it("rejects a whitespace-only value", () => {
+    expect(() => parseAccountSelector("   ")).toThrow("--account must not be blank");
+  });
+
+  it("keeps surrounding whitespace on a real id rather than trimming it", () => {
+    // Only emptiness is rejected. Trimming would change the selector, and the
+    // account lookup owns what counts as a match.
+    expect(parseAccountSelector(" work ")).toBe(" work ");
   });
 });

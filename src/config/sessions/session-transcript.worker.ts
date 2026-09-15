@@ -3,6 +3,7 @@ import type {
   SessionFileEntry,
   readSessionEntryResetRecallCutoff,
 } from "../../../packages/memory-host-sdk/src/host/session-files.js";
+import { beginHistoryProbePhase } from "../../infra/session-history-probe.js";
 import { serveWorkerTasks } from "../../infra/worker-task-pool.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
@@ -85,9 +86,25 @@ serveWorkerTasks(
       | SessionBranchSummaryWorkerInput;
     try {
       if (request.kind === "branch-summaries") {
-        const { readSessionBranchSummariesInWorker } =
-          await import("./session-accessor.sqlite-branches.js");
-        return { ok: true, value: readSessionBranchSummariesInWorker(request.request) };
+        const importDone = beginHistoryProbePhase("branch-kernel-import");
+        let kernel: typeof import("./session-accessor.sqlite-branches.js");
+        try {
+          kernel = await import("./session-accessor.sqlite-branches.js");
+        } catch (error) {
+          importDone?.(true);
+          throw error;
+        } finally {
+          importDone?.();
+        }
+        const bodyDone = beginHistoryProbePhase("branch-body");
+        try {
+          return { ok: true, value: kernel.readSessionBranchSummariesInWorker(request.request) };
+        } catch (error) {
+          bodyDone?.(true);
+          throw error;
+        } finally {
+          bodyDone?.();
+        }
       }
       return await runWithSessionTranscriptReadFence(
         request.admission,
@@ -103,15 +120,30 @@ serveWorkerTasks(
           if (request.kind === "history-page") {
             const options = { readOnly: true, deferProfileDisplay: true };
             if (request.request.kind === "rpc") {
-              const { readChatHistoryPageLocal } =
-                await import("../../gateway/server-methods/chat-history-pages.js");
-              return {
-                ok: true,
-                value: {
-                  kind: "rpc",
-                  page: await readChatHistoryPageLocal(request.request.params, options),
-                },
-              };
+              const importDone = beginHistoryProbePhase("kernel-import");
+              let kernel: typeof import("../../gateway/server-methods/chat-history-pages.js");
+              try {
+                kernel = await import("../../gateway/server-methods/chat-history-pages.js");
+                importDone?.();
+              } catch (error) {
+                importDone?.(true);
+                throw error;
+              }
+              const bodyDone = beginHistoryProbePhase("history-body");
+              try {
+                return {
+                  ok: true,
+                  value: {
+                    kind: "rpc",
+                    page: await kernel.readChatHistoryPageLocal(request.request.params, options),
+                  },
+                };
+              } catch (error) {
+                bodyDone?.(true);
+                throw error;
+              } finally {
+                bodyDone?.();
+              }
             }
             const { readSessionHistorySnapshotLocal } =
               await import("../../gateway/session-history-state.js");

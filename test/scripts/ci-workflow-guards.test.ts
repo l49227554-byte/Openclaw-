@@ -30,6 +30,8 @@ import { parse } from "yaml";
 import {
   detectChangedScope,
   detectNodeFastScope,
+  isMacosToolingPath,
+  shouldRunIosScreenshots,
   shouldRunNativeI18n,
   writeGitHubOutput,
 } from "../../scripts/ci-changed-scope.mjs";
@@ -12879,6 +12881,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     eventName?: "pull_request" | "push" | "workflow_dispatch";
     releaseGate?: boolean;
     legacyOutput?: boolean;
+    nativeProofInput?: boolean;
     selectedJobs: string[];
   }>([
     {
@@ -12921,6 +12924,30 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       changedPath: "test/scripts/mac-elevation-artifact.test.ts",
       selectedJobs: ["macos-node", "macos-swift"],
     },
+    ...[
+      "scripts/test-native-action-gateway.mts",
+      "scripts/lib/native-action-gateway-diagnostics.mts",
+      "test/fixtures/qa-gateway-rpc-proxy.mjs",
+      "test/e2e/qa-lab/runtime/profile-binding-wire-fixture.ts",
+      "test/e2e/qa-lab/runtime/skill-library-wire-fixture.ts",
+      "test/e2e/qa-lab/runtime/cloud-worker-midturn-loss-fixture.ts",
+      "test/e2e/qa-lab/runtime/paired-node-worker-wire-fixture.ts",
+      "test/helpers/qa-gateway-cleanup.ts",
+    ].map((changedPath) => ({
+      label: `Native action proof ${changedPath}`,
+      changedPath,
+      nativeProofInput: true,
+      selectedJobs: ["macos-node", "macos-swift", "ios-build"],
+    })),
+    ...[
+      "test/qa-gateway-rpc-proxy.test.ts",
+      "test/e2e/qa-lab/runtime/gateway-profile-binding-wire.e2e.test.ts",
+    ].map((changedPath) => ({
+      label: `Independent QA test ${changedPath}`,
+      changedPath,
+      nativeProofInput: false,
+      selectedJobs: [],
+    })),
     {
       label: "iOS app pull request",
       changedPath: "apps/ios/Sources/Foo.swift",
@@ -12979,6 +13006,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       eventName = "pull_request",
       releaseGate = false,
       legacyOutput,
+      nativeProofInput,
       selectedJobs,
     }) => {
       const workflow = readCiWorkflow();
@@ -12986,6 +13014,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         (step: WorkflowStep) => step.name === "Build CI manifest",
       );
       const changedPaths = [changedPath];
+      if (nativeProofInput !== undefined) {
+        expect(isMacosToolingPath(changedPath)).toBe(nativeProofInput);
+        expect(shouldRunIosScreenshots(changedPaths)).toBe(false);
+      }
       const scopeOutputs = runCiChangedScopeFixture(changedPaths);
       if (legacyOutput) {
         delete scopeOutputs.run_macos_node;

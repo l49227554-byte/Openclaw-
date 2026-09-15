@@ -93,6 +93,7 @@ function respondChatHistoryUnavailable(
 }
 
 export async function handleChatHistoryRequest({
+  req,
   params,
   respond,
   client,
@@ -244,8 +245,7 @@ export async function handleChatHistoryRequest({
   const resolvedSessionModel = resolveSessionModelRef(cfg, entry, sessionAgentId, {
     allowPluginNormalization: false,
   });
-  const requested = typeof limit === "number" ? limit : 200;
-  const max = Math.min(CHAT_HISTORY_MAX_ENTRIES, requested);
+  const max = Math.min(CHAT_HISTORY_MAX_ENTRIES, typeof limit === "number" ? limit : 200);
   const maxHistoryBytes = Math.min(maxBytes ?? Infinity, getMaxChatHistoryMessagesBytes());
   const effectiveMaxChars = resolveEffectiveChatHistoryMaxChars(maxChars);
   const pendingInputs =
@@ -300,10 +300,15 @@ export async function handleChatHistoryRequest({
           {
             config: cfg,
             phase: method,
+            workerTasks: true,
             attributes: {
               limit: max,
               hasMessageId: Boolean(messageId),
               hasOffset: offset !== undefined,
+              // Private timeline correlation only; public proof exposes proxy ordinals.
+              ...(typeof req?.id === "string" && req.id.length > 0 && req.id.length <= 128
+                ? { requestId: req.id }
+                : {}),
             },
           },
         );
@@ -477,13 +482,12 @@ export async function handleChatHistoryRequest({
     },
   );
   Object.assign(sessionInfo, currentSharing);
-  const activeRunAgentId = sessionAgentId;
   const activeRunState = resolveVisibleActiveSessionRunState({
     context,
     requestedKey: sessionKey,
     canonicalKey,
     sessionId,
-    ...(activeRunAgentId ? { agentId: activeRunAgentId } : {}),
+    ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
     defaultAgentId: compatibilityOwnerAgentId,
     // History stays active until the terminal row is queryable or its write fails.
     includeTerminalPersistence: true,
@@ -569,7 +573,7 @@ export async function handleChatHistoryRequest({
       // falls back to the default agent for alias keys, misses the abort entry's
       // stored key, and drops the in-flight snapshot for non-default agents.
       canonicalSessionKey: canonicalKey,
-      agentId: activeRunAgentId,
+      agentId: sessionAgentId,
       defaultAgentId: compatibilityOwnerAgentId,
     }) ?? embeddedRecovery;
   if (cursor !== undefined) {
@@ -654,7 +658,7 @@ export async function handleChatHistoryRequest({
     getMessagesBytes: () => byteCounter.messagesBytes(capped),
     maxBytes: responseHistoryBytes,
   });
-  const payload = {
+  respond(true, {
     sessionKey,
     sessionId,
     messages: composeTranscriptDisplay(capped),
@@ -676,8 +680,7 @@ export async function handleChatHistoryRequest({
     verboseLevel,
     ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
     ...(startupMetadata ? { metadata: startupMetadata } : {}),
-  };
-  respond(true, payload);
+  });
 }
 
 export const chatHistoryHandlers: GatewayRequestHandlers = {

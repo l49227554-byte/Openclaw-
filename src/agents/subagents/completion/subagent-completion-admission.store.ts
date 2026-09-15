@@ -8,18 +8,20 @@ import {
   prepareClaimedSessionDelivery,
   SESSION_DELIVERY_QUEUE_NAME,
   type QueuedSessionDelivery,
-} from "../../../infra/session-delivery-queue-storage.js";
+} from "../../../infra/session-delivery-queue.records.js";
 import { deferSqlitePostCommitPublication } from "../../../infra/sqlite-post-commit.js";
+import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { resolveEventSessionKey } from "../../../routing/session-key.js";
 import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "../../../state/openclaw-state-db.js";
+import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { publishTaskRecordAfterAtomicStore } from "../../../tasks/runtime-internal.js";
 import { resolveRequiredCompletionDeliveryFailureTerminalResult } from "../../../tasks/task-completion-contract.js";
 import { formatTaskBlockedFollowupMessage } from "../../../tasks/task-executor-policy.js";
-import { syncFlowFromTaskAfterTaskMutation } from "../../../tasks/task-registry-mutation.js";
+import { syncFlowFromTaskAfterTaskMutation } from "../../../tasks/task-registry-state.js";
 import {
   bindTaskRecord,
   findTaskRecordByRunIdForViewInDatabase,
@@ -28,7 +30,11 @@ import {
 } from "../../../tasks/task-registry.store.kernel.js";
 import type { TaskRecord } from "../../../tasks/task-registry.types.js";
 import { resolveTaskCleanupAfter } from "../../../tasks/task-retention.js";
-import { ensureCompletionState, ensureDeliveryState } from "../registry/subagent-delivery-state.js";
+import {
+  ensureCompletionState,
+  ensureDeliveryState,
+  isCompletedRequesterDeliveryBlocked,
+} from "../registry/subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "../registry/subagent-lifecycle-events.js";
 import { resolveFinalizedSubagentTaskState } from "../registry/subagent-registry-completion.js";
 import {
@@ -44,6 +50,8 @@ import {
 } from "../registry/subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import { compareSubagentRunGeneration } from "../registry/subagent-run-generation.js";
+
+const log = createSubsystemLogger("subagents/completion");
 
 export const SUSPENDED_RETENTION_MS = 7 * 24 * 60 * 60_000;
 
@@ -268,6 +276,7 @@ export function blockSubagentCompletionDelivery(params: {
   taskId: string;
   reason: string;
   suspendedReason?: "expiry" | "permanent_failure";
+  lastDropReason?: NonNullable<SubagentRunRecord["delivery"]>["lastDropReason"];
   disposition?: NonNullable<SubagentRunRecord["delivery"]>["disposition"];
   databaseOptions?: OpenClawStateDatabaseOptions;
 }): boolean {
@@ -337,12 +346,21 @@ export function blockSubagentCompletionDelivery(params: {
       announcedAt: undefined,
       suspendedAt: params.suspendedReason ? (delivery.suspendedAt ?? now) : delivery.suspendedAt,
       suspendedReason: params.suspendedReason ?? delivery.suspendedReason,
+      lastDropReason: params.lastDropReason ?? delivery.lastDropReason,
       nextAttemptAt: undefined,
       queueId: undefined,
     });
     Object.assign(subagent, { cleanupHandled: false, wakeOnDescendantSettle: undefined });
     if (params.suspendedReason) {
-      markRequesterSettleWakePending(subagent);
+      if (isCompletedRequesterDeliveryBlocked(subagent)) {
+        // This requester already ran. An ordinary settle wake would replay it;
+        // a separately owned yield batch still has genuine unfinished work.
+        if (subagent.requesterSettleWake?.requesterYieldBatch !== true) {
+          subagent.requesterSettleWake = undefined;
+        }
+      } else {
+        markRequesterSettleWakePending(subagent);
+      }
     } else {
       subagent.suppressCompletionDelivery = true;
     }
@@ -392,7 +410,18 @@ export function blockSubagentCompletionDelivery(params: {
     deferSqlitePostCommitPublication(database.db, () => {
       publishCommittedRecords(subagent, task);
       if (queued) {
-        void scheduleSessionDelivery(queued.id);
+        void (async () => {
+          const queueContext = captureOpenClawStateWorkerContext({
+            path: database.path,
+            env: params.databaseOptions?.env,
+          });
+          await scheduleSessionDelivery(queued.id, queueContext);
+        })().catch((error: unknown) => {
+          log.warn("Subagent completion remains queued after scheduling failed", {
+            queueId: queued.id,
+            error,
+          });
+        });
       }
     });
     return true;

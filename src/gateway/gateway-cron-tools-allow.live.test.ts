@@ -165,7 +165,8 @@ describeLive("cron tool allowlists through live harnesses", () => {
               "chat.history",
               "--params",
               JSON.stringify({ sessionKey, limit: 100 }),
-            ])) as { messages: Message[] };
+            ])) as { messages: Message[]; sessionInfo: { agentRuntime?: { id: string } } };
+            expect(history.sessionInfo.agentRuntime?.id).toBe(runtime);
             const assistants = history.messages.filter((message) => message.role === "assistant");
             const calls = assistants.flatMap((message) =>
               message.content.filter((block) => block.type === "toolCall"),
@@ -188,16 +189,6 @@ describeLive("cron tool allowlists through live harnesses", () => {
               expect(result).toMatchObject({ toolName, isError: false });
               expect(JSON.stringify(result?.content)).toContain(marker);
             }
-            const sessions = (await cliJson(instance, [
-              "gateway",
-              "call",
-              "sessions.list",
-              "--params",
-              JSON.stringify({ includeGlobal: true, limit: 100 }),
-            ])) as { sessions: Array<{ key: string; agentRuntime?: { id: string } }> };
-            expect(
-              sessions.sessions.find((entry) => entry.key === sessionKey)?.agentRuntime?.id,
-            ).toBe(runtime);
             logLiveProgress(`cron ${runtime}: tools=${JSON.stringify(cap)} passed (${MODEL_KEY})`);
           }
         },

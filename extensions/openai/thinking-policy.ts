@@ -13,8 +13,10 @@ import {
   OPENAI_GPT_55_MODEL_ID,
   OPENAI_GPT_55_PRO_MODEL_ID,
   OPENAI_GPT_56_MODEL_ID,
+  OPENAI_GPT_6_ASTRA_MODEL_ID,
   resolveOpenAICodexReasoningEfforts,
 } from "./model-route-contract.js";
+import manifest from "./openclaw.plugin.json" with { type: "json" };
 
 type OpenAIThinkingCompat = ProviderDefaultThinkingPolicyContext["compat"];
 type OpenAIThinkingApi = ProviderDefaultThinkingPolicyContext["api"];
@@ -71,9 +73,8 @@ function normalizeCodexReasoningEffort(value: string): OpenAIThinkingLevelId | u
 }
 
 function buildCodexLevels(efforts: readonly string[]): ProviderThinkingProfile["levels"] {
-  // Omitting an effort remains a valid Codex choice even when model/list has
-  // no reasoning presets. Every other picker stop must come from that list.
-  const supported = new Set<OpenAIThinkingLevelId>(["off"]);
+  // Omitting effort uses the model default; only an advertised none/off disables reasoning.
+  const supported = new Set<OpenAIThinkingLevelId>();
   for (const effort of efforts) {
     const level = normalizeCodexReasoningEffort(effort);
     if (level) {
@@ -93,8 +94,28 @@ function buildOpenAIThinkingProfile(params: {
   const modelId = normalizeModelId(params.modelId);
   const agentRuntime = normalizeModelId(params.agentRuntime ?? "");
   const codexEfforts = params.compat?.supportedReasoningEfforts?.map(normalizeModelId);
+  if (modelId === OPENAI_GPT_6_ASTRA_MODEL_ID) {
+    const efforts =
+      codexEfforts ??
+      manifest.modelCatalog.providers.openai.models.find((model) => model.id === modelId)?.compat
+        ?.supportedReasoningEfforts ??
+      [];
+    // Ultra is runtime orchestration; the Platform's scalar effort list stops at Max.
+    // Preserve narrower account capabilities while exposing the supported runtime mode.
+    const supportsUltra =
+      ["openclaw", "codex", "auto"].includes(agentRuntime) && efforts.includes("max");
+    const defaultLevel = efforts.includes("medium")
+      ? "medium"
+      : efforts.includes("low")
+        ? "low"
+        : undefined;
+    return {
+      levels: buildCodexLevels(supportsUltra ? [...efforts, "ultra"] : efforts),
+      ...(defaultLevel ? { defaultLevel } : {}),
+    };
+  }
   const resolvedCodexEfforts =
-    params.api === "openai-chatgpt-responses"
+    params.api === undefined || params.api === "openai-chatgpt-responses"
       ? resolveOpenAICodexReasoningEfforts(modelId, codexEfforts)
       : undefined;
   const knownCodexEfforts = resolveOpenAICodexReasoningEfforts(modelId, undefined);
@@ -104,7 +125,7 @@ function buildOpenAIThinkingProfile(params: {
     modelId.startsWith("gpt-5.6") && (agentRuntime !== "codex" || codexSupportsMax);
   const codexSupportsUltra = (resolvedCodexEfforts ?? knownCodexEfforts)?.includes("ultra");
   // OpenClaw owns its logical Ultra orchestration. Native Codex capabilities
-  // come only from the selected ChatGPT route's catalog metadata.
+  // come from native discovery or the selected ChatGPT route's catalog metadata.
   const supportsUltra =
     (modelId === OPENAI_GPT_56_MODEL_ID || isGpt56Variant) &&
     (agentRuntime === "openclaw" ||

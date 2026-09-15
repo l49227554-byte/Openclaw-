@@ -1,5 +1,9 @@
 import { gatewayOriginScope } from "@openclaw/gateway-client/browser";
-import type { SessionPlacementDiskSpace } from "../../../packages/gateway-protocol/src/schema/session-placement.js";
+import type { SessionParticipant } from "../../../packages/gateway-protocol/src/schema/session-participant.js";
+import type {
+  SessionPlacementDiskSpace,
+  SessionPlacementMachine,
+} from "../../../packages/gateway-protocol/src/schema/session-placement.js";
 import type { SessionCatalogPullRequestSummary } from "../../../packages/gateway-protocol/src/schema/sessions-catalog.js";
 import type { SessionVisibility } from "../../../packages/gateway-protocol/src/schema/sessions-sharing.js";
 import type {
@@ -32,7 +36,7 @@ export type SidebarSessionAttention =
   | { kind: "question" }
   | { kind: "approval" }
   | { kind: "agent"; note: string; icon: SessionAgentAttentionIconId }
-  | { kind: "error"; reason: string };
+  | { kind: "error"; reason: string; childLabel?: string };
 
 /** Client-owned attention that can name a session before its row is loaded. */
 export type SidebarKnownSessionAttention = {
@@ -60,25 +64,24 @@ export function sidebarSessionAttentionPriority(attention: SidebarSessionAttenti
 
 export type SidebarRecentSession = {
   key: string;
+  agentId?: string;
   sessionId?: string;
   displayName?: string;
   incognito?: boolean;
   createdActor?: SessionCreatedActor;
   owner?: SessionOwner;
-  participants?: SessionCreatedActor[];
+  participants?: SessionParticipant[];
+  expandedParticipants?: SessionParticipant[];
   participantCount?: number;
   archivedBy?: SessionCreatedActor;
   label: string;
-  /**
-   * Stored user label, undecorated. `label` above is the resolved display name
-   * and can carry a derived account or channel; rename edits this one so a
-   * derived string never lands back in persisted state.
-   */
+  /** Stored user label, separate from generated titles and display decoration. */
   userLabel?: string;
+  /** Editable session name prepared before the display name gains decoration. */
+  renameValue: string;
   /** Compact repo/branch/node line for work sessions. */
   subtitle?: string;
   workContext?: SessionWorkContext;
-  href: string;
   active: boolean;
   visuallyActive: boolean;
   hasActiveRun: boolean;
@@ -88,11 +91,13 @@ export type SidebarRecentSession = {
   modelSelectionLocked: boolean;
   kind?: string;
   pinned: boolean;
+  pinnable: boolean;
   archived?: boolean;
   visibility?: SessionVisibility;
   draftOwnedBySelf?: boolean;
   category?: string;
   icon?: string;
+  color?: string;
   channelAvatarUrl?: string;
   boardFace?: BoardFace;
   channel?: string;
@@ -103,6 +108,9 @@ export type SidebarRecentSession = {
   worktreeId?: string;
   execNode?: string;
   placementState?: SessionPlacementState;
+  placementProviderId?: string;
+  placementProfileId?: string;
+  placementMachine?: SessionPlacementMachine;
   diskSpaceStatus?: SessionPlacementDiskSpace["status"];
   workspaceConflictCount?: number;
   cloudWorkerStopAction: CloudWorkerStopAction | null;
@@ -114,6 +122,11 @@ export type SidebarRecentSession = {
   lastMessagePreview?: string;
   lastReadAt?: number;
   attention: SidebarSessionAttention;
+  /** Own attention remains distinct from the collapsed-tree projection. */
+  ownAttention?: SidebarSessionAttention;
+  childAttention?: readonly SidebarSessionAttention[];
+  unreadChildCount?: number;
+  queuedChildCount?: number;
   agentStatusNote?: string;
   observerDigest?: Pick<
     SessionObserverDigest,
@@ -139,14 +152,22 @@ export type SidebarRecentSession = {
 
 export type SidebarSessionHovercardRow = Pick<
   SidebarRecentSession,
+  | "boardFace"
   | "createdActor"
   | "createdAt"
   | "channelAvatarUrl"
+  | "color"
   | "endedAt"
+  | "hasAutomation"
+  | "hasActiveRun"
   | "label"
   | "lastMessagePreview"
+  | "expandedParticipants"
   | "participantCount"
   | "participants"
+  | "placementProviderId"
+  | "placementProfileId"
+  | "placementMachine"
   | "status"
   | "startedAt"
   | "updatedAt"
@@ -171,6 +192,10 @@ export function rowDemandsVisibility(
         row.containsActiveDescendant ||
         row.hasActiveRun ||
         row.runningChildCount > 0 ||
+        row.failedChildCount > 0 ||
+        (row.workspaceConflictCount ?? 0) > 0 ||
+        row.unread ||
+        (row.unreadChildCount ?? 0) > 0 ||
         row.attention.kind !== "none";
 }
 
@@ -188,6 +213,7 @@ export type SidebarSessionGroupMenuState = {
 
 export type SidebarSessionSortMode = "created" | "updated" | "people";
 export type SidebarSessionStatusFilter = "active" | "archived" | "all";
+export type SidebarEmptyGroupsMode = "filtering" | "always" | "never";
 export type SidebarSessionOwnerFilter = {
   ownerId: string | null;
   involvingMe: boolean;
@@ -230,16 +256,20 @@ export type SidebarSessionMutationScope = {
 
 export type SidebarSessionMutationResult = "completed" | "failed" | "stale";
 
+export type SidebarCatalogSessionMutationScope = SidebarSessionMutationScope & {
+  catalogGeneration: number;
+};
+
 export type SidebarSessionPatch = {
   archived?: boolean;
   pinned?: boolean;
   unread?: boolean;
   label?: string | null;
   icon?: string | null;
+  color?: string | null;
   category?: string | null;
 };
 
-export const SIDEBAR_AGENT_SESSION_LIST_LIMIT = 60;
 export const SIDEBAR_SESSION_PAGE_SIZE = 10;
 export const SIDEBAR_SESSION_SEE_LESS_THRESHOLD = 30;
 

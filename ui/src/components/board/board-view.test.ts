@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { BoardSnapshot } from "../../lib/board/types.ts";
 // Side-effect import: registers the custom elements mount() depends on
 // without relying on transitive fixture imports.
@@ -8,8 +9,6 @@ import { applyBoardFixtureOps } from "../../test-helpers/board-fixture.ts";
 import {
   boardWidget,
   callbacks,
-  deferred,
-  deferredValue,
   gatewayContext,
   mount,
   settleCells,
@@ -66,6 +65,10 @@ describe("openclaw-board-view", () => {
 
   it("bounds the wait for a sandbox proxy that never becomes ready", async () => {
     vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("<!doctype html><p>Ready document</p>")),
+    );
     const frameLoadFailed = vi.fn(async () => undefined);
     const view = await mount({
       context: gatewayContext(null),
@@ -647,7 +650,7 @@ describe("openclaw-board-view", () => {
   it("does not schedule renewal when an in-flight MCP App load resolves after disconnect", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    const pending = deferredValue<{
+    const pending = deferred<{
       status: "ready";
       viewId: string;
       expiresAtMs: number;
@@ -672,7 +675,7 @@ describe("openclaw-board-view", () => {
     expect(refreshWidgetAppView).not.toHaveBeenCalled();
   });
 
-  it("shows stale MCP Apps with retry and remove without breaking the board", async () => {
+  it("shows stale MCP Apps with retry and delete without breaking the board", async () => {
     if (!customElements.get("mcp-app-view")) {
       customElements.define("mcp-app-view", class extends HTMLElement {});
     }
@@ -698,7 +701,7 @@ describe("openclaw-board-view", () => {
     const buttons = view.querySelectorAll<HTMLButtonElement>(
       '[data-test-id="board-mcp-app-stale"] button',
     );
-    expect([...buttons].map((button) => button.textContent?.trim())).toEqual(["Retry", "Remove"]);
+    expect([...buttons].map((button) => button.textContent?.trim())).toEqual(["Retry", "Delete"]);
     buttons[1]?.click();
     await vi.waitFor(() =>
       expect(applyOps).toHaveBeenCalledWith([{ kind: "widget_remove", name: "alpha" }]),

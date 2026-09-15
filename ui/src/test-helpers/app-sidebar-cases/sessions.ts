@@ -8,7 +8,6 @@ import {
   createSessions,
   createSessionsHarness,
   createSessionState,
-  type LobsterPetElement,
   mountSidebar,
   type TestSessionMenu,
   TWO_AGENTS,
@@ -125,50 +124,6 @@ describe("AppSidebar session pagination", () => {
     expect(button("Show more")).not.toBeNull();
     expect(button("Collapse")).toBeNull();
   });
-});
-
-describe("AppSidebar lobster outcome wiring", () => {
-  it.each([
-    ["panel", "failed", "error"],
-    ["panel", "killed", "aborted"],
-    ["drawer", "failed", "error"],
-    ["drawer", "killed", "aborted"],
-  ] as const)(
-    "passes the %s variant's latest %s session outcome",
-    async (variant, status, expectedOutcome) => {
-      const client = {} as GatewayBrowserClient;
-      const gateway = createGateway(client);
-      const sessions = createSessionsHarness("main", ["agent:main:main"]);
-      const { sidebar } = await mountSidebar(gateway, sessions.sessions, variant);
-      const terminalState = createSessionState("main", ["agent:main:main"]);
-      const result = terminalState.result;
-      if (!result) {
-        throw new Error("expected terminal session result");
-      }
-      const row = result.sessions[0];
-      if (!row) {
-        throw new Error("expected terminal session row");
-      }
-
-      sessions.publishList({
-        result: {
-          ...result,
-          sessions: [
-            {
-              ...row,
-              status,
-              endedAt: 100,
-            },
-          ],
-        },
-        agentId: terminalState.agentId,
-      });
-      await sidebar.updateComplete;
-
-      const pet = sidebar.querySelector<LobsterPetElement>("openclaw-lobster-pet");
-      expect(pet?.runOutcome).toBe(expectedOutcome);
-    },
-  );
 });
 
 describe("AppSidebar session source lifecycle", () => {
@@ -439,19 +394,17 @@ describe("AppSidebar session accessibility", () => {
     expect(link?.getAttribute("aria-current")).toBe("page");
     const lead = link?.querySelector(".sidebar-session-indicator");
     expect(lead).not.toBeNull();
-    expect(lead?.childElementCount).toBe(0);
+    expect(lead?.childElementCount).toBe(1);
     expect(link?.querySelector(".sidebar-recent-session__text")).not.toBeNull();
-    const rowState = row?.querySelector(".session-row-state");
-    expect(rowState?.getAttribute("role")).toBe("img");
-    expect(rowState?.getAttribute("aria-label")).toBe("Unread");
-    expect(rowState?.querySelector(".session-unread-dot")).not.toBeNull();
+    const unread = lead?.querySelector(".session-unread-dot");
+    expect(unread?.getAttribute("role")).toBe("img");
+    expect(unread?.getAttribute("aria-label")).toBe("Unread");
+    expect(row?.querySelector(".session-row-state")).toBeNull();
     expect(link?.querySelector(".sidebar-recent-session__name")?.textContent).toBe(
       "Quarterly launch plan",
     );
     expect(link?.hasAttribute("title")).toBe(false);
-    expect(link?.getAttribute("aria-describedby")).toBe(
-      `sidebar-session-state-${encodeURIComponent(key)}`,
-    );
+    expect(link?.hasAttribute("aria-describedby")).toBe(false);
     expect(row?.querySelector(".session-row-trail")).toBeNull();
   });
 });

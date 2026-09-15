@@ -12,12 +12,15 @@ import {
   readSessionProgressCard,
   writeSessionProgressCard,
 } from "../../session-cards/progress-card-store.js";
+import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../../state/openclaw-state-db-readonly.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
@@ -31,7 +34,15 @@ import { readTranscriptEventRows } from "./session-accessor.sqlite-read.js";
 import { appendTranscriptEventInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import type { SessionEntry } from "./types.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeOpenClawAgentDatabasesAsync();
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawAgentDatabasesForTest();
+    closeOpenClawStateDatabaseForTest();
+    cleanup();
+  }),
+);
 const humanOwner = {
   actor: { type: "human", id: "alice" },
   assignedBy: { type: "human", id: "bob" },
@@ -194,11 +205,6 @@ function readLedgerReport(env: NodeJS.ProcessEnv): unknown {
     { env },
   );
 }
-
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-});
 
 describe("legacy main session migration", () => {
   const closedOutcomeCases = [
@@ -400,6 +406,117 @@ describe("legacy main session migration", () => {
 
   it.each(closedOutcomeCases)("reports the $kind outcome", async ({ kind, run }) => {
     expect(outcomeKinds(await run())).toContain(kind);
+  });
+
+  it("cleans a foreign logical claim from its physical partition without bypassing active work", async () => {
+    const fixture = createFixture();
+    const storePath = path.join(fixture.stateDir, "shared.json");
+    fixture.cfg = {
+      agents: {
+        defaults: { sessionStore: { agentId: "ops" } },
+        entries: { ops: {}, beta: {} },
+      },
+      session: { store: storePath },
+    };
+    const source = {
+      databaseAgentId: "beta",
+      databasePath: path.join(fixture.stateDir, "shared.beta.sqlite"),
+      key: "agent:main:chat",
+    };
+    const destination = {
+      databaseAgentId: "ops",
+      databasePath: path.join(fixture.stateDir, "shared.sqlite"),
+      key: "agent:ops:chat",
+    };
+    const sibling = { ...destination, key: "agent:ops:keep" };
+    seedClaim(sibling);
+    const entry = seedClaim({ ...source, events: [{ kind: "repeat" }, { kind: "repeat" }] });
+    const sourceBefore = readClaim(source);
+    const siblingBefore = readClaim(sibling);
+    const admission = await beginSessionWorkAdmission({
+      scope: storePath,
+      identities: [source.key, entry.sessionId],
+      assertAllowed: () => {},
+    });
+    try {
+      const blocked = await migrateLegacyMainSessionKeys({
+        cfg: fixture.cfg,
+        env: fixture.env,
+        mode: "automatic",
+      });
+      expect(blocked.complete).toBe(false);
+      expect(blocked.warnings.join("\n")).toContain("competing work is in flight");
+      expect(readClaim(source)).toEqual(sourceBefore);
+    } finally {
+      admission.release();
+    }
+
+    const repaired = await migrateLegacyMainSessionKeys({
+      cfg: fixture.cfg,
+      env: fixture.env,
+      mode: "automatic",
+    });
+    const retry = await migrateLegacyMainSessionKeys({
+      cfg: fixture.cfg,
+      env: fixture.env,
+      mode: "automatic",
+    });
+
+    expect(repaired.complete).toBe(true);
+    expect(retry.ledgerComplete).toBe(true);
+    expect(readClaim(source)).toBeUndefined();
+    expect(readClaim(destination)?.entry).toMatchObject(entry);
+    expect(readClaim(destination)?.events).toEqual(sourceBefore?.events);
+    expect(readClaim(sibling)).toEqual(siblingBefore);
+    expect(fs.existsSync(path.join(fixture.stateDir, "shared.main.sqlite"))).toBe(false);
+  });
+
+  it("imports a new fixed-store destination at its planned path and owner on the first attempt", async () => {
+    const fixture = createFixture();
+    const storePath = path.join(fixture.stateDir, "shared.json");
+    fixture.cfg.session = { store: storePath };
+    const source = {
+      databaseAgentId: "main",
+      databasePath: databasePath(fixture.stateDir, "main"),
+      key: "agent:main:chat",
+    };
+    const sibling = { ...source, key: "agent:other:keep" };
+    const entry = seedClaim({ ...source, events: [{ kind: "repeat" }, { kind: "repeat" }] });
+    seedClaim(sibling);
+    const sourceBefore = readClaim(source);
+    const siblingBefore = readClaim(sibling);
+    const destination = {
+      databaseAgentId: "ops",
+      databasePath: path.join(fixture.stateDir, "shared.sqlite"),
+      key: "agent:ops:chat",
+    };
+
+    const result = await migrateLegacyMainSessionKeys({
+      cfg: fixture.cfg,
+      env: fixture.env,
+      mode: "automatic",
+    });
+    const retry = await migrateLegacyMainSessionKeys({
+      cfg: fixture.cfg,
+      env: fixture.env,
+      mode: "automatic",
+    });
+
+    expect(result.complete).toBe(true);
+    expect(outcomeKinds(result)).toContain("migrated-cross-store");
+    expect(retry.ledgerComplete).toBe(true);
+    expect(readClaim(source)).toBeUndefined();
+    expect(readClaim(destination)?.entry).toMatchObject(entry);
+    expect(readClaim(destination)?.events).toEqual(sourceBefore?.events);
+    expect(readClaim(sibling)).toEqual(siblingBefore);
+    expect(fs.existsSync(path.join(fixture.stateDir, "shared.ops.sqlite"))).toBe(false);
+    expect(fs.existsSync(storePath)).toBe(false);
+    expect(
+      runOpenClawAgentWriteTransaction(
+        (database) => readTranscriptEventRows(database, entry.sessionId),
+        { agentId: source.databaseAgentId, path: source.databasePath },
+      ),
+    ).toEqual([]);
   });
 
   it("keeps divergent canonical claims intact and detects mid-stream transcript divergence", async () => {

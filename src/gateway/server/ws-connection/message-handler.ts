@@ -1,6 +1,5 @@
 // WebSocket message handler validates frames, dispatches gateway RPCs, manages pairing, and reports responses.
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
-import type { RawData } from "ws";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
@@ -42,20 +41,20 @@ import { resolveNodePairingClientIpSource } from "../../node-pairing-auto-approv
 import { MAX_PREAUTH_PAYLOAD_BYTES } from "../../server-constants.js";
 import { formatForLog, logWs } from "../../ws-log.js";
 import { truncateCloseReason } from "../close-reason.js";
+import type { GatewayConnectionFrame } from "../connection-transport.js";
+import { resolveGatewayWsBrowserOrigin } from "../ws-origin-policy.js";
 import { createGatewayAuthenticatedRequestDispatcher } from "./authenticated-request-dispatch.js";
 import { isStartupNodeConnect } from "./connect-admission.js";
 import { authenticateGatewayConnect } from "./connect-auth.js";
 import { authorizeGatewayConnectDevice } from "./connect-device-pairing.js";
+import { publishConnectModelCatalog } from "./connect-model-catalog.js";
 import { attachAuthenticatedGatewayConnect } from "./connect-session.js";
 import { resolveHandshakeBrowserSecurityContext } from "./handshake-auth-helpers.js";
 import type {
   GatewayConnectPhaseContext,
   GatewayWsMessageHandlerParams,
 } from "./message-handler-types.js";
-export type {
-  GatewayWsMessageHandlerParams,
-  WsOriginCheckMetrics,
-} from "./message-handler-types.js";
+export type { GatewayWsMessageHandlerParams } from "./message-handler-types.js";
 
 const GATEWAY_WORK_ADMISSION_RETRY_AFTER_MS = 1_000;
 const GATEWAY_WORK_ADMISSION_CLOSE_CODE = 1013;
@@ -166,10 +165,14 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
   const runDetachedConnectWork = (run: () => Promise<void>, onError: (error: unknown) => void) => {
     // Connect-triggered mutations outlive hello-ok. Give each tail its own
     // root lease so suspension cannot report ready while one is still active.
-    void runWithGatewayIndependentRootWorkAdmission(run).catch(onError);
+    void params.connectionWork
+      .track(() =>
+        runWithGatewayIndependentRootWorkAdmission(run, "ws:preauth", params.connectionWork.signal),
+      )
+      .catch(onError);
   };
 
-  const handleMessage = async (data: RawData) => {
+  const handleMessage = async (data: GatewayConnectionFrame, admission?: "continuation") => {
     if (isClosed()) {
       return;
     }
@@ -355,7 +358,13 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
           reportedClientIp,
           reportedClientIpSource,
           hasBrowserOriginHeader,
-          enforceOriginCheckForAnyClient,
+          browserOrigin: resolveGatewayWsBrowserOrigin({
+            client: connectParams.client,
+            requestHost,
+            origin: requestOrigin,
+            isLocalClient,
+            enforceOriginCheckForAnyClient,
+          }),
           browserRateLimitClientIp,
           authRateLimiter,
           clientLabel,
@@ -378,9 +387,19 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
           return;
         }
         await attachAuthenticatedGatewayConnect(phaseContext, deviceAuthorized);
+        runDetachedConnectWork(
+          () => publishConnectModelCatalog(params, authenticatedRequestDispatcher),
+          (error) =>
+            logGateway.debug(`connection model catalog unavailable: ${formatForLog(error)}`),
+        );
         return;
       }
-      await authenticatedRequestDispatcher.dispatch(parsed, client);
+      await authenticatedRequestDispatcher.dispatch(
+        parsed,
+        client,
+        rawDataByteLength(data),
+        admission,
+      );
     } catch (err) {
       await releasePendingNodePairingCleanup();
       logGateway.error(`parse/handle error: ${String(err)}`);
@@ -392,7 +411,7 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
   };
 
   const parsePreauthConnectFrame = (
-    data: RawData,
+    data: GatewayConnectionFrame,
   ): { id: string; params: ConnectParams } | null => {
     if (isClosed() || rawDataByteLength(data) > MAX_PREAUTH_PAYLOAD_BYTES) {
       return null;
@@ -413,7 +432,7 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
     return { id: parsed.id, params: parsed.params };
   };
 
-  const isPreparedControlConnect = (data: RawData): boolean => {
+  const isPreparedControlConnect = (data: GatewayConnectionFrame): boolean => {
     const parsed = parsePreauthConnectFrame(data);
     if (!parsed) {
       return false;
@@ -422,12 +441,14 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
     return connectParams.role !== "node" && !claimsWorkerConnectionIdentity(parsed.params);
   };
 
-  const isStartupNodePreauth = (data: RawData): boolean => {
+  const isStartupNodePreauth = (data: GatewayConnectionFrame): boolean => {
     const parsed = parsePreauthConnectFrame(data);
     return parsed ? isStartupNodeConnect(parsed.params) : false;
   };
 
-  const rejectConnectForClosedAdmission = async (data: RawData): Promise<boolean> => {
+  const rejectConnectForClosedAdmission = async (
+    data: GatewayConnectionFrame,
+  ): Promise<boolean> => {
     const parsed = parsePreauthConnectFrame(data);
     if (!parsed) {
       return false;
@@ -465,12 +486,15 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
     return true;
   };
 
-  const handleIncomingMessage = async (data: RawData) => {
+  const handleIncomingMessage = async (
+    data: GatewayConnectionFrame,
+    requestAdmission?: "continuation",
+  ) => {
     if (getClient()) {
-      await handleMessage(data);
+      await handleMessage(data, requestAdmission);
       return;
     }
-    const admission = tryBeginGatewayRootWorkAdmission();
+    const admission = tryBeginGatewayRootWorkAdmission("ws:connect");
     if (!admission) {
       if (
         isGatewayRestartDraining() &&
@@ -515,9 +539,23 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
     }
   };
 
-  socket.on("message", (data) => {
-    void runWithDiagnosticTraceContext(createDiagnosticTraceContext(), () =>
-      handleIncomingMessage(data),
-    );
-  });
+  const receive = (data: GatewayConnectionFrame) => {
+    // Capture receipt before any await: older requests keep their admitted lifetime,
+    // while shutdown frames may only settle an exact pending node owner.
+    const admission = params.connectionWork.isClosing ? "continuation" : undefined;
+    if (admission && getClient()?.connect.role !== "node") {
+      return;
+    }
+    void params.connectionWork
+      .track(() =>
+        runWithDiagnosticTraceContext(createDiagnosticTraceContext(), () =>
+          handleIncomingMessage(data, admission),
+        ),
+      )
+      .catch((error: unknown) => {
+        logGateway.error(`request dispatch failed conn=${connId}: ${formatForLog(error)}`);
+      });
+  };
+  socket.on("message", receive);
+  return receive;
 }

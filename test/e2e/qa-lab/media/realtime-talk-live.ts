@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import {
   QA_EVIDENCE_FILENAME,
   type QaEvidenceSummaryJson,
-} from "../../../../extensions/qa-lab/api.js";
+} from "../../../../extensions/qa-lab/test-api.js";
 import {
   createQaScriptBlockedStatusTracker,
   createQaScriptEvidenceWriter,
@@ -210,7 +210,7 @@ function createRealtimeTalkEvidenceWriter(
       id: SCENARIO_ID,
       title: "OpenAI realtime Talk live",
       sourcePath: SOURCE_PATH,
-      docsRefs: ["docs/nodes/talk.md", "docs/providers/openai.md"],
+      docsRefs: ["docs/nodes/talk.md", "docs/providers/openai/voice-and-speech.md"],
       codeRefs: [
         SOURCE_PATH,
         SMOKE_PATH,

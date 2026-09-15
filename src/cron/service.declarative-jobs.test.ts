@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCronJobConfigRevision } from "./config-revision.js";
+import { resolveCronSession } from "./isolated-agent/session.js";
+import { toPublicCronJob } from "./public-job.js";
 import { CronService } from "./service.js";
 import {
   createCronStoreHarness,
@@ -7,6 +10,7 @@ import {
   installCronTestHooks,
 } from "./service.test-harness.js";
 import type { CronAddResult } from "./service/state.js";
+import { resolveSkillCollectionReviewMonitorSpecs } from "./skill-collection-review-monitor.js";
 import { loadCronStore } from "./store.js";
 import type { CronJob, CronJobCreate } from "./types.js";
 
@@ -198,16 +202,69 @@ describe("CronService declarative jobs", () => {
     }
   });
 
+  it("persists an ineligible review and reconciles recovery without replacing its job", async () => {
+    const { storePath } = await makeStorePath();
+    const cron = createCronService(storePath);
+    const cfg = {
+      agents: {
+        defaults: { model: "openai/gpt-blocked" },
+        list: [{ id: "main", models: { "openai/gpt-blocked": { agentRuntime: { id: "codex" } } } }],
+      },
+      skills: { workshop: { autonomous: { mode: "auto" } } },
+    } as OpenClawConfig;
+    const project = () => resolveSkillCollectionReviewMonitorSpecs(cfg, [])[0]!.input;
+    await cron.start();
+    try {
+      const created = declarativeResult(
+        await cron.add(project(), { enabledExplicit: true, systemOwned: true }),
+      );
+      expect(created.job).toMatchObject({
+        enabled: false,
+        displayName: expect.stringContaining("no-rooted-runtime"),
+      });
+      expect(created.job.state.nextRunAtMs).toBeUndefined();
+      expect(
+        (await loadCronStore(storePath)).jobs.find((job) => job.id === created.id),
+      ).toMatchObject({ enabled: false, displayName: created.job.displayName });
+      cfg.agents!.defaults!.model = "anthropic/claude-sonnet-4-6";
+      const recovered = declarativeResult(
+        await cron.add(project(), { enabledExplicit: true, systemOwned: true }),
+      );
+      expect(recovered).toMatchObject({
+        id: created.id,
+        created: false,
+        updated: true,
+        enabled: true,
+      });
+      expect(recovered.job.displayName).toBe("Skill collection review (main)");
+      expect(recovered.job.state.nextRunAtMs).toEqual(expect.any(Number));
+      expect(
+        (await loadCronStore(storePath)).jobs.find((job) => job.id === created.id),
+      ).toMatchObject({ enabled: true, displayName: "Skill collection review (main)" });
+    } finally {
+      cron.stop();
+    }
+  });
+
   it("keeps the first creator across declaration convergence and restart", async () => {
     const { storePath } = await makeStorePath();
     const writer = createCronService(storePath);
     await writer.start();
     let createdId = "";
+    const selections = [
+      {
+        skillId: "00000000-0000-4000-8000-000000000001",
+        revision: "a".repeat(64),
+        name: "s_report_00000000000040008000",
+        ownerProfileId: "profile-ada",
+      },
+    ];
 
     try {
       const created = declarativeResult(
         await writer.add(declaration(), {
-          createdActor: { type: "human", id: "profile-ada" },
+          createdActor: { type: "human", source: "profile", id: "profile-ada" },
+          skillLibrarySelections: selections,
         }),
       );
       createdId = created.id;
@@ -217,7 +274,8 @@ describe("CronService declarative jobs", () => {
 
       const converged = declarativeResult(
         await writer.add(declaration({ displayName: "Updated report" }), {
-          createdActor: { type: "human", id: "profile-bob" },
+          createdActor: { type: "human", source: "profile", id: "profile-bob" },
+          skillLibrarySelections: [],
         }),
       );
       expect(converged).toMatchObject({ created: false, updated: true, id: created.id });
@@ -231,7 +289,30 @@ describe("CronService declarative jobs", () => {
     const reader = createCronService(storePath, false);
     await expect(reader.readJob(createdId)).resolves.toMatchObject({
       createdActor: { type: "human", id: "profile-ada" },
+      skillLibrarySelections: selections,
     });
+    const job = (await loadCronStore(storePath)).jobs.find((stored) => stored.id === createdId)!;
+    expect(toPublicCronJob(job)).not.toHaveProperty("skillLibrarySelections");
+    const first = resolveCronSession({
+      cfg: {},
+      sessionKey: "agent:ops:cron:test",
+      agentId: "ops",
+      nowMs: Date.now(),
+      store: {},
+      skillLibrarySelections: job.skillLibrarySelections,
+      forceNew: true,
+    });
+    expect(first.sessionEntry.skillLibrarySelections).toEqual(selections);
+    const restarted = resolveCronSession({
+      cfg: {},
+      sessionKey: "agent:ops:cron:test",
+      agentId: "ops",
+      nowMs: Date.now(),
+      store: { "agent:ops:cron:test": first.sessionEntry },
+      skillLibrarySelections: [],
+      forceNew: true,
+    });
+    expect(restarted.sessionEntry.skillLibrarySelections).toEqual(selections);
   });
 
   it("keeps declaration-key uniqueness local to the caller visibility predicate", async () => {

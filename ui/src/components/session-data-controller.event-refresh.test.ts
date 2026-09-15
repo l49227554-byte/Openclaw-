@@ -1,13 +1,20 @@
-// @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
+// @vitest-environment node
+import { SIDEBAR_SESSION_ROSTER_LIMIT } from "../../../src/shared/session-list-limits.ts";
 import type { GatewayBrowserClient, GatewayEventFrame } from "../api/gateway.ts";
+import { createConnectionBootstrapCoordinator } from "../app/connection-bootstrap.ts";
 import type { ApplicationContext } from "../app/context.ts";
 import { createSessionCapability, type SessionCapability } from "../lib/sessions/index.ts";
 import type { SessionGateway } from "../lib/sessions/session-capability.ts";
 import type { SessionDataControllerHost } from "./session-data-controller-catalog.ts";
 import { SessionDataController } from "./session-data-controller.ts";
 
+const cleanups: Array<() => void> = [];
+
 afterEach(() => {
+  for (const cleanup of cleanups.splice(0)) {
+    cleanup();
+  }
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -102,8 +109,24 @@ function createFilteredSessionController(
       return () => eventListeners.delete(listener);
     },
   } as const;
-  const sessions = createSessionCapability(gateway);
   let selectedAgentId = "main";
+  const agentSelection = {
+    get state() {
+      return { selectedId: selectedAgentId, scopeId: selectedAgentId };
+    },
+    subscribe: () => () => undefined,
+  };
+  const connectionBootstrap = createConnectionBootstrapCoordinator();
+  const synchronizeBootstrap = (next: SessionGateway["snapshot"]) =>
+    connectionBootstrap.synchronize({ client: next.client, connected: next.phase === "connected" });
+  synchronizeBootstrap(snapshot);
+  const stopBootstrap = gateway.subscribe(synchronizeBootstrap);
+  const sessions = createSessionCapability(gateway, agentSelection, { connectionBootstrap });
+  cleanups.push(() => {
+    stopBootstrap();
+    sessions.dispose();
+    connectionBootstrap.reset();
+  });
   let selectedStatusFilter = statusFilter;
   let membership = { ownerId: null as string | null, involvingMe: false };
   const agentsState = {
@@ -116,6 +139,7 @@ function createFilteredSessionController(
   };
   const agentListeners = new Set<(state: ApplicationContext["agents"]["state"]) => void>();
   const context = {
+    connectionBootstrap,
     gateway,
     sessions,
     agents: {
@@ -125,16 +149,16 @@ function createFilteredSessionController(
         return () => agentListeners.delete(listener);
       },
     },
-    agentSelection: {
-      get state() {
-        return { selectedId: selectedAgentId, scopeId: selectedAgentId };
-      },
-      subscribe: () => () => undefined,
-    },
+    agentSelection,
   } as unknown as ApplicationContext;
+  let hostConnected = true;
   const host = {
-    isConnected: true,
+    get isConnected() {
+      return hostConnected;
+    },
     connected: true,
+    activeRouteId: "sessions",
+    getRouteSessionKey: () => context.gateway.snapshot.sessionKey.trim(),
     sessionDataContext: context,
     addController: () => undefined,
     removeController: () => undefined,
@@ -146,11 +170,18 @@ function createFilteredSessionController(
     selectedAgentIdForSessions: () => selectedAgentId,
     sidebarSessionStatusFilter: () => selectedStatusFilter,
     sidebarSessionOwnerFilter: () => membership,
+    sessionCatalogIdsWithoutVisibleRows: () => [],
     querySelector: () => null,
   } satisfies SessionDataControllerHost;
   const controller = new SessionDataController(host);
 
   return {
+    context,
+    host,
+    disconnectHost: () => {
+      hostConnected = false;
+      controller.hostDisconnected();
+    },
     controller,
     list,
     resultForKeys,
@@ -204,6 +235,51 @@ function createFilteredSessionController(
 }
 
 describe("filtered sidebar session event refresh", () => {
+  it("keeps shared group hydration when its first sidebar presenter disconnects", async () => {
+    const { controller, context, host, disconnectHost } = createFilteredSessionController("active");
+    const bootstrap = context.connectionBootstrap;
+    const client = context.gateway.snapshot.client;
+    bootstrap.setForegroundRoute("agent:main:pending");
+    const load = vi.spyOn(context.sessions, "groupsLoad");
+    const replacement = new SessionDataController({ ...host, isConnected: true });
+    try {
+      controller.hostConnected();
+      replacement.hostConnected();
+      expect(load).not.toHaveBeenCalled();
+      disconnectHost();
+      bootstrap.setForegroundPane({}, { sessionKey: "agent:main:pending", client, ready: true });
+      await bootstrap.run(context.sessions.groupsLoad, async () => {});
+      expect(load).toHaveBeenCalledOnce();
+    } finally {
+      replacement.hostDisconnected();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it.each(["archived", "all"] as const)(
+    "automatically rebinds the restored %s filter across controller reconnect",
+    async (statusFilter) => {
+      vi.useFakeTimers();
+      const { controller, list } = createFilteredSessionController(statusFilter);
+      try {
+        controller.hostConnected();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(list).toHaveBeenCalledOnce();
+        expect(list).toHaveBeenLastCalledWith(
+          expect.objectContaining({ agentId: "main", archivedFilter: statusFilter }),
+        );
+        expect(controller.sessionsResult?.sessions).toHaveLength(1);
+        controller.hostDisconnected();
+        controller.hostConnected();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(list).toHaveBeenCalledTimes(2);
+        expect(controller.sessionsResult?.sessions).toHaveLength(1);
+      } finally {
+        controller.hostDisconnected();
+      }
+    },
+  );
+
   it.each(["active", "archived", "all"] as const)(
     "keeps membership in the displayed %s query across refresh, pagination, and agent changes",
     async (statusFilter) => {
@@ -216,52 +292,55 @@ describe("filtered sidebar session event refresh", () => {
         selectStatusFilter,
         reconnect,
         publishSessionChanged,
-      } = createFilteredSessionController(statusFilter, 140, true);
+        // Membership keeps the odd-numbered half, so four roster pages of rows
+        // leave two pages of matches -- enough that pagination is still real.
+      } = createFilteredSessionController(statusFilter, SIDEBAR_SESSION_ROSTER_LIMIT * 4, true);
+      const pageSize = SIDEBAR_SESSION_ROSTER_LIMIT;
       controller.hostConnected();
       try {
         await selectMembership({ ownerId: null, involvingMe: true });
-        expect(controller.sessionsResult?.sessions).toHaveLength(60);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize);
         expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ involvingMe: true }));
         expect(controller.sessionsResult?.sessions.every((row) => row.updatedAt! % 2 === 1)).toBe(
           true,
         );
 
         await controller.loadMoreSidebarSessions();
-        expect(controller.sessionsResult?.sessions).toHaveLength(70);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
         expect(list).toHaveBeenLastCalledWith(
-          expect.objectContaining({ involvingMe: true, offset: 60 }),
+          expect.objectContaining({ involvingMe: true, offset: pageSize }),
         );
         await controller.refreshSidebarSessions();
-        expect(controller.sessionsResult?.sessions).toHaveLength(70);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
 
         list.mockClear();
         publishSessionChanged();
         await vi.advanceTimersByTimeAsync(200);
         expect(list.mock.calls.some(([query]) => query?.involvingMe === true)).toBe(true);
-        expect(controller.sessionsResult?.sessions).toHaveLength(70);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
 
         list.mockClear();
         reconnect();
         await controller.refreshSidebarSessions();
         expect(list.mock.calls.some(([query]) => query?.involvingMe === true)).toBe(true);
-        expect(controller.sessionsResult?.sessions).toHaveLength(70);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
 
         selectStatusFilter(statusFilter === "all" ? "archived" : "all");
         await controller.refreshSidebarSessions();
         expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ involvingMe: true }));
-        expect(controller.sessionsResult?.sessions).toHaveLength(60);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize);
 
         selectAgent("research");
         await controller.refreshSidebarSessions();
         expect(list).toHaveBeenLastCalledWith(
           expect.objectContaining({ agentId: "research", involvingMe: true }),
         );
-        expect(controller.sessionsResult?.sessions).toHaveLength(60);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize);
 
         await selectMembership({ ownerId: "profile-ada", involvingMe: false });
         expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ ownerId: "profile-ada" }));
         expect(list.mock.lastCall?.[0]?.involvingMe).toBeUndefined();
-        expect(controller.sessionsResult?.sessions).toHaveLength(60);
+        expect(controller.sessionsResult?.sessions).toHaveLength(pageSize);
 
         await selectMembership({ ownerId: null, involvingMe: false });
         expect(list.mock.lastCall?.[0]?.ownerId).toBeUndefined();
@@ -347,6 +426,9 @@ describe("filtered sidebar session event refresh", () => {
   it("ignores a retired filter's delayed failure after the replacement scope binds", async () => {
     const { controller, list, selectStatusFilter } = createFilteredSessionController("archived");
     controller.hostConnected();
+    // Retire an issued request, not a refresh still queued behind startup.
+    await controller.refreshSidebarSessions();
+    list.mockClear();
     let rejectList!: (error: Error) => void;
     const delayedList = new Promise<Awaited<ReturnType<typeof list>>>((_, reject) => {
       rejectList = reject;
@@ -354,6 +436,7 @@ describe("filtered sidebar session event refresh", () => {
     list.mockImplementationOnce(async () => await delayedList);
 
     const retiredRefresh = controller.refreshSidebarSessions();
+    expect(list).toHaveBeenCalledOnce();
     selectStatusFilter("all");
     rejectList(new Error("Retired archived request failed"));
     await retiredRefresh;
@@ -428,16 +511,18 @@ describe("filtered sidebar session event refresh", () => {
     "preserves every loaded %s page when a remote event replaces the list",
     async (statusFilter) => {
       vi.useFakeTimers();
+      // Two full roster pages, so the retained window still spans a real append.
+      const pageSize = SIDEBAR_SESSION_ROSTER_LIMIT;
       const { controller, list, publishSessionChanged } = createFilteredSessionController(
         statusFilter,
-        120,
+        pageSize * 2,
       );
       controller.hostConnected();
       await controller.refreshSidebarSessions();
-      expect(controller.sessionsResult?.sessions).toHaveLength(60);
+      expect(controller.sessionsResult?.sessions).toHaveLength(pageSize);
 
       await controller.loadMoreSidebarSessions();
-      expect(controller.sessionsResult?.sessions).toHaveLength(120);
+      expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
       list.mockClear();
 
       publishSessionChanged();
@@ -449,10 +534,10 @@ describe("filtered sidebar session event refresh", () => {
           agentId: "main",
           archivedFilter: statusFilter,
           includeLastMessage: true,
-          limit: 120,
+          limit: pageSize * 2,
         }),
       );
-      expect(controller.sessionsResult?.sessions).toHaveLength(120);
+      expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
       controller.hostDisconnected();
     },
   );
@@ -489,23 +574,26 @@ describe("filtered sidebar session event refresh", () => {
   });
 
   it("does not carry another filtered list's page depth across a filter change", async () => {
+    // The archived list grows to two pages; switching filters must start over
+    // at one page rather than inheriting that depth.
+    const pageSize = SIDEBAR_SESSION_ROSTER_LIMIT;
     const { controller, list, selectStatusFilter } = createFilteredSessionController(
       "archived",
-      120,
+      pageSize * 2,
     );
     controller.hostConnected();
     await controller.refreshSidebarSessions();
     await controller.loadMoreSidebarSessions();
-    expect(controller.sessionsResult?.sessions).toHaveLength(120);
+    expect(controller.sessionsResult?.sessions).toHaveLength(pageSize * 2);
     list.mockClear();
 
     selectStatusFilter("all");
     await controller.refreshSidebarSessions();
 
     expect(list).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "main", archivedFilter: "all", limit: 60 }),
+      expect.objectContaining({ agentId: "main", archivedFilter: "all", limit: pageSize }),
     );
-    expect(controller.sessionsResult?.sessions).toHaveLength(60);
+    expect(controller.sessionsResult?.sessions).toHaveLength(pageSize);
     controller.hostDisconnected();
   });
 

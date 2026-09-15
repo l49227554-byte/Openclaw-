@@ -3,7 +3,6 @@
 
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { isLoopbackIpAddress } from "@openclaw/net-policy/ip";
 import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
@@ -16,6 +15,7 @@ import { listAgentEntries } from "../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { buildGatewayConnectionDetailsWithResolvers } from "../gateway/connection-details.js";
 import { normalizeControlUiBasePath } from "../gateway/control-ui-shared.js";
+import { isLoopbackGatewayUrl } from "../gateway/net.js";
 import { resolveGatewayProbeTarget } from "../gateway/probe-target.js";
 import type { GatewayProbeResult, probeGateway as probeGatewayFn } from "../gateway/probe.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
@@ -24,6 +24,7 @@ import { defaultSlotIdForKey } from "../plugins/slots.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import { resolveTailscalePublishedHost } from "../shared/tailscale-status.js";
+import type { StatusSummary } from "../status/summary.js";
 import { pickGatewaySelfPresence } from "./gateway-presence.js";
 import { isProbeReachable } from "./gateway-status/helpers.js";
 
@@ -34,6 +35,13 @@ const memoryEngineStorageModuleLoader = createLazyImportLoader(
   () => import("../memory-host-sdk/engine-storage.js"),
 );
 const MEMORY_INDEX_META_KEY = "memory_index_meta_v1";
+
+export function resolveStatusGatewayProbeTimeoutMs(opts: {
+  timeoutMs?: number;
+  all?: boolean;
+}): number {
+  return opts.timeoutMs ?? (opts.all ? 5000 : 2500);
+}
 
 function loadGatewayProbeModule() {
   return gatewayProbeModuleLoader.load();
@@ -157,17 +165,6 @@ type StatusMemorySearchManagerResolver = (params: {
   manager: StatusMemorySearchManager | null;
 }>;
 
-function isLoopbackGatewayUrl(rawUrl: string): boolean {
-  try {
-    const hostname = new URL(rawUrl).hostname.toLowerCase();
-    const unbracketed =
-      hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-    return unbracketed === "localhost" || isLoopbackIpAddress(unbracketed);
-  } catch {
-    return false;
-  }
-}
-
 function shouldTryLocalStatusRpcFallback(params: {
   gatewayMode: "local" | "remote";
   gatewayUrl: string;
@@ -218,7 +215,7 @@ async function applyLocalStatusRpcFallback(params: {
   // The fallback uses the gateway status RPC because it can succeed after probe handshake ambiguity.
   const status = await loadGatewayCallModule()
     .then(({ callGateway }) =>
-      callGateway({
+      callGateway<Partial<StatusSummary>>({
         config: params.cfg,
         configPath: params.configPath,
         method: "status",
@@ -310,9 +307,8 @@ export async function resolveGatewayProbeSnapshot(params: {
       )
     : { auth: {}, warning: undefined };
   let gatewayProbeAuthWarning = gatewayProbeAuthResolution.warning;
-  const defaultProbeTimeoutMs = params.opts.all ? 5000 : 2500;
   const timeoutMsExplicit = params.opts.timeoutMs !== undefined;
-  const probeTimeoutMs = params.opts.timeoutMs ?? defaultProbeTimeoutMs;
+  const probeTimeoutMs = resolveStatusGatewayProbeTimeoutMs(params.opts);
   const initialGatewayProbe = shouldProbe
     ? await loadProbeGatewayModule()
         .then(({ probeGateway }) =>

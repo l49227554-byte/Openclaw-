@@ -5,9 +5,10 @@ import path from "node:path";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import { resolveConfigWidePluginManifestRegistry } from "../config/io.plugin-metadata.js";
+import { collectEnvSecretRefIds, resolveConfigSecretRef } from "../config/resolution-facts.js";
 import { collectDurableServiceEnvVarSources } from "../config/state-dir-dotenv.js";
 import type { OpenClawConfig } from "../config/types.js";
-import { coerceSecretRef, resolveSecretInputRef, type SecretRef } from "../config/types.secrets.js";
+import { resolveSecretInputRef, type SecretRef } from "../config/types.secrets.js";
 import { resolveGatewayLaunchAgentLabel } from "../daemon/constants.js";
 import { resolveGatewayStateDir, resolveGatewayTaskScriptPath } from "../daemon/paths.js";
 import {
@@ -29,7 +30,11 @@ import {
   readManagedServiceEnvKeysFromEnvironment,
 } from "../daemon/service-managed-env.js";
 import { isNonMinimalServicePathEntry } from "../daemon/service-path-policy.js";
-import type { GatewayServiceEnvironmentValueSource } from "../daemon/service-types.js";
+import {
+  resolveManagedGatewayServiceCommand,
+  type GatewayServiceCommandConfig,
+  type GatewayServiceEnvironmentValueSource,
+} from "../daemon/service-types.js";
 import {
   isDangerousHostEnvOverrideVarName,
   isDangerousHostEnvVarName,
@@ -42,6 +47,7 @@ import {
 } from "../secrets/provider-integrations.js";
 import { collectPluginConfigAssignments } from "../secrets/runtime-config-collectors-plugins.js";
 import { evaluateGatewayAuthSurfaceStates } from "../secrets/runtime-gateway-auth-surfaces.js";
+import { hasSecretRefCandidate } from "../secrets/runtime-secret-scan.js";
 import { createResolverContext } from "../secrets/runtime-shared.js";
 import { discoverConfigSecretTargets } from "../secrets/target-registry.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
@@ -67,27 +73,6 @@ const NON_PERSISTED_CONFIG_SECRET_ENV_TARGET_IDS = new Set([
   "gateway.auth.token",
 ]);
 const EXEC_SECRET_REF_PASS_ENV_ALLOWED_OVERRIDE_ONLY_KEYS = new Set(["HOME"]);
-
-function configContainsSecretRef(config: OpenClawConfig | undefined): boolean {
-  if (!config) {
-    return false;
-  }
-  const pending: unknown[] = [config];
-  const seen = new Set<object>();
-  const defaults = config.secrets?.defaults;
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (coerceSecretRef(value, defaults)) {
-      return true;
-    }
-    if (!value || typeof value !== "object" || seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    pending.push(...Object.values(value));
-  }
-  return false;
-}
 
 function isBlockedExecSecretRefPassEnvKey(key: string): boolean {
   if (isDangerousHostEnvVarName(key)) {
@@ -284,7 +269,13 @@ function collectConfigSecretRefServiceEnvSources(params: {
       continue;
     }
     const { ref } = resolveSecretInputRef({
-      value: target.value,
+      value: resolveConfigSecretRef({
+        config: params.config,
+        path: target.path,
+        value: target.value,
+        defaults: params.config.secrets?.defaults,
+        includeResolved: true,
+      }),
       refValue: target.refValue,
       defaults: params.config.secrets?.defaults,
     });
@@ -347,7 +338,13 @@ function collectExecSecretRefPassEnvServiceEnvVars(params: {
         continue;
       }
       const { ref } = resolveSecretInputRef({
-        value: target.value,
+        value: resolveConfigSecretRef({
+          config: params.config,
+          path: target.path,
+          value: target.value,
+          defaults: params.config.secrets?.defaults,
+          includeResolved: true,
+        }),
         refValue: target.refValue,
         defaults: params.config.secrets?.defaults,
       });
@@ -412,6 +409,10 @@ function collectExecSecretRefPassEnvServiceEnvVars(params: {
         );
         continue;
       }
+      const value = Object.hasOwn(params.env, key) ? params.env[key]?.trim() : undefined;
+      if (!value) {
+        continue;
+      }
       if (isBlockedExecSecretRefPassEnvKey(key)) {
         params.warn?.(
           `Exec SecretRef passEnv ref "${key}" blocked by host-env security policy`,
@@ -420,10 +421,6 @@ function collectExecSecretRefPassEnvServiceEnvVars(params: {
         continue;
       }
       if (Object.hasOwn(params.durableEnvironment, key)) {
-        continue;
-      }
-      const value = params.env[key]?.trim();
-      if (!value) {
         continue;
       }
       entries[key] = value;
@@ -552,6 +549,7 @@ function mergeServicePath(
 // service definition that the install/repair flow should not silently revert.
 const PRESERVED_OPENCLAW_OPERATOR_OPT_IN_ENV_KEYS = new Set([
   "OPENCLAW_CLI_CONTAINER_BYPASS",
+  "OPENCLAW_CONFIG_READONLY",
   "OPENCLAW_CONTAINER_HINT",
 ]);
 
@@ -570,10 +568,12 @@ function collectPreservedExistingServiceEnvVars(
       continue;
     }
     const upper = key.toUpperCase();
+    // Like OPENCLAW_SQLITE_LIBRARY, HOMEBREW_PREFIX must regenerate from each install/repair invocation.
     if (
       upper === "HOME" ||
       upper === "PATH" ||
       upper === "TMPDIR" ||
+      upper === "HOMEBREW_PREFIX" ||
       (upper.startsWith("OPENCLAW_") && !PRESERVED_OPENCLAW_OPERATOR_OPT_IN_ENV_KEYS.has(upper))
     ) {
       continue;
@@ -689,7 +689,9 @@ async function buildGatewayInstallEnvironment(params: {
       config: params.config,
     });
   // Full target discovery materializes plugin metadata; configs without refs do not need it.
-  const containsConfigSecretRef = configContainsSecretRef(params.config);
+  const containsConfigSecretRef =
+    hasSecretRefCandidate(params.config, params.config?.secrets?.defaults) ||
+    collectEnvSecretRefIds(params.config).size > 0;
   const { keys: configSecretRefKeys, environment: configSecretRefEnvironment } =
     collectConfigSecretRefServiceEnvSources({
       env: params.env,
@@ -801,8 +803,10 @@ async function buildGatewayInstallEnvironment(params: {
 export async function buildGatewayInstallPlan(params: {
   env: Record<string, string | undefined>;
   port: number;
+  allowUnconfigured?: boolean;
   runtime: GatewayDaemonRuntime;
   existingEnvironment?: Record<string, string | undefined>;
+  existingCommand?: GatewayServiceCommandConfig | null;
   devMode?: boolean;
   runtimePath?: string;
   wrapperPath?: string;
@@ -817,12 +821,6 @@ export async function buildGatewayInstallPlan(params: {
   >;
 }): Promise<GatewayInstallPlan> {
   const platform = params.platform ?? process.platform;
-  const { devMode, runtimePath } = await resolveDaemonInstallRuntimeInputs({
-    env: params.env,
-    runtime: params.runtime,
-    devMode: params.devMode,
-    runtimePath: params.runtimePath,
-  });
   const wrapperInput = params.wrapperPath ?? params.env[OPENCLAW_WRAPPER_ENV_KEY];
   const wrapperPointsAtWindowsTaskScript =
     Boolean(wrapperInput?.trim()) &&
@@ -836,6 +834,13 @@ export async function buildGatewayInstallPlan(params: {
   const wrapperPath = wrapperPointsAtWindowsTaskScript
     ? undefined
     : await resolveOpenClawWrapperPath(wrapperInput);
+  const { devMode, runtimePath } = await resolveDaemonInstallRuntimeInputs({
+    env: params.env,
+    runtime: params.runtime,
+    devMode: params.devMode,
+    runtimePath: params.runtimePath,
+    wrapperPath,
+  });
   const serviceInputEnv: Record<string, string | undefined> = wrapperPath
     ? { ...params.env, [OPENCLAW_WRAPPER_ENV_KEY]: wrapperPath }
     : wrapperPointsAtWindowsTaskScript
@@ -843,10 +848,17 @@ export async function buildGatewayInstallPlan(params: {
       : params.env;
   const { programArguments, workingDirectory } = await resolveGatewayProgramArguments({
     port: params.port,
+    allowUnconfigured:
+      params.allowUnconfigured ??
+      (params.config?.gateway?.mode === "remote" &&
+        resolveManagedGatewayServiceCommand(params.existingCommand)?.programArguments.includes(
+          "--allow-unconfigured",
+        ) === true),
     dev: devMode,
     runtime: params.runtime,
     runtimePath,
     wrapperPath,
+    ...(params.existingCommand ? { existingCommand: params.existingCommand } : {}),
   });
   await emitDaemonInstallRuntimeWarning({
     env: params.env,
@@ -858,7 +870,9 @@ export async function buildGatewayInstallPlan(params: {
   const serviceEnvironment = buildServiceEnvironment({
     env: serviceInputEnv,
     port: params.port,
-    existingNodeOptions: params.existingEnvironment?.NODE_OPTIONS,
+    runtime: params.runtime,
+    existingNodeOptions: resolveManagedGatewayServiceCommand(params.existingCommand)?.environment
+      ?.NODE_OPTIONS,
     launchdLabel:
       platform === "darwin"
         ? resolveGatewayLaunchAgentLabel(serviceInputEnv.OPENCLAW_PROFILE)

@@ -1,10 +1,12 @@
 // Control UI tests cover config behavior.
 import { render } from "lit";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import "../../styles.css";
 import type { ThemeMode, ThemeName } from "../../app/theme.ts";
 import { renderConfigForm } from "../../components/config-form.ts";
+import "../../styles.css";
+import type { SelectPicker } from "../../components/select-picker.ts";
 import { warmJson5 } from "../../lib/json5-runtime.ts";
+import { updatePickers, choosePickerValue } from "../../test-helpers/select-picker.ts";
 import { renderBrowserLinkPreferencesRow } from "./browser-link-preferences.ts";
 import { createConfigViewState, renderConfig, type ConfigProps } from "./view.ts";
 
@@ -63,15 +65,14 @@ describe("config view", () => {
     setFontUi: vi.fn(),
     setFontChat: vi.fn(),
     accent: undefined,
-    accentOverridden: false,
     accentProvenance: "default" as const,
+    accentResetValue: undefined,
     systemLocale: "en" as const,
     localeOverride: undefined,
     localeOverridden: false,
     localeProvenance: "default" as const,
     localeResetValue: undefined,
     onLocaleChange: vi.fn(),
-    resetLocale: vi.fn(),
     setTheme: vi.fn(),
     setThemeMode: vi.fn(),
     setAccent: vi.fn(),
@@ -97,6 +98,8 @@ describe("config view", () => {
     setSessionCatalogHidden: vi.fn(),
     chatMessageMaxWidth: undefined,
     setChatMessageMaxWidth: vi.fn(),
+    chatCollapseTaskProgress: false,
+    setChatCollapseTaskProgress: vi.fn(),
     showAdvancedSettings: false,
     setShowAdvancedSettings: vi.fn(),
     chatSendShortcut: "enter" as const,
@@ -104,7 +107,6 @@ describe("config view", () => {
     chatSendShortcutProvenance: "default" as const,
     chatSendShortcutResetValue: "enter" as const,
     setChatSendShortcut: vi.fn(),
-    resetChatSendShortcut: vi.fn(),
     chatFollowUpMode: undefined,
     chatFollowUpModeOverridden: false,
     chatFollowUpModeProvenance: "default" as const,
@@ -135,6 +137,78 @@ describe("config view", () => {
     } finally {
       container.remove();
     }
+  });
+
+  it("keeps Setup collapsed on Advanced and edits consent without exposing machine state", () => {
+    const wizard = {
+      accessMode: "full",
+      appRecommendations: true,
+      lastRunAt: "2026-08-30T12:00:00Z",
+      lastRunVersion: "2026.8.30",
+      lastRunCommit: "abc1234",
+      lastRunCommand: "onboard",
+      lastRunMode: "local",
+      securityAcknowledgedAt: "2026-08-29T12:00:00Z",
+    };
+    const schema = {
+      type: "object",
+      properties: {
+        wizard: {
+          type: "object",
+          properties: Object.fromEntries(
+            Object.entries(wizard).map(([key, value]) => [
+              key,
+              key === "accessMode"
+                ? { type: "string", enum: ["full", "guarded"] }
+                : { type: typeof value },
+            ]),
+          ),
+        },
+      },
+    };
+    const onFormPatch = vi.fn();
+    const { container, props } = renderConfigView({
+      schema,
+      formValue: { wizard },
+      forceShowAdvanced: true,
+      settingsLayout: "accordion",
+      onFormPatch,
+    });
+    const setup = queryRequired(container, "#config-section-wizard", HTMLDetailsElement);
+    expect(setup.open).toBe(false);
+    setup.open = true;
+    expect(setup.textContent).toContain(wizard.lastRunVersion);
+    expect(setup.textContent).not.toContain(wizard.securityAcknowledgedAt);
+    expect(setup.querySelectorAll("input, textarea, select")).toHaveLength(0);
+    expect(onFormPatch).not.toHaveBeenCalled();
+    const access = setup.querySelector("wa-radio-group") as HTMLElement & { value: string };
+    access.value = setup.querySelector('wa-radio[value="1"]')?.getAttribute("value") ?? "";
+    access.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(onFormPatch).toHaveBeenCalledWith(["wizard", "accessMode"], "guarded");
+    const toggle = setup.querySelector("wa-switch") as HTMLElement & { checked: boolean };
+    expect(toggle.checked).toBe(true);
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(onFormPatch).toHaveBeenLastCalledWith(["wizard", "appRecommendations"], false);
+    expect(props.formValue).toEqual({ wizard });
+
+    const defaults = renderConfigView({
+      schema,
+      formValue: {},
+      activeSection: "wizard",
+      forceAdvancedSection: "wizard",
+      forceShowAdvanced: true,
+    });
+    expect(
+      queryRequired(defaults.container, "#config-section-wizard", HTMLDetailsElement).open,
+    ).toBe(true);
+    expect(
+      (defaults.container.querySelector("wa-radio-group") as HTMLElement & { value: string }).value,
+    ).toBe("0");
+    expect(
+      (defaults.container.querySelector("wa-switch") as HTMLElement & { checked: boolean }).checked,
+    ).toBe(true);
+    expect(defaults.props.onFormPatch).not.toHaveBeenCalled();
   });
 
   it("renders System language first on Appearance and emits locale overrides", () => {
@@ -229,7 +303,7 @@ describe("config view", () => {
     return container.textContent?.replace(/\s+/g, " ").trim() ?? "";
   }
 
-  it("names the theme's chat face and maps typography sentinels back to unset overrides", () => {
+  it("names the theme's chat face and maps typography sentinels back to unset overrides", async () => {
     const { container, props } = renderConfigView({
       theme: "dash",
       fontUi: "geist",
@@ -238,27 +312,27 @@ describe("config view", () => {
       activeSection: "__appearance__",
       includeSections: ["__appearance__"],
     });
-    const ui = queryRequired(container, "#settings-font-ui", HTMLElement) as HTMLElement & {
-      value: string;
-    };
-    const chat = queryRequired(container, "#settings-font-chat", HTMLElement) as HTMLElement & {
-      value: string;
-    };
-    expect(ui.querySelector('wa-option[value="theme"]')?.textContent).toContain("Dash · DM Sans");
-    expect(chat.querySelector('wa-option[value="theme"]')?.textContent).toContain(
+    await updatePickers(container);
+    const ui = queryRequired(container, "#settings-font-ui", HTMLElement).closest<SelectPicker>(
+      "openclaw-select-picker",
+    )!;
+    const chat = queryRequired(container, "#settings-font-chat", HTMLElement).closest<SelectPicker>(
+      "openclaw-select-picker",
+    )!;
+    expect(ui.querySelector('[role="option"][data-value="theme"]')?.textContent).toContain(
+      "Dash · DM Sans",
+    );
+    expect(chat.querySelector('[role="option"][data-value="theme"]')?.textContent).toContain(
       "Dash · Fraunces",
     );
     expect(ui.closest(".settings-row")?.textContent).toContain("Saved to your profile");
-    expect(ui.querySelectorAll("wa-option")).toHaveLength(11);
-    expect(chat.querySelectorAll("wa-option")).toHaveLength(11);
-    Object.defineProperty(ui, "value", { configurable: true, value: "lora" });
-    ui.dispatchEvent(new Event("change"));
+    expect(ui.querySelectorAll('[role="option"]')).toHaveLength(11);
+    expect(chat.querySelectorAll('[role="option"]')).toHaveLength(11);
+    await choosePickerValue(ui, "lora");
     expect(props.setFontUi).toHaveBeenLastCalledWith("lora");
-    Object.defineProperty(ui, "value", { configurable: true, value: "theme" });
-    ui.dispatchEvent(new Event("change"));
+    await choosePickerValue(ui, "theme");
     expect(props.setFontUi).toHaveBeenLastCalledWith(undefined);
-    Object.defineProperty(chat, "value", { configurable: true, value: "theme" });
-    chat.dispatchEvent(new Event("change"));
+    await choosePickerValue(chat, "theme");
     expect(props.setFontChat).toHaveBeenLastCalledWith(undefined);
   });
 
@@ -324,7 +398,7 @@ describe("config view", () => {
     ).toEqual(["Open links in Control UI browser", "Browser Enabled"]);
   });
 
-  it("routes restore-default actions through config removal", () => {
+  it("routes scalar clears and default selections through config callbacks", () => {
     const onFormPatch = vi.fn();
     const onFormRemove = vi.fn();
     const { container } = renderConfigView({
@@ -359,11 +433,9 @@ describe("config view", () => {
     const retriesRow = Array.from(container.querySelectorAll<HTMLElement>(".settings-row")).find(
       (row) => row.textContent?.includes("Retries"),
     );
-    queryRequired(
-      retriesRow ?? container,
-      "button[aria-label='Reset to default']",
-      HTMLButtonElement,
-    ).click();
+    const retries = queryRequired(retriesRow ?? container, "input", HTMLInputElement);
+    retries.value = "";
+    retries.dispatchEvent(new Event("input", { bubbles: true }));
     expect(onFormRemove).toHaveBeenCalledWith(["gateway", "retries"]);
     expect(onFormPatch).not.toHaveBeenCalled();
 
@@ -693,7 +765,11 @@ describe("config view", () => {
     // The capability refuses form submissions until the raw draft is saved or
     // discarded, so the raw actions stay on screen and Form remains gated.
     expect(container.querySelector(".config-raw-actions")).not.toBeNull();
-    expect(findButtonByText(container, "Form").disabled).toBe(true);
+    const formButton = findButtonByText(container, "Form");
+    const rawButton = findButtonByText(container, "Raw");
+    expect(formButton.disabled).toBe(true);
+    expect(formButton.getAttribute("aria-pressed")).toBe("false");
+    expect(rawButton.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("disables raw save/discard without changes and locks the editor while busy", () => {
@@ -803,7 +879,8 @@ describe("config view", () => {
 
     const formButton = findButtonByText(container, "Form");
     const rawButton = findButtonByText(container, "Raw");
-    expect([...formButton.classList]).toEqual(["config-mode-toggle__btn", "active"]);
+    expect(formButton.getAttribute("aria-pressed")).toBe("true");
+    expect(rawButton.getAttribute("aria-pressed")).toBe("false");
     expect(rawButton.disabled).toBe(true);
     expect(rawButton.getAttribute("title")).toBe("Raw mode unavailable for this snapshot");
     expect(container.querySelector(".config-raw-field")).toBeNull();
@@ -907,6 +984,43 @@ describe("config view", () => {
     expect(queryRequired(expanded.container, `#${controlledPanelId}`, HTMLDivElement).hidden).toBe(
       false,
     );
+    expect(
+      queryRequired(
+        expanded.container,
+        ".config-accordion-group__item--active",
+        HTMLButtonElement,
+      ).getAttribute("aria-current"),
+    ).toBe("true");
+    expect(
+      collapsed.container
+        .querySelector(".config-accordion-group__item")
+        ?.hasAttribute("aria-current"),
+    ).toBe(false);
+  });
+
+  it("exposes the selected Form/Raw mode through aria-pressed", () => {
+    const base = {
+      schema: {
+        type: "object",
+        properties: {
+          gateway: { type: "object", properties: { mode: { type: "string" } } },
+        },
+      },
+      formValue: { gateway: { mode: "local" } },
+      originalValue: { gateway: { mode: "local" } },
+    } as const;
+    const formMode = renderConfigView({ ...base, formMode: "form" });
+    expect(findButtonByText(formMode.container, "Form").getAttribute("aria-pressed")).toBe("true");
+    expect(findButtonByText(formMode.container, "Raw").getAttribute("aria-pressed")).toBe("false");
+
+    const rawMode = renderConfigView({
+      ...base,
+      formMode: "raw",
+      raw: "{}\n",
+      originalRaw: "{}\n",
+    });
+    expect(findButtonByText(rawMode.container, "Form").getAttribute("aria-pressed")).toBe("false");
+    expect(findButtonByText(rawMode.container, "Raw").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("renders the virtual Notifications tab on Notifications settings", () => {
@@ -925,7 +1039,7 @@ describe("config view", () => {
       webPush: {
         supported: true,
         permission: "default",
-        subscribed: false,
+        subscription: "missing",
         loading: false,
       },
     });
@@ -952,7 +1066,7 @@ describe("config view", () => {
       webPush: {
         supported: true,
         permission: "default",
-        subscribed: false,
+        subscription: "missing",
         loading: false,
       },
     });
@@ -1835,7 +1949,7 @@ describe("config view", () => {
     expect(findButtonByText(customContainer, "Claw").getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("shows Appearance defaults without reset actions", () => {
+  it("shows Appearance default descriptions", () => {
     const { container } = renderConfigView({
       activeSection: "__appearance__",
       includeSections: ["__appearance__"],
@@ -1868,30 +1982,16 @@ describe("config view", () => {
     expect(
       [...lobsterPreviews].every((preview) => Boolean(preview.getAttribute("aria-label")?.trim())),
     ).toBe(true);
-    expect(container.querySelector('button[aria-label="Reset to default"]')).toBeNull();
   });
 
-  it("keeps direct Appearance defaults while resetting unrelated overrides independently", () => {
-    const resetLocale = vi.fn();
+  it("keeps direct Appearance default selections independent", () => {
     const setTheme = vi.fn();
     const setThemeMode = vi.fn();
     const setAccent = vi.fn();
     const setTextScale = vi.fn();
-    const setSidebarLiveActivity = vi.fn();
-    const setChatMessageMaxWidth = vi.fn();
-    const setChatSendShortcut = vi.fn();
-    const resetChatSendShortcut = vi.fn();
-    const setCatalogOpenTarget = vi.fn();
-    const setComposerHoldToRecord = vi.fn();
-    const setLobsterPetVisits = vi.fn();
-    const setLobsterPetSounds = vi.fn();
     const { container } = renderConfigView({
       activeSection: "__appearance__",
       includeSections: ["__appearance__"],
-      systemLocale: "de",
-      localeOverride: "pt-BR",
-      localeOverridden: true,
-      resetLocale,
       theme: "knot",
       themeOverridden: true,
       setTheme,
@@ -1899,35 +1999,11 @@ describe("config view", () => {
       themeModeOverridden: true,
       setThemeMode,
       accent: "#52c99a",
-      accentOverridden: true,
       setAccent,
       textScale: 110,
       textScaleOverridden: true,
       setTextScale,
-      sidebarLiveActivity: false,
-      setSidebarLiveActivity,
-      chatMessageMaxWidth: "82%",
-      setChatMessageMaxWidth,
-      chatSendShortcut: "modifier-enter",
-      chatSendShortcutOverridden: true,
-      setChatSendShortcut,
-      resetChatSendShortcut,
-      catalogOpenTarget: "terminal",
-      setCatalogOpenTarget,
-      composerHoldToRecord: false,
-      setComposerHoldToRecord,
-      lobsterPetVisits: false,
-      setLobsterPetVisits,
-      lobsterPetSounds: true,
-      setLobsterPetSounds,
     });
-    const resetIn = (element: Element | null) => {
-      const button = element?.querySelector<HTMLButtonElement>(
-        'button[aria-label="Reset to default"]',
-      );
-      expect(button).not.toBeNull();
-      button?.click();
-    };
     const row = (title: string) =>
       Array.from(container.querySelectorAll<HTMLElement>(".settings-row")).find(
         (candidate) =>
@@ -1948,33 +2024,15 @@ describe("config view", () => {
       .find((button) => button.textContent?.includes("100%"))
       ?.click();
 
-    resetIn(container.querySelector("#settings-language .settings-row"));
-    resetIn(row("Show live agent activity in sidebar"));
-    resetIn(row("Message width"));
-    resetIn(row("Send shortcut"));
-    resetIn(row("Open external sessions in"));
-    resetIn(row("Hold microphone button to start dictation"));
-    resetIn(row("Lobster visits"));
-    resetIn(row("Lobster sounds"));
-
-    expect(resetLocale).toHaveBeenCalledOnce();
     expect(setTheme).toHaveBeenCalledWith("claw", expect.any(Object));
     expect(setThemeMode).toHaveBeenCalledWith("system", expect.any(Object));
     expect(setAccent).toHaveBeenCalledWith(undefined);
     expect(setTextScale).toHaveBeenCalledWith(100);
-    expect(setSidebarLiveActivity).toHaveBeenCalledWith(true);
-    expect(setChatMessageMaxWidth).toHaveBeenCalledWith(undefined);
-    expect(resetChatSendShortcut).toHaveBeenCalledOnce();
-    expect(setCatalogOpenTarget).toHaveBeenCalledWith("viewer");
-    expect(setComposerHoldToRecord).toHaveBeenCalledWith(true);
-    expect(setLobsterPetVisits).toHaveBeenCalledWith(true);
-    expect(setLobsterPetSounds).toHaveBeenCalledWith(false);
   });
 
-  it("keeps authored visual defaults direct while preserving chat preference resets", () => {
+  it("keeps authored visual defaults direct", () => {
     const setTheme = vi.fn();
     const setThemeMode = vi.fn();
-    const resetChatSendShortcut = vi.fn();
     const { container } = renderConfigView({
       activeSection: "__appearance__",
       includeSections: ["__appearance__"],
@@ -1989,7 +2047,6 @@ describe("config view", () => {
       chatSendShortcut: "enter",
       chatSendShortcutOverridden: true,
       chatSendShortcutProvenance: "synced",
-      resetChatSendShortcut,
     });
     const themeSection = queryRequired(container, "#settings-appearance-theme", HTMLElement);
     const shortcutRow = Array.from(container.querySelectorAll<HTMLElement>(".settings-row")).find(
@@ -2002,15 +2059,12 @@ describe("config view", () => {
     expect(shortcutRow?.textContent).toContain("Default: Enter");
     findButtonByText(themeSection, "Claw").click();
     themeSection.querySelector<HTMLElement>('wa-radio[value="system"]')?.click();
-    shortcutRow?.querySelector<HTMLButtonElement>("button[aria-label='Reset to default']")?.click();
 
     expect(setTheme).toHaveBeenCalledWith("claw", expect.any(Object));
     expect(setThemeMode).toHaveBeenCalledWith("system", expect.any(Object));
-    expect(resetChatSendShortcut).toHaveBeenCalledOnce();
   });
 
   it("renders rejected theme and locale edits as browser-only fallbacks", () => {
-    const resetLocale = vi.fn();
     const setTheme = vi.fn();
     const { container } = renderConfigView({
       activeSection: "__appearance__",
@@ -2019,7 +2073,6 @@ describe("config view", () => {
       localeOverridden: true,
       localeProvenance: "device-local",
       localeResetValue: "de",
-      resetLocale,
       theme: "knot",
       themeOverridden: true,
       themeProvenance: "device-local",
@@ -2051,10 +2104,8 @@ describe("config view", () => {
       themeSection.querySelector(".settings-theme-card--knot")?.getAttribute("aria-pressed"),
     ).toBe("true");
 
-    languageRow.querySelector<HTMLButtonElement>('button[aria-label="Reset to default"]')?.click();
     findButtonByText(themeSection, "Claw").click();
 
-    expect(resetLocale).toHaveBeenCalledOnce();
     expect(setTheme).toHaveBeenCalledWith("claw", expect.any(Object));
   });
 
@@ -2111,12 +2162,35 @@ describe("config view", () => {
     );
     for (const title of [
       "Message width",
+      "Collapse task progress by default",
       "Open external sessions in",
       "Hold microphone button to start dictation",
     ]) {
       expect(row(title)?.textContent).toContain("Stored in this browser only");
       expect(row(title)?.textContent).not.toContain("Synced across your devices");
     }
+  });
+
+  it("renders task progress auto-collapse off by default and enables it from Chat settings", () => {
+    const setChatCollapseTaskProgress = vi.fn();
+    const { container } = renderConfigView({
+      activeSection: "__appearance__",
+      includeSections: ["__appearance__"],
+      chatCollapseTaskProgress: false,
+      setChatCollapseTaskProgress,
+    });
+    const row = Array.from(container.querySelectorAll<HTMLElement>(".settings-row")).find(
+      (candidate) =>
+        candidate.querySelector(".settings-row__title")?.textContent?.trim() ===
+        "Collapse task progress by default",
+    );
+    const toggle = row?.querySelector<HTMLElement & { checked: boolean }>("wa-switch");
+
+    expect(toggle?.checked).toBe(false);
+    row?.click();
+    expect(setChatCollapseTaskProgress).toHaveBeenCalledWith(true);
+    expect(row?.textContent).toContain("Using default: Disabled");
+    expect(row?.textContent).toContain("Stored in this browser only");
   });
 
   it("shows the tweakcn importer once the custom slot is opened", () => {
@@ -2249,6 +2323,9 @@ describe("config view", () => {
       "System default",
       "Desk Camera",
     ]);
+    for (const select of [microphoneSelect, cameraSelect]) {
+      expect(select.closest(".settings-row")?.querySelector("button")).toBeNull();
+    }
     expect(container.textContent).toContain("Hold microphone button to start dictation");
 
     microphoneSelect.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));

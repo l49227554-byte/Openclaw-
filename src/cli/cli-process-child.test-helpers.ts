@@ -1,8 +1,9 @@
 // Shared child harness for CLI process suites: real Node+TSX children, one
 // deadlock guard each, and failures that always carry the child's own output.
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import path from "node:path";
+import { resolveVitestNodeArgs } from "../../scripts/lib/vitest-process-env.mts";
 import { DEFAULT_VITEST_TEST_TIMEOUT_MS } from "../../test/vitest/vitest.timeouts.js";
 
 const OUTPUT_TAIL_CHARS = 8_000;
@@ -44,19 +45,71 @@ export function formatCliProcessFailure(params: {
   )}\n--- child stdout (tail) ---\n${formatOutputTail(params.stdout)}`;
 }
 
+/** Observe a marker without taking ownership of the shared stderr pipe. */
+export function waitForCliProcessStderrMarker(
+  child: ChildProcessWithoutNullStreams,
+  marker: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let stderr = "";
+    const cleanup = () => {
+      child.stderr.off("data", onData);
+      child.stderr.off("end", onEnd);
+      child.stderr.off("close", onClose);
+      child.stderr.off("error", onError);
+      child.off("error", onError);
+    };
+    const fail = (reason: string, cause?: Error) => {
+      cleanup();
+      reject(
+        new Error(`CLI stderr ${reason} before marker ${JSON.stringify(marker)}\n${stderr}`, {
+          cause,
+        }),
+      );
+    };
+    const onData = (chunk: string | Buffer) => {
+      stderr += chunk.toString();
+      if (stderr.includes(marker)) {
+        cleanup();
+        resolve();
+      }
+    };
+    const onEnd = () => fail("ended");
+    const onClose = () => fail("closed");
+    const onError = (error: Error) => fail(`failed: ${error.message}`, error);
+    child.stderr.on("data", onData);
+    child.stderr.once("end", onEnd);
+    child.stderr.once("close", onClose);
+    child.stderr.once("error", onError);
+    child.once("error", onError);
+    if (child.stderr.readableEnded || child.stderr.destroyed) {
+      onEnd();
+    }
+  });
+}
+
 /** Runs one CLI child to completion under {@link CLI_PROCESS_DEADLOCK_GUARD_MS}. */
 export async function runCliProcessChild(params: {
   nodeArgs: string[];
+  nodeExecutable?: string;
   env: NodeJS.ProcessEnv;
   cwd?: string;
+  input?: string;
+  interact?: (child: ChildProcessWithoutNullStreams) => Promise<void> | void;
   onStdout?: (stdout: string) => void;
   timeoutMs?: number;
 }): Promise<CliProcessChildResult> {
   const timeoutMs = params.timeoutMs ?? CLI_PROCESS_DEADLOCK_GUARD_MS;
-  const child = spawn(process.execPath, params.nodeArgs, {
+  const executable = params.nodeExecutable ?? process.execPath;
+  // CLI children use the test runner's V8 policy without inheriting its preloads.
+  const nodeArgs =
+    process.versions.bun && params.nodeExecutable === undefined
+      ? params.nodeArgs
+      : [...resolveVitestNodeArgs(params.env), ...params.nodeArgs];
+  const child = spawn(executable, nodeArgs, {
     cwd: params.cwd ?? path.resolve("."),
     env: params.env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
   });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -80,9 +133,17 @@ export async function runCliProcessChild(params: {
     code: code as number | null,
     signal: signal as NodeJS.Signals | null,
   }));
+  const interaction = (async () => {
+    if (params.interact) {
+      await params.interact(child);
+      return;
+    }
+    child.stdin.end(params.input);
+  })();
+  const completed = Promise.all([closed, interaction]).then(([exit]) => exit);
   let guard: NodeJS.Timeout | undefined;
   const exit = await Promise.race([
-    closed,
+    completed,
     new Promise<never>((_, reject) => {
       guard = setTimeout(() => {
         child.kill("SIGKILL");
@@ -105,10 +166,20 @@ export async function runCliProcessChild(params: {
       }, timeoutMs);
       guard.unref();
     }),
-  ]).finally(() => {
-    if (guard) {
-      clearTimeout(guard);
-    }
-  });
+  ])
+    .catch((error: unknown) => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      throw error;
+    })
+    .finally(() => {
+      if (guard) {
+        clearTimeout(guard);
+      }
+    });
   return { code: exit.code, signal: exit.signal, stdout, stderr };
 }

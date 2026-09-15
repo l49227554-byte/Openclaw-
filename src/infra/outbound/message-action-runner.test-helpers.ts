@@ -1,20 +1,24 @@
 // Shared runner-facade test harness. These mocks isolate message-action routing,
 // execution, and send coordination from real channel and gateway runtimes.
-import { vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
+import { createRequireRecord } from "../../../test/helpers/record.js";
 import { jsonResult } from "../../agents/tools/common.js";
 import { dispatchChannelMessageAction } from "../../channels/plugins/message-action-dispatch.js";
 import type {
-  ChannelMessageActionContext,
   ChannelMessageActionName,
   ChannelPlugin,
 } from "../../channels/plugins/types.public.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   normalizeMessagePresentation,
   renderMessagePresentationFallbackText,
 } from "../../interactive/payload.js";
 import { extractToolPayload } from "../../plugin-sdk/tool-payload.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../../plugins/runtime.js";
-import { createTestRegistry } from "../../test-utils/channel-plugins.js";
+import {
+  createChannelTestPluginBase,
+  createTestRegistry,
+} from "../../test-utils/channel-plugins.js";
 
 type ChannelActionHandler = NonNullable<NonNullable<ChannelPlugin["actions"]>["handleAction"]>;
 
@@ -34,9 +38,7 @@ const hoistedMessageActionRunnerMocks = vi.hoisted(() => ({
   prepareOutboundMirrorRoute: vi.fn(),
   beginTerminalSourceReplyDelivery: vi.fn(),
   cancelTerminalSourceReplyDelivery: vi.fn(),
-  isCurrentSourceReplyActionName: vi.fn(() => false),
   isDeliveredCurrentSourceReply: vi.fn(() => false),
-  isDeliveredCurrentSourceReplyAction: vi.fn(() => false),
   reconcileTerminalSourceReplyDelivery: vi.fn(),
   loadWebMedia: vi.fn<typeof import("../../media/web-media.js").loadWebMedia>(),
 }));
@@ -68,9 +70,7 @@ vi.mock("./message.gateway.runtime.js", () => ({
 vi.mock("./source-reply-mirror.js", () => ({
   beginTerminalSourceReplyDelivery: messageActionRunnerMocks.beginTerminalSourceReplyDelivery,
   cancelTerminalSourceReplyDelivery: messageActionRunnerMocks.cancelTerminalSourceReplyDelivery,
-  isCurrentSourceReplyActionName: messageActionRunnerMocks.isCurrentSourceReplyActionName,
   isDeliveredCurrentSourceReply: messageActionRunnerMocks.isDeliveredCurrentSourceReply,
-  isDeliveredCurrentSourceReplyAction: messageActionRunnerMocks.isDeliveredCurrentSourceReplyAction,
   reconcileTerminalSourceReplyDelivery:
     messageActionRunnerMocks.reconcileTerminalSourceReplyDelivery,
 }));
@@ -110,7 +110,8 @@ vi.mock("./message-action-threading.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../media/web-media.js", () => ({
+vi.mock("../../media/web-media.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../media/web-media.js")>()),
   loadWebMedia: messageActionRunnerMocks.loadWebMedia,
 }));
 
@@ -123,6 +124,39 @@ export function setMessageActionTestPlugin(plugin: unknown, pluginId: string, or
   setActivePluginRegistry(
     createTestRegistry([{ pluginId, source: "test", ...(origin ? { origin } : {}), plugin }]),
   );
+}
+
+export function createWorkspaceMediaTestPlugin(): ChannelPlugin {
+  return {
+    ...createChannelTestPluginBase({
+      id: "workspace",
+      label: "Workspace",
+      config: {
+        listAccountIds: () => ["default"],
+        resolveAccount: (cfg) => cfg.channels?.workspace ?? {},
+        isConfigured: async (account) =>
+          typeof (account as { botToken?: unknown }).botToken === "string" &&
+          (account as { botToken?: string }).botToken!.trim() !== "" &&
+          typeof (account as { appToken?: unknown }).appToken === "string" &&
+          (account as { appToken?: string }).appToken!.trim() !== "",
+      },
+    }),
+    outbound: {
+      deliveryMode: "direct",
+      resolveTarget: ({ to }) => {
+        const trimmed = to?.trim() ?? "";
+        if (!trimmed) {
+          return {
+            ok: false,
+            error: new Error("missing target for workspace"),
+          };
+        }
+        return { ok: true, to: trimmed };
+      },
+      sendText: async () => ({ channel: "workspace", messageId: "msg-test" }),
+      sendMedia: async () => ({ channel: "workspace", messageId: "msg-test" }),
+    },
+  };
 }
 
 export function createAlwaysConfiguredPluginConfig(
@@ -171,6 +205,7 @@ export function createActionHubPluginFixture() {
         ],
       }),
       messageActionTargetAliases: {
+        "list-pins": { aliases: ["chatId"] },
         edit: {
           aliases: ["messageId", "chatId", "chat_id", "channel_id"],
           deliveryTargetAliases: ["chatId", "chat_id", "channel_id"],
@@ -266,20 +301,7 @@ export function createPollForwardingPlugin(params: {
 
 async function executePluginAction(params: {
   action: "send" | "poll";
-  ctx: Pick<
-    ChannelMessageActionContext,
-    | "channel"
-    | "cfg"
-    | "params"
-    | "mediaAccess"
-    | "accountId"
-    | "gateway"
-    | "toolContext"
-    | "inboundEventKind"
-  > & {
-    dryRun: boolean;
-    agentId?: string;
-  };
+  ctx: Parameters<typeof import("./outbound-send-service.js").executeSendAction>[0]["ctx"];
 }) {
   const handled = await dispatchChannelMessageAction({
     channel: params.ctx.channel,
@@ -294,8 +316,8 @@ async function executePluginAction(params: {
         : undefined,
     accountId: params.ctx.accountId ?? undefined,
     gateway: params.ctx.gateway,
-    toolContext: params.ctx.toolContext,
-    inboundEventKind: params.ctx.inboundEventKind,
+    toolContext: params.ctx.input.toolContext,
+    inboundEventKind: params.ctx.input.inboundEventKind,
     dryRun: params.ctx.dryRun,
     agentId: params.ctx.agentId,
   });
@@ -414,4 +436,74 @@ export async function resetMessageActionMediaMocks() {
   });
   mocks.loadWebMedia.mockReset();
   mocks.loadWebMedia.mockImplementation(actualLoadWebMedia);
+}
+
+const requireRecord = createRequireRecord("record", "expected-non-array-record");
+const requireLabeledRecord = createRequireRecord("record", "expected-label");
+
+export function readFirstPluginCall(mock: {
+  mock: { calls: unknown[][] };
+}): Record<string, unknown> {
+  const [mockCall] = mock.mock.calls;
+  const call = mockCall?.[0];
+  return requireRecord(call);
+}
+
+export function readPluginCall(
+  mock: { mock: { calls: unknown[][] } },
+  callIndex: number,
+): Record<string, unknown> {
+  const mockCall = mock.mock.calls[callIndex];
+  const call = mockCall?.[0];
+  return requireRecord(call);
+}
+
+export function readLastPluginCall(mock: {
+  mock: { calls: unknown[][] };
+}): Record<string, unknown> {
+  return readPluginCall(mock, mock.mock.calls.length - 1);
+}
+
+export function readMockCallArg(
+  mock: { mock: { calls: unknown[][] } },
+  label: string,
+  callIndex = 0,
+  argIndex = 0,
+): Record<string, unknown> {
+  const mockCall = mock.mock.calls[callIndex];
+  const value = mockCall?.[argIndex];
+  return requireLabeledRecord(value, label);
+}
+
+export function readRecordField(record: Record<string, unknown>, key: string, label: string) {
+  const value = record[key];
+  return requireLabeledRecord(value, label);
+}
+
+export function expectRecordFields(
+  record: Record<string, unknown>,
+  expected: Record<string, unknown>,
+  label: string,
+) {
+  for (const [key, value] of Object.entries(expected)) {
+    expect(record[key], `${label}.${key}`).toEqual(value);
+  }
+}
+
+export function createEnabledMessageActionConfig(channel: string): OpenClawConfig {
+  return { channels: { [channel]: { enabled: true } } };
+}
+
+export function useActionHubPluginFixture() {
+  const fixture = createActionHubPluginFixture();
+  beforeEach(() => {
+    setMessageActionTestPlugin(fixture.plugin, "actionhub");
+    fixture.handleAction.mockClear();
+  });
+  afterEach(() => {
+    setActivePluginRegistry(createTestRegistry([]));
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+  return fixture;
 }

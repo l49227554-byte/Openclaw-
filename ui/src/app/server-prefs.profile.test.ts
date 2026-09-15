@@ -5,6 +5,7 @@ import {
   normalizeUiAppearancePreference,
   UI_APPEARANCE_PREFERENCE_KEYS,
 } from "../../../packages/gateway-protocol/src/schema/ui-appearance-preferences.ts";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { createStorageMock } from "../test-helpers/storage.ts";
 import { waitForFast } from "../test-helpers/wait-for.ts";
 import {
@@ -30,6 +31,7 @@ const scope = "ws://profiles";
 beforeEach(() => {
   vi.stubGlobal("localStorage", createStorageMock());
   resetServerUiPrefsSync();
+  patchSettings({ gatewayUrl: scope });
 });
 
 afterEach(() => {
@@ -52,6 +54,10 @@ describe("profile-bound appearance preferences", () => {
       tide: true,
       beacon: true,
       phosphor: true,
+      crt: true,
+      manuscript: true,
+      rose: true,
+      miami: true,
       custom: false,
     };
     for (const [theme, storable] of Object.entries(profileStorable)) {
@@ -256,10 +262,7 @@ describe("profile-bound appearance preferences", () => {
   );
 
   it("keeps pending local edits above incoming profile updates", async () => {
-    let releaseWrite!: (value: unknown) => void;
-    const write = new Promise<unknown>((resolve) => {
-      releaseWrite = resolve;
-    });
+    const { promise: write, resolve: releaseWrite } = createDeferred<unknown>();
     let profileTheme = "knot";
     const request = vi.fn(async (method: string) =>
       method === "users.prefs.get"

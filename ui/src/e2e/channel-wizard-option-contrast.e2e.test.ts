@@ -1,6 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
+import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -12,15 +13,15 @@ const suite = createControlUiE2eSuite({
 });
 
 const proofVariant = process.env.OPENCLAW_PICKER_PROOF_VARIANT;
-const proofDirectory = path.join(
-  process.cwd(),
-  ".artifacts",
-  "control-ui-e2e",
-  "channel-wizard-option-contrast",
-);
+let proofDirectory: string;
+beforeEach(() => {
+  if (proofVariant) {
+    proofDirectory = createControlUiE2eArtifactDir("channel-wizard-option-contrast");
+  }
+});
 
 suite.define(() => {
-  it("keeps active option subtext as legible as its label", async () => {
+  it("keeps option subtext legible and keyboard focus visible in forced colors", async () => {
     await suite.withPage(
       {
         colorScheme: "dark",
@@ -29,7 +30,7 @@ suite.define(() => {
         viewport: { height: 900, width: 1280 },
       },
       async ({ page }) => {
-        await installMockGateway(page, {
+        const gateway = await installMockGateway(page, {
           featureMethods: ["channels.status", "channels.pairing.list", "wizard.start"],
           methodResponses: {
             "channels.status": {
@@ -73,19 +74,24 @@ suite.define(() => {
         });
 
         expect((await page.goto(`${suite.server.baseUrl}settings/channels`))?.status()).toBe(200);
-        await page.locator(".channels-item", { hasText: "iMessage" }).first().click();
+        await page
+          .locator("button.channels-item, button.channels-item__detail", { hasText: "iMessage" })
+          .first()
+          .click();
         await page.locator(".channels-detail").getByRole("button", { name: "Run setup" }).click();
 
         const wizard = page.locator(".channels-wizard");
-        const picker = wizard.locator("wa-select");
-        await picker.click();
-        await expect.poll(() => picker.getAttribute("open")).not.toBeNull();
+        const picker = wizard.locator("openclaw-select-picker");
+        await picker.locator(".picker-select__trigger").click();
+        await expect
+          .poll(() => picker.locator(".picker-select__trigger").getAttribute("aria-expanded"))
+          .toBe("true");
 
-        const activeOption = wizard.locator("wa-option").filter({
+        const activeOption = wizard.locator('[role="option"]').filter({
           has: page.getByText("Primary iMessage connection", { exact: true }),
         });
         await expect
-          .poll(() => activeOption.evaluate((option) => option.matches(":state(current)")))
+          .poll(() => activeOption.evaluate((option) => option.hasAttribute("data-active")))
           .toBe(true);
         const colors = await activeOption.evaluate((option) => {
           const label = option.querySelector<HTMLElement>(".picker-select__label");
@@ -101,7 +107,6 @@ suite.define(() => {
         });
 
         if (proofVariant) {
-          await mkdir(proofDirectory, { recursive: true });
           await page.screenshot({
             animations: "disabled",
             fullPage: true,
@@ -114,6 +119,31 @@ suite.define(() => {
         }
 
         expect(colors.description).toBe(colors.label);
+
+        await page.emulateMedia({ forcedColors: "active" });
+        await page.keyboard.press("ArrowDown");
+        const nextOption = picker.getByRole("option", { name: "Add another iMessage account" });
+        await expect
+          .poll(async () => {
+            const activeId = await picker
+              .getByRole("listbox")
+              .getAttribute("aria-activedescendant");
+            return (
+              activeId === (await nextOption.getAttribute("id")) &&
+              (await picker.getByRole("listbox").evaluate((list) => list.matches(":focus-visible")))
+            );
+          })
+          .toBe(true);
+        expect(
+          await nextOption.evaluate((option) => {
+            const style = getComputedStyle(option);
+            return style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) >= 2;
+          }),
+        ).toBe(true);
+        expect(await activeOption.getAttribute("aria-selected")).toBe("true");
+        await page.keyboard.press("Enter");
+        const answer = await gateway.waitForRequest("wizard.next");
+        expect(answer.params).toMatchObject({ answer: { value: "another" } });
       },
     );
   });

@@ -1,8 +1,8 @@
-import type { SessionEntry } from "../config/sessions.js";
+import type { InternalSessionEntry } from "../config/sessions.js";
 import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
 
-export type CommandSessionEntryFixture = Partial<SessionEntry> & {
+export type CommandSessionEntryFixture = Partial<InternalSessionEntry> & {
   channel?: string;
   deliveryContext?: DeliveryContext;
   lastThreadId?: string | number;
@@ -10,18 +10,18 @@ export type CommandSessionEntryFixture = Partial<SessionEntry> & {
 
 export function createCommandSessionEntry(
   overrides: CommandSessionEntryFixture = {},
-): SessionEntry {
+): InternalSessionEntry {
   return normalizeLegacySessionEntryDelivery({
     sessionId: "session-1",
     updatedAt: 1,
     ...overrides,
-  } as SessionEntry);
+  } as InternalSessionEntry);
 }
 
 export function createCommandSessionFixture(
   overrides: CommandSessionEntryFixture = {},
   sessionKey = "agent:main:main",
-): { entry: SessionEntry; store: Record<string, SessionEntry> } {
+): { entry: InternalSessionEntry; store: Record<string, InternalSessionEntry> } {
   const entry = createCommandSessionEntry({
     skillsSnapshot: { prompt: "", skills: [], version: 0 },
     ...overrides,
@@ -55,12 +55,13 @@ export function createChannelModelRuntimeConfig({
   };
 }
 
-export function createConfiguredModelCompatRuntimeConfig(allowlisted: boolean) {
+export function createConfiguredModelCompatRuntimeConfig(allowlisted: boolean, excluded = false) {
   return {
     agents: {
       defaults: {
         model: { primary: "gmn/gpt-5.4" },
         ...(allowlisted ? { models: { "gmn/gpt-5.4": {} } } : {}),
+        ...(excluded ? { modelPolicy: { allow: ["gmn/manual"] } } : {}),
       },
     },
     models: {
@@ -73,6 +74,7 @@ export function createConfiguredModelCompatRuntimeConfig(allowlisted: boolean) {
               reasoning: true,
               compat: { supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] },
             },
+            ...(excluded ? [{ id: "manual", name: "Manual", reasoning: false }] : []),
           ],
         },
       },
@@ -191,11 +193,11 @@ export function createTestModelVisibilityPolicy(params: ModelSelectionParams) {
     allowed.allowAny || isTestModelKeyAllowed(allowed.allowedKeys, key);
   return {
     ...allowed,
+    catalog: [...(params.catalog ?? []), ...buildTestConfiguredModelCatalog(params.cfg)],
     exactModelRefs: [],
     providerWildcards: new Set<string>(),
     hasConfiguredEntries: !allowed.allowAny,
     hasProviderWildcards: wildcardModelKeys.size > 0,
-    allowsKey,
     allows: ({ provider, model }: { provider: string; model: string }) =>
       allowsKey(`${provider}/${model}`),
     allowsByWildcard: ({ provider, model }: { provider: string; model: string }) =>

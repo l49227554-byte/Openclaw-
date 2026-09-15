@@ -2,6 +2,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { callGatewayHandler } from "../../gateway/server-methods/skills.test-helpers.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -9,13 +11,12 @@ import {
 import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { captureEnv } from "../../test-utils/env.js";
 import { createFixtureSuite } from "../../test-utils/fixture-suite.js";
-import {
-  resolveSkillInvocationPolicy,
-  resolveSkillManifestMetadata,
-} from "../loading/frontmatter.js";
-import { loadSkillsFromDirSafe, readSkillFrontmatterSafe } from "../loading/local-loader.js";
+import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
+import { buildWorkspaceSkillStatus } from "../discovery/status.js";
+import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import { runCommandWithTimeoutMock } from "../test-support/install-test-mocks.js";
 import type { SkillEntry, SkillInstallSpec } from "../types.js";
+import { resolveWorkshopSkillsDir } from "../workshop/skills-root.js";
 import { installSkill } from "./install.js";
 import { skillsInstallTesting } from "./install.test-support.js";
 
@@ -30,7 +31,7 @@ vi.mock("../loading/plugin-skills.js", () => ({
 async function writeInstallableSkill(
   workspaceDir: string,
   name: string,
-  installSpec: SkillInstallSpec = {
+  installSpec: SkillInstallSpec | SkillInstallSpec[] = {
     id: "deps",
     kind: "node",
     package: "example-package",
@@ -43,7 +44,7 @@ async function writeInstallableSkill(
     `---
 name: ${name}
 description: test skill
-metadata: ${JSON.stringify({ openclaw: { install: [installSpec] } })}
+metadata: ${JSON.stringify({ openclaw: { install: Array.isArray(installSpec) ? installSpec : [installSpec] } })}
 ---
 
 # ${name}
@@ -65,29 +66,7 @@ async function writeDangerousInstallableSkill(workspaceDir: string, name: string
 }
 
 function loadTestWorkspaceSkillEntries(workspaceDir: string): SkillEntry[] {
-  const skills = loadSkillsFromDirSafe({
-    dir: path.join(workspaceDir, "skills"),
-    source: "openclaw-workspace",
-  }).skills;
-  return skills.map((skill) => {
-    const frontmatter =
-      readSkillFrontmatterSafe({
-        rootDir: skill.baseDir,
-        filePath: skill.filePath,
-      }) ?? {};
-    const invocation = resolveSkillInvocationPolicy(frontmatter);
-    return {
-      skill,
-      frontmatter,
-      metadata: resolveSkillManifestMetadata(frontmatter),
-      invocation,
-      exposure: {
-        includeInRuntimeRegistry: true,
-        includeInAvailableSkillsPrompt: !invocation.disableModelInvocation,
-        userInvocable: invocation.userInvocable,
-      },
-    };
-  });
+  return loadWorkspaceSkills(workspaceDir, { workspaceOnly: true });
 }
 
 function lastRunCommandCall(): unknown[] | undefined {
@@ -166,6 +145,212 @@ describe("installSkill before_install hooks", () => {
       expect(stat.isDirectory()).toBe(true);
     });
   });
+
+  it.each([
+    {
+      platform: "darwin" as const,
+      guidance: "Homebrew is not installed. Install it from https://brew.sh",
+    },
+    {
+      platform: "linux" as const,
+      guidance:
+        'Homebrew is not installed. Install it from https://brew.sh or install "vendor/tap/tool" manually using your system package manager (e.g. apt, dnf, pacman).',
+    },
+  ])("preserves supported-platform missing-brew guidance on $platform", async (testCase) => {
+    await withWorkspaceCase(async ({ workspaceDir }) => {
+      await writeInstallableSkill(workspaceDir, "brew-tool", {
+        id: "brew",
+        kind: "brew",
+        formula: "vendor/tap/tool",
+      });
+      skillsInstallTesting.setDepsForTest({
+        loadWorkspaceSkills: loadTestWorkspaceSkillEntries,
+        hasBinary: () => false,
+        resolveBrewExecutable: () => undefined,
+        isContainerEnvironment: () => false,
+      });
+      const result = await withMockedPlatform(testCase.platform, () =>
+        installSkill({ workspaceDir, skillName: "brew-tool", installId: "brew" }),
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        message: `brew not installed — ${testCase.guidance}`,
+        code: null,
+      });
+      expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("reports FreeBSD manual recovery over RPC without running an installer", async () => {
+    const { skillsHandlers } = await import("../../gateway/server-methods/skills.js");
+    await withWorkspaceCase(async ({ workspaceDir }) => {
+      const skillName = "brew-manual-recovery";
+      await writeInstallableSkill(workspaceDir, skillName, {
+        id: "brew",
+        kind: "brew",
+        formula: "vendor/tap/tool",
+      });
+      const config: OpenClawConfig = {
+        agents: { ownership: "explicit", list: [{ id: "ops", workspace: workspaceDir }] },
+      };
+      skillsInstallTesting.setDepsForTest({
+        loadWorkspaceSkills: loadTestWorkspaceSkillEntries,
+        hasBinary: () => false,
+        resolveBrewExecutable: () => undefined,
+      });
+      await withMockedPlatform("freebsd", async () => {
+        const result = await callGatewayHandler(
+          skillsHandlers,
+          "skills.install",
+          { agentId: "ops", name: skillName, installId: "brew" },
+          { context: { getRuntimeConfig: () => config } },
+        );
+        expect(result.ok).toBe(false);
+        expect(result.error).toMatchObject({
+          code: "UNAVAILABLE",
+          message: expect.stringContaining("Homebrew is not supported on FreeBSD"),
+        });
+        expect(result.response).toMatchObject({
+          ok: false,
+          message: expect.stringContaining("pkg or Ports"),
+          code: null,
+        });
+        const message = (result.error as { message: string }).message;
+        expect(message).toContain("Gateway host");
+        expect(message).toContain("openclaw skills check");
+        expect(message).toContain("--agent <id>");
+        expect(message).not.toContain("brew.sh");
+        expect(message).not.toContain("vendor/tap/tool");
+        expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  it("installs the advertised Workshop recipe for each agent sharing a workspace", async () => {
+    const { skillsHandlers } = await import("../../gateway/server-methods/skills.js");
+    await withWorkspaceCase(async ({ workspaceDir, stateDir }) => {
+      skillsInstallTesting.setDepsForTest({
+        loadWorkspaceSkills,
+        resolveNodeInstallStateDir: () => stateDir,
+      });
+      const config: OpenClawConfig = {
+        agents: {
+          ownership: "explicit",
+          list: [
+            { id: "ops", workspace: workspaceDir, skills: [] },
+            { id: "research", workspace: workspaceDir },
+          ],
+        },
+      };
+      const skillName = "shared-workshop-recipe";
+      for (const agentId of ["ops", "research"]) {
+        const skillDir = await writeInstallableSkill(workspaceDir, skillName, {
+          id: "deps",
+          kind: "node",
+          package: `${agentId}-package`,
+        });
+        const workshopDir = resolveWorkshopSkillsDir(config, agentId);
+        await fs.mkdir(workshopDir, { recursive: true });
+        await fs.rename(skillDir, path.join(workshopDir, skillName));
+      }
+
+      for (const agentId of ["research", "ops"]) {
+        const context = { getRuntimeConfig: () => config };
+        const status = await callGatewayHandler(
+          skillsHandlers,
+          "skills.status",
+          { agentId },
+          {
+            context,
+          },
+        );
+        expect(status.ok).toBe(true);
+        expect(status.response).toMatchObject({
+          skills: expect.arrayContaining([
+            expect.objectContaining({
+              name: skillName,
+              source: "openclaw-workshop",
+              install: expect.arrayContaining([expect.objectContaining({ id: "deps" })]),
+            }),
+          ]),
+        });
+
+        runCommandWithTimeoutMock.mockClear();
+        const result = await callGatewayHandler(
+          skillsHandlers,
+          "skills.install",
+          { agentId, name: skillName, installId: "deps" },
+          { context },
+        );
+
+        expect(result.error).toBeUndefined();
+        expect(result.response).toMatchObject({ ok: true, message: "Installed", code: 0 });
+        expect(runCommandWithTimeoutMock).toHaveBeenCalledTimes(1);
+        expect(lastRunCommandCall()?.[0]).toEqual([
+          "npm",
+          "install",
+          "-g",
+          "--ignore-scripts",
+          `${agentId}-package`,
+        ]);
+      }
+    });
+  });
+
+  it.each([
+    { kind: "node", explicitId: false },
+    { kind: "download", explicitId: false },
+    { kind: "node", explicitId: true },
+    { kind: "download", explicitId: true },
+  ] as const)(
+    "installs the advertised $kind recipe after OS filtering (explicit ID: $explicitId)",
+    async ({ kind, explicitId }) => {
+      const handler = vi.fn().mockReturnValue({ block: true, blockReason: "Recipe observed" });
+      initializeGlobalHookRunner(
+        createMockPluginRegistry([{ hookName: "before_install", handler }]),
+      );
+
+      await withWorkspaceCase(async ({ workspaceDir }) => {
+        const foreignOs = process.platform === "darwin" ? "linux" : "darwin";
+        const specs = [foreignOs, process.platform, undefined].map((os, index) => {
+          const spec: SkillInstallSpec =
+            kind === "node"
+              ? { kind, package: `example-package-${index}` }
+              : { kind, url: `https://example.invalid/recipe-${index}.tar.gz` };
+          if (explicitId) {
+            spec.id = `recipe-${index}`;
+          }
+          if (os) {
+            spec.os = [os];
+          }
+          return spec;
+        });
+        await writeInstallableSkill(workspaceDir, "platform-recipes", specs);
+        const report = buildWorkspaceSkillStatus(workspaceDir, {
+          entries: loadTestWorkspaceSkillEntries(workspaceDir),
+        });
+        const options = report.skills[0]!.install;
+        expect(options).toHaveLength(kind === "download" ? 2 : 1);
+
+        for (const [index, option] of options.entries()) {
+          const sourceIndex = index + 1;
+          const result = await installSkill({
+            workspaceDir,
+            skillName: "platform-recipes",
+            installId: option.id,
+          });
+
+          expect(result.message).toBe("Recipe observed");
+          expect(handler.mock.calls.at(-1)?.[0]).toMatchObject({
+            skill: { installSpec: specs[sourceIndex] },
+          });
+          expect(option.id).toBe(explicitId ? `recipe-${sourceIndex}` : `${kind}-${sourceIndex}`);
+        }
+        expect(runCommandWithTimeoutMock).not.toHaveBeenCalled();
+      });
+    },
+  );
 
   it("keeps the default npm prefix out of env-overridden state paths", () => {
     const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"]);

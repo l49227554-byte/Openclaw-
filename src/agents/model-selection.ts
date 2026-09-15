@@ -10,6 +10,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { DEFAULT_PROVIDER } from "./defaults.js";
 import { findModelInCatalog } from "./model-catalog-lookup.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
+import type { ModelFallbackRouteResolution } from "./model-fallback.types.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 import {
   type ModelManifestNormalizationContext,
@@ -43,7 +44,7 @@ export { resolveAllowedModelRefCore as resolveAllowedModelRef } from "./model-se
 export { buildAllowedModelSet } from "./model-selection-shared.js";
 export {
   resolveThinkingDefault,
-  resolveThinkingDefaultWithRuntimeCatalog,
+  resolveThinkingDefaultWithRuntimeCatalogCore,
 } from "./model-thinking-default.js";
 
 export type { ModelAliasIndex, ModelManifestNormalizationContext, ModelRef };
@@ -90,15 +91,17 @@ function normalizePersistedDefaultProvider(value: unknown): string {
  * Runtime-first resolver for persisted model metadata.
  * Use this when callers intentionally want the last executed model identity.
  */
-export function resolvePersistedModelRef(params: {
-  defaultProvider?: unknown;
-  runtimeProvider?: unknown;
-  runtimeModel?: unknown;
-  overrideProvider?: unknown;
-  overrideModel?: unknown;
-  allowManifestNormalization?: boolean;
-  allowPluginNormalization?: boolean;
-}): ModelRef | null {
+export function resolvePersistedModelRef(
+  params: {
+    defaultProvider?: unknown;
+    runtimeProvider?: unknown;
+    runtimeModel?: unknown;
+    overrideProvider?: unknown;
+    overrideModel?: unknown;
+    allowManifestNormalization?: boolean;
+    allowPluginNormalization?: boolean;
+  } & ModelManifestNormalizationContext,
+): ModelRef | null {
   const defaultProvider = normalizePersistedDefaultProvider(params.defaultProvider);
   const runtimeProvider = normalizeOptionalString(params.runtimeProvider);
   const runtimeModel = normalizeOptionalString(params.runtimeModel);
@@ -110,6 +113,7 @@ export function resolvePersistedModelRef(params: {
       parseModelRef(runtimeModel, defaultProvider, {
         allowManifestNormalization: params.allowManifestNormalization,
         allowPluginNormalization: params.allowPluginNormalization,
+        manifestPlugins: params.manifestPlugins,
       }) ?? {
         provider: defaultProvider,
         model: runtimeModel,
@@ -122,6 +126,7 @@ export function resolvePersistedModelRef(params: {
     overrideModel: params.overrideModel,
     allowManifestNormalization: params.allowManifestNormalization,
     allowPluginNormalization: params.allowPluginNormalization,
+    manifestPlugins: params.manifestPlugins,
   });
 }
 
@@ -130,21 +135,26 @@ export function resolvePersistedModelRef(params: {
  * Use this for control/status/UI surfaces that should honor explicit session
  * overrides before falling back to runtime identity.
  */
-export function resolvePersistedSelectedModelRef(params: {
-  defaultProvider?: unknown;
-  runtimeProvider?: unknown;
-  runtimeModel?: unknown;
-  overrideProvider?: unknown;
-  overrideModel?: unknown;
-  allowManifestNormalization?: boolean;
-  allowPluginNormalization?: boolean;
-}): ModelRef | null {
+export function resolvePersistedSelectedModelRef(
+  params: {
+    defaultProvider?: unknown;
+    runtimeProvider?: unknown;
+    runtimeModel?: unknown;
+    overrideProvider?: unknown;
+    overrideModel?: unknown;
+    overrideRouteResolution?: ModelFallbackRouteResolution;
+    allowManifestNormalization?: boolean;
+    allowPluginNormalization?: boolean;
+  } & ModelManifestNormalizationContext,
+): ModelRef | null {
   const override = resolvePersistedOverrideModelRef({
     defaultProvider: params.defaultProvider,
     overrideProvider: params.overrideProvider,
     overrideModel: params.overrideModel,
+    routeResolution: params.overrideRouteResolution,
     allowManifestNormalization: params.allowManifestNormalization,
     allowPluginNormalization: params.allowPluginNormalization,
+    manifestPlugins: params.manifestPlugins,
   });
   if (override) {
     return override;
@@ -155,6 +165,7 @@ export function resolvePersistedSelectedModelRef(params: {
     runtimeModel: params.runtimeModel,
     allowManifestNormalization: params.allowManifestNormalization,
     allowPluginNormalization: params.allowPluginNormalization,
+    manifestPlugins: params.manifestPlugins,
   });
 }
 
@@ -228,18 +239,19 @@ function appendAuthProfileSuffix(modelRef: string, profile: string | undefined):
  * or not a known alias, returns it unchanged.
  */
 function resolveModelThroughAliases(value: string, aliasIndex: ModelAliasIndex): string {
+  const { model, profile } = splitTrailingAuthProfile(value);
   // Already a provider/model ref — no alias resolution needed.
-  if (value.includes("/")) {
-    return value;
+  if (model.includes("/")) {
+    return appendAuthProfileSuffix(model, profile);
   }
   // Check if the value is a known alias; if so, resolve to provider/model.
   // Unknown bare strings are returned as-is (don't guess the provider).
-  const aliasKey = normalizeLowercaseStringOrEmpty(value);
+  const aliasKey = normalizeLowercaseStringOrEmpty(model);
   const aliasMatch = aliasIndex.byAlias.get(aliasKey);
   if (aliasMatch) {
-    return `${aliasMatch.ref.provider}/${aliasMatch.ref.model}`;
+    return appendAuthProfileSuffix(`${aliasMatch.ref.provider}/${aliasMatch.ref.model}`, profile);
   }
-  return value;
+  return appendAuthProfileSuffix(model, profile);
 }
 
 export function resolveSubagentSpawnModelSelection(params: {

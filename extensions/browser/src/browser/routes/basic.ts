@@ -378,6 +378,7 @@ export function registerBrowserBasicRoutes(app: BrowserRouteRegistrar, ctx: Brow
       const status = await runProfileRouteOperation({
         profileCtx,
         signal: req.signal,
+        assertCurrent: req.assertCurrent,
         run: async (signal) => await buildBrowserStatus(ctx, profileCtx, signal),
       });
       res.json(status);
@@ -395,15 +396,18 @@ export function registerBrowserBasicRoutes(app: BrowserRouteRegistrar, ctx: Brow
       const report = await runProfileRouteOperation({
         profileCtx,
         signal: req.signal,
+        assertCurrent: req.assertCurrent,
         run: async (signal) => {
           const status = await buildBrowserStatus(ctx, profileCtx, signal);
+          const relay = ctx.state().extensionRelays?.get(profileCtx.profile.name);
+          const identity =
+            relay?.ownership === "borrowed"
+              ? (await relay.client.status()).identity
+              : relay?.bridge.identity;
           const doctorReport = buildBrowserDoctorReport({
             status,
             extensionVersion:
-              status.transport === "extension"
-                ? ctx.state().extensionRelays?.get(profileCtx.profile.name)?.bridge.identity
-                    ?.extensionVersion
-                : undefined,
+              status.transport === "extension" ? identity?.extensionVersion : undefined,
           });
           if (toBoolean(req.query.deep) === true || toBoolean(req.query.live) === true) {
             doctorReport.checks.push(await runBrowserLiveProbe(profileCtx, signal));

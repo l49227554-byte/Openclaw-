@@ -12,7 +12,7 @@ import {
   ArchiveSecurityError,
   extractArchive,
 } from "../infra/archive.js";
-import { createBackupLinkCache } from "../infra/backup-volatile-stat-cache.js";
+import { createBackupVolatileStatCache } from "../infra/backup-volatile-stat-cache.js";
 import {
   getPublishFileExclusiveFailureDetails,
   publishFileNoClobber,
@@ -302,7 +302,7 @@ export async function backupFleetCell(params: {
           gzip: true,
           portable: true,
           preservePaths: true,
-          linkCache: createBackupLinkCache(),
+          statCache: createBackupVolatileStatCache(() => false),
           filter,
           onWriteEntry: (entry) => {
             entry.path = remapArchivePath(entry.path, manifestPath, dataTarget, authTarget);
@@ -376,9 +376,8 @@ export async function backupFleetCell(params: {
 }
 
 function isAllowedRestorePath(rawPath: string): boolean {
-  // Fleet archives use POSIX separators only. A literal backslash would
-  // validate as one path but extract as another on POSIX, so it is rejected
-  // outright at both backup and restore time.
+  // Backup writes canonical POSIX names; restore receives fs-safe's canonical
+  // paths. Reject raw aliases here when validating backup source names.
   if (rawPath.includes("\\")) {
     return false;
   }

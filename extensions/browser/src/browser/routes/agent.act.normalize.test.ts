@@ -66,6 +66,23 @@ describe("canonicalizeActTargetIds", () => {
 });
 
 describe("normalizeActRequest keyboard keys", () => {
+  it.each(["  pasted 🦞\nsecond line  ", "", "\t\n"])(
+    "preserves focused text insertion without an element ref: %j",
+    (text) => {
+      expect(normalizeActRequest({ kind: "insertText", text, targetId: "tab-1" })).toEqual({
+        kind: "insertText",
+        text,
+        targetId: "tab-1",
+      });
+    },
+  );
+
+  it("rejects non-text insertion payloads without echoing content", () => {
+    expect(() =>
+      normalizeActRequest({ kind: "insertText", text: { secret: "synthetic" } }),
+    ).toThrow("insertText requires text");
+  });
+
   it.each([
     ["Esc", "Escape"],
     ["ESC", "Escape"],
@@ -177,6 +194,17 @@ describe("normalizeActRequest numeric fields", () => {
         height: 600,
       }),
     ).toThrow("resize requires positive width and height");
+  });
+});
+
+describe("normalizeActRequest fill fields", () => {
+  it("validates fill fields inside batch sub-actions", () => {
+    expect(() =>
+      normalizeActRequest({
+        kind: "batch",
+        actions: [{ kind: "fill", fields: [{ ref: "e1", value: "Neo", text: "unsupported" }] }],
+      }),
+    ).toThrow('fields[0] unsupported field key "text"');
   });
 });
 

@@ -6,8 +6,14 @@ import {
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { ensureOpenClawAgentProgressCardSchemaInTransaction } from "../../state/openclaw-agent-progress-card-schema.js";
 import { ensureSessionParticipantsSchema } from "../../state/openclaw-agent-session-participants-schema.js";
+import { copyLegacyAcpMigrationSourcesForRepair } from "./session-accessor.sqlite-acp-provenance.js";
+import {
+  copySessionInputCompletionsForRepair,
+  copySessionPendingInputsForRepair,
+  deleteSessionPendingInputs,
+} from "./session-accessor.sqlite-pending-inputs.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
-import { mergeSessionParticipantSource } from "./session-entry-provenance.js";
+import { mergeParticipantAggregate } from "./session-participant-identity.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 
 export function clearSessionCollaborationForKey(
@@ -43,10 +49,15 @@ export function copySessionNodeArtifactsForRepair(
   if (keys.length === 0) {
     return;
   }
+  copySessionPendingInputsForRepair(source, destination, keys, canonicalKey);
+  copyLegacyAcpMigrationSourcesForRepair(source, destination, keys, canonicalKey);
   const sourceDb = getSessionKysely(source.db);
   const destinationDb = getSessionKysely(destination.db);
   const sourceKeyReferences = new Set(keys.flatMap((key) => [key, key.trim()]));
   const sourceTables = readSessionNodeArtifactTables(source);
+  if (sourceTables.has("session_input_completions")) {
+    copySessionInputCompletionsForRepair(source, destination, keys, canonicalKey);
+  }
   let destinationTables = readSessionNodeArtifactTables(destination);
   if (
     options.includeParticipants !== false &&
@@ -55,9 +66,6 @@ export function copySessionNodeArtifactsForRepair(
   ) {
     ensureSessionParticipantsSchema(destination.db);
     destinationTables = readSessionNodeArtifactTables(destination);
-  }
-  if (options.includeParticipants !== false && destinationTables.has("session_participants")) {
-    ensureSessionParticipantsSchema(destination.db);
   }
   if (sourceTables.has("session_progress_cards")) {
     const progressCards = executeSqliteQuerySync(
@@ -245,55 +253,29 @@ export function copySessionNodeArtifactsForRepair(
         destination.db,
         destinationDb
           .selectFrom("session_participants")
-          .select(["actor_source", "contribution_count", "first_prompted_at", "last_prompted_at"])
+          .select(["contribution_count", "first_prompted_at", "last_prompted_at"])
           .where("session_key", "=", canonicalKey)
-          .where("actor_type", "=", participant.actor_type)
+          .where("identity_namespace", "=", participant.identity_namespace)
           .where("actor_id", "=", participant.actor_id),
       );
-      const incomingProfile =
-        participant.actor_type === "human" && participant.actor_source === "profile";
-      const existingProfile = existing?.actor_source === "profile";
-      const incomingCount = participant.contribution_count ?? 1;
-      const existingCount = existing?.contribution_count ?? 1;
-      // Cross-store doctor repair may retry before source archival. Aggregates have
-      // no per-prompt identity, so max preserves evidence without double-counting.
-      const contributionCount = !incomingProfile
-        ? (existing?.contribution_count ?? null)
-        : !existingProfile
-          ? incomingCount
-          : source.db === destination.db
-            ? existingCount + incomingCount
-            : Math.max(existingCount, incomingCount);
+      const aggregate = mergeParticipantAggregate(
+        existing,
+        participant,
+        source.db === destination.db ? "sum" : "copy",
+      );
       executeSqliteQuerySync(
         destination.db,
         destinationDb
           .insertInto("session_participants")
           .values({
             ...participant,
-            contribution_count: incomingProfile ? (participant.contribution_count ?? 1) : null,
+            ...aggregate,
             session_key: canonicalKey,
           })
           .onConflict((conflict) =>
-            conflict.columns(["session_key", "actor_type", "actor_id"]).doUpdateSet({
-              actor_source: mergeSessionParticipantSource(
-                existing?.actor_source,
-                participant.actor_source,
-              ),
-              contribution_count: contributionCount,
-              first_prompted_at:
-                incomingProfile && !existingProfile
-                  ? participant.first_prompted_at
-                  : existingProfile && !incomingProfile
-                    ? existing.first_prompted_at
-                    : Math.min(
-                        existing?.first_prompted_at ?? participant.first_prompted_at,
-                        participant.first_prompted_at,
-                      ),
-              last_prompted_at: Math.max(
-                existing?.last_prompted_at ?? participant.last_prompted_at,
-                participant.last_prompted_at,
-              ),
-            }),
+            conflict
+              .columns(["session_key", "identity_namespace", "actor_id"])
+              .doUpdateSet(aggregate),
           ),
       );
     }
@@ -328,17 +310,20 @@ export function deleteSessionDeliveryArtifacts(
     normalizeStoreSessionKey(trimmedKey),
     ...additionalKeys,
   ]);
-  const competingIdentities = new Set(
-    executeSqliteQuerySync(
-      database.db,
-      db.selectFrom("session_nodes").select("session_key"),
-    ).rows.flatMap((row) =>
-      row.session_key === sessionKey ? [] : [normalizeStoreSessionKey(row.session_key.trim())],
-    ),
-  );
-  const sessionKeys = lookupKeys.filter(
-    (key) => key === sessionKey || !competingIdentities.has(normalizeStoreSessionKey(key.trim())),
-  );
+  let sessionKeys = lookupKeys;
+  if (lookupKeys.some((key) => key !== sessionKey)) {
+    const competingIdentities = new Set(
+      executeSqliteQuerySync(
+        database.db,
+        db.selectFrom("session_nodes").select("session_key"),
+      ).rows.flatMap((row) =>
+        row.session_key === sessionKey ? [] : [normalizeStoreSessionKey(row.session_key.trim())],
+      ),
+    );
+    sessionKeys = lookupKeys.filter(
+      (key) => key === sessionKey || !competingIdentities.has(normalizeStoreSessionKey(key.trim())),
+    );
+  }
   executeSqliteQuerySync(
     database.db,
     db.deleteFrom("conversation_deliveries").where("source_session_key", "in", sessionKeys),
@@ -349,6 +334,7 @@ export function deleteSessionNodeArtifacts(
   database: OpenClawAgentDatabase,
   sessionKey: string,
 ): void {
+  deleteSessionPendingInputs(database, sessionKey);
   const db = getSessionKysely(database.db);
   const presentTables = readSessionNodeArtifactTables(database);
   if (presentTables.has("board_tabs") && presentTables.has("board_widgets")) {
@@ -365,13 +351,14 @@ export function deleteSessionNodeArtifacts(
     "heartbeat_outcomes",
     "session_participants",
     "session_progress_cards",
+    "session_members",
+    "session_suggestions",
   ] as const) {
     if (!presentTables.has(table)) {
       continue;
     }
     executeSqliteQuerySync(database.db, db.deleteFrom(table).where("session_key", "=", sessionKey));
   }
-  clearSessionCollaborationForKey(database, sessionKey);
 }
 
 function readSessionNodeArtifactTables(database: OpenClawAgentDatabase): Set<string> {
@@ -387,6 +374,7 @@ function readSessionNodeArtifactTables(database: OpenClawAgentDatabase): Set<str
           "board_tabs",
           "board_widgets",
           "heartbeat_outcomes",
+          "session_input_completions",
           "session_members",
           "session_participants",
           "session_progress_cards",

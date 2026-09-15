@@ -2,14 +2,17 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { withServer, withTempDir } from "openclaw/plugin-sdk/test-env";
 import { expect, test } from "vitest";
 import {
   type MockOpenAiRequestSnapshot,
-  startQaGatewayChild,
+  createQaGatewayChild,
   startQaMockOpenAiServer,
   writeJson,
+  type QaGatewayChild,
 } from "../../../../extensions/qa-lab/api.js";
+import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
 
 type TelegramCall = { method: string; body: Record<string, unknown> };
 const BOT_ID = 424242;
@@ -102,7 +105,8 @@ test.each(["allowlist", "open"] as const)(
       async (apiRoot) =>
         await withTempDir("openclaw-telegram-policy-", async (workspace) => {
           const mock = await startQaMockOpenAiServer();
-          let gateway: Awaited<ReturnType<typeof startQaGatewayChild>> | undefined;
+          const gatewayOwner = createQaGatewayChild();
+          let gateway: QaGatewayChild | undefined;
           const evidence: Record<string, unknown> = {
             head: execFileSync("git", ["rev-parse", "HEAD"], {
               cwd: repoRoot,
@@ -134,11 +138,19 @@ test.each(["allowlist", "open"] as const)(
           };
           const deliveries = () => telegramCalls.filter((call) => call.method === "sendMessage");
           try {
-            gateway = await startQaGatewayChild({
+            gateway = await gatewayOwner.start({
               repoRoot,
               command: {
                 executablePath: process.execPath,
-                argsPrefix: [path.join(repoRoot, "scripts/run-node.mjs")],
+                argsPrefix: [
+                  "--import",
+                  pathToFileURL(path.join(repoRoot, "scripts/tsx.mjs")).href,
+                  path.join(repoRoot, "scripts/run-with-env.mts"),
+                  `OPENCLAW_DEV_SOURCE_ROOT=${repoRoot}`,
+                  "--",
+                  process.execPath,
+                  path.join(repoRoot, "openclaw.mjs"),
+                ],
                 argsSuffix: ["--verbose"],
                 cwd: repoRoot,
                 usePackagedPlugins: true,
@@ -268,7 +280,9 @@ test.each(["allowlist", "open"] as const)(
               console.log(`TELEGRAM_AUTHORITY_CHAIN ${JSON.stringify(evidence)}`);
             } finally {
               try {
-                await gateway?.stop({ preserveToDir: path.join(outputDir, "gateway") });
+                await stopQaGatewayFixture(gatewayOwner, {
+                  preserveToDir: path.join(outputDir, "gateway"),
+                });
               } finally {
                 await mock.stop();
               }

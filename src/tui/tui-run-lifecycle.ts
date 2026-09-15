@@ -83,7 +83,7 @@ export function createTuiRunLifecycle(context: TuiRunLifecycleContext) {
       return;
     }
     runCoordinator.pendingHistoryRefresh = false;
-    runCoordinator.queueHistoryReload();
+    void runCoordinator.queueHistoryReload();
   };
 
   const clearStreamingWatchdog = () => {
@@ -141,7 +141,7 @@ export function createTuiRunLifecycle(context: TuiRunLifecycleContext) {
         state.activityStatus = "idle";
         setActivityStatus("idle");
         runCoordinator.pendingHistoryRefresh = false;
-        runCoordinator.queueHistoryReload();
+        void runCoordinator.queueHistoryReload();
         tui.requestRender();
         return;
       }
@@ -167,7 +167,7 @@ export function createTuiRunLifecycle(context: TuiRunLifecycleContext) {
       return undefined;
     }
     const provider = state.sessionInfo.modelProvider?.trim();
-    const failoverReason = classifyFailoverReason(errorMessage, { provider });
+    const failoverReason = classifyFailoverReason(errorMessage, { provider, providerPlugin: null });
     if (failoverReason === "billing" || failoverReason === "rate_limit") {
       return undefined;
     }
@@ -181,10 +181,7 @@ export function createTuiRunLifecycle(context: TuiRunLifecycleContext) {
     if (event.stream !== "lifecycle" || formatPrimitiveString(data.phase, "") !== "fallback_step") {
       return false;
     }
-    if (typeof data.fallbackStepToModel !== "string") {
-      return false;
-    }
-    const modelRef = data.fallbackStepToModel.trim();
+    const modelRef = formatPrimitiveString(data.fallbackStepToModel).trim();
     const separator = modelRef.indexOf("/");
     if (separator <= 0 || separator >= modelRef.length - 1) {
       return false;
@@ -380,7 +377,7 @@ export function createTuiRunLifecycle(context: TuiRunLifecycleContext) {
       return;
     }
     runCoordinator.pendingHistoryRefresh = false;
-    runCoordinator.queueHistoryReload();
+    void runCoordinator.queueHistoryReload();
   };
 
   const renderTerminalRunError = (params: {

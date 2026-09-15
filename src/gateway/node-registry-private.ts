@@ -1,17 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
 import {
   isPrivateNodeInvokeCommand,
   NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
   NODE_WORKER_PRIVATE_COMMANDS,
   NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND,
+  NODE_WORKER_WORKSPACE_PREPARE_COMMAND,
 } from "../infra/node-commands.js";
 import {
   NODE_WORKER_BUNDLE_RETENTION_VERSION,
   NODE_WORKER_BUNDLE_STATUS_VERSION,
   NODE_WORKER_ENVIRONMENT_SESSION_VERSION,
+  NODE_WORKER_PREPARED_WORKSPACE_VERSION,
   type NodeRunnerInventoryIssue,
   type NodeRunnerInventoryDeclaration,
   type NodeWorkerCapacitySnapshot,
@@ -19,6 +19,8 @@ import {
 import type { NodeWorkerBundleStatus } from "../shared/node-list-types.js";
 import { ABSOLUTE_DEADLINE_EXPIRED, awaitWithinDeadline } from "../utils/absolute-deadline.js";
 import { sameWorkerProtocolFeatures } from "../worker/worker-build-identity.js";
+import { buildNodeInvokeRequest, serializeNodeEvent } from "./node-invoke-request.js";
+import type { NodeInvokeParams, NodeInvokeResult } from "./node-invoke.types.js";
 import { NODE_INVOKE_PAIRING_CHANGED_ABORT } from "./node-registry-private-token.js";
 import type { NodeInvokeStreamController, PendingInvoke } from "./node-registry.invoke-stream.js";
 import {
@@ -27,6 +29,7 @@ import {
 } from "./node-registry.system-run.js";
 import {
   createNodeRunnerStatePublisher,
+  isNodeWorkerHostClientId,
   resolveNodeRunnerInventoryIssue,
   resolveNodeWorkerSupervisorProof,
   sameBundleStatusObservation,
@@ -38,6 +41,7 @@ import {
   type NodeWorkerBundleStatusObservation,
   type NodeWorkerSupervisorNodeProof,
 } from "./node-runner-inventory-runtime.js";
+import { MAX_PAYLOAD_BYTES } from "./server-constants.js";
 
 export type {
   NodeRunnerStateChange,
@@ -46,40 +50,20 @@ export type {
 
 type NodeRegistryPrivateSession = NodeRunnerRegistrySession;
 
-type NodeInvokeResult = {
-  ok: boolean;
-  payload?: unknown;
-  payloadJSON?: string | null;
-  error?: { code?: string; message?: string } | null;
-};
-
 type PairingBoundNodeSession = NodeRegistryPrivateSession & { pairingIdentity: string };
 type PairingLeaseResolution =
   | { status: "current"; session: PairingBoundNodeSession }
   | { status: "stale"; presenceInvalidated: boolean }
   | { status: "unavailable" };
 
-type NodeInvokeParams = {
-  nodeId: string;
-  expectedConnId?: string;
-  expectedPairingGeneration?: string;
-  command: string;
-  params?: unknown;
-  timeoutMs?: number;
-  idleTimeoutMs?: number;
-  onProgress?: (chunk: string) => void;
-  signal?: AbortSignal;
-  idempotencyKey?: string;
-  sessionKey?: string;
-  onDispatchReady?: (invokeId: string) => void;
-  isDispatchAuthorized?: () => boolean;
-};
-
 type NodeWorkerPrivateCommand = (typeof NODE_WORKER_PRIVATE_COMMANDS)[number];
 
 export type NodeWorkerSupervisorTransport = {
+  getCurrentNode(nodeId: string): Promise<NodeWorkerSupervisorNodeProof | undefined>;
   listCurrentNodes(): Promise<readonly NodeWorkerSupervisorNodeProof[]>;
   hasCurrentRunner(nodeId: string): boolean;
+  /** Diagnostic connection presence, independent of session-host eligibility. */
+  isConnected?(nodeId: string): boolean;
   getIssue?(nodeId: string): NodeRunnerInventoryIssue | undefined;
   getBundleStatus?(nodeId: string): NodeWorkerBundleStatusObservation | undefined;
   acceptBundleStatus?(
@@ -105,7 +89,9 @@ export type NodeWorkerSupervisorTransport = {
 
 type NodeRegistryPrivateContext = {
   getNode: (nodeId: string) => PairingBoundNodeSession | undefined;
+  isCommandAllowed: (nodeId: string, command: string) => boolean;
   listCurrentConnected: () => Promise<NodeRegistryPrivateSession[]>;
+  getCurrentConnected: (nodeId: string) => Promise<NodeRegistryPrivateSession | undefined>;
   hasCurrentPairingStateResolver: boolean;
   resolvePairingLease: (node: PairingBoundNodeSession) => Promise<PairingLeaseResolution>;
   pendingInvokes: Map<string, PendingInvoke>;
@@ -140,7 +126,11 @@ type NodeRegistryPrivateState = {
   bundleStatusByConn: Map<string, NodeWorkerBundleStatusObservation>;
   runnerState: NodeRunnerStatePublisher;
   generationBoundInvokes: WeakMap<PendingInvoke, GenerationBoundPendingInvoke>;
-  invokeCore: (params: NodeInvokeParams, allowPrivateCommand: boolean) => Promise<NodeInvokeResult>;
+  invokeCore: (
+    params: NodeInvokeParams,
+    allowPrivateCommand: boolean,
+    isCompletionAuthorized?: () => boolean,
+  ) => Promise<NodeInvokeResult>;
   updateRunnerInventory: (params: {
     nodeId: string;
     connId: string | undefined;
@@ -157,6 +147,7 @@ function isWorkerSupervisorProofCurrent(
   requireLaunchEligibility: boolean,
   requiredCommands: readonly string[] = [],
   requireEnvironmentSession = false,
+  requirePreparedWorkspace = false,
 ): boolean {
   const node = state.context.getNode(proof.nodeId);
   if (!node || node.client.invalidated === true || node.connId !== proof.connId) {
@@ -172,6 +163,8 @@ function isWorkerSupervisorProofCurrent(
     (!requireLaunchEligibility || current.workerHost.capacity.available > 0) &&
     (!requireEnvironmentSession ||
       current.workerHost.environmentSession === NODE_WORKER_ENVIRONMENT_SESSION_VERSION) &&
+    (!requirePreparedWorkspace ||
+      current.workerHost.preparedWorkspace === NODE_WORKER_PREPARED_WORKSPACE_VERSION) &&
     requiredCommands.every((command) => current.commands.includes(command))
   );
 }
@@ -190,7 +183,7 @@ function updateWorkerRunnerInventory(
     !node ||
     node.client.invalidated === true ||
     node.connId !== params.connId ||
-    node.clientId !== GATEWAY_CLIENT_IDS.NODE_HOST ||
+    !isNodeWorkerHostClientId(node.clientId) ||
     node.clientMode !== "node"
   ) {
     return null;
@@ -212,7 +205,7 @@ function updateWorkerRunnerInventory(
     connId: node.connId,
     pairingIdentity: node.pairingIdentity,
     ...(node.pairingGeneration ? { pairingGeneration: node.pairingGeneration } : {}),
-    clientId: GATEWAY_CLIENT_IDS.NODE_HOST,
+    clientId: node.clientId,
     clientMode: "node",
     protocolFeatures: [...params.declaration.protocolFeatures],
     ...(workerHost
@@ -247,12 +240,16 @@ async function invokeNodeRegistryCore(
   state: NodeRegistryPrivateState,
   params: NodeInvokeParams,
   allowPrivateCommand: boolean,
+  isCompletionAuthorized?: () => boolean,
 ): Promise<NodeInvokeResult> {
   let timeoutMs = resolveTimerTimeoutMs(params.timeoutMs, 30_000, 0);
   // Explicit budgets include pairing and serialization; omitted budgets retain
   // the post-dispatch default, and zero keeps long-lived invokes unbounded.
   const deadlineAtMs =
-    Number.isFinite(params.timeoutMs) && timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
+    params.deadlineAtMs ??
+    (Number.isFinite(params.timeoutMs) && timeoutMs > 0
+      ? performance.now() + timeoutMs
+      : undefined);
   if (isPrivateNodeInvokeCommand(params.command) && !allowPrivateCommand) {
     return {
       ok: false,
@@ -296,6 +293,7 @@ async function invokeNodeRegistryCore(
     const resolution = await awaitWithinDeadline(
       () => state.context.resolvePairingLease(pairingNode),
       deadlineAtMs,
+      () => performance.now(),
     );
     if (resolution === ABSOLUTE_DEADLINE_EXPIRED) {
       return { ok: false, error: { code: "TIMEOUT", message: "node invoke timed out" } };
@@ -325,22 +323,34 @@ async function invokeNodeRegistryCore(
     command: params.command,
     params: params.params,
   });
-  const payload = {
+  const payload = buildNodeInvokeRequest({
     id: requestId,
     nodeId: params.nodeId,
     command: params.command,
-    paramsJSON:
-      "params" in params && invokeParams !== undefined ? JSON.stringify(invokeParams) : null,
+    params: "params" in params ? invokeParams : undefined,
     timeoutMs,
     idempotencyKey: params.idempotencyKey,
-    sessionKey: normalizeOptionalString(params.sessionKey),
-  };
+    sessionKey: params.sessionKey,
+  });
+  if (
+    params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND &&
+    Buffer.byteLength(serializeNodeEvent("node.invoke.request", payload), "utf8") >
+      MAX_PAYLOAD_BYTES
+  ) {
+    return {
+      ok: false,
+      error: { code: "INVALID_REQUEST", message: "worker launch exceeds the node payload limit" },
+    };
+  }
   const systemRunEvent = resolvePendingSystemRunEvent({
     command: params.command,
     params: invokeParams,
   });
   // Serialization can consume the budget or close caller-owned authority.
   // Revalidate both before arming pending state and handing off to transport.
+  if (params.signal?.aborted) {
+    return { ok: false, error: { code: "ABORTED", message: "node invoke cancelled" } };
+  }
   if (params.isDispatchAuthorized?.() === false) {
     return {
       ok: false,
@@ -350,12 +360,20 @@ async function invokeNodeRegistryCore(
       },
     };
   }
+  if (!state.context.isCommandAllowed(params.nodeId, params.command)) {
+    return {
+      ok: false,
+      error: { code: "POLICY_CHANGED", message: "node command is no longer allowed" },
+    };
+  }
   if (deadlineAtMs !== undefined) {
-    timeoutMs = Math.max(0, deadlineAtMs - Date.now());
+    timeoutMs = Math.max(0, deadlineAtMs - performance.now());
     if (timeoutMs === 0) {
       return { ok: false, error: { code: "TIMEOUT", message: "node invoke timed out" } };
     }
-    payload.timeoutMs = timeoutMs;
+    // Keep the precise monotonic budget for Gateway timers, but satisfy the integer
+    // node-event contract without turning a sub-millisecond budget into "unbounded".
+    payload.timeoutMs = Math.ceil(timeoutMs);
   }
   const result = new Promise<NodeInvokeResult>((resolve, reject) => {
     const pending: PendingInvoke = {
@@ -369,6 +387,8 @@ async function invokeNodeRegistryCore(
       progressChunks: new Map(),
       nextInputSeq: 0,
       ...(params.onProgress ? { onProgress: params.onProgress } : {}),
+      // Lifecycle cleanup retains its exact owner through reply settlement.
+      ...(isCompletionAuthorized ? { isCompletionAuthorized } : {}),
     };
     const generationController = params.expectedPairingGeneration
       ? new AbortController()
@@ -389,13 +409,16 @@ async function invokeNodeRegistryCore(
       requestId,
       pending,
       timeoutMs,
+      deadlineAtMs,
       idleTimeoutMs,
       ...(signal ? { signal } : {}),
     });
   });
-  if (!state.context.pendingInvokes.has(requestId)) {
+  const pendingAtDispatch = state.context.pendingInvokes.get(requestId);
+  if (!pendingAtDispatch) {
     return await result;
   }
+  const dispatchDeadlineAtMs = pendingAtDispatch.deadlineAtMs;
   const ok = state.context.sendEventToSession(node, "node.invoke.request", payload);
   if (!ok) {
     const pending = state.context.pendingInvokes.get(requestId);
@@ -416,7 +439,7 @@ async function invokeNodeRegistryCore(
       ...systemRunEvent,
     });
   }
-  params.onDispatchReady?.(requestId);
+  params.onDispatchReady?.(requestId, dispatchDeadlineAtMs);
   return await result;
 }
 
@@ -430,10 +453,14 @@ export function registerNodeRegistryPrivateRuntime(
   state.bundleStatusByConn = new Map();
   state.runnerState = createNodeRunnerStatePublisher(context.getNode, state.runnerInventoryByConn);
   state.generationBoundInvokes = new WeakMap();
-  state.invokeCore = async (params, allowPrivateCommand) =>
-    await invokeNodeRegistryCore(state, params, allowPrivateCommand);
+  state.invokeCore = async (params, allowPrivateCommand, isCompletionAuthorized) =>
+    await invokeNodeRegistryCore(state, params, allowPrivateCommand, isCompletionAuthorized);
   state.updateRunnerInventory = (params) => updateWorkerRunnerInventory(state, params);
   state.workerSupervisorTransport = {
+    getCurrentNode: async (nodeId) => {
+      const node = await context.getCurrentConnected(nodeId);
+      return node ? resolveNodeWorkerSupervisorProof(node, state.runnerInventoryByConn) : undefined;
+    },
     listCurrentNodes: async () => {
       const current = await context.listCurrentConnected();
       return current.flatMap((node) => {
@@ -442,6 +469,10 @@ export function registerNodeRegistryPrivateRuntime(
       });
     },
     hasCurrentRunner: state.runnerState.hasCurrent,
+    isConnected: (nodeId) => {
+      const node = context.getNode(nodeId);
+      return Boolean(node && node.client.invalidated !== true);
+    },
     getIssue: (nodeId) => {
       const node = context.getNode(nodeId);
       return node ? resolveNodeRunnerInventoryIssue(node, state.runnerInventoryByConn) : undefined;
@@ -494,6 +525,7 @@ export function registerNodeRegistryPrivateRuntime(
           [],
           params.command === NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND ||
             params.command === NODE_WORKER_ENVIRONMENT_STOP_COMMAND,
+          params.command === NODE_WORKER_WORKSPACE_PREPARE_COMMAND,
         );
       if (!isProofCurrent()) {
         return {
@@ -518,6 +550,7 @@ export function registerNodeRegistryPrivateRuntime(
           ...(params.onDispatchReady ? { onDispatchReady: params.onDispatchReady } : {}),
         },
         true,
+        isProofCurrent,
       );
     },
   };
@@ -569,6 +602,17 @@ export function invokePublicNodeRegistry(
     throw new Error("node registry private runtime was not initialized");
   }
   return state.invokeCore(params, false);
+}
+
+export function invokeLifecycleNodeRegistry(
+  nodeRegistry: object,
+  params: NodeInvokeParams & { isDispatchAuthorized: () => boolean },
+): Promise<NodeInvokeResult> {
+  const state = NODE_REGISTRY_PRIVATE_STATES.get(nodeRegistry);
+  if (!state) {
+    throw new Error("node registry private runtime was not initialized");
+  }
+  return state.invokeCore(params, false, params.isDispatchAuthorized);
 }
 
 export function updateNodeRunnerInventory(params: {

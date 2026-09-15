@@ -1,11 +1,16 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   captureOpenAIResponsesCompaction,
   requestPreparedOpenAIResponsesCompaction,
+  requiresCompactionReplayRefresh,
   resolveOpenAIResponsesCompactEndpointPlan,
 } from "@openclaw/ai/transports";
 import type { Message } from "@openclaw/llm-core";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { AgentMessage } from "../runtime/index.js";
+import { withSessionManagerWrite } from "../sessions/session-manager-write-admission.js";
+import { redactTranscriptMessage } from "../transcript-redact.js";
 import { compactWithSafetyTimeout } from "./compaction-safety-timeout.js";
 import { log } from "./logger.js";
 import { rewriteTranscriptEntriesInSessionManager } from "./transcript-rewrite.js";
@@ -28,6 +33,10 @@ export async function attemptServerEndpointCompaction(params: {
   extraParams: Record<string, unknown>;
   requestOptions: Parameters<typeof requestPreparedOpenAIResponsesCompaction>[3];
   customInstructions?: string;
+  config?: OpenClawConfig;
+  onUsage?: (usage: ServerEndpointCompactionResult["usage"]) => void;
+  onCompactionCommitted?: () => void;
+  assertActive?: () => void;
 }): Promise<ServerEndpointCompactionResult | undefined> {
   if (
     params.trigger === "overflow" ||
@@ -36,6 +45,9 @@ export async function attemptServerEndpointCompaction(params: {
   ) {
     return undefined;
   }
+  params.assertActive?.();
+  let compacted: ServerEndpointCompactionResult;
+  let compactionCommitted = false;
   try {
     const messages = params.context.messages.filter(
       (message): message is Message =>
@@ -44,13 +56,18 @@ export async function attemptServerEndpointCompaction(params: {
     if (messages.at(-1)?.role !== "assistant") {
       return undefined;
     }
+    if (requiresCompactionReplayRefresh(messages, params.model, params.requestOptions)) {
+      // The exact old window is gone. Only the durable full-history client
+      // compactor can rebuild it; recent-turn endpoint input cannot.
+      return undefined;
+    }
     const owner = params.sessionManager
       .getBranch()
       .findLast((entry) => entry.type === "message" && entry.message.role === "assistant");
     if (!owner || owner.type !== "message" || owner.message.role !== "assistant") {
       throw new Error("Responses compact endpoint requires a persisted assistant owner");
     }
-    const compacted = await compactWithSafetyTimeout(
+    compacted = await compactWithSafetyTimeout(
       (signal) =>
         requestPreparedOpenAIResponsesCompaction(
           params.streamFn,
@@ -61,6 +78,8 @@ export async function attemptServerEndpointCompaction(params: {
       params.requestOptions.timeoutMs,
       params.requestOptions.signal ? { abortSignal: params.requestOptions.signal } : undefined,
     );
+    params.onUsage?.(compacted.usage);
+    params.assertActive?.();
     const replacement = structuredClone(owner.message);
     captureOpenAIResponsesCompaction(
       replacement,
@@ -68,25 +87,45 @@ export async function attemptServerEndpointCompaction(params: {
       compacted.historyMode === "retained-users" ? "retained-users" : replacement.content.length,
       compacted.model,
       compacted.replayMetadata,
+      compacted.output,
     );
-    const rewritten = rewriteTranscriptEntriesInSessionManager({
-      sessionManager: params.sessionManager,
-      replacements: [{ entryId: owner.id, message: replacement }],
-      preserveReplacementCompactionReplay: true,
-    });
+    const redacted = redactTranscriptMessage(replacement, params.config);
     if (
-      replacement.providerReplay?.data !== compacted.item.encrypted_content ||
-      !rewritten.changed
+      redacted.role !== "assistant" ||
+      !isDeepStrictEqual(redacted.providerReplay, replacement.providerReplay)
     ) {
-      throw new Error(
-        `Responses compact endpoint checkpoint was not persisted: ${rewritten.reason}`,
-      );
+      throw new Error("Responses compact endpoint window requires transcript redaction");
     }
-    return compacted;
+    await withSessionManagerWrite(params.sessionManager, () => {
+      params.requestOptions.signal?.throwIfAborted();
+      params.assertActive?.();
+      const rewritten = rewriteTranscriptEntriesInSessionManager({
+        sessionManager: params.sessionManager,
+        replacements: [{ entryId: owner.id, message: redacted }],
+        preserveReplacementCompactionReplay: true,
+      });
+      if (
+        replacement.providerReplay?.data !== compacted.item.encrypted_content ||
+        !rewritten.changed
+      ) {
+        throw new Error(
+          `Responses compact endpoint checkpoint was not persisted: ${rewritten.reason}`,
+        );
+      }
+      compactionCommitted = true;
+      params.onCompactionCommitted?.();
+    });
   } catch (err) {
+    // Observer or handle-release failures after commit must not trigger a
+    // second client compaction of the already replaced context.
+    if (compactionCommitted) {
+      throw err;
+    }
+    params.assertActive?.();
     log.debug(
       `Responses compact endpoint failed; falling back to client compaction: ${formatErrorMessage(err)}`,
     );
     return undefined;
   }
+  return compacted;
 }

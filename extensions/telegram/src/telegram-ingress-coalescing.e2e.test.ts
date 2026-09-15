@@ -5,6 +5,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -134,29 +135,36 @@ function forwardedTextUpdate(params: { updateId: number; messageId: number; text
   };
 }
 
+function textUpdate(params: { updateId: number; messageId: number; text: string }) {
+  return {
+    update_id: params.updateId,
+    message: {
+      message_id: params.messageId,
+      date: 1_736_380_800 + params.messageId,
+      chat: { id: 111, type: "private" as const, first_name: "Ada" },
+      from: { id: 111, is_bot: false, first_name: "Ada" },
+      text: params.text,
+    },
+  };
+}
+
 function createBotApiTransport() {
   let getFileCall = 0;
   const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
     const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
     if (url.includes("/getFile")) {
       getFileCall += 1;
-      return new Response(
-        JSON.stringify({
-          ok: true,
-          result: {
-            file_id: `photo-${getFileCall}`,
-            file_unique_id: `unique-${getFileCall}`,
-            file_size: 4,
-            file_path: `photos/photo-${getFileCall}.jpg`,
-          },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
+      return Response.json({
+        ok: true,
+        result: {
+          file_id: `photo-${getFileCall}`,
+          file_unique_id: `unique-${getFileCall}`,
+          file_size: 4,
+          file_path: `photos/photo-${getFileCall}.jpg`,
+        },
+      });
     }
-    return new Response(JSON.stringify({ ok: true, result: true }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return Response.json({ ok: true, result: true });
   }) as unknown as typeof fetch;
   return { fetch: fetchImpl, sourceFetch: fetchImpl, close: async () => {} };
 }
@@ -177,6 +185,7 @@ function createTelegramDeps(stateDir: string): TelegramBotDeps {
       providers: [],
       resolvedDefault: { provider: "openai", model: "gpt-test" },
       modelNames: new Map<string, string>(),
+      modelCatalog: [],
     }),
     listSkillCommandsForAgents: () => [],
     wasSentByBot: () => false,
@@ -308,7 +317,6 @@ describe("Telegram durable ingress coalescing", () => {
     const monitor = createTelegramTransportIngressMonitor({
       spoolDir,
       bot,
-      cfg,
       accountId: "default",
       botInfo: telegramBotInfoForTest,
       ...(options.adoptionStallTimeoutMs === undefined
@@ -465,6 +473,55 @@ describe("Telegram durable ingress coalescing", () => {
     );
     expect(downstreamTurns).toHaveBeenCalledOnce();
     expect(runtimeError).toHaveBeenCalledOnce();
+
+    await monitor.stop();
+    await telegramTransport.close();
+  });
+
+  it("bounds repeated session-start conflicts and drains the next Telegram update", async () => {
+    const poison = textUpdate({ updateId: 801, messageId: 1, text: "poison" });
+    const after = textUpdate({ updateId: 802, messageId: 2, text: "after" });
+    const poisonId = telegramQueueEventId(poison.update_id);
+    const sessionError = Object.assign(
+      new Error('Session "agent:main:telegram:direct:111" changed while starting work. Retry.'),
+      { code: "SESSION_WORK_START_CHANGED" },
+    );
+    downstreamTurns.mockImplementation(async (turn) => {
+      if ((turn.BodyForAgent ?? turn.Body ?? "").includes("poison")) {
+        throw sessionError;
+      }
+      return { queuedFinal: false, counts: { block: 0, final: 0, tool: 0 } };
+    });
+    await writeTelegramSpooledUpdate({ spoolDir, update: poison });
+    await writeTelegramSpooledUpdate({ spoolDir, update: after });
+    const queue = openTelegramIngressQueue(spoolDir);
+    for (let attempt = 1; attempt < DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS; attempt += 1) {
+      const claim = await queue.claim(poisonId, { ownerId: `proof:${attempt}` });
+      if (!claim) {
+        throw new Error(`Expected setup claim ${attempt}`);
+      }
+      await queue.release(claim, {
+        lastError: sessionError.message,
+        releasedAt: Date.now() - 60 * 60 * 1_000,
+      });
+    }
+    const runtimeError = vi.fn();
+    const { monitor, telegramTransport } = await createMonitor({ onRuntimeError: runtimeError });
+
+    monitor.start();
+    await vi.waitFor(async () => {
+      expect(await queue.listFailed?.({ limit: "all" })).toEqual([
+        expect.objectContaining({ id: poisonId, reason: "session-start-conflict-retry-limit" }),
+      ]);
+    });
+    await vi.waitFor(async () => {
+      expect(await queue.listPending({ limit: "all" })).toEqual([]);
+    });
+    expect(
+      downstreamTurns.mock.calls.some(([turn]) =>
+        (turn.BodyForAgent ?? turn.Body ?? "").includes("after"),
+      ),
+    ).toBe(true);
 
     await monitor.stop();
     await telegramTransport.close();

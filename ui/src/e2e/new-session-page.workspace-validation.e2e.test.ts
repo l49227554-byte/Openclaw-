@@ -71,12 +71,7 @@ async function withNewSessionPage(
   options: BrowserContextOptions,
   run: (page: Page) => Promise<void>,
 ): Promise<void> {
-  const context = await suite.browser.newContext(options);
-  try {
-    await run(await context.newPage());
-  } finally {
-    await context.close();
-  }
+  await suite.withPage(options, ({ page }) => run(page));
 }
 
 type MockGateway = Awaited<ReturnType<typeof installMockGateway>>;

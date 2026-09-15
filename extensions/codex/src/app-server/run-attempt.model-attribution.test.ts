@@ -14,6 +14,7 @@ import { ensureAuthProfileStore, resolveAuthProfileOrder } from "openclaw/plugin
 import { resolveProviderIdForAuth } from "openclaw/plugin-sdk/provider-auth-aliases";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import plugin from "../../index.js";
+import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import { CodexAppServerClient } from "./client.js";
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
@@ -42,7 +43,9 @@ setupRunAttemptTestHooks();
 afterEach(() => resetPluginStateStoreForTests());
 
 describe("registered Codex harness model attribution", () => {
-  it("reports the ready native model and current-turn reroutes before settlement", async () => {
+  it.each(["completed", "timed out"] as const)("attributes models (%s)", async (outcome) => {
+    // Protocol events own completion; host load must not spend the attempt watchdog.
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const params = createTestParams();
     params.agentDir = path.join(tempDir, "agent");
     params.provider = "anthropic";
@@ -152,6 +155,20 @@ describe("registered Codex harness model attribution", () => {
             result = turnStartResult();
             turnStarted.resolve();
             break;
+          case "turn/interrupt":
+            queueMicrotask(() =>
+              send({
+                method: "turn/completed",
+                params: {
+                  threadId: "native-thread",
+                  turn: { id: "turn-1", status: "interrupted" },
+                },
+              }),
+            );
+            break;
+          case "thread/backgroundTerminals/list":
+            result = { data: [], nextCursor: null };
+            break;
           case "thread/unsubscribe":
             result = { status: "unsubscribed" };
             break;
@@ -228,27 +245,39 @@ describe("registered Codex harness model attribution", () => {
           data: { fromModel: "ready-native-model", toModel: "rerouted-model", reason: "other" },
         },
       ]);
-      transport.send({
-        method: "turn/completed",
-        params: {
-          threadId: "native-thread",
-          turn: {
-            id: "turn-1",
-            status: "completed",
-            items: [{ type: "agentMessage", id: "answer", text: "Native answer." }],
+      if (outcome === "timed out") {
+        await vi.advanceTimersByTimeAsync(params.timeoutMs);
+      } else {
+        transport.send({
+          method: "turn/completed",
+          params: {
+            threadId: "native-thread",
+            turn: {
+              id: "turn-1",
+              status: "completed",
+              items: [{ type: "agentMessage", id: "answer", text: "Native answer." }],
+            },
           },
-        },
-      });
+        });
+      }
       const result = await run;
-      expect(result).toHaveProperty("terminal", { kind: "ok" });
+      if (outcome === "completed") {
+        expect(result).toHaveProperty("terminal", { kind: "ok" });
+      } else {
+        expect(readAttemptTerminal(result)).toMatchObject({ timedOut: true, aborted: true });
+        expect(requests).toContainEqual({
+          method: "thread/backgroundTerminals/list",
+          params: { threadId: "native-thread" },
+        });
+      }
       expect(result.runtimeModelSelection).toEqual({
         provider: "openai",
         model: "ready-native-model",
       });
-      expect(result.assistantTexts).toEqual(["Native answer."]);
+      expect(result.assistantTexts).toEqual(outcome === "completed" ? ["Native answer."] : []);
       expect(
         events.filter((event) => event.stream === "lifecycle").map((event) => event.data.phase),
-      ).toEqual(["start", "model", "model", "end"]);
+      ).toEqual(["start", "model", "model", outcome === "completed" ? "end" : "error"]);
       for (const method of ["thread/resume", "turn/start"]) {
         const matching = requests.filter((request) => request.method === method);
         expect(matching).toHaveLength(1);
@@ -264,6 +293,7 @@ describe("registered Codex harness model attribution", () => {
       await transport.client.closeAndWait();
       await Promise.allSettled([run]);
       await registered.dispose?.();
+      vi.useRealTimers();
     }
   });
 });

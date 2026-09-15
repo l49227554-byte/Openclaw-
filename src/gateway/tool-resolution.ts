@@ -13,6 +13,11 @@ import { createLazyExecTool, resolveExecToolConfig } from "../agents/lazy-exec-t
 import { createOpenClawTools } from "../agents/openclaw-tools.js";
 import { filterRequesterYieldTools } from "../agents/openclaw-tools.requester-yield.js";
 import {
+  applySwarmCollectorToolContract,
+  createSwarmCollectorWriteAuthority,
+  resolveSwarmCollectorToolContext,
+} from "../agents/openclaw-tools.swarm.js";
+import {
   captureRequesterToolCap,
   filterToolsByRequesterCap,
   getRequesterToolCap,
@@ -87,6 +92,11 @@ export function resolveGatewayScopedTools(
     allowGatewaySubagentBinding?: boolean;
     allowMediaInvokeCommands?: boolean;
     surface?: GatewayScopedToolSurface;
+    /**
+     * Liveness of the client grant this request authenticated with, supplied by
+     * the loopback server. Run-contract tools re-check it before they write.
+     */
+    isGrantCurrent?: () => boolean;
     excludeToolNames?: Iterable<string>;
     /** Server-minted coding tools that must be mediated through the loopback surface. */
     mediatedToolNames?: Iterable<string>;
@@ -136,6 +146,7 @@ function resolveGatewayScopedToolsWithinCap(
     providerProfile,
     profileAlsoAllow,
     providerProfileAlsoAllow,
+    gatewayConfigReadAllowed,
   } = resolveEffectiveToolPolicy({
     config: params.cfg,
     sessionKey: runtimePolicySessionKey,
@@ -284,9 +295,39 @@ function resolveGatewayScopedToolsWithinCap(
       gatewayRequestedTools.length > 0 ? { allow: gatewayRequestedTools } : undefined,
     ].some(hasRestrictiveAllowPolicy);
 
+  // CLI backends reach OpenClaw tools through this resolver instead of the
+  // embedded runner, and the loopback grant carries no collector fields, so the
+  // subagent registry supplies the collector run contract for this child.
+  //
+  // Authority is the admitted collector run, not the transport. `params.runId`
+  // reaches this resolver only from `McpLoopbackRequestContext.runId`, which
+  // `resolveMcpRequestContext` copies out of a Gateway-minted, run-bound CLI
+  // client grant; the session-scoped `openclaw attach` branch and the
+  // header-derived branch never set it, and the `http` caller never passes one.
+  // Requiring that id to match the registry's collector record therefore admits
+  // the collector child's own run and nobody else, including an attach client
+  // bound to that same collector session.
+  const swarmCollectorAdmission = {
+    childSessionKey: params.sessionKey,
+    admittedRunId: surface === "loopback" ? params.runId : undefined,
+  };
+  const swarmCollectorContext = resolveSwarmCollectorToolContext(swarmCollectorAdmission);
   const openClawTools = createOpenClawTools({
+    gatewayConfigReadAllowed,
     agentSessionKey: params.sessionKey,
     runId: params.runId,
+    ...(swarmCollectorContext
+      ? {
+          swarmCollector: true,
+          assertCollectorWriteAuthority: createSwarmCollectorWriteAuthority({
+            admission: swarmCollectorAdmission,
+            isGrantCurrent: params.isGrantCurrent,
+          }),
+          ...(swarmCollectorContext.swarmOutputSchema
+            ? { swarmOutputSchema: swarmCollectorContext.swarmOutputSchema }
+            : {}),
+        }
+      : {}),
     execSession: params.execSession,
     execOverrides: params.execOverrides,
     approvalReviewerDeviceIds: params.approvalReviewerDeviceId
@@ -320,6 +361,7 @@ function resolveGatewayScopedToolsWithinCap(
     onYield: params.onYield,
     requireExplicitMessageTarget: params.requireExplicitMessageTarget,
     senderIsOwner: params.senderIsOwner,
+    requesterSenderId: senderId,
     conversationReadOrigin: params.conversationReadOrigin,
     allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
     skillWorkshop: params.skillWorkshop,
@@ -335,6 +377,7 @@ function resolveGatewayScopedToolsWithinCap(
     modelHasVision: params.modelHasVision,
     pairedNodeComputerUse: params.pairedNodeComputerUse,
     clientCaps: params.clientCaps,
+    gatewayUiCommandTarget: params.gatewayUiCommandTarget,
     pinnedWidgetAuthoring: surface === "loopback" ? params.pinnedWidgetAuthoring : undefined,
     workspaceDir,
     sandboxed,
@@ -417,6 +460,7 @@ function resolveGatewayScopedToolsWithinCap(
           messageProvider: params.messageProvider,
           messageChannel: params.messageProvider,
           clientCaps: params.clientCaps,
+          gatewayUiCommandTarget: params.gatewayUiCommandTarget,
           agentAccountId: params.accountId,
           currentChannelId: params.currentChannelId,
           currentThreadTs: params.currentThreadTs,
@@ -572,11 +616,17 @@ function resolveGatewayScopedToolsWithinCap(
       ...excludedToolNames,
     ].map(normalizeToolPolicyName),
   );
-  const tools = filterToolsByRequesterCap(
-    applyDelegationCapability(
-      policyFiltered.filter((tool) => !gatewayDenySet.has(normalizeToolPolicyName(tool.name))),
-      params.delegationCapability,
+  const tools = applySwarmCollectorToolContract(
+    filterToolsByRequesterCap(
+      applyDelegationCapability(
+        policyFiltered.filter((tool) => !gatewayDenySet.has(normalizeToolPolicyName(tool.name))),
+        params.delegationCapability,
+      ),
     ),
+    {
+      swarmCollector: Boolean(swarmCollectorContext),
+      structuredOutputTool: openClawTools.find((tool) => tool.name === "structured_output"),
+    },
   );
   // A node-only exec tool is valid on this loopback request but cannot become
   // generic exec authority in a receiving session or scheduled child.

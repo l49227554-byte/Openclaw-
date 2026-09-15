@@ -458,6 +458,7 @@ describe("sessions_send gateway loopback", () => {
         });
 
         await runSessionsSendA2AFlow({
+          targetAgentId: "main",
           targetSessionKey: "agent:main:whatsapp:direct:peer-1",
           displayKey: "agent:main:whatsapp:direct:peer-1",
           message: "ping",
@@ -643,6 +644,7 @@ describe("sessions_send gateway loopback", () => {
         });
 
         await runSessionsSendA2AFlow({
+          targetAgentId: "main",
           targetSessionKey: sessionKey,
           requesterSessionKey: sessionKey,
           requesterChannel: "whatsapp",

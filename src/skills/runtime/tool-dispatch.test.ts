@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createOpenClawTools } from "../../agents/openclaw-tools.js";
 import {
   captureRequesterToolCap,
   runWithRequesterToolCap,
@@ -53,6 +54,40 @@ describe("resolveSkillDispatchTools", () => {
     expect(tools.map((tool) => tool.name)).toEqual(["read"]);
     expect(createOpenClawToolsMock.mock.lastCall?.[0]?.inheritedToolAllowlist).toEqual(["read"]);
   });
+
+  it.each([
+    { tools: { profile: "coding" }, actions: ["update.run"] },
+    {
+      tools: { profile: "full" },
+      actions: ["config.get", "config.schema.lookup", "update.run"],
+    },
+    {
+      tools: { profile: "messaging", alsoAllow: ["gateway"] },
+      actions: ["config.get", "config.schema.lookup", "update.run"],
+    },
+  ] satisfies Array<{ tools: OpenClawConfig["tools"]; actions: string[] }>)(
+    "limits gateway actions to the skill dispatch policy: $tools",
+    ({ tools: toolPolicy, actions }) => {
+      const tools = resolveSkillDispatchTools(
+        {
+          message: { surface: "webchat" },
+          cfg: { plugins: { enabled: false }, tools: toolPolicy },
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          workspaceDir: "/tmp/openclaw-skill-tool-dispatch-test",
+          provider: "openai",
+          model: "gpt-5.5",
+          senderIsOwner: true,
+        },
+        { createOpenClawTools },
+      );
+
+      expect(tools.find((tool) => tool.name === "gateway")?.parameters).toHaveProperty(
+        "properties.action.enum",
+        actions,
+      );
+    },
+  );
 
   it.each([
     { agentId: "isolated", expectedTools: ["read"] },

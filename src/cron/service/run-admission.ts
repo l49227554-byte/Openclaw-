@@ -17,6 +17,7 @@ import { enrollForeignReceipt } from "./foreign-receipt-monitor.js";
 import { recomputeJobNextRunAtMs } from "./jobs-scheduling.js";
 import { locked } from "./locked.js";
 import { runWithCronAdmission } from "./run-admission-capacity.js";
+import { skipCronJobsWithoutOwners } from "./run-owner.js";
 import {
   activateServiceCronRunReceiptInDatabase,
   claimServiceCronRunReceiptInDatabase,
@@ -145,6 +146,8 @@ export async function cleanupQueuedCronRunReservations(params: {
             }
             if (runningMatches) {
               delete job.state.runningAtMs;
+              delete job.state.runningReceiptId;
+              delete job.state.runningScheduleChangeId;
             }
             if (params.recompute && job.enabled && job.state.nextRunAtMs === undefined) {
               recomputeJobNextRunAtMs({
@@ -227,8 +230,24 @@ export async function persistQueuedCronRunReservations(params: {
   candidates: readonly CronJob[];
   immediateJobIds?: ReadonlySet<string>;
   reservedAtMs: number;
+  scheduleMode?: "advance" | "preserve";
+  manualRun?: {
+    runId?: string;
+    terminalTracker?: { emitted: boolean };
+    scheduleOwnershipAtMs?: number;
+  };
 }): Promise<Array<{ job: CronJob; runReceipt: CronRunReceiptHandle }>> {
-  const pendingJobs = new Map(params.candidates.map((job) => [job.id, structuredClone(job)]));
+  // Manual runs reach reservations without the scheduler's earlier owner filter.
+  const candidates = skipCronJobsWithoutOwners(
+    params.state,
+    [...params.candidates],
+    params.reservedAtMs,
+    {
+      ...(params.scheduleMode ? { scheduleMode: params.scheduleMode } : {}),
+      ...(params.manualRun ? { manualRun: params.manualRun } : {}),
+    },
+  );
+  const pendingJobs = new Map(candidates.map((job) => [job.id, structuredClone(job)]));
   const preparedClaims = new Map(
     [...pendingJobs].map(([jobId, job]) => [
       jobId,
@@ -403,6 +422,8 @@ export async function activateQueuedCronRun(params: {
           ] as const;
           delete current.state.queuedAtMs;
           current.state.runningAtMs = startedAt;
+          current.state.runningReceiptId = runReceipt.receiptId;
+          delete current.state.runningScheduleChangeId;
           current.state.lastError = undefined;
           return { value, upsertJobIds: [current.id] };
         },
@@ -452,6 +473,8 @@ export async function activateQueuedCronRun(params: {
         }
         current.state.lastError = previousLastError;
         delete current.state.runningAtMs;
+        delete current.state.runningReceiptId;
+        delete current.state.runningScheduleChangeId;
         return { value: current, upsertJobIds: [current.id] };
       },
     });
@@ -489,7 +512,6 @@ export async function executeQueuedCronRun(params: {
   | { kind: "completed"; outcome: TimedCronRunOutcome; handled: boolean }
 > {
   const { state } = params;
-  let activated = false;
   const executeAdmitted = async () => {
     const started = await locked(state, async () => {
       await ensureLoaded(state, { forceReload: true, skipRecompute: true });
@@ -555,7 +577,6 @@ export async function executeQueuedCronRun(params: {
       if (activation.kind !== "activated") {
         return undefined;
       }
-      activated = true;
       params.onActivated?.();
       return {
         job: activation.job,
@@ -644,13 +665,13 @@ export async function executeQueuedCronRun(params: {
     executeAdmitted,
     params.admissionRelease,
   ).catch(async (error: unknown) => {
-    if (activated) {
-      await cleanupQueuedCronRunReservations({
-        state,
-        reservations: [{ jobId: params.jobId, reservationIdentity: params.reservationIdentity }],
-        recompute: "maintenance",
-      });
-    }
+    // Release this producer's exact reservation even when admission or activation
+    // failed before execution; callers' batch cleanup is only a safety net.
+    await cleanupQueuedCronRunReservations({
+      state,
+      reservations: [{ jobId: params.jobId, reservationIdentity: params.reservationIdentity }],
+      recompute: "maintenance",
+    });
     throw error;
   });
   if (admission.kind === "stopped") {

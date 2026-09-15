@@ -92,6 +92,7 @@ import type { ModelAuthMode } from "./model-auth.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import { createOpenClawTools, filterToolsByClientCaps } from "./openclaw-tools.js";
 import { filterRequesterYieldTools } from "./openclaw-tools.requester-yield.js";
+import { applySwarmCollectorToolContract } from "./openclaw-tools.swarm.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.js";
 import {
   captureRequesterToolCap,
@@ -205,6 +206,7 @@ type OpenClawCodingToolsOptions = {
   questionPrompt?: QuestionPromptDelivery;
   /** Capabilities declared by the gateway client that originated this run. */
   clientCaps?: string[];
+  gatewayUiCommandTarget?: import("../gateway/ui-command-target.types.js").GatewayUiCommandTarget;
   /** Host-admitted dashboard authoring without an originating inline renderer. */
   pinnedWidgetAuthoring?: boolean;
   /** Out-of-band plugin bindings attached by the run initiator. */
@@ -933,9 +935,11 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             webSearchEnabled: options?.webSearchEnabled,
             clientCaps: options?.clientCaps,
             pinnedWidgetAuthoring: options?.pinnedWidgetAuthoring,
+            gatewayUiCommandTarget: options?.gatewayUiCommandTarget,
             toolBindings: options?.toolBindings,
             pluginToolAllowlist,
             pluginToolDenylist,
+            gatewayConfigReadAllowed: capabilityProfile.policy.gatewayConfigReadAllowed,
             runtimeToolAllowlist: options?.runtimeToolAllowlist,
             githubPublicationAvailable: options?.githubPublicationAvailable,
             cronCreatorToolAllowlist,
@@ -988,6 +992,7 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             inheritedToolDenylist,
             onYield: options?.onYield,
             claimYieldCompletion: options?.claimYieldCompletion,
+            processScopeKey: scopeKey,
             allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
             recordToolPrepStage: options?.recordToolPrepStage,
           }),
@@ -1075,23 +1080,18 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
   });
   // Host-bound ring-zero tools carry their own authority checks. Agent policy
   // must not deadlock setup, but the tools still receive schema/hook wrappers.
-  const authorizedTools = filterToolsByRequesterCap(
-    applyDelegationCapability(
-      mergeAgentRingZeroTools(ringZeroTools, subagentFiltered),
-      options?.delegationCapability,
+  const authorizedTools = applySwarmCollectorToolContract(
+    filterToolsByRequesterCap(
+      applyDelegationCapability(
+        mergeAgentRingZeroTools(ringZeroTools, subagentFiltered),
+        options?.delegationCapability,
+      ),
     ),
-  ).filter(
-    (tool) =>
-      !options?.swarmCollector ||
-      (tool.name !== "ask_user" && tool.name !== "sessions_send" && tool.name !== "sessions_yield"),
+    {
+      swarmCollector: options?.swarmCollector,
+      structuredOutputTool: swarmStructuredOutputTool,
+    },
   );
-  if (
-    swarmStructuredOutputTool &&
-    !authorizedTools.some((tool) => tool.name === swarmStructuredOutputTool.name)
-  ) {
-    // Collector output is a run contract, not an operator-configurable capability.
-    authorizedTools.push(swarmStructuredOutputTool);
-  }
   authorizedTools.forEach(bindAssembledAgentToolActionDescriptor);
   processToolAvailabilityRef.value = authorizedTools.some((tool) => tool.name === "process");
   if (shouldInheritEffectiveToolAllowlist) {

@@ -97,6 +97,7 @@ export function resolveSkillDispatchTools(
     providerProfile,
     profileAlsoAllow,
     providerProfileAlsoAllow,
+    gatewayConfigReadAllowed,
   } = resolveEffectiveToolPolicy({
     config: params.cfg,
     sessionKey: params.sessionKey,
@@ -174,6 +175,7 @@ export function resolveSkillDispatchTools(
     : undefined;
   const tools = dependencies.createOpenClawTools({
     sessionSendToolCapRef,
+    gatewayConfigReadAllowed,
     agentSessionKey: params.sessionKey,
     agentChannel: channel,
     agentAccountId: params.message.accountId,

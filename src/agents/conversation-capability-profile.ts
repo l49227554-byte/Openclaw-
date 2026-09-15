@@ -288,6 +288,7 @@ export function resolveConversationCapabilityProfile(params: ConversationCapabil
       trustedGroup,
       profile: effective.profile,
       providerProfile: effective.providerProfile,
+      gatewayConfigReadAllowed: effective.gatewayConfigReadAllowed,
       profilePolicy,
       providerProfilePolicy,
       profileAlsoAllow: mergeRuntimeToolAlsoAllowlist(effective.profileAlsoAllow),

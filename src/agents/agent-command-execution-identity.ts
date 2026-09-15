@@ -30,8 +30,10 @@ import type {
 import { commitMainSessionRecovery } from "./main-session-recovery/main-session-recovery-store.js";
 import type { MainSessionRecoveryCommand } from "./main-session-recovery/main-session-recovery-types.js";
 import { getRequesterToolCap } from "./requester-tool-cap.js";
-import { captureGatewayToolCallerContinuationAssertion } from "./tools/gateway-caller-context.js";
-import { captureGatewayToolCallerAssertion } from "./tools/in-process-gateway.js";
+import {
+  captureGatewayToolCallerAssertion,
+  captureGatewayToolCallerContinuationAssertion,
+} from "./tools/gateway-caller-context.js";
 
 export type AgentCommandAdmissionIngress = ExecutionIdentityAdmissionFacts["ingress"];
 

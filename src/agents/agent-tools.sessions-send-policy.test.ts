@@ -7,7 +7,7 @@ import "./test-helpers/fast-coding-tools.js";
 const mocks = vi.hoisted(() => ({ dispatch: vi.fn(), outbound: vi.fn() }));
 vi.mock("../gateway/server-plugins.js", () => ({
   hasInProcessGatewayContext: () => true,
-  getInProcessGatewayRequestContext: () => undefined,
+  getInProcessGatewayRequestContext: () => ({}),
   dispatchGatewayMethodInProcess: mocks.dispatch,
   runWithOperatorToolGatewayCleanupContext: (run: () => unknown) => run(),
 }));

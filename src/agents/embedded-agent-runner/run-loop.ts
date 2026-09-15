@@ -148,8 +148,7 @@ export async function runPreparedEmbeddedLoop(
   const resolveRuntimeFallbackReason = (): string | null =>
     traceAttempts.findLast(
       (attempt) => attempt.result === "fallback_model" && typeof attempt.reason === "string",
-    )?.reason ??
-    lastRetryFailoverReason;
+    )?.reason ?? lastRetryFailoverReason;
   const { sessionAgentId } = resolveSessionAgentIds({
     sessionKey: params.sessionKey,
     config: params.config,

@@ -77,6 +77,21 @@ describe.each([false, true])("assertSqliteSchemaContains (statement cache: %s)",
     }
   });
 
+  it("names the doctor repair path when a canonical index is missing", () => {
+    const database = createDatabase(CANONICAL_SCHEMA);
+    try {
+      database.exec("DROP INDEX idx_children_parent;");
+
+      // Operators hit this throw as gateway startup failure text, so it must
+      // name the repair owner instead of dead-ending on the drift detail.
+      expect(() => assertSqliteSchemaContains(database, "test database", CANONICAL_SCHEMA)).toThrow(
+        /missing or drifted index idx_children_parent; run openclaw doctor --fix to repair it\./,
+      );
+    } finally {
+      database.close();
+    }
+  });
+
   it("accepts an extra non-unique index on a canonical table", () => {
     const database = createDatabase(CANONICAL_SCHEMA);
     try {
@@ -116,15 +131,22 @@ describe.each([false, true])("assertSqliteSchemaContains (statement cache: %s)",
         unexpectedUniqueIndex,
       ]);
 
-      database.exec("CREATE INDEX idx_children_parent ON children(id, parent_id);");
-      expect(collectSqliteSchemaIssues(database, CANONICAL_SCHEMA, compatibility)).toEqual([
-        {
-          code: "missing-or-drifted-index",
-          objectName: "idx_children_parent",
-          message: "missing or drifted index idx_children_parent",
-        },
-        unexpectedUniqueIndex,
-      ]);
+      for (const [name, definition] of [
+        ["idx_children_parent", "children(id, parent_id)"],
+        ["idx_children_parent", "parents(value, id)"],
+        ["IDX_CHILDREN_PARENT", "parents(value, id)"],
+      ]) {
+        database.exec(`CREATE INDEX ${name} ON ${definition};`);
+        expect(collectSqliteSchemaIssues(database, CANONICAL_SCHEMA, compatibility)).toEqual([
+          {
+            code: "missing-or-drifted-index",
+            objectName: "idx_children_parent",
+            message: "missing or drifted index idx_children_parent",
+          },
+          unexpectedUniqueIndex,
+        ]);
+        database.exec("DROP INDEX idx_children_parent;");
+      }
     } finally {
       database.close();
     }

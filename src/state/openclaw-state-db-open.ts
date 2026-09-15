@@ -1,12 +1,15 @@
 import type { DatabaseSync } from "node:sqlite";
+import { formatErrorMessage } from "../infra/errors.js";
 import { enableNodeSqliteKyselyStatementCache } from "../infra/kysely-sync.js";
-import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import {
   runWithSqliteBusyTimeout,
   setSqliteBusyTimeout,
   type SqliteLockFailureReporting,
 } from "../infra/sqlite-busy-timeout.js";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import {
+  createSqliteLifecycleAggregateError,
+  runWithSqliteCoordinator,
+} from "../infra/sqlite-coordinator.js";
 import {
   assertSqliteIntegrity,
   isTerminalSqliteIntegrityError,
@@ -17,13 +20,20 @@ import {
   configureSqlitePreSchemaPragmas,
   type SqliteWalMaintenance,
 } from "../infra/sqlite-wal.js";
+import {
+  acquireStateDatabaseCoordinator,
+  resolveStateLifecycleRuntimeDirectory,
+} from "../infra/state-database-coordinator.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
 import {
   OPENCLAW_STATE_SCHEMA_VERSION,
   type OpenClawStateDatabase,
 } from "./openclaw-state-db-contract.js";
+import { hasDanglingSkillWorkshopCollectionReviewIndex } from "./openclaw-state-db-dangling-workshop-index.js";
+import { openTrackedStateDatabase } from "./openclaw-state-db-handle.js";
 import { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
+import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import {
   assertSupportedStateSchemaVersion,
   readStateSchemaMigrationVersion,
@@ -64,8 +74,9 @@ export function openUnpublishedStateDatabase(params: {
   recordOpenFailure: (pathname: string, error: Error) => void;
 }): OpenClawStateDatabase {
   const { busyTimeoutMs, lockFailureReporting } = params;
+  const runtimeDirectory = resolveStateLifecycleRuntimeDirectory();
   ensureOpenClawStatePermissions(params.pathname, params.env);
-  const db = openNodeSqliteDatabase(params.pathname);
+  const db = openTrackedStateDatabase(params.pathname);
   let walMaintenance: SqliteWalMaintenance | undefined;
   try {
     enableNodeSqliteKyselyStatementCache(db);
@@ -74,6 +85,12 @@ export function openUnpublishedStateDatabase(params: {
       db,
       busyTimeoutMs,
       () => {
+        if (hasDanglingSkillWorkshopCollectionReviewIndex(db)) {
+          throw new OpenClawStateDatabaseSchemaMigrationRequiredError(
+            "legacy-workshop-review-index",
+            params.pathname,
+          );
+        }
         assertSupportedStateSchemaVersion(db, params.pathname);
         assertStateDatabaseIntegrityBeforeMutation(db, params.pathname);
         configureSqlitePreSchemaPragmas(db, { busyTimeoutMs });
@@ -81,6 +98,22 @@ export function openUnpublishedStateDatabase(params: {
           busyTimeoutMs,
           databaseLabel: "openclaw-state",
           databasePath: params.pathname,
+          onCheckpointError: (error) =>
+            stateDbLog.warn("Shared-state WAL maintenance failed", {
+              error: formatErrorMessage(error),
+              path: params.pathname,
+              checkpoint: walMaintenance?.health,
+            }),
+          runMaintenance: (operation) =>
+            runWithSqliteCoordinator(
+              acquireStateDatabaseCoordinator({
+                databasePath: params.pathname,
+                runtimeDirectory,
+                busyTimeoutMs: 0,
+              }),
+              "shared-state WAL maintenance",
+              operation,
+            ),
           foreignKeys: true,
           synchronous: "NORMAL",
         });
@@ -93,7 +126,7 @@ export function openUnpublishedStateDatabase(params: {
     return { db, path: params.pathname, walMaintenance: maintenance };
   } catch (error) {
     // Acquisition owns the native handle until every setup and hardening step returns.
-    const errors = openClawStateDatabaseCache.closeOpenClawStateDatabaseHandle({
+    const errors = openClawStateDatabaseCache.closeUnpublishedOpenClawStateDatabaseHandle({
       db,
       path: params.pathname,
       walMaintenance,

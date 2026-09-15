@@ -14,7 +14,6 @@ import {
 } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { createSyncSuiteTempRootTracker } from "../plugins/test-helpers/fs-fixtures.js";
 import { withEnvAsync } from "../test-utils/env.js";
-import type { resolveModelAsync } from "./embedded-agent-runner/model.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   type PreparedModelRuntimeSnapshot,
@@ -26,8 +25,10 @@ import { AuthStorage, ModelRegistry } from "./sessions/index.js";
 import {
   completeWithPreparedSimpleCompletionModel,
   prepareSimpleCompletionModel,
+  acquireSimpleCompletionModel,
   acquireSimpleCompletionModelForAgent,
 } from "./simple-completion-runtime.js";
+import type { SimpleCompletionModelResolver } from "./simple-completion-scope.js";
 
 const tempRoots = createSyncSuiteTempRootTracker("openclaw-simple-completion-plugin-scope");
 
@@ -43,6 +44,7 @@ function createTransportOwnerFixture(
     providerId: "completion-owner-provider",
   });
   const reconcileFailureMarker = path.join(rootDir, "fail-reconcile");
+  const ownerEvent = `completion-owner:${rootDir}`;
   const createStreamSource = registerProviderStream
     ? `createStreamFn() {
         const source = getApiProvider("openai-completions");
@@ -63,6 +65,7 @@ fs.writeFileSync(${JSON.stringify(fixture.runtimeMarker)}, "loaded", "utf8");
 module.exports = {
   id: ${JSON.stringify(fixture.pluginId)},
   register(api) {
+    process.on(${JSON.stringify(ownerEvent)}, () => {});
     api.registerProvider({
       id: ${JSON.stringify(fixture.providerId)}, label: owner, auth: [],
       async prepareRuntimeAuth() { return { apiKey: "fixture-auth-" + owner }; },
@@ -86,7 +89,7 @@ module.exports = {
 `,
     "utf8",
   );
-  return { ...fixture, reconcileFailureMarker };
+  return { ...fixture, reconcileFailureMarker, ownerEvent };
 }
 
 afterEach(async () => {
@@ -162,7 +165,7 @@ module.exports = {
       },
     } satisfies OpenClawConfig;
     let preparedRuntime: PreparedModelRuntimeSnapshot | undefined;
-    const modelResolver: typeof resolveModelAsync = vi.fn(
+    const modelResolver: SimpleCompletionModelResolver = vi.fn(
       async (provider, modelId, _agentDir, _cfg, options) => {
         preparedRuntime = options?.preparedModelRuntime;
         return {
@@ -178,7 +181,7 @@ module.exports = {
       OPENCLAW_STATE_DIR: path.join(tempRoot, "state"),
     };
 
-    let release: (() => void) | undefined;
+    let acquiredResource: AsyncDisposable | undefined;
     try {
       const result = await withEnvAsync(env, async () => {
         if (mode === "agent") {
@@ -189,17 +192,21 @@ module.exports = {
             modelResolver,
           });
           if (!("error" in acquired)) {
-            release = acquired.release;
+            acquiredResource = acquired;
           }
           return acquired;
         }
-        return await prepareSimpleCompletionModel({
+        const acquired = await acquireSimpleCompletionModel({
           cfg: config,
           agentId: "main",
           modelResolver,
           provider: selected.providerId,
           modelId: expectedModelId,
         });
+        if (!("error" in acquired)) {
+          acquiredResource = acquired;
+        }
+        return acquired;
       });
       expect(result).toMatchObject({
         error: `stop after selected resolver ${selected.providerId}/${expectedModelId}`,
@@ -213,7 +220,7 @@ module.exports = {
         selected.pluginId,
       ]);
     } finally {
-      release?.();
+      await acquiredResource?.[Symbol.asyncDispose]();
     }
   });
 
@@ -330,6 +337,7 @@ module.exports = {
                   },
                   { catalogMode: "static" },
                 );
+          let preparedResource: AsyncDisposable | undefined;
           try {
             if (mode === "empty") {
               expect(lease?.snapshot.pluginRegistry).toBeUndefined();
@@ -347,19 +355,38 @@ module.exports = {
             // Loading the public SDK must retain the host's registered metadata owners.
             const metadataReaders = readHostMetadataReaders();
             expect(metadataReaders.every((reader) => typeof reader === "function")).toBe(true);
-            const prepared = await prepareSimpleCompletionModel({
+            const modelParams = {
               cfg,
               agentId: "main",
               agentDir: input.agentDir,
               workspaceDir: input.workspaceDir,
               provider: selected.providerId,
               modelId: "selected-model",
-              ...(lease ? { preparedModelRuntime: lease.snapshot } : {}),
-            });
+            };
+            let prepared: Awaited<ReturnType<typeof prepareSimpleCompletionModel>>;
+            if (lease) {
+              prepared = await prepareSimpleCompletionModel({
+                ...modelParams,
+                preparedModelRuntime: lease.snapshot,
+              });
+            } else {
+              const acquired = await acquireSimpleCompletionModel(modelParams);
+              if (!("error" in acquired)) {
+                preparedResource = acquired;
+              }
+              prepared = acquired;
+            }
             if ("error" in prepared) {
               throw new Error(prepared.error);
             }
             if (mode === "acquired") {
+              const repeatedPreparation = await acquireSimpleCompletionModel(modelParams);
+              if ("error" in repeatedPreparation) {
+                throw new Error(repeatedPreparation.error);
+              }
+              await using repeated = repeatedPreparation;
+              expect(repeated).not.toHaveProperty("error");
+              expect(process.listenerCount(selected.ownerEvent)).toBe(1);
               activateAmbient();
             }
             // Callers use the logical API before dispatch, including CLI system-prompt selection.
@@ -386,7 +413,8 @@ module.exports = {
               "public SDK loading must preserve registered host metadata readers",
             ).toEqual(metadataReaders);
           } finally {
-            lease?.release();
+            await preparedResource?.[Symbol.asyncDispose]();
+            await lease?.[Symbol.asyncDispose]();
           }
         });
       } finally {
@@ -405,6 +433,7 @@ module.exports = {
     const tempRoot = fs.realpathSync(tempRoots.makeTempDir());
     const selected = createTransportOwnerFixture(path.join(tempRoot, "selected"), "A", false);
     const requestPaths: string[] = [];
+    let preparedResource: AsyncDisposable | undefined;
     const server = createServer((request, response) => {
       request.resume();
       const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -479,7 +508,7 @@ module.exports = {
         OPENCLAW_STATE_DIR: path.join(tempRoot, "state"),
       };
       await withEnvAsync(env, async () => {
-        const prepared = await prepareSimpleCompletionModel({
+        const prepared = await acquireSimpleCompletionModel({
           cfg,
           agentId: "main",
           agentDir: path.join(tempRoot, "agent"),
@@ -490,6 +519,7 @@ module.exports = {
         if ("error" in prepared) {
           throw new Error(prepared.error);
         }
+        preparedResource = prepared;
         const completionTransport = getModelCompletionTransport(prepared.model);
         if (!completionTransport) {
           throw new Error("Managed completion transport was not prepared");
@@ -534,6 +564,7 @@ module.exports = {
         expect(modelRequestIndex).toBeGreaterThan(reloadIndex);
       }
     } finally {
+      await preparedResource?.[Symbol.asyncDispose]();
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));

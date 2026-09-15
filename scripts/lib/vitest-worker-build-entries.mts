@@ -1,5 +1,8 @@
 import { fileURLToPath } from "node:url";
+import { logbookSqliteBackendEntrypoint } from "../../extensions/logbook/src/sqlite-backend-entrypoint.test-support.ts";
 import { qaGatewayCleanupRuntimeEntrypoint } from "../../extensions/qa-lab/src/gateway-child-artifacts-runtime.test-support.ts";
+import { teamReportsSqliteBackendEntrypoint } from "../../extensions/team-reports/src/sqlite-backend-entrypoint.test-support.ts";
+import { workboardSqliteBackendEntrypoint } from "../../extensions/workboard/src/sqlite-backend-entrypoint.test-support.ts";
 import {
   codeModeDescriptionRetentionEntrypoint,
   codeModeRetentionEntrypoint,
@@ -10,6 +13,7 @@ import {
   gatewayDirectStopEntrypoints,
   stateDirGatewayFixtureEntrypoint,
 } from "../../src/cli/cli-entrypoint.test-support.ts";
+import { updateExecutorNativeEntrypoints } from "../../src/cli/update-cli/update-command-executor-native-runtime.test-support.ts";
 import { doctorConfigRuntimeEntrypoints } from "../../src/commands/doctor-config-runtime.test-support.ts";
 import { cronOwnerHardeningEntrypoints } from "../../src/cron/owner-hardening-runtime.test-support.ts";
 import { sessionListCacheRetentionEntrypoint } from "../../src/gateway/server-methods/sessions-list-cache-retention-entrypoint.test-support.ts";
@@ -29,6 +33,7 @@ import {
   agentDatabaseHeldRuntimeEntrypoint,
   stateLeaseProcessExitRuntimeEntrypoint,
 } from "../../src/state/openclaw-state-lease-runtime.test-support.ts";
+import { groqSetupSdkEntrypoints } from "../../src/system-agent/setup-inference-groq-sdk.test-support.ts";
 import { tuiPtyRuntimeEntrypoints } from "../../src/tui/tui-pty-runtime-test-support.ts";
 import { channelIngressGatewayRestartEntrypoint } from "../../test/fixtures/channel-ingress-gateway-restart-entrypoint.ts";
 import { runtimeProcessBuildEntries } from "./runtime-process-build-entries.mts";
@@ -45,7 +50,9 @@ export const vitestWorkerBuildEntries = {
       ...cliCompactionBackendEntrypoints,
       ...publishedSdkBridgeEntrypoints,
       mcpProviderCatalogEntrypoint,
+      ...groqSetupSdkEntrypoints,
       ...Object.values(cliRecoveryEntrypoints),
+      ...Object.values(updateExecutorNativeEntrypoints),
       ...Object.values(gatewayDirectStopEntrypoints),
       stateDirGatewayFixtureEntrypoint,
       ...Object.values(doctorConfigRuntimeEntrypoints),
@@ -58,6 +65,9 @@ export const vitestWorkerBuildEntries = {
       channelIngressGatewayRestartEntrypoint,
       persistenceRuntimeEntrypoint,
       qaGatewayCleanupRuntimeEntrypoint,
+      logbookSqliteBackendEntrypoint,
+      teamReportsSqliteBackendEntrypoint,
+      workboardSqliteBackendEntrypoint,
       stateLeaseProcessExitRuntimeEntrypoint,
       agentDatabaseHeldRuntimeEntrypoint,
     ].map((entry) => [
@@ -68,7 +78,7 @@ export const vitestWorkerBuildEntries = {
   // The retention fixture executes the real nested QuickJS worker.
   "agents/code-mode.worker": "src/agents/code-mode.worker.ts",
   // The real ulimit fixture must import its parent before imposing a file-size limit.
-  "infra/sqlite-readonly-location": "src/infra/sqlite-readonly-location.ts",
+  "infra/sqlite-snapshot-source": "src/infra/sqlite-snapshot-source.ts",
   // Keep provider preparation in the same compiled graph as payload rendering;
   // a source-injected plugin would miss duplicated registry scope state.
   "plugins/provider-hook-runtime": "src/plugins/provider-hook-runtime.ts",

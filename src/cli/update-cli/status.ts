@@ -14,12 +14,9 @@ import {
   resolveUpdateChannelDisplay,
 } from "../../infra/update-channels.js";
 import { checkUpdateStatus, formatGitInstallLabel } from "../../infra/update-check.js";
-import {
-  inspectUpdateRunAbandonment,
-  staleUpdateRunGuidance,
-} from "../../infra/update-run-activity.js";
-import { findActiveUpdateRun, listUpdateRuns } from "../../infra/update-run-ledger.js";
+import { readUpdateRunReportHealth } from "../../infra/update-run-report-health.js";
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
+import { readUpdateRunStatus } from "../../infra/update-run-status.js";
 import { defaultRuntime } from "../../runtime.js";
 import { VERSION } from "../../version.js";
 import { parseTimeoutMsOrExit, resolveUpdateRoot, type UpdateStatusOptions } from "./shared.js";
@@ -40,7 +37,7 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
 
   const update = await checkUpdateStatus({
     root,
-    timeoutMs: timeoutMs ?? 3500,
+    timeoutMs,
     fetchGit: true,
     useDetachedDevUpstream: configChannel === "dev",
     includeRegistry: true,
@@ -63,10 +60,7 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
 
   const updateAvailability = resolveUpdateAvailability(update);
 
-  const activeRun = findActiveUpdateRun();
-  const lastRun = listUpdateRuns({ limit: 1 })[0];
-  const abandonment = activeRun ? inspectUpdateRunAbandonment(activeRun) : undefined;
-  const staleGuidance = activeRun ? staleUpdateRunGuidance(activeRun) : undefined;
+  const runStatus = readUpdateRunStatus();
 
   if (opts.json) {
     defaultRuntime.writeJson({
@@ -79,14 +73,7 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
       },
       availability: updateAvailability,
       ...(runtimeFindings.length > 0 ? { runtimeFindings } : {}),
-      ...(activeRun ? { activeRun } : {}),
-      ...(lastRun ? { lastRun } : {}),
-      ...(staleGuidance && activeRun
-        ? { staleRun: { runId: activeRun.runId, guidance: staleGuidance } }
-        : {}),
-      ...(abandonment && activeRun
-        ? { abandonedRun: { runId: activeRun.runId, rule: abandonment } }
-        : {}),
+      ...runStatus,
     });
     return;
   }
@@ -138,24 +125,46 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
   );
   defaultRuntime.log("");
 
-  const run = activeRun ?? lastRun;
-  if (run) {
-    if (staleGuidance) {
-      defaultRuntime.log(`Update ${run.runId}: ${staleGuidance}`);
-    }
-    if (abandonment) {
-      defaultRuntime.log(
-        "Abandoned update detected; the Gateway will reconcile its recorded outcome. Run openclaw update repair to reconcile it now.",
-      );
-    }
-    const report = renderUpdateRunReport(run);
-    if (!abandonment && !staleGuidance) {
-      defaultRuntime.log(report.headline);
-    }
-    for (const line of report.lines) {
-      defaultRuntime.log(line);
-    }
+  if ("runReconciliationError" in runStatus) {
+    defaultRuntime.log(
+      theme.warn(`Update run reconciliation failed: ${runStatus.runReconciliationError}`),
+    );
     defaultRuntime.log("");
+  }
+  if ("runStatusError" in runStatus) {
+    defaultRuntime.log(theme.warn(`Update run status unavailable: ${runStatus.runStatusError}`));
+    defaultRuntime.log("");
+  } else {
+    const { activeRun, lastRun, staleRun, abandonedRun, advisories } = runStatus;
+    const run = activeRun ?? lastRun;
+    for (const advisory of advisories ?? []) {
+      if (advisory.runId !== run?.runId) {
+        defaultRuntime.log(advisory.message);
+      }
+    }
+    if (run) {
+      if (staleRun) {
+        defaultRuntime.log(`Update ${run.runId}: ${staleRun.guidance}`);
+      }
+      if (abandonedRun) {
+        defaultRuntime.log(
+          "Abandoned update detected; the Gateway will reconcile its recorded outcome. Run openclaw update repair to reconcile it now.",
+        );
+      }
+      const report = renderUpdateRunReport(
+        run,
+        run.status === "failed"
+          ? { currentHealth: await readUpdateRunReportHealth(run.verification, { timeoutMs }) }
+          : {},
+      );
+      if (!abandonedRun && !staleRun) {
+        defaultRuntime.log(report.headline);
+      }
+      for (const line of report.lines) {
+        defaultRuntime.log(line);
+      }
+      defaultRuntime.log("");
+    }
   }
 
   const updateHint = formatUpdateAvailableHint(update);

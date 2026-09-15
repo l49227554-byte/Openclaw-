@@ -1,6 +1,5 @@
 // OpenClaw state database manages shared persisted state and migrations.
 import { existsSync } from "node:fs";
-import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
@@ -16,19 +15,11 @@ import {
   repairCanonicalSqliteIndexes,
   verifyAndRepairCanonicalSqliteIndexes,
 } from "../infra/sqlite-index-schema.js";
-import {
-  assertSqliteIntegrity,
-  confirmSqliteFileIntegrity,
-  type SqliteIntegrityConfirmation,
-} from "../infra/sqlite-integrity.js";
-import { withSqlitePostCommitPublications } from "../infra/sqlite-post-commit.js";
-import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.js";
+import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import { assertSqliteSchemaTablesPresent } from "../infra/sqlite-schema-contract.js";
+import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
 import { migrateSqliteSchemaToStrictInTransaction } from "../infra/sqlite-strict.js";
-import {
-  runSqliteImmediateTransactionSync,
-  type SqliteTransactionOptions,
-} from "../infra/sqlite-transaction.js";
+import type { SqliteTransactionOptions } from "../infra/sqlite-transaction.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import {
   StateSchemaMutationConflictError,
@@ -37,12 +28,15 @@ import {
 import { migrateLegacyCronRunLogsToTaskRuns } from "../infra/state-migrations.cron-run-logs.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { clearOpenClawDatabaseQuarantine } from "./openclaw-quarantine-store.js";
+import {
+  getOpenClawDatabaseMaintenanceScope,
+  observeOpenClawDatabaseMaintenanceResource,
+} from "./openclaw-state-db-async-lifecycle.js";
 import { repairAuditEventsSchema } from "./openclaw-state-db-audit-migration.js";
 import {
   openClawStateDatabaseCache as stateDbCache,
   recordOpenClawStateDatabaseOpenFailure,
   clearOpenClawStateDatabaseOpenFailure,
-  closeOpenClawStateDatabaseByPath,
 } from "./openclaw-state-db-cache.js";
 import {
   OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
@@ -60,6 +54,7 @@ import {
 } from "./openclaw-state-db-fast-path.js";
 import {
   assertOpenClawStateDatabaseForMaintenance,
+  assertOpenClawStateDatabaseOwner,
   markCurrentStateSchemaVersion,
   openClawStateMigrationAssertions,
   resolveDatabasePath,
@@ -67,10 +62,12 @@ import {
   runStateSchemaMigrationTransaction,
   writeCurrentStateSchemaMetadata,
   executeCanonicalStateSchema,
+  prepareStateDatabaseSchemaRepair,
 } from "./openclaw-state-db-maintenance.js";
 import { openUnpublishedStateDatabase } from "./openclaw-state-db-open.js";
 import * as operatorApprovalMigration from "./openclaw-state-db-operator-approval-migration.js";
 import { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
+import { openOpenClawStateReadConnection } from "./openclaw-state-db-read-connection.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.js";
 import {
   ensureAdditiveStateColumns,
@@ -99,6 +96,11 @@ import {
   withOpenClawStateStartupCheckpointConnection,
 } from "./openclaw-state-db-startup-checkpoint.js";
 import * as retirements from "./openclaw-state-db-table-retirements.js";
+import { recoverOrphanTaskDeliveryRows } from "./openclaw-state-db-task-delivery-recovery.js";
+import {
+  runCoordinatedStateTransaction,
+  withSharedStateWriteCoordinator,
+} from "./openclaw-state-db-write-coordination.js";
 import { describeAgentPathMigration, warnAgentPathMigration } from "./openclaw-state-db.paths.js";
 import {
   assertOpenClawStateWriteAllowed,
@@ -125,15 +127,6 @@ export { assertOpenClawStateDatabaseForMaintenance } from "./openclaw-state-db-m
 export { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
 export { detectOpenClawStateDatabaseSchemaMigrations } from "./openclaw-state-db-schema-repair.js";
 
-/** Reconfirm an advisory worker failure on the live owner connection. */
-export function confirmOpenClawStateDatabaseIntegrity(
-  pathname: string,
-): SqliteIntegrityConfirmation {
-  const resolvedPath = path.resolve(pathname);
-  closeOpenClawStateDatabaseByPath(resolvedPath);
-  return confirmSqliteFileIntegrity(resolvedPath, resolvedPath);
-}
-
 /** Reject a fresh shared-state open after known corruption until repair clears it. */
 function assertOpenClawStateDatabaseFreshOpenAllowed(
   options: OpenClawStateDatabaseOptions = {},
@@ -158,15 +151,19 @@ function repairStateSchema(
   let ownershipRefused = false;
   try {
     db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
-    assertSupportedStateSchemaVersion(db, pathname);
+    const repairAdmittedSchema = prepareStateDatabaseSchemaRepair(db, pathname, env);
     db.exec("PRAGMA foreign_keys = OFF;");
     const changes = runStateSchemaMigrationTransaction(
       db,
       pathname,
       () => {
-        assertOpenClawStateWriteAllowed({ database: db, databasePath: pathname, env });
-        const applied: string[] = [];
+        const applied = repairAdmittedSchema();
+        applied.push(...recoverOrphanTaskDeliveryRows(db, pathname));
         const previousVersion = readStateSchemaMigrationVersion(db);
+        const preAuditSchema = previousVersion === 1 && !tableExists(db, "audit_events");
+        if (preAuditSchema) {
+          assertOpenClawStateDatabaseOwner(db, { pathname });
+        }
         if (previousVersion === OPENCLAW_STATE_SCHEMA_VERSION) {
           for (const name of verifyAndRepairCanonicalSqliteIndexes(
             db,
@@ -214,7 +211,9 @@ function repairStateSchema(
           );
         }
         assertCanonicalStateSchemaShape(db, pathname);
-        if (tableExists(db, "audit_events")) {
+        // Recognized schema-1 stores predate audit; Doctor must finish their schema
+        // before its later read-only workspace and agent readers can consume it.
+        if (preAuditSchema || tableExists(db, "audit_events")) {
           ensureAdditiveStateColumns(db);
           for (const migration of versionedStateMigrations) {
             if (migration.migrate(db, previousVersion)) {
@@ -294,9 +293,12 @@ function repairStateSchema(
   } finally {
     if (db.isOpen) {
       db.exec("PRAGMA foreign_keys = ON;");
+      clearNodeSqliteKyselyCacheForDatabase(db);
+      // Rollback cleanup may have closed the handle after an unrecoverable
+      // transaction failure; double-close throws ERR_INVALID_STATE and would
+      // discard the diagnostic warnings returned by the catch above.
+      db.close();
     }
-    clearNodeSqliteKyselyCacheForDatabase(db);
-    db.close();
     if (!ownershipRefused) {
       ensureOpenClawStatePermissions(pathname, env);
     }
@@ -430,7 +432,9 @@ function ensureSchema(
         },
       ).forEach(retirements.logRetiredStateTableMigration);
     } finally {
-      db.exec("PRAGMA foreign_keys = ON;");
+      if (db.isOpen) {
+        db.exec("PRAGMA foreign_keys = ON;");
+      }
     }
   });
 }
@@ -462,17 +466,9 @@ export async function openExistingOpenClawStateDatabaseReadOnly(
   }
   assertOpenClawStateDatabaseFreshOpenAllowed(options);
   const prepared = await prepareSqliteReadOnlyLocation(pathname);
-  let db: DatabaseSync;
+  const connection = openOpenClawStateReadConnection(pathname, prepared);
+  const { db } = connection.database;
   try {
-    db = openNodeSqliteDatabase(prepared.location, {
-      readOnly: true,
-    });
-  } catch (error) {
-    prepared.cleanup();
-    throw error;
-  }
-  try {
-    db.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
     assertSupportedStateSchemaVersion(db, pathname);
     assertSqliteIntegrity(db, pathname);
     if (readStateSchemaContentVersion(db) === OPENCLAW_STATE_SCHEMA_VERSION) {
@@ -480,15 +476,12 @@ export async function openExistingOpenClawStateDatabaseReadOnly(
     }
   } catch (error) {
     try {
-      clearNodeSqliteKyselyCacheForDatabase(db);
-      db.close();
+      connection.close();
     } catch {
       // Preserve the verification failure that explains why the database was refused.
     }
-    prepared.cleanup();
     throw error;
   }
-  let cleanupComplete = false;
   return {
     db,
     path: pathname,
@@ -496,21 +489,7 @@ export async function openExistingOpenClawStateDatabaseReadOnly(
       checkpoint: () => false,
       // Cleanup can fail transiently after the database closes. Keep the
       // close contract retryable until one call finishes both responsibilities.
-      close: () => {
-        const wasOpen = db.isOpen;
-        if (!wasOpen && cleanupComplete) {
-          return false;
-        }
-        try {
-          if (wasOpen) {
-            clearNodeSqliteKyselyCacheForDatabase(db);
-            db.close();
-          }
-        } finally {
-          cleanupComplete = prepared.cleanup();
-        }
-        return cleanupComplete;
-      },
+      close: connection.close,
     },
   };
 }
@@ -522,6 +501,7 @@ function openOpenClawStateDatabaseWithBusyTimeout(
   busyTimeoutMs = OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
   lockFailureReporting: SqliteLockFailureReporting = "report",
 ): OpenClawStateDatabase {
+  getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
   const env = options.env ?? process.env;
   if (options.database) {
     assertOpenClawStateWriteAllowed({
@@ -529,6 +509,7 @@ function openOpenClawStateDatabaseWithBusyTimeout(
       databasePath: options.database.path,
       env,
     });
+    observeOpenClawDatabaseMaintenanceResource(options.database.db);
     return options.database;
   }
   const pathname = resolveDatabasePath(options);
@@ -548,6 +529,7 @@ function openOpenClawStateDatabaseWithBusyTimeout(
       env,
       schemaReady: true,
     });
+    observeOpenClawDatabaseMaintenanceResource(cached.db);
     if (deferredStateDatabases.has(cached.db)) {
       reconcileOpenClawStateSchemaPublication(options);
       if (readSqliteUserVersion(cached.db) === OPENCLAW_STATE_SCHEMA_VERSION) {
@@ -589,7 +571,7 @@ function openOpenClawStateDatabaseWithBusyTimeout(
     if (!unpublished) {
       throw error;
     }
-    const errors = stateDbCache.closeOpenClawStateDatabaseHandle(unpublished);
+    const errors = stateDbCache.closeUnpublishedOpenClawStateDatabaseHandle(unpublished);
     if (errors.length > 0) {
       throw createSqliteLifecycleAggregateError(
         [error, ...errors],
@@ -663,12 +645,19 @@ export function runWithOpenClawStateBusyTimeout<T>(
   options: OpenClawStateDatabaseOptions,
   busyTimeoutMs: number,
 ): T {
+  getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
   const normalizedTimeoutMs = normalizeSqliteNonNegativeInteger(busyTimeoutMs, "busyTimeoutMs");
   const existing = options.database ?? getOpenClawStateDatabaseIfOpen(options);
   if (existing) {
-    return runWithSqliteBusyTimeout(existing.db, normalizedTimeoutMs, () => operation(existing), {
-      lockFailureReporting: "suppress",
-    });
+    return runWithSqliteBusyTimeout(
+      existing.db,
+      normalizedTimeoutMs,
+      () => {
+        observeOpenClawDatabaseMaintenanceResource(existing.db);
+        return operation(existing);
+      },
+      { lockFailureReporting: "suppress" },
+    );
   }
   const opened = openOpenClawStateDatabaseWithBusyTimeout(options, normalizedTimeoutMs, "suppress");
   try {
@@ -691,46 +680,57 @@ export function runOpenClawStateWriteTransaction<T>(
     "busyTimeoutMs" | "operationLabel" | "slowTransactionHoldMs"
   > = {},
 ): T {
-  let database = options.database ?? getOpenClawStateDatabaseIfOpen(options);
-  let result: T;
-  try {
-    const acquired = options.database
-      ? openOpenClawStateDatabase(options)
-      : (database ?? openOpenClawStateDatabase(options));
-    database = acquired;
-    result = withSqlitePostCommitPublications(acquired.db, () =>
-      runSqliteImmediateTransactionSync(
-        acquired.db,
-        () => {
-          assertOpenClawStateWriteAllowed({
-            database: acquired.db,
-            databasePath: acquired.path,
-            env: options.env ?? process.env,
-            schemaReady: !options.database && acquired === getOpenClawStateDatabaseIfOpen(options),
-          });
-          return operation(acquired);
-        },
-        {
-          busyTimeoutMs: transactionOptions.busyTimeoutMs ?? readSqliteBusyTimeout(acquired.db),
-          databaseLabel: acquired.path,
-          ...transactionOptions,
-          operationLabel: transactionOptions.operationLabel ?? "state.write",
-        },
-      ),
-    );
-  } catch (error) {
-    if (database) {
-      stateDbCache.evictOpenClawStateDatabaseAfterCorruption(database, error);
-    }
-    throw error;
-  }
-  try {
-    ensureOpenClawStatePermissions(database.path, options.env ?? process.env);
-  } catch {
-    // The write already committed; permission hardening is best-effort here so
-    // callers never retry an operation that is durable in SQLite.
-  }
-  return result;
+  getOpenClawDatabaseMaintenanceScope()?.assertAdmission();
+  const existing = options.database ?? getOpenClawStateDatabaseIfOpen(options);
+  return withSharedStateWriteCoordinator(
+    {
+      databasePath: existing?.path ?? resolveDatabasePath(options),
+      existing: existing?.db,
+      ...transactionOptions,
+    },
+    () => {
+      let database = existing;
+      let result: T;
+      try {
+        const acquired = options.database
+          ? openOpenClawStateDatabase(options)
+          : (database ?? openOpenClawStateDatabase(options));
+        database = acquired;
+        result = runCoordinatedStateTransaction(
+          acquired.db,
+          () => {
+            assertOpenClawStateWriteAllowed({
+              database: acquired.db,
+              databasePath: acquired.path,
+              env: options.env ?? process.env,
+              schemaReady:
+                !options.database && acquired === getOpenClawStateDatabaseIfOpen(options),
+            });
+            observeOpenClawDatabaseMaintenanceResource(acquired.db);
+            return operation(acquired);
+          },
+          {
+            busyTimeoutMs: transactionOptions.busyTimeoutMs ?? readSqliteBusyTimeout(acquired.db),
+            databaseLabel: acquired.path,
+            ...transactionOptions,
+            operationLabel: transactionOptions.operationLabel ?? "state.write",
+          },
+        );
+      } catch (error) {
+        if (database) {
+          stateDbCache.evictOpenClawStateDatabaseAfterCorruption(database, error);
+        }
+        throw error;
+      }
+      try {
+        ensureOpenClawStatePermissions(database.path, options.env ?? process.env);
+      } catch {
+        // The write already committed; permission hardening is best-effort here so
+        // callers never retry an operation that is durable in SQLite.
+      }
+      return result;
+    },
+  );
 }
 
 /**
@@ -742,14 +742,17 @@ export function runOpenClawStateWriteTransaction<T>(
 function getOpenClawStateDatabaseIfOpen(
   options: OpenClawStateDatabaseOptions = {},
 ): OpenClawStateDatabase | undefined {
-  return stateDbCache.getOpenClawStateDatabaseIfOpenAtPath(resolveDatabasePath(options));
+  const cached = stateDbCache.getCachedOpenClawStateDatabase(resolveDatabasePath(options));
+  return cached?.db.isOpen ? cached : undefined;
 }
 
 export {
   recordOpenClawStateDatabaseOpenFailure,
   clearOpenClawStateDatabaseOpenFailure,
-  closeOpenClawStateDatabaseByPath,
+  closeOpenClawStateDatabaseByPathAsync,
   closeOpenClawStateDatabase,
+  closeOpenClawStateDatabaseAsync,
   isOpenClawStateDatabaseOpen,
   closeOpenClawStateDatabaseForTest,
+  confirmOpenClawStateDatabaseIntegrity,
 } from "./openclaw-state-db-cache.js";

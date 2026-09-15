@@ -16,7 +16,7 @@ import {
 import type { ModelCatalogEntry, ModelInputType } from "./model-catalog.types.js";
 import { modelTransportRoutesMatch } from "./model-compat-catalog.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
-import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
+import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
 import { canonicalizeProviderModelId } from "./provider-model-route.js";
 
 type ModelThinkingCompat = {
@@ -156,6 +156,10 @@ export function findModelInCatalog<T extends Pick<ModelCatalogEntry, "provider" 
   const providerCatalog = catalog.filter(
     (entry) => normalizeProviderId(entry.provider) === normalizedProvider,
   );
+  const literal = providerCatalog.find((entry) => entry.id === modelId.trim());
+  if (literal) {
+    return literal;
+  }
   // One synchronous lookup uses one policy owner instead of reloading it for every row.
   const surface = resolveProviderModelPolicySurface(normalizedProvider);
   const identityOf = (id: string) =>
@@ -191,10 +195,9 @@ export function findModelCatalogEntry(
     return findModelInCatalog(catalog, provider, modelId);
   }
 
+  const keyOf = createModelCatalogIdentityKeyResolver();
   const exact = catalog.filter(
-    (entry) =>
-      resolveModelCatalogIdentityKey(entry) ===
-      resolveModelCatalogIdentityKey({ provider: entry.provider, id: modelId }),
+    (entry) => keyOf(entry) === keyOf({ provider: entry.provider, id: modelId }),
   );
   const normalizedModelId = normalizeLowercaseStringOrEmpty(modelId);
   const matches = exact.length

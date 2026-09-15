@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
 import { listAgentEntries } from "../agents/agent-scope-config.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { SessionEntry } from "../config/sessions.js";
@@ -39,6 +38,7 @@ import {
 import { readFileWindowFullySync } from "./file-read.js";
 import { expandHomePrefix } from "./home-dir.js";
 import { isWithinDir } from "./path-safety.js";
+import { importLegacyAcpSessionMetadata } from "./state-migrations.acp-session-metadata.js";
 import {
   existsDir,
   migrationFileExists,
@@ -989,6 +989,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
 
     const normalized = Object.create(null) as Record<string, SessionEntry>;
     let migrated = 0;
+    let consumed = 0;
     let preserved = 0;
     for (const [sessionKey, entry] of Object.entries(parsed.store)) {
       const normalizedEntry = normalizeSessionEntry(entry, sessionKey);
@@ -1014,7 +1015,9 @@ export async function migrateLegacyAcpSessionMetadata(params: {
           skipCrossAgentRemap: true,
           legacySessionSurfaces: params.legacySessionSurfaces.surfaces,
         });
-        writeAcpSessionMetaForMigration({
+        const imported = importLegacyAcpSessionMetadata({
+          sourcePath: storePath,
+          preserveSource,
           sessionKey: canonicalSessionKey,
           sessionId: normalizedEntry.sessionId,
           lifecycleRevision: normalizedEntry.lifecycleRevision,
@@ -1023,7 +1026,10 @@ export async function migrateLegacyAcpSessionMetadata(params: {
           now,
         });
         delete normalizedEntry.acp;
-        migrated++;
+        consumed++;
+        if (imported) {
+          migrated++;
+        }
       }
       normalized[sessionKey] = normalizedEntry;
     }
@@ -1032,7 +1038,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
         `Preserved ACP metadata for ${preserved} ambiguous session key(s) in potentially shared store ${storePath}`,
       );
     }
-    if (migrated === 0) {
+    if (consumed === 0 || (preserveSource && migrated === 0)) {
       continue;
     }
     try {
@@ -1040,7 +1046,9 @@ export async function migrateLegacyAcpSessionMetadata(params: {
         await saveSessionStoreStrict(storePath, normalized);
       }
       changes.push(
-        `Migrated ${migrated} ACP session metadata ${migrated === 1 ? "row" : "rows"} → shared SQLite state`,
+        migrated > 0
+          ? `Migrated ${migrated} ACP session metadata ${migrated === 1 ? "row" : "rows"} → shared SQLite state`
+          : `Removed previously imported ACP metadata from ${storePath}`,
       );
     } catch (err) {
       warnings.push(`Failed to write ACP metadata migration source ${storePath}: ${String(err)}`);

@@ -244,6 +244,7 @@ export function writeAcpSessionMetaForMigration(params: {
   lifecycleRevision?: string;
   meta: SessionAcpMeta;
   env?: NodeJS.ProcessEnv;
+  database?: OpenClawStateDatabaseOptions["database"];
   databasePath?: string;
   now?: () => number;
 }): void {
@@ -262,7 +263,7 @@ export function writeAcpSessionMetaForMigration(params: {
     (database) => {
       upsertAcpSessionMetaRow(database.db, row);
     },
-    { env: params.env, path: params.databasePath },
+    { database: params.database, env: params.env, path: params.databasePath },
   );
 }
 

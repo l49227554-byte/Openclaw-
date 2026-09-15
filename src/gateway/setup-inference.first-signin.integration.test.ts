@@ -141,7 +141,9 @@ it(
           let result = await client.request<WizardNextResult>("wizard.next", { sessionId });
           while (!result.done) {
             const step = result.step;
-            if (!step) throw new Error("Setup wizard did not return a step");
+            if (!step) {
+              throw new Error("Setup wizard did not return a step");
+            }
             result = await client.request<WizardNextResult>("wizard.next", {
               sessionId,
               answer: { stepId: step.id, value: step.type === "confirm" ? true : null },

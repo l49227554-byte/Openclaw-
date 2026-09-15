@@ -26,7 +26,7 @@ import {
 import {
   computeUsageTokenTotals,
   createUsageCostResolver,
-  parseUsageCostTranscriptEntry,
+  parseUsageCostTranscriptEntryAsync,
 } from "./session-cost-usage-pricing.js";
 import { createUsageDayKeyFormatter } from "./session-cost-usage-projection.js";
 import { buildSessionCostSummaryFromRollup } from "./session-cost-usage-rollup.js";
@@ -135,7 +135,7 @@ export async function loadSessionCostSummary(params: {
   if (!currentFile) {
     return null;
   }
-  const pricingFingerprint = resolveUsageCostPricingFingerprint(params.config, agentDir);
+  const pricingFingerprint = await resolveUsageCostPricingFingerprint(params.config, agentDir);
   const stored = readUsageCostRollups(params.agentId, pricingFingerprint, databasePath, {
     filePaths: [currentFile.filePath],
   }).get(currentFile.filePath);
@@ -181,7 +181,7 @@ export async function loadSessionUsageTimeSeries(params: {
   const resolveCost = createUsageCostResolver({ config: params.config, agentDir });
 
   for await (const record of readTranscriptRecords(sessionFile)) {
-    const entry = parseUsageCostTranscriptEntry(record, resolveCost);
+    const entry = await parseUsageCostTranscriptEntryAsync(record, resolveCost, params.config);
     const timestamp = entry?.timestamp?.getTime();
     if (!entry?.usage || !timestamp) {
       continue;
@@ -362,7 +362,7 @@ export async function loadSessionLogs(params: {
 
       // Logs share pricing and timestamp interpretation with summaries and charts.
       // Recomputing here can turn unknown prices into zero or ignore tiered rates.
-      const entry = parseUsageCostTranscriptEntry(parsed, resolveCost);
+      const entry = await parseUsageCostTranscriptEntryAsync(parsed, resolveCost, params.config);
       const usage = role === "assistant" ? entry?.usage : undefined;
 
       logs.push({

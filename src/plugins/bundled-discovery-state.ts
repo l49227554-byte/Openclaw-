@@ -1,4 +1,5 @@
 // Bundled-discovery compatibility is machine-owned upgrade state.
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -6,26 +7,40 @@ import {
   hasActivePluginInstallRoots,
   resolveActivePluginInstallRoots,
 } from "./install-root-context.js";
+import {
+  getPluginCache,
+  getPluginCacheRetirementSignal,
+  getProcessPluginCache,
+  preparePluginCacheFact,
+} from "./plugin-cache.js";
 import { registerPluginMetadataProcessMemoLifecycleClear } from "./plugin-metadata-lifecycle.js";
+import { readPluginMetadataStateRow } from "./plugin-metadata-state-worker.js";
 
-function parseBundledDiscoveryMode(value: unknown): "compat" | "allowlist" | undefined {
+type BundledDiscoveryMode = "compat" | "allowlist" | undefined;
+
+function parseBundledDiscoveryMode(value: unknown): BundledDiscoveryMode {
   return value === "compat" || value === "allowlist" ? value : undefined;
+}
+
+function resolveBundledDiscoveryOptions(
+  options: OpenClawStateDatabaseOptions,
+): OpenClawStateDatabaseOptions {
+  return options.path || options.database || !hasActivePluginInstallRoots()
+    ? options
+    : {
+        ...options,
+        env: {
+          ...(options.env ?? process.env),
+          OPENCLAW_STATE_DIR: resolveActivePluginInstallRoots(options.env).stateDir,
+        },
+      };
 }
 
 export function readBundledDiscoveryMode(
   options: OpenClawStateDatabaseOptions = {},
   behavior: { artifactPreservingReadOnly?: boolean } = {},
 ): "compat" | "allowlist" | undefined {
-  const resolvedOptions =
-    options.path || options.database || !hasActivePluginInstallRoots()
-      ? options
-      : {
-          ...options,
-          env: {
-            ...(options.env ?? process.env),
-            OPENCLAW_STATE_DIR: resolveActivePluginInstallRoots(options.env).stateDir,
-          },
-        };
+  const resolvedOptions = resolveBundledDiscoveryOptions(options);
   const value = readConfigMachineState<unknown>(
     "plugins.bundledDiscovery",
     resolvedOptions,
@@ -39,12 +54,13 @@ export function readBundledDiscoveryMode(
 // per-plugin activation must not open SQLite once per decision. The key keeps
 // interleaved isolated scopes (agent execution, doctor lint) from inheriting
 // another root's cached mode; the reads honor the active install-root context.
-let memoizedBundledDiscoveryMode:
-  | { key: string; value: "compat" | "allowlist" | undefined }
-  | undefined;
+const discoveryState = resolveGlobalSingleton<{
+  generation: object;
+  memoized?: { key: string; value: BundledDiscoveryMode };
+}>(Symbol.for("openclaw.bundledDiscoveryMode"), () => ({ generation: {} }));
 
 registerPluginMetadataProcessMemoLifecycleClear(() => {
-  memoizedBundledDiscoveryMode = undefined;
+  clearBundledDiscoveryModeMemo();
 });
 
 function resolveBundledDiscoveryMemoKey(env: NodeJS.ProcessEnv): string {
@@ -70,15 +86,67 @@ export function readBundledDiscoveryModeMemoized(
     return readBundledDiscoveryMode(env === process.env ? {} : { env }, behavior);
   }
   const key = resolveBundledDiscoveryMemoKey(env);
-  if (memoizedBundledDiscoveryMode?.key !== key) {
-    memoizedBundledDiscoveryMode = {
-      key,
-      value: readPreparedValue
-        ? parseBundledDiscoveryMode(readPreparedValue(key))
-        : readBundledDiscoveryMode(env === process.env ? {} : { env }),
-    };
+  if (discoveryState.memoized?.key !== key) {
+    const owner = getPluginCache();
+    const prepared = owner.preparedBundledDiscoveryModes.get(key);
+    if (
+      prepared &&
+      "value" in prepared &&
+      prepared.value.generation === discoveryState.generation
+    ) {
+      getPluginCacheRetirementSignal(owner).throwIfAborted();
+      discoveryState.memoized = { key, value: prepared.value.value };
+    } else {
+      discoveryState.memoized = {
+        key,
+        value: readPreparedValue
+          ? parseBundledDiscoveryMode(readPreparedValue(key))
+          : readBundledDiscoveryMode(env === process.env ? {} : { env }),
+      };
+    }
   }
-  return memoizedBundledDiscoveryMode.value;
+  return discoveryState.memoized.value;
+}
+
+/** Prepare the same machine-owned fact for synchronous metadata derivation. */
+export async function prepareBundledDiscoveryMode(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<() => void> {
+  const owner = getPluginCache();
+  const cache = owner.preparedBundledDiscoveryModes;
+  const key = resolveBundledDiscoveryMemoKey(env);
+  const generation = discoveryState.generation;
+  const current = cache.get(key);
+  if (current && "value" in current && current.value.generation !== generation) {
+    cache.delete(key);
+  }
+  const prepared = await preparePluginCacheFact(owner, cache, key, async () => {
+    let value: BundledDiscoveryMode;
+    if (discoveryState.memoized?.key === key) {
+      value = discoveryState.memoized.value;
+    } else {
+      const row = await readPluginMetadataStateRow(
+        "bundled-discovery",
+        resolveBundledDiscoveryOptions({ env }),
+      );
+      value = parseBundledDiscoveryMode(row ? JSON.parse(row.value_json) : undefined);
+    }
+    if (discoveryState.generation !== generation) {
+      throw new Error("Plugin discovery state changed during preparation; retry the operation.");
+    }
+    return { value, generation };
+  });
+  const activate = () => {
+    prepared.assertCurrent();
+    if (discoveryState.generation !== generation) {
+      throw new Error("Plugin discovery state changed during preparation; retry the operation.");
+    }
+    // Another root may use the single-slot memo while preparation awaits its row.
+    // Reuse this operation's captured fact for the following synchronous derivation.
+    discoveryState.memoized = { key, value: prepared.value.value };
+  };
+  activate();
+  return activate;
 }
 
 /**
@@ -87,5 +155,9 @@ export function readBundledDiscoveryModeMemoized(
  * absent mode and rebuild plugin indexes against stale strict-gate decisions.
  */
 export function clearBundledDiscoveryModeMemo(): void {
-  memoizedBundledDiscoveryMode = undefined;
+  discoveryState.memoized = undefined;
+  discoveryState.generation = {};
+  for (const cache of new Set([getPluginCache(), getProcessPluginCache()])) {
+    cache.preparedBundledDiscoveryModes.clear();
+  }
 }

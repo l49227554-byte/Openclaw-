@@ -1,7 +1,10 @@
+import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import {
   patchConfigHealthEntryInDatabase,
   readConfigHealthSnapshotInDatabase,
 } from "../config/io.health-state.kernel.js";
+import { loadMutableCronStoreInWorker } from "../cron/store/load.worker.js";
+import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { executeSessionDeliveryCommand } from "../infra/session-delivery-queue.worker.js";
 import { createSqliteAuditRecordKernel } from "../infra/sqlite-audit-record.kernel.js";
 import {
@@ -13,7 +16,13 @@ import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
+import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
+import {
+  ensureProjectRegistrySchema,
+  resolveRecordedProjectRootInDatabase,
+} from "../projects/project-registry.kernel.js";
 import { mapTaskFlowView } from "../tasks/task-domain-views.js";
 import { runManagedTaskInFlowInDatabase } from "../tasks/task-flow-managed-run-task.kernel.js";
 import type { RunTaskInFlowResult } from "../tasks/task-flow-managed-run-task.types.js";
@@ -45,6 +54,7 @@ import {
   retainOpenClawStateDatabase,
 } from "./openclaw-state-db-cache.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
+import { assertOpenClawStateDatabaseOwner } from "./openclaw-state-db-maintenance.js";
 import {
   withArtifactPreservingStateReads,
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
@@ -137,6 +147,21 @@ function createSharedStateWorkerBackend(
           command.input.selector,
           { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
           command.input.artifactPreservingReadOnly,
+        );
+      }
+      if (command.type === "plugins.deferredMigrations.read") {
+        return readDeferredPluginMigrations({
+          path: context.databasePath,
+          env: getSqliteWorkerStateContext().environment,
+        });
+      }
+      if (command.type === "claws.install-schema-versions") {
+        return withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
+          ({ db, path: pathname }) => {
+            assertOpenClawStateDatabaseOwner(db, { pathname });
+            return readClawInstallSchemaVersionRows(db);
+          },
+          { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
         );
       }
       if (command.type === "database.generationMatches") {
@@ -248,6 +273,17 @@ function createSharedStateWorkerBackend(
           };
         }
       }
+      if (isPluginStateWorkerCommand(command)) {
+        return executePluginStateCommand(
+          command,
+          {
+            path: context.databasePath,
+            env: getSqliteWorkerStateContext().environment,
+          },
+          open,
+          nativeDatabase?.db.isOpen === true,
+        );
+      }
       if (command.type === "config.health.read") {
         const read = command.input.artifactPreserving
           ? withExistingOpenClawStateDatabaseArtifactPreservingReadOnly
@@ -260,6 +296,9 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "cron.loadMutable") {
+        return loadMutableCronStoreInWorker(database, command.input.storeKey);
+      }
       if (
         command.type === "sessionDelivery.enqueue" ||
         command.type === "sessionDelivery.enqueueClaimed" ||
@@ -282,6 +321,10 @@ function createSharedStateWorkerBackend(
         path: context.databasePath,
         env: getSqliteWorkerStateContext().environment,
       };
+      if (command.type === "projects.findRoot") {
+        ensureProjectRegistrySchema(writeOptions);
+        return resolveRecordedProjectRootInDatabase(database.db, command.input.repoRoot);
+      }
       if (command.type === "config.health.patch") {
         const { configPath, patch, expected, updatedAtMs } = command.input;
         return runOpenClawStateWriteTransaction(({ db }) => {

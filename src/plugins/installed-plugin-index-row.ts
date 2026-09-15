@@ -13,16 +13,20 @@ import {
 
 export const INSTALLED_PLUGIN_INDEX_STATE_KEY = "plugins.installedIndex";
 
-export type PluginMetadataStateSelector = "installed-index";
+export type PluginMetadataStateSelector = "installed-index" | "bundled-discovery";
 
 /** Shared inspection commands use the same existing-only, artifact-preserving reader. */
 export function readPluginMetadataStateRowSync(
-  _selector: PluginMetadataStateSelector,
+  selector: PluginMetadataStateSelector,
   databaseOptions: Parameters<typeof withExistingOpenClawStateDatabaseReadOnly>[1],
   artifactPreservingReadOnly = false,
 ): { value_json: string } | undefined {
   const row = readPluginMetadataStateRowsSync(
-    [INSTALLED_PLUGIN_INDEX_STATE_KEY],
+    [
+      selector === "installed-index"
+        ? INSTALLED_PLUGIN_INDEX_STATE_KEY
+        : "plugins.bundledDiscovery",
+    ],
     databaseOptions,
     artifactPreservingReadOnly,
   )[0];

@@ -12,6 +12,7 @@ import { withSharedStateWriteCoordinator } from "../state/openclaw-state-db-writ
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { invalidateSuccessfulMigrationCheckpointsInTransaction } from "./startup-migration-checkpoint.js";
 import { recordLegacyMigrationRun } from "./state-migrations.receipts.js";
@@ -104,7 +105,7 @@ function assertPendingGeneration(
 }
 
 export function readDeferredPluginMigrations(
-  options: { env?: NodeJS.ProcessEnv } = {},
+  options: { path?: string; env?: NodeJS.ProcessEnv } = {},
 ): readonly DeferredPluginMigration[] {
   return (
     withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
@@ -112,6 +113,23 @@ export function readDeferredPluginMigrations(
       options,
     ) ?? []
   );
+}
+
+/** Keep asynchronous config inspection off the main thread without creating state. */
+export async function readDeferredPluginMigrationsAsync(
+  options: { path?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<readonly DeferredPluginMigration[]> {
+  const context = captureOpenClawStateWorkerContext(options);
+  const { runOpenClawStateWorkerOperation } =
+    await import("../state/openclaw-state-worker-store.js");
+  context.admission.assertCurrent();
+  const pending = await runOpenClawStateWorkerOperation(
+    context,
+    (scope) => scope.execute({ type: "plugins.deferredMigrations.read", input: undefined }),
+    { existingOnly: true },
+  );
+  context.admission.assertCurrent();
+  return pending ?? [];
 }
 
 /** Bind asynchronous settlement to the same pending records, including newly added owners. */

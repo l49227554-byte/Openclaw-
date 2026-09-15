@@ -47,8 +47,8 @@ vi.mock("../../model-auth.js", async (importOriginal) => ({
 }));
 vi.mock("../../auth-profiles.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../auth-profiles.js")>()),
-  loadAuthProfileStoreForRuntime: () => fixtures.authStore,
   ensureAuthProfileStore: () => fixtures.authStore,
+  loadAuthProfileStoreForRuntime: () => fixtures.authStore,
 }));
 vi.mock("openclaw/plugin-sdk/provider-auth-runtime", () => ({
   resolveApiKeyForProvider: async () => ({ mode: "token", apiKey: "fixture-token" }),

@@ -3,6 +3,7 @@
  *
  * Channel-specific non-retryable classification stays out of core; pass it in.
  */
+import { SESSION_WORK_START_CHANGED_ERROR_CODE } from "../../config/sessions/work-start-error.js";
 import { computeBackoff } from "../../infra/backoff.js";
 
 export const DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS = 8;
@@ -41,6 +42,50 @@ type IngressFailureDisposition =
       attempt: number;
       message: string;
     };
+
+function isSessionStartConflictFailure(error: unknown): boolean {
+  const queue: unknown[] = [error];
+  const seen = new Set<unknown>();
+
+  while (queue.length > 0) {
+    const candidate = queue.shift();
+    if (candidate == null || seen.has(candidate)) {
+      continue;
+    }
+    seen.add(candidate);
+    if (typeof candidate !== "object" && typeof candidate !== "function") {
+      continue;
+    }
+
+    const read = (key: string): unknown => {
+      try {
+        return (candidate as Record<string, unknown>)[key];
+      } catch {
+        return undefined;
+      }
+    };
+    const code = read("code");
+    if (
+      (typeof code === "string" || typeof code === "number") &&
+      String(code) === SESSION_WORK_START_CHANGED_ERROR_CODE
+    ) {
+      return true;
+    }
+
+    for (const key of ["cause", "reason", "original", "error", "data"] as const) {
+      const nested = read(key);
+      if (nested != null && !seen.has(nested)) {
+        queue.push(nested);
+      }
+    }
+    const errors = read("errors");
+    if (Array.isArray(errors)) {
+      queue.push(...errors);
+    }
+  }
+
+  return false;
+}
 
 function resolveConfig(config?: IngressRetryPolicyConfig) {
   return {
@@ -98,6 +143,7 @@ export function resolveIngressFailureDisposition(params: {
   now?: number;
 }): IngressFailureDisposition {
   const now = params.now ?? Date.now();
+  const { maxAttempts } = resolveConfig(params.config);
   const attempt = resolveIngressAttemptNumber(params.event);
   const message = params.formatError(params.err);
   const nonRetryable = params.resolveNonRetryableFailure?.(params.err) ?? null;
@@ -106,6 +152,14 @@ export function resolveIngressFailureDisposition(params: {
       kind: "fail",
       reason: nonRetryable.reason,
       message: nonRetryable.message,
+      attempt,
+    };
+  }
+  if (attempt >= maxAttempts && isSessionStartConflictFailure(params.err)) {
+    return {
+      kind: "fail",
+      reason: "session-start-conflict-retry-limit",
+      message,
       attempt,
     };
   }

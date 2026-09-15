@@ -23,6 +23,7 @@ import type { OpenClawConfig } from "../types.openclaw.js";
 import { migrateLegacyMainSessionKeys } from "./legacy-main-session-migration.js";
 import {
   isLegacySessionRecordOwnedByTarget,
+  listLegacySessionTranscriptFiles,
   readLegacySessionStoreEntries,
   shouldFilterLegacySessionRecordsByTarget,
 } from "./legacy-store-inspection.js";
@@ -107,15 +108,7 @@ export function assertSessionStoreMigrationComplete(params: {
     const sourceSha256 = createHash("sha256").update(source.bytes).digest("hex");
     // Empty indexes may have unindexed history: retain the existing requirement
     // for every named owner's verified receipt rather than infer ownership here.
-    // Owners without a database can never hold a replayable receipt (receipts bind
-    // the database identity, which a later-created database would invalidate), and
-    // a zero-record source has nothing to replay for them. Requiring their receipt
-    // deadlocks startup: doctor refuses to create a database just for the receipt.
-    const required = new Set<SourceOwner>(
-      source.entries.length === 0
-        ? [...owners.values()].filter(({ destination }) => fs.existsSync(destination))
-        : [],
-    );
+    const required = new Set<SourceOwner>(source.entries.length === 0 ? owners.values() : []);
     for (const { sessionKey } of source.entries) {
       const matches = [...owners.values()].filter(
         ({ target }) =>
@@ -127,11 +120,23 @@ export function assertSessionStoreMigrationComplete(params: {
       }
       required.add(matches[0]!);
     }
+    let hasUnindexedHistory: boolean | undefined;
     return [...required].some(({ target, destination }) => {
       const receipt = readDeferredPluginSessionImport({
         target: { ...target, sqlitePath: destination },
         env,
       });
+      // Owners without a database can never hold a replayable receipt (receipts bind
+      // the database identity, which a later-created database would invalidate).
+      // Without a receipt or unindexed history, demanding one deadlocks startup:
+      // Doctor refuses to create a database just for the receipt.
+      if (!receipt && source.entries.length === 0 && !fs.existsSync(destination)) {
+        hasUnindexedHistory ??=
+          listLegacySessionTranscriptFiles(path.dirname(storePath)).length > 0;
+        if (!hasUnindexedHistory) {
+          return false;
+        }
+      }
       return (
         !receipt ||
         receipt.sources.find((entry) => path.resolve(entry.path) === storePath)?.identity.sha256 !==

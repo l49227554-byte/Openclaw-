@@ -147,7 +147,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
   );
 
   it("does not report silent success after routed progress delivery fails", async () => {
-    mocks.routeReply.mockResolvedValue({ ok: false, error: "delivery unavailable" });
+    mocks.routeReply.mockResolvedValue({ ok: false, messageId: "" });
     const result = await dispatchReplyFromConfig({
       ctx: { ...createHookCtx(), OriginatingChannel: "discord", OriginatingTo: "channel:C1" },
       cfg: emptyConfig,

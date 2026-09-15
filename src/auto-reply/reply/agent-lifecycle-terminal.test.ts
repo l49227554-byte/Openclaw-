@@ -33,7 +33,7 @@ describe("createAgentLifecycleTerminalBackstop", () => {
     }
     terminal.emit("error", new Error(retry ? "preparation failed" : "first failure"));
     expect(emitAgentEvent).toHaveBeenCalledOnce();
-    const data = emitAgentEvent.mock.calls[0][0].data;
+    const data = emitAgentEvent.mock.calls[0]?.[0]?.data;
     expect(data.assistantTranscriptIdempotencyKey).toBe(retry ? undefined : "saved-A");
     expect(data.error).toBe(retry ? "preparation failed" : "first failure");
     expect(data.executionSettled).toBe(true);

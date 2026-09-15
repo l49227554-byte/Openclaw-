@@ -27,14 +27,11 @@ export function captureCleanupBindings(
 
 export function assertCleanupBindingsAvailable(
   params: CleanupBindingContext & {
-    mode: "warn" | "enforce";
     offline: boolean;
     hasMissingRemovals: boolean;
   },
 ): void {
-  if (params.mode === "warn") {
-    return;
-  }
+  // Explicit missing-session removals commit even when automatic maintenance only warns.
   if (
     params.hasMissingRemovals &&
     params.offline &&

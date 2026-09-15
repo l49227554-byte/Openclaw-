@@ -539,7 +539,6 @@ export async function runSessionsCleanup(params: {
         assertCleanupBindingsAvailable({
           cfg,
           target,
-          mode,
           offline: params.bindingCleanupMode === "offline",
           hasMissingRemovals: missingRemovals.length > 0,
           bindings: missingBindings,

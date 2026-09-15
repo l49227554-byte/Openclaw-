@@ -30,9 +30,13 @@ const key = "agent:main:offline-missing";
 const stateKey = Symbol.for("openclaw.test.offline-cleanup-bindings");
 
 describe("offline CLI cleanup binding ownership", () => {
-  it.each(["explicit-store", "gateway-unavailable", "dry-run", "custom-store"] as const)(
-    "preserves persisted routes without a registered manager: %s",
-    async (route) => {
+  it.each(
+    (["explicit-store", "gateway-unavailable", "dry-run", "custom-store"] as const).flatMap(
+      (route) => [true, false].map((enforce) => ({ route, enforce })),
+    ),
+  )(
+    "preserves persisted routes without a registered manager: $route (enforce=$enforce)",
+    async ({ route, enforce }) => {
       await withOpenClawTestState({ layout: "state-only" }, async (state) => {
         fixture.cfg = {
           agents: { ownership: "explicit", entries: { main: {} } },
@@ -101,7 +105,7 @@ describe("offline CLI cleanup binding ownership", () => {
           const run = sessionsCleanupCommand(
             {
               agent: "main",
-              enforce: true,
+              enforce,
               fixMissing: true,
               json: true,
               ...(route === "gateway-unavailable"

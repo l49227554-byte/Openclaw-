@@ -171,21 +171,24 @@ async function withFixture(
 }
 
 describe("missing-session cleanup binding ownership", () => {
-  it("removes committed missing-entry bindings from real registered and generic SQLite owners", async () => {
-    await withFixture(async ({ cfg, storePath, seed, bind }) => {
-      seed(key);
-      await bind(key);
-      const result = await runSessionsCleanup({
-        cfg,
-        opts: { agent: "main", enforce: true, fixMissing: true },
+  it.each([true, false])(
+    "removes committed missing-entry bindings from real registered and generic SQLite owners (enforce=%s)",
+    async (enforce) => {
+      await withFixture(async ({ cfg, storePath, seed, bind }) => {
+        seed(key);
+        await bind(key);
+        const result = await runSessionsCleanup({
+          cfg,
+          opts: { agent: "main", enforce, fixMissing: true },
+        });
+        expect(result.appliedSummaries[0]?.missing).toBe(1);
+        closeOpenClawAgentDatabasesForTest();
+        closeOpenClawStateDatabaseForTest();
+        expect(loadSessionEntry({ storePath, sessionKey: key })).toBeUndefined();
+        expect(service.listBySession(key)).toEqual([]);
       });
-      expect(result.appliedSummaries[0]?.missing).toBe(1);
-      closeOpenClawAgentDatabasesForTest();
-      closeOpenClawStateDatabaseForTest();
-      expect(loadSessionEntry({ storePath, sessionKey: key })).toBeUndefined();
-      expect(service.listBySession(key)).toEqual([]);
-    });
-  });
+    },
+  );
 
   it.each([
     { dryRun: true, enforce: true, fixMissing: true },
@@ -458,9 +461,13 @@ describe("missing-session cleanup binding ownership", () => {
     });
   });
 
-  it.each(["unguarded", "read-only", "read-only-with-marker"])(
-    "preserves the session before rejecting a %s adapter",
-    async (kind) => {
+  it.each(
+    ["unguarded", "read-only", "read-only-with-marker"].flatMap((kind) =>
+      [true, false].map((enforce) => ({ kind, enforce })),
+    ),
+  )(
+    "preserves the session before rejecting a $kind adapter (enforce=$enforce)",
+    async ({ kind, enforce }) => {
       await withFixture(async ({ cfg, storePath, seed, bind }) => {
         seed(key);
         const before = await bind(key);
@@ -475,7 +482,7 @@ describe("missing-session cleanup binding ownership", () => {
           supportsConditionalUnbind: kind === "read-only-with-marker",
         });
         await expect(
-          runSessionsCleanup({ cfg, opts: { agent: "main", enforce: true, fixMissing: true } }),
+          runSessionsCleanup({ cfg, opts: { agent: "main", enforce, fixMissing: true } }),
         ).rejects.toThrow("conditional cleanup");
         expect(unbind).not.toHaveBeenCalled();
         expect(loadSessionEntry({ storePath, sessionKey: key })).toBeDefined();

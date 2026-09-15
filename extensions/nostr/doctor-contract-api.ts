@@ -132,10 +132,10 @@ async function ensureStoreCapacity(params: {
   return existingKeys;
 }
 
-function createNostrStateMigration<T>(options: {
+function createNostrStateMigration(options: {
   namespace: string;
   label: string;
-  parse: (value: unknown) => T | null;
+  parse: (value: unknown) => unknown;
 }): PluginDoctorStateMigration {
   return {
     id: `nostr-${options.namespace}-json-to-plugin-state`,
@@ -163,7 +163,7 @@ function createNostrStateMigration<T>(options: {
         prefix: `${options.namespace}-`,
         parse: options.parse,
       });
-      const store = params.context.openPluginStateKeyedStore<T>({
+      const store = params.context.openPluginStateKeyedStore<unknown>({
         namespace: options.namespace,
         maxEntries: MAX_NOSTR_STATE_ENTRIES,
       });

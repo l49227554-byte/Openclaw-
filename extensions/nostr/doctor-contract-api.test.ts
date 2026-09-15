@@ -175,14 +175,14 @@ describe("nostr doctor state migration", () => {
           const store = baseContext.openPluginStateKeyedStore<T>(options);
           const wrapped: typeof store = {
             ...store,
-            async register(key, entry, options) {
+            async register(key, entry, registerOptions) {
               registrations.push(key);
               if (key === "second") {
                 await fs.access(`${firstPath}.migrated`);
                 await expect(fs.access(firstPath)).rejects.toThrow();
                 throw failure;
               }
-              await store.register(key, entry, options);
+              await store.register(key, entry, registerOptions);
             },
           };
           return wrapped;

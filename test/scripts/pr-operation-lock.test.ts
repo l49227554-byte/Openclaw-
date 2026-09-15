@@ -131,6 +131,7 @@ function createTemplateRepo() {
   // This shared template must not inherit the operator's Git hooks or identity.
   const options = { cwd: dir, env: createPrFixtureEnv(dir, process.env.PATH ?? "") };
   execFileSync("git", ["init", "-q", "-b", "main"], options);
+  writeFileSync(join(dir, ".git/info/exclude"), ".local/\n");
   execFileSync("git", ["config", "user.name", "OpenClaw Test"], options);
   execFileSync("git", ["config", "user.email", "test@openclaw.invalid"], options);
   writeFileSync(join(dir, "base.txt"), "base\n");
@@ -2438,7 +2439,13 @@ describePosix("scripts/pr per-PR operation lock", () => {
   });
   it("keeps gc lock ownership with the supervisor until gc exits", async () => {
     const repoDir = createRepo();
-    mkdirSync(join(repoDir, ".worktrees", "pr-42"), { recursive: true });
+    execFileSync(
+      "git",
+      ["worktree", "add", "-q", "-b", "pr-42", join(repoDir, ".worktrees", "pr-42")],
+      {
+        cwd: repoDir,
+      },
+    );
     const ghStarted = join(repoDir, "gc-gh-started");
     const ghContinue = join(repoDir, "gc-gh-continue");
     const outputFile = join(repoDir, "gc-output");
@@ -2947,7 +2954,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
       const result = runLockShell(repoDir, [
         "git() {",
         '  command git "$@" || return $?',
-        `  if [ "$*" = "branch -D -- ${branch}" ]; then`,
+        `  if [ "$*" = "branch -d -- ${branch}" ]; then`,
         `    command git worktree add -q -b ${branch}/topic .worktrees/pr-99 || return $?`,
         "  fi",
         "}",

@@ -7,6 +7,7 @@ import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { withStateDirEnv } from "../test-helpers/state-dir-env.js";
+import { createPreparedGatewayModelCatalog } from "./server-model-catalog-view.js";
 import { listSessionFixture } from "./session-list.test-support.js";
 
 test.each([
@@ -43,11 +44,11 @@ test.each([
       const modelCatalog = new Map([
         [
           "main",
-          {
+          createPreparedGatewayModelCatalog({
             entries: [{ provider: "example", id: "list-model", name: "Synthetic model" }],
             pluginRegistry,
             metadataSnapshot,
-          },
+          }),
         ],
       ]);
       const metadata = await import("../plugins/current-plugin-metadata-snapshot.js");

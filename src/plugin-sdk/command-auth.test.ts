@@ -20,6 +20,7 @@ import {
   buildCommandsMessagePaginated,
   buildHelpMessage,
 } from "./command-status.js";
+import type { GatewayRequestHandlerOptions } from "./gateway-runtime.js";
 import { resolveSessionModelRef } from "./model-session-runtime.js";
 
 const baseCfg = {
@@ -52,6 +53,16 @@ async function resolveAuthorization(params: {
 
 describe("plugin-sdk/command-auth", () => {
   it("keeps prepared host metadata outside public model resolver inputs", () => {
+    type PublishedCatalog = NonNullable<
+      Awaited<
+        ReturnType<
+          NonNullable<GatewayRequestHandlerOptions["context"]["readPreparedGatewayModelCatalog"]>
+        >
+      >
+    >;
+    expectTypeOf<keyof PublishedCatalog>().toEqualTypeOf<
+      "entries" | "pluginRegistry" | "routeVariants"
+    >();
     type StoredModelInput = Parameters<typeof resolveStoredModelOverride>[0];
     expectTypeOf<keyof StoredModelInput>().toEqualTypeOf<
       | "loadSessionEntry"

@@ -17,6 +17,10 @@ import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import {
+  createPreparedGatewayModelCatalog,
+  readPreparedGatewayModelCatalogMetadata,
+} from "../server-model-catalog-view.js";
 import { readPreparedGatewayModelCatalog } from "../server-model-catalog.js";
 import type { GatewaySessionRow, GatewaySessionsDefaults } from "../session-utils.types.js";
 import { agentsHandlers } from "./agents.js";
@@ -182,14 +186,20 @@ describe("sessions.list catalog scoping", () => {
       const entries: ModelCatalogEntry[] = [
         { provider: "fixture-runtime", id: "model", name: "Model" },
       ];
-      let metadataSnapshot = createPluginMetadataSnapshotFixture();
+      const initialMetadataSnapshot = createPluginMetadataSnapshotFixture();
+      let metadataSnapshot = initialMetadataSnapshot;
+      let lastCatalog: ReturnType<typeof createPreparedGatewayModelCatalog> | undefined;
       const context = {
         ...requestContext(config),
-        readPreparedGatewayModelCatalog: async () => ({ entries, metadataSnapshot }),
+        readPreparedGatewayModelCatalog: async () => {
+          lastCatalog = createPreparedGatewayModelCatalog({ entries, metadataSnapshot });
+          return lastCatalog;
+        },
       };
       const client = identifiedClient("owner@example.com");
       const request = { agentId: "main", archived: "all" as const, limit: 100 };
       const first = await listSessions({ client, context, request });
+      const firstCatalog = lastCatalog;
       expect(first.sessions[0]?.agentRuntime?.id).not.toBe("fixture-runtime");
       expect(await listSessions({ client, context, request })).toBe(first);
 
@@ -199,6 +209,8 @@ describe("sessions.list catalog scoping", () => {
       const updated = await listSessions({ client, context, request });
       expect(updated).not.toBe(first);
       expect(updated.sessions[0]?.agentRuntime?.id).toBe("fixture-runtime");
+      expect(readPreparedGatewayModelCatalogMetadata(firstCatalog)).toBe(initialMetadataSnapshot);
+      expect(readPreparedGatewayModelCatalogMetadata(lastCatalog)).toBe(metadataSnapshot);
     });
   });
 
@@ -245,7 +257,10 @@ describe("sessions.list catalog scoping", () => {
         setActivePluginRegistry(createEmptyPluginRegistry());
         const context = publishedCatalogContext(config, new Map([["main", owner]]));
         const prepared = await context.readPreparedGatewayModelCatalog?.({ agentId: "main" });
-        expect(prepared?.metadataSnapshot).toBe(owner.metadataSnapshot);
+        expect(readPreparedGatewayModelCatalogMetadata(prepared)).toBe(owner.metadataSnapshot);
+        expect(new Set(Reflect.ownKeys(prepared ?? {}))).toEqual(
+          new Set(["entries", "pluginRegistry", "routeVariants"]),
+        );
 
         const result = await listSessions({
           client: identifiedClient("owner@example.com"),

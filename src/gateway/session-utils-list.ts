@@ -25,6 +25,7 @@ import { sessionActivityTimestamp } from "../shared/session-activity-timestamp.j
 import { SESSIONS_LIST_OWNER_LIMIT } from "../shared/session-list-limits.js";
 import type { SessionOwnerFacetIdentity } from "../shared/session-types.js";
 import { runSynchronousWork, type SynchronousWork } from "../shared/synchronous-work.js";
+import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
 import { projectActivitySummaryList } from "./session-activity-summary-list.js";
 import {
   projectSessionOwner,
@@ -558,7 +559,7 @@ function buildSessionsListResult(
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       allowPluginNormalization: false,
       providerPolicySource: preparedDefaultsCatalog?.pluginRegistry,
-      metadataSnapshot: preparedDefaultsCatalog?.metadataSnapshot,
+      metadataSnapshot: readPreparedGatewayModelCatalogMetadata(preparedDefaultsCatalog),
     }),
     sessions,
   };

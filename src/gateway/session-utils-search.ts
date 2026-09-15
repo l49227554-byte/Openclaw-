@@ -19,6 +19,7 @@ import { formatGoalSummary } from "../shared/session-goal-display.js";
 import { isSessionRunActive } from "../shared/session-run-state.js";
 import { sessionDeliveryChannel, sessionDeliveryOrigin } from "../utils/delivery-context.shared.js";
 import { resolveAssistantIdentity } from "./assistant-identity.js";
+import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
 import type { SessionEntryPair } from "./session-list-order.js";
 import type {
   SessionListActiveRunProjector,
@@ -163,6 +164,9 @@ export function createSessionListSearchMatcher(params: {
       return true;
     }
     const agentId = target.agentId;
+    const metadataSnapshot = readPreparedGatewayModelCatalogMetadata(
+      params.modelCatalog?.get(agentId),
+    );
     const run = projectGatewaySessionRunState({
       key: storeKey,
       entry,
@@ -203,7 +207,7 @@ export function createSessionListSearchMatcher(params: {
       agentId,
       rowContext: context(),
       allowPluginNormalization: false,
-      manifestPlugins: params.modelCatalog?.get(agentId)?.metadataSnapshot,
+      manifestPlugins: metadataSnapshot,
     });
     if (
       shouldResolveDerivedSessionModelSearchFields(search) &&
@@ -215,7 +219,7 @@ export function createSessionListSearchMatcher(params: {
           agentId,
           rowContext: context(),
           selectedModel: selected,
-          manifestPlugins: params.modelCatalog?.get(agentId)?.metadataSnapshot,
+          manifestPlugins: metadataSnapshot,
         }),
         search,
       )
@@ -238,7 +242,7 @@ export function createSessionListSearchMatcher(params: {
       agentId,
       provider: selected.provider,
       model: selected.model,
-      metadataSnapshot: params.modelCatalog?.get(agentId)?.metadataSnapshot,
+      metadataSnapshot,
       rowContext: context(),
     });
     return matchesSessionListSearch([formatAgentRuntimeLabel(agentRuntime)], search);

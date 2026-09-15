@@ -43,9 +43,11 @@ type EmbeddedSubscribeLogger = {
 /** Per-tool metadata tracked between tool start/update/end events. */
 export type ToolCallSummary = {
   meta?: string;
+  verifiesRecoveryOfToolCallId?: string;
   instanceReplaySafe: boolean;
   replaySafe: boolean;
   mutatingAction: boolean;
+  recoveryFingerprint?: string;
   actionFingerprint?: string;
   fileTarget?: import("./tool-mutation.js").FileTarget;
 };

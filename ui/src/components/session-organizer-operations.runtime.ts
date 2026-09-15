@@ -1,6 +1,7 @@
 import type { WorktreesRemoveResult } from "../../../packages/gateway-protocol/src/index.js";
 import { loadSettings, patchSettings } from "../app/settings.ts";
 import { t } from "../i18n/index.ts";
+import { formatUiError } from "../lib/format-error.ts";
 import { readSessionMethodAccess } from "../lib/session-method-access.ts";
 import { resolveSessionRenamePatch } from "../lib/session-rename.ts";
 import {
@@ -164,8 +165,7 @@ export async function archiveSessionWithUndo(
   showToast({
     message: t("sessionsView.sessionArchived"),
     actionLabel: t("common.undo"),
-    onAction: () =>
-      void restoreArchivedSessions(host, [{ session, pinned: session.pinned }], scope),
+    onAction: archiveUndoAction(host, [{ session, pinned: session.pinned }], scope),
   });
 }
 
@@ -203,8 +203,36 @@ async function archiveSessionsWithUndo(
         ? t("sessionsView.sessionArchived")
         : t("sessionsView.sessionsArchived", { count: String(archived.length) }),
     actionLabel: t("common.undo"),
-    onAction: () => void restoreArchivedSessions(host, archived, scope),
+    onAction: archiveUndoAction(host, archived, scope),
   });
+}
+
+function archiveUndoAction(
+  host: SessionActionHost,
+  archived: readonly { session: SessionActionRow; pinned: boolean }[],
+  scope: SidebarSessionMutationScope,
+): () => void {
+  // The toast outlives its originating pane. The session owner fences reconnects;
+  // the captured row IDs still fence replacement conversations during restore.
+  const connection = scope.sessions.captureConnectionScope();
+  const undoHost: SessionActionHost = {
+    pruneSidebarSessionEntry: (key) => host.pruneSidebarSessionEntry(key),
+    selectSession: (key) => host.selectSession(key),
+    sidebarSessionStatusFilter: () => host.sidebarSessionStatusFilter(),
+    sessionData: {
+      refreshSidebarSessions: (agentId) => host.sessionData.refreshSidebarSessions(agentId),
+      isSessionMutationScopeCurrent: () =>
+        connection !== null && scope.sessions.isConnectionScopeCurrent(connection),
+      publishSessionMutationError: (candidate, error) => {
+        if (host.sessionData.isSessionMutationScopeCurrent(candidate)) {
+          host.sessionData.publishSessionMutationError(candidate, error);
+        } else if (connection && scope.sessions.isConnectionScopeCurrent(connection)) {
+          showToast({ message: formatUiError(error) });
+        }
+      },
+    },
+  };
+  return () => void restoreArchivedSessions(undoHost, archived, scope);
 }
 
 async function restoreArchivedSessions(

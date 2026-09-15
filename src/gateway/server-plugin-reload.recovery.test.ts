@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createTranscriptsTool } from "../agents/tools/transcripts-tool.js";
 import { clearRuntimeConfigSnapshot } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { CronService } from "../cron/service.js";
+import type { PluginHookGatewayContext } from "../plugins/hook-types.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { clearActivePluginRegistry, resetPluginRuntimeStateForTest } from "../plugins/runtime.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "../plugins/test-helpers/fs-fixtures.js";
-import type { OpenClawPluginApi } from "../plugins/types.js";
+import type { OpenClawPluginApi, OpenClawPluginServiceContext } from "../plugins/types.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -41,8 +43,6 @@ import {
   verifyPendingServiceCleanupRetry,
   verifyGatewayCleanupRetry,
   verifyPendingServiceCleanupRollback,
-  verifyFailedRecoveryServiceOwnership,
-  verifyCandidateCleanupRecovery,
 } from "./server-plugin-reload.managed-candidate.test-support.js";
 import { verifyGatewayMemoryReplacement } from "./server-plugin-reload.memory.test-support.js";
 import {
@@ -53,10 +53,7 @@ import {
   verifyChannelCleanupFailureFence,
   verifyMalformedReloadFailureReceipt,
 } from "./server-plugin-reload.recovery.test-support.js";
-import {
-  verifyOneWayDrainRecovery,
-  verifyReversibleFenceRecovery,
-} from "./server-plugin-reload.suspension.test-support.js";
+import { registerPluginServiceRecoveryTests } from "./server-plugin-reload.service-recovery.test-support.js";
 import {
   registerTranscriptFixture,
   startTranscriptReloadFixtureSidecars,
@@ -126,6 +123,73 @@ function createRecoveryFixture(
 ) {
   return createPluginReloadRecoveryFixture({ cleanups, logMocks: mocks.log }, options);
 }
+
+it.each(["commit", "rollback"] as const)(
+  "keeps service and lifecycle Cron getters current after %s",
+  async (outcome) => {
+    let serviceGetter: OpenClawPluginServiceContext["getCron"];
+    let hookGetter: PluginHookGatewayContext["getCron"];
+    const schedulers = ["first", "next"].map((name) => {
+      const cron = new CronService({
+        storePath: path.join(makeTrackedTempDir(`reload-cron-${name}`, tempDirs), "jobs.sqlite"),
+        cronEnabled: false,
+        log: mocks.log,
+        enqueueSystemEvent: () => {},
+        requestHeartbeat: () => {},
+        runIsolatedAgentJob: async () => ({ status: "ok" as const }),
+      });
+      const list = vi.spyOn(cron, "list").mockResolvedValue([]);
+      cleanups.push(async () => cron.stop());
+      return { cron, list };
+    });
+    const [first, next] = schedulers;
+    assert(first && next);
+    const fixture = await createRecoveryFixture({
+      abortOnCandidateStart: false,
+      beforePublish: async () => {
+        if (outcome === "rollback") {
+          throw new Error("Cron getter rollback");
+        }
+      },
+      register(api, owner) {
+        if (owner !== "first") {
+          return;
+        }
+        api.registerService({
+          id: "cron-getter",
+          start(ctx) {
+            serviceGetter = ctx.getCron;
+          },
+        });
+        api.on("gateway_start", (_event, ctx) => {
+          hookGetter = ctx.getCron;
+        });
+      },
+    });
+    fixture.runtime.runtimeState.cronState.cron = first.cron;
+    if (outcome === "rollback") {
+      await expect(fixture.reload()).rejects.toThrow("Cron getter rollback");
+    } else {
+      await fixture.reload();
+    }
+    assert(serviceGetter && hookGetter);
+    expect(hookGetter()).toBe(first.cron);
+    const stale = serviceGetter();
+    assert(stale);
+    await stale.list();
+    expect(first.list).toHaveBeenCalledOnce();
+
+    fixture.runtime.runtimeState.cronState.cron = next.cron;
+    expect(hookGetter()).toBe(next.cron);
+    const current = serviceGetter();
+    assert(current);
+    await current.list();
+    expect(next.list).toHaveBeenCalledOnce();
+    const remove = vi.spyOn(first.cron, "remove");
+    await expect(stale.remove("must-not-mutate")).rejects.toThrow("scheduler was replaced");
+    expect(remove).not.toHaveBeenCalled();
+  },
+);
 
 it("validates expanded replacement targets before draining their live owners", async () => {
   await verifyExpandedReplacementTargets(createRecoveryFixture);
@@ -761,90 +825,7 @@ it.for([
   },
 );
 
-describe("Gateway plugin service recovery ownership", () => {
-  it.each(["prepare", "drain", "publish", "committed"] as const)(
-    "preserves the committed owner when its invoker closes during %s",
-    async (boundary) => {
-      const entered = createDeferredCore();
-      const release = createDeferredCore();
-      const failure = new Error("plugin invoker closed");
-      let invokerOpen = true;
-      const pause = async () => {
-        entered.resolve();
-        await release.promise;
-      };
-      const candidateStart = vi.fn();
-      const fixture = await createRecoveryFixture({
-        abortOnCandidateStart: false,
-        candidateStart,
-        ...(boundary === "prepare" ? { prepareAttached: pause } : {}),
-        ...(boundary === "drain" ? { initialStop: pause } : {}),
-        ...(boundary === "publish" ? { beforePublish: pause } : {}),
-        ...(boundary === "committed" ? { afterPublish: pause } : {}),
-        assertInvokerOwned: () => {
-          if (!invokerOpen) {
-            throw failure;
-          }
-        },
-      });
-      const pending = fixture.reload().catch((error: unknown) => error);
-      try {
-        await Promise.race([
-          entered.promise,
-          pending.then(() => {
-            throw new Error("plugin reload completed before its pause");
-          }),
-        ]);
-        invokerOpen = false;
-        release.resolve();
-        const result = await pending;
-        if (boundary === "committed") {
-          expect(result).toMatchObject({
-            runtime: { operationId: "service-recovery", pluginIds: ["first"] },
-          });
-          expect(fixture.registryOwner.registry).not.toBe(fixture.previousRegistry);
-          const previousRecord = fixture.previousRegistry.plugins.find(
-            (record) => record.id === "first",
-          );
-          assert.ok(previousRecord);
-          expect(getPluginInstance(previousRecord)?.lifecycle.signal.aborted).toBe(true);
-          expect(fixture.firstStart).toHaveBeenCalledOnce();
-          expect(fixture.candidateStop).not.toHaveBeenCalled();
-        } else {
-          expect(result).toMatchObject({
-            details: { phase: boundary === "publish" ? "activate" : boundary, committed: false },
-            cause: failure,
-          });
-          expect(fixture.registryOwner.registry).toBe(fixture.previousRegistry);
-          expect(fixture.firstStart).toHaveBeenCalledTimes(boundary === "prepare" ? 1 : 2);
-          expect(fixture.candidateStop).toHaveBeenCalledTimes(boundary === "publish" ? 1 : 0);
-        }
-        expect(candidateStart).toHaveBeenCalledTimes(
-          boundary === "publish" || boundary === "committed" ? 1 : 0,
-        );
-        expect(fixture.siblingStart).toHaveBeenCalledOnce();
-        expect(fixture.siblingStop).not.toHaveBeenCalled();
-      } finally {
-        release.resolve();
-        await pending;
-      }
-    },
-  );
-
-  it("keeps retained and failed-recovery services owned after recovery startup rejects", () =>
-    verifyFailedRecoveryServiceOwnership(createRecoveryFixture));
-
-  it("restores the previous service after candidate cleanup fails and permits another attempt", () =>
-    verifyCandidateCleanupRecovery(createRecoveryFixture));
-
-  it.each(["suspension", "restart signal"] as const)(
-    "restores the previous plugin runtime after failed replacement during reversible %s",
-    (fence) => verifyReversibleFenceRecovery(createRecoveryFixture, fence),
-  );
-
-  it("publishes retained services before awaited cleanup when admission closes and recovery is skipped", () =>
-    verifyOneWayDrainRecovery(createRecoveryFixture));
-});
+registerPluginServiceRecoveryTests(createRecoveryFixture);
 
 it("starts the first configured transcript capture after plugin reload", async ({ signal }) => {
   const stateDir = makeTrackedTempDir("gateway-transcript-first-start-", tempDirs);

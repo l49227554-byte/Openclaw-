@@ -165,13 +165,15 @@ export function collectSqliteSchemaIssues(
       expectedIndexFingerprints.add(fingerprint);
       if (!actualIndexFingerprints.has(fingerprint)) {
         const objectName = expectedIndex.name ?? tableName;
-        const namedIndexPresent = expectedIndex.name
-          ? actualTable.indexes.some((actualIndex) => actualIndex.name === expectedIndex.name)
-          : false;
+        // Index names are schema-wide and case-insensitive, including on other tables.
         if (
           expectedIndex.name &&
           allowedMissingIndexes.has(expectedIndex.name) &&
-          !namedIndexPresent
+          !database
+            .prepare(
+              "SELECT 1 FROM main.sqlite_schema WHERE type = 'index' AND name = ? COLLATE NOCASE LIMIT 1",
+            )
+            .get(expectedIndex.name)
         ) {
           continue;
         }
@@ -318,9 +320,14 @@ export function collectSqliteNamedIndexContract(
   database: DatabaseSync,
   indexName: string,
 ): SqliteIndexContract | undefined {
+  // Authorize the original catalog columns even when the index is absent.
   const row = database
-    .prepare("SELECT name, sql, tbl_name FROM main.sqlite_schema WHERE type = 'index' AND name = ?")
-    .get(indexName) as SqliteSchemaRow | undefined;
+    .prepare(`
+      SELECT tbl_name FROM (
+        SELECT name, sql, tbl_name FROM main.sqlite_schema WHERE type = 'index' AND name = ?
+      )
+    `)
+    .get(indexName);
   if (!row || typeof row.tbl_name !== "string") {
     return undefined;
   }

@@ -74,12 +74,24 @@ the job's uploaded artifacts.
 | `openclaw-performance`           | Separate workflow: daily/on-demand Kova runtime performance reports with mock-provider, deep-profile, and GPT 5.6 live lanes                                                                                                                                                                             | Scheduled and manual dispatch                          |
 | `docs-external-links`            | Separate workflow: Docs External Link Audit checks external documentation links with lychee and uploads a report; it reports findings without failing, so it never blocks a pull request                                                                                                                 | Scheduled and manual dispatch                          |
 
+Ordinary Markdown and MDX pages under `docs/`, plus root `README.md`, retain
+their separate `check-docs` coverage beside precise pull-request Node tests.
+Page deletions and renames preserve this targeting. Explicit Node owners for
+Markdown inputs remain selected; workspace templates under
+`docs/reference/templates/` and unowned source inputs retain the full fallback.
+
 Full canonical `main` pushes run the operator config and prior-release state
-startup corpora once through the Node `runtime-config` owner. Other runs that
-select baseline-ratchets retain its explicit **Check startup corpus** step:
-pull requests may select only changed tests, and release-gate dispatches
-also validate a separate merge tree. Both state repair passes and the static
-baseline ratchets remain unchanged.
+startup corpora once through the Node `runtime-config` owner. Canonical pull
+requests also omit the duplicate **Check startup corpus** step when preflight
+certifies both complete files in the required Node matrix on the exact same
+checkout revision. Partial, filtered or unknown plans retain the explicit step;
+release-gate dispatches retain their separate merge-tree proof. Both state
+repair passes, all static baseline ratchets and required Node failure aggregation
+remain unchanged.
+The corpus uses the normal bundled-plugin resolver to select the prepared
+runtime from this checkout instead of forcing TypeScript plugin entrypoints.
+Plugins whose Doctor contracts require source loading retain that behavior;
+the complete config/state matrix and its assertions remain intact.
 
 Ordinary pull requests that change only independent Control UI unit-test entries
 keep all three UI unit rows, performance checks, and existing type/lint gates,
@@ -101,8 +113,11 @@ PR selection includes `src/cli/update-cli/**`, `src/infra/update-*`,
 `package.json` (including its packaged schema-version metadata). It also includes
 `scripts/e2e/upgrade-survivor*`, `scripts/e2e/lib/upgrade-survivor/**`, the survivor
 policy and baseline resolver, the Docker planner/catalog, and this gate's CI
-workflow and changed-lane planner. Tests independently pin both state and agent
-schema-version constant owners to the published lane.
+workflow, Docker selector (`scripts/lib/ci-docker-seed-plan.mts`), and shared
+test-path classifier. Node-only planner edits do not select Docker lanes. The
+Node planner retains its selector export for older target/harness combinations.
+Tests independently pin both state and agent schema-version constant owners to
+the published lane.
 Trusted same-repository pull requests request one 32-vCPU Blacksmith runner with
 main and tail parallelism set to 3. The weighted scheduler still admits only one
 weight-three MCP or published-upgrade lane at a time; the larger host supplies package-build and

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { enableNodeSqliteKyselyStatementCache } from "./kysely-sync.js";
 import {
   assertSqliteSchemaContains,
+  collectSqliteNamedIndexContract,
   collectSqliteSchemaIssues,
   createSqliteTableContractReader,
 } from "./sqlite-schema-contract.js";
@@ -92,6 +93,34 @@ describe.each([false, true])("assertSqliteSchemaContains (statement cache: %s)",
     }
   });
 
+  it("preserves SQL-column authorization errors for an absent named index", () => {
+    const database = createDatabase(CANONICAL_SCHEMA);
+    try {
+      database.exec("DROP INDEX idx_children_parent;");
+      expect(collectSqliteNamedIndexContract(database, "idx_children_parent")).toBeUndefined();
+
+      database.setAuthorizer((action, table, column, schema) => {
+        if (
+          action === constants.SQLITE_READ &&
+          (table === "sqlite_master" || table === "sqlite_schema") &&
+          column === "sql" &&
+          schema === "main"
+        ) {
+          return constants.SQLITE_DENY;
+        }
+        return constants.SQLITE_OK;
+      });
+      expect(() => collectSqliteNamedIndexContract(database, "idx_children_parent")).toThrow(
+        /access to sqlite_(?:master|schema)\.sql is prohibited/iu,
+      );
+      database.setAuthorizer(null);
+      expect(collectSqliteNamedIndexContract(database, "idx_children_parent")).toBeUndefined();
+    } finally {
+      database.setAuthorizer(null);
+      database.close();
+    }
+  });
+
   it("accepts an extra non-unique index on a canonical table", () => {
     const database = createDatabase(CANONICAL_SCHEMA);
     try {
@@ -131,15 +160,22 @@ describe.each([false, true])("assertSqliteSchemaContains (statement cache: %s)",
         unexpectedUniqueIndex,
       ]);
 
-      database.exec("CREATE INDEX idx_children_parent ON children(id, parent_id);");
-      expect(collectSqliteSchemaIssues(database, CANONICAL_SCHEMA, compatibility)).toEqual([
-        {
-          code: "missing-or-drifted-index",
-          objectName: "idx_children_parent",
-          message: "missing or drifted index idx_children_parent",
-        },
-        unexpectedUniqueIndex,
-      ]);
+      for (const [name, definition] of [
+        ["idx_children_parent", "children(id, parent_id)"],
+        ["idx_children_parent", "parents(value, id)"],
+        ["IDX_CHILDREN_PARENT", "parents(value, id)"],
+      ]) {
+        database.exec(`CREATE INDEX ${name} ON ${definition};`);
+        expect(collectSqliteSchemaIssues(database, CANONICAL_SCHEMA, compatibility)).toEqual([
+          {
+            code: "missing-or-drifted-index",
+            objectName: "idx_children_parent",
+            message: "missing or drifted index idx_children_parent",
+          },
+          unexpectedUniqueIndex,
+        ]);
+        database.exec("DROP INDEX idx_children_parent;");
+      }
     } finally {
       database.close();
     }

@@ -136,6 +136,12 @@ The script may return an object with these optional fields:
 
 Throws, timeouts, exhausted tool budgets, invalid results, and `nextCheck` without pacing are normal automation run errors: they enter run history, backoff, and failure-alert handling without persisting returned state.
 
+Plugin reloads invalidate cached script preparation. If a plugin retires during setup,
+OpenClaw refreshes the tools once before starting the script, within the original
+deadline. A failure after the script starts never triggers this setup retry.
+If the refresh fails, run history and failure alerts explain that automatic setup
+recovery failed and the script did not run.
+
 Changing a running job's script payload or saved state protects that edit from
 the old script's returned state, including when completion is recovered after a
 Gateway restart. The completed run still retains its history.
@@ -182,7 +188,7 @@ Agent-turn jobs default to the creating conversation when the create request car
 
   </Accordion>
   <Accordion title="Subagent and Discord delivery">
-    When isolated automation runs orchestrate subagents, delivery prefers the final descendant output over stale parent interim text. If descendants are still running, OpenClaw suppresses that partial parent update instead of announcing it.
+    When isolated automation runs orchestrate subagents, delivery prefers the final descendant output over stale parent interim text. If descendant tasks are still running or settling, OpenClaw suppresses that partial parent update instead of announcing it. This includes a yielded orchestrator waiting for its successor to start and completed descendants whose result delivery is still pending. The wait shares the existing run deadline and stops on cancellation.
 
     For text-only Discord announce targets, OpenClaw sends the canonical final assistant text once instead of replaying both streamed/intermediate text and the final answer. Media and structured Discord payloads are still delivered separately so attachments and components are not dropped.
 

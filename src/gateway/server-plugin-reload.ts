@@ -134,7 +134,7 @@ export async function reloadGatewayPlugins(
       errors.push(error);
     }
   };
-  const replacePluginIds = new Set(requestedIds);
+  const replacePluginIds = new Set([...requestedIds, ...(params.reloadPluginIds ?? [])]);
   for (const record of previousRegistry.plugins) {
     if (
       params.changedPaths.some(
@@ -161,6 +161,7 @@ export async function reloadGatewayPlugins(
   let releaseChannelStarts: ReturnType<typeof channelManager.pauseChannelStarts> | undefined;
   const channelTargets = new Set<ChannelId>();
   const quiescedInstances: PluginInstanceHandle[] = [];
+  let rollbackConfigEffects: (() => Promise<void>) | undefined;
   const skipChannels =
     isTruthyEnvValue(params.env?.OPENCLAW_SKIP_CHANNELS) ||
     isTruthyEnvValue(params.env?.OPENCLAW_SKIP_PROVIDERS);
@@ -230,7 +231,7 @@ export async function reloadGatewayPlugins(
       config,
       workspaceDir: pluginWorkspaceDir,
       // SAFETY: Gateway cron implements the SDK hook surface, which erases core-only job fields.
-      getCron: () => runtimeState.cronState.cron as PluginHookGatewayCronService,
+      getCron: kernel.getCronService as () => PluginHookGatewayCronService,
     };
     await withPluginHttpRouteRegistry(registry, () =>
       start
@@ -343,10 +344,13 @@ export async function reloadGatewayPlugins(
     }
     await params.checkpoint?.();
     assertCurrent();
-    params.prepareConfigEffects({ pluginIds: changedPluginIds, channels: channelTargets });
-    releaseChannelStarts = channelManager.pauseChannelStarts(channelTargets);
+    rollbackConfigEffects = params.prepareConfigEffects({
+      pluginIds: changedPluginIds,
+      channels: channelTargets,
+    });
     phase = "drain";
-    for (const sidecar of runtimeState.gatewayLifetimeSidecars) {
+    releaseChannelStarts = channelManager.pauseChannelStarts(channelTargets);
+    for (const sidecar of runtimeState.gatewayLifetimeSidecars.snapshot()) {
       const prepared = sidecar.preparePluginReload?.({
         previousRegistry,
         nextRegistry,
@@ -426,7 +430,7 @@ export async function reloadGatewayPlugins(
         config: params.nextConfig,
         workspaceDir: pluginWorkspaceDir,
         broadcastPluginEvent,
-        getCronService: () => runtimeState.cronState.cron,
+        getCronService: kernel.getCronService,
         previous: previousServices,
         onHandle: (handle) => {
           candidateServices = handle;
@@ -609,7 +613,7 @@ export async function reloadGatewayPlugins(
               config: previousConfig,
               workspaceDir: pluginWorkspaceDir,
               broadcastPluginEvent,
-              getCronService: () => runtimeState.cronState.cron,
+              getCronService: kernel.getCronService,
               previous: kernel.pluginRuntimeGeneration.currentServices(),
               onHandle: (handle) => {
                 kernel.pluginRuntimeGeneration.publishServices(
@@ -644,6 +648,9 @@ export async function reloadGatewayPlugins(
           recoveryErrors.push(recoveryError);
         } finally {
           await releaseChannelHandoffs(recoveryErrors);
+        }
+        if (recoveryErrors.length === 0) {
+          await attempt(recoveryErrors, () => rollbackConfigEffects?.());
         }
         if (recoveryErrors.length > 0) {
           const recoveryError =

@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import { createRequire, isBuiltin } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -80,9 +82,11 @@ export function verifyPluginSourceInputs(
   }
 }
 
+export type PluginDependencyResolution = { root: string; lookupDirectory: string };
+
 export function createPluginDependencyResolver() {
-  const roots = new Map<string, string | undefined>();
-  return (name: string, importer: string): string | undefined => {
+  const roots = new Map<string, PluginDependencyResolution | undefined>();
+  return (name: string, importer: string): PluginDependencyResolution | undefined => {
     const key = `${path.dirname(importer)}\0${name}`;
     if (roots.has(key)) {
       return roots.get(key);
@@ -91,9 +95,12 @@ export function createPluginDependencyResolver() {
     for (const nodeModules of createRequire(importer).resolve.paths(`${name}/`) ?? []) {
       const candidate = path.join(nodeModules, name);
       if (fs.existsSync(path.join(candidate, "package.json"))) {
-        const root = fs.realpathSync(candidate);
-        roots.set(key, root);
-        return root;
+        const resolved = {
+          root: fs.realpathSync(candidate),
+          lookupDirectory: path.dirname(nodeModules),
+        };
+        roots.set(key, resolved);
+        return resolved;
       }
     }
     roots.set(key, undefined);
@@ -106,7 +113,7 @@ export function createPluginDependencyLookup(
   importer: string,
   manifest: Record<string, unknown> | undefined,
   resolve: ReturnType<typeof createPluginDependencyResolver>,
-  capture: (name: string, root: string) => void,
+  capture: (name: string, dependency: PluginDependencyResolution) => void,
 ) {
   const prepared = new Map<string, boolean>();
   return (specifier: string): boolean | "package-map" | undefined => {
@@ -127,11 +134,11 @@ export function createPluginDependencyLookup(
       return "package-map";
     }
     if (!prepared.has(name)) {
-      const root = resolve(name, importer);
-      if (root) {
-        capture(name, root);
+      const dependency = resolve(name, importer);
+      if (dependency) {
+        capture(name, dependency);
       }
-      prepared.set(name, root !== undefined);
+      prepared.set(name, dependency !== undefined);
     }
     return prepared.get(name);
   };
@@ -159,7 +166,7 @@ export type PluginModuleCapture = {
 /** Native resolvers need declared package lookups before they can resolve a deferred import. */
 export function createPluginNativeDependencyScopes(
   resolve: ReturnType<typeof createPluginDependencyResolver>,
-  capture: (name: string, importer: string, root: string) => void,
+  capture: (name: string, dependency: PluginDependencyResolution) => void,
 ) {
   const scopes = new Map<string, PluginNativeDependencyScope>();
   return (source: string, manifest: Record<string, unknown> | undefined) => {
@@ -175,7 +182,7 @@ export function createPluginNativeDependencyScopes(
               for (const name of dependencies) {
                 const dependency = resolve(name, source);
                 if (dependency) {
-                  capture(name, source, dependency);
+                  capture(name, dependency);
                 }
               }
             }
@@ -192,7 +199,7 @@ export function capturePluginDependencies(params: {
   manifestFile?: string;
   references: ReadonlyMap<string, ReadonlySet<string>>;
   resolve: ReturnType<typeof createPluginDependencyResolver>;
-  capture: (name: string, importer: string, root: string) => void;
+  capture: (name: string, dependency: PluginDependencyResolution) => void;
 }) {
   const manifest: {
     dependencies?: Record<string, string>;
@@ -226,7 +233,7 @@ export function capturePluginDependencies(params: {
         `Plugin dependency ${name} is missing from ${params.root}; install its dependencies and reload.`,
       );
     }
-    params.capture(name, importer, dependency);
+    params.capture(name, dependency);
   }
   return manifest;
 }
@@ -578,20 +585,34 @@ export function createPluginPackageMetadataCapture(params: {
         manifest: Record<string, unknown>;
         aliases: Set<string>;
       };
-      const packageScopes = new Map<string, PackageScope | undefined>();
-      const capturedScopes = new Map<string, { source: string; target: string } | undefined>();
-      const captureScopeMetadata = (
-        scopeDirectory: string,
-      ): { source: string; target: string } | undefined => {
+      const capturedScopes = new Map<string, (() => PackageScope) | undefined>();
+      const captureScopeMetadata = (scopeDirectory: string): (() => PackageScope) | undefined => {
         if (capturedScopes.has(scopeDirectory)) {
           return capturedScopes.get(scopeDirectory);
         }
-        let scope: { source: string; target: string } | undefined;
+        let scope: (() => PackageScope) | undefined;
         const source = path.join(scopeDirectory, "package.json");
         if (hasSource(source) || fs.existsSync(source)) {
           const target = path.join(destination, path.relative(root, source));
           copy(source, target);
-          scope = { source, target };
+          let parsed: PackageScope | undefined;
+          scope = () => {
+            if (!parsed) {
+              const metadata = metadataScopes.get(target)!;
+              const data =
+                asOptionalRecord(metadata.manifest) ??
+                asOptionalRecord(JSON.parse(fs.readFileSync(target, "utf8"))) ??
+                {};
+              metadata.manifest = data;
+              metadata.prepareAliases(data);
+              parsed = {
+                source,
+                manifest: data,
+                aliases: new Set(importTargetNames(data.imports)),
+              };
+            }
+            return parsed;
+          };
         } else if (
           scopeDirectory !== boundary &&
           isPathInside(boundary, path.dirname(scopeDirectory))
@@ -601,28 +622,10 @@ export function createPluginPackageMetadataCapture(params: {
         capturedScopes.set(scopeDirectory, scope);
         return scope;
       };
-      const packageScope = (scopeDirectory: string): PackageScope | undefined => {
-        if (packageScopes.has(scopeDirectory)) {
-          return packageScopes.get(scopeDirectory);
-        }
-        let scope: PackageScope | undefined;
-        const capturedScope = captureScopeMetadata(scopeDirectory);
-        if (capturedScope) {
-          const { source: manifest, target } = capturedScope;
-          const data = asOptionalRecord(JSON.parse(fs.readFileSync(target, "utf8"))) ?? {};
-          metadataScopes.get(target)!.manifest = data;
-          scope = {
-            source: manifest,
-            manifest: data,
-            aliases: new Set(importTargetNames(data.imports)),
-          };
-          // Conditional aliases need stable metadata, but unused optional package bodies stay lazy.
-          metadataScopes.get(target)!.prepareAliases(data);
-        }
-        packageScopes.set(scopeDirectory, scope);
-        return scope;
+      return {
+        captureMetadata: captureScopeMetadata,
+        resolve: (scopeDirectory: string) => captureScopeMetadata(scopeDirectory)?.(),
       };
-      return { captureMetadata: captureScopeMetadata, resolve: packageScope };
     },
     clear() {
       metadataScopes.clear();
@@ -631,9 +634,20 @@ export function createPluginPackageMetadataCapture(params: {
   };
 }
 
+const sourceCaptureDirectory = new AsyncLocalStorage<string>();
+
+/** A compute worker's parent reclaims this scratch directory after confirmed exit. */
+export function withPluginSourceCaptureDirectory<T>(directory: string, run: () => T): T {
+  return sourceCaptureDirectory.run(directory, run);
+}
+
 /** Admissions and failed-input receipts belong to one source acquisition lifetime. */
 export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
-  const directory = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), "openclaw-plugin-build-")));
+  const directory = fs.realpathSync(
+    fs.mkdtempSync(
+      path.join(sourceCaptureDirectory.getStore() ?? tmpdir(), "openclaw-plugin-build-"),
+    ),
+  );
   fs.chmodSync(directory, 0o700);
   const inputs = new Map<string, PluginSourceInput>();
   const pendingInputs = new Set<string>();
@@ -668,6 +682,19 @@ export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
     const capture = () => acquire(run);
     return execute ? execute(capture) : capture();
   };
+  const beginDisposal = () => {
+    disposed = true;
+    // Revoke cached modules before removal yields, including compiled CJS helpers.
+    const filenames = directory + path.sep;
+    const urls = pathToFileURL(filenames).href;
+    const cache = createRequire(import.meta.url).cache;
+    for (const id of Object.keys(cache)) {
+      if (id.startsWith(filenames) || id.startsWith(urls)) {
+        delete cache[id];
+      }
+    }
+    captureFailures.clear();
+  };
   return {
     inputs,
     pendingInputs,
@@ -682,19 +709,12 @@ export function createPluginSourceCapture(execute?: <T>(run: () => T) => T) {
       fs.symlinkSync(hostRoot, path.join(modules, "openclaw"), "junction");
     },
     dispose() {
-      disposed = true;
-      // The capture owns compiled helpers and CJS files as well as async URL-keyed records.
-      // Prefixes need no filesystem lookup after source-build disposal removes their files.
-      const filenames = directory + path.sep;
-      const urls = pathToFileURL(filenames).href;
-      const cache = createRequire(import.meta.url).cache;
-      for (const id of Object.keys(cache)) {
-        if (id.startsWith(filenames) || id.startsWith(urls)) {
-          delete cache[id];
-        }
-      }
-      captureFailures.clear();
+      beginDisposal();
       fs.rmSync(directory, { recursive: true, force: true });
+    },
+    async disposeAsync() {
+      beginDisposal();
+      await fsPromises.rm(directory, { recursive: true, force: true });
     },
   };
 }

@@ -134,6 +134,7 @@ export type WorkerPlacementDispatchAdmission = <T>(
   request: Pick<WorkerPlacementDispatchRequest, "sessionId" | "sessionKey" | "agentId">,
   run: (signal?: AbortSignal) => Promise<T>,
   authorize?: () => void,
+  signal?: AbortSignal,
 ) => Promise<T>;
 
 /** Canonical admission rejected the session owner, not a caller or process cancellation. */
@@ -183,6 +184,8 @@ export type WorkerPlacementReclaimSourceCheck = (
 // Leaf dispatch contract: GatewayRequestContext must not import the dispatch
 // runtime (it reaches agents/plugins and closes an import cycle through core).
 export type WorkerPlacementDispatchContract = {
+  getPendingDeviceDispatchCount?(deviceId: string, excludeSessionId?: string): number;
+  getAdmittedDeviceSessionCounts?(excludeSessionId?: string): ReadonlyMap<string, number>;
   dispatch(
     request: WorkerPlacementDispatchRequest,
     onTransition?: (placement: WorkerSessionPlacementRecord) => void,

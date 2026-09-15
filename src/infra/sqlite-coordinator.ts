@@ -2,20 +2,32 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { sameFileIdentity } from "./fs-safe-advanced.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { applyPrivateModeSync } from "./private-mode.js";
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
 
-export class SqliteCoordinatorError extends Error {
-  constructor(
-    message: string,
-    public override readonly cause?: unknown,
-  ) {
-    super(message);
-    this.name = "SqliteCoordinatorError";
-  }
-}
+export const SqliteCoordinatorError = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteCoordinatorError"),
+  () =>
+    class CoordinatorError extends Error {
+      constructor(
+        message: string,
+        public override readonly cause?: unknown,
+      ) {
+        super(message);
+        this.name = "SqliteCoordinatorError";
+      }
+    },
+);
+export type SqliteCoordinatorError = InstanceType<typeof SqliteCoordinatorError>;
+
+export type SqliteCoordinatorLease = {
+  /** This lease has relinquished custody, either to the pool or by native close. */
+  readonly closed: boolean;
+  release: (options?: { keepAlive?: false }) => void;
+};
 
 export function createSqliteLifecycleAggregateError(
   errors: unknown[],
@@ -97,26 +109,33 @@ export function ensurePrivateSqliteCoordinatorDirectory(
 
 const IDLE_COORDINATOR_TIMEOUT_MS = 30 * 60_000;
 const MAX_IDLE_COORDINATORS = 16;
-// Bootstrap imports this owner before turns. Idle timers must not retain the
-// request context that released a coordinator.
-const runInCoordinatorPoolContext = AsyncLocalStorage.snapshot();
 type IdleCoordinator = {
   database: DatabaseSync;
   identity: fs.BigIntStats;
   timer: ReturnType<typeof setTimeout>;
 };
-const idleCoordinators = new Map<string, IdleCoordinator>();
-const failedIdleCloses = new Set<DatabaseSync>();
-let exitCloseRegistered = false;
+// Bootstrap imports this owner before turns. Idle timers must not retain the
+// request context that released a coordinator.
+const coordinatorPool = resolveGlobalSingleton(
+  Symbol.for("openclaw.sqliteCoordinatorPool"),
+  () => ({
+    runInCoordinatorPoolContext: AsyncLocalStorage.snapshot(),
+    idleCoordinators: new Map<string, IdleCoordinator>(),
+    failedIdleCloses: new Set<DatabaseSync>(),
+    exitCloseRegistered: false,
+    closeOnExit: closeIdleCoordinatorsOnExit,
+  }),
+);
+const { runInCoordinatorPoolContext, idleCoordinators, failedIdleCloses } = coordinatorPool;
 
 function updateCoordinatorExitClose() {
   const needed = idleCoordinators.size > 0 || failedIdleCloses.size > 0;
-  if (needed && !exitCloseRegistered) {
-    process.once("exit", closeIdleCoordinatorsOnExit);
-  } else if (!needed && exitCloseRegistered) {
-    process.removeListener("exit", closeIdleCoordinatorsOnExit);
+  if (needed && !coordinatorPool.exitCloseRegistered) {
+    process.once("exit", coordinatorPool.closeOnExit);
+  } else if (!needed && coordinatorPool.exitCloseRegistered) {
+    process.removeListener("exit", coordinatorPool.closeOnExit);
   }
-  exitCloseRegistered = needed;
+  coordinatorPool.exitCloseRegistered = needed;
 }
 
 function takeIdleCoordinator(location: string) {
@@ -227,11 +246,15 @@ function tryAcquireSqliteCoordinator(
   location: string,
   mode: "shared" | "exclusive",
   options: { busyTimeoutMs?: number; keepAlive?: boolean },
-): { release: () => void } | null {
+): SqliteCoordinatorLease | null {
   const busyTimeoutMs = Math.max(0, Math.trunc(options.busyTimeoutMs ?? 0));
-  const poolLocation =
-    options.keepAlive && location !== "" && location !== ":memory:" && !location.startsWith("file:")
+  const reusableLocation =
+    location !== "" && location !== ":memory:" && !location.startsWith("file:")
       ? path.resolve(location)
+      : undefined;
+  const poolLocation =
+    reusableLocation && (options.keepAlive || idleCoordinators.has(reusableLocation))
+      ? reusableLocation
       : undefined;
   const before = poolLocation ? readCoordinatorIdentity(poolLocation) : undefined;
   const idle = poolLocation ? takeIdleCoordinator(poolLocation) : undefined;
@@ -273,29 +296,42 @@ function tryAcquireSqliteCoordinator(
   }
   let released = false;
   return {
-    release: () => {
-      if (released) {
+    get closed() {
+      return released || !database.isOpen;
+    },
+    release: (releaseOptions) => {
+      if (released || !database.isOpen) {
         return;
       }
-      released = true;
       const errors: unknown[] = [];
-      try {
-        database.exec("ROLLBACK");
-        if (poolLocation && database.isTransaction) {
-          throw new SqliteCoordinatorError("SQLite coordinator rollback left its transaction open");
+      if (database.isTransaction) {
+        try {
+          database.exec("ROLLBACK");
+          if (poolLocation && database.isTransaction) {
+            throw new SqliteCoordinatorError(
+              "SQLite coordinator rollback left its transaction open",
+            );
+          }
+        } catch (error) {
+          errors.push(error);
         }
-      } catch (error) {
-        errors.push(error);
       }
       let retained = false;
-      if (errors.length === 0 && poolLocation && identity) {
+      if (
+        errors.length === 0 &&
+        options.keepAlive &&
+        releaseOptions?.keepAlive !== false &&
+        poolLocation &&
+        identity &&
+        !failedIdleCloses.has(database)
+      ) {
         try {
           retained = retainIdleCoordinator(poolLocation, database, identity);
         } catch (error) {
           errors.push(error);
         }
       }
-      if (!retained) {
+      if (!retained && database.isOpen) {
         try {
           if (poolLocation) {
             closeIdleCoordinatorDatabase(database);
@@ -306,6 +342,8 @@ function tryAcquireSqliteCoordinator(
           errors.push(error);
         }
       }
+      // Pool handoff ends this lease; a later borrower owns the still-open handle.
+      released = retained || !database.isOpen;
       if (errors.length === 1) {
         throw errors[0];
       }
@@ -320,7 +358,7 @@ function tryAcquireSqliteCoordinator(
 export function tryAcquireExclusiveSqliteCoordinator(
   location: string,
   options: { busyTimeoutMs?: number; keepAlive?: boolean } = {},
-): { release: () => void } | null {
+): SqliteCoordinatorLease | null {
   return tryAcquireSqliteCoordinator(location, "exclusive", options);
 }
 
@@ -328,6 +366,6 @@ export function tryAcquireExclusiveSqliteCoordinator(
 export function tryAcquireSharedSqliteCoordinator(
   location: string,
   options: { busyTimeoutMs?: number } = {},
-): { release: () => void } | null {
+): SqliteCoordinatorLease | null {
   return tryAcquireSqliteCoordinator(location, "shared", options);
 }

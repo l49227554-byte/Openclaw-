@@ -563,15 +563,9 @@ export function reconcileSessionTranscriptIndexInTransaction(
   return true;
 }
 
-/**
- * Sessions whose index needs reconcile work: flagged rebuilds, transcripts
- * that gained rows without index state (doctor imports), and watermarks
- * behind the newest row. Ordered for deterministic reconcile passes.
- */
-export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): string[] {
+function selectSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync) {
   const kysely = getIndexKysely(db);
-  const rows = executeSqliteQuerySync(
-    db,
+  return (
     kysely
       .selectFrom("session_windows")
       .innerJoin("transcript_events as latest", (join) =>
@@ -600,19 +594,48 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
         eb.or([
           eb(eb.fn.coalesce("st.needs_rebuild", eb.val(1)), "!=", 0),
           eb("latest.seq", ">", eb.fn.coalesce("st.indexed_seq", eb.val(-1))),
-          eb.exists(
-            eb
-              .selectFrom("session_transcript_active_events as pending")
-              .select("pending.session_id")
-              .whereRef("pending.session_id", "=", "session_windows.session_id")
-              .where("pending.context_eligible", "is", null),
-          ),
+          eb.and([
+            // A clean store has no pending rows; check once before per-session probes.
+            eb.exists(
+              eb
+                .selectFrom("session_transcript_active_events as any_pending")
+                .select("any_pending.session_id")
+                .where("any_pending.context_eligible", "is", null)
+                .limit(1),
+            ),
+            eb.exists(
+              eb
+                .selectFrom("session_transcript_active_events as pending")
+                .select("pending.session_id")
+                .whereRef("pending.session_id", "=", "session_windows.session_id")
+                .where("pending.context_eligible", "is", null),
+            ),
+          ]),
         ]),
       )
-      // The transcript PK makes the correlated latest-row lookup one index seek per session.
-      // Grouping transcript_events here made every healthy search rescan the entire history.
-      .orderBy("session_windows.session_id"),
-  ).rows;
+      // Ordering keeps the session-window scan and one latest-row index seek per session.
+      // Without it, SQLite can scan every transcript row even for an existence check.
+      .orderBy("session_windows.session_id")
+  );
+}
+
+/** Search needs only one pending session; the reconcile owner selects its complete work list. */
+export function hasSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): boolean {
+  return (
+    executeSqliteQueryTakeFirstSync(
+      db,
+      selectSessionsNeedingTranscriptIndexReconcile(db).limit(1),
+    ) !== undefined
+  );
+}
+
+/**
+ * Sessions whose index needs reconcile work: flagged rebuilds, transcripts
+ * that gained rows without index state (doctor imports), and watermarks
+ * behind the newest row. Ordered for deterministic reconcile passes.
+ */
+export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): string[] {
+  const rows = executeSqliteQuerySync(db, selectSessionsNeedingTranscriptIndexReconcile(db)).rows;
   return rows.flatMap((row) => (typeof row.session_id === "string" ? [row.session_id] : []));
 }
 

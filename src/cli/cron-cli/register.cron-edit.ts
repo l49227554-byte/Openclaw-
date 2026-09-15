@@ -1,4 +1,3 @@
-import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
 // Cron edit command registration and patch construction for existing jobs.
 import {
   normalizeOptionalLowercaseString,
@@ -27,6 +26,7 @@ import {
 import {
   getCronChannelOptions,
   handleCronCliError,
+  parseCronIntegerOption,
   warnIfCronSchedulerDisabled,
   requireCronJobId,
 } from "./shared.js";
@@ -111,6 +111,9 @@ export function registerCronEditCommand(cron: Command) {
           const id = requireCronJobId(idArg);
           if (opts.clearTools && opts.tools !== undefined) {
             throw new CronCliError("Use --tools or --clear-tools, not both");
+          }
+          if (typeof opts.script === "string" && !readNonBlankString(opts.script)) {
+            throw new CronCliError("--script must not be blank");
           }
           const commandCwd = normalizeOptionalString(opts.commandCwd);
           if (typeof opts.commandCwd === "string" && !commandCwd) {
@@ -399,13 +402,10 @@ export function registerCronEditCommand(cron: Command) {
           } else if (failureAlertFlag === true || hasFailureAlertFields) {
             const failureAlert: Record<string, unknown> = {};
             if (hasFailureAlertAfter) {
-              const after = parseStrictPositiveInteger(opts.failureAlertAfter);
-              if (after === undefined) {
-                throw new CronCliError(
-                  "Invalid --failure-alert-after (must be a positive integer).",
-                );
-              }
-              failureAlert.after = after;
+              failureAlert.after = parseCronIntegerOption(
+                opts.failureAlertAfter,
+                "--failure-alert-after",
+              );
             }
             if (hasFailureAlertChannel) {
               failureAlert.channel = normalizeOptionalLowercaseString(opts.failureAlertChannel);

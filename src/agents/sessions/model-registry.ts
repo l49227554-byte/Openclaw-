@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { normalizeResolvedPricing } from "@openclaw/llm-core";
+import type { ModelCatalogContextWindowOption } from "@openclaw/model-catalog-core/model-catalog-types";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
@@ -419,6 +420,7 @@ export class ModelRegistry {
     this.pluginCatalogs = options.pluginCatalogs;
     this.staticProviderConfigs = options.staticProviderConfigs;
     this.pluginMetadataSnapshot = resolveModelPluginMetadataSnapshot({
+      config: this.config,
       ...(options.pluginMetadataSnapshot
         ? { pluginMetadataSnapshot: options.pluginMetadataSnapshot }
         : {}),
@@ -851,6 +853,8 @@ export class ModelRegistry {
           cost: normalizeResolvedPricing(modelDef.cost ?? {}),
           contextWindow: modelDef.contextWindow ?? 128000,
           contextTokens: modelDef.contextTokens,
+          contextWindows: modelDef.contextWindows,
+          contextWindowDefault: modelDef.contextWindowDefault,
           maxTokens: modelDef.maxTokens ?? 16384,
           ...(modelDef.maxTokens !== undefined
             ? { maxTokensSource: modelDef.maxTokensSource }
@@ -1197,6 +1201,8 @@ export class ModelRegistry {
           cost: modelDef.cost,
           contextWindow: modelDef.contextWindow,
           contextTokens: modelDef.contextTokens,
+          contextWindows: modelDef.contextWindows,
+          contextWindowDefault: modelDef.contextWindowDefault,
           maxTokens: modelDef.maxTokens,
           params: modelDef.params,
           headers: undefined,
@@ -1244,6 +1250,8 @@ export interface ProviderConfigInput {
     cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
     contextWindow: number;
     contextTokens?: number;
+    contextWindows?: ModelCatalogContextWindowOption[];
+    contextWindowDefault?: string;
     maxTokens: number;
     params?: Record<string, unknown>;
     headers?: Record<string, string>;

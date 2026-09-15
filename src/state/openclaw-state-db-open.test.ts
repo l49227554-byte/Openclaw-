@@ -8,7 +8,11 @@ import * as kyselySync from "../infra/kysely-sync.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as busyTimeout from "../infra/sqlite-busy-timeout.js";
 import * as sqliteWal from "../infra/sqlite-wal.js";
-import { acquireStateDatabaseHandleExclusion } from "../infra/state-database-coordinator.js";
+import {
+  acquireStateDatabaseHandleExclusion,
+  resolveStateDatabaseCoordinatorPath,
+  withStateDatabaseCoordinatorRuntimeDirectory,
+} from "../infra/state-database-coordinator.js";
 import {
   openClawStateDatabaseCache,
   recordOpenClawStateDatabaseOpenFailure,
@@ -17,6 +21,18 @@ import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import { closeTrackedStateDatabase } from "./openclaw-state-db-handle.js";
 import { openUnpublishedStateDatabase } from "./openclaw-state-db-open.js";
 import * as permissions from "./openclaw-state-db-permissions.js";
+
+const logger = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger: (name: string) => {
+      const original = actual.createSubsystemLogger(name);
+      return name === "state/db" ? { ...original, warn: logger.warn } : original;
+    },
+  };
+});
 
 describe("unpublished state database acquisition", () => {
   const databases = new Set<DatabaseSync>();
@@ -96,6 +112,61 @@ describe("unpublished state database acquisition", () => {
     }
     expect(maintenanceTimerCount()).toBe(0);
   }
+
+  it("keeps the admitted coordinator directory for delayed maintenance", () => {
+    const { params, open } = acquisitionFixture();
+    const runtimeDirectory = tempDirs.make("openclaw-maintenance-scope-");
+    const database = withStateDatabaseCoordinatorRuntimeDirectory(runtimeDirectory, () =>
+      openUnpublishedStateDatabase(params),
+    );
+    const coordinatorPath = resolveStateDatabaseCoordinatorPath({
+      databasePath: params.pathname,
+      runtimeDirectory,
+      uid: typeof process.getuid === "function" ? process.getuid() : undefined,
+    });
+    try {
+      open.mockClear();
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      expect(open.mock.calls.map(([location]) => location)).toContain(coordinatorPath);
+    } finally {
+      database.walMaintenance.close();
+      closeTrackedStateDatabase(database.db);
+    }
+  });
+
+  it("records and reports SQLite errors from scheduled shared-state checkpoints", () => {
+    const { params } = acquisitionFixture();
+    const database = openUnpublishedStateDatabase(params);
+    const prepare = database.db.prepare.bind(database.db);
+    const checkpointFailure = new Error("checkpoint storage unavailable");
+    const intercepted = vi.spyOn(database.db, "prepare").mockImplementation((sql) => {
+      if (sql === "PRAGMA wal_checkpoint(PASSIVE);") {
+        throw checkpointFailure;
+      }
+      return prepare(sql);
+    });
+    try {
+      logger.warn.mockClear();
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      expect(database.walMaintenance.health).toMatchObject({
+        state: "error",
+        error: "checkpoint storage unavailable",
+        warning: true,
+      });
+      expect(logger.warn).toHaveBeenCalledWith("Shared-state WAL maintenance failed", {
+        error: "checkpoint storage unavailable",
+        path: params.pathname,
+        checkpoint: database.walMaintenance.health,
+      });
+      intercepted.mockRestore();
+      vi.advanceTimersByTime(30 * 60 * 1000);
+      expect(database.walMaintenance.health).toMatchObject({ state: "complete", warning: false });
+    } finally {
+      intercepted.mockRestore();
+      database.walMaintenance.close();
+      closeTrackedStateDatabase(database.db);
+    }
+  });
 
   it.each([
     "statement cache",

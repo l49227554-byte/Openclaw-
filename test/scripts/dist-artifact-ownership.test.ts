@@ -15,12 +15,17 @@ import {
   TSDOWN_PLUGIN_SDK_DTS_CONFIG_GROUPS,
 } from "../../scripts/lib/tsdown-config-groups.mts";
 import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
+import { resolveTestNodeExecPath } from "../../src/test-utils/node-process.js";
 import { createFixtureLifetime } from "../helpers/fixture-lifetime.js";
 import { waitForDead } from "../helpers/process-wait.js";
-import { materializeNativeCompiler } from "./native-boundary-fixture.js";
+import {
+  materializeNativeCompiler,
+  overrideNativeFixtureExecutable,
+} from "./native-boundary-fixture.js";
 import { createFixture as createDeclarationFixture } from "./tsdown-declaration-fixture.js";
 
 const fixture = createFixtureLifetime();
+const testNodeExecPath = resolveTestNodeExecPath();
 afterEach(() => fixture.cleanup());
 const sourceRoot = process.cwd();
 const declarationPath = "dist/plugin-sdk/src/plugin-sdk/qa-channel-protocol.d.ts";
@@ -79,6 +84,7 @@ function installCompiler(root: string, afterEmit = "") {
   `,
   );
   fs.chmodSync(compiler, 0o755);
+  overrideNativeFixtureExecutable(root, compiler);
 }
 
 function installBuildCheckpoint(root: string, checkpoint: string) {
@@ -235,7 +241,7 @@ async function runWithProcesses(
       start: (root, script, args, resourceOwner) => {
         signal.throwIfAborted();
         const commandArgs = [script, ...(args ?? [])];
-        const child = spawn(process.execPath, commandArgs, {
+        const child = spawn(testNodeExecPath, commandArgs, {
           cwd: root,
           env: {
             ...process.env,
@@ -460,7 +466,7 @@ describe.skipIf(process.platform === "win32")("dist artifact ownership", () => {
       execFileSync(path.join(root, "absent-command"), [], { stdio: "pipe" }),
     ).catch((cause: unknown) => cause);
     expect(error).toHaveProperty("code", "ENOENT");
-    expect(error).toHaveProperty("error", error);
+    expect((error as { error?: unknown }).error ?? error).toBe(error);
     expect(fs.existsSync(path.join(resolveDistArtifactLockPath(root), "owner.json"))).toBe(false);
     expect(fs.existsSync(path.join(resolveDistArtifactLockPath(root), "unjoined"))).toBe(false);
   });
@@ -609,6 +615,7 @@ describe.skipIf(process.platform === "win32")("dist artifact ownership", () => {
     async ({ owner, unjoined }, { signal }) => {
       await withProcesses(async ({ start }) => {
         const root = createCheckout();
+        materializeNativeCompiler(root);
         const ownerPath = write(root, ".artifacts/dist-artifacts.lock/owner.json", owner);
         if (unjoined) {
           write(root, ".artifacts/dist-artifacts.lock/unjoined", "unverified cleanup");
@@ -868,6 +875,7 @@ describe.skipIf(process.platform === "win32")("dist artifact ownership", () => {
       `,
       );
       fs.chmodSync(compiler, 0o755);
+      overrideNativeFixtureExecutable(root, compiler);
       installBuildCheckpoint(root, checkpoint("shard-build-started"));
       write(root, "dist/still-consumed.txt", "owned");
       const shards = start(root, path.join(root, "scripts/run-tsgo-core-test-shards.mts"), [

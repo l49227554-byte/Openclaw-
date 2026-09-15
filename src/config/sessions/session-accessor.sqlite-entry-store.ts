@@ -8,6 +8,7 @@ import {
 import { getChildLogger } from "../../logging/logger.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { ConversationRouteContext } from "./conversation-route-context.js";
+import { retainLegacyAcpMigrationSourcesForEntry } from "./session-accessor.sqlite-acp-provenance.js";
 import {
   linkSessionConversation,
   prepareSessionConversationForWrite,
@@ -290,6 +291,7 @@ function clearSqliteSessionEntryPreservingWindows(
   database: OpenClawAgentDatabase,
   params: { sessionId: string; sessionKey: string; updatedAt: number },
 ): void {
+  retainLegacyAcpMigrationSourcesForEntry(database.db, params.sessionKey, undefined);
   const db = getSessionKysely(database.db);
   const cleared = {
     current_session_id: params.sessionId,
@@ -600,6 +602,13 @@ export function writeSessionEntry(
       db.updateTable("session_nodes").set({ entry_valid: 1 }).where("session_key", "=", sessionKey),
     );
   });
+  if (
+    canonicalPreviousEntry &&
+    (canonicalPreviousEntry.sessionId !== normalizedEntry.sessionId ||
+      canonicalPreviousEntry.lifecycleRevision !== normalizedEntry.lifecycleRevision)
+  ) {
+    retainLegacyAcpMigrationSourcesForEntry(database.db, sessionKey, normalizedEntry);
+  }
   executeSqliteQuerySync(
     database.db,
     db
@@ -607,7 +616,11 @@ export function writeSessionEntry(
       .values(sessionRow)
       .onConflict((conflict) =>
         conflict.column("session_id").doUpdateSet({
-          session_key: sessionKey,
+          // Logical nodes can share a physical window. Only creation or a
+          // generation change claims it; metadata updates retain its owner.
+          ...(canonicalPreviousEntry?.sessionId === normalizedEntry.sessionId
+            ? {}
+            : { session_key: sessionKey }),
           previous_session_id: sessionRow.previous_session_id,
           reason: sessionRow.reason,
           session_scope: sessionRow.session_scope,

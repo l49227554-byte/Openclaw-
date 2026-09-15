@@ -86,6 +86,11 @@ Native command probes should use `runCommandWithTimeout` from
 before returning. For commands whose output is always UTF-8, such as JSON status
 probes, use `runUtf8CommandWithTimeout` from the same subpath.
 
+When launching an isolated Gateway child that your plugin owns, remove
+`SUPERVISOR_HINT_ENV_VARS` from its environment after applying caller overrides.
+This list is exported from `openclaw/plugin-sdk/process-runtime`; inherited parent
+service markers would otherwise assign restart ownership to that parent's supervisor.
+
 Use `splitCommandArgs(raw)` from the same subpath to group quoted process
 arguments. Backslashes and `#` stay literal; there is no shell expansion.
 Unfinished quotes return `null` unless the caller passes
@@ -204,3 +209,29 @@ spans do not advance the checkpoint used by `mark`.
 clock defaults to `Date.now`. Formatting produces comma-separated
 `name:durationMs@elapsedMs` entries (with `ms` units) or `none`. Callers retain
 ownership of log labels, warning thresholds, and when to emit a summary.
+
+For process-scoped performance logging,
+`openclaw/plugin-sdk/diagnostic-runtime` exports
+`areDiagnosticsEnabledForProcess(): boolean` and `createSubsystemLogger`. This
+focused entrypoint does not load live session diagnostics or network dispatcher
+configuration during plugin descriptor registration. The predicate reads the current process-wide
+diagnostic setting; `isDiagnosticsEnabled(config)` instead reads the supplied
+configuration snapshot. Neither function changes the setting or enables an
+exporter. Combine the process predicate with the selected log level before
+collecting diagnostic-only state:
+
+```typescript
+import {
+  areDiagnosticsEnabledForProcess,
+  createSubsystemLogger,
+} from "openclaw/plugin-sdk/diagnostic-runtime";
+
+const log = createSubsystemLogger("example/catalog");
+function diagnosticsEnabled() {
+  return areDiagnosticsEnabledForProcess() && log.isEnabled("warn");
+}
+```
+
+Recheck the gates when emitting a delayed summary. Keep fields bounded and
+content-free, and preserve the operation's result if the diagnostic sink fails.
+This predicate does not enable or authorize [audit identity collection](/gateway/audit).

@@ -308,10 +308,6 @@ vi.mock("../../globals.js", () => ({
   setVerbose: (enabled: boolean) => setVerbose(enabled),
 }));
 
-vi.mock("../../infra/gateway-lock.js", () => ({
-  GatewayLockError: class GatewayLockError extends Error {},
-}));
-
 vi.mock("../../infra/ports-inspect.js", () => ({
   inspectPortUsage: async () => ({ status: "free" }),
 }));
@@ -1746,6 +1742,61 @@ describe("gateway run option collisions", () => {
     );
   });
 
+  it("keeps managed keys referenced by shorthand when startup repairs the config", async () => {
+    detectRespawnSupervisor.mockReturnValue("systemd");
+    const { createConfigResolutionFacts, setConfigResolutionFacts } =
+      await import("../../config/resolution-facts.js");
+    // A repairable legacy key sends this boot through startup repair, which rebuilds sourceConfig
+    // as a clone. Reading the preserve set off the rebuilt object alone loses the recorded name.
+    const sourceConfig = {
+      session: { idleMinutes: 45 },
+      models: { providers: { minimax: { apiKey: "substituted-not-a-real-key" } } },
+    };
+    setConfigResolutionFacts(
+      sourceConfig,
+      createConfigResolutionFacts(
+        [],
+        new Map(),
+        "default",
+        new Map([["models.providers.minimax.apiKey", "SHORTHAND_KEY"]]),
+      ),
+    );
+    configState.snapshot = {
+      path: "/tmp/openclaw.json",
+      includedPaths: [],
+      exists: true,
+      raw: JSON.stringify(sourceConfig),
+      parsed: sourceConfig,
+      config: sourceConfig,
+      sourceConfig,
+      valid: false,
+      issues: [{ path: "session.idleMinutes", message: "retired" }],
+      legacyIssues: [{ path: "", message: "retired" }],
+    };
+    loadGlobalRuntimeDotEnvFiles.mockReturnValue({
+      dotenvPresentKeys: [],
+      gatewayEnvAppliedKeys: [],
+      stateEnvAppliedKeys: [],
+    });
+
+    await withMockedPlatform("linux", () =>
+      withEnvAsync(
+        {
+          INVOCATION_ID: "systemd-invocation",
+          OPENCLAW_SERVICE_MANAGED_ENV_KEYS: "SHORTHAND_KEY,REMOVED_KEY",
+          SHORTHAND_KEY: "environment-file-value",
+          REMOVED_KEY: "stale-service-value",
+        },
+        async () => {
+          const { selectGatewayRunEnvironment } = await import("./pre-bootstrap.js");
+          await selectGatewayRunEnvironment({ opts: {}, runtime: defaultRuntime });
+          expect(process.env.SHORTHAND_KEY).toBe("environment-file-value");
+          expect(process.env.REMOVED_KEY).toBeUndefined();
+        },
+      ),
+    );
+  });
+
   it("re-inspects crash-loop breaker state for each boot iteration", async () => {
     let firstBootRecovery: (() => boolean) | undefined;
     bootLifecycle.record.mockReturnValueOnce("boot-1").mockReturnValueOnce("boot-2");
@@ -2133,7 +2184,7 @@ describe("gateway run option collisions", () => {
     expect(runtimeErrors.join("\n")).toContain("newer");
     expect(runtimeErrors.join("\n")).toContain("restore your pre-update backup");
     expect(runtimeErrors.join("\n")).toMatch(
-      /Stop the service.*then restore your pre-update backup.*then start it again/s,
+      /Stop the service.*then restore your pre-update backup created with openclaw backup create, then start it again/s,
     );
     expect(triageAfterFailure).not.toHaveBeenCalled();
     expect(startGatewayServer).toHaveBeenCalledTimes(phase === "server" ? 1 : 0);

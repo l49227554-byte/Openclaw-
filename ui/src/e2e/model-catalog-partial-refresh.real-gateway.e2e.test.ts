@@ -8,6 +8,7 @@ import {
 } from "../../../test/helpers/openclaw-test-instance.ts";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.ts";
 import type { ModelCatalogResult } from "../api/types.ts";
+import type { ApplicationContext } from "../app/context.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -89,9 +90,17 @@ suite.define(() => {
       model: "openai/gpt-5.4",
     });
     await call("sessions.patch", { key, thinkingLevel: "high" });
-    const catalog: ModelCatalogResult = JSON.parse(
+    let catalog: ModelCatalogResult = JSON.parse(
       await call("models.list", { agentId: "main", view: "configured", refresh: true }),
     );
+    await expect
+      .poll(async () => {
+        if (catalog.pendingProviders?.length) {
+          catalog = JSON.parse(await call("models.list", { agentId: "main", view: "configured" }));
+        }
+        return catalog.pendingProviders ?? [];
+      })
+      .toEqual([]);
     await fs.writeFile(
       path.join(suite.artifactDir, "models-list.json"),
       JSON.stringify(catalog, null, 2),
@@ -121,12 +130,53 @@ suite.define(() => {
           url.pathname = `/${route}`;
           await page.goto(url.href);
           await waitForControlUiGatewayReady(page);
+          if (route === "new") {
+            await page.waitForFunction(async () => {
+              const app = document.querySelector<
+                HTMLElement & { runtime?: { context: ApplicationContext } }
+              >("openclaw-app");
+              const context = app?.runtime?.context;
+              const agents = context?.agents.state;
+              if (
+                !agents?.connected ||
+                agents.client !== context?.gateway.snapshot.client ||
+                !agents.agentsList?.agents.some((agent) => agent.id === "main")
+              ) {
+                return false;
+              }
+              // Discovery starts in updated(), after the current roster arrives.
+              const view = document.querySelector<
+                HTMLElement & { updateComplete: Promise<boolean> }
+              >("openclaw-new-session-page");
+              return (await view?.updateComplete) === true;
+            });
+          }
           const composer = page.locator(".agent-chat__input").first();
           const model = composer.locator("[data-chat-model-select]");
+          // Summary elements do not participate in Playwright's disabled actionability check.
+          await expect.poll(() => model.getAttribute("aria-disabled")).toBe("false");
           await model.click();
           // A failed background refresh must not add chrome above a usable list.
           await composer.locator('[data-chat-model-option="openai/gpt-5.4"]').waitFor();
-          expect(await composer.locator("[data-chat-model-catalog-state]").count()).toBe(0);
+          // CLI discovery starts with agent hydration and can outlive model loading.
+          await composer
+            .locator(
+              '[data-chat-model-target-group="cliAgents"] [data-chat-model-catalog-state="loading"]',
+            )
+            .waitFor({ state: "detached" });
+          const catalogNotices = await composer
+            .locator("[data-chat-model-catalog-state]")
+            .evaluateAll((nodes) =>
+              nodes.map((node) => ({
+                state: node.getAttribute("data-chat-model-catalog-state"),
+                text: node.textContent?.trim(),
+                group:
+                  node
+                    .closest("[data-chat-model-target-group]")
+                    ?.getAttribute("data-chat-model-target-group") ?? "models",
+              })),
+            );
+          expect(catalogNotices).toEqual([]);
           const stage = route === "new" ? "new" : "chat";
           await page.screenshot({
             path: path.join(suite.artifactDir, `${stage}-catalog.png`),

@@ -190,6 +190,10 @@ Node conditions select the target from that captured metadata. Legacy packages
 without an exports map also prefetch their existing main or index entry as raw
 bytes; this can read a large native entry, but does not execute unselected code.
 The selected package's remaining body is captured before execution.
+Dependency links retain existing nested installation locations; hoisted dependencies
+link at the captured package root. Capture does not add `node_modules` beside
+individual source files, so native-addon loaders can still locate their package
+root and its build assets.
 
 After the existing runtime, setup, or executable-discovery checks admit an entry,
 its instance captures imported shared files and dependency modules on demand.
@@ -209,6 +213,16 @@ creation-time capture; later inputs extend explicit source-current checks withou
 changing that digest. Invalid optional package metadata fails only when selected.
 Module acquisition uses the instance's current admission, and disposal closes
 further capture.
+Runtime and setup retirement remove captured artifacts asynchronously and wait
+for removal to finish. Plugin callback deadlines do not end custody of those
+files; synchronous source inspection and failed capture still clean up before returning.
+
+Model-catalog workers keep their captured plugin files in a directory owned by
+one worker. The parent removes any remaining captures after that worker exits,
+including cancellation and crashes. Files remain available while the worker is
+running, and retiring one worker does not remove another generation's captures.
+Cancellation releases compute capacity after the worker exits; terminal shutdown
+also waits for file cleanup. Failed file removal is reported as a cleanup warning.
 
 Loading metadata alone does not execute every plugin, and registration remains
 synchronous. Synchronously loaded TypeScript entries and their synchronous

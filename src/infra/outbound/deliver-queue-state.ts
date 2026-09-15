@@ -1,23 +1,38 @@
 // Persists queue state around the irreversible platform-send boundary.
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { DeliveryQueueStateContext } from "../delivery-queue-sqlite.js";
+import {
+  findPlatformMessageRejectedError,
+  isProvenDeliveryNotSentError,
+  resolveDeliveryNotSentRetryability,
+} from "../delivery-recovery.shared.js";
 import { formatErrorMessage } from "../errors.js";
+import type { InternalDeliverOutboundPayloadsParams } from "./deliver-contracts.js";
+import { OutboundHandoffRejectedError } from "./deliver-handoff.js";
 import {
   OutboundDeliveryError,
   type OutboundDeliveryQueuePolicy,
+  type OutboundPayloadDeliveryOutcome,
+  type PlatformMessageNotDispatchedError,
   type PlatformSendRoute,
 } from "./deliver-types.js";
+import { rejectDurableDelivery } from "./delivery-completion.js";
 import { retireUnsentDelivery } from "./delivery-queue-ack.js";
-import { releaseSpoolArtifacts } from "./delivery-queue-media-spool.js";
+import { collectEntrySpoolPaths, releaseSpoolArtifacts } from "./delivery-queue-media-spool.js";
 import {
   ackDelivery,
   failDelivery,
   failDeliveryAfterPlatformSend,
   failDeliveryBeforePlatformSend,
+  finalizeDeliveryFailureSettlement,
+  loadPendingDelivery,
   markDeliveryPlatformOutcomeUnknown,
   markDeliveryPlatformSendAttemptStarted,
   moveToFailed,
+  stageDeliveryFailureSettlement,
 } from "./delivery-queue-storage.js";
+import type { DeliveryFailureSettlement, QueuedDelivery } from "./delivery-queue-types.js";
+import { acceptedPreparedOutboundEntries } from "./prepared-batch.js";
 
 const log = createSubsystemLogger("outbound/deliver");
 
@@ -97,6 +112,17 @@ export function createQueuedDeliveryOwner(
       );
       custody = "released";
     },
+    // Staged failure has left send custody; exact row equality now fences compaction.
+    finalizeFailure(entry: QueuedDelivery): boolean {
+      if (
+        entry.id !== owner.queueId ||
+        !finalizeDeliveryFailureSettlement(entry, owner.stateDir, context)
+      ) {
+        return false;
+      }
+      custody = "released";
+      return true;
+    },
     fail(record: QueuedDeliveryFailureRecorder, error: string): Promise<void> {
       owner.signal?.throwIfAborted();
       // Internal transitions retain captured state; caller-supplied recorders keep their public arguments.
@@ -128,6 +154,90 @@ export function createQueuedDeliveryOwner(
 }
 
 export type QueuedDeliveryOwner = ReturnType<typeof createQueuedDeliveryOwner>;
+
+export function findTerminalBatchRejection(errors: readonly unknown[]) {
+  if (errors.length === 0 || !errors.every(isProvenDeliveryNotSentError)) {
+    return undefined;
+  }
+  // A shared handoff rejection ends every unsent payload. Payload-specific
+  // rejections must leave another payload's valid retry with recovery.
+  return (
+    errors.find((error) => error instanceof OutboundHandoffRejectedError) ??
+    (errors.every((error) => resolveDeliveryNotSentRetryability(error) === false)
+      ? findPlatformMessageRejectedError(errors[0])
+      : undefined)
+  );
+}
+
+export function isProvenBatchNotSent(
+  error: unknown,
+  outcomes: readonly OutboundPayloadDeliveryOutcome[],
+): boolean {
+  return (
+    isProvenDeliveryNotSentError(error) &&
+    outcomes.every((outcome) =>
+      outcome.status === "failed"
+        ? !outcome.sentBeforeError && isProvenDeliveryNotSentError(outcome.error)
+        : outcome.status === "suppressed" && outcome.reason !== "adapter_returned_no_identity",
+    )
+  );
+}
+
+export async function rejectQueuedDelivery(
+  owner: QueuedDeliveryOwner,
+  rejection: PlatformMessageNotDispatchedError,
+  params: Pick<
+    InternalDeliverOutboundPayloadsParams,
+    "deliveryQueueStateContext" | "conversationDeliveryTarget"
+  >,
+  terminals: DeliveryFailureSettlement["terminals"],
+): Promise<boolean> {
+  try {
+    owner.signal?.throwIfAborted();
+    const pending = await loadPendingDelivery(
+      owner.queueId,
+      owner.stateDir,
+      params.deliveryQueueStateContext,
+    );
+    if (!pending || !owner.claimId) {
+      return false;
+    }
+    const entry = await stageDeliveryFailureSettlement(
+      pending,
+      { outcome: "failed", error: rejection.message, rejectionError: rejection.message, terminals },
+      owner.stateDir,
+      owner.claimId,
+      params.deliveryQueueStateContext,
+    );
+    if (!entry) {
+      return false;
+    }
+    // The exact claim is now durably unsendable. Recovery resumes only this
+    // idempotent completion projection if projection or terminal cleanup fails.
+    if (entry.deliveryCompletion) {
+      await rejectDurableDelivery(
+        entry.deliveryCompletion,
+        rejection.message,
+        owner.stateDir,
+        params.deliveryQueueStateContext,
+        params.conversationDeliveryTarget,
+      );
+    }
+    const spoolPaths = collectEntrySpoolPaths(
+      acceptedPreparedOutboundEntries(entry.preparedBatch).map((prepared) => prepared.payload),
+      owner.stateDir,
+    );
+    if (!owner.finalizeFailure(entry)) {
+      return false;
+    }
+    await releaseSpoolArtifacts(spoolPaths, owner.stateDir);
+  } catch (error) {
+    log.warn(
+      `failed to finalize permanently rejected delivery ${owner.queueId}: ${formatErrorMessage(error)}`,
+    );
+  }
+  return owner.custody === "released";
+}
 
 export async function persistQueuedPreSendState(
   params: {

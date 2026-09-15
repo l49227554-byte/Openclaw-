@@ -1,11 +1,16 @@
+import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import { onTrustedMessageAuditEvent } from "../../audit/message-audit-events.js";
 import { deliverFollowupDecision } from "../../auto-reply/reply/followup-delivery.js";
 import type { AdmittedFollowupTurn } from "../../auto-reply/reply/followup-turn-admission.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { createMessageReceiptFromOutboundResults } from "../../channels/message/receipt.js";
+import type { ChannelMessageSendTextContext } from "../../channels/message/types.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
@@ -14,10 +19,11 @@ import { getDeliveryQueueEntryStatus } from "../delivery-queue-sqlite.js";
 import { createQueuedDeliveryOwner } from "./deliver-queue-state.js";
 import { drainMatrixReconnect } from "./deliver.queue-integration.test-support.js";
 import { OUTBOUND_DELIVERY_QUEUE_NAME } from "./delivery-queue-media-staging.js";
-import { enqueueDeliveryOnce } from "./delivery-queue-storage.js";
+import * as queueStorage from "./delivery-queue-storage.js";
 import {
   installDeliveryQueueTmpDirHooks,
   loadPendingDeliveries,
+  readQueuedEntry,
 } from "./delivery-queue.test-helpers.js";
 
 vi.mock("../../agents/runtime-plan/build.js", () => ({
@@ -46,7 +52,7 @@ describe("follow-up delivery custody", () => {
     async (transition) => {
       const stateDir = fixtures.tmpDir();
       const queueId = `custody-${transition}`;
-      await enqueueDeliveryOnce(
+      await queueStorage.enqueueDeliveryOnce(
         { channel: "matrix", to: "!room:example", payloads: [{ text: "settled reply" }] },
         queueId,
         stateDir,
@@ -185,4 +191,189 @@ describe("follow-up delivery custody", () => {
       expect(nativeSend).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("retired caller delivery settlement", () => {
+  const fixtures = installDeliveryQueueTmpDirHooks();
+
+  beforeAll(async () => {
+    ({ deliverOutboundPayloads } = await import("./deliver.js"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    resetPluginRuntimeStateForTest();
+    setActivePluginRegistry(createEmptyPluginRegistry());
+  });
+
+  function installHeldAdapter() {
+    const prepared = createDeferred();
+    const release = createDeferred();
+    const send = vi.fn(async (ctx: ChannelMessageSendTextContext) => {
+      await ctx.onPlatformSendDispatch?.();
+      return {
+        messageId: "unexpected-send",
+        receipt: createMessageReceiptFromOutboundResults({
+          results: [{ channel: "matrix", messageId: "unexpected-send" }],
+          kind: "text",
+        }),
+      };
+    });
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "matrix",
+          source: "test",
+          plugin: {
+            ...createChannelTestPluginBase({ id: "matrix", config: { listAccountIds: () => [] } }),
+            message: {
+              id: "matrix",
+              durableFinal: { capabilities: { text: true } },
+              send: {
+                lifecycle: {
+                  beforeSendAttempt: async () => {
+                    prepared.resolve();
+                    await release.promise;
+                  },
+                },
+                text: send,
+              },
+            },
+          },
+        },
+      ]),
+    );
+    return { prepared: prepared.promise, release: release.resolve, send };
+  }
+
+  it.each([false, true])(
+    "finishes interrupted terminal compaction after reopening without another send (bestEffort: %s)",
+    async (bestEffort) => {
+      const stateDir = fixtures.tmpDir();
+      vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+      const adapter = installHeldAdapter();
+      const caller = new AbortController();
+      const queueIdReady = createDeferred<string>();
+      const compaction = vi
+        .spyOn(queueStorage, "finalizeDeliveryFailureSettlement")
+        .mockImplementationOnce(() => {
+          throw new Error("terminal compaction interrupted");
+        });
+      const terminals: string[] = [];
+      const unsubscribe = onTrustedMessageAuditEvent((event) => {
+        if (event.action === "message.outbound.finished") {
+          terminals.push(event.outcome);
+        }
+      });
+      const outcome = deliverOutboundPayloads({
+        cfg: {},
+        channel: "matrix",
+        to: "!room:example",
+        payloads: [{ text: "retired caller message" }],
+        queuePolicy: "required",
+        bestEffort,
+        assertDirectAdapterHandoff: () => caller.signal.throwIfAborted(),
+        onDeliveryIntent: ({ id }) => queueIdReady.resolve(id),
+      }).then(
+        (results) => ({ results }),
+        (error: unknown) => ({ error }),
+      );
+      try {
+        const queueId = await queueIdReady.promise;
+        await adapter.prepared;
+        caller.abort(new Error("message caller retired"));
+        adapter.release();
+        expect(await outcome).toMatchObject(
+          bestEffort
+            ? { results: [] }
+            : { error: { message: expect.stringContaining("message caller retired") } },
+        );
+        expect(compaction).toHaveBeenCalledOnce();
+        expect(queueStorage.findDeliveryIntentOwner(queueId, stateDir)).toMatchObject({
+          status: "failed",
+          settlementPending: true,
+        });
+        expect(
+          await queueStorage.claimDeliveryPlatformSendAttempt(queueId, stateDir),
+        ).toBeUndefined();
+        expect(adapter.send).not.toHaveBeenCalled();
+        expect(terminals).toEqual([]);
+        compaction.mockRestore();
+        closeOpenClawStateDatabaseForTest();
+        await drainMatrixReconnect({ stateDir, deliver: deliverOutboundPayloads });
+        expect(await queueStorage.loadUnfinishedDelivery(queueId, stateDir)).toBeNull();
+        expect(adapter.send).not.toHaveBeenCalled();
+        expect(terminals).toEqual(["failed"]);
+      } finally {
+        caller.abort();
+        adapter.release();
+        await outcome;
+        unsubscribe();
+      }
+    },
+  );
+
+  it("does not project rejection or alter a replacement producer after caller retirement", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-15T12:00:00.000Z"));
+    const stateDir = fixtures.tmpDir();
+    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+    const completion = await import("./delivery-completion.js");
+    vi.spyOn(completion, "markDurableDeliveryQueued").mockResolvedValueOnce({ state: "queued" });
+    const reject = vi
+      .spyOn(completion, "rejectDurableDelivery")
+      .mockResolvedValue({ state: "suppressed" });
+    const adapter = installHeldAdapter();
+    const caller = new AbortController();
+    const queueIdReady = createDeferred<string>();
+    const outcome = deliverOutboundPayloads({
+      cfg: {},
+      channel: "matrix",
+      to: "!room:example",
+      payloads: [{ text: "replacement-owned message" }],
+      queuePolicy: "required",
+      assertDirectAdapterHandoff: () => caller.signal.throwIfAborted(),
+      deliveryCompletion: {
+        kind: "pending-final",
+        deliveryId: "replacement-completion",
+        intentId: "replacement-intent",
+        sessionId: "replacement-session",
+        sessionKey: "agent:main:matrix:direct:recipient",
+        storePath: path.join(stateDir, "sessions.json"),
+      },
+      onDeliveryIntent: ({ id }) => queueIdReady.resolve(id),
+    }).then(
+      (results) => ({ results }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      const queueId = await queueIdReady.promise;
+      await adapter.prepared;
+      const originalClaim = readQueuedEntry(stateDir, queueId).producerClaimId;
+      // Expire the lease without running its heartbeat so the queue CAS owns the rejection.
+      vi.setSystemTime(Date.now() + 60_001);
+      const replacementClaim = await queueStorage.claimDeliveryPlatformSendAttempt(
+        queueId,
+        stateDir,
+      );
+      expect(replacementClaim).toEqual(expect.any(String));
+      expect(replacementClaim).not.toBe(originalClaim);
+      const replacement = readQueuedEntry(stateDir, queueId);
+      caller.abort(new Error("original caller retired"));
+      adapter.release();
+      expect(await outcome).toMatchObject({ error: expect.any(Error) });
+      expect(reject).not.toHaveBeenCalled();
+      expect(adapter.send).not.toHaveBeenCalled();
+      expect(getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, queueId, stateDir)).toBe(
+        "pending",
+      );
+      expect(readQueuedEntry(stateDir, queueId)).toEqual(replacement);
+    } finally {
+      caller.abort();
+      adapter.release();
+      await outcome;
+    }
+  });
 });

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { assertTransactionUsable } from "./sqlite-transaction.js";
 
 type MaintenanceAdmission = {
   admit: (operation: () => void) => Promise<void>;
@@ -67,6 +68,11 @@ export function registerDeferredSqliteWalWriteAdmission(
       } catch (error) {
         current.reject(error);
       }
+    }
+    // Maintenance can catch the primary error before returning to its admission owner.
+    // Unsettled native state must still reach the caller that retains the writer.
+    if (database.isOpen && database.isTransaction) {
+      assertTransactionUsable(database);
     }
   };
   admissions.set(database, {

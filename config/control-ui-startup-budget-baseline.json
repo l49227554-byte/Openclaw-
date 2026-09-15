@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 353110,
-  "reason": "Codex cyber safety notices plus automatic Daybreak escalation: six composer notice states, their precedence projection, and thirteen strings on the startup path. Measured 353110 B by ui:check-performance:base against f2ce1992, a 579 B increase over the previous baseline where the growth allowance plus build variance permits 576 B. Trimming was attempted and measured: removing roughly 40 characters of notice copy moves the gzip total by 1 byte, and a deslop pass over the diff moved 0 B, so the growth is feature code rather than comments.",
-  "updatedAt": "2026-09-11"
+  "startupJsGzipBytes": 362012,
+  "reason": "Maintainer-approved 354 KiB cap after integrated scoped catalog invalidation (#147845), remote workspaces (#147773), and update-status feedback (#147883). Controlled build measured 362012 B; deferring the new workspace labels saved only 64 B and still failed the previous limit. Existing 512 B growth and 64 B build variance allowances remain unchanged.",
+  "updatedAt": "2026-09-14"
 }

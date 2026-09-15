@@ -6,6 +6,7 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   runSqliteImmediateTransactionSync,
+  sqliteStringSet,
   withOpenClawAgentDatabaseAsync,
 } from "openclaw/plugin-sdk/sqlite-runtime";
 
@@ -74,10 +75,14 @@ type StoredChannelScope = ["v1", "channel" | "conversation", string, string, str
 type StoredSenderScope = ["v1", string, string, string];
 
 function withStandingIntentDatabase<T>(
-  agentId: string,
+  params: { agentId: string; assertCurrent?: () => void },
   callback: (db: DatabaseSync) => T,
 ): Promise<T> {
+  const { agentId, assertCurrent } = params;
+  assertCurrent?.();
   return withOpenClawAgentDatabaseAsync({ agentId }, ({ db }) => {
+    // Refuse only this callback; hook expiry must not cancel a shared physical open.
+    assertCurrent?.();
     ensureOpenClawAgentStandingIntentsSchema(db);
     return callback(db);
   });
@@ -242,16 +247,14 @@ function maintainStandingIntentLifecycle(db: DatabaseSync, nowMs: number): void 
       .where("expires_at", ">", nowMs)
       .whereRef("fire_count", "<", "max_fires"),
   ).rows;
-  for (const row of fired) {
-    if (!shouldRearm(row, nowMs)) {
-      continue;
-    }
+  const readyIds = fired.filter((row) => shouldRearm(row, nowMs)).map((row) => row.id);
+  if (readyIds.length > 0) {
     executeSqliteQuerySync(
       db,
       kysely
         .updateTable("standing_intents")
         .set({ status: "armed" })
-        .where("id", "=", row.id)
+        .where("id", "in", sqliteStringSet(readyIds))
         .where("status", "=", "fired"),
     );
   }
@@ -288,7 +291,7 @@ export async function createStandingIntent(params: {
     created_at: nowMs,
     source_session_id: params.sourceSessionId ?? null,
   };
-  await withStandingIntentDatabase(params.agentId, (db) => {
+  await withStandingIntentDatabase(params, (db) => {
     runSqliteImmediateTransactionSync(db, () => {
       const kysely = getNodeSqliteKysely<StandingIntentDatabase>(db);
       executeSqliteQuerySync(db, kysely.insertInto("standing_intents").values(row));
@@ -302,7 +305,7 @@ export async function listStandingIntents(params: {
   status?: StandingIntentStatus;
   nowMs?: number;
 }): Promise<StandingIntent[]> {
-  return await withStandingIntentDatabase(params.agentId, (db) =>
+  return await withStandingIntentDatabase(params, (db) =>
     runSqliteImmediateTransactionSync(db, () => {
       const nowMs = params.nowMs ?? Date.now();
       maintainStandingIntentLifecycle(db, nowMs);
@@ -323,7 +326,7 @@ export async function sweepStandingIntents(params: {
   agentId: string;
   nowMs?: number;
 }): Promise<void> {
-  await withStandingIntentDatabase(params.agentId, (db) => {
+  await withStandingIntentDatabase(params, (db) => {
     runSqliteImmediateTransactionSync(db, () => {
       maintainStandingIntentLifecycle(db, params.nowMs ?? Date.now());
     });
@@ -334,7 +337,7 @@ export async function cancelStandingIntent(params: {
   agentId: string;
   id: string;
 }): Promise<StandingIntent | null> {
-  return await withStandingIntentDatabase(params.agentId, (db) =>
+  return await withStandingIntentDatabase(params, (db) =>
     runSqliteImmediateTransactionSync(db, () => {
       const kysely = getNodeSqliteKysely<StandingIntentDatabase>(db);
       const result = executeSqliteQuerySync(
@@ -406,6 +409,7 @@ export async function matchStandingIntents(params: {
   accountId?: string;
   senderId?: string;
   nowMs?: number;
+  assertCurrent?: () => void;
 }): Promise<StandingIntent[]> {
   const promptTokens = new Set(tokenizeIntentText(params.prompt));
   const ftsQuery = buildFtsQuery(promptTokens);
@@ -443,7 +447,7 @@ export async function matchStandingIntents(params: {
           senderId,
         })
       : undefined;
-  return await withStandingIntentDatabase(params.agentId, (db) =>
+  return await withStandingIntentDatabase(params, (db) =>
     runSqliteImmediateTransactionSync(db, () => {
       const nowMs = params.nowMs ?? Date.now();
       maintainStandingIntentLifecycle(db, nowMs);
@@ -517,16 +521,12 @@ export async function matchStandingIntents(params: {
         cursor = lastCandidate
           ? { createdAt: lastCandidate.created_at, id: lastCandidate.id }
           : cursor;
-        for (const candidate of candidates) {
+        for (const current of candidates) {
           if (fired.length >= INTENT_INJECTION_MAX_COUNT) {
             break;
           }
-          const current = executeSqliteQueryTakeFirstSync(
-            db,
-            kysely.selectFrom("standing_intents").selectAll().where("id", "=", candidate.id),
-          );
+          // This write transaction's page stays current: firing only changes the selected row.
           if (
-            !current ||
             !readKnownCreatorSender(current.creator_sender) ||
             !canFire(current, nowMs) ||
             !scopesMatch(current, channelScopes, storedSenderScope) ||

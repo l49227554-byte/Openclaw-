@@ -11,7 +11,7 @@ import {
 import { MINIMAX_OAUTH_MARKER } from "openclaw/plugin-sdk/provider-auth";
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildMinimaxModelDiscovery } from "./provider-catalog.js";
+import { buildMinimaxModelDiscovery, buildMinimaxProvider } from "./provider-catalog.js";
 import { registerMinimaxProviders } from "./provider-registration.js";
 import { createMiniMaxWebSearchProvider } from "./src/minimax-web-search-provider.js";
 
@@ -46,7 +46,7 @@ describe("minimax provider hooks", () => {
   });
 
   it("uses the Anthropic model-list route and X-Api-Key auth", () => {
-    const discovery = buildMinimaxModelDiscovery();
+    const discovery = buildMinimaxModelDiscovery(buildMinimaxProvider());
     const headers = new Headers(
       discovery.buildRequestHeaders?.({ apiKey: "api-key", discoveryApiKey: "discovery-key" }),
     );
@@ -57,7 +57,7 @@ describe("minimax provider hooks", () => {
   });
 
   it("preserves Bearer auth for portal OAuth model discovery", () => {
-    const discovery = buildMinimaxModelDiscovery("oauth");
+    const discovery = buildMinimaxModelDiscovery(buildMinimaxProvider(), "oauth");
     const headers = new Headers(
       discovery.buildRequestHeaders?.({ apiKey: "marker", discoveryApiKey: "oauth-token" }),
     );
@@ -807,15 +807,12 @@ describe("minimax provider hooks", () => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       expect(url).toBe("https://api.minimax.io/v1/token_plan/remains");
-      return new Response(
-        JSON.stringify({
-          data: {
-            current_interval_total_count: 100,
-            current_interval_usage_count: 98,
-          },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
+      return Response.json({
+        data: {
+          current_interval_total_count: 100,
+          current_interval_usage_count: 98,
+        },
+      });
     });
 
     const result = await apiProvider.fetchUsageSnapshot?.({

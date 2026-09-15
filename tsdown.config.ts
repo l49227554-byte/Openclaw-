@@ -8,9 +8,11 @@ import {
   collectChannelConfigDoctorBuildEntries,
   collectPluginDeclarationSourceEntries,
   collectSourceCheckoutPluginBuildEntries,
+  createBundledPluginBuildInventory,
 } from "./scripts/lib/bundled-plugin-build-entries.mjs";
 import { createGatewayRunChunkMetadataPlugin } from "./scripts/lib/gateway-run-chunk-metadata.mts";
 import { createManagedHandoffBuildConfig } from "./scripts/lib/managed-handoff-build-config.mts";
+import { createPluginInventoryModuleRefsPlugin } from "./scripts/lib/plugin-inventory-module-refs.mts";
 import {
   buildPluginSdkEntrySources,
   pluginSdkEntrypoints,
@@ -21,6 +23,7 @@ import { createRuntimeDependencyOwnershipBuildPlugin } from "./scripts/lib/runti
 import { runtimeProcessBuildEntries } from "./scripts/lib/runtime-process-build-entries.mts";
 import {
   sharedRuntimeProcessBuildEntries,
+  shouldBundleRuntimeSqliteDependency,
   standaloneRuntimeProcessBuildEntries,
 } from "./scripts/lib/runtime-process-core-build-entries.mts";
 import {
@@ -277,7 +280,8 @@ function nodeWorkspacePackageBuildConfig(packageDir: string, config: UserConfig 
   };
 }
 
-const bundledPluginBuildEntries = collectBundledPluginBuildEntries();
+const bundledPluginBuildInventory = createBundledPluginBuildInventory();
+const bundledPluginBuildEntries = collectBundledPluginBuildEntries(bundledPluginBuildInventory);
 const shouldBuildPrivateQaEntries = process.env.OPENCLAW_BUILD_PRIVATE_QA === "1";
 const selectedPluginSdkEntrypoints = shouldBuildPrivateQaEntries
   ? pluginSdkEntrypoints
@@ -353,7 +357,7 @@ function shouldNeverBundleDeclarationDependency(id: string): boolean {
   // Arrow's relative module augmentations must stay beside their package modules.
   return (
     shouldNeverBundleDependency(id) ||
-    ["zod", "apache-arrow"].some((name) => id === name || id.startsWith(`${name}/`))
+    ["zod", "apache-arrow", "kysely"].some((name) => id === name || id.startsWith(`${name}/`))
   );
 }
 
@@ -382,18 +386,21 @@ function listBundledPluginEntrySources(
     sourceEntries: string[];
   }>,
 ): Record<string, string> {
-  return Object.fromEntries(
-    entries.flatMap(({ id, sourceEntries }) =>
-      sourceEntries.map((entry) => {
-        const normalizedEntry = entry.replace(/^\.\//u, "");
-        const entryKey = bundledPluginFile(id, normalizedEntry.replace(/\.[^.]+$/u, ""));
-        return [
-          entryKey,
-          normalizedEntry ? `extensions/${id}/${normalizedEntry}` : `extensions/${id}`,
-        ];
-      }),
-    ),
-  );
+  const sources: Record<string, string> = {};
+  for (const { id, sourceEntries } of entries) {
+    for (const entry of sourceEntries) {
+      const normalizedEntry = entry.replace(/^\.\//u, "");
+      const entryKey = bundledPluginFile(id, normalizedEntry.replace(/\.[^.]+$/u, ""));
+      const source = normalizedEntry ? `extensions/${id}/${normalizedEntry}` : `extensions/${id}`;
+      if (sources[entryKey] && sources[entryKey] !== source) {
+        throw new Error(
+          `Plugin build entries share output ${entryKey}: ${sources[entryKey]}, ${source}`,
+        );
+      }
+      sources[entryKey] = source;
+    }
+  }
+  return sources;
 }
 
 function buildCoreDistEntries(): Record<string, string> {
@@ -415,9 +422,9 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/tool-images.runtime": "src/agents/tool-images.runtime.ts",
     "agents/code-mode.worker": "src/agents/code-mode.worker.ts",
     "agents/compaction-planning.worker": "src/agents/compaction-planning.worker.ts",
-    "config/sessions/session-model-context.worker":
-      "src/config/sessions/session-model-context.worker.ts",
     "config/sessions/disk-budget.worker": "src/config/sessions/disk-budget.worker.ts",
+    "config/sessions/session-transcript-reconcile":
+      "src/config/sessions/session-transcript-reconcile.ts",
     ...runtimeProcessBuildEntries,
     ...runtimeProcessDeclarationEntries,
     "acp/control-plane/manager": "src/acp/control-plane/manager.ts",
@@ -471,8 +478,10 @@ function buildDockerE2eHarnessEntries(): Record<string, string> {
       "src/agents/embedded-agent-runner/run/runtime-context-prompt.ts",
     "auto-reply/reply/commands-system-agent": "src/auto-reply/reply/commands-system-agent.ts",
     "cli/run-main": "src/cli/run-main.ts",
+    "commands/onboard-guided": "src/commands/onboard-guided.ts",
     "config/config": "src/config/config.ts",
     "infra/sqlite-audit-record-store": "src/infra/sqlite-audit-record-store.ts",
+    "state/local-onboarding-state": "src/state/local-onboarding-state.ts",
     "system-agent/audit": "src/system-agent/audit.ts",
     "system-agent/system-agent": "src/system-agent/system-agent.ts",
     "system-agent/rescue-message": "src/system-agent/rescue-message.ts",
@@ -589,8 +598,39 @@ function shouldExternalizeTerminalCoreDependency(id: string): boolean {
 
 const coreDistEntries = buildCoreDistEntries();
 const dockerE2eHarnessEntries = buildDockerE2eHarnessEntries();
-const rootBundledPluginBuildEntries = collectSourceCheckoutPluginBuildEntries().filter(
-  ({ isolated }) => !isolated,
+const rootBundledPluginBuildEntries = collectSourceCheckoutPluginBuildEntries(
+  bundledPluginBuildInventory,
+).filter(({ isolated }) => !isolated);
+const bundledInventoryEntries = rootBundledPluginBuildEntries.flatMap((plugin) => {
+  const sourceEntries = plugin.sourceEntries.filter(
+    (source) =>
+      source === plugin.packageJson?.openclaw?.setupEntry ||
+      plugin.catalogSourceEntries.includes(source) ||
+      /^\.\/setup-api\.[cm]?[jt]s$/u.test(source),
+  );
+  if (!sourceEntries.length) {
+    return [];
+  }
+  const entries = [{ id: plugin.id, sourceEntries }];
+  const runtime = listBundledPluginEntrySources([
+    {
+      id: plugin.id,
+      sourceEntries: plugin.packageJson?.openclaw?.extensions?.length
+        ? plugin.packageJson.openclaw.extensions
+        : ["./index.ts"],
+    },
+  ]);
+  const runtimeSources = new Set(Object.values(runtime).map((source) => fs.realpathSync(source)));
+  for (const [name, source] of Object.entries(listBundledPluginEntrySources(entries))) {
+    // One public artifact cannot carry both native runtime and reloadable inventory ownership.
+    if (Object.hasOwn(runtime, name) || runtimeSources.has(fs.realpathSync(source))) {
+      throw new Error(`Plugin ${plugin.id} inventory entry overlaps its runtime: ${source}`);
+    }
+  }
+  return entries;
+});
+const bundledInventoryEntryNames = new Set(
+  Object.keys(listBundledPluginEntrySources(bundledInventoryEntries)),
 );
 
 function buildUnifiedDistEntries(): Record<string, string> {
@@ -816,10 +856,17 @@ const configs: UserConfig[] = [
       // Build core entrypoints, plugin-sdk subpaths, bundled plugin entrypoints,
       // and bundled hooks in one graph so runtime singletons are emitted once.
       entry: {
-        ...sharedRuntimeProcessBuildEntries(unifiedDistEntries),
-        "native-hook-relay/entry": "src/cli/native-hook-relay-entry.ts",
+        ...Object.fromEntries(
+          Object.entries(sharedRuntimeProcessBuildEntries(unifiedDistEntries)).filter(
+            ([name]) => !bundledInventoryEntryNames.has(name),
+          ),
+        ),
       },
-      deps: unifiedDeps,
+      deps: {
+        ...unifiedDeps,
+        alwaysBundle: (id) =>
+          shouldAlwaysBundleDependency(id) || shouldBundleRuntimeSqliteDependency(id),
+      },
       // Explicit ESM chunks avoid repeated package-format parsing in Node;
       // named entrypoints retain their public .js paths.
       outputOptions: { chunkFileNames: "[name]-[hash].mjs" },
@@ -834,12 +881,54 @@ const configs: UserConfig[] = [
   nodeBuildConfig(
     {
       name: TSDOWN_UNIFIED_CONFIG_GROUP,
-      entry: standaloneRuntimeProcessBuildEntries,
+      // One-shot relays must not load shared Gateway/SDK chunks just to read a locator.
+      // Keep splitting enabled so the existing Gateway fallback stays lazy.
+      entry: { "native-hook-relay/entry": "src/cli/native-hook-relay-entry.ts" },
       deps: unifiedDeps,
-      outputOptions: { codeSplitting: false },
+      outputOptions: { chunkFileNames: "native-hook-relay/[name]-[hash].mjs" },
       plugins: [createStateSchemaInlinePlugin()],
     },
     false,
+  ),
+  ...bundledInventoryEntries.map((plugin) => {
+    const entry = listBundledPluginEntrySources([plugin]);
+    const privateChunks = `${bundledPluginRoot(plugin.id)}/.setup/[name]-[hash].mjs`;
+    return nodeBuildConfig(
+      {
+        name: TSDOWN_UNIFIED_CONFIG_GROUP,
+        // Inventory generations own their lazy chunks; host SDK singletons stay native.
+        entry,
+        plugins: [createPluginInventoryModuleRefsPlugin(bundledPluginRoot(plugin.id))],
+        deps: {
+          ...unifiedDeps,
+          neverBundle: [...rootDependencyOptions.neverBundle, /^openclaw(?:\/|$)/u],
+          alwaysBundle: (id) => !/^openclaw(?:\/|$)/u.test(id) && shouldAlwaysBundleDependency(id),
+        },
+        outputOptions: {
+          entryFileNames: (chunk) =>
+            Object.hasOwn(entry, chunk.name) ? "[name].js" : privateChunks,
+          chunkFileNames: privateChunks,
+          assetFileNames: `${bundledPluginRoot(plugin.id)}/.setup/[name]-[hash][extname]`,
+        },
+      },
+      false,
+    );
+  }),
+  ...Object.entries(standaloneRuntimeProcessBuildEntries).map(([name, source]) =>
+    nodeBuildConfig(
+      {
+        name: TSDOWN_UNIFIED_CONFIG_GROUP,
+        entry: { [name]: source },
+        deps: {
+          ...unifiedDeps,
+          alwaysBundle: (id) =>
+            shouldAlwaysBundleDependency(id) || shouldBundleRuntimeSqliteDependency(id),
+        },
+        outputOptions: { codeSplitting: false },
+        plugins: [createStateSchemaInlinePlugin()],
+      },
+      false,
+    ),
   ),
   workerDeployBuildConfig(),
   { ...createManagedHandoffBuildConfig(), name: TSDOWN_UNIFIED_CONFIG_GROUP, env },
@@ -848,7 +937,7 @@ const configs: UserConfig[] = [
       name: TSDOWN_UNIFIED_CONFIG_GROUP,
       // Keep retained config repairs in their own graph: shared public SDK chunks
       // otherwise pull state-migration exports into these pre-install artifacts.
-      entry: collectChannelConfigDoctorBuildEntries(),
+      entry: collectChannelConfigDoctorBuildEntries(bundledPluginBuildInventory),
       outDir: "dist/config-doctor",
       deps: unifiedDeps,
     },

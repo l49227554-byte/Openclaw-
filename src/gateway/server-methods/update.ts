@@ -32,6 +32,7 @@ import {
 } from "../../infra/update-channels.js";
 import { CONTROL_PLANE_UPDATE_HANDOFF_STARTED_REASON } from "../../infra/update-control-plane-sentinel.js";
 import { devUpdateTargetFromGitTarget } from "../../infra/update-dev-target.js";
+import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import {
   buildManagedServiceHandoffUnavailableMessage,
@@ -63,12 +64,8 @@ import {
 import { summarizeUpdateStepFailure } from "../../infra/update-run-record.js";
 import { renderUpdateRunNotice } from "../../infra/update-run-report.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
-import {
-  resolveUpdateInstallSurface,
-  runGatewayUpdate,
-  runGatewayUpdatePreflight,
-} from "../../infra/update-runner.js";
-import { getUpdateAvailable, initializeGatewayUpdateStatus } from "../../infra/update-startup.js";
+import { runGatewayUpdate, runGatewayUpdatePreflight } from "../../infra/update-runner.js";
+import { getUpdateAvailable } from "../../infra/update-startup.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
@@ -82,6 +79,7 @@ import { resolveUpdateRunNoticeTarget } from "../update-run-notice-target.js";
 import { wakeUpdateRunWatcher } from "../update-run-watcher.js";
 import { parseRestartRequestParams } from "./restart-request.js";
 import type { GatewayRequestHandlers } from "./types.js";
+import { resolveGatewayUpdateAdmission } from "./update-admission.js";
 import { updateReportHandler } from "./update-report.js";
 import { updateStatusHandlers } from "./update-status.js";
 import { assertValidParams } from "./validation.js";
@@ -119,7 +117,8 @@ export const updateHandlers: GatewayRequestHandlers = {
             (sessionKey && isInternalMessageChannel(requesterChannel ?? deliveryContext?.channel))
           ? "control-ui"
           : "api";
-    const config = context.getRuntimeConfig();
+    const getConfig = context.getRuntimeConfig;
+    const config = getConfig();
     const noticeTarget = resolveUpdateRunNoticeTarget({
       cfg: config,
       sessionKey,
@@ -170,43 +169,54 @@ export const updateHandlers: GatewayRequestHandlers = {
     let ackDelivered = false;
     let ackQueued = false;
     let acknowledgement: string | undefined;
+    let outcomeMessage: string | undefined;
     let ownsUpdateOutcome = false;
     let adoptedCampaignId: string | undefined;
-    const ownerRequiredMessage = () =>
-      `Only the OpenClaw owner can start an update from chat. ${formatCommandOwnerHint({ cfg: context.getRuntimeConfig(), channel: params.requester?.channel, id: params.requester?.senderId })}`;
-    const refuseNonOwner = () => {
+    const refuseUnauthorizedChatUpdate = () => {
       const requester = params.requester;
-      // Only external chat identities are revocable here; internal or channel-less
-      // requesters retain the owner authority established at admission.
-      if (
-        !requester?.channel ||
-        isInternalMessageChannel(requester.channel) ||
-        isConfiguredCommandOwner(context.getRuntimeConfig(), requester)
-      ) {
+      // Chat update authority is revocable; internal or channel-less requesters
+      // retain the operator authority established at admission.
+      if (!requester?.channel || isInternalMessageChannel(requester.channel)) {
         return false;
       }
+      const currentConfig = getConfig();
+      const reason = !isConfiguredCommandOwner(currentConfig, requester)
+        ? "owner_required"
+        : !isRestartEnabled(currentConfig)
+          ? "restart-disabled"
+          : undefined;
+      if (!reason) {
+        return false;
+      }
+      const message =
+        reason === "owner_required"
+          ? `Only the OpenClaw owner can start an update from chat. ${formatCommandOwnerHint({ cfg: currentConfig, channel: requester.channel, id: requester.senderId })}`
+          : "Updates from chat are disabled (commands.restart=false). Use the Control UI or ask the Gateway operator to update OpenClaw.";
       if (adoptedCampaignId && gatewayUpdateCampaign.getState()?.id === adoptedCampaignId) {
         gatewayUpdateCampaign.clear();
       }
-      recordUpdateRunPhase(runId, "requested", { origin: { nextAction: ownerRequiredMessage() } });
-      const refusedRun = finishUpdateRun(runId, { status: "failed", reason: "owner_required" });
+      recordUpdateRunPhase(runId, "requested", { origin: { nextAction: message } });
+      const refusedRun = finishUpdateRun(runId, {
+        status: reason === "owner_required" ? "failed" : "skipped",
+        reason,
+      });
       respond(true, {
         runId,
         ok: false,
-        code: "owner_required",
-        message: ownerRequiredMessage(),
+        code: reason,
+        message,
         ackDelivered,
         ackQueued,
         acknowledgement,
-        result: { status: "error", reason: "owner_required" },
+        result: { status: reason === "owner_required" ? "error" : "skipped", reason },
       });
       return refusedRun;
     };
-    if (refuseNonOwner()) {
+    if (refuseUnauthorizedChatUpdate()) {
       return;
     }
     const { createUpdateRunNotifier } = await import("../update-run-notice.runtime.js");
-    const notify = createUpdateRunNotifier(run, config, context.deps, noticeTarget);
+    const notify = createUpdateRunNotifier(run, getConfig, context.deps, noticeTarget);
     const sentinelMeta: UpdateRestartSentinelMeta = {
       runId,
       ...(sessionKey ? { sessionKey } : {}),
@@ -217,12 +227,7 @@ export const updateHandlers: GatewayRequestHandlers = {
     };
     try {
       const configChannel = normalizeUpdateChannel(config.update?.channel);
-      const { root, status } = await initializeGatewayUpdateStatus();
-      const installSurface = await resolveUpdateInstallSurface({
-        root,
-        installKind: status.installKind,
-        timeoutMs,
-      });
+      const { status, installSurface } = await resolveGatewayUpdateAdmission(timeoutMs);
       const installRoot = installSurface.root;
       const refusedUpdate = (
         outcome: "error" | "skipped",
@@ -307,7 +312,7 @@ export const updateHandlers: GatewayRequestHandlers = {
           ? `version ${adoptedPackageTargetVersion}`
           : `${effectiveChannel} channel`;
       const acknowledgeUpdate = async (beforeVersion: string | null) => {
-        if (refuseNonOwner()) {
+        if (refuseUnauthorizedChatUpdate()) {
           return false;
         }
         const targetVersion = adoptedPackageTargetVersion ?? getUpdateAvailable()?.latestVersion;
@@ -388,7 +393,7 @@ export const updateHandlers: GatewayRequestHandlers = {
               return;
             }
             // Recheck after the awaited acknowledgement, immediately before the effect.
-            const refusal = refuseNonOwner();
+            const refusal = refuseUnauthorizedChatUpdate();
             if (refusal) {
               if (ackDelivered || ackQueued) {
                 await notify(refusal, "finished");
@@ -498,7 +503,7 @@ export const updateHandlers: GatewayRequestHandlers = {
           return;
         }
         // Recheck after the awaited acknowledgement, immediately before the effect.
-        const refusal = refuseNonOwner();
+        const refusal = refuseUnauthorizedChatUpdate();
         if (refusal) {
           if (ackDelivered || ackQueued) {
             await notify(refusal, "finished");
@@ -552,11 +557,14 @@ export const updateHandlers: GatewayRequestHandlers = {
         }
         result = foldPostCoreFinalizeIntoResult(result, finalizeOutcome);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof FreeBsdPkgOwnershipError) {
+        outcomeMessage = error.message;
+      }
       result = {
         status: "error",
         mode: "unknown",
-        reason: "unexpected-error",
+        reason: error instanceof FreeBsdPkgOwnershipError ? error.reason : "unexpected-error",
         steps: [],
         durationMs: 0,
       };
@@ -576,7 +584,11 @@ export const updateHandlers: GatewayRequestHandlers = {
       {
         before: result.before,
         after: result.after,
-        ...(handoff && "message" in handoff ? { origin: { nextAction: handoff.message } } : {}),
+        ...(outcomeMessage
+          ? { origin: { nextAction: outcomeMessage } }
+          : handoff && "message" in handoff
+            ? { origin: { nextAction: handoff.message } }
+            : {}),
       },
     );
     for (const step of result.steps) {
@@ -613,7 +625,6 @@ export const updateHandlers: GatewayRequestHandlers = {
       ownsUpdateOutcome = gatewayUpdateCampaign.getState()?.id === adoptedCampaignId;
     }
     let sentinelPersisted = false;
-    let noticeFailureMessage: string | undefined;
     if (ownsUpdateOutcome) {
       try {
         await writeRestartSentinel(payload);
@@ -621,10 +632,10 @@ export const updateHandlers: GatewayRequestHandlers = {
         recordLatestUpdateRestartSentinel(payload);
       } catch {
         if (result.status === "ok" && handoff?.status !== "started") {
-          noticeFailureMessage =
+          outcomeMessage =
             "The update was installed, but its restart notice could not be saved. Run openclaw update status after the gateway restarts.";
           recordUpdateRunPhase(runId, "restarting", {
-            origin: { nextAction: noticeFailureMessage },
+            origin: { nextAction: outcomeMessage },
           });
           outcomeRun = finishUpdateRun(runId, {
             status: "failed",
@@ -708,7 +719,7 @@ export const updateHandlers: GatewayRequestHandlers = {
         ackDelivered,
         ackQueued,
         acknowledgement,
-        ...(noticeFailureMessage ? { message: noticeFailureMessage } : {}),
+        ...(outcomeMessage ? { message: outcomeMessage } : {}),
         result,
         ...(handoff ? { handoff } : {}),
         restart,

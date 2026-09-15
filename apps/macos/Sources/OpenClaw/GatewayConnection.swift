@@ -28,6 +28,7 @@ actor GatewayConnection: Observable {
     nonisolated static let operatorClientCaps = [
         OpenClawGatewayClientCapability.agentKind,
         OpenClawGatewayClientCapability.inlineWidgets,
+        OpenClawGatewayClientCapability.modelSelectionPolicy,
         OpenClawGatewayClientCapability.usageRefreshing,
     ]
 
@@ -426,7 +427,7 @@ actor GatewayConnection: Observable {
             try requireCurrentShutdownGeneration(shutdownGeneration)
             switch mode {
             case .local:
-                await MainActor.run { GatewayProcessManager.shared.setActive(true) }
+                await MainActor.run { GatewayProcessManager.shared.setActive(true, source: .recovery) }
                 try requireCurrentShutdownGeneration(shutdownGeneration)
 
                 let lastError: Error

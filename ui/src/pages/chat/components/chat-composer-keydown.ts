@@ -104,6 +104,7 @@ export function createComposerKeyDownHandler({
         keyCode: event.keyCode,
       });
       if (result.handled) {
+        state.editRevision += 1;
         if (result.preventDefault) {
           event.preventDefault();
         }
@@ -151,7 +152,7 @@ export function createComposerKeyDownHandler({
           props.canSend &&
           !props.submitDisabledReason &&
           props.onQueueSteer
-            ? steerableQueuedMessage(props.queue)
+            ? steerableQueuedMessage(props.displayQueue ?? props.queue)
             : undefined;
         if (queued) {
           event.preventDefault();

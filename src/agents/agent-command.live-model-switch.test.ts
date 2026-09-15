@@ -48,6 +48,7 @@ import {
   resolveTestModelAliasFromPair,
   resolveTestModelRefFromString,
 } from "./agent-command.live-model-switch.test-helpers.js";
+import { createApiKeyCredential } from "./auth-profiles/credential-fixtures.test-support.js";
 import type { FailoverReason } from "./failover/signal.js";
 import { formatAgentInternalEventsForPrompt, type AgentInternalEvent } from "./internal-events.js";
 import {
@@ -2872,11 +2873,18 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
   });
 
   it("recomputes a model-derived thinking default for each fallback candidate", async () => {
+    const policyModule = await import("./model-visibility-policy.js");
+    const { createModelVisibilityPolicyWithFallbacks } =
+      await import("./model-selection-shared.js");
+    vi.spyOn(policyModule, "createModelVisibilityPolicy").mockImplementation((params) =>
+      createModelVisibilityPolicyWithFallbacks({ ...params, fallbackModels: [] }),
+    );
     setupStoredSession();
     state.runtimeConfigMock = {
       agents: {
         defaults: {
           model: { primary: "openai/gpt-5.6-sol" },
+          modelPolicy: { allow: ["openai/manual-only"] },
           models: {
             "openai/gpt-5.6-sol": {
               agentRuntime: { id: "codex" },
@@ -3138,6 +3146,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     expect(stored?.restartRecoveryTerminalDeliveryEvidence).toEqual([
       {
         runId: "image:task-1:agent-loop",
+        transcriptRunId: "image:task-1:agent-loop",
         captured: true,
         payloads: [{ visible: false }, { mediaUrls: ["/tmp/payload.png"], visible: true }],
         deliveryStatus: {
@@ -4210,13 +4219,28 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     {
       name: "validates explicit thinking against configured model compat without an allowlist",
       allowlisted: false,
+      excluded: false,
     },
     {
       name: "validates explicit thinking against allowlisted configured model compat when manifest catalog is empty",
       allowlisted: true,
+      excluded: false,
     },
-  ])("$name", async ({ allowlisted }) => {
-    state.runtimeConfigMock = createConfiguredModelCompatRuntimeConfig(allowlisted);
+    {
+      name: "retains automatic-primary thinking metadata outside the manual allowlist",
+      allowlisted: true,
+      excluded: true,
+    },
+  ])("$name", async ({ allowlisted, excluded }) => {
+    if (excluded) {
+      const policyModule = await import("./model-visibility-policy.js");
+      const { createModelVisibilityPolicyWithFallbacks } =
+        await import("./model-selection-shared.js");
+      vi.spyOn(policyModule, "createModelVisibilityPolicy").mockImplementation((params) =>
+        createModelVisibilityPolicyWithFallbacks({ ...params, fallbackModels: [] }),
+      );
+    }
+    state.runtimeConfigMock = createConfiguredModelCompatRuntimeConfig(allowlisted, excluded);
     if (allowlisted) {
       state.loadManifestModelCatalogMock.mockReturnValue([]);
     }
@@ -4972,11 +4996,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     };
     state.authProfileStoreMock = {
       profiles: {
-        "openai:work": {
-          type: "api_key",
-          provider: "openai",
-          key: "sk-test",
-        },
+        "openai:work": createApiKeyCredential("openai", "sk-test"),
       },
     };
     state.runWithModelFallbackMock.mockImplementation(async (params: FallbackRunnerParams) => {

@@ -14,6 +14,7 @@ import { isPreparedModelCatalogFull } from "../agents/prepared-model-runtime.ful
 // Gateway catalog reads use the atomic prepared runtime generation.
 import { getRuntimeConfig } from "../config/io.js";
 import type { PreparedGatewayModelCatalogSnapshot } from "./server-model-catalog-auth.js";
+import { createPreparedGatewayModelCatalog } from "./server-model-catalog-view.js";
 import type {
   GatewayModelCatalogSnapshot,
   PreparedGatewayModelCatalog,
@@ -29,6 +30,7 @@ type LoadPublishedPreparedModelCatalogOwnerSnapshot = (params: {
   config: GatewayModelCatalogConfig;
   readOnly?: boolean;
   refreshFullCatalog?: LoadPreparedModelCatalogParams["refreshFullCatalog"];
+  providerDiscoveryProviderIds?: readonly string[];
   workspaceDir?: string;
 }) => Promise<PublishedModelCatalogOwnerCandidate>;
 type LoadGatewayModelCatalogParams = {
@@ -38,6 +40,7 @@ type LoadGatewayModelCatalogParams = {
   loadPublishedPreparedModelCatalogOwnerSnapshot?: LoadPublishedPreparedModelCatalogOwnerSnapshot;
   readOnly?: boolean;
   refreshFullCatalog?: LoadPreparedModelCatalogParams["refreshFullCatalog"];
+  providerDiscoveryProviderIds?: readonly string[];
   workspaceDir?: string;
 };
 type LoadPreparedGatewayModelCatalogParams = LoadGatewayModelCatalogParams & {
@@ -83,6 +86,9 @@ async function loadGatewayModelCatalogOwnerSnapshot(
     readOnly: params?.readOnly !== false,
     ...(params?.refreshFullCatalog !== undefined
       ? { refreshFullCatalog: params.refreshFullCatalog }
+      : {}),
+    ...(params?.providerDiscoveryProviderIds
+      ? { providerDiscoveryProviderIds: params.providerDiscoveryProviderIds }
       : {}),
     ...(params?.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
   });
@@ -196,10 +202,13 @@ export async function readPreparedGatewayModelCatalog(
   if (!owner) {
     return undefined;
   }
-  return {
-    entries: (owner.readFullModelCatalog?.() ?? owner.modelCatalog).entries,
+  const catalog = owner.readFullModelCatalog?.() ?? owner.modelCatalog;
+  return createPreparedGatewayModelCatalog({
+    entries: catalog.entries,
+    routeVariants: catalog.routeVariants,
     pluginRegistry: owner.pluginRegistry,
-  };
+    metadataSnapshot: owner.metadataSnapshot,
+  });
 }
 
 /** Reads the published owner generation without activating full catalog discovery. */

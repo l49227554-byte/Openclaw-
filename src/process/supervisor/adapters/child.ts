@@ -8,7 +8,7 @@ import {
 } from "../../../plugin-sdk/windows-spawn.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { onDecodedOutput } from "../../decoded-output.js";
-import { signalProcessTree } from "../../kill-tree.js";
+import { killProcessTree, signalProcessTree } from "../../kill-tree.js";
 import { prepareOomScoreAdjustedSpawn } from "../../linux-oom-score.js";
 import { pipeProcessOutput } from "../../pipe-output.js";
 import { scheduleAdoptedChildZombieReapAfterExit } from "../../scoped-child-reaper.js";
@@ -20,6 +20,7 @@ import {
   resolveTrustedWindowsCmdExe,
   resolveWindowsCommandShim,
 } from "../../windows-command.js";
+import { GRACEFUL_CANCEL_TIMEOUT_MS } from "../cancellation-policy.js";
 import { createServiceChildRelayAdapter } from "../service-child-relay-host.js";
 import type {
   ProcessAdapterConstruction,
@@ -113,6 +114,7 @@ export async function createChildAdapter(params: ChildAdapterInput): Promise<Wor
   if (params.anchoredShellCommand !== undefined) {
     return await createServiceChildRelayAdapter({
       assertCurrent: params.assertCurrent,
+      beforeSpawn: params.beforeSpawn,
       command: process.platform === "win32" ? params.anchoredShellCommand : "/bin/sh",
       args: process.platform === "win32" ? [] : ["-c", params.anchoredShellCommand],
       windowsShellCommand: process.platform === "win32" ? params.anchoredShellCommand : undefined,
@@ -153,6 +155,7 @@ export async function createChildAdapter(params: ChildAdapterInput): Promise<Wor
   ) {
     return await createServiceChildRelayAdapter({
       assertCurrent: params.assertCurrent,
+      beforeSpawn: params.beforeSpawn,
       command: preparedSpawn.command,
       args: preparedSpawn.args,
       argv0: preparedSpawn.argv0,
@@ -196,7 +199,10 @@ export async function createChildAdapter(params: ChildAdapterInput): Promise<Wor
     }
   };
   const spawned = await spawnWithFallback({
-    assertCurrent,
+    assertCurrent: () => {
+      assertCurrent();
+      params.beforeSpawn?.();
+    },
     argv: [preparedSpawn.command, ...preparedSpawn.args],
     options,
     fallbacks: useDetached && params.ownedWorker === undefined ? [{ detached: false }] : [],
@@ -432,17 +438,42 @@ export async function createChildAdapter(params: ChildAdapterInput): Promise<Wor
   // gateway's process group regardless of intent, so the kill must avoid
   // group-kill. (#71662 follow-up — caught by Greptile review)
   const childIsDetached = useDetached && !spawned.usedFallback;
+  const attachedLinuxFallback = process.platform === "linux" && !childIsDetached;
+  let attachedTerminationStarted = false;
+  let attachedTermination: ReturnType<typeof killProcessTree>;
   const scheduleAdoptedReapForChild = () => {
     // Reap after Node exit/adoption — not at signal time — and never waitpid
     // the tracked root (libuv owns that ChildProcess).
     scheduleAdoptedChildZombieReapAfterExit(child, childIsDetached);
   };
   const signalProcessTreeForChild = (pid: number, signal: "SIGTERM" | "SIGKILL") => {
+    if (attachedLinuxFallback) {
+      if (attachedTerminationStarted) {
+        if (signal === "SIGKILL") {
+          attachedTermination?.force();
+        }
+      } else if (!childExitState) {
+        // Retain one identity-bound snapshot across root settlement. Its timer
+        // must survive disposal when the supervisor clears its own grace timer.
+        attachedTerminationStarted = true;
+        attachedTermination = killProcessTree(pid, {
+          detached: false,
+          graceMs: GRACEFUL_CANCEL_TIMEOUT_MS,
+          force: signal === "SIGKILL",
+        });
+      }
+      return;
+    }
     signalProcessTree(pid, signal, { detached: childIsDetached });
     scheduleAdoptedReapForChild();
   };
   const signalProcessTreeForChildAndWait = (pid: number, signal: "SIGTERM" | "SIGKILL") =>
     new Promise<void>((resolve) => {
+      if (attachedLinuxFallback) {
+        signalProcessTreeForChild(pid, signal);
+        resolve();
+        return;
+      }
       signalProcessTree(pid, signal, {
         detached: childIsDetached,
         onComplete: () => {
@@ -454,6 +485,9 @@ export async function createChildAdapter(params: ChildAdapterInput): Promise<Wor
   const kill = (signal?: NodeJS.Signals) => {
     // A delayed private-input failure must not signal a PID whose child has closed.
     if (processClosed) {
+      if (signal === undefined || signal === "SIGKILL") {
+        attachedTermination?.force();
+      }
       return;
     }
     const pid = child.pid ?? undefined;

@@ -4,6 +4,8 @@ import { t } from "../../i18n/index.ts";
 import { boardProviderCacheKey } from "../../lib/board/provider.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { sessionPullRequestsForGateway } from "../../lib/session-pull-requests.ts";
+import { runSessionNavigationIntent } from "../../lib/sessions/navigation-handoff.ts";
+import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts";
 import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import { storeChatComposerMemoryFallback } from "./chat-composer-memory-fallback.ts";
 import { loadChatBranches, retireChatBranchRequests } from "./chat-history-branches.ts";
@@ -20,6 +22,7 @@ import { stopChatRealtimeTalk } from "./chat-realtime.ts";
 import { retryReconnectableQueuedChatSends } from "./chat-send-actions.ts";
 import { setChatError } from "./chat-send-queue-state.ts";
 import { refreshCurrentChatSessionList } from "./chat-session.ts";
+import type { ChatPageHost } from "./chat-state-host.ts";
 import { invalidateImageLightbox } from "./chat-state-page.ts";
 import { refreshChatMetadata } from "./chat-state-refresh.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
@@ -29,6 +32,7 @@ import { clearSessionWorkspacePreviews } from "./components/chat-session-workspa
 import { resetTaskDetail } from "./components/chat-task-detail-state.ts";
 import { resetTranscriptSession } from "./components/chat-thread-interactions.ts";
 import { CHAT_COMPOSER_DRAFT_STORAGE_ERROR } from "./composer-persistence.ts";
+import { activeQueuedMessageEdit } from "./queued-message-edit.ts";
 
 const COMPOSER_PREFILL_ATTENTION_DURATION_MS = 600;
 const COMPOSER_PREFILL_ATTENTION_CLASS = "agent-chat__input--prefill-attention";
@@ -37,6 +41,37 @@ const COMPOSER_PREFILL_ATTENTION_CLASS = "agent-chat__input--prefill-attention";
 export abstract class ChatPaneRetainedPresentation extends ChatPaneBoard {
   protected abstract syncActiveBindings(): void;
   protected abstract activateComposerPresentation(): void;
+
+  protected reviewQueuedMessageEdit(pageState: ChatPageHost): void {
+    const edit = activeQueuedMessageEdit(pageState);
+    if (!edit || this.state !== pageState || !this.isConnected) {
+      return;
+    }
+    const client = pageState.client;
+    const target = sessionNavigationTarget({
+      context: this.context,
+      face: "chat",
+      sessionKey: edit.sessionKey,
+      agentId: edit.agentId,
+      exactKey: true,
+    });
+    runSessionNavigationIntent(this, {
+      face: "chat",
+      sessionKey: edit.sessionKey,
+      commit: () => {
+        if (
+          this.state !== pageState ||
+          pageState.client !== client ||
+          this.context.gateway.snapshot.client !== client ||
+          activeQueuedMessageEdit(pageState) !== edit
+        ) {
+          return false;
+        }
+        this.context.navigate("chat", target.options);
+        return true;
+      },
+    });
+  }
 
   protected clearComposerPrefillAttention(): void {
     if (this.composerPrefillAttentionTimer !== null) {

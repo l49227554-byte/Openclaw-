@@ -21,8 +21,6 @@ import { matchesShortcutCombo } from "../../lib/keyboard-shortcut-contract.ts";
 import { sessionPullRequestsForGateway } from "../../lib/session-pull-requests.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import { resolveSessionKey } from "../../lib/sessions/index.ts";
-import { runSessionNavigationIntent } from "../../lib/sessions/navigation-handoff.ts";
-import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts";
 import {
   areUiSessionKeysEquivalent,
   parseAgentSessionKey,
@@ -79,7 +77,6 @@ import { CHAT_COMPOSER_DRAFT_STORAGE_ERROR } from "./composer-persistence.ts";
 import { exportChatMarkdown } from "./export.ts";
 import { admitChatSubmission } from "./history-merge.ts";
 import { admitInitialTurnHandoff } from "./initial-turn-handoff.ts";
-import { activeQueuedMessageEdit } from "./queued-message-edit.ts";
 import {
   applyChatCacheSnapshot,
   cacheChatSessionSnapshot,
@@ -365,36 +362,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionCreation {
     pageState.chatIsProgrammaticScroll = () => this.transcript.isProgrammaticScroll;
     pageState.chatScrollElement = () => this.transcript.scrollElement;
     pageState.chatScrollToEnd = (options) => this.transcript.scrollToEnd(options);
-    pageState.reviewQueuedMessageEdit = () => {
-      const edit = activeQueuedMessageEdit(pageState);
-      if (!edit || this.state !== pageState || !this.isConnected) {
-        return;
-      }
-      const client = pageState.client;
-      const target = sessionNavigationTarget({
-        context: this.context,
-        face: "chat",
-        sessionKey: edit.sessionKey,
-        agentId: edit.agentId,
-        exactKey: true,
-      });
-      runSessionNavigationIntent(this, {
-        face: "chat",
-        sessionKey: edit.sessionKey,
-        commit: () => {
-          if (
-            this.state !== pageState ||
-            pageState.client !== client ||
-            this.context.gateway.snapshot.client !== client ||
-            activeQueuedMessageEdit(pageState) !== edit
-          ) {
-            return false;
-          }
-          this.context.navigate("chat", target.options);
-          return true;
-        },
-      });
-    };
+    pageState.reviewQueuedMessageEdit = () => this.reviewQueuedMessageEdit(pageState);
     pageState.createChatSession = () => this.createSession();
     pageState.confirmConversationReset = () => this.confirmConversationReset();
     pageState.exportCurrentChat = () =>

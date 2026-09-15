@@ -21,7 +21,6 @@ import { showInputDialog } from "./input-dialog.ts";
 import type { SessionMenuAction } from "./session-menu.ts";
 import {
   patchSessionRows,
-  refreshSessionsAfterBatch,
   requireSessionMutationAccess,
   sessionRowAgentId,
 } from "./session-organizer-batch-mutations.ts";
@@ -235,6 +234,7 @@ function archiveUndoAction(
   return () => void restoreArchivedSessions(undoHost, archived, scope);
 }
 
+// Undo restores captured rows; the roster owner refreshes whichever queries are now visible.
 async function restoreArchivedSessions(
   host: SessionActionHost,
   archived: readonly { session: SessionActionRow; pinned: boolean }[],
@@ -250,32 +250,45 @@ async function restoreArchivedSessions(
       scope,
       { deferListRefresh: true },
     );
-    if (restored !== "stale") {
-      await refreshSessionsAfterBatch(host, scope, rows);
+    if (restored === "stale") {
+      return;
     }
-    return;
-  }
-  const restored = await patchSessionRows(host, rows, { archived: false }, scope, {
-    deferListRefresh: true,
-  });
-  if (!restored) {
-    return;
-  }
-  const repinRows = archived.flatMap(({ session, pinned }) =>
-    pinned && restored.includes(session) ? [session] : [],
-  );
-  if (repinRows.length > 0) {
-    const repinned = await patchSessionRows(host, repinRows, { pinned: true }, scope, {
+  } else {
+    const restored = await patchSessionRows(host, rows, { archived: false }, scope, {
       deferListRefresh: true,
     });
-    if (!repinned && !host.sessionData.isSessionMutationScopeCurrent(scope)) {
+    if (!restored) {
       return;
+    }
+    const repinRows = archived.flatMap(({ session, pinned }) =>
+      pinned && restored.includes(session) ? [session] : [],
+    );
+    if (repinRows.length > 0) {
+      const repinned = await patchSessionRows(host, repinRows, { pinned: true }, scope, {
+        deferListRefresh: true,
+      });
+      if (!repinned && !host.sessionData.isSessionMutationScopeCurrent(scope)) {
+        return;
+      }
     }
   }
   if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
     return;
   }
-  await refreshSessionsAfterBatch(host, scope, rows);
+  scope.sessions.invalidate();
+  try {
+    const result = await scope.sessions.refreshReplacement();
+    if (!host.sessionData.isSessionMutationScopeCurrent(scope)) {
+      return;
+    }
+    if (!result && scope.sessions.state.error) {
+      host.sessionData.publishSessionMutationError(scope, scope.sessions.state.error);
+    }
+  } catch (error) {
+    if (host.sessionData.isSessionMutationScopeCurrent(scope)) {
+      host.sessionData.publishSessionMutationError(scope, error);
+    }
+  }
 }
 
 /**

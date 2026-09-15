@@ -9,6 +9,10 @@ import {
 } from "../infra/diagnostic-events.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../infra/diagnostic-llm-content.js";
 import {
+  createDiagnosticToolExecutionLiveness,
+  markToolExecutionLivenessDiagnosticEvent,
+} from "../infra/diagnostic-tool-execution-liveness.js";
+import {
   createChildDiagnosticTraceContext,
   freezeDiagnosticTraceContext,
 } from "../infra/diagnostic-trace-context.js";
@@ -542,18 +546,21 @@ export function wrapToolWithBeforeToolCallHook(
       recordAdjustedParamsForToolCall(toolCallId, executeParams, ctx?.runId);
       const eventBase = buildEventBase(executeParams);
       recordToolExecutionStarted(toolCallId, ctx?.runId);
+      const liveness = createDiagnosticToolExecutionLiveness(signal);
       if (hookOptions.emitDiagnostics) {
-        emitTrustedDiagnosticEvent({
-          type: "tool.execution.started",
-          ...eventBase,
-        });
+        emitTrustedDiagnosticEvent(
+          markToolExecutionLivenessDiagnosticEvent(
+            { type: "tool.execution.started", ...eventBase },
+            liveness.view,
+          ),
+        );
       }
       const startedAt = Date.now();
       try {
         let result: Awaited<ReturnType<ForwardedToolExecution>>;
         try {
           const args = [toolCallId, executeParams, signal, forwardedOnUpdate, ...executionArgs];
-          const invoke = () => (execute as ForwardedToolExecution)(...args);
+          const invoke = () => liveness.run(() => (execute as ForwardedToolExecution)(...args));
           result = outcome.ownerDecision
             ? await invoke()
             : await runWithGenericToolActionDecision(tool, toolCallId, invoke);
@@ -651,6 +658,8 @@ export function wrapToolWithBeforeToolCallHook(
           toolCallOrdinal,
         });
         throw err;
+      } finally {
+        liveness.close();
       }
     },
   };

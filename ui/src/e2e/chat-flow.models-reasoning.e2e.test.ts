@@ -177,7 +177,7 @@ suite.define(() => {
       await gateway.setSessionsListResponse(workspaceList);
       // Snapshot and emit in one browser turn so an earlier request cannot satisfy this event.
       const workspaceEventListCount = await page.evaluate(
-        ({ session, match }) => {
+        ({ session: eventSession, match }) => {
           const mockGateway = (
             window as Window & { openclawControlUiE2eGateway?: ControlUiMockGateway }
           ).openclawControlUiE2eGateway;
@@ -186,10 +186,10 @@ suite.define(() => {
           }
           const count = mockGateway.findRequests("sessions.list", match).length;
           mockGateway.emit("sessions.changed", {
-            ...session,
+            ...eventSession,
             permissionMode: "workspace",
             reason: "patch",
-            sessionKey: session.key,
+            sessionKey: eventSession.key,
             updatedAt: 3,
           });
           return count;

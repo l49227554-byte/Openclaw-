@@ -2,13 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { handlePluginsCommand } from "../auto-reply/reply/commands-plugins.js";
 import { buildPluginsCommandParams } from "../auto-reply/reply/commands.test-harness.js";
 import { runPluginsDoctorCommand } from "../cli/plugins-cli.runtime.js";
 import { runPluginsInspectCommand } from "../cli/plugins-inspect-command.js";
 import * as configRuntime from "../config/config.js";
 import { readConfigFileSnapshotForWrite, writeConfigFile } from "../config/config.js";
+import * as configObserver from "../config/io.observe.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -824,6 +825,7 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
     const errorCodes = [
       "ERR_SQLITE_ERROR",
       "ERR_INVALID_STATE",
+      "STATE_DATABASE_READ_ADMISSION_INVALIDATED",
       "EACCES",
       "EPERM",
       "ENOENT",
@@ -833,9 +835,49 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
       "ENOSPC",
       "EROFS",
     ];
+    const classifyError = (error: unknown) => {
+      const classified = {
+        errorName: "<other>",
+        errorCode: "<other-or-absent>",
+        messageKind: "detail-withheld",
+        stackOwners: [] as string[],
+      };
+      try {
+        const errorName = error instanceof Error ? error.name : undefined;
+        const errorCode =
+          typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+        classified.errorName = errorNames.find((name) => name === errorName) ?? "<other>";
+        classified.errorCode = errorCodes.find((code) => code === errorCode) ?? "<other-or-absent>";
+        const message = error instanceof Error ? error.message : undefined;
+        classified.messageKind =
+          [
+            ["OpenClaw state database read admission is closed", "state-read-admission-closed"],
+            ["OpenClaw state database read admission changed", "state-read-admission-changed"],
+            ["Config health observation was superseded", "health-observation-superseded"],
+          ].find(([knownMessage]) => knownMessage === message)?.[1] ?? "detail-withheld";
+        const stack = error instanceof Error ? error.stack : undefined;
+        if (typeof stack === "string") {
+          const frames = stack.split("\n").filter((line) => /^\s+at /.test(line));
+          const stackOwners: [string, RegExp][] = [
+            ["io-observe", /[\\/]src[\\/]config[\\/]io\.observe\.(?:ts|js):\d+:\d+\)?$/],
+            ["io-health-state", /[\\/]src[\\/]config[\\/]io\.health-state\.(?:ts|js):\d+:\d+\)?$/],
+            [
+              "state-db-async-lifecycle",
+              /[\\/]src[\\/]state[\\/]openclaw-state-db-async-lifecycle\.(?:ts|js):\d+:\d+\)?$/,
+            ],
+          ];
+          classified.stackOwners = stackOwners
+            .filter(([, pattern]) => frames.some((frame) => pattern.test(frame)))
+            .map(([owner]) => owner);
+        }
+      } catch {
+        // Error getters and classification must not replace the original failure.
+      }
+      return classified;
+    };
     for (const name of [id, "all"]) {
       let lastCompletedStage = "<none>";
-      let measuredFailure: { stage: string; errorName: string; errorCode: string } | undefined;
+      let measuredFailure: { stage: string; error: unknown } | undefined;
       const readConfigSnapshot = configRuntime.readConfigFileSnapshot;
       const configRead = vi
         .spyOn(configRuntime, "readConfigFileSnapshot")
@@ -849,30 +891,15 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                 lastCompletedStage = safeStage;
                 return value;
               } catch (error) {
-                measuredFailure = {
-                  stage: safeStage,
-                  errorName: "<other>",
-                  errorCode: "<other-or-absent>",
-                };
-                try {
-                  const errorName = error instanceof Error ? error.name : undefined;
-                  const errorCode =
-                    typeof error === "object" && error !== null && "code" in error
-                      ? error.code
-                      : undefined;
-                  measuredFailure.errorName =
-                    errorNames.find((knownName) => knownName === errorName) ?? "<other>";
-                  measuredFailure.errorCode =
-                    errorCodes.find((code) => code === errorCode) ?? "<other-or-absent>";
-                } catch {
-                  // Classification must not replace the caught error, including throwing getters.
-                }
+                measuredFailure = { stage: safeStage, error };
                 throw error;
               }
             },
           }),
         );
+      let observation: MockInstance<typeof configObserver.observeConfigSnapshot> | undefined;
       try {
+        observation = vi.spyOn(configObserver, "observeConfigSnapshot");
         const result = await handlePluginsCommand(
           buildPluginsCommandParams({
             cfg: config,
@@ -888,7 +915,17 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
         try {
           // Observe the command's existing promise only after failure; do not warm config reads.
           const read = configRead.mock.results[0];
-          const snapshot = read?.type === "return" ? await read.value : undefined;
+          let snapshot: Awaited<ReturnType<typeof readConfigSnapshot>> | undefined;
+          let readFailure: ReturnType<typeof classifyError> | undefined;
+          try {
+            snapshot = read?.type === "return" ? await read.value : undefined;
+          } catch (readError) {
+            // A rejected fallback observation must not hide the first observation's failure.
+            readFailure = classifyError(readError);
+          }
+          const observations = (observation?.mock.calls ?? []).flatMap(([, observed], index) =>
+            observed.path === state.configPath ? [{ index, observed }] : [],
+          );
           const issuePaths = new Set([
             "",
             "agents",
@@ -920,9 +957,38 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
           console.error("diagnostics-chat config snapshot", {
             selection: name,
             readCalls: configRead.mock.calls.length,
+            readFailure,
+            observationCount: observations.length,
+            omittedObservations: Math.max(0, observations.length - 4),
+            observations: observations.slice(0, 4).map(({ index, observed }) => {
+              const result = observation?.mock.results[index];
+              const settled = observation?.mock.settledResults[index];
+              return {
+                index,
+                valid: observed.valid,
+                exists: observed.exists,
+                snapshotKind: observed.valid
+                  ? "valid-snapshot"
+                  : observed.issues.some(
+                        (issue) => issue.path === "" && issue.message.startsWith("read failed:"),
+                      )
+                    ? "read-failed-fallback"
+                    : "other",
+                result: result?.type ?? "unavailable",
+                settled: settled?.type ?? "unavailable",
+                failure:
+                  result?.type === "throw"
+                    ? classifyError(result.value)
+                    : settled?.type === "rejected"
+                      ? classifyError(settled.value)
+                      : undefined,
+              };
+            }),
             matchesFixturePath: snapshot ? snapshot.path === state.configPath : undefined,
             lastCompletedStage,
-            measuredFailure: measuredFailure ?? { stage: "<outside measured callback>" },
+            measuredFailure: measuredFailure
+              ? { stage: measuredFailure.stage, ...classifyError(measuredFailure.error) }
+              : { stage: "<outside measured callback>" },
             valid: snapshot?.valid,
             exists: snapshot?.exists,
             matchesWrittenFixture: snapshot?.raw === `${JSON.stringify(config, null, 2)}\n`,
@@ -938,7 +1004,11 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
         }
         throw error;
       } finally {
-        configRead.mockRestore();
+        try {
+          observation?.mockRestore();
+        } finally {
+          configRead.mockRestore();
+        }
       }
     }
     expect(fs.readFileSync(disposed, "utf8")).toBe("disposed\ndisposed\n");

@@ -411,6 +411,65 @@ describe("createModelSelectionState catalog loading", () => {
     },
   );
 
+  it.each([
+    ["m", 1_000_000, false],
+    ["fixture/m", 64_000, false],
+    ["m", 1_000_000, true],
+    ["fixture/m", 64_000, true],
+  ] as const)(
+    "preserves literal catalog identity for %s (%i tokens, reversed=%s)",
+    async (model, contextWindow, reversed) => {
+      // Both literal rows must survive regardless of their shared display key or order.
+      const models = [
+        makeConfiguredModel({ id: "m", contextWindow: 1_000_000 }),
+        makeConfiguredModel({ id: "fixture/m", contextWindow: 64_000 }),
+      ];
+      if (reversed) {
+        models.reverse();
+      }
+      const cfg: OpenClawConfig = {
+        agents: { defaults: { modelPolicy: { allow: [] } } },
+        models: {
+          providers: {
+            fixture: {
+              api: "openai-responses",
+              baseUrl: "https://models.example/v1",
+              models,
+            },
+          },
+        },
+      };
+      const entries = [{ provider: "unrelated", id: "other", name: "Other" }];
+      const state = await createModelSelectionState({
+        cfg,
+        agentCfg: cfg.agents?.defaults,
+        defaultProvider: "fixture",
+        defaultModel: model,
+        provider: "fixture",
+        model,
+        hasModelDirective: false,
+        preparedModelCatalog: { entries, routeVariants: entries, authoritative: true },
+      });
+
+      expect(state.modelContextWindow).toBe(contextWindow);
+      expect(state.allowedModelCatalog).toEqual([
+        ...models.map(({ id, contextWindow }) =>
+          expect.objectContaining({ provider: "fixture", id, contextWindow }),
+        ),
+        entries[0],
+      ]);
+      expect(
+        resolveContextTokens({
+          cfg,
+          provider: state.provider,
+          model: state.model,
+          modelContextWindow: state.modelContextWindow,
+          modelContextTokens: state.modelContextTokens,
+        }),
+      ).toBe(contextWindow);
+    },
+  );
+
   it("uses the prepared gateway owner catalog without an exact-generation reload", async () => {
     vi.mocked(loadModelCatalogLocal).mockClear();
     catalogRuntimeMocks.loadModelCatalogSnapshot.mockClear();

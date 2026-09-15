@@ -44,7 +44,14 @@ export function findSelectedCatalogEntry(params: {
 }): ModelCatalogEntry | undefined {
   const normalizedProvider = normalizeProviderId(params.provider);
   const selectedKey = modelKey(normalizedProvider, params.model);
-  return params.catalog?.find((entry) => modelKey(entry.provider, entry.id) === selectedKey);
+  // Literal IDs can share a display key; prefer the selected row before alias matching.
+  return (
+    params.catalog?.find(
+      (entry) =>
+        normalizeProviderId(entry.provider) === normalizedProvider &&
+        entry.id.trim() === params.model.trim(),
+    ) ?? params.catalog?.find((entry) => modelKey(entry.provider, entry.id) === selectedKey)
+  );
 }
 
 /** Provider identity comes from authored routes or prepared/plugin metadata, not model inventory. */
@@ -155,6 +162,12 @@ export async function prepareModelSelectionRuntime(params: {
   };
 }
 
+// Match catalog metadata by literal identity, not a potentially collapsed display key.
+function modelCatalogEntryKey(entry: Pick<ModelCatalogEntry, "provider" | "id">): string {
+  return JSON.stringify([entry.provider.trim(), entry.id.trim()]);
+}
+
+/** Retain prepared-only models while overlaying matching configured model metadata. */
 export function mergePreparedConfiguredCatalog(params: {
   configured: ModelCatalogEntry[];
   prepared?: readonly ModelCatalogEntry[];
@@ -163,12 +176,12 @@ export function mergePreparedConfiguredCatalog(params: {
     return params.configured;
   }
   const mergedByKey = new Map(
-    params.configured.map((entry) => [modelKey(entry.provider, entry.id), entry]),
+    params.configured.map((entry) => [modelCatalogEntryKey(entry), entry]),
   );
   // Plugin-owned providers need not have authored models.providers rows. Keep
   // their prepared capabilities too; selection applies visibility after this merge.
   for (const entry of params.prepared) {
-    const key = modelKey(entry.provider, entry.id);
+    const key = modelCatalogEntryKey(entry);
     mergedByKey.set(key, { ...mergedByKey.get(key), ...entry });
   }
   return [...mergedByKey.values()];

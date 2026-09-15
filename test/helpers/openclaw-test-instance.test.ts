@@ -174,6 +174,10 @@ async function createFakeGateway(
   startTimeoutMs = 1_000,
   stopTimeoutMs = 1_500,
   control?: { url: string; holdPreparation?: boolean },
+  ownerOptions: {
+    signal?: AbortSignal;
+    verifyCleanup?: (cleanup: () => Promise<void>) => Promise<void>;
+  } = {},
 ) {
   const cwd = await fs.mkdtemp(path.join(tmpdir(), "openclaw-test-instance-gateway-"));
   fakeRoots.push(cwd);
@@ -343,6 +347,7 @@ writeFileSync("dist/.runtime-postbuildstamp", "");
     },
     startTimeoutMs,
     stopTimeoutMs,
+    ...ownerOptions,
   });
   fakeInstances.push({
     instance,
@@ -425,9 +430,16 @@ function readReadinessReceipt(error: unknown) {
 
 function createStalledReadinessFetch(phase: "headers" | "body") {
   return vi.fn<typeof fetch>((_url, init) => {
-    const stalled = new Promise<never>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
-    });
+    const signal = init?.signal;
+    if (!signal) {
+      throw new Error("readiness probe signal is required");
+    }
+    const stalled = (async (): Promise<never> => {
+      for (;;) {
+        signal.throwIfAborted();
+        await once(signal, "abort");
+      }
+    })();
     if (phase === "headers") {
       return stalled;
     }
@@ -882,6 +894,132 @@ describe("openclaw test instance", () => {
     expect(await response.json()).toEqual({ ready: true });
   });
 
+  it("joins shared entrypoint preparation without launching the cancelled owner", async () => {
+    const controller = new AbortController();
+    const cancelled = new Error("instance owner cancelled during preparation");
+    const control = await createGatewayControl();
+    const { instance, tracePath, readAttempts } = await createFakeGateway(
+      "ready",
+      1_000,
+      1_500,
+      {
+        url: control.url,
+        holdPreparation: true,
+      },
+      { signal: controller.signal },
+    );
+    const first = trackOperation(instance.startGateway());
+    const firstOutcome = first.catch((error: unknown) => error);
+    await Promise.race([control.reached, first]);
+    const borrower = await createOpenClawTestInstance({
+      name: "shared-entrypoint-borrower",
+      cwd: path.dirname(tracePath),
+      env: {
+        OPENCLAW_FAKE_GATEWAY_SEQUENCE: "ready",
+        OPENCLAW_FAKE_GATEWAY_TRACE: tracePath,
+        OPENCLAW_FAKE_GATEWAY_CONTROL: control.url,
+      },
+    });
+    fakeInstances.push({ instance: borrower });
+    const borrowedStart = trackOperation(borrower.startGateway());
+    const borrowedOutcome = borrowedStart.catch((error: unknown) => error);
+    controller.abort(cancelled);
+    const laterStart = trackOperation(instance.startGateway()).catch((error: unknown) => error);
+    // Observe cancellation only after the original shared preparation is joined.
+    await control.release();
+    expect(await firstOutcome).toBe(cancelled);
+    expect(await laterStart).toBeInstanceOf(Error);
+    expect(await borrowedOutcome).toBeUndefined();
+    expect(instance.child).toBeUndefined();
+    expect(control.launches).toHaveLength(1);
+    expect((await readAttempts()).map((attempt) => attempt.port)).toEqual([borrower.port]);
+    const response = await fetch(`http://127.0.0.1:${borrower.port}/readyz`);
+    expect(await response.json()).toEqual({ ready: true });
+  });
+
+  it("rolls back the real child when its owner aborts a pending readiness probe", async () => {
+    const controller = new AbortController();
+    const cancelled = new Error("instance owner cancelled during readiness");
+    const control = await createGatewayControl();
+    const { instance } = await createFakeGateway("held-ready", 1_000, 1_500, control, {
+      signal: controller.signal,
+    });
+    const startup = trackOperation(instance.startGateway());
+    const outcome = startup.catch((error: unknown) => error);
+    await Promise.race([control.reached, startup]);
+    const child = instance.child;
+    expect(child).toBeDefined();
+    controller.abort(cancelled);
+    expect(await outcome).toBe(cancelled);
+    expect(instance.child).toBeUndefined();
+    expect(child?.stdout.closed).toBe(true);
+    expect(child?.stderr.closed).toBe(true);
+    expect(inspectManagedProcessGroup(child!, { errorPolicy: "indeterminate" })).toBe("dead");
+    expect(isProcessAlive(child!.pid!)).toBe(false);
+    await expect(fs.stat(instance.state.root)).resolves.toBeDefined();
+  });
+
+  it("rolls back readiness that completes after owner cancellation", async () => {
+    const controller = new AbortController();
+    const cancelled = new Error("instance owner cancelled at readiness handoff");
+    const { instance } = await createFakeGateway("ready", 1_000, 1_500, undefined, {
+      signal: controller.signal,
+    });
+    const nativeFetch = globalThis.fetch;
+    let child: typeof instance.child;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (...args) => {
+      const response = await nativeFetch(...args);
+      if (args[0] === `http://127.0.0.1:${instance.port}/readyz`) {
+        const json = response.json.bind(response);
+        vi.spyOn(response, "json").mockImplementation(async () => {
+          const result: unknown = await json();
+          child = instance.child;
+          controller.abort(cancelled);
+          return result;
+        });
+      }
+      return response;
+    });
+    try {
+      const outcome = await trackOperation(instance.startGateway()).catch(
+        (error: unknown) => error,
+      );
+      expect(outcome).toBe(cancelled);
+      expect(child).toBeDefined();
+      expect(instance.child).toBeUndefined();
+      expect(child?.stdout.closed).toBe(true);
+      expect(child?.stderr.closed).toBe(true);
+      expect(isProcessAlive(child!.pid!)).toBe(false);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("joins a cancelled CLI command before releasing instance state", async () => {
+    const controller = new AbortController();
+    const { instance, tracePath, readAttempts } = await createFakeGateway(
+      "cli",
+      1_000,
+      1_500,
+      undefined,
+      {
+        signal: controller.signal,
+      },
+    );
+    const command = trackOperation(instance.cli(["wait"], { timeoutMs: 1_000 }));
+    const outcome = command.catch((error: unknown) => error);
+    await waitForFile(tracePath, 5_000);
+    const [attempt] = await readAttempts();
+    expect(isProcessAlive(attempt!.pid)).toBe(true);
+    controller.abort(new Error("instance owner cancelled during CLI"));
+    expect(await outcome).toMatchObject({ message: expect.stringContaining("aborted") });
+    expect(isProcessAlive(attempt!.pid)).toBe(false);
+    await expect(fs.stat(instance.state.root)).resolves.toBeDefined();
+    await expect(instance.cli(["0"])).rejects.toThrow();
+    await instance.cleanup();
+    await expectPathMissing(instance.state.root);
+  });
+
   it("orders a new start after an intervening stop instead of joining the earlier start", async () => {
     const control = await createGatewayControl();
     const { instance } = await createFakeGateway("held-ready,ready", 1_000, 1_500, control);
@@ -906,7 +1044,9 @@ describe("openclaw test instance", () => {
   it("starts a ready replacement after a real readiness deadline expires", async () => {
     const control = await createGatewayControl();
     const { instance } = await createFakeGateway("never-ready,ready", 1_000, 1_500, control);
-    const error = await trackOperation(instance.startGateway()).catch((error: unknown) => error);
+    const error = await trackOperation(instance.startGateway()).catch(
+      (failure: unknown) => failure,
+    );
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("timeout waiting for gateway readiness");
     const firstPid = control.launches[0];
@@ -982,6 +1122,38 @@ describe("openclaw test instance", () => {
     ]) {
       expect(classify(...(candidate as [number, NodeJS.Signals | null, string]))).toBe(false);
     }
+  });
+
+  it("does not retry a drained migration refusal after owner cancellation", async () => {
+    const controller = new AbortController();
+    const control = await createGatewayControl();
+    const { instance, readAttempts } = await createFakeGateway(
+      "late-refuse,ready",
+      10_000,
+      1_500,
+      control,
+      {
+        signal: controller.signal,
+      },
+    );
+    const exited = createDeferred();
+    control.observers.onLaunch = () => {
+      instance.child?.once("exit", () => exited.resolve());
+    };
+    const startup = trackOperation(instance.startGateway());
+    const outcome = startup.catch((error: unknown) => error);
+    await Promise.race([exited.promise, startup]);
+    await Promise.race([control.reached, startup]);
+    expect(instance.child?.stderr.closed).toBe(false);
+    controller.abort(new Error("instance owner cancelled during refusal drain"));
+    await control.release();
+    const result = await outcome;
+    const attempts = await readAttempts();
+    expect(attempts).toHaveLength(1);
+    expect(result).toBeInstanceOf(Error);
+    expect(instance.logs()).not.toContain(RESTART_MARKER);
+    expect(instance.child).toBeUndefined();
+    expect(isProcessAlive(attempts[0]!.pid)).toBe(false);
   });
 
   it.for(["refuse", "late-refuse"])(
@@ -1406,7 +1578,9 @@ describe("openclaw test instance", () => {
         // Keep the inherited pipe held through a complete failed restart: eventual
         // replacement after release alone cannot prove that stale ownership blocked it.
         await expect(trackOperation(instance.startGateway())).rejects.toThrow(
-          new Error(`gateway process did not close before stop deadline\n${instance.logs()}`),
+          new Error(
+            `gateway process cleanup could not verify termination and output closure\n${instance.logs()}`,
+          ),
         );
         expect(instance.child).toBe(firstChild);
         expect(firstChild.stderr.closed).toBe(false);
@@ -1731,7 +1905,7 @@ describe("openclaw test instance", () => {
         1,
         10_000,
       )
-      .catch((error: unknown) => error);
+      .catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("gateway exited before readiness");
     expect(readReadinessReceipt(error)).toEqual({
@@ -1783,7 +1957,7 @@ describe("openclaw test instance", () => {
     });
     const error = await testing
       .waitForGatewayReady(createGatewayProcessState(), [], [], 12345, 100, fetchImpl)
-      .catch((error: unknown) => error);
+      .catch((failure: unknown) => failure);
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("timeout waiting for gateway readiness");
@@ -1832,7 +2006,7 @@ describe("openclaw test instance", () => {
       });
       const error = await testing
         .waitForGatewayReady(createGatewayProcessState(), [], [], 12345, 25, fetchImpl)
-        .catch((error: unknown) => error);
+        .catch((failure: unknown) => failure);
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("timeout waiting for gateway readiness");
@@ -1855,7 +2029,7 @@ describe("openclaw test instance", () => {
       const startedAt = Date.now();
       const error = await testing
         .waitForGatewayReady(processState, [], [], 12345, 25, fetchImpl)
-        .catch((error: unknown) => error);
+        .catch((failure: unknown) => failure);
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("timeout waiting for gateway readiness");
@@ -1883,7 +2057,7 @@ describe("openclaw test instance", () => {
       try {
         const error = await testing
           .waitForGatewayReady(processState, [], [], 12345, 5_000, fetchImpl)
-          .catch((error: unknown) => error);
+          .catch((failure: unknown) => failure);
 
         expect(error).toBeInstanceOf(Error);
         expect((error as Error).message).toContain("gateway exited before readiness");
@@ -1924,7 +2098,7 @@ describe("openclaw test instance", () => {
     try {
       const error = await testing
         .waitForGatewayReady(processState, [], [], 12345, 5_000, fetchImpl)
-        .catch((error: unknown) => error);
+        .catch((failure: unknown) => failure);
 
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("gateway exited before readiness");

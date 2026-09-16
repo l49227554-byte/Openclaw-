@@ -702,9 +702,15 @@ describe("managed plugin instances", () => {
     pending.resolve();
     await rejectedCall;
     expect(atDrainTimeout).toEqual({ aborted: true, cleanupEntered: 1, cleaned: 0 });
-    await expect(disposing).resolves.toMatchObject({
-      errors: [new Error("Plugin stuck still has active calls after 5000ms")],
-    });
+    const { errors } = await disposing;
+    expect(errors).toHaveLength(1);
+    const [drainTimeout] = errors;
+    expect(drainTimeout).toBeInstanceOf(PluginInstanceDrainTimeoutError);
+    if (!(drainTimeout instanceof PluginInstanceDrainTimeoutError)) {
+      throw new Error("Expected the disposal's original-call drain diagnostic");
+    }
+    expect(drainTimeout.message).toBe("Plugin stuck still has active calls after 5000ms");
+    await expect(drainTimeout.settled).resolves.toBeUndefined();
     expect(instance.lifecycle.signal.aborted).toBe(true);
     expect(cleaned).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);

@@ -16,6 +16,8 @@ import {
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { captureCronJobMessageActionAuthority } from "../active-jobs.js";
 import type { CronExecutionIdentityAdmission } from "../service/state.js";
+import { resolveCronAuthenticatedChannelRequester } from "../tools-allow-provenance.js";
+import type { CronStoredJob } from "../types.js";
 
 /** Owns one prompt admission and its private message grant through settlement. */
 export function prepareCronPromptRunAdmission(params: {
@@ -23,7 +25,7 @@ export function prepareCronPromptRunAdmission(params: {
   agentId: string;
   runId: string;
   sessionKey: string;
-  jobId: string;
+  job: CronStoredJob;
   toolsAllow?: string[];
   scheduledToolPolicy?: ScheduledToolPolicyContext;
   executionIdentity?: CronExecutionIdentityAdmission;
@@ -54,8 +56,11 @@ export function prepareCronPromptRunAdmission(params: {
     : basePreparedRunAdmission;
   const scheduledMessageAuthority =
     scheduledToolPolicy && isRuntimeToolAllowed("message", params.toolsAllow)
-      ? captureCronJobMessageActionAuthority({ jobId: params.jobId, operationalRunInstance })
+      ? captureCronJobMessageActionAuthority({ jobId: params.job.id, operationalRunInstance })
       : undefined;
+  const channelRequester = scheduledMessageAuthority
+    ? resolveCronAuthenticatedChannelRequester(params.job)
+    : undefined;
   // This opaque token remains unusable until this exact operational instance
   // is admitted by the live occurrence. Both runners redeem the same host grant.
   const messageActionTurnCapability =
@@ -70,6 +75,7 @@ export function prepareCronPromptRunAdmission(params: {
           scheduled: {
             policy: scheduledToolPolicy,
             assertCurrent: scheduledMessageAuthority,
+            ...(channelRequester ? { channelRequester } : {}),
           },
           expiresWithRun: true,
         })

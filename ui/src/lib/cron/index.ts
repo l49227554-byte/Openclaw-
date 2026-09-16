@@ -1244,6 +1244,15 @@ export async function addCronJob(state: CronState): Promise<CronSaveResult> {
     if (schedule) {
       job.schedule = schedule;
     }
+    if (sourceJob?.pacing) {
+      if (schedule?.kind === "every" || schedule?.kind === "cron") {
+        if (!editingJob) {
+          job.pacing = { ...sourceJob.pacing };
+        }
+      } else if (editingJob && schedule) {
+        job.pacing = null;
+      }
+    }
     if (payload) {
       job.payload = payload;
     }
@@ -1476,6 +1485,11 @@ export async function loadCronRuns(
     append,
   };
   activeCronRunsRequests.set(state, request);
+  // Retained rows cannot authorize an append until their replacement page arrives.
+  if (!append) {
+    state.cronRunsHasMore = false;
+    state.cronRunsNextOffset = null;
+  }
   state.cronRunsLoadingMore = append;
   try {
     const res = await client.request<CronRunsResult>("cron.runs", {

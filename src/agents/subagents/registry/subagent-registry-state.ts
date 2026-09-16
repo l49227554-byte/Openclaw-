@@ -4,10 +4,15 @@ import {
   type SessionLifecycleEvent,
 } from "../../../sessions/session-lifecycle-events.js";
 import { runOutsideAsyncWorkScope } from "../../../shared/async-work-scope.js";
+import { isStateDatabaseReadAdmissionInvalidatedError } from "../../../state/openclaw-state-db-async-lifecycle.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
-import { projectSubagentRunForMaintenance } from "./subagent-delivery-state.js";
+import {
+  projectSubagentRunForMaintenance,
+  projectSubagentRunForSessionList,
+} from "./subagent-delivery-state.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
+import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 /**
  * Subagent registry state persistence bridge.
  *
@@ -25,11 +30,7 @@ import {
   saveSubagentRegistryChangesToSqlite,
   saveSubagentRegistryToSqlite,
 } from "./subagent-registry.store.sqlite.js";
-import type {
-  SubagentRunMaintenanceRecord,
-  SubagentRunReadRecord,
-  SubagentRunRecord,
-} from "./subagent-registry.types.js";
+import type { SubagentRunMaintenanceRecord, SubagentRunRecord } from "./subagent-registry.types.js";
 import { collectSubagentSessionReadKeys } from "./subagent-session-read-scope.js";
 
 export const SUBAGENT_RUNS_READ_CACHE_TTL_MS = 500;
@@ -164,58 +165,6 @@ export function onSubagentRegistryPersisted(listener: SubagentRegistryPersistLis
   };
 }
 
-function projectSubagentRunForSessionList(entry: SubagentRunRecord): SubagentRunReadRecord {
-  return {
-    runId: entry.runId,
-    ...(entry.pauseReason ? { pauseReason: entry.pauseReason } : {}),
-    ...(entry.swarmRunId ? { swarmRunId: entry.swarmRunId } : {}),
-    childSessionKey: entry.childSessionKey,
-    ...(entry.controllerSessionKey ? { controllerSessionKey: entry.controllerSessionKey } : {}),
-    requesterSessionKey: entry.requesterSessionKey,
-    ...(entry.collect
-      ? {
-          collect: true,
-          groupId: entry.groupId,
-          swarmRequesterSessionKey: entry.swarmRequesterSessionKey,
-        }
-      : {}),
-    ...(entry.collectorCompletion
-      ? { collectorCompletion: { status: entry.collectorCompletion.status } }
-      : {}),
-    ...(entry.requesterAgentId ? { requesterAgentId: entry.requesterAgentId } : {}),
-    ...(entry.model ? { model: entry.model } : {}),
-    ...(entry.generation !== undefined ? { generation: entry.generation } : {}),
-    createdAt: entry.createdAt,
-    execution: {
-      status: entry.execution.status,
-      ...(entry.execution.startedAt !== undefined ? { startedAt: entry.execution.startedAt } : {}),
-      ...(entry.execution.endedAt !== undefined ? { endedAt: entry.execution.endedAt } : {}),
-      ...(entry.execution.outcome ? { outcome: { status: entry.execution.outcome.status } } : {}),
-    },
-    ...(entry.sessionStartedAt !== undefined ? { sessionStartedAt: entry.sessionStartedAt } : {}),
-    ...(entry.accumulatedRuntimeMs !== undefined
-      ? { accumulatedRuntimeMs: entry.accumulatedRuntimeMs }
-      : {}),
-    ...(entry.runTimeoutSeconds !== undefined
-      ? { runTimeoutSeconds: entry.runTimeoutSeconds }
-      : {}),
-    ...(entry.endedReason ? { endedReason: entry.endedReason } : {}),
-    ...(entry.cleanupCompletedAt !== undefined
-      ? { cleanupCompletedAt: entry.cleanupCompletedAt }
-      : {}),
-    ...(entry.delivery
-      ? {
-          delivery: {
-            status: entry.delivery.status,
-            ...(entry.delivery.suspendedAt !== undefined
-              ? { suspendedAt: entry.delivery.suspendedAt }
-              : {}),
-          },
-        }
-      : {}),
-  };
-}
-
 function matchesSubagentCacheContext(
   previous: OpenClawStateWorkerContext | undefined,
   current: OpenClawStateWorkerContext | undefined,
@@ -258,7 +207,17 @@ function rememberSubagentRunsSnapshot<T extends SubagentRunReadRecord>(
   changedRunIds: readonly string[] | undefined,
   loadedAtMs: number,
 ): void {
-  const context = cache.captureContext?.();
+  let context: OpenClawStateWorkerContext | undefined;
+  try {
+    context = cache.captureContext?.();
+  } catch (error) {
+    if (!isStateDatabaseReadAdmissionInvalidatedError(error)) {
+      throw error;
+    }
+    // Read retirement cannot turn committed or best-effort publication into a write failure.
+    cache.state = {};
+    return;
+  }
   const previous = matchesSubagentCacheContext(cache.state.context, context) ? cache.state : {};
   const snapshot = previous.snapshot;
   if (changedRunIds && !snapshot && cache === persistedSubagentSessionListRunsReadCache) {

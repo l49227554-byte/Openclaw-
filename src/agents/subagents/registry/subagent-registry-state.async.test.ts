@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { createOpenClawDatabaseMaintenanceScope } from "../../../state/openclaw-state-db-async-lifecycle.js";
-import { closeOpenClawStateDatabaseByPathAsync } from "../../../state/openclaw-state-db-cache.js";
+import {
+  closeOpenClawStateDatabaseByPathAsync,
+  registerOpenClawStateDatabaseAsyncResource,
+} from "../../../state/openclaw-state-db-cache.js";
+import * as databaseCache from "../../../state/openclaw-state-db-cache.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import * as workerStore from "../../../state/openclaw-state-worker-store.js";
@@ -10,18 +14,23 @@ import {
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import {
   clearSubagentRunsReadCacheForTest,
   getSubagentRunsSnapshotForSessions,
   getSubagentRunsSnapshotForRead,
+  getSubagentMaintenanceRunsSnapshotForRead,
+  getSubagentSessionListRunsSnapshotForRead,
   invalidateSubagentSessionListReadCache,
+  onSubagentRegistryPersisted,
   persistSubagentRunsToDisk,
   persistSubagentRunsToDiskOrThrow,
+  publishSubagentRunsAfterAtomicStore,
   restoreSubagentRunsFromDisk,
   withSubagentSessionListRunsSnapshotForRead,
 } from "./subagent-registry-state.js";
 import * as store from "./subagent-registry.store.sqlite.js";
-import type { SubagentRunReadRecord, SubagentRunRecord } from "./subagent-registry.types.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const transport = vi.hoisted(() => ({
   execute: vi.fn<() => Promise<Map<string, SubagentRunReadRecord> | undefined>>(),
@@ -149,6 +158,99 @@ it("does not supersede a fill on a rolled-back strict write", async () => {
   expect(() => persistSubagentRunsToDiskOrThrow(runs("uncommitted"))).toThrow("write failed");
   replies[0]!.resolve(runs("committed"));
   expect(await first).toEqual(["committed"]);
+});
+
+it.each(["best effort", "strict refusal", "strict commit", "atomic commit"])(
+  "keeps %s publication independent of retired read admission",
+  async (mode) => {
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    persistSubagentRunsToDiskOrThrow(runs("before"), ["one"]);
+    const database = openOpenClawStateDatabase();
+    const context = captureOpenClawStateWorkerContext();
+    const current = runs("after");
+    const entry = current.get("one")!;
+    entry.execution = { status: "terminal", endedAt: 2, outcome: { status: "ok" } };
+    entry.cleanupCompletedAt = 2;
+    const wake = vi.fn();
+    const unsubscribe = onSubagentRegistryPersisted(wake);
+    const releaseClose = createDeferredCore();
+    const unregister = registerOpenClawStateDatabaseAsyncResource({
+      close: () => releaseClose.promise,
+    });
+    const events: Array<() => void> = [];
+    const publish = () => {
+      if (mode === "atomic commit") {
+        publishSubagentRunsAfterAtomicStore(current, ["one"], events);
+      } else if (mode === "best effort") {
+        persistSubagentRunsToDisk(current, ["one"]);
+      } else {
+        persistSubagentRunsToDiskOrThrow(current, ["one"]);
+      }
+    };
+    if (mode === "atomic commit") {
+      store.saveSubagentRegistryChangesToSqlite(current, ["one"]);
+    }
+    const resumePublication = createDeferredCore();
+    let publication: Promise<void> | undefined;
+    if (mode === "best effort" || mode === "strict refusal") {
+      const scope = createOpenClawDatabaseMaintenanceScope();
+      scope.run(() => {
+        publication = resumePublication.promise.then(publish);
+      });
+      await scope.close();
+    }
+    const closing = closeOpenClawStateDatabaseByPathAsync(context.admission.databasePath);
+    try {
+      expect(() => captureOpenClawStateWorkerContext()).toThrow("read admission is closed");
+      if (publication) {
+        const observed =
+          mode === "strict refusal"
+            ? expect(publication).rejects.toThrow("maintenance resource scope is closed")
+            : expect(publication).resolves.toBeUndefined();
+        resumePublication.resolve();
+        await observed;
+      } else {
+        expect(publish).not.toThrow();
+      }
+      const committed = mode === "strict commit" || mode === "atomic commit";
+      expect(store.readSubagentRun(database, "one")?.model).toBe(committed ? "after" : "before");
+      const refused = mode === "strict refusal";
+      expect(getSubagentRunsSnapshotForRead(new Map()).get("one")).toMatchObject({
+        model: refused ? "before" : "after",
+        execution: { status: refused ? "running" : "terminal" },
+      });
+      const maintenance = getSubagentMaintenanceRunsSnapshotForRead(new Map()).get("one");
+      expect(maintenance?.execution.status).toBe(refused ? "running" : "terminal");
+      expect(maintenance?.cleanupCompletedAt).toBe(refused ? undefined : 2);
+      expect(events).toHaveLength(mode === "atomic commit" ? 1 : 0);
+      events.forEach((event) => event());
+      expect(wake).toHaveBeenCalledTimes(refused ? 0 : 1);
+      await expect(
+        withSubagentSessionListRunsSnapshotForRead(new Map(), context, () => "stale"),
+      ).rejects.toThrow("read admission is closed");
+    } finally {
+      resumePublication.resolve();
+      releaseClose.resolve();
+      await closing;
+      unregister();
+      unsubscribe();
+    }
+    store.saveSubagentRegistryChangesToSqlite(runs("reopened"), ["one"]);
+    expect(getSubagentSessionListRunsSnapshotForRead(new Map()).get("one")?.model).toBe("reopened");
+    await expect(
+      withSubagentSessionListRunsSnapshotForRead(new Map(), context, () => "stale"),
+    ).rejects.toThrow("read admission changed");
+  },
+);
+
+it("keeps unrelated publication context failures visible", () => {
+  const failure = new Error("synthetic context failure");
+  vi.spyOn(databaseCache, "captureOpenClawStateDatabaseReadAdmission").mockImplementationOnce(
+    () => {
+      throw failure;
+    },
+  );
+  expect(() => persistSubagentRunsToDisk(runs("current"), ["one"])).toThrow(failure);
 });
 
 it.each([1600, 900])(

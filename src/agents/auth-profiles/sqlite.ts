@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { safeParseJson } from "@openclaw/normalization-core";
+import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import { resolveStateDir } from "../../config/paths.js";
 import { sha256HexPrefixCore } from "../../infra/crypto-digest.js";
 import { executeWithCachedStatement } from "../../infra/kysely-sync-cache-state.js";
@@ -20,7 +21,6 @@ import {
 import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { resolveSqliteDatabaseFilePaths } from "../../infra/sqlite-files.js";
-import { deferSqlitePostCommitPublication } from "../../infra/sqlite-post-commit.js";
 import { readSqliteUserVersion } from "../../infra/sqlite-user-version.js";
 import { registerSqliteCacheExitClose } from "../../infra/sqlite-wal.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
@@ -89,7 +89,8 @@ export function resolveAuthProfileStoreOwner(
 }
 
 function prepareAuthProfileSharedOwner(env: NodeJS.ProcessEnv) {
-  const preparedEnv = { ...env, OPENCLAW_STATE_DIR: resolveStateDir(env) };
+  const preparedEnv = cloneEnvWithPlatformSemantics(env);
+  preparedEnv.OPENCLAW_STATE_DIR = resolveStateDir(preparedEnv);
   return {
     env: preparedEnv,
     sharedDatabasePath: resolveSharedAuthStorePath(preparedEnv),
@@ -154,14 +155,6 @@ let unregisterReadHandleExitClose: (() => void) | null = null;
 type AuthProfileReadPoolCloseScope =
   | { kind: "database"; databasePath: string }
   | { kind: "root"; rootPath: string };
-
-/** Queue runtime publication on the transaction edge owned by this database. */
-export function deferAuthProfilePostCommitPublication(
-  database: AuthProfileDatabase,
-  publish: () => void,
-): boolean {
-  return deferSqlitePostCommitPublication(database.db, publish);
-}
 
 function inferAgentIdFromDir(agentDir: string): string {
   const normalized = path.normalize(agentDir);
@@ -702,12 +695,11 @@ function prepareAuthProfileWriteTransaction(
   agentDir: string | undefined,
   options: AuthProfileWriteOptions,
 ) {
-  const env = {
-    ...(options.env ?? process.env),
-    ...(!options.env && options.stateDir
-      ? { OPENCLAW_STATE_DIR: options.stateDir, OPENCLAW_AGENT_DIR: undefined }
-      : {}),
-  };
+  const env = cloneEnvWithPlatformSemantics(options.env ?? process.env);
+  if (!options.env && options.stateDir) {
+    env.OPENCLAW_STATE_DIR = options.stateDir;
+    env.OPENCLAW_AGENT_DIR = undefined;
+  }
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
   const sharedStoreWrite = prepareFreshSharedAuthStoreWrite({
     agentDir,

@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
+import * as configEnvVars from "../../config/config-env-vars.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/io.js";
 import * as integrity from "../../infra/sqlite-integrity-worker.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -15,7 +18,10 @@ import {
   runOpenClawAgentWriteAdmission,
 } from "../../state/openclaw-agent-write-admission.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
+import { withEnvAsync } from "../../test-utils/env.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
+import { withMockedPlatform, withRestoredMocks } from "../../test-utils/vitest-spies.js";
 import {
   noteCommittedSharedAuthStoreOwnership,
   resolveSharedAuthStoreOwnership,
@@ -27,7 +33,13 @@ import {
   getRuntimeAuthProfileStoreSnapshotCore,
   setRuntimeAuthProfileStoreSnapshot,
 } from "./runtime-snapshots.js";
-import { runAuthProfileWriteTransaction } from "./sqlite.js";
+import {
+  closeAuthProfileReadPool,
+  resolveAuthProfileDatabasePath,
+  runAuthProfileWriteTransaction,
+  runAuthProfileWriteTransactionAsync,
+  writePersistedAuthProfileStoreRaw,
+} from "./sqlite.js";
 import { saveAuthProfileStore } from "./store-runtime.js";
 import type { AuthProfileStore } from "./types.js";
 import { markAuthProfileFailure } from "./usage.js";
@@ -397,3 +409,183 @@ it.each(["supplied-first", "ordinary-first"] as const)(
     );
   },
 );
+
+it.each(["raw", "precloned"] as const)(
+  "keeps queued auth writes on their captured Windows owners (%s)",
+  async (input) => {
+    await withOpenClawTestState(
+      { label: "auth-windows-owner", scenario: "minimal" },
+      async (state) => {
+        const cfg = {
+          agents: {
+            list: [{ id: "main", default: true }, { id: "voice" }, { id: "shared-auth" }],
+          },
+        };
+        setRuntimeConfigSnapshot(cfg, cfg);
+        const agentDir = state.agentDir("voice");
+        const sharedAgentDir = state.agentDir("shared-auth");
+        const store = createStore();
+        saveAuthProfileStore(store, agentDir, saveOptions);
+        runAuthProfileWriteTransaction(
+          sharedAgentDir,
+          (database) => writePersistedAuthProfileStoreRaw(store, sharedAgentDir, database),
+          { env: { ...state.env, OPENCLAW_AGENT_DIR: sharedAgentDir } },
+        );
+        expect(resolveSharedAuthStoreOwnership(state.env).location).toBe("legacy-main");
+        expect(loadPersistedAuthProfileStore(sharedAgentDir)).toEqual(store);
+        const database = openOpenClawAgentDatabase({ agentId: "voice", env: state.env });
+        const fallbackHome = state.statePath("fallback-home");
+        const fallbackRoot = path.join(fallbackHome, ".openclaw");
+        const replacementRoot = state.statePath("replacement-state");
+        const ignoredRoot = state.statePath("ignored-state");
+        const replacementAgentDir = path.join(replacementRoot, "agents", "main", "agent");
+        const hostPlatform = process.platform;
+        const cloneEnvironment = configEnvVars.cloneEnvWithPlatformSemantics;
+        // Only the synchronous clone sees Windows; all native work keeps the host platform.
+        const windowsCapture = vi
+          .spyOn(configEnvVars, "cloneEnvWithPlatformSemantics")
+          .mockImplementation((env) => {
+            const captured = withMockedPlatform("win32", () => cloneEnvironment(env));
+            expect(process.platform).toBe(hostPlatform);
+            return captured;
+          });
+        try {
+          await withRestoredMocks([windowsCapture], async () => {
+            const rawEnv = {
+              OPENCLAW_HOME: fallbackHome,
+              OpenClaw_State_Dir: state.stateDir,
+              OpenClaw_Agent_Dir: sharedAgentDir,
+            };
+            const inputEnv =
+              input === "precloned" ? configEnvVars.cloneEnvWithPlatformSemantics(rawEnv) : rawEnv;
+            const originalEntries = Object.entries(inputEnv);
+            const options = { env: inputEnv, stateDir: ignoredRoot };
+            const entered = createDeferredCore();
+            const release = createDeferredCore();
+            const reservation = runOpenClawAgentWorkerWrite(
+              { agentId: "voice", path: database.path },
+              async () => {
+                entered.resolve();
+                await release.promise;
+              },
+            );
+            void reservation.catch(() => {});
+            let writing: Promise<void> | undefined;
+            let enteredWriter = false;
+            let settled = false;
+            const updated: AuthProfileStore = {
+              version: store.version,
+              profiles: {
+                [profileId]: {
+                  type: "api_key",
+                  provider: "fixture-provider",
+                  key: "synthetic-captured-auth-key",
+                },
+              },
+            };
+            try {
+              await Promise.race([
+                entered.promise,
+                reservation.then(() => {
+                  throw new Error("Auth writer reservation settled before it was held");
+                }),
+              ]);
+              writing = runAuthProfileWriteTransactionAsync(
+                agentDir,
+                (transaction, owner) => {
+                  enteredWriter = true;
+                  expect(process.platform).toBe(hostPlatform);
+                  expect({
+                    databasePath: transaction.path,
+                    stateDir: owner.env.OPENCLAW_STATE_DIR,
+                    sharedDatabasePath: owner.sharedDatabasePath,
+                    sharedAgentDir: owner.env.OPENCLAW_AGENT_DIR,
+                    location: owner.location,
+                  }).toEqual({
+                    databasePath: database.path,
+                    stateDir: state.stateDir,
+                    sharedDatabasePath: resolveAuthProfileDatabasePath(sharedAgentDir),
+                    sharedAgentDir,
+                    location: "legacy-main",
+                  });
+                  writePersistedAuthProfileStoreRaw(updated, agentDir, transaction);
+                },
+                options,
+              ).finally(() => {
+                settled = true;
+              });
+              void writing.catch(() => {});
+              await nextTurn();
+              if (settled) {
+                await writing;
+              }
+              expect({ enteredWriter, settled }).toEqual({ enteredWriter: false, settled: false });
+              expect(loadPersistedAuthProfileStore(agentDir)).toEqual(store);
+              expect(Object.entries(inputEnv)).toEqual(originalEntries);
+              inputEnv.OpenClaw_State_Dir = replacementRoot;
+              inputEnv.OpenClaw_Agent_Dir = replacementAgentDir;
+              options.env = {
+                OPENCLAW_STATE_DIR: replacementRoot,
+                OPENCLAW_AGENT_DIR: replacementAgentDir,
+              };
+              release.resolve();
+              await writing;
+              expect(loadPersistedAuthProfileStore(agentDir)).toEqual(updated);
+              expect(loadPersistedAuthProfileStore(sharedAgentDir)).toEqual(store);
+              for (const root of [fallbackRoot, replacementRoot, ignoredRoot]) {
+                expect(fs.existsSync(root)).toBe(false);
+              }
+            } finally {
+              release.resolve();
+              await Promise.allSettled([reservation, writing]);
+            }
+            await reservation;
+          });
+        } finally {
+          // Counterfactual broken captures can open one of these fixture-owned roots.
+          for (const stateDir of [fallbackRoot, replacementRoot, ignoredRoot]) {
+            closeAuthProfileReadPool({ kind: "root", rootPath: stateDir });
+            await cleanupSessionStateForTest({ stateDir });
+          }
+        }
+      },
+    );
+  },
+);
+
+it("keeps the explicit auth stateDir override ahead of ambient owner paths", async () => {
+  await withOpenClawTestState(
+    { label: "auth-state-dir-precedence", scenario: "minimal" },
+    async (state) => {
+      const agentDir = state.agentDir("voice");
+      const ambientRoot = state.statePath("ambient-state");
+      const ambientAgentDir = path.join(ambientRoot, "agents", "main", "agent");
+      const store = createStore();
+      await withEnvAsync(
+        { OPENCLAW_STATE_DIR: ambientRoot, OPENCLAW_AGENT_DIR: ambientAgentDir },
+        async () => {
+          runAuthProfileWriteTransaction(
+            agentDir,
+            (database, owner) => {
+              expect({
+                stateDir: owner.env.OPENCLAW_STATE_DIR,
+                sharedAgentDir: owner.env.OPENCLAW_AGENT_DIR,
+                sharedDatabasePath: owner.sharedDatabasePath,
+              }).toEqual({
+                stateDir: state.stateDir,
+                sharedAgentDir: undefined,
+                sharedDatabasePath: resolveAuthProfileDatabasePath(state.agentDir("main")),
+              });
+              writePersistedAuthProfileStoreRaw(store, agentDir, database);
+            },
+            { stateDir: state.stateDir },
+          );
+          expect(process.env.OPENCLAW_STATE_DIR).toBe(ambientRoot);
+          expect(process.env.OPENCLAW_AGENT_DIR).toBe(ambientAgentDir);
+        },
+      );
+      expect(loadPersistedAuthProfileStore(agentDir)).toEqual(store);
+      expect(fs.existsSync(ambientRoot)).toBe(false);
+    },
+  );
+});

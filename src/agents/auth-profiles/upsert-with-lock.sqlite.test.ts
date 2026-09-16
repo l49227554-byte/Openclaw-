@@ -10,11 +10,13 @@ import {
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { clearAuthProfileMigrationDiagnostics } from "./legacy-source-diagnostic.js";
 import { withOAuthProfileLock } from "./oauth-profile-lock.js";
 import { createOAuthRefreshFence } from "./oauth-refresh-marker.js";
 import { loadPersistedAuthProfileStore } from "./persisted.js";
 import {
+  closeAuthProfileReadPool,
   inspectPersistedAuthProfileStateRaw,
   inspectPersistedAuthProfileStoreRaw,
   resolveAuthProfileDatabasePath,
@@ -30,8 +32,14 @@ import {
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  for (const stateDir of tempDirs.dirs) {
+    closeAuthProfileReadPool({ kind: "root", rootPath: stateDir });
+    await cleanupSessionStateForTest({ stateDir });
+  }
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
   clearAuthProfileMigrationDiagnostics();
 });
 
@@ -47,12 +55,7 @@ async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<v
   const root = tempDirs.make("openclaw-auth-batch-");
   const agentDir = path.join(root, "agents", "work", "agent");
   fs.mkdirSync(agentDir, { recursive: true });
-  try {
-    await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => await run(agentDir));
-  } finally {
-    closeOpenClawAgentDatabasesForTest();
-    closeOpenClawStateDatabaseForTest();
-  }
+  await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => await run(agentDir));
 }
 
 describe("auth profile batch persistence", () => {
@@ -296,8 +299,6 @@ describe("auth profile batch persistence", () => {
         expect(loadPersistedAuthProfileStore(mainAgentDir)?.profiles[profileId]).toEqual(rotated);
       },
     );
-    closeOpenClawAgentDatabasesForTest();
-    closeOpenClawStateDatabaseForTest();
   });
 
   it("rejects OAuth writes when authority appears after empty-store admission", async () => {
@@ -352,8 +353,6 @@ describe("auth profile batch persistence", () => {
         );
       },
     );
-    closeOpenClawAgentDatabasesForTest();
-    closeOpenClawStateDatabaseForTest();
   });
 
   it("does not resurrect a refresh fence during batch rollback", async () => {

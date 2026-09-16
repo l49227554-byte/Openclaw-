@@ -120,7 +120,9 @@ Each group contains the agent's pinned and recent sessions, with the usual sessi
 
 Groups share a window of at most 300 sessions across agents with [Agents home](/web/control-ui#agents-home), loading pinned sessions first and then the most recent sessions. Pinned sessions count toward that limit, so more than 300 pinned sessions cannot all appear in this view. The open conversation can remain visible outside this window. **Involving me** loads the same bounded window filtered by the Gateway; the other filters apply to the loaded sessions across groups.
 
-Activity refreshes pause while the browser tab is hidden and catch up when you return. Changes that arrive during a roster read share one follow-up refresh; switching filters never combines pages from different filters.
+The active session list applies Gateway lifecycle row snapshots to existing members without reloading the whole list. Membership changes, mutation events, missing row snapshots, and Gateway-owned filters still require an authoritative list read. Automatic roster refreshes debounce the first event after idle by 200 ms and coalesce continuous events within one second. After an automatic refresh completes, the next waits three times its duration, bounded between one and 15 seconds. Explicit refreshes, filter or agent changes, reconnects, and foreground replacements bypass that delay.
+
+Activity refreshes pause while the browser tab is hidden and catch up once when you return, respecting the automatic refresh delay. Changes that arrive during a roster read share one follow-up refresh; switching filters never combines pages from different filters.
 
 The **Online** list opens a person's activity card with their reported device,
 platform, and connection type: **Web**, **App**, **Terminal** for the TUI, or
@@ -133,7 +135,7 @@ Toggle the sidebar with **⌘B** on Mac or **Ctrl+B** on Windows/Linux. Open the
 
 After token or device-token authentication, the sidebar can show its cached session roster on reload only when the browser will present the Gateway token that authenticated the previous connection, or the paired device token retained from that connection. The cached roster has no live run state and is replaced by the live list after connecting. Other authentication methods wait for the connection; see [Warm reload](/web/control-ui/offline-and-reconnect#warm-reload).
 
-Switching agents refreshes the session list even while other conversations are active. Confirmed permission, pin, and read changes remain visible if their follow-up list refresh fails. Older responses cannot undo confirmed pin or read state; newer activity or a later manual unread mark still takes effect.
+Switching agents refreshes the session list even while other conversations are active. A session action finishing for another agent keeps the selected agent’s filtered sidebar and pagination active. Confirmed permission, pin, and read changes remain visible if their follow-up list refresh fails. Older responses cannot undo confirmed pin or read state; newer activity or a later manual unread mark still takes effect.
 
 An older list response preserves newer session names and run status already loaded in another open session list.
 

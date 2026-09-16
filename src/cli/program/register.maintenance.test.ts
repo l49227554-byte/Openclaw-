@@ -800,10 +800,12 @@ describe("registerMaintenanceCommands doctor action", () => {
         updateResult: "/tmp/update-failure.json",
       },
     },
-    ...["claude", "codex", "cursor", "grok", "muse", "opencode", "pi"].map((agent) => ({
-      args: ["--agent", agent],
-      options: { json: false, noExport: false, run: false, agent },
-    })),
+    ...["claude", "codex", "cursor", "grok", "kimi", "muse", "opencode", "pi", "qwen"].map(
+      (agent) => ({
+        args: ["--agent", agent],
+        options: { json: false, noExport: false, run: false, agent },
+      }),
+    ),
   ])("forwards triage options for $args", async ({ args, options }) => {
     triageCommand.mockResolvedValue(undefined);
 
@@ -846,7 +848,8 @@ describe("registerMaintenanceCommands doctor action", () => {
       await runMaintenanceCli(["triage", "--agent", "unknown-agent", ...(json ? ["--json"] : [])]);
 
       expect(triageCommand).not.toHaveBeenCalled();
-      const message = "Invalid --agent. Use claude, codex, cursor, grok, muse, opencode, or pi.";
+      const message =
+        "Invalid --agent. Use claude, codex, cursor, grok, kimi, muse, opencode, pi, or qwen.";
       if (json) {
         expect(runtime.writeJson).toHaveBeenCalledWith(jsonFailure(message));
         expect(runtime.error).not.toHaveBeenCalled();

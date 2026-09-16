@@ -15,6 +15,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const source = readFileSync("scripts/crabbox-untrusted-bootstrap.sh", "utf8");
+const previousPnpmSpec =
+  "pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457";
 const historicalPnpmSpec =
   "pnpm@12.1.0+sha512.d9b8276d97f6ec86e49815877f91ee9f63cee61f2063b304e43b6dab8fa07ce8a9afd46d2facd39f921e6a9d06b3c75a81349c7b888c2d22886bae0229901037";
 const roots: string[] = [];
@@ -210,16 +212,17 @@ describe("scripts/crabbox-untrusted-bootstrap.sh", () => {
     expect(readFileSync(join(f.root, "ran"), "utf8")).toBe("ran\nran\n");
   });
 
-  it.each(["current", "historical"])(
+  it.each(["current", "previous", "historical"])(
     "prepares the approved %s pin outside the checkout before frozen installation",
     (kind) => {
       const f = fixture();
-      const spec = kind === "historical" ? historicalPnpmSpec : f.spec;
+      const spec =
+        kind === "current" ? f.spec : kind === "previous" ? previousPnpmSpec : historicalPnpmSpec;
       writeFileSync(join(f.root, "package.json"), JSON.stringify({ packageManager: spec }));
       const result = f.run();
       expect(result.status, result.stderr).toBe(0);
       expect(readFileSync(join(f.root, "prepared-pin"), "utf8")).toBe(`${spec}\n${f.install}\n`);
-      expect(f.downloads()).toBe(kind === "historical" ? "pnpm-download\n" : "");
+      expect(f.downloads()).toBe(kind === "current" ? "" : "pnpm-download\n");
       expect(readFileSync(join(f.root, "install-log"), "utf8")).toBe("frozen\n");
       expect(readFileSync(join(f.root, "ran"), "utf8")).toBe("ran\n");
     },
@@ -257,6 +260,7 @@ describe("scripts/crabbox-untrusted-bootstrap.sh", () => {
     "candidate-pin",
     "missing-pin",
     "current-wrong-hash",
+    "previous-wrong-hash",
     "historical-wrong-hash",
     "unsupported-historical-pin",
     "malformed-json",
@@ -268,6 +272,7 @@ describe("scripts/crabbox-untrusted-bootstrap.sh", () => {
       "candidate-pin": '{"packageManager":"pnpm@99.0.0"}',
       "missing-pin": "{}",
       "current-wrong-hash": JSON.stringify({ packageManager: `${f.spec}0` }),
+      "previous-wrong-hash": JSON.stringify({ packageManager: `${previousPnpmSpec}0` }),
       "historical-wrong-hash": JSON.stringify({ packageManager: `${historicalPnpmSpec}0` }),
       "unsupported-historical-pin": '{"packageManager":"pnpm@11.22.0"}',
       "malformed-json": "{",

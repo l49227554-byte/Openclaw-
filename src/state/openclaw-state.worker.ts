@@ -27,6 +27,10 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
+import {
+  readPluginBindingApprovalsInDatabase,
+  upsertPluginBindingApprovalInDatabase,
+} from "../plugins/conversation-binding-state.kernel.js";
 import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
 import {
   ensureProjectRegistrySchema,
@@ -180,6 +184,16 @@ function createSharedStateWorkerBackend(
         return command.input.artifactPreservingReadOnly
           ? withArtifactPreservingStateReads(read)
           : read();
+      }
+      if (command.type === "plugins.conversationBindingApprovals.read") {
+        return readPluginBindingApprovalsInDatabase(open().db);
+      }
+      if (command.type === "plugins.conversationBindingApprovals.upsert") {
+        const database = open();
+        return runOpenClawStateWriteTransaction(
+          ({ db }) => upsertPluginBindingApprovalInDatabase(db, command.input),
+          { database, path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+        );
       }
       if (command.type === "plugins.metadata.read") {
         return readPluginMetadataStateRowSync(

@@ -15,6 +15,7 @@ import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.ker
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-worker-contract.js";
+import type { PluginBindingApprovalEntry } from "../plugins/conversation-binding-state.types.js";
 import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
 import type { TaskFlowView } from "../plugins/runtime/task-domain-types.js";
 import type { ProjectRegistryIdentity } from "../projects/project-registry.kernel.js";
@@ -73,6 +74,14 @@ export type OpenClawStateWorkerOperations = NativeHookRelayStoreWorkerOperations
     "modelCatalog.remote.read": {
       input: { artifactPreservingReadOnly: boolean };
       output: ReturnType<typeof readRemoteModelCatalog>;
+    };
+    "plugins.conversationBindingApprovals.read": {
+      input: undefined;
+      output: PluginBindingApprovalEntry[];
+    };
+    "plugins.conversationBindingApprovals.upsert": {
+      input: PluginBindingApprovalEntry;
+      output: void;
     };
     "plugins.metadata.read": {
       input: { selector: PluginMetadataStateSelector; artifactPreservingReadOnly?: boolean };

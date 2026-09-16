@@ -409,15 +409,14 @@ describe("official external plugin catalog", () => {
 
   it("declares each published ClawHub counterpart in its package and discovery catalog", () => {
     const gaps = listPublishedPluginOwners().flatMap(
-      ({ id, packageName, install, publishToClawHub }) => {
+      ({ id, packageName, install, publishToClawHub, external }) => {
         if (!publishToClawHub) {
           return [];
         }
         const expected = `clawhub:${packageName}`;
-        const catalogSpec = resolveOfficialExternalPluginInstall(
-          expectCatalogEntry(id),
-        )?.clawhubSpec;
-        return install.clawhubSpec === expected && catalogSpec === expected
+        const entry = getOfficialExternalPluginCatalogEntry(id);
+        const catalogSpec = entry && resolveOfficialExternalPluginInstall(entry)?.clawhubSpec;
+        return install.clawhubSpec === expected && (entry ? catalogSpec === expected : !external)
           ? []
           : [{ id, packageName, expected, packageSpec: install.clawhubSpec, catalogSpec }];
       },

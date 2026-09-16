@@ -704,7 +704,7 @@ describe("collectPublishablePluginPackages", () => {
           };
         };
       };
-      if (packageJson.openclaw?.build?.bundledDist === true) {
+      if (packageJson.openclaw?.build?.bundledDist !== false) {
         corePackageRuntimePluginIds.add(plugin.extensionId);
       }
     }

@@ -188,6 +188,19 @@ function parseDispatchedSubcommands(script: string): string[] {
 }
 
 describe("scripts/pr wrappers", () => {
+  it("refreshes wrapper dependencies idempotently", () => {
+    const destination = tempDirs.make("openclaw-pr-wrapper-dependencies-");
+
+    linkPrWrapperDependencies(destination);
+    linkPrWrapperDependencies(destination);
+
+    for (const dependency of ["tsx", "zod", "minimatch", "yaml"]) {
+      expect(realpathSync(join(destination, "node_modules", dependency))).toBe(
+        realpathSync(join("node_modules", dependency)),
+      );
+    }
+  });
+
   it("loads the tooling include policy from the wrapper source inventory", () => {
     const root = tempDirs.make("openclaw-wrapper-include-policy-");
     copyPrWrapperSources(root);
@@ -1250,6 +1263,8 @@ exit 99
     function makeAliasFixture() {
       const fixture = makeMismatchedWrapperRepo({ realModules: true });
       fixture.git(fixture.linked, ["checkout", "--detach", "refs/remotes/origin/main"]);
+      // Keep the Node recorder at the supervisor handoff, after dependency preparation.
+      linkPrWrapperDependencies(fixture.linked);
       for (const alias of ["pr-prepare", "pr-review", "pr-merge"]) {
         cpSync(join("scripts", alias), join(fixture.linked, "scripts", alias));
       }

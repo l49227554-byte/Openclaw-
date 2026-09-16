@@ -354,7 +354,7 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   stays on 8 unless the bounded hybrid plan admits it to hosted Ubuntu. The twelve-row 4:38 result in historical run 33695337496 used the
   32-class with eight reported CPUs; it does not prove timing on the current
   16-class route or refresh stale timing weights.
-- Eligible real-Gateway jobs request the existing 16-class for the private artifact
+- Eligible real-Gateway jobs request the existing 32-class for the private artifact
   build's two canonical SDK cache misses. Overlap requires at least two available
   CPUs and 25.5 GiB of observed remaining memory for unchanged 12-GiB heaps plus
   768 MiB native headroom each. Unknown finite-cgroup usage or insufficient capacity

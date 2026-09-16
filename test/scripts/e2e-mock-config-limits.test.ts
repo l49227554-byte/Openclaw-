@@ -190,7 +190,7 @@ describe("mock OpenAI response markers", () => {
   )(
     "emits native exec draft-proof calls from $api (stream=$stream, modelMap=$modelMap)",
     async ({ api, stream, modelMap }, { expect: taskExpect }) => {
-      await withTempDir(async (root) => {
+      await withTempDir("mock-response-markers-", async (root) => {
         const control = join(root, "response.json");
         const utilityText = '{"headline":"Structured fixture","health":"on-track"}';
         await writeFile(
@@ -442,7 +442,7 @@ describe("mock OpenAI response markers", () => {
   });
 
   it("matches only own model keys and rejects mixed global/map controls", async () => {
-    await withTempDir(async (root) => {
+    await withTempDir("mock-response-controls-", async (root) => {
       const control = join(root, "response.json");
       await writeFile(control, JSON.stringify({ models: { arbitrary: { text: "mapped" } } }));
       await withMockServer(mockOpenAiPath, { MOCK_RESPONSE_CONTROL: control }, async (baseUrl) => {

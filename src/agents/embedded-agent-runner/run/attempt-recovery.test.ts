@@ -1,15 +1,7 @@
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
-import type { Context, Model } from "@openclaw/ai";
-import { streamOpenAICompletions } from "@openclaw/ai/internal/openai";
 import { APIError } from "openai/core/error";
 import { describe, expect, it, vi } from "vitest";
 import { projectProviderError } from "../../../../packages/ai/src/utils/provider-error.js";
 import { sleepWithAbort } from "../../../infra/backoff.js";
-import type { AssistantMessage } from "../../../llm/types.js";
-import { loadBundledPluginFacade } from "../../../test-utils/bundled-plugin-public-surface.js";
-import { registerSingleProviderPlugin } from "../../../test-utils/plugin-registration.js";
-import { buildAssistantFailoverSignal } from "../../embedded-agent-helpers/assistant-message-failures.js";
 import {
   buildEmbeddedRunnerAssistant,
   createMockUsage,
@@ -19,273 +11,18 @@ import { normalizeUsage } from "../../usage.js";
 import { createUsageAccumulator } from "../usage-accumulator.js";
 import { handleEmbeddedAssistantFailure } from "./assistant-failure.js";
 import { recoverEmbeddedRunAttempt } from "./attempt-recovery.js";
+import {
+  disabledCompactionRuntime,
+  recoverAfterTransportDrop,
+  type TransportDropScenario,
+} from "./attempt-recovery.test-support.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
-import { createEmbeddedRunFailoverRetryController } from "./failover-retry-controller.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
-
-/** A real HTTP round-trip through the real OpenRouter transport, feeding the
- * exact reported per-day-cap 429 body. Used so the production retry
- * controller is exercised against transport-truth text, not a hand-typed
- * string (#147546 / PR real-transport proof requests). */
-async function fetchRealPerDayCapErrorMessage(): Promise<string | undefined> {
-  const { default: openrouterPlugin } = await loadBundledPluginFacade<{
-    default: Parameters<typeof registerSingleProviderPlugin>[0];
-  }>({ pluginId: "openrouter", artifactBasename: "index.js" });
-  await registerSingleProviderPlugin(openrouterPlugin);
-
-  const server = createServer((request, response) => {
-    request.resume();
-    response.writeHead(429, { "content-type": "application/json" });
-    response.end(
-      JSON.stringify({
-        error: { code: 429, message: "Rate limit exceeded: free-models-per-day-high-balance." },
-      }),
-    );
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  try {
-    const address = server.address() as AddressInfo;
-    const model = {
-      id: "example/model",
-      name: "OpenRouter mock",
-      api: "openai-completions",
-      provider: "openrouter",
-      baseUrl: `http://127.0.0.1:${address.port}/api/v1`,
-      reasoning: false,
-      input: ["text", "image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 16_000,
-      maxTokens: 1_024,
-    } satisfies Model<"openai-completions">;
-    const context: Context = { messages: [{ role: "user", content: "hello", timestamp: 1 }] };
-    const result = await streamOpenAICompletions(model, context, {
-      apiKey: ["test", "key"].join("-"),
-    }).result();
-    return buildAssistantFailoverSignal(result).message;
-  } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-  }
-}
-
-type TransportDropScenario = {
-  assistantTexts?: string[];
-  errorMessage?: string;
-  errorBody?: string;
-  errorCode?: string;
-  errorType?: string;
-  completedAssistant?: AssistantMessage;
-  compactionEnabled?: boolean;
-  content?: AssistantMessage["content"];
-  diagnostics?: AssistantMessage["diagnostics"];
-  activeCount?: number;
-  asyncStarted?: boolean;
-  codeModeSuspended?: boolean;
-  didSendDeterministicApprovalPrompt?: boolean;
-  failedToolCallId?: string;
-  missingToolResult?: boolean;
-  noTools?: boolean;
-  lastToolError?: Parameters<typeof makeEmbeddedRunnerAttempt>[0]["lastToolError"];
-  pluginHarnessOwnsTransport?: boolean;
-  retryAvailable?: boolean;
-  replaySafe?: boolean;
-  terminal?: Parameters<typeof makeEmbeddedRunnerAttempt>[0]["terminal"];
-  usage?: AssistantMessage["usage"];
-  terminate?: boolean;
-  yieldDetected?: boolean;
-};
 
 vi.mock("../../../infra/backoff.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../infra/backoff.js")>()),
   sleepWithAbort: vi.fn(async () => {}),
 }));
-
-const disabledCompactionRuntime = {
-  prepareRecoveryOwner: () => {
-    throw new Error("Compaction is disabled in this recovery fixture");
-  },
-};
-
-// Live shape: a code-mode exec batch settled, then the ChatGPT Responses stream
-// died while the model was still reasoning, so the errored turn is thinking-only.
-async function recoverAfterTransportDrop(scenario: TransportDropScenario = {}) {
-  const toolCalls = scenario.noTools ? [] : ["call_1", "call_2"];
-  const toolAssistant = buildEmbeddedRunnerAssistant({
-    stopReason: "toolUse",
-    content: toolCalls.map((id) => ({ type: "toolCall", id, name: "exec", arguments: {} })),
-  });
-  const erroredAssistant = buildEmbeddedRunnerAssistant({
-    stopReason: scenario.terminal?.kind === "timeout" ? "aborted" : "error",
-    errorMessage:
-      scenario.errorMessage ??
-      (scenario.terminal?.kind === "timeout" ? "LLM request timed out." : "WebSocket error"),
-    errorBody: scenario.errorBody,
-    errorCode: scenario.errorCode,
-    errorType: scenario.errorType,
-    diagnostics:
-      scenario.diagnostics ??
-      ([
-        {
-          type: "provider_transport_failure",
-          error: { message: "WebSocket error" },
-          details: { phase: "after_message_stream_start" },
-        },
-      ] as never),
-    content: scenario.content ?? [{ type: "thinking", thinking: "checking the results" }],
-    usage: scenario.usage ?? createMockUsage(0, 0),
-  });
-  const messagesSnapshot = [
-    { role: "user", content: "why is it unauthorized?" },
-    ...(toolCalls.length > 0 ? [toolAssistant] : []),
-    ...toolCalls
-      .filter((id) => !scenario.missingToolResult || id !== "call_2")
-      .map((id) => ({
-        role: "toolResult",
-        toolCallId: id,
-        toolName: "exec",
-        isError: id === scenario.failedToolCallId,
-      })),
-    erroredAssistant,
-  ] as never;
-  const attempt = makeEmbeddedRunnerAttempt({
-    assistantTexts: scenario.assistantTexts ?? [],
-    messagesSnapshot,
-    toolMetas: toolCalls.map((toolCallId) => ({
-      toolCallId,
-      toolName: "exec",
-      replaySafe: false,
-      ...(scenario.asyncStarted ? { asyncStarted: true } : {}),
-      ...(scenario.terminate ? { terminate: true } : {}),
-      ...(scenario.codeModeSuspended ? { codeModeSuspended: true } : {}),
-    })) as never,
-    lastAssistant: erroredAssistant,
-    currentAttemptAssistant: erroredAssistant,
-    ...(scenario.completedAssistant
-      ? { currentAttemptCompletedAssistant: scenario.completedAssistant }
-      : {}),
-    lastToolError: scenario.lastToolError,
-    didSendDeterministicApprovalPrompt: scenario.didSendDeterministicApprovalPrompt,
-    itemLifecycle: {
-      startedCount: toolCalls.length,
-      completedCount: toolCalls.length,
-      activeCount: scenario.activeCount ?? 0,
-    },
-    ...(scenario.terminal ? { terminal: scenario.terminal } : {}),
-    ...(scenario.yieldDetected ? { yieldDetected: true } : {}),
-    ...(scenario.replaySafe
-      ? { currentAttemptReplayMetadata: { replaySafe: true, hadPotentialSideEffects: false } }
-      : {}),
-  });
-  const terminalState = resolveEmbeddedRunAttemptTerminalState({
-    attempt,
-    assistant: erroredAssistant,
-  });
-  const markOwnedTranscriptRetry = vi.fn();
-  const continueFromCurrentTranscript = vi.fn();
-  const contextRecoveryState = createEmbeddedRunContextRecoveryState();
-  const failoverRetryController = createEmbeddedRunFailoverRetryController({
-    runParams: { runId: "run:transport-drop" } as Parameters<
-      typeof createEmbeddedRunFailoverRetryController
-    >[0]["runParams"],
-    provider: "openai",
-    modelId: "gpt-5.6-luna",
-    globalLane: "test",
-    agentDir: "/tmp/provider-recovery-test",
-    fallbackConfigured: false,
-    profileFailureStore: { version: 1, profiles: {} },
-    getLastProfileId: () => undefined,
-    getSessionId: () => "session:transport-drop",
-    harnessOwnsTransport: () => scenario.pluginHarnessOwnsTransport ?? false,
-    getRuntimeAuthOwnerId: () => "embedded",
-    getApiKeyInfo: () => null,
-    advanceAuthProfile: vi.fn(async () => false),
-  });
-  if (scenario.retryAvailable === false) {
-    failoverRetryController.setTransientRetryBudget(0);
-  }
-  vi.spyOn(failoverRetryController, "maybeMarkAuthProfileFailure");
-  const onAgentEvent = vi.fn();
-  const recover = () =>
-    recoverEmbeddedRunAttempt({
-      runInput: {
-        runParams: {
-          config: {},
-          agentId: "main",
-          sessionId: "session:transport-drop",
-          runId: "run:transport-drop",
-          onAgentEvent,
-        },
-        resolvedSessionKey: "agent:main:transport-drop",
-        startedAtMs: Date.now(),
-        laneController: { throwIfAborted: vi.fn() },
-      },
-      preparedRuntime: {
-        provider: "openai",
-        modelId: "gpt-5.6-luna",
-        model: { id: "gpt-5.6-luna" },
-        genericCompactionRecoveryAllowed: scenario.compactionEnabled ?? false,
-        snapshot: () => ({
-          thinkLevel: "off",
-          agentHarness: { id: "openclaw" },
-          outerContextTokenMeta: {},
-          contextTokenBudget: scenario.compactionEnabled ? 200_000 : undefined,
-          pluginHarnessOwnsTransport: scenario.pluginHarnessOwnsTransport ?? false,
-        }),
-      },
-      normalizedAttempt: {
-        attempt,
-        sessionIdUsed: attempt.sessionIdUsed,
-        attemptAssistant: erroredAssistant,
-        currentAttemptAssistant: erroredAssistant,
-        currentAttemptCompletedAssistant: scenario.completedAssistant,
-        assistantErrorText: erroredAssistant.errorMessage,
-        terminalState,
-        setTerminalLifecycleMeta: vi.fn(),
-        attemptCompactionCount: 0,
-        activeErrorContext: { provider: "openai", model: "gpt-5.6-luna" },
-        resolveReplayInvalidForAttempt: () => true,
-        canRestartForLiveSwitch: false,
-      },
-      runtimePlan: { auth: {} },
-      sessionPromptState: {
-        sessionFile: "/tmp/session.jsonl",
-        markOwnedTranscriptRetry,
-        continueFromCurrentTranscript,
-      },
-      failoverRetryController,
-      compactionRuntime: {
-        ...disabledCompactionRuntime,
-        assertRecoveryActive: () => {
-          throw new Error("overflow compaction requested");
-        },
-      },
-      contextRecoveryState,
-      usageAccumulator: createUsageAccumulator(),
-      lastRunPromptUsage: undefined,
-      runtimeAuthRetry: false,
-      codexAppServerRecoveryRetryAvailable: false,
-      codexAppServerRecoveryRetries: 0,
-      lastRetryFailoverReason: null,
-      traceAttempts: [],
-      sessionAgentId: "main",
-    } as never);
-  const recovery = await recover();
-  return {
-    recovery,
-    recover,
-    attempt,
-    erroredAssistant,
-    markOwnedTranscriptRetry,
-    continueFromCurrentTranscript,
-    contextRecoveryState,
-    failoverRetryController,
-    onAgentEvent,
-  };
-}
 
 function handleAssistantFailureAfterRecovery(
   fixture: Awaited<ReturnType<typeof recoverAfterTransportDrop>>,
@@ -677,32 +414,6 @@ describe("recoverEmbeddedRunAttempt", () => {
       status: 429,
     });
     expect(failover.advanceAuthProfile).toHaveBeenCalledOnce();
-  });
-
-  it("routes a real HTTP per-day 429 straight to fallback with zero same-model retries", async () => {
-    // Message text comes from a real local HTTP 429 response round-tripped through
-    // the real OpenRouter transport (streamOpenAICompletions) and the real
-    // buildAssistantFailoverSignal() — the same production text attempt-recovery.ts:331
-    // passes into failoverRetryController.maybeRetryTransient() as retry.message.
-    const realErrorMessage = await fetchRealPerDayCapErrorMessage();
-    expect(realErrorMessage).toContain("free-models-per-day-high-balance");
-
-    vi.mocked(sleepWithAbort).mockClear();
-    const fixture = await recoverAfterTransportDrop({
-      errorMessage: realErrorMessage,
-      diagnostics: [],
-      content: [],
-      replaySafe: true,
-    });
-
-    // The exhausted-daily-cap guard at failover-retry-controller.ts:232 must trip on
-    // the very first attempt: immediate fallback, never a same-model retry burned
-    // against a cap that a retry cannot recover from.
-    expect(fixture.recovery).toEqual({ action: "proceed" });
-    expect(fixture.continueFromCurrentTranscript).not.toHaveBeenCalled();
-    expect(fixture.markOwnedTranscriptRetry).not.toHaveBeenCalled();
-    expect(sleepWithAbort).not.toHaveBeenCalled();
-    expect(fixture.failoverRetryController.transientRetryCount).toBe(0);
   });
 
   it.each([

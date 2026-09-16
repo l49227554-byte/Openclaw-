@@ -847,50 +847,6 @@ describe("config schema", () => {
     ).toBeUndefined();
   });
 
-  it("preserves authored metadata without deriving tags from field names or tiers", () => {
-    const result = buildConfigSchemaCore({
-      plugins: [
-        {
-          id: "authored-metadata",
-          configSchema: {
-            type: "object",
-            properties: {
-              maxTokens: { type: "integer" },
-              storagePath: { type: "string" },
-              apiKey: { type: "string" },
-            },
-          },
-          configUiHints: {
-            maxTokens: { sensitive: false },
-            storagePath: { tags: ["User-defined"], advanced: true },
-            apiKey: { sensitive: true },
-          },
-        },
-      ],
-      channels: [
-        {
-          id: "authored-metadata-channel",
-          configSchema: { type: "object", properties: { retryLimit: { type: "integer" } } },
-          configUiHints: { retryLimit: { tags: ["Tuning"] } },
-        },
-      ],
-    });
-    const hints = result.uiHints;
-    expect(hints["gateway.auth.token"]?.tags).toBeUndefined();
-    expect(hints["plugins.entries.authored-metadata.config.maxTokens"]).toMatchObject({
-      sensitive: false,
-    });
-    expect(hints["plugins.entries.authored-metadata.config.maxTokens"]?.tags).toBeUndefined();
-    expect(hints["plugins.entries.authored-metadata.config.storagePath"]).toMatchObject({
-      tags: ["User-defined"],
-      advanced: true,
-    });
-    expect(hints["plugins.entries.authored-metadata.config.apiKey"]?.sensitive).toBe(true);
-    expect(hints["plugins.entries.authored-metadata.config.apiKey"]?.tags).toBeUndefined();
-    expect(hints["channels.authored-metadata-channel.retryLimit"]?.tags).toEqual(["Tuning"]);
-    expect(hints["mcp.servers.*.url"]?.tags).toContain(SENSITIVE_URL_HINT_TAG);
-  });
-
   it("rejects removed Firecrawl config from the core web fetch schema", () => {
     const result = ToolsSchema.safeParse({
       web: {

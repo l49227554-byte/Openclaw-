@@ -1426,9 +1426,12 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       writeFileSync(join(legacy.directory, "merge-output.log"), text);
       legacy.oid = f.git(["hash-object", "--no-filters", capture]);
     }
-    if (fault === "extra-capture")
+    if (fault === "extra-capture") {
       writeFileSync(join(f.worktree, ".local/merge-output.other.log"), "");
-    if (fault === "wrong-hash") legacy.oid = f.base;
+    }
+    if (fault === "wrong-hash") {
+      legacy.oid = f.base;
+    }
     if (fault === "wrong-pr" || fault === "wrong-base") {
       const path = join(legacy.directory, "prep.env");
       writeFileSync(
@@ -1439,17 +1442,31 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
         ),
       );
     }
-    if (fault === "missing-proof") rmSync(join(legacy.directory, "prep.md"));
+    if (fault === "missing-proof") {
+      rmSync(join(legacy.directory, "prep.md"));
+    }
     if (fault === "symlink") {
       rmSync(capture);
       symlinkSync(join(legacy.directory, "merge-output.log"), capture);
     }
-    if (fault === "auto") next.pr.autoMergeRequest = { mergeMethod: "SQUASH" };
-    if (fault === "queue") next.pr.isMergeQueueEnabled = true;
-    if (fault === "closed") next.pr.state = "CLOSED";
-    if (fault === "pending") next.gates = "pending";
-    if (fault === "ci-proof") next.ciExit = 15;
-    if (fault === "changed-capture") next.duringChecks = { artifact: "merge-output.log" };
+    if (fault === "auto") {
+      next.pr.autoMergeRequest = { mergeMethod: "SQUASH" };
+    }
+    if (fault === "queue") {
+      next.pr.isMergeQueueEnabled = true;
+    }
+    if (fault === "closed") {
+      next.pr.state = "CLOSED";
+    }
+    if (fault === "pending") {
+      next.gates = "pending";
+    }
+    if (fault === "ci-proof") {
+      next.ciExit = 15;
+    }
+    if (fault === "changed-capture") {
+      next.duringChecks = { artifact: "merge-output.log" };
+    }
     f.save(next);
     const run = f.run(
       false,

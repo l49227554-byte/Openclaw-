@@ -9,7 +9,9 @@ const [directory, captureOid, repo, pr, repoUrl] = process.argv.slice(2);
 const names = ["gates.env", "merge-output.log", "prep.env", "prep.md"];
 const oid = /^[0-9a-f]{40}$/u;
 const hash = (path) => {
-  if (!lstatSync(path).isFile()) throw new Error("legacy evidence must be regular files");
+  if (!lstatSync(path).isFile()) {
+    throw new Error("legacy evidence must be regular files");
+  }
   return execFileSync("git", ["hash-object", "--no-filters", "--", path], {
     encoding: "utf8",
   }).trim();
@@ -42,7 +44,9 @@ Run the following to resolve the merge conflicts locally:
   const prep = readFileSync(join(directory, "prep.env"), "utf8");
   const field = (name) => {
     const rows = prep.split("\n").filter((line) => line.startsWith(`${name}=`));
-    if (rows.length !== 1) throw new Error("missing or duplicate legacy preparation identity");
+    if (rows.length !== 1) {
+      throw new Error("missing or duplicate legacy preparation identity");
+    }
     return rows[0].slice(name.length + 1);
   };
   const head = field("PREP_HEAD_SHA");

@@ -3076,12 +3076,17 @@ NODE
               ],
             }
           : {
-              smoke: ["Swift lint", "Build iOS app"],
+              smoke: [
+                "Swift lint",
+                "Build iOS app",
+                ...(historical ? [] : ["Run focused iOS voice cleanup simulator tests"]),
+              ],
               release: ["Build iOS app (Release)"],
               tests: [
                 "Test Watch RTC engine",
                 "Swift lint",
                 "Build iOS app",
+                "Run focused iOS voice cleanup simulator tests",
                 "Run focused iOS lifecycle simulator tests",
                 "Run focused Apple Watch operation simulator tests",
               ],

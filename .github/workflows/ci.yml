@@ -5165,6 +5165,37 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Run focused iOS voice cleanup simulator tests
+        id: ios_voice_cleanup_tests
+        if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
+        run: |
+          set -euo pipefail
+          simulator_id="$(
+            xcrun simctl list devices available --json | node --input-type=module -e '
+              const chunks = [];
+              for await (const chunk of process.stdin) chunks.push(chunk);
+              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
+              const simulator = Object.values(runtimes)
+                .flat()
+                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
+              if (!simulator) throw new Error("No available iPhone simulator for voice cleanup tests");
+              process.stdout.write(simulator.udid);
+            '
+          )"
+          mkdir -p apps/ios/build/LifecycleTestResults
+          xcodebuild \
+            -project apps/ios/OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.xcresult \
+            -parallel-testing-enabled NO \
+            -only-testing:OpenClawTests/TalkRealtimeVoiceSessionCleanupTests \
+            -only-testing:OpenClawTests/TalkRealtimeConsultCancellationTests \
+            -only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests \
+            -only-testing:OpenClawTests/TalkModeManagerTests \
+            test
+
       # App compilation and screenshots do not execute approval or notification
       # lifecycles. Exercise both owners on the already provisioned simulator.
       - name: Run focused iOS lifecycle simulator tests
@@ -5280,7 +5311,7 @@ jobs:
             test-without-building
 
       - name: Upload iOS lifecycle simulator evidence
-        if: ${{ always() && steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped' }}
+        if: ${{ always() && ((steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped') || (steps.ios_voice_cleanup_tests.outcome != '' && steps.ios_voice_cleanup_tests.outcome != 'skipped')) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-lifecycle-tests-${{ needs.preflight.outputs.checkout_revision }}

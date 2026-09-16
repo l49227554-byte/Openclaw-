@@ -3040,7 +3040,7 @@ docker_e2e_docker_run_cmd run demo
     );
     expect(publishedRunner).toContain(
       [
-        'if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ]; then',
+        'if [ "$SCENARIO" = "watchos-direct-node" ] || [ "$SCENARIO" = "mobile-pairing-reconnect" ] || [ "$WORKER_CELL" = "1" ]; then',
         "  unset OPENAI_API_KEY DISCORD_BOT_TOKEN TELEGRAM_BOT_TOKEN",
         "else",
         '  export OPENAI_API_KEY="sk-openclaw-upgrade-survivor"',

@@ -71,6 +71,19 @@ printf '{"dir":"%s"}\n' "$OPENCLAW_DOCKER_ALL_LOG_DIR/prepublish-plugin-registry
 set -euo pipefail
 printf '%s\n' "$*" >>"$CAPTURE_DIR/docker-args"
 if [ "\${1:-}" = run ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      *:/tmp/openclaw-worker-cleanup)
+        printf '%s\\0' "$@" >"$CAPTURE_DIR/docker-cleanup-args"
+        test -f "$CAPTURE_DIR/main-run-finished"
+        if [ "\${FIXTURE_CLEANUP_EXIT:-0}" != 0 ]; then
+          exit "$FIXTURE_CLEANUP_EXIT"
+        fi
+        rm -rf "\${arg%%:*}/runtime"
+        exit 0
+        ;;
+    esac
+  done
   printf '%s\\0' "$@" >"$CAPTURE_DIR/docker-run-args"
   if [ -n "\${FIXTURE_PAYLOAD_SHELL:-}" ]; then
     exec "$FIXTURE_PAYLOAD_SHELL" -c "\${!#}"
@@ -89,7 +102,10 @@ for arg in "$@"; do
   fi
   previous="$arg"
 done
-[ "\${1:-}" != run ] || exit "\${FIXTURE_RUN_EXIT:-0}"
+if [ "\${1:-}" = run ]; then
+  touch "$CAPTURE_DIR/main-run-finished"
+  exit "\${FIXTURE_RUN_EXIT:-0}"
+fi
 `,
   );
 
@@ -316,6 +332,7 @@ on_exit 0
           OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_DIR: artifacts,
           OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC: "openclaw@2026.9.4",
           OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: scenario,
+          OPENCLAW_UPGRADE_SURVIVOR_E2E_IMAGE: "worker-cleanup-fixture",
           FIXTURE_RUN_EXIT: exitCode,
         });
         expect(result.status, result.stderr).toBe(Number(exitCode));
@@ -327,6 +344,27 @@ on_exit 0
           name.startsWith("worker-runtime."),
         );
         expect(runtimes).toHaveLength(exitCode === "0" ? 0 : 1);
+        const cleanupArgsPath = join(captureDir, "docker-cleanup-args");
+        expect(existsSync(cleanupArgsPath)).toBe(exitCode === "0");
+        if (exitCode === "0") {
+          const args = readFileSync(cleanupArgsPath, "utf8").split("\0").slice(0, -1);
+          expect(args[args.indexOf("--network") + 1]).toBe("none");
+          expect(args[args.indexOf("--entrypoint") + 1]).toBe("rm");
+          expect(args).not.toContain("--user");
+          expect(args.filter((arg) => arg === "-v")).toHaveLength(1);
+          expect(args[args.indexOf("-v") + 1]).toMatch(
+            /\/worker-runtime\.[^:]+:\/tmp\/openclaw-worker-cleanup$/u,
+          );
+          expect(args.slice(-4)).toEqual([
+            "worker-cleanup-fixture",
+            "-rf",
+            "--",
+            "/tmp/openclaw-worker-cleanup/runtime",
+          ]);
+          expect(readFileSync(join(captureDir, "docker-run-args"), "utf8")).toContain(
+            "worker-cleanup-fixture\0",
+          );
+        }
         if (exitCode !== "0") {
           expect(result.stderr).toContain("Preserved failed synthetic worker-cell state:");
           for (const runtime of runtimes) {
@@ -340,6 +378,26 @@ on_exit 0
       expect(readFileSync(retained, "utf8")).toBe("previous evidence");
     },
   );
+
+  it("fails and retains state when container-owned cleanup fails", () => {
+    const { captureDir, result } = runSurvivor({
+      OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC: "openclaw@2026.9.4",
+      OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "taskflow-restoration",
+      FIXTURE_CLEANUP_EXIT: "43",
+    });
+    expect(result.status, result.stderr).toBe(1);
+    expectFinalFailure(result.stderr, 1);
+    expect(result.stderr).toContain("Worker-cell runtime cleanup failed:");
+    const args = readFileSync(join(captureDir, "docker-cleanup-args"), "utf8").split("\0");
+    const mount = args[args.indexOf("-v") + 1];
+    if (!mount) {
+      throw new Error("Cleanup did not mount the synthetic runtime");
+    }
+    const runtimeRoot = mount.slice(0, mount.lastIndexOf(":"));
+    expect(readFileSync(join(runtimeRoot, "runtime", "state-marker"), "utf8")).toBe(
+      "synthetic state",
+    );
+  });
 });
 
 describe("standalone upgrade survivor live OpenAI probe", () => {

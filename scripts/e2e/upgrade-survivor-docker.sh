@@ -47,7 +47,12 @@ cleanup_outer() {
   fi
   if [ -n "$WORKER_RUNTIME_HOST_ROOT" ]; then
     if [ "$exit_status" -eq 0 ] && [ "$run_completed" = "1" ]; then
-      if ! rm -rf "$WORKER_RUNTIME_HOST_ROOT"; then
+      # The image user owns the private child and can differ from the host user.
+      if ! docker_e2e_docker_cmd run --rm --network none \
+        --entrypoint rm \
+        -v "$WORKER_RUNTIME_HOST_ROOT:/tmp/openclaw-worker-cleanup" \
+        "$IMAGE_NAME" -rf -- /tmp/openclaw-worker-cleanup/runtime ||
+        ! rm -rf "$WORKER_RUNTIME_HOST_ROOT"; then
         echo "Worker-cell runtime cleanup failed: $WORKER_RUNTIME_HOST_ROOT" >&2
         exit_status=1
       fi

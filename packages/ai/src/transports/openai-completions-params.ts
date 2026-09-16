@@ -374,7 +374,7 @@ export function buildOpenAICompletionsRequest(
   // Documented `compat.supportsTools: false` already omits `tools`. Replay must
   // also drop Chat Completions tool protocol or no-tools backends still 400.
   if (!supportsModelTools(model)) {
-    messages = flattenUnsupportedCompletionsToolHistory(messages);
+    messages = flattenUnsupportedCompletionsToolHistory(messages, cacheOptOutIndexes);
   }
   const promptCacheKey = resolvePromptCacheKey(options, cacheRetention);
   const params: CompletionsRequest = {

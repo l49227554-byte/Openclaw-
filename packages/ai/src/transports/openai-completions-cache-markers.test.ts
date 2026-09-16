@@ -183,4 +183,83 @@ describe("managed Completions cache markers", () => {
       }
     },
   );
+
+  it("keeps runtime-context cache exclusions after flattening no-tools tool history", () => {
+    const payload = buildOpenAICompletionsParams(
+      {
+        ...model,
+        compat: {
+          supportsTools: false,
+          cacheControlFormat: "anthropic",
+        },
+      } as typeof model,
+      {
+        ...context,
+        messages: [
+          ...context.messages,
+          {
+            role: "assistant",
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            content: [
+              {
+                type: "toolCall",
+                id: "call_notes",
+                name: "read",
+                arguments: { path: "notes.txt" },
+              },
+              {
+                type: "toolCall",
+                id: "call_readme",
+                name: "read",
+                arguments: { path: "readme.md" },
+              },
+            ],
+            usage: {
+              input: 1,
+              output: 1,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "toolUse",
+            timestamp: 2,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_notes",
+            toolName: "read",
+            isError: false,
+            content: [{ type: "text", text: "ok: notes" }],
+            timestamp: 3,
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_readme",
+            toolName: "read",
+            isError: false,
+            content: [{ type: "text", text: "ok: readme" }],
+            timestamp: 4,
+          },
+          { role: "user", content: "Next", timestamp: 5 },
+          { role: "user", content: "Runtime facts", runtimeContextCarrier: true, timestamp: 6 },
+        ],
+      },
+      undefined,
+    ) as {
+      tools?: unknown;
+      messages: Array<{ role?: string; content?: unknown }>;
+    };
+
+    expect(payload).not.toHaveProperty("tools");
+    const wire = JSON.stringify(payload.messages);
+    expect(wire).toContain(JSON.stringify(marked("Next")));
+    expect(wire).toContain('"content":"Runtime facts"');
+    expect(wire).not.toContain(JSON.stringify(marked("Runtime facts")));
+    expect(wire).toContain("[tool call id=call_notes name=read]");
+    expect(wire).toContain("notes.txt");
+    expect(wire).toContain("readme.md");
+  });
 });

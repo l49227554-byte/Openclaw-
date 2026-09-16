@@ -27,19 +27,69 @@ function readPlainMessageText(content: unknown): string {
   return textParts.join("\n");
 }
 
+function formatToolArguments(raw: unknown): string {
+  if (raw == null) {
+    return "";
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return "";
+    }
+    try {
+      return JSON.stringify(JSON.parse(trimmed));
+    } catch {
+      return trimmed;
+    }
+  }
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return "";
+  }
+}
+
+function formatToolProtocolLine(
+  kind: "call" | "result",
+  attrs: { id?: string; name?: string },
+  detail = "",
+): string {
+  const labeled = [
+    kind === "call" ? "tool call" : "tool result",
+    attrs.id ? `id=${attrs.id}` : "",
+    attrs.name ? `name=${attrs.name}` : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join(" ");
+  const head = `[${labeled}]`;
+  return detail.length > 0 ? `${head} ${detail}` : head;
+}
+
 function summarizeCompletionToolCalls(toolCalls: unknown): string {
   if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
     return "";
   }
-  const names = toolCalls.flatMap((call) => {
-    if (!isRecord(call) || !isRecord(call.function)) {
+  const lines = toolCalls.flatMap((call) => {
+    if (!isRecord(call)) {
       return [];
     }
-    return typeof call.function.name === "string" && call.function.name.length > 0
-      ? [call.function.name]
-      : [];
+    const fn = isRecord(call.function) ? call.function : undefined;
+    const name = typeof fn?.name === "string" ? fn.name : "";
+    const id = typeof call.id === "string" ? call.id : "";
+    if (!name && !id && !fn) {
+      return [];
+    }
+    return [formatToolProtocolLine("call", { id, name }, formatToolArguments(fn?.arguments))];
   });
-  return names.length > 0 ? `[tool call: ${names.join(", ")}]` : "[tool call]";
+  return lines.join("\n");
+}
+
+function summarizeLegacyFunctionCall(functionCall: unknown): string {
+  if (!isRecord(functionCall)) {
+    return "";
+  }
+  const name = typeof functionCall.name === "string" ? functionCall.name : "";
+  return formatToolProtocolLine("call", { name }, formatToolArguments(functionCall.arguments));
 }
 
 function appendAssistantPlainText(message: Record<string, unknown>, extra: string): void {
@@ -106,23 +156,47 @@ export function stripCompletionMessagesToRoleContent(messages: unknown[]): unkno
 /**
  * Replay tool protocol as plain assistant text. Chat Completions backends that
  * do not accept tools still 400 if prior `tool_calls` or tool-result roles
- * remain after the `tools` array is omitted.
+ * remain after the `tools` array is omitted. Collapsed rows remap
+ * `cacheOptOutIndexes` so later runtime-context carriers keep their exclusion.
  */
-export function flattenUnsupportedCompletionsToolHistory(messages: unknown[]): unknown[] {
+export function flattenUnsupportedCompletionsToolHistory(
+  messages: unknown[],
+  cacheOptOutIndexes?: Set<number>,
+): unknown[] {
   const out: unknown[] = [];
-  for (const message of messages) {
+  const oldToNew = new Map<number, number>();
+  const callNames = new Map<string, string>();
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
     if (!isRecord(message)) {
+      oldToNew.set(index, out.length);
       out.push(message);
       continue;
     }
     const role = readMessageRole(message);
     if (role === "tool" || role === "function") {
       const result = readPlainMessageText(message.content);
-      const note = result.trim().length > 0 ? `[tool result]\n${result}` : "[tool result]";
+      const callId = typeof message.tool_call_id === "string" ? message.tool_call_id : "";
+      const named =
+        typeof message.name === "string" && message.name.length > 0
+          ? message.name
+          : callId
+            ? callNames.get(callId)
+            : undefined;
+      const note = formatToolProtocolLine(
+        "result",
+        {
+          id: callId || undefined,
+          name: named,
+        },
+        result.trim(),
+      );
       const last = out.at(-1);
       if (isRecord(last) && readMessageRole(last) === "assistant") {
         appendAssistantPlainText(last, note);
+        oldToNew.set(index, out.length - 1);
       } else {
+        oldToNew.set(index, out.length);
         out.push({ role: "assistant", content: note });
       }
       continue;
@@ -131,7 +205,28 @@ export function flattenUnsupportedCompletionsToolHistory(messages: unknown[]): u
       const next: Record<string, unknown> = { ...message };
       const hadToolPayload =
         Object.hasOwn(next, "tool_calls") || Object.hasOwn(next, "function_call");
-      const toolNote = summarizeCompletionToolCalls(next.tool_calls);
+      if (Array.isArray(next.tool_calls)) {
+        for (const call of next.tool_calls) {
+          if (!isRecord(call)) {
+            continue;
+          }
+          const fn = isRecord(call.function) ? call.function : undefined;
+          const id = typeof call.id === "string" ? call.id : "";
+          const name = typeof fn?.name === "string" ? fn.name : "";
+          if (id && name) {
+            callNames.set(id, name);
+          }
+        }
+      }
+      if (isRecord(next.function_call) && typeof next.function_call.name === "string") {
+        callNames.set(next.function_call.name, next.function_call.name);
+      }
+      const toolNote = [
+        summarizeCompletionToolCalls(next.tool_calls),
+        summarizeLegacyFunctionCall(next.function_call),
+      ]
+        .filter((part) => part.length > 0)
+        .join("\n");
       delete next.tool_calls;
       delete next.function_call;
       if (toolNote) {
@@ -139,10 +234,25 @@ export function flattenUnsupportedCompletionsToolHistory(messages: unknown[]): u
       } else if (hadToolPayload && readPlainMessageText(next.content).length === 0) {
         next.content = "[tool call]";
       }
+      oldToNew.set(index, out.length);
       out.push(next);
       continue;
     }
+    oldToNew.set(index, out.length);
     out.push(message);
+  }
+  if (cacheOptOutIndexes) {
+    const remapped = new Set<number>();
+    for (const oldIndex of cacheOptOutIndexes) {
+      const mapped = oldToNew.get(oldIndex);
+      if (mapped !== undefined) {
+        remapped.add(mapped);
+      }
+    }
+    cacheOptOutIndexes.clear();
+    for (const mapped of remapped) {
+      cacheOptOutIndexes.add(mapped);
+    }
   }
   return out;
 }

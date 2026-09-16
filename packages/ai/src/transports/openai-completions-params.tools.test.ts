@@ -268,18 +268,32 @@ describe("openai completions params", () => {
             content: [
               {
                 type: "toolCall",
-                id: "call_abc",
-                name: "noop",
-                arguments: {},
+                id: "call_notes",
+                name: "read",
+                arguments: { path: "notes.txt" },
+              },
+              {
+                type: "toolCall",
+                id: "call_readme",
+                name: "read",
+                arguments: { path: "readme.md" },
               },
             ],
             timestamp: Date.now(),
           },
           {
             role: "toolResult",
-            toolCallId: "call_abc",
-            toolName: "noop",
-            content: [{ type: "text", text: "ok" }],
+            toolCallId: "call_notes",
+            toolName: "read",
+            content: [{ type: "text", text: "ok: notes" }],
+            isError: false,
+            timestamp: Date.now(),
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_readme",
+            toolName: "read",
+            content: [{ type: "text", text: "ok: readme" }],
             isError: false,
             timestamp: Date.now(),
           },
@@ -300,8 +314,11 @@ describe("openai completions params", () => {
     expect(params.messages.some((message) => message.role === "tool")).toBe(false);
     expect(params.messages.some((message) => message.tool_calls !== undefined)).toBe(false);
     const replayedAssistant = params.messages.find((message) => message.role === "assistant");
-    expect(String(replayedAssistant?.content ?? "")).toContain("noop");
-    expect(String(replayedAssistant?.content ?? "")).toContain("ok");
+    const replayed = String(replayedAssistant?.content ?? "");
+    expect(replayed).toContain('[tool call id=call_notes name=read] {"path":"notes.txt"}');
+    expect(replayed).toContain('[tool call id=call_readme name=read] {"path":"readme.md"}');
+    expect(replayed).toContain("[tool result id=call_notes name=read] ok: notes");
+    expect(replayed).toContain("[tool result id=call_readme name=read] ok: readme");
     expect(params.messages.some((message) => message.role === "user")).toBe(true);
   });
 

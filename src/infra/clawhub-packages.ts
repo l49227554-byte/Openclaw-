@@ -10,7 +10,7 @@ import {
   readRequiredClawHubBooleanField,
   readRequiredClawHubStringArrayField,
   readRequiredClawHubStringField,
-  requestClawHub,
+  withClawHubResponse,
   resolveClawHubAuthToken,
   type ClawHubFetch,
 } from "./clawhub-client.js";
@@ -291,7 +291,9 @@ function parseOptionalSecurityRelease(value: unknown): ClawHubPackageSecurityRes
   return result;
 }
 
-function parseClawHubPackageSecurityResponse(value: unknown): ClawHubPackageSecurityResponse {
+export function parseClawHubPackageSecurityResponse(
+  value: unknown,
+): ClawHubPackageSecurityResponse {
   if (!isJsonObject(value)) {
     throw new Error("Malformed ClawHub security response: expected an object.");
   }
@@ -452,22 +454,26 @@ export async function reportClawHubPluginInstallTelemetry(params: {
     return;
   }
 
-  const { response, url, hasToken } = await requestClawHub({
-    baseUrl: params.baseUrl,
-    path: "/api/cli/telemetry/install",
-    method: "POST",
-    token,
-    timeoutMs: params.timeoutMs,
-    fetchImpl: params.fetchImpl,
-    json: {
-      event: "plugin_install",
-      packageName,
-      version: params.version ?? undefined,
+  return await withClawHubResponse(
+    {
+      baseUrl: params.baseUrl,
+      path: "/api/cli/telemetry/install",
+      method: "POST",
+      token,
+      timeoutMs: params.timeoutMs,
+      fetchImpl: params.fetchImpl,
+      json: {
+        event: "plugin_install",
+        packageName,
+        version: params.version ?? undefined,
+      },
     },
-  });
-  if (!response.ok) {
-    throw await createClawHubError(response, url, hasToken, params.timeoutMs);
-  }
+    async ({ response, url, hasToken }) => {
+      if (!response.ok) {
+        throw await createClawHubError(response, url, hasToken, params.timeoutMs);
+      }
+    },
+  );
 }
 
 export function resolveLatestVersionFromPackage(detail: ClawHubPackageDetail): string | null {

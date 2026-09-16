@@ -9,11 +9,12 @@ title: "Update troubleshooting"
 Failed updates enter built-in triage after update recovery settles. In an
 interactive terminal, OpenClaw shows the selected agent, saved prompt path when
 available, and use of your own account/tokens, then asks before launching
-[triage](/cli/triage). Enter or `y` proceeds, `n` preserves diagnostics and prints
-handoff commands, and no answer within 30 seconds proceeds as Yes with a notice.
-With `--yes`, `--json`, or no interactive
-terminal, it prepares diagnostics and handoff commands without launching an
-agent. The original update failure and exit status remain authoritative;
+[triage](/cli/triage). Only an affirmative Yes proceeds. Enter, `n`, cancellation,
+or no answer within 30 seconds skips the launch and preserves diagnostics and
+a manual recovery command. Use `openclaw triage --agent codex` to choose another
+agent. With `--yes`, `--json`, or no interactive terminal, eligible failures can
+start one owned automatic repair; other failures retain diagnostics and handoff
+commands. See [automatic recovery](/cli/triage#automatic-failure-handoff). The original update failure and exit status remain authoritative;
 diagnostics do not turn a failed update into a successful one.
 
 In the Control UI, a failed attempt opens **Ask OpenClaw** with its recorded
@@ -68,7 +69,10 @@ localized guidance or executes an arbitrary command string.
 1. Select **Check status** when the Gateway restarted, disconnected, or did not
    report a final result. This reads `update.status`; it does not start another
    update. Recovery controls stay disabled while the check is pending, and a
-   rejected request appears as an error on the page.
+   rejected request appears as an error on the page or in the update dialog.
+   The dialog shows **Checking status…** while waiting and **Status refreshed.**
+   after a successful read, even when the recorded failure has not changed.
+   If the Gateway is disconnected, reconnect before checking or retrying.
 2. Open **View details** and address the recorded failing step. Diagnostic text
    is bounded and redacted for display; use Gateway logs when more context is
    required.
@@ -83,6 +87,15 @@ the CLI fallback on the Gateway host.
 ## Reason codes
 
 - `dirty`, `no-upstream`: repair the source checkout before retrying.
+- `update-ledger-busy`: another process held the state database's write lock
+  beyond the update step budget. The command exited successfully without admitting
+  a run and left previous history intact. Retry once the Gateway's writes settle.
+  The update command's JSON output contains the deferred note;
+  `openclaw update status --json` shows the previous recorded run.
+  If required finalization after a core update is deferred, its child exits
+  nonzero so existing parents cannot mistake it for completed plugin convergence.
+  Updated Gateways record the skipped reason and do not restart; retrying the
+  update runs finalization again, including when the core is already current.
 - `plugin-target-unavailable`: an enabled configured npm plugin has no resolvable
   target for the selected core, or its registry metadata could not be read. The
   refusal identifies the plugin, package target, and registry error before the
@@ -99,10 +112,35 @@ the CLI fallback on the Gateway host.
   for staging placement and the older published-updater limitation.
 - `deps-install-failed`, `build-failed`, `ui-build-failed`: inspect the failing
   step, fix the dependency or build error, then retry.
-- `global-install-failed`: retry after checking package-manager ownership and
-  permissions. Re-run the installer if the package install is incomplete.
-- `doctor-failed`: run Doctor on the Gateway host, resolve its findings, then
-  retry.
+- `global-install-failed`: the package-manager install, staging, verification,
+  or launcher swap exited nonzero. The updater then attempts rollback. The
+  generated report's `Rollback outcome` line and `openclaw update status`
+  record whether the previous install was restored and is safe to restart.
+  `openclaw gateway status --deep` shows what is serving; confirm both before
+  assuming the previous version runs. The generated failure report redacts
+  the package manager's own error line; the failing step's bounded stderr tail
+  is kept in the durable run record and in the update-failure context saved
+  under `logs/support/` in the state directory. Two causes belong to the
+  published 2026.9.3 and 2026.9.4 updaters, and a later release cannot rescue
+  the updater already installed: on macOS, `Package rollback launcher backup
+changed` when the updater's umask differs from the installed launcher's
+  permissions, and on busy hosts or slow disks a 30-second baseline package
+  fingerprint timeout reported as a changed package tree. Retrying with the
+  same installed updater repeats them. Install the target once with the
+  [manual package-manager procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun),
+  run `openclaw doctor --fix`, and restart the Gateway. This manual install
+  bypasses the installed updater once. No published release contains both fixes
+  yet: `openclaw update` runs through a repaired updater only after installing a
+  release later than 2026.9.4 that contains [#145282](https://github.com/openclaw/openclaw/pull/145282)
+  and [#144758](https://github.com/openclaw/openclaw/pull/144758).
+  Other causes show the package manager's error:
+  `EACCES`, `EPERM`, or a prefix mismatch mean the global prefix is custom or
+  not writable by the invoking user; fix ownership and permissions, then retry.
+  Re-run the [installer](/install/installer) if the package install is
+  incomplete.
+- `doctor-failed`: run `openclaw doctor` on the Gateway host, resolve its
+  findings, then retry. See [Doctor](/cli/doctor) for the check list and
+  `--fix` behavior.
 - `restart-disabled`, `restart-unavailable`: restore a supported supervisor or
   enable Gateway restarts before retrying.
 - `restart-unhealthy`, `restart-revision-mismatch`,

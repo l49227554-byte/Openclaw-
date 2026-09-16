@@ -18,6 +18,10 @@ import {
   resolveStorePath,
   upsertSessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawStateDatabaseAsync,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 // Codex tests cover commands plugin behavior.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,10 +50,7 @@ import { CODEX_APP_SERVER_VERSION } from "./app-server/version.js";
 import { codexDiagnosticsFeedbackState } from "./command-diagnostics-state.js";
 import { handleCodexCommand as dispatchCodexCommand } from "./command-dispatch.js";
 import type { CodexCommandDepsOverride } from "./command-handlers.js";
-import type {
-  CodexPluginsConfigBlock,
-  CodexPluginsManagementIO,
-} from "./command-plugins-management.js";
+import type { CodexPluginsConfigBlock, CodexPluginsManagementIO } from "./command-plugin-config.js";
 import type { CodexControlRequestOptions } from "./command-rpc.js";
 import { handleCodexConversationInboundClaim } from "./conversation-binding-hooks.js";
 import {
@@ -442,6 +443,8 @@ describe("codex command", () => {
     }
     codexDiagnosticsFeedbackState.clear();
     resetSharedCodexAppServerClientForTests();
+    await closeOpenClawAgentDatabasesAsync();
+    await closeOpenClawStateDatabaseAsync();
     clearRuntimeAuthProfileStoreSnapshots();
     clearSessionStoreCacheForTest();
     vi.unstubAllEnvs();
@@ -503,6 +506,7 @@ describe("codex command", () => {
       "/codex fast menu",
       "/codex computer-use menu",
       "/codex account",
+      "/codex plugins refresh",
       "/codex help",
     ]);
   });
@@ -514,6 +518,8 @@ describe("codex command", () => {
 
     expectResultTextContains(result, "/codex plugins enable");
     expect(buttonCommands(result)).toContain("/codex plugins list");
+    expect(buttonCommands(result)).toContain("/codex plugins refresh");
+    expectResultTextContains(result, "/codex plugins refresh");
   });
 
   it("lists Codex sub-plugins through the /codex plugins command surface", async () => {
@@ -902,8 +908,7 @@ describe("codex command", () => {
         }
         throw new Error(`unexpected Codex method ${method}`);
       });
-      vi.useFakeTimers({ toFake: ["Date"] });
-      const startedAt = Date.now();
+      const elapsedClock = vi.spyOn(performance, "now").mockReturnValue(0);
       try {
         const result = await runCommand(
           `resume ${threadId}`,
@@ -916,7 +921,7 @@ describe("codex command", () => {
                   if (failure === "read") {
                     throw new Error("Invalid Codex app-server binding row");
                   }
-                  vi.setSystemTime(startedAt + 1_001);
+                  elapsedClock.mockReturnValue(1_001);
                 }
                 return testCodexAppServerBindingStore.read(bindingIdentity);
               },
@@ -956,7 +961,7 @@ describe("codex command", () => {
         releaseLease.mockRestore();
         acquireClient.mockRestore();
         harness.client.close();
-        vi.useRealTimers();
+        elapsedClock.mockRestore();
       }
     },
   );

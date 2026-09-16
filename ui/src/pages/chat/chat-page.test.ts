@@ -5,22 +5,13 @@ import { expectDefined } from "@openclaw/normalization-core";
 import type { RouteLocation } from "@openclaw/uirouter";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const nativeGateways = vi.hoisted(() => ({ current: null as NativeGatewaysCapability | null }));
-
 // Keep this complete mock in the dedicated unit-mock-registry project.
 vi.mock("./chat-pane.ts", () => ({}));
-vi.mock("../../app/native-gateways.runtime.ts", () => ({
-  nativeGatewaysCapability: () => nativeGateways.current,
-}));
 
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient, GatewayHelloOk } from "../../api/gateway.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/gateway.ts";
-import type {
-  NativeGatewaysCapability,
-  NativeGatewaysSnapshot,
-} from "../../app/native-gateways.runtime.ts";
 import { loadSettings } from "../../app/settings.ts";
 import { UI_COMMAND_EVENT } from "../../components/panel-toggle-contract.ts";
 import {
@@ -60,9 +51,8 @@ type RenderedPane = HTMLElement & {
   paneTitle: string;
   narrow: boolean;
   mergedChrome: boolean;
-  nativeGateways: NativeGatewaysCapability | null;
-  gatewaysSnapshot: NativeGatewaysSnapshot | null;
   onOpenSplitView?: () => void;
+  onFocusPane?: (paneId: string) => void;
   onClosePane?: (paneId: string) => void;
   onFaceChange?: (paneId: string, sessionKey: string, face: "chat" | "dashboard") => void;
 };
@@ -78,6 +68,7 @@ function createSessionTitleSource() {
     sessions: {
       ...createChatPageSessions(),
       state,
+      presentation: state,
       subscribe(listener: () => void) {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -238,7 +229,6 @@ function stubMatchMedia(matches: boolean) {
 
 describe("chat page split layout host", () => {
   beforeEach(() => {
-    nativeGateways.current = null;
     vi.stubGlobal("localStorage", createStorageMock());
     vi.stubGlobal("sessionStorage", createStorageMock());
     localStorage.clear();
@@ -284,33 +274,6 @@ describe("chat page split layout host", () => {
     expect(typeof itemAt(panes, 0, "rendered pane").onOpenSplitView).toBe("function");
   });
 
-  it("passes the chat-owned gateway capability only to the rightmost pane", async () => {
-    const gatewaySnapshot: NativeGatewaysSnapshot = {
-      gateways: [],
-      currentId: "primary",
-    };
-    nativeGateways.current = {
-      snapshot: gatewaySnapshot,
-      subscribe: () => () => undefined,
-      select: vi.fn(),
-      openWindow: vi.fn(),
-      setPrimary: vi.fn(),
-      openSettings: vi.fn(),
-    };
-    const page = new ChatPage();
-    page.data = { sessionKey: "main" };
-    document.body.append(page);
-    setLayout(page, createSplitLayout("main"));
-    await page.updateComplete;
-
-    const panes = [...page.querySelectorAll<RenderedPane>("openclaw-chat-pane")];
-    expect(panes).toHaveLength(2);
-    expect(panes[0]?.nativeGateways).toBeNull();
-    expect(panes[0]?.gatewaysSnapshot).toBeNull();
-    expect(panes[1]?.nativeGateways).toBe(nativeGateways.current);
-    expect(panes[1]?.gatewaysSnapshot).toBe(gatewaySnapshot);
-  });
-
   it("passes merged chrome from the shared mobile-nav query", async () => {
     stubMatchMedia(true);
     const page = new ChatPage();
@@ -321,7 +284,9 @@ describe("chat page split layout host", () => {
     const pane = itemAt(page.querySelectorAll<RenderedPane>("openclaw-chat-pane"), 0, "pane");
     expect(pane.mergedChrome).toBe(true);
     expect(matchMedia).toHaveBeenCalledWith("(max-width: 1099px)");
-    expect(matchMedia).toHaveBeenCalledWith("(max-width: 1100px)");
+    expect(matchMedia).toHaveBeenCalledWith(
+      "(max-width: 900px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape)",
+    );
   });
 
   it("retains the classic pane element while split view opens and closes", async () => {
@@ -354,6 +319,27 @@ describe("chat page split layout host", () => {
     );
     expect(survivingPane).toBe(classicPane);
     expect(survivingPane.classList.contains("chat-split-view__pane")).toBe(false);
+  });
+
+  it("ignores ordinary pane focus while Chat is retained behind another page", async () => {
+    const page = new ChatPage();
+    const navigation = setNavigationContext(page);
+    page.data = { sessionKey: "main" };
+    document.body.append(page);
+    await page.updateComplete;
+    const first = itemAt(page.querySelectorAll<RenderedPane>("openclaw-chat-pane"), 0, "pane");
+    first.onOpenSplitView?.();
+    await page.updateComplete;
+    const activePaneId = getLayout(page)?.activePaneId;
+    expect(activePaneId).not.toBe(first.paneId);
+    page.presented = false;
+    await page.updateComplete;
+    navigation.replace.mockClear();
+
+    first.onFocusPane?.(first.paneId);
+
+    expect(getLayout(page)?.activePaneId).toBe(activePaneId);
+    expect(navigation.replace).not.toHaveBeenCalled();
   });
 
   it("applies mounted UI split, focus, and close commands", () => {
@@ -646,6 +632,7 @@ describe("chat page split layout host", () => {
 
   it("renders keyed panes and a divider for a two-column split", async () => {
     const page = new ChatPage();
+    const navigation = setNavigationContext(page);
     page.data = { sessionKey: "main" };
     document.body.append(page);
     setLayout(page, createSplitLayout("main"));
@@ -687,6 +674,9 @@ describe("chat page split layout host", () => {
         cell.getAttribute("aria-current"),
       ),
     ).toEqual(["true", null]);
+    expect(navigation.replace).toHaveBeenCalledOnce();
+    itemAt(cells, 0, "split cell").dispatchEvent(new Event("focusin"));
+    expect(navigation.replace).toHaveBeenCalledOnce();
   });
 
   it("declares split panes, session switches, pane closes, and page disposal", async () => {

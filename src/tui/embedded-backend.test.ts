@@ -253,6 +253,10 @@ vi.mock("../agents/model-selection.js", () => ({
 vi.mock("../agents/prepared-model-catalog.js", () => ({
   readPreparedModelCatalog: (params?: LoadPreparedModelCatalogParams) =>
     loadPreparedModelCatalogMock(params),
+  loadPreparedModelCatalogSnapshot: async (params?: LoadPreparedModelCatalogParams) => {
+    const entries = loadPreparedModelCatalogMock(params);
+    return { entries, routeVariants: entries };
+  },
   withPreparedModelCatalogOwner: (...args: Parameters<typeof withPreparedModelCatalogOwnerMock>) =>
     withPreparedModelCatalogOwnerMock(...args),
 }));
@@ -556,7 +560,7 @@ describe("EmbeddedTuiBackend", () => {
         armSessionDiffBaselineCapture: true,
         emitCommandHooks: true,
         commandSource: "tui:embedded",
-        loadGatewayModelCatalog: expect.any(Function),
+        loadGatewayModelCatalogSnapshot: expect.any(Function),
       }),
     );
     expect(result).toEqual({
@@ -589,11 +593,17 @@ describe("EmbeddedTuiBackend", () => {
       loadPreparedModelCatalogMock.mockReturnValue(catalog);
       createGatewaySessionMock.mockImplementation(
         async ({
-          loadGatewayModelCatalog,
+          loadGatewayModelCatalogSnapshot,
         }: {
-          loadGatewayModelCatalog: () => Promise<unknown[]>;
+          loadGatewayModelCatalogSnapshot: () => Promise<{
+            entries: unknown[];
+            routeVariants: unknown[];
+          }>;
         }) => {
-          expect(await loadGatewayModelCatalog()).toBe(catalog);
+          expect(await loadGatewayModelCatalogSnapshot()).toEqual({
+            entries: catalog,
+            routeVariants: catalog,
+          });
           return {
             ok: true,
             key: input.key,
@@ -957,11 +967,17 @@ describe("EmbeddedTuiBackend", () => {
     buildModelsListResultMock.mockResolvedValue({ models });
     projectSessionsPatchEntryMock.mockImplementation(
       async ({
-        loadGatewayModelCatalog,
+        loadGatewayModelCatalogSnapshot,
       }: {
-        loadGatewayModelCatalog: () => Promise<unknown[]>;
+        loadGatewayModelCatalogSnapshot: () => Promise<{
+          entries: unknown[];
+          routeVariants: unknown[];
+        }>;
       }) => {
-        expect(await loadGatewayModelCatalog()).toBe(catalog);
+        expect(await loadGatewayModelCatalogSnapshot()).toEqual({
+          entries: catalog,
+          routeVariants: catalog,
+        });
         return { ok: true, entry: {} };
       },
     );
@@ -3617,9 +3633,9 @@ describe("EmbeddedTuiBackend", () => {
       ],
       expectedDeltas: [
         { deltaText: "Echo", replace: undefined },
-        { deltaText: "Echo", replace: undefined },
+        { deltaText: "\n\nEcho", replace: undefined },
       ],
-      expectedText: "EchoEcho",
+      expectedText: "Echo\n\nEcho",
     },
     {
       name: "a new assistant item extending an earlier item's text",
@@ -3629,9 +3645,9 @@ describe("EmbeddedTuiBackend", () => {
       ],
       expectedDeltas: [
         { deltaText: "Echo", replace: undefined },
-        { deltaText: "Echo!", replace: undefined },
+        { deltaText: "\n\nEcho!", replace: undefined },
       ],
-      expectedText: "EchoEcho!",
+      expectedText: "Echo\n\nEcho!",
     },
     {
       name: "replayed and growing snapshots of one assistant item",
@@ -3656,9 +3672,9 @@ describe("EmbeddedTuiBackend", () => {
       expectedDeltas: [
         { deltaText: "Echo", replace: undefined },
         { deltaText: "Echo", replace: undefined },
-        { deltaText: "!", replace: undefined },
+        { deltaText: "\n\n!", replace: undefined },
       ],
-      expectedText: "EchoEcho!",
+      expectedText: "EchoEcho\n\n!",
     },
     {
       name: "empty corrections that remove only the current assistant item",
@@ -3669,7 +3685,7 @@ describe("EmbeddedTuiBackend", () => {
       ],
       expectedDeltas: [
         { deltaText: "Hello", replace: undefined },
-        { deltaText: " world", replace: undefined },
+        { deltaText: "\n\n world", replace: undefined },
         { deltaText: "Hello", replace: true },
       ],
       expectedText: "Hello",

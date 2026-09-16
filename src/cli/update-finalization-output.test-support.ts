@@ -4,11 +4,15 @@ import fs from "node:fs/promises";
 import { createRequire, registerHooks } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { SQLITE_READONLY_CHILD_ARG } from "../infra/runtime-process-entrypoints.js";
 
 const require = createRequire(import.meta.url);
 const root = process.env.HOME!;
 // Keep real install discovery inside the fixture; only the completion case has a CLI binary.
-await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: "openclaw" }));
+await fs.writeFile(
+  path.join(root, "package.json"),
+  JSON.stringify({ name: "openclaw", version: "2026.9.4" }),
+);
 const [runtimeProcessEntrypointsJson, scenario, ...args] = process.argv.slice(2);
 const borrowed = scenario?.startsWith("borrowed-");
 const blockedChildSource = `
@@ -60,6 +64,12 @@ export async function doctorCommand() {
   }
   outro('Doctor complete.');
   ${scenario === "doctor-error" ? "throw new Error('Doctor repair failed');" : ""}
+  ${
+    scenario === "doctor-warning"
+      ? `await fs.writeFile(process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH,
+        JSON.stringify({status:'ok', warnings:['Optional probe failed; run openclaw doctor after updating.']}));`
+      : ""
+  }
 }
 `;
 const installedEntry = path.join(root, "installed-cli.mjs");
@@ -73,6 +83,7 @@ async function triageCommand() {
   const contextIndex = process.argv.indexOf('--update-result');
   if (contextIndex < 0) throw new Error('Missing update failure artifact');
   await fs.readFile(process.argv[contextIndex + 1], 'utf8');
+  ${scenario === "plugin-error" ? "await new Promise(resolve => setTimeout(resolve, 11_000));" : ""}
   const promptPath = path.join(process.env.OPENCLAW_STATE_DIR, 'logs', 'support', 'triage-fixture-prompt.md');
   await fs.mkdir(path.dirname(promptPath), { recursive: true });
   await fs.writeFile(promptPath, 'Synthetic update failure debugging prompt.\\n');
@@ -111,7 +122,8 @@ const stubs = new Map<string, string>([
   // place that URL in a shared chunk. Workers still execute their real compiled code.
   [
     sourceUrl("../infra/runtime-process-entrypoints.ts"),
-    `export const runtimeProcessEntrypoints = ${runtimeProcessEntrypointsJson};`,
+    `export const runtimeProcessEntrypoints = ${runtimeProcessEntrypointsJson};
+export const SQLITE_READONLY_CHILD_ARG = ${JSON.stringify(SQLITE_READONLY_CHILD_ARG)};`,
   ],
   [sourceUrl("../commands/doctor.ts"), doctorSource],
   [sourceUrl("../config/config.ts"), snapshotSource],

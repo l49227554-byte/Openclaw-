@@ -39,6 +39,10 @@ import type { SandboxContext } from "../sandbox/types.js";
 import { beginForegroundSessionMaintenance } from "../session-maintenance/coordinator.js";
 import { resolveSessionPlacementSandbox } from "../session-placement-admission.js";
 import { DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON } from "./compact-reasons.js";
+import {
+  runForegroundCompactionWork,
+  type ForegroundCompactionOwner,
+} from "./compact.foreground-work.js";
 import { compactNativeCliSession } from "./compact.js";
 import {
   createQueuedCompactionAbortedResult,
@@ -60,6 +64,7 @@ import {
 } from "./compaction-runtime-preparation.js";
 import type { acceptCompactionSuccessor } from "./compaction-successor.js";
 import { resolveContextEngineCapabilities } from "./context-engine-capabilities.js";
+import type { ContextEngineMaintenanceResources } from "./context-engine-maintenance-work.js";
 import { runContextEngineMaintenance } from "./context-engine-maintenance.js";
 import { log } from "./logger.js";
 import { resolveTieredModel } from "./model-resolution.js";
@@ -116,16 +121,6 @@ function resolveManualCompactionActiveRunSessionId(
   );
 }
 
-async function disposeContextEngine(contextEngine: ContextEngine): Promise<void> {
-  try {
-    await contextEngine.dispose?.();
-  } catch (err) {
-    log.warn("context engine dispose failed", {
-      errorMessage: formatErrorMessage(err),
-    });
-  }
-}
-
 async function deferOwningContextEngineBudgetCompaction(params: {
   compactParams: CompactEmbeddedAgentSessionParams;
   contextEngineSessionKey?: string;
@@ -133,6 +128,7 @@ async function deferOwningContextEngineBudgetCompaction(params: {
   contextEngineRuntimeContext: ContextEngineRuntimeContext;
   contextEngineRuntimeSettings: ContextEngineRuntimeSettings;
   onDeferredMaintenance: (completion: Promise<void>) => void;
+  factoryResources: ContextEngineMaintenanceResources;
 }): Promise<EmbeddedAgentCompactResult> {
   let deferredScheduled = false;
   let deferredScheduleFailure: unknown;
@@ -149,6 +145,7 @@ async function deferOwningContextEngineBudgetCompaction(params: {
       config: params.compactParams.config,
       contextEngineAgentId: params.compactParams.contextEngineAgentId,
       disposeDeferredContextEngineAfterMaintenance: true,
+      factoryResources: params.factoryResources,
       onDeferredMaintenance: (completion) => {
         deferredScheduled = true;
         params.onDeferredMaintenance(completion);
@@ -301,6 +298,24 @@ async function compactEmbeddedAgentSessionImpl(
   host: QueuedCompactionHostOptions,
   contextEngineSessionKey?: string,
 ): Promise<EmbeddedAgentCompactResult> {
+  return await runForegroundCompactionWork((owner) =>
+    compactEmbeddedAgentSessionPrepared(
+      params,
+      expectedEntry,
+      host,
+      contextEngineSessionKey,
+      owner,
+    ),
+  );
+}
+
+async function compactEmbeddedAgentSessionPrepared(
+  params: QueuedCompactionParams,
+  expectedEntry: Parameters<typeof acceptCompactionSuccessor>[0]["expectedEntry"],
+  host: QueuedCompactionHostOptions,
+  contextEngineSessionKey: string | undefined,
+  owner: ForegroundCompactionOwner,
+): Promise<EmbeddedAgentCompactResult> {
   if (params.abortSignal?.aborted) {
     return createQueuedCompactionAbortedResult();
   }
@@ -380,6 +395,7 @@ async function compactEmbeddedAgentSessionImpl(
       },
     },
   );
+  const factoryResources = owner.adoptLease(lease);
   // Admission can replace config and agent storage while preserving the requested workspace.
   const preparedParams = {
     ...params,
@@ -390,48 +406,31 @@ async function compactEmbeddedAgentSessionImpl(
     ),
     agentDir: lease.snapshot.agentDir,
   };
-  let deferredCompletion: Promise<void> | undefined;
   const run = async () => {
+    owner.captureContext();
     ensureContextEnginesInitialized();
-    const contextEngine = await resolveContextEngine(preparedParams.config, {
-      agentDir: preparedParams.agentDir,
-      workspaceDir: resolvedWorkspaceDir,
-    });
-    let disposeContextEngineOnExit = true;
-    try {
-      assertQueuedCompactionPreparationActive(params, host);
-      // Foreground disposal belongs to this finally. Only accepted background
-      // maintenance transfers engine ownership away from this call.
-      return await compactResolvedContextEngine(
-        preparedParams,
-        expectedEntry,
-        host,
-        contextEngine,
-        preparedParams.agentDir,
-        resolvedWorkspaceDir,
-        lease.snapshot,
-        contextEngineSessionKey,
-        (completion) => {
-          disposeContextEngineOnExit = false;
-          deferredCompletion = completion;
-        },
-      );
-    } finally {
-      if (disposeContextEngineOnExit) {
-        await disposeContextEngine(contextEngine);
-      }
-    }
-  };
-  try {
+    const contextEngine = await owner.resolveEngine(() =>
+      resolveContextEngine(preparedParams.config, {
+        agentDir: preparedParams.agentDir,
+        workspaceDir: resolvedWorkspaceDir,
+      }),
+    );
     assertQueuedCompactionPreparationActive(params, host);
-    return await withPluginRuntimeGenerationScope(lease.snapshot, run);
-  } finally {
-    if (deferredCompletion) {
-      void deferredCompletion.then(lease.release, lease.release);
-    } else {
-      lease.release();
-    }
-  }
+    return await compactResolvedContextEngine(
+      preparedParams,
+      expectedEntry,
+      host,
+      contextEngine,
+      preparedParams.agentDir,
+      resolvedWorkspaceDir,
+      lease.snapshot,
+      contextEngineSessionKey,
+      owner.transferEngine,
+      factoryResources,
+    );
+  };
+  assertQueuedCompactionPreparationActive(params, host);
+  return await withPluginRuntimeGenerationScope(lease.snapshot, run);
 }
 
 async function compactResolvedContextEngine(
@@ -444,6 +443,7 @@ async function compactResolvedContextEngine(
   preparedModelRuntime: PreparedModelRuntimeSnapshot,
   contextEngineSessionKey: string | undefined,
   transferContextEngineOwnership: (completion: Promise<void>) => void,
+  factoryResources: ContextEngineMaintenanceResources,
 ): Promise<EmbeddedAgentCompactResult> {
   const runtimeTarget = params.sessionTarget;
   const lockedHarnessRuntime = resolveSessionPinnedHarnessId(params.sessionEntry);
@@ -677,6 +677,7 @@ async function compactResolvedContextEngine(
       contextEngineRuntimeContext,
       contextEngineRuntimeSettings,
       onDeferredMaintenance: transferContextEngineOwnership,
+      factoryResources,
     });
   }
   return await executeQueuedContextEngineCompaction({

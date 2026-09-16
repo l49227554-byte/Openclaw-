@@ -17,7 +17,10 @@ import {
   appendSessionTranscriptMessageByIdentity,
   type SessionTranscriptTargetParams,
 } from "openclaw/plugin-sdk/session-transcript-runtime";
-import { closeOpenClawAgentDatabasesForTest } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import {
   afterAll,
   afterEach,
@@ -30,6 +33,7 @@ import {
   vi,
 } from "vitest";
 import plugin, { testing } from "./index.js";
+import * as recallRun from "./recall-run.js";
 import { resolveActiveRecallForRun } from "./recall-state.js";
 import * as transcriptWatch from "./transcript-watch.js";
 
@@ -756,6 +760,7 @@ describe("active-memory plugin", () => {
 
   afterAll(async () => {
     closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(fixtureRoot, { recursive: true, force: true });
     fixtureRoot = "";
@@ -792,6 +797,52 @@ describe("active-memory plugin", () => {
     expect(hoisted.getActiveMemorySearchManager).not.toHaveBeenCalled();
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
     expect(hasInfoLine("active-memory: recall skipped reason=policy-disabled")).toBe(true);
+  });
+
+  it("skips recall for inter-session deliveries that reuse the user trigger", async () => {
+    const result = await runPromptBuild(
+      {
+        prompt:
+          "[Inter-session message] sourceSession=agent:main:other sourceTool=sessions_send isUser=false\nHandoff payload",
+      },
+      {
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: "agent:main:other",
+          sourceTool: "sessions_send",
+        },
+      },
+    );
+
+    expect(result).toBeUndefined();
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    expect(hoisted.getActiveMemorySearchManager).not.toHaveBeenCalled();
+    expect(hasInfoLine("active-memory: recall skipped reason=session-ineligible")).toBe(true);
+  });
+
+  it("skips recall for subagent settlement deliveries into a visible session", async () => {
+    const result = await runPromptBuild(
+      { prompt: "[Subagent Context] subagent_settle\nTask finished" },
+      {
+        inputProvenance: {
+          kind: "inter_session",
+          sourceTool: "subagent_settle",
+        },
+      },
+    );
+
+    expect(result).toBeUndefined();
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    expect(hasInfoLine("active-memory: recall skipped reason=session-ineligible")).toBe(true);
+  });
+
+  it("still recalls for external-user provenance", async () => {
+    const result = await runPromptBuild(
+      { prompt: "what wings should i order?" },
+      { inputProvenance: { kind: "external_user" } },
+    );
+
+    expectPrependContextContains(result, "lemon pepper wings");
   });
 
   it("does not inject recall that completes after the turn authority closes", async () => {
@@ -4039,12 +4090,26 @@ describe("active-memory plugin", () => {
   });
 
   it("does not fast-fail memory_search results solely because debug hits is zero", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     testing.setMinimumTimeoutMsForTests(1);
     testing.setSetupGraceTimeoutMsForTests(0);
     registerPluginConfig({ timeoutMs: 100, logging: true });
     const sessionKey = "agent:main:terminal-zero-hit-with-results";
     seedSession(sessionKey, "s-terminal-zero-hit-with-results", 0);
+    const transcriptWritten = createDeferred<void>();
+    const transcriptRead = createDeferred<void>();
+    const readFile = fs.readFile;
+    let transcriptPath: string | undefined;
+    vi.spyOn(fs, "readFile").mockImplementation(async (...args) => {
+      const content = await readFile(...args);
+      if (args[0] === transcriptPath) {
+        // Let the watcher consume this read before the model summary settles.
+        setImmediate(() => transcriptRead.resolve());
+      }
+      return content;
+    });
     runEmbeddedAgent.mockImplementationOnce(async (params: { sessionFile: string }) => {
+      transcriptPath = params.sessionFile;
       await writeTranscriptJsonl(params.sessionFile, [
         {
           message: {
@@ -4057,16 +4122,21 @@ describe("active-memory plugin", () => {
           },
         },
       ]);
+      transcriptWritten.resolve();
       await new Promise((resolve) => {
         setTimeout(resolve, 35);
       });
+      await transcriptRead.promise;
       return { payloads: [{ text: "User usually orders ramen." }] };
     });
 
-    const result = await runPromptBuild(
+    const resultPromise = runPromptBuild(
       { prompt: "what food do i usually order? zero hit with results" },
       { sessionKey },
     );
+    await transcriptWritten.promise;
+    await vi.advanceTimersByTimeAsync(35);
+    const result = await resultPromise;
 
     expect(requirePrependContext(result)).toContain("User usually orders ramen.");
     const lines = getActiveMemoryLines(sessionKey);
@@ -4288,10 +4358,7 @@ describe("active-memory plugin", () => {
     registerPluginConfig({ timeoutMs: 100, logging: true });
     const sessionKey = "agent:main:unsettled-timeout";
     seedSession(sessionKey, "s-unsettled-timeout", 0);
-    let resolveLateWrite: () => void = () => {};
-    const lateWriteDone = new Promise<void>((resolve) => {
-      resolveLateWrite = resolve;
-    });
+    const recallRunSpy = vi.spyOn(recallRun, "runRecallSubagent");
     let releaseLateWrite: () => void = () => {};
     const lateWriteRelease = new Promise<void>((resolve) => {
       releaseLateWrite = resolve;
@@ -4329,7 +4396,6 @@ describe("active-memory plugin", () => {
             },
           },
         ]);
-        resolveLateWrite();
         return { payloads: [] };
       },
     );
@@ -4346,8 +4412,10 @@ describe("active-memory plugin", () => {
       expectLinesNotToContain(lines, "timeout_partial");
     } finally {
       releaseLateWrite();
-      await lateWriteDone;
+      // Join the recall owner before shared mocks and session state can be reset.
+      await Promise.allSettled(recallRunSpy.mock.results.map(({ value }) => value));
     }
+    expect(hoisted.sessionStore[lastEmbeddedSessionKey()]).toBeUndefined();
   });
 
   it("does not recover a timeout partial after an unmirrored custom memory tool fails", async () => {
@@ -5026,6 +5094,7 @@ describe("active-memory plugin", () => {
     registerPluginConfig({ timeoutMs: CONFIGURED_TIMEOUT_MS, logging: true });
     const sessionKey = "agent:main:terminal-unavailable";
     hoisted.sessionStore[sessionKey] = { sessionId: "s-terminal-unavailable", updatedAt: 0 };
+    const recallRunSpy = vi.spyOn(recallRun, "runRecallSubagent");
     runEmbeddedAgent.mockImplementationOnce(
       async (params: { sessionFile: string; abortSignal?: AbortSignal }) => {
         await writeTranscriptJsonl(params.sessionFile, [
@@ -5046,27 +5115,32 @@ describe("active-memory plugin", () => {
       },
     );
 
-    const result = await runPromptBuild(
-      { prompt: "what food do i usually order? unavailable" },
-      { sessionKey },
-    );
+    try {
+      const result = await runPromptBuild(
+        { prompt: "what food do i usually order? unavailable" },
+        { sessionKey },
+      );
 
-    expectPrependContextContains(result, unavailableRecallContext);
-    const infoLines = vi
-      .mocked(api.logger.info)
-      .mock.calls.map((call: unknown[]) => String(call[0]));
-    expectLinesToContain(infoLines, "done status=unavailable");
-    expectLinesToContain(infoLines, "reason=search-error");
-    expectLinesNotToContain(infoLines, "fixture-secret");
-    expectLinesNotToContain(infoLines, "/private/runtime");
-    expectLinesNotToContain(infoLines, "done status=timeout");
-    const lines = getActiveMemoryLines(sessionKey);
-    expect(lines).toHaveLength(2);
-    expectLinesToContain(lines, "🧩 Active Memory: status=unavailable");
-    expectLinesToContain(
-      lines,
-      "🔎 Active Memory Debug: Memory search is unavailable due to an embedding/provider error. Check the embedding provider configuration, then retry memory_search.",
-    );
+      expectPrependContextContains(result, unavailableRecallContext);
+      const infoLines = vi
+        .mocked(api.logger.info)
+        .mock.calls.map((call: unknown[]) => String(call[0]));
+      expectLinesToContain(infoLines, "done status=unavailable");
+      expectLinesToContain(infoLines, "reason=search-error");
+      expectLinesNotToContain(infoLines, "fixture-secret");
+      expectLinesNotToContain(infoLines, "/private/runtime");
+      expectLinesNotToContain(infoLines, "done status=timeout");
+      const lines = getActiveMemoryLines(sessionKey);
+      expect(lines).toHaveLength(2);
+      expectLinesToContain(lines, "🧩 Active Memory: status=unavailable");
+      expectLinesToContain(
+        lines,
+        "🔎 Active Memory Debug: Memory search is unavailable due to an embedding/provider error. Check the embedding provider configuration, then retry memory_search.",
+      );
+    } finally {
+      await Promise.allSettled(recallRunSpy.mock.results.map(({ value }) => value));
+    }
+    expect(hoisted.sessionStore[lastEmbeddedSessionKey()]).toBeUndefined();
   });
 
   it("does not fast-fail memory_get misses but rejects ungrounded completed output", async () => {

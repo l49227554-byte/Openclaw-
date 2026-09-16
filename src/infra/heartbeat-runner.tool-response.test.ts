@@ -1,10 +1,10 @@
+import { STREAM_ERROR_FALLBACK_TEXT } from "@openclaw/ai/internal/shared";
 // Covers heartbeat tool-response handling and visible reply policy.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GENERIC_EXTERNAL_RUN_FAILURE_TEXT,
   HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
 } from "../agents/failover/user-copy.js";
-import { STREAM_ERROR_FALLBACK_TEXT } from "../agents/stream-message-shared.js";
 import {
   createHeartbeatToolResponsePayload,
   type HeartbeatToolResponse,
@@ -22,8 +22,8 @@ import { resolveCronJobsStorePath, saveCronJobsStore } from "../cron/store.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
+import { heartbeatLog } from "./heartbeat-log.js";
 import { claimHeartbeatOutcomeForRun } from "./heartbeat-outcome-store.js";
-import { heartbeatLog } from "./heartbeat-runner-config.js";
 import { truncateHeartbeatPreview } from "./heartbeat-runner-prompt.js";
 import { runHeartbeatOnce, type HeartbeatDeps } from "./heartbeat-runner.js";
 import { installHeartbeatRunnerTestRuntime } from "./heartbeat-runner.test-harness.js";
@@ -447,7 +447,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
       });
 
       expect(
-        claimHeartbeatOutcomeForRun({
+        await claimHeartbeatOutcomeForRun({
           agentId: "main",
           sessionKey,
           storePath,

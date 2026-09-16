@@ -17,6 +17,7 @@ import { UI_COMMAND_EVENT } from "../../components/panel-toggle-contract.ts";
 import { SESSION_NAVIGATION_INTENT_EVENT } from "../../lib/sessions/navigation-handoff.ts";
 import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
+import { QUEUED_EDIT_RETENTION_CHANGE_EVENT } from "./chat-page-retained-sessions.ts";
 import { createChatPageSessions } from "./chat-page.test-support.ts";
 import { ChatPage } from "./chat-page.ts";
 import { routeDraft } from "./route-draft.ts";
@@ -24,6 +25,7 @@ import type { SessionChatRouteData } from "./route-loader.ts";
 
 type RenderedPane = HTMLElement & {
   active: boolean;
+  hasQueuedMessageEdit?: boolean;
   draft?: string;
   focusComposer: boolean;
   onFaceChange?: (paneId: string, sessionKey: string, face: "chat" | "dashboard") => void;
@@ -241,6 +243,45 @@ describe("chat page retained sessions", () => {
         .toSorted(),
     ).toEqual(["agent:main:a", "agent:main:c", "agent:main:d"]);
     expect(paneB?.isConnected).toBe(false);
+  });
+
+  it("keeps edited panes mounted through overflow and prunes released custody without moving survivors", async () => {
+    const { page, paneFor, panes } = await mountRetainedPage("agent:main:a");
+    const paneA = expectDefined(paneFor("agent:main:a"), "first edited pane");
+    paneA.hasQueuedMessageEdit = true;
+    await showSession(page, "agent:main:b");
+    const paneB = expectDefined(paneFor("agent:main:b"), "second edited pane");
+    paneB.hasQueuedMessageEdit = true;
+    await showSession(page, "agent:main:c");
+    const paneC = expectDefined(paneFor("agent:main:c"), "third edited pane");
+    paneC.hasQueuedMessageEdit = true;
+    await showSession(page, "agent:main:d");
+    expect(panes()).toHaveLength(4);
+    await showSession(page, "agent:main:e");
+    const paneE = paneFor("agent:main:e");
+    expect(paneFor("agent:main:d")).toBeUndefined();
+    expect(panes()).toHaveLength(4);
+    expect(paneFor("agent:main:a")).toBe(paneA);
+    expect(paneFor("agent:main:b")).toBe(paneB);
+    expect(paneFor("agent:main:c")).toBe(paneC);
+
+    paneB.hasQueuedMessageEdit = false;
+    paneB.dispatchEvent(new Event(QUEUED_EDIT_RETENTION_CHANGE_EVENT, { bubbles: true }));
+    await page.updateComplete;
+    expect(panes()).toHaveLength(3);
+    expect(paneB.isConnected).toBe(false);
+    expect(paneFor("agent:main:a")).toBe(paneA);
+    expect(paneFor("agent:main:c")).toBe(paneC);
+    expect(paneFor("agent:main:e")).toBe(paneE);
+
+    paneA.hasQueuedMessageEdit = false;
+    paneC.hasQueuedMessageEdit = false;
+    await showSession(page, "agent:main:f");
+    await showSession(page, "agent:main:g");
+    expect(panes()).toHaveLength(3);
+    expect(paneFor("agent:main:a")).toBeUndefined();
+    expect(paneFor("agent:main:c")).toBeUndefined();
+    expect(paneFor("agent:main:e")).toBe(paneE);
   });
 
   it("parks pane activity and ignores session commands while another page is presented", async () => {
@@ -534,6 +575,41 @@ describe("chat page retained sessions", () => {
     expect(panes().some((pane) => pane.sessionKey === "agent:main:a")).toBe(false);
     expect(navigation.navigate).not.toHaveBeenCalled();
     expect(page.data.sessionKey).toBe("agent:main:b");
+  });
+
+  it("reuses a deleted middle position without replacing survivors or changing eviction recency", async () => {
+    const { page, paneFor, panes } = await mountRetainedPage(
+      "agent:main:a",
+      "agent:main:b",
+      "agent:main:c",
+    );
+    const paneA = paneFor("agent:main:a");
+    const paneB = paneFor("agent:main:b");
+    const paneC = paneFor("agent:main:c");
+
+    paneB?.onSessionDeleted?.("p1", "agent:main:b", "agent:main:main");
+    await page.updateComplete;
+    await showSession(page, "agent:main:d");
+
+    expect(paneB?.isConnected).toBe(false);
+    expect(paneFor("agent:main:a")).toBe(paneA);
+    expect(paneFor("agent:main:c")).toBe(paneC);
+    expect(
+      panes()
+        .map((pane) => pane.sessionKey)
+        .toSorted(),
+    ).toEqual(["agent:main:a", "agent:main:c", "agent:main:d"]);
+
+    await showSession(page, "agent:main:a");
+    await showSession(page, "agent:main:e");
+
+    expect(paneFor("agent:main:a")).toBe(paneA);
+    expect(paneC?.isConnected).toBe(false);
+    expect(
+      panes()
+        .map((pane) => pane.sessionKey)
+        .toSorted(),
+    ).toEqual(["agent:main:a", "agent:main:d", "agent:main:e"]);
   });
 
   it("rolls a retained preview back when authoritative navigation never commits", async () => {

@@ -3,7 +3,7 @@ import type { ModelRegistry as CoreModelRegistry } from "../../llm/model-registr
 import type { Model } from "../../llm/types.js";
 import type { PluginMetadataSnapshotOwnerMaps } from "../../plugins/plugin-metadata-snapshot.types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
-import { ensureAuthProfileStore, resolveAuthProfileOrder } from "../auth-profiles.js";
+import { loadAuthProfileStoreForRuntime, resolveAuthProfileOrder } from "../auth-profiles.js";
 import { externalCliDiscoveryForProviderAuth } from "../auth-profiles/external-cli-discovery.js";
 import { createSelectedAuthProfileUnavailableError } from "../auth-profiles/selection-error.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
@@ -219,7 +219,8 @@ export function resolveDynamicModelAuthProfile(params: {
       authProfileMode: params.authProfileMode,
     };
   }
-  const store = ensureAuthProfileStore(params.agentDir, {
+  const store = loadAuthProfileStoreForRuntime(params.agentDir, {
+    readOnly: true,
     migrationProvider: params.provider,
     allowKeychainPrompt: false,
     profileId: explicitProfileId,
@@ -377,6 +378,7 @@ export function shouldCompareProviderRuntimeResolvedModel(params: {
 export function normalizeProviderModelRef(params: {
   provider: string;
   modelId: string;
+  modelIdSource?: "input" | "selected";
   cfg?: OpenClawConfig;
   workspaceDir?: string;
 }): {
@@ -392,10 +394,13 @@ export function normalizeProviderModelRef(params: {
   });
   return {
     provider: manifestAlias.provider,
-    model: normalizeStaticProviderModelId(
-      normalizeProviderId(manifestAlias.provider),
-      params.modelId,
-    ),
+    model:
+      params.modelIdSource === "selected"
+        ? params.modelId
+        : normalizeStaticProviderModelId(
+            normalizeProviderId(manifestAlias.provider),
+            params.modelId,
+          ),
     manifestAlias,
   };
 }

@@ -148,6 +148,7 @@ fun ShellScreen(
     var commandOpen by rememberSaveable { mutableStateOf(false) }
     var conversationScreenWasActive by rememberSaveable { mutableStateOf(false) }
     val pendingTrust by viewModel.pendingGatewayTrust.collectAsState()
+    val gatewayAddition by viewModel.gatewayAdditionRequest.collectAsState()
     FoldAwareContent(
       features = features,
       modifier = modifier.background(ClawTheme.colors.canvas),
@@ -406,6 +407,10 @@ fun ShellScreen(
           )
         }
 
+        gatewayAddition?.let { request ->
+          key(request) { GatewayAdditionDialog(viewModel, request) }
+        }
+
         pendingTrust?.let { prompt ->
           // Gateway certificate trust is modal across the shell so navigation
           // cannot hide a changed TLS identity prompt.
@@ -413,9 +418,9 @@ fun ShellScreen(
             prompt = prompt,
             confirmLabel = stringResource(R.string.trust_and_continue),
             cancelLabel = stringResource(R.string.cancel),
-            onAccept = viewModel::acceptGatewayTrustPrompt,
-            onUseSystemTrust = viewModel::useSystemGatewayTrustPrompt,
-            onDecline = viewModel::declineGatewayTrustPrompt,
+            onAccept = { viewModel.acceptGatewayTrustPrompt(prompt, it) },
+            onUseSystemTrust = { viewModel.useSystemGatewayTrustPrompt(prompt) },
+            onDecline = { viewModel.declineGatewayTrustPrompt(prompt) },
           )
         }
       }
@@ -1646,7 +1651,7 @@ private fun SettingsShellScreen(
             value = nativeText("Return to setup"),
             icon = Icons.AutoMirrored.Filled.ExitToApp,
             opensRoute = false,
-            onClick = viewModel::pairNewGateway,
+            onClick = viewModel::returnToGatewaySetup,
           )
         }
       }

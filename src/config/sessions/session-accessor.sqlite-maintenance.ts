@@ -12,10 +12,8 @@ import {
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { publishSessionStateArchives } from "./session-accessor.sqlite-archive-store.js";
-import {
-  materializeSessionStateDeletePlans,
-  type SessionStateDeletePlan,
-} from "./session-accessor.sqlite-archive.js";
+import type { SessionStateDeletePlan } from "./session-accessor.sqlite-archive-types.js";
+import { materializeSessionStateDeletePlans } from "./session-accessor.sqlite-archive.js";
 import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
 import {
   runSqliteSessionDeletionTransaction as runOpenClawAgentWriteTransaction,
@@ -51,6 +49,7 @@ import {
   getSessionKysely,
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
+  withSqliteSessionDatabase,
   type ResolvedSqliteReadScope,
 } from "./session-accessor.sqlite-scope.js";
 import { planSessionEntryMaintenance } from "./store-maintenance-plan.js";
@@ -368,13 +367,6 @@ export function applySessionEntryMaintenance(
     params.activeSessionKey ?? "",
     ...(params.activeSessionKeys ?? []),
   ]);
-  const keyProjection = readSessionMaintenanceKeyProjection(database);
-  const preserveKeys =
-    collectSessionMaintenancePreserveKeysForStore({
-      storePath: params.storePath,
-      store: keyProjection,
-      baseKeys: collectSqliteSessionMaintenanceBaseKeys(keyProjection, activeSessionKeys),
-    }) ?? new Set<string>();
   const removalReasons = new Map<
     string,
     NonNullable<SessionEntryMaintenancePlan["entryRemovals"][number]["maintenanceReason"]>
@@ -386,7 +378,14 @@ export function applySessionEntryMaintenance(
       maintenance,
       initialUnarchivedCount: entryCount,
       forceMaintenance: params.forceMaintenance,
-      preserveKeys,
+      readPreserveKeys: () => {
+        const keyProjection = readSessionMaintenanceKeyProjection(database);
+        return collectSessionMaintenancePreserveKeysForStore({
+          storePath: params.storePath,
+          store: keyProjection,
+          baseKeys: collectSqliteSessionMaintenanceBaseKeys(keyProjection, activeSessionKeys),
+        });
+      },
       log: false,
       readAgeCandidates: (minimumAgeMs) =>
         readSessionMaintenanceAgeCandidates({ database, minimumAgeMs }),
@@ -408,15 +407,18 @@ export function applySessionEntryMaintenance(
   const selectedEntries = readSessionEntryStore(database, { sessionKeys: selectedKeys });
   const archivedWorktrees: NonNullable<SessionEntryMaintenancePlan["archivedWorktrees"]> = [];
   for (const key of archivedKeys) {
-    const entry = selectedEntries[key];
+    const previousEntry = selectedEntries[key];
     const planned = store[key];
-    if (!entry || !planned?.archivedAt) {
+    if (!previousEntry || !planned?.archivedAt) {
       continue;
     }
-    entry.archivedAt = planned.archivedAt;
+    const entry = {
+      ...previousEntry,
+      archivedAt: planned.archivedAt,
+      archiveReason: planned.archiveReason,
+    };
     delete entry.archivedBy;
-    entry.archiveReason = planned.archiveReason;
-    writeSessionEntry(database, key, entry);
+    writeSessionEntry(database, key, entry, { canonicalPreviousEntry: previousEntry });
     if (entry.worktree) {
       archivedWorktrees.push({
         entry: cloneSessionEntry(entry),
@@ -583,34 +585,44 @@ export async function finalizeSessionEntryMaintenancePlansAfterWriterReleaseBest
         batch.entryRemovals.flatMap(({ expectedEntry: entry, sessionKey }) =>
           entry ? [{ entry, sessionKey }] : [],
         ),
-        async () =>
+        async (assertCurrent) =>
           await runExclusiveSqliteSessionWrite(
             scope,
             async () => {
               if (!isCurrent()) {
                 return [];
               }
-              let committed: SessionLifecycleArchivedTranscript[] = [];
-              runOpenClawAgentWriteTransaction((database) => {
-                const partition = partitionUnchangedPlannedLifecycleArtifactEntries(
-                  database,
-                  batch.entryRemovals,
-                );
-                changedEntryRemovals = partition.changed;
-                committedEntryRemovals = partition.unchanged;
-                committed = deleteMaterializedSessionStatePlans(
-                  database,
-                  materializedPlans,
-                  undefined,
-                  new Set(committedEntryRemovals.map((removal) => removal.sessionKey)),
-                );
-                deletePlannedLifecycleArtifactEntries(database, committedEntryRemovals);
-                deferOpenClawAgentPostCommitPublication(
-                  database,
-                  prepareCommittedSessionEntryRemovals(scope.agentId, committedEntryRemovals),
-                );
-              }, toDatabaseOptions(scope));
-              return committed;
+              return await withSqliteSessionDatabase(
+                toDatabaseOptions(scope),
+                () => {
+                  // Cold admission can yield while this maintenance owner retires.
+                  if (!isCurrent()) {
+                    return [];
+                  }
+                  let committed: SessionLifecycleArchivedTranscript[] = [];
+                  runOpenClawAgentWriteTransaction((database) => {
+                    const partition = partitionUnchangedPlannedLifecycleArtifactEntries(
+                      database,
+                      batch.entryRemovals,
+                    );
+                    changedEntryRemovals = partition.changed;
+                    committedEntryRemovals = partition.unchanged;
+                    committed = deleteMaterializedSessionStatePlans(
+                      database,
+                      materializedPlans,
+                      undefined,
+                      new Set(committedEntryRemovals.map((removal) => removal.sessionKey)),
+                    );
+                    deletePlannedLifecycleArtifactEntries(database, committedEntryRemovals);
+                    deferOpenClawAgentPostCommitPublication(
+                      database,
+                      prepareCommittedSessionEntryRemovals(scope.agentId, committedEntryRemovals),
+                    );
+                  }, toDatabaseOptions(scope));
+                  return committed;
+                },
+                assertCurrent,
+              );
             },
             "session.maintenance.finalize",
           ),

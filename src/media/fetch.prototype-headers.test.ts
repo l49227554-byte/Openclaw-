@@ -9,7 +9,9 @@ it.each(["__proto__", "constructor", "application/x-openclaw-probe"])(
     const server = createServer((_request, response) => {
       response.writeHead(200, { "Content-Type": contentType }).end(bytes);
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
     try {
       const address = server.address();
       if (!address || typeof address === "string") {

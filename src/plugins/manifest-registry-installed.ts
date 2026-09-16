@@ -524,6 +524,15 @@ export function prepareInstalledPluginCandidateResolver(params: {
   );
   return (plugin) => {
     const candidate = toPluginCandidate(plugin, env);
+    // Explicit managed paths carry the requested workspace during discovery;
+    // restore that same provenance when hydrating the persisted inventory.
+    if (
+      candidate.origin === "global" &&
+      (resolveInstalledPluginIndexInstallOwner(plugin) ||
+        isInstalledPluginIndexInstallOwnerAmbiguous(plugin))
+    ) {
+      candidate.workspaceDir = normalizeOptionalString(params.workspaceDir);
+    }
     if (
       candidate.origin === "bundled" &&
       ((sourceRoots.size > 0 &&

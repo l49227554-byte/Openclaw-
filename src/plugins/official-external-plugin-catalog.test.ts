@@ -407,18 +407,18 @@ describe("official external plugin catalog", () => {
     expect(gaps).toEqual([]);
   });
 
-  it("declares each published ClawHub counterpart in its package and discovery catalog", () => {
+  it("declares each ClawHub publication target in its package", () => {
     const gaps = listPublishedPluginOwners().flatMap(
-      ({ id, packageName, install, publishToClawHub, external }) => {
+      ({ id, packageName, install, publishToClawHub }) => {
         if (!publishToClawHub) {
           return [];
         }
         const expected = `clawhub:${packageName}`;
-        const entry = getOfficialExternalPluginCatalogEntry(id);
-        const catalogSpec = entry && resolveOfficialExternalPluginInstall(entry)?.clawhubSpec;
-        return install.clawhubSpec === expected && (entry ? catalogSpec === expected : !external)
+        // Bundled packages may be publishable before external catalog publication.
+        // The preceding test checks catalog/install parity for external owners.
+        return install.clawhubSpec === expected
           ? []
-          : [{ id, packageName, expected, packageSpec: install.clawhubSpec, catalogSpec }];
+          : [{ id, packageName, expected, packageSpec: install.clawhubSpec }];
       },
     );
     expect(gaps).toEqual([]);

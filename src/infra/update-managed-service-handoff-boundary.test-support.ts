@@ -6,9 +6,9 @@ import { expect, vi, type Mock } from "vitest";
 import { waitForFile } from "../../test/helpers/process-wait.js";
 import { DEFAULT_VITEST_TEST_TIMEOUT_MS } from "../../test/vitest/vitest.timeouts.js";
 import { writeTriageUpdateFailure } from "../commands/triage-update.js";
-import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 import { writeRestartSentinel } from "./restart-sentinel.js";
 import type { ManagedServiceBoundaryOptions } from "./update-managed-service-handoff-boundary-contract.test-support.js";
 import {
@@ -26,7 +26,11 @@ import {
   type ManagedServiceCommandTiming,
   type ManagedServiceManagerBoundaryResult,
 } from "./update-managed-service-handoff-lifecycle.test-support.js";
-import { createManagedServiceBoundaryCleanup } from "./update-managed-service-handoff-process.test-support.js";
+import {
+  createManagedServiceBoundaryCleanup,
+  createManagedServiceBoundaryParent,
+  pathExists,
+} from "./update-managed-service-handoff-process.test-support.js";
 import {
   managedRepairUpdaterScript,
   readManagedRepairEffects,
@@ -48,14 +52,7 @@ import {
 } from "./update-managed-service-native.test-support.js";
 import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
 
-export async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export { pathExists };
 
 export function createManagedServiceManagerBoundary({
   spawnMock,
@@ -133,18 +130,8 @@ export function createManagedServiceManagerBoundary({
       await fs.mkdir(invocationCwd);
       await fs.writeFile(path.join(invocationCwd, "update-input.txt"), "selected target");
     }
-    const parent = spawn(process.execPath, ["-e", "process.stdin.resume()"], {
-      stdio: ["pipe", "ignore", "ignore"],
-    });
-    const parentClosed = new Promise<void>((resolve) => {
-      parent.once("close", () => resolve());
-    });
-    const parentPid = parent.pid;
-    const parentStartIdentity = parentPid ? getFileLockProcessStartTime(parentPid) : null;
-    if (!parentPid || parentStartIdentity === null) {
-      parent.kill("SIGKILL");
-      throw new Error("expected the managed Gateway parent to have a stable process identity");
-    }
+    const { parent, parentClosed, parentPid, parentStartIdentity } =
+      createManagedServiceBoundaryParent(spawn);
     await fs.writeFile(
       path.join(root, kind === "systemd" ? "systemctl" : "launchctl"),
       createManagedServiceManagerFixtureScript({
@@ -155,9 +142,7 @@ export function createManagedServiceManagerBoundary({
         configPath: path.join(root, "openclaw.json"),
         options,
       }),
-      {
-        mode: 0o755,
-      },
+      { mode: 0o755 },
     );
     const env = {
       ...process.env,
@@ -204,7 +189,7 @@ export function createManagedServiceManagerBoundary({
         parentPid,
         invocationCwd,
         requester: options?.requester,
-        execPath: process.execPath,
+        execPath: resolveTestNodeExecPath(),
         argv1: process.argv[1],
         handoffId: `${kind}-boundary`,
         env,
@@ -215,8 +200,7 @@ export function createManagedServiceManagerBoundary({
         string[],
         { env: NodeJS.ProcessEnv },
       ];
-      const scriptPath = generatedArgs[0];
-      const generatedParamsPath = generatedArgs[1];
+      const [scriptPath, generatedParamsPath] = generatedArgs;
       if (!scriptPath || !generatedParamsPath) {
         throw new Error("expected generated managed handoff script and parameters");
       }
@@ -337,7 +321,7 @@ export function createManagedServiceManagerBoundary({
           ...(options?.recoveryHang ? { recoveryTimeoutMs: 1000 } : {}),
           recovery: { serviceRestartSafe: true, version: "1.0.0" },
           recoveryModulePath,
-          commandArgv: [process.execPath, "-e", updaterScript],
+          commandArgv: [resolveTestNodeExecPath(), "-e", updaterScript],
         }),
       );
       if (options?.recoverySentinel) {
@@ -413,7 +397,7 @@ export function createManagedServiceManagerBoundary({
         );
         helperEnv = { ...helperEnv, NODE_OPTIONS: `--require ${preloadPath}` };
       }
-      const runningHelper = spawn(process.execPath, [scriptPath, paramsPath], {
+      const runningHelper = spawn(resolveTestNodeExecPath(), [scriptPath, paramsPath], {
         env: helperEnv,
         stdio: ["pipe", "pipe", "pipe"],
       });

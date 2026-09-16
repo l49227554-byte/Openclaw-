@@ -104,95 +104,107 @@ describe("Doctor maintenance with session workers", () => {
     );
   });
 
-  it("preserves migrated history, archives deletion, and drains workers before another repair", async () => {
-    await withOpenClawTestState(
-      { scenario: "external-service", label: "doctor-session-workers" },
-      async (state) => {
-        const cfg: OpenClawConfig = {
-          agents: { entries: { ops: {} } },
-          plugins: { enabled: false },
-        };
-        await state.writeConfig(cfg);
-        const sessionId = "doctor-migrated-history";
-        const source = {
-          agentId: "main",
-          env: state.env,
-          sessionId,
-          sessionKey: "agent:main:doctor",
-          storePath: path.join(state.sessionsDir("main"), "sessions.json"),
-        };
-        const destination = {
-          ...source,
-          agentId: "ops",
-          sessionKey: "agent:ops:doctor",
-          storePath: path.join(state.sessionsDir("ops"), "sessions.json"),
-        };
-        const events = [
-          { type: "session", id: sessionId, version: 3 },
-          {
-            type: "message",
-            id: "doctor-history-message",
-            parentId: null,
-            message: { role: "user", content: "Preserve this history through Doctor repair." },
-          },
-        ];
-        const maintenance = await beginDoctorMaintenance({
-          options: { repair: true, nonInteractive: true },
-          root: null,
-          runtime: quietRuntime,
-        });
-        try {
-          await maintenance!.run(async () => {
-            await replaceSessionEntry(source, { sessionId, updatedAt: Date.now() });
-            await replaceTranscriptEvents(source, events);
-            await waitForSessionTranscriptIndexReconcile({ agentId: "main", env: state.env });
-
-            await noteSessionTranscriptHealth({
-              cfg,
-              env: state.env,
-              shouldRepair: true,
-              postSessionPluginMigrationPlanBound: true,
-            });
-            expect(loadExactSessionEntryReadOnly(source)).toBeUndefined();
-            expect(loadExactSessionEntryReadOnly(destination)?.entry.sessionId).toBe(sessionId);
-            await expect(loadTranscriptEvents(destination)).resolves.toEqual(events);
-
-            const deleted = await deleteSessionEntryLifecycle({
-              agentId: destination.agentId,
-              archiveTranscript: true,
-              storePath: destination.storePath,
-              target: {
-                canonicalKey: destination.sessionKey,
-                storeKeys: [destination.sessionKey],
-              },
-            });
-            expect(deleted.deleted).toBe(true);
-            expect(loadExactSessionEntryReadOnly(destination)).toBeUndefined();
-            expect(deleted.archivedTranscripts).toHaveLength(1);
-            expect(
-              readSessionArchiveContentSync(deleted.archivedTranscripts[0]!.archivedPath),
-            ).toBe(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+  it.each([false, true])(
+    "preserves migrated history, archives deletion, and drains workers before another repair (in-place: %s)",
+    async (inPlace) => {
+      await withOpenClawTestState(
+        { scenario: "external-service", label: "doctor-session-workers" },
+        async (state) => {
+          const sharedStore = inPlace ? state.statePath("shared.sqlite") : undefined;
+          const cfg: OpenClawConfig = {
+            agents: { entries: { ops: {} } },
+            plugins: { enabled: false },
+            ...(sharedStore ? { session: { store: sharedStore } } : {}),
+          };
+          await state.writeConfig(cfg);
+          const sessionId = "doctor-migrated-history";
+          const source = {
+            agentId: "main",
+            env: state.env,
+            sessionId,
+            sessionKey: "agent:main:doctor",
+            storePath: sharedStore ?? path.join(state.sessionsDir("main"), "sessions.json"),
+          };
+          const destination = {
+            ...source,
+            agentId: "ops",
+            sessionKey: "agent:ops:doctor",
+            storePath: sharedStore ?? path.join(state.sessionsDir("ops"), "sessions.json"),
+          };
+          const events = [
+            { type: "session", id: sessionId, version: 3 },
+            {
+              type: "message",
+              id: "doctor-history-message",
+              parentId: null,
+              message: { role: "user", content: "Preserve this history through Doctor repair." },
+            },
+          ];
+          const maintenance = await beginDoctorMaintenance({
+            options: { repair: true, nonInteractive: true },
+            root: null,
+            runtime: quietRuntime,
           });
-        } finally {
-          await maintenance?.release();
-        }
+          try {
+            await maintenance!.run(async () => {
+              if (sharedStore) {
+                openOpenClawAgentDatabase({ agentId: "main", path: sharedStore, env: state.env });
+              }
+              await replaceSessionEntry(source, { sessionId, updatedAt: Date.now() });
+              await replaceTranscriptEvents(source, events);
+              await waitForSessionTranscriptIndexReconcile({
+                agentId: "main",
+                env: state.env,
+                ...(sharedStore ? { path: sharedStore } : {}),
+              });
 
-        const next = await beginDoctorMaintenance({
-          options: { repair: true, nonInteractive: true },
-          root: null,
-          runtime: quietRuntime,
-        });
-        try {
-          next!.run(() => {
-            expect(loadExactSessionEntryReadOnly(source)).toBeUndefined();
-            expect(loadExactSessionEntryReadOnly(destination)).toBeUndefined();
+              await noteSessionTranscriptHealth({
+                cfg,
+                env: state.env,
+                shouldRepair: true,
+                postSessionPluginMigrationPlanBound: true,
+              });
+              expect(loadExactSessionEntryReadOnly(source)).toBeUndefined();
+              expect(loadExactSessionEntryReadOnly(destination)?.entry.sessionId).toBe(sessionId);
+              await expect(loadTranscriptEvents(destination)).resolves.toEqual(events);
+
+              const deleted = await deleteSessionEntryLifecycle({
+                agentId: destination.agentId,
+                archiveTranscript: true,
+                storePath: destination.storePath,
+                target: {
+                  canonicalKey: destination.sessionKey,
+                  storeKeys: [destination.sessionKey],
+                },
+              });
+              expect(deleted.deleted).toBe(true);
+              expect(loadExactSessionEntryReadOnly(destination)).toBeUndefined();
+              expect(deleted.archivedTranscripts).toHaveLength(1);
+              expect(
+                readSessionArchiveContentSync(deleted.archivedTranscripts[0]!.archivedPath),
+              ).toBe(`${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
+            });
+          } finally {
+            await maintenance?.release();
+          }
+
+          const next = await beginDoctorMaintenance({
+            options: { repair: true, nonInteractive: true },
+            root: null,
+            runtime: quietRuntime,
           });
-        } finally {
-          await next?.release();
-        }
-      },
-    );
-  });
+          try {
+            next!.run(() => {
+              expect(loadExactSessionEntryReadOnly(source)).toBeUndefined();
+              expect(loadExactSessionEntryReadOnly(destination)).toBeUndefined();
+            });
+          } finally {
+            await next?.release();
+          }
+        },
+      );
+    },
+  );
 
   it("archives and restores exact cold history while Doctor holds maintenance ownership", async () => {
     await withOpenClawTestState(

@@ -454,6 +454,7 @@ describe("session list subagent metadata", () => {
       updatedAt: now,
       spawnedBy: "agent:main:subagent:persisted-spawner",
       parentSessionKey: "agent:main:dashboard:navigation-parent",
+      parentSessionId: "sess-navigation-parent",
       createdVia: "spawn",
       createdActor: { type: "agent", id: "agent:main:main" },
       createdAt: now - 10_000,
@@ -488,6 +489,7 @@ describe("session list subagent metadata", () => {
     expect(row.spawnedBy).toBe("agent:main:subagent:runtime-controller");
     expect(row.controlOwnerSessionKey).toBe("agent:main:subagent:runtime-controller");
     expect(row.parentSessionKey).toBe("agent:main:dashboard:navigation-parent");
+    expect(row.parentSessionId).toBe("sess-navigation-parent");
     expect(row.createdVia).toBe("spawn");
     expect(row.createdActor).toEqual({
       type: "agent",
@@ -501,6 +503,28 @@ describe("session list subagent metadata", () => {
       entryId: "entry-source",
     });
     expect(row.previousSessionId).toBe("sess-previous");
+
+    const homeLinkedResult = await listSessionFixture({
+      cfg,
+      storePath: "/tmp/sessions.json",
+      store: {
+        "agent:main:main": { sessionId: "sess-home", updatedAt: now - 1 },
+        "agent:main:dashboard:conversation": {
+          sessionId: "sess-conversation",
+          updatedAt: now,
+          parentSessionKey: "agent:main:main",
+        },
+      },
+      opts: {},
+    });
+    const homeLinkedRow = expectDefined(
+      homeLinkedResult.sessions.find(
+        (session) => session.key === "agent:main:dashboard:conversation",
+      ),
+      "Home-linked conversation row",
+    );
+    expect(homeLinkedRow.parentSessionKey).toBe("agent:main:main");
+    expect(homeLinkedRow.parentSessionId).toBeUndefined();
   });
 
   test("discovers controlled children through both navigation and runtime owners", async () => {

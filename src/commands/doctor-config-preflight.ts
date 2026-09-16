@@ -419,6 +419,7 @@ async function runDoctorConfigPreflightOperation(
         snapshotRead: { ...configSnapshotRead, snapshot },
         readRefreshedSnapshot: () => readConfigSnapshotForPreflight(false),
         beforeStateMigrations: options.beforeStateMigrations,
+        onWarnings: (warnings) => startupMigrationWarnings.push(...warnings),
         onDeferredPlugins: (pending, inspection) =>
           pluginMigrations.converged(
             pending,

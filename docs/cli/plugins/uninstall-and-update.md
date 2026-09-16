@@ -16,6 +16,10 @@ package operation finishes. Without a running Gateway, these commands save chang
 for its next startup. See [Install plugins](/cli/plugins/install#install) for
 installation sources and Gateway-host path requirements.
 
+If the Gateway rejects a lifecycle request because another operation is still
+running, the CLI honors its retry delay within the existing request timeout.
+Connection failures and failures after a mutation starts still stop the command.
+
 ## Uninstall
 
 ```bash

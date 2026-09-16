@@ -553,8 +553,9 @@ export const en: TranslationMap & {
   lazyView: {
     errorTitle: "Panel failed to load",
     genericSubtitle: "Something went wrong while loading this panel.",
-    staleTitle: "A new version is available",
-    staleSubtitle: "OpenClaw was updated in the background. Reload to get the latest panel.",
+    staleTitle: "This view could not load",
+    staleSubtitle:
+      "Some interface files could not be downloaded. Check your connection, then reload.",
     reloading: "Reloading…",
     retry: "Retry",
     stylesFailed: "Styles failed to load, so the page may look broken.",

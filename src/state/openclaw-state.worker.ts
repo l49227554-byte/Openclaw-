@@ -27,6 +27,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import { isNodeWorkerJournalCommand } from "../node-host/node-worker-journal.worker-contract.js";
 import { executeNodeWorkerJournalCommand } from "../node-host/node-worker-journal.worker.js";
+import { NodeWorkerPreparedWorkspaceKernel } from "../node-host/node-worker-prepared-workspace-store.kernel.js";
 import { isPluginStateWorkerCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { executePluginStateCommand } from "../plugin-state/plugin-state.worker.js";
 import { readPluginMetadataStateRowSync } from "../plugins/installed-plugin-index-row.js";
@@ -335,6 +336,18 @@ function createSharedStateWorkerBackend(
             env: getSqliteWorkerStateContext().environment,
           }) ?? { state: {}, basis: {} }
         );
+      }
+      if (
+        command.type === "nodeWorker.prepared.find" ||
+        command.type === "nodeWorker.prepared.list"
+      ) {
+        const kernel = new NodeWorkerPreparedWorkspaceKernel({
+          path: context.databasePath,
+          env: getSqliteWorkerStateContext().environment,
+        });
+        return command.type === "nodeWorker.prepared.find"
+          ? kernel.find(...command.input)
+          : kernel.list(...command.input);
       }
       const database = open();
       if (command.type === "nativeHookRelay.listSnapshots") {

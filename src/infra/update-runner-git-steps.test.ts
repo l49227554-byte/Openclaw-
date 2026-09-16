@@ -99,7 +99,7 @@ describe("activation Doctor ledger writes", () => {
     dirs.cleanup();
   });
 
-  /** The gateway `update.run` progress sink, verbatim. */
+  /** The gateway `update.run` ledger writes: its heartbeat and step-start sinks. */
   function gatewayProgress(runId: string): UpdateStepProgress {
     const driver = adoptUpdateRun(runId).origin.driver;
     expect(driver?.pid).toBe(process.pid);

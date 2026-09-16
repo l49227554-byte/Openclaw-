@@ -78,21 +78,19 @@ describe("thread item cache startup revalidation", () => {
     resetChatThreadState();
     const input = createProps();
     expect(buildCachedChatItems(input)).toEqual([]);
-    const pendingInputs = [
-      {
-        acceptedAt: 1,
-        id: "pending-follow-up",
-        message: { role: "user", content: "continue", timestamp: 1 },
-        runId: "follow-up-run",
-        state: "queued" as const,
-      },
-    ];
-    const pending = buildCachedChatItems({ ...input, pendingInputs });
+    const pendingInput = {
+      acceptedAt: 1,
+      id: "pending-follow-up",
+      message: { role: "user", content: "continue", timestamp: 1 },
+      runId: "follow-up-run",
+      state: "queued" as const,
+    };
+    const pending = buildCachedChatItems({ ...input, pendingInputs: [pendingInput] });
     expect(
       pending
         .filter((item) => item.kind === "group")
         .flatMap((group) => group.messages.map((entry) => entry.message)),
-    ).toContainEqual(pendingInputs[0].message);
+    ).toContainEqual(pendingInput.message);
     expect(buildCachedChatItems({ ...input, pendingInputs: [] })).toEqual([]);
   });
 

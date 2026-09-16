@@ -47,17 +47,27 @@ describe("scripts/e2e/lib/fixtures/mock-openai-config.mjs", () => {
       modelRef: "openai/fixture-agent",
       utilityModelRef: "openai/fixture-utility",
     });
-    expect(cfg.models.providers).toMatchObject({ openai: { models: [
-      { id: "fixture-agent", api: "openai-responses", agentRuntime: { id: "openclaw" } },
-      { id: "fixture-utility", api: "openai-responses", agentRuntime: { id: "openclaw" } },
-    ] } });
+    expect(cfg.models.providers).toMatchObject({
+      openai: {
+        models: [
+          { id: "fixture-agent", api: "openai-responses", agentRuntime: { id: "openclaw" } },
+          { id: "fixture-utility", api: "openai-responses", agentRuntime: { id: "openclaw" } },
+        ],
+      },
+    });
     for (const agent of [cfg.agents.defaults, ...Object.values(cfg.agents.entries)]) {
       expect(agent).toMatchObject({
         model: { primary: "openai/fixture-agent" },
         utilityModel: "openai/fixture-utility",
-        models: Object.fromEntries(["fixture-agent", "fixture-utility"].map((model) => [`openai/${model}`, {
-          agentRuntime: { id: "openclaw" }, params: { transport: "sse", openaiWsWarmup: false },
-        }])),
+        models: Object.fromEntries(
+          ["fixture-agent", "fixture-utility"].map((model) => [
+            `openai/${model}`,
+            {
+              agentRuntime: { id: "openclaw" },
+              params: { transport: "sse", openaiWsWarmup: false },
+            },
+          ]),
+        ),
       });
     }
   });

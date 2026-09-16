@@ -821,7 +821,12 @@ function parseMockRequests(value: unknown, beforeMs: number, afterMs: number): M
 
 async function readMockRequests(port: number, deadlineAt: number): Promise<MockRequestSnapshot> {
   const beforeMs = performance.now();
-  const response = await requestHttp({ accept: "application/json", port, path: "/health", deadlineAt });
+  const response = await requestHttp({
+    accept: "application/json",
+    port,
+    path: "/health",
+    deadlineAt,
+  });
   const afterMs = performance.now();
   if (response.status !== 200) {
     throw new Error(`mock request checkpoint failed: HTTP ${response.status}`);
@@ -835,7 +840,11 @@ function summarizeMockRequests(checkpoints: readonly MockRequestSnapshot[]) {
     throw new Error("mock request checkpoints are incomplete");
   }
   const first = checkpoints[0]!;
-  if ([...Object.values(first.ingress), ...Object.values(first.selections)].some((count) => count !== 0)) {
+  if (
+    [...Object.values(first.ingress), ...Object.values(first.selections)].some(
+      (count) => count !== 0,
+    )
+  ) {
     throw new Error("mock request counters were not zero before Gateway startup");
   }
   for (let index = 0; index < checkpoints.length; index += 1) {
@@ -854,12 +863,19 @@ function summarizeMockRequests(checkpoints: readonly MockRequestSnapshot[]) {
     }
   }
   const difference = (after: MockRequestSnapshot, before: MockRequestSnapshot) =>
-    Object.fromEntries(MOCK_INGRESS_KEYS.map((key) => [key, after.ingress[key] - before.ingress[key]])) as MockRequestSnapshot["ingress"];
+    Object.fromEntries(
+      MOCK_INGRESS_KEYS.map((key) => [key, after.ingress[key] - before.ingress[key]]),
+    ) as MockRequestSnapshot["ingress"];
   return {
     // Acknowledged HTTP brackets partition ingress, not causal work or exact CPU windows.
     checkpoints,
     ingress: {
-      ...Object.fromEntries(phases.map((phase, index) => [phase, difference(checkpoints[index + 1]!, checkpoints[index]!)])),
+      ...Object.fromEntries(
+        phases.map((phase, index) => [
+          phase,
+          difference(checkpoints[index + 1]!, checkpoints[index]!),
+        ]),
+      ),
       total: difference(checkpoints.at(-1)!, first),
     },
     selections: { ...checkpoints.at(-1)!.selections },
@@ -867,13 +883,16 @@ function summarizeMockRequests(checkpoints: readonly MockRequestSnapshot[]) {
 }
 
 function createTurnEvidence(toolEvents: boolean) {
-  const turns = new Map<string, {
-    sessionKey: string;
-    toolCallId?: string;
-    toolCompleted: boolean;
-    final: boolean;
-    observer: boolean;
-  }>();
+  const turns = new Map<
+    string,
+    {
+      sessionKey: string;
+      toolCallId?: string;
+      toolCompleted: boolean;
+      final: boolean;
+      observer: boolean;
+    }
+  >();
   let invalid = false;
   return {
     register(runId: string, sessionKey: string) {
@@ -903,7 +922,12 @@ function createTurnEvidence(toolEvents: boolean) {
       // The WebSocket callback cannot throw into runTurn's promise. Retain bounded
       // failure state through client teardown, including late duplicate results.
       const data = payload.data;
-      if (payload.sessionKey !== turn.sessionKey || !isRecord(data) || data.name !== "exec" || typeof data.toolCallId !== "string") {
+      if (
+        payload.sessionKey !== turn.sessionKey ||
+        !isRecord(data) ||
+        data.name !== "exec" ||
+        typeof data.toolCallId !== "string"
+      ) {
         invalid = true;
         return;
       }
@@ -913,23 +937,41 @@ function createTurnEvidence(toolEvents: boolean) {
       } else if (data.phase === "result") {
         const result = isRecord(data.result) ? data.result : {};
         const details = isRecord(result.details) ? result.details : {};
-        invalid ||= turn.toolCompleted || turn.toolCallId !== data.toolCallId ||
-          data.isError !== false || details.status !== "completed" || details.exitCode !== 0 ||
-          typeof details.aggregated !== "string" || !details.aggregated.includes("openclaw-draft-proof");
+        invalid ||=
+          turn.toolCompleted ||
+          turn.toolCallId !== data.toolCallId ||
+          data.isError !== false ||
+          details.status !== "completed" ||
+          details.exitCode !== 0 ||
+          typeof details.aggregated !== "string" ||
+          !details.aggregated.includes("openclaw-draft-proof");
         turn.toolCompleted = true;
       }
     },
     complete(runId: string, terminalReply: unknown) {
       const turn = turns.get(runId);
-      if (!turn || turn.final || !isRecord(terminalReply) ||
-          terminalReply.disposition !== "visible" || terminalReply.text !== "OPENCLAW_E2E_DRAFTPROOF") {
+      if (
+        !turn ||
+        turn.final ||
+        !isRecord(terminalReply) ||
+        terminalReply.disposition !== "visible" ||
+        terminalReply.text !== "OPENCLAW_E2E_DRAFTPROOF"
+      ) {
         throw new Error("benchmark tool turn did not produce its expected visible final reply");
       }
       turn.final = true;
     },
     finish() {
-      if (invalid || (toolEvents && [...turns.values()].some((turn) => !turn.toolCallId || !turn.toolCompleted || !turn.final))) {
-        throw new Error("benchmark tool lifecycle evidence is missing, duplicated, or unsuccessful");
+      if (
+        invalid ||
+        (toolEvents &&
+          [...turns.values()].some(
+            (turn) => !turn.toolCallId || !turn.toolCompleted || !turn.final,
+          ))
+      ) {
+        throw new Error(
+          "benchmark tool lifecycle evidence is missing, duplicated, or unsuccessful",
+        );
       }
       return {
         toolTurns: toolEvents ? turns.size : 0,
@@ -1076,22 +1118,23 @@ async function connectGateway(
   }
   return {
     close: client.close,
-    waitClosed: () => new Promise<void>((resolve, reject) => {
-      if (client.ws.readyState === client.ws.CLOSED) {
-        resolve();
-        return;
-      }
-      const onClose = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        client.ws.off("close", onClose);
-        reject(new Error("benchmark event client did not close"));
-      }, HTTP_TIMEOUT_MS);
-      timer.unref();
-      client.ws.once("close", onClose);
-    }),
+    waitClosed: () =>
+      new Promise<void>((resolve, reject) => {
+        if (client.ws.readyState === client.ws.CLOSED) {
+          resolve();
+          return;
+        }
+        const onClose = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          client.ws.off("close", onClose);
+          reject(new Error("benchmark event client did not close"));
+        }, HTTP_TIMEOUT_MS);
+        timer.unref();
+        client.ws.once("close", onClose);
+      }),
     request: requestRpc,
     setDeadlineAt: (value: number) => {
       requestDeadlineAt = value;
@@ -1470,15 +1513,20 @@ async function runGatewaySample(options: {
         options.browserSessionClicks,
         agentIds,
       );
-      writeFileSync(responseControlPath, JSON.stringify({
-        models: {
-          [UTILITY_MODEL_ID]: { text: JSON.stringify({
-            headline: "Synthetic benchmark work is progressing.",
-            assessment: OBSERVER_ASSESSMENT,
-            health: "on-track",
-          }) },
-        },
-      }));
+      writeFileSync(
+        responseControlPath,
+        JSON.stringify({
+          models: {
+            [UTILITY_MODEL_ID]: {
+              text: JSON.stringify({
+                headline: "Synthetic benchmark work is progressing.",
+                assessment: OBSERVER_ASSESSMENT,
+                health: "on-track",
+              }),
+            },
+          },
+        }),
+      );
       mockProvider = spawn(process.execPath, ["scripts/e2e/mock-openai-server.mjs"], {
         cwd: process.cwd(),
         detached: process.platform !== "win32",
@@ -1561,7 +1609,13 @@ async function runGatewaySample(options: {
         throw new Error(`gateway did not become ready\n${gatewayOutput.readOutput()}`);
       }
       await waitForGatewayDispatchReady(gatewayOutput.readOutput, options.deadlineAt);
-      client = await connectGateway(port, options.deadlineAt, protocolVersion, true, turnEvidence.onEvent);
+      client = await connectGateway(
+        port,
+        options.deadlineAt,
+        protocolVersion,
+        true,
+        turnEvidence.onEvent,
+      );
       const rpc = client.request;
       if (options.visibleObserver) {
         await rpc("sessions.observer.visibility", { visible: true });
@@ -1709,8 +1763,9 @@ async function runGatewaySample(options: {
             refresh: false,
           });
           if (
-            ["gpt-5.6-luna", UTILITY_MODEL_ID].some((id) =>
-              !models.models.some((model) => model.provider === "openai" && model.id === id),
+            ["gpt-5.6-luna", UTILITY_MODEL_ID].some(
+              (id) =>
+                !models.models.some((model) => model.provider === "openai" && model.id === id),
             )
           ) {
             throw new Error(`Configured benchmark model is not published for ${agentId}`);
@@ -2356,14 +2411,23 @@ function summarizeRuns(
     messageSubscriptionLoadLatencyMs: summarizeNumbers(
       subscriptionsDuringLoad.map((sample) => sample.latencyMs),
     ),
-    mockRequestIngress: Object.fromEntries(MOCK_INGRESS_KEYS.map((key) => [
-      key, runs.reduce((count, run) => count + run.mockRequests.ingress.total[key], 0),
-    ])),
-    mockResponseSelections: Object.fromEntries(MOCK_SELECTION_KEYS.map((key) => [
-      key, runs.reduce((count, run) => count + run.mockRequests.selections[key], 0),
-    ])),
+    mockRequestIngress: Object.fromEntries(
+      MOCK_INGRESS_KEYS.map((key) => [
+        key,
+        runs.reduce((count, run) => count + run.mockRequests.ingress.total[key], 0),
+      ]),
+    ),
+    mockResponseSelections: Object.fromEntries(
+      MOCK_SELECTION_KEYS.map((key) => [
+        key,
+        runs.reduce((count, run) => count + run.mockRequests.selections[key], 0),
+      ]),
+    ),
     toolTurns: runs.reduce((count, run) => count + run.turnEvidence.toolTurns, 0),
-    observerModelDigestTurns: runs.reduce((count, run) => count + run.turnEvidence.observerModelDigestTurns, 0),
+    observerModelDigestTurns: runs.reduce(
+      (count, run) => count + run.turnEvidence.observerModelDigestTurns,
+      0,
+    ),
     pluginMetadataScanCount: runs.reduce((sum, run) => sum + run.pluginMetadataScans.count, 0),
     pluginMetadataScanTotalDurationMs: runs.reduce(
       (sum, run) => sum + run.pluginMetadataScans.totalDurationMs,

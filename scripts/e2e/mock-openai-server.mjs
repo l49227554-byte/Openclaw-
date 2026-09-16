@@ -934,7 +934,8 @@ const server = http.createServer((req, res) => {
 
     if (route === "responses") {
       if (!selectedResponse) {
-        const events = agentPluginBundleEvents(body, bodyText) ??
+        const events =
+          agentPluginBundleEvents(body, bodyText) ??
           mcpAppConformanceEvents(body, bodyText) ??
           mcpCodeModeApiFileEvents(body, bodyText) ??
           progressDraftEvents(body, bodyText);

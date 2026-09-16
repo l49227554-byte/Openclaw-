@@ -62,6 +62,7 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
     ? AbortSignal.any([shutdown.signal, options.abortSignal])
     : shutdown.signal;
   const activeDeliveries = new Set<Promise<unknown>>();
+  const activeInspections = new Set<Promise<ChannelIngressMonitorFacts | null>>();
   // Deliveries that deferred: still live work awaited by stop, but no longer
   // holding a start slot. Deferral already released the lane and handed the
   // claim off, so counting them against startLimit would let a few waiting
@@ -119,7 +120,9 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
   };
 
   const publishActivity = (): void => {
-    const active = activeDeliveries.size > 0 || (running && (requested || pumping !== undefined));
+    const active =
+      activeInspections.size + activeDeliveries.size > 0 ||
+      (running && (requested || pumping !== undefined));
     if (active === lastReportedActive) {
       return;
     }
@@ -186,6 +189,7 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
       await (reject ? Promise.all(pending) : Promise.allSettled(pending));
     }
   };
+  const inspect = options.inspectAsync ?? options.inspect;
   const waitForActiveDeliveries = () => waitForPending(() => activeDeliveries);
   // A rejected pump wrapper remains caller-visible; delivery joins observe every outcome.
   const waitForPumpIdle = () => waitForPending(() => (pumping ? [pumping] : []), true);
@@ -221,13 +225,30 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
         }
         const raw = options.payload.deserialize(decoded.body, { claim });
         const claimedLaneKey = claim.laneKey ?? options.drain?.deriveLaneKey?.(claim);
-        const facts = options.inspect(raw, {
-          phase: "claim",
-          claimedId: claim.id,
-          claimedLaneKey,
-        });
-        if (!facts || facts.eventId !== claim.id || facts.laneKey !== claimedLaneKey) {
-          throw options.payload.createClaimError("identity-mismatch", claim);
+        // Each claim retains a slot even when the inspector shares its result promise.
+        const inspection = (async () =>
+          await inspect(raw, {
+            phase: "claim",
+            claimedId: claim.id,
+            claimedLaneKey,
+          }))();
+        activeInspections.add(inspection);
+        publishActivity();
+        let inspectionAccepted = false;
+        try {
+          const facts = await inspection;
+          if (!running || isAborted() || lifecycle.abortSignal.aborted) {
+            return { kind: "failed-retryable", error: createStoppedError() };
+          }
+          if (!facts || facts.eventId !== claim.id || facts.laneKey !== claimedLaneKey) {
+            throw options.payload.createClaimError("identity-mismatch", claim);
+          }
+          inspectionAccepted = true;
+        } finally {
+          activeInspections.delete(inspection);
+          if (!inspectionAccepted) {
+            publishActivity();
+          }
         }
 
         let handedOff = false;
@@ -312,9 +333,12 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
 
         // Adoption can complete before delivery returns; track both lifetimes so stop
         // never drops channel work merely because the durable claim already settled.
-        const delivery = Promise.resolve().then(() =>
-          options.deliver(raw, wrappedLifecycle, claim),
-        );
+        const delivery = Promise.resolve().then(() => {
+          if (!running || isAborted() || lifecycle.abortSignal.aborted) {
+            return { kind: "failed-retryable", error: createStoppedError() } as const;
+          }
+          return options.deliver(raw, wrappedLifecycle, claim);
+        });
         activeDeliveries.add(delivery);
         publishActivity();
         let result: ChannelIngressMonitorDeliveryResult | void;
@@ -437,7 +461,8 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
               isAborted() ||
               getGatewaySuspendAdmissionPhase() !== "accepting" ||
               (options.drain?.startLimit !== undefined &&
-                activeDeliveries.size - deferredStartCapacity >= options.drain.startLimit),
+                activeDeliveries.size + activeInspections.size - deferredStartCapacity >=
+                  options.drain.startLimit),
           }),
         );
         if (waitForDeliveryIdleBeforeRepump) {
@@ -591,7 +616,7 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
     },
   ) => {
     try {
-      const facts = admitOptions.facts ?? options.inspect(raw, { phase: "admission" });
+      const facts = admitOptions.facts ?? (await inspect(raw, { phase: "admission" }));
       if (!facts) {
         return { kind: "ignored" } as const;
       }
@@ -723,6 +748,7 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
         await admissionTail;
         shutdown.abort(createStoppedError());
         await waitForPumpIdle();
+        await waitForPending(() => activeInspections);
         if (options.waitForDeliveryIdleOnStop !== false) {
           await waitForActiveDeliveries();
         }
@@ -741,10 +767,11 @@ export function createChannelIngressMonitor<TRaw, TBody, TStoredPayload, TMetada
       for (;;) {
         await admissionTail;
         await waitForPumpIdle();
+        await waitForPending(() => activeInspections);
         await waitForActiveDeliveries();
         await drain?.waitForIdle();
         await restartFenceWake;
-        if (!pumping && activeDeliveries.size === 0 && !requested) {
+        if (!pumping && activeInspections.size === 0 && activeDeliveries.size === 0 && !requested) {
           return;
         }
       }

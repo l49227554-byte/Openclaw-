@@ -1650,6 +1650,31 @@ test("createGatewaySession rejects explicit and key-derived unconfigured creatio
   expect(prepareLifecycle).not.toHaveBeenCalled();
 });
 
+test("createGatewaySession infers the child owner from a prefixed parent", async () => {
+  await withFixedOwnerSessionStore("per-sender", async ({ storePath, cfg }) => {
+    const parentSessionKey = "agent:ops:main";
+    await upsertSessionEntryCore(
+      { agentId: "ops", sessionKey: parentSessionKey, storePath },
+      { sessionId: "ops-parent", updatedAt: 1 },
+    );
+
+    const { createGatewaySession } = await import("./session-create-service.js");
+    const created = await createGatewaySession({
+      cfg,
+      parentSessionKey,
+      commandSource: "test",
+    });
+
+    expect(created.ok, JSON.stringify(created)).toBe(true);
+    if (!created.ok) {
+      return;
+    }
+    expect(created.agentId).toBe("ops");
+    expect(created.key).toMatch(/^agent:ops:dashboard:/);
+    expect(loadSessionEntry({ agentId: "ops", sessionKey: created.key, storePath })).toBeDefined();
+  });
+});
+
 test.each(["rpc", "service"] as const)(
   "creates a fresh selected-agent child outside fixed global ownership through %s",
   (entrypoint) =>

@@ -110,26 +110,29 @@ export function createUpdateCommandFailureResult(
 export async function withUpdateAdmissionReporting<T>(
   opts: UpdateCommandOptions,
   admit: () => Promise<T>,
+  mode: "unknown" | "finalize" = "unknown",
 ): Promise<T> {
   const startedAt = Date.now();
   try {
     return await admit();
   } catch (error) {
     if (error instanceof UpdateRunAdmissionBusyError) {
+      const result = {
+        status: "skipped",
+        mode,
+        reason: error.reason,
+        steps: [],
+        durationMs: Date.now() - startedAt,
+        ...(opts.dryRun ? { dryRun: true } : {}),
+        notes: [error.message],
+      };
       if (opts.json) {
-        defaultRuntime.writeJson({
-          status: "skipped",
-          mode: "unknown",
-          reason: error.reason,
-          steps: [],
-          durationMs: Date.now() - startedAt,
-          ...(opts.dryRun ? { dryRun: true } : {}),
-          notes: [error.message],
-        });
+        defaultRuntime.writeJson(result);
       } else {
         defaultRuntime.log(theme.warn(error.message));
       }
-      return exitCliAfterOutput(defaultRuntime, 0);
+      // Existing parents treat zero as completed convergence, even without reading JSON.
+      return exitCliAfterOutput(defaultRuntime, result.mode === "finalize" ? 1 : 0);
     }
     if (error instanceof UpdateCommandPendingRecoveryFailure) {
       return reportUpdateCommandPendingRecovery(error, opts);

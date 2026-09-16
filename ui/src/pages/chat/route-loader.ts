@@ -444,7 +444,9 @@ export async function loadChatRoute(
           row: resolution.session,
           preferenceDerived,
         });
-        return resolved ?? notFound({ routeId: face });
+        return resolved
+          ? { ...resolved, ...(cachedRow ? { sessionResolutionFromCache: true as const } : {}) }
+          : notFound({ routeId: face });
       }
       if (target.slugCandidate) {
         if (resolution?.kind === "not-found") {
@@ -617,6 +619,11 @@ export async function loadChatRoute(
     shortId: target.shortId,
   });
   return resolved
-    ? { ...resolved, ...(!localRow ? { routeLoadingSkeleton: true as const } : {}) }
+    ? {
+        ...resolved,
+        ...(localRow
+          ? { sessionResolutionFromCache: true as const }
+          : { routeLoadingSkeleton: true as const }),
+      }
     : notFound({ routeId: face });
 }

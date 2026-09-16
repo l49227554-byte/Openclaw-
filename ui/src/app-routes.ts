@@ -254,8 +254,13 @@ export async function startApplicationRouter(
     listen: (listener) => {
       let listening = true;
       let recoveryQueued = false;
+      let lastHello = context.gateway.snapshot.hello;
       let interrupted:
-        | { controller: AbortController; scope: ReturnType<typeof gatewayPresentationScope> }
+        | {
+            controller: AbortController;
+            scope: ReturnType<typeof gatewayPresentationScope>;
+            verifySession: boolean;
+          }
         | undefined;
       const currentTarget = () => {
         const state = router.getState();
@@ -263,10 +268,11 @@ export async function startApplicationRouter(
       };
       const verifyReconnectedSession = async (
         target: NonNullable<ReturnType<typeof currentTarget>>,
+        verifySession: boolean,
       ) => {
         // SAFETY: The caller accepts only chat/dashboard matches, both loaded by loadChatRoute.
         const data = target.data as ChatRouteData | undefined;
-        if (data?.kind !== "session") {
+        if (data?.kind !== "session" || (!verifySession && !data.sessionResolutionFromCache)) {
           return;
         }
         const { client, hello } = context.gateway.snapshot;
@@ -331,15 +337,24 @@ export async function startApplicationRouter(
             target.status === "success" ||
             target.isFetching === "loader"
           ) {
-            interrupted = { controller: target.abortController, scope };
+            interrupted = {
+              controller: target.abortController,
+              scope,
+              // The first pending loader owns startup discovery; only interrupted
+              // connections or data already presented offline need another lookup.
+              verifySession:
+                interrupted?.verifySession === true ||
+                lastHello !== null ||
+                target.data !== undefined,
+            };
           }
           return;
         }
         if (target.status === "success" && !target.isFetching) {
-          const needsVerification = interrupted !== undefined;
+          const pendingVerification = interrupted;
           interrupted = undefined;
-          if (needsVerification) {
-            void verifyReconnectedSession(target);
+          if (pendingVerification) {
+            void verifyReconnectedSession(target, pendingVerification.verifySession);
           }
         }
         if (!interrupted || recoveryQueued || target.status !== "error") {
@@ -378,7 +393,6 @@ export async function startApplicationRouter(
         });
       };
       const stopSessionRecovery = router.subscribe(recoverSessionRoute);
-      let lastHello = context.gateway.snapshot.hello;
       const stopGateway = context.gateway.subscribe((snapshot) => {
         recoverSessionRoute();
         if (lastHello === snapshot.hello) {

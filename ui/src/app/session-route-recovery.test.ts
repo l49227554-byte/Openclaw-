@@ -3,6 +3,10 @@ import type { RouteLocation, RouterHistory } from "@openclaw/uirouter";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferredCore } from "../../../src/shared/deferred.js";
 import { createApplicationRouter, startApplicationRouter, type RouteId } from "../app-routes.ts";
+import {
+  createSessionRouteContext,
+  createSessionRouteRow,
+} from "../pages/chat/route-resolution.test-support.ts";
 import { createApplicationGateway } from "../test-helpers/application-context.ts";
 import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../test-helpers/gateway-methods.ts";
@@ -90,6 +94,103 @@ describe("session route reconnect recovery", () => {
     kind: "session",
     sessionKey: "agent:main:dashboard:12345678-90ab-cdef-1234-567890abcdef",
   };
+
+  it.each(["pending", "cached"])(
+    "verifies first-connect data only when it was already committed offline: %s",
+    async (state) => {
+      const f = await setup(referencePath);
+      f.router.stop();
+      f.publish({ ...f.gateway.snapshot, phase: "connecting", hello: null });
+      const loaded = createDeferredCore<unknown>();
+      f.load.mockImplementationOnce(() => loaded.promise);
+      f.request.mockResolvedValue({ ok: true, key: session.sessionKey });
+      const startup = startApplicationRouter(
+        f.router,
+        {
+          location: () => f.destination,
+          push: f.writeHistory,
+          replace: f.writeHistory,
+          listen: () => () => {},
+        },
+        "",
+        f.context,
+      );
+      await vi.waitFor(() => expect(f.load).toHaveBeenCalledOnce());
+      if (state === "pending") {
+        f.reconnect();
+      }
+      loaded.resolve(session);
+      await startup;
+      if (state === "cached") {
+        f.reconnect();
+      }
+      await vi.dynamicImportSettled();
+      expect(f.request).toHaveBeenCalledTimes(state === "cached" ? 1 : 0);
+      expect(f.load).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retries a failed first-connect loader without adding success verification", async () => {
+    const f = await setup(referencePath);
+    f.router.stop();
+    f.publish({ ...f.gateway.snapshot, phase: "connecting", hello: null });
+    f.load.mockRejectedValueOnce(new Error("Gateway unavailable")).mockResolvedValue(session);
+    await startApplicationRouter(
+      f.router,
+      {
+        location: () => f.destination,
+        push: f.writeHistory,
+        replace: f.writeHistory,
+        listen: () => () => {},
+      },
+      "",
+      f.context,
+    ).catch(() => undefined);
+    expect(f.router.getState().status).toBe("error");
+    f.reconnect();
+    await vi.waitFor(() => expect(f.router.getState().status).toBe("success"));
+    expect(f.load).toHaveBeenCalledTimes(2);
+    expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it("verifies cached loader data when its component commits after the first hello", async () => {
+    const row = createSessionRouteRow();
+    const { context, publishGateway, request } = createSessionRouteContext({ ok: false }, [row]);
+    context.gateway.snapshot.phase = "connecting";
+    context.sessions.state.resultCached = true;
+    const router = createApplicationRouter();
+    context.router = router;
+    onTestFinished(() => router.stop());
+    const component = createDeferredCore<{ render: () => null }>();
+    const route = router.getRoute("chat")!;
+    vi.spyOn(route, "component").mockReturnValue(component.promise);
+    const loader = route.loader!;
+    const completed = vi.fn();
+    vi.spyOn(route, "loader").mockImplementation(async (...args) => {
+      const result = await loader(...args);
+      completed(result);
+      return result;
+    });
+    const location = { pathname: "/chat/roboclaw/cached-12345678", search: "", hash: "" };
+    const startup = startApplicationRouter(
+      router,
+      { location: () => location, push: () => {}, replace: () => {}, listen: () => () => {} },
+      "",
+      context,
+    );
+    await vi.waitFor(() => expect(completed).toHaveBeenCalledOnce());
+    expect(request).not.toHaveBeenCalled();
+    publishGateway({ phase: "connected", hello: gatewayHelloForMethods([]) });
+    component.resolve({ render: () => null });
+    await startup;
+    await vi.waitFor(() =>
+      expect(router.getState().matches[0]?.data).toMatchObject({ kind: "missing-session" }),
+    );
+    expect(request).toHaveBeenCalledWith(
+      "sessions.resolve",
+      expect.objectContaining({ reference: { key: row.key } }),
+    );
+  });
 
   it("verifies a bridged startup route whose component finishes after reconnect", async () => {
     const f = await setup(referencePath);

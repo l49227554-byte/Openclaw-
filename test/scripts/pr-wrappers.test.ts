@@ -188,6 +188,19 @@ function parseDispatchedSubcommands(script: string): string[] {
 }
 
 describe("scripts/pr wrappers", () => {
+  it("refreshes wrapper dependencies idempotently", () => {
+    const destination = tempDirs.make("openclaw-pr-wrapper-dependencies-");
+
+    linkPrWrapperDependencies(destination);
+    linkPrWrapperDependencies(destination);
+
+    for (const dependency of ["tsx", "zod", "minimatch", "yaml"]) {
+      expect(realpathSync(join(destination, "node_modules", dependency))).toBe(
+        realpathSync(join("node_modules", dependency)),
+      );
+    }
+  });
+
   it("loads the tooling include policy from the wrapper source inventory", () => {
     const root = tempDirs.make("openclaw-wrapper-include-policy-");
     copyPrWrapperSources(root);

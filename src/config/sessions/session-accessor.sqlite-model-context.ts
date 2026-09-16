@@ -462,10 +462,7 @@ function withTranscriptContextSnapshot<T>(
                         ? eb.case().when("seq", "in", omitted).then(1).else(0).end()
                         : eb.val(0),
                     );
-                    return [
-                      "seq" /* kysely-allow-raw: budget projected JSON in SQLite before hydration. */,
-                      sql<number>`octet_length(${projected})`.as("bytes"),
-                    ];
+                    return ["seq", eb.fn<number>("octet_length", [projected]).as("bytes")];
                   })
                   .where("seq", "in", [...bySeq.keys()]);
                 for (const row of iterateSqliteQuerySync(database.db, query)) {

@@ -348,17 +348,19 @@ function createKimiThinkingWrapper(
   baseStreamFn: StreamFn | undefined,
   thinkingConfig: KimiThinkingConfig,
   k3ThinkingConfig: { type: "disabled" } | { type: "adaptive"; effort: KimiK3ThinkingEffort },
+  sourceApi?: ProviderWrapStreamFnContext["sourceApi"],
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
   const payloadWrapper = createPayloadPatchStreamWrapper(
     underlying,
     ({ payload: payloadObj, model }) => {
+      const anthropic = (sourceApi ?? model.api) === "anthropic-messages";
       delete payloadObj.reasoning;
       delete payloadObj.reasoning_effort;
       delete payloadObj.reasoningEffort;
       stripAnthropicCacheControlMarkers(payloadObj);
 
-      if (model.api === "anthropic-messages" && isKimiK3ModelId(model.id)) {
+      if (anthropic && isKimiK3ModelId(model.id)) {
         const outputConfig = isRecord(payloadObj.output_config)
           ? { ...payloadObj.output_config }
           : {};
@@ -378,9 +380,8 @@ function createKimiThinkingWrapper(
         return;
       }
 
-      payloadObj.thinking =
-        model.api === "anthropic-messages" ? { ...thinkingConfig } : { type: thinkingConfig.type };
-      if (model.api === "anthropic-messages") {
+      payloadObj.thinking = anthropic ? { ...thinkingConfig } : { type: thinkingConfig.type };
+      if (anthropic) {
         ensureKimiAnthropicMaxTokens(payloadObj, thinkingConfig);
       } else {
         normalizeOpenAICompatibleReasoningReplay(payloadObj, {
@@ -393,7 +394,7 @@ function createKimiThinkingWrapper(
   );
   return (model, context, options) => {
     const runtimeModel =
-      model.api === "anthropic-messages" && isKimiK3ModelId(model.id)
+      (sourceApi ?? model.api) === "anthropic-messages" && isKimiK3ModelId(model.id)
         ? {
             ...model,
             compat: { ...model.compat, allowEmptySignature: true },
@@ -449,6 +450,6 @@ export function wrapKimiProviderStream(ctx: ProviderWrapStreamFnContext): Stream
   const thinkingConfig = resolveKimiThinkingConfig(configured, ctx.thinkingLevel);
   const k3ThinkingConfig = resolveKimiK3ThinkingConfig(configured, ctx.thinkingLevel);
   return createKimiToolCallMarkupWrapper(
-    createKimiThinkingWrapper(ctx.streamFn, thinkingConfig, k3ThinkingConfig),
+    createKimiThinkingWrapper(ctx.streamFn, thinkingConfig, k3ThinkingConfig, ctx.sourceApi),
   );
 }

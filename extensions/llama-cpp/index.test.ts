@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-sdk/llm";
 import { createLocalEmbeddingProvider } from "openclaw/plugin-sdk/memory-core-host-engine-embeddings";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import {
@@ -19,6 +20,7 @@ import type {
   ModelProviderConfig,
   ProviderPlugin,
 } from "openclaw/plugin-sdk/provider-model-shared";
+import { buildOpenAICompletionsParams } from "openclaw/plugin-sdk/provider-transport-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -190,23 +192,6 @@ describe("llama.cpp provider plugin", () => {
       "llama-cpp",
       "llama-cpp-existing-server",
     ]);
-    expect(
-      provider.wrapSimpleCompletionStreamFn?.({
-        config: {
-          models: {
-            providers: {
-              [LLAMA_CPP_PROVIDER_ID]: {
-                baseUrl: "http://127.0.0.1:8080/v1",
-                models: [],
-              },
-            },
-          },
-        },
-        provider: LLAMA_CPP_PROVIDER_ID,
-        modelId: "external",
-        streamFn: vi.fn(),
-      } as never),
-    ).toBeUndefined();
     expect(provider).not.toHaveProperty("createStreamFn");
   });
 
@@ -227,33 +212,68 @@ describe("llama.cpp provider plugin", () => {
     expect(mocks.discoverServer).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("honors thinking off for managed=%s requests", async (managed) => {
-    const provider = registerTextProvider();
-    const { config } = configuredOptions();
-    const configured = config.models.providers[LLAMA_CPP_PROVIDER_ID];
-    const model = { ...configured.models[0], provider: LLAMA_CPP_PROVIDER_ID };
-    const payload = { chat_template_kwargs: { enable_thinking: true } };
-    const inner = vi.fn<StreamFn>(async (requestModel, _context, options) => {
-      await options?.onPayload?.(payload, requestModel);
-      return {} as never;
-    });
-    const wrapped = expectDefined(
-      provider.wrapStreamFn?.({
-        config: managed ? config : {},
+  it.each(
+    [false, true].flatMap((managed) =>
+      (["wrapStreamFn", "wrapSimpleCompletionStreamFn"] as const).flatMap((hook) =>
+        (["off", "high"] as const).map((thinkingLevel) => ({ managed, hook, thinkingLevel })),
+      ),
+    ),
+  )(
+    "normalizes $thinkingLevel requests through $hook with managed=$managed",
+    async ({ managed, hook, thinkingLevel }) => {
+      const provider = registerTextProvider();
+      const { config } = configuredOptions();
+      const configured = config.models.providers[LLAMA_CPP_PROVIDER_ID];
+      const model: Model = {
+        ...expectDefined(configured.models[0], "configured chat model"),
         provider: LLAMA_CPP_PROVIDER_ID,
-        modelId: model.id,
-        model,
-        thinkingLevel: "off",
-        streamFn: inner,
-      } as never),
-      "llama.cpp stream wrapper",
-    );
+        api:
+          hook === "wrapSimpleCompletionStreamFn"
+            ? "openclaw-provider-simple:llama-fixture"
+            : "openai-completions",
+        baseUrl: configured.baseUrl,
+        reasoning: true,
+        compat: { supportsReasoningEffort: true, supportsJsonSchemaResponseFormat: true },
+      };
+      const schema = { type: "object", properties: { ok: { type: "boolean" } } };
+      let payload: unknown;
+      const inner = vi.fn<StreamFn>(async (requestModel, context, options) => {
+        const request = buildOpenAICompletionsParams(
+          { ...requestModel, api: "openai-completions" },
+          context,
+          { reasoning: thinkingLevel, responseFormat: schema },
+        );
+        payload = (await options?.onPayload?.(request, requestModel)) ?? request;
+        const stream = createAssistantMessageEventStream();
+        stream.end();
+        return stream;
+      });
+      const wrapped = expectDefined(
+        provider[hook]?.({
+          config: managed ? config : {},
+          provider: LLAMA_CPP_PROVIDER_ID,
+          modelId: model.id,
+          model,
+          sourceApi: "openai-completions",
+          thinkingLevel,
+          streamFn: inner,
+        }),
+        "llama.cpp stream wrapper",
+      );
 
-    await wrapped(model as never, { messages: [] }, {});
+      await wrapped(model, { messages: [] }, { reasoning: thinkingLevel, responseFormat: schema });
 
-    expect(payload.chat_template_kwargs.enable_thinking).toBe(false);
-    expect(mocks.ensureChat).toHaveBeenCalledTimes(managed ? 1 : 0);
-  });
+      expect(payload).toMatchObject({ response_format: { type: "json_object", schema } });
+      if (thinkingLevel === "off") {
+        expect(payload).toHaveProperty("chat_template_kwargs.enable_thinking", false);
+      } else {
+        expect(payload).not.toHaveProperty("chat_template_kwargs");
+        expect(payload).toHaveProperty("reasoning_effort", "high");
+      }
+      expect(inner.mock.calls[0]?.[0]).toBe(model);
+      expect(mocks.ensureChat).toHaveBeenCalledTimes(managed ? 1 : 0);
+    },
+  );
 
   it("keeps an embedding-only managed model inventory empty", async () => {
     const provider = registerTextProvider();

@@ -81,6 +81,19 @@ type AnthropicMessagesModel = Model<"anthropic-messages">;
 type AnthropicStreamFn = ReturnType<typeof createAnthropicMessagesTransportStreamFn>;
 type AnthropicStreamContext = Parameters<AnthropicStreamFn>[1];
 type AnthropicStreamOptions = NonNullable<Parameters<AnthropicStreamFn>[2]>;
+type AnthropicReplayCase = {
+  name: string;
+  model: NonNullable<Parameters<typeof makeAnthropicTransportModel>[0]> & { id: string };
+  content: AssistantMessage["content"];
+  options: AnthropicStreamOptions;
+  expectedContent: Array<Record<string, unknown>>;
+  firstUser?: string;
+  toolResult?: { text: string; toolName?: string; continueAfter?: boolean };
+  expectedReasoning?: string;
+  expectedThinking?: { type: "disabled" };
+  omitThinking?: boolean;
+  absent?: string[];
+};
 type RequestTransportConfig = {
   proxy?: unknown;
   tls?: unknown;
@@ -279,6 +292,7 @@ function makeAnthropicTransportModel(
     maxTokens?: number;
     input?: AnthropicMessagesModel["input"];
     thinkingLevelMap?: AnthropicMessagesModel["thinkingLevelMap"];
+    compat?: AnthropicMessagesModel["compat"];
     headers?: Record<string, string>;
     authHeader?: boolean;
     requestTransport?: RequestTransportConfig;
@@ -298,6 +312,7 @@ function makeAnthropicTransportModel(
       contextWindow: 200000,
       maxTokens: params.maxTokens ?? 8192,
       ...(params.thinkingLevelMap ? { thinkingLevelMap: params.thinkingLevelMap } : {}),
+      ...(params.compat ? { compat: params.compat } : {}),
       ...(params.headers ? { headers: params.headers } : {}),
       ...(params.authHeader !== undefined ? { authHeader: params.authHeader } : {}),
     } satisfies AnthropicMessagesModel,
@@ -3173,7 +3188,22 @@ describe("anthropic transport stream", () => {
     expect(toolUse.input).toEqual({});
   });
 
-  it.each([
+  it.each<AnthropicReplayCase>([
+    ...[undefined, false, true].map<AnthropicReplayCase>((allowEmptySignature) => ({
+      name: `replays empty thinking signatures with allowEmptySignature=${allowEmptySignature}`,
+      model: {
+        id: "k3",
+        name: "Kimi K3",
+        provider: "kimi",
+        baseUrl: "https://api.kimi.com/coding",
+        compat: { allowEmptySignature },
+      },
+      content: [{ type: "thinking", thinking: "Retained thought", thinkingSignature: "" }],
+      options: { apiKey: "synthetic-kimi-key", reasoning: "high" },
+      expectedContent: allowEmptySignature
+        ? [{ type: "thinking", thinking: "Retained thought", signature: "" }]
+        : [{ type: "text", text: "Retained thought" }],
+    })),
     {
       name: "replays reasoning_content from compatible Anthropic thinking blocks",
       model: {
@@ -3398,7 +3428,7 @@ describe("anthropic transport stream", () => {
     await runTransportStream(
       makeAnthropicTransportModel(testCase.model),
       { messages } as unknown as AnthropicStreamContext,
-      testCase.options as AnthropicStreamOptions,
+      testCase.options,
     );
     const payload = latestAnthropicRequest().payload;
     const assistantMessage = findRecord(payload.messages, (record) => record.role === "assistant");

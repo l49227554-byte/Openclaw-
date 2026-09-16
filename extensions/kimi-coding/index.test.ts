@@ -1,5 +1,8 @@
 // Kimi Coding tests cover index plugin behavior.
+import { streamSimpleAnthropic } from "@openclaw/ai/internal/anthropic";
+import type { Context, Model } from "openclaw/plugin-sdk/llm";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
+import { createZeroUsageFixture } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it } from "vitest";
 import plugin from "./index.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
@@ -151,4 +154,87 @@ describe("kimi provider plugin", () => {
       } as never),
     ).toBe(streamFn);
   });
+
+  it.each(["off", "high", "max"] as const)(
+    "preserves K3 %s thinking through the registered standalone alias",
+    async (thinkingLevel) => {
+      const provider = await registerSingleProviderPlugin(plugin);
+      const model: Model = {
+        provider: "kimi",
+        id: "k3",
+        name: "Kimi K3",
+        api: "openclaw-provider-simple:synthetic",
+        baseUrl: "https://api.kimi.com/coding/",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_048_576,
+        maxTokens: 131_072,
+      };
+      const context: Context = {
+        messages: [
+          { role: "user", content: "First turn", timestamp: 0 },
+          {
+            role: "assistant",
+            provider: "kimi",
+            model: "k3",
+            api: "anthropic-messages",
+            content: [{ type: "thinking", thinking: "Retained thought", thinkingSignature: "" }],
+            usage: createZeroUsageFixture(),
+            stopReason: "stop",
+            timestamp: 1,
+          },
+          { role: "user", content: "Next turn", timestamp: 2 },
+        ],
+      };
+      let payload: unknown;
+      const wrapped = provider.wrapSimpleCompletionStreamFn?.({
+        provider: "kimi",
+        modelId: model.id,
+        model,
+        sourceApi: "anthropic-messages",
+        thinkingLevel,
+        streamFn: (runtimeModel, streamContext, options) =>
+          streamSimpleAnthropic(
+            { ...runtimeModel, api: "anthropic-messages" },
+            streamContext,
+            options,
+          ),
+      });
+      if (!wrapped) {
+        throw new Error("Kimi did not register its standalone completion wrapper");
+      }
+      const stream = await wrapped(model, context, {
+        apiKey: "synthetic-kimi-key",
+        reasoning: thinkingLevel,
+        onPayload: (value) => {
+          payload = value;
+          throw new Error("stop before network");
+        },
+      });
+      expect(await stream.result()).toMatchObject({ errorMessage: "stop before network" });
+      expect(payload).toMatchObject({
+        thinking:
+          thinkingLevel === "off"
+            ? { type: "disabled" }
+            : { type: "adaptive", display: "summarized" },
+      });
+      expect(payload).not.toHaveProperty("thinking.budget_tokens");
+      if (thinkingLevel === "off") {
+        expect(payload).not.toHaveProperty("output_config.effort");
+      } else {
+        expect(payload).toMatchObject({
+          output_config: { effort: thinkingLevel },
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              role: "assistant",
+              content: expect.arrayContaining([
+                { type: "thinking", thinking: "Retained thought", signature: "" },
+              ]),
+            }),
+          ]),
+        });
+      }
+    },
+  );
 });

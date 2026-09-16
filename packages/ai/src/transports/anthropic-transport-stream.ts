@@ -589,6 +589,7 @@ async function buildAnthropicParams(
     {
       profile: "transport",
       allowReasoningContentReplay: supportsReasoningContentReplay(model),
+      allowEmptySignature: model.compat?.allowEmptySignature,
       compaction: replayPlan.compaction,
       replayThinkingEnabled,
       cacheBreakpointOptOutMessageIndexes,

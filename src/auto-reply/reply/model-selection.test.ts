@@ -16,6 +16,7 @@ import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metada
 import * as activeThinkingPolicy from "../../plugins/provider-thinking-active.js";
 import { prepareModelCatalogThinkingPolicies } from "../../plugins/provider-thinking.js";
 import { isThinkingLevelSupported } from "../thinking.js";
+import { prepareModelSelectionRuntime } from "./model-runtime-normalization.js";
 import { createModelSelectionState, resolveContextTokens } from "./model-selection.js";
 
 type PersistReplySessionEntry =
@@ -254,26 +255,39 @@ describe("createModelSelectionState catalog loading", () => {
     expect(loadModelCatalogLocal).not.toHaveBeenCalled();
   });
 
-  it.each(["high", "ultra"] as const)(
-    "prefers per-model params.thinking=%s over global thinkingDefault",
-    async (thinking) => {
+  it.each([
+    { thinking: "high", agentThinking: undefined, expected: "high" },
+    { thinking: "ultra", agentThinking: undefined, expected: "ultra" },
+    { thinking: "high", agentThinking: false, expected: "off" },
+    { thinking: "low", agentThinking: "high", expected: "high" },
+    { thinking: "low", agentThinking: "extra-high", expected: "xhigh" },
+  ] as const)(
+    "resolves per-model thinking (shared=$thinking, agent=$agentThinking) ahead of global defaults",
+    async ({ thinking, agentThinking, expected }) => {
       vi.mocked(loadModelCatalogLocal).mockClear();
       const cfg = {
         agents: {
           defaults: {
             thinkingDefault: "low",
             models: {
-              "openai-codex/gpt-5.4": {
+              "fixture/reasoning-model": {
                 params: { thinking },
+              },
+            },
+          },
+          entries: {
+            alpha: {
+              models: {
+                "fixture/reasoning-model": { params: { thinking: agentThinking } },
               },
             },
           },
         },
         models: {
           providers: {
-            "openai-codex": {
-              baseUrl: "https://api.openai.com/v1",
-              models: [makeConfiguredModel()],
+            fixture: {
+              baseUrl: "https://fixture.invalid/v1",
+              models: [makeConfiguredModel({ id: "reasoning-model" })],
             },
           },
         },
@@ -281,15 +295,16 @@ describe("createModelSelectionState catalog loading", () => {
 
       const state = await createModelSelectionState({
         cfg,
+        agentId: "alpha",
         agentCfg: cfg.agents?.defaults,
-        defaultProvider: "openai-codex",
-        defaultModel: "gpt-5.4",
-        provider: "openai-codex",
-        model: "gpt-5.4",
+        defaultProvider: "fixture",
+        defaultModel: "reasoning-model",
+        provider: "fixture",
+        model: "reasoning-model",
         hasModelDirective: false,
       });
 
-      await expect(state.resolveDefaultThinkingLevel()).resolves.toBe(thinking);
+      await expect(state.resolveDefaultThinkingLevel()).resolves.toBe(expected);
       expect(loadModelCatalogLocal).not.toHaveBeenCalled();
     },
   );
@@ -365,47 +380,106 @@ describe("createModelSelectionState catalog loading", () => {
     expect(loadModelCatalogLocal).not.toHaveBeenCalled();
   });
 
-  it("hydrates runtime catalog metadata when the configured allowlist entry lacks reasoning", async () => {
-    vi.mocked(loadModelCatalogLocal).mockClear();
-    vi.mocked(loadProviderScopedThinkingCatalog).mockResolvedValueOnce([
-      { provider: "openai", id: "gpt-5.4", name: "GPT-5.4", reasoning: true },
-    ]);
-    const cfg = {
-      agents: {
-        defaults: {
-          models: {
-            "openai/gpt-5.4": {},
+  it.each([
+    { reasoning: undefined, agentRuntime: undefined },
+    { reasoning: false, agentRuntime: "codex" },
+  ])(
+    "hydrates thinking for its runtime (reasoning=$reasoning, runtime=$agentRuntime)",
+    async ({ reasoning, agentRuntime }) => {
+      vi.mocked(loadModelCatalogLocal).mockClear();
+      vi.mocked(loadProviderScopedThinkingCatalog).mockResolvedValueOnce([
+        { provider: "openai", id: "gpt-5.4", name: "GPT-5.4", reasoning: true },
+      ]);
+      const cfg = {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.4": { agentRuntime: { id: "openclaw" } },
+            },
           },
         },
-      },
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            models: [makeConfiguredModel({ reasoning: undefined })],
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "https://api.openai.com/v1",
+              models: [makeConfiguredModel({ reasoning: undefined })],
+            },
           },
         },
+      } as OpenClawConfig;
+
+      const state = await createModelSelectionState({
+        cfg,
+        agentCfg: cfg.agents?.defaults,
+        defaultProvider: "openai",
+        defaultModel: "gpt-5.4",
+        provider: "openai",
+        model: "gpt-5.4",
+        hasModelDirective: false,
+        preparedModelCatalog: agentRuntime
+          ? {
+              entries: [{ provider: "openai", id: "gpt-5.4", name: "GPT-5.4", reasoning }],
+              routeVariants: [],
+            }
+          : undefined,
+      });
+
+      if (agentRuntime) {
+        await state.resolveThinkingCatalog({
+          provider: "openai",
+          model: "gpt-5.4",
+          agentRuntime: "openclaw",
+        });
+      }
+      await expect(
+        state.resolveDefaultThinkingLevel({ provider: "openai", model: "gpt-5.4", agentRuntime }),
+      ).resolves.toBe("medium");
+      expect(loadModelCatalogLocal).not.toHaveBeenCalled();
+      expect(loadProviderScopedThinkingCatalog).toHaveBeenCalledWith({
+        config: cfg,
+        agentId: undefined,
+        provider: "openai",
+        model: "gpt-5.4",
+        agentRuntime: agentRuntime ?? "openclaw",
+      });
+    },
+  );
+
+  it("reloads embedded thinking metadata when clearing a native runtime pin", async () => {
+    const embedded = {
+      provider: "openai",
+      id: "gpt-5.4",
+      name: "GPT-5.4",
+      api: "openai-responses" as const,
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: false,
+    };
+    const sessionEntry = { agentRuntimeOverride: "codex" };
+    vi.mocked(loadProviderScopedThinkingCatalog).mockResolvedValueOnce([embedded]);
+
+    const prepared = await prepareModelSelectionRuntime({
+      cfg: {
+        agents: {
+          defaults: { models: { "openai/gpt-5.4": { agentRuntime: { id: "openclaw" } } } },
+        },
       },
-    } as OpenClawConfig;
-
-    const state = await createModelSelectionState({
-      cfg,
-      agentCfg: cfg.agents?.defaults,
-      defaultProvider: "openai",
-      defaultModel: "gpt-5.4",
+      agentId: "main",
       provider: "openai",
       model: "gpt-5.4",
-      hasModelDirective: false,
+      rawRuntime: "default",
+      sessionEntry,
+      catalog: [{ ...embedded, nativeRuntime: "codex", reasoning: true }],
     });
 
-    await expect(state.resolveDefaultThinkingLevel()).resolves.toBe("medium");
-    expect(loadModelCatalogLocal).not.toHaveBeenCalled();
-    expect(loadProviderScopedThinkingCatalog).toHaveBeenCalledWith({
-      config: cfg,
-      agentId: undefined,
-      provider: "openai",
-      model: "gpt-5.4",
-    });
+    expect(prepared).toMatchObject({ status: "ready", runtime: { kind: "clear" } });
+    if (prepared.status !== "ready") {
+      throw new Error(prepared.message);
+    }
+    expect(prepared.catalog).toEqual([embedded]);
+    expect(sessionEntry.agentRuntimeOverride).toBe("codex");
+    expect(loadProviderScopedThinkingCatalog).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ agentId: "main", agentRuntime: "openclaw" }),
+    );
   });
 
   it.each([

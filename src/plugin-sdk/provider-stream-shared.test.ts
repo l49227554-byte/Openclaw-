@@ -587,6 +587,24 @@ describe("createOpenAICompatibleCompletionsThinkingOffWrapper", () => {
     expect(payloads[0]?.reasoning_effort).toBe("none");
   });
 
+  it("preserves a configured off mapping for an always-thinking model", () => {
+    const { baseStreamFn, payloads } = createPayloadCapture("low");
+    const wrapped = createOpenAICompatibleCompletionsThinkingOffWrapper(baseStreamFn, "off");
+    void wrapped(
+      {
+        ...lmstudioBinaryModel,
+        compat: {
+          supportedReasoningEfforts: ["low", "high"],
+          reasoningEffortMap: { off: "low" },
+        },
+      },
+      { messages: [] },
+      {},
+    );
+
+    expect(payloads[0]?.reasoning_effort).toBe("low");
+  });
+
   it("drops reasoning_effort when the model has no disabled effort", () => {
     const { baseStreamFn, payloads } = createPayloadCapture("high");
     const wrapped = createOpenAICompatibleCompletionsThinkingOffWrapper(baseStreamFn, "off");

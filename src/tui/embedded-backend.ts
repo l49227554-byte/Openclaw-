@@ -709,6 +709,7 @@ export class EmbeddedTuiBackend implements TuiBackend {
       });
       thinkingLevel = resolveThinkingDefault({
         cfg,
+        agentId: sessionAgentId,
         provider: resolvedSessionModel.provider,
         model: resolvedSessionModel.model,
         catalog,

@@ -1,4 +1,4 @@
-import type { Model } from "openclaw/plugin-sdk/llm";
+import type { Context, Model } from "openclaw/plugin-sdk/llm";
 import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import {
@@ -14,6 +14,7 @@ import {
   type OpenClawConfig,
 } from "openclaw/plugin-sdk/provider-onboard";
 import { buildOpenAICompletionsParams } from "openclaw/plugin-sdk/provider-transport-runtime";
+import { createZeroUsageFixture } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { runSingleProviderCatalog } from "../test-support/provider-model-test-helpers.js";
 import { applyBasetenConfig } from "./api.js";
@@ -111,6 +112,63 @@ function captureDeepSeekReplayPayload(thinkingLevel: "off" | "high" | undefined)
     throw new Error("Baseten thinking wrapper missing");
   }
   void wrapped(basetenModel(modelId), { messages: [] }, {});
+  return captured;
+}
+
+async function captureRegisteredPayload(params: {
+  modelId: string;
+  thinkingLevel: "off" | "high" | "max";
+  simple?: boolean;
+  context?: Context;
+}) {
+  const provider = await registerSingleProviderPlugin(basetenPlugin);
+  const catalog = await runSingleProviderCatalog(provider);
+  const catalogModel = catalog.models.find((model) => model.id === params.modelId);
+  if (!catalogModel) {
+    throw new Error(`Baseten catalog did not provide ${params.modelId}`);
+  }
+  const model: Model = {
+    ...catalogModel,
+    input: catalogModel.input.filter((kind) => kind === "text" || kind === "image"),
+    provider: provider.id,
+    api: params.simple
+      ? `openclaw-provider-stream:baseten:${params.modelId}`
+      : "openai-completions",
+    baseUrl: catalog.baseUrl,
+  };
+  let captured: ReturnType<typeof buildOpenAICompletionsParams> | undefined;
+  const wrap = params.simple ? provider.wrapSimpleCompletionStreamFn : provider.wrapStreamFn;
+  const wrapped = wrap?.({
+    provider: provider.id,
+    modelId: model.id,
+    model,
+    sourceApi: "openai-completions",
+    thinkingLevel: params.thinkingLevel,
+    streamFn: (streamModel, context, options) => {
+      const payload = buildOpenAICompletionsParams(
+        { ...streamModel, api: "openai-completions" },
+        context,
+        {
+          reasoning: params.thinkingLevel === "off" ? "none" : params.thinkingLevel,
+          maxTokens: 32,
+        },
+      );
+      options?.onPayload?.(payload, streamModel);
+      captured = payload;
+      const stream = createAssistantMessageEventStream();
+      queueMicrotask(() => stream.end());
+      return stream;
+    },
+  });
+  if (!wrapped) {
+    throw new Error(
+      `Baseten provider did not register a ${params.simple ? "simple completion" : "stream"} wrapper`,
+    );
+  }
+  await wrapped(model, params.context ?? { messages: [] }, { reasoning: params.thinkingLevel });
+  if (!captured) {
+    throw new Error("Baseten payload was not captured");
+  }
   return captured;
 }
 
@@ -293,6 +351,102 @@ describe("Baseten provider registration", () => {
       chat_template_args: { preserve_me: true, enable_thinking: false },
     });
   });
+
+  it("preserves Inkling max effort through the registered catalog and stream payload", async () => {
+    const payload = await captureRegisteredPayload({
+      modelId: "thinkingmachines/inkling",
+      thinkingLevel: "max",
+    });
+    expect(payload.reasoning_effort).toBe("max");
+  });
+
+  it.each(["off", "high"] as const)(
+    "applies %s opt-in thinking through the registered simple completion hook",
+    async (thinkingLevel) => {
+      const payload = await captureRegisteredPayload({
+        modelId: "moonshotai/Kimi-K2.6",
+        thinkingLevel,
+        simple: true,
+      });
+      expect(payload.chat_template_args).toEqual({ enable_thinking: thinkingLevel === "high" });
+    },
+  );
+
+  it.each(["off", "high"] as const)(
+    "normalizes DeepSeek replay with %s thinking through the registered simple completion hook",
+    async (thinkingLevel) => {
+      const modelId = "deepseek-ai/DeepSeek-V4-Pro";
+      const payload = await captureRegisteredPayload({
+        modelId,
+        thinkingLevel,
+        simple: true,
+        context: {
+          messages: [
+            { role: "user", content: "Read the fixture.", timestamp: 0 },
+            {
+              role: "assistant",
+              api: "openai-completions",
+              provider: "other-provider",
+              model: "other-model",
+              content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
+              usage: createZeroUsageFixture(),
+              stopReason: "toolUse",
+              timestamp: 1,
+            },
+            {
+              role: "toolResult",
+              toolCallId: "call_1",
+              toolName: "read",
+              content: [{ type: "text", text: "ok" }],
+              isError: false,
+              timestamp: 2,
+            },
+            {
+              role: "assistant",
+              api: "openai-completions",
+              provider: "baseten",
+              model: modelId,
+              content: [
+                {
+                  type: "thinking",
+                  thinking: "preserve me",
+                  thinkingSignature: "reasoning_content",
+                },
+                { type: "text", text: "done" },
+              ],
+              usage: createZeroUsageFixture(),
+              stopReason: "stop",
+              timestamp: 3,
+            },
+          ],
+        },
+      });
+
+      expect(payload.reasoning_effort).toBe(thinkingLevel === "off" ? "none" : "high");
+      if (thinkingLevel === "off") {
+        expect(payload.messages).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ reasoning_content: expect.any(String) }),
+          ]),
+        );
+      } else {
+        expect(payload.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: "assistant",
+              tool_calls: expect.any(Array),
+              reasoning_content: "",
+            }),
+            expect.objectContaining({
+              role: "assistant",
+              content: "done",
+              reasoning_content: "preserve me",
+            }),
+          ]),
+        );
+      }
+    },
+  );
 
   it("exposes opt-in thinking without duplicate reasoning levels", async () => {
     const provider = await registerSingleProviderPlugin(basetenPlugin);

@@ -699,7 +699,7 @@ export function buildStatusMessageParts(args: StatusArgs): StatusMessageParts {
   const runtimeAliasModelEquivalent = areRuntimeModelRefsEquivalent(
     modelRefs.selected.label || "unknown",
     activeModelLabel,
-    { config: args.config },
+    { config: args.config, includeSetupRegistry: false },
   );
   const activeModelProvider = runtimeAliasModelEquivalent
     ? selectedLookupProvider
@@ -955,6 +955,7 @@ export function buildStatusMessageParts(args: StatusArgs): StatusMessageParts {
     selectedModelLabel !== configuredDefaultModelLabel &&
     !areRuntimeModelRefsEquivalent(selectedModelLabel, configuredDefaultModelLabel, {
       config: args.config,
+      includeSetupRegistry: false,
     });
   const overrideLabel = configDefaultDiffersFromSession
     ? sessionHasPersistedModelSelection

@@ -2979,13 +2979,21 @@ describe("model-selection", () => {
         name: "prefers per-model params.thinking over global thinkingDefault",
         thinking: "high",
         thinkingDefault: "low" as const,
+        expected: "high",
       },
       {
         name: "accepts per-model params.thinking=adaptive",
         thinking: "adaptive",
         thinkingDefault: undefined,
+        expected: "adaptive",
       },
-    ])("$name", ({ thinking, thinkingDefault }) => {
+      {
+        name: "normalizes per-model thinking aliases accepted by runtime controls",
+        thinking: "extra-high",
+        thinkingDefault: "low" as const,
+        expected: "xhigh",
+      },
+    ])("$name", ({ thinking, thinkingDefault, expected }) => {
       const cfg = {
         agents: {
           defaults: {
@@ -2999,8 +3007,40 @@ describe("model-selection", () => {
         },
       } as OpenClawConfig;
 
-      expect(resolveAnthropicOpusThinking(cfg)).toBe(thinking);
+      expect(resolveAnthropicOpusThinking(cfg)).toBe(expected);
     });
+
+    it.each([
+      { thinking: false, agentDefault: undefined, expected: "off" },
+      { thinking: "extra-high", agentDefault: undefined, expected: "xhigh" },
+      { thinking: "high", agentDefault: "minimal", expected: "minimal" },
+    ] as const)(
+      "resolves agent thinking defaults (model=$thinking, agent=$agentDefault)",
+      ({ thinking, agentDefault, expected }) => {
+        const cfg: OpenClawConfig = {
+          agents: {
+            defaults: {
+              thinkingDefault: "low",
+              models: { "fixture/reasoning-model": { params: { thinking: "high" } } },
+            },
+            entries: {
+              alpha: {
+                thinkingDefault: agentDefault,
+                models: { "fixture/reasoning-model": { params: { thinking } } },
+              },
+            },
+          },
+        };
+        expect(
+          resolveThinkingDefault({
+            cfg,
+            agentId: "alpha",
+            provider: "fixture",
+            model: "reasoning-model",
+          }),
+        ).toBe(expected);
+      },
+    );
 
     it("accepts legacy duplicated OpenRouter keys for per-model thinking", () => {
       const cfg = {

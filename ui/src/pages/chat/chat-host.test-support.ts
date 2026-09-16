@@ -181,6 +181,7 @@ export function makeChatHost(
     chatDisplayedLeafEntryId: undefined,
     chatStream: null,
     chatStreamSegments: [],
+    chatReasoningSegments: [],
     chatToolMessages: [],
     connected: true,
     connectionEpoch: 0,

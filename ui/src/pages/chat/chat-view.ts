@@ -336,6 +336,7 @@ export function renderChat(props: ChatProps) {
     (pendingInputs?.page.items.length ?? 0) === 0 &&
     props.toolMessages.length === 0 &&
     props.streamSegments.length === 0 &&
+    (props.reasoningSegments?.length ?? 0) === 0 &&
     !props.stream &&
     queue.length === 0;
   // A failed load with cached content must stay visible without displacing the

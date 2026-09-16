@@ -81,8 +81,9 @@ suite.define(() => {
         await expect.poll(() => reasoning.isVisible()).toBe(false);
         await worked.click();
         await expect.poll(() => worked.getAttribute("aria-expanded")).toBe("true");
-        await expect.poll(() => reasoning.isVisible()).toBe(reasoningLevel === "on");
-        if (reasoningLevel === "on") {
+        const savedReasoningVisible = reasoningLevel === "on" || reasoningLevel === "stream";
+        await expect.poll(() => reasoning.isVisible()).toBe(savedReasoningVisible);
+        if (savedReasoningVisible) {
           expect(await reasoning.locator("pre code").allTextContents()).toEqual([code]);
           expect(await reasoning.locator("p").allTextContents()).toEqual([
             "Reasoning:",
@@ -106,7 +107,7 @@ suite.define(() => {
         await menuTrigger.click();
         await expect
           .poll(() => reasoning.isVisible())
-          .toBe(showReasoning && reasoningLevel === "on");
+          .toBe(showReasoning && (reasoningLevel === "on" || reasoningLevel === "stream"));
         expect(await answer.isVisible()).toBe(true);
       }
       expect(await gateway.getRequests("sessions.patch")).toHaveLength(0);

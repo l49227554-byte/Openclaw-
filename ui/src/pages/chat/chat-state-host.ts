@@ -12,6 +12,7 @@ import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
 import type {
   ChatComposerMemoryFallback,
   ChatGuardianNotice,
+  ChatReasoningSegment,
   ChatStreamSegment,
   HumanMention,
 } from "../../lib/chat/chat-types.ts";
@@ -98,6 +99,7 @@ export type ChatPageHost = ChatHost &
     chatSubmitGuards: Map<string, Promise<void>>;
     chatSendTimingsByRun: Map<string, ChatSendTimingEntry>;
     chatStreamSegments: ChatStreamSegment[];
+    chatReasoningSegments: ChatReasoningSegment[];
     toolStreamById: Map<string, ToolStreamEntry>;
     toolStreamOrder: string[];
     toolStreamSyncTimer: number | null;

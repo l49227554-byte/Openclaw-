@@ -14530,6 +14530,7 @@ public struct SessionRow: Codable, Sendable {
     public let activeleafentryid: AnyCodable?
     public let spawnedby: String?
     public let parentsessionkey: String?
+    public let parentsessionid: String?
     public let controlownersessionkey: String?
     public let childsessions: [String]?
     public let forkedfromparent: Bool?
@@ -14617,6 +14618,7 @@ public struct SessionRow: Codable, Sendable {
         activeleafentryid: AnyCodable? = nil,
         spawnedby: String? = nil,
         parentsessionkey: String? = nil,
+        parentsessionid: String? = nil,
         controlownersessionkey: String? = nil,
         childsessions: [String]? = nil,
         forkedfromparent: Bool? = nil,
@@ -14703,6 +14705,7 @@ public struct SessionRow: Codable, Sendable {
         self.activeleafentryid = activeleafentryid
         self.spawnedby = spawnedby
         self.parentsessionkey = parentsessionkey
+        self.parentsessionid = parentsessionid
         self.controlownersessionkey = controlownersessionkey
         self.childsessions = childsessions
         self.forkedfromparent = forkedfromparent
@@ -14791,6 +14794,7 @@ public struct SessionRow: Codable, Sendable {
         case activeleafentryid = "activeLeafEntryId"
         case spawnedby = "spawnedBy"
         case parentsessionkey = "parentSessionKey"
+        case parentsessionid = "parentSessionId"
         case controlownersessionkey = "controlOwnerSessionKey"
         case childsessions = "childSessions"
         case forkedfromparent = "forkedFromParent"

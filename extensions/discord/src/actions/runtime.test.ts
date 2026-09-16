@@ -3271,10 +3271,10 @@ describe("handleDiscordGuildAction - channel management", () => {
       permissions: [PermissionFlagsBits.ManageThreads],
     },
     {
-      name: "allows SendMessagesInThreads for unlocked Discord sender thread reopens",
+      name: "allows SendMessages for unlocked Discord sender thread reopens",
       params: { archived: false },
       previouslyLocked: false,
-      permissions: [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessagesInThreads],
+      permissions: [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessages],
     },
   ])("$name", async ({ params, previouslyLocked, permissions }) => {
     const threadChannel = {

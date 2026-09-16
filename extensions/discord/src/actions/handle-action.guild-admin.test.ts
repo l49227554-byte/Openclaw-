@@ -5,34 +5,41 @@ import { handleDiscordMessageAction } from "./handle-action.js";
 
 type FetchChannelInfoDiscord = typeof import("../send.js").fetchChannelInfoDiscord;
 
-const { editChannelDiscord, fetchChannelInfoDiscord, hasAnyChannelPermissionDiscord, threadInfo } =
-  vi.hoisted(() => {
-    const thread = (locked = false): Awaited<ReturnType<FetchChannelInfoDiscord>> => ({
-      id: "T1",
-      type: ChannelType.GuildPublicThread,
-      name: "archived-thread",
-      guild_id: "G1",
-      thread_metadata: {
-        archived: true,
-        auto_archive_duration: 1440,
-        archive_timestamp: "2026-09-16T00:00:00.000Z",
-        locked,
-      },
-    });
-    return {
-      editChannelDiscord: vi.fn(async () => ({ id: "T1" })),
-      fetchChannelInfoDiscord: vi.fn<FetchChannelInfoDiscord>(async () => thread()),
-      hasAnyChannelPermissionDiscord: vi.fn(
-        async (
-          _guildId: string,
-          _channelId: string,
-          _senderUserId: string,
-          requiredPermissions: bigint[],
-        ) => requiredPermissions.includes(PermissionFlagsBits.SendMessagesInThreads),
-      ),
-      threadInfo: thread,
-    };
+const {
+  editChannelDiscord,
+  fetchChannelInfoDiscord,
+  grantedPermissions,
+  hasAnyChannelPermissionDiscord,
+  threadInfo,
+} = vi.hoisted(() => {
+  const permissions = new Set<bigint>();
+  const thread = (locked = false): Awaited<ReturnType<FetchChannelInfoDiscord>> => ({
+    id: "T1",
+    type: ChannelType.GuildPublicThread,
+    name: "archived-thread",
+    guild_id: "G1",
+    thread_metadata: {
+      archived: true,
+      auto_archive_duration: 1440,
+      archive_timestamp: "2026-09-16T00:00:00.000Z",
+      locked,
+    },
   });
+  return {
+    editChannelDiscord: vi.fn(async () => ({ id: "T1" })),
+    fetchChannelInfoDiscord: vi.fn<FetchChannelInfoDiscord>(async () => thread()),
+    hasAnyChannelPermissionDiscord: vi.fn(
+      async (
+        _guildId: string,
+        _channelId: string,
+        _senderUserId: string,
+        requiredPermissions: bigint[],
+      ) => requiredPermissions.some((permission) => permissions.has(permission)),
+    ),
+    grantedPermissions: permissions,
+    threadInfo: thread,
+  };
+});
 
 vi.mock("../send.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../send.js")>()),
@@ -57,21 +64,35 @@ function runReopen(params: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  grantedPermissions.clear();
+  grantedPermissions.add(PermissionFlagsBits.SendMessages);
   fetchChannelInfoDiscord.mockResolvedValue(threadInfo());
 });
 
 describe("registered Discord channel-edit thread permissions", () => {
-  it("allows an unlocked thread reopen with SendMessagesInThreads", async () => {
+  it("allows an unlocked thread reopen with SendMessages", async () => {
     await expect(runReopen()).resolves.toMatchObject({ details: { ok: true } });
 
     expect(hasAnyChannelPermissionDiscord).toHaveBeenCalledWith(
       "G1",
       "T1",
       "sender-1",
-      [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessagesInThreads],
+      [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessages],
       { cfg },
     );
     expect(editChannelDiscord).toHaveBeenCalled();
+  });
+
+  it("does not treat SendMessagesInThreads as reopen permission", async () => {
+    grantedPermissions.clear();
+    grantedPermissions.add(PermissionFlagsBits.SendMessagesInThreads);
+
+    await expect(runReopen()).rejects.toThrow(/required permissions/);
+    expect(hasAnyChannelPermissionDiscord.mock.calls[0]?.[3]).toEqual([
+      PermissionFlagsBits.ManageThreads,
+      PermissionFlagsBits.SendMessages,
+    ]);
+    expect(editChannelDiscord).not.toHaveBeenCalled();
   });
 
   it.each([

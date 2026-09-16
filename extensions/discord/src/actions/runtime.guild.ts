@@ -197,7 +197,7 @@ async function resolveGuildAdminActionPermissions(params: {
     params.values.autoArchiveDuration === undefined &&
     !isLockedThreadChannel(channel);
   return onlyReopen
-    ? [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessagesInThreads]
+    ? [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessages]
     : [PermissionFlagsBits.ManageThreads];
 }
 

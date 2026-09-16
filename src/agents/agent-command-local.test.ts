@@ -11,7 +11,6 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { clearActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { getPluginRuntimeGenerationRegistry } from "../plugins/runtime/generation-scope.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
-import type { RuntimeEnv } from "../runtime.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -65,7 +64,7 @@ describe("runLocalAgentCommand operator authority", () => {
 
     await runLocalAgentCommand({
       opts: { message: "test", runId: "run-local" },
-      runtime: {} as RuntimeEnv,
+      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
       operatorAuthority: true,
       run: async (prepared) => {
         capability = prepared.opts.cronCreatorAuthorityCapability;
@@ -87,7 +86,7 @@ describe("runLocalAgentCommand operator authority", () => {
       mocks.prepare.mockResolvedValueOnce(createPrepared(testCase.senderIsOwner));
       await runLocalAgentCommand({
         opts: { message: "test", runId: "run-local" },
-        runtime: {} as RuntimeEnv,
+        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
         operatorAuthority: testCase.operatorAuthority,
         run: async (prepared) => {
           expect(prepared.opts.cronCreatorAuthorityCapability).toBeUndefined();
@@ -115,7 +114,7 @@ it("keeps runtime memory registrations through local command preparation", async
   });
   await runLocalAgentCommand({
     opts: { message: "test", runId: "local-memory" },
-    runtime: {} as RuntimeEnv,
+    runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     run: async () => {
       const captured = getPluginRuntimeGenerationRegistry();
       expect(captured?.memoryCorpusSupplements).toContainEqual({ pluginId, supplement });

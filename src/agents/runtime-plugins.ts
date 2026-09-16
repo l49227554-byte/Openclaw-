@@ -140,6 +140,7 @@ function reusableAgentRuntimeRegistry(
 function adoptAgentRuntimeRegistrations(
   pluginRegistry: PluginRegistry,
   params: AgentRuntimePluginRegistryParams,
+  config: OpenClawConfig | undefined,
 ): {
   registry: PluginRegistry;
   donor?: PluginRegistry;
@@ -151,9 +152,9 @@ function adoptAgentRuntimeRegistrations(
   const memoryRegistry =
     params.metadataSnapshot &&
     params.workspaceDir &&
-    params.config &&
+    config &&
     getActivePluginRegistryWorkspaceDir() === resolveUserPath(params.workspaceDir)
-      ? adoptRuntimeMemoryRegistrations(pluginRegistry, activeRegistry, params.config)
+      ? adoptRuntimeMemoryRegistrations(pluginRegistry, activeRegistry, config)
       : pluginRegistry;
   const registry = bindPluginRegistryResourceOwner(
     adoptRuntimeWidgetPresenterRegistrations(
@@ -188,7 +189,11 @@ export async function acquireAgentRuntimePluginRegistry(
     ? withPluginMetadataSnapshotScope(params.metadataSnapshot, acquire)
     : acquire());
   try {
-    const { registry, donor } = adoptAgentRuntimeRegistrations(acquired.registry, params);
+    const { registry, donor } = adoptAgentRuntimeRegistrations(
+      acquired.registry,
+      params,
+      loadOptions.config,
+    );
     const primaryResources = getPluginRegistryInspectionResources(acquired.registry);
     if (!primaryResources) {
       throw new Error("Acquired prepared registry has no registration resource owner");
@@ -239,7 +244,7 @@ export function loadAgentRuntimePluginRegistryHandle(
     : load();
   // Media providers remain owned by this source when full-only donors require a copy.
   onPrimaryRegistry?.(pluginRegistry);
-  return adoptAgentRuntimeRegistrations(pluginRegistry, params).registry;
+  return adoptAgentRuntimeRegistrations(pluginRegistry, params, loadOptions.config).registry;
 }
 
 /** Binds a scoped plugin generation when a direct host has no Gateway owner. */

@@ -2,13 +2,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import {
-  createInitialCronState,
-  loadCronRuns,
-  loadCronStatus,
-  loadMoreCronRuns,
-  type CronState,
-} from "./index.ts";
+import { createInitialCronState, loadCronStatus, type CronState } from "./index.ts";
+import { loadCronRuns, loadMoreCronRuns } from "./runs.ts";
 
 function createRefreshHarness(method: "cron.status" | "cron.runs") {
   const pending: Array<ReturnType<typeof createDeferred<unknown>>> = [];

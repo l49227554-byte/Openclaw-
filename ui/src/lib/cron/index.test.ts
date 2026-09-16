@@ -17,9 +17,7 @@ import {
   loadCronStatus,
   invalidateCronRefresh,
   loadCronJobsPage,
-  loadCronRuns,
   loadCronScopeStats,
-  loadMoreCronRuns,
   normalizeCronFormState,
   removeCronJob,
   resolveConfiguredCronModelSuggestions,
@@ -27,11 +25,11 @@ import {
   startCronEdit,
   startCronClone,
   updateCronJobsFilter,
-  updateCronRunsFilter,
   validateCronForm,
   type CronState,
 } from "../../lib/cron/index.ts";
 import { DEFAULT_CRON_FORM } from "../../test-helpers/cron.ts";
+import { loadCronRuns, loadMoreCronRuns, updateCronRunsFilter } from "./runs.ts";
 
 function createState(overrides: Partial<CronState> = {}): CronState {
   return {

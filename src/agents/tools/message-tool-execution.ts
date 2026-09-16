@@ -351,8 +351,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       const assertActionCurrent = () => {
         assertCaller();
         turnAuthority.assertCurrent();
-        scheduledRead?.assertCurrent();
-        scheduledWrite?.assertCurrent();
+        (scheduledRead ?? scheduledWrite)?.assertCurrent();
         assertDashboardReadCurrent?.();
       };
       assertActionCurrent();

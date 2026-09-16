@@ -7,7 +7,6 @@ import type {
 import { resolveCacheRetention } from "../providers/cache-retention.js";
 import { resolveOpenAIPromptCacheParams } from "../providers/openai-prompt-cache.js";
 import {
-  supportsOpenAIReasoningEffort,
   supportsOpenAITemperature,
   type OpenAIApiReasoningEffort,
 } from "../providers/openai-reasoning-effort.js";
@@ -312,11 +311,7 @@ export function buildOpenAIResponsesParams(
     const requestedEffort =
       options?.reasoningEffort ??
       (reasoning === "none" ? "none" : resolveOpenAISimpleReasoningEffort(model, reasoning)) ??
-      (options?.reasoningSummary
-        ? "high"
-        : model.provider !== "github-copilot" && supportsOpenAIReasoningEffort(model, "none")
-          ? "none"
-          : undefined);
+      (options?.reasoningSummary ? "high" : payloadPolicy.defaultManagedReasoningEffort);
     const resolvedEffort =
       requestedEffort === undefined
         ? undefined

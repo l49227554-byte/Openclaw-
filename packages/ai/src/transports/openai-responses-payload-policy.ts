@@ -40,6 +40,7 @@ type OpenAIResponsesEndpointClass =
 type OpenAIResponsesPayloadPolicy = {
   allowsServiceTier: boolean;
   compactThreshold: number | undefined;
+  defaultManagedReasoningEffort: "none" | undefined;
   explicitContinuationOptIn: boolean;
   explicitStore: boolean | undefined;
   shouldStripDisabledReasoningPayload: boolean;
@@ -331,6 +332,13 @@ export function resolveOpenAIResponsesPayloadPolicy(
   return {
     allowsServiceTier: capabilities.allowsOpenAIServiceTier,
     compactThreshold: serverCompactionPlan.threshold,
+    // Managed proxies inherit their provider default; explicit none is a separate capability.
+    defaultManagedReasoningEffort:
+      capabilities.usesKnownNativeOpenAIRoute &&
+      !shouldStripDisabledReasoningPayload &&
+      model.provider !== "github-copilot"
+        ? "none"
+        : undefined,
     explicitContinuationOptIn: capabilities.explicitContinuationOptIn,
     explicitStore,
     shouldStripDisabledReasoningPayload,

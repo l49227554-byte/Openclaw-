@@ -45,6 +45,16 @@ const { maybeResolveNativeSlashCommandFastReply } =
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => cliBackendsTesting.resetDepsForTest());
 
+const runtimeCliBackends = [
+  {
+    id: "claude-cli",
+    modelProvider: "anthropic",
+    pluginId: "anthropic",
+    config: { command: "claude" },
+    bundleMcp: false,
+  },
+];
+
 const createTypingController = (): TypingController => ({
   onReplyStart: async () => {},
   startTypingLoop: async () => {},
@@ -107,7 +117,7 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
     vi.restoreAllMocks();
     vi.stubEnv("OPENCLAW_TEST_FAST", "1");
     cliBackendsTesting.setDepsForTest({
-      resolveRuntimeCliBackends: () => [{ id: "claude-cli", modelProvider: "anthropic" }] as never,
+      resolveRuntimeCliBackends: () => runtimeCliBackends,
       resolvePluginSetupCliBackend: () => {
         throw new Error("native command attempted synchronous CLI setup discovery");
       },
@@ -299,6 +309,18 @@ describe("maybeResolveNativeSlashCommandFastReply", () => {
   });
 
   it("renders native status thinking for the pinned model and target agent", async () => {
+    cliBackendsTesting.setDepsForTest({
+      resolveRuntimeCliBackends: () => runtimeCliBackends,
+      resolvePluginSetupCliBackend: ({ backend }) => {
+        if (backend === "fixture" || backend === "openai") {
+          return undefined;
+        }
+        throw new Error(`unexpected native status CLI backend lookup: ${backend}`);
+      },
+      resolvePluginSetupRegistry: () => {
+        throw new Error("native status must not load the full CLI setup registry");
+      },
+    });
     const { buildStatusReplyParts } = await import("../../status/status-text.js");
     buildStatusReplyMock.mockImplementation(
       async (params: Parameters<typeof buildStatusReplyParts>[0]) =>

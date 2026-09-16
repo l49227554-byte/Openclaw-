@@ -46,6 +46,7 @@ import { loadManifestModelCatalog } from "../model-catalog.js";
 import type { ModelFallbackRouteResolution } from "../model-fallback.types.js";
 import { splitTrailingAuthProfile } from "../model-ref-profile.js";
 import type { ModelManifestNormalizationContext } from "../model-ref-shared.js";
+import { dedupeModelCatalogEntries } from "../model-selection-shared.js";
 import {
   modelKey,
   resolveDefaultModelForAgent,
@@ -563,10 +564,12 @@ export async function resolveEmbeddedModelSelection(params: {
         ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
       }),
     );
-    if (findModelInCatalog(runtimeCatalog, provider, model)) {
+    const refreshedModel = findModelInCatalog(runtimeCatalog, provider, model);
+    if (refreshedModel) {
+      // Replace this route's row whole; later fallback routes retain their prepared capabilities.
       catalogForThinking = createModelVisibilityPolicy({
         cfg: params.cfg,
-        catalog: runtimeCatalog,
+        catalog: dedupeModelCatalogEntries([refreshedModel, ...catalogForThinking]),
         defaultProvider,
         defaultModel,
         agentId: params.sessionAgentId,

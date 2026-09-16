@@ -254,7 +254,7 @@ export async function resolveSessionToolAccess(params: {
       return deny(capped);
     }
   }
-  const scoped = createSessionVisibilityChecker.resolveScopedAccess({
+  const scoped = await createSessionVisibilityChecker.resolveScopedAccessAsync({
     action: params.action,
     requesterSessionKey: params.requesterSessionKey,
     // A bare key is not globally unique under explicit ownership. Callers

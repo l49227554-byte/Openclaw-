@@ -56,6 +56,7 @@ import type { EmbeddedAttemptSetup } from "./attempt-setup.js";
 import { resolveAttemptSpawnWorkspaceDir } from "./attempt-thread-helpers.js";
 import {
   applyEmbeddedAttemptToolsAllow,
+  mergeForcedEmbeddedAttemptToolsAllow,
   resolveEmbeddedAttemptToolConstructionPlan,
 } from "./attempt-tool-construction-plan.js";
 import { buildEmbeddedAttemptToolRunContext } from "./attempt-tool-run-context.js";
@@ -136,10 +137,12 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             : "nonempty",
     });
   }
-  const effectiveToolsAllow =
-    toolSearchControlsEnabledForRun && toolsAllowWithForcedRuntimeTools
-      ? [...new Set([...toolsAllowWithForcedRuntimeTools, ...TOOL_SEARCH_CONTROL_ALLOWLIST_NAMES])]
-      : toolsAllowWithForcedRuntimeTools;
+  const effectiveToolsAllow = mergeForcedEmbeddedAttemptToolsAllow(
+    toolsAllowWithForcedRuntimeTools,
+    {
+      forceToolNames: toolSearchControlsEnabledForRun ? TOOL_SEARCH_CONTROL_ALLOWLIST_NAMES : [],
+    },
+  );
   const shouldConstructTools =
     toolConstructionPlan.constructTools ||
     toolSearchControlsEnabledForRun ||

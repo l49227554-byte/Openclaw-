@@ -97,9 +97,14 @@ describe("host-bound session read scope", () => {
     },
   );
 
-  it.each(["history", "search"] as const)(
-    "keeps an observed session's active plugin grant inside the %s read cap",
-    async (kind) => {
+  it.each([
+    { kind: "history", grantMode: "sync" },
+    { kind: "search", grantMode: "sync" },
+    { kind: "history", grantMode: "async" },
+    { kind: "search", grantMode: "async" },
+  ] as const)(
+    "keeps an observed session's active $grantMode plugin grant inside the $kind read cap",
+    async ({ kind, grantMode }) => {
       const discussion = "agent:main:clickclack:discussion";
       const attached = "agent:main:main";
       const expectedSessionId = "attached-incarnation";
@@ -158,9 +163,17 @@ describe("host-bound session read scope", () => {
       expect(
         (await create(false).execute("no-grant", { ...args, sessionKey: attached })).details,
       ).toMatchObject({ status: "forbidden" });
-      const unregister = createSessionVisibilityChecker.registerScopedAccessProvider((request) =>
+      const resolveGrant = vi.fn<
+        Parameters<typeof createSessionVisibilityChecker.registerScopedAccessProvider>[0]
+      >((request) =>
         request.requesterSessionKey === discussion && request.targetSessionKey === attached
           ? { expectedSessionId }
+          : undefined,
+      );
+      const unregister = createSessionVisibilityChecker.registerScopedAccessProvider(
+        grantMode === "async" ? () => undefined : resolveGrant,
+        grantMode === "async"
+          ? { resolveAsync: async (request) => resolveGrant(request) }
           : undefined,
       );
       try {
@@ -183,9 +196,11 @@ describe("host-bound session read scope", () => {
             : { results: [{ sessionKey: discussion, snippet: "evidence" }] },
         );
         requests.length = 0;
+        resolveGrant.mockClear();
         expect(
           (await scoped.execute("outside-cap", { ...args, sessionKey: attached })).details,
         ).toMatchObject({ status: "forbidden" });
+        expect(resolveGrant).not.toHaveBeenCalled();
         expect(
           requests.some(
             (request) => request.method === "chat.history" || request.method === "sessions.search",

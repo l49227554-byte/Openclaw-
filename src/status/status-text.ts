@@ -402,7 +402,7 @@ export async function buildStatusReplyParts(
   const runtimeAliasModelEquivalent = areRuntimeModelRefsEquivalent(
     modelRefs.selected.label,
     modelRefs.active.label,
-    { config: cfg, includeSetupRegistry: false },
+    { config: cfg },
   );
   const fallbackState = resolveActiveFallbackState({
     selectedModelRef: modelRefs.selected.label || "unknown",

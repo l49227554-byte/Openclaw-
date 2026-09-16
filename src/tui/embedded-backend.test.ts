@@ -2133,14 +2133,6 @@ describe("EmbeddedTuiBackend", () => {
     const first = deferred<EmbeddedAgentResult>();
     agentCommandFromIngressMock.mockReturnValueOnce(first.promise);
     resolveActiveEmbeddedRunSessionIdMock.mockReturnValue("active-session");
-    loadSessionEntryMock.mockImplementation((sessionKey: string, opts?: { agentId?: string }) => ({
-      cfg: {},
-      agentId: opts?.agentId ?? parseAgentSessionKey(sessionKey)?.agentId ?? "main",
-      canonicalKey: sessionKey,
-      storePath: "/tmp/openclaw-sessions.json",
-      store: {},
-      entry: {},
-    }));
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockResolvedValue({
       queued: true,
       sessionId: "active-session",
@@ -2207,14 +2199,6 @@ describe("EmbeddedTuiBackend", () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
     resolveActiveEmbeddedRunSessionIdMock.mockReturnValue("active-session");
-    loadSessionEntryMock.mockImplementation((sessionKey: string, opts?: { agentId?: string }) => ({
-      cfg: {},
-      agentId: opts?.agentId ?? parseAgentSessionKey(sessionKey)?.agentId ?? "main",
-      canonicalKey: sessionKey,
-      storePath: "/tmp/openclaw-sessions.json",
-      store: {},
-      entry: {},
-    }));
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockResolvedValue({
       queued: false,
       sessionId: "active-session",

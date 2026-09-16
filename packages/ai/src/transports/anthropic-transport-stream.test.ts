@@ -1541,39 +1541,25 @@ describe("anthropic transport stream", () => {
     expect(latestAnthropicRequestHeaders().get("anthropic-beta")).toBeNull();
   });
 
-  it("ignores non-positive runtime maxTokens overrides and falls back to the model limit", async () => {
-    await runTransportStream(
-      makeAnthropicTransportModel(),
-      {
-        messages: [{ role: "user", content: "hello" }],
-      } as AnthropicStreamContext,
-      {
-        apiKey: "sk-ant-api",
-        maxTokens: 0,
-      } as AnthropicStreamOptions,
-    );
+  it.each([0, 0.5])(
+    "falls back to the model limit when runtime maxTokens=%s floors to zero",
+    async (maxTokens) => {
+      await runTransportStream(
+        makeAnthropicTransportModel(),
+        {
+          messages: [{ role: "user", content: "hello" }],
+        } as AnthropicStreamContext,
+        {
+          apiKey: "sk-ant-api",
+          maxTokens,
+        } as AnthropicStreamOptions,
+      );
 
-    expect(latestAnthropicRequest().payload.model).toBe("claude-sonnet-4-6");
-    expect(latestAnthropicRequest().payload.max_tokens).toBe(8192);
-    expect(latestAnthropicRequest().payload.stream).toBe(true);
-  });
-
-  it("ignores fractional runtime maxTokens overrides that floor to zero", async () => {
-    await runTransportStream(
-      makeAnthropicTransportModel(),
-      {
-        messages: [{ role: "user", content: "hello" }],
-      } as AnthropicStreamContext,
-      {
-        apiKey: "sk-ant-api",
-        maxTokens: 0.5,
-      } as AnthropicStreamOptions,
-    );
-
-    expect(latestAnthropicRequest().payload.model).toBe("claude-sonnet-4-6");
-    expect(latestAnthropicRequest().payload.max_tokens).toBe(8192);
-    expect(latestAnthropicRequest().payload.stream).toBe(true);
-  });
+      expect(latestAnthropicRequest().payload.model).toBe("claude-sonnet-4-6");
+      expect(latestAnthropicRequest().payload.max_tokens).toBe(8192);
+      expect(latestAnthropicRequest().payload.stream).toBe(true);
+    },
+  );
 
   it("forwards stop sequences as Anthropic stop_sequences", async () => {
     await runTransportStream(
@@ -4474,61 +4460,39 @@ describe("anthropic transport stream", () => {
     expect(payload.output_config).toEqual({ effort: "high" });
   });
 
-  it("maps xhigh thinking effort for Claude Opus 4.8 transport runs", async () => {
-    const model = makeAnthropicTransportModel({
-      id: "claude-opus-4-8",
-      name: "Claude Opus 4.8",
-      maxTokens: 8192,
-      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
-    });
+  it.each([
+    { reasoning: "xhigh", prompt: "Think extra hard." },
+    { reasoning: "max", prompt: "Think as much as needed." },
+  ] as const)(
+    "preserves $reasoning effort for Claude Opus 4.8 transport runs",
+    async ({ reasoning, prompt }) => {
+      const model = makeAnthropicTransportModel({
+        id: "claude-opus-4-8",
+        name: "Claude Opus 4.8",
+        maxTokens: 8192,
+        thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+      });
 
-    await runTransportStream(
-      model,
-      {
-        messages: [{ role: "user", content: "Think extra hard." }],
-      } as AnthropicStreamContext,
-      {
-        apiKey: "sk-ant-api",
-        reasoning: "xhigh",
-      } as AnthropicStreamOptions,
-    );
+      await runTransportStream(
+        model,
+        {
+          messages: [{ role: "user", content: prompt }],
+        } as AnthropicStreamContext,
+        {
+          apiKey: "sk-ant-api",
+          reasoning,
+        } as AnthropicStreamOptions,
+      );
 
-    const payload = latestAnthropicRequest().payload;
-    expect(payload.thinking).toEqual({
-      type: "adaptive",
-      display: "summarized",
-      block_binding: { prefix_mismatch_behavior: "drop_block" },
-    });
-    expect(payload.output_config).toEqual({ effort: "xhigh" });
-  });
-
-  it("preserves max thinking effort for Claude Opus 4.8 transport runs", async () => {
-    const model = makeAnthropicTransportModel({
-      id: "claude-opus-4-8",
-      name: "Claude Opus 4.8",
-      maxTokens: 8192,
-      thinkingLevelMap: { xhigh: "xhigh", max: "max" },
-    });
-
-    await runTransportStream(
-      model,
-      {
-        messages: [{ role: "user", content: "Think as much as needed." }],
-      } as AnthropicStreamContext,
-      {
-        apiKey: "sk-ant-api",
-        reasoning: "max",
-      } as AnthropicStreamOptions,
-    );
-
-    const payload = latestAnthropicRequest().payload;
-    expect(payload.thinking).toEqual({
-      type: "adaptive",
-      display: "summarized",
-      block_binding: { prefix_mismatch_behavior: "drop_block" },
-    });
-    expect(payload.output_config).toEqual({ effort: "max" });
-  });
+      const payload = latestAnthropicRequest().payload;
+      expect(payload.thinking).toEqual({
+        type: "adaptive",
+        display: "summarized",
+        block_binding: { prefix_mismatch_behavior: "drop_block" },
+      });
+      expect(payload.output_config).toEqual({ effort: reasoning });
+    },
+  );
 
   it("honors provider routes that exclude native max effort", async () => {
     const model = makeAnthropicTransportModel({

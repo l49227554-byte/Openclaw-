@@ -162,10 +162,7 @@ function resolveIsolatedCronPromptCacheKey(params: {
 /** Detects single-line cron prompts that look like shell commands or command invocations. */
 function isCommandStyleCronMessage(message: string): boolean {
   const trimmed = message.trim();
-  if (!trimmed || trimmed.includes("\n")) {
-    return false;
-  }
-  return COMMAND_STYLE_CRON_PREFIX.test(trimmed);
+  return !trimmed.includes("\n") && COMMAND_STYLE_CRON_PREFIX.test(trimmed);
 }
 
 function resolveCronBootstrapContextMode(
@@ -409,18 +406,16 @@ function createCronPromptExecutor(
       entry: params.cronSession.sessionEntry,
       cfg: params.cfgWithAgentDefaults,
     });
-    const executionProvider =
-      (sessionRuntimeOverride && isCliProvider(sessionRuntimeOverride, params.cfgWithAgentDefaults)
+    const executionProvider = sessionRuntimeOverride
+      ? isCliProvider(sessionRuntimeOverride, params.cfgWithAgentDefaults)
         ? sessionRuntimeOverride
-        : undefined) ??
-      (sessionRuntimeOverride
-        ? provider
-        : (resolveCliRuntimeExecutionProvider({
-            provider,
-            cfg: params.cfgWithAgentDefaults,
-            agentId: params.agentId,
-            modelId: model,
-          }) ?? provider));
+        : provider
+      : (resolveCliRuntimeExecutionProvider({
+          provider,
+          cfg: params.cfgWithAgentDefaults,
+          agentId: params.agentId,
+          modelId: model,
+        }) ?? provider);
     return {
       sessionRuntimeOverride,
       executionProvider,

@@ -1216,11 +1216,7 @@ async function acquireWebSocket(
     const socket = await connectWebSocket(url, headers, signal);
     return {
       socket,
-      release: ({ keep } = {}) => {
-        if (keep === false) {
-          closeWebSocketSilently(socket);
-          return;
-        }
+      release: () => {
         closeWebSocketSilently(socket);
       },
     };

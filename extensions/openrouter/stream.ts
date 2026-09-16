@@ -220,19 +220,20 @@ function createOpenRouterDeepSeekV4ReplayWrapper(
 ): StreamFn {
   return createPayloadPatchStreamWrapper(
     baseStreamFn,
-    ({ payload, model }) => {
+    ({ payload, model, options }) => {
       delete payload.thinking;
       delete payload.reasoning_effort;
       const compat = asNonArrayRecord(model.compat);
       if (compat.supportsReasoningEffort !== false && !compat.supportedReasoningEfforts) {
+        const requestedLevel = options?.reasoning ?? thinkingLevel;
         // Configured rows without discovery metadata retain the documented V4 aliases.
         // Declared model efforts are already normalized by the transport owner.
         payload.reasoning = {
           ...asNonArrayRecord(payload.reasoning),
           effort:
-            thinkingLevel === "off"
+            requestedLevel === "off"
               ? "none"
-              : thinkingLevel === "max" || thinkingLevel === "xhigh"
+              : requestedLevel === "max" || requestedLevel === "xhigh"
                 ? "xhigh"
                 : "high",
         };

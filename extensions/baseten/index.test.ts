@@ -115,9 +115,10 @@ function captureDeepSeekReplayPayload(thinkingLevel: "off" | "high" | undefined)
   return captured;
 }
 
-async function captureRegisteredPayload(params: {
+async function captureRegisteredPayloads(params: {
   modelId: string;
-  thinkingLevel: "off" | "high" | "max";
+  thinkingLevel?: "off" | "high" | "max" | "adaptive";
+  reasoningLevels: readonly ("off" | "high" | "max" | undefined)[];
   simple?: boolean;
   context?: Context;
 }) {
@@ -136,7 +137,7 @@ async function captureRegisteredPayload(params: {
       : "openai-completions",
     baseUrl: catalog.baseUrl,
   };
-  let captured: ReturnType<typeof buildOpenAICompletionsParams> | undefined;
+  const captured: ReturnType<typeof buildOpenAICompletionsParams>[] = [];
   const wrap = params.simple ? provider.wrapSimpleCompletionStreamFn : provider.wrapStreamFn;
   const wrapped = wrap?.({
     provider: provider.id,
@@ -149,12 +150,13 @@ async function captureRegisteredPayload(params: {
         { ...streamModel, api: "openai-completions" },
         context,
         {
-          reasoning: params.thinkingLevel === "off" ? "none" : params.thinkingLevel,
+          reasoning: options?.reasoning === "off" ? "none" : options?.reasoning,
           maxTokens: 32,
         },
       );
+      payload.chat_template_args = { preserve_me: true };
       options?.onPayload?.(payload, streamModel);
-      captured = payload;
+      captured.push(payload);
       const stream = createAssistantMessageEventStream();
       queueMicrotask(() => stream.end());
       return stream;
@@ -165,9 +167,12 @@ async function captureRegisteredPayload(params: {
       `Baseten provider did not register a ${params.simple ? "simple completion" : "stream"} wrapper`,
     );
   }
-  await wrapped(model, params.context ?? { messages: [] }, { reasoning: params.thinkingLevel });
-  if (!captured) {
-    throw new Error("Baseten payload was not captured");
+  for (const reasoning of params.reasoningLevels) {
+    await wrapped(
+      model,
+      params.context ?? { messages: [] },
+      reasoning === undefined ? {} : { reasoning },
+    );
   }
   return captured;
 }
@@ -353,33 +358,67 @@ describe("Baseten provider registration", () => {
   });
 
   it("preserves Inkling max effort through the registered catalog and stream payload", async () => {
-    const payload = await captureRegisteredPayload({
+    const [payload] = await captureRegisteredPayloads({
       modelId: "thinkingmachines/inkling",
       thinkingLevel: "max",
+      reasoningLevels: ["max"],
     });
-    expect(payload.reasoning_effort).toBe("max");
+    expect(payload?.reasoning_effort).toBe("max");
   });
 
   it.each(["off", "high"] as const)(
     "applies %s opt-in thinking through the registered simple completion hook",
     async (thinkingLevel) => {
-      const payload = await captureRegisteredPayload({
+      const [payload] = await captureRegisteredPayloads({
         modelId: "moonshotai/Kimi-K2.6",
         thinkingLevel,
+        reasoningLevels: [thinkingLevel],
         simple: true,
       });
-      expect(payload.chat_template_args).toEqual({ enable_thinking: thinkingLevel === "high" });
+      expect(payload?.chat_template_args).toEqual({
+        preserve_me: true,
+        enable_thinking: thinkingLevel === "high",
+      });
     },
   );
 
-  it.each(["off", "high"] as const)(
-    "normalizes DeepSeek replay with %s thinking through the registered simple completion hook",
-    async (thinkingLevel) => {
+  it.each([false, true])(
+    "uses per-call thinking and the factory default through one registered wrapper (simple=%s)",
+    async (simple) => {
+      for (const [thinkingLevel, defaultEffort] of [
+        [undefined, "none"],
+        ["off", "none"],
+        ["high", "high"],
+        ["adaptive", "max"],
+      ] as const) {
+        const payloads = await captureRegisteredPayloads({
+          modelId: "zai-org/GLM-5.2",
+          thinkingLevel,
+          reasoningLevels: ["off", "max", undefined],
+          simple,
+        });
+        expect(payloads.map((payload) => payload.chat_template_args)).toEqual([
+          { preserve_me: true, enable_thinking: false },
+          { preserve_me: true, enable_thinking: true },
+          { preserve_me: true, enable_thinking: defaultEffort !== "none" },
+        ]);
+        expect(payloads.map((payload) => payload.reasoning_effort)).toEqual([
+          "none",
+          "max",
+          defaultEffort,
+        ]);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "normalizes DeepSeek replay per call through one registered wrapper (simple=%s)",
+    async (simple) => {
       const modelId = "deepseek-ai/DeepSeek-V4-Pro";
-      const payload = await captureRegisteredPayload({
+      const payloads = await captureRegisteredPayloads({
         modelId,
-        thinkingLevel,
-        simple: true,
+        reasoningLevels: ["off", "max", undefined],
+        simple,
         context: {
           messages: [
             { role: "user", content: "Read the fixture.", timestamp: 0 },
@@ -422,28 +461,30 @@ describe("Baseten provider registration", () => {
         },
       });
 
-      expect(payload.reasoning_effort).toBe(thinkingLevel === "off" ? "none" : "high");
-      if (thinkingLevel === "off") {
-        expect(payload.messages).not.toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ reasoning_content: expect.any(String) }),
-          ]),
-        );
-      } else {
-        expect(payload.messages).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              role: "assistant",
-              tool_calls: expect.any(Array),
-              reasoning_content: "",
-            }),
-            expect.objectContaining({
-              role: "assistant",
-              content: "done",
-              reasoning_content: "preserve me",
-            }),
-          ]),
-        );
+      expect(payloads.map((payload) => payload.reasoning_effort)).toEqual(["none", "max", "high"]);
+      for (const [index, payload] of payloads.entries()) {
+        if (index === 0) {
+          expect(payload.messages).not.toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ reasoning_content: expect.any(String) }),
+            ]),
+          );
+        } else {
+          expect(payload.messages).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                role: "assistant",
+                tool_calls: expect.any(Array),
+                reasoning_content: "",
+              }),
+              expect.objectContaining({
+                role: "assistant",
+                content: "done",
+                reasoning_content: "preserve me",
+              }),
+            ]),
+          );
+        }
       }
     },
   );

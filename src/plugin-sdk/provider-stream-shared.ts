@@ -294,11 +294,11 @@ export function createOpenAICompatibleCompletionsThinkingOffWrapper(
   sourceApi?: ProviderWrapStreamFnContext["sourceApi"],
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  if (thinkingLevel !== "off") {
-    return underlying;
-  }
   return (model, context, options) => {
-    if ((sourceApi ?? model.api) !== "openai-completions") {
+    if (
+      (options?.reasoning ?? thinkingLevel) !== "off" ||
+      (sourceApi ?? model.api) !== "openai-completions"
+    ) {
       return underlying(model, context, options);
     }
     return streamWithPayloadPatch(underlying, model, context, options, (payload) => {
@@ -543,8 +543,9 @@ export function createDeepSeekV4OpenAICompatibleThinkingWrapper(params: {
       return underlying(model, context, options);
     }
 
+    const thinkingLevel = options?.reasoning ?? params.thinkingLevel;
     return streamWithPayloadPatch(underlying, model, context, options, (payload) => {
-      if (isDisabledDeepSeekV4ThinkingLevel(params.thinkingLevel)) {
+      if (isDisabledDeepSeekV4ThinkingLevel(thinkingLevel)) {
         payload.thinking = { type: "disabled" };
         delete payload.reasoning_effort;
         delete payload.reasoning;
@@ -553,7 +554,7 @@ export function createDeepSeekV4OpenAICompatibleThinkingWrapper(params: {
       }
 
       payload.thinking = { type: "enabled" };
-      payload.reasoning_effort = resolveReasoningEffort(params.thinkingLevel);
+      payload.reasoning_effort = resolveReasoningEffort(thinkingLevel);
       normalizeOpenAICompatibleReasoningReplay(payload, {
         thinkingEnabled: true,
         shouldBackfillAssistantMessage: params.shouldBackfillAssistantReasoningContent,

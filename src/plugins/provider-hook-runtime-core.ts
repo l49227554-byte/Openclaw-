@@ -1,4 +1,3 @@
-import type { StreamFn } from "@openclaw/llm-core";
 import { findNormalizedProviderValue } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { attachModelProviderLocalServiceReconciler } from "../agents/provider-local-service-reconcile.js";
@@ -265,21 +264,13 @@ export function createProviderHookRuntime(
   }
 
   function wrapProviderSimpleCompletionStreamFn(
-    params: ProviderHookParams<ProviderWrapStreamFnContext & { streamFn: StreamFn }>,
-  ): StreamFn | undefined {
-    const plugin = ensureProviderRuntimePluginHandle(params).plugin;
-    const wrap = plugin?.wrapSimpleCompletionStreamFn?.bind(plugin);
-    if (!wrap) {
-      return undefined;
-    }
-    const { streamFn } = params.context;
-    // Keep the prepared provider owner, but resolve thinking for each invocation.
-    return (model, context, options) =>
-      (wrap({ ...params.context, thinkingLevel: options?.reasoning }) ?? streamFn)(
-        model,
-        context,
-        options,
-      );
+    params: ProviderHookParams<ProviderWrapStreamFnContext>,
+  ) {
+    return (
+      ensureProviderRuntimePluginHandle(params).plugin?.wrapSimpleCompletionStreamFn?.(
+        params.context,
+      ) ?? undefined
+    );
   }
 
   return {

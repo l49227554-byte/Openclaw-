@@ -262,19 +262,6 @@ async function expectResolvedMatches(
   );
 }
 
-async function expectResolvedAsyncValues(
-  cases: ReadonlyArray<{
-    actual: () => Promise<unknown>;
-    expected: unknown;
-  }>,
-) {
-  await Promise.all(
-    cases.map(async ({ actual, expected }) => {
-      await expect(actual()).resolves.toEqual(expected);
-    }),
-  );
-}
-
 describe("provider-runtime", () => {
   beforeAll(async () => {
     vi.resetModules();
@@ -1001,9 +988,7 @@ describe("provider-runtime", () => {
       expect(streamFn).toHaveBeenLastCalledWith(model, context, { reasoning });
     }
     expect(createStreamFn).toHaveBeenCalledOnce();
-    expect(
-      wrapSimpleCompletionStreamFn.mock.calls.map(([hookContext]) => hookContext.thinkingLevel),
-    ).toEqual(["off", "max", undefined]);
+    expect(wrapSimpleCompletionStreamFn).toHaveBeenCalledOnce();
     expect(resolvePluginProvidersMock).not.toHaveBeenCalled();
     expect(isPluginProvidersLoadInFlightMock).not.toHaveBeenCalled();
   });
@@ -1864,47 +1849,29 @@ describe("provider-runtime", () => {
     );
   });
 
-  it("keeps OpenAI plugin personality fallback for OpenAI-family GPT-5 providers", () => {
-    const contribution = resolveProviderSystemPromptContribution({
-      provider: "openai",
-      config: {
-        plugins: {
-          entries: {
-            openai: { config: { personality: "off" } },
+  it.each(["openai", "azure-openai-responses"])(
+    "keeps OpenAI plugin personality fallback for %s GPT-5 providers",
+    (provider) => {
+      const contribution = resolveProviderSystemPromptContribution({
+        provider,
+        config: {
+          plugins: {
+            entries: {
+              openai: { config: { personality: "off" } },
+            },
           },
         },
-      },
-      context: {
-        provider: "openai",
-        modelId: "gpt-5.4",
-        promptMode: "full",
-      } as never,
-    });
+        context: {
+          provider,
+          modelId: "gpt-5.4",
+          promptMode: "full",
+        } as never,
+      });
 
-    expect(contribution?.stablePrefix).toContain("<persona_latch>");
-    expect(contribution?.sectionOverrides).toStrictEqual({});
-  });
-
-  it("keeps OpenAI plugin personality fallback for Azure OpenAI GPT-5 providers", () => {
-    const contribution = resolveProviderSystemPromptContribution({
-      provider: "azure-openai-responses",
-      config: {
-        plugins: {
-          entries: {
-            openai: { config: { personality: "off" } },
-          },
-        },
-      },
-      context: {
-        provider: "azure-openai-responses",
-        modelId: "gpt-5.4",
-        promptMode: "full",
-      } as never,
-    });
-
-    expect(contribution?.stablePrefix).toContain("<persona_latch>");
-    expect(contribution?.sectionOverrides).toStrictEqual({});
-  });
+      expect(contribution?.stablePrefix).toContain("<persona_latch>");
+      expect(contribution?.sectionOverrides).toStrictEqual({});
+    },
+  );
 
   it("does not apply the shared GPT-5 prompt overlay to non-GPT-5 models", () => {
     expect(
@@ -2857,19 +2824,15 @@ describe("provider-runtime", () => {
       }),
     ).toBe('{"token":"oauth-access"}');
 
-    await expectResolvedAsyncValues([
-      {
-        actual: () =>
-          buildProviderAuthDoctorHintWithPlugin({
-            provider: DEMO_PROVIDER_ID,
-            context: createDemoProviderContext({
-              profileId: "demo:default",
-              store: { version: 1, profiles: {} },
-            }),
-          }),
-        expected: "Repair demo:default",
-      },
-    ]);
+    await expect(
+      buildProviderAuthDoctorHintWithPlugin({
+        provider: DEMO_PROVIDER_ID,
+        context: createDemoProviderContext({
+          profileId: "demo:default",
+          store: { version: 1, profiles: {} },
+        }),
+      }),
+    ).resolves.toEqual("Repair demo:default");
 
     expectResolvedValues([
       {

@@ -290,7 +290,7 @@ describe("openrouter-model-capabilities", () => {
     });
   });
 
-  it("refreshes cached rows that predate independent mandatory-reasoning metadata", async () => {
+  it("retries an unavailable catalog before replacing cached rows without mandatory-reasoning metadata", async () => {
     await withOpenRouterStateDir(async () => {
       const modelId = "minimax/minimax-m2.7";
       createCorePluginStateSyncKeyedStore({
@@ -305,19 +305,34 @@ describe("openrouter-model-capabilities", () => {
         maxTokens: 4096,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       });
-      const fetchSpy = vi.fn(async () =>
-        Response.json({
-          data: [{ id: modelId, reasoning: { mandatory: true } }],
-        }),
-      );
+      const fetchSpy = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("temporarily unavailable", { status: 503 }))
+        .mockResolvedValueOnce(
+          Response.json({
+            data: [{ id: modelId, reasoning: { mandatory: true } }],
+          }),
+        );
       vi.stubGlobal("fetch", fetchSpy);
       const cache = await importOpenRouterModelCapabilities("mandatory-metadata-cache-upgrade");
       await cache.loadOpenRouterModelCapabilities(modelId);
       expect(fetchSpy).toHaveBeenCalledOnce();
+      expect(cache.getOpenRouterModelCapabilities(modelId)).toBeUndefined();
+      expect(fetchSpy).toHaveBeenCalledOnce();
+
+      await cache.loadOpenRouterModelCapabilities(modelId);
       expect(cache.getOpenRouterModelCapabilities(modelId)).toMatchObject({
         compat: { supportsReasoningEffort: false },
         thinkingLevelMap: { off: null },
       });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+      const reader = await importOpenRouterModelCapabilities("mandatory-metadata-cache-recovered");
+      expect(reader.getOpenRouterModelCapabilities(modelId)).toMatchObject({
+        compat: { supportsReasoningEffort: false },
+        thinkingLevelMap: { off: null },
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
   });
 

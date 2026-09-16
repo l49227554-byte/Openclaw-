@@ -215,11 +215,15 @@ describe("llama.cpp provider plugin", () => {
   it.each(
     [false, true].flatMap((managed) =>
       (["wrapStreamFn", "wrapSimpleCompletionStreamFn"] as const).flatMap((hook) =>
-        (["off", "high"] as const).map((thinkingLevel) => ({ managed, hook, thinkingLevel })),
+        (["off", "high", undefined] as const).map((thinkingLevel) => ({
+          managed,
+          hook,
+          thinkingLevel,
+        })),
       ),
     ),
   )(
-    "normalizes $thinkingLevel requests through $hook with managed=$managed",
+    "normalizes sequential requests through one $hook with managed=$managed and default=$thinkingLevel",
     async ({ managed, hook, thinkingLevel }) => {
       const provider = registerTextProvider();
       const { config } = configuredOptions();
@@ -236,14 +240,14 @@ describe("llama.cpp provider plugin", () => {
         compat: { supportsReasoningEffort: true, supportsJsonSchemaResponseFormat: true },
       };
       const schema = { type: "object", properties: { ok: { type: "boolean" } } };
-      let payload: unknown;
+      const payloads: unknown[] = [];
       const inner = vi.fn<StreamFn>(async (requestModel, context, options) => {
         const request = buildOpenAICompletionsParams(
           { ...requestModel, api: "openai-completions" },
           context,
-          { reasoning: thinkingLevel, responseFormat: schema },
+          options,
         );
-        payload = (await options?.onPayload?.(request, requestModel)) ?? request;
+        payloads.push((await options?.onPayload?.(request, requestModel)) ?? request);
         const stream = createAssistantMessageEventStream();
         stream.end();
         return stream;
@@ -261,17 +265,29 @@ describe("llama.cpp provider plugin", () => {
         "llama.cpp stream wrapper",
       );
 
-      await wrapped(model, { messages: [] }, { reasoning: thinkingLevel, responseFormat: schema });
-
-      expect(payload).toMatchObject({ response_format: { type: "json_object", schema } });
-      if (thinkingLevel === "off") {
-        expect(payload).toHaveProperty("chat_template_kwargs.enable_thinking", false);
-      } else {
-        expect(payload).not.toHaveProperty("chat_template_kwargs");
-        expect(payload).toHaveProperty("reasoning_effort", "high");
+      const reasoningLevels = ["off", "max", undefined] as const;
+      for (const reasoning of reasoningLevels) {
+        await wrapped(
+          model,
+          { messages: [] },
+          reasoning === undefined
+            ? { responseFormat: schema }
+            : { reasoning, responseFormat: schema },
+        );
       }
-      expect(inner.mock.calls[0]?.[0]).toBe(model);
-      expect(mocks.ensureChat).toHaveBeenCalledTimes(managed ? 1 : 0);
+
+      for (const [index, reasoning] of reasoningLevels.entries()) {
+        const payload = payloads[index];
+        expect(payload).toMatchObject({ response_format: { type: "json_object", schema } });
+        if ((reasoning ?? thinkingLevel) === "off") {
+          expect(payload).toHaveProperty("chat_template_kwargs.enable_thinking", false);
+        } else {
+          expect(payload).not.toHaveProperty("chat_template_kwargs");
+          expect(payload).toHaveProperty("reasoning_effort", "high");
+        }
+      }
+      expect(inner).toHaveBeenCalledTimes(reasoningLevels.length);
+      expect(mocks.ensureChat).toHaveBeenCalledTimes(managed ? reasoningLevels.length : 0);
     },
   );
 

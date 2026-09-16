@@ -155,15 +155,18 @@ describe("kimi provider plugin", () => {
     ).toBe(streamFn);
   });
 
-  it.each(["off", "high", "max"] as const)(
-    "preserves K3 %s thinking through the registered standalone alias",
-    async (thinkingLevel) => {
+  it.each(["wrapStreamFn", "wrapSimpleCompletionStreamFn"] as const)(
+    "resolves per-call K3 thinking through one %s wrapper",
+    async (hook) => {
       const provider = await registerSingleProviderPlugin(plugin);
       const model: Model = {
         provider: "kimi",
         id: "k3",
         name: "Kimi K3",
-        api: "openclaw-provider-simple:synthetic",
+        api:
+          hook === "wrapSimpleCompletionStreamFn"
+            ? "openclaw-provider-simple:synthetic"
+            : "anthropic-messages",
         baseUrl: "https://api.kimi.com/coding/",
         reasoning: true,
         input: ["text"],
@@ -188,12 +191,12 @@ describe("kimi provider plugin", () => {
         ],
       };
       let payload: unknown;
-      const wrapped = provider.wrapSimpleCompletionStreamFn?.({
+      const wrapped = provider[hook]?.({
         provider: "kimi",
         modelId: model.id,
         model,
         sourceApi: "anthropic-messages",
-        thinkingLevel,
+        thinkingLevel: "low",
         streamFn: (runtimeModel, streamContext, options) =>
           streamSimpleAnthropic(
             { ...runtimeModel, api: "anthropic-messages" },
@@ -202,38 +205,40 @@ describe("kimi provider plugin", () => {
           ),
       });
       if (!wrapped) {
-        throw new Error("Kimi did not register its standalone completion wrapper");
+        throw new Error(`Kimi did not register ${hook}`);
       }
-      const stream = await wrapped(model, context, {
-        apiKey: "synthetic-kimi-key",
-        reasoning: thinkingLevel,
-        onPayload: (value) => {
-          payload = value;
-          throw new Error("stop before network");
-        },
-      });
-      expect(await stream.result()).toMatchObject({ errorMessage: "stop before network" });
-      expect(payload).toMatchObject({
-        thinking:
-          thinkingLevel === "off"
-            ? { type: "disabled" }
-            : { type: "adaptive", display: "summarized" },
-      });
-      expect(payload).not.toHaveProperty("thinking.budget_tokens");
-      if (thinkingLevel === "off") {
-        expect(payload).not.toHaveProperty("output_config.effort");
-      } else {
-        expect(payload).toMatchObject({
-          output_config: { effort: thinkingLevel },
-          messages: expect.arrayContaining([
-            expect.objectContaining({
-              role: "assistant",
-              content: expect.arrayContaining([
-                { type: "thinking", thinking: "Retained thought", signature: "" },
-              ]),
-            }),
-          ]),
+      for (const reasoning of ["off", "max", undefined, "high"] as const) {
+        const stream = await wrapped(model, context, {
+          apiKey: "synthetic-kimi-key",
+          reasoning,
+          onPayload: (value) => {
+            payload = value;
+            throw new Error("stop before network");
+          },
         });
+        expect(await stream.result()).toMatchObject({ errorMessage: "stop before network" });
+        expect(payload).toMatchObject({
+          thinking:
+            reasoning === "off"
+              ? { type: "disabled" }
+              : { type: "adaptive", display: "summarized" },
+        });
+        expect(payload).not.toHaveProperty("thinking.budget_tokens");
+        if (reasoning === "off") {
+          expect(payload).not.toHaveProperty("output_config.effort");
+        } else {
+          expect(payload).toMatchObject({
+            output_config: { effort: reasoning ?? "low" },
+            messages: expect.arrayContaining([
+              expect.objectContaining({
+                role: "assistant",
+                content: expect.arrayContaining([
+                  { type: "thinking", thinking: "Retained thought", signature: "" },
+                ]),
+              }),
+            ]),
+          });
+        }
       }
     },
   );

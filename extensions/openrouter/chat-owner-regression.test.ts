@@ -41,6 +41,53 @@ async function captureProviderPayload(
 }
 
 describe("OpenRouter chat owner invariants", () => {
+  it.each([false, true])(
+    "reads each request's DeepSeek effort from one wrapper (catalog efforts=%s)",
+    async (hasEffortMetadata) => {
+      const provider = await registerSingleProviderPlugin(openrouterPlugin);
+      const model: Parameters<StreamFn>[0] = {
+        provider: "openrouter",
+        id: "deepseek/deepseek-v4-pro",
+        name: "DeepSeek V4 Pro",
+        api: "openclaw-provider-simple:synthetic",
+        baseUrl: "https://openrouter.ai/api/v1",
+        reasoning: true,
+        input: ["text"],
+        compat: hasEffortMetadata ? { supportedReasoningEfforts: ["none", "high", "xhigh"] } : {},
+        contextWindow: 100_000,
+        maxTokens: 4096,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      };
+      const requests: Record<string, unknown>[] = [];
+      const baseStreamFn: StreamFn = async (runtimeModel, context, options) => {
+        const payload = buildOpenAICompletionsParams(
+          { ...runtimeModel, api: "openai-completions" },
+          context,
+          options,
+        );
+        await options?.onPayload?.(payload, runtimeModel);
+        requests.push(payload);
+        return createAssistantMessageEventStream();
+      };
+      const wrapped = provider.wrapSimpleCompletionStreamFn?.({
+        provider: "openrouter",
+        modelId: model.id,
+        model,
+        sourceApi: "openai-completions",
+        streamFn: baseStreamFn,
+      });
+      expect(wrapped).toBeTypeOf("function");
+      for (const reasoning of ["off", "max", undefined] as const) {
+        await wrapped?.(model, { messages: [] }, { reasoning });
+      }
+      expect(requests.map((request) => request.reasoning)).toEqual([
+        { effort: "none" },
+        { effort: "xhigh" },
+        { effort: "high" },
+      ]);
+    },
+  );
+
   it("preserves default-on DeepSeek replay when effort is omitted", async () => {
     const payload = await captureProviderPayload(
       "deepseek/deepseek-v4-pro",

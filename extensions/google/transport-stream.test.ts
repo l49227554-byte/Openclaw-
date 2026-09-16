@@ -1799,32 +1799,25 @@ describe("google transport stream", () => {
     "retries $modelId with $retryThinkingLevel thinking when the first $stalledPhase stalls",
     async ({ modelId, retryThinkingLevel, stalledPhase }) => {
       vi.stubEnv("OPENCLAW_GOOGLE_GEMINI_FIRST_RESPONSE_RETRY_MS", "10");
-      guardedFetchMock
-        .mockImplementationOnce((_url: string, init?: RequestInit) =>
-          stalledPhase === "response body"
-            ? Promise.resolve(
-                new Response(new ReadableStream<Uint8Array>(), {
-                  headers: { "content-type": "text/event-stream" },
-                }),
-              )
-            : new Promise<Response>((_resolve, reject) => {
-                init?.signal?.addEventListener("abort", () => {
-                  reject(
-                    toLintErrorObject(
-                      init.signal?.reason ?? new Error("aborted"),
-                      "Non-Error rejection",
-                    ),
-                  );
-                });
+      guardedFetchMock.mockImplementationOnce((_url: string, init?: RequestInit) =>
+        stalledPhase === "response body"
+          ? Promise.resolve(
+              new Response(new ReadableStream<Uint8Array>(), {
+                headers: { "content-type": "text/event-stream" },
               }),
-        )
-        .mockResolvedValueOnce(
-          buildSseResponse([
-            {
-              candidates: [{ content: { parts: [{ text: "recovered" }] }, finishReason: "STOP" }],
-            },
-          ]),
-        );
+            )
+          : new Promise<Response>((_resolve, reject) => {
+              init?.signal?.addEventListener("abort", () => {
+                reject(
+                  toLintErrorObject(
+                    init.signal?.reason ?? new Error("aborted"),
+                    "Non-Error rejection",
+                  ),
+                );
+              });
+            }),
+      );
+      mockGoogleTextResponse("recovered");
 
       const result = await runGeminiStreamResult({
         model: buildGeminiModel({ id: modelId }),
@@ -1938,20 +1931,13 @@ describe("google transport stream", () => {
     vi.stubEnv("OPENCLAW_GOOGLE_GEMINI_FIRST_RESPONSE_RETRY_MS", "10");
     const controller = new AbortController();
     const cancel = vi.fn();
-    guardedFetchMock
-      .mockResolvedValueOnce(
-        buildOpenRawSseResponse({
-          sse: 'data: {"candidates":[{"finishReason":"STOP"}]}\n\n',
-          onCancel: cancel,
-        }),
-      )
-      .mockResolvedValueOnce(
-        buildSseResponse([
-          {
-            candidates: [{ content: { parts: [{ text: "recovered" }] }, finishReason: "STOP" }],
-          },
-        ]),
-      );
+    guardedFetchMock.mockResolvedValueOnce(
+      buildOpenRawSseResponse({
+        sse: 'data: {"candidates":[{"finishReason":"STOP"}]}\n\n',
+        onCancel: cancel,
+      }),
+    );
+    mockGoogleTextResponse("recovered");
     let responseCount = 0;
     const onResponse = vi.fn(() => {
       responseCount += 1;
@@ -1982,19 +1968,12 @@ describe("google transport stream", () => {
 
   it("keeps oversized-video shedding in the Gemini 3 retry payload", async () => {
     vi.stubEnv("OPENCLAW_GOOGLE_GEMINI_FIRST_RESPONSE_RETRY_MS", "10");
-    guardedFetchMock
-      .mockResolvedValueOnce(
-        new Response(new ReadableStream<Uint8Array>(), {
-          headers: { "content-type": "text/event-stream" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        buildSseResponse([
-          {
-            candidates: [{ content: { parts: [{ text: "recovered" }] }, finishReason: "STOP" }],
-          },
-        ]),
-      );
+    guardedFetchMock.mockResolvedValueOnce(
+      new Response(new ReadableStream<Uint8Array>(), {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    );
+    mockGoogleTextResponse("recovered");
 
     const result = await runGeminiStreamResult({
       model: buildGeminiModel({

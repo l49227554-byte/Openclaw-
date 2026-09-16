@@ -868,22 +868,23 @@ describe("openrouter provider hooks", () => {
     } as never);
     expect(normalizedAnthropicModel?.id).toBe("anthropic/claude-sonnet-4.6");
 
+    const autoModel = {
+      provider: "openrouter",
+      id: "openrouter/auto",
+      name: "OpenRouter Auto",
+      api: "openai-completions",
+      baseUrl: "https://openrouter.ai/api/v1",
+      reasoning: false,
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 8192,
+    };
     expect(
       provider.normalizeResolvedModel?.({
         provider: "openrouter",
         modelId: "openrouter/auto",
-        model: {
-          provider: "openrouter",
-          id: "openrouter/auto",
-          name: "OpenRouter Auto",
-          api: "openai-completions",
-          baseUrl: "https://openrouter.ai/api/v1",
-          reasoning: false,
-          input: ["text", "image"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 200_000,
-          maxTokens: 8192,
-        },
+        model: autoModel,
       } as never),
     ).toBeUndefined();
 
@@ -891,16 +892,8 @@ describe("openrouter provider hooks", () => {
       provider: "openrouter",
       modelId: "openrouter/openrouter/auto",
       model: {
-        provider: "openrouter",
+        ...autoModel,
         id: "openrouter/openrouter/auto",
-        name: "OpenRouter Auto",
-        api: "openai-completions",
-        baseUrl: "https://openrouter.ai/api/v1",
-        reasoning: false,
-        input: ["text", "image"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 200_000,
-        maxTokens: 8192,
       },
     } as never);
     expect(normalizedDuplicatedAutoModel?.id).toBe("openrouter/auto");

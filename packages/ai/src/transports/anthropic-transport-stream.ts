@@ -747,7 +747,6 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
         );
         usedCompactionReplay = builtParams.usedCompactionReplay;
         let params = builtParams.params;
-        const toolProjection = builtParams.toolProjection;
         applyAnthropicContextManagementToRequest(
           params,
           model,
@@ -787,7 +786,7 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
           stream,
           refusalBuffer,
           isOAuthToken,
-          toolProjection,
+          toolProjection: builtParams.toolProjection,
           profile: "transport",
         });
         finalizeTransportStream({ stream, output });

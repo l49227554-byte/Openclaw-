@@ -447,8 +447,7 @@ function* projectSessionPatchSteps(
   }
 
   if ("verboseLevel" in patch) {
-    const raw = patch.verboseLevel;
-    const parsed = parseVerboseOverride(raw);
+    const parsed = parseVerboseOverride(patch.verboseLevel);
     if (!parsed.ok) {
       return invalid(parsed.error);
     }
@@ -456,8 +455,7 @@ function* projectSessionPatchSteps(
   }
 
   if ("traceLevel" in patch) {
-    const raw = patch.traceLevel;
-    const parsed = parseTraceOverride(raw);
+    const parsed = parseTraceOverride(patch.traceLevel);
     if (!parsed.ok) {
       return invalid(parsed.error);
     }

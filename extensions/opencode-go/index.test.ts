@@ -139,14 +139,14 @@ describe("opencode-go provider plugin", () => {
     clearLiveCatalogCacheForTests();
   });
 
-  it.each(["off", "high"] as const)(
-    "keeps DeepSeek %s thinking on the standalone completion wire",
-    async (thinkingLevel) => {
+  it.each(["deepseek-v4-pro", "deepseek-v4-flash", "kimi-k3"] as const)(
+    "keeps %s thinking per invocation on one standalone completion wrapper",
+    async (modelId) => {
       const provider = await registerSingleProviderPlugin(plugin);
       const catalog = buildStaticOpencodeGoProviderConfig();
-      const entry = catalog.models.find((model) => model.id === "deepseek-v4-pro");
+      const entry = catalog.models.find((model) => model.id === modelId);
       if (!entry) {
-        throw new Error("Missing DeepSeek V4 Pro catalog entry");
+        throw new Error(`Missing ${modelId} catalog entry`);
       }
       const model: Parameters<StreamFn>[0] = {
         ...entry,
@@ -166,28 +166,37 @@ describe("opencode-go provider plugin", () => {
         payload = request;
         return createAssistantMessageEventStream();
       };
-      const wrapped =
-        provider.wrapSimpleCompletionStreamFn?.({
-          provider: "opencode-go",
-          modelId: model.id,
-          model,
-          sourceApi: "openai-completions",
-          thinkingLevel,
-          streamFn: baseStreamFn,
-        }) ?? baseStreamFn;
-      await wrapped(
+      const wrapped = provider.wrapSimpleCompletionStreamFn?.({
+        provider: "opencode-go",
+        modelId: model.id,
         model,
-        {
-          messages: [{ role: "user", content: "Synthetic request", timestamp: 1 }],
-        },
-        { reasoning: thinkingLevel },
-      );
+        sourceApi: "openai-completions",
+        streamFn: baseStreamFn,
+      });
+      if (!wrapped) {
+        throw new Error("Missing standalone completion wrapper");
+      }
+      for (const reasoning of ["off", "max", undefined] as const) {
+        await wrapped(
+          model,
+          {
+            messages: [{ role: "user", content: "Synthetic request", timestamp: 1 }],
+          },
+          { reasoning },
+        );
 
-      expect(payload?.thinking).toEqual({ type: thinkingLevel === "off" ? "disabled" : "enabled" });
-      if (thinkingLevel === "off") {
-        expect(payload).not.toHaveProperty("reasoning_effort");
-      } else {
-        expect(payload?.reasoning_effort).toBe("high");
+        if (modelId === "kimi-k3") {
+          expect(payload).not.toHaveProperty("thinking");
+        } else {
+          expect(payload?.thinking).toEqual({ type: reasoning === "off" ? "disabled" : "enabled" });
+        }
+        const expectedEffort =
+          reasoning === "off" ? undefined : modelId === "kimi-k3" ? "max" : (reasoning ?? "high");
+        if (expectedEffort === undefined) {
+          expect(payload).not.toHaveProperty("reasoning_effort");
+        } else {
+          expect(payload?.reasoning_effort).toBe(expectedEffort);
+        }
       }
     },
   );
@@ -825,21 +834,28 @@ describe("opencode-go provider plugin", () => {
     }
   });
 
-  it.each(["deepseek-v4-pro", "deepseek-v4-flash"] as const)(
-    "disables invalid DeepSeek V4 reasoning_effort off payloads on OpenCode Go for %s",
-    async (modelId) => {
+  it.each([
+    ["deepseek-v4-pro", "off", undefined],
+    ["deepseek-v4-flash", "off", undefined],
+    ["deepseek-v4-flash", "low", "low"],
+    ["deepseek-v4-flash", "high", "high"],
+    ["deepseek-v4-flash", "max", "max"],
+  ] as const)(
+    "maps OpenCode Go %s thinking %s to %s reasoning effort",
+    async (modelId, thinkingLevel, reasoningEffort) => {
+      const disabled = thinkingLevel === "off";
       const payload = await captureGoWirePayload({
-        thinkingLevel: "off",
+        thinkingLevel,
         payload: {
           model: modelId,
-          reasoning_effort: "off",
-          reasoning: "off",
+          ...(disabled ? { reasoning_effort: "off", reasoning: "off" } : {}),
         },
       });
 
       expect(payload).toEqual({
         model: modelId,
-        thinking: { type: "disabled" },
+        thinking: { type: disabled ? "disabled" : "enabled" },
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
       });
     },
   );
@@ -885,26 +901,6 @@ describe("opencode-go provider plugin", () => {
           reasoning: enabledEffort,
         } as never),
       ).toHaveProperty("reasoning_effort", enabledEffort);
-    },
-  );
-
-  it.each([
-    ["low", "low"],
-    ["high", "high"],
-    ["max", "max"],
-  ] as const)(
-    "maps OpenCode Go DeepSeek V4 %s thinking to %s reasoning effort",
-    async (thinkingLevel, reasoningEffort) => {
-      const payload = await captureGoWirePayload({
-        thinkingLevel,
-        payload: { model: "deepseek-v4-flash" },
-      });
-
-      expect(payload).toEqual({
-        model: "deepseek-v4-flash",
-        thinking: { type: "enabled" },
-        reasoning_effort: reasoningEffort,
-      });
     },
   );
 

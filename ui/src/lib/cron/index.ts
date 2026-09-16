@@ -235,6 +235,7 @@ export type CronState = {
   // only the current filtered/paged table cache.
   cronEditingJob: CronJob | null;
   cronCloningJob: CronJob | null;
+  cronRunsError: string | null;
   cronRunsJobId: string | null;
   cronRunsLoadingMore: boolean;
   cronRuns: CronRunLogEntry[];
@@ -285,6 +286,7 @@ export function createInitialCronState(
     cronFieldErrors: {},
     cronEditingJob: null,
     cronCloningJob: null,
+    cronRunsError: null,
     cronRunsJobId: null,
     cronRunsLoadingMore: false,
     cronRuns: [],
@@ -835,6 +837,8 @@ function clearCronEditState(state: CronState) {
 }
 
 function clearCronRunsPage(state: CronState) {
+  cronRunsViews.delete(state);
+  state.cronRunsError = null;
   state.cronRuns = [];
   state.cronRunsTotal = 0;
   state.cronRunsHasMore = false;
@@ -1467,6 +1471,8 @@ type CronRunsRequestIdentity = {
 // Mutation completions refresh this view without supplying another job identity.
 // Only its latest exact request may replace the history, error, or load state.
 const activeCronRunsRequests = new WeakMap<CronState, CronRunsRequestIdentity>();
+// Rows and failures belong to the query even after its request settles.
+const cronRunsViews = new WeakMap<CronState, CronRunsRequestIdentity>();
 
 export function invalidateCronRefresh(state: CronState) {
   // Retire page reads without canceling an already accepted mutation chain.
@@ -1477,10 +1483,8 @@ export function invalidateCronRefresh(state: CronState) {
   state.cronJobsReloadPendingTableFilters = false;
 }
 
-function ownsCronRunsRequest(state: CronState, request: CronRunsRequestIdentity): boolean {
+function matchesCronRunsView(state: CronState, request: CronRunsRequestIdentity): boolean {
   return (
-    activeCronRunsRequests.get(state) === request &&
-    state.connected &&
     state.client === request.client &&
     state.cronAgentId === request.agentId &&
     state.cronRunsScope === request.scope &&
@@ -1494,7 +1498,15 @@ function ownsCronRunsRequest(state: CronState, request: CronRunsRequestIdentity)
     state.cronRunsDeliveryStatuses.length === request.deliveryStatuses.length &&
     state.cronRunsDeliveryStatuses.every(
       (status, index) => status === request.deliveryStatuses[index],
-    ) &&
+    )
+  );
+}
+
+function ownsCronRunsRequest(state: CronState, request: CronRunsRequestIdentity): boolean {
+  return (
+    activeCronRunsRequests.get(state) === request &&
+    state.connected &&
+    matchesCronRunsView(state, request) &&
     (!request.append ||
       Math.max(0, state.cronRunsNextOffset ?? state.cronRuns.length) === request.offset)
   );
@@ -1513,6 +1525,10 @@ export async function loadCronRuns(
   if (scope === "job" && !activeJobId) {
     clearCronRunsPage(state);
     return "skipped";
+  }
+  const view = cronRunsViews.get(state);
+  if (!view || !matchesCronRunsView(state, view)) {
+    clearCronRunsPage(state);
   }
   const append = opts?.append === true;
   if (append && !state.cronRunsHasMore) {
@@ -1545,6 +1561,7 @@ export async function loadCronRuns(
     append,
   };
   activeCronRunsRequests.set(state, request);
+  cronRunsViews.set(state, request);
   // Retained rows cannot authorize an append until their replacement page arrives.
   if (!append) {
     state.cronRunsHasMore = false;
@@ -1568,6 +1585,7 @@ export async function loadCronRuns(
     if (!ownsCronRunsRequest(state, request)) {
       return "skipped";
     }
+    state.cronRunsError = null;
     const entries = Array.isArray(res.entries) ? res.entries : [];
     state.cronRuns = append ? [...state.cronRuns, ...entries] : entries;
     const meta = normalizeCronRunsPageMeta({
@@ -1585,7 +1603,7 @@ export async function loadCronRuns(
     if (!ownsCronRunsRequest(state, request) || request.queued) {
       return "skipped";
     }
-    state.cronError = formatUiError(err);
+    state.cronRunsError = formatUiError(err);
     return "error";
   } finally {
     const reload = ownsCronRunsRequest(state, request);

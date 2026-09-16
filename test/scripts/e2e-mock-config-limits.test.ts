@@ -15,6 +15,7 @@ import { writeJsonAtomic } from "../../src/infra/json-files.js";
 import { captureFullEnv } from "../../src/test-utils/env.js";
 import { createOpenClawTestState } from "../../src/test-utils/openclaw-test-state.js";
 import { getFreePort } from "../../src/test-utils/ports.js";
+import { withTempDir } from "../../src/test-utils/temp-dir.js";
 import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
@@ -184,12 +185,16 @@ describe("mock OpenAI response markers", () => {
     { api: "responses", stream: true },
     { api: "chat/completions", stream: false },
     { api: "chat/completions", stream: true },
-  ])(
-    "emits native exec draft-proof calls from $api (stream=$stream)",
-    async ({ api, stream }, { expect: taskExpect }) => {
+  ].flatMap((row) => [false, true].map((modelMap) => ({ ...row, modelMap }))))(
+    "emits native exec draft-proof calls from $api (stream=$stream, modelMap=$modelMap)",
+    async ({ api, stream, modelMap }, { expect: taskExpect }) => {
+      await withTempDir(async (root) => {
+      const control = join(root, "response.json");
+      const utilityText = '{"headline":"Structured fixture","health":"on-track"}';
+      await writeFile(control, JSON.stringify({ models: { "fixture-utility": { text: utilityText } } }));
       await withMockServer(
         mockOpenAiPath,
-        { MOCK_DRAFTPROOF_FINAL_DELAY_MS: "80" },
+        { MOCK_DRAFTPROOF_FINAL_DELAY_MS: "80", ...(modelMap ? { MOCK_RESPONSE_CONTROL: control } : {}) },
         async (baseUrl) => {
           const user = { role: "user", content: "return OPENCLAW_E2E_DRAFTPROOF" };
           const tool = {
@@ -197,11 +202,12 @@ describe("mock OpenAI response markers", () => {
             description: "Execute a shell command",
             parameters: execSchema,
           };
-          const request = async (turns: unknown[]) => {
+          const request = async (turns: unknown[], model = "fixture-agent") => {
             const response = await fetch(`${baseUrl}/v1/${api}`, {
               method: "POST",
               headers: { "content-type": "application/json" },
               body: JSON.stringify({
+                model,
                 [api === "responses" ? "input" : "messages"]: turns,
                 tools: [
                   api === "responses"
@@ -221,6 +227,13 @@ describe("mock OpenAI response markers", () => {
               .map((line) => JSON.parse(line.slice(6)));
           };
 
+          if (modelMap) {
+            const utility = await request([user], "fixture-utility");
+            const text = api === "responses"
+              ? (stream ? utility.find((event) => event.type === "response.completed").response : utility[0]).output[0].content[0].text
+              : utility.map((chunk) => stream ? (chunk.choices[0].delta.content ?? "") : chunk.choices[0].message.content).join("");
+            taskExpect(text).toBe(utilityText);
+          }
           const first = await request([user]);
           let call;
           let assistant;
@@ -351,10 +364,47 @@ describe("mock OpenAI response markers", () => {
               }),
             );
           }
+          const health = await (await fetch(`${baseUrl}/health`)).json();
+          taskExpect(health.requests.selections).toEqual({ model: modelMap ? 1 : 0, global: 0, automaticTool: 2, automaticText: 1 });
         },
       );
+      });
     },
   );
+
+  it("counts ingress independently of body rejection and excludes health/catalog probes", async () => {
+    await withMockServer(mockOpenAiPath, { OPENCLAW_MOCK_OPENAI_REQUEST_MAX_BYTES: "128" }, async (baseUrl) => {
+      const initial = await (await fetch(`${baseUrl}/health`)).json();
+      await (await fetch(`${baseUrl}/v1/models`)).text();
+      const rejected = await fetch(`${baseUrl}/v1/responses`, { method: "POST", body: "x".repeat(129) });
+      expect(rejected.status).toBe(413);
+      await rejected.text();
+      await (await fetch(`${baseUrl}/v1/embeddings`, { method: "POST", body: JSON.stringify({ input: "sample" }) })).text();
+      await (await fetch(`${baseUrl}/missing`, { method: "POST" })).text();
+      const final = await (await fetch(`${baseUrl}/health`)).json();
+      expect(final.requests.id).toBe(initial.requests.id);
+      expect(initial.requests.ingress).toEqual({ responses: 0, chatCompletions: 0, embeddings: 0, other: 0 });
+      expect(final.requests.ingress).toEqual({ responses: 1, chatCompletions: 0, embeddings: 1, other: 1 });
+      expect(final.requests.selections).toEqual({ model: 0, global: 0, automaticTool: 0, automaticText: 0 });
+    });
+  });
+
+  it("matches only own model keys and rejects mixed global/map controls", async () => {
+    await withTempDir(async (root) => {
+      const control = join(root, "response.json");
+      await writeFile(control, JSON.stringify({ models: { arbitrary: { text: "mapped" } } }));
+      await withMockServer(mockOpenAiPath, { MOCK_RESPONSE_CONTROL: control }, async (baseUrl) => {
+        const post = () => fetch(`${baseUrl}/v1/responses`, { method: "POST", body: JSON.stringify({ model: "toString", input: "hello", stream: false }) });
+        expect((await (await post()).json()).output[0].content[0].text).toBe("OPENCLAW_E2E_OK");
+        for (const global of [{ text: "global" }, { responses: [{ text: "global" }] }, { default: { text: "global" } }, { scriptVersion: "global" }]) {
+          await writeFile(control, JSON.stringify({ models: { arbitrary: { text: "mapped" } }, ...global }));
+          const response = await post();
+          expect(response.status).toBe(500);
+          expect(await response.text()).toContain("exclusive nonempty map");
+        }
+      });
+    });
+  });
 
   it("echoes dynamic OpenClaw E2E and update serving markers", async () => {
     await withMockServer(mockOpenAiPath, {}, async (baseUrl) => {

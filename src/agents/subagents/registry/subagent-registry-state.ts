@@ -18,6 +18,7 @@ import {
   loadSubagentRegistryFromSqlite,
   loadSubagentMaintenanceRunsFromSqlite,
   loadSubagentSessionListRunsFromSqlite,
+  loadSubagentRunsForSessionsFromSqlite,
   saveSubagentRegistryChangesToSqlite,
   saveSubagentRegistryToSqlite,
 } from "./subagent-registry.store.sqlite.js";
@@ -26,6 +27,7 @@ import type {
   SubagentRunReadRecord,
   SubagentRunRecord,
 } from "./subagent-registry.types.js";
+import { collectSubagentSessionReadKeys } from "./subagent-session-read-scope.js";
 
 export const SUBAGENT_RUNS_READ_CACHE_TTL_MS = 500;
 
@@ -363,6 +365,7 @@ function getSubagentRunsSnapshot<T extends SubagentRunReadRecord>(
   scope?: {
     load?: () => Iterable<T>;
     fresh?: boolean;
+    borrowPersisted?: boolean;
     matches: (entry: SubagentRunReadRecord) => boolean;
   },
 ): Map<string, T> {
@@ -380,7 +383,10 @@ function getSubagentRunsSnapshot<T extends SubagentRunReadRecord>(
         : loadPersistedSubagentRunsForRead(cache).values();
       for (const entry of persisted) {
         if (!scope || scope.matches(entry)) {
-          merged.set(entry.runId, scope?.load ? structuredClone(entry) : entry);
+          merged.set(
+            entry.runId,
+            scope?.load && !scope.borrowPersisted ? structuredClone(entry) : entry,
+          );
         }
       }
     } catch {
@@ -459,6 +465,71 @@ export function getSubagentSessionListRunsSnapshotForRead(
     });
   }
   return getSubagentRunsSnapshot(inMemoryRuns, persistedSubagentSessionListRunsReadCache);
+}
+
+function getSubagentSessionTreeSnapshot<T extends SubagentRunReadRecord>(
+  inMemoryRuns: Map<string, SubagentRunRecord>,
+  sessionKeys: readonly string[],
+  cache: SubagentRunsCache<T>,
+  load: () => { sessionKeys: Set<string>; runs: Map<string, T>; complete: boolean },
+): Map<string, T> {
+  if (!sessionKeys.some((key) => key.trim())) {
+    return new Map();
+  }
+  const cached = shouldReadPersistedSubagentRuns()
+    ? getFreshPersistedSubagentRunsSnapshot(cache, Date.now())
+    : null;
+  let selected = collectSubagentSessionReadKeys(
+    sessionKeys,
+    cached?.values() ?? [],
+    inMemoryRuns.values(),
+  );
+  return getSubagentRunsSnapshot(inMemoryRuns, cache, {
+    // The loader owns cache selection so topology and metadata use the same source.
+    fresh: true,
+    // Descendant queries only inspect records, matching their unscoped snapshots.
+    borrowPersisted: true,
+    load: () => {
+      if (cached) {
+        return cached.values();
+      }
+      const loadedAtMs = Date.now();
+      const snapshot = load();
+      // A tree covering every physical row may populate the existing full cache.
+      if (snapshot.complete) {
+        cache.snapshot = { loadedAtMs, runs: snapshot.runs };
+      }
+      selected = snapshot.sessionKeys;
+      return snapshot.runs.values();
+    },
+    matches: (entry) => selected.has(entry.childSessionKey.trim()),
+  });
+}
+
+/** Exact rows share cache freshness while projecting only their complete requester trees. */
+export function getSubagentSessionListRunsSnapshotForSessions(
+  inMemoryRuns: Map<string, SubagentRunRecord>,
+  sessionKeys: readonly string[],
+): Map<string, SubagentRunReadRecord> {
+  return getSubagentSessionTreeSnapshot(
+    inMemoryRuns,
+    sessionKeys,
+    persistedSubagentSessionListRunsReadCache,
+    () => loadSubagentRunsForSessionsFromSqlite(sessionKeys, inMemoryRuns.values(), "session-list"),
+  );
+}
+
+/** Settlement reads retain the canonical codec and raw local reservation ownership. */
+export function getSubagentRunsSnapshotForSessions(
+  inMemoryRuns: Map<string, SubagentRunRecord>,
+  sessionKeys: readonly string[],
+): Map<string, SubagentRunRecord> {
+  return getSubagentSessionTreeSnapshot(
+    inMemoryRuns,
+    sessionKeys,
+    persistedSubagentRunsReadCache,
+    () => loadSubagentRunsForSessionsFromSqlite(sessionKeys, inMemoryRuns.values(), "full"),
+  );
 }
 
 export function getSubagentRunsSnapshotForController(

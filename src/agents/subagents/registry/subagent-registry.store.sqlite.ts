@@ -17,6 +17,7 @@ import {
   getNodeSqliteKysely,
   sqliteStringSet,
 } from "../../../infra/kysely-sync.js";
+import { runSqliteDeferredTransactionSync } from "../../../infra/sqlite-transaction.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../../state/openclaw-state-db.generated.js";
 import {
   openOpenClawStateDatabase,
@@ -33,6 +34,7 @@ import type {
   SubagentRunReadRecord,
   SubagentRunRecord,
 } from "./subagent-registry.types.js";
+import { collectSubagentSessionReadKeys } from "./subagent-session-read-scope.js";
 
 type SubagentRunsTable = OpenClawStateKyselyDatabase["subagent_runs"];
 type SubagentRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "subagent_runs">;
@@ -345,9 +347,10 @@ const subagentMaintenancePayload =
     ELSE payload_json END`;
 
 function readSubagentSessionListRows(
-  controllerSessionKeys?: readonly string[],
+  scope?: { controllerSessionKeys?: readonly string[]; runIds?: readonly string[] },
+  database = openOpenClawStateDatabase(),
 ): SubagentRunReadSqliteRow[] {
-  const { db } = openOpenClawStateDatabase();
+  const { db } = database;
   const stateDb = getNodeSqliteKysely<SubagentRegistryDatabase>(db);
   return executeSqliteQuerySync(
     db,
@@ -364,8 +367,11 @@ function readSubagentSessionListRows(
             // Materialize compact metadata once; an inline CTE repeats retained JSON work per field.
             subagentMetadataPayload.as("payload_json"),
           ]);
-          return controllerSessionKeys
-            ? selected.where(subagentControllerFilter(controllerSessionKeys))
+          if (scope?.runIds) {
+            return selected.where("run_id", "in", sqliteStringSet(scope.runIds));
+          }
+          return scope?.controllerSessionKeys
+            ? selected.where(subagentControllerFilter(scope.controllerSessionKeys))
             : selected;
         },
       )
@@ -550,13 +556,85 @@ export function loadSubagentSessionListRunsFromSqlite(
   if (keys?.length === 0) {
     return runs;
   }
-  for (const row of readSubagentSessionListRows(keys)) {
+  for (const row of readSubagentSessionListRows({ controllerSessionKeys: keys })) {
     const entry = rowToSubagentRunReadRecord(row);
     if (entry) {
       runs.set(entry.runId, entry);
     }
   }
   return runs;
+}
+
+export function loadSubagentRunsForSessionsFromSqlite(
+  sessionKeys: readonly string[],
+  inMemoryRuns: Iterable<SubagentRunReadRecord>,
+  projection: "full",
+): { sessionKeys: Set<string>; runs: Map<string, SubagentRunRecord>; complete: boolean };
+export function loadSubagentRunsForSessionsFromSqlite(
+  sessionKeys: readonly string[],
+  inMemoryRuns: Iterable<SubagentRunReadRecord>,
+  projection: "session-list",
+): { sessionKeys: Set<string>; runs: Map<string, SubagentRunReadRecord>; complete: boolean };
+/** Select identities and their records from the same persisted read snapshot. */
+export function loadSubagentRunsForSessionsFromSqlite(
+  sessionKeys: readonly string[],
+  inMemoryRuns: Iterable<SubagentRunReadRecord>,
+  projection: "full" | "session-list",
+): { sessionKeys: Set<string>; runs: Map<string, SubagentRunReadRecord>; complete: boolean } {
+  const database = openOpenClawStateDatabase();
+  const { db } = database;
+  return runSqliteDeferredTransactionSync(db, () => {
+    const identities = executeSqliteQuerySync(
+      db,
+      getNodeSqliteKysely<SubagentRegistryDatabase>(db)
+        .selectFrom("subagent_runs")
+        .select(["run_id", "child_session_key", "requester_session_key"]),
+    ).rows;
+    const selected = collectSubagentSessionReadKeys(
+      sessionKeys,
+      identities.map((row) => ({
+        childSessionKey: row.child_session_key,
+        requesterSessionKey:
+          projection === "session-list"
+            ? row.requester_session_key.trim()
+            : row.requester_session_key,
+      })),
+      inMemoryRuns,
+    );
+    // Include physical rows that decode to the same run ID, even outside the
+    // selected tree, so the codec's ordered replacement cannot resurrect a row.
+    const selectedRunIds = new Set(
+      identities
+        .filter((row) => selected.has(row.child_session_key.trim()))
+        .map((row) => row.run_id.trim()),
+    );
+    const runIds = identities
+      .filter((row) => selectedRunIds.has(row.run_id.trim()))
+      .map((row) => row.run_id);
+    const runs = new Map<string, SubagentRunReadRecord>();
+    const complete = projection === "full" && runIds.length === identities.length;
+    if (runIds.length) {
+      if (projection === "full") {
+        for (const row of readSubagentRegistryRows(
+          complete ? undefined : { kind: "runs", runIds },
+          database,
+        )) {
+          const entry = rowToSubagentRunRecord(row);
+          if (entry) {
+            runs.set(entry.runId, entry);
+          }
+        }
+      } else {
+        for (const row of readSubagentSessionListRows({ runIds }, database)) {
+          const entry = rowToSubagentRunReadRecord(row);
+          if (entry) {
+            runs.set(entry.runId, entry);
+          }
+        }
+      }
+    }
+    return { sessionKeys: selected, runs, complete };
+  });
 }
 
 /** Saves the complete subagent run snapshot to sqlite and prunes rows not in the snapshot. */
@@ -586,4 +664,27 @@ export function saveSubagentRegistryChangesToSqlite(
     }
   }
   writeSubagentRunValues(values, deleteRunIds);
+}
+
+/** Mutation ownership cannot discard undecodable retained rows as presentation readers do. */
+export function hasSubagentSessionOwnerInDatabase(
+  database: Pick<OpenClawStateDatabase, "db">,
+  sessionKey: string,
+): boolean {
+  return (
+    executeSqliteQuerySync(
+      database.db,
+      getNodeSqliteKysely<SubagentRegistryDatabase>(database.db)
+        .selectFrom("subagent_runs")
+        .select("run_id")
+        .where((eb) =>
+          eb.or([
+            eb("child_session_key", "=", sessionKey),
+            eb("requester_session_key", "=", sessionKey),
+            eb("controller_session_key", "=", sessionKey),
+          ]),
+        )
+        .limit(1),
+    ).rows.length > 0
+  );
 }

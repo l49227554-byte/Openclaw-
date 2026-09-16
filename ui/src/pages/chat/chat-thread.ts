@@ -366,7 +366,7 @@ export function setExpansionState<T>(values: Map<string, T>, key: string, value:
   expansionMapVersions.set(values, getExpansionStateVersion(values) + 1);
 }
 
-export function deleteExpansionState<T>(values: Map<string, T>, key: string): void {
+function deleteExpansionState<T>(values: Map<string, T>, key: string): void {
   if (values.delete(key)) {
     expansionMapVersions.set(values, getExpansionStateVersion(values) + 1);
   }

@@ -10,6 +10,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/cli/native-hook-relay-cli.locator-worker.test.ts",
   "src/snapshot/git-backup.test.ts",
   "src/plugins/conversation-binding.test.ts",
+  "src/plugins/conversation-binding.worker.test.ts",
   "src/plugins/conversation-binding.sqlite.test.ts",
   "src/state/backup-run-records.test.ts",
   "src/claws/provenance-runtime-read.async.test.ts",

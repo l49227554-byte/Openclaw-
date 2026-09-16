@@ -2,7 +2,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
-import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import type {
   ConversationRef,
   SessionBindingAdapter,
@@ -447,18 +446,6 @@ function readPluginBindingApprovalRows(): Array<{
   ).rows;
 }
 
-async function insertPluginBindingApprovalRow(params: {
-  pluginRoot: string;
-  channel: string;
-  accountId: string;
-  pluginId: string;
-}): Promise<void> {
-  await seedPluginConversationBindingApprovalForTest({
-    ...params,
-    approvedAt: 1,
-  });
-}
-
 describe("plugin conversation binding approvals", () => {
   beforeEach(async () => {
     await drainGlobalSingletonLifecycleState();
@@ -722,202 +709,6 @@ describe("plugin conversation binding approvals", () => {
     expect(sameScope.status).toBe("pending");
   });
 
-  it("keeps the actual approval and reopen flow off the application SQLite thread", async () => {
-    await closeOpenClawStateDatabaseAsync();
-    const native = requireNodeSqlite();
-    const counters = [
-      ...(["prepare", "exec", "close"] as const).map((method) =>
-        vi.spyOn(native.DatabaseSync.prototype, method),
-      ),
-      ...(["get", "all", "run", "iterate"] as const).map((method) =>
-        vi.spyOn(native.StatementSync.prototype, method),
-      ),
-    ];
-    try {
-      const pending = await requestPendingBinding(
-        createDiscordCodexBindRequest("channel:worker", "worker proof"),
-      );
-      expect((await approveBindingRequest(pending.approvalId, "allow-always")).status).toBe(
-        "approved",
-      );
-      await drainGlobalSingletonLifecycleState();
-      await closeOpenClawStateDatabaseAsync();
-      registerSessionBindingAdapter(createAdapter("discord", "isolated"));
-      expect(
-        (
-          await requestPluginConversationBinding(
-            createDiscordCodexBindRequest("channel:worker-reopen", "reopen"),
-          )
-        ).status,
-      ).toBe("bound");
-      expect(counters.map((counter) => counter.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0, 0]);
-    } finally {
-      counters.forEach((counter) => counter.mockRestore());
-    }
-  });
-
-  it.each(["read", "upsert", "decision"] as const)(
-    "preserves current ownership and admitted decisions after a held approval %s",
-    async (mode) => {
-      const input = createDiscordCodexBindRequest("channel:storage-race", "race");
-      const pending = mode !== "read" ? await requestPendingBinding(input) : undefined;
-      const entered = createDeferred();
-      const release = createDeferred();
-      const original = stateWorker.runOpenClawStateWorkerOperation;
-      const spy = vi
-        .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
-        .mockImplementationOnce(async (context, operation) => {
-          const value = await original(context, operation);
-          entered.resolve();
-          await release.promise;
-          return value;
-        });
-      const resolutionParams = {
-        approvalId: pending?.approvalId ?? "unused",
-        decision: "allow-always" as PluginBindingDecision,
-        senderId: "user-1",
-      };
-      const result = pending
-        ? resolvePluginConversationBindingApproval(resolutionParams)
-        : requestPluginConversationBinding(input);
-      const observed = result.then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      );
-      try {
-        expect(
-          await Promise.race([entered.promise.then(() => "held"), observed.then(() => "settled")]),
-        ).toBe("held");
-        if (mode === "decision") {
-          resolutionParams.decision = "deny";
-        } else {
-          sessionBindingState.setRecord({
-            bindingId: "foreign",
-            targetSessionKey: "agent:main:foreign",
-            targetKind: "session",
-            conversation: input.conversation,
-            status: "active",
-            boundAt: 1,
-          });
-        }
-        release.resolve();
-        const outcome = await observed;
-        if (mode === "decision") {
-          expect(outcome).toMatchObject({
-            value: { status: "approved", decision: "allow-always" },
-          });
-          expect(sessionBindingState.bind).toHaveBeenCalledOnce();
-        } else if (mode === "read") {
-          expect(outcome).toMatchObject({
-            value: { status: "error", message: expect.stringContaining("core routing") },
-          });
-        } else {
-          expect(outcome).toMatchObject({
-            error: expect.objectContaining({ message: expect.stringContaining("core routing") }),
-          });
-        }
-        if (mode !== "decision") {
-          expect(sessionBindingState.bind).not.toHaveBeenCalled();
-        }
-      } finally {
-        release.resolve();
-        await observed;
-        spy.mockRestore();
-      }
-    },
-  );
-
-  it("joins a consumed approval and cache publication before resetting its lifecycle", async () => {
-    const pending = await requestPendingBinding(
-      createDiscordCodexBindRequest("channel:reset-write", "reset"),
-    );
-    const entered = createDeferred();
-    const release = createDeferred();
-    const original = stateWorker.runOpenClawStateWorkerOperation;
-    const spy = vi
-      .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
-      .mockImplementationOnce(async (context, operation) => {
-        const value = await original(context, operation);
-        entered.resolve();
-        await release.promise;
-        return value;
-      });
-    const resolution = approveBindingRequest(pending.approvalId, "allow-always");
-    const observed = resolution.then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
-    );
-    let resetting: Promise<void> | undefined;
-    try {
-      expect(
-        await Promise.race([entered.promise.then(() => "held"), observed.then(() => "settled")]),
-      ).toBe("held");
-      expect((await approveBindingRequest(pending.approvalId, "allow-once")).status).toBe(
-        "expired",
-      );
-      expect(sessionBindingState.bind).not.toHaveBeenCalled();
-      let resetFinished = false;
-      resetting = drainGlobalSingletonLifecycleState().then(() => {
-        resetFinished = true;
-      });
-      await flushMicrotasks();
-      expect(resetFinished).toBe(false);
-      release.resolve();
-      expect(await observed).toMatchObject({
-        error: expect.objectContaining({ message: expect.stringContaining("operation closed") }),
-      });
-      await resetting;
-      expect(sessionBindingState.bind).not.toHaveBeenCalled();
-      spy.mockRestore();
-      await closeOpenClawStateDatabaseAsync();
-      registerSessionBindingAdapter(createAdapter("discord", "isolated"));
-      expect(
-        (
-          await requestPluginConversationBinding(
-            createDiscordCodexBindRequest("channel:after-reset", "after"),
-          )
-        ).status,
-      ).toBe("bound");
-    } finally {
-      release.resolve();
-      await observed;
-      await resetting;
-      spy.mockRestore();
-    }
-  });
-
-  it("retains an already started binding until lifecycle reset can finish", async () => {
-    const pending = await requestPendingBinding(
-      createDiscordCodexBindRequest("channel:reset-bind", "reset binding"),
-    );
-    const entered = createDeferred();
-    const release = createDeferred();
-    const original = sessionBindingState.bind.getMockImplementation()!;
-    sessionBindingState.bind.mockImplementationOnce(async (input) => {
-      entered.resolve();
-      await release.promise;
-      return await original(input);
-    });
-    const resolution = approveBindingRequest(pending.approvalId, "allow-once");
-    let resetting: Promise<void> | undefined;
-    try {
-      await entered.promise;
-      let finished = false;
-      resetting = drainGlobalSingletonLifecycleState().then(() => {
-        finished = true;
-      });
-      await flushMicrotasks();
-      expect(finished).toBe(false);
-      release.resolve();
-      expect((await resolution).status).toBe("approved");
-      await resetting;
-    } finally {
-      release.resolve();
-      await resolution;
-      await resetting;
-    }
-  });
-
   it("persists overlapping always-allow approvals", async () => {
     const firstRequest = await requestPendingBinding(
       createDiscordCodexBindRequest(
@@ -979,7 +770,8 @@ describe("plugin conversation binding approvals", () => {
   });
 
   it("does not remove approval rows written outside the process cache", async () => {
-    await insertPluginBindingApprovalRow({
+    await seedPluginConversationBindingApprovalForTest({
+      approvedAt: 1,
       pluginRoot: "/plugins/other",
       channel: "discord",
       accountId: "default",

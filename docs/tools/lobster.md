@@ -204,7 +204,10 @@ gateway/auth context.
 For `openclaw.invoke` and `clawd.invoke`, ambient `OPENCLAW_TOKEN` or
 `CLAWD_TOKEN` credentials are accepted only for `localhost`, `127.0.0.1`, or
 `[::1]` destinations. To send credentials to another HTTP(S) endpoint, pass
-`--token` explicitly. If an invocation times out or fails after dispatch,
+`--token` explicitly. This rule also applies to embedded workflows that
+explicitly configure a remote connection. This command argument is the remote
+Gateway credential, not the Lobster tool's approval-resume `token` parameter.
+If an invocation times out or fails after dispatch,
 Lobster does not retry it automatically, because the Gateway may already have
 performed the action.
 

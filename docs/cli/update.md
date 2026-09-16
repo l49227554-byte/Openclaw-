@@ -16,6 +16,16 @@ If you installed via **npm/pnpm/bun** (global install, no git metadata),
 updates go through the package-manager flow described in
 [Updating](/install/updating).
 
+Custom npm prefixes such as `~/.npm-global` are recognized from npm's configured
+prefix and the installed OpenClaw launcher. A prefix configured in `~/.npmrc`
+does not need a matching `NPM_CONFIG_PREFIX` environment variable. If no owner
+can be identified, the CLI includes the inspected package, prefix, and launcher
+paths and the package-manager probe results in its guidance.
+
+An older updater that stops before staging cannot use this repair. For a known
+npm installation, supply its configured prefix explicitly for that update:
+`NPM_CONFIG_PREFIX="$(npm prefix -g)" openclaw update`.
+
 An installation without a detected package-manager owner records a **skipped**
 update, exits successfully, and leaves the Gateway running. For Docker/container
 images, pull or build the new image and recreate the container with the same
@@ -49,6 +59,20 @@ openclaw --update
 
 `openclaw --update` rewrites to `openclaw update` (useful for shells and
 launcher scripts).
+
+Invalid or unreadable configuration reports `invalid-config` before database
+schema inspection. The diagnostic identifies invalid fields and recommends
+`openclaw doctor --fix`, followed by correcting any remaining errors. A dry run
+keeps this guidance in its JSON `notes` without changing the configuration.
+Guided recovery recognizes the saved config failure after a later successful
+update and still verifies the installed runtime and Gateway readiness.
+
+The 2026.9.4 updater reports this condition as `database-schema-preflight` and
+can show `mode: unknown` even after resolving an npm target. Before another
+update or dry run replaces the latest history, run `openclaw update status --json`
+and inspect `lastRun.origin.nextAction` and `lastRun.target` for the recorded
+reason and target. A candidate release cannot repair an installed updater that
+refuses before staging it; correct the configuration before retrying.
 
 Update admission recognizes orphan `task_delivery_state` rows whose parent tasks
 are missing as repairable. When it can acquire Doctor's ownership fences, it runs
@@ -137,18 +161,32 @@ restart/stop and detached restart or Windows Startup-folder fallbacks that canno
 retain this ownership. Ordinary user-invoked `openclaw gateway` commands keep their
 existing behavior.
 
+On Windows, capability probes stay alive until the updater finishes binding their
+process identity. If Windows cannot supply a process creation timestamp, the
+updater retains the identity established by the live parent or uses the child's
+recorded launcher identity, with a warning in the run history and diagnostic logs.
+A different observed identity still refuses the
+handoff. Scheduled Tasks using `InteractiveToken` remain supported; this does not
+require storing a task password.
+
 This target-CLI protection does not cover every Doctor or plugin child, the
 in-process service preparation before package mutation, or the separate
 deferred-install activation checks.
 
 ## Options
 
-Updater-managed `openclaw update finalize` runs repair Doctor without an automatic
-wall-clock deadline, including post-plugin repair. It waits for completion,
-failure, or manual cancellation. An explicit `--timeout <seconds>` still limits
-each finalization phase and its child commands. Post-plugin config validation and
-readiness checks keep their separate three-minute defaults; other finalization
-phase limits are unchanged.
+Updater-managed `openclaw update finalize` runs repair Doctor without a separate
+per-Doctor deadline, including post-plugin repair. The enclosing activation deadline
+still applies. An explicit `--timeout <seconds>` limits each finalization phase and
+its child commands. Admission and config phases scale with shared SQLite state.
+Post-plugin config validation and readiness checks use the measured shared and
+agent database sizes after Doctor finishes, including WAL files. Serial plugin
+operations retain individual deadlines within the enclosing activation budget. That
+budget uses the measured database sizes, observed candidate startup, plugin count,
+and the caller's step allowance. Migrated finalization receives the same allowance;
+it does not choose a separate default. Expiry reports `update-activation-timeout`
+and retains ownership until writers settle; it does not authorize rollback or restart.
+Use `openclaw update status` and Doctor for recovery guidance.
 
 | Flag                                             | Description                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -191,6 +229,11 @@ compatible state before the updater records history. The selected release's
 Doctor runs before activation, including when npm's install hooks already created
 the database. Existing databases retain their downgrade protections.
 
+If database schema preflight cannot inspect the configured paths because the
+config is invalid, its refusal lists the config file and invalid fields. Run
+`openclaw doctor --fix` to repair retired or unrecognized fields, correct any
+remaining errors, and retry the update. Preflight leaves the config unchanged.
+
 Explicit package specs on a fresh profile first stage with a temporary OpenClaw
 profile. The updater inspects the staged runtime's declared schema and Node
 requirements before admitting changes to the selected profile. Artifacts without
@@ -201,6 +244,13 @@ A fresh-profile `--dry-run` leaves the database absent and does not record a run
 If package metadata cannot be resolved, retry with an exact published `--tag`;
 failed target selection does not initialize the profile with the updater's schema.
 
+`--dry-run --json` reports the known installed version in `currentVersion` for
+package and Git installs, including a saved dev channel that selects conversion
+to Git. If the target version is unresolved, `targetVersion` remains `null` and
+the additive `targetVersionReason` field explains why. Resolved targets omit this
+field. The text preview also shows the installed version and explains unresolved
+targets.
+
 `--yes` also skips the optional shell-completion setup prompt. Existing
 completion profiles and caches are still repaired when needed; installing
 completion in a new shell profile remains an interactive choice.
@@ -210,6 +260,9 @@ govern later foreground and automatic updates, even after a one-off beta
 install. Use `--channel` to change that policy.
 
 For explicit package artifacts, configured plugin availability is checked against the privately staged package version before rehearsal or activation. `--dry-run` does not stage the artifact and reports that this check remains pending.
+
+Managed update handoffs preserve the selected artifact, including already-current
+repeats, so target checks use that artifact's database schema and runtime requirements.
 
 For source checkouts, `--dry-run` previews the update flow without fetching Git
 refs or checking working-tree changes. The real update checks for uncommitted

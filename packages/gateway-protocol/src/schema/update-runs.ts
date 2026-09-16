@@ -80,7 +80,20 @@ export const UpdateRunRecordSchema = closedObject({
       status: Type.Enum(UPDATE_RUN_STEP_STATUSES),
       startedAtMs: Type.Optional(timestamp),
       endedAtMs: Type.Optional(timestamp),
+      exitCode: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
       detail: Type.Optional(text),
+      failureFacts: Type.Optional(
+        Type.Array(
+          closedObject({
+            check: Type.String({ maxLength: 128 }),
+            code: Type.String({ maxLength: 80 }),
+            message: Type.Optional(Type.String({ maxLength: 200 })),
+            affectedKey: Type.Optional(Type.String({ maxLength: 128 })),
+            pluginId: Type.Optional(Type.String({ maxLength: 80 })),
+          }),
+          { maxItems: 5 },
+        ),
+      ),
       configChange: Type.Optional(
         Type.Union([
           closedObject({ kind: Type.Literal("key"), key: text }),

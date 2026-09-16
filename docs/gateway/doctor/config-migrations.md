@@ -9,6 +9,27 @@ read_when:
 Checks 0-2 cover config normalization and the legacy config key migrations,
 plus how doctor publishes shared-state schema during an update.
 
+## Missing plugins during migration
+
+A configured plugin that is missing or cannot finish installation does not block
+Doctor, updates, or Gateway startup. OpenClaw records a warning that names the
+plugin, its pending migration, and the command to finish installation or repair.
+The Gateway continues serving the available plugins.
+
+Deferred migrations keep their state and legacy config inputs in place. Config
+repairs can still update unrelated settings, while the pending plugin's retired
+fields remain inactive. After installing or repairing the plugin, run
+`openclaw doctor --fix` to complete its migration and clear the pending warning.
+During an update driven by an older version, plugin installation can remain
+deferred until that updater finishes; its pending inputs receive the same
+protection.
+Session edits and deletions made after the core import remain authoritative when
+the plugin migration resumes.
+
+While a migration is pending, explicit config edits that would change or remove
+its retained inputs are refused with the recovery command. Unrelated settings
+remain writable. Complete the plugin migration before editing those inputs.
+
 ## Schema publication during a 2026.9.2 update
 
 When OpenClaw 2026.9.2 drives an update that needs a newer shared-state schema,
@@ -49,6 +70,10 @@ beyond the grace period.
 
   </Accordion>
   <Accordion title="2. Legacy config key migrations">
+    Ordinary Doctor, including `doctor --non-interactive`, automatically normalizes a legacy single-file config when the shared migration transforms produce a fully valid result. This also covers older npm updaters that invoke Doctor without `--fix`. The planner still requires complete plugin validation. Doctor preserves the original in the config backup ring and keeps state migration ordering intact. Includes, externally managed config, newer-written config, and remaining validation errors require the existing explicit repair or operator recovery path. Updaters that explicitly defer plugin repair or advertise a later writable config handoff keep automatic normalization deferred. This does not enable repair maintenance, service changes, or exec-approval migration without `--fix`.
+
+    Older Git updaters can keep an in-memory config snapshot and write it after Doctor exits. When that parent marks the update in progress without advertising support for Doctor config writes, Doctor preserves the config and defers importing retired plugin install records, including with `--fix`. The first fresh Gateway startup then performs the complete migration. Existing canonical plugin install records keep precedence; missing records from the legacy config are imported before that config is rewritten. Startup also handles records restored after the same build previously completed its migration checkpoint.
+
     Gateway startup automatically applies deterministic, prompt-free legacy config migrations when an otherwise invalid single-file config can be fully migrated. It uses the same migration transforms as `openclaw doctor --fix`, validates the complete result including plugin config before writing, and reports the applied changes. The write runs under the startup migration lease and preserves the previous config in the five-slot `openclaw.json.bak` / `.bak.1` through `.bak.4` backup ring.
 
     Startup does not migrate configs using `$include`, configs in Nix mode, or configs last written by a newer OpenClaw version. It also skips automatic config migration while an update is in progress and plugin validation is deferred; the post-update doctor run owns that repair. If any validation or legacy-key issue remains after migration, startup leaves the config unchanged, refuses to start, and prints the `openclaw doctor --fix` hint. An interactive terminal can still offer to run doctor and retry once for configs that need other repairs; headless services stop with the hint.
@@ -168,6 +193,8 @@ beyond the grace period.
     </Note>
 
     Per-agent `memorySearch` migrations work with both old `agents.list` rosters and keyed `agents.entries`. Doctor preserves explicit `memory.search` settings when merging legacy values, including environment references moved to the new paths. When repairs affect only per-agent settings, single-file agent includes stay in their included file.
+
+    When model-policy migration accompanies an agent repair in the same included file, Doctor keeps the explicit policy and repaired settings in that file. A policy-only repair can target a deeper defaults include without rewriting its parent files. Existing include ownership, backup, and conflict checks still apply.
 
     The retired `tools.message.allowCrossContextSend` flag migrates at both root and per-agent scopes. Doctor preserves the effective cross-context permissions, including an agent's `false` override of a root `true` flag.
 

@@ -7,6 +7,7 @@ import { runCommandWithTimeout } from "../process/exec.js";
 import { hasErrnoCode } from "./errno.js";
 import type { UpdateDoctorConfigChange } from "./update-doctor-config.js";
 import { UpdateRequesterRevokedError } from "./update-requester-authority.js";
+import { resolveCandidateNodeRuntimeForTest } from "./update-runner-git-candidate.test-support.js";
 import { prepareGitRuntimePromotion } from "./update-runner-git-runtime.js";
 import { updateGitCheckout } from "./update-runner-git.js";
 import type { CommandRunner, UpdateRunnerOptions } from "./update-runner-types.js";
@@ -20,6 +21,8 @@ async function git(root: string, ...args: string[]) {
 }
 
 const runtimeImports = [
+  "../dist-runtime/identity.cjs",
+  "../packages/runtime/dist-runtime/identity.cjs",
   "../node_modules/identity.cjs",
   "workspace-runtime",
   "relative-workspace-runtime",
@@ -41,11 +44,7 @@ async function writeRuntime(directory: string, sha: string, store: string, layou
   const root = await fs.realpath(directory);
   const dist = path.join(root, "dist");
   const external = path.join(store, sha);
-  await fs.mkdir(external, { recursive: true });
-  await fs.writeFile(path.join(external, "index.js"), `module.exports = ${JSON.stringify(sha)};`);
   await fs.mkdir(path.join(dist, "control-ui"), { recursive: true });
-  await fs.mkdir(path.join(root, "node_modules"), { recursive: true });
-  await fs.mkdir(path.join(root, "packages", "runtime", "node_modules"), { recursive: true });
   const virtualStore =
     layout === "external"
       ? path.join(store, "virtual-store")
@@ -57,11 +56,17 @@ async function writeRuntime(directory: string, sha: string, store: string, layou
     await fs.symlink(linkedStore, virtualStore, "junction");
   }
   const virtualPackage = path.join(virtualStore, sha, "node_modules", "virtual-runtime");
-  await fs.mkdir(virtualPackage, { recursive: true });
-  await fs.writeFile(
+  for (const file of [
+    path.join(external, "index.js"),
     path.join(virtualPackage, "index.js"),
-    `module.exports = ${JSON.stringify(sha)};`,
-  );
+    path.join(root, "node_modules", "identity.cjs"),
+    path.join(root, "packages", "runtime", "node_modules", "nested.cjs"),
+    path.join(root, "dist-runtime", "identity.cjs"),
+    path.join(root, "packages", "runtime", "dist-runtime", "identity.cjs"),
+  ]) {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, `module.exports = ${JSON.stringify(sha)};`);
+  }
   await fs.rm(path.join(root, "node_modules", "workspace-runtime"), { force: true });
   await fs.symlink(
     path.join(root, "packages", "runtime"),
@@ -92,14 +97,6 @@ async function writeRuntime(directory: string, sha: string, store: string, layou
             ? virtualStore
             : path.relative(path.join(root, "node_modules"), virtualStore),
       }),
-    ),
-    fs.writeFile(
-      path.join(root, "packages", "runtime", "node_modules", "nested.cjs"),
-      `module.exports = ${JSON.stringify(sha)};`,
-    ),
-    fs.writeFile(
-      path.join(root, "node_modules", "identity.cjs"),
-      `module.exports = ${JSON.stringify(sha)};`,
     ),
     fs.writeFile(
       path.join(dist, "entry.js"),
@@ -157,7 +154,7 @@ describe("Git candidate activation", () => {
     );
     await fs.writeFile(
       path.join(remote, ".gitignore"),
-      "node_modules/\ndist/\n.artifacts\n.pnpm\ncache/\n",
+      "node_modules/\ndist/\ndist-runtime/\n.artifacts\n.pnpm\ncache/\n",
     );
     await git(remote, "add", ".");
     await git(remote, "commit", "-m", "base");
@@ -335,7 +332,8 @@ describe("Git candidate activation", () => {
   });
 
   it("falls back when only the latest dev candidate requires an incompatible Node runtime", async () => {
-    const requiredMajor = Number.parseInt(process.versions.node.split(".")[0]!, 10) + 1;
+    const nodeRuntime = await resolveCandidateNodeRuntimeForTest();
+    const requiredMajor = Number.parseInt(nodeRuntime.version.split(".")[0]!, 10) + 1;
     const requiredEngine = `>=${requiredMajor}.0.0`;
     const olderCandidate = await advanceRemote();
     await fs.writeFile(
@@ -373,8 +371,8 @@ describe("Git candidate activation", () => {
     });
     const runtimeOutput = `${runtimeSteps[0]?.stdoutTail ?? ""}\n${runtimeSteps[0]?.stderrTail ?? ""}`;
     expect(runtimeOutput).toContain(requiredEngine);
-    expect(runtimeOutput).toContain(process.execPath);
-    expect(runtimeOutput).toContain(process.versions.node);
+    expect(runtimeOutput).toContain(nodeRuntime.path);
+    expect(runtimeOutput).toContain(nodeRuntime.version);
     expect(packageManagerCommands).toContainEqual(["pnpm", "build"]);
     expect(
       result.steps.some(
@@ -388,7 +386,8 @@ describe("Git candidate activation", () => {
 
   it("rejects after all bounded rebased dev candidates require an incompatible Node runtime", async () => {
     const upstreamBase = beforeSha;
-    const requiredMajor = Number.parseInt(process.versions.node.split(".")[0]!, 10) + 1;
+    const nodeRuntime = await resolveCandidateNodeRuntimeForTest();
+    const requiredMajor = Number.parseInt(nodeRuntime.version.split(".")[0]!, 10) + 1;
     const requiredEngine = `>=${requiredMajor}.0.0`;
     await fs.writeFile(
       path.join(root, "package.json"),
@@ -437,8 +436,8 @@ describe("Git candidate activation", () => {
     for (const step of runtimeSteps) {
       const output = `${step.stdoutTail ?? ""}\n${step.stderrTail ?? ""}`;
       expect(output).toContain(requiredEngine);
-      expect(output).toContain(process.execPath);
-      expect(output).toContain(process.versions.node);
+      expect(output).toContain(nodeRuntime.path);
+      expect(output).toContain(nodeRuntime.version);
     }
     expect(packageManagerCommands).toEqual([]);
     expect(stopped).toBe(false);
@@ -466,7 +465,7 @@ describe("Git candidate activation", () => {
     await fs.mkdir(stale);
     await fs.writeFile(path.join(stale, "candidate"), "operator-owned");
     const result = await update();
-    expect(result).toMatchObject({ status: "skipped", reason: "dirty" });
+    expect(result).toMatchObject({ status: "error", reason: "dirty" });
     expect(events).toEqual([]);
     expect(await fs.readFile(path.join(stale, "candidate"), "utf8")).toBe("operator-owned");
   });
@@ -501,7 +500,7 @@ describe("Git candidate activation", () => {
           }
         },
       });
-      expect(result).toMatchObject({ status: "skipped", reason: "dirty" });
+      expect(result).toMatchObject({ status: "error", reason: "dirty" });
       expect(stopped).toBe(false);
       if (mutation === "untracked") {
         expect(

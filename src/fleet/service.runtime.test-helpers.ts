@@ -12,9 +12,7 @@ type FleetServiceOptions = NonNullable<Parameters<typeof createFleetServiceRunti
 export const TEST_ATTEMPT_ID = "22222222222222222222222222222222";
 export const NEXT_ATTEMPT_ID = "44444444444444444444444444444444";
 
-// The cell owner id is derived from the suite's temp state dir, so each suite
-// publishes its per-test root here before building labels. Vitest isolates
-// module state per test file, so the two suites never share this value.
+// Each suite sets its per-test root in beforeEach before deriving ownership labels.
 let suiteRoot = "";
 
 export function setFleetSuiteRoot(root: string): void {

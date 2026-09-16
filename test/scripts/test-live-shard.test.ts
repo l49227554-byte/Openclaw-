@@ -504,6 +504,7 @@ describe("scripts/test-live-shard", () => {
   });
 
   it.each([
+    ["test/e2e/crabbox-sandbox.live.test.ts", "OPENCLAW_E2E_CRABBOX"],
     ["src/skills/workshop/experience-review.live.test.ts", "OPENCLAW_LIVE_SKILL_EXPERIENCE_REVIEW"],
     ["src/agents/subagent-announce.live.test.ts", "OPENCLAW_LIVE_SUBAGENT_E2E"],
     ["src/agents/subagents/announce/subagent-announce.live.test.ts", "OPENCLAW_LIVE_SUBAGENT_E2E"],
@@ -556,6 +557,7 @@ describe("scripts/test-live-shard", () => {
 
   it("allows GPT-Live files to be skipped until their shared opt-in is enabled", () => {
     const gptLiveFiles = [
+      "extensions/openai/realtime-meeting.live.test.ts",
       "extensions/openai/realtime-quicksilver-gateway-bridge.live.test.ts",
       "extensions/openai/realtime-quicksilver.live.test.ts",
       "extensions/openai/realtime-talk-defaults.live.test.ts",

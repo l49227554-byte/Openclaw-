@@ -84,6 +84,9 @@ receive `openclaw doctor --fix` guidance, not a guarantee that every backup will
 be retired. Preserved roots require manual review of workspace ownership, backup
 manifests, and workspace migration blockers. If both kinds remain, Doctor reports
 both next steps. Do not delete preserved backups to clear the warning.
+The check uses the configured agent directories and actual filesystem paths even
+when lint reads a private state snapshot. Correctly placed Workshop targets do
+not need relocation merely because lint uses a temporary directory.
 
 ## Check selection
 
@@ -98,6 +101,15 @@ To check model credentials, run `openclaw doctor --lint --only core/doctor/auth-
 This opt-in check inspects shared credentials and each configured agent's local
 auth store, including fleets without a default agent. Shared credential problems
 are reported once; agent-specific cooldowns remain attributed to their local store.
+
+`core/doctor/runtime-tool-schemas` does not probe OAuth-backed MCP servers in read-only
+Doctor reports, including triage and update checks. A probe can rotate a refresh token
+at the external server even when local state writes go to a disposable snapshot.
+Doctor reports this deferral at informational severity; use `--severity-min info` to
+display it. For servers in `mcp.servers`, run `openclaw mcp probe <name>` against the
+serving configuration. Validate plugin-provided servers or agent-local auth profiles
+from an authenticated serving-agent turn so refreshed credentials persist with their
+owner. Non-OAuth MCP schema checks still run.
 
 ## Post-upgrade mode
 

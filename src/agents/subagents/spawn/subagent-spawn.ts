@@ -9,6 +9,7 @@ import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js
 import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
+import { getCanonicalGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import {
   GatewayDrainingError,
   runWithGatewayIndependentRootWorkContinuation,
@@ -70,13 +71,11 @@ export { SUBAGENT_SPAWN_CONTEXT_MODES, SUBAGENT_SPAWN_MODES } from "./subagent-s
 
 function sanitizeMountPathHint(value?: string): string | undefined {
   const trimmed = normalizeOptionalString(value);
-  if (!trimmed) {
-    return undefined;
-  }
-  if (hasPromptUnsafeControlCharacter(trimmed)) {
-    return undefined;
-  }
-  if (!/^[A-Za-z0-9._\-/:]+$/.test(trimmed)) {
+  if (
+    !trimmed ||
+    hasPromptUnsafeControlCharacter(trimmed) ||
+    !/^[A-Za-z0-9._\-/:]+$/.test(trimmed)
+  ) {
     return undefined;
   }
   return trimmed;
@@ -99,7 +98,13 @@ export async function spawnSubagentDirect(
     return requestResolution.result;
   }
   const {
-    request: { taskName, spawnMode, cleanup, expectsCompletionMessage },
+    request: {
+      taskName,
+      spawnMode,
+      cleanup,
+      expectsCompletionMessage,
+      completionRequesterSessionId,
+    },
     runtime: {
       hookRunner,
       cfg,
@@ -270,6 +275,7 @@ export async function spawnSubagentDirect(
           : "quiet";
     const envelope = buildSubagentSpawnEnvelope({
       completionMode,
+      completionTarget: params.completionTarget,
       soleCollectorChild: soleImplicitMember,
       spawnMode,
       task,
@@ -539,6 +545,8 @@ export async function spawnSubagentDirect(
           workspaceDir: spawnedMetadata.workspaceDir,
           runTimeoutSeconds,
           expectsCompletionMessage: completionMode === "announce",
+          completionTarget: params.completionTarget,
+          completionRequesterSessionId,
           spawnMode,
           collect: params.collect === true,
           swarmRequesterSessionKey: params.collect ? requesterInternalKey : undefined,
@@ -582,6 +590,9 @@ export async function spawnSubagentDirect(
       activateSwarmRun({
         groupId: swarmSchedulerGroupKey,
         runId: childRunId,
+        lifecycleOwner: gatewayContextResolver
+          ? getCanonicalGatewayContextResolver(gatewayContextResolver)
+          : undefined,
         start: async () => {
           await runWithGatewayIndependentRootWorkContinuation(async () => {
             const launch = await launchChildRun();
@@ -622,7 +633,7 @@ export async function spawnSubagentDirect(
             }
             await emitSpawnLifecycleHooks(gatewayRunId);
           }, "subagents:spawn");
-          await pipelineResult.state.contextEnginePreparation?.dispose();
+          await pipelineResult.state.contextEnginePreparation?.dispose().catch(() => {});
         },
         onStartFailure: async (error) => {
           if (error instanceof GatewayDrainingError) {
@@ -657,8 +668,13 @@ export async function spawnSubagentDirect(
           }
           return true;
         },
-        onRemoved: async () => {
-          await rollbackPreparedContextEngine(pipelineResult.state.contextEnginePreparation);
+        onRemoved: async (reason) => {
+          if (reason === "shutdown") {
+            // Restart replays queuedLaunch without repeating its durable context preparation.
+            await pipelineResult.state.contextEnginePreparation?.dispose();
+          } else {
+            await pipelineResult.state.contextEnginePreparation?.rollback();
+          }
         },
       });
       contextEnginePreparation = undefined;
@@ -683,6 +699,7 @@ export async function spawnSubagentDirect(
       runId: childRunId,
       mode: spawnMode,
       expectsCompletionMessage: completionMode === "announce",
+      completionTarget: params.completionTarget,
       context: preparedSpawnContext.mode,
       taskName,
       note:
@@ -700,7 +717,7 @@ export async function spawnSubagentDirect(
     if (params.collect && contextEnginePreparation) {
       await rollbackPreparedContextEngine(contextEnginePreparation);
     } else {
-      await contextEnginePreparation?.dispose();
+      await contextEnginePreparation?.dispose().catch(() => {});
     }
   }
 }

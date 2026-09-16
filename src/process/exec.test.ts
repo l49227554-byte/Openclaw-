@@ -19,6 +19,7 @@ import {
   runCommandBuffered,
   runCommandWithTimeout,
   runExec,
+  runUtf8CommandWithTimeout,
   shouldSpawnWithShell,
 } from "./exec.js";
 
@@ -360,7 +361,7 @@ describe("runCommandWithTimeout", () => {
     ["long unterminated", "x".repeat(10_000), "x".repeat(24)],
     ["UTF-8 boundary", `😀${"x".repeat(22)}`, "x".repeat(22)],
   ])("bounds preserved %s line tails", async (_name, input, expected) => {
-    const result = await runCommandWithTimeout(
+    const result = await runUtf8CommandWithTimeout(
       [process.execPath, "-e", "process.stdin.pipe(process.stdout)"],
       {
         input,
@@ -520,7 +521,7 @@ describe("runCommandWithTimeout", () => {
   ] as const)(
     "preserves truncated UTF-8 %s output (%#)",
     async (outputCapture, input, maxOutputBytes, expected, truncatedBytes) => {
-      const result = await runCommandWithTimeout(
+      const result = await runUtf8CommandWithTimeout(
         [process.execPath, "-e", "process.stdin.pipe(process.stdout)"],
         {
           input,
@@ -538,7 +539,7 @@ describe("runCommandWithTimeout", () => {
   it.each([1, 2, 3])(
     "discards an entirely partial UTF-8 head at %i bytes",
     async (maxOutputBytes) => {
-      const result = await runCommandWithTimeout(
+      const result = await runUtf8CommandWithTimeout(
         [process.execPath, "-e", "process.stdout.write('😀')"],
         {
           maxOutputBytes,
@@ -917,24 +918,31 @@ describe("attachChildProcessBridge", () => {
 });
 
 describe("child input admission", () => {
-  it("publishes input only after binding the actual spawned PID", async () => {
+  it("publishes input only after binding the actual spawned PID and argv", async () => {
     let admittedPid: number | undefined;
+    let admittedArgv: readonly string[] | undefined;
     const result = await runCommandWithTimeout(
       [
         process.execPath,
         "-e",
-        "let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({pid:process.pid,input})))",
+        "let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>process.stdout.write(JSON.stringify({pid:process.pid,argv:[process.argv0,...process.execArgv,...process.argv.slice(1)],input})))",
       ],
       {
         input: "owned",
         timeoutMs: 5_000,
-        beforeInput: (pid) => {
+        beforeInput: (pid, argv) => {
           admittedPid = pid;
+          admittedArgv = argv;
         },
       },
     );
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.stdout)).toEqual({ pid: admittedPid, input: "owned" });
+    expect(admittedArgv).toBeDefined();
+    expect(JSON.parse(result.stdout)).toEqual({
+      pid: admittedPid,
+      argv: admittedArgv,
+      input: "owned",
+    });
   });
 
   it("joins the child without delivering input when admission rejects", async () => {

@@ -1,14 +1,15 @@
+import { formatErrorMessage, readErrorName } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   buildRealtimeVoiceAgentErrorProviderResult,
   classifyRealtimeVoiceConsultToolCall,
   classifySkippableRealtimeVoiceConsultTranscript,
-  controlRealtimeVoiceAgentRun,
   createRealtimeVoiceAgentTalkbackQueue,
   parseRealtimeVoiceAgentControlToolArgs,
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   REALTIME_VOICE_AGENT_CONTROL_TOOL_NAME,
   type RealtimeVoiceAgentConsultToolPolicy,
+  type RealtimeVoiceAgentConsultRunner,
   type RealtimeVoiceAgentControlResult,
   type RealtimeVoiceAgentTalkbackQueue,
   type RealtimeVoiceBridgeSession,
@@ -18,8 +19,8 @@ import {
   type RealtimeVoiceWakeNamePolicy,
 } from "openclaw/plugin-sdk/realtime-voice";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
-import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
-import { maybeControlDiscordVoiceAgentRun } from "./agent-control.js";
+import { controlDiscordVoiceAgentRun, maybeControlDiscordVoiceAgentRun } from "./agent-control.js";
+import type { DiscordVoiceIngressContext } from "./ingress.js";
 import { formatVoiceLogPreview } from "./log-preview.js";
 import { formatVoiceIngressPrompt } from "./prompt.js";
 import type { DiscordRealtimePlaybackPort } from "./realtime-playback.js";
@@ -49,7 +50,7 @@ type AgentProxyProviderDelivery = ReturnType<typeof createDeferred<void>>;
 export type AgentProxyConsultState = {
   speaker: DiscordRealtimeSpeakerContext;
   providerEpoch: number;
-  handledByForcedPlayback?: boolean;
+  delivery: "provider" | "forced-pending" | "playback" | "detached" | "retired";
   promise?: Promise<AgentProxyConsultResult>;
   result?: AgentProxyConsultResult;
 };
@@ -58,6 +59,7 @@ type AgentProxyConsultHandle = RealtimeVoiceForcedConsultHandle<AgentProxyConsul
 
 export class DiscordRealtimeConsults {
   private talkback: RealtimeVoiceAgentTalkbackQueue;
+  private detachedProviderEpoch: number | undefined;
   // Pending deliveries outlive the coordinator's recent-result dedupe window.
   private readonly providerDeliveries = new Map<
     AgentProxyConsultState,
@@ -66,18 +68,21 @@ export class DiscordRealtimeConsults {
 
   constructor(
     private readonly params: {
+      accountId: string;
       consultPolicy: () => "auto" | "always";
       consultToolPolicy: () => RealtimeVoiceAgentConsultToolPolicy;
       consultToolsAllow: () => string[] | undefined;
       debounceMs: () => number | undefined;
       entry: VoiceSessionEntry;
       harness: RealtimeVoiceSessionHarness<AgentProxyConsultState>;
-      isAgentProxy: boolean;
+      isAgentProxy: () => boolean;
       isWakeNameRequired: () => boolean;
       playback: DiscordRealtimePlaybackPort;
       providerEpoch: () => number;
       runAgentTurn: (params: VoiceRealtimeAgentTurnParams) => Promise<string>;
+      resolveSpeakerContext: (userId: string) => Promise<DiscordVoiceIngressContext | null>;
       stopped: () => boolean;
+      detached?: () => boolean;
       turns: DiscordRealtimeTurns;
       usesRealtimeAgentHandoff: () => boolean;
       wakeNamePolicy: () => RealtimeVoiceWakeNamePolicy;
@@ -86,9 +91,10 @@ export class DiscordRealtimeConsults {
     this.talkback = this.createTalkbackQueue();
   }
 
-  close(): void {
+  close(preservePendingSpeech = false): void {
+    this.detachedProviderEpoch = preservePendingSpeech ? this.params.providerEpoch() : undefined;
     this.talkback.close();
-    this.clearProviderConsultState();
+    this.clearProviderConsultState(preservePendingSpeech);
   }
 
   isIdle(): boolean {
@@ -100,9 +106,36 @@ export class DiscordRealtimeConsults {
   }
 
   resetProviderContinuity(): void {
+    this.detachedProviderEpoch = undefined;
     this.talkback.close();
     this.talkback = this.createTalkbackQueue();
     this.clearProviderConsultState();
+  }
+
+  async runAgentConsult(
+    request: Parameters<RealtimeVoiceAgentConsultRunner>[0],
+  ): ReturnType<RealtimeVoiceAgentConsultRunner> {
+    request.signal?.throwIfAborted();
+    if (this.params.stopped()) {
+      throw new Error("Discord realtime speaker session is closed");
+    }
+    if (this.params.consultToolPolicy() === "none") {
+      return { text: "Agent delegation is disabled for this voice session." };
+    }
+    const context = this.params.turns.consumePendingSpeakerContext();
+    if (!context) {
+      throw new Error("No Discord speaker context available");
+    }
+    const text = await this.runAgentTurn({
+      context,
+      message: request.prompt,
+      signal: request.signal,
+    });
+    request.signal?.throwIfAborted();
+    if (this.params.stopped() && !this.params.detached?.()) {
+      throw new Error("Discord realtime speaker session is closed");
+    }
+    return { text };
   }
 
   async handleToolCall(
@@ -115,15 +148,15 @@ export class DiscordRealtimeConsults {
       await session.submitToolResult(callId, { error: "No Discord speaker context available" });
       return;
     }
+    if (this.params.consultToolPolicy() === "none") {
+      await session.submitToolResult(callId, { error: `Tool "${event.name}" not available` });
+      return;
+    }
     if (event.name === REALTIME_VOICE_AGENT_CONTROL_TOOL_NAME) {
       await this.handleAgentControlToolCall(event, session, callId, providerEpoch);
       return;
     }
     if (event.name !== REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME) {
-      await session.submitToolResult(callId, { error: `Tool "${event.name}" not available` });
-      return;
-    }
-    if (this.params.consultToolPolicy() === "none") {
       await session.submitToolResult(callId, { error: `Tool "${event.name}" not available` });
       return;
     }
@@ -227,24 +260,31 @@ export class DiscordRealtimeConsults {
     providerEpoch: number,
   ): Promise<void> {
     const usesRealtimeAgentHandoff = this.params.usesRealtimeAgentHandoff();
-    const usesFallbackTalkback = this.params.isAgentProxy && !usesRealtimeAgentHandoff;
+    const usesFallbackTalkback = this.params.isAgentProxy() && !usesRealtimeAgentHandoff;
     // Claim fallback talkback context before active-run control awaits. Concurrent
     // final transcripts can otherwise resume out of order and swap owner flags.
     const fallbackSpeakerContext = usesFallbackTalkback
       ? (forcedSpeakerContext ?? this.params.turns.consumePendingSpeakerContext())
       : undefined;
     const pendingForcedConsult =
-      this.params.isAgentProxy && usesRealtimeAgentHandoff
+      this.params.isAgentProxy() && usesRealtimeAgentHandoff
         ? this.prepareForcedAgentProxyConsult(acceptedText, forcedSpeakerContext)
         : undefined;
     let control: Awaited<ReturnType<typeof maybeControlDiscordVoiceAgentRun>> | undefined;
     try {
       control = await maybeControlDiscordVoiceAgentRun({
-        entry: this.params.entry,
+        ...this.controlParams(providerEpoch),
         text: acceptedText,
       });
     } catch (error) {
-      if (providerEpoch !== this.params.providerEpoch()) {
+      if (this.params.stopped() || providerEpoch !== this.params.providerEpoch()) {
+        return;
+      }
+      if (readErrorName(error) === "AbortError") {
+        if (pendingForcedConsult) {
+          this.params.harness.forcedConsults.remove(pendingForcedConsult);
+        }
+        logger.warn(`discord voice: realtime transcript cancelled: ${formatErrorMessage(error)}`);
         return;
       }
       logger.warn(
@@ -252,7 +292,7 @@ export class DiscordRealtimeConsults {
       );
       control = undefined;
     }
-    if (providerEpoch !== this.params.providerEpoch()) {
+    if (this.params.stopped() || providerEpoch !== this.params.providerEpoch()) {
       return;
     }
     if (control?.handled) {
@@ -265,7 +305,7 @@ export class DiscordRealtimeConsults {
       }
       return;
     }
-    if (!this.params.isAgentProxy) {
+    if (!this.params.isAgentProxy()) {
       return;
     }
     if (usesRealtimeAgentHandoff) {
@@ -313,38 +353,59 @@ export class DiscordRealtimeConsults {
     let result: RealtimeVoiceAgentControlResult;
     try {
       const parsed = parseRealtimeVoiceAgentControlToolArgs(event.args);
-      result = await controlRealtimeVoiceAgentRun({
-        sessionKey: this.params.entry.route.sessionKey,
+      result = await controlDiscordVoiceAgentRun({
+        ...this.controlParams(providerEpoch),
         text: parsed.text,
         mode: parsed.mode,
       });
     } catch (error) {
-      if (providerEpoch !== this.params.providerEpoch()) {
+      if (this.params.stopped() || providerEpoch !== this.params.providerEpoch()) {
         return;
       }
       await session.submitToolResult(callId, { error: formatErrorMessage(error) });
       return;
     }
-    if (providerEpoch !== this.params.providerEpoch()) {
+    if (this.params.stopped() || providerEpoch !== this.params.providerEpoch()) {
       return;
     }
     this.logAgentControlResult(result);
     await session.submitToolResult(callId, result);
   }
 
+  private controlParams(providerEpoch: number) {
+    const context = this.params.turns.speakerContext();
+    if (!context) {
+      throw new Error("No Discord speaker context available");
+    }
+    return {
+      entry: this.params.entry,
+      accountId: this.params.accountId,
+      context,
+      toolsAllow: this.params.consultToolsAllow(),
+      resolveContext: () => this.params.resolveSpeakerContext(context.userId),
+      isCurrent: () => !this.params.stopped() && providerEpoch === this.params.providerEpoch(),
+    };
+  }
+
   private async runAgentTurn(params: {
     context?: DiscordRealtimeSpeakerContext;
     message: string;
+    signal?: AbortSignal;
+    deliveryOwner?: VoiceRealtimeAgentTurnParams["deliveryOwner"];
   }): Promise<string> {
     const context = params.context;
     if (!context) {
       return "";
     }
+    const providerEpoch = this.params.providerEpoch();
     return this.params.runAgentTurn({
       context,
       message: params.message,
       toolsAllow: this.params.consultToolsAllow(),
       userId: context.userId,
+      isCurrent: () => !this.params.stopped() && providerEpoch === this.params.providerEpoch(),
+      deliveryOwner: params.deliveryOwner,
+      ...(params.signal ? { signal: params.signal } : {}),
     });
   }
 
@@ -386,7 +447,11 @@ export class DiscordRealtimeConsults {
       return undefined;
     }
     return this.params.harness.forcedConsults.prepare(question, {
-      context: { speaker: context, providerEpoch: this.params.providerEpoch() },
+      context: {
+        speaker: context,
+        providerEpoch: this.params.providerEpoch(),
+        delivery: "provider",
+      },
     });
   }
 
@@ -423,10 +488,10 @@ export class DiscordRealtimeConsults {
         `discord voice: realtime forced agent consult preserving active playback guild=${this.params.entry.guildId} channel=${this.params.entry.channelId} outputAudioMs=${this.params.playback.outputAudioMs()} outputActive=${this.params.playback.isOutputAudioActive()} playbackChunks=${this.params.harness.outputActivity.snapshot().chunks}`,
       );
     }
-    state.handledByForcedPlayback = true;
+    state.delivery = "forced-pending";
     const result = await this.trackAgentProxyConsult(
       pending,
-      this.runAgentTurn({ context, message: question }),
+      this.runAgentTurn({ context, message: question, deliveryOwner: "consult" }),
     );
     const deliveries = this.providerDeliveries.get(state);
     await Promise.all(Array.from(deliveries ?? [], (delivery) => delivery.promise));
@@ -443,7 +508,8 @@ export class DiscordRealtimeConsults {
       );
     }
     const text = "text" in result ? result.text : DISCORD_REALTIME_FALLBACK_TEXT;
-    if (text.trim() && state.handledByForcedPlayback) {
+    if (text.trim() && state.delivery === "forced-pending") {
+      state.delivery = "playback";
       this.params.playback.enqueueExactSpeechMessage(text);
     }
   }
@@ -454,7 +520,11 @@ export class DiscordRealtimeConsults {
     options: { id?: string; started?: boolean } = {},
   ): AgentProxyConsultHandle {
     const handle = this.params.harness.forcedConsults.prepare(question, {
-      context: { speaker: context, providerEpoch: this.params.providerEpoch() },
+      context: {
+        speaker: context,
+        providerEpoch: this.params.providerEpoch(),
+        delivery: "provider",
+      },
       ...(options.id ? { id: options.id } : {}),
     });
     if (!handle) {
@@ -477,8 +547,17 @@ export class DiscordRealtimeConsults {
     const tracked = promise
       .then((text) => ({ text }), buildRealtimeVoiceAgentErrorProviderResult)
       .then((result) => {
-        if (recent && state && state.providerEpoch === this.params.providerEpoch()) {
+        if (state) {
           state.result = result;
+          if (
+            this.detachedProviderEpoch === state.providerEpoch &&
+            state.delivery === "forced-pending"
+          ) {
+            state.delivery = "detached";
+          }
+          this.deliverDetachedResult(state);
+        }
+        if (recent && state && state.providerEpoch === this.params.providerEpoch()) {
           // Cancellation must reach the coordinator before delivery closes that transition.
           if ("status" in result) {
             this.params.harness.forcedConsults.markCancelled(recent);
@@ -531,7 +610,7 @@ export class DiscordRealtimeConsults {
       return false;
     }
     const providerDelivery =
-      state.handledByForcedPlayback &&
+      state.delivery === "forced-pending" &&
       !state.result &&
       session.bridge.supportsToolResultSuppression === false
         ? createDeferred<void>()
@@ -549,17 +628,26 @@ export class DiscordRealtimeConsults {
     );
     try {
       const result = await pendingResult;
-      if (state.providerEpoch !== this.params.providerEpoch()) {
+      if (
+        state.providerEpoch !== this.params.providerEpoch() ||
+        state.delivery === "detached" ||
+        state.delivery === "retired"
+      ) {
         return true;
       }
       await this.submitAgentProxyConsultResult(
         callId,
         session,
         result,
-        Boolean(state.handledByForcedPlayback && !providerDelivery),
+        (state.delivery === "forced-pending" || state.delivery === "playback") && !providerDelivery,
       );
-      if (providerDelivery && state.providerEpoch === this.params.providerEpoch()) {
-        state.handledByForcedPlayback = false;
+      if (
+        providerDelivery &&
+        !("status" in result) &&
+        state.providerEpoch === this.params.providerEpoch() &&
+        state.delivery === "forced-pending"
+      ) {
+        state.delivery = "provider";
       }
     } finally {
       if (providerDelivery) {
@@ -592,9 +680,38 @@ export class DiscordRealtimeConsults {
     }
   }
 
-  private clearProviderConsultState(): void {
-    for (const [state, deliveries] of this.providerDeliveries) {
-      state.handledByForcedPlayback = false;
+  private deliverDetachedResult(state: AgentProxyConsultState): void {
+    const result = state.result;
+    if (state.delivery !== "detached" || !result) {
+      return;
+    }
+    state.delivery = "status" in result ? "retired" : "playback";
+    if (!("status" in result)) {
+      this.params.playback.deliverRetainedSpeech(
+        "text" in result ? result.text : DISCORD_REALTIME_FALLBACK_TEXT,
+      );
+    }
+  }
+
+  private clearProviderConsultState(preservePendingSpeech = false): void {
+    const states = new Set([
+      ...this.params.harness.forcedConsults
+        .handles()
+        .flatMap((handle) => (handle.context ? [handle.context] : [])),
+      ...this.providerDeliveries.keys(),
+    ]);
+    for (const state of states) {
+      if (state.delivery === "forced-pending") {
+        state.delivery =
+          preservePendingSpeech && state.providerEpoch === this.params.providerEpoch()
+            ? "detached"
+            : "retired";
+        this.deliverDetachedResult(state);
+      } else if (!preservePendingSpeech && state.delivery === "detached") {
+        state.delivery = "retired";
+      }
+    }
+    for (const deliveries of this.providerDeliveries.values()) {
       for (const delivery of deliveries) {
         delivery.resolve();
       }

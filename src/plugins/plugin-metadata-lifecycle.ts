@@ -22,11 +22,11 @@ import {
 import type { PluginMetadataSnapshot } from "./plugin-metadata-snapshot.types.js";
 import { PluginRuntimeCloseRetainedError } from "./runtime-close-error.js";
 
-const pluginMetadataProcessMemoClears = new Set<() => void>();
+const pluginMetadataProcessMemoClears = new Map<() => void, "process" | "operation">();
 type GatewayMetadataOwner = {
   cache?: PluginCache;
   phase: "booting" | "active" | "closing";
-  closing?: Promise<void>;
+  closing?: Promise<PluginHostCleanupResult>;
   retirements: Set<{
     cache: PluginCache;
     beforeRetire?: PluginHostRegistryRetirement;
@@ -135,6 +135,7 @@ export function retainGatewayPluginMetadata() {
   return {
     // Fence admission before teardown can fail, without retiring a live sibling's inventory.
     beginClose,
+    retire: releaseCache,
     runBootstrap<T>(run: () => T): T {
       if (owner.phase !== "booting" || !owner.cache) {
         throw new Error("Gateway plugin bootstrap has already finished");
@@ -172,15 +173,15 @@ export function retainGatewayPluginMetadata() {
     },
     waitForRetirement,
     close(
-      onFinal?: (retire: () => Promise<void>) => void | Promise<void>,
+      onFinal?: (retire: () => Promise<PluginHostCleanupResult>) => void | Promise<void>,
       retireRegistry?: () => Promise<void | PluginHostCleanupResult>,
-    ): Promise<void> {
+    ): Promise<PluginHostCleanupResult> {
       beginClose();
       if (owner.closing) {
         return owner.closing;
       }
       if (!gatewayMetadataOwners.has(owner)) {
-        return Promise.resolve();
+        return Promise.resolve({ cleanupCount: 0, failures: [] });
       }
       const otherOwners = [...gatewayMetadataOwners].filter((other) => other !== owner);
       const precedingCloses = otherOwners.flatMap((other) =>
@@ -188,7 +189,7 @@ export function retainGatewayPluginMetadata() {
       );
       // The last entrant owns shared close, including when prior retirements are still pending.
       const final = precedingCloses.length === otherOwners.length;
-      let retirement: Promise<void> | undefined;
+      let retirement: Promise<PluginHostCleanupResult> | undefined;
       const retire = () =>
         (retirement ??= Promise.resolve().then(async () => {
           const previous = owner.cache;
@@ -204,7 +205,7 @@ export function retainGatewayPluginMetadata() {
               selectCurrentPluginMetadataCache(survivor.cache);
             }
           }
-          await waitForRetirement([
+          return await waitForRetirement([
             ...(retireRegistry ? [Promise.resolve().then(retireRegistry)] : []),
             ...(final ? precedingCloses : []),
           ]);
@@ -215,14 +216,15 @@ export function retainGatewayPluginMetadata() {
           if (final) {
             await onFinal?.(retire);
           }
-          await retire();
+          const cleanup = await retire();
           if (final) {
             clearPluginMetadataCaches();
           }
+          gatewayMetadataOwners.delete(owner);
+          return cleanup;
         } catch (error) {
           throw new PluginRuntimeCloseRetainedError(error);
         }
-        gatewayMetadataOwners.delete(owner);
       });
       return owner.closing;
     },
@@ -231,15 +233,21 @@ export function retainGatewayPluginMetadata() {
 
 export type GatewayPluginMetadataOwner = ReturnType<typeof retainGatewayPluginMetadata>;
 
-/** Registers a process-local plugin metadata memo clear hook. */
+/** Registers a metadata clear hook with the lifetime of its facts. */
 export function registerPluginMetadataProcessMemoLifecycleClear(
   clearProcessMemo: () => void,
+  options: { owner: "process" | "operation" } = { owner: "process" },
 ): void {
-  pluginMetadataProcessMemoClears.add(clearProcessMemo);
+  pluginMetadataProcessMemoClears.set(clearProcessMemo, options.owner);
 }
 
 /** Clears plugin metadata snapshots and registered process memo caches. */
 export function clearPluginMetadataLifecycleCaches(): void {
+  for (const [clearMemo, owner] of pluginMetadataProcessMemoClears) {
+    if (owner === "operation") {
+      clearMemo();
+    }
+  }
   // Installs and a sibling Gateway's teardown cannot retire a running inventory.
   // Pre-publication planning remains refreshable until boot metadata is pinned.
   if (
@@ -255,8 +263,10 @@ export function clearPluginMetadataLifecycleCaches(): void {
 
 function clearPluginMetadataCaches(): void {
   clearCurrentPluginMetadataSnapshot();
-  for (const clearProcessMemo of pluginMetadataProcessMemoClears) {
-    clearProcessMemo();
+  for (const [clearProcessMemo, owner] of pluginMetadataProcessMemoClears) {
+    if (owner === "process") {
+      clearProcessMemo();
+    }
   }
   resetPluginCache();
 }

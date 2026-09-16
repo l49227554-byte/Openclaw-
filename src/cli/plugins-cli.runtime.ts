@@ -1,5 +1,6 @@
 // Runtime implementations for `openclaw plugins` subcommands. Heavy plugin modules stay
 // lazy-loaded so the base CLI can start without activating the plugin registry.
+import type { PluginsRefreshResult } from "../../packages/gateway-protocol/src/schema/plugins.js";
 import { formatDocsLink } from "../../packages/terminal-core/src/links.js";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
@@ -19,7 +20,7 @@ import { resolvePluginInstallSources } from "../plugins/install-channel-specs.js
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { tracePluginLifecyclePhaseAsync } from "../plugins/plugin-lifecycle-trace.js";
 import { defaultRuntime } from "../runtime.js";
-import { shortenHomeInString } from "../utils.js";
+import { shortenHomeInString, shortenHomePath } from "../utils.js";
 import { formatMissingPluginMessage } from "./error-format.js";
 import { ExpectedCliError, formatCliJsonFailure } from "./failure-output.js";
 import { exitCliAfterOutput } from "./one-shot-exit.js";
@@ -265,7 +266,11 @@ export async function runPluginsReloadCommand(
   if (!gateway) {
     throw new Error("The Gateway is not running. Start it before reloading a plugin.");
   }
-  const consent = resolvePluginCapabilityConsentCliOptions({ ...opts, action: "reload" });
+  const consent = resolvePluginCapabilityConsentCliOptions({
+    ...opts,
+    action: "reload",
+    allowPrompt: !opts.json,
+  });
   const result = await gateway<{ runtime: { generation: number }; warnings?: string[] }>(
     "plugins.reload",
     { plugins: [{ pluginId }] },
@@ -307,7 +312,7 @@ export async function runPluginsRegistryCommand(opts: PluginRegistryOptions): Pr
     differences: Awaited<ReturnType<typeof inspectPluginRegistry>>["differences"],
   ) => {
     const formatSource = (source: string | null) =>
-      source ? sanitizeTerminalText(shortenHomeInString(source)) : "missing";
+      source ? sanitizeTerminalText(shortenHomePath(source)) : "missing";
     return differences.map(
       (difference) =>
         `${sanitizeTerminalText(difference.pluginId)}: ${difference.changed.join("+")} changed; persisted ${formatSource(difference.persistedSource)}; derived ${formatSource(difference.derivedSource)}`,
@@ -441,13 +446,12 @@ export async function runPluginsDoctorCommand(opts: PluginDoctorOptions = {}): P
               id: entry.id,
               ...(entry.failurePhase ? { failurePhase: entry.failurePhase } : {}),
               error: shortenHomeInString(entry.error ?? "failed to load"),
-              source: shortenHomeInString(entry.source),
+              source: shortenHomePath(entry.source),
             })),
-            diagnostics: diags.map((entry) => ({
-              level: entry.level,
-              ...(entry.pluginId ? { pluginId: entry.pluginId } : {}),
-              message: shortenHomeInString(entry.message),
-              ...(entry.source ? { source: shortenHomeInString(entry.source) } : {}),
+            diagnostics: diags.map(({ message, source, ...diagnostic }) => ({
+              ...diagnostic,
+              message: shortenHomeInString(message),
+              ...(source ? { source: shortenHomePath(source) } : {}),
             })),
             sourceShadowing: shadowed.map((entry) => {
               const active = report.plugins.find((plugin) => plugin.id === entry.pluginId);
@@ -457,19 +461,19 @@ export async function runPluginsDoctorCommand(opts: PluginDoctorOptions = {}): P
                 ...(active
                   ? {
                       active: {
-                        source: shortenHomeInString(active.source),
+                        source: shortenHomePath(active.source),
                         origin: active.origin,
                         status: active.status,
                         ...(active.error ? { error: shortenHomeInString(active.error) } : {}),
                       },
                     }
                   : {}),
-                ...(entry.source ? { shadowedSource: shortenHomeInString(entry.source) } : {}),
+                ...(entry.source ? { shadowedSource: shortenHomePath(entry.source) } : {}),
                 repair: [
                   `openclaw plugins inspect ${entry.pluginId ?? "<plugin-id>"}`,
                   "edit or remove the config-selected plugin source",
                   "openclaw plugins registry --refresh",
-                  "openclaw gateway restart --force",
+                  `openclaw plugins reload ${entry.pluginId ?? "<plugin-id>"}`,
                 ],
               };
             }),
@@ -519,19 +523,19 @@ export async function runPluginsDoctorCommand(opts: PluginDoctorOptions = {}): P
           const target = diag.pluginId ? `${diag.pluginId}: ` : "";
           lines.push(`- ${target}${diag.message}`);
           if (active) {
-            lines.push(`  active: ${shortenHomeInString(active.source)} (${active.origin})`);
+            lines.push(`  active: ${shortenHomePath(active.source)} (${active.origin})`);
             if (active.status === "error") {
               lines.push(`  active status: error${active.error ? `: ${active.error}` : ""}`);
             }
           }
           if (diag.source) {
-            lines.push(`  shadowed: ${shortenHomeInString(diag.source)}`);
+            lines.push(`  shadowed: ${shortenHomePath(diag.source)}`);
           }
           lines.push("  repair:");
           lines.push("    openclaw plugins inspect " + (diag.pluginId ?? "<plugin-id>"));
           lines.push("    edit or remove the config-selected plugin source");
           lines.push("    openclaw plugins registry --refresh");
-          lines.push("    openclaw gateway restart --force");
+          lines.push("    openclaw plugins reload " + (diag.pluginId ?? "<plugin-id>"));
         }
       }
       if (compatibility.length > 0) {
@@ -957,9 +961,12 @@ export async function runPluginMarketplaceRefreshCommand(
   if (result.source !== "bundled-fallback") {
     if (gateway) {
       try {
-        const applied = await gateway<{ runtime?: { generation: number } }>("plugins.refresh", {});
+        const applied = await gateway<PluginsRefreshResult>("plugins.refresh", {});
         if (!applied.runtime) {
           throw new Error("Marketplace refresh did not return a runtime application receipt.");
+        }
+        for (const warning of applied.warnings ?? []) {
+          (opts.json ? defaultRuntime.error : defaultRuntime.log)(theme.warn(warning));
         }
         runtimeNotice = `Marketplace catalog applied in Gateway generation ${applied.runtime.generation}.`;
       } catch (error) {

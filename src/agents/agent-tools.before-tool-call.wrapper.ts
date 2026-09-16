@@ -38,6 +38,7 @@ import {
   resolveToolErrorDiagnostic,
   resolveToolResultTerminalDiagnostic,
   summarizeToolParams,
+  startToolExecutionLiveness,
 } from "./agent-tools.before-tool-call.diagnostics.js";
 import {
   consumeFinalClientVoiceToolConfirmation,
@@ -68,19 +69,22 @@ import {
   validateToolExecutionParams,
 } from "./agent-tools.execution-validation.js";
 import {
+  bindBeforeToolCallMetadata,
   clearBeforeToolCallWrappedMarker,
   getBeforeToolCallDiagnosticOptions,
   getBeforeToolCallHookContext,
   getBeforeToolCallSourceTool,
-  setBeforeToolCallMetadata,
   type BeforeToolCallDiagnosticOptions,
 } from "./before-tool-call-metadata.js";
 import { getChannelAgentToolMeta } from "./channel-tool-metadata.js";
 import {
+  CODE_MODE_WAIT_TOOL_NAME,
+  isCodeModeControlTool,
   getCodeModeExecBeforeHookMetadata,
   normalizeCodeModeExecBeforeHookParams,
   reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
+import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import {
   appendToolLoopWarning,
   attachInternalToolExecutionPreparer,
@@ -293,6 +297,12 @@ export function wrapToolWithBeforeToolCallHook(
   options: Partial<BeforeToolCallDiagnosticOptions> = {},
 ): AnyAgentTool {
   const execute = tool.execute;
+  const refresh = captureAgentPluginRuntimeRefresh();
+  // Only the exact host wait control may drain work admitted before a reload.
+  const assertAgentPluginRuntimeCurrent =
+    isCodeModeControlTool(tool) && tool.name === CODE_MODE_WAIT_TOOL_NAME
+      ? refresh.assertActive
+      : refresh.assertCurrent;
   if (!execute) {
     return tool;
   }
@@ -307,6 +317,7 @@ export function wrapToolWithBeforeToolCallHook(
   const wrappedTool: AnyAgentTool = {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate, ...executionArgs: unknown[]) => {
+      assertAgentPluginRuntimeCurrent();
       const prepareControl = readInternalExecutionControl(executionArgs.at(-1));
       if (prepareControl) {
         executionArgs.pop();
@@ -510,6 +521,7 @@ export function wrapToolWithBeforeToolCallHook(
       // A voice grant binds the post-finalizer execution shape. Consume it only
       // after steering can no longer suppress the prepared call.
       const voiceConfirmation = consumeFinalClientVoiceToolConfirmation({
+        toolCallId,
         toolName,
         params: executeParams,
         ctx,
@@ -524,24 +536,20 @@ export function wrapToolWithBeforeToolCallHook(
       // Host capabilities can close while hooks, approval, validation, or
       // steering awaits. Recheck at the final synchronous source boundary.
       signal?.throwIfAborted();
+      assertAgentPluginRuntimeCurrent();
       runAgentToolSourceExecutionGuard(tool);
       admitExecution?.();
       onImplementationStart?.();
       recordAdjustedParamsForToolCall(toolCallId, executeParams, ctx?.runId);
       const eventBase = buildEventBase(executeParams);
       recordToolExecutionStarted(toolCallId, ctx?.runId);
-      if (hookOptions.emitDiagnostics) {
-        emitTrustedDiagnosticEvent({
-          type: "tool.execution.started",
-          ...eventBase,
-        });
-      }
+      const liveness = startToolExecutionLiveness(eventBase, hookOptions.emitDiagnostics, signal);
       const startedAt = Date.now();
       try {
         let result: Awaited<ReturnType<ForwardedToolExecution>>;
         try {
           const args = [toolCallId, executeParams, signal, forwardedOnUpdate, ...executionArgs];
-          const invoke = () => (execute as ForwardedToolExecution)(...args);
+          const invoke = () => liveness.run(() => (execute as ForwardedToolExecution)(...args));
           result = outcome.ownerDecision
             ? await invoke()
             : await runWithGenericToolActionDecision(tool, toolCallId, invoke);
@@ -639,6 +647,8 @@ export function wrapToolWithBeforeToolCallHook(
           toolCallOrdinal,
         });
         throw err;
+      } finally {
+        liveness.close();
       }
     },
   };
@@ -687,8 +697,9 @@ export function wrapToolWithBeforeToolCallHook(
     }
   };
   copyBeforeToolCallWrapperMetadata(tool, wrappedTool);
-  setBeforeToolCallMetadata(wrappedTool, tool, {
-    diagnosticOptions: hookOptions,
+  bindBeforeToolCallMetadata(wrappedTool, {
+    options: hookOptions,
+    sourceTool: tool,
     hookContext: ctx,
   });
   return wrappedTool;

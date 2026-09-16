@@ -52,11 +52,7 @@ export function resolveProviderModelPolicySurface(
       allowScopedSnapshot: true,
       allowWorkspaceScopedSnapshot: true,
     });
-  return metadata
-    ? resolveProviderPolicySurface(provider, {
-        manifestRegistry: { plugins: [...metadata.plugins] },
-      })
-    : null;
+  return metadata ? resolveProviderPolicySurface(provider, { manifestRegistry: metadata }) : null;
 }
 
 /** Binds one provider's identity facts for an authored-row lookup. */
@@ -141,19 +137,19 @@ export function createProviderModelRoutesResolver(params: {
   const providerRuntimeId = providerConfig?.agentRuntime?.id?.trim();
   const canonicalizeModelId = (modelId: string) =>
     normalizeModelId(provider, modelId, surface) ?? modelId.trim();
-  const configuredModels = new Map(
-    Array.from(
-      resolveMergedModelProviderModels({
-        models: providerConfig?.models,
-        normalizeModelId: canonicalizeModelId,
-      }),
-      ([modelId, model]) =>
-        [
-          modelId,
-          { route: projectConfiguredModelRoute(model), runtimeId: model.agentRuntime?.id?.trim() },
-        ] as const,
-    ),
-  );
+  const configuredModels = new Map<
+    string,
+    { route: ProviderModelRouteSource; runtimeId: string | undefined }
+  >();
+  for (const [modelId, model] of resolveMergedModelProviderModels({
+    models: providerConfig?.models,
+    normalizeModelId: canonicalizeModelId,
+  })) {
+    configuredModels.set(modelId, {
+      route: projectConfiguredModelRoute(model),
+      runtimeId: model.agentRuntime?.id?.trim(),
+    });
+  }
   const resolveRouteOverridePresence =
     params.requestTransportOverrides === "present"
       ? () => "present" as const
@@ -163,12 +159,10 @@ export function createProviderModelRoutesResolver(params: {
           canonicalizeModelId,
         });
   const providerRouteOverridePresence = resolveRouteOverridePresence();
-  const routeOverridePresenceByModel = new Map(
-    Array.from(
-      configuredModels.keys(),
-      (modelId) => [modelId, resolveRouteOverridePresence(modelId)] as const,
-    ),
-  );
+  const routeOverridePresenceByModel = new Map<string, ProviderRouteOverridePresence>();
+  for (const modelId of configuredModels.keys()) {
+    routeOverridePresenceByModel.set(modelId, resolveRouteOverridePresence(modelId));
+  }
   const env = params.env ?? process.env;
 
   return (observed) => {

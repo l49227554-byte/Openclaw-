@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import nodePath from "node:path";
-import { UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE_ENV } from "../commands/doctor/shared/update-phase.js";
+import { shouldSkipLegacyUpdateDoctorConfigWrite } from "../commands/doctor/shared/update-phase.js";
 import { resolveIsConfigReadOnly, resolveIsNixMode } from "../config/paths.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { recordUpdateModelRetirement } from "../infra/update-deferred-model-retirement.js";
@@ -17,23 +17,6 @@ import {
   resolveLegacyParentVersionOverride,
 } from "./doctor-health-contribution-utils.js";
 import type { HealthCheckContext, HealthFinding } from "./health-checks.js";
-
-function isExplicitOptOutEnvValue(value: string | undefined): boolean {
-  if (!value) {
-    return false;
-  }
-  // Update handoff predates canonical opt-in flags: every non-false value means the
-  // parent opted in, so preserve its broad acceptance until that protocol is retired.
-  const normalized = value.trim().toLowerCase();
-  return normalized !== "" && normalized !== "0" && normalized !== "false" && normalized !== "no";
-}
-
-function shouldSkipLegacyUpdateDoctorConfigWrite(env: NodeJS.ProcessEnv): boolean {
-  return (
-    isExplicitOptOutEnvValue(env.OPENCLAW_UPDATE_IN_PROGRESS) &&
-    !isExplicitOptOutEnvValue(env[UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE_ENV])
-  );
-}
 
 /** Removes queued retired profiles after any config references have been durably repaired. */
 export async function runRetiredAuthProfileCleanup(ctx: DoctorHealthFlowContext): Promise<void> {
@@ -67,6 +50,8 @@ export async function runWriteConfigHealth(
   const { resolveConfigIncludeWriteBoundary } = await import("../config/mutate.js");
   const { getConfigValueAtPath } = await import("../config/config-paths.js");
   const { isDeepStrictEqual } = await import("node:util");
+  const { getDeferredPluginMigrationConfigFacts, preserveDeferredPluginMigrationConfig } =
+    await import("../config/deferred-plugin-migration-config.js");
   const { createSubsystemLogger } = await import("../logging/subsystem.js");
   const { recordDoctorHealthWarnings } = await import("./doctor-health-contribution.js");
   const { logConfigUpdated } = await import("../config/logging.js");
@@ -96,6 +81,7 @@ export async function runWriteConfigHealth(
       await import("../commands/doctor/shared/config-flow-steps.js");
     const { assertShippedPluginInstallConfigImportCurrent } =
       await import("../commands/doctor/shared/plugin-registry-migration.js");
+    let committed: Awaited<ReturnType<typeof transformConfigFile>>;
     try {
       const authority = getUpdateDoctorConfigWriteAuthority(ctx.configPath);
       const includeSnapshot = authority
@@ -114,9 +100,7 @@ export async function runWriteConfigHealth(
       const includeWrite = includeBoundary ? includeSnapshot : undefined;
       const writeSource =
         confirmedConfigSource ??
-        (includeWrite
-          ? { path: includeWrite.path, hash: hashConfigRaw(includeWrite.raw) }
-          : undefined);
+        (includeWrite ? { path: includeWrite.path, hash: includeWrite.hash } : undefined);
       const writeConfig = () =>
         transformConfigFile({
           ...(writeSource ? { baseHash: writeSource.hash } : {}),
@@ -180,7 +164,7 @@ export async function runWriteConfigHealth(
             ),
           ),
         ].toSorted();
-        await runUpdateDoctorIncludeWrite(
+        committed = await runUpdateDoctorIncludeWrite(
           includeWrite.path,
           hashConfigRaw(includeWrite.raw),
           async () => {
@@ -192,7 +176,7 @@ export async function runWriteConfigHealth(
           },
         );
       } else {
-        await writeConfig();
+        committed = await writeConfig();
       }
     } catch (error) {
       recordUpdateDoctorConfigWriteRefusal({
@@ -288,9 +272,15 @@ export async function runWriteConfigHealth(
       }
       delete ctx.configResult.pendingChangePanels;
     }
-    // The final writer runs again after health repairs. Advance its baseline only
-    // after the atomic write succeeds so later failures cannot mark volatile state durable.
-    ctx.cfgForPersistence = structuredClone(ctx.cfg);
+    // Preserve committed retained inputs in the runtime-shaped baseline so late
+    // migration completion still triggers the final cleanup write.
+    ctx.cfgForPersistence = structuredClone(
+      preserveDeferredPluginMigrationConfig({
+        sourceConfig: committed.nextConfig,
+        nextConfig: ctx.cfg,
+        pending: getDeferredPluginMigrationConfigFacts(committed.nextConfig) ?? [],
+      }),
+    );
     delete ctx.configResult.sourceConfigForWrite;
     if (ctx.configResult.shouldWriteConfig === true) {
       ctx.configResultWriteCommitted = true;

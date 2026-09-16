@@ -189,9 +189,11 @@ describe("triageCommand", () => {
 
   it.each([
     { answer: "y", run: false, launches: true },
-    { answer: "\r", run: true, launches: true },
-    { answer: "timeout", run: false, launches: true },
-    { answer: "timeout", run: true, launches: true },
+    { answer: "y", run: true, launches: true },
+    { answer: "\r", run: false, launches: false },
+    { answer: "\r", run: true, launches: false },
+    { answer: "timeout", run: false, launches: false },
+    { answer: "timeout", run: true, launches: false },
     { answer: "n", run: false, launches: false },
     { answer: "\u0003", run: false, launches: false },
     { answer: "abort", run: false, launches: false },
@@ -234,7 +236,7 @@ describe("triageCommand", () => {
             `Agent: ${agent}. This will use your own account/tokens.`,
           );
           expect(mocks.confirm.mock.calls[0]?.[0].message).toContain(
-            `Open ${agent} to diagnose and repair the installation now? [Y/n]`,
+            `Open ${agent} to diagnose and repair the installation now? [y/N]`,
           );
           if (answer === "timeout") {
             await vi.advanceTimersByTimeAsync(29_999);
@@ -253,7 +255,10 @@ describe("triageCommand", () => {
           expect(mocks.spawn).toHaveBeenCalledTimes(launches && !run ? 1 : 0);
           expect(mocks.runUpdateRepairLoop).toHaveBeenCalledTimes(launches && run ? 1 : 0);
           expect(
-            runtime.log.mock.calls.flat().join("\n").includes("No answer; continuing with"),
+            runtime.log.mock.calls
+              .flat()
+              .join("\n")
+              .includes("No answer; skipping automatic repair."),
           ).toBe(answer === "timeout");
           expect(input.listenerCount("keypress")).toBe(0);
           expect(output.listenerCount("resize")).toBe(0);
@@ -269,6 +274,7 @@ describe("triageCommand", () => {
   );
 
   it("runs one selected automatic route with the original failure prompt", async () => {
+    mocks.resolveExecutablePath.mockImplementation((binary: string) => `/usr/local/bin/${binary}`);
     await fs.writeFile(
       path.join(stateDir, "openclaw.json"),
       JSON.stringify({ agents: { defaults: { model: "openai/gpt-5.6-luna" } } }),
@@ -293,6 +299,8 @@ describe("triageCommand", () => {
       ),
     ).rejects.toMatchObject({ code: 1 });
     expect(mocks.agentExecCommand).toHaveBeenCalledOnce();
+    expect(mocks.runUtf8CommandWithTimeout).not.toHaveBeenCalled();
+    expect(mocks.spawn).not.toHaveBeenCalled();
     expect(runtime.writeJson).not.toHaveBeenCalled();
     expect(runtime.writeStdout).not.toHaveBeenCalled();
     expect(runtime.exit).toHaveBeenCalledWith(1);
@@ -449,7 +457,7 @@ describe("triageCommand", () => {
         await vi.importActual<typeof import("node:child_process")>("node:child_process");
       mocks.spawn.mockImplementation(actual.spawn);
       mocks.resolveExecutablePath.mockImplementation((binary) =>
-        binary === agent ? executablePath : undefined,
+        binary === agent || (agent === "codex" && binary === "claude") ? executablePath : undefined,
       );
       const runtime = createTriageRuntime();
       const cleanup = createAgentCleanupScope();
@@ -571,15 +579,15 @@ describe("triageCommand", () => {
       suggestedCommands:
         process.platform === "win32"
           ? [
-              expect.stringContaining("| & claude -p"),
               expect.stringContaining("| & codex exec --skip-git-repo-check -"),
+              expect.stringContaining("| & claude -p"),
               expect.stringContaining("| & opencode run"),
               expect.stringContaining("| & pi --print"),
               expect.stringContaining("& openclaw triage --run"),
             ]
           : [
-              `${targetEnv} claude -p < '${promptPath}'`,
               `${targetEnv} codex exec --skip-git-repo-check - < '${promptPath}'`,
+              `${targetEnv} claude -p < '${promptPath}'`,
               `${targetEnv} opencode run < '${promptPath}'`,
               `${targetEnv} pi --print < '${promptPath}'`,
               `${targetEnv} openclaw triage --run`,
@@ -1043,12 +1051,12 @@ describe("triageCommand", () => {
     });
 
     expect(mocks.spawn).toHaveBeenCalledOnce();
-    expect(runtime.error).toHaveBeenCalledWith("Failed to launch claude: permission denied");
+    expect(runtime.error).toHaveBeenCalledWith("Failed to launch codex: permission denied");
     expect(runtime.log).toHaveBeenCalledWith(
       expect.stringMatching(
         process.platform === "win32"
-          ? /Run manually: .*\| & claude -p/u
-          : /^Run manually: env .* claude /u,
+          ? /Run manually: .*\| & codex exec/u
+          : /^Run manually: env .* codex exec/u,
       ),
     );
     expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);

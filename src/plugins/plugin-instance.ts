@@ -1,6 +1,7 @@
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { PluginInstanceUnavailableError } from "./plugin-instance-error.js";
 import { pluginInstanceInvocation as invocation } from "./plugin-instance-invocation.js";
 import {
   pluginInstanceState,
@@ -32,14 +33,14 @@ export class PluginInstance {
   controlPlaneInitialized = false;
   sourceDigest?: string;
   private moduleLoader?: (source: string) => unknown;
-  private moduleSourceExists?: (source: string) => boolean;
+  private moduleSourceExists?: false | ((source: string) => boolean);
   private accepting = true;
   private readonly calls = new Map<object, PluginRegistry | undefined>();
   private readonly consumers = new Map<
     object,
     { active: boolean; completion: Promise<void>; registry?: PluginRegistry }
   >();
-  private readonly cleanups = new Set<() => void | Promise<void>>();
+  private readonly cleanups = new Map<() => void | Promise<void>, "plugin" | "module">();
   private readonly waiters = new Set<() => void>();
   private readonly originalValues = new WeakMap<object, object>();
   readonly wrap = this.createValueView(<T>(run: () => T) => this.run(run));
@@ -60,17 +61,24 @@ export class PluginInstance {
     }
     this.lifecycle = Object.freeze({
       signal: this.controller.signal,
-      onDispose: (cleanup: () => void | Promise<void>) => {
-        if (
-          this.controller.signal.aborted ||
-          ((!this.accepting || this.owner?.revoked) && !this.activeCall())
-        ) {
-          throw new Error(`Plugin ${pluginId} is retiring`);
-        }
-        this.cleanups.add(cleanup);
-        return () => void this.cleanups.delete(cleanup);
-      },
+      onDispose: (cleanup: () => void | Promise<void>) => this.addCleanup(cleanup, "plugin"),
     });
+  }
+
+  private addCleanup(cleanup: () => void | Promise<void>, kind: "plugin" | "module") {
+    if (
+      this.controller.signal.aborted ||
+      ((!this.accepting || this.owner?.revoked) && !this.activeCall())
+    ) {
+      throw new Error(`Plugin ${this.pluginId} is retiring`);
+    }
+    this.cleanups.set(cleanup, kind);
+    return () => void this.cleanups.delete(cleanup);
+  }
+
+  /** Captured module resources must finish releasing before instance retirement settles. */
+  onModuleDispose(cleanup: () => Promise<void>): void {
+    this.addCleanup(cleanup, "module");
   }
 
   private hasToken(token: object): boolean {
@@ -99,7 +107,7 @@ export class PluginInstance {
       return scoped.run(run);
     }
     if (!this.accepting || this.owner?.revoked) {
-      throw new Error(`Plugin ${this.pluginId} was reloaded or disabled; use its current tools.`);
+      throw new PluginInstanceUnavailableError(this.pluginId);
     }
     return this.invoke(run);
   }
@@ -111,7 +119,7 @@ export class PluginInstance {
     }
     // Fresh ordinary calls never inherit a scope's retained-consumer admission.
     if (!this.accepting || this.owner?.revoked) {
-      throw new Error(`Plugin ${this.pluginId} was reloaded or disabled; use its current tools.`);
+      throw new PluginInstanceUnavailableError(this.pluginId);
     }
     return this.invoke(run, this.lease(true, registry));
   }
@@ -247,14 +255,10 @@ export class PluginInstance {
 
   private enter<T>(token: object, run: () => T): T {
     const current = invocation.getStore();
-    // Node can reuse an identical store instead of copying the entire async context map.
-    const invoke = () =>
-      invocation.run(
-        current?.instance === this && current.token === token ? current : { instance: this, token },
-        run,
-      );
+    const call =
+      current?.instance === this && current.token === token ? current : { instance: this, token };
     if (!this.owner) {
-      return invoke();
+      return invocation.run(call, run);
     }
     const { record } = this.owner;
     const generation = getPluginRuntimeGenerationRegistry();
@@ -271,8 +275,9 @@ export class PluginInstance {
         pluginOrigin: record.origin,
         pluginTrustedOfficialInstall: record.trustedOfficialInstall,
       },
-      invoke,
+      run,
       registry,
+      call,
     );
   }
 
@@ -333,7 +338,7 @@ export class PluginInstance {
   }
 
   hasModuleSource(source: string): boolean | undefined {
-    return this.moduleSourceExists?.(source);
+    return this.moduleSourceExists && this.moduleSourceExists(source);
   }
 
   quiesce(): boolean {
@@ -430,9 +435,14 @@ export class PluginInstance {
     }
     const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
     this.controller.abort(new Error(`Plugin ${this.pluginId} is retiring`));
-    for (const cleanup of Array.from(this.cleanups).toReversed()) {
+    for (const [cleanup, kind] of Array.from(this.cleanups).toReversed()) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
+        if (kind === "module") {
+          // Plugin hook deadlines cannot release custody of an in-flight filesystem removal.
+          await this.invoke(cleanup);
+          continue;
+        }
         await Promise.race([
           this.invoke(cleanup),
           new Promise<never>((_, reject) => {
@@ -452,6 +462,8 @@ export class PluginInstance {
     this.calls.clear();
     this.waiters.forEach((wake) => wake());
     this.moduleLoader = undefined;
+    // Release captured paths without reopening the never-bound bundled-library fallback.
+    this.moduleSourceExists &&= false;
     this.slots.clear();
     if (failures.length) {
       log.warn(

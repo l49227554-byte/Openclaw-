@@ -27,6 +27,7 @@ import {
   getPreparedTelegramPollAnswer,
   isEligibleTelegramPollAnswerUpdate,
   prepareTelegramPollAnswerContext,
+  prepareTelegramPollAnswerContextAsync,
   recordPreparedTelegramPollAnswer,
   settleTelegramPollAnswerContext,
 } from "./poll-answer-context.js";
@@ -262,8 +263,8 @@ type TelegramIngressDrainDispatch = (
 
 type CreateTelegramIngressMonitorParams = {
   queue: ChannelIngressQueue<TelegramSpooledUpdatePayload>;
-  /** Required for authorization-gated supersede (numeric allowlist). */
-  cfg: OpenClawConfig;
+  /** Read committed policy for every supersession decision, including after reconnect. */
+  getConfig: () => OpenClawConfig;
   accountId: string;
   botInfo?: TelegramBotInfo;
   adoptionStallTimeoutMs?: number;
@@ -297,6 +298,21 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         isEligibleTelegramPollAnswerUpdate(update)
       ) {
         prepareTelegramPollAnswerContext({ update, accountId: params.accountId });
+      }
+      return inspectTelegramSpooledUpdate(
+        update,
+        params.botInfo,
+        context.phase === "claim" ? context.claimedLaneKey : undefined,
+      );
+    },
+    inspectAsync: async (update, context) => {
+      if (
+        context.phase === "admission" &&
+        typeof update === "object" &&
+        update !== null &&
+        isEligibleTelegramPollAnswerUpdate(update)
+      ) {
+        await prepareTelegramPollAnswerContextAsync({ update, accountId: params.accountId });
       }
       return inspectTelegramSpooledUpdate(
         update,
@@ -463,7 +479,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
       startLimit: TELEGRAM_SPOOLED_DRAIN_START_LIMIT,
       resolveNonRetryableFailure: resolveTelegramIngressNonRetryableFailure,
       shouldSupersedePending: createShouldSupersedeTelegramSpooledPending({
-        cfg: params.cfg,
+        getConfig: params.getConfig,
         accountId: params.accountId,
         ...(params.botInfo?.username ? { botUsername: params.botInfo.username } : {}),
       }),

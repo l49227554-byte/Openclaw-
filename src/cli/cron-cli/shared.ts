@@ -1,6 +1,8 @@
 // Shared cron CLI formatting, parsing, delivery preview, and warning helpers.
 import {
   MAX_DATE_TIMESTAMP_MS,
+  parseStrictNonNegativeInteger,
+  parseStrictPositiveInteger,
   resolveExpiresAtMsFromDurationMs,
   timestampMsToIsoString,
 } from "@openclaw/normalization-core/number-coercion";
@@ -35,6 +37,31 @@ import { isJsonOutputModeActive } from "../json-output-mode.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { parseDurationMs as parseSharedDurationMs } from "../parse-duration.js";
 import { CronCliError } from "./cron-cli-error.js";
+
+export function parseCronIntegerOption(
+  value: unknown,
+  flag: string,
+  kind: "positive" | "non-negative" = "positive",
+): number | undefined {
+  const parsed =
+    kind === "non-negative"
+      ? parseStrictNonNegativeInteger(value)
+      : parseStrictPositiveInteger(value);
+  if (value !== undefined && parsed === undefined) {
+    throw new CronCliError(`Invalid ${flag} (must be a ${kind} integer).`);
+  }
+  return parsed;
+}
+
+export function parseCronNoOutputTimeoutOption(opts: Record<string, unknown>): number | undefined {
+  // Commander strips the leading no- from this option's attribute name.
+  const raw =
+    opts.noOutputTimeoutSeconds ??
+    (typeof opts.outputTimeoutSeconds === "string" || typeof opts.outputTimeoutSeconds === "number"
+      ? opts.outputTimeoutSeconds
+      : undefined);
+  return parseCronIntegerOption(raw, "--no-output-timeout-seconds");
+}
 
 function parseCronArgv(value: unknown, flag: string): string[] | undefined {
   if (typeof value !== "string") {
@@ -221,7 +248,7 @@ function formatCronStatusForDisplay(job: CronJob) {
           ? theme.success
           : theme.muted;
   let label = decorateStatusWithFailures(status, state.consecutiveErrors);
-  if (streamDisabled) {
+  if (streamDisabled && status !== "running") {
     label = "disabled";
   } else if (status === "disabled" && state.autoDisabled) {
     label =
@@ -344,20 +371,7 @@ export function parseCronStaggerMs(params: {
   return parsed;
 }
 
-export function parseCronToolsAllow(input: unknown): string[] | undefined {
-  const raw = Array.isArray(input)
-    ? input.map((value) => String(value)).join(" ")
-    : typeof input === "string"
-      ? input
-      : "";
-  const tools = raw
-    .split(/[,\s]+/u)
-    .map((tool) => normalizeOptionalString(tool))
-    .filter((tool): tool is string => Boolean(tool));
-  return tools.length > 0 ? tools : undefined;
-}
-
-export function parseCronFallbacks(input: unknown): string[] | undefined {
+export function parseCronStringList(input: unknown): string[] | undefined {
   if (input === undefined) {
     return undefined;
   }
@@ -368,8 +382,8 @@ export function parseCronFallbacks(input: unknown): string[] | undefined {
       : "";
   return raw
     .split(/[,\s]+/u)
-    .map((fallback) => normalizeOptionalString(fallback))
-    .filter((fallback): fallback is string => Boolean(fallback));
+    .map((entry) => normalizeOptionalString(entry))
+    .filter((entry): entry is string => Boolean(entry));
 }
 
 /**

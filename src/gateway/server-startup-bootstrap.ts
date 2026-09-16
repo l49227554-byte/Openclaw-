@@ -35,6 +35,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { prepareGatewayAgentCliShim } from "../infra/openclaw-cli-shim.js";
 import { readGatewayRestartHandoffSync } from "../infra/restart-handoff.js";
 import { setGatewaySigusr1RestartPolicy, setPreRestartDeferralCheck } from "../infra/restart.js";
+import { withSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
 import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { applyLoggingConfig } from "../logging/logger.js";
@@ -63,7 +64,7 @@ import {
 } from "./restart-trace.js";
 import type { GatewayServerOptions } from "./server-public.js";
 import { createGatewayStartupTrace } from "./server-startup-trace.js";
-import { mergeGatewayAuthConfig, mergeGatewayTailscaleConfig } from "./startup-auth.js";
+import { mergeGatewayAuthConfig } from "./startup-auth.js";
 import { maybeSeedControlUiAllowedOriginsAtStartup } from "./startup-control-ui-origins.js";
 
 type GatewayLogger = ReturnType<typeof createSubsystemLogger>;
@@ -137,60 +138,44 @@ export async function prepareGatewayServerBootstrap(input: {
       signal,
     });
   };
-  await startupTrace.measure("state.ownership", () =>
-    opts.startupOperation ? opts.startupOperation(inspectStateOwnership) : inspectStateOwnership(),
-  );
-  const [
-    {
+  // Reuse child imports while each check still acquires a fresh source snapshot.
+  // Join the worker before starting any network or plugin runtime.
+  await withSqliteReadOnlyWorkerScope(async () => {
+    await startupTrace.measure("state.ownership", () =>
+      opts.startupOperation
+        ? opts.startupOperation(inspectStateOwnership)
+        : inspectStateOwnership(),
+    );
+    const {
       OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
       OpenClawDatabaseSchemaPreflightError,
       preflightOpenClawDatabaseSchemas,
-    },
-    agentDatabase,
-    stateDatabase,
-  ] = await startupTrace.measure("state.runtime-imports", () =>
-    Promise.all([
-      import("../state/openclaw-database-preflight.js"),
-      import("../state/openclaw-agent-db.js"),
-      import("../state/openclaw-state-db-contract.js"),
-    ]),
-  );
-  const inspectDatabaseSchemas = (signal?: AbortSignal) =>
-    preflightOpenClawDatabaseSchemas({
-      signal,
-      env: process.env,
-      supportedVersions: {
-        state: stateDatabase.OPENCLAW_STATE_SCHEMA_VERSION,
-        agent: agentDatabase.OPENCLAW_AGENT_SCHEMA_VERSION,
-      },
-    });
-  const databaseSchemas = await startupTrace.measure("state.schema-preflight", () =>
-    opts.startupOperation
-      ? opts.startupOperation(inspectDatabaseSchemas)
-      : inspectDatabaseSchemas(),
-  );
-  if (databaseSchemas.incompatible.length > 0) {
-    for (const database of databaseSchemas.incompatible) {
-      log.error("database schema preflight rejected newer schema", {
+    } = await startupTrace.measure(
+      "state.runtime-imports",
+      () => import("../state/openclaw-database-preflight.js"),
+    );
+    const inspectDatabaseSchemas = (signal?: AbortSignal) =>
+      preflightOpenClawDatabaseSchemas({
+        signal,
+        env: process.env,
+      });
+    const databaseSchemas = await startupTrace.measure("state.schema-preflight", () =>
+      opts.startupOperation
+        ? opts.startupOperation(inspectDatabaseSchemas)
+        : inspectDatabaseSchemas(),
+    );
+    if (databaseSchemas.incompatible.length > 0) {
+      throw new OpenClawDatabaseSchemaPreflightError(databaseSchemas.incompatible);
+    }
+    for (const database of databaseSchemas.indeterminate) {
+      log.warn("database schema preflight could not inspect database; continuing to real open", {
         kind: database.kind,
         path: database.path,
-        ...(database.agentId ? { agentId: database.agentId } : {}),
-        foundVersion: database.foundVersion,
-        supportedVersion: database.supportedVersion,
-        writerAppVersion: database.writerAppVersion ?? "unknown",
+        reason: database.reason,
         docsUrl: OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
       });
     }
-    throw new OpenClawDatabaseSchemaPreflightError(databaseSchemas.incompatible);
-  }
-  for (const database of databaseSchemas.indeterminate) {
-    log.warn("database schema preflight could not inspect database; continuing to real open", {
-      kind: database.kind,
-      path: database.path,
-      reason: database.reason,
-      docsUrl: OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
-    });
-  }
+  });
   const { bootstrapGatewayNetworkRuntime } = await startupTrace.measure(
     "runtime.network-imports",
     () => import("./server-network-runtime.js"),
@@ -219,7 +204,8 @@ export async function prepareGatewayServerBootstrap(input: {
   const loadStartupPluginsModule = createLazyPromise(() => import("./server-startup-plugins.js"), {
     cacheRejections: true,
   });
-  const { loadGatewayStartupConfigSnapshot } = await startupConfigModulePromise;
+  const { applyGatewayAuthOverridesForStartupPreflight, loadGatewayStartupConfigSnapshot } =
+    await startupConfigModulePromise;
 
   const startupConfigLoad = await startupTrace.measure("config.snapshot", () =>
     loadGatewayStartupConfigSnapshot({
@@ -383,46 +369,31 @@ export async function prepareGatewayServerBootstrap(input: {
     ? cfgAtStart.gateway?.controlUi?.allowedOrigins
     : undefined;
   const applyFixedGatewayOverlays = (config: OpenClawConfig): OpenClawConfig => {
-    let runtimeConfig = config;
-    if (reloadAuthOverride || startupTailscaleOverride) {
-      runtimeConfig = {
-        ...runtimeConfig,
-        gateway: {
-          ...runtimeConfig.gateway,
-          ...(reloadAuthOverride
-            ? { auth: mergeGatewayAuthConfig(runtimeConfig.gateway?.auth, reloadAuthOverride) }
-            : {}),
-          ...(startupTailscaleOverride
-            ? {
-                tailscale: mergeGatewayTailscaleConfig(
-                  runtimeConfig.gateway?.tailscale,
-                  startupTailscaleOverride,
-                ),
-              }
-            : {}),
-        },
-      };
-    }
+    const runtimeConfig = applyGatewayAuthOverridesForStartupPreflight(config, {
+      auth:
+        authBootstrap.generatedToken && config.gateway?.auth?.mode === undefined
+          ? { mode: authBootstrap.auth.mode, ...reloadAuthOverride }
+          : reloadAuthOverride,
+      tailscale: startupTailscaleOverride,
+    });
     if (
-      seededControlUiAllowedOrigins &&
-      runtimeConfig.gateway?.controlUi?.allowedOrigins === undefined
+      !seededControlUiAllowedOrigins ||
+      runtimeConfig.gateway?.controlUi?.allowedOrigins !== undefined
     ) {
-      runtimeConfig = {
-        ...runtimeConfig,
-        gateway: {
-          ...runtimeConfig.gateway,
-          controlUi: {
-            ...runtimeConfig.gateway?.controlUi,
-            allowedOrigins: seededControlUiAllowedOrigins,
-          },
-        },
-      };
+      return runtimeConfig;
     }
-    copyConfigResolutionFactsExcept(config, runtimeConfig, [
-      ...(reloadAuthOverride?.token !== undefined ? ["gateway.auth.token"] : []),
-      ...(reloadAuthOverride?.password !== undefined ? ["gateway.auth.password"] : []),
-    ]);
-    return runtimeConfig;
+    const withOrigins = {
+      ...runtimeConfig,
+      gateway: {
+        ...runtimeConfig.gateway,
+        controlUi: {
+          ...runtimeConfig.gateway?.controlUi,
+          allowedOrigins: seededControlUiAllowedOrigins,
+        },
+      },
+    };
+    copyConfigResolutionFacts(runtimeConfig, withOrigins);
+    return withOrigins;
   };
   const applyReloadableGatewayAuthRefs = (config: OpenClawConfig): OpenClawConfig => {
     if (!startupAuthSecretRefOverride?.token && !startupAuthSecretRefOverride?.password) {

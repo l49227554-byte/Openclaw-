@@ -136,6 +136,11 @@ openclaw-board-view {
   position: relative;
 }
 
+.board-grid[hidden],
+openclaw-board-widget-cell[hidden] {
+  display: none;
+}
+
 @container (max-width: 560px) {
   /* Keep desktop sizes canonical; only placement changes on narrow boards.
      CSS order preserves the keyed frame nodes when persisted order changes. */
@@ -593,6 +598,29 @@ openclaw-board-widget-cell {
     .board-widget__body {
       border-radius: 0;
       padding: 0;
+    }
+  }
+
+  &:has(> .board-view--page) {
+    height: 100%;
+    overflow: hidden;
+
+    > .board-view {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .board-grid {
+      flex: 1 1 0;
+      min-height: 0;
+      grid-auto-rows: minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .board-widget:not(.board-widget--dragging) {
+      grid-area: 1 / 1 / -1 / -1 !important;
     }
   }
 }

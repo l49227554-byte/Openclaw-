@@ -54,6 +54,9 @@ const rawSqliteAllowPathGroups = {
     "src/state/openclaw-agent-db-registry.ts",
     "src/state/openclaw-agent-db-registry-listing.ts",
     "src/state/openclaw-agent-db-schema-helpers.ts",
+    // Existing schema ownership/version preflight, split from schema-helpers for readers.
+    "src/state/openclaw-agent-db-schema-read.ts",
+    "src/state/openclaw-agent-db-metadata.ts",
     "src/state/openclaw-agent-db-schema.ts",
     "src/state/openclaw-agent-db-session-nodes-migration.ts",
     "src/state/openclaw-agent-db-session-migrations.ts",
@@ -91,7 +94,7 @@ const rawSqliteAllowPathGroups = {
     "src/state/openclaw-state-db-readonly.ts",
   ],
   "cold-process read-only relay lookup avoids the shared state writer lifecycle": [
-    "src/agents/harness/native-hook-relay-client-store.ts",
+    "src/agents/harness/native-hook-relay-client.worker.ts",
   ],
   "read-only schema preflight and integrity verification access": [
     "src/state/openclaw-database-preflight.ts",

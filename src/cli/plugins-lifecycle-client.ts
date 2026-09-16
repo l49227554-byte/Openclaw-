@@ -7,7 +7,6 @@ import type {
   PluginsInspectResult,
   PluginsReloadResult,
 } from "../../packages/gateway-protocol/src/schema/plugins.js";
-import { callGateway } from "../gateway/call.js";
 import { readActiveGatewayLockIdentity } from "../infra/gateway-lock.js";
 import type { PluginCapabilityConsentHandler } from "../plugins/capability-consent.js";
 import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
@@ -40,10 +39,11 @@ export type PluginLifecycleGateway = <T>(
 
 /** Select the local runtime owner before acquiring a lease the Gateway also needs. */
 export async function resolvePluginLifecycleGateway(): Promise<PluginLifecycleGateway | null> {
-  const owner = await readActiveGatewayLockIdentity();
+  const owner = await readActiveGatewayLockIdentity({ requireInspection: true });
   if (!owner) {
     return null;
   }
+  const { callGateway } = await import("../gateway/call.js");
   const request = <T>(method: string, params: Record<string, unknown>) =>
     callGateway<T>({
       method,

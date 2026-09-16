@@ -1,4 +1,5 @@
 // Gateway concurrency benchmark tests cover CLI controls, probe budgets, and summaries.
+import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readFile, writeFile } from "node:fs/promises";
@@ -94,14 +95,16 @@ describe("gateway concurrency benchmark script", () => {
     });
     expect(result.selections).toEqual({ model: 4, global: 0, automaticTool: 0, automaticText: 4 });
     expect(() => testing.summarizeMockRequests(snapshots.slice(1))).toThrow("incomplete");
+    const finalSnapshot = snapshots[4];
+    assert(finalSnapshot);
     for (const change of [
       { id: "replacement" },
       { beforeMs: 0 },
-      { ingress: { ...snapshots[4].ingress, responses: 1 } },
-      { selections: { ...snapshots[4].selections, model: 0 } },
+      { ingress: { ...finalSnapshot.ingress, responses: 1 } },
+      { selections: { ...finalSnapshot.selections, model: 0 } },
     ]) {
       expect(() =>
-        testing.summarizeMockRequests([...snapshots.slice(0, 4), { ...snapshots[4], ...change }]),
+        testing.summarizeMockRequests([...snapshots.slice(0, 4), { ...finalSnapshot, ...change }]),
       ).toThrow("regressed");
     }
   });

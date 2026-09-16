@@ -901,7 +901,7 @@ function createTurnEvidence(toolEvents: boolean) {
       }
       turns.set(runId, { sessionKey, toolCompleted: false, final: false, observer: false });
     },
-    onEvent(event: { event: string; payload?: unknown }) {
+    onEvent(this: void, event: { event: string; payload?: unknown }) {
       const payload = event.payload;
       if (!isRecord(payload) || typeof payload.runId !== "string") {
         return;

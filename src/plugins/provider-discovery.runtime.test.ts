@@ -664,17 +664,11 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
         pluginId: "fixture",
       };
       mocks.resolveDiscoveredProviderPluginIds.mockReturnValue(["fixture"]);
+      const manifest = createManifestPlugin("fixture");
+      manifest.modelCatalog = { discovery: { fixture: "runtime" } };
       mocks.loadPluginMetadataSnapshot.mockReturnValue({
         index: { plugins: [] },
-        manifestRegistry: {
-          plugins: [
-            {
-              ...createManifestPlugin("fixture"),
-              modelCatalog: { discovery: { fixture: "runtime" } },
-            },
-          ],
-          diagnostics: [],
-        },
+        manifestRegistry: { plugins: [manifest], diagnostics: [] },
       });
       mocks.loadSource.mockReturnValue(authProvider);
       const unrelatedAuth = {
@@ -725,17 +719,11 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
           : {}),
       };
       mocks.resolveDiscoveredProviderPluginIds.mockReturnValue(["fixture"]);
+      const manifest = createManifestPlugin("fixture");
+      manifest.modelCatalog = { discovery: { fixture: "runtime" } };
       mocks.loadPluginMetadataSnapshot.mockReturnValue({
         index: { plugins: [] },
-        manifestRegistry: {
-          plugins: [
-            {
-              ...createManifestPlugin("fixture"),
-              modelCatalog: { discovery: { fixture: "runtime" } },
-            },
-          ],
-          diagnostics: [],
-        },
+        manifestRegistry: { plugins: [manifest], diagnostics: [] },
       });
       mocks.loadSource.mockReturnValue(entryProvider);
       mocks.resolvePluginProvidersCore.mockReturnValue([runtimeProvider]);

@@ -291,12 +291,13 @@ function retainSyntheticAuthProviders(
   authProviders: ProviderPlugin[],
 ): ProviderPlugin[] {
   const retained = new Set(providers);
-  return [
-    ...providers,
-    ...authProviders
-      .filter((provider) => !retained.has(provider))
-      .map((provider) => ({ ...provider, catalog: undefined, staticCatalog: undefined })),
-  ];
+  const result = [...providers];
+  for (const provider of authProviders) {
+    if (!retained.has(provider)) {
+      result.push({ ...provider, catalog: undefined, staticCatalog: undefined });
+    }
+  }
+  return result;
 }
 
 export function planPluginDiscoveryRuntime(

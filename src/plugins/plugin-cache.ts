@@ -55,9 +55,11 @@ export function materializePluginCacheError(failure: unknown): void {
   while (error instanceof Error && !seen.has(error)) {
     seen.add(error);
     try {
-      void error.stack;
+      error.stack = String(error.stack);
     } catch {
-      // Preserve the original failure if a custom stack formatter throws.
+      // V8's setter releases private frames even when formatting throws;
+      // coercion also detaches CallSites returned by a custom formatter.
+      error.stack = "Stack trace unavailable: custom formatter failed";
     }
     // Bounded file readers wrap their original failure without replacing its stack.
     error = error.cause;

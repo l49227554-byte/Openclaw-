@@ -16,6 +16,7 @@ it.each([
   "json",
   "json5",
   "formatter",
+  "formatter-call-sites",
 ])(
   "preserves %s metadata failures across caller teardown",
   async (scenario) => {

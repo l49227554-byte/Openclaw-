@@ -17,6 +17,7 @@ function readFailure(rootDir: string, scenario: string): Error {
   const params = { rootDir, relativePath: "file.json", rejectHardlinks: false };
   switch (scenario) {
     case "formatter":
+    case "formatter-call-sites":
     case "directory":
       try {
         readPluginCacheDirectory(path.join(rootDir, "missing"));
@@ -130,6 +131,8 @@ try {
     Error.prepareStackTrace = () => {
       throw new Error("Custom stack formatter failed");
     };
+  } else if (scenario === "formatter-call-sites") {
+    Error.prepareStackTrace = (_error, frames) => frames;
   }
   let captured: ReturnType<typeof captureCaller>;
   try {
@@ -142,30 +145,25 @@ try {
     }
   }
   const { cache, reference, error } = captured;
-  if (scenario === "formatter") {
+  if (scenario.startsWith("formatter")) {
     assert.equal((error as NodeJS.ErrnoException).code, "ENOENT");
-    assert.equal(
-      withPluginCache(cache, () => readFailure(rootDir, scenario)),
-      error,
-    );
-  } else {
-    const gc = globalThis.gc;
-    assert.ok(gc, "The retention child requires --expose-gc");
-    const control = new WeakRef({ unowned: true });
-    for (let pass = 0; pass < 8; pass += 1) {
-      await setImmediate();
-      gc();
-    }
-    assert.equal(control.deref(), undefined, "Unowned control must collect");
-    assert.equal(reference.deref(), undefined, `${scenario}: cached error retained caller state`);
-    assert.equal(
-      withPluginCache(cache, () => readFailure(rootDir, scenario)),
-      error,
-    );
-    assert.equal(typeof error.stack, "string");
-    if (scenario.endsWith("overflow")) {
-      assert.ok(error.cause instanceof Error, "Bounded read preserves its original cause");
-    }
+  }
+  const gc = globalThis.gc;
+  assert.ok(gc, "The retention child requires --expose-gc");
+  const control = new WeakRef({ unowned: true });
+  for (let pass = 0; pass < 8; pass += 1) {
+    await setImmediate();
+    gc();
+  }
+  assert.equal(control.deref(), undefined, "Unowned control must collect");
+  assert.equal(reference.deref(), undefined, `${scenario}: cached error retained caller state`);
+  assert.equal(
+    withPluginCache(cache, () => readFailure(rootDir, scenario)),
+    error,
+  );
+  assert.equal(typeof error.stack, "string");
+  if (scenario.endsWith("overflow")) {
+    assert.ok(error.cause instanceof Error, "Bounded read preserves its original cause");
   }
 } finally {
   fs.rmSync(rootDir, { recursive: true, force: true });

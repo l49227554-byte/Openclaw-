@@ -40,7 +40,8 @@ extension WebChatRoute {
             return nil
         }
         guard !rest.contains(where: \.isEmpty) else { return nil }
-        if rest.count == 1, rest[0].lowercased() == "global" {
+        // Qualified global is a literal session; only main aliases the agent home.
+        if rest.count == 1, rest[0].lowercased() == "main" {
             return "/chat/" + Self.encodedSessionSegment(agent)
         }
         // The Control UI exact-key grammar uses ~key for a single literal rest

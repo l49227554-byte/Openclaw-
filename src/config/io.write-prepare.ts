@@ -219,7 +219,10 @@ function pathStartsWith(path: readonly string[], prefix: readonly string[]): boo
   return prefix.length <= path.length && prefix.every((segment, index) => path[index] === segment);
 }
 
-function pathOverlapsAny(path: string[], candidates: readonly string[][] | undefined): boolean {
+function pathOverlapsAny(
+  path: readonly string[],
+  candidates: readonly (readonly string[])[] | undefined,
+): boolean {
   return Boolean(
     candidates?.some(
       (candidate) => pathStartsWith(path, candidate) || pathStartsWith(candidate, path),
@@ -853,6 +856,29 @@ function pathTouchesAgentRoster(path: readonly string[]): boolean {
 
 function pathTargetsAgentRoster(path: readonly string[]): boolean {
   return AGENT_ROSTER_PATHS.some((rosterPath) => pathStartsWith(path, rosterPath));
+}
+
+export type PendingIncludeWrite = {
+  includePath: string[];
+  value: unknown;
+};
+
+function isKeyedAgentEntryIncludePath(path: readonly string[]): boolean {
+  return path.length === 3 && path[0] === "agents" && path[1] === "entries";
+}
+
+function isKeyedProviderModelsIncludePath(path: readonly string[]): boolean {
+  return (
+    path.length === 4 && path[0] === "models" && path[1] === "providers" && path[3] === "models"
+  );
+}
+
+function collectKeyedAgentEntryIncludePaths(rootAuthoredConfig: unknown): string[][] {
+  return collectIncludeOwnedPaths(rootAuthoredConfig).filter(isKeyedAgentEntryIncludePath);
+}
+
+function collectKeyedProviderModelsIncludePaths(rootAuthoredConfig: unknown): string[][] {
+  return collectIncludeOwnedPaths(rootAuthoredConfig).filter(isKeyedProviderModelsIncludePath);
 }
 
 function hasOnlyPreparedKeyedAgentEntryRosterIncludes(
@@ -1607,6 +1633,8 @@ export function resolvePersistCandidateForWrite(
     rootAuthoredConfig?: unknown;
     agentRosterIncludeOwned?: boolean;
     keyedAgentEntryIncludePaths?: readonly (readonly string[])[];
+    includeWriteThroughPaths?: readonly (readonly string[])[];
+    pendingIncludeWrites?: PendingIncludeWrite[];
     persistCanonicalAgentRoster?: boolean;
     allowedAgentRosterRemovals?: readonly string[];
     allowIncludeAncestorExplicitSetPaths?: boolean;
@@ -1615,7 +1643,46 @@ export function resolvePersistCandidateForWrite(
 ): unknown {
   const inputBasis = params.inputBasis ?? { kind: "runtime", config: params.runtimeConfig };
   const rootAuthoredConfig = params.rootAuthoredConfig ?? params.sourceConfig;
-  const wantsCanonicalRoster = shouldPersistCanonicalAgentRoster(params);
+  const keyedAgentEntryIncludePaths =
+    params.keyedAgentEntryIncludePaths ??
+    (params.pendingIncludeWrites && params.includeWriteThroughPaths === undefined
+      ? collectKeyedAgentEntryIncludePaths(rootAuthoredConfig)
+      : undefined);
+  const includeWriteThroughPaths =
+    params.includeWriteThroughPaths ??
+    (params.pendingIncludeWrites
+      ? [
+          ...collectKeyedAgentEntryIncludePaths(rootAuthoredConfig),
+          ...collectKeyedProviderModelsIncludePaths(rootAuthoredConfig),
+        ]
+      : undefined);
+  let nextConfig = params.nextConfig;
+  if (params.pendingIncludeWrites && includeWriteThroughPaths) {
+    for (const includePath of includeWriteThroughPaths) {
+      const path = [...includePath];
+      const nextValue = getPathValue(nextConfig, path);
+      const sourceValue = getPathValue(params.sourceConfig, path);
+      const runtimeValue = getPathValue(inputBasis.config, path);
+      if (
+        nextValue === undefined ||
+        isDeepStrictEqual(nextValue, sourceValue) ||
+        isDeepStrictEqual(nextValue, runtimeValue)
+      ) {
+        continue;
+      }
+      params.pendingIncludeWrites.push({ includePath: path, value: nextValue });
+      const restoreValue = sourceValue !== undefined ? sourceValue : runtimeValue;
+      if (restoreValue !== undefined) {
+        nextConfig = setPathValue(nextConfig, path, restoreValue);
+      }
+    }
+  }
+  const writeParams = {
+    ...params,
+    nextConfig,
+    keyedAgentEntryIncludePaths,
+  };
+  const wantsCanonicalRoster = shouldPersistCanonicalAgentRoster(writeParams);
   const includeOwnsRoster =
     wantsCanonicalRoster &&
     configIncludeOwnsAgentRosterValues({
@@ -1625,10 +1692,7 @@ export function resolvePersistCandidateForWrite(
     });
   const preserveKeyedEntryIncludes =
     includeOwnsRoster &&
-    hasOnlyPreparedKeyedAgentEntryRosterIncludes(
-      rootAuthoredConfig,
-      params.keyedAgentEntryIncludePaths,
-    );
+    hasOnlyPreparedKeyedAgentEntryRosterIncludes(rootAuthoredConfig, keyedAgentEntryIncludePaths);
   if (includeOwnsRoster && !preserveKeyedEntryIncludes) {
     // Canonical roster writes replace the whole roster atomically. Any included contribution
     // therefore owns this boundary; flattening only its root-authored siblings is not safe.
@@ -1658,7 +1722,7 @@ export function resolvePersistCandidateForWrite(
           toAgentEntriesRecord(listAgentEntries(params.sourceConfig as OpenClawConfig)),
         )
       : projectedAuthoredRoster;
-  const explicitSetPaths = persistCanonicalRoster
+  const rosterFilteredExplicitSetPaths = persistCanonicalRoster
     ? params.explicitSetPaths?.filter((path) => !pathTargetsAgentRoster(path))
     : preserveKeyedEntryIncludes
       ? (params.explicitSetPaths ?? []).filter(
@@ -1667,19 +1731,29 @@ export function resolvePersistCandidateForWrite(
             undefined,
         )
       : params.explicitSetPaths;
+  // Patch/CLI writes record the catalog array as an explicit set. Write-through already
+  // restored the $include pointer; re-injecting that path would flatten-refuse the persist.
+  const explicitSetPaths =
+    includeWriteThroughPaths &&
+    includeWriteThroughPaths.length > 0 &&
+    rosterFilteredExplicitSetPaths
+      ? rosterFilteredExplicitSetPaths.filter(
+          (path) => !pathOverlapsAny(path, includeWriteThroughPaths),
+        )
+      : rosterFilteredExplicitSetPaths;
   const explicitSetValueSource = persistCanonicalRoster
     ? canonicalizeAgentRosterForExplicitWrite({
-        valueSource: params.explicitSetValueSource ?? params.nextConfig,
+        valueSource: params.explicitSetValueSource ?? nextConfig,
         rootAuthoredConfig,
         runtimeConfig: params.runtimeConfig,
         sourceConfig: params.sourceConfig,
         sourceConfigBeforeMigrations: params.sourceConfigBeforeMigrations,
-        nextConfig: params.nextConfig,
+        nextConfig,
         explicitSetPaths: params.explicitSetPaths,
         unsetPaths: params.unsetPaths,
       })
-    : (params.explicitSetValueSource ?? params.nextConfig);
-  let persistedBase = projectConfigWriteSource(params);
+    : (params.explicitSetValueSource ?? nextConfig);
+  let persistedBase = projectConfigWriteSource(writeParams);
   if (persistCanonicalRoster) {
     persistedBase = deletePathValue(persistedBase, ["agents", "entries"]);
     persistedBase = deletePathValue(persistedBase, ["agents", "list"]);
@@ -1692,7 +1766,7 @@ export function resolvePersistCandidateForWrite(
     runtimeConfig: inputBasis.config,
     sourceConfig: params.sourceConfig,
     sourceConfigBeforeMigrations: includeProjectionSourceBeforeMigrations,
-    nextConfig: params.nextConfig,
+    nextConfig,
     rootAuthoredConfig: includeProjectionRootAuthoredConfig,
     persistedCandidate: persistedBase,
   });
@@ -1710,7 +1784,7 @@ export function resolvePersistCandidateForWrite(
     allowIncludeAncestorExplicitSetPaths: params.allowIncludeAncestorExplicitSetPaths,
   });
   const preserveAuthoredRoster =
-    canCanonicalizeAgentRoster(params.nextConfig) || params.preserveLegacyAgentRoster === true;
+    canCanonicalizeAgentRoster(nextConfig) || params.preserveLegacyAgentRoster === true;
   const withAuthoredRoster =
     wantsCanonicalRoster || !preserveAuthoredRoster
       ? persisted
@@ -1726,7 +1800,7 @@ export function resolvePersistCandidateForWrite(
   }
   const withSchema = preserveRootSchemaUri({
     rootAuthoredConfig,
-    nextConfig: params.nextConfig,
+    nextConfig,
     persistedCandidate: withAuthoredRoster,
   });
   // Source edits and invalid-config repairs own omitted params as well as explicit values.
@@ -1734,7 +1808,7 @@ export function resolvePersistCandidateForWrite(
     ? withSchema
     : preserveAuthoredAgentParams({
         sourceConfig: params.sourceConfig,
-        nextConfig: params.nextConfig,
+        nextConfig,
         rootAuthoredConfig,
         persistedCandidate: withSchema,
         unsetPaths: params.unsetPaths,

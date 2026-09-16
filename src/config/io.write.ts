@@ -8,7 +8,7 @@ import {
   withDeferredPluginMigrationsCurrent,
 } from "../infra/deferred-plugin-migrations.js";
 import { isVitestRuntimeEnv } from "../infra/env.js";
-import { formatErrorMessage } from "../infra/errors.js";
+import { formatErrorMessage, hasErrnoCode } from "../infra/errors.js";
 import {
   getUpdateDoctorConfigWriteAuthority,
   assertUpdateDoctorConfigInputHash,
@@ -38,8 +38,15 @@ import {
   restoreEnvRefsFromMap,
   restoreEnvVarRefs,
 } from "./env-preserve.js";
-import { resolveKeyedAgentEntryIncludePreservation } from "./include-write-boundary.js";
-import { readConfigIncludeFileWithGuards, resolveConfigIncludes } from "./includes.js";
+import {
+  resolveKeyedAgentEntryIncludePreservation,
+  resolveKeyedProviderModelsIncludePreservation,
+} from "./include-write-boundary.js";
+import {
+  isInternalIncludeWriteTarget,
+  readConfigIncludeFileWithGuards,
+  resolveConfigIncludes,
+} from "./includes.js";
 import {
   appendConfigAuditRecord,
   capConfigAuditIssues,
@@ -78,10 +85,11 @@ import {
 import { logConfigWarningsOnce } from "./io.warnings.js";
 import {
   ConfigWritePostCommitError,
+  createConfigIncludeOwnershipError,
   createConfigValidationFailedError,
   type ConfigWriteRollbackStatus,
 } from "./io.write-errors.js";
-import { resolvePersistCandidateForWrite } from "./io.write-prepare.js";
+import { resolvePersistCandidateForWrite, type PendingIncludeWrite } from "./io.write-prepare.js";
 import {
   assertBaseSnapshotStillCurrent,
   createGuardedConfigFileSystem,
@@ -103,6 +111,87 @@ import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import type { OpenClawConfig } from "./types.js";
 import { validateConfigObjectRawWithPlugins } from "./validation.js";
 import { captureConfigWriteLockGuard } from "./write-lock.js";
+
+function includeConfigPathsEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
+}
+
+function formatPendingIncludeJson(value: unknown): string {
+  rejectConfigNonFiniteNumbers(value);
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+async function restorePendingIncludeWrites(
+  restorers: ReadonlyArray<{ restore: () => Promise<boolean> }>,
+): Promise<void> {
+  for (const restorer of restorers.toReversed()) {
+    try {
+      await restorer.restore();
+    } catch {
+      // Keep the original write failure; include restore is best-effort.
+    }
+  }
+}
+
+async function commitPendingKeyedIncludeWrites(params: {
+  snapshot: ReadConfigFileSnapshotInternalResult["snapshot"];
+  pendingIncludeWrites: readonly PendingIncludeWrite[];
+  fsModule: typeof fs;
+  assertConfigPathForWrite?: () => void;
+}): Promise<Array<{ restore: () => Promise<boolean> }>> {
+  const restorers: Array<{ restore: () => Promise<boolean> }> = [];
+  for (const pending of params.pendingIncludeWrites) {
+    const ownership = params.snapshot.includeProvenance?.find(
+      (entry) =>
+        includeConfigPathsEqual(entry.path, pending.includePath) &&
+        typeof entry.targetPath === "string",
+    );
+    const targetPath = ownership?.targetPath;
+    if (!targetPath) {
+      throw createConfigIncludeOwnershipError({
+        ownedConfigPath: pending.includePath.join("."),
+      });
+    }
+    if (
+      !isInternalIncludeWriteTarget({
+        configPath: params.snapshot.path,
+        includePath: targetPath,
+      })
+    ) {
+      throw new Error(
+        `Config mutation cannot update external $include target ${targetPath}; edit the included file directly or move it under the config directory.`,
+      );
+    }
+    params.assertConfigPathForWrite?.();
+    let previousRaw: string | null = null;
+    try {
+      previousRaw = await params.fsModule.promises.readFile(targetPath, "utf-8");
+    } catch (error) {
+      if (!hasErrnoCode(error, "ENOENT")) {
+        throw error;
+      }
+    }
+    await params.fsModule.promises.writeFile(targetPath, formatPendingIncludeJson(pending.value), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    restorers.push({
+      restore: async () => {
+        params.assertConfigPathForWrite?.();
+        if (previousRaw === null) {
+          await params.fsModule.promises.unlink(targetPath);
+          return true;
+        }
+        await params.fsModule.promises.writeFile(targetPath, previousRaw, {
+          encoding: "utf-8",
+          mode: 0o600,
+        });
+        return true;
+      },
+    });
+  }
+  return restorers;
+}
 
 export async function writeConfigFileFromContext(
   context: ConfigIoContext,
@@ -194,6 +283,8 @@ export async function writeConfigFileFromContext(
   const identityRestoredPaths = new Set<string>();
   const hasAuthoredIncludes = containsConfigIncludeDirective(snapshot.parsed);
   const hasIncludes = hasAuthoredIncludes && !containsConfigIncludeDirective(snapshot.sourceConfig);
+  const pendingIncludeWrites: PendingIncludeWrite[] = [];
+  let pendingIncludeRestorers: Array<{ restore: () => Promise<boolean> }> = [];
   // Doctor repairs need the same authored projection so roster moves preserve nested includes.
   // Missing snapshots also use this owner; exact bootstrap rosters carry explicitSetPaths.
   if (snapshot.valid || (snapshot.exists && hasAuthoredIncludes)) {
@@ -201,6 +292,14 @@ export async function writeConfigFileFromContext(
       configPath: snapshot.path,
       provenance: snapshot.includeProvenance,
     });
+    const keyedProviderModelsIncludes = resolveKeyedProviderModelsIncludePreservation({
+      configPath: snapshot.path,
+      provenance: snapshot.includeProvenance,
+    });
+    const includeWriteThroughPaths = [
+      ...(keyedAgentEntryIncludes?.includePaths ?? []),
+      ...(keyedProviderModelsIncludes?.includePaths ?? []),
+    ];
     persistCandidate = resolvePersistCandidateForWrite({
       inputBasis,
       runtimeConfig: snapshot.config,
@@ -211,6 +310,9 @@ export async function writeConfigFileFromContext(
       rootAuthoredConfig: snapshot.parsed,
       agentRosterIncludeOwned: snapshot.agentRosterIncludeOwned,
       keyedAgentEntryIncludePaths: keyedAgentEntryIncludes?.includePaths,
+      includeWriteThroughPaths:
+        includeWriteThroughPaths.length > 0 ? includeWriteThroughPaths : undefined,
+      pendingIncludeWrites: includeWriteThroughPaths.length > 0 ? pendingIncludeWrites : undefined,
       unsetPaths,
       explicitSetPaths,
       explicitSetValueSource,
@@ -219,6 +321,17 @@ export async function writeConfigFileFromContext(
       allowIncludeAncestorExplicitSetPaths: options.allowIncludeAncestorExplicitSetPaths,
       preserveLegacyAgentRoster,
     });
+    // Write include files before hash/preflight so revision hashes match the
+    // files that will exist. Restorers run if validation or preflight misses,
+    // or if the later publication try exits unpublished / rolls back the root.
+    if (pendingIncludeWrites.length > 0) {
+      pendingIncludeRestorers = await commitPendingKeyedIncludeWrites({
+        snapshot,
+        pendingIncludeWrites,
+        fsModule: deps.fs,
+        assertConfigPathForWrite: options.assertConfigPathForWrite,
+      });
+    }
   }
   if (snapshot.exists && (snapshot.valid || hasIncludes)) {
     try {
@@ -273,22 +386,28 @@ export async function writeConfigFileFromContext(
     return result;
   };
   // Validate authored structure before stamping can replace malformed parents.
-  validateCandidate(validationCandidate);
-  // SAFETY: the original resolved input was just validated; retain raw values, not parser defaults.
-  const validatedCandidate = validationCandidate as OpenClawConfig;
-  const materialized = stampConfigVersion(
-    snapshot.exists
-      ? validatedCandidate
-      : initializeNativeSessionCatalogPreferences(validatedCandidate),
-    options.lastTouchedVersionOverride,
-    snapshot.exists ? (snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig) : null,
-  );
-  // Resolve policy from included facts, but persist only its delta beside authored directives.
-  persistCandidate = applyMergePatch(
-    persistCandidate,
-    createMergePatch(validationCandidate, materialized),
-  );
-  const validated = validateCandidate(resolveValidationCandidate(persistCandidate));
+  let validated;
+  try {
+    validateCandidate(validationCandidate);
+    // SAFETY: the original resolved input was just validated; retain raw values, not parser defaults.
+    const validatedCandidate = validationCandidate as OpenClawConfig;
+    const materialized = stampConfigVersion(
+      snapshot.exists
+        ? validatedCandidate
+        : initializeNativeSessionCatalogPreferences(validatedCandidate),
+      options.lastTouchedVersionOverride,
+      snapshot.exists ? (snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig) : null,
+    );
+    // Resolve policy from included facts, but persist only its delta beside authored directives.
+    persistCandidate = applyMergePatch(
+      persistCandidate,
+      createMergePatch(validationCandidate, materialized),
+    );
+    validated = validateCandidate(resolveValidationCandidate(persistCandidate));
+  } catch (error) {
+    await restorePendingIncludeWrites(pendingIncludeRestorers);
+    throw error;
+  }
   const previousWarningFingerprint = loggedConfigWarningFingerprints.get(configPath);
   // Capture before commit so rollback cannot restore a watcher-updated slot.
   options.assertConfigPathForWrite?.();
@@ -310,6 +429,7 @@ export async function writeConfigFileFromContext(
     }
   } catch (error) {
     if (error instanceof EnvRefArrayMutationError) {
+      await restorePendingIncludeWrites(pendingIncludeRestorers);
       throw error;
     }
     // A failed current-file reread leaves the already validated candidate unchanged.
@@ -479,6 +599,7 @@ export async function writeConfigFileFromContext(
     });
     deps.logger.warn(message);
     await appendWriteAudit("rejected", error);
+    await restorePendingIncludeWrites(pendingIncludeRestorers);
     throw error;
   }
 
@@ -496,7 +617,12 @@ export async function writeConfigFileFromContext(
           ),
       });
     });
-  await preCommitRuntimePreflight(sourceConfigForPreflight);
+  try {
+    await preCommitRuntimePreflight(sourceConfigForPreflight);
+  } catch (error) {
+    await restorePendingIncludeWrites(pendingIncludeRestorers);
+    throw error;
+  }
 
   const publication: { phase: "unpublished" | "removed" | "published" | "accepted" } = {
     phase: "unpublished",
@@ -689,6 +815,9 @@ export async function writeConfigFileFromContext(
       }
     } catch (failureDuringAudit) {
       failure = failureDuringAudit;
+    }
+    if (publication.phase === "unpublished" || rollbackStatus === "restored") {
+      await restorePendingIncludeWrites(pendingIncludeRestorers);
     }
     if (publication.phase === "unpublished") {
       throw failure;

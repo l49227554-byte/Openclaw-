@@ -96,6 +96,7 @@ const identityFields = new Set(["key", "sessionId", "agentId"]);
 /** Field receipts follow row copies without retaining another store of row values. */
 export function createSessionRowProvenance() {
   let observationsByRow = new WeakMap<GatewaySessionRow, RowObservation>();
+  const completedSelfMerges = new WeakSet<RowObservation>();
   const owner = (row: GatewaySessionRow, agentId?: string | null) => {
     const resolved =
       parseAgentSessionKey(row.key)?.agentId ??
@@ -219,11 +220,33 @@ export function createSessionRowProvenance() {
     offered: GatewaySessionRow,
     agentId?: string | null,
   ): GatewaySessionRow => {
+    const observed = current === offered ? observationsByRow.get(current) : undefined;
+    if (observed && completedSelfMerges.has(observed)) {
+      return current;
+    }
     const key = identity(current, agentId);
     if (!key || key !== identity(offered, agentId)) {
       return current;
     }
-    const currentMetadata = metadata(current, agentId);
+    const currentMetadata = observed ?? metadata(current, agentId);
+    if (observed) {
+      // Self-projection can admit event writers without changing any row values.
+      let fields: Map<string, FieldObservation> | undefined;
+      for (const [field, observation] of currentMetadata.fields) {
+        const merged = mergeSessionFieldObservations(observation, observation).observation;
+        if (merged !== observation) {
+          fields ??= new Map(currentMetadata.fields);
+          fields.set(field, merged);
+        }
+      }
+      const settled = fields ? { ...currentMetadata, fields } : currentMetadata;
+      if (fields) {
+        observationsByRow.set(current, settled);
+      }
+      // Only completed, valid self-merges are reusable; every receipt writer replaces this record.
+      completedSelfMerges.add(settled);
+      return current;
+    }
     const offeredMetadata = metadata(offered, agentId);
     const offeredReadIsNewer =
       offeredMetadata.read.source.revision > currentMetadata.read.source.revision;

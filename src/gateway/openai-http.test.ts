@@ -2673,7 +2673,10 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
     [
       { name: "resolved", reject: false },
       { name: "rejected", reject: true },
-    ].flatMap((scenario) => ["SDK", "raw HTTP"].map((consumer) => ({ ...scenario, consumer }))),
+    ].flatMap((scenario) => [
+      { ...scenario, consumer: "SDK" },
+      { ...scenario, consumer: "raw HTTP" },
+    ]),
   )(
     "preserves streaming failure when an error lifecycle precedes a $name run ($consumer)",
     async ({ reject, consumer }) => {
@@ -2932,7 +2935,10 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
         expected: "Agent run failed",
         protocolError: true,
       },
-    ].flatMap((scenario) => ["SDK", "raw HTTP"].map((consumer) => ({ ...scenario, consumer }))),
+    ].flatMap((scenario) => [
+      { ...scenario, consumer: "SDK" },
+      { ...scenario, consumer: "raw HTTP" },
+    ]),
   )(
     "separates streamed content from the terminal finish for $name ($consumer)",
     async ({ fail, providerTerminal, expected, protocolError, consumer }) => {

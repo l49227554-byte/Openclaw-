@@ -651,44 +651,20 @@ vi.mock("./agent-scope.js", async () => {
 });
 
 vi.mock("./auth-profiles.js", async () => {
-  const {
-    externalCliDiscoveryForProviderAuth,
-    ensureAuthProfileStoreWithoutExternalProfiles,
-    listProfilesForProvider,
-    loadAuthProfileStoreWithoutExternalProfiles,
-    resolveApiKeyForProfile,
-    resolveAuthProfileDisplayLabel,
-    resolveAuthProfileOrder,
-    resolveAuthStorePathForDisplay,
-  } = await vi.importActual<typeof import("./auth-profiles.js")>("./auth-profiles.js");
+  const actual = await vi.importActual<typeof import("./auth-profiles.js")>("./auth-profiles.js");
   return {
-    externalCliDiscoveryForProviderAuth,
+    ...actual,
     ensureAuthProfileStore: () => ({ profiles: {} }),
-    ensureAuthProfileStoreWithoutExternalProfiles,
-    listProfilesForProvider,
-    loadAuthProfileStoreWithoutExternalProfiles,
-    resolveApiKeyForProfile,
-    resolveAuthProfileDisplayLabel,
-    resolveAuthProfileOrder,
-    resolveAuthStorePathForDisplay,
   };
 });
 
 vi.mock("./auth-profiles/store-runtime.js", async () => {
-  const {
-    createAuthProfileStoreReadScope,
-    ensureAuthProfileStoreWithoutExternalProfiles,
-    loadAuthProfileStoreWithoutExternalProfiles,
-    saveAuthProfileStoreWithPreparedOwner,
-  } = await vi.importActual<typeof import("./auth-profiles/store-runtime.js")>(
+  const actual = await vi.importActual<typeof import("./auth-profiles/store-runtime.js")>(
     "./auth-profiles/store-runtime.js",
   );
   return {
-    createAuthProfileStoreReadScope,
+    ...actual,
     ensureAuthProfileStore: vi.fn(() => state.authProfileStoreMock),
-    ensureAuthProfileStoreWithoutExternalProfiles,
-    loadAuthProfileStoreWithoutExternalProfiles,
-    saveAuthProfileStoreWithPreparedOwner,
   };
 });
 

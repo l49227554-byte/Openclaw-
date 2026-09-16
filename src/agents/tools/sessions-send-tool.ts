@@ -17,6 +17,10 @@ import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/tr
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { AgentRouteBinding } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  bindInProcessSubagentResume,
+  readInProcessSubagentResume,
+} from "../../gateway/in-process-subagent-resume.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEventEntry } from "../../infra/system-events.js";
@@ -583,10 +587,17 @@ export function createSessionsSendTool(opts?: {
         signal && opts?.signal ? AbortSignal.any([signal, opts.signal]) : (signal ?? opts?.signal);
       const baseGatewayCall = opts?.callGateway ?? callAgentToolGatewayRequest;
       const gatewayCall: GatewayCaller = async <T>(request: Parameters<GatewayCaller>[0]) =>
-        await baseGatewayCall<T>({
-          ...request,
-          ...(executionSignal ? { signal: executionSignal } : {}),
-        });
+        await baseGatewayCall<T>(
+          // Resume authority is attached to the exact in-process carrier, not
+          // enumerable request fields. Preserve it when adding cancellation.
+          bindInProcessSubagentResume(
+            {
+              ...request,
+              ...(executionSignal ? { signal: executionSignal } : {}),
+            },
+            readInProcessSubagentResume(request),
+          ),
+        );
       const message = readToolStringParam(params, "message", { required: true, trim: false });
       if (!message.trim()) {
         throw new ToolInputError("message required");

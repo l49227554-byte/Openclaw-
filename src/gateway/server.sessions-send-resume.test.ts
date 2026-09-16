@@ -366,11 +366,11 @@ it("fences a cancelled successor after adoption before queued input consumption"
   }
 });
 
-it("resumes a visible child through sessions_send and delivers exactly one task-owned result", async () => {
+it.each([false, true])("resumes a child exactly once (signal=%s)", async (withRequestSignal) => {
   const root = tempDirs.make("openclaw-parent-resume-gateway-");
   const parent = "agent:main:main";
-  const child = "agent:main:dashboard:resume-proof";
-  const previousRunId = "resume-gateway-paused";
+  const child = `agent:main:dashboard:resume-proof-${withRequestSignal}`;
+  const previousRunId = `resume-gateway-paused-${withRequestSignal}`;
   const release = createDeferred();
   const started = createDeferred();
   const announce = vi
@@ -442,11 +442,15 @@ it("resumes a visible child through sessions_send and delivers exactly one task-
         gatewayContextResolver: () => kernel.gatewayRequestContext,
       },
       () =>
-        tool.execute("resume-proof", {
-          sessionKey: child,
-          mode: "resume",
-          message: "The answer is ready; finish the task.",
-        }),
+        tool.execute(
+          "resume-proof",
+          {
+            sessionKey: child,
+            mode: "resume",
+            message: "The answer is ready; finish the task.",
+          },
+          withRequestSignal ? new AbortController().signal : undefined,
+        ),
     );
     expect(result.details, JSON.stringify(result.details)).toMatchObject({
       status: "accepted",

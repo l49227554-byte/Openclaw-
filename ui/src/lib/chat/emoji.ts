@@ -139,7 +139,8 @@ function isLiteralContext(value: string, start: number, caret: number): boolean 
     begin -= 1;
   }
   const tail = inline.slice(begin, end);
-  if (tail.toLowerCase().includes("www.")) {
+  // Paths, queries, and fragments stay literal even when their URL has no scheme.
+  if (tail.toLowerCase().includes("www.") || /[/?#]/u.test(tail)) {
     return true;
   }
   // A single pass avoids regex retries at every letter in long pasted tokens.

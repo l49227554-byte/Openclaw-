@@ -81,7 +81,6 @@ function renderStartControl(options: NewSessionComposerOptions) {
   </openclaw-tooltip>`;
 }
 
-
 function handleComposerKeydown(
   event: KeyboardEvent,
   options: NewSessionComposerOptions,
@@ -137,6 +136,10 @@ function handleComposerKeydown(
     ? hasSubmitModifier && event.shiftKey
     : hasSubmitModifier && !event.shiftKey;
   if (!event.altKey && isBackgroundShortcut && options.onBackgroundSubmit) {
+    if (event.repeat) {
+      event.preventDefault();
+      return;
+    }
     if (options.canSubmit || options.submitDisabledReason !== undefined) {
       event.preventDefault();
       resetSkillMenuState(options.textareaController.skillMenuState);
@@ -147,6 +150,10 @@ function handleComposerKeydown(
     return;
   }
   if (event.shiftKey || (options.requiresModifier && !hasSubmitModifier)) {
+    return;
+  }
+  if (event.repeat) {
+    event.preventDefault();
     return;
   }
   // A reasoned gate still consumes the press: the submission flow records the
@@ -423,6 +430,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
               @focus=${handleSelect}
               @pointerup=${handleSelect}
               @keyup=${(event: KeyboardEvent) => {
+                emojiMenu.handleKeyup(event);
                 if (event.key.startsWith("Arrow") || event.key === "Home" || event.key === "End") {
                   handleSelect(event);
                 }

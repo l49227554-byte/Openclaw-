@@ -1,4 +1,4 @@
-import { render } from "lit";
+import { nothing, render } from "lit";
 import MarkdownIt from "markdown-it";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TextareaTokenAnchor } from "../../components/textarea-token-anchor.ts";
@@ -40,11 +40,12 @@ beforeEach(() => {
   });
 });
 
-function fixture(kind: "chat" | "new", locked = false) {
+function fixture(kind: "chat" | "new", locked = false, requiresModifier = false) {
   const container = document.createElement("div");
   document.body.append(container);
   let draft = "";
   const send = vi.fn();
+  const backgroundSend = vi.fn();
   const controller = new NewSessionComposerTextareaController();
   controllers.push(controller);
   const props = createComposerProps({
@@ -61,13 +62,14 @@ function fixture(kind: "chat" | "new", locked = false) {
       kind === "chat"
         ? renderChatComposer({ ...props, draft })
         : renderNewSessionComposer({
+            renderCritters: () => nothing,
             attachments: [],
             getAttachments: () => [],
             canSubmit: true,
             message: draft,
             pendingAttachmentReads: 0,
             readSignal: new AbortController().signal,
-            requiresModifier: false,
+            requiresModifier,
             submitting: false,
             messageLocked: locked,
             textareaController: controller,
@@ -79,6 +81,7 @@ function fixture(kind: "chat" | "new", locked = false) {
               redraw();
             },
             onSubmit: send,
+            onBackgroundSubmit: backgroundSend,
           }),
       container,
     );
@@ -113,7 +116,7 @@ function fixture(kind: "chat" | "new", locked = false) {
     textarea.dispatchEvent(event);
     return event;
   };
-  return { container, textarea, input, key, colon, send, draft: () => draft };
+  return { container, textarea, input, key, colon, send, backgroundSend, draft: () => draft };
 }
 
 describe.each(["chat", "new"] as const)("%s emoji composer", (kind) => {
@@ -132,6 +135,19 @@ describe.each(["chat", "new"] as const)("%s emoji composer", (kind) => {
     expect(f.textarea.selectionStart).toBe(9);
     expect(document.activeElement).toBe(f.textarea);
     expect(f.send).not.toHaveBeenCalled();
+  });
+  it("does not send on held Enter after accepting an emoji, but sends on a fresh press", () => {
+    const f = fixture(kind);
+    f.input(":smi");
+    f.key("Enter");
+    expect(f.draft()).toBe("😄");
+    expect(f.container.querySelector('[role="listbox"]')).toBeNull();
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.key("Enter", { repeat: true }).defaultPrevented).toBe(true);
+    expect(f.draft()).toBe("😄");
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.key("Enter").defaultPrevented).toBe(true);
+    expect(f.send).toHaveBeenCalledTimes(1);
   });
   it("supports mouse and Tab acceptance and persistent Escape dismissal", () => {
     const f = fixture(kind);
@@ -171,6 +187,11 @@ describe.each(["chat", "new"] as const)("%s emoji composer", (kind) => {
     "~~~\n> ~~~\n:smile",
     " \t:smile",
     "https://example.com/:smile",
+    "//example.com/?emoji=:smile",
+    "example.com?emoji=:smile",
+    "../page?emoji=:smile",
+    "/page#emoji=:smile",
+    "page?emoji=:smile",
     "mailto:person@example.com?subject=:smile",
     "[link](:smile",
     "[x](foo(bar)(:smile",
@@ -253,4 +274,49 @@ describe.each(["chat", "new"] as const)("%s emoji composer", (kind) => {
     expect(locked.colon().defaultPrevented).toBe(false);
     expect(locked.container.querySelector('[aria-label="Emoji suggestions"]')).toBeNull();
   });
+});
+
+describe("New Session emoji submission shortcuts", () => {
+  it.each([
+    { requiresModifier: false, shiftKey: true },
+    { requiresModifier: true, shiftKey: false },
+    { requiresModifier: true, shiftKey: true },
+  ])("preserves native repeated newlines for %j", ({ requiresModifier, shiftKey }) => {
+    const f = fixture("new", false, requiresModifier);
+    f.input("A draft");
+    expect(f.key("Enter", { shiftKey }).defaultPrevented).toBe(false);
+    expect(f.key("Enter", { shiftKey, repeat: true }).defaultPrevented).toBe(false);
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.backgroundSend).not.toHaveBeenCalled();
+  });
+  it("consumes held emoji acceptance until Enter is released in modifier mode", () => {
+    const f = fixture("new", false, true);
+    f.input(":smi");
+    f.key("Enter");
+    expect(f.key("Enter", { repeat: true }).defaultPrevented).toBe(true);
+    f.textarea.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+    expect(f.key("Enter").defaultPrevented).toBe(false);
+    expect(f.key("Enter", { repeat: true }).defaultPrevented).toBe(false);
+    expect(f.send).not.toHaveBeenCalled();
+  });
+  it.each([
+    { requiresModifier: false, ctrlKey: true, shiftKey: false },
+    { requiresModifier: false, metaKey: true, shiftKey: false },
+    { requiresModifier: true, ctrlKey: true, shiftKey: true },
+    { requiresModifier: true, metaKey: true, shiftKey: true },
+  ])(
+    "ignores held background shortcut %j after emoji acceptance",
+    ({ requiresModifier, ...keys }) => {
+      const f = fixture("new", false, requiresModifier);
+      f.input(":smi");
+      f.key("Enter");
+      expect(f.draft()).toBe("😄");
+      expect(f.key("Enter", { ...keys, repeat: true }).defaultPrevented).toBe(true);
+      expect(f.draft()).toBe("😄");
+      expect(f.send).not.toHaveBeenCalled();
+      expect(f.backgroundSend).not.toHaveBeenCalled();
+      expect(f.key("Enter", keys).defaultPrevented).toBe(true);
+      expect(f.backgroundSend).toHaveBeenCalledTimes(1);
+    },
+  );
 });

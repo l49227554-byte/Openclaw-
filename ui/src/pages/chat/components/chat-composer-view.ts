@@ -504,6 +504,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                     @focus=${handleSelect}
                     @pointerup=${handleSelect}
                     @keyup=${(event: KeyboardEvent) => {
+                      state.emojiMenu.handleKeyup(event);
                       if (
                         event.key.startsWith("Arrow") ||
                         event.key === "Home" ||

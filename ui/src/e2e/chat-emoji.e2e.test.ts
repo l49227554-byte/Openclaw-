@@ -155,7 +155,22 @@ suite.define(() => {
         await composer.press("Escape");
         await expect.poll(() => menu.count()).toBe(0);
         await expect.poll(() => composer.inputValue()).toBe(":smi");
+        await composer.fill("");
+        await composer.pressSequentially(":smi");
+        await menu.waitFor({ state: "visible" });
+        await page.keyboard.down("Enter");
+        await expect.poll(() => composer.inputValue()).toBe("😄");
+        await expect.poll(() => menu.count()).toBe(0);
+        await page.keyboard.down("Enter");
+        await page.keyboard.up("Enter");
+        expect(await composer.inputValue()).toBe("😄");
         expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+        expect(await gateway.getRequests("sessions.create")).toHaveLength(0);
+        await composer.press("Enter");
+        const sent = await gateway.waitForRequest(
+          route.startsWith("new") ? "sessions.create" : "chat.send",
+        );
+        expect(sent.params.message).toBe("😄");
       });
     },
   );

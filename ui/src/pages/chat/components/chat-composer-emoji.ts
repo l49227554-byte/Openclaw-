@@ -25,6 +25,7 @@ export class ComposerEmojiMenu {
   private dismissed: { value: string; caret: number } | null = null;
   private readonly resolver = new EmojiTargetResolver();
   private inserting = false;
+  private acceptedEnter = false;
   private requestUpdate: (() => void) | null = null;
   private readonly anchor = new TextareaTokenAnchor(() => {
     const update = this.requestUpdate;
@@ -50,6 +51,7 @@ export class ComposerEmojiMenu {
     return this.items.length > 0;
   }
   close() {
+    this.acceptedEnter = false;
     this.anchor.close();
     this.requestUpdate = null;
     this.textarea = null;
@@ -168,7 +170,21 @@ export class ComposerEmojiMenu {
     return true;
   }
 
+  handleKeyup(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      this.acceptedEnter = false;
+    }
+  }
+
   handleKeydown(event: KeyboardEvent, paneId: string, requestUpdate: () => void) {
+    if (event.key === "Enter") {
+      if (!event.repeat) {
+        this.acceptedEnter = false;
+      } else if (this.acceptedEnter) {
+        event.preventDefault();
+        return true;
+      }
+    }
     const textarea = event.target;
     if (
       !this.open ||
@@ -196,7 +212,11 @@ export class ComposerEmojiMenu {
         requestUpdate();
         return this.activeId(paneId);
       },
-      select: () => this.select(textarea, requestUpdate),
+      select: (key) => {
+        this.select(textarea, requestUpdate);
+        // Keep the accepting press consumed after insertion closes the menu.
+        this.acceptedEnter = key === "Enter";
+      },
     });
   }
 

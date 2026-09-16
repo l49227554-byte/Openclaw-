@@ -760,97 +760,59 @@ describe("session cost usage", () => {
     }
   });
 
-  it("counts token usage for an unpriced (unconfigured all-zero) model as missing, not a confident $0", async () => {
-    const root = await makeSessionCostRoot("cost-unknown-pricing");
-    const sessionsDir = path.join(root, "agents", "main", "sessions");
-    await fs.mkdir(sessionsDir, { recursive: true });
-
-    // A real assistant turn that burned tokens for a model absent from every pricing source.
-    const entry = {
-      type: "message",
-      timestamp: new Date().toISOString(),
-      message: {
-        role: "assistant",
-        provider: "custom",
-        model: "unpriced-model",
-        usage: {
-          input: 881,
-          output: 6,
-          cacheRead: 22400,
-          cacheWrite: 0,
-          totalTokens: 23287,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
-      },
-    };
-
-    await fs.writeFile(
-      path.join(sessionsDir, "sess-1.jsonl"),
-      transcriptText("sess-1", entry),
-      "utf-8",
-    );
-
-    // No operator-configured pricing for this model, so its all-zero cost is unknown,
-    // not an intentional "free" price.
-    await withStateDir(root, async () => {
-      const summary = await loadCostUsageSummary();
-      expect(summary.totals.totalTokens).toBe(23287);
-      expect(summary.totals.totalCost).toBe(0);
-      // Unknown pricing must be surfaced as missing rather than reported as a
-      // confident $0 that would blind budget/spike monitoring to real spend.
-      expect(summary.totals.missingCostEntries).toBe(1);
-    });
-  });
-
-  it("counts token usage for a configured all-zero model as missing because pricing is still unknown", async () => {
-    const root = await makeSessionCostRoot("cost-configured-zero-unknown");
-    const sessionsDir = path.join(root, "agents", "main", "sessions");
-    await fs.mkdir(sessionsDir, { recursive: true });
-
-    // Same shape of turn, with a configured all-zero cost block. After config defaults,
-    // omitted cost and explicit all-zero cost are indistinguishable, so a zero-rate
-    // token-burning turn is still safer to report as missing than as complete $0 spend.
-    const entry = {
-      type: "message",
-      timestamp: new Date().toISOString(),
-      message: {
-        role: "assistant",
-        provider: "custom",
-        model: "unpriced-model",
-        usage: {
-          input: 881,
-          output: 6,
-          cacheRead: 22400,
-          cacheWrite: 0,
-          totalTokens: 23287,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
-      },
-    };
-
-    await fs.writeFile(
-      path.join(sessionsDir, "sess-1.jsonl"),
-      transcriptText("sess-1", entry),
-      "utf-8",
-    );
-
-    // This mirrors normalized config where a model declaration without pricing has
-    // already received default zero rates.
-    const config = {
-      models: {
-        providers: {
-          custom: {
-            models: [
-              {
-                id: "unpriced-model",
-                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              },
-            ],
+  it.each([
+    { name: "unconfigured", config: undefined },
+    {
+      name: "configured all-zero",
+      config: {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example/v1",
+              models: [
+                {
+                  id: "unpriced-model",
+                  name: "Unpriced model",
+                  reasoning: false,
+                  input: ["text"],
+                  maxTokens: 8192,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                },
+              ],
+            },
           },
         },
+      } satisfies OpenClawConfig,
+    },
+  ])("counts token usage for $name pricing as missing", async ({ config }) => {
+    const root = await makeSessionCostRoot("cost-zero-pricing");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const entry = {
+      type: "message",
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        provider: "custom",
+        model: "unpriced-model",
+        usage: {
+          input: 881,
+          output: 6,
+          cacheRead: 22400,
+          cacheWrite: 0,
+          totalTokens: 23287,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
       },
-    } as unknown as OpenClawConfig;
+    };
 
+    await fs.writeFile(
+      path.join(sessionsDir, "sess-1.jsonl"),
+      transcriptText("sess-1", entry),
+      "utf-8",
+    );
+
+    // Config defaults cannot distinguish omitted pricing from explicit zero rates.
     await withStateDir(root, async () => {
       const summary = await loadCostUsageSummary({ config });
       expect(summary.totals.totalTokens).toBe(23287);
@@ -1194,68 +1156,41 @@ describe("session cost usage", () => {
           }),
         ).toBe(true);
       };
-      await writeLegacyRollup();
-
+      const appendUsage = (timestamp: string) =>
+        fs.appendFile(sessionFile, `${JSON.stringify(assistantEntry(timestamp, 5))}\n`, "utf-8");
       const rangeEndMs = Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1;
-      await refreshSessionCostUsageForTest(sessionFile);
-      const rebuilt = await loadSessionCostSummariesFromCache({
-        sessions: [session],
-        agentId: "main",
-        startMs: Date.UTC(2026, 1, 5),
-        endMs: rangeEndMs,
-        requestRefresh: false,
-      });
-      expect(rebuilt.cacheStatus.status).toBe("fresh");
-      expect(rebuilt.summaries[0]?.totalTokens).toBe(20);
-      expect(rebuilt.summaries[0]?.messageCounts?.toolCalls).toBe(2);
-      expect(rebuilt.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(2);
-      expect(rebuilt.summaries[0]?.toolUsage).toEqual({
-        totalCalls: 2,
-        uniqueTools: 1,
-        tools: [{ name: "read", count: 2 }],
-      });
-
-      await writeLegacyRollup();
-      await fs.appendFile(
-        sessionFile,
-        `${JSON.stringify(assistantEntry("2026-02-05T13:00:00.000Z", 5))}\n`,
-        "utf-8",
-      );
-      await refreshSessionCostUsageForTest(sessionFile);
-      const appended = await loadSessionCostSummariesFromCache({
-        sessions: [session],
-        agentId: "main",
-        startMs: Date.UTC(2026, 1, 5),
-        endMs: rangeEndMs,
-        requestRefresh: false,
-      });
-      expect(appended.cacheStatus.status).toBe("fresh");
-      expect(appended.summaries[0]?.totalTokens).toBe(25);
-      expect(appended.summaries[0]?.messageCounts?.toolCalls).toBe(4);
-      expect(appended.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(4);
-
-      await fs.appendFile(
-        sessionFile,
-        `${JSON.stringify(assistantEntry("2026-02-05T14:00:00.000Z", 5))}\n`,
-        "utf-8",
-      );
-      await refreshSessionCostUsageForTest(sessionFile);
-      const currentAppend = await loadSessionCostSummariesFromCache({
-        sessions: [session],
-        agentId: "main",
-        startMs: Date.UTC(2026, 1, 5),
-        endMs: rangeEndMs,
-        requestRefresh: false,
-      });
-      expect(currentAppend.cacheStatus.status).toBe("fresh");
-      expect(currentAppend.summaries[0]?.totalTokens).toBe(30);
-      expect(currentAppend.summaries[0]?.messageCounts?.toolCalls).toBe(6);
-      expect(currentAppend.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls).toBe(6);
-      expect(currentAppend.summaries[0]?.toolUsage).toEqual({
-        totalCalls: 6,
-        uniqueTools: 1,
-        tools: [{ name: "read", count: 6 }],
-      });
+      for (const [label, prepare, totalTokens, toolCalls] of [
+        ["obsolete without append", writeLegacyRollup, 20, 2],
+        [
+          "obsolete with append",
+          async () => {
+            await writeLegacyRollup();
+            await appendUsage("2026-02-05T13:00:00.000Z");
+          },
+          25,
+          4,
+        ],
+        ["current append", () => appendUsage("2026-02-05T14:00:00.000Z"), 30, 6],
+      ] as const) {
+        await prepare();
+        await refreshSessionCostUsageForTest(sessionFile);
+        const result = await loadSessionCostSummariesFromCache({
+          sessions: [session],
+          agentId: "main",
+          startMs: Date.UTC(2026, 1, 5),
+          endMs: rangeEndMs,
+          requestRefresh: false,
+        });
+        expect(result.cacheStatus.status, label).toBe("fresh");
+        expect(result.summaries[0]?.totalTokens, label).toBe(totalTokens);
+        expect(result.summaries[0]?.messageCounts?.toolCalls, label).toBe(toolCalls);
+        expect(result.summaries[0]?.dailyMessageCounts?.[0]?.toolCalls, label).toBe(toolCalls);
+        expect(result.summaries[0]?.toolUsage, label).toEqual({
+          totalCalls: toolCalls,
+          uniqueTools: 1,
+          tools: [{ name: "read", count: toolCalls }],
+        });
+      }
 
       const appendedRow = requireValue(
         readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
@@ -3187,42 +3122,23 @@ describe("session cost usage", () => {
     const sessionsDir = path.join(root, "agents", "main", "sessions");
     await fs.mkdir(sessionsDir, { recursive: true });
     const sessionFile = path.join(sessionsDir, "sess-invalid-max-points.jsonl");
-    const entries = [
-      {
-        type: "message",
-        timestamp: new Date(Date.UTC(2026, 1, 12, 10, 1, 0)).toISOString(),
-        message: {
-          role: "assistant",
-          provider: "openai",
-          model: "gpt-5.4",
-          usage: {
-            input: 1,
-            output: 2,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 3,
-            cost: { total: 0.001 },
-          },
+    const entries = [1, 2].map((index) => ({
+      type: "message",
+      timestamp: new Date(Date.UTC(2026, 1, 12, 10, index, 0)).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: index,
+          output: index * 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: index * 3,
+          cost: { total: index * 0.001 },
         },
       },
-      {
-        type: "message",
-        timestamp: new Date(Date.UTC(2026, 1, 12, 10, 2, 0)).toISOString(),
-        message: {
-          role: "assistant",
-          provider: "openai",
-          model: "gpt-5.4",
-          usage: {
-            input: 2,
-            output: 4,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 6,
-            cost: { total: 0.002 },
-          },
-        },
-      },
-    ];
+    }));
     await fs.writeFile(
       sessionFile,
       entries.map((entry) => JSON.stringify(entry)).join("\n"),
@@ -3231,20 +3147,12 @@ describe("session cost usage", () => {
 
     const createReadStream = vi.spyOn(nodeFs, "createReadStream");
     try {
-      await expect(loadSessionUsageTimeSeries({ sessionFile, maxPoints: 0 })).resolves.toEqual({
-        sessionId: undefined,
-        points: [],
-      });
-      await expect(loadSessionUsageTimeSeries({ sessionFile, maxPoints: -1 })).resolves.toEqual({
-        sessionId: undefined,
-        points: [],
-      });
-      await expect(
-        loadSessionUsageTimeSeries({ sessionFile, maxPoints: Number.NaN }),
-      ).resolves.toEqual({ sessionId: undefined, points: [] });
-      await expect(
-        loadSessionUsageTimeSeries({ sessionFile, maxPoints: Number.POSITIVE_INFINITY }),
-      ).resolves.toEqual({ sessionId: undefined, points: [] });
+      for (const maxPoints of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        await expect(loadSessionUsageTimeSeries({ sessionFile, maxPoints })).resolves.toEqual({
+          sessionId: undefined,
+          points: [],
+        });
+      }
       expect(createReadStream).not.toHaveBeenCalled();
     } finally {
       createReadStream.mockRestore();

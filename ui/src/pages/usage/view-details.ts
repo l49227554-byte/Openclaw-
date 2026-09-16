@@ -1,7 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-// Control UI view renders usage render details screen content.
 import { html, svg, nothing } from "lit";
 import {
   renderPanelRefreshStatus,
@@ -23,7 +22,6 @@ import type {
 } from "./types.ts";
 import { renderInsightList, USAGE_TOKEN_CATEGORIES } from "./view-overview.ts";
 
-// Chart constants
 const CHART_BAR_WIDTH_RATIO = 0.75; // Fraction of slot used for bar (rest is gap)
 const CHART_MAX_BAR_WIDTH = 8; // Max bar width in SVG viewBox units
 const CHART_SELECTION_OPACITY = 0.06; // Opacity of range selection overlay
@@ -48,21 +46,13 @@ function dateBoundaryMs(date: string, timeZone: "local" | "utc", dayOffset: 0 | 
   return timeZone === "utc" ? Date.UTC(year, month, day) : new Date(year, month, day).getTime();
 }
 
-/** Filter session logs by a timestamp range. */
-function filterLogsByRange(
-  logs: SessionLogEntry[],
-  rangeStart: number,
-  rangeEnd: number,
-): SessionLogEntry[] {
-  const lo = Math.min(rangeStart, rangeEnd);
-  const hi = Math.max(rangeStart, rangeEnd);
-  return logs.filter((log) => {
-    if (log.timestamp <= 0) {
-      return true;
-    }
-    const ts = normalizeLogTimestamp(log.timestamp);
-    return ts >= lo && ts <= hi;
-  });
+function isLogInRange(log: SessionLogEntry, rangeStart: number, rangeEnd: number): boolean {
+  // Keep undated entries visible; interval totals count dated entries separately.
+  if (!(log.timestamp > 0)) {
+    return true;
+  }
+  const ts = normalizeLogTimestamp(log.timestamp);
+  return ts >= Math.min(rangeStart, rangeEnd) && ts <= Math.max(rangeStart, rangeEnd);
 }
 
 function renderUsageRefreshStatus(
@@ -357,7 +347,9 @@ function renderSessionDetailPanel(
           filteredUsage,
           hasRange
             ? sessionLogsStatus.hasLoaded && sessionLogs
-              ? filterLogsByRange(sessionLogs, timeSeriesCursorStart, timeSeriesCursorEnd)
+              ? sessionLogs.filter((log) =>
+                  isLogInRange(log, timeSeriesCursorStart, timeSeriesCursorEnd),
+                )
               : null
             : undefined,
         )}
@@ -443,7 +435,6 @@ function renderTimeSeriesCompact(
     `;
   }
 
-  // Filter and recalculate (same logic as main function)
   let points = timeSeries.points;
   if (startDate || endDate || (selectedDays && selectedDays.length > 0)) {
     const startTs = startDate ? dateBoundaryMs(startDate, timeZone, 0) : 0;
@@ -475,7 +466,6 @@ function renderTimeSeriesCompact(
     return { ...p, cumulativeTokens: cumTokens, cumulativeCost: cumCost };
   });
 
-  // Compute range-filtered sums for "Tokens by Type"
   const hasSelection = cursorStart != null && cursorEnd != null;
   const rangeStartTs = hasSelection ? Math.min(cursorStart, cursorEnd) : 0;
   const rangeEndTs = hasSelection ? Math.max(cursorStart, cursorEnd) : Infinity;
@@ -530,7 +520,6 @@ function renderTimeSeriesCompact(
   const barWidth = Math.min(CHART_MAX_BAR_WIDTH, Math.max(1, slotWidth * CHART_BAR_WIDTH_RATIO));
   const barGap = slotWidth - barWidth;
 
-  // Pre-compute handle X positions in SVG viewBox coordinates
   const leftHandleX = padding.left + rangeStartIdx * (barWidth + barGap);
   const rightHandleX =
     rangeEndIdx >= points.length
@@ -611,14 +600,10 @@ function renderTimeSeriesCompact(
               svg`<text x="${padding.left - 4}" y="${y}" text-anchor="end" class="ts-axis-label">${text}</text>`,
           )}
           <!-- X axis labels (first and last) -->
-          ${
-            points.length > 0
-              ? svg`
+          ${svg`
             <text x="${padding.left}" y="${padding.top + chartHeight + 10}" text-anchor="start" class="ts-axis-label">${formatTimeMs(expectDefined(points[0], "time series first point").timestamp, { hour: "2-digit", minute: "2-digit", ...timeZoneOptions }, "")}</text>
             <text x="${width - padding.right}" y="${padding.top + chartHeight + 10}" text-anchor="end" class="ts-axis-label">${formatTimeMs(expectDefined(points.at(-1), "time series last point").timestamp, { hour: "2-digit", minute: "2-digit", ...timeZoneOptions }, "")}</text>
-          `
-              : nothing
-          }
+          `}
           <!-- Bars -->
           ${points.map((p, i) => {
             const val = expectDefined(barTotals[i], "time series bar total");
@@ -687,9 +672,8 @@ function renderTimeSeriesCompact(
             }
             e.preventDefault();
             e.stopPropagation();
-            // Find the wrapper, then the SVG inside it
             const wrapper = (e.currentTarget as HTMLElement).closest(".timeseries-chart-wrapper");
-            const svgEl = wrapper?.querySelector("svg") as SVGSVGElement;
+            const svgEl = wrapper?.querySelector("svg");
             if (!svgEl) {
               return;
             }
@@ -1053,25 +1037,16 @@ function renderSessionLogsCompact(
     new Set(entries.flatMap((entry) => entry.toolInfo.tools.map(([name]) => name))),
   ).toSorted((a, b) => a.localeCompare(b));
   const hasCursorFilter = cursorStart != null && cursorEnd != null;
-  const cursorMin = hasCursorFilter ? Math.min(cursorStart, cursorEnd) : 0;
-  const cursorMax = hasCursorFilter ? Math.max(cursorStart, cursorEnd) : Infinity;
-  const filteredEntries = entries.filter((entry) => {
-    // Filter by cursor timeline range (only if logs cover the range)
-    if (hasCursorFilter && entry.log.timestamp > 0) {
-      const timestamp = normalizeLogTimestamp(entry.log.timestamp);
-      if (timestamp < cursorMin || timestamp > cursorMax) {
-        return false;
-      }
-    }
-    return (
+  const filteredEntries = entries.filter(
+    (entry) =>
+      (!hasCursorFilter || isLogInRange(entry.log, cursorStart, cursorEnd)) &&
       (filters.roles.length === 0 || filters.roles.includes(entry.log.role)) &&
       (!filters.hasTools || entry.toolInfo.tools.length > 0) &&
       (filters.tools.length === 0 ||
         entry.toolInfo.tools.some(([name]) => filters.tools.includes(name))) &&
       (!normalizedQuery ||
-        normalizeLowercaseStringOrEmpty(entry.cleanContent).includes(normalizedQuery))
-    );
-  });
+        normalizeLowercaseStringOrEmpty(entry.cleanContent).includes(normalizedQuery)),
+  );
   const hasActiveFilters =
     filters.roles.length > 0 || filters.tools.length > 0 || filters.hasTools || normalizedQuery;
   const displayedCount =

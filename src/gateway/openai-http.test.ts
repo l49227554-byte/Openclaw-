@@ -49,6 +49,8 @@ import {
   emitCompatibleAssistantReplacement,
   emitBufferedAssistantReplacement,
   createOpenAiHttpTestClient,
+  parseSseDataLines,
+  readRawChatCompletionStream,
 } from "./http-stream.test-support.js";
 import { buildAssistantDeltaResult } from "./test-helpers.agent-results.js";
 import {
@@ -141,32 +143,6 @@ async function postRawChatCompletions(port: number, body: string) {
     },
     body,
   });
-}
-
-function parseSseDataLines(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("data: "))
-    .map((line) => line.slice("data: ".length));
-}
-
-// SDK error handling aborts its fetch before [DONE]. Observe wire framing on
-// its own request so SDK cancellation cannot destroy the capture.
-async function readRawChatCompletionStream(
-  response: Response,
-  expectedError?: { message: string; type: string },
-): Promise<OpenAI.ChatCompletionChunk["choices"]> {
-  expect(response.status).toBe(200);
-  const data = parseSseDataLines(await response.text());
-  const chunks = data
-    .filter((line) => line !== "[DONE]")
-    .map((line) => JSON.parse(line) as OpenAI.ChatCompletionChunk | { error: unknown });
-  expect(chunks.filter((chunk) => "error" in chunk)).toEqual(
-    expectedError ? [{ error: expectedError }] : [],
-  );
-  expect(data.at(-1)).toBe("[DONE]");
-  return chunks.flatMap((chunk) => ("choices" in chunk ? chunk.choices : []));
 }
 
 type FirstAgentCommandOptions = {

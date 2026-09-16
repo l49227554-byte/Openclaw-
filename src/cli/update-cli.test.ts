@@ -55,6 +55,7 @@ import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contra
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureEnv, withEnvAsync } from "../test-utils/env.js";
+import { createCommandResult as commandResult } from "../test-utils/npm-spec-install-test-helpers.js";
 import { getFreePort } from "../test-utils/ports.js";
 import type { TempHomeEnv } from "../test-utils/temp-home.js";
 import { VERSION } from "../version.js";
@@ -1380,25 +1381,6 @@ describe("update-cli", () => {
       ...(params.yes ? ["--yes"] : []),
     ]);
   };
-
-  const commandResult = (
-    overrides: Partial<{
-      stdout: string;
-      stderr: string;
-      code: number;
-      signal: NodeJS.Signals | null;
-      killed: boolean;
-      termination: "exit" | "timeout";
-    }> = {},
-  ) => ({
-    stdout: "",
-    stderr: "",
-    code: 0,
-    signal: null,
-    killed: false,
-    termination: "exit" as const,
-    ...overrides,
-  });
 
   const writeNpmPackageInstall = async (
     argv: string[],

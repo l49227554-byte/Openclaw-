@@ -33,11 +33,11 @@ import {
   resolveTrajectoryPath,
   resolveTrajectoryPointerPath,
   deferredPluginSessionStoreIds,
+  prepareSessionSourceVerification,
   readDeferredPluginSessionImport,
   recordDeferredPluginSessionImport,
   resolveVerifiedSessionSource,
   type DeferredPluginSessionImport,
-  type SessionSourceVerification,
 } from "../infra/deferred-plugin-session-sources.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { prepareLegacyAcpMigrationSource } from "../infra/legacy-acp-migration-source.js";
@@ -664,26 +664,16 @@ async function inspectOrMigrateTarget(params: {
   // Keeping them out of the file path also prevents archiving a live database.
   const isSqliteStore = params.target.storePath.endsWith(".sqlite");
   let retainedImport: DeferredPluginSessionImport | undefined;
-  const retainedSourceTarget = {
-    ...params.target,
+  const sourceVerification = prepareSessionSourceVerification({
+    ...params,
     sqlitePath: resolveTargetSqlitePath(params.target, params.env),
-  };
-  // Receipt verification and retained counting are synchronous; later publication revalidates.
-  const sourceVerification: SessionSourceVerification = new Map();
+  });
   if (!isSqliteStore && fs.existsSync(params.target.storePath)) {
     try {
-      retainedImport = readDeferredPluginSessionImport({
-        cfg: params.cfg,
-        target: params.target,
-        sqlitePath: retainedSourceTarget.sqlitePath,
-        env: params.env,
-        verification: sourceVerification,
-      });
+      retainedImport = readDeferredPluginSessionImport(sourceVerification);
     } catch (error) {
       return createDoctorSessionSqliteTargetReport({
-        agentId: params.target.agentId,
-        storePath: params.target.storePath,
-        sqlitePath: resolveTargetSqlitePath(params.target, params.env),
+        ...sourceVerification.resolvedTarget,
         issues: [{ code: "retained_plugin_source_conflict", message: formatErrorMessage(error) }],
       });
     }
@@ -830,9 +820,9 @@ async function inspectOrMigrateTarget(params: {
         }
         const transcriptPath = resolveVerifiedSessionSource(
           source,
-          retainedSourceTarget,
+          sourceVerification.resolvedTarget,
           params.env,
-          sourceVerification,
+          sourceVerification.verification,
         );
         if (!transcriptPath) {
           throw new Error(`Retained session migration source changed: ${record.transcriptPath}`);

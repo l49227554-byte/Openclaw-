@@ -190,6 +190,23 @@ function collectArchivedSources(
   return archives;
 }
 
+/** Receipt verification and retained counting share one synchronous phase; publication revalidates. */
+export function prepareSessionSourceVerification(params: SessionImportSource) {
+  const verification: SessionSourceVerification = new Map();
+  return {
+    cfg: params.cfg,
+    target: params.target,
+    resolvedTarget: {
+      agentId: params.target.agentId,
+      storePath: params.target.storePath,
+      sqlitePath: params.sqlitePath,
+    },
+    sqlitePath: params.sqlitePath,
+    env: params.env,
+    verification,
+  };
+}
+
 export function resolveVerifiedSessionSource(
   source: DeferredPluginSessionImport["sources"][number],
   target: SessionImportTarget,

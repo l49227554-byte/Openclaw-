@@ -182,6 +182,16 @@ export function createPluginReloadCleanup({
     }
   };
   return {
+    attempt,
+    assertResourceHandoff: (pluginIds: ReadonlySet<string>) => {
+      for (const record of previousRegistry.plugins) {
+        if (pluginIds.has(record.id) && getPluginInstance(record)?.hasActiveCall) {
+          throw new Error(
+            `Plugin ${record.id} cannot replace itself from its own active call; retry after the call finishes.`,
+          );
+        }
+      }
+    },
     drainInstances,
     disposeInstances,
     runLifecycleHooks,

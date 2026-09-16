@@ -103,13 +103,6 @@ export async function reloadGatewayPlugins(
   const operationId = params.pluginLifecycle?.operationId ?? randomUUID();
   const requestedIds = new Set(params.pluginLifecycle?.pluginIds ?? []);
   const { warnings, recordWarning, recordCleanup, cleanup } = createPluginReloadDiagnostics(log);
-  const attempt = async (errors: unknown[], run: () => void | Promise<void>) => {
-    try {
-      await run();
-    } catch (error) {
-      errors.push(error);
-    }
-  };
   const replacePluginIds = new Set([...requestedIds, ...(params.reloadPluginIds ?? [])]);
   for (const record of previousRegistry.plugins) {
     if (
@@ -150,6 +143,8 @@ export async function reloadGatewayPlugins(
   });
   const { channelTargets, startReplacedChannels, releaseChannelHandoffs } = channels;
   const {
+    attempt,
+    assertResourceHandoff,
     drainInstances,
     disposeInstances,
     runLifecycleHooks,
@@ -262,13 +257,7 @@ export async function reloadGatewayPlugins(
         )
         .map((record) => record.id),
     );
-    for (const record of previousRegistry.plugins) {
-      if (resourceHandoffIds.has(record.id) && getPluginInstance(record)?.hasActiveCall) {
-        throw new Error(
-          `Plugin ${record.id} cannot replace itself from its own active call; retry after the call finishes.`,
-        );
-      }
-    }
+    assertResourceHandoff(resourceHandoffIds);
     channels.collectTargets(nextRegistry, changedPluginIds);
     recovery.capture(changedPluginIds);
     await params.checkpoint?.();

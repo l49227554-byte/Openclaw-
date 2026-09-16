@@ -31,7 +31,29 @@ const KEY_ALIASES = new Map([
   ["del", "Delete"],
   ["ctrl", "Control"],
   ["cmd", "Meta"],
+  ["space", "Space"],
 ]);
+
+/**
+ * KeyboardEvent.key for Space is the literal " ". Route helpers trim strings, so
+ * map that exact character before empty rejection. Other whitespace still rejects.
+ */
+function normalizePressKeyChord(raw: unknown): string {
+  if (typeof raw !== "string" && typeof raw !== "number" && typeof raw !== "boolean") {
+    return "";
+  }
+  // Empty chord segments represent a literal plus key and must survive normalization.
+  return String(raw)
+    .split("+")
+    .map((part) => {
+      if (part === " ") {
+        return "Space";
+      }
+      const normalized = toStringOrEmpty(part);
+      return KEY_ALIASES.get(normalized.toLowerCase()) ?? normalized;
+    })
+    .join("+");
+}
 
 function countBatchActions(actions: BrowserActRequest[]): number {
   let count = 0;
@@ -219,11 +241,7 @@ export function normalizeActRequest(
       return definedAction({ kind, text: body.text, targetId });
     }
     case "press": {
-      // Empty chord segments represent a literal plus key and must survive normalization.
-      const key = toStringOrEmpty(body.key)
-        .split("+")
-        .map((part) => KEY_ALIASES.get(part.toLowerCase()) ?? part)
-        .join("+");
+      const key = normalizePressKeyChord(body.key);
       if (!key) {
         throw new Error("press requires key");
       }

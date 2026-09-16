@@ -2525,6 +2525,62 @@ stderr="$(<"$TMPDIR/stderr")"
     execDockerSnippet(script);
   });
 
+  describe.each(process.platform === "darwin" ? ["/bin/bash", "bash"] : ["/bin/bash"])(
+    "%s EXIT-trap Docker status",
+    (shell) => {
+      const cases = ["docker_e2e_docker_cmd", "docker_e2e_docker_run_cmd"].flatMap((helper) =>
+        ["normal", "no-diagnostics", "node-watchdog"].flatMap((mode) =>
+          [
+            { entryStatus: 0, commandStatus: 43 },
+            { entryStatus: 42, commandStatus: 0 },
+          ].map(({ entryStatus, commandStatus }) => ({ helper, mode, entryStatus, commandStatus })),
+        ),
+      );
+      it.each(cases)(
+        "preserves $helper status $commandStatus in $mode after exit $entryStatus",
+        ({ helper, mode, entryStatus, commandStatus }) => {
+          const workDir = tempDirs.make("docker-exit-status-");
+          writeExecutables(join(workDir, "bin"), {
+            timeout: PASSTHROUGH_TIMEOUT_SCRIPT,
+            node: `#!/bin/bash\nexec ${shellQuote(testNodeExecPath)} "$@"\n`,
+            docker: `#!/bin/bash\nexit ${commandStatus}\n`,
+          });
+          const setup =
+            mode === "no-diagnostics"
+              ? "docker_e2e_resource_limit_temp_dir() { return 1; }"
+              : mode === "node-watchdog"
+                ? "docker_e2e_timeout_bin() { return 1; }"
+                : "";
+          const script = repoShell(workDir)`
+export PATH="$TMPDIR/bin:$PATH"
+export OPENCLAW_DOCKER_E2E_DISABLE_RESOURCE_LIMITS=1
+source "$ROOT_DIR/scripts/lib/docker-e2e-container.sh"
+${setup}
+on_exit() {
+  trap - EXIT
+  set +e
+  if ${helper} run demo; then
+    observed=0
+  else
+    observed="$?"
+  fi
+  printf '%s\\n' "$observed"
+  exit 0
+}
+trap on_exit EXIT
+exit ${entryStatus}
+`;
+          const result = spawnSync(shell, ["--noprofile", "--norc", "-c", script], {
+            encoding: "utf8",
+            env: { ...process.env, BASH_ENV: "", ENV: "" },
+          });
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout).toBe(`${commandStatus}\n`);
+        },
+      );
+    },
+  );
+
   it("uses a Node watchdog for Docker commands when timeout is unavailable", () => {
     const workDir = tempDirs.make("openclaw-docker-node-timeout-");
     writeExecutables(join(workDir, "bin"), {

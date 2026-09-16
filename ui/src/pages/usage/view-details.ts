@@ -85,7 +85,7 @@ function renderUsageRefreshStatus(
 function renderSessionSummary(
   session: UsageSessionEntry,
   filteredUsage?: UsageSessionEntry["usage"],
-  filteredLogs?: SessionLogEntry[],
+  filteredLogs?: SessionLogEntry[] | null,
 ) {
   const usage = filteredUsage || session.usage;
   if (!usage) {
@@ -93,6 +93,22 @@ function renderSessionSummary(
   }
 
   const formatTs = (ts?: number): string => (ts ? formatMs(ts) : t("usage.common.emptyValue"));
+  const hasInterval = filteredLogs !== undefined;
+  const datedLogs = filteredLogs?.filter((log) => log.timestamp > 0);
+  const messageCounts = !hasInterval
+    ? usage.messageCounts
+    : datedLogs?.length
+      ? datedLogs.reduce(
+          (counts, { role }) => {
+            if (role === "user" || role === "assistant") {
+              counts[role] += 1;
+              counts.total += 1;
+            }
+            return counts;
+          },
+          { total: 0, user: 0, assistant: 0 },
+        )
+      : undefined;
 
   const badges = [
     session.channel && `channel:${session.channel}`,
@@ -105,10 +121,10 @@ function renderSessionSummary(
   // Always use the full tool list for stable layout; update counts when filtering
   const baseTools = usage.toolUsage?.tools.slice(0, 6) ?? [];
   let toolCounts: Map<string, number> | undefined;
-  if (filteredLogs) {
+  if (datedLogs?.length) {
     toolCounts = new Map();
     // Result rows carry tool names for filtering, but only assistant rows record calls.
-    for (const log of filteredLogs.filter(({ role }) => role === "assistant")) {
+    for (const log of datedLogs.filter(({ role }) => role === "assistant")) {
       for (const [name, count] of parseToolSummary(log.content).tools) {
         toolCounts.set(name, (toolCounts.get(name) ?? 0) + count);
       }
@@ -116,13 +132,19 @@ function renderSessionSummary(
   }
   const toolItems = baseTools.map((tool) => ({
     label: tool.name,
-    value: `${toolCounts ? (toolCounts.get(tool.name) ?? 0) : tool.count}`,
+    value: `${toolCounts ? (toolCounts.get(tool.name) ?? 0) : hasInterval ? t("usage.common.emptyValue") : tool.count}`,
     sub: t("usage.overview.calls"),
   }));
   const toolCallCount = toolCounts
     ? [...toolCounts.values()].reduce((sum, count) => sum + count, 0)
-    : (usage.toolUsage?.totalCalls ?? 0);
-  const uniqueToolCount = toolCounts ? toolCounts.size : (usage.toolUsage?.uniqueTools ?? 0);
+    : hasInterval
+      ? t("usage.common.emptyValue")
+      : (usage.toolUsage?.totalCalls ?? 0);
+  const uniqueToolCount = toolCounts
+    ? toolCounts.size
+    : hasInterval
+      ? t("usage.common.emptyValue")
+      : (usage.toolUsage?.uniqueTools ?? 0);
   const modelItems =
     usage.modelUsage?.slice(0, 6).map((entry) => ({
       label: entry.model ?? t("usage.common.unknown"),
@@ -132,11 +154,15 @@ function renderSessionSummary(
   const cards = [
     {
       labelKey: "usage.overview.messages",
-      value: usage.messageCounts?.total ?? 0,
-      meta: html`${usage.messageCounts?.user ?? 0}
-      ${normalizeLowercaseStringOrEmpty(t("usage.overview.user"))} ·
-      ${usage.messageCounts?.assistant ?? 0}
-      ${normalizeLowercaseStringOrEmpty(t("usage.overview.assistant"))}`,
+      value: messageCounts?.total ?? (hasInterval ? t("usage.common.emptyValue") : 0),
+      meta: html`${
+        hasInterval && !messageCounts
+          ? t("usage.common.emptyValue")
+          : html`${messageCounts?.user ?? 0}
+            ${normalizeLowercaseStringOrEmpty(t("usage.overview.user"))} ·
+            ${messageCounts?.assistant ?? 0}
+            ${normalizeLowercaseStringOrEmpty(t("usage.overview.assistant"))}`
+      }${hasInterval ? html`<br />${t("usage.details.loadedIntervalMessages")}` : nothing}`,
     },
     {
       labelKey: "usage.overview.toolCalls",
@@ -145,8 +171,9 @@ function renderSessionSummary(
     },
     {
       labelKey: "usage.overview.errors",
-      value: usage.messageCounts?.errors ?? 0,
-      meta: html`${usage.messageCounts?.toolResults ?? 0} ${t("usage.overview.toolResults")}`,
+      value: hasInterval ? t("usage.common.emptyValue") : (usage.messageCounts?.errors ?? 0),
+      meta: html`${hasInterval ? t("usage.common.emptyValue") : (usage.messageCounts?.toolResults ?? 0)}
+      ${t("usage.overview.toolResults")}`,
     },
     {
       labelKey: "usage.details.duration",
@@ -197,8 +224,6 @@ function computeFilteredUsage(
 
   let totalTokens = 0;
   let totalCost = 0;
-  let userMessages = 0;
-  let assistantMessages = 0;
   const tokenTotals = { output: 0, input: 0, cacheWrite: 0, cacheRead: 0 };
 
   for (const p of filtered) {
@@ -207,8 +232,6 @@ function computeFilteredUsage(
     for (const { key } of USAGE_TOKEN_CATEGORIES) {
       tokenTotals[key] += p[key] || 0;
     }
-    assistantMessages += p.output > 0 ? 1 : 0;
-    userMessages += p.input > 0 ? 1 : 0;
   }
   const first = expectDefined(filtered[0], "filtered usage first point");
   const last = expectDefined(filtered.at(-1), "filtered usage last point");
@@ -221,14 +244,7 @@ function computeFilteredUsage(
     durationMs: last.timestamp - first.timestamp,
     firstActivity: first.timestamp,
     lastActivity: last.timestamp,
-    messageCounts: {
-      total: filtered.length,
-      user: userMessages,
-      assistant: assistantMessages,
-      toolCalls: 0,
-      toolResults: 0,
-      errors: 0,
-    },
+    messageCounts: undefined,
   };
 }
 
@@ -339,8 +355,10 @@ function renderSessionDetailPanel(
         ${renderSessionSummary(
           session,
           filteredUsage,
-          timeSeriesCursorStart != null && timeSeriesCursorEnd != null && sessionLogs
-            ? filterLogsByRange(sessionLogs, timeSeriesCursorStart, timeSeriesCursorEnd)
+          hasRange
+            ? sessionLogsStatus.hasLoaded && sessionLogs
+              ? filterLogsByRange(sessionLogs, timeSeriesCursorStart, timeSeriesCursorEnd)
+              : null
             : undefined,
         )}
         <div class="session-detail-row">

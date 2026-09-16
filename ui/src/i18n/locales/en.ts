@@ -3762,6 +3762,7 @@ export const en: TranslationMap & {
       ofInput: "of input",
       of: "of",
       timelineFiltered: "timeline filtered",
+      loadedIntervalMessages: "Loaded conversation · selected interval",
       conversation: "Conversation",
       noMessages: "No messages",
       tool: "Tool",

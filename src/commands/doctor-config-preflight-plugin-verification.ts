@@ -8,7 +8,9 @@ import { normalizePluginsConfig, resolveEffectiveEnableState } from "../plugins/
 import type { PluginPayloadSmokeFailure } from "../plugins/payload-verification.js";
 import {
   buildDegradedPluginsFromVerificationFailures,
+  describePluginAvailabilityFailure,
   formatPluginVerificationDiagnostic,
+  PLUGIN_AVAILABILITY_POLICY,
   type DegradedPlugin,
 } from "../plugins/runtime-degraded-state.js";
 import { resolveCompatibilityHostVersion } from "../version.js";
@@ -68,12 +70,15 @@ function buildStartupPluginQuarantine(params: {
 }
 
 function formatStartupPluginSmokeFailure(failure: PluginPayloadSmokeFailure): string {
-  return `Plugin "${failure.pluginId}": ${formatPluginVerificationDiagnostic({
-    kind: "plugin-verification",
-    reason: failure.reason,
-    detail: failure.detail,
-    ...(failure.installPath ? { installPath: failure.installPath } : {}),
-  })}. Run \`openclaw update repair\` to retry plugin repair.`;
+  return describePluginAvailabilityFailure(
+    failure.pluginId,
+    formatPluginVerificationDiagnostic({
+      kind: "plugin-verification",
+      reason: failure.reason,
+      detail: failure.detail,
+      ...(failure.installPath ? { installPath: failure.installPath } : {}),
+    }),
+  ).message;
 }
 
 export async function runDoctorPluginConvergence(params: {
@@ -92,7 +97,7 @@ export async function runDoctorPluginConvergence(params: {
     // Shipped drivers run this preflight inside their fixed canary deadline.
     note(
       "Plugin refresh deferred to live update finalization; the canary verifies copied plugin payloads without downloading replacements.",
-      "Doctor warnings",
+      `Doctor ${PLUGIN_AVAILABILITY_POLICY.severity}s`,
     );
   }
   if (isUpdateRehearsal || shouldDeferConfiguredPluginInstallRepair(params.env)) {
@@ -141,7 +146,10 @@ export async function runDoctorPluginConvergence(params: {
     `${warning.message} ${warning.guidance.join(" ")}`.trim(),
   );
   if (warnings.length > 0) {
-    note(warnings.map((warning) => `- ${warning}`).join("\n"), "Doctor warnings");
+    note(
+      warnings.map((warning) => `- ${warning}`).join("\n"),
+      `Doctor ${PLUGIN_AVAILABILITY_POLICY.severity}s`,
+    );
   }
   const quarantinedPlugins = buildStartupPluginQuarantine({
     cfg: params.cfg,
@@ -233,7 +241,7 @@ async function verifyStartupPluginPayloads(
             })}`,
         )
         .join("\n"),
-      "Doctor warnings",
+      `Doctor ${PLUGIN_AVAILABILITY_POLICY.severity}s`,
     );
   }
   return result;

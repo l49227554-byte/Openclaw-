@@ -26,8 +26,8 @@ import {
   startCronClone,
   updateCronJobsFilter,
   validateCronForm,
-  type CronState,
 } from "../../lib/cron/index.ts";
+import type { CronState } from "../../lib/cron/types.ts";
 import { DEFAULT_CRON_FORM } from "../../test-helpers/cron.ts";
 import { loadCronRuns, loadMoreCronRuns, updateCronRunsFilter } from "./runs.ts";
 

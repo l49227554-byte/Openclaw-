@@ -9,7 +9,7 @@ import type {
   CronSortDir,
 } from "../../api/types.ts";
 import { formatUiError } from "../format-error.ts";
-import type { CronState } from "./index.ts";
+import type { CronState } from "./types.ts";
 
 type CronRunsLoadStatus = "ok" | "error" | "skipped";
 

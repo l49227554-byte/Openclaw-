@@ -41,7 +41,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await resetPreparedModelRuntimeSnapshotsForTest();
-  clearActivePluginRegistry();
+  await clearActivePluginRegistry();
   await state.cleanup();
 });
 
@@ -138,45 +138,47 @@ describe("agent command static capabilities", () => {
         const stateDir = path.join(home, "state");
         const key = "synthetic-static-capability-key";
         const requests: Array<{ method?: string; url?: string; auth?: string; model: string }> = [];
-        const server = http.createServer(async (req, res) => {
-          const chunks = [];
-          for await (const chunk of req) {
+        const server = http.createServer((req, res) => {
+          const chunks: Buffer[] = [];
+          req.on("data", (chunk: Buffer) => {
             chunks.push(chunk);
-          }
-          const body = JSON.parse(Buffer.concat(chunks).toString());
-          requests.push({
-            method: req.method,
-            url: req.url,
-            auth: req.headers.authorization,
-            model: body.model,
           });
-          res.writeHead(200, { "content-type": "text/event-stream" });
-          const common = {
-            id: "fixture-reply",
-            object: "chat.completion.chunk",
-            created: 1,
-            model: body.model,
-          };
-          for (const row of [
-            {
-              ...common,
-              choices: [
-                {
-                  index: 0,
-                  delta: { role: "assistant", content: "STATIC_OK" },
-                  finish_reason: null,
-                },
-              ],
-            },
-            {
-              ...common,
-              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-              usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-            },
-          ]) {
-            res.write(`data: ${JSON.stringify(row)}\n\n`);
-          }
-          res.end("data: [DONE]\n\n");
+          req.on("end", () => {
+            const body = JSON.parse(Buffer.concat(chunks).toString());
+            requests.push({
+              method: req.method,
+              url: req.url,
+              auth: req.headers.authorization,
+              model: body.model,
+            });
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            const common = {
+              id: "fixture-reply",
+              object: "chat.completion.chunk",
+              created: 1,
+              model: body.model,
+            };
+            for (const row of [
+              {
+                ...common,
+                choices: [
+                  {
+                    index: 0,
+                    delta: { role: "assistant", content: "STATIC_OK" },
+                    finish_reason: null,
+                  },
+                ],
+              },
+              {
+                ...common,
+                choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+                usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+              },
+            ]) {
+              res.write(`data: ${JSON.stringify(row)}\n\n`);
+            }
+            res.end("data: [DONE]\n\n");
+          });
         });
         server.listen(0, "127.0.0.1");
         await once(server, "listening");
@@ -268,9 +270,9 @@ describe("agent command static capabilities", () => {
           ]);
         } finally {
           server.closeAllConnections();
-          await new Promise<void>((resolve, reject) =>
-            server.close((error) => (error ? reject(error) : resolve())),
-          );
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => (error ? reject(error) : resolve()));
+          });
         }
       },
       { prefix: "openclaw-static-first-request-" },

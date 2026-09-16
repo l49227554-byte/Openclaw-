@@ -653,11 +653,12 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
   it.each([false, true])(
     "retains discovery-only auth beside captured runtime siblings (empty: %s)",
     (emptyRuntime) => {
+      const auth = { apiKey: "fixture-key", source: "fixture", mode: "api_key" as const };
       const authProvider: ProviderPlugin = {
         id: "fixture-login",
         label: "Fixture login",
         auth: [],
-        prepareSyntheticAuth: vi.fn(async () => ({ apiKey: "fixture-key", source: "fixture" })),
+        prepareSyntheticAuth: vi.fn(async () => auth),
       };
       const runtimeProvider = {
         ...createProvider({ id: "fixture-static", mode: "static" }),
@@ -676,7 +677,11 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
         pluginId: "fixture",
         label: "Runtime-only login",
         auth: [],
-        resolveSyntheticAuth: vi.fn(() => ({ apiKey: "unselected-key", source: "runtime" })),
+        resolveSyntheticAuth: vi.fn(() => ({
+          ...auth,
+          apiKey: "unselected-key",
+          source: "runtime",
+        })),
       };
       mocks.resolvePluginProvidersCore.mockReturnValue(
         emptyRuntime ? [] : [runtimeProvider, unrelatedAuth],
@@ -701,8 +706,8 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
   it.each(["none", "sync", "async"] as const)(
     "composes lightweight auth with runtime catalog replacement (runtime auth: %s)",
     async (runtimeAuth) => {
-      const entryAuth = { apiKey: "entry-key", source: "entry" };
-      const runtimeAuthResult = { apiKey: "runtime-key", source: "runtime" };
+      const entryAuth = { apiKey: "entry-key", source: "entry", mode: "api_key" as const };
+      const runtimeAuthResult = { ...entryAuth, apiKey: "runtime-key", source: "runtime" };
       const entryProvider: ProviderPlugin = {
         ...createProvider({ id: "fixture", mode: "static" }),
         ...(runtimeAuth === "async"

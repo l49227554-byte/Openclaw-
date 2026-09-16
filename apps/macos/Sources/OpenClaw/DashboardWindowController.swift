@@ -30,12 +30,11 @@ private final class DashboardWindowContentView: NSView {
 /// pinned at `--openclaw-native-titlebar-height`, resurrecting the traffic-light
 /// misalignment. Refusing the toggle keeps the two heights in lockstep.
 /// Full screen hides this sizing toolbar so it cannot cover the web controls.
-private final class DashboardWindow: NSWindow {
+private final class DashboardWindow: ExperienceWindow {
     /// User intent belongs to the native window, not the privileged document it hosts.
     var userIntentGeneration: UInt64 = 0
     var lifetimeRevision: UInt64 = 0
     var pendingGatewaySwitch: DashboardGatewaySwitchIntent?
-    var isHiddenForExperience = false
 
     override func toggleToolbarShown(_: Any?) {}
 

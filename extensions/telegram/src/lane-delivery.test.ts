@@ -1,220 +1,20 @@
-import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
 // Telegram tests cover lane delivery plugin behavior.
-import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { createTelegramDraftStream } from "./draft-stream.js";
 import { createTestDraftStream } from "./draft-stream.test-helpers.js";
 import { renderTelegramHtmlText, telegramHtmlToPlainTextFallback } from "./format.js";
 import {
-  createLaneTextDeliverer,
-  type DraftLaneState,
-  type LaneDeliveryResult,
-  type LaneName,
-} from "./lane-delivery-text-deliverer.js";
-import {
-  createTelegramPromptContextProjectionSequence,
-  type TelegramPromptContextProjectionSequence,
-} from "./prompt-context-projection.js";
+  createHarness,
+  createProjectionSequence,
+  deliverFinalAnswer,
+  deliverProjectedFinalAnswer,
+  expectPreviewFinalized,
+  expectRecordedPreview,
+  expectSentPayload,
+} from "./lane-delivery.test-support.js";
 
 const HELLO_FINAL = "Hello final";
-type PromptContextRecord = Parameters<
-  typeof createTelegramPromptContextProjectionSequence
->[0]["record"];
-
-function createHarness(params?: {
-  answerMessageId?: number;
-  answerStream?: DraftLaneState["stream"] | null;
-  resolveFinalTextCandidate?: (params: {
-    finalText: string;
-    laneName: LaneName;
-  }) => string | undefined;
-}) {
-  const answer =
-    params?.answerStream === null
-      ? undefined
-      : (params?.answerStream ?? createTestDraftStream({ messageId: params?.answerMessageId }));
-  const reasoning = createTestDraftStream();
-  const lanes: Record<LaneName, DraftLaneState> = {
-    answer: {
-      stream: answer,
-      lastPartialText: "",
-      hasStreamedMessage: false,
-      finalized: false,
-      retainedPromptContextPages: [],
-    },
-    reasoning: {
-      stream: reasoning,
-      lastPartialText: "",
-      hasStreamedMessage: false,
-      finalized: false,
-      retainedPromptContextPages: [],
-    },
-  };
-  const sendPayload = vi.fn().mockResolvedValue(true);
-  const flushDraftLane = vi.fn().mockImplementation(async (lane: DraftLaneState) => {
-    await lane.stream?.flush();
-  });
-  const stopDraftLane = vi.fn().mockImplementation(async (lane: DraftLaneState) => {
-    await lane.stream?.stop();
-  });
-  const clearDraftLane = vi.fn().mockImplementation(async (lane: DraftLaneState) => {
-    await lane.stream?.clear();
-  });
-  const editStreamMessage = vi.fn().mockResolvedValue(undefined);
-  const recordPromptContextPreview = vi.fn<PromptContextRecord>().mockResolvedValue(true);
-  const createPromptContextSequence = () =>
-    createTelegramPromptContextProjectionSequence({ record: recordPromptContextPreview });
-  const log = vi.fn();
-  const markDelivered = vi.fn();
-
-  const deliverLaneText = createLaneTextDeliverer({
-    lanes,
-    applyTextToPayload: (payload: ReplyPayload, text: string) => ({ ...payload, text }),
-    sendPayload,
-    flushDraftLane,
-    stopDraftLane,
-    clearDraftLane,
-    editStreamMessage,
-    createPromptContextSequence,
-    resolveFinalTextCandidate: params?.resolveFinalTextCandidate,
-    log,
-    markDelivered,
-  });
-
-  return {
-    deliverLaneText,
-    lanes,
-    answer,
-    reasoning,
-    sendPayload,
-    flushDraftLane,
-    stopDraftLane,
-    clearDraftLane,
-    editStreamMessage,
-    recordPromptContextPreview,
-    log,
-    markDelivered,
-  };
-}
-
-async function deliverFinalAnswer(harness: ReturnType<typeof createHarness>, text: string) {
-  return harness.deliverLaneText({
-    laneName: "answer",
-    text,
-    payload: { text },
-    infoKind: "final",
-  });
-}
-
-function createProjectionSequence(
-  record: PromptContextRecord,
-): TelegramPromptContextProjectionSequence {
-  return createTelegramPromptContextProjectionSequence({
-    source: { transcriptMessageId: "assistant-1" },
-    record,
-  });
-}
-
-async function deliverProjectedFinalAnswer(
-  harness: ReturnType<typeof createHarness>,
-  text: string,
-) {
-  return harness.deliverLaneText({
-    laneName: "answer",
-    text,
-    payload: { text },
-    infoKind: "final",
-    promptContextSequence: createProjectionSequence(harness.recordPromptContextPreview),
-  });
-}
-
-function expectPreviewFinalized(
-  result: LaneDeliveryResult,
-): Extract<LaneDeliveryResult, { kind: "preview-finalized" }>["delivery"] {
-  expect(result.kind).toBe("preview-finalized");
-  if (result.kind !== "preview-finalized") {
-    throw new Error(`expected preview-finalized, got ${result.kind}`);
-  }
-  return result.delivery;
-}
-
-function expectRecordedPreview(
-  recordPromptContextPreview: ReturnType<typeof vi.fn>,
-  index: number,
-  params: { messageId?: number; text: string; partIndex: number; finalPart: boolean },
-) {
-  expect(recordPromptContextPreview.mock.calls[index]?.[0]).toEqual({
-    messageId: params.messageId ?? 999,
-    text: params.text,
-    projection: {
-      transcriptMessageId: "assistant-1",
-      partIndex: params.partIndex,
-      finalPart: params.finalPart,
-    },
-  });
-}
-
-function expectSentPayload(
-  harness: ReturnType<typeof createHarness>,
-  payload: ReplyPayload,
-  durable: boolean,
-) {
-  expect(harness.sendPayload).toHaveBeenCalledWith(
-    payload,
-    expect.objectContaining({
-      durable,
-      promptContextSequence: expect.any(Object),
-    }),
-  );
-}
-
 describe("createLaneTextDeliverer", () => {
-  it("createLaneTextDeliverer preserves a preceding input answer when later text extends it", async () => {
-    const earlierAnswer =
-      "Here is the earlier answer with enough stable prefix text before the ellipsis...";
-    const latestAnswer =
-      "Here is the earlier answer with enough stable prefix text before the ellipsis and a much longer answer to the next question.";
-    const answer = createTestDraftStream({ messageId: 999 });
-    answer.update(latestAnswer);
-    const harness = createHarness({
-      answerStream: answer,
-      resolveFinalTextCandidate: () => latestAnswer,
-    });
-    harness.lanes.answer.hasStreamedMessage = true;
-    const result = await harness.deliverLaneText({
-      laneName: "answer",
-      text: earlierAnswer,
-      payload: setReplyPayloadMetadata({ text: earlierAnswer }, { precedingInputAnswer: true }),
-      infoKind: "final",
-    });
-    expect(expectPreviewFinalized(result).content).toBe(earlierAnswer);
-  });
-
-  it("createLaneTextDeliverer keeps a preceding input answer's caption when its media follows an active preview", async () => {
-    const earlierAnswer =
-      "Here is the earlier answer with enough stable prefix text before the ellipsis...";
-    const latestAnswer =
-      "Here is the earlier answer with enough stable prefix text before the ellipsis and a much longer answer to the next question.";
-    const answer = createTestDraftStream({ messageId: 999 });
-    answer.update(latestAnswer);
-    const harness = createHarness({
-      answerStream: answer,
-      resolveFinalTextCandidate: () => latestAnswer,
-    });
-    harness.lanes.answer.hasStreamedMessage = true;
-    await harness.deliverLaneText({
-      laneName: "answer",
-      text: earlierAnswer,
-      payload: setReplyPayloadMetadata(
-        { text: earlierAnswer, mediaUrls: ["/tmp/earlier-answer.jpg"] },
-        { precedingInputAnswer: true },
-      ),
-      infoKind: "final",
-    });
-    expect(harness.answer?.update).toHaveBeenLastCalledWith(earlierAnswer);
-    expect(harness.answer?.update).not.toHaveBeenCalledWith(latestAnswer.trimEnd() + "\n");
-  });
-
   it("finalizes text-only replies in the active stream message", async () => {
     const harness = createHarness({ answerMessageId: 999 });
 
@@ -1296,4 +1096,3 @@ describe("createLaneTextDeliverer", () => {
     );
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

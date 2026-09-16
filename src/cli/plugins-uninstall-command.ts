@@ -68,18 +68,18 @@ export async function runPluginUninstallCommand(
       runtime.log(theme.warn(warning));
     }
   };
-  const execute = async (pluginId: string, skipPreview: boolean) => {
+  const execute = async (targetPluginId: string, skipPreview: boolean) => {
     // Keep errors/output inside the plugin lease; the owner emits success inside any package lease.
     const result = await uninstallPluginWithPolicy({
-      pluginId,
+      pluginId: targetPluginId,
       keepFiles,
       caller: "cli",
       clawManaged: opts.clawManaged,
       beforePersistentApply: opts.beforePersistentApply,
       invalidateRuntimeCache: opts.invalidateRuntimeCache,
       onPreview: (preview) => {
-        if (skipPreview && preview.pluginId !== pluginId) {
-          throw new Error(`Plugin package owner changed for "${pluginId}"; retry uninstall.`);
+        if (skipPreview && preview.pluginId !== targetPluginId) {
+          throw new Error(`Plugin package owner changed for "${targetPluginId}"; retry uninstall.`);
         }
         if (!skipPreview) {
           printPreview(preview);

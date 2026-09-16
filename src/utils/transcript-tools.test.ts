@@ -9,16 +9,18 @@ describe("transcript-tools", () => {
       expect(extractToolCallNames({ tool_name: "notes" })).toEqual(["notes"]);
     });
 
-    it("extracts tool call names from content blocks (tool_use/toolcall/tool_call)", () => {
+    it("extracts tool call names from supported content blocks", () => {
       const names = extractToolCallNames({
         content: [
           { type: "text", text: "hi" },
           { type: "tool_use", name: "read" },
           { type: "toolcall", name: "exec" },
           { type: "tool_call", name: "write" },
+          { type: " toolCall ", name: "padded" },
+          { type: "toolUse", name: "legacy" },
         ],
       });
-      expect(names).toEqual(["read", "exec", "write"]);
+      expect(names).toEqual(["read", "exec", "write", "padded", "legacy"]);
     });
 
     it.each([
@@ -44,8 +46,8 @@ describe("transcript-tools", () => {
           tool_name: "ignored",
           content: [
             { type: "toolCall", name: "read" },
-            { type: "toolCall", name: "write" },
-            { type: "toolCall", name: "write" },
+            { type: "toolUse", name: "write" },
+            { type: "tooluse", name: "write" },
           ],
         }),
       ).toEqual(["write", "read", "write"]);

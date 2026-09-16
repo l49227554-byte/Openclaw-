@@ -215,12 +215,17 @@ it("preserves canonical tool calls and mixed content order in session logs", asy
     },
     {
       role: "assistant",
+      content: [{ type: " toolUse ", id: "legacy-only", name: " legacy-only ", input: {} }],
+    },
+    {
+      role: "assistant",
       content: [
         { type: "text", text: "Before" },
-        { type: "toolCall", id: "read-1", name: "read", arguments: {} },
+        { type: " TOOL_CALL ", id: "read-1", name: "read", arguments: {} },
         { type: "text", text: "Between" },
         { type: "toolCall", id: "read-2", name: "read", arguments: {} },
         { type: "tool_use", id: "legacy-1", name: " legacy ", input: {} },
+        { type: "tooluse", id: "legacy-2", name: "lowercase", input: {} },
         { type: "text", text: "After" },
       ],
     },
@@ -250,9 +255,11 @@ it("preserves canonical tool calls and mixed content order in session logs", asy
     expect(logs?.map(({ role, content }) => ({ role, content }))).toEqual([
       { role: "user", content: "Question" },
       { role: "assistant", content: "[Tool: read]" },
+      { role: "assistant", content: "[Tool:  legacy-only ]" },
       {
         role: "assistant",
-        content: "Before\n[Tool: read]\nBetween\n[Tool: read]\n[Tool:  legacy ]\nAfter",
+        content:
+          "Before\n[Tool: read]\nBetween\n[Tool: read]\n[Tool:  legacy ]\n[Tool: lowercase]\nAfter",
       },
       { role: "assistant", content: "Ordinary answer" },
       { role: "toolResult", content: "[Tool: read]\n[Tool Result]\nDone" },

@@ -12,6 +12,7 @@ import {
   isReplyRunAbortableForSignal,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
+  type ReplyMessageInjectionTarget,
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
 import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main-session.js";
@@ -31,6 +32,7 @@ import {
   registerChatAbortController,
   resolveChatRunExpiresAtMs,
 } from "../chat-abort.js";
+import { ExpectedProfileMismatchError } from "../expected-profile.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX, type DedupeEntry } from "../server-shared.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
@@ -47,16 +49,15 @@ import {
 } from "./chat-restart-recovery.js";
 import { assertExpectedLeafActive } from "./chat-send-active-leaf.js";
 import {
-  ACTIVE_LEAF_CHANGED_ERROR_REASON,
   inspectGoalChatSendRetry,
-  respondChatActiveLeafChanged,
+  readChatSendDedupeResponse,
+  resolveChatSendRequestConflict,
+  respondChatSendAdmissionError,
+  respondChatSendRetry,
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
-import {
-  captureAdmittedChatSendSessionSettings,
-  SESSION_SETTINGS_CHANGED_ERROR_REASON,
-} from "./chat-send-session-settings.js";
+import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
 import { prepareGoalChatSendSession, type PreparedChatSendSession } from "./chat-send-session.js";
 import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -69,7 +70,9 @@ export async function admitChatSend(params: {
   context: GatewayRequestHandlerOptions["context"];
   client: GatewayRequestHandlerOptions["client"];
   onAdmissionOwned?: () => Promise<boolean>;
+  assertCurrent?: () => void;
 }) {
+  params.assertCurrent?.();
   const { request, session, respond, context, client } = params;
   const { p, explicitOrigin, normalizedAttachments, turnKind } = request;
   const {
@@ -116,7 +119,12 @@ export async function admitChatSend(params: {
   });
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const pendingAttemptId = randomUUID();
-  const pendingExpiresAtMs = resolveChatRunExpiresAtMs({ now, timeoutMs });
+  const readPendingReservation = () =>
+    readPreRegisteredRun({
+      key: pendingChatSendKey,
+      entry: context.dedupe.get(pendingChatSendKey),
+      keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
+    });
   const goalRetry = inspectGoalChatSendRetry(params);
   if (goalRetry.kind !== "new") {
     if (goalRetry.kind === "replay") {
@@ -128,13 +136,7 @@ export async function admitChatSend(params: {
     return { ok: false as const };
   }
   // A plain chat retry must not replace a Goal reservation after yielding in recovery.
-  if (
-    readPreRegisteredRun({
-      key: pendingChatSendKey,
-      entry: context.dedupe.get(pendingChatSendKey),
-      keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
-    })?.payload.goalFingerprint
-  ) {
+  if (readPendingReservation()?.payload.goalFingerprint) {
     respond(
       false,
       undefined,
@@ -142,11 +144,16 @@ export async function admitChatSend(params: {
     );
     return { ok: false as const };
   }
+  if (!request.goalOperation && respondChatSendRetry(params)) {
+    return { ok: false as const };
+  }
   // Keep the run abortable while lifecycle mutation owns the session. Admission
   // must reject an expired/missing reservation instead of reviving evicted work.
+  params.assertCurrent?.();
   context.dedupe.set(pendingChatSendKey, {
     ts: now,
     ok: true,
+    requestIdentity: request.requestIdentity,
     payload: {
       runId: clientRunId,
       attemptId: pendingAttemptId,
@@ -156,7 +163,7 @@ export async function admitChatSend(params: {
       ...(selectedAgent.agentId ? { agentId: selectedAgent.agentId } : {}),
       ownerConnId: normalizeOptionalChatText(client?.connId),
       ownerDeviceId: normalizeOptionalChatText(client?.connect?.device?.id),
-      expiresAtMs: pendingExpiresAtMs,
+      expiresAtMs: resolveChatRunExpiresAtMs({ now, timeoutMs }),
       turnKind,
       ...(request.goalOperation
         ? { goalFingerprint: request.goalOperation.requestFingerprint }
@@ -164,11 +171,7 @@ export async function admitChatSend(params: {
     },
   });
   const clearPendingChatSendReservation = () => {
-    const pending = readPreRegisteredRun({
-      key: pendingChatSendKey,
-      entry: context.dedupe.get(pendingChatSendKey),
-      keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
-    });
+    const pending = readPendingReservation();
     if (
       pending?.runId === clientRunId &&
       normalizeUnknownChatText(pending.payload.attemptId) === pendingAttemptId
@@ -183,21 +186,20 @@ export async function admitChatSend(params: {
   let initialSessionEntry: SessionEntry | undefined;
   let admittedSessionSettings: ReturnType<typeof captureAdmittedChatSendSessionSettings>;
   let assertInitialSkillSelection: (() => void) | undefined;
-  let messageInjectionTarget: ReturnType<
-    typeof replyRunRegistry.resolveCurrentMessageInjectionTarget
-  >;
+  let messageInjectionTarget: ReplyMessageInjectionTarget | undefined;
   let runInterruptTarget: ReturnType<typeof replyRunRegistry.resolveCurrentInterruptTarget>;
   let reservationSuperseded = false;
   let supersedingResult: DedupeEntry | undefined;
   const assertChatWorkAdmissionAllowed = (commitOutcome: boolean) => {
+    params.assertCurrent?.();
+    const retainedRequestConflict = resolveChatSendRequestConflict(params);
+    if (retainedRequestConflict) {
+      throw new Error(retainedRequestConflict.message);
+    }
     if (context.chatRunState.hasAbortMarker(clientRunId)) {
       return;
     }
-    const pendingReservation = readPreRegisteredRun({
-      key: pendingChatSendKey,
-      entry: context.dedupe.get(pendingChatSendKey),
-      keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
-    });
+    const pendingReservation = readPendingReservation();
     if (
       pendingReservation &&
       normalizeUnknownChatText(pendingReservation.payload.attemptId) !== pendingAttemptId
@@ -208,7 +210,7 @@ export async function admitChatSend(params: {
       return;
     }
     if (!pendingReservation) {
-      const terminalResult = context.dedupe.get(`chat:${clientRunId}`);
+      const terminalResult = readChatSendDedupeResponse(context.dedupe, clientRunId);
       if (terminalResult || context.chatAbortControllers.has(clientRunId)) {
         if (commitOutcome) {
           reservationSuperseded = true;
@@ -248,6 +250,13 @@ export async function admitChatSend(params: {
       throw new Error(SESSION_ROUTING_CHANGED_ERROR_REASON);
     }
     const latestEntry = latestSession.entry;
+    const requestConflict = resolveChatSendRequestConflict({
+      ...params,
+      session: { ...session, entry: latestEntry },
+    });
+    if (requestConflict) {
+      throw new Error(requestConflict.message);
+    }
     // Freeze the writer-barrier snapshot; later preparation must retain this authority.
     admittedSessionSettings = captureAdmittedChatSendSessionSettings({
       commit: commitOutcome,
@@ -407,52 +416,57 @@ export async function admitChatSend(params: {
         }
       },
     });
+    params.assertCurrent?.();
   } catch (err) {
     clearPendingChatSendReservation();
+    admittedRunAbort?.cleanup();
+    gatewayWorkAdmission?.release();
+    if (err instanceof ExpectedProfileMismatchError) {
+      throw err;
+    }
+    const requestConflict = resolveChatSendRequestConflict(params);
+    if (requestConflict) {
+      respond(false, undefined, requestConflict);
+      return { ok: false as const };
+    }
     const aborted =
-      context.chatRunState.hasAbortMarker(clientRunId) && context.dedupe.get(`chat:${clientRunId}`);
+      context.chatRunState.hasAbortMarker(clientRunId) &&
+      readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (aborted) {
       respond(aborted.ok, aborted.payload, aborted.error, { cached: true, runId: clientRunId });
       return { ok: false as const };
     }
-    if (err instanceof Error && err.message === "goal-session-busy") {
-      respond(
-        false,
-        undefined,
-        errorShape(
-          ErrorCodes.UNAVAILABLE,
-          "This session still has active or queued work. Wait for it to finish, then retry the Goal.",
-          { retryable: true, details: { reason: "goal-session-busy" } },
-        ),
-      );
-      return { ok: false as const };
-    }
-    if (err instanceof Error && err.message === SESSION_ROUTING_CHANGED_ERROR_REASON) {
-      respondChatSessionRoutingChanged(respond);
-      return { ok: false as const };
-    }
-    if (err instanceof Error && err.message === ACTIVE_LEAF_CHANGED_ERROR_REASON) {
-      respondChatActiveLeafChanged(respond);
-      return { ok: false as const };
-    }
-    if (err instanceof Error && err.message === SESSION_SETTINGS_CHANGED_ERROR_REASON) {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "Session settings changed before send. Retry.", {
-          details: { reason: SESSION_SETTINGS_CHANGED_ERROR_REASON },
-        }),
-      );
-      return { ok: false as const };
-    }
-    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
+    respondChatSendAdmissionError(err, respond);
     return { ok: false as const };
+  }
+  const retainedRequestConflict = resolveChatSendRequestConflict(params);
+  if (retainedRequestConflict) {
+    clearPendingChatSendReservation();
+    admittedRunAbort?.cleanup();
+    gatewayWorkAdmission.release();
+    respond(false, undefined, retainedRequestConflict);
+    return { ok: false as const };
+  }
+  if (
+    !request.goalOperation &&
+    admittedRunAbort?.registered &&
+    !reservationSuperseded &&
+    !readChatSendDedupeResponse(context.dedupe, clientRunId)
+  ) {
+    // Transfer immutable input identity before retiring the pending reservation.
+    // It survives transient pre-ACK failures without inventing a successful response.
+    context.dedupe.set(`chat:${clientRunId}`, {
+      ts: Date.now(),
+      ok: true,
+      requestIdentity: request.requestIdentity,
+    });
   }
   clearPendingChatSendReservation();
   const activeRunAbort = admittedRunAbort;
   if (reservationSuperseded) {
     gatewayWorkAdmission.release();
-    const supersedingCached = supersedingResult ?? context.dedupe.get(`chat:${clientRunId}`);
+    const supersedingCached =
+      supersedingResult ?? readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (supersedingCached) {
       respond(supersedingCached.ok, supersedingCached.payload, supersedingCached.error, {
         cached: true,
@@ -475,7 +489,7 @@ export async function admitChatSend(params: {
       activeRunAbort.cleanup();
     }
     gatewayWorkAdmission.release();
-    if (!context.dedupe.has(`chat:${clientRunId}`)) {
+    if (!readChatSendDedupeResponse(context.dedupe, clientRunId)) {
       writePreRegisteredChatAbort({
         context,
         runId: clientRunId,
@@ -483,7 +497,7 @@ export async function admitChatSend(params: {
         attemptId: pendingAttemptId,
       });
     }
-    const aborted = context.dedupe.get(`chat:${clientRunId}`);
+    const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, {
       cached: true,
       runId: clientRunId,
@@ -492,7 +506,7 @@ export async function admitChatSend(params: {
   }
   if (!activeRunAbort) {
     gatewayWorkAdmission.release();
-    const aborted = context.dedupe.get(`chat:${clientRunId}`);
+    const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (aborted) {
       respond(aborted.ok, aborted.payload, aborted.error, {
         cached: true,
@@ -531,6 +545,7 @@ export async function admitChatSend(params: {
       // The fallback runs inside the new admission so the lifecycle owner excludes itself.
       // A captured reply operation never falls through to this identity-scoped path.
       const fallback = await gatewayWorkAdmission.run(async () => {
+        params.assertCurrent?.();
         if (!isCompetingSessionWorkAdmissionActive(storePath, identities)) {
           return { interrupted: false, settled: true };
         }
@@ -546,6 +561,7 @@ export async function admitChatSend(params: {
       interruptedActiveRun = fallback.interrupted;
       interruptionSettled = fallback.settled;
     }
+    params.assertCurrent?.();
     if (!interruptionSettled) {
       cleanupPreDispatchAdmission();
       respond(
@@ -565,6 +581,7 @@ export async function admitChatSend(params: {
       cleanupPreDispatchAdmission();
       return { ok: false as const };
     }
+    params.assertCurrent?.();
   } catch (error) {
     cleanupPreDispatchAdmission();
     throw error;
@@ -665,6 +682,7 @@ export async function admitChatSend(params: {
     respond(true, payload, undefined, { runId: clientRunId });
   };
   claimAgentRunContext(clientRunId, {
+    agentId: selectedAgent.agentId ?? agentId,
     sessionKey,
     sessionId: admittedSessionId,
     lifecycleGeneration,
@@ -715,7 +733,5 @@ export async function admitChatSend(params: {
   };
 }
 
-export type AdmittedChatSend = Extract<
-  Awaited<ReturnType<typeof admitChatSend>>,
-  { ok: true }
->["value"];
+type ChatSendAdmissionResult = Awaited<ReturnType<typeof admitChatSend>>;
+export type AdmittedChatSend = Extract<ChatSendAdmissionResult, { ok: true }>["value"];

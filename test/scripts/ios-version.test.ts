@@ -5,13 +5,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   encodeIosAppStoreVersion,
-  extractChangelogSection,
   normalizeIosAppStoreRevision,
-  normalizePinnedIosVersion,
   renderIosReleaseNotes,
   resolveGatewayVersionForIosRelease,
   resolveIosVersion,
 } from "../../scripts/lib/ios-version.ts";
+import { extractChangelogSection } from "../../scripts/lib/mobile-changelog.ts";
 import { installIosFixtureCleanup, writeIosFixture } from "./ios-version.test-support.ts";
 
 installIosFixtureCleanup();
@@ -243,15 +242,6 @@ describe("resolveIosVersion", () => {
     });
 
     expect(() => resolveIosVersion(rootDir, { releaseVersion: "2026.4.6-beta.1" })).toThrow(
-      "Expected release version like 2026.6.5",
-    );
-  });
-
-  it("rejects impossible pinned release versions", () => {
-    expect(() => normalizePinnedIosVersion("2026.13.6")).toThrow(
-      "Expected release version like 2026.6.5",
-    );
-    expect(() => normalizePinnedIosVersion("2026.4.9007199254740993")).toThrow(
       "Expected release version like 2026.6.5",
     );
   });

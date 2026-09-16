@@ -270,7 +270,7 @@ describe("Codex supervision actions", () => {
       getRuntimeConfig: () => config,
       env: { CODEX_HOME: home },
     });
-    const source = factory.homesForAgent("main")[0]!;
+    const source = (await factory.homesForAgent("main"))[0]!;
     const { runtime, createSessionEntry } = createRuntime();
     const { api } = createGatewayApi(runtime);
     await expect(
@@ -417,7 +417,7 @@ describe("Codex supervision actions", () => {
       modelProvider: "openai",
       config,
     });
-    await expect(
+    expect(
       bindingStore.read(
         sessionBindingIdentity({
           sessionId: runtime.agent.session.getSessionEntry({ sessionKey: first.sessionKey })!
@@ -426,7 +426,7 @@ describe("Codex supervision actions", () => {
           config,
         }),
       ),
-    ).resolves.toMatchObject({
+    ).toMatchObject({
       threadId: "thread-1",
       connectionScope: "supervision",
       supervisionSourceThreadId: "thread-1",
@@ -684,7 +684,7 @@ describe("Codex supervision actions", () => {
       sessionKey: continued.sessionKey,
       config,
     });
-    const pending = (await bindingStore.read(identity))?.pendingSupervisionBranch;
+    const pending = bindingStore.read(identity)?.pendingSupervisionBranch;
     if (!pending) {
       throw new Error("expected a pending supervision branch");
     }

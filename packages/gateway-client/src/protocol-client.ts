@@ -48,6 +48,7 @@ export class GatewayProtocolClient<TPlan> {
   private lastSeq: number | null = null;
   private connectNonce: string | null = null;
   private connectChallengeTs: number | null | undefined;
+  private serverCapabilities: string[] = [];
   private connectSent = false;
   private connectRequestSent = false;
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -188,6 +189,7 @@ export class GatewayProtocolClient<TPlan> {
     this.lastSeq = null; // Outer event sequences belong to one WebSocket generation.
     this.connectNonce = null;
     this.connectChallengeTs = undefined;
+    this.serverCapabilities = [];
     this.connectSent = this.connectRequestSent = false;
     this.socketOpened = false;
     this.helloReceived = false;
@@ -290,6 +292,7 @@ export class GatewayProtocolClient<TPlan> {
       planOrPromise = this.opts.buildConnectPlan({
         nonce: this.connectNonce,
         challengeTs: this.connectChallengeTs,
+        serverCapabilities: this.serverCapabilities,
         generation,
       });
     } catch (error) {
@@ -390,7 +393,9 @@ export class GatewayProtocolClient<TPlan> {
     if (isGatewayEventFrame(parsed)) {
       this.opts.onActivity?.();
       if (parsed.event === "connect.challenge") {
-        const payload = parsed.payload as { nonce?: unknown; ts?: unknown } | undefined;
+        const payload = parsed.payload as
+          | { nonce?: unknown; ts?: unknown; capabilities?: unknown }
+          | undefined;
         const nonce = typeof payload?.nonce === "string" ? payload.nonce.trim() : "";
         if (!nonce) {
           if (this.opts.handshake.mode === "require-challenge") {
@@ -401,6 +406,9 @@ export class GatewayProtocolClient<TPlan> {
           return;
         }
         this.connectNonce = nonce;
+        this.serverCapabilities = Array.isArray(payload?.capabilities)
+          ? payload.capabilities.filter((value): value is string => typeof value === "string")
+          : [];
         const challengeTs = payload?.ts;
         this.connectChallengeTs =
           typeof challengeTs === "number" && Number.isSafeInteger(challengeTs) && challengeTs >= 0
@@ -476,7 +484,21 @@ export class GatewayProtocolClient<TPlan> {
     this.invoke("close", () => this.opts.onClose?.(context, decision));
     // A close callback can reconnect synchronously and already own the next socket or retry.
     if (decision.retry && !this.stopped && !this.socket && !this.reconnectSignal) {
-      this.scheduleReconnect(decision.reconnectDelayMs ?? context.connectFailure?.reconnectDelayMs);
+      const error = context.connectFailure?.error;
+      // Apply server timing only after adapter policy admits retry; a hint
+      // must never turn terminal authentication failures into reconnects.
+      const retryAfterMs =
+        error instanceof GatewayProtocolRequestError &&
+        error.retryable &&
+        error.retryAfterMs !== undefined &&
+        Number.isFinite(error.retryAfterMs) &&
+        error.retryAfterMs > 0
+          ? error.retryAfterMs
+          : undefined;
+      this.scheduleReconnect(
+        decision.reconnectDelayMs ?? context.connectFailure?.reconnectDelayMs,
+        retryAfterMs,
+      );
     }
   }
 
@@ -488,10 +510,9 @@ export class GatewayProtocolClient<TPlan> {
     this.opts.onConnectError?.(error);
   }
 
-  private scheduleReconnect(overrideMs?: number): void {
+  private scheduleReconnect(overrideMs?: number, minimumMs = 0): void {
     if (overrideMs !== undefined) {
-      // Retry-After is a floor for this wait, not a failed attempt. Preserve
-      // the exponential sequence for the next transport failure.
+      // Adapter-owned startup timing does not consume a transport attempt.
       this.reconnectSupervisor.nextDelayOverrideMs = overrideMs;
     }
     const retry = this.reconnectSupervisor.next();
@@ -500,7 +521,10 @@ export class GatewayProtocolClient<TPlan> {
     }
     this.reconnectSignal = retry.signal;
     // Ignore cancelled sleeps only; reconnect start failures stay observable.
-    void sleepWithAbort(retry.delayMs, retry.signal).then(
+    // Wire Retry-After is a floor: repeated short hints must still advance
+    // normal backoff, while adapter-owned startup overrides stay independent.
+    const delayMs = overrideMs ?? Math.max(retry.delayMs, minimumMs);
+    void sleepWithAbort(delayMs, retry.signal).then(
       () => {
         if (this.reconnectSignal !== retry.signal) {
           return;

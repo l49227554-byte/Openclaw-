@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runDoctorSessionSqlite } from "../commands/doctor-session-sqlite.js";
 import {
   loadExactSessionEntry,
@@ -13,23 +13,35 @@ import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { setCanonicalSqliteSessionMainKey } from "../config/sessions/session-canonical-key.js";
 import { sessionTranscriptIndexNeedsReconcile } from "../config/sessions/session-transcript-index.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as nodeSqlite from "../infra/node-sqlite.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
+  getOpenClawAgentDatabaseIfOpen,
+  isOpenClawAgentDatabaseOpen,
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
+  type OpenClawAgentDatabaseOptions,
 } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { runStartupSessionMigration } from "./server-startup-session-migration.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = createTempDirTracker();
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
+  tempDirs.cleanup();
 });
 
 function makeLog() {
@@ -37,6 +49,56 @@ function makeLog() {
 }
 
 describe("runStartupSessionMigration", () => {
+  it.each(["successful", "failed"] as const)(
+    "hands the cold maintenance connection directly to %s reconciliation",
+    async (outcome) => {
+      const stateDir = fs.realpathSync.native(tempDirs.make("openclaw-startup-handoff-"));
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const options = { agentId: "main", env };
+      const initial = openOpenClawAgentDatabase(options);
+      setCanonicalSqliteSessionMainKey(initial, "previous");
+      closeOpenClawAgentDatabasesForTest();
+      const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+      let handedOff: ReturnType<typeof getOpenClawAgentDatabaseIfOpen>;
+      let reconciled: ReturnType<typeof openOpenClawAgentDatabase> | undefined;
+      const failure = new Error("projection reconciliation failed");
+      const reconcileSessionTranscriptIndexes = vi.fn(
+        async (databaseOptions: OpenClawAgentDatabaseOptions) => {
+          handedOff = getOpenClawAgentDatabaseIfOpen(databaseOptions);
+          reconciled = openOpenClawAgentDatabase(databaseOptions);
+          if (outcome === "failed") {
+            throw failure;
+          }
+          return { reconciledSessions: 0 };
+        },
+      );
+      try {
+        const startup = runStartupSessionMigration({
+          cfg: { agents: { entries: { main: {} } } },
+          env,
+          log: makeLog(),
+          deps: { reconcileSessionTranscriptIndexes },
+        });
+        if (outcome === "failed") {
+          await expect(startup).rejects.toBe(failure);
+        } else {
+          await startup;
+        }
+        expect(reconcileSessionTranscriptIndexes).toHaveBeenCalledOnce();
+        expect(handedOff).toBe(reconciled);
+        expect(
+          open.mock.calls.filter(
+            ([databasePath, behavior]) =>
+              databasePath === initial.path && behavior?.readOnly !== true,
+          ),
+        ).toHaveLength(1);
+        expect(isOpenClawAgentDatabaseOpen(initial.path)).toBe(outcome === "successful");
+      } finally {
+        open.mockRestore();
+      }
+    },
+  );
+
   it("does not create databases for agents without durable sessions", async () => {
     const stateDir = tempDirs.make("openclaw-empty-session-startup-");
     const env = { OPENCLAW_STATE_DIR: stateDir };

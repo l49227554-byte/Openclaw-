@@ -6,7 +6,9 @@ import {
   resetPluginRuntimeStateForTest,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,7 +74,9 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawAgentDatabasesAsync();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   resetPluginRuntimeStateForTest();
@@ -204,7 +208,7 @@ describe("forkCodexUpstreamSession", () => {
       await expect(
         forkCodexUpstreamSession(params, {
           bindingStore: {
-            read: vi.fn(async () => ({
+            read: vi.fn(() => ({
               threadId: "thread-canonical",
               connectionScope: "supervision",
               supervisionSourceThreadId:
@@ -265,7 +269,7 @@ describe("forkCodexUpstreamSession", () => {
     );
 
     const result = await forkCodexUpstreamSession(forkParams(), {
-      bindingStore: { read: vi.fn(async () => undefined) } as unknown as CodexAppServerBindingStore,
+      bindingStore: { read: vi.fn(() => undefined) } as unknown as CodexAppServerBindingStore,
       controlFactory,
       harnessRuntimeId: "codex",
       runtime: createPluginRuntimeMock(),
@@ -285,7 +289,7 @@ describe("forkCodexUpstreamSession", () => {
 
       const result = await forkCodexUpstreamSession(forkParams(), {
         bindingStore: {
-          read: vi.fn(async () => ({
+          read: vi.fn(() => ({
             threadId: "thread-canonical",
             connectionScope: "supervision",
             supervisionSourceThreadId: "thread-source",

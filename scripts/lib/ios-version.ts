@@ -1,8 +1,9 @@
 // Ios Version script supports OpenClaw repository automation.
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { extractChangelogSection } from "./mobile-changelog.ts";
 import { mobileVersionPath, readMobileVersionManifest } from "./mobile-version.ts";
-import { parseReleaseVersion } from "./release-version.mjs";
+import { parsePinnedReleaseVersion, parseReleaseVersion } from "./release-version.mjs";
 
 const IOS_CHANGELOG_FILE = "apps/ios/CHANGELOG.md";
 export const MAX_IOS_APP_STORE_REVISION = 9;
@@ -20,14 +21,6 @@ type ResolvedIosVersion = {
 };
 
 type SyncIosVersioningMode = "check" | "write";
-
-function parsePinnedReleaseVersion(rawVersion: string): string | null {
-  const parsed = parseReleaseVersion(rawVersion.trim());
-  if (!parsed || parsed.version !== parsed.baseVersion) {
-    return null;
-  }
-  return parsed.baseVersion;
-}
 
 export function normalizePinnedIosVersion(rawVersion: string): string {
   const trimmed = rawVersion.trim();
@@ -119,33 +112,6 @@ export function resolveIosVersion(
     versionSource: explicitReleaseVersion ? "explicit" : "mobile",
     versionSourcePath: explicitReleaseVersion ? null : mobileVersionPath(rootDir),
   };
-}
-
-function matchChangelogHeading(line: string, heading: string): boolean {
-  const normalized = line.trim();
-  return normalized === `## ${heading}` || normalized.startsWith(`## ${heading} - `);
-}
-
-export function extractChangelogSection(content: string, heading: string): string | null {
-  const lines = content.split(/\r?\n/);
-  const startIndex = lines.findIndex((line) => matchChangelogHeading(line, heading));
-  if (startIndex === -1) {
-    return null;
-  }
-
-  let endIndex = lines.length;
-  for (let index = startIndex + 1; index < lines.length; index += 1) {
-    if (lines[index]?.startsWith("## ")) {
-      endIndex = index;
-      break;
-    }
-  }
-
-  const body = lines
-    .slice(startIndex + 1, endIndex)
-    .join("\n")
-    .trim();
-  return body || null;
 }
 
 export function renderIosReleaseNotes(

@@ -66,6 +66,15 @@ vi.mock("../../../runtime.js", async (importOriginal) => ({
   defaultRuntime: runtimeMock,
 }));
 
+// Forward to the same synchronous-throwing exit mock: runMessageAction only defers the
+// real exit via the one-shot output drain, which these tests don't exercise directly.
+vi.mock("../../one-shot-exit.js", () => ({
+  requestExitAfterOneShotOutput: (runtime: { exit: (code: number) => never }, exitCode = 0) => {
+    runtime.exit(exitCode);
+    return true;
+  },
+}));
+
 vi.mock("../../deps.js", () => ({
   createDefaultDeps: () => ({}),
 }));
@@ -214,6 +223,25 @@ describe("runMessageAction", () => {
       ).rejects.toThrow("exit");
 
       expect(exitMock).toHaveBeenCalledWith(exitCode);
+    },
+  );
+
+  it.each(["", "   "])(
+    "rejects an explicitly blank message channel before command startup (%j)",
+    async (channel) => {
+      const program = new Command().exitOverride().configureOutput({ writeErr: () => undefined });
+      const message = program.command("message");
+      registerMessageSendCommand(message, createMessageCliHelpers("discord"));
+
+      await expect(
+        program.parseAsync(
+          ["message", "send", "--channel", channel, "--target", "channel:123", "--message", "hi"],
+          { from: "user" },
+        ),
+      ).rejects.toThrow("--channel must not be blank");
+
+      expect(loadPluginRegistryHandleMock).not.toHaveBeenCalled();
+      expect(messageCommandMock).not.toHaveBeenCalled();
     },
   );
 

@@ -1,7 +1,12 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { GatewayBrowserClient, GatewayHelloOk } from "../../../api/gateway.ts";
+import {
+  GatewayRequestError,
+  type GatewayBrowserClient,
+  type GatewayHelloOk,
+} from "../../../api/gateway.ts";
 import { hasOperatorWriteAccess } from "../../../app/operator-access.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerBackgroundTasksEnglish } from "../../../i18n/locales/en-background-tasks.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
 import type { SessionScopeHost } from "../../../lib/sessions/index.ts";
 import {
@@ -10,13 +15,15 @@ import {
   resolveUiConversationIdentity,
 } from "../../../lib/sessions/session-key.ts";
 import {
-  applyTaskEvent,
+  coalesceTaskEvent,
+  type CoalescedTaskEvent,
   isActiveTask,
   mergeTaskLists,
   normalizeTaskEventPayload,
   normalizeTasksCancelResult,
   normalizeTasksGetResult,
   normalizeTasksListResult,
+  replayTaskEvents,
   sortTasks,
   taskTimestampMs,
 } from "../../../lib/tasks/data.ts";
@@ -26,12 +33,19 @@ import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import { deriveSubagentActivity } from "./chat-subagent-activity.ts";
 import { observeTaskDetailEvent } from "./chat-task-detail-state.ts";
 
+registerBackgroundTasksEnglish();
+
 type BackgroundTaskLoadEvent = NonNullable<ReturnType<typeof normalizeTaskEventPayload>>;
 
 type BackgroundTaskEventBuffer = {
   requestId: number;
-  events: BackgroundTaskLoadEvent[];
+  events: Map<string, CoalescedTaskEvent>;
 };
+
+type BackgroundTaskSnapshotResult =
+  | { kind: "ready"; active: unknown; recent: unknown }
+  | { kind: "deferred"; retryAttempt: number }
+  | { kind: "stale" };
 
 type BackgroundTasksState = {
   cancellingTaskIds: Set<string>;
@@ -39,6 +53,8 @@ type BackgroundTasksState = {
   connectionClient: GatewayBrowserClient | null;
   connectionEpoch: number | undefined;
   error: string | null;
+  explicitReadRequested: boolean;
+  deferredRetryAttempt?: number;
   finishedCollapsed: boolean;
   // Loads are keyed to the client so a reconnect (or gateway switch) refreshes
   // the snapshot instead of trusting the previous connection's task list.
@@ -71,6 +87,7 @@ export type BackgroundTasksHost = {
   hello: GatewayHelloOk | null;
   agentsList?: SessionScopeHost["agentsList"];
   backgroundTasksState?: BackgroundTasksState;
+  chatSecondaryReadsReady?: (explicit?: boolean) => boolean;
   requestUpdate?: () => void;
 };
 
@@ -79,6 +96,9 @@ export type BackgroundTasksHost = {
 // from hiding behind newer terminal records here.
 const ACTIVE_TASKS_LIMIT = 200;
 const RECENT_TASKS_LIMIT = 100;
+const TASK_LIST_MAX_ATTEMPTS = 2;
+const TASK_LIST_RETRY_DEFAULT_MS = 250;
+const TASK_LIST_RETRY_MAX_MS = 30_000;
 
 let nextStatusRowId = 0;
 
@@ -110,6 +130,7 @@ function getBackgroundTasksState(host: BackgroundTasksHost): BackgroundTasksStat
     connectionClient: host.client,
     connectionEpoch: host.connectionEpoch,
     error: null,
+    explicitReadRequested: false,
     // Finished history starts collapsed so active work owns the rail; the
     // section header still shows the count for discoverability.
     finishedCollapsed: current?.finishedCollapsed ?? true,
@@ -136,22 +157,27 @@ function getBackgroundTasksState(host: BackgroundTasksHost): BackgroundTasksStat
 
 function retainTaskStreamingFields(state: BackgroundTasksState, task: TaskSummary): TaskSummary {
   const retained = state.taskActivityById.get(task.id);
-  const lastActivity = task.lastActivity ?? retained?.lastActivity;
+  const lastActivity = isActiveTask(task)
+    ? (task.lastActivity ?? retained?.lastActivity)
+    : undefined;
   const diffStat = task.diffStat ?? retained?.diffStat;
+  const streamingFields = {
+    ...(lastActivity ? { lastActivity } : {}),
+    ...(diffStat ? { diffStat } : {}),
+  };
   if (lastActivity || diffStat) {
-    state.taskActivityById.set(task.id, {
-      ...(lastActivity ? { lastActivity } : {}),
-      ...(diffStat ? { diffStat } : {}),
-    });
+    state.taskActivityById.set(task.id, streamingFields);
+  } else {
+    state.taskActivityById.delete(task.id);
   }
   if (lastActivity === task.lastActivity && diffStat === task.diffStat) {
     return task;
   }
-  return {
-    ...task,
-    ...(lastActivity ? { lastActivity } : {}),
-    ...(diffStat ? { diffStat } : {}),
-  };
+  const next = { ...task, ...streamingFields };
+  if (!lastActivity) {
+    delete next.lastActivity;
+  }
+  return next;
 }
 
 function prepareTaskSnapshot(state: BackgroundTasksState, task: TaskSummary): TaskSummary {
@@ -209,6 +235,81 @@ function scheduleSubagentActivityExpiry(
   );
 }
 
+function taskListRetryDelayMs(error: unknown): number | undefined {
+  if (!(error instanceof GatewayRequestError) || !error.retryable) {
+    return undefined;
+  }
+  return Math.min(
+    TASK_LIST_RETRY_MAX_MS,
+    Math.max(
+      0,
+      typeof error.retryAfterMs === "number" && Number.isFinite(error.retryAfterMs)
+        ? error.retryAfterMs
+        : TASK_LIST_RETRY_DEFAULT_MS,
+    ),
+  );
+}
+
+async function requestTaskSnapshot(
+  host: BackgroundTasksHost,
+  state: BackgroundTasksState,
+  client: GatewayBrowserClient,
+  requestId: number,
+): Promise<BackgroundTaskSnapshotResult> {
+  const { sessionKey, agentId } = state;
+  const retryAttempt = state.deferredRetryAttempt ?? 0;
+  delete state.deferredRetryAttempt;
+  for (let attempt = retryAttempt; attempt < TASK_LIST_MAX_ATTEMPTS; attempt += 1) {
+    if (
+      !host.connected ||
+      host.client !== client ||
+      getBackgroundTasksState(host) !== state ||
+      state.requestId !== requestId
+    ) {
+      return { kind: "stale" };
+    }
+    if (host.chatSecondaryReadsReady?.(state.explicitReadRequested) === false) {
+      return { kind: "deferred", retryAttempt: attempt };
+    }
+    const results = await Promise.allSettled([
+      client.request("tasks.list", {
+        sessionKey,
+        agentId,
+        status: ["queued", "running"],
+        limit: ACTIVE_TASKS_LIMIT,
+      }),
+      client.request("tasks.list", {
+        sessionKey,
+        agentId,
+        status: ["completed", "failed", "timed_out", "cancelled"],
+        sortBy: "endedAt",
+        limit: RECENT_TASKS_LIMIT,
+      }),
+    ]);
+    const [active, recent] = results;
+    if (active?.status === "fulfilled" && recent?.status === "fulfilled") {
+      return { kind: "ready", active: active.value, recent: recent.value };
+    }
+    const failures = results.filter((result) => result.status === "rejected");
+    const error = failures[0]?.reason;
+    let retryDelayMs = 0;
+    for (const failure of failures) {
+      const delay = taskListRetryDelayMs(failure.reason);
+      if (delay === undefined) {
+        throw failure.reason;
+      }
+      retryDelayMs = Math.max(retryDelayMs, delay);
+    }
+    if (attempt === TASK_LIST_MAX_ATTEMPTS - 1) {
+      throw error;
+    }
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, retryDelayMs);
+    });
+  }
+  throw new Error("unreachable task list retry state");
+}
+
 function loadBackgroundTasks(
   host: BackgroundTasksHost,
   state: BackgroundTasksState,
@@ -219,53 +320,45 @@ function loadBackgroundTasks(
     return;
   }
   if (state.loading) {
-    if (force) {
-      state.pendingReload = true;
-    }
+    state.pendingReload ||= force;
     return;
   }
   const requestId = ++state.requestId;
   // The state owns the client and conversation pair; its request owns this
   // buffer so late pages cannot resurrect an unopened concurrent task.
-  const eventBuffer: BackgroundTaskEventBuffer = {
+  const buffer: BackgroundTaskEventBuffer = {
     requestId,
-    events: [],
+    events: state.pendingTaskEvents?.events ?? new Map(),
   };
-  state.pendingTaskEvents = eventBuffer;
+  state.pendingTaskEvents = buffer;
   state.loading = true;
   state.error = null;
   state.pendingReload = false;
-  const { sessionKey, agentId } = state;
+  host.requestUpdate?.();
   void (async () => {
     try {
-      const [activePayload, recentPayload] = await Promise.all([
-        client.request("tasks.list", {
-          sessionKey,
-          agentId,
-          status: ["queued", "running"],
-          limit: ACTIVE_TASKS_LIMIT,
-        }),
-        client.request("tasks.list", { sessionKey, agentId, limit: RECENT_TASKS_LIMIT }),
-      ]);
-      const active = normalizeTasksListResult(activePayload)?.tasks.map((task) =>
+      const result = await requestTaskSnapshot(host, state, client, requestId);
+      const current = getBackgroundTasksState(host);
+      if (current !== state || current.requestId !== requestId || result.kind === "stale") {
+        return;
+      }
+      if (result.kind === "deferred") {
+        current.deferredRetryAttempt = current.pendingReload ? 0 : result.retryAttempt;
+        current.pendingReload = true;
+        return;
+      }
+      const active = normalizeTasksListResult(result.active)?.tasks.map((task) =>
         prepareTaskSnapshot(state, task),
       );
-      const recent = normalizeTasksListResult(recentPayload)?.tasks.map((task) =>
+      const recent = normalizeTasksListResult(result.recent)?.tasks.map((task) =>
         prepareTaskSnapshot(state, task),
       );
       if (!active || !recent) {
         throw new Error(t("tasksPage.invalidResponse"));
       }
-      const current = getBackgroundTasksState(host);
-      if (current !== state || current.requestId !== requestId) {
-        return;
-      }
       // The active query is issued first. Apply the later recent snapshot last
       // so same-millisecond running progress cannot regress when events drop.
-      let merged = mergeTaskLists(active, recent);
-      for (const event of eventBuffer.events) {
-        merged = applyTaskEvent(merged, event).tasks;
-      }
+      const merged = replayTaskEvents(mergeTaskLists(active, recent), buffer.events);
       current.tasks = sortTasks(
         merged.map((task) => newestTaskSnapshot(task, current.taskDetails.get(task.id))),
       );
@@ -276,13 +369,10 @@ function loadBackgroundTasks(
     } catch (error) {
       const current = getBackgroundTasksState(host);
       if (current === state && current.requestId === requestId) {
-        if (current.tasks === null && eventBuffer.events.length > 0) {
+        if (current.tasks === null && buffer.events.size > 0) {
           // Real registry events remain authoritative when an initial page
           // fails; discarding them would hide active work and completions.
-          current.tasks = eventBuffer.events.reduce<TaskSummary[]>(
-            (tasks, event) => applyTaskEvent(tasks, event).tasks,
-            [],
-          );
+          current.tasks = replayTaskEvents([], buffer.events);
           for (const task of current.tasks) {
             observeTaskTerminal(current, task, "event");
           }
@@ -292,14 +382,18 @@ function loadBackgroundTasks(
     } finally {
       const current = getBackgroundTasksState(host);
       if (current === state && current.requestId === requestId) {
-        if (current.pendingTaskEvents === eventBuffer) {
+        if (current.pendingTaskEvents === buffer && current.deferredRetryAttempt === undefined) {
           current.pendingTaskEvents = null;
         }
         current.loading = false;
         const reload = current.pendingReload;
         current.pendingReload = false;
-        if (reload) {
+        if (reload && host.chatSecondaryReadsReady?.(current.explicitReadRequested) !== false) {
           loadBackgroundTasks(host, current, true);
+        } else if (reload) {
+          current.loadedClient = null;
+          // The superseded read's error must not block its queued replacement on resume.
+          current.error = null;
         }
       }
       host.requestUpdate?.();
@@ -343,17 +437,16 @@ function bufferBackgroundTaskEvent(
   state: BackgroundTasksState,
   event: BackgroundTaskLoadEvent,
 ): boolean {
-  const buffer = state.pendingTaskEvents;
-  if (
-    event.action === "restored" ||
-    !buffer ||
-    !state.loading ||
-    buffer.requestId !== state.requestId
-  ) {
+  if (event.action === "restored") {
     return false;
   }
-  buffer.events.push(event);
-  return true;
+  const buffer = (state.pendingTaskEvents ??=
+    state.tasks === null ? { requestId: state.requestId, events: new Map() } : null);
+  if (!buffer || buffer.requestId !== state.requestId) {
+    return false;
+  }
+  coalesceTaskEvent(buffer.events, event);
+  return state.loading;
 }
 
 /** Apply a gateway `task` event to the pane's snapshot. Events for other
@@ -391,7 +484,13 @@ export function handleBackgroundTasksEvent(
         }
       : normalizedEvent;
   const bufferedEvent = bufferBackgroundTaskEvent(state, event);
-  if (event.action === "restored" && !presented) {
+  const readReady =
+    presented && host.chatSecondaryReadsReady?.(state.explicitReadRequested) !== false;
+  if (event.action === "restored") {
+    state.pendingTaskEvents?.events.clear();
+    delete state.deferredRetryAttempt;
+  }
+  if (event.action === "restored" && !readReady) {
     // Restore replaces the registry snapshot. Retire any older page without
     // issuing hidden work; presentation will start the authoritative reload.
     state.requestId += 1;
@@ -407,8 +506,11 @@ export function handleBackgroundTasksEvent(
   if (state.tasks === null) {
     // The exact in-flight snapshot already replays its buffered events; a
     // redundant stale reload would immediately undo that initial-load replay.
-    if (presented && !bufferedEvent) {
+    if (readReady && !bufferedEvent) {
       loadBackgroundTasks(host, state, true);
+    } else if (!bufferedEvent) {
+      state.pendingReload = true;
+      host.requestUpdate?.();
     }
     return;
   }
@@ -565,10 +667,13 @@ async function cancelBackgroundTask(
   }
 }
 
-function toggleBackgroundTasks(host: BackgroundTasksHost) {
-  const state = getBackgroundTasksState(host);
-  state.collapsed = !state.collapsed;
-  host.requestUpdate?.();
+export function refreshBackgroundTasks(
+  host: BackgroundTasksHost,
+  state = getBackgroundTasksState(host),
+): void {
+  delete state.deferredRetryAttempt;
+  state.explicitReadRequested = true;
+  loadBackgroundTasks(host, state, true);
 }
 
 export function createBackgroundTasksProps(
@@ -590,9 +695,10 @@ export function createBackgroundTasksProps(
   // gets detected at all, so it cannot wait for the rail to be opened first.
   if (
     opts.presented !== false &&
+    host.chatSecondaryReadsReady?.(state.explicitReadRequested) !== false &&
     host.connected &&
     !state.loading &&
-    !state.error &&
+    (!state.error || state.pendingReload) &&
     (state.tasks === null || state.loadedClient !== host.client)
   ) {
     loadBackgroundTasks(host, state);
@@ -626,12 +732,16 @@ export function createBackgroundTasksProps(
     taskDetailLoadingIds: state.taskDetailLoadingIds,
     cancellingTaskIds: state.cancellingTaskIds,
     finishedCollapsed: state.finishedCollapsed,
-    onToggleCollapsed: () => toggleBackgroundTasks(host),
+    onToggleCollapsed: () => {
+      const current = getBackgroundTasksState(host);
+      current.collapsed = !current.collapsed;
+      host.requestUpdate?.();
+    },
     onToggleFinished: () => {
       state.finishedCollapsed = !state.finishedCollapsed;
       host.requestUpdate?.();
     },
-    onRefresh: () => loadBackgroundTasks(host, state, true),
+    onRefresh: () => refreshBackgroundTasks(host, state),
     onCancel: (taskId) => void cancelBackgroundTask(host, state, taskId),
     onLoadDetail: (task) => void loadBackgroundTaskDetail(host, state, task),
     onOpenTaskDetail: opts.onOpenTaskDetail

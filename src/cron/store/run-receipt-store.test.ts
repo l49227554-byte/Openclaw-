@@ -1,12 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
+import {
+  createOperationalRunInstanceRef,
+  prepareAgentRunAdmission,
+  type AdmittedRunContext,
+} from "../../agents/admitted-run-context.js";
 import { createExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import * as pidAlive from "../../shared/pid-alive.js";
+import { recordAgentDatabaseAdmissions } from "../../state/agent-database-admission.js";
+import { closeOpenClawStateDatabaseByPath } from "../../state/openclaw-state-db-cache.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
+import {
+  advanceCronActiveJobGeneration,
+  bindCronJobAdmittedRun,
+  bindCronSelfRemovalCommitGuard,
+  markCronJobActive,
+  noteActiveCronJobRemoval,
+  requestActiveCronJobCancellation,
+  resetCronActiveJobs,
+} from "../active-jobs.js";
 import { setupCronServiceSuite } from "../service.test-harness.js";
+import { assertServiceCronRunReceiptCurrent } from "../service/run-receipts.js";
 import { proposeCronRunRecovery, recoverCronRunProposal } from "../service/run-recovery.js";
 import { createCronServiceState } from "../service/state.js";
 import { loadCronStore, saveCronStore } from "../store.js";
@@ -26,6 +42,10 @@ import {
   releaseLocalCronRunReceiptOwnership,
   type CronRunReceiptHandle,
 } from "./run-receipt-store.js";
+import {
+  isCronRunTriggerStateRetiredInDatabase,
+  retireCronRunTriggerStateInDatabase,
+} from "./run-receipt-trigger-state.js";
 
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-run-receipt-" });
 
@@ -96,6 +116,123 @@ function makeForeignOwner(handle: CronRunReceiptHandle) {
 }
 
 describe("cron run receipt store", () => {
+  it("reports the recorded database refusal when a scheduled agent is unavailable", async () => {
+    const { storePath } = await makeStorePath();
+    const job = makeJob("database-refusal");
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+    const receipt = claim(storePath, job, Date.now());
+    const reason = "Refused agent alpha: its database belongs to main.";
+    recordAgentDatabaseAdmissions([
+      {
+        agentId: "alpha",
+        paths: ["/synthetic/alpha/openclaw-agent.sqlite"],
+        embeddedOwnerId: "main",
+        code: "agent-database-ownership-mismatch",
+        reason,
+        repairHint: "Inspect the copy, then restart.",
+      },
+    ]);
+    try {
+      expect(() =>
+        assertCronRunReceiptCurrent({
+          handle: receipt,
+          resolveAgentId: (current) => current.agentId!,
+          isAgentAvailable: () => false,
+        }),
+      ).toThrow(reason);
+    } finally {
+      recordAgentDatabaseAdmissions([]);
+      finishCronRunReceipt({
+        handle: receipt,
+        status: "error",
+        finishedAtMs: Date.now(),
+        error: reason,
+      });
+    }
+  });
+
+  it.each([
+    "self-removed",
+    "operator-removed",
+    "cancelled",
+    "copied guard",
+    "copied marker",
+    "replaced marker",
+    "retired generation",
+    "closed receipt",
+    "foreign receipt owner",
+    "unavailable agent",
+  ] as const)("revalidates completion ownership for a %s job", async (scenario) => {
+    const { storePath } = await makeStorePath();
+    const job = makeJob("removed-completion");
+    await saveCronStore(storePath, { version: 1, jobs: [job] });
+    const receipt = claim(storePath, job, Date.now());
+    let liveReceipt = receipt;
+    const marker = markCronJobActive(job.id)!;
+    const controller = new AbortController();
+    const admission = prepareAgentRunAdmission({
+      cfg: {},
+      operationalRunInstance: createOperationalRunInstanceRef("removed-completion-run"),
+      facts: {
+        runId: "removed-completion-run",
+        agentId: job.agentId!,
+        ingress: { kind: "schedule", boundary: "cron.script", state: "present" },
+      },
+    });
+    try {
+      const context = await admission.admit("gateway");
+      bindCronJobAdmittedRun(marker, context, controller.signal);
+      const guard = () => {};
+      bindCronSelfRemovalCommitGuard(job.id, context.operationalRunInstance, guard, () => {});
+      await saveCronStore(storePath, { version: 1, jobs: [] });
+      noteActiveCronJobRemoval(
+        job.id,
+        scenario === "operator-removed"
+          ? undefined
+          : scenario === "copied guard"
+            ? () => guard()
+            : guard,
+      );
+      admission.close();
+      if (scenario === "cancelled") {
+        requestActiveCronJobCancellation(job.id, "cancelled after removal");
+      } else if (scenario === "replaced marker") {
+        markCronJobActive(job.id);
+      } else if (scenario === "retired generation") {
+        advanceCronActiveJobGeneration();
+      } else if (scenario === "closed receipt") {
+        finishCronRunReceipt({ handle: receipt, status: "ok", finishedAtMs: Date.now() });
+      } else if (scenario === "foreign receipt owner") {
+        liveReceipt = makeForeignOwner(receipt).handle;
+      }
+      const state = createCronServiceState({
+        storePath,
+        cronEnabled: true,
+        log: logger,
+        nowMs: () => Date.now(),
+        isAgentAvailable: () => scenario !== "unavailable agent",
+        enqueueSystemEvent: vi.fn(),
+        requestHeartbeat: vi.fn(),
+        runIsolatedAgentJob: vi.fn(),
+      });
+      const assertCurrent = () =>
+        assertServiceCronRunReceiptCurrent(
+          state,
+          receipt,
+          scenario === "copied marker" ? { ...marker } : marker,
+        );
+      if (scenario === "self-removed") {
+        expect(assertCurrent).not.toThrow();
+      } else {
+        expect(assertCurrent).toThrow(CronRunReceiptRevisionError);
+      }
+    } finally {
+      admission.close();
+      finishCronRunReceipt({ handle: liveReceipt, status: "ok", finishedAtMs: Date.now() });
+      resetCronActiveJobs();
+    }
+  });
+
   it.each(["single", "batch"] as const)(
     "lazily creates receipt storage for a direct $case lookup",
     async (testCase) => {
@@ -117,6 +254,116 @@ describe("cron run receipt store", () => {
           )
           .get(),
       ).toEqual({ name: "cron_run_receipts" });
+    },
+  );
+
+  it.each(["present", "absent"] as const)(
+    "keeps trigger-state retirement atomic with %s storage",
+    async (storage) => {
+      const { storePath } = await makeStorePath();
+      const startedAtMs = Date.now();
+      const editedJob = makeJob(`retirement-${storage}`);
+      const untouchedJob = makeJob(`untouched-${storage}`);
+      for (const job of [editedJob, untouchedJob]) {
+        job.trigger = { script: "return true", once: true };
+        job.state.runningAtMs = startedAtMs;
+      }
+      await saveCronStore(storePath, { version: 1, jobs: [editedJob, untouchedJob] });
+      let editedReceipt = claim(storePath, editedJob, startedAtMs);
+      const untouchedReceipt = claim(storePath, untouchedJob, startedAtMs);
+      let database = openOpenClawStateDatabase();
+      const schemaVersion = database.db.prepare("PRAGMA user_version").get();
+      const readTable = () =>
+        database.db
+          .prepare(
+            `SELECT name FROM sqlite_schema
+              WHERE type = 'table' AND name = 'cron_run_trigger_state_retirements'`,
+          )
+          .get();
+      const readRetirements = () =>
+        runOpenClawStateWriteTransaction(({ db }) => ({
+          edited: isCronRunTriggerStateRetiredInDatabase({ database: db, handle: editedReceipt }),
+          untouched: isCronRunTriggerStateRetiredInDatabase({
+            database: db,
+            handle: untouchedReceipt,
+          }),
+        }));
+
+      try {
+        if (storage === "present") {
+          runOpenClawStateWriteTransaction(({ db }) => {
+            retireCronRunTriggerStateInDatabase({ database: db, handle: editedReceipt });
+          });
+          finishCronRunReceipt({
+            handle: editedReceipt,
+            status: "ok",
+            finishedAtMs: startedAtMs + 1,
+          });
+          // An earlier retirement must not transfer to a same-timestamp successor.
+          editedReceipt = claim(storePath, editedJob, startedAtMs);
+        } else {
+          // Preserve the receipt rows while restoring the pre-feature database shape.
+          database.db.exec("DROP TABLE IF EXISTS cron_run_trigger_state_retirements");
+        }
+        closeOpenClawStateDatabaseByPath(database.path);
+        database = openOpenClawStateDatabase();
+        const previousTable =
+          storage === "present" ? { name: "cron_run_trigger_state_retirements" } : undefined;
+        expect(readTable()).toEqual(previousTable);
+        expect(readRetirements()).toEqual({ edited: false, untouched: false });
+        expect(readTable()).toEqual(previousTable);
+
+        expect(() =>
+          runOpenClawStateWriteTransaction(({ db }) => {
+            retireCronRunTriggerStateInDatabase({
+              database: db,
+              handle: editedReceipt,
+            });
+            expect(
+              isCronRunTriggerStateRetiredInDatabase({ database: db, handle: editedReceipt }),
+            ).toBe(true);
+            expect(readTable()).toEqual({ name: "cron_run_trigger_state_retirements" });
+            throw new Error("cron edit did not commit");
+          }),
+        ).toThrow("cron edit did not commit");
+
+        expect(readTable()).toEqual(previousTable);
+        expect(readRetirements()).toEqual({ edited: false, untouched: false });
+        runOpenClawStateWriteTransaction(({ db }) => {
+          retireCronRunTriggerStateInDatabase({
+            database: db,
+            handle: editedReceipt,
+          });
+        });
+        expect(readTable()).toEqual({ name: "cron_run_trigger_state_retirements" });
+        expect(database.db.prepare("PRAGMA user_version").get()).toEqual(schemaVersion);
+        expect(
+          database.db
+            .prepare(
+              "SELECT receipt_id FROM cron_run_trigger_state_retirements WHERE receipt_id = ?",
+            )
+            .get(untouchedReceipt.receiptId),
+        ).toBeUndefined();
+
+        closeOpenClawStateDatabaseByPath(database.path);
+        database = openOpenClawStateDatabase();
+        expect(readRetirements()).toEqual({ edited: true, untouched: false });
+        expect(
+          receipts(storePath, editedJob.id).filter((receipt) => receipt.status === "running"),
+        ).toEqual([
+          {
+            receiptId: editedReceipt.receiptId,
+            status: "running",
+            agentId: editedJob.agentId,
+            startedAtMs,
+            error: null,
+          },
+        ]);
+      } finally {
+        for (const handle of [editedReceipt, untouchedReceipt]) {
+          finishCronRunReceipt({ handle, status: "ok", finishedAtMs: startedAtMs + 1 });
+        }
+      }
     },
   );
 
@@ -319,21 +566,37 @@ describe("cron run receipt store", () => {
         executionId: "execution-retention",
       }),
     };
+    const retireTriggerState = async (handle: CronRunReceiptHandle) => {
+      job.state.runningAtMs = handle.startedAtMs;
+      await saveCronStore(storePath, { version: 1, jobs: [job] });
+      runOpenClawStateWriteTransaction(({ db }) => {
+        retireCronRunTriggerStateInDatabase({ database: db, handle });
+      });
+    };
     const finishedReceiptIds: string[] = [];
     for (let index = 0; index < 70; index += 1) {
       const handle = claim(storePath, job, 1_000 + index * 2);
       finishedReceiptIds.push(handle.receiptId);
       if (index === 0 || index === 69) {
         expect(bindCronRunReceiptExecution({ admitted, handle })).toBe("bound");
+        await retireTriggerState(handle);
       }
       finishCronRunReceipt({
         handle,
         status: "ok",
         finishedAtMs: 1_001 + index * 2,
       });
+      if (index === 0 || index === 69) {
+        expect(
+          runOpenClawStateWriteTransaction(({ db }) =>
+            isCronRunTriggerStateRetiredInDatabase({ database: db, handle }),
+          ),
+        ).toBe(true);
+      }
     }
     const active = claim(storePath, job, 2_000);
     expect(bindCronRunReceiptExecution({ admitted, handle: active })).toBe("bound");
+    await retireTriggerState(active);
 
     const retained = receipts(storePath, job.id);
     const retainedIds = new Set(retained.map((receipt) => receipt.receiptId));
@@ -366,7 +629,29 @@ describe("cron run receipt store", () => {
         .map((owner_id) => ({ owner_id })),
     );
 
+    const readRetiredReceipts = () =>
+      openOpenClawStateDatabase()
+        .db.prepare(
+          `SELECT receipt_id FROM cron_run_trigger_state_retirements
+            WHERE receipt_id IN (?, ?, ?) ORDER BY receipt_id`,
+        )
+        .all(finishedReceiptIds[0]!, finishedReceiptIds.at(-1)!, active.receiptId);
+    const retainedStateWriters = [active.receiptId, finishedReceiptIds.at(-1)!]
+      .toSorted()
+      .map((receipt_id) => ({ receipt_id }));
+    // Read the companion directly so an orphan left by pruning cannot hide behind a join.
+    expect(readRetiredReceipts()).toEqual(retainedStateWriters);
+
+    await saveCronStore(storePath, { version: 1, jobs: [] });
+    expect(receipts(storePath, job.id)).toHaveLength(65);
+    expect(readRetiredReceipts()).toEqual(retainedStateWriters);
     finishCronRunReceipt({ handle: active, status: "skipped", finishedAtMs: 2_001 });
+    expect(readRetiredReceipts()).toEqual(retainedStateWriters);
+    expect(
+      runOpenClawStateWriteTransaction(({ db }) =>
+        isCronRunTriggerStateRetiredInDatabase({ database: db, handle: active }),
+      ),
+    ).toBe(true);
   });
 
   it("rejects a live run after its durable owner revision changes", async () => {

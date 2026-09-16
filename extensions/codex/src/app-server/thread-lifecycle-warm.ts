@@ -195,7 +195,7 @@ export async function tryReuseCodexLiveThread(
       ((await options.buildLoadedPluginThreadConfig(binding))?.fingerprint ??
         binding.pluginAppsFingerprint) === binding.pluginAppsFingerprint
     ) {
-      params.buildFinalConfigPatch?.({ action: "resume", binding });
+      await params.buildFinalConfigPatch?.({ action: "resume", binding });
       throwIfAborted();
       return { kind: "ready", binding: { ...binding, lifecycle: { action: "resumed" } } };
     }
@@ -228,6 +228,7 @@ export async function tryReuseCodexLiveThread(
       // healthy. Both subscription and host authority must survive policy awaits.
       retainedThread.assertCurrent();
       params.params.hostCapabilities.assertActive();
+      params.assertCurrent?.();
     } catch (cause) {
       throw new AgentHarnessPreflightError(
         "Codex warm thread ownership changed before this turn could run. No turn was sent; reconnect before continuing, or start a new conversation if the original thread was closed.",
@@ -247,10 +248,10 @@ export async function tryReuseCodexLiveThread(
     // Engine identity, projection epoch, and policy were checked by the owner
     // before this call; compatible bootstrap threads must keep their session.
 
-    const prebuiltFinalConfigPatch = params.buildFinalConfigPatch?.({
+    const prebuiltFinalConfigPatch = (await params.buildFinalConfigPatch?.({
       action: "resume",
       binding,
-    }) ?? {
+    })) ?? {
       configPatch: params.finalConfigPatch,
       nativeHookRelayGeneration: params.nativeHookRelayGeneration,
     };

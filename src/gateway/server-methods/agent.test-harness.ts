@@ -10,13 +10,15 @@ import type { SubagentRegistryDeps } from "../../agents/subagents/registry/subag
 import { resetSubagentRegistryForTests } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type {
-  SessionTranscriptStats,
+  hasSessionTranscriptEventsSync,
+  readTranscriptMutationStateSync,
   recordSessionParticipant,
   listSessionParticipantsReadOnly,
   stageSessionPendingInput,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetDiagnosticEventsForTest } from "../../infra/diagnostic-events.js";
+import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import {
   resetDetachedTaskLifecycleRuntimeForTests,
   resetTaskRegistryForTests,
@@ -49,10 +51,10 @@ const mocks = vi.hoisted(() => ({
   stageSessionPendingInput: vi.fn<typeof stageSessionPendingInput>(),
   recordSessionParticipant: vi.fn<typeof recordSessionParticipant>(() => "inserted"),
   listSessionParticipantsReadOnly: vi.fn<typeof listSessionParticipantsReadOnly>(() => new Map()),
-  readTranscriptStatsSync: vi.fn<() => SessionTranscriptStats>(() => ({
-    eventCount: 0,
-    maxSeq: 0,
-    sizeBytes: 0,
+  hasSessionTranscriptEventsSync: vi.fn<typeof hasSessionTranscriptEventsSync>(() => false),
+  readTranscriptMutationStateSync: vi.fn<typeof readTranscriptMutationStateSync>(() => ({
+    observedAt: null,
+    updatedAt: null,
   })),
   agentCommand: vi.fn(),
   agentCommandListeners: new Set<() => void>(),
@@ -69,6 +71,7 @@ const mocks = vi.hoisted(() => ({
   readAcpSessionMeta: vi.fn<typeof readAcpSessionMeta>(() => undefined),
   listAgentIds: vi.fn(() => ["main"]),
   loadConfigReturn: {} as OpenClawConfig,
+  userTurnStorePath: undefined as string | undefined,
   loadVoiceWakeRoutingConfig: vi.fn(),
   resolveVoiceWakeRouteByTrigger: vi.fn(),
   getChannelPlugin: vi.fn(),
@@ -80,7 +83,6 @@ const mocks = vi.hoisted(() => ({
       lastInteractionAt: entry?.lastInteractionAt,
     }),
   ),
-  hasTerminalMainSessionTranscriptNewerThanRegistrySync: vi.fn(() => false),
   lifecycleGeneration: "test-generation",
 }));
 
@@ -134,8 +136,6 @@ vi.mock("../../config/sessions.js", async () => {
       return m?.[1] ?? "main";
     },
     resolveExplicitAgentSessionKey: mocks.resolveExplicitAgentSessionKey,
-    hasTerminalMainSessionTranscriptNewerThanRegistrySync:
-      mocks.hasTerminalMainSessionTranscriptNewerThanRegistrySync,
     resolveAgentMainSessionKey: ({
       cfg,
       agentId,
@@ -159,7 +159,8 @@ vi.mock("../../config/sessions/session-accessor.js", async () => {
     // These handler fixtures own an in-memory store; participant access must not reach shared /tmp SQLite.
     recordSessionParticipant: mocks.recordSessionParticipant,
     listSessionParticipantsReadOnly: mocks.listSessionParticipantsReadOnly,
-    readTranscriptStatsSync: mocks.readTranscriptStatsSync,
+    hasSessionTranscriptEventsSync: mocks.hasSessionTranscriptEventsSync,
+    readTranscriptMutationStateSync: mocks.readTranscriptMutationStateSync,
   };
 });
 
@@ -176,14 +177,16 @@ vi.mock("../../sessions/user-turn-transcript.js", async () => {
         ...params,
         // Handler-unit fixtures mock session loading with ordered returns. The
         // gateway-server suites own real target revalidation and SQLite proof.
-        target: {
-          sessionId: "test-session-id",
-          expectedSessionId: "test-session-id",
-          sessionKey: "agent:main:main",
-          sessionEntry: { sessionId: "test-session-id", updatedAt: Date.now() },
-          storePath: "/tmp/sessions.json",
-          agentId: "main",
-        },
+        target: mocks.userTurnStorePath
+          ? params.target
+          : {
+              sessionId: "test-session-id",
+              expectedSessionId: "test-session-id",
+              sessionKey: "agent:main:main",
+              sessionEntry: { sessionId: "test-session-id", updatedAt: Date.now() },
+              storePath: "/tmp/sessions.json",
+              agentId: "main",
+            },
       }),
   };
 });
@@ -207,7 +210,7 @@ vi.mock("../../agents/prepared-model-runtime.js", () => ({
   // Direct handler tests bypass Gateway startup, so provide the lifecycle fact
   // that production publishes before admitting agent RPCs.
   acquireAgentRunPreparedModelRuntime: vi.fn(async () => ({
-    release: vi.fn(),
+    [Symbol.asyncDispose]: vi.fn(async () => {}),
     snapshot: {},
   })),
   loadPublishedGatewayReplyDispatchRuntime: async ({ agentId }: { agentId: string }) => ({
@@ -312,10 +315,12 @@ vi.mock("../../infra/agent-events.js", () => ({
   registerAgentRunContext: mocks.registerAgentRunContext,
   onAgentEvent: vi.fn(),
 }));
-vi.mock("../../infra/agent-run-registry.js", () => ({
+vi.mock("../../infra/agent-run-registry.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/agent-run-registry.js")>()),
   claimAgentRunContext: mocks.registerAgentRunContext,
   clearAgentRunContext: mocks.clearAgentRunContext,
   getAgentRunContext: vi.fn(() => undefined),
+  getAgentRunLifecycleGeneration: () => mocks.lifecycleGeneration,
   resolveProjectedAgentRunProgressState: vi.fn(() => undefined),
   registerAgentRunContext: mocks.registerAgentRunContext,
 }));
@@ -399,6 +404,7 @@ vi.mock("../../channels/message/runtime.js", async () => {
 
 export const makeContext = (): GatewayRequestContext =>
   ({
+    trackExecution: trackAsyncWork,
     dedupe: new Map(),
     addChatRun: vi.fn(),
     removeChatRun: vi.fn(),
@@ -624,10 +630,10 @@ function resetSessionAccessorMocks() {
   });
   mocks.recordSessionParticipant.mockReset().mockReturnValue("inserted");
   mocks.listSessionParticipantsReadOnly.mockReset().mockReturnValue(new Map());
-  mocks.readTranscriptStatsSync.mockReset().mockReturnValue({
-    eventCount: 0,
-    maxSeq: 0,
-    sizeBytes: 0,
+  mocks.hasSessionTranscriptEventsSync.mockReset().mockReturnValue(false);
+  mocks.readTranscriptMutationStateSync.mockReset().mockReturnValue({
+    observedAt: null,
+    updatedAt: null,
   });
   mocks.applySessionEntryReplacements.mockReset().mockImplementation(
     async (params: {
@@ -645,29 +651,36 @@ function resetSessionAccessorMocks() {
             replacements?: Iterable<{ sessionKey: string; entry: SessionEntry }>;
             result: unknown;
           };
-    }) =>
+    }) => {
+      let updateResult: Promise<unknown> | undefined;
       await mocks.updateSessionStore(
         params.storePath,
-        async (store: Record<string, SessionEntry>) => {
-          const keys = params.sessionKeys ?? Object.keys(store);
-          const snapshots = keys.flatMap((sessionKey) => {
-            const entry = store[sessionKey];
-            return entry ? [{ sessionKey, entry: structuredClone(entry) }] : [];
-          });
-          const planned = await params.update(snapshots);
-          for (const replacement of planned.replacements ?? []) {
-            if (store[replacement.sessionKey]) {
-              store[replacement.sessionKey] = structuredClone(replacement.entry);
+        (store: Record<string, SessionEntry>) => {
+          updateResult = (async () => {
+            const keys = params.sessionKeys ?? Object.keys(store);
+            const snapshots = keys.flatMap((sessionKey) => {
+              const entry = store[sessionKey];
+              return entry ? [{ sessionKey, entry: structuredClone(entry) }] : [];
+            });
+            const planned = await params.update(snapshots);
+            for (const replacement of planned.replacements ?? []) {
+              if (store[replacement.sessionKey]) {
+                store[replacement.sessionKey] = structuredClone(replacement.entry);
+              }
             }
-          }
-          return planned.result;
+            return planned.result;
+          })();
+          return updateResult;
         },
         {
           activeSessionKey: params.activeSessionKey,
           requireWriteSuccess: params.requireWriteSuccess,
           skipMaintenance: params.skipMaintenance,
         },
-      ),
+      );
+      // Empty store stubs must still run the projection; undefined can be its valid result.
+      return updateResult === undefined ? (await params.update([])).result : await updateResult;
+    },
   );
   mocks.persistSessionTranscriptTurn.mockReset().mockImplementation(
     async (
@@ -1076,6 +1089,7 @@ export async function invokeAgentIdentityGet(
     respond?: ReturnType<typeof vi.fn>;
     reqId?: string;
     context?: GatewayRequestContext;
+    client?: AgentHandlerArgs["client"];
   },
 ) {
   const respond = options?.respond ?? vi.fn();
@@ -1091,7 +1105,7 @@ export async function invokeAgentIdentityGet(
       id: options?.reqId ?? "agent-identity-test-req",
       method: "agent.identity.get",
     },
-    client: null,
+    client: options?.client ?? null,
     isWebchatConnect: () => false,
   });
   return respond;
@@ -1114,6 +1128,8 @@ export function applyGatewaySubagentRegistryTestDeps(
       endedAt: Date.now(),
     })) as SubagentRegistryDeps["callGateway"],
     loadAgentRuntimePluginRegistryHandle: () => undefined,
+    // Handler fixtures own no browser sessions; lifecycle cleanup has separate coverage.
+    cleanupBrowserSessionsForLifecycleEnd: async () => {},
     ...overrides,
   });
 }
@@ -1131,6 +1147,7 @@ export function restoreAgentTaskRegistryRuntimeAfterTests(): void {
 }
 
 export const describe0AfterEach0 = () => {
+  mocks.userTurnStorePath = undefined;
   // Drain deferred broadcasts before retiring the test-owned row and runtime state.
   flushPendingSessionsChangedEvents();
   mocks.loadGatewaySessionRow.mockReset();
@@ -1161,7 +1178,6 @@ export const describe0AfterEach0 = () => {
         lastInteractionAt: entry?.lastInteractionAt,
       }),
     );
-  mocks.hasTerminalMainSessionTranscriptNewerThanRegistrySync.mockReset().mockReturnValue(false);
   mocks.lifecycleGeneration = "test-generation";
   dateOnlyFakeClockActive = false;
   vi.useRealTimers();
@@ -1172,6 +1188,8 @@ function resetIntegrationState() {
   envSnapshot.restore();
   resetDetachedTaskLifecycleRuntimeForTests();
   resetAgentTaskRegistryForTests();
+  resetSubagentRegistryForTests({ persist: false });
+  applyGatewaySubagentRegistryTestDeps();
   mocks.agentCommand.mockReset();
   mocks.loadConfigReturn = {};
   mocks.loadGatewaySessionRow.mockReset();

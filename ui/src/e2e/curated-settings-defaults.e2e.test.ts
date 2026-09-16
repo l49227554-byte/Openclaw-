@@ -242,11 +242,8 @@ suite.define(() => {
           });
         }
 
-        await gateway.setMethodResponse(
-          "config.get",
-          configResponse(afterThinkingReset, "curated-defaults-model-thinking-reset"),
-        );
         const modelSavesBefore = (await gateway.getRequests("config.patch")).length;
+        await gateway.deferNext("config.patch");
         await selectDefault(thinkingRow);
         expect(
           requestRaw(await gateway.waitForRequest("config.patch", { after: modelSavesBefore })),
@@ -260,14 +257,23 @@ suite.define(() => {
             },
           },
         });
-        await expect
-          .poll(() => page.getByRole("status").filter({ hasText: "Defaults saved" }).count())
-          .toBeGreaterThan(0);
-        await gateway.setMethodResponse(
-          "config.get",
-          configResponse(afterModelResets, "curated-defaults-model-resets"),
+        const afterThinkingResponse = configResponse(
+          afterThinkingReset,
+          "curated-defaults-model-thinking-reset",
         );
+        await gateway.setMethodResponse("config.get", afterThinkingResponse);
+        await gateway.resolveDeferred("config.patch", { ok: true, ...afterThinkingResponse });
+        await expect
+          .poll(() => thinkingRow.locator("wa-radio-group").getAttribute("disabled"))
+          .toBeNull();
+        await expect
+          .poll(() =>
+            thinkingRow.getByRole("radio", { name: /^Default/u }).getAttribute("aria-checked"),
+          )
+          .toBe("true");
+        expect(await page.getByText("Defaults saved.", { exact: true }).count()).toBe(0);
         const fastModeSavesBefore = (await gateway.getRequests("config.patch")).length;
+        await gateway.deferNext("config.patch");
         await selectDefault(fastModeRow);
         expect(
           requestRaw(await gateway.waitForRequest("config.patch", { after: fastModeSavesBefore })),
@@ -281,11 +287,23 @@ suite.define(() => {
             },
           },
         });
+        const afterModelResponse = configResponse(
+          afterModelResets,
+          "curated-defaults-model-resets",
+        );
+        await gateway.setMethodResponse("config.get", afterModelResponse);
+        await gateway.resolveDeferred("config.patch", { ok: true, ...afterModelResponse });
         await expectDefaultInfo(thinkingRow, thinkingDefaultExplanation);
         await expectDefaultInfo(fastModeRow, fastModeDefaultExplanation);
         await expect
-          .poll(() => page.getByRole("status").filter({ hasText: "Defaults saved" }).count())
-          .toBeGreaterThan(0);
+          .poll(() => fastModeRow.locator("wa-radio-group").getAttribute("disabled"))
+          .toBeNull();
+        await expect
+          .poll(() =>
+            fastModeRow.getByRole("radio", { name: /^Default/u }).getAttribute("aria-checked"),
+          )
+          .toBe("true");
+        expect(await page.getByText("Defaults saved.", { exact: true }).count()).toBe(0);
 
         if (captureUiProofEnabled) {
           await page.locator("#settings-model-behavior").screenshot({

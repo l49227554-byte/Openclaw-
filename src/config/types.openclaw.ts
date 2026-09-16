@@ -122,7 +122,6 @@ export type OpenClawConfig = {
     lastRunCommit?: string;
     lastRunCommand?: string;
     lastRunMode?: "local" | "remote";
-    localModelLeanAutoModel?: string;
     securityAcknowledgedAt?: string;
   };
   /** Diagnostics, tracing, and stability debugging settings. */
@@ -205,6 +204,8 @@ export type OpenClawConfig = {
   agents?: AgentsConfig;
   /** Global root for new managed worktrees. Defaults to <state-dir>/worktrees; accepts ~. */
   worktreeRoot?: string;
+  /** Use filesystem acceleration for new worktrees when supported (default: true). */
+  worktreeAcceleration?: boolean;
   /** Tool exposure, policy, web/media tools, exec, and code-mode settings. */
   tools?: ToolsConfig;
   /** Legacy/direct agent bindings used by runtime resolution. */

@@ -8,12 +8,14 @@ import {
   type GatewayBrowserClient,
 } from "../../api/gateway.ts";
 import { formatUiError } from "../../lib/format-error.ts";
+import { isAwaitingGatewayFailure } from "../../lib/gateway-availability.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import {
   isTerminalFailureChatSendAck,
   normalizeChatSendAck,
 } from "../../pages/chat/chat-send-ack.ts";
 import { formatTerminalChatSendAckError } from "../../pages/chat/chat-send-support.ts";
+import type { HumanMention } from "../chat/chat-types.ts";
 import type { SessionPlacementTarget } from "./session-placement-recovery.ts";
 
 type SessionPlacementStartOutcome =
@@ -31,6 +33,7 @@ type PlacementReadResult =
   | { status: "read"; placement?: SessionPlacement; sessionId?: string }
   | { status: "missing" }
   | { status: "rejected"; error: string }
+  | { status: "awaiting-gateway" }
   | { status: "unavailable" };
 type PlacementResolution =
   | { status: "active"; placement: SessionPlacement }
@@ -63,6 +66,7 @@ export function sessionPlacementDispatchParams(params: {
     ...(params.target.kind === "profile"
       ? {
           profileId: params.target.profileId,
+          ...(params.target.os ? { os: params.target.os } : {}),
           ...(params.target.machineClass ? { machineClass: params.target.machineClass } : {}),
         }
       : params.target.kind === "device"
@@ -96,6 +100,9 @@ async function readPlacement(
       ...(typeof sessionId === "string" && sessionId.trim() ? { sessionId } : {}),
     };
   } catch (error) {
+    if (isAwaitingGatewayFailure(error, null)) {
+      return { status: "awaiting-gateway" };
+    }
     if (!isAmbiguousDispatchError(error)) {
       return {
         status: "rejected",
@@ -141,8 +148,9 @@ async function resolveActivePlacement(
     if (result.status === "rejected") {
       return { status: "cleanup-rejected", error: result.error };
     }
-    if (result.status === "unavailable") {
-      lookupFailures += 1;
+    if (result.status === "unavailable" || result.status === "awaiting-gateway") {
+      // A planned Gateway interruption says nothing about the worker's health.
+      lookupFailures = result.status === "awaiting-gateway" ? 0 : lookupFailures + 1;
       const submissionCancelled = !isCurrent();
       if (submissionCancelled || lookupFailures >= PLACEMENT_LOOKUP_FAILURE_LIMIT) {
         if (!params.cleanupOnCancellation() && submissionCancelled) {
@@ -237,7 +245,7 @@ export async function deleteSessionPlacementDraft(
   if (existing.status === "rejected") {
     return existing.error;
   }
-  if (existing.status === "unavailable") {
+  if (existing.status === "unavailable" || existing.status === "awaiting-gateway") {
     return "placement draft session could not be verified";
   }
   if (!existing.sessionId) {
@@ -307,7 +315,7 @@ export async function deleteRecoveredSessionPlacementDraft(
   if (existing.status === "rejected") {
     return existing.error;
   }
-  if (existing.status === "unavailable") {
+  if (existing.status === "unavailable" || existing.status === "awaiting-gateway") {
     return "session placement could not be verified";
   }
   if (existing.placement) {
@@ -333,6 +341,7 @@ export async function startSessionPlacementInitialTurn(
     agentId: string;
     target: SessionPlacementTarget;
     message: string;
+    mentions?: readonly HumanMention[];
     attachments?: unknown[];
     messageId?: string;
     recovering?: boolean;
@@ -341,6 +350,8 @@ export async function startSessionPlacementInitialTurn(
   isCurrent: () => boolean,
   beforeSend: () => boolean = () => true,
 ): Promise<SessionPlacementStartOutcome> {
+  const message = params.message;
+  const mentions = params.mentions?.map((mention) => ({ ...mention }));
   const cleanupOnCancellation = params.cleanupOnCancellation ?? (() => true);
   let resolution: PlacementResolution | undefined;
   let dispatchError = "";
@@ -447,7 +458,8 @@ export async function startSessionPlacementInitialTurn(
     const sent = await client.request("sessions.send", {
       key: params.key,
       agentId: params.agentId,
-      message: params.message,
+      message,
+      ...(mentions?.length ? { mentions } : {}),
       attachments: params.attachments,
       idempotencyKey: messageId,
     });

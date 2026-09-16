@@ -9,6 +9,7 @@ import {
 import { SUPPORTED_NODE_VERSIONS } from "../../node-version.mjs";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { replaceConfigFile, type OpenClawConfig } from "../config/config.js";
+import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import { isDefaultInstallIdentity, resolveGatewayPort, resolveIsNixMode } from "../config/paths.js";
 import { resolveSecretInputRef } from "../config/types.secrets.js";
 import { formatGatewayHeapLimitReport, inspectGatewayHeapLimit } from "../daemon/gateway-heap.js";
@@ -341,7 +342,7 @@ export function extraGatewayServiceToHealthFinding(service: ExtraGatewayService)
     target: service.label,
     fixHint:
       service.legacy === true
-        ? "Run openclaw doctor --fix to remove legacy gateway services."
+        ? "Run `openclaw doctor` interactively to review legacy gateway services and confirm supported cleanup."
         : "Run a single gateway per machine unless this extra gateway is intentional.",
   };
 }
@@ -568,7 +569,7 @@ export async function maybeRepairGatewayServiceConfig(
   const sourceCheckoutWarning = serviceLayout?.entrypointSourceCheckout
     ? [
         `Gateway service entrypoint resolves to a source checkout: ${serviceLayout.packageRootReal ?? serviceLayout.packageRoot ?? serviceLayout.entrypointReal ?? serviceLayout.entrypoint}.`,
-        "Run `openclaw doctor --fix` from the intended package install, or reinstall the gateway service with `openclaw gateway install --force`.",
+        "Run `openclaw gateway install --force` from the intended package install to replace the gateway service definition.",
       ].join("\n")
     : null;
 
@@ -611,6 +612,9 @@ export async function maybeRepairGatewayServiceConfig(
     expectedServicePath: expectedPlan.environment.PATH,
     expectedPort: port,
   });
+  if (audit.runtimeNote) {
+    note(audit.runtimeNote, "Gateway runtime");
+  }
   const serviceToken = readEmbeddedGatewayToken(command);
   if (tokenRefConfigured && serviceToken) {
     audit.issues.push({
@@ -622,7 +626,7 @@ export async function maybeRepairGatewayServiceConfig(
     });
   }
   const needsNodeRuntime = needsNodeRuntimeMigration(audit.issues);
-  // Unsupported Bun and version-managed Node services migrate through a concrete system Node.
+  // Unusable runtimes and version-managed Node services migrate through a concrete system Node.
   const systemNodeInfo = needsNodeRuntime
     ? await resolveSystemNodeInfo({ env: process.env })
     : null;
@@ -916,6 +920,9 @@ export async function maybeRepairGatewayServiceConfig(
         "Gateway",
       );
     } catch (err) {
+      if (err instanceof ConfigWritePostCommitError) {
+        throw err;
+      }
       runtime.error(`Failed to persist gateway.auth.token before service repair: ${String(err)}`);
       return cfg;
     }
@@ -1032,9 +1039,6 @@ export async function maybeScanExtraGatewayServices(
       if (failed.length > 0) {
         note(failed.map((line) => `- ${line}`).join("\n"), "Legacy gateway cleanup skipped");
       }
-      if (removed.length > 0) {
-        runtime.log("Legacy gateway services removed. Installing OpenClaw gateway next.");
-      }
     }
   }
 
@@ -1044,7 +1048,10 @@ export async function maybeScanExtraGatewayServices(
     extraServices.filter((service) => service.legacy !== true),
   );
   if (cleanupHints.length > 0) {
-    note(cleanupHints.map((hint) => `- ${hint}`).join("\n"), "Cleanup hints");
+    note(
+      cleanupHints.map((hint) => `- ${hint}`).join("\n"),
+      process.platform === "linux" ? "Inspection hints" : "Cleanup hints",
+    );
   }
 
   note(

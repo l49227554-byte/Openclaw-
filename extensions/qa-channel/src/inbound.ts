@@ -8,7 +8,6 @@ import {
 // Qa Channel plugin module implements inbound behavior.
 import { resolveStableChannelMessageIngress } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { resolveNativeCommandSessionTargets } from "openclaw/plugin-sdk/command-auth-native";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-local-roots";
 import { saveMediaBuffer, saveMediaSource } from "openclaw/plugin-sdk/media-store";
@@ -167,6 +166,7 @@ function createQaReplyPreview(params: {
 }) {
   let messageId: string | null = null;
   let currentText = "";
+  let previewStopped = false;
   let lastDurableText = "";
   let lastDurableToolCallSnapshot = "[]";
   // Partials run concurrently with delivery callbacks. Keep edits, deletion,
@@ -246,9 +246,17 @@ function createQaReplyPreview(params: {
   };
 
   return {
-    clear: () => withPreviewLock(clear),
-    deliver: (text: string, kind: string, isError?: boolean, mediaUrls: string[] = []) =>
-      withPreviewLock(async () => {
+    clear: () => {
+      previewStopped = true;
+      return withPreviewLock(clear);
+    },
+    deliver: (text: string, kind: string, isError?: boolean, mediaUrls: string[] = []) => {
+      // Stop queued partials at final admission, not after an awaited send.
+      // Durable callbacks may still contain several final chunks or attachments.
+      if (kind === "final") {
+        previewStopped = true;
+      }
+      return withPreviewLock(async () => {
         if (mediaUrls.length > 0) {
           // Tool/block callbacks acknowledge real delivery, not a preview. A new
           // attachment must survive even when its caption matches an earlier send.
@@ -277,12 +285,23 @@ function createQaReplyPreview(params: {
         }
         if (kind === "final" && messageId && params.toolCalls.length === 0) {
           await write(text);
+          // The edited message is now durable; preview cleanup no longer owns it.
+          messageId = null;
+          currentText = "";
+          lastDurableText = text;
+          lastDurableToolCallSnapshot = "[]";
           return;
         }
         await clear();
         await sendDurable(text);
+      });
+    },
+    update: (text: string) =>
+      withPreviewLock(async () => {
+        if (!previewStopped) {
+          await write(text);
+        }
       }),
-    update: (text: string) => withPreviewLock(() => write(text)),
   };
 }
 
@@ -304,7 +323,7 @@ export async function handleQaInbound(params: {
   });
   const toolCalls: QaBusToolCall[] = [];
   const { route, buildEnvelope } = resolveChannelInboundRouteEnvelope({
-    cfg: params.config as OpenClawConfig,
+    cfg: params.config,
     channel: params.channelId,
     accountId: params.account.accountId,
     peer: {
@@ -323,13 +342,13 @@ export async function handleQaInbound(params: {
     inbound,
     target,
     toolCalls,
-    mediaLocalRoots: getAgentScopedMediaLocalRoots(params.config as OpenClawConfig, route.agentId),
+    mediaLocalRoots: getAgentScopedMediaLocalRoots(params.config, route.agentId),
   });
   const isGroup = inbound.conversation.kind !== "direct";
   const wasMentioned = isGroup
     ? channelRuntime.mentions.matchesMentionPatterns(
         inbound.text,
-        channelRuntime.mentions.buildMentionRegexes(params.config as OpenClawConfig, route.agentId),
+        channelRuntime.mentions.buildMentionRegexes(params.config, route.agentId),
       )
     : undefined;
   const groupConfig = isGroup
@@ -350,6 +369,7 @@ export async function handleQaInbound(params: {
     : undefined;
   const sessionKey = commandTargets?.sessionKey ?? route.sessionKey;
   const access = await resolveStableChannelMessageIngress({
+    cfg: params.config,
     channelId: params.channelId,
     accountId: params.account.accountId,
     identity: { key: "sender", entryIdPrefix: "qa-entry" },
@@ -458,8 +478,13 @@ export async function handleQaInbound(params: {
     },
   });
 
-  await channelRuntime.inbound.dispatch({
-    cfg: params.config as OpenClawConfig,
+  const clearPreview = () =>
+    preview.clear().catch((error: unknown) => {
+      console.warn(`[qa-channel] failed to clear reply preview: ${formatQaErrorForLog(error)}`);
+    });
+
+  const dispatch = channelRuntime.inbound.dispatch({
+    cfg: params.config,
     channel: params.channelId,
     accountId: params.account.accountId,
     route: { agentId: route.agentId, dmScope: route.dmScope, sessionKey: route.sessionKey },
@@ -490,12 +515,15 @@ export async function handleQaInbound(params: {
         await preview.deliver(text, info?.kind ?? "final", reply?.isError, mediaUrls);
       },
       onError: (error) => {
-        void preview.clear().catch((clearError: unknown) => {
-          console.warn(
-            `[qa-channel] failed to clear reply preview after dispatch error: ${formatQaErrorForLog(clearError)}`,
-          );
-        });
+        void clearPreview();
         console.warn(`[qa-channel] reply dispatch failed: ${formatQaErrorForLog(error)}`);
+      },
+    },
+    dispatcherOptions: {
+      onSkip: (_payload, info) => {
+        if (info.kind === "final") {
+          void clearPreview();
+        }
       },
     },
     replyOptions: {
@@ -527,4 +555,9 @@ export async function handleQaInbound(params: {
       },
     },
   });
+  try {
+    await dispatch;
+  } finally {
+    await clearPreview();
+  }
 }

@@ -48,8 +48,8 @@ function fixture() {
   write("dist/index.js", "#!/usr/bin/env node\nconsole.log('artifact');\n");
   fs.chmodSync(path.join(root, "dist/index.js"), 0o755);
   write("dist/private-qa.js", "private QA\n");
-  write("dist/.buildstamp", JSON.stringify({ head }));
-  write("dist/.runtime-postbuildstamp", JSON.stringify({ head }));
+  write("dist/.buildstamp", JSON.stringify({ head, inputsClean: true }));
+  write("dist/.runtime-postbuildstamp", JSON.stringify({ head, inputsClean: true }));
   write("packages/demo/dist/index.d.ts", "export declare const ready: true;\n");
   fs.mkdirSync(path.join(root, "dist-runtime"));
   fs.symlinkSync("../dist/index.js", path.join(root, "dist-runtime/index.js"));
@@ -104,7 +104,9 @@ describe("repo E2E artifact transfer", () => {
         fs.statSync(path.join(root, "package.json")).mtimeMs,
       );
       expect(fs.readlinkSync(path.join(root, "dist-runtime/index.js"))).toBe("../dist/index.js");
-      expect(fs.statSync(path.join(root, "dist/index.js")).mode & 0o777).toBe(0o755);
+      expect(execFileSync(path.join(root, "dist/index.js"), { encoding: "utf8" })).toBe(
+        "artifact\n",
+      );
       expect(fs.readFileSync(path.join(root, "dist/private-qa.js"), "utf8")).toBe("private QA\n");
       expect(fs.readFileSync(path.join(root, "packages/demo/dist/index.d.ts"), "utf8")).toContain(
         "ready",
@@ -121,7 +123,24 @@ describe("repo E2E artifact transfer", () => {
     },
   );
 
-  describe.sequential("identity validation", () => {
+  it.each([false, null, undefined])(
+    "preserves unclean or legacy producer provenance (%s)",
+    (inputsClean) => {
+      const { root, artifact } = fixture();
+      const buildStamp = path.join(root, "dist/.buildstamp");
+      const recorded = JSON.parse(fs.readFileSync(buildStamp, "utf8"));
+      recorded.inputsClean = inputsClean;
+      const original = JSON.stringify(recorded);
+      fs.writeFileSync(buildStamp, original);
+      transferRepoE2eArtifacts("pack", artifact, "full", root);
+      fs.rmSync(path.join(root, "dist"), { recursive: true });
+      transferRepoE2eArtifacts("restore", artifact, "full", root);
+      expect(fs.readFileSync(buildStamp, "utf8")).toBe(original);
+      expect(requirement(root).shouldBuild).toBe(true);
+    },
+  );
+
+  describe("identity validation", { concurrent: false }, () => {
     let root: string;
     let artifact: string;
     let manifest: string;

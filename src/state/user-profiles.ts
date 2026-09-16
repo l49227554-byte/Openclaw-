@@ -2,8 +2,13 @@ import { createHash } from "node:crypto";
 // Durable user profiles plus typed login identities in the shared state DB.
 import type { DatabaseSync } from "node:sqlite";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { sql } from "kysely";
-import type { UserProfileGitHubIdentity } from "../../packages/gateway-protocol/src/schema/users.js";
+import {
+  GATEWAY_OWNER_PROFILE_ID,
+  type UserProfile as UserProfileListItem,
+  type UserProfileGitHubIdentity,
+} from "../../packages/gateway-protocol/src/schema/users.js";
 import { executeSqliteQuerySync, executeSqliteQueryTakeFirstSync } from "../infra/kysely-sync.js";
 import { generateSecureUuid } from "../infra/secure-random.js";
 import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
@@ -11,11 +16,11 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
-  type OpenClawStateDatabase,
 } from "./openclaw-state-db.js";
 import { mergeUserGitHubConnection } from "./user-github-connections.js";
-import { ensureUserPreferencesSchema, mergeUserPreferences } from "./user-preferences.js";
-import { emitUserProfilesChanged } from "./user-profile-events.js";
+import { mergeUserModelAccounts } from "./user-model-accounts.js";
+import { ensureUserPreferencesSchema, mergeUserPreferences } from "./user-preferences.store.js";
+import { emitUserProfilesChanged, publishUserProfileAliasChange } from "./user-profile-events.js";
 import {
   applyVerifiedGitHubIdentity,
   githubAuthenticationSubject,
@@ -25,16 +30,20 @@ import {
 import {
   normalizeUserProfileAvatarMime,
   requireResolvedUserProfileById,
-  selectResolvedUserProfileById,
+  requireResolvedUserProfileMetadataById,
+  selectResolvedUserProfileMetadataById,
+  type UserProfileMetadataRow,
   type UserProfileRow,
   userProfileAvatarPresence,
   userProfilesDb,
 } from "./user-profiles-internal.js";
+import { ensureGatewayOwnerProfileRow } from "./user-profiles-owner.js";
 import {
   ensureUserProfileRoleSchema,
   ensureUserProfilesSchema,
   hasEnsuredUserProfileRoleSchema,
   UserProfileNotFoundError,
+  UserProfileOwnerError,
 } from "./user-profiles-schema.js";
 import {
   fetchTailscaleAvatar,
@@ -56,21 +65,7 @@ export {
   listProfiles,
 } from "./user-profile-list.js";
 
-type UserProfile = {
-  id: string;
-  displayName: string | null;
-  avatarMime: UserProfileAvatarMime | null;
-  mergedInto: string | null;
-  role?: string;
-  createdAt: number;
-  updatedAt: number;
-};
-
-type UserProfileListItem = UserProfile & {
-  emails: string[];
-  githubIdentity: UserProfileGitHubIdentity | null;
-  hasAvatar: boolean;
-};
+type UserProfile = Omit<UserProfileListItem, "emails" | "githubIdentity" | "hasAvatar">;
 
 type GitHubAuthenticationAlias =
   | { kind: "email"; email: string }
@@ -92,22 +87,6 @@ type UserProfileListRow = Pick<
 
 const MAX_USER_PROFILE_DISPLAY_NAME_LENGTH = 256;
 
-function runUserProfileWriteTransaction<T>(
-  operation: (database: OpenClawStateDatabase) => T,
-  options: OpenClawStateDatabaseOptions,
-  transactionOptions: Parameters<typeof runOpenClawStateWriteTransaction>[2],
-): T {
-  return runOpenClawStateWriteTransaction(
-    (database) => {
-      const result = operation(database);
-      deferSqlitePostCommitPublication(database.db, emitUserProfilesChanged);
-      return result;
-    },
-    options,
-    transactionOptions,
-  );
-}
-
 function normalizeEmail(email: string): string {
   const normalized = email.trim().toLowerCase();
   if (!normalized) {
@@ -116,12 +95,12 @@ function normalizeEmail(email: string): string {
   return normalized;
 }
 
-function normalizeInitialDisplayName(name: string | undefined): string | null {
+function normalizeInitialDisplayName(name: string | null | undefined): string | null {
   const normalized = name?.trim();
-  return normalized ? normalized.slice(0, MAX_USER_PROFILE_DISPLAY_NAME_LENGTH) : null;
+  return normalized ? truncateUtf16Safe(normalized, MAX_USER_PROFILE_DISPLAY_NAME_LENGTH) : null;
 }
 
-function toUserProfile(row: UserProfileRow): UserProfile {
+function toUserProfile(row: UserProfileMetadataRow): UserProfile {
   return {
     id: row.id,
     displayName: row.display_name,
@@ -214,7 +193,7 @@ export function resolveUserProfileId(
 ): string | undefined {
   ensureUserProfilesSchema(options);
   const { db } = openOpenClawStateDatabase(options);
-  return selectResolvedUserProfileById(db, profileId)?.id;
+  return selectResolvedUserProfileMetadataById(db, profileId)?.id;
 }
 
 /** Reads a profile's protocol-facing representation through its merge head. */
@@ -224,7 +203,8 @@ export function getUserProfileListItem(
 ): UserProfileListItem {
   ensureUserProfilesSchema(options);
   const { db } = openOpenClawStateDatabase(options);
-  return selectUserProfileListItemById(db, requireResolvedUserProfileById(db, profileId).id);
+  const profile = requireResolvedUserProfileMetadataById(db, profileId);
+  return selectUserProfileListItemById(db, profile.id);
 }
 
 /** Reads the role assigned to an existing profile's current merge head. */
@@ -234,7 +214,7 @@ export function getUserProfileRole(
 ): string | null {
   ensureUserProfileRoleSchema(options);
   const { db } = openOpenClawStateDatabase(options);
-  return requireResolvedUserProfileById(db, profileId).role ?? null;
+  return requireResolvedUserProfileMetadataById(db, profileId).role ?? null;
 }
 
 /** Assigns or clears the role on an existing profile's current merge head. */
@@ -245,9 +225,12 @@ export function setUserProfileRole(
 ): UserProfileListItem {
   ensureUserProfileRoleSchema(options);
   const now = Date.now();
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
-      const profile = requireResolvedUserProfileById(db, profileId);
+      const profile = requireResolvedUserProfileMetadataById(db, profileId);
+      if (profileId === GATEWAY_OWNER_PROFILE_ID || profile.id === GATEWAY_OWNER_PROFILE_ID) {
+        throw new UserProfileOwnerError("role");
+      }
       executeSqliteQuerySync(
         db,
         userProfilesDb(db)
@@ -255,6 +238,7 @@ export function setUserProfileRole(
           .set({ role, updated_at: now })
           .where("id", "=", profile.id),
       );
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return selectUserProfileListItemById(db, profile.id);
     },
     options,
@@ -271,12 +255,12 @@ function ensureProfileForEmailWithInitialName(
   const now = Date.now();
   const displayName =
     initialDisplayName ??
-    (normalizedEmail.split("@", 1)[0] || normalizedEmail).slice(
-      0,
+    truncateUtf16Safe(
+      normalizedEmail.split("@", 1)[0] || normalizedEmail,
       MAX_USER_PROFILE_DISPLAY_NAME_LENGTH,
     );
   ensureUserProfilesSchema(options);
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const kysely = userProfilesDb(db);
       const existingAlias = executeSqliteQueryTakeFirstSync(
@@ -287,7 +271,8 @@ function ensureProfileForEmailWithInitialName(
           .where("email", "=", normalizedEmail),
       );
       if (existingAlias) {
-        return toUserProfile(requireResolvedUserProfileById(db, existingAlias.profile_id));
+        // Authenticated avatar reads reuse this path; unchanged identities must not refresh rosters.
+        return toUserProfile(requireResolvedUserProfileMetadataById(db, existingAlias.profile_id));
       }
       const row = insertUserProfile(db, displayName, now);
       executeSqliteQuerySync(
@@ -298,6 +283,7 @@ function ensureProfileForEmailWithInitialName(
           created_at: now,
         }),
       );
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return toUserProfile(row);
     },
     options,
@@ -323,7 +309,7 @@ function ensureProfileForProviderIdentity(params: {
   const subject =
     params.provider === "github" ? githubAuthenticationSubject(params.subject) : params.subject;
   ensureUserProfilesSchema(params.options);
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const kysely = userProfilesDb(db);
       let existingQuery = kysely
@@ -352,8 +338,11 @@ function ensureProfileForProviderIdentity(params: {
               .where("provider", "=", params.provider)
               .where("subject", "=", existingIdentity.subject),
           );
+          deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
         }
-        return toUserProfile(requireResolvedUserProfileById(db, existingIdentity.profile_id));
+        return toUserProfile(
+          requireResolvedUserProfileMetadataById(db, existingIdentity.profile_id),
+        );
       }
       const row = insertUserProfile(db, params.initialDisplayName, now);
       executeSqliteQuerySync(
@@ -366,6 +355,7 @@ function ensureProfileForProviderIdentity(params: {
           created_at: now,
         }),
       );
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return toUserProfile(row);
     },
     params.options,
@@ -391,6 +381,7 @@ function mergeUserProfiles(
     ).rows.map((row) => row.id),
   ];
   prepareUserProfileGitHubMerge(db, sourceProfileIds, targetProfileId);
+  mergeUserModelAccounts(db, sourceProfileId, targetProfileId);
   mergeUserGitHubConnection(db, sourceProfileId, targetProfileId);
   for (const mergedProfileId of sourceProfileIds) {
     mergeUserPreferences(db, mergedProfileId, targetProfileId);
@@ -420,6 +411,7 @@ function mergeUserProfiles(
     db,
     kysely.updateTable("user_profiles").set({ updated_at: now }).where("id", "=", targetProfileId),
   );
+  deferSqlitePostCommitPublication(db, publishUserProfileAliasChange);
 }
 
 function adoptDisplayNameIfEmpty(
@@ -429,13 +421,13 @@ function adoptDisplayNameIfEmpty(
 ): UserProfile {
   if (!displayName) {
     const { db } = openOpenClawStateDatabase(options);
-    return toUserProfile(requireResolvedUserProfileById(db, profileId));
+    return toUserProfile(requireResolvedUserProfileMetadataById(db, profileId));
   }
   const now = Date.now();
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
-      const profile = requireResolvedUserProfileById(db, profileId);
-      if (profile.display_name !== null) {
+      const profile = requireResolvedUserProfileMetadataById(db, profileId);
+      if (profile.display_name?.trim()) {
         return toUserProfile(profile);
       }
       executeSqliteQuerySync(
@@ -445,10 +437,25 @@ function adoptDisplayNameIfEmpty(
           .set({ display_name: displayName, updated_at: now })
           .where("id", "=", profile.id),
       );
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return toUserProfile({ ...profile, display_name: displayName, updated_at: now });
     },
     options,
     { operationLabel: "user-profiles.adopt-display-name" },
+  );
+}
+
+/** Shared-secret devices resolve one local owner without inventing an email identity. */
+export function ensureGatewayOwnerProfile(
+  initialDisplayName: string | null,
+  options: OpenClawStateDatabaseOptions = {},
+): UserProfile {
+  const displayName = normalizeInitialDisplayName(initialDisplayName);
+  ensureUserProfilesSchema(options);
+  return runOpenClawStateWriteTransaction(
+    ({ db }) => toUserProfile(ensureGatewayOwnerProfileRow(db, displayName)),
+    options,
+    { operationLabel: "user-profiles.ensure-owner" },
   );
 }
 
@@ -458,23 +465,26 @@ async function adoptAvatarIfEmpty(params: {
   options: OpenClawStateDatabaseOptions;
   fetchOptions: TailscaleAvatarFetchOptions;
 }): Promise<UserProfile> {
-  const { db } = openOpenClawStateDatabase(params.options);
-  const beforeFetch = requireResolvedUserProfileById(db, params.profileId);
+  const database = openOpenClawStateDatabase(params.options);
+  const beforeFetch = requireResolvedUserProfileById(database.db, params.profileId);
   if (beforeFetch.avatar !== null || !params.profilePic) {
     return toUserProfile(beforeFetch);
   }
+  // Remote work may outlive a cached handle or a change to the state-directory selector.
+  const options = { ...params.options, path: database.path };
   const avatar = await fetchTailscaleAvatar(params.profilePic, params.fetchOptions);
   if (!avatar) {
+    const { db } = openOpenClawStateDatabase(options);
     return toUserProfile(requireResolvedUserProfileById(db, params.profileId));
   }
+  const sha256 = createHash("sha256").update(avatar.bytes).digest("hex");
   const now = Date.now();
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db: transactionDb }) => {
       const profile = requireResolvedUserProfileById(transactionDb, params.profileId);
       if (profile.avatar !== null) {
         return toUserProfile(profile);
       }
-      const sha256 = createHash("sha256").update(avatar.bytes).digest("hex");
       executeSqliteQuerySync(
         transactionDb,
         userProfilesDb(transactionDb)
@@ -487,15 +497,15 @@ async function adoptAvatarIfEmpty(params: {
           })
           .where("id", "=", profile.id),
       );
+      deferSqlitePostCommitPublication(transactionDb, emitUserProfilesChanged);
       return toUserProfile({
         ...profile,
-        avatar: avatar.bytes,
         avatar_mime: avatar.mime,
         avatar_sha256: sha256,
         updated_at: now,
       });
     },
-    params.options,
+    options,
     { operationLabel: "user-profiles.adopt-avatar" },
   );
 }
@@ -546,10 +556,13 @@ export function linkEmail(
   const normalizedEmail = normalizeEmail(email);
   const now = Date.now();
   ensureUserProfilesSchema(options);
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const kysely = userProfilesDb(db);
-      const target = requireResolvedUserProfileById(db, targetProfileId);
+      const target = requireResolvedUserProfileMetadataById(db, targetProfileId);
+      if (targetProfileId === GATEWAY_OWNER_PROFILE_ID || target.id === GATEWAY_OWNER_PROFILE_ID) {
+        throw new UserProfileOwnerError("merge");
+      }
       const existingAlias = executeSqliteQueryTakeFirstSync(
         db,
         kysely
@@ -557,6 +570,9 @@ export function linkEmail(
           .select("profile_id")
           .where("email", "=", normalizedEmail),
       );
+      if (existingAlias?.profile_id === GATEWAY_OWNER_PROFILE_ID) {
+        throw new UserProfileOwnerError("merge");
+      }
       if (!existingAlias) {
         executeSqliteQuerySync(
           db,
@@ -570,6 +586,7 @@ export function linkEmail(
           db,
           kysely.updateTable("user_profiles").set({ updated_at: now }).where("id", "=", target.id),
         );
+        deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
         return selectUserProfileListItemById(db, target.id);
       }
       if (existingAlias.profile_id === target.id) {
@@ -604,6 +621,7 @@ export function linkEmail(
             .where("id", "=", existingAlias.profile_id),
         );
       }
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return selectUserProfileListItemById(db, target.id);
     },
     options,
@@ -618,9 +636,9 @@ export function setDisplayName(
 ): UserProfileListItem {
   const now = Date.now();
   ensureUserProfilesSchema(options);
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
-      const profile = requireResolvedUserProfileById(db, profileId);
+      const profile = requireResolvedUserProfileMetadataById(db, profileId);
       executeSqliteQuerySync(
         db,
         userProfilesDb(db)
@@ -628,6 +646,7 @@ export function setDisplayName(
           .set({ display_name: name, updated_at: now })
           .where("id", "=", profile.id),
       );
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return selectUserProfileListItemById(db, profile.id);
     },
     options,
@@ -657,7 +676,7 @@ export function syncGitHubIdentity(
     githubDisplayName ?? normalizeInitialDisplayName(params.initialDisplayName);
   ensureUserProfilesSchema(options);
   ensureUserPreferencesSchema(options);
-  return runUserProfileWriteTransaction(
+  return runOpenClawStateWriteTransaction(
     ({ db }) => {
       const now = Date.now();
       const kysely = userProfilesDb(db);
@@ -683,6 +702,7 @@ export function syncGitHubIdentity(
           .set({ display_name: displayName, updated_at: now })
           .where("id", "=", canonicalProfileId),
       );
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return { ...profile, displayName, updatedAt: now };
     },
     options,
@@ -705,9 +725,9 @@ export function setAvatar(
   }
   const now = Date.now();
   ensureUserProfilesSchema(options);
-  const value = runUserProfileWriteTransaction(
+  const value = runOpenClawStateWriteTransaction(
     ({ db }) => {
-      const profile = requireResolvedUserProfileById(db, profileId);
+      const profile = requireResolvedUserProfileMetadataById(db, profileId);
       const sha256 = createHash("sha256").update(bytes).digest("hex");
       executeSqliteQuerySync(
         db,
@@ -716,6 +736,7 @@ export function setAvatar(
           .set({ avatar: bytes, avatar_mime: mime, avatar_sha256: sha256, updated_at: now })
           .where("id", "=", profile.id),
       );
+      deferSqlitePostCommitPublication(db, emitUserProfilesChanged);
       return selectUserProfileListItemById(db, profile.id);
     },
     options,

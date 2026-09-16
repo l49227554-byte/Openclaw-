@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sha256Hex } from "../../infra/crypto-digest.js";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { normalizeCronJobIdentityFields } from "../normalize-job-identity.js";
 import { normalizeCronJobInput } from "../normalize.js";
@@ -18,8 +18,8 @@ import {
 import type { CronJobState, CronStoredJob, CronStoreFile } from "../types.js";
 import { deliveryFromJson, deliveryToJson } from "./delivery-codec.js";
 import { normalizeNumber, tryParseJsonObject } from "./scalar-codec.js";
-import type { CronJobInsert, CronJobRow } from "./schema.js";
-import { getCronStoreKysely } from "./schema.js";
+import type { CronJobInsert, CronJobReadRow, CronJobRow } from "./schema.js";
+import { CRON_JOB_READ_COLUMNS, getCronStoreKysely } from "./schema.js";
 import type { LoadedCronStore } from "./types.js";
 
 function stripJobRuntimeFields(job: CronStoreFile["jobs"][number]): Record<string, unknown> {
@@ -124,7 +124,7 @@ function decodeCronJobConfig(jobJson: Record<string, unknown>): Record<string, u
   return delivery ? { ...jobJson, delivery } : jobJson;
 }
 
-function rowToCronJob(row: CronJobRow, jobJson: Record<string, unknown>): CronStoredJob | null {
+function rowToCronJob(row: CronJobReadRow, jobJson: Record<string, unknown>): CronStoredJob | null {
   const state = tryParseJsonObject(row.state_json);
   if (!state || getInvalidPersistedCronJobReason(jobJson)) {
     return null;
@@ -187,30 +187,57 @@ export function projectCronJobThroughStorageCodec(job: CronStoredJob): CronStore
 }
 
 /** Loads cron rows in config order with deterministic fallbacks for old rows. */
-export function loadCronRows(db: DatabaseSync, storeKey: string): CronJobRow[] {
-  return executeSqliteQuerySync(
-    db,
-    getCronStoreKysely(db)
-      .selectFrom("cron_jobs")
-      .selectAll()
-      .where("store_key", "=", storeKey)
-      .orderBy("sort_order", "asc")
-      .orderBy("updated_at", "asc")
-      .orderBy("job_id", "asc"),
-  ).rows;
+export function loadCronRows(
+  db: DatabaseSync,
+  storeKey: string,
+  jobIds?: ReadonlySet<string>,
+): CronJobReadRow[] {
+  // Preserve authorization of every stored column even when no row matches.
+  let query = getCronStoreKysely(db)
+    .selectFrom(getCronStoreKysely(db).selectFrom("cron_jobs").selectAll().as("cron_rows"))
+    .select(CRON_JOB_READ_COLUMNS)
+    .where("store_key", "=", storeKey)
+    .orderBy("sort_order", "asc")
+    .orderBy("updated_at", "asc")
+    .orderBy("job_id", "asc");
+  if (jobIds) {
+    const ids = [...jobIds];
+    query =
+      ids.length === 1
+        ? query.where("job_id", "=", ids[0]!)
+        : query.where("job_id", "in", sqliteStringSet(ids));
+  }
+  const rows = executeSqliteQuerySync(db, query).rows;
+  // SQLite replaces lone surrogates in bound IDs; keep exact caller identity
+  // so an invalid ID cannot select the replacement-character job.
+  return jobIds ? rows.filter((row) => jobIds.has(row.job_id)) : rows;
 }
 
-/** Fingerprints definition JSON and order while excluding runtime-owned state. */
+/** Fingerprints raw definition rows without mutating their config order. */
+export function fingerprintCronJobRows(
+  rows: readonly Pick<CronJobRow, "job_id" | "job_json" | "sort_order">[],
+): string {
+  // This internal, transient Doctor token uses one encoding-independent ID order.
+  // Keep raw fields so every definition edit invalidates the snapshot.
+  const ordered = rows
+    .map(({ job_id, job_json, sort_order }) => ({
+      idBytes: Buffer.from(job_id),
+      definition: { job_id, job_json, sort_order },
+    }))
+    .toSorted((left, right) => Buffer.compare(left.idBytes, right.idBytes));
+  return sha256Hex(JSON.stringify(ordered.map(({ definition }) => definition)));
+}
+
+/** Reads only definition JSON and order while excluding runtime-owned state. */
 export function readCronJobsFingerprint(db: DatabaseSync, storeKey: string): string {
   const rows = executeSqliteQuerySync(
     db,
     getCronStoreKysely(db)
       .selectFrom("cron_jobs")
       .select(["job_id", "job_json", "sort_order"])
-      .where("store_key", "=", storeKey)
-      .orderBy("job_id", "asc"),
+      .where("store_key", "=", storeKey),
   ).rows;
-  return sha256Hex(JSON.stringify(rows));
+  return fingerprintCronJobRows(rows);
 }
 
 /** Materializes retired ownership within the caller's write transaction. */
@@ -315,7 +342,8 @@ export function replaceCronRows(
     db,
     getCronStoreKysely(db)
       .selectFrom("cron_jobs")
-      .select(["job_id", "job_json"])
+      .select("job_id")
+      .$if(opts?.preserveRuntimeState === true, (query) => query.select("job_json"))
       .where("store_key", "=", storeKey),
   ).rows;
   const normalizedJobs: CronStoredJob[] = [];
@@ -327,7 +355,7 @@ export function replaceCronRows(
   const legacyAuthorityJobIds = new Set<string>();
   for (const row of existingRows) {
     existingJobIds.add(row.job_id);
-    const storedJob = tryParseJsonObject(row.job_json);
+    const storedJob = row.job_json === undefined ? undefined : tryParseJsonObject(row.job_json);
     if (
       storedJob &&
       (Object.hasOwn(storedJob, "runtimeAuthority") ||
@@ -427,7 +455,7 @@ export function updateCronRuntimeRows(
 }
 
 /** Reconstructs loaded cron store data and config-runtime sidecars from SQLite rows. */
-export function loadedCronStoreFromRows(rows: CronJobRow[]): LoadedCronStore {
+export function loadedCronStoreFromRows(rows: CronJobReadRow[]): LoadedCronStore {
   const jobs: CronStoredJob[] = [];
   const configJobs: LoadedCronStore["configJobs"] = [];
   const configJobIndexes: number[] = [];

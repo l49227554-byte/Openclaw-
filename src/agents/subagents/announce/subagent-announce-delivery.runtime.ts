@@ -11,7 +11,8 @@ import { resolveSessionStorePathCore } from "../../../config/sessions.js";
 import { loadSessionEntryReadOnly as loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../../config/sessions/session-store-owner.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { callGateway } from "../../../gateway/call.js";
+import type { callGateway } from "../../../gateway/call.js";
+import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-runtime-context.js";
 import { resolveExternalBestEffortDeliveryTarget } from "../../../infra/outbound/best-effort-delivery.js";
 import { createBoundDeliveryRouter } from "../../../infra/outbound/bound-delivery-router.js";
 import { resolveConversationIdFromTargets } from "../../../infra/outbound/conversation-id.js";
@@ -27,8 +28,8 @@ import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runn
 import {
   formatEmbeddedAgentQueueFailureSummary,
   isEmbeddedAgentRunActive,
-  isEmbeddedRunAbandoned,
   queueEmbeddedAgentMessageWithOutcomeAsync,
+  resolveEmbeddedRunAbandonment,
   type EmbeddedAgentQueueMessageOutcome,
 } from "../../embedded-agent-runner/runs.js";
 import { dispatchGatewayMethodInProcess } from "./subagent-announce.runtime.js";
@@ -55,7 +56,10 @@ export type SubagentAnnounceDeliveryDeps = {
     sessionId?: string;
     isActive: boolean;
   };
-  isRequesterSessionAbandoned: (requesterSessionKey: string, sessionId?: string) => boolean;
+  resolveRequesterSessionAbandonment: (
+    requesterSessionKey: string,
+    sessionId?: string,
+  ) => ReturnType<typeof resolveEmbeddedRunAbandonment>;
   loadSessionEntry: typeof loadSessionEntry;
   loadRequesterSessionEntry: typeof loadRequesterSessionEntry;
   queueEmbeddedAgentMessageWithOutcome: (
@@ -130,7 +134,7 @@ function loadDefaultRequesterSessionEntry(
 }
 
 const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
-  callGateway: ((...args) => callGateway(...args)) as typeof callGateway,
+  callGateway: (request) => bindGatewayLifecycleRequest()(request),
   dispatchGatewayMethodInProcess: ((...args) =>
     dispatchGatewayMethodInProcess(...args)) as typeof dispatchGatewayMethodInProcess,
   getRuntimeConfig: () => getRuntimeConfig(),
@@ -157,8 +161,8 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
       isActive: Boolean(sessionId && isEmbeddedAgentRunActive(sessionId)),
     };
   },
-  isRequesterSessionAbandoned: (requesterSessionKey, sessionId) =>
-    isEmbeddedRunAbandoned({ sessionKey: requesterSessionKey, sessionId }),
+  resolveRequesterSessionAbandonment: (requesterSessionKey, sessionId) =>
+    resolveEmbeddedRunAbandonment({ sessionKey: requesterSessionKey, sessionId }),
   loadSessionEntry: (...args) => loadSessionEntry(...args),
   loadRequesterSessionEntry: loadDefaultRequesterSessionEntry,
   queueEmbeddedAgentMessageWithOutcome: (...args) =>
@@ -209,11 +213,14 @@ export function getSubagentRequesterSessionActivity(
   );
 }
 
-export function isSubagentRequesterSessionAbandoned(
+export function resolveSubagentRequesterSessionAbandonment(
   requesterSessionKey: string,
   sessionId?: string,
 ) {
-  return subagentAnnounceDeliveryDeps.isRequesterSessionAbandoned(requesterSessionKey, sessionId);
+  return subagentAnnounceDeliveryDeps.resolveRequesterSessionAbandonment(
+    requesterSessionKey,
+    sessionId,
+  );
 }
 
 export function loadRequesterSessionEntry(

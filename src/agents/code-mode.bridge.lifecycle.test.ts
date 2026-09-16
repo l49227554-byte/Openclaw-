@@ -7,7 +7,10 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { composeTranscriptDisplay } from "../chat/transcript-display-position.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
-import { estimateTranscriptPromptTokens } from "../config/sessions/session-accessor.sqlite-parent-fork.js";
+import {
+  estimateParentForkPromptTokens,
+  resolveParentForkSourceTranscript,
+} from "../config/sessions/session-accessor.sqlite-parent-fork.js";
 import { projectChatDisplayMessages } from "../gateway/chat-display-projection.js";
 import { readSessionMessagesAsync } from "../gateway/session-transcript-readers.js";
 import { wrapToolWithAbortSignal } from "./agent-tools.abort.js";
@@ -38,37 +41,57 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 describe("Code Mode subscribed bridge lifecycle", () => {
   afterEach(() => resetCodeModeTestState());
 
-  it("observes output rejection as the single nested terminal failure", async () => {
-    const harness = createSubscribedCodeModeHarness({ name: "output-rejection" });
-    const target = pluginToolWithExecute("lookup", "Look up a record", async () =>
-      jsonResult({ rejected: true }),
-    );
-    try {
-      await expect(
-        harness.executeTool({
-          tool: target,
-          toolName: target.name,
-          source: "openclaw",
-          toolCallId: "nested-output-rejection",
-          parentToolCallId: "outer-exec",
-          input: {},
-          acceptResultBeforeProjection: async () => {
-            throw new Error("declared output mismatch");
+  it.each(["redacted", "rejected"])(
+    "preserves nested source delivery when output is %s",
+    async (projection) => {
+      const harness = createSubscribedCodeModeHarness({ name: `source-${projection}` });
+      const target = fakeTool("message", "Reply to the source conversation");
+      target.execute = vi.fn(async () =>
+        jsonResult({
+          messageDelivery: {
+            status: "settled",
+            partialDelivery: false,
+            createdThreadIds: [],
+            sourceReplyDelivered: true,
           },
         }),
-      ).rejects.toThrow("declared output mismatch");
-      expect(harness.subscription.toolMetas).toEqual([
-        expect.objectContaining({ toolName: "lookup", isError: true }),
-      ]);
-      expect(harness.subscription.getItemLifecycle()).toMatchObject({
-        startedCount: 1,
-        completedCount: 1,
-        activeCount: 0,
-      });
-    } finally {
-      harness.dispose();
-    }
-  });
+      );
+      try {
+        const result = harness.executeTool({
+          tool: target,
+          toolName: "message",
+          source: "openclaw",
+          sourceName: "core",
+          toolCallId: "nested-source-reply",
+          parentToolCallId: "outer-exec",
+          input: { action: "send", message: "Delivered once" },
+          acceptResultBeforeProjection: async () => {
+            if (projection === "rejected") {
+              throw new Error("declared output mismatch");
+            }
+            return jsonResult({ redacted: true });
+          },
+        });
+        if (projection === "rejected") {
+          await expect(result).rejects.toThrow("declared output mismatch");
+        } else {
+          await expect(result).resolves.toMatchObject({ details: { redacted: true } });
+        }
+        expect(target.execute).toHaveBeenCalledOnce();
+        expect(harness.subscription.getSourceReplyDelivered()).toBe(true);
+        expect(harness.subscription.toolMetas).toEqual([
+          expect.objectContaining({ toolName: "message", isError: projection === "rejected" }),
+        ]);
+        expect(harness.subscription.getItemLifecycle()).toMatchObject({
+          startedCount: 1,
+          completedCount: 1,
+          activeCount: 0,
+        });
+      } finally {
+        harness.dispose();
+      }
+    },
+  );
 
   it("persists concurrent nested starts in order across wait without changing replay or pairing", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(42);
@@ -177,12 +200,14 @@ describe("Code Mode subscribed bridge lifecycle", () => {
       const bounded = SessionManager.openBounded(scope, { maxEvents: 4, maxBytes: 4096 });
       expect(bounded.buildSessionContext().messages).toEqual(replay.slice(-4));
       const events = reopened.getPersistedEntries();
-      expect(estimateTranscriptPromptTokens(events)).toEqual(
-        estimateTranscriptPromptTokens(
-          events.filter(
-            (event) =>
-              !(event as { message?: { excludeFromContext?: boolean } }).message
-                ?.excludeFromContext,
+      expect(estimateParentForkPromptTokens(resolveParentForkSourceTranscript(events))).toEqual(
+        estimateParentForkPromptTokens(
+          resolveParentForkSourceTranscript(
+            events.filter(
+              (event) =>
+                !(event as { message?: { excludeFromContext?: boolean } }).message
+                  ?.excludeFromContext,
+            ),
           ),
         ),
       );
@@ -555,7 +580,8 @@ describe("Code Mode subscribed bridge lifecycle", () => {
           controller.abort(new Error("parked owner closed"));
         }
         expect([...testing.activeRuns.keys()]).toEqual([survivorId]);
-        await expect(pending.promise).resolves.toMatchObject({ id: pending.id, ok: false });
+        await expect(pending.promise).resolves.toBeUndefined();
+        expect(() => pending.reply.take()).toThrow("unavailable");
         expect(testing.activeRuns.get(survivorId)).toBe(survivorState);
         expect(otherPending.settled).toBeUndefined();
       } finally {
@@ -798,10 +824,15 @@ describe("Code Mode subscribed bridge lifecycle", () => {
           disposeAllCodeModeRuns();
         }
 
-        const settlement = await pending.promise;
-        expect(settlement).toMatchObject({ id: pending.id, ok: false });
-        expect(settlement.ok ? "" : settlement.error).toMatch(/cancel|abort|expir|owner|shut/i);
+        await expect(pending.promise).resolves.toBeUndefined();
         const result = resultDetails(await waiting);
+        if (close === "cancel") {
+          expect(result).toMatchObject({
+            status: "completed",
+            value: expect.stringMatching(/cancel/i),
+          });
+        }
+        expect(() => pending.reply.take()).toThrow("unavailable");
         expect(result.status).not.toBe("waiting");
         if (close === "catalog") {
           expect(result).toMatchObject({

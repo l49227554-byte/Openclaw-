@@ -9,6 +9,7 @@ describe("SessionRowSchema", () => {
       key: "agent:main:main",
       kind: "global",
       lastRunId: "run-settled",
+      snapshotAt: 200,
       activeLeafEntryId: "leaf-rendered",
       createdActor: {
         type: "human",
@@ -39,6 +40,8 @@ describe("SessionRowSchema", () => {
     const roundTripped = structuredClone(row);
 
     expect(SessionRowSchema.properties.activeLeafEntryId).toBeDefined();
+    expect(SessionRowSchema.properties.activeModel).toBeDefined();
+    expect(SessionRowSchema.properties.activeModelProvider).toBeDefined();
     expect(SessionRowSchema.properties.lastRunId).toBeDefined();
     expect(Value.Check(SessionRowSchema, roundTripped)).toBe(true);
     expect(Value.Check(SessionRowSchema, { ...roundTripped, activeLeafEntryId: null })).toBe(true);
@@ -68,6 +71,7 @@ describe("SessionRowSchema", () => {
     ).toBe(false);
     expect(roundTripped).toMatchObject({
       activeLeafEntryId: "leaf-rendered",
+      snapshotAt: 200,
       lastRunId: "run-settled",
       createdActor: { avatarUrl: "/api/users/profile-ada/avatar?v=7" },
       participantCount: 2,
@@ -84,6 +88,9 @@ describe("SessionRowSchema", () => {
       false,
     );
     expect(Value.Check(SessionRowSchema, { ...roundTripped, lastRunId: "" })).toBe(false);
+    expect(Value.Check(SessionRowSchema, { ...roundTripped, archiveReason: "age-retention" })).toBe(
+      true,
+    );
     expect(Value.Check(SessionRowSchema, { ...roundTripped, archiveReason: "unknown" })).toBe(
       false,
     );
@@ -104,15 +111,18 @@ describe("SessionRowSchema", () => {
     expect(rejected.every((value) => !validateSessionsAssignOwnerParams(value))).toBe(true);
   });
 
-  it.each(["user", "auto", null] as const)("accepts model override source %s", (source) => {
-    expect(
-      Value.Check(SessionRowSchema, {
-        key: "agent:main:main",
-        kind: "global",
-        modelOverrideSource: source,
-      }),
-    ).toBe(true);
-  });
+  it.each(["user", "auto", "inherited", null] as const)(
+    "accepts model override source %s",
+    (source) => {
+      expect(
+        Value.Check(SessionRowSchema, {
+          key: "agent:main:main",
+          kind: "global",
+          modelOverrideSource: source,
+        }),
+      ).toBe(true);
+    },
+  );
 
   it("rejects an invalid model override source", () => {
     expect(

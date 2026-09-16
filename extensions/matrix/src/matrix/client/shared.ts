@@ -3,7 +3,9 @@ import { normalizeOptionalAccountId } from "openclaw/plugin-sdk/account-id";
 import { toStringifiedError as toRetirementError } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { getMatrixRuntimeLifecycle, type MatrixRuntimeLifecycle } from "../../runtime.js";
 import type { CoreConfig } from "../../types.js";
+import { getMatrixMonitorTaskSignal } from "../monitor/task-runner.js";
 import type { MatrixClient } from "../sdk.js";
 import { LogService } from "../sdk/logger.js";
 import { awaitMatrixStartupWithAbort, throwIfMatrixStartupAborted } from "../startup-abort.js";
@@ -60,6 +62,8 @@ type SharedMatrixClientState = {
   retirementPromise: Promise<void> | null;
   poisonError: Error | null;
   releaseMode: MatrixClientReleaseMode;
+  ownerSignal?: AbortSignal;
+  detachLifecycle?: () => void;
 };
 
 type SharedMatrixClientParams = {
@@ -93,6 +97,7 @@ function buildSharedClientKey(auth: MatrixAuth): string {
 async function createSharedMatrixClient(params: {
   auth: MatrixAuth;
   timeoutMs?: number;
+  lifecycle?: MatrixRuntimeLifecycle;
 }): Promise<SharedMatrixClientState> {
   const { createMatrixClient } = await loadMatrixCreateClientDeps();
   const client = await createMatrixClient({
@@ -123,6 +128,7 @@ async function createSharedMatrixClient(params: {
     retirementPromise: null,
     poisonError: null,
     releaseMode: "discard",
+    ownerSignal: params.lifecycle?.signal,
   };
 }
 
@@ -130,7 +136,38 @@ function deleteSharedClientState(state: SharedMatrixClientState): void {
   if (sharedClientStates.get(state.key) === state) {
     sharedClientStates.delete(state.key);
   }
-  sharedClientPromises.delete(state.key);
+  const detachLifecycle = state.detachLifecycle;
+  state.detachLifecycle = undefined;
+  detachLifecycle?.();
+}
+
+function bindSharedClientLifecycle(
+  state: SharedMatrixClientState,
+  lifecycle: MatrixRuntimeLifecycle | undefined,
+): void {
+  if (!lifecycle) {
+    return;
+  }
+  const retire = () => forceRetireState(state);
+  const onAbort = () => {
+    // The disposal callback joins the same retirement and reports its failure.
+    void retire().catch(() => undefined);
+  };
+  lifecycle.signal.addEventListener("abort", onAbort, { once: true });
+  let removeDisposer: () => void;
+  try {
+    removeDisposer = lifecycle.onDispose(retire);
+  } catch (error) {
+    lifecycle.signal.removeEventListener("abort", onAbort);
+    throw error;
+  }
+  state.detachLifecycle = () => {
+    lifecycle.signal.removeEventListener("abort", onAbort);
+    removeDisposer();
+  };
+  if (lifecycle.signal.aborted) {
+    onAbort();
+  }
 }
 
 async function ensureSharedClientStarted(
@@ -200,8 +237,10 @@ async function resolveSharedMatrixAuth(params: SharedMatrixClientParams): Promis
 
 async function resolveOpenSharedMatrixClientState(
   params: SharedMatrixClientParams,
+  lifecycle: MatrixRuntimeLifecycle | undefined,
 ): Promise<SharedMatrixClientState> {
   const auth = await resolveSharedMatrixAuth(params);
+  throwIfMatrixStartupAborted(params.abortSignal);
   const key = buildSharedClientKey(auth);
 
   while (true) {
@@ -209,11 +248,17 @@ async function resolveOpenSharedMatrixClientState(
     if (existing?.poisonError) {
       throw existing.poisonError;
     }
-    if (existing?.phase === "open") {
+    if (existing?.phase === "open" && existing.ownerSignal === lifecycle?.signal) {
       return existing;
     }
     if (existing?.retirementPromise) {
       await awaitMatrixStartupWithAbort(existing.retirementPromise, params.abortSignal);
+      continue;
+    }
+    if (existing) {
+      // Wait for the state cached in this module to drain and retire before
+      // creating another client for the same auth key under a new owner.
+      await awaitMatrixStartupWithAbort(existing.noLeases.promise, params.abortSignal);
       continue;
     }
 
@@ -226,14 +271,23 @@ async function resolveOpenSharedMatrixClientState(
     const creationPromise = createSharedMatrixClient({
       auth,
       timeoutMs: params.timeoutMs,
+      lifecycle,
     });
     sharedClientPromises.set(key, creationPromise);
     try {
       const created = await creationPromise;
       sharedClientStates.set(key, created);
+      try {
+        bindSharedClientLifecycle(created, lifecycle);
+      } catch (error) {
+        await forceRetireState(created);
+        throw error;
+      }
       return created;
     } finally {
-      sharedClientPromises.delete(key);
+      if (sharedClientPromises.get(key) === creationPromise) {
+        sharedClientPromises.delete(key);
+      }
     }
   }
 }
@@ -298,13 +352,11 @@ function abortTransientLeases(state: SharedMatrixClientState): void {
   }
 }
 
-function forceReleaseLeases(
-  state: SharedMatrixClientState,
-  releasePromise = Promise.resolve(),
-): void {
+function forceReleaseLeases(state: SharedMatrixClientState, releasePromise: Promise<void>): void {
   for (const lease of state.leases) {
+    // Only monitor owners join shutdown; their transient child tasks must be able to drain.
+    lease.releasePromise ??= lease.role === "monitor" ? releasePromise : Promise.resolve();
     lease.abortController.abort();
-    lease.releasePromise ??= releasePromise;
   }
   state.leases.clear();
   state.noLeases.resolve();
@@ -350,6 +402,9 @@ function beginGenerationRetirement(params: {
     return state.retirementPromise;
   }
   state.phase = "quiescing";
+  if (state.leases.size === 0) {
+    state.noLeases.resolve();
+  }
   const result = createDeferred<void>();
   state.retirementPromise = result.promise;
   const owner = Promise.resolve().then(async () => {
@@ -528,9 +583,13 @@ function createSharedMatrixClientLease(
         leaseState.releasePromise = retireMonitorLease(state, leaseState);
         return leaseState.releasePromise;
       }
-      const shouldRetire = finalMonitor || state.leases.size === 0;
+      // Retirement drains monitor tasks, which can themselves release transient leases.
+      // Those child releases must not wait for the enclosing generation to finish.
+      const shouldRetire = state.phase === "open" && (finalMonitor || state.leases.size === 0);
       if (!shouldRetire) {
-        leaseState.releasePromise = Promise.resolve();
+        leaseState.releasePromise = state.poisonError
+          ? Promise.reject(state.poisonError)
+          : Promise.resolve();
         return leaseState.releasePromise;
       }
       leaseState.releasePromise = beginGenerationRetirement({
@@ -545,15 +604,29 @@ function createSharedMatrixClientLease(
 export async function acquireSharedMatrixClient(
   params: SharedMatrixClientParams = {},
 ): Promise<SharedMatrixClientLease> {
+  const lifecycle = getMatrixRuntimeLifecycle();
+  const signals = [getMatrixMonitorTaskSignal(), params.abortSignal, lifecycle?.signal].filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  );
+  const abortSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+  const acquisition = { ...params, abortSignal };
   while (true) {
-    const state = await resolveOpenSharedMatrixClientState(params);
+    throwIfMatrixStartupAborted(abortSignal);
+    const state = await resolveOpenSharedMatrixClientState(acquisition, lifecycle);
+    if (abortSignal?.aborted) {
+      // An awaited creation can outlive its caller; retire an unclaimed client before rejecting.
+      if (state.phase === "open" && state.leases.size === 0) {
+        await beginGenerationRetirement({ state });
+      }
+      throwIfMatrixStartupAborted(abortSignal);
+    }
     const lease = createSharedMatrixClientLease(state, params.role ?? "transient");
     if (!lease) {
       continue;
     }
     if (params.startClient !== false) {
       try {
-        await lease.start(params.abortSignal);
+        await lease.start(abortSignal);
       } catch (error) {
         await lease.release({ mode: "stop" }).catch(() => undefined);
         throw error;
@@ -584,7 +657,7 @@ async function forceRetireState(state: SharedMatrixClientState): Promise<void> {
 
 export async function stopSharedClientForAccount(auth: MatrixAuth): Promise<void> {
   const state = sharedClientStates.get(buildSharedClientKey(auth));
-  if (!state) {
+  if (!state || state.ownerSignal !== getMatrixRuntimeLifecycle()?.signal) {
     return;
   }
   await forceRetireState(state);

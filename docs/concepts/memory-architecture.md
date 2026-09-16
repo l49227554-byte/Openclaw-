@@ -96,6 +96,15 @@ noise, and recall feedback loops:
   structurally marked and never re-extracted as a new memory. A fact recalled
   one hundred times stays one fact.
 
+Beyond per-chunk trust metadata, automatic session ingestion records source
+sessions for its staged entries. Consolidation carries those origins forward,
+so `openclaw memory forget` can remove tracked entries derived from selected
+sessions and exclude those session IDs from future ingestion. Separately,
+admission policy can exclude matching sources from dreaming ingestion and session backfill.
+Neither control covers every workspace write or retained copy; see the
+coverage, retained-data boundaries, and operator workflow in
+[Memory provenance and deletion](/concepts/memory-provenance).
+
 ## Trust boundaries and limits
 
 Workspace memory files are inside the operator trust boundary: any process
@@ -176,7 +185,12 @@ touching long-term memory.
 The consolidation output is accepted only if it passes structural
 validation, stays within the bootstrap file budget, and does not lose more
 than a bounded fraction of existing entries. A rejected rewrite falls back
-to the previous append-only behavior for that sweep.
+to append-only behavior for that sweep. Promotion uses the smallest configured
+per-file bootstrap limit among agents sharing the workspace, capped by the
+writer's own limit. If an append still cannot fit after older generated
+sections are removed, the writer preserves `MEMORY.md` unchanged and leaves
+the candidates eligible for a later sweep instead of committing an oversized
+file.
 
 **Write safety.** Replacing `MEMORY.md` uses optimistic concurrency: the
 content hash captured when consolidation input was built is re-checked
@@ -414,18 +428,20 @@ authority in a future session.
 Memory architecture is mostly convention over configuration; these are the
 knobs that exist:
 
-| Concern                         | Where                                                           | Reference                                                |
-| ------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------- |
-| Dreaming enable, cadence, model | `plugins.entries.memory-core.config.dreaming`                   | [Dreaming](/concepts/dreaming)                           |
-| Search providers, hybrid tuning | `memory.search`                                                 | [Memory config](/reference/memory-config)                |
-| Escalation lane mode, scope     | `plugins.entries.active-memory`                                 | [Active memory](/concepts/active-memory)                 |
-| Cross-conversation recall       | `agents.entries.<id>.memory.search.rememberAcrossConversations` | [Active memory](/concepts/active-memory)                 |
-| Flush behavior                  | `agents.defaults.compaction.memoryFlush`                        | [Memory overview](/concepts/memory)                      |
-| Memory plugin selection         | `plugins.slots.memory`                                          | [Builtin](/concepts/memory-builtin), [Plugins](/plugins) |
+| Concern                         | Where                                                           | Reference                                                     |
+| ------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
+| Dreaming enable, cadence, model | `plugins.entries.memory-core.config.dreaming`                   | [Dreaming](/concepts/dreaming)                                |
+| Session admission exclusions    | `plugins.entries.memory-core.config.memoryPolicy`               | [Provenance & deletion](/concepts/memory-provenance)          |
+| Search providers, hybrid tuning | `memory.search`                                                 | [Memory config](/reference/memory-config)                     |
+| Escalation lane mode, scope     | `plugins.entries.active-memory`                                 | [Active memory](/concepts/active-memory)                      |
+| Cross-conversation recall       | `agents.entries.<id>.memory.search.rememberAcrossConversations` | [Active memory](/concepts/active-memory)                      |
+| Flush behavior                  | `agents.defaults.compaction.memoryFlush`                        | [Memory overview](/concepts/memory)                           |
+| Memory plugin selection         | `plugins.slots.memory`                                          | [Builtin](/concepts/memory-builtin), [Plugins](/tools/plugin) |
 
 ## Related
 
 - [Memory overview](/concepts/memory)
+- [Memory provenance and deletion](/concepts/memory-provenance)
 - [Dreaming](/concepts/dreaming)
 - [Active memory](/concepts/active-memory)
 - [User model](/concepts/user-model)

@@ -1,102 +1,53 @@
 import { html } from "lit";
+import { guard } from "lit/directives/guard.js";
+import { until } from "lit/directives/until.js";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import type { ChatAttachment } from "../../../lib/chat/chat-types.ts";
+import { getChatAttachmentVideoPosterUrl } from "../attachment-payload-store.ts";
+import { resolveAttachmentFileIcon } from "./chat-attachment-file-icon.ts";
 
-type AttachmentFileKind =
-  | "archive"
-  | "audio"
-  | "code"
-  | "generic"
-  | "pdf"
-  | "presentation"
-  | "spreadsheet"
-  | "text"
-  | "video"
-  | "word";
-
-function attachmentFilePresentation(attachment: ChatAttachment): {
-  icon: (typeof icons)[keyof typeof icons];
-  kind: AttachmentFileKind;
-  typeLabel: string;
-} {
-  const mimeType = attachment.mimeType.toLowerCase();
-  const extension = attachment.fileName?.toLowerCase().split(".").pop() ?? "";
-  const typeLabel = extension.toUpperCase() || t("chat.attachments.attachedFile");
-  if (mimeType === "application/pdf" || extension === "pdf") {
-    return { icon: icons.fileText, kind: "pdf", typeLabel };
-  }
-  if (mimeType.startsWith("audio/")) {
-    return { icon: icons.music, kind: "audio", typeLabel };
-  }
-  if (mimeType.startsWith("video/")) {
-    return { icon: icons.play, kind: "video", typeLabel };
-  }
-  if (
-    [
-      "application/gzip",
-      "application/vnd.rar",
-      "application/x-7z-compressed",
-      "application/zip",
-    ].includes(mimeType) ||
-    ["zip", "tar", "gz", "tgz", "rar", "7z"].includes(extension)
-  ) {
-    return { icon: icons.archive, kind: "archive", typeLabel };
-  }
-  if (
-    [
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ].includes(mimeType) ||
-    ["doc", "docx"].includes(extension)
-  ) {
-    return { icon: icons.fileText, kind: "word", typeLabel };
-  }
-  if (
-    [
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "text/csv",
-    ].includes(mimeType) ||
-    ["csv", "xls", "xlsx"].includes(extension)
-  ) {
-    return { icon: icons.file, kind: "spreadsheet", typeLabel };
-  }
-  if (
-    [
-      "application/vnd.ms-powerpoint",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ].includes(mimeType) ||
-    ["ppt", "pptx"].includes(extension)
-  ) {
-    return { icon: icons.file, kind: "presentation", typeLabel };
-  }
-  if (
-    ["application/json", "application/toml", "application/yaml"].includes(mimeType) ||
-    ["js", "jsx", "ts", "tsx", "json", "yaml", "yml", "toml", "sh"].includes(extension)
-  ) {
-    return { icon: icons.braces, kind: "code", typeLabel };
-  }
-  if (mimeType.startsWith("text/") || ["md", "txt", "rtf"].includes(extension)) {
-    return { icon: icons.fileText, kind: "text", typeLabel };
-  }
-  return { icon: icons.file, kind: "generic", typeLabel };
+function renderAttachmentVideoPreview(attachment: ChatAttachment) {
+  const poster = getChatAttachmentVideoPosterUrl(attachment);
+  return html`
+    <span class="chat-attachment-file__preview" aria-hidden="true">
+      ${guard([poster], () =>
+        until(
+          poster?.then((src) =>
+            src
+              ? html`
+                  <img src=${src} alt="" />
+                  <span class="chat-attachment-video__play">${icons.play}</span>
+                `
+              : icons.play,
+          ) ?? icons.play,
+          icons.play,
+        ),
+      )}
+    </span>
+  `;
 }
 
-export function renderStandardFileAttachment(attachment: ChatAttachment) {
-  const presentation = attachmentFilePresentation(attachment);
-  const label = attachment.fileName ?? t("chat.attachments.attachedFile");
+export function renderCompactAttachmentFile(attachment: ChatAttachment) {
+  const { family, extensionLabel } = resolveAttachmentFileIcon(
+    attachment.fileName ?? "attachment",
+    attachment.mimeType,
+  );
+  const name = attachment.fileName ?? t("chat.attachments.attachedFile");
+  const glyph = family === "audio" ? icons.music : icons.fileText;
   return html`
-    <openclaw-tooltip .content=${label}>
+    <openclaw-tooltip .content=${name}>
       <div
-        class="chat-attachment-file chat-attachment-file--${presentation.kind}"
-        role="img"
-        aria-label=${label}
+        class=${`chat-attachment-file${family === "video" ? " chat-attachment-file--video" : ""}`}
       >
-        <span class="chat-attachment-file__icon">${presentation.icon}</span>
+        ${
+          family === "video"
+            ? renderAttachmentVideoPreview(attachment)
+            : html`<span class="chat-attachment-file__icon" data-family=${family}>${glyph}</span>`
+        }
         <span class="chat-attachment-file__body">
-          <span class="chat-attachment-file__name">${label}</span>
-          <span class="chat-attachment-file__type">${presentation.typeLabel}</span>
+          <span class="chat-attachment-file__name">${name}</span>
+          <span class="chat-attachment-file__type">${extensionLabel}</span>
         </span>
       </div>
     </openclaw-tooltip>

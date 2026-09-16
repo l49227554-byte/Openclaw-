@@ -63,7 +63,7 @@ vi.mock("../auth-profiles/order.js", () => ({
 vi.mock("../auth-profiles/session-override.js", () => ({
   clearSessionAuthProfileOverride: vi.fn(async () => undefined),
 }));
-vi.mock("../auth-profiles/store.js", () => ({
+vi.mock("../auth-profiles/store-runtime.js", () => ({
   ensureAuthProfileStore: () => ({ profiles: {} }),
 }));
 vi.mock("../harness/runtime-plugin.js", () => ({
@@ -95,9 +95,10 @@ vi.mock("../model-thinking-default.js", () => ({
 vi.mock("../model-visibility-policy.js", () => ({
   createModelVisibilityPolicy: () => ({
     allowAny: true,
+    catalog: [],
     allowedCatalog: [],
     selectionAliasIndex: { byAlias: new Map(), byKey: new Map() },
-    allowsKey: () => true,
+    allows: () => true,
     resolveSelection: (ref: { provider: string; model: string }) => ref,
   }),
 }));
@@ -111,7 +112,7 @@ vi.mock("../session-runtime-compat.js", () => ({
   resolveSessionRuntimeOverrideForProvider: () => undefined,
 }));
 vi.mock("../thinking-runtime.js", () => ({
-  hasResolvedThinkingCatalogEntry: () => false,
+  needsThinkHydration: () => false,
   normalizeThinkingCatalogProviders: (catalog: unknown) => catalog,
   resolveEffectiveAgentRuntime: () => undefined,
 }));

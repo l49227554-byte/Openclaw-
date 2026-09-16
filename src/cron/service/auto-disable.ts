@@ -1,6 +1,7 @@
 /** Shared state and owner-notification policy for cron auto-disable transitions. */
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { cronFailureDetailLines } from "../failure-notification-text.js";
+import { isSystemMonitorDeclaration } from "../system-owned-declaration.js";
 import type { CronJob, CronJobState } from "../types.js";
 import type { CronServiceState, DeferredCronNotifications } from "./state.js";
 import { enqueueCronNotification } from "./wake.js";
@@ -27,6 +28,10 @@ export function autoDisableCronJob(params: {
   deferredNotifications?: DeferredCronNotifications;
 }): boolean {
   const { state, job } = params;
+  // Gateway convergence owns these jobs; clients cannot re-enable them, so failures stay visible while they retry on schedule.
+  if (isSystemMonitorDeclaration(job.declarationKey)) {
+    return false;
+  }
   if (!job.enabled || job.state.autoDisabled) {
     return false;
   }

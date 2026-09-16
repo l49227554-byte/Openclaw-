@@ -25,6 +25,7 @@ import type { SkillInstallResult, SkillInstallSkipReason } from "./install-types
 
 type SkillInstallRequest = {
   workspaceDir: string;
+  agentId?: string;
   skillName: string;
   installId: string;
   timeoutMs?: number;
@@ -313,6 +314,12 @@ async function runCommandSafely(
 }
 
 function resolveBrewMissingFailure(spec: SkillInstallSpec): SkillInstallResult {
+  if (process.platform === "freebsd") {
+    return createInstallFailure({
+      message:
+        "brew not installed — Homebrew is not supported on FreeBSD. Install the required binaries on the Gateway host using pkg or Ports, then run `openclaw skills check` (use `--agent <id>` for a specific agent) to verify readiness.",
+    });
+  }
   const formula = spec.formula ?? "this package";
   if (process.platform === "linux" && getSkillsInstallDeps().isContainerEnvironment()) {
     return createInstallFailure({
@@ -681,7 +688,12 @@ export async function installSkill(params: SkillInstallRequest): Promise<SkillIn
   const timeoutMs = Math.min(Math.max(params.timeoutMs ?? 300_000, 1_000), 900_000);
   const workspaceDir = resolveUserPath(params.workspaceDir);
   const deps = getSkillsInstallDeps();
-  const entries = deps.loadWorkspaceSkills(workspaceDir);
+  // Match status inventory: operators can install dependencies for hidden skills.
+  const entries = deps.loadWorkspaceSkills(workspaceDir, {
+    config: params.config,
+    agentId: params.agentId,
+    agentSkillFilter: "ignore",
+  });
   const entry = entries.find((item) => item.skill.name === params.skillName);
   if (!entry) {
     return {

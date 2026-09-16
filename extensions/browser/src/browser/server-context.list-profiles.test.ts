@@ -100,17 +100,19 @@ function createExistingSessionProcessFixture(
     const pid = nextPid++;
     alive.add(pid);
     const transport: { pid: number | null } = { pid };
+    const client = {
+      callTool,
+      close: vi.fn(async () => {
+        alive.delete(pid);
+        transport.pid = null;
+      }),
+    };
     return {
       transport,
+      closeTransport: () => client.close(),
       processCleanup: { status: "open" as const },
       ready: Promise.resolve(),
-      client: {
-        callTool,
-        close: vi.fn(async () => {
-          alive.delete(pid);
-          transport.pid = null;
-        }),
-      },
+      client,
     } as never;
   });
   setChromeMcpSessionFactoryForTest(factory);
@@ -266,6 +268,70 @@ describe("browser server-context listProfiles", () => {
     }
   });
 
+  it("cancels one profile operation without interrupting a shared transition", async () => {
+    const state = makeBrowserServerState();
+    const ctx = createBrowserRouteContext({ getState: () => state });
+    const profile = ctx.forProfile("openclaw");
+    const runtime = state.profiles.get("openclaw");
+    if (!runtime) {
+      throw new Error("expected profile runtime");
+    }
+
+    let releaseCleanup!: () => void;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    let transitionCompleted = false;
+    const transition = beginProfileTransition({
+      state,
+      runtime,
+      reason: "profile refresh requested",
+      closeSharedAdapters: false,
+      afterCleanup: async () => {
+        await cleanupGate;
+        transitionCompleted = true;
+      },
+    });
+    const isChromeCdpReady = vi.mocked(chromeModule.isChromeCdpReady);
+    isChromeCdpReady.mockResolvedValue(true);
+
+    const controller = new AbortController();
+    const aborted = profile.isReachable(undefined, { signal: controller.signal });
+    const surviving = profile.isReachable();
+    let survivingCompleted = false;
+    void surviving.then(() => {
+      survivingCompleted = true;
+    });
+
+    const reason = new Error("profile request cancelled during transition");
+    controller.abort(reason);
+
+    try {
+      const outcome = await Promise.race([
+        aborted.then(
+          () => ({ state: "resolved" as const }),
+          (error: unknown) => ({ state: "rejected" as const, error }),
+        ),
+        new Promise<{ state: "pending" }>((resolve) => {
+          setTimeout(() => resolve({ state: "pending" }), 50);
+        }),
+      ]);
+
+      expect(outcome).toEqual({ state: "rejected", error: reason });
+      expect(transitionCompleted).toBe(false);
+      expect(survivingCompleted).toBe(false);
+      expect(isChromeCdpReady).not.toHaveBeenCalled();
+    } finally {
+      releaseCleanup();
+      await transition;
+    }
+
+    await expect(surviving).resolves.toBe(true);
+    expect(survivingCompleted).toBe(true);
+    await expect(profile.isReachable()).resolves.toBe(true);
+    expect(isChromeCdpReady).toHaveBeenCalledTimes(2);
+  });
+
   it("reads running state only after an in-flight profile transition settles", async () => {
     const state = makeBrowserServerState();
     const ctx = createBrowserRouteContext({ getState: () => state });
@@ -319,7 +385,12 @@ describe("browser server-context listProfiles", () => {
     const ctx = createBrowserRouteContext({ getState: () => state });
     const profiles = await ctx.listProfiles();
 
-    expect(isChromeReachable).toHaveBeenCalledWith("http://127.0.0.1:18800", 200, undefined);
+    expect(isChromeReachable).toHaveBeenCalledWith(
+      "http://127.0.0.1:18800",
+      200,
+      undefined,
+      expect.any(AbortSignal),
+    );
     expect(profiles).toHaveLength(1);
     expect(profiles[0]?.name).toBe("openclaw");
     expect(profiles[0]?.running).toBe(true);
@@ -353,6 +424,7 @@ describe("browser server-context listProfiles", () => {
       "http://127.0.0.1:9222",
       state.resolved.remoteCdpTimeoutMs,
       undefined,
+      expect.any(AbortSignal),
     );
     expect(profiles).toHaveLength(1);
     expect(profiles[0]?.name).toBe("manual-cdp");
@@ -387,6 +459,7 @@ describe("browser server-context listProfiles", () => {
       "http://openclaw:relay-token@127.0.0.1:9222",
       state.resolved.remoteCdpTimeoutMs,
       undefined,
+      expect.any(AbortSignal),
     );
     expect(profiles[0]?.cdpUrl).toBe("http://127.0.0.1:9222");
   });

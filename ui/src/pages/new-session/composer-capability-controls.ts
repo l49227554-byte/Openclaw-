@@ -1,6 +1,7 @@
 import { html, nothing } from "lit";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
+import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import type { SessionToolOverrides } from "../../lib/sessions/patch.ts";
 import { countSessionToolOverrides } from "../../lib/sessions/tool-overrides.ts";
 import {
@@ -9,6 +10,8 @@ import {
 } from "../chat/components/chat-composer-plus-menu.ts";
 import type { CapabilityMenuProps } from "../chat/components/chat-composer-types.ts";
 import type { NewSessionVisibility } from "./create-params.ts";
+
+registerNewSessionSetupEnglish();
 
 type NewSessionComposerCapabilityOptions = {
   submitting: boolean;
@@ -32,9 +35,9 @@ export function renderNewSessionDraftVisibility(options: NewSessionComposerCapab
   return html`
     <button
       type="button"
-      class="new-session-page__visibility new-session-page__visibility--draft ${active
-        ? "new-session-page__visibility--active"
-        : ""}"
+      class="new-session-page__visibility new-session-page__visibility--draft ${
+        active ? "new-session-page__visibility--active" : ""
+      }"
       role="switch"
       aria-label=${label}
       aria-checked=${String(active)}
@@ -53,8 +56,6 @@ export function renderNewSessionPlusMenu(
   attachments: Parameters<typeof renderChatComposerPlusMenu>[0]["attachments"],
 ) {
   const draftEnabled = options.visibility === "draft";
-  const overrideCount = countSessionToolOverrides(options.toolOverrides);
-  const selectedCount = overrideCount + (draftEnabled ? 1 : 0);
   const disabled = options.submitting || options.messageLocked === true;
   const controller = options.textareaController;
   return renderChatComposerPlusMenu({
@@ -77,10 +78,6 @@ export function renderNewSessionPlusMenu(
           },
         ]
       : undefined,
-    selectedLabel:
-      selectedCount > 0
-        ? t("newSession.composerOptionsSelected", { count: String(selectedCount) })
-        : undefined,
     onOpenChange: (open) => {
       controller.capabilityMenuOpen = open;
       if (!open) {

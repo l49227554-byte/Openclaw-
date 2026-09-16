@@ -1,4 +1,5 @@
 // This proof exercises the pretag caller against a real stalled runtime-build process tree.
+import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -9,6 +10,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { runPluginReleasePretagPackCheck } from "../../scripts/plugin-release-pretag-pack-check.ts";
 import { writePublishablePluginFixture } from "../helpers/publishable-plugin-fixture.js";
@@ -132,7 +134,6 @@ describe("scripts/plugin-release-pretag-pack-check.ts process-tree proof", () =>
         expect(Number.isInteger(directPid) && directPid > 1).toBe(true);
         expect(Number.isInteger(descendantPid) && descendantPid > 1).toBe(true);
         await waitFor(() => !isProcessAlive(directPid) && !isProcessAlive(descendantPid));
-        await delay(50);
 
         const proof = {
           timeoutCode: (thrown as { code?: string }).code,
@@ -156,5 +157,239 @@ describe("scripts/plugin-release-pretag-pack-check.ts process-tree proof", () =>
       }
     },
     30_000,
+  );
+
+  posixIt(
+    "rejects a build leader that exits successfully while a descendant remains",
+    async () => {
+      const { descendantPidFile, directPidFile, repoDir } = createProofRepo();
+      writeFileSync(join(repoDir, "scripts/plugin-npm-publish.sh"), "#!/bin/bash\nexit 0\n");
+      writeFileSync(
+        join(repoDir, "scripts/check-plugin-npm-runtime-builds.mts"),
+        `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const descendant = spawn(process.execPath, ["-e", 'process.send("ready"); setInterval(() => {}, 1000);'], {
+  stdio: ["ignore", "ignore", "ignore", "ipc"],
+});
+descendant.once("message", () => {
+  writeFileSync(${JSON.stringify(directPidFile)}, String(process.pid));
+  writeFileSync(${JSON.stringify(descendantPidFile)}, String(descendant.pid));
+  descendant.disconnect();
+  descendant.unref();
+});
+`,
+      );
+      try {
+        await expect(
+          runPluginReleasePretagPackCheck(repoDir, { timeoutMs: 5_000 }),
+        ).rejects.toMatchObject({
+          code: "EPROCESSGROUP_CLEANUP_FAILED",
+          processTreeState: "terminated",
+        });
+        expect(readPid(descendantPidFile)).toBeGreaterThan(1);
+        expect(isProcessAlive(readPid(directPidFile))).toBe(false);
+        expect(isProcessAlive(readPid(descendantPidFile))).toBe(false);
+      } finally {
+        killProcessIfAlive(readPid(directPidFile));
+        killProcessIfAlive(readPid(descendantPidFile));
+      }
+    },
+    15_000,
+  );
+});
+
+function startProofCli(repoDir: string) {
+  const child = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      fileURLToPath(new URL("../../scripts/plugin-release-pretag-pack-check.ts", import.meta.url)),
+    ],
+    {
+      cwd: repoDir,
+      env: { PATH: process.env.PATH, HOME: repoDir, TMPDIR: repoDir },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (data) => {
+    stdout += data;
+  });
+  child.stderr.on("data", (data) => {
+    stderr += data;
+  });
+  const completion = new Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+  }>((resolveCompletion, reject) => {
+    const deadline = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("pretag CLI fixture exceeded its outer safety deadline"));
+    }, 15_000);
+    child.once("error", (error) => {
+      clearTimeout(deadline);
+      reject(error);
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(deadline);
+      resolveCompletion({ code, signal, stdout, stderr });
+    });
+  });
+  void completion.catch(() => {});
+  return { child, completion };
+}
+
+describe("pretag executable and per-stage deadlines", () => {
+  for (const [signal, code] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ] as const) {
+    posixIt(
+      `joins the build tree and returns ${code} for ${signal}`,
+      async () => {
+        const { descendantPidFile, directPidFile, repoDir } = createProofRepo();
+        const cli = startProofCli(repoDir);
+        try {
+          await waitFor(() => readPid(directPidFile) > 1 && readPid(descendantPidFile) > 1);
+          expect(isProcessAlive(readPid(directPidFile))).toBe(true);
+          expect(isProcessAlive(readPid(descendantPidFile))).toBe(true);
+          expect(cli.child.kill(signal)).toBe(true);
+          const result = await cli.completion;
+          expect(result).toMatchObject({ code, signal: null });
+          expect(result.stderr).toContain(`failed with exit code ${code}`);
+          expect(isProcessAlive(readPid(directPidFile))).toBe(false);
+          expect(isProcessAlive(readPid(descendantPidFile))).toBe(false);
+          expect(result.stdout).not.toContain("npm pack:");
+        } finally {
+          killProcessIfAlive(readPid(directPidFile));
+          killProcessIfAlive(readPid(descendantPidFile));
+          if (cli.child.exitCode === null && cli.child.signalCode === null) {
+            cli.child.kill("SIGKILL");
+          }
+          await cli.completion.catch(() => {});
+        }
+      },
+      20_000,
+    );
+  }
+
+  posixIt(
+    "preserves a real build failure at the executable boundary and does not pack",
+    async () => {
+      const { repoDir } = createProofRepo();
+      writeFileSync(
+        join(repoDir, "scripts/check-plugin-npm-runtime-builds.mts"),
+        "process.exit(7);\n",
+      );
+      const cli = startProofCli(repoDir);
+      const result = await cli.completion;
+      expect(result).toMatchObject({ code: 7, signal: null });
+      expect(result.stderr).toContain("failed with exit code 7");
+      expect(result.stdout).not.toContain("npm pack:");
+    },
+    20_000,
+  );
+
+  for (const stage of ["npm", "ClawHub"] as const) {
+    posixIt(
+      `bounds the real ${stage} pack command and joins its descendants`,
+      async () => {
+        const { repoDir, directPidFile, descendantPidFile } = createProofRepo();
+        writePublishablePluginFixture(repoDir, { version: "2026.8.26", publishTo: "both" });
+        const scriptsDir = join(repoDir, "scripts");
+        writeFileSync(
+          join(scriptsDir, "stall.mts"),
+          readFileSync(join(scriptsDir, "check-plugin-npm-runtime-builds.mts")),
+        );
+        writeFileSync(
+          join(scriptsDir, "check-plugin-npm-runtime-builds.mts"),
+          "process.exit(0);\n",
+        );
+        writeFileSync(
+          join(scriptsDir, "plugin-npm-publish.sh"),
+          stage === "npm"
+            ? "#!/bin/bash\nexec node --import tsx scripts/stall.mts\n"
+            : "#!/bin/bash\nexit 0\n",
+        );
+        writeFileSync(
+          join(scriptsDir, "plugin-clawhub-publish.sh"),
+          "#!/bin/bash\nexec node --import tsx scripts/stall.mts\n",
+        );
+        try {
+          await expect(
+            runPluginReleasePretagPackCheck(repoDir, { timeoutMs: 2_000 }),
+          ).rejects.toMatchObject({
+            code: "ETIMEDOUT",
+            message: expect.stringContaining(`${stage} pack for @openclaw/demo-plugin timed out`),
+          });
+          expect(readPid(descendantPidFile)).toBeGreaterThan(1);
+          expect(isProcessAlive(readPid(directPidFile))).toBe(false);
+          expect(isProcessAlive(readPid(descendantPidFile))).toBe(false);
+        } finally {
+          killProcessIfAlive(readPid(directPidFile));
+          killProcessIfAlive(readPid(descendantPidFile));
+        }
+      },
+      15_000,
+    );
+  }
+
+  posixIt(
+    "lets two plugins complete real independent build and pack budgets",
+    async () => {
+      const { repoDir } = createProofRepo();
+      for (const extensionId of ["demo-plugin", "second-plugin"]) {
+        writePublishablePluginFixture(repoDir, {
+          extensionId,
+          version: "2026.8.26",
+          publishTo: "both",
+        });
+      }
+      const scriptsDir = join(repoDir, "scripts");
+      const recordPath = join(repoDir, "stages.jsonl");
+      const stageCode = `import { appendFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+appendFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args: process.argv.slice(2), prebuilt: process.env.OPENCLAW_PLUGIN_NPM_RUNTIME_BUILD, outputDir: process.env.OPENCLAW_CLAWHUB_PACK_OUTPUT_DIR }) + "\\n");
+await delay(600);
+`;
+      writeFileSync(join(scriptsDir, "check-plugin-npm-runtime-builds.mts"), stageCode);
+      writeFileSync(join(scriptsDir, "pack.mts"), stageCode);
+      for (const name of ["plugin-npm-publish.sh", "plugin-clawhub-publish.sh"]) {
+        writeFileSync(
+          join(scriptsDir, name),
+          '#!/bin/bash\nexec node --import tsx scripts/pack.mts "$@"\n',
+        );
+      }
+      const started = Date.now();
+      await runPluginReleasePretagPackCheck(repoDir, { timeoutMs: 2_000 });
+      expect(Date.now() - started).toBeGreaterThan(2_000);
+      const records = readFileSync(recordPath, "utf8")
+        .trim()
+        .split("\n")
+        .map(
+          (line) => JSON.parse(line) as { args: string[]; prebuilt?: string; outputDir?: string },
+        );
+      expect(records.map((record) => record.args)).toEqual([
+        ["--package", "extensions/demo-plugin"],
+        ["--pack-dry-run", "extensions/demo-plugin"],
+        ["--pack", "extensions/demo-plugin"],
+        ["--package", "extensions/second-plugin"],
+        ["--pack-dry-run", "extensions/second-plugin"],
+        ["--pack", "extensions/second-plugin"],
+      ]);
+      for (const index of [1, 2, 4, 5]) {
+        expect(records[index]?.prebuilt).toBe("0");
+      }
+      expect(records[2]?.outputDir).toContain("clawhub-0");
+      expect(records[5]?.outputDir).toContain("clawhub-1");
+      for (const index of [2, 5]) {
+        expect(existsSync(records[index]!.outputDir!)).toBe(false);
+      }
+    },
+    20_000,
   );
 });

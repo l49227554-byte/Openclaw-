@@ -1,17 +1,11 @@
-// Voyage batch tests cover the real HTTP boundary and bounded response reads.
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runVoyageEmbeddingBatches } from "./embedding-batch.js";
-import type { VoyageEmbeddingClient } from "./embedding-provider.js";
+import { createVoyageEmbeddingProvider, type VoyageEmbeddingClient } from "./embedding-provider.js";
 
 type VoyageBatchOptions = Parameters<typeof runVoyageEmbeddingBatches>[0];
 type BatchStage = "upload" | "create" | "status" | "output" | "error";
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
 
 function buildClient(): VoyageEmbeddingClient {
   return {
@@ -43,11 +37,11 @@ function resolveBatchStage(url: string, init?: RequestInit): BatchStage {
 function defaultBatchResponse(stage: BatchStage): Response {
   switch (stage) {
     case "upload":
-      return jsonResponse({ id: "input-0" });
+      return Response.json({ id: "input-0" });
     case "create":
-      return jsonResponse({ id: "batch-0", status: "in_progress" });
+      return Response.json({ id: "batch-0", status: "in_progress" });
     case "status":
-      return jsonResponse({ id: "batch-0", status: "completed", output_file_id: "output-0" });
+      return Response.json({ id: "batch-0", status: "completed", output_file_id: "output-0" });
     case "output":
       return new Response(
         JSON.stringify({
@@ -133,6 +127,163 @@ afterEach(() => {
 });
 
 describe("voyage batch bounded reads", () => {
+  it.each([
+    { operation: "single", inputType: "query", expectedInputs: [["first"]] },
+    { operation: "single", inputType: "document", expectedInputs: [["first"]] },
+    { operation: "single", inputType: undefined, expectedInputs: [["first"]] },
+    { operation: "batch", inputType: "query", expectedInputs: [["first"], ["second"]] },
+    { operation: "batch", inputType: "document", expectedInputs: [["first", "second"]] },
+    { operation: "batch", inputType: undefined, expectedInputs: [["first", "second"]] },
+  ] as const)(
+    "preserves real $operation $inputType requests, grouping, and configured query parameters",
+    async ({ operation, inputType, expectedInputs }) => {
+      const received: Array<{
+        url: string;
+        authorization: string | undefined;
+        body: unknown;
+      }> = [];
+      const vectors: Record<string, number[]> = { first: [7, 11], second: [13, 17] };
+      const server = createServer((request, response) => {
+        request.setEncoding("utf8");
+        let text = "";
+        request.on("data", (chunk: string) => {
+          text += chunk;
+        });
+        request.on("end", () => {
+          if (request.url !== "/tenant/v1/embeddings?api-version=2024-10-21&tenant=beta") {
+            response.writeHead(404).end("wrong embedding endpoint");
+            return;
+          }
+          const body = JSON.parse(text) as { input: string[] };
+          received.push({ url: request.url, authorization: request.headers.authorization, body });
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              data: body.input.map((input, index) => ({ index, embedding: vectors[input] })),
+            }),
+          );
+        });
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected loopback TCP address");
+      }
+
+      try {
+        const { provider } = await createVoyageEmbeddingProvider({
+          config: {},
+          provider: "voyage",
+          model: "voyage/voyage-3",
+          fallback: "none",
+          remote: {
+            baseUrl: `http://127.0.0.1:${address.port}/tenant/v1/?api-version=2024-10-21&tenant=beta#local`,
+            apiKey: "voyage-loopback-key",
+          },
+        });
+        expect(provider.maxInputTokens).toBe(32000);
+        if (operation === "single") {
+          await expect(provider.embed({ text: "first" }, { inputType })).resolves.toEqual([7, 11]);
+        } else {
+          await expect(
+            provider.embedBatch([{ text: "first" }, "second"], { inputType }),
+          ).resolves.toEqual([
+            [7, 11],
+            [13, 17],
+          ]);
+        }
+        expect(received).toHaveLength(expectedInputs.length);
+        expect(received).toEqual(
+          expect.arrayContaining(
+            expectedInputs.map((input) => ({
+              url: "/tenant/v1/embeddings?api-version=2024-10-21&tenant=beta",
+              authorization: "Bearer voyage-loopback-key",
+              body: { model: "voyage-3", input, input_type: inputType ?? "document" },
+            })),
+          ),
+        );
+        await expect(provider.embedBatch([], { inputType })).resolves.toEqual([]);
+        expect(received).toHaveLength(expectedInputs.length);
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    },
+  );
+
+  it("preserves configured query parameters through real batch upload, create, status, and error output", async () => {
+    const received: Array<{ url: string; authorization: string | undefined }> = [];
+    const server = createServer((request, response) => {
+      const url = request.url ?? "";
+      received.push({ url, authorization: request.headers.authorization });
+      const parsed = new URL(url, "http://localhost");
+      if (parsed.search !== "?api-version=2024-10-21&tenant=beta") {
+        response.writeHead(404).end("missing embedding tenant query");
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      if (parsed.pathname === "/tenant/v1/files") {
+        response.end(JSON.stringify({ id: "input-0" }));
+      } else if (parsed.pathname === "/tenant/v1/batches") {
+        response.end(JSON.stringify({ id: "batch-0", status: "in_progress" }));
+      } else if (parsed.pathname === "/tenant/v1/batches/batch-0") {
+        response.end(
+          JSON.stringify({
+            id: "batch-0",
+            status: "completed",
+            output_file_id: "output-0",
+            error_file_id: "error-0",
+          }),
+        );
+      } else if (parsed.pathname === "/tenant/v1/files/error-0/content") {
+        response.end(
+          JSON.stringify({
+            custom_id: "req-0",
+            response: { status_code: 500, message: "provider rejected request" },
+            error: null,
+          }),
+        );
+      } else {
+        response.end(JSON.stringify({ error: "unexpected embedding path" }));
+      }
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("expected loopback TCP address");
+    }
+
+    try {
+      await expect(
+        runBatch({
+          client: {
+            baseUrl: `http://127.0.0.1:${address.port}/tenant/v1/?api-version=2024-10-21&tenant=beta#local`,
+            headers: { Authorization: "Bearer voyage-loopback-key" },
+            model: "voyage-3",
+            ssrfPolicy: { allowedHostnames: ["127.0.0.1"] },
+          },
+        }),
+      ).rejects.toThrow("voyage batch batch-0 completed: provider rejected request");
+
+      expect(received.map(({ url }) => url)).toEqual([
+        "/tenant/v1/files?api-version=2024-10-21&tenant=beta",
+        "/tenant/v1/batches?api-version=2024-10-21&tenant=beta",
+        "/tenant/v1/batches/batch-0?api-version=2024-10-21&tenant=beta",
+        "/tenant/v1/files/error-0/content?api-version=2024-10-21&tenant=beta",
+      ]);
+      expect(
+        received.every(({ authorization }) => authorization === "Bearer voyage-loopback-key"),
+      ).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it("clamps polling to the remaining batch timeout", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -190,7 +341,7 @@ describe("voyage batch bounded reads", () => {
     const streamed = streamingResponse({ chunkCount: 20, chunkSize: 1024 * 1024 });
     stubBatchFetch((stage) => {
       if (stage === "create") {
-        return jsonResponse({
+        return Response.json({
           id: "batch-0",
           status: "completed",
           output_file_id: "output-0",
@@ -209,7 +360,9 @@ describe("voyage batch bounded reads", () => {
 
   it("normalizes and bounds a non-OK status diagnostic through the public runner", async () => {
     const streamed = streamingResponse({ chunkCount: 20, chunkSize: 1024 * 1024, status: 500 });
-    stubBatchFetch((stage) => (stage === "status" ? streamed.response : undefined));
+    const fetchMock = stubBatchFetch((stage) =>
+      stage === "status" ? streamed.response : undefined,
+    );
 
     await expect(runBatch()).rejects.toMatchObject({
       name: "ProviderHttpError",
@@ -218,6 +371,9 @@ describe("voyage batch bounded reads", () => {
     });
     expect(streamed.getReadCount()).toBeLessThan(20);
     expect(streamed.wasCanceled()).toBe(true);
+    expect(
+      fetchMock.mock.calls.filter(([input]) => fetchInputUrl(input).endsWith("/batches/batch-0")),
+    ).toHaveLength(1);
   });
 
   it("uses the shared output reader and stops after the expected result", async () => {
@@ -249,7 +405,7 @@ describe("voyage batch bounded reads", () => {
   it("reads a completed error file before downloading successful output", async () => {
     const fetchMock = stubBatchFetch((stage) =>
       stage === "status"
-        ? jsonResponse({
+        ? Response.json({
             id: "batch-0",
             status: "completed",
             output_file_id: "output-0",
@@ -295,7 +451,7 @@ describe("voyage batch bounded reads", () => {
       if (stage !== "create" || ++attempts > 1) {
         return undefined;
       }
-      return jsonResponse({ error: { message: "retry this request" } }, 503);
+      return Response.json({ error: { message: "retry this request" } }, { status: 503 });
     });
 
     await expect(runBatch()).resolves.toEqual(new Map([["req-0", [1, 2]]]));

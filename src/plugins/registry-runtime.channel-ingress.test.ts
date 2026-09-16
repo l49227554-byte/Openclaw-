@@ -291,26 +291,29 @@ describe("bundled channel ingress runtime ownership", () => {
     }
   });
 
-  it("mints only for the exact active bundled record", async () => {
-    const cleanup = configureChannelAdmissionEvidenceCollection(true);
-    try {
-      const external = createRuntimeBuilder({ origin: "workspace" });
-      const bundled = createRuntimeBuilder({ origin: "bundled" });
-      const ingress = await resolveIngress("person-a");
+  it.each(["workspace", "global"] as const)(
+    "does not mint for %s plugins, only the exact active bundled record",
+    async (origin) => {
+      const cleanup = configureChannelAdmissionEvidenceCollection(true);
+      try {
+        const external = createRuntimeBuilder({ origin });
+        const bundled = createRuntimeBuilder({ origin: "bundled" });
+        const ingress = await resolveIngress("person-a");
 
-      expect(inspect(external.buildContext(contextParams({ ingress })))).toMatchObject({
-        ingressState: "unknown",
-        invoker: { state: "unknown" },
-      });
-      expect(inspect(bundled.buildContext(contextParams({ ingress })))).toMatchObject({
-        ingressState: "present",
-        invoker: { state: "present", kind: "person" },
-        decisionCoverage: "enforced",
-      });
-    } finally {
-      cleanup();
-    }
-  });
+        expect(inspect(external.buildContext(contextParams({ ingress })))).toMatchObject({
+          ingressState: "unknown",
+          invoker: { state: "unknown" },
+        });
+        expect(inspect(bundled.buildContext(contextParams({ ingress })))).toMatchObject({
+          ingressState: "present",
+          invoker: { state: "present", kind: "person" },
+          decisionCoverage: "enforced",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  );
 
   it("consumes the exact resolution-to-context handoff on its first attempt", async () => {
     const cleanup = configureChannelAdmissionEvidenceCollection(true);
@@ -652,10 +655,16 @@ describe("bundled channel ingress runtime ownership", () => {
     }
   });
 
-  it("invalidates the pre-retirement closure and result across reactivation", async () => {
+  it("preserves a live channel owner but never revives its retired instance", async () => {
     const cleanup = configureChannelAdmissionEvidenceCollection(true);
     try {
       const bundled = createRuntimeBuilder({ origin: "bundled" });
+      markPluginRegistryActive(bundled.registryBuilder.registry);
+      const liveIngress = await resolveIngress("person-a");
+      expect(inspect(bundled.buildContext(contextParams({ ingress: liveIngress })))).toMatchObject({
+        ingressState: "present",
+        invoker: { state: "present" },
+      });
       const ingress = await resolveIngress("person-a");
       markPluginRegistryRetired(bundled.registryBuilder.registry);
       markPluginRegistryActive(bundled.registryBuilder.registry);
@@ -668,6 +677,14 @@ describe("bundled channel ingress runtime ownership", () => {
       const reactivatedIngress = await resolveIngress("person-a");
       expect(
         inspect(reactivatedBuildContext(contextParams({ ingress: reactivatedIngress }))),
+      ).toMatchObject({
+        ingressState: "unknown",
+        invoker: { state: "unknown" },
+      });
+      const replacement = createRuntimeBuilder({ origin: "bundled" });
+      const replacementIngress = await resolveIngress("person-a");
+      expect(
+        inspect(replacement.buildContext(contextParams({ ingress: replacementIngress }))),
       ).toMatchObject({
         ingressState: "present",
         invoker: { state: "present" },

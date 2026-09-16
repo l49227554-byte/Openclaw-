@@ -10,6 +10,7 @@ import {
   resolveMemoryDreamingPluginConfig,
   resolveMemoryDreamingPluginId,
   resolveMemoryDreamingConfig,
+  resolveMemoryDreamingWorkspace,
   resolveMemoryDreamingWorkspaces,
 } from "./dreaming.js";
 
@@ -236,6 +237,21 @@ describe("memory dreaming host helpers", () => {
     ]);
   });
 
+  it("uses canonical roster identities when agent aliases share a workspace", () => {
+    const cfg = {
+      agents: {
+        list: [
+          { id: "Team Alpha", workspace: "/workspace/shared" },
+          { id: "team-alpha", workspace: "/workspace/shared" },
+        ],
+      },
+    } as OpenClawConfig;
+
+    expect(resolveMemoryDreamingWorkspaces(cfg)).toEqual([
+      { workspaceDir: "/workspace/shared", agentIds: ["team-alpha"] },
+    ]);
+  });
+
   it("does not require a default owner when no primary workspace is supplied", () => {
     const cfg = {
       agents: {
@@ -281,6 +297,10 @@ describe("memory dreaming host helpers", () => {
     expect(resolveMemoryDreamingWorkspaces(cfg)).toEqual([
       { workspaceDir, agentIds: ["alpha", "beta"] },
     ]);
+    expect(resolveMemoryDreamingWorkspace(cfg, workspaceAliasDir)).toEqual({
+      workspaceDir,
+      agentIds: ["alpha", "beta"],
+    });
   });
 
   it("includes the runtime primary workspace alongside configured subagent workspaces", () => {
@@ -314,7 +334,7 @@ describe("memory dreaming host helpers", () => {
     ]);
   });
 
-  it("uses default agent fallback and timezone-aware day helpers", () => {
+  it("uses default agent fallback", () => {
     const cfg = {
       agents: {
         defaults: {
@@ -330,10 +350,29 @@ describe("memory dreaming host helpers", () => {
         agentIds: ["main"],
       },
     ]);
+  });
 
-    expect(
-      formatMemoryDreamingDay(Date.parse("2026-04-02T06:30:00.000Z"), "America/Los_Angeles"),
-    ).toBe("2026-04-01");
+  it("preserves timezone-aware day selection and local fallback", () => {
+    const epochMs = Date.parse("2026-04-02T06:30:00.000Z");
+    const localDate = new Date(epochMs);
+    const localDay = [
+      localDate.getFullYear(),
+      String(localDate.getMonth() + 1).padStart(2, "0"),
+      String(localDate.getDate()).padStart(2, "0"),
+    ].join("-");
+    for (const [timestamp, timezone, expected] of [
+      [epochMs, "America/Los_Angeles", "2026-04-01"],
+      [epochMs, "UTC", "2026-04-02"],
+      [epochMs, "America/Los_Angeles", "2026-04-01"],
+      [epochMs, "Invalid/Timezone", localDay],
+      [epochMs, undefined, localDay],
+      [epochMs, "", localDay],
+      [Number.NaN, "America/Los_Angeles", "NaN-NaN-NaN"],
+      [epochMs, "America/Los_Angeles", "2026-04-01"],
+      [Date.parse("2026-04-02T07:00:00.000Z"), "America/Los_Angeles", "2026-04-02"],
+    ] as const) {
+      expect(formatMemoryDreamingDay(timestamp, timezone)).toBe(expected);
+    }
     expect(
       isSameMemoryDreamingDay(
         Date.parse("2026-04-02T06:30:00.000Z"),
@@ -341,6 +380,13 @@ describe("memory dreaming host helpers", () => {
         "America/Los_Angeles",
       ),
     ).toBe(true);
+    expect(
+      isSameMemoryDreamingDay(
+        Date.parse("2026-04-02T06:59:59.000Z"),
+        Date.parse("2026-04-02T07:00:00.000Z"),
+        "America/Los_Angeles",
+      ),
+    ).toBe(false);
   });
 
   it("resolves the configured memory-slot plugin id", () => {

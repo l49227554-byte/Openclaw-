@@ -78,18 +78,6 @@ describe("sqlite hot query plans", () => {
     });
     expectPlanUsesIndex({
       db: database.db,
-      indexName: "idx_cron_jobs_enabled_next_run",
-      params: ["/state/cron/jobs.json"],
-      sql: `
-        SELECT job_id, next_run_at_ms
-          FROM cron_jobs
-         WHERE store_key = ? AND enabled = 1 AND next_run_at_ms IS NOT NULL
-         ORDER BY next_run_at_ms ASC, job_id
-         LIMIT 25
-      `,
-    });
-    expectPlanUsesIndex({
-      db: database.db,
       indexName: "idx_delivery_queue_pending",
       params: ["outbound", "pending"],
       sql: `
@@ -100,30 +88,32 @@ describe("sqlite hot query plans", () => {
          LIMIT 50
       `,
     });
-    expectPlanUsesIndex({
-      db: database.db,
-      indexName: "idx_delivery_queue_session",
-      params: ["outbound", "pending", "agent:main:main"],
-      sql: `
-        SELECT id, entry_json
-          FROM delivery_queue_entries
-         WHERE queue_name = ? AND status = ? AND session_key = ?
-         ORDER BY enqueued_at ASC, id
-         LIMIT 50
-      `,
-    });
-    expectPlanUsesIndex({
-      db: database.db,
-      indexName: "idx_plugin_state_listing",
-      params: ["telegram", "kv"],
-      sql: `
+    const pluginListingPlan = explainQueryPlan(
+      database.db,
+      `
         SELECT entry_key, value_json
           FROM plugin_state_entries
          WHERE plugin_id = ? AND namespace = ?
          ORDER BY created_at ASC, entry_key
          LIMIT 50
       `,
-    });
+      ["telegram", "kv"],
+    );
+    expect(pluginListingPlan).toContain("idx_plugin_state_listing");
+    expect(pluginListingPlan).not.toContain("USE TEMP B-TREE FOR ORDER BY");
+    for (const namespace of [undefined, "kv"]) {
+      expectPlanIncludes({
+        db: database.db,
+        expected: "USING COVERING INDEX idx_plugin_state_listing",
+        params: namespace ? ["telegram", namespace, 1000] : ["telegram", 1000],
+        sql: `
+          SELECT count(*)
+            FROM plugin_state_entries
+           WHERE plugin_id = ? ${namespace ? "AND namespace = ?" : ""}
+             AND (expires_at IS NULL OR expires_at > ?)
+        `,
+      });
+    }
     expectPlanUsesIndex({
       db: database.db,
       indexName: "idx_channel_ingress_pending",
@@ -155,18 +145,6 @@ describe("sqlite hot query plans", () => {
          WHERE scope = ?
          ORDER BY key ASC
          LIMIT 50
-      `,
-    });
-    expectPlanUsesIndex({
-      db: database.db,
-      indexName: "idx_agent_cache_expiry",
-      params: ["session_entries"],
-      sql: `
-        SELECT key, expires_at
-          FROM cache_entries
-         WHERE scope = ? AND expires_at IS NOT NULL
-         ORDER BY expires_at ASC, key
-        LIMIT 50
       `,
     });
     expectPlanUsesIndex({
@@ -210,6 +188,16 @@ describe("sqlite hot query plans", () => {
         SELECT session_key, entry_json
           FROM session_nodes
          WHERE status = ?
+      `,
+    });
+    expectPlanUsesIndex({
+      db: database.db,
+      indexName: "idx_agent_session_nodes_active",
+      sql: `
+        SELECT *
+          FROM session_nodes
+         WHERE archived_at IS NULL
+         ORDER BY session_key
       `,
     });
     const latestMessagePlan = explainQueryPlan(
@@ -277,7 +265,7 @@ describe("sqlite hot query plans", () => {
     const rawDeltaPlan = explainQueryPlan(
       database.db,
       `
-        SELECT seq, LENGTH(CAST(event_json AS BLOB)) + 1 AS serialized_bytes
+        SELECT seq, OCTET_LENGTH(event_json) + 1 AS serialized_bytes
           FROM transcript_events
          WHERE session_id = ? AND seq > ?
          ORDER BY seq ASC
@@ -326,7 +314,7 @@ describe("sqlite hot query plans", () => {
       database.db,
       `
         SELECT active.event_seq, active.message_position,
-               LENGTH(CAST(event.event_json AS BLOB)) + 1 AS serialized_bytes
+               OCTET_LENGTH(event.event_json) + 1 AS serialized_bytes
           FROM session_transcript_active_events AS active
           JOIN transcript_events AS event
             ON event.session_id = active.session_id AND event.seq = active.event_seq

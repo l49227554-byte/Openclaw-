@@ -5,33 +5,46 @@ import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
+import { resolveGroupToolPolicyOutcome } from "../../agents/agent-tools.policy.js";
 import type { BootstrapContextMode } from "../../agents/bootstrap-files.js";
-import { resolveCliRuntimeToolsAllow } from "../../agents/cli-runner/tool-policy.js";
-import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
-import { createContextEngineLogicalTurnLease } from "../../agents/harness/context-engine-logical-turn.js";
+import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import {
-  finalizeAcceptedContextEngineTurn,
-  type ContextEngineTurnAttemptFacts,
-} from "../../agents/harness/context-engine-turn-attempt.js";
+  cliBackendAcceptsAuthProfileForwarding,
+  resolveCliExecutionAuthProfileId,
+} from "../../agents/cli-execution-auth.js";
+import { resolveCliRuntimeToolsAllow } from "../../agents/cli-runner/tool-policy.js";
+import { settleCliSessionResult } from "../../agents/cli-session-store.js";
+import {
+  applyCliSessionBindingResult,
+  assertCliSessionBindingResultCommitAllowed,
+} from "../../agents/cli-session.js";
+import { runEmbeddedAgentEntry } from "../../agents/embedded-agent-runner/run-entry.js";
+import { createDeferredEmbeddedRunLifecycleManager } from "../../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
+import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../agents/harness/hook-helpers.js";
 import { findModelInCatalog, modelSupportsInput } from "../../agents/model-catalog-lookup.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
+import { rootedAgentRunParams } from "../../agents/rooted-run-params.js";
 import { wrapUntrustedPromptDataBlock } from "../../agents/sanitize-for-prompt.js";
 import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
-import { withLocalSessionPlacementTurnAdmission } from "../../agents/session-placement-admission.js";
+import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
-import { hasResolvedThinkingCatalogEntry } from "../../agents/thinking-runtime.js";
+import { needsThinkHydration } from "../../agents/thinking-runtime.js";
 import { withPostAdmissionExecutionOwnerBinding } from "../../audit/execution-owner-binding.js";
+import {
+  resolveAgentLifecycleTerminalMetadata,
+  type AgentLifecycleTerminalBackstop,
+} from "../../auto-reply/reply/agent-lifecycle-terminal.js";
 import type { ThinkLevel, VerboseLevel } from "../../auto-reply/thinking.js";
 import type { CliSessionBinding } from "../../config/sessions.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
 import type { SourceDeliveryPlan } from "../../infra/outbound/source-delivery-plan.js";
-import type { PluginRegistry } from "../../plugins/registry-types.js";
 import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
@@ -43,6 +56,7 @@ import {
   hasNewGeneratedMediaTaskForSessionKey,
 } from "../../tasks/task-status-access.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { assertCronExecutionRootRuntime } from "../execution-root-runtime.js";
 import type { CronRuntimeAuthority } from "../runtime-authority.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import type { CronAgentExecutionPhaseUpdate, CronJob, CronStoredJob } from "../types.js";
@@ -53,26 +67,25 @@ import {
 import { resolveCronPayloadOutcome } from "./helpers.js";
 import { appendCronDeliveryInstruction } from "./run-delivery-trace.js";
 import {
-  classifyEmbeddedAgentRunResultForModelFallback,
-  ensureSelectedAgentHarnessPlugin,
   getCliSessionBinding,
   isCliProvider,
   LiveSessionModelSwitchError,
   logWarn,
-  mergeEmbeddedAgentRunResultForModelFallbackExhaustion,
   normalizeVerboseLevel,
   registerAgentRunContext,
   resolveBootstrapWarningSignaturesSeen,
   resolveCandidateThinkingLevel,
   resolveCronAgentLane,
+  resolveFastModeState,
   runCliAgent,
-  runWithModelFallback,
 } from "./run-execution.runtime.js";
 import { resolveCronFallbacksOverride } from "./run-fallback-policy.js";
 import {
   type CronLiveSelection,
   type MutableCronSession,
   type PersistCronSessionEntry,
+  type CronRunContinuationSession,
+  setCronSessionAgentHarnessId,
   setCronSessionRuntimeModel,
   syncCronSessionLiveSelection,
 } from "./run-session-state.js";
@@ -121,22 +134,6 @@ const COMMAND_STYLE_CRON_PREFIX =
   /^(?:(?:[A-Z_][A-Z0-9_]*=\S+\s+)+)?(?:cd\s+\S+|(?:\.{1,2}|~)?\/\S+|[A-Za-z]:[\\/]\S+|(?:bash|bun|cargo|deno|docker|gh|git|go|make|node|npm|npx|pnpm|python|python3|ruby|sh|tsx|uv|zsh)\b)/u;
 const MAX_CRON_DELIVERY_TARGET_CONTEXT_CHARS = 1000;
 
-function shouldAdvanceCronContextEngineTurn(params: {
-  outcome: "completed" | "exhausted";
-  result: CronPromptRunResult;
-}): boolean {
-  const meta = params.result.meta;
-  return (
-    params.outcome === "completed" &&
-    meta.yielded !== true &&
-    meta.aborted !== true &&
-    meta.error === undefined &&
-    meta.timeoutPhase === undefined &&
-    meta.stopReason !== "error" &&
-    meta.stopReason !== "timeout"
-  );
-}
-
 function resolveIsolatedCronPromptCacheKey(params: {
   job: CronJob;
   agentId: string;
@@ -165,10 +162,7 @@ function resolveIsolatedCronPromptCacheKey(params: {
 /** Detects single-line cron prompts that look like shell commands or command invocations. */
 function isCommandStyleCronMessage(message: string): boolean {
   const trimmed = message.trim();
-  if (!trimmed || trimmed.includes("\n")) {
-    return false;
-  }
-  return COMMAND_STYLE_CRON_PREFIX.test(trimmed);
+  return !trimmed.includes("\n") && COMMAND_STYLE_CRON_PREFIX.test(trimmed);
 }
 
 function resolveCronBootstrapContextMode(
@@ -233,18 +227,20 @@ function buildCronDeliveryTargetRuntimeContext(params: {
   ].join("\n");
 }
 
-/** Result envelope returned after an isolated cron prompt completes. */
-export type CronExecutionResult = {
+export type CronCompletedPromptRun = {
   runResult: CronPromptRunResult;
   fallbackProvider: string;
   fallbackModel: string;
   runStartedAt: number;
   runEndedAt: number;
-  liveSelection: CronLiveSelection;
 };
 
-/** Creates the model-fallback executor for one isolated cron prompt run. */
-function createCronPromptExecutor(params: {
+/** Result envelope returned after an isolated cron prompt completes. */
+export type CronExecutionResult = CronCompletedPromptRun & {
+  completedPromptRuns: readonly CronCompletedPromptRun[];
+};
+
+type CronRunExecutionParams = {
   cfg: OpenClawConfig;
   cfgWithAgentDefaults: OpenClawConfig;
   job: CronStoredJob;
@@ -254,12 +250,16 @@ function createCronPromptExecutor(params: {
   runSessionKey: string;
   usesDetachedRunSession?: boolean;
   workspaceDir: string;
-  pluginRegistry?: PluginRegistry;
+  executionRoot?: string;
   lane?: string;
-  resolvedVerboseLevel: VerboseLevel;
+  agentVerboseDefault: AgentDefaultsConfig["verboseDefault"];
   immutableThinkLevel: ThinkLevel | undefined;
   thinkingCatalog?: ModelCatalogEntry[];
-  loadThinkingCatalog: (provider: string, model: string) => Promise<ModelCatalogEntry[]>;
+  loadThinkingCatalog: (
+    provider: string,
+    model: string,
+    agentRuntime: string,
+  ) => Promise<ModelCatalogEntry[]>;
   timeoutMs: number;
   /** Set when the cron payload's `timeoutSeconds` was explicitly configured. */
   runTimeoutOverrideMs?: number;
@@ -281,18 +281,35 @@ function createCronPromptExecutor(params: {
   modelFallbacksOverride?: string[];
   liveSelection: CronLiveSelection;
   cronSession: MutableCronSession;
-  persistRunContinuationSession?: () => Promise<void>;
+  commandBody: string;
+  persistSessionEntry: PersistCronSessionEntry;
+  persistRunContinuationSession?: CronRunContinuationSession["sync"];
   setRunContinuationCliExecutionProvider?: (provider?: string) => Promise<void>;
   abortSignal?: AbortSignal;
   abortReason: () => string;
+  isAborted: () => boolean;
+  lifecycle: Omit<AgentLifecycleTerminalBackstop, "emit">;
   onExecutionStarted?: (info?: CronRunnerStartedInfo) => void;
   onExecutionPhase?: (
     info: Pick<CronAgentExecutionPhaseUpdate, "phase"> &
       Partial<Omit<CronAgentExecutionPhaseUpdate, "jobId" | "phase">>,
   ) => void;
   onLaneWait?: (info?: { waiting?: boolean }) => void;
+  onPromptCompleted?: (runs: readonly CronCompletedPromptRun[]) => void;
   executionIdentity?: import("../service/state.js").CronExecutionIdentityAdmission;
-}) {
+  runStartedAt?: number;
+};
+
+/** Creates the model-fallback executor for one isolated cron prompt run. */
+function createCronPromptExecutor(
+  params: Omit<
+    CronRunExecutionParams,
+    "commandBody" | "isAborted" | "agentVerboseDefault" | "runStartedAt" | "onPromptCompleted"
+  > & {
+    resolvedVerboseLevel: VerboseLevel;
+    onPromptCompleted: (run: CronCompletedPromptRun) => void;
+  },
+) {
   const sessionFile = params.runSessionKey;
   const cronFallbacksOverride =
     params.modelFallbacksOverride ??
@@ -303,10 +320,6 @@ function createCronPromptExecutor(params: {
       useSubagentFallbacks: params.useSubagentFallbacks,
       inheritDefaultFallbacksForAgentStringModel: params.inheritDefaultFallbacksForAgentStringModel,
     });
-  let runResult: CronPromptRunResult | undefined;
-  let fallbackProvider = params.liveSelection.provider;
-  let fallbackModel = params.liveSelection.model;
-  let runEndedAt = Date.now();
   const fastModeStartedAtMs = Date.now();
   const fastModeAutoProgressState: FastModeAutoProgressState = {
     offAnnounced: false,
@@ -325,10 +338,24 @@ function createCronPromptExecutor(params: {
     toolsAllow: params.agentPayload?.toolsAllow,
     scheduledToolPolicy: validatedScheduledToolPolicy,
     callerOrigin: params.job.toolsAllowProvenance?.callerOrigin,
+    execTarget: params.job.toolsAllowExecTarget,
   });
   const { sourceDelivery } = params;
   const sourceReplyDeliveryMode = sourceDelivery.sourceReplyDeliveryMode;
   const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
+  if (scheduledToolPolicy?.mode === "account") {
+    const policyOutcome = resolveGroupToolPolicyOutcome({
+      config: params.cfgWithAgentDefaults,
+      sessionKey: scheduledToolPolicy.ownerSessionKey,
+      messageProvider: messageChannel,
+      accountId: scheduledToolPolicy.ownerAccountId,
+      requireConfiguredAccount: true,
+      senderPolicyMode: "never",
+    });
+    if (policyOutcome.kind === "account-unavailable") {
+      throw new Error(policyOutcome.message);
+    }
+  }
   // Cron prompts may intentionally have nothing to report; both runners must agree on silence.
   const allowEmptyAssistantReplyAsSilent = true;
   const finalizePromptForResolvedTools = ({
@@ -369,23 +396,50 @@ function createCronPromptExecutor(params: {
     | undefined;
   let attemptMediaTaskIds: ReadonlySet<string> = new Set();
   let thinkingCatalog = params.thinkingCatalog;
-  let attemptedThinkingCatalogHydration = false;
+  let hydratedThinkingSelection: string | undefined;
   const currentAttemptCommittedMedia = () =>
     hasNewGeneratedMediaTaskForSessionKey(params.runSessionKey, attemptMediaTaskIds);
 
-  const runPrompt = async (promptText: string) => {
-    let candidateStarted = false;
+  const resolveCandidateExecution = (provider: string, model: string) => {
+    const sessionRuntimeOverride = resolveSessionRuntimeOverrideForProvider({
+      provider,
+      entry: params.cronSession.sessionEntry,
+      cfg: params.cfgWithAgentDefaults,
+    });
+    const executionProvider = sessionRuntimeOverride
+      ? isCliProvider(sessionRuntimeOverride, params.cfgWithAgentDefaults)
+        ? sessionRuntimeOverride
+        : provider
+      : (resolveCliRuntimeExecutionProvider({
+          provider,
+          cfg: params.cfgWithAgentDefaults,
+          agentId: params.agentId,
+          modelId: model,
+        }) ?? provider);
+    return {
+      sessionRuntimeOverride,
+      executionProvider,
+      cliExecution: isCliProvider(executionProvider, params.cfgWithAgentDefaults),
+    };
+  };
+
+  return async (promptText: string, runStartedAt: number): Promise<CronCompletedPromptRun> => {
+    // A retry can fail during preparation, before any backend start callback.
+    params.lifecycle.beginAttempt();
+    const sessionTarget = {
+      agentId: params.agentId,
+      sessionId: params.cronSession.sessionEntry.sessionId,
+      sessionKey: params.runSessionKey,
+      storePath: params.cronSession.storePath,
+    };
     const userTurnTranscriptRecorder =
       pendingUserTurn?.promptText === promptText
         ? pendingUserTurn.recorder
         : createUserTurnTranscriptRecorder({
             input: { text: promptText },
             target: {
-              sessionId: params.cronSession.sessionEntry.sessionId,
-              agentId: params.agentId,
-              sessionKey: params.runSessionKey,
+              ...sessionTarget,
               sessionEntry: params.cronSession.sessionEntry,
-              storePath: params.cronSession.storePath,
               cwd: params.workspaceDir,
               config: params.cfgWithAgentDefaults,
             },
@@ -393,12 +447,6 @@ function createCronPromptExecutor(params: {
             errorContext: "cron user turn transcript",
           });
     pendingUserTurn = { promptText, recorder: userTurnTranscriptRecorder };
-    const contextEngineLogicalTurnLease = await createContextEngineLogicalTurnLease({
-      config: params.cfgWithAgentDefaults,
-      agentDir: params.agentDir,
-      workspaceDir: params.workspaceDir,
-    });
-    let acceptedContextEngineTurnCandidate: ContextEngineTurnAttemptFacts | undefined;
     const runId = params.cronSession.sessionEntry.sessionId;
     const basePreparedRunAdmission = prepareAgentRunAdmission({
       operationalRunInstance: createOperationalRunInstanceRef(runId),
@@ -435,62 +483,62 @@ function createCronPromptExecutor(params: {
         agentId: params.agentId,
         jobId: params.job.id,
         jobConfigRevision: resolveCronJobConfigRevision(params.job),
+        jobName: params.job.name,
       });
     } catch {
       // Non-canonicalizable job config: no grant registration for this run.
     }
-    const fallbackResult = await runWithModelFallback({
-      cfg: params.cfgWithAgentDefaults,
-      provider: params.liveSelection.provider,
-      model: params.liveSelection.model,
-      requestedRouteResolution: "resolved",
-      runId,
-      sessionId: params.cronSession.sessionEntry.sessionId,
-      lane: resolveCronAgentLane(params.lane),
-      agentDir: params.agentDir,
-      agentId: params.agentId,
-      sessionKey: params.runSessionKey,
-      userLockedAuthProfileId:
-        params.liveSelection.authProfileIdSource === "user"
-          ? params.liveSelection.authProfileId
-          : undefined,
+    const fallbackResult = await runEmbeddedAgentEntry({
+      selection: {
+        cfg: params.cfgWithAgentDefaults,
+        provider: params.liveSelection.provider,
+        model: params.liveSelection.model,
+        requestedRouteResolution: "resolved",
+        agentDir: params.agentDir,
+        userLockedAuthProfileId:
+          params.liveSelection.authProfileIdSource === "user"
+            ? params.liveSelection.authProfileId
+            : undefined,
+        fallbacksOverride: cronFallbacksOverride,
+      },
+      identity: {
+        runId,
+        sessionId: params.cronSession.sessionEntry.sessionId,
+        lane: resolveCronAgentLane(params.lane),
+        agentId: params.agentId,
+        sessionKey: params.runSessionKey,
+      },
+      harness: {
+        workspaceDir: params.executionRoot ?? params.workspaceDir,
+        sessionKey: params.runSessionKey,
+        preparation: { kind: "direct" },
+        resolveRuntimeOverride: (provider, model) =>
+          resolveCandidateExecution(provider, model).sessionRuntimeOverride,
+        resolveContextEngineHost: (provider, model) => {
+          const { executionProvider, cliExecution } = resolveCandidateExecution(provider, model);
+          if (!cliExecution) {
+            return undefined;
+          }
+          const backend = resolveCliBackendConfig(executionProvider, params.cfgWithAgentDefaults, {
+            agentId: params.agentId,
+          });
+          return buildGenericCliContextEngineHostSupport({
+            backendId: backend?.id ?? executionProvider,
+            ...(backend?.contextEngineHostCapabilities
+              ? { capabilities: backend.contextEngineHostCapabilities }
+              : {}),
+          });
+        },
+      },
+      behavior: { kind: "command-rpc", hasCommittedSideEffect: currentAttemptCommittedMedia },
+      sessionOverride: { kind: "preserve" },
       abortSignal: params.abortSignal,
-      resolveAgentHarnessRuntimeOverride: (provider) =>
-        resolveSessionRuntimeOverrideForProvider({
-          provider,
-          entry: params.cronSession.sessionEntry,
-          cfg: params.cfgWithAgentDefaults,
-        }),
-      prepareAgentHarnessRuntime: async ({ provider, model, agentHarnessRuntimeOverride }) => {
-        await ensureSelectedAgentHarnessPlugin({
-          config: params.cfgWithAgentDefaults,
-          provider,
-          modelId: model,
-          agentId: params.agentId,
-          sessionKey: params.runSessionKey,
-          agentHarnessRuntimeOverride,
-          workspaceDir: params.workspaceDir,
-          pluginRegistry: params.pluginRegistry,
-        });
-      },
-      fallbacksOverride: cronFallbacksOverride,
-      classifyResult: ({ provider, model, result }) => {
-        const classification = classifyEmbeddedAgentRunResultForModelFallback({
-          provider,
-          model,
-          result,
-        });
-        return classification && currentAttemptCommittedMedia() ? undefined : classification;
-      },
-      canFallbackAfterError: () => !currentAttemptCommittedMedia(),
-      mergeExhaustedResult: mergeEmbeddedAgentRunResultForModelFallbackExhaustion,
-      run: async (providerOverride, modelOverride, runOptions) => {
-        const isFallback = candidateStarted;
-        candidateStarted = true;
+      runCandidate: async (providerOverride, modelOverride, runOptions) => {
+        params.lifecycle.beginAttempt();
         const notifyExecutionStarted = (info?: { lifecycleGeneration?: string }) =>
           onExecutionStarted({
             ...info,
-            ...(isFallback ? { isFallback: true } : {}),
+            ...(runOptions.isFallbackRetry ? { isFallback: true } : {}),
             provider: providerOverride,
             model: modelOverride,
           });
@@ -503,16 +551,12 @@ function createCronPromptExecutor(params: {
             provider: providerOverride,
             model: modelOverride,
           });
-        let contextEngineTurnCandidate: ContextEngineTurnAttemptFacts | undefined;
         attemptMediaTaskIds = getGeneratedMediaTaskIdsForSessionKey(params.runSessionKey);
         if (params.abortSignal?.aborted) {
           throw new Error(params.abortReason());
         }
-        const sessionRuntimeOverride = resolveSessionRuntimeOverrideForProvider({
-          provider: providerOverride,
-          entry: params.cronSession.sessionEntry,
-          cfg: params.cfgWithAgentDefaults,
-        });
+        const { sessionRuntimeOverride, executionProvider, cliExecution } =
+          resolveCandidateExecution(providerOverride, modelOverride);
         const candidateRuntime = resolveEffectiveAgentRuntime({
           cfg: params.cfgWithAgentDefaults,
           provider: providerOverride,
@@ -525,20 +569,23 @@ function createCronPromptExecutor(params: {
           params.immutableThinkLevel ??
           resolveConfiguredThinkingDefault({
             cfg: params.cfgWithAgentDefaults,
+            agentId: params.agentId,
             provider: providerOverride,
             model: modelOverride,
           });
+        // A fallback or runtime switch needs its own capability proof; retries reuse that selection.
+        const thinkingSelectionKey = `${providerOverride}/${modelOverride}\0${candidateRuntime}`;
         if (
-          candidateConfiguredThinkLevel !== "off" &&
-          !attemptedThinkingCatalogHydration &&
-          !hasResolvedThinkingCatalogEntry({
-            catalog: thinkingCatalog,
-            provider: providerOverride,
-            model: modelOverride,
-          })
+          (candidateConfiguredThinkLevel !== "off" || candidateRuntime !== "openclaw") &&
+          hydratedThinkingSelection !== thinkingSelectionKey &&
+          needsThinkHydration(thinkingCatalog, providerOverride, modelOverride, candidateRuntime)
         ) {
-          attemptedThinkingCatalogHydration = true;
-          const runtimeCatalog = await params.loadThinkingCatalog(providerOverride, modelOverride);
+          hydratedThinkingSelection = thinkingSelectionKey;
+          const runtimeCatalog = await params.loadThinkingCatalog(
+            providerOverride,
+            modelOverride,
+            candidateRuntime,
+          );
           if (runtimeCatalog.length > 0) {
             thinkingCatalog = runtimeCatalog;
           }
@@ -547,6 +594,7 @@ function createCronPromptExecutor(params: {
           candidateConfiguredThinkLevel ??
           resolveThinkingDefault({
             cfg: params.cfgWithAgentDefaults,
+            agentId: params.agentId,
             provider: providerOverride,
             model: modelOverride,
             catalog: thinkingCatalog,
@@ -563,20 +611,12 @@ function createCronPromptExecutor(params: {
           sessionEntry: params.cronSession.sessionEntry,
           agentRuntime: candidateRuntime,
         });
-        const executionProvider =
-          (sessionRuntimeOverride &&
-          isCliProvider(sessionRuntimeOverride, params.cfgWithAgentDefaults)
-            ? sessionRuntimeOverride
-            : undefined) ??
-          (sessionRuntimeOverride
-            ? providerOverride
-            : (resolveCliRuntimeExecutionProvider({
-                provider: providerOverride,
-                cfg: params.cfgWithAgentDefaults,
-                agentId: params.agentId,
-                modelId: modelOverride,
-              }) ?? providerOverride));
-        const cliExecution = isCliProvider(executionProvider, params.cfgWithAgentDefaults);
+        const rootedExecution = params.executionRoot ? { root: params.executionRoot } : undefined;
+        assertCronExecutionRootRuntime(
+          params.executionRoot,
+          candidateRuntime,
+          cliExecution && Boolean(rootedExecution),
+        );
         assertCronRuntimeAuthorityCandidate({
           authority: params.job.runtimeAuthority,
           candidateRuntime,
@@ -589,6 +629,13 @@ function createCronPromptExecutor(params: {
           provider: providerOverride,
           model: modelOverride,
         });
+        setCronSessionAgentHarnessId({
+          entry: params.cronSession.sessionEntry,
+          agentHarnessId: candidateRuntime,
+        });
+        // Native bindings can exist before turn/start fails; deletion must retain
+        // the selected owner even when no result metadata is ever returned.
+        await params.persistSessionEntry();
         await params.persistRunContinuationSession?.();
         await params.setRunContinuationCliExecutionProvider?.(
           cliExecution ? executionProvider : undefined,
@@ -597,97 +644,176 @@ function createCronPromptExecutor(params: {
           bootstrapPromptWarningSignaturesSeen[bootstrapPromptWarningSignaturesSeen.length - 1];
         // CLI providers can resume provider-native sessions; embedded providers
         // use OpenClaw's transcript/session file plus prompt-cache affinity.
+        const fastModeState = resolveFastModeState({
+          cfg: params.cfgWithAgentDefaults,
+          provider: providerOverride,
+          model: modelOverride,
+          agentId: params.agentId,
+          sessionEntry: params.cronSession.sessionEntry,
+        });
         if (cliExecution) {
-          const cliSessionBinding = params.cronSession.isNewSession
-            ? undefined
-            : await getCliSessionBinding(params.cronSession.sessionEntry, executionProvider);
-          const guardedCliSessionBinding =
-            cliSessionBinding && hasCliSessionReuseMetadata(cliSessionBinding)
-              ? cliSessionBinding
-              : undefined;
+          const allowCliAuthProfileForwarding = cliBackendAcceptsAuthProfileForwarding({
+            provider: executionProvider,
+            config: params.cfgWithAgentDefaults,
+            agentId: params.agentId,
+          });
           // Cron intentionally reuses its durable session id as the run id; turn
           // claims stay unique via per-claim ids and the worker gate handles this
           // via credential rotation (see worker-environments/service.ts fences).
-          const result = await withLocalSessionPlacementTurnAdmission(
-            {
-              sessionId: params.cronSession.sessionEntry.sessionId,
-              sessionKey: params.runSessionKey,
-              agentId: params.agentId,
-              runId,
-            },
-            async () =>
-              await runCliAgent({
-                preparedRunAdmission,
+          // Keep CLI work visible to recovery until execution and settlement finish.
+          const deferredLifecycle = createDeferredEmbeddedRunLifecycleManager({
+            runId,
+            agentId: params.agentId,
+            sessionId: params.cronSession.sessionEntry.sessionId,
+            sessionKey: params.runSessionKey,
+            sessionFile,
+            abortSignal: params.abortSignal,
+          });
+          try {
+            const cliAbortSignal = deferredLifecycle.signal;
+            const result = await withLocalSessionPlacementTurnSettlement(
+              {
                 sessionId: params.cronSession.sessionEntry.sessionId,
                 sessionKey: params.runSessionKey,
-                sessionEntry: params.cronSession.sessionEntry,
-                contextWindow: params.cronSession.sessionEntry.contextWindow,
                 agentId: params.agentId,
-                trigger: "cron",
-                jobId: params.job.id,
-                cleanupCliLiveSessionOnRunEnd: params.usesDetachedRunSession === true,
-                sessionFile,
-                storePath: params.cronSession.storePath,
-                persistAssistantTranscript: true,
-                workspaceDir: params.workspaceDir,
-                config: params.cfgWithAgentDefaults,
-                prompt: promptText,
-                finalizePromptForResolvedTools,
-                modelProvider: providerOverride,
-                modelHasVision: modelSupportsInput(
-                  findModelInCatalog(thinkingCatalog ?? [], providerOverride, modelOverride),
-                  "image",
-                ),
-                provider: executionProvider,
-                model: modelOverride,
-                thinkLevel: candidateThinkLevel,
-                timeoutMs: params.timeoutMs,
                 runId,
-                lane: resolveCronAgentLane(params.lane),
-                allowEmptyAssistantReplyAsSilent,
-                cliSessionId: cliSessionBinding?.sessionId,
-                cliSessionBinding: guardedCliSessionBinding,
-                skillsSnapshot: params.skillsSnapshot,
-                messageChannel,
-                agentAccountId: params.resolvedDelivery.accountId,
-                sourceReplyDeliveryMode,
-                requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
-                cliSessionBindingFacts: {
+              },
+              async (assertSettlementCurrent) => {
+                const diagnosticOwner = deferredLifecycle.handoffToCli();
+                const cliSessionBinding = params.cronSession.isNewSession
+                  ? undefined
+                  : await getCliSessionBinding(params.cronSession.sessionEntry, executionProvider);
+                const authProfileId = allowCliAuthProfileForwarding
+                  ? resolveCliExecutionAuthProfileId({
+                      cliExecutionProvider: executionProvider,
+                      authProfileProvider: providerOverride,
+                      config: params.cfgWithAgentDefaults,
+                      agentDir: params.agentDir,
+                      sessionBinding: cliSessionBinding,
+                      selected: params.liveSelection.authProfileId
+                        ? {
+                            authProfileId: params.liveSelection.authProfileId,
+                            authProfileIdSource:
+                              params.liveSelection.authProfileIdSource === "user" ? "user" : "auto",
+                          }
+                        : undefined,
+                    })
+                  : undefined;
+                const guardedCliSessionBinding =
+                  cliSessionBinding && hasCliSessionReuseMetadata(cliSessionBinding)
+                    ? cliSessionBinding
+                    : undefined;
+                const candidateResult = await runCliAgent({
+                  preparedRunAdmission,
+                  diagnosticOwner,
+                  sessionId: params.cronSession.sessionEntry.sessionId,
+                  sessionKey: params.runSessionKey,
+                  sessionTarget,
+                  sessionEntry: params.cronSession.sessionEntry,
+                  contextWindow: params.cronSession.sessionEntry.contextWindow,
+                  agentId: params.agentId,
+                  trigger: "cron",
+                  jobId: params.job.id,
+                  cleanupCliLiveSessionOnRunEnd: params.usesDetachedRunSession === true,
+                  sessionFile,
+                  storePath: params.cronSession.storePath,
+                  persistAssistantTranscript: true,
+                  workspaceDir: params.executionRoot ?? params.workspaceDir,
+                  bootstrapWorkspaceDir: params.workspaceDir,
+                  rootedExecution,
+                  config: params.cfgWithAgentDefaults,
+                  prompt: promptText,
+                  finalizePromptForResolvedTools,
+                  modelProvider: providerOverride,
+                  requesterModel: { provider: providerOverride, model: modelOverride },
+                  modelHasVision: modelSupportsInput(
+                    findModelInCatalog(thinkingCatalog ?? [], providerOverride, modelOverride),
+                    "image",
+                  ),
+                  provider: executionProvider,
+                  model: modelOverride,
+                  authProfileId,
+                  thinkLevel: candidateThinkLevel,
+                  timeoutMs: params.timeoutMs,
+                  runId,
+                  lane: resolveCronAgentLane(params.lane),
+                  allowEmptyAssistantReplyAsSilent,
+                  cliSessionId: cliSessionBinding?.sessionId,
+                  cliSessionBinding: guardedCliSessionBinding,
+                  skillsSnapshot: params.skillsSnapshot,
+                  messageChannel,
+                  agentAccountId: params.resolvedDelivery.accountId,
                   sourceReplyDeliveryMode,
                   requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
-                },
-                toolsAllow: resolveCliRuntimeToolsAllow(
-                  params.agentPayload?.toolsAllow,
-                  params.agentPayload?.toolsAllowIsDefault,
-                ),
-                scheduledToolPolicy,
-                abortSignal: params.abortSignal,
-                onExecutionStarted: notifyExecutionStarted,
-                onExecutionPhase: notifyExecutionPhase,
-                bootstrapContextMode,
-                bootstrapContextRunKind: "cron",
-                bootstrapPromptWarningSignaturesSeen,
-                bootstrapPromptWarningSignature,
-                fastModeStartedAtMs,
-                fastModeAutoProgressState,
-                isFinalFallbackAttempt: runOptions?.isFinalFallbackAttempt,
-                contextEngineLogicalTurnLease,
-                onContextEngineTurnCandidate: (facts) => {
-                  contextEngineTurnCandidate = facts;
-                },
-                userTurnTranscriptRecorder,
-                suppressNextUserMessagePersistence:
-                  userTurnTranscriptRecorder.hasPersisted() ||
-                  userTurnTranscriptRecorder.isBlocked(),
-              }),
-          );
-          bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
-            result.meta?.systemPromptReport,
-          );
-          acceptedContextEngineTurnCandidate = contextEngineTurnCandidate;
-          return result;
+                  cliSessionBindingFacts: {
+                    sourceReplyDeliveryMode,
+                    requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
+                  },
+                  toolsAllow: resolveCliRuntimeToolsAllow(
+                    params.agentPayload?.toolsAllow,
+                    params.agentPayload?.toolsAllowIsDefault,
+                  ),
+                  scheduledToolPolicy,
+                  abortSignal: cliAbortSignal,
+                  onExecutionStarted: notifyExecutionStarted,
+                  onExecutionPhase: notifyExecutionPhase,
+                  bootstrapContextMode,
+                  bootstrapContextRunKind: "cron",
+                  bootstrapPromptWarningSignaturesSeen,
+                  bootstrapPromptWarningSignature,
+                  fastMode: fastModeState.mode,
+                  fastModeAutoOnSeconds: fastModeState.fastAutoOnSeconds,
+                  fastModeStartedAtMs,
+                  fastModeAutoProgressState,
+                  isFinalFallbackAttempt: runOptions.isFinalFallbackAttempt,
+                  contextEngineLogicalTurnLease: runOptions.contextEngineLogicalTurnLease,
+                  onContextEngineTurnCandidate: runOptions.onContextEngineTurnCandidate,
+                  userTurnTranscriptRecorder,
+                  suppressNextUserMessagePersistence:
+                    userTurnTranscriptRecorder.hasPersisted() ||
+                    userTurnTranscriptRecorder.isBlocked(),
+                });
+                const classification = runOptions.classifyResult(candidateResult);
+                // Cleanup can seal this run after rejection. Publish the candidate
+                // to the live entry only once the base persistence owner accepts it.
+                const settledEntry = { ...params.cronSession.sessionEntry };
+                if (
+                  (candidateResult.meta.agentMeta?.clearCliSessionBinding === true ||
+                    (!cliAbortSignal.aborted && !classification)) &&
+                  applyCliSessionBindingResult(
+                    settledEntry,
+                    executionProvider,
+                    candidateResult.meta.agentMeta,
+                  )
+                ) {
+                  const assertCommitAllowed = () =>
+                    assertCliSessionBindingResultCommitAllowed(
+                      candidateResult.meta.agentMeta,
+                      assertSettlementCurrent,
+                      cliAbortSignal,
+                    );
+                  return await settleCliSessionResult(candidateResult, async () => {
+                    await params.persistSessionEntry(assertCommitAllowed, settledEntry);
+                    await params.persistRunContinuationSession?.(assertCommitAllowed);
+                  });
+                }
+                return candidateResult;
+              },
+              { preparedRunAdmission, abortSignal: cliAbortSignal, trigger: "cron" },
+            );
+            bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
+              result.meta?.systemPromptReport,
+            );
+            return result;
+          } catch (error) {
+            // Process cancellation must retain the owner's terminal reason across fallback.
+            deferredLifecycle.signal.throwIfAborted();
+            throw error;
+          } finally {
+            await deferredLifecycle.complete();
+          }
         }
-        const { resolveFastModeState, runEmbeddedAgent } = await cronEmbeddedRuntimeLoader.load();
+        const { runEmbeddedAgent } = await cronEmbeddedRuntimeLoader.load();
         const promptCacheKey = resolveIsolatedCronPromptCacheKey({
           job: params.job,
           agentId: params.agentId,
@@ -706,12 +832,7 @@ function createCronPromptExecutor(params: {
           preparedRunAdmission,
           sessionId: params.cronSession.sessionEntry.sessionId,
           sessionKey: params.runSessionKey,
-          sessionTarget: {
-            agentId: params.agentId,
-            sessionId: params.cronSession.sessionEntry.sessionId,
-            sessionKey: params.runSessionKey,
-            storePath: params.cronSession.storePath,
-          },
+          sessionTarget,
           promptCacheKey,
           agentId: params.agentId,
           trigger: "cron",
@@ -724,7 +845,7 @@ function createCronPromptExecutor(params: {
           messageThreadId: params.resolvedDelivery.threadId,
           currentChannelId,
           agentDir: params.agentDir,
-          workspaceDir: params.workspaceDir,
+          ...rootedAgentRunParams(params.workspaceDir, params.executionRoot),
           config: params.cfgWithAgentDefaults,
           skillsSnapshot: params.skillsSnapshot,
           prompt: promptText,
@@ -733,6 +854,7 @@ function createCronPromptExecutor(params: {
           provider: providerOverride,
           model: modelOverride,
           agentHarnessRuntimeOverride: sessionRuntimeOverride,
+          requestedRouteResolution: "resolved",
           modelFallbacksOverride: cronFallbacksOverride,
           authProfileId: params.liveSelection.authProfileId,
           authProfileIdSource: params.liveSelection.authProfileId
@@ -740,26 +862,15 @@ function createCronPromptExecutor(params: {
             : undefined,
           // Scheduled run: keep bursty cron overloaded/rate_limit local, while
           // still sharing real credential/account failures across auth profiles.
-          authProfileFailurePolicy: "local_transient",
+          authProfileFailurePolicy: runOptions.authProfileFailurePolicy ?? "local_transient",
           // Fallback selection is turn-local. Revalidate the stored or
           // requested level without rewriting the durable preference.
           thinkLevel: candidateThinkLevel,
-          ...(() => {
-            const fastModeState = resolveFastModeState({
-              cfg: params.cfgWithAgentDefaults,
-              provider: providerOverride,
-              model: modelOverride,
-              agentId: params.agentId,
-              sessionEntry: params.cronSession.sessionEntry,
-            });
-            return {
-              fastMode: fastModeState.mode,
-              fastModeAutoOnSeconds: fastModeState.fastAutoOnSeconds,
-              fastModeStartedAtMs,
-              fastModeAutoProgressState,
-              isFinalFallbackAttempt: runOptions?.isFinalFallbackAttempt,
-            };
-          })(),
+          fastMode: fastModeState.mode,
+          fastModeAutoOnSeconds: fastModeState.fastAutoOnSeconds,
+          fastModeStartedAtMs,
+          fastModeAutoProgressState,
+          isFinalFallbackAttempt: runOptions.isFinalFallbackAttempt,
           verboseLevel: params.resolvedVerboseLevel,
           timeoutMs: params.timeoutMs,
           runTimeoutOverrideMs: params.runTimeoutOverrideMs,
@@ -778,6 +889,8 @@ function createCronPromptExecutor(params: {
             : undefined,
           sourceReplyDeliveryMode,
           runId: params.cronSession.sessionEntry.sessionId,
+          deferTerminalLifecycle: true,
+          onAgentEvent: params.lifecycle.note,
           allowEmptyAssistantReplyAsSilent,
           // Cron owns the resolved delivery contract. A valid announce route
           // still needs a final payload; none, webhook, and invalid routes do not.
@@ -788,11 +901,10 @@ function createCronPromptExecutor(params: {
           requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
           disableMessageTool: !sourceDelivery.messageTool.enabled,
           forceMessageTool: sourceDelivery.messageTool.force,
-          allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
-          contextEngineLogicalTurnLease,
-          onContextEngineTurnCandidate: (facts) => {
-            contextEngineTurnCandidate = facts;
-          },
+          allowTransientCooldownProbe: runOptions.allowTransientCooldownProbe,
+          contextEngineLogicalTurnLease: runOptions.contextEngineLogicalTurnLease,
+          onContextEngineTurnCandidate: runOptions.onContextEngineTurnCandidate,
+          assistantErrorTranscript: runOptions.assistantErrorTranscript,
           abortSignal: params.abortSignal,
           onExecutionStarted: notifyExecutionStarted,
           onExecutionPhase: notifyExecutionPhase,
@@ -806,37 +918,31 @@ function createCronPromptExecutor(params: {
         bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
           result.meta?.systemPromptReport,
         );
-        acceptedContextEngineTurnCandidate = contextEngineTurnCandidate;
         return result;
       },
     })
-      .catch(async (error: unknown) => {
-        await contextEngineLogicalTurnLease.dispose();
+      .catch((error: unknown) => {
+        params.lifecycle.capture("error", error);
         throw error;
       })
       .finally(() => {
         unregisterCronRunExecSource();
         preparedRunAdmission.close();
       });
-    try {
-      if (
-        acceptedContextEngineTurnCandidate &&
-        shouldAdvanceCronContextEngineTurn({
-          outcome: fallbackResult.outcome,
-          result: fallbackResult.result,
-        })
-      ) {
-        await finalizeAcceptedContextEngineTurn({
-          facts: acceptedContextEngineTurnCandidate,
-          lease: contextEngineLogicalTurnLease,
-        });
-      }
-    } finally {
-      await contextEngineLogicalTurnLease.dispose();
+    const executionError =
+      params.lifecycle.getDeferredError() ??
+      (fallbackResult.result.meta.error || fallbackResult.outcome === "exhausted"
+        ? "Agent run failed"
+        : undefined);
+    if (executionError) {
+      params.lifecycle.capture(
+        "error",
+        executionError,
+        resolveAgentLifecycleTerminalMetadata(fallbackResult.result.meta),
+      );
+    } else {
+      params.lifecycle.capture("end", fallbackResult.result);
     }
-    runResult = fallbackResult.result;
-    fallbackProvider = fallbackResult.provider;
-    fallbackModel = fallbackResult.model;
     params.liveSelection.provider = fallbackResult.provider;
     params.liveSelection.model = fallbackResult.model;
     setCronSessionRuntimeModel({
@@ -844,77 +950,22 @@ function createCronPromptExecutor(params: {
       provider: fallbackResult.provider,
       model: fallbackResult.model,
     });
+    const completed = {
+      runResult: fallbackResult.result,
+      fallbackProvider: fallbackResult.provider,
+      fallbackModel: fallbackResult.model,
+      runStartedAt,
+      runEndedAt: Date.now(),
+    };
+    params.onPromptCompleted(completed);
     await params.persistRunContinuationSession?.();
-    runEndedAt = Date.now();
     pendingUserTurn = undefined;
-  };
-
-  return {
-    runPrompt,
-    getState: () => ({
-      runResult,
-      fallbackProvider,
-      fallbackModel,
-      runEndedAt,
-      liveSelection: params.liveSelection,
-    }),
+    return completed;
   };
 }
 
 /** Executes an isolated cron prompt, including live model-switch and interim-ack retries. */
-export async function executeCronRun(params: {
-  cfg: OpenClawConfig;
-  cfgWithAgentDefaults: OpenClawConfig;
-  job: CronStoredJob;
-  agentId: string;
-  agentDir: string;
-  agentSessionKey: string;
-  runSessionKey: string;
-  usesDetachedRunSession?: boolean;
-  workspaceDir: string;
-  lane?: string;
-  resolvedDelivery: {
-    channel?: string;
-    accountId?: string;
-    to?: string;
-    threadId?: string | number;
-    ok?: boolean;
-  };
-  resolvedDeliveryOk: boolean;
-  deliveryRequested?: boolean;
-  sourceDelivery: SourceDeliveryPlan;
-  skillsSnapshot: SkillSnapshot;
-  agentPayload: AgentTurnPayload;
-  useSubagentFallbacks: boolean;
-  inheritDefaultFallbacksForAgentStringModel?: boolean;
-  modelFallbacksOverride?: string[];
-  agentVerboseDefault: AgentDefaultsConfig["verboseDefault"];
-  liveSelection: CronLiveSelection;
-  cronSession: MutableCronSession;
-  commandBody: string;
-  persistSessionEntry: PersistCronSessionEntry;
-  persistRunContinuationSession?: () => Promise<void>;
-  setRunContinuationCliExecutionProvider?: (provider?: string) => Promise<void>;
-  abortSignal?: AbortSignal;
-  abortReason: () => string;
-  isAborted: () => boolean;
-  onExecutionStarted?: (info?: CronRunnerStartedInfo) => void;
-  onExecutionPhase?: (
-    info: Pick<CronAgentExecutionPhaseUpdate, "phase"> &
-      Partial<Omit<CronAgentExecutionPhaseUpdate, "jobId" | "phase">>,
-  ) => void;
-  onLaneWait?: (info?: { waiting?: boolean }) => void;
-  executionIdentity?: import("../service/state.js").CronExecutionIdentityAdmission;
-  immutableThinkLevel: ThinkLevel | undefined;
-  thinkingCatalog?: ModelCatalogEntry[];
-  loadThinkingCatalog: (provider: string, model: string) => Promise<ModelCatalogEntry[]>;
-  timeoutMs: number;
-  /** Set when the cron payload's `timeoutSeconds` was explicitly configured. */
-  runTimeoutOverrideMs?: number;
-  suppressExecNotifyOnExit: boolean;
-  runStartedAt?: number;
-  pluginRegistry?: PluginRegistry;
-}): Promise<CronExecutionResult> {
+export async function executeCronRun(params: CronRunExecutionParams): Promise<CronExecutionResult> {
   const resolvedVerboseLevel: VerboseLevel =
     normalizeVerboseLevel(params.cronSession.sessionEntry.verboseLevel) ??
     normalizeVerboseLevel(params.agentVerboseDefault) ??
@@ -924,54 +975,25 @@ export async function executeCronRun(params: {
     sessionId: params.cronSession.sessionEntry.sessionId,
     verboseLevel: resolvedVerboseLevel,
   });
-  const executor = createCronPromptExecutor({
-    cfg: params.cfg,
-    cfgWithAgentDefaults: params.cfgWithAgentDefaults,
-    job: params.job,
-    agentId: params.agentId,
-    agentDir: params.agentDir,
-    agentSessionKey: params.agentSessionKey,
-    runSessionKey: params.runSessionKey,
-    usesDetachedRunSession: params.usesDetachedRunSession,
-    workspaceDir: params.workspaceDir,
-    pluginRegistry: params.pluginRegistry,
-    lane: params.lane,
+  const runStartedAt = params.runStartedAt ?? Date.now();
+  const completedPromptRuns: CronCompletedPromptRun[] = [];
+  const runPrompt = createCronPromptExecutor({
+    ...params,
     resolvedVerboseLevel,
-    immutableThinkLevel: params.immutableThinkLevel,
-    thinkingCatalog: params.thinkingCatalog,
-    loadThinkingCatalog: params.loadThinkingCatalog,
-    timeoutMs: params.timeoutMs,
-    runTimeoutOverrideMs: params.runTimeoutOverrideMs,
-    suppressExecNotifyOnExit: params.suppressExecNotifyOnExit,
-    resolvedDelivery: params.resolvedDelivery,
-    resolvedDeliveryOk: params.resolvedDeliveryOk,
-    deliveryRequested: params.deliveryRequested,
-    sourceDelivery: params.sourceDelivery,
-    skillsSnapshot: params.skillsSnapshot,
-    agentPayload: params.agentPayload,
-    useSubagentFallbacks: params.useSubagentFallbacks,
-    inheritDefaultFallbacksForAgentStringModel: params.inheritDefaultFallbacksForAgentStringModel,
-    modelFallbacksOverride: params.modelFallbacksOverride,
-    liveSelection: params.liveSelection,
-    cronSession: params.cronSession,
-    persistRunContinuationSession: params.persistRunContinuationSession,
-    setRunContinuationCliExecutionProvider: params.setRunContinuationCliExecutionProvider,
-    abortSignal: params.abortSignal,
-    abortReason: params.abortReason,
-    onExecutionStarted: params.onExecutionStarted,
-    onExecutionPhase: params.onExecutionPhase,
-    onLaneWait: params.onLaneWait,
-    executionIdentity: params.executionIdentity,
+    onPromptCompleted: (run) => {
+      completedPromptRuns.push(run);
+      params.onPromptCompleted?.(completedPromptRuns);
+    },
   });
 
-  const runStartedAt = params.runStartedAt ?? Date.now();
   const MAX_MODEL_SWITCH_RETRIES = 2;
   let modelSwitchRetries = 0;
   let promptMediaTaskIds: ReadonlySet<string> = new Set();
+  let execution: CronCompletedPromptRun;
   while (true) {
     try {
       promptMediaTaskIds = getGeneratedMediaTaskIdsForSessionKey(params.runSessionKey);
-      await executor.runPrompt(params.commandBody);
+      execution = await runPrompt(params.commandBody, runStartedAt);
       break;
     } catch (err) {
       if (
@@ -1012,11 +1034,7 @@ export async function executeCronRun(params: {
     }
   }
 
-  let { runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState();
-  if (!runResult) {
-    throw new Error("cron isolated run returned no result");
-  }
-
+  const { runResult } = execution;
   if (!params.isAborted()) {
     const interimPayloads = runResult.payloads ?? [];
     const {
@@ -1068,21 +1086,14 @@ export async function executeCronRun(params: {
         "Do not send a status update like 'on it'.",
         "Use tools when needed, including sessions_spawn for parallel subtasks, wait for spawned subagents to finish, then return only the final summary.",
       ].join(" ");
-      await executor.runPrompt(continuationPrompt);
-      ({ runResult, fallbackProvider, fallbackModel, runEndedAt } = executor.getState());
+      execution = await runPrompt(continuationPrompt, Date.now());
     }
   }
 
-  if (!runResult) {
-    throw new Error("cron isolated run returned no result");
-  }
   return {
-    runResult,
-    fallbackProvider,
-    fallbackModel,
+    ...execution,
     runStartedAt,
-    runEndedAt,
-    liveSelection: params.liveSelection,
+    completedPromptRuns,
   };
 }
 

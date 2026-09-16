@@ -1,5 +1,12 @@
 // Control UI E2E tests cover the redesigned chat composer.
+import { writeFile } from "node:fs/promises";
 import { expect, it } from "vitest";
+import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
+import {
+  takeControlUiElementScreenshot,
+  takeControlUiViewportScreenshot,
+  waitForControlUiProofSurface,
+} from "../test-helpers/control-ui-e2e-screenshot.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
@@ -9,6 +16,176 @@ const suite = createControlUiE2eSuite({
 
 // Browser contexts preserve test isolation; keep one process warm for this file.
 suite.define(() => {
+  it.each([
+    {
+      reason: "missing-auth",
+      blocked: true,
+      message: "No provider credential is configured for this model. Set it up in Model Setup.",
+    },
+    {
+      reason: "auth-failed",
+      blocked: true,
+      message: "Authentication failed. Review the provider credential or sign-in, then retry.",
+    },
+    { reason: "cooldown", blocked: false, message: null },
+    { reason: undefined, blocked: false, message: null },
+  ] as const)(
+    "keeps $reason model availability honest in the composer and picker",
+    async ({ reason, blocked, message }) => {
+      const artifactRoot = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
+      const artifactDir = artifactRoot
+        ? createControlUiE2eArtifactDir("chat-composer-redesign", artifactRoot)
+        : undefined;
+      await suite.withPage(
+        {
+          viewport: { width: 1280, height: 900 },
+          ...(artifactDir ? { recordVideo: { dir: artifactDir } } : {}),
+        },
+        async ({ page }) => {
+          const gateway = await installMockGateway(page, {
+            models: [
+              {
+                id: "gpt-5.5",
+                name: "GPT-5.5",
+                provider: "openai",
+                available: false,
+                unavailableReason: reason,
+              },
+            ],
+          });
+          await page.goto(`${suite.server.baseUrl}chat`);
+          await gateway.waitForRequest("chat.startup");
+          const textarea = page.locator(".agent-chat__composer-combobox textarea");
+          const sendButton = page.getByRole("button", { name: "Send message", exact: true });
+          await expect.poll(() => textarea.isDisabled()).toBe(false);
+          await textarea.fill("Send while availability recovers");
+          await expect.poll(() => sendButton.isDisabled()).toBe(blocked);
+          expect(await textarea.inputValue()).toBe("Send while availability recovers");
+          const statusBand = page.locator(".agent-chat__composer-status-band");
+          const setupBanner = page.locator(".agent-chat__disabled-banner");
+          await expect.poll(() => statusBand.count()).toBe(0);
+          if (message) {
+            await expect.poll(() => setupBanner.textContent()).toContain(message);
+            const setupAction = setupBanner.getByRole("button", { name: "Connect an AI provider" });
+            await expect.poll(() => setupAction.isVisible()).toBe(true);
+            expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+          } else {
+            await sendButton.click();
+            const send = await gateway.waitForRequest("chat.send");
+            expect(send.params).toMatchObject({ message: "Send while availability recovers" });
+            const runId =
+              typeof send.params === "object" &&
+              send.params !== null &&
+              "idempotencyKey" in send.params
+                ? String(send.params.idempotencyKey)
+                : "";
+            await gateway.emitChatFinal({ runId, text: "The run succeeded." });
+            await expect
+              .poll(() => page.getByText("The run succeeded.").count())
+              .toBeGreaterThan(0);
+          }
+          if (artifactDir) {
+            await page.screenshot({
+              path: `${artifactDir}/model-${reason ?? "unknown"}-composer.png`,
+            });
+          }
+          await page.locator('[data-chat-model-select="true"]').click();
+          const option = page.locator('[data-chat-model-option="openai/gpt-5.5"]');
+          await expect.poll(() => option.isVisible()).toBe(true);
+          if (blocked) {
+            await expect.poll(() => option.getAttribute("data-chat-model-setup")).toBe("true");
+            await option.click();
+            await expect.poll(() => page.url()).toContain("model-setup");
+          } else {
+            expect(await option.isDisabled()).toBe(true);
+            expect(await page.locator(".chat-controls__model-menu").textContent()).not.toContain(
+              "Authentication failed",
+            );
+            expect(await option.textContent()).not.toContain("Sign-in needed");
+          }
+        },
+      );
+    },
+  );
+
+  it("does not repeat an auth failure below the composer when the run error is visible", async () => {
+    await suite.withPage({ viewport: { width: 1280, height: 900 } }, async ({ page }) => {
+      const message =
+        "Your refresh token has already been used to generate a new access token. Please try signing in again.";
+      const gateway = await installMockGateway(page, {
+        inFlightRun: { runId: "auth-failed-run", text: "" },
+        models: [
+          {
+            id: "gpt-5.5",
+            name: "GPT-5.5",
+            provider: "openai",
+            available: false,
+            unavailableReason: "auth-failed",
+          },
+        ],
+      });
+
+      await page.goto(`${suite.server.baseUrl}chat`);
+      await gateway.waitForRequest("chat.startup");
+      await gateway.emitGatewayEvent("chat", {
+        errorDetail: {
+          provider: "openai",
+          failoverReason: "refresh_token_reused",
+          providerRuntimeFailureKind: "auth_refresh",
+          providerErrorType: "invalid_request_error",
+          httpStatus: 401,
+        },
+        errorMessage: `⚠️ ${message}`,
+        runId: "auth-failed-run",
+        sessionKey: "main",
+        state: "error",
+      });
+      await expect.poll(() => page.locator(".chat-error").textContent()).toContain(message);
+      await expect.poll(() => page.locator(".agent-chat__composer-status-band").count()).toBe(0);
+      const textarea = page.locator(".agent-chat__input textarea");
+      await expect.poll(() => textarea.isDisabled()).toBe(false);
+      await textarea.fill("Try the message again.");
+      await expect
+        .poll(() => page.getByRole("button", { name: "Send message", exact: true }).isDisabled())
+        .toBe(true);
+      expect(await textarea.inputValue()).toBe("Try the message again.");
+      expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+    });
+  });
+
+  it("keeps the loading model picker beside the microphone", async () => {
+    const artifactRoot = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
+    const artifactDir = artifactRoot
+      ? createControlUiE2eArtifactDir("chat-composer-redesign", artifactRoot)
+      : undefined;
+    await suite.withPage({ viewport: { width: 1280, height: 900 } }, async ({ page }) => {
+      const gateway = await installMockGateway(page, {
+        deferredMethods: ["chat.startup", "models.list"],
+      });
+      await page.goto(`${suite.server.baseUrl}chat`);
+      await gateway.waitForRequest("chat.startup");
+
+      const composer = page.locator(".agent-chat__input");
+      const model = composer.locator('[data-chat-model-select="true"]');
+      const voice = page.getByRole("button", { name: "Start voice input" });
+      await expect.poll(() => model.getAttribute("aria-busy")).toBe("true");
+      await expect.poll(() => voice.isVisible()).toBe(true);
+      if (artifactDir) {
+        await composer.screenshot({
+          animations: "disabled",
+          path: `${artifactDir}/loading-model-picker-spacing.png`,
+        });
+      }
+
+      const measureGap = async () => {
+        const [modelBox, voiceBox] = await Promise.all([model.boundingBox(), voice.boundingBox()]);
+        return modelBox && voiceBox ? voiceBox.x - (modelBox.x + modelBox.width) : null;
+      };
+      await expect.poll(measureGap).toBeGreaterThanOrEqual(0);
+      await expect.poll(measureGap).toBeLessThanOrEqual(16);
+    });
+  });
+
   it("keeps offline status in one bounded composer row", async () => {
     await suite.withPage({ viewport: { width: 1280, height: 900 } }, async ({ page }) => {
       const gateway = await installMockGateway(page);
@@ -49,29 +226,25 @@ suite.define(() => {
         buffer: Buffer.from("mobile composer attachment"),
       });
       await composer.locator(".chat-attachments-preview").waitFor({ state: "visible" });
-      const mobileModelSettings = composer.locator('[data-chat-model-settings="true"]');
-
       for (const picker of [
         {
           menu: ".chat-controls__model-menu",
+          popup: '.chat-controls__model-picker wa-popup [part="popup"]',
           trigger: '[data-chat-model-select="true"]',
         },
         {
           menu: ".chat-controls__effort-menu",
+          popup: '.chat-controls__effort-picker wa-popup [part="popup"]',
           trigger: '[data-chat-thinking-select="true"]',
         },
       ]) {
-        if (picker.menu === ".chat-controls__effort-menu") {
-          await mobileModelSettings.click();
-          await composer.locator(".chat-controls__mobile-effort-option").click();
-        } else {
-          await composer.locator(picker.trigger).click();
-        }
-        await page.waitForTimeout(100);
-        const visibleTrigger =
-          picker.menu === ".chat-controls__effort-menu"
-            ? mobileModelSettings
-            : composer.locator(picker.trigger);
+        const visibleTrigger = composer.locator(picker.trigger);
+        await expect.poll(() => visibleTrigger.isVisible()).toBe(true);
+        await visibleTrigger.click();
+        // The popup scales while opening; measure its settled viewport bounds.
+        await waitForControlUiProofSurface(composer.locator(picker.popup), [
+          page.locator(picker.menu),
+        ]);
         const [composerBox, footerBox, menuBox, triggerBox] = await Promise.all([
           composer.boundingBox(),
           composer.locator(".agent-chat__composer-footer").boundingBox(),
@@ -94,10 +267,12 @@ suite.define(() => {
         expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(853);
         await page.keyboard.press("Escape");
       }
-      await mobileModelSettings.press("Enter");
-      const mobileEffortOption = composer.locator(".chat-controls__mobile-effort-option");
-      await expect.poll(() => mobileEffortOption.isVisible()).toBe(true);
-      await mobileEffortOption.press("Enter");
+      const effort = composer.locator('[data-chat-thinking-select="true"]');
+      await effort.press("Enter");
+      await expect
+        .poll(() => composer.locator(".chat-controls__effort-menu").isVisible())
+        .toBe(true);
+      await effort.press("Tab");
       const focusedEffortControl = composer.locator(
         "[data-chat-thinking-slider]:not([disabled]), [data-chat-speed-toggle]:not([disabled])",
       );
@@ -108,13 +283,16 @@ suite.define(() => {
         .toBe(true);
       await page.keyboard.press("Escape");
       await expect
-        .poll(() => mobileModelSettings.evaluate((node) => node === document.activeElement))
+        .poll(() => effort.evaluate((node) => node === document.activeElement))
         .toBe(true);
     });
   });
 
   it("keeps the model in the bottom bar, session settings in the header, and holds send beside the microphone in every input state", async () => {
-    const artifactDir = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
+    const artifactRoot = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
+    const artifactDir = artifactRoot
+      ? createControlUiE2eArtifactDir("chat-composer-redesign", artifactRoot)
+      : undefined;
     const pageOptions = {
       viewport: { width: 1920, height: 1080 },
       ...(artifactDir
@@ -122,6 +300,7 @@ suite.define(() => {
         : {}),
     };
     await suite.withPage(pageOptions, async ({ page }) => {
+      await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
       const gateway = await installMockGateway(page, {
         assistantName: "Rosita",
         deferredMethods: ["chat.send"],
@@ -185,11 +364,12 @@ suite.define(() => {
                 contextTokens: 200_000,
                 displayName: "Main",
                 hasActiveRun: false,
-                key: "main",
+                key: "agent:main:main",
                 kind: "direct",
                 label: "Main",
                 model: "gpt-5.5",
                 modelProvider: "openai",
+                permissionMode: "workspace",
                 status: "done",
                 totalTokens: 46_000,
                 totalTokensFresh: true,
@@ -212,6 +392,8 @@ suite.define(() => {
       const effort = composer.locator('[data-chat-thinking-select="true"]');
       const usage = composer.locator('[data-chat-provider-usage="true"]');
       const contextUsage = composer.locator(".context-ring");
+      const permission = composer.locator('[data-chat-permission-select="true"]');
+      const permissionIcon = permission.locator(".chat-controls__permission-icon svg");
       const textarea = composer.locator("textarea");
       const attach = composer.locator(
         'button.agent-chat__input-btn--attach[aria-label="Add attachment"]',
@@ -221,22 +403,38 @@ suite.define(() => {
       const settings = page.locator(".chat-header-session-menu__trigger");
       const splitView = page.getByRole("button", { name: "Open split view" });
       const voice = page.getByRole("button", { name: "Start voice input" });
+      const mobileDictation = page.getByRole("button", { name: "Dictation" });
       const microphonePicker = page.getByRole("button", { name: "Microphone input" });
       const microphonePickerShell = page.locator(".chat-talk-input-picker");
-      const captureMobileState = async (fileName: string) => {
+      const captureMobileState = async (
+        fileName: string,
+        surface = page.locator(".shell"),
+        content = [textarea],
+      ) => {
         if (!artifactDir) {
           return;
         }
-        await page.screenshot({
-          animations: "disabled",
-          fullPage: true,
-          path: `${artifactDir}/${fileName}`,
-        });
+        await writeFile(
+          `${artifactDir}/${fileName}`,
+          await takeControlUiViewportScreenshot(page, surface, content),
+        );
+      };
+      const permissionIconCenterError = async () => {
+        const [triggerBox, iconBox] = await Promise.all([
+          permission.boundingBox(),
+          permissionIcon.boundingBox(),
+        ]);
+        if (!triggerBox || !iconBox) {
+          return Number.POSITIVE_INFINITY;
+        }
+        const x = iconBox.x + iconBox.width / 2 - (triggerBox.x + triggerBox.width / 2);
+        const y = iconBox.y + iconBox.height / 2 - (triggerBox.y + triggerBox.height / 2);
+        return Math.max(Math.abs(x), Math.abs(y));
       };
 
       await expect.poll(() => model.isVisible()).toBe(true);
       expect(await gateway.getRequests("chat.metadata")).toHaveLength(0);
-      expect(await gateway.getRequests("models.list")).toHaveLength(0);
+      await gateway.waitForRequest("models.list");
       await expect.poll(() => contextUsage.isVisible()).toBe(true);
       await expect.poll(() => usage.isVisible()).toBe(false);
       await expect.poll(() => settings.isVisible()).toBe(true);
@@ -269,9 +467,68 @@ suite.define(() => {
       const pickerWidth = () =>
         microphonePicker.evaluate((node) => node.getBoundingClientRect().width);
       await expect.poll(pickerWidth).toBe(0);
+      await page.emulateMedia({ reducedMotion: "no-preference" });
       await voice.hover();
+      await expect
+        .poll(() =>
+          microphonePickerShell.evaluate((node) => getComputedStyle(node).transitionDelay),
+        )
+        .toBe("0.75s");
+      await expect
+        .poll(() => microphonePicker.evaluate((node) => getComputedStyle(node).transitionDelay))
+        .toBe("0.75s, 0.75s, 0.82s, 0s, 0s");
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+          }),
+      );
+      expect(await pickerWidth()).toBe(0);
+      await expect.poll(pickerWidth).toBeGreaterThanOrEqual(27.5);
+      const [voiceBeforeHold, pickerBeforeHold] = await Promise.all([
+        voice.boundingBox(),
+        microphonePicker.boundingBox(),
+      ]);
+      expect(voiceBeforeHold).not.toBeNull();
+      expect(pickerBeforeHold).not.toBeNull();
+      expect(
+        Math.abs(
+          (voiceBeforeHold?.x ?? 0) - ((pickerBeforeHold?.x ?? 0) + (pickerBeforeHold?.width ?? 0)),
+        ),
+      ).toBeLessThanOrEqual(0.5);
+      // Measure the arming layout without letting slow browser round trips
+      // cross the 500 ms hold threshold and open the unavailable-device picker.
+      await page.clock.pauseAt(new Date("2026-01-01T01:00:00Z"));
+      await page.mouse.down();
+      await page.clock.runFor(150);
+      await expect
+        .poll(() =>
+          voice.evaluate((node) => node.classList.contains("chat-send-btn--dictation-arming")),
+        )
+        .toBe(true);
+      await expect.poll(() => microphonePicker.isVisible()).toBe(true);
       await expect.poll(pickerWidth).toBeGreaterThanOrEqual(12);
+      const voiceDuringHold = await voice.boundingBox();
+      expect(voiceDuringHold).not.toBeNull();
+      expect(Math.abs((voiceDuringHold?.x ?? 0) - (voiceBeforeHold?.x ?? 0))).toBeLessThanOrEqual(
+        1,
+      );
+      await page.mouse.up();
       await page.mouse.move(0, 0);
+      await page.clock.resume();
+      await expect.poll(pickerWidth).toBe(0);
+      await voice.hover();
+      await voice.press("Tab");
+      await expect
+        .poll(() => microphonePicker.evaluate((node) => node === document.activeElement))
+        .toBe(true);
+      await expect
+        .poll(() =>
+          microphonePickerShell.evaluate((node) => getComputedStyle(node).transitionDelay),
+        )
+        .toBe("0s, 0s");
+      await expect.poll(pickerWidth).toBeGreaterThanOrEqual(27.5);
+      await textarea.click();
       await expect.poll(pickerWidth).toBe(0);
       await expect
         .poll(() => model.evaluate((node) => node.closest(".agent-chat__composer-footer") != null))
@@ -360,7 +617,9 @@ suite.define(() => {
         .toBe(1);
       await page.keyboard.press("Escape");
       await model.click();
-      const providerHeadings = composer.locator("[data-chat-model-provider]");
+      const providerHeadings = composer.locator(
+        "[data-chat-model-provider] .chat-controls__provider-label",
+      );
       await expect
         .poll(async () => (await providerHeadings.allTextContents()).map((label) => label.trim()))
         .toEqual(["OpenAI", "Anthropic"]);
@@ -534,7 +793,7 @@ suite.define(() => {
           timestamp: Date.now(),
         },
         runId,
-        sessionKey: "main",
+        sessionKey: "agent:main:main",
         state: "delta",
       });
       // The working row stays attached with elapsed/token telemetry throughout streaming.
@@ -581,7 +840,7 @@ suite.define(() => {
       await expect
         .poll(() => stop.evaluate((node) => getComputedStyle(node).backgroundColor))
         .not.toBe(brandFill);
-      const mobileModelSettings = composer.locator('[data-chat-model-settings="true"]');
+      const mobileModelSettings = composer.locator('[data-chat-model-select="true"]');
       await expect.poll(() => mobileModelSettings.isVisible()).toBe(true);
       const [activeMobileSettingsBox, activeMobileStopBox] = await Promise.all([
         mobileModelSettings.boundingBox(),
@@ -589,23 +848,21 @@ suite.define(() => {
       ]);
       expect(activeMobileSettingsBox?.width).toBeGreaterThanOrEqual(44);
       expect(activeMobileSettingsBox?.height).toBeGreaterThanOrEqual(44);
-      expect(activeMobileStopBox?.width).toBeGreaterThanOrEqual(44);
-      expect(activeMobileStopBox?.height).toBeGreaterThanOrEqual(44);
+      expect(activeMobileStopBox?.width).toBeCloseTo(32, 2);
+      expect(activeMobileStopBox?.height).toBeCloseTo(32, 2);
       await captureMobileState("mobile-composer-active-stop.png");
       await textarea.press("Escape");
       const abortRequest = await gateway.waitForRequest("chat.abort");
       expect(abortRequest.params).toMatchObject({
         runId,
-        sessionKey: "main",
+        sessionKey: "agent:main:main",
       });
       await expect.poll(() => stop.count()).toBe(0);
 
       await textarea.fill("");
-      await expect
-        .poll(() => page.getByRole("button", { name: "Start voice input" }).isVisible())
-        .toBe(true);
-      await expect.poll(() => emptySend.isVisible()).toBe(true);
-      await expect.poll(() => emptySend.isDisabled()).toBe(true);
+      await expect.poll(() => mobileDictation.isVisible()).toBe(true);
+      const mobileTalk = page.getByRole("button", { name: "Tap to talk" });
+      await expect.poll(() => mobileTalk.isVisible()).toBe(true);
       await captureMobileState("mobile-composer-idle.png");
       // Send holds its place with nothing to send: it goes unavailable rather
       // than disappearing, so the composer never looks like it lost the control
@@ -613,8 +870,8 @@ suite.define(() => {
       await expect
         .poll(async () => {
           const [voiceRect, sendRect] = await Promise.all([
-            voice.boundingBox(),
-            emptySend.boundingBox(),
+            mobileDictation.boundingBox(),
+            mobileTalk.boundingBox(),
           ]);
           return voiceRect && sendRect ? sendRect.x - (voiceRect.x + voiceRect.width) : null;
         })
@@ -634,7 +891,17 @@ suite.define(() => {
         })
         .toBeLessThanOrEqual(393);
       await expect.poll(() => mobileModelSettings.isVisible()).toBe(true);
-      await expect.poll(() => effort.isVisible()).toBe(false);
+      await expect.poll(() => effort.isVisible()).toBe(true);
+      await permission.click();
+      await expect
+        .poll(() => composer.locator(".chat-controls__permission-option").first().isVisible())
+        .toBe(true);
+      await captureMobileState(
+        "mobile-composer-permissions-open.png",
+        composer.locator('.chat-controls__permission-picker [part="menu"]'),
+        [composer.locator(".chat-controls__permission-option").first()],
+      );
+      await page.keyboard.press("Escape");
       const [
         mobileAttachBox,
         mobileModelSettingsBox,
@@ -646,7 +913,7 @@ suite.define(() => {
         mobileModelSettings.boundingBox(),
         settings.boundingBox(),
         contextUsage.boundingBox(),
-        voice.boundingBox(),
+        mobileDictation.boundingBox(),
       ]);
       expect(mobileAttachBox).not.toBeNull();
       expect(mobileModelSettingsBox).not.toBeNull();
@@ -664,6 +931,7 @@ suite.define(() => {
       }
       expect(mobileModelSettingsBox.width).toBeGreaterThanOrEqual(44);
       expect(mobileModelSettingsBox.height).toBeGreaterThanOrEqual(44);
+      await expect.poll(permissionIconCenterError).toBeLessThanOrEqual(1);
       expect(mobileModelSettingsBox.x).toBeGreaterThanOrEqual(
         mobileContextBox.x + mobileContextBox.width - 1,
       );
@@ -679,11 +947,14 @@ suite.define(() => {
       expect(mobileSettingsBox.x).toBeGreaterThanOrEqual(0);
       expect(mobileSettingsBox.x + mobileSettingsBox.width).toBeLessThanOrEqual(393);
       expect(mobileAttachBox.x + mobileAttachBox.width).toBeLessThanOrEqual(mobileVoiceBox.x + 1);
+      await page.setViewportSize({ width: 560, height: 852 });
+      await expect.poll(permissionIconCenterError).toBeLessThanOrEqual(1);
+      await page.setViewportSize({ width: 393, height: 852 });
       await expect
         .poll(async () => {
           const [polledAttachBox, polledVoiceBox] = await Promise.all([
             attach.boundingBox(),
-            voice.boundingBox(),
+            mobileDictation.boundingBox(),
           ]);
           if (!polledAttachBox || !polledVoiceBox) {
             return Number.POSITIVE_INFINITY;
@@ -716,7 +987,11 @@ suite.define(() => {
       await expect
         .poll(() => composer.locator(".chat-controls__model-menu").isVisible())
         .toBe(true);
-      await captureMobileState("mobile-composer-model-open.png");
+      await captureMobileState(
+        "mobile-composer-model-open.png",
+        composer.locator('.chat-controls__model-picker wa-popup [part="popup"]'),
+        [composer.locator('[data-chat-model-option="openai/gpt-5.5"]')],
+      );
       const mobilePickerBox = await composer.locator(".chat-controls__model-menu").boundingBox();
       expect(mobilePickerBox).not.toBeNull();
       if (!mobilePickerBox) {
@@ -724,11 +999,22 @@ suite.define(() => {
       }
       expect(mobilePickerBox.x).toBeGreaterThanOrEqual(0);
       expect(mobilePickerBox.x + mobilePickerBox.width).toBeLessThanOrEqual(393);
-      await composer.locator(".chat-controls__mobile-effort-option").click();
+      expect(
+        await composer
+          .locator(".chat-controls__model-menu")
+          .getByText(/Effort|Fast mode/)
+          .count(),
+      ).toBe(0);
+      await page.keyboard.press("Escape");
+      await effort.click();
       await expect
         .poll(() => composer.locator(".chat-controls__effort-menu").isVisible())
         .toBe(true);
-      await captureMobileState("mobile-composer-effort-open.png");
+      await captureMobileState(
+        "mobile-composer-effort-open.png",
+        composer.locator('.chat-controls__effort-picker wa-popup [part="popup"]'),
+        [thinkingSlider],
+      );
       await page.keyboard.press("Escape");
       await settings.click();
       await expect.poll(() => viewMenu.isVisible()).toBe(true);
@@ -748,10 +1034,10 @@ suite.define(() => {
         .poll(() => microphonePicker.evaluate((node) => getComputedStyle(node).borderLeftWidth))
         .toBe("0px");
       if (artifactDir) {
-        await composerShell.screenshot({
-          animations: "disabled",
-          path: `${artifactDir}/voice-picker-disabled-background.png`,
-        });
+        await writeFile(
+          `${artifactDir}/voice-picker-disabled-background.png`,
+          await takeControlUiElementScreenshot(page, composerShell, [voice]),
+        );
       }
       await page.mouse.move(0, 0);
       await expect.poll(() => page.locator("wa-tooltip[open]").count()).toBe(0);

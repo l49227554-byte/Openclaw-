@@ -27,6 +27,7 @@ export type TelegramMediaRef = {
   fileName?: string;
   stickerMetadata?: StickerMetadata;
   sourceMessageId?: string;
+  unavailable?: { reason: "oversize"; limitMb: number } | { reason: "download-failed" };
 };
 
 export type TelegramChannelIngressResolver = (
@@ -102,6 +103,7 @@ export type TelegramMessageContextSessionRuntimeOverrides = Partial<
 >;
 
 export type BuildTelegramMessageContextParams = {
+  nativeCommandNames?: ReadonlyMap<string, string>;
   primaryCtx: TelegramContext;
   allMedia: TelegramMediaRef[];
   replyMedia?: TelegramMediaRef[];

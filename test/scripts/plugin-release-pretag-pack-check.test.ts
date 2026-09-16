@@ -1,5 +1,6 @@
 // Plugin release pretag pack check tests cover its script-local target and command routing.
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   collectPluginReleasePretagPackTargets,
@@ -75,6 +76,7 @@ describe("scripts/plugin-release-pretag-pack-check.ts", () => {
         bin: process.execPath,
         cwd: repoDir,
         shell: false,
+        requireProcessTreeExit: process.platform !== "win32",
         stdio: "inherit",
         timeoutMs: 600_000,
       }),
@@ -190,4 +192,28 @@ describe("scripts/plugin-release-pretag-pack-check.ts", () => {
       pluginReleasePretagExitCode(Object.assign(new Error("timed out"), { code: "ETIMEDOUT" })),
     ).toBe(1);
   });
+
+  it.each(["live", "indeterminate", "terminated"] as const)(
+    "retains temporary inputs only when managed cleanup reports %s work",
+    async (processTreeState) => {
+      const repoDir = createDualPublishPluginRepo();
+      runManagedCommandMock.mockResolvedValueOnce(0).mockRejectedValueOnce(
+        Object.assign(new Error("managed cleanup failed"), {
+          code: "EPROCESSGROUP_CLEANUP_FAILED",
+          processTreeState,
+        }),
+      );
+      await expect(runPluginReleasePretagPackCheck(repoDir)).rejects.toMatchObject({
+        code: "EPROCESSGROUP_CLEANUP_FAILED",
+        processTreeState,
+      });
+      const options = runManagedCommandMock.mock.calls[1]?.[0] as {
+        env: NodeJS.ProcessEnv;
+      };
+      const wrapperDir = options.env.PATH!.split(delimiter)[0]!;
+      const tempRoot = dirname(wrapperDir);
+      tempDirs.push(tempRoot);
+      expect(existsSync(tempRoot)).toBe(processTreeState !== "terminated");
+    },
+  );
 });

@@ -2,8 +2,12 @@
  * Tests lazy cron startup behavior in the gateway server.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../test/helpers/promise.js";
 import type { CliDeps } from "../cli/deps.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createMockCronStateForJobs } from "../cron/service.test-harness.js";
+import { listPage } from "../cron/service/ops-read.js";
+import type { CronJob } from "../cron/types.js";
 import type { GatewayCronServiceContract } from "./server-cron-contract.js";
 import type { GatewayCronState } from "./server-cron.js";
 
@@ -22,14 +26,6 @@ vi.mock("./server-cron.js", () => ({
 }));
 
 const { createLazyGatewayCronState } = await import("./server-cron-lazy.js");
-
-function deferred() {
-  let resolve = () => {};
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 describe("createLazyGatewayCronState", () => {
   beforeEach(() => {
@@ -94,6 +90,35 @@ describe("createLazyGatewayCronState", () => {
     expect(hoisted.buildGatewayCronService).not.toHaveBeenCalled();
   });
 
+  it("keeps visibility filtering inside the loaded service's page snapshot", async () => {
+    const jobs: CronJob[] = ["hidden", "visible"].map((id) => ({
+      id,
+      name: id,
+      enabled: false,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      schedule: { kind: "every", everyMs: 60_000, anchorMs: 1 },
+      sessionTarget: "main",
+      wakeMode: "now",
+      payload: { kind: "systemEvent", text: "tick" },
+      state: {},
+    }));
+    const store = createMockCronStateForJobs({ jobs });
+    const cron = createCronService();
+    const start = vi.spyOn(cron, "start");
+    cron.listPage = (opts, matchesJob) => listPage(store, opts, matchesJob);
+    hoisted.setState(createCronState(cron));
+
+    const lazy = createLazyGatewayCronState(createParams());
+    const page = await lazy.cron.listPage(
+      { includeDisabled: true, limit: 1, sortBy: "name" },
+      (job) => job.id === "visible",
+    );
+
+    expect(page).toMatchObject({ total: 1, hasMore: false, jobs: [jobs[1]] });
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("preserves a watcher owner when hot reload overtakes lazy startup", async () => {
     const finishStart = deferred();
     const cron = createCronService();
@@ -106,13 +131,14 @@ describe("createLazyGatewayCronState", () => {
       updateHandlers: vi.fn(),
     };
     const stopOwner = vi.fn(async () => {});
+    const prepareExitWatcherHandoff = vi.fn(async () => ({
+      current: () => watchers,
+      adopt: vi.fn(),
+      stopOwner,
+    }));
     hoisted.setState({
       ...createCronState(cron),
-      prepareExitWatcherHandoff: vi.fn(async () => ({
-        current: () => watchers,
-        adopt: vi.fn(),
-        stopOwner,
-      })),
+      prepareExitWatcherHandoff,
     });
     const lazy = createLazyGatewayCronState(createParams());
 
@@ -124,7 +150,9 @@ describe("createLazyGatewayCronState", () => {
     await handoff?.stopOwner();
     finishStart.resolve();
     await start;
+    await handoff?.stopOwner();
 
+    expect(prepareExitWatcherHandoff).toHaveBeenCalledOnce();
     expect(stopOwner).toHaveBeenCalledOnce();
     expect(watchers.cancelAll).not.toHaveBeenCalled();
     expect(cron["stop"]).not.toHaveBeenCalled();
@@ -386,11 +414,10 @@ describe("createLazyGatewayCronState", () => {
     hoisted.setState(state);
 
     const lazy = createLazyGatewayCronState(createParams());
-    const cfg = { agents: { defaults: { heartbeat: { every: "5m" } } } } as OpenClawConfig;
-    await lazy.reconcileHeartbeatJobs(cfg);
+    await lazy.reconcileSystemJobs();
 
     expect(hoisted.buildGatewayCronService).toHaveBeenCalledTimes(1);
-    expect(state.reconcileHeartbeatJobs).toHaveBeenCalledExactlyOnceWith(cfg);
+    expect(state.reconcileSystemJobs).toHaveBeenCalledExactlyOnceWith();
   });
 
   it("forwards watcher reconciliation and teardown hooks through the proxy", async () => {
@@ -401,7 +428,6 @@ describe("createLazyGatewayCronState", () => {
     const lazy = createLazyGatewayCronState(createParams());
 
     // Teardown before load must not force the heavy import.
-    lazy.stopExitWatchers();
     await lazy.stopStreamWatchers();
     expect(hoisted.buildGatewayCronService).not.toHaveBeenCalled();
 
@@ -410,9 +436,7 @@ describe("createLazyGatewayCronState", () => {
     expect(state.reconcileExitWatchers).toHaveBeenCalledTimes(1);
     expect(state.reconcileStreamWatchers).toHaveBeenCalledTimes(1);
 
-    lazy.stopExitWatchers();
     await lazy.stopStreamWatchers();
-    expect(state.stopExitWatchers).toHaveBeenCalledTimes(1);
     expect(state.stopStreamWatchers).toHaveBeenCalledTimes(1);
   });
 
@@ -449,10 +473,9 @@ function createCronState(cron: GatewayCronServiceContract): GatewayCronState {
     storePath: "/tmp/openclaw-cron.json",
     cronEnabled: true,
     reconcileExitWatchers: vi.fn(async () => {}),
-    stopExitWatchers: vi.fn(),
     reconcileStreamWatchers: vi.fn(async () => {}),
     stopStreamWatchers: vi.fn(async () => {}),
-    reconcileHeartbeatJobs: vi.fn(async () => {}),
+    reconcileSystemJobs: vi.fn(async () => "converged" as const),
   } satisfies GatewayCronState;
 }
 
@@ -471,6 +494,9 @@ function createCronService(): GatewayCronServiceContract {
     remove: vi.fn(async () => ({ ok: true }) as never),
     removeStaleJobFamily: vi.fn(async () => 0),
     removeAgentJobsTransactional: vi.fn(async (_agentId, commit) => await commit()),
+    quiesceJobs: vi.fn(async (_jobs, commitGuard) => {
+      commitGuard();
+    }),
     run: vi.fn(async () => ({ ok: true, ran: false, reason: "invalid-spec" }) as never),
     enqueueRun: vi.fn(async () => ({ ok: true, ran: false, reason: "invalid-spec" }) as never),
     getJob: vi.fn(() => undefined),

@@ -3,10 +3,10 @@ import {
   runChannelInboundEvent,
   type ChannelInboundEventRunnerParams,
 } from "openclaw/plugin-sdk/channel-inbound";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { FinalizedMsgContext, GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig } from "../../runtime-api.js";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import type { MatrixMonitorHandlerParams } from "./handler-types.js";
 import {
@@ -173,14 +173,12 @@ describe("Matrix active-turn steering admission", () => {
             body: "keep this run active",
           }),
         );
-        await vi.waitFor(() => expect(queuePolicyResolver).toHaveBeenCalledTimes(1), {
-          // This suite imports the full Matrix extension graph. Keep the
-          // active-turn admission assertion deterministic on saturated CI
-          // workers without weakening the behavior being asserted.
-          timeout: 10_000,
-          interval: 10,
-        });
+        // The first turn in a worker also pays the cold reply-dispatch path (module
+        // graph, session store, plugin discovery); on a starved 2-vCPU runner that
+        // alone exceeded a 10 s budget. The resolver signals its own admission, so
+        // wait on that signal instead of a wall-clock poll.
         await activeResolverStarted.promise;
+        expect(queuePolicyResolver).toHaveBeenCalledTimes(1);
 
         followupTurn = handler(
           "!room:example.org",

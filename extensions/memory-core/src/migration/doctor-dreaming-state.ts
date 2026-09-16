@@ -34,6 +34,8 @@ type LegacySource = {
   filePath: string;
 };
 
+const LEGACY_DREAMING_STATE_DIR = path.join("memory", ".dreams");
+
 async function readJsonFile(filePath: string): Promise<unknown> {
   return JSON.parse(await fs.readFile(filePath, "utf8"));
 }
@@ -51,7 +53,7 @@ async function collectLegacySources(
       { label: "phase signals", fileName: "phase-signals.json" },
     ];
     for (const candidate of candidates) {
-      const filePath = path.join(workspaceDir, "memory", ".dreams", candidate.fileName);
+      const filePath = path.join(workspaceDir, LEGACY_DREAMING_STATE_DIR, candidate.fileName);
       if (await legacyStateFileExists(filePath)) {
         sources.push({ workspaceDir, label: candidate.label, filePath });
       }
@@ -103,38 +105,27 @@ async function migrateSessionIngestion(source: LegacySource): Promise<number> {
   return Object.keys(state.files).length + Object.keys(state.seenMessages).length;
 }
 
-async function migrateShortTermRecall(source: LegacySource): Promise<number> {
+async function migrateShortTermStore(
+  source: LegacySource,
+  kind: "recall" | "phase",
+): Promise<number> {
   const nowIso = new Date().toISOString();
-  const state = normalizeShortTermRecallStore(await readJsonFile(source.filePath), nowIso);
+  const raw = await readJsonFile(source.filePath);
+  const state =
+    kind === "recall"
+      ? normalizeShortTermRecallStore(raw, nowIso)
+      : normalizeShortTermPhaseSignalStore(raw, nowIso);
   await Promise.all([
     writeMemoryCoreWorkspaceEntries({
-      namespace: SHORT_TERM_RECALL_NAMESPACE,
+      namespace:
+        kind === "recall" ? SHORT_TERM_RECALL_NAMESPACE : SHORT_TERM_PHASE_SIGNAL_NAMESPACE,
       workspaceDir: source.workspaceDir,
       entries: Object.entries(state.entries).map(([key, value]) => ({ key, value })),
     }),
     writeMemoryCoreWorkspaceEntry({
       namespace: SHORT_TERM_META_NAMESPACE,
       workspaceDir: source.workspaceDir,
-      key: "recall",
-      value: { updatedAt: state.updatedAt },
-    }),
-  ]);
-  return Object.keys(state.entries).length;
-}
-
-async function migratePhaseSignals(source: LegacySource): Promise<number> {
-  const nowIso = new Date().toISOString();
-  const state = normalizeShortTermPhaseSignalStore(await readJsonFile(source.filePath), nowIso);
-  await Promise.all([
-    writeMemoryCoreWorkspaceEntries({
-      namespace: SHORT_TERM_PHASE_SIGNAL_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      entries: Object.entries(state.entries).map(([key, value]) => ({ key, value })),
-    }),
-    writeMemoryCoreWorkspaceEntry({
-      namespace: SHORT_TERM_META_NAMESPACE,
-      workspaceDir: source.workspaceDir,
-      key: "phase",
+      key: kind,
       value: { updatedAt: state.updatedAt },
     }),
   ]);
@@ -148,10 +139,10 @@ async function migrateSource(source: LegacySource): Promise<number> {
   if (source.label === "session ingestion") {
     return await migrateSessionIngestion(source);
   }
-  if (source.label === "short-term recall") {
-    return await migrateShortTermRecall(source);
-  }
-  return await migratePhaseSignals(source);
+  return await migrateShortTermStore(
+    source,
+    source.label === "short-term recall" ? "recall" : "phase",
+  );
 }
 
 export const dreamingStateMigration: PluginDoctorStateMigration = {

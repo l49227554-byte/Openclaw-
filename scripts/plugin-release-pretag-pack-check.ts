@@ -2,9 +2,9 @@
 
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runManagedCommand } from "./lib/managed-child-process.mts";
+import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
 import { collectClawHubPublishablePluginPackages } from "./lib/plugin-clawhub-release.ts";
 import { collectPublishablePluginPackages } from "./lib/plugin-npm-release.ts";
 
@@ -83,6 +83,7 @@ async function runCommand(
       cwd: params.cwd,
       env: params.env,
       shell: false,
+      requireProcessTreeExit: process.platform !== "win32",
       stdio: params.quietStdout ? ["inherit", "ignore", "inherit"] : "inherit",
       timeoutMs: params.timeoutMs,
     });
@@ -124,11 +125,12 @@ export async function runPluginReleasePretagPackCheck(
   );
   chmodSync(clawHubWrapper, 0o755);
 
+  let unjoinedWork = false;
   try {
     const packEnv = {
       ...process.env,
       CLAWHUB_CLI_PACKAGE: process.env.CLAWHUB_CLI_PACKAGE?.trim() || DEFAULT_CLAWHUB_CLI_PACKAGE,
-      PATH: `${wrapperDir}:${process.env.PATH ?? ""}`,
+      PATH: `${wrapperDir}${delimiter}${process.env.PATH ?? ""}`,
     };
     const prebuiltPackEnv = {
       ...packEnv,
@@ -187,8 +189,13 @@ export async function runPluginReleasePretagPackCheck(
         );
       }
     }
+  } catch (error) {
+    unjoinedWork = hasUnjoinedWork(error);
+    throw error;
   } finally {
-    rmSync(tempRoot, { recursive: true, force: true });
+    if (!unjoinedWork) {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   }
 
   console.log(`plugin-release-pretag-pack-check: packed ${targets.length} publishable plugins.`);

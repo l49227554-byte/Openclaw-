@@ -40,6 +40,7 @@ describe("Git backup command agent selection", () => {
       commit: "backup-commit",
       noChanges: false,
       pushed: false,
+      warnings: [],
       repositoryPath: "/tmp/repository",
     });
     mocks.getRuntimeConfig.mockReset().mockReturnValue({
@@ -49,6 +50,7 @@ describe("Git backup command agent selection", () => {
     mocks.restoreGitBackupRef.mockReset().mockResolvedValue({
       commit: "backup-commit",
       excludedTables: [],
+      excludedConfigStateKeyPrefixes: [],
       targetPath: "/tmp/restored.sqlite",
     });
     mocks.verifyGitBackupRef.mockReset().mockResolvedValue({
@@ -111,6 +113,20 @@ describe("Git backup command agent selection", () => {
 
     expect(mocks.getRuntimeConfig).not.toHaveBeenCalled();
     expect(mocks.createGitBackup).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the Git-specific warning when outcome recording fails", async () => {
+    mocks.recordBackupRunOutcome.mockRejectedValue(new Error("record failed"));
+    const runtime = createTestRuntime();
+
+    await backupGitCreateCommand(runtime, {
+      repository: "/tmp/repository",
+      global: true,
+    });
+
+    expect(runtime.error).toHaveBeenCalledWith(
+      "Warning: the Git backup outcome could not be recorded: record failed",
+    );
   });
 
   it("resolves every current agent and its configured root for an all-scope backup", async () => {

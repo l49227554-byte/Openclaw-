@@ -157,6 +157,8 @@ export function repairOpenClawStateDatabaseReadabilityForDoctor(
   if (!existsSync(pathname)) {
     return { changes: [], warnings: [] };
   }
+  // A writer close can checkpoint WAL and invalidate a generation-bound corruption refusal.
+  assertOpenClawStateDatabaseFreshOpenAllowed(options);
   return runWithOpenClawStateWriteAccess(
     {
       databasePath: pathname,

@@ -54,6 +54,7 @@ import {
   assertCanonicalSessionKeyWriteMatchesDatabase,
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
+import { certifyCanonicalSessionValidationRows } from "./session-canonical-validation.js";
 import { preserveCreationStamp } from "./session-entry-provenance.js";
 import { resolveSessionPublicShare } from "./session-public-share.js";
 import { resolveDeliveryProvenCanonicalSessionKey } from "./store-entry.js";
@@ -342,6 +343,7 @@ function clearSqliteSessionEntryPreservingWindows(
       .set({ entry_valid: -1 })
       .where("session_key", "=", params.sessionKey),
   );
+  certifyCanonicalSessionValidationRows(database, [params.sessionKey]);
 }
 
 export function deleteLifecycleTargetRows(
@@ -654,6 +656,9 @@ export function writeSessionEntry(
       conversation,
       updatedAt,
     });
+  }
+  if (!options.allowStoredAliases) {
+    certifyCanonicalSessionValidationRows(database, [sessionKey]);
   }
   publishSessionEntryCacheInvalidation(
     database,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import {
@@ -19,6 +19,7 @@ import {
   upsertSessionEntryCore,
 } from "./session-accessor.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import { hasPendingCanonicalSessionValidation } from "./session-canonical-validation.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 
 // These tests exercise the durable owner, including rollback and process reopen; existing
@@ -80,6 +81,7 @@ describe("typed Goal operation persistence", () => {
     await upsertSessionEntryCore(scope(), { ...loadSessionEntry(scope())!, skillsSnapshot });
     const identityMutation = vi.fn();
     const unsubscribe = onSessionIdentityMutation(identityMutation);
+    onTestFinished(unsubscribe);
     const reads = trackSqliteStatementExecutions(database().db, ["sessionNodeSelects"], (sql) =>
       /^select\b/i.test(sql) && /\bfrom\s+"session_nodes"/i.test(sql) ? "sessionNodeSelects" : null,
     );
@@ -98,7 +100,6 @@ describe("typed Goal operation persistence", () => {
       expect(identityMutation).not.toHaveBeenCalled();
     } finally {
       reads.restore();
-      unsubscribe();
     }
     expect(turn.sessionEntry?.skillsSnapshot).toEqual(skillsSnapshot);
     const receipt = turn.sessionTurnMutationResult?.result;
@@ -162,6 +163,9 @@ describe("typed Goal operation persistence", () => {
     } finally {
       editReads.restore();
     }
+    expect(identityMutation).not.toHaveBeenCalled();
+    expect(hasPendingCanonicalSessionValidation(database())).toBe(false);
+    expect(edited.sessionEntry).toMatchObject({ sessionId, status: "running", lastRunId: "run-1" });
     expect(edited.result.goal?.objective).toBe(editedObjective);
     expect(edited.sessionEntry?.skillsSnapshot).toEqual(skillsSnapshot);
     expect(loadSessionEntry(scope())?.goal?.objective).toBe(editedObjective);
@@ -242,12 +246,16 @@ describe("typed Goal operation persistence", () => {
 
   it("fences stale Goal controls and retains the clear receipt for exact retries", async () => {
     const goal = await createSessionGoal({ ...scope(), objective: "first" });
+    const identityMutation = vi.fn();
+    onTestFinished(onSessionIdentityMutation(identityMutation));
     const clear = { ...identity("clear-1"), action: "clear" as const, goalId: goal.id };
     const cleared = await mutateSessionGoal({
       ...scope(),
       expectedSessionId: sessionId,
       operation: clear,
     });
+    expect(cleared.sessionEntry).toMatchObject({ sessionId, status: "done" });
+    expect(identityMutation).not.toHaveBeenCalled();
     const replacement = await createSessionGoal({ ...scope(), objective: "second" });
     expect(
       await mutateSessionGoal({ ...scope(), expectedSessionId: sessionId, operation: clear }),

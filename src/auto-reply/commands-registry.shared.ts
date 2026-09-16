@@ -583,6 +583,12 @@ export function buildBuiltinChatCommands(
     defineBuiltinCommand("models", "List model providers/models.", "options", "standard", {
       acceptsArgs: true,
     }),
+    defineBuiltinCommand("luna", "Switch to Luna with max thinking.", "options", "standard", {
+      nativeName: false,
+    }),
+    defineBuiltinCommand("sol", "Switch to Sol with medium thinking.", "options", "standard", {
+      nativeName: false,
+    }),
     defineBuiltinCommand("queue", "Adjust queue settings.", "options", "power", {
       args: [
         defineCommandArgument("mode", "queue mode", {

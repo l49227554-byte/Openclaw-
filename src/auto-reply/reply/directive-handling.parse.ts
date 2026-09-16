@@ -123,6 +123,16 @@ export function parseInlineSessionDirectives(
     nativeCommand?: NativeReplyDirectiveCommand;
   },
 ): InlineDirectives {
+  // Reuse the existing model and thinking persistence path for exact shortcuts.
+  const shortcut = !options?.nativeCommand && /^\/(luna|sol)$/i.exec(body.trim());
+  if (shortcut) {
+    return parseInlineSessionDirectives(
+      shortcut[1]?.toLowerCase() === "luna"
+        ? "/think max /model openai/gpt-5.6-luna"
+        : "/think medium /model openai/gpt-5.6-sol",
+      options,
+    );
+  }
   const nativeCommand = options?.nativeCommand;
   let cleaned = body;
   let hasAnyDirective = false;

@@ -61,6 +61,7 @@ import { resolveInternalSessionEffectsTarget } from "./internal-session-effects.
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import type { ModelFallbackRunOptions } from "./model-fallback-attempt.js";
+import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 import {
   createAgentRunDirectAbortError,
   createAgentRunRestartAbortError,
@@ -169,7 +170,7 @@ const state = vi.hoisted(() => ({
   enqueueExecutionIdentityContextAtAdmissionMock: vi.fn(),
 }));
 
-const manifestMetadataSnapshot = createPluginMetadataSnapshotFixture();
+let manifestMetadataSnapshot: ReturnType<typeof createPluginMetadataSnapshotFixture>;
 
 vi.mock("../sessions/session-diff-baseline.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../sessions/session-diff-baseline.js")>();
@@ -345,9 +346,17 @@ vi.mock("./harness/runtime-plugin.js", () => ({
   ensureSelectedAgentHarnessPlugin: vi.fn(async () => undefined),
 }));
 
-vi.mock("./runtime-plugins.js", () => ({
-  withAgentPluginRegistry: ({ run }: { run: () => unknown }) => run(),
-}));
+vi.mock("./runtime-plugins.js", async () => {
+  const { createEmptyPluginRegistry } = await import("../plugins/registry-empty.js");
+  return {
+    withAgentPluginRegistry: ({ run }: { run: () => unknown }) => run(),
+    loadAgentRuntimePluginRegistryHandle: () => createEmptyPluginRegistry(),
+    acquireAgentRuntimePluginRegistry: async () => {
+      const registry = createEmptyPluginRegistry();
+      return { registry, primaryRegistry: registry };
+    },
+  };
+});
 
 // Harness selection has dedicated coverage; this command suite registers no auto harnesses.
 vi.mock("./harness/support.js", () => ({
@@ -436,14 +445,20 @@ vi.mock("../skills/discovery/chat-commands.runtime.js", () => ({
   resolveEffectiveAgentSkillFilter: () => undefined,
 }));
 
-vi.mock("../config/runtime-snapshot.js", () => ({
-  getRuntimeConfigSnapshot: () => state.runtimeConfigMock ?? state.defaultRuntimeConfig,
-  // No source snapshot: runtime-source projection no-ops and resolvers read the
-  // provided config directly, matching this suite's pre-projection world.
-  getRuntimeConfigSourceSnapshot: () => null,
-  registerRuntimeConfigSnapshotPreparer: vi.fn(),
-  setRuntimeConfigSnapshot: vi.fn(),
-}));
+vi.mock("../config/runtime-snapshot.js", async () => {
+  const { hashRuntimeConfigValue } = await vi.importActual<
+    typeof import("../config/runtime-snapshot.js")
+  >("../config/runtime-snapshot.js");
+  return {
+    hashRuntimeConfigValue,
+    getRuntimeConfigSnapshot: () => state.runtimeConfigMock ?? state.defaultRuntimeConfig,
+    // No source snapshot: runtime-source projection no-ops and resolvers read the
+    // provided config directly, matching this suite's pre-projection world.
+    getRuntimeConfigSourceSnapshot: () => null,
+    registerRuntimeConfigSnapshotPreparer: vi.fn(),
+    setRuntimeConfigSnapshot: vi.fn(),
+  };
+});
 
 vi.mock("../config/sessions.js", () => ({
   resolveAgentIdFromSessionKey: () => "default",
@@ -603,39 +618,79 @@ vi.mock("../utils/message-channel.js", () => ({
       .toLowerCase(),
 }));
 
-vi.mock("./agent-scope.js", () => ({
-  clearAutoFallbackPrimaryProbeSelection: vi.fn(),
-  entryMatchesAutoFallbackPrimaryProbe: () => true,
-  hasLegacyAutoFallbackWithoutOrigin: (entry: unknown) =>
-    state.hasLegacyAutoFallbackWithoutOriginMock(entry),
-  hasSessionAutoModelFallbackProvenance: () => false,
-  listAgentEntries: () => [],
-  listAgentIds: () => ["default"],
-  markAutoFallbackPrimaryProbe: vi.fn(),
-  resolveAutoFallbackPrimaryProbe: (params: unknown) =>
-    state.resolveAutoFallbackPrimaryProbeMock(params),
-  resolveAgentConfig: () => undefined,
-  resolveAgentDir: () => "/tmp/agent",
-  resolveAgentEffectiveModelPrimary: (cfg: unknown) => {
-    const raw = (cfg as { agents?: { defaults?: { model?: string | { primary?: string } } } })
-      ?.agents?.defaults?.model;
-    return typeof raw === "string" ? raw : raw?.primary;
-  },
-  resolveDefaultAgentId: () => "default",
-  resolveEffectiveModelFallbacks: state.resolveEffectiveModelFallbacksMock,
-  resolveSessionAgentIds: () => ({ defaultAgentId: "default", sessionAgentId: "default" }),
-  resolveSessionAgentId: () => "default",
-  resolveAgentSkillsFilter: () => undefined,
-  resolveAgentWorkspaceDir: () => "/tmp/workspace",
-}));
+vi.mock("./agent-scope.js", async () => {
+  const { resolveAgentModelFallbacksOverride, resolveSubagentSpawnModelFallbacksOverride } =
+    await vi.importActual<typeof import("./agent-scope.js")>("./agent-scope.js");
+  return {
+    resolveAgentModelFallbacksOverride,
+    resolveSubagentSpawnModelFallbacksOverride,
+    clearAutoFallbackPrimaryProbeSelection: vi.fn(),
+    entryMatchesAutoFallbackPrimaryProbe: () => true,
+    hasLegacyAutoFallbackWithoutOrigin: (entry: unknown) =>
+      state.hasLegacyAutoFallbackWithoutOriginMock(entry),
+    hasSessionAutoModelFallbackProvenance: () => false,
+    listAgentEntries: () => [],
+    listAgentIds: () => ["default"],
+    markAutoFallbackPrimaryProbe: vi.fn(),
+    resolveAutoFallbackPrimaryProbe: (params: unknown) =>
+      state.resolveAutoFallbackPrimaryProbeMock(params),
+    resolveAgentConfig: () => undefined,
+    resolveAgentDir: () => "/tmp/agent",
+    resolveAgentEffectiveModelPrimary: (cfg: unknown) => {
+      const raw = (cfg as { agents?: { defaults?: { model?: string | { primary?: string } } } })
+        ?.agents?.defaults?.model;
+      return typeof raw === "string" ? raw : raw?.primary;
+    },
+    resolveDefaultAgentId: () => "default",
+    resolveEffectiveModelFallbacks: state.resolveEffectiveModelFallbacksMock,
+    resolveSessionAgentIds: () => ({ defaultAgentId: "default", sessionAgentId: "default" }),
+    resolveSessionAgentId: () => "default",
+    resolveAgentSkillsFilter: () => undefined,
+    resolveAgentWorkspaceDir: () => "/tmp/workspace",
+  };
+});
 
-vi.mock("./auth-profiles.js", () => ({
-  ensureAuthProfileStore: () => ({ profiles: {} }),
-}));
+vi.mock("./auth-profiles.js", async () => {
+  const {
+    externalCliDiscoveryForProviderAuth,
+    ensureAuthProfileStoreWithoutExternalProfiles,
+    listProfilesForProvider,
+    loadAuthProfileStoreWithoutExternalProfiles,
+    resolveApiKeyForProfile,
+    resolveAuthProfileDisplayLabel,
+    resolveAuthProfileOrder,
+    resolveAuthStorePathForDisplay,
+  } = await vi.importActual<typeof import("./auth-profiles.js")>("./auth-profiles.js");
+  return {
+    externalCliDiscoveryForProviderAuth,
+    ensureAuthProfileStore: () => ({ profiles: {} }),
+    ensureAuthProfileStoreWithoutExternalProfiles,
+    listProfilesForProvider,
+    loadAuthProfileStoreWithoutExternalProfiles,
+    resolveApiKeyForProfile,
+    resolveAuthProfileDisplayLabel,
+    resolveAuthProfileOrder,
+    resolveAuthStorePathForDisplay,
+  };
+});
 
-vi.mock("./auth-profiles/store-runtime.js", () => ({
-  ensureAuthProfileStore: vi.fn(() => state.authProfileStoreMock),
-}));
+vi.mock("./auth-profiles/store-runtime.js", async () => {
+  const {
+    createAuthProfileStoreReadScope,
+    ensureAuthProfileStoreWithoutExternalProfiles,
+    loadAuthProfileStoreWithoutExternalProfiles,
+    saveAuthProfileStoreWithPreparedOwner,
+  } = await vi.importActual<typeof import("./auth-profiles/store-runtime.js")>(
+    "./auth-profiles/store-runtime.js",
+  );
+  return {
+    createAuthProfileStoreReadScope,
+    ensureAuthProfileStore: vi.fn(() => state.authProfileStoreMock),
+    ensureAuthProfileStoreWithoutExternalProfiles,
+    loadAuthProfileStoreWithoutExternalProfiles,
+    saveAuthProfileStoreWithPreparedOwner,
+  };
+});
 
 vi.mock("./auth-profiles/store.js", async (importOriginal) => ({
   // Native loader bootstrap still needs the real auth-store factory exports.
@@ -1045,6 +1100,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     state.resolveThinkingDefaultMock.mockReturnValue("low");
     state.resolveAgentSkillsFilterMock.mockReturnValue(undefined);
     state.loadManifestModelCatalogMock.mockReturnValue([]);
+    manifestMetadataSnapshot = createPluginMetadataSnapshotFixture();
     state.resolvePluginMetadataSnapshotMock.mockReturnValue(manifestMetadataSnapshot);
     state.loadProviderScopedThinkingCatalogMock.mockReset().mockResolvedValue(undefined);
     state.loadFullModelCatalogMock.mockClear();
@@ -1225,7 +1281,8 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     );
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await resetPreparedModelRuntimeSnapshotsForTest();
     vi.restoreAllMocks();
   });
 
@@ -1465,6 +1522,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
           }
         });
       } finally {
+        await resetPreparedModelRuntimeSnapshotsForTest();
         await closeOpenClawAgentDatabasesAsync(stateDir);
         await closeOpenClawStateDatabaseByPathAsync(
           resolveOpenClawStateSqlitePath({ ...process.env, OPENCLAW_STATE_DIR: stateDir }),

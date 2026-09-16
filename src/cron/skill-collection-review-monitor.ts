@@ -22,7 +22,7 @@ import {
   resolveAgentModelPrimaryValue,
 } from "../config/model-input.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
-import { loadSessionEntry } from "../config/sessions/session-accessor.js";
+import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveHeartbeatSchedulerSeed } from "../infra/heartbeat-runner.js";
 import { resolveHeartbeatPhaseMs } from "../infra/heartbeat-schedule.js";
@@ -172,7 +172,7 @@ function hasStoredExecutionPreference(
   jobId: string,
 ): boolean {
   try {
-    const entry = loadSessionEntry({
+    const entry = loadSessionEntryReadOnly({
       storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId }),
       sessionKey: resolveCronAgentSessionKey({
         sessionKey: `cron:${jobId}`,

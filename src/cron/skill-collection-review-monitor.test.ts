@@ -1,5 +1,7 @@
+import fs from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { resolveSkillCollectionReviewMonitorSpecs } from "./skill-collection-review-monitor.js";
 
 describe("resolveSkillCollectionReviewMonitorSpecs", () => {
@@ -133,6 +135,44 @@ describe("resolveSkillCollectionReviewMonitorSpecs", () => {
       expect(byAgent.get(agentId)?.displayName).not.toContain("no-rooted-runtime");
     }
   });
+
+  it("does not create session storage while projecting an existing monitor", async () => {
+    const testState = await createOpenClawTestState({ label: "skill-review-projection" });
+    try {
+      const cfg: OpenClawConfig = {
+        agents: {
+          entries: {
+            main: {
+              model: "openai/gpt-blocked",
+              models: { "openai/gpt-blocked": { agentRuntime: { id: "codex" } } },
+            },
+          },
+        },
+        skills: { workshop: { autonomous: { mode: "auto" } } },
+      };
+      const options = { schedulerSeed: "test-seed" };
+      const [initial] = resolveSkillCollectionReviewMonitorSpecs(cfg, [], options);
+      const [projected] = resolveSkillCollectionReviewMonitorSpecs(
+        cfg,
+        [
+          {
+            ...initial!.input,
+            id: "existing-review",
+            enabled: true,
+            createdAtMs: 1,
+            updatedAtMs: 1,
+            state: {},
+          },
+        ],
+        options,
+      );
+      expect(projected?.input.enabled).toBe(false);
+      expect(await fs.readdir(testState.stateDir)).toEqual([]);
+    } finally {
+      await testState.cleanup();
+    }
+  });
+
   it("keeps an executable agent-scoped review alias enabled", () => {
     const cfg = {
       agents: {

@@ -40,7 +40,13 @@ describe("MCP automation creator capture", () => {
     vi.unstubAllEnvs();
   });
 
-  it.each([
+  const cases: Array<{
+    label: string;
+    toolsAllow?: string[];
+    nativeExec: boolean;
+    unreadableSchema?: boolean;
+    nativeRestriction?: "allow" | "deny";
+  }> = [
     { label: "inherited native", toolsAllow: undefined, nativeExec: true, unreadableSchema: false },
     { label: "finite native", toolsAllow: ["exec"], nativeExec: true, unreadableSchema: false },
     { label: "restricted MCP", toolsAllow: undefined, nativeExec: false, unreadableSchema: false },
@@ -50,9 +56,12 @@ describe("MCP automation creator capture", () => {
       nativeExec: false,
       unreadableSchema: true,
     },
-  ])(
+    { label: "native denied", nativeExec: true, nativeRestriction: "deny" },
+    { label: "native excluded", nativeExec: true, nativeRestriction: "allow" },
+  ];
+  it.each(cases)(
     "persists the final $label creator surface",
-    async ({ toolsAllow, nativeExec, unreadableSchema }) => {
+    async ({ toolsAllow, nativeExec, unreadableSchema, nativeRestriction }) => {
       const root = tempDirs.make("openclaw-cli-cron-capture-");
       const storePath = path.join(root, "cron", "jobs.json");
       const cfg: OpenClawConfig = {
@@ -60,10 +69,11 @@ describe("MCP automation creator capture", () => {
         tools: {
           allow: [
             "automations",
-            "exec",
+            ...(nativeRestriction === "allow" ? [] : ["exec"]),
             ...(!nativeExec ? ["sessions_list"] : []),
             ...(unreadableSchema ? ["unreadable_plugin"] : []),
           ],
+          ...(nativeRestriction === "deny" ? { deny: ["exec"] } : {}),
           exec: { host: "auto" },
         },
         plugins: { enabled: false },
@@ -169,21 +179,23 @@ describe("MCP automation creator capture", () => {
           callerOrigin: stored.toolsAllowProvenance?.callerOrigin,
           execTarget: stored.toolsAllowExecTarget,
         });
-        // Exercise the runtime's host selector with the persisted target: non-main
-        // isolation provides a sandbox, while the creator's native Bash ran here.
-        expect(
-          resolveExecTarget({
-            configuredTarget: policy?.execTarget?.host ?? cfg.tools?.exec?.host,
-            elevatedRequested: false,
-            sandboxAvailable: true,
-          }).effectiveHost,
-        ).toBe(nativeExec ? "gateway" : "sandbox");
-        expect(stored.toolsAllowExecTarget).toEqual(
-          nativeExec ? { version: 1, host: "gateway" } : undefined,
-        );
+        const capturesNativeExec = nativeExec && !nativeRestriction;
         expect(stored.payload.toolsAllow).toEqual(
-          toolsAllow ?? ["automations", ...(nativeExec ? ["exec"] : [])],
+          toolsAllow ?? ["automations", ...(capturesNativeExec ? ["exec"] : [])],
         );
+        expect(stored.toolsAllowExecTarget).toEqual(
+          capturesNativeExec ? { version: 1, host: "gateway" } : undefined,
+        );
+        if (capturesNativeExec) {
+          // Ordinary sandbox availability must not replace the captured target.
+          expect(
+            resolveExecTarget({
+              configuredTarget: policy?.execTarget?.host ?? cfg.tools?.exec?.host,
+              elevatedRequested: false,
+              sandboxAvailable: true,
+            }).effectiveHost,
+          ).toBe("gateway");
+        }
         expect(stored.scheduledToolPolicy).toEqual({
           version: 1,
           mode: "account",

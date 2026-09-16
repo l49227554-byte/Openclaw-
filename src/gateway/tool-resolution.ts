@@ -22,6 +22,7 @@ import type { PreparedRootedExecutionCapability } from "../agents/rooted-run-par
 import { resolveSandboxRuntimeStatus } from "../agents/sandbox/runtime-status.js";
 import { resolveScheduledToolCallerContext } from "../agents/scheduled-tool-policy.js";
 import { buildDeclaredToolAllowlistContext } from "../agents/tool-policy-declared-context.js";
+import { filterToolsByPolicy } from "../agents/tool-policy-match.js";
 import {
   applyToolPolicyPipeline,
   buildDefaultToolPolicyPipelineSteps,
@@ -569,6 +570,7 @@ export function resolveGatewayScopedTools(
     : toolsWithMediatedCoding;
 
   const toolsForMessageProvider = filterToolsByMessageProvider(allTools, params.messageProvider);
+  let nativeCreatorTools = (params.nativeCronCreatorToolAllowlist ?? []).map((name) => ({ name }));
   const policyFiltered = applyToolPolicyPipeline({
     tools: toolsForMessageProvider,
     toolMeta: (tool: AnyAgentTool) => getPluginToolMeta(tool),
@@ -598,6 +600,11 @@ export function resolveGatewayScopedTools(
       workspaceDir,
       toolDenylist: explicitDenylist,
     }),
+    // Native initialization reports availability; the same creator policies must
+    // also allow those capabilities before an automation may inherit them.
+    onFilter: ({ policy }) => {
+      nativeCreatorTools = filterToolsByPolicy(nativeCreatorTools, policy);
+    },
   });
 
   const gatewayDenySet = new Set(
@@ -650,7 +657,10 @@ export function resolveGatewayScopedTools(
             cronCreatorToolAllowlistCaptureRef,
             inheritableTools.filter((tool) => callableToolNames.has(tool.name.trim())),
             (tool) => getPluginToolMeta(tool),
-            nativeCapture,
+            {
+              ...nativeCapture,
+              canonicalToolNames: nativeCreatorTools.map((tool) => tool.name),
+            },
           )
       : undefined,
   };

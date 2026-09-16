@@ -700,6 +700,16 @@ export async function reloadGatewayPlugins(
           );
         }
       }
+      if (phase !== "prepare" && !restartDrainSignal.aborted) {
+        const retainedChannelErrors: unknown[] = [];
+        await channels.restoreUnchanged(changedPluginIds, retainedChannelErrors);
+        if (retainedChannelErrors.length) {
+          failure = new AggregateError(
+            [failure, ...retainedChannelErrors],
+            "Plugin replacement failed and an unchanged channel could not resume.",
+          );
+        }
+      }
     } else {
       await kernel.pluginMetadata
         .waitForRetirement()

@@ -1,4 +1,5 @@
 import type { ChannelId } from "../channels/plugins/types.public.js";
+import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import type { prepareGatewayLifecycle } from "./server-lifecycle.js";
 
@@ -25,9 +26,13 @@ export function createPluginReloadChannels({
       errors.push(error);
     }
   };
-  const startReplacedChannels = async (registry: PluginRegistry, errors: unknown[]) => {
+  const startReplacedChannels = async (
+    registry: PluginRegistry,
+    errors: unknown[],
+    targets: ReadonlySet<ChannelId> = channelTargets,
+  ) => {
     for (const { plugin } of registry.channels) {
-      if (skipChannels || !channelTargets.has(plugin.id)) {
+      if (skipChannels || !targets.has(plugin.id)) {
         continue;
       }
       await attempt(errors, async () => {
@@ -53,8 +58,11 @@ export function createPluginReloadChannels({
       });
     }
   };
-  const releaseChannelHandoffs = async (errors: unknown[]) => {
-    for (const channelId of channelTargets) {
+  const releaseChannelHandoffs = async (
+    errors: unknown[],
+    targets: ReadonlySet<ChannelId> = channelTargets,
+  ) => {
+    for (const channelId of targets) {
       // The manager keeps handoffs already admitted by successful accounts.
       await attempt(errors, () => channelManager.releaseChannelRouteHandoffs(channelId));
     }
@@ -94,9 +102,9 @@ export function createPluginReloadChannels({
     if (additionalChannels.size) {
       const releaseAdditional = channelManager.pauseChannelStarts(additionalChannels);
       const releasePrevious = releaseChannelStarts;
-      releaseChannelStarts = (outcome) => {
-        releasePrevious?.(outcome);
-        releaseAdditional(outcome);
+      releaseChannelStarts = (outcome, selected) => {
+        releasePrevious?.(outcome, selected);
+        releaseAdditional(outcome, selected);
       };
       for (const channelId of additionalChannels) {
         await channelManager.stopChannel(channelId, undefined, {
@@ -136,10 +144,40 @@ export function createPluginReloadChannels({
     stopAdditional,
     startReplacedChannels,
     releaseChannelHandoffs,
+    restoreUnchanged: async (changedPluginIds: ReadonlySet<string>, errors: unknown[]) => {
+      if (!releaseChannelStarts) {
+        return;
+      }
+      const callableIds = new Set(
+        previousRegistry.plugins
+          .filter(
+            (record) =>
+              !changedPluginIds.has(record.id) && getPluginInstance(record)?.acceptingCalls,
+          )
+          .map((record) => record.id),
+      );
+      const targets = new Set(
+        previousRegistry.channels
+          .filter(
+            ({ plugin, pluginId }) => channelTargets.has(plugin.id) && callableIds.has(pluginId),
+          )
+          .map(({ plugin }) => plugin.id),
+      );
+      // Command catalog changes can stop healthy siblings. A failed changed owner
+      // must not strand their admission or force them to acquire a fresh instance.
+      releaseChannelStarts("rollback", targets);
+      try {
+        await startReplacedChannels(previousRegistry, errors, targets);
+      } finally {
+        await releaseChannelHandoffs(errors, targets);
+      }
+    },
     pause: () => {
       releaseChannelStarts = channelManager.pauseChannelStarts(channelTargets);
     },
-    release: (outcome: Parameters<NonNullable<typeof releaseChannelStarts>>[0]) =>
-      releaseChannelStarts?.(outcome),
+    release: (outcome: Parameters<NonNullable<typeof releaseChannelStarts>>[0]) => {
+      releaseChannelStarts?.(outcome);
+      releaseChannelStarts = undefined;
+    },
   };
 }

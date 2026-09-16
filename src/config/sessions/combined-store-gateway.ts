@@ -72,7 +72,7 @@ function createSessionModelSources(
     string,
     {
       entries: Record<string, SessionEntry>;
-      readers: Map<string, GatewaySessionModelSource["loadSessionEntry"]>;
+      readers: Map<string, GatewaySessionModelSource["readSourceEntry"]>;
     }
   >();
   const logicalEntries = new Map<string, SessionEntry | undefined>();
@@ -90,7 +90,7 @@ function createSessionModelSources(
         logicalAgentId: string,
         key: string,
         entry: SessionEntry,
-      ): GatewaySessionModelSource["loadSessionEntry"] => {
+      ): GatewaySessionModelSource["readSourceEntry"] => {
         store[key] = entry;
         const identity = logicalKey(logicalAgentId, key);
         // Preserve target-order selection within an owner, including hidden sentinels.
@@ -334,7 +334,7 @@ function mergeOpenIncognitoStores(params: {
         target: {
           ...modelTarget,
           entry,
-          loadSessionEntry: addModelEntry(target.agentId, sessionKey, entry),
+          readSourceEntry: addModelEntry(target.agentId, sessionKey, entry),
         },
         canonicalKey: sessionKey,
       });
@@ -678,7 +678,7 @@ export function loadCombinedSessionStoreForGatewayCore(
       const canonicalAgentId = normalizeAgentId(parsed?.agentId ?? rowAgentId);
       preparedAgentIds?.add(canonicalAgentId);
       // A scoped row can inherit a differently owned parent from this same physical store.
-      const loadSessionEntry = addModelEntry(canonicalAgentId, canonicalKey, entry);
+      const readSourceEntry = addModelEntry(canonicalAgentId, canonicalKey, entry);
       if (requestedAgentId && canonicalAgentId !== requestedAgentId) {
         continue;
       }
@@ -698,7 +698,7 @@ export function loadCombinedSessionStoreForGatewayCore(
           agentId: canonicalAgentId,
           storeTarget,
           entry,
-          loadSessionEntry,
+          readSourceEntry,
           ...(projectedKey !== canonicalKey ? { storeKey: canonicalKey } : {}),
         },
         canonicalKey,

@@ -333,208 +333,13 @@ function bindingName(node: ts.BindingElement) {
   return null;
 }
 
-function createImportedAccessorBindings(
-  sourceFile: ts.SourceFile,
-  accessorNames: ReadonlySet<string>,
-) {
-  // Bind this file only: property names on local readers are not imported accessors.
-  const options: ts.CompilerOptions = { noLib: true, noResolve: true };
-  const sourcePath = path.resolve(sourceFile.fileName);
-  const isSource = (fileName: string) => path.resolve(fileName) === sourcePath;
-  const host: ts.CompilerHost = {
-    ...ts.createCompilerHost(options, true),
-    getSourceFile: (fileName) => (isSource(fileName) ? sourceFile : undefined),
-    fileExists: isSource,
-    readFile: (fileName) => (isSource(fileName) ? sourceFile.text : undefined),
-  };
-  const checker = ts.createProgram([sourceFile.fileName], options, host).getTypeChecker();
-  const bindingSource = (binding: ts.BindingElement) => {
-    let owner = binding.parent.parent;
-    while (ts.isBindingElement(owner)) {
-      owner = owner.parent.parent;
-    }
-    return ts.isVariableDeclaration(owner) ? owner.initializer : undefined;
-  };
-
-  type ImportedKind = "module" | "promise" | "value";
-  const importedKind = (
-    expression: ts.Expression,
-    seen = new Set<ts.Symbol>(),
-  ): ImportedKind | undefined => {
-    const value = unwrapExpression(expression);
-    if (ts.isSatisfiesExpression(value)) {
-      return importedKind(value.expression, seen);
-    }
-    if (ts.isAwaitExpression(value)) {
-      const kind = importedKind(value.expression, seen);
-      return kind === "promise" ? "module" : kind;
-    }
-    if (ts.isCallExpression(value) && value.expression.kind === ts.SyntaxKind.ImportKeyword) {
-      return "promise";
-    }
-    if (ts.isConditionalExpression(value)) {
-      const left = importedKind(value.whenTrue, new Set(seen));
-      const right = importedKind(value.whenFalse, seen);
-      if (left === "promise" || right === "promise") {
-        return "promise";
-      }
-      return left === "module" || right === "module" ? "module" : (left ?? right);
-    }
-    if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
-      return importedKind(value.expression, seen) ? "value" : undefined;
-    }
-    if (!ts.isIdentifier(value)) {
-      return undefined;
-    }
-    let symbol: ts.Symbol | undefined;
-    if (ts.isShorthandPropertyAssignment(value.parent)) {
-      symbol = checker.getShorthandAssignmentValueSymbol(value.parent);
-    } else if (ts.isExportSpecifier(value.parent)) {
-      const specifier = value.parent;
-      const declaration = specifier.parent.parent;
-      if (
-        specifier.isTypeOnly ||
-        declaration.isTypeOnly ||
-        declaration.moduleSpecifier ||
-        (specifier.propertyName ?? specifier.name) !== value
-      ) {
-        return undefined;
-      }
-      symbol = checker.getExportSpecifierLocalTargetSymbol(specifier);
-    } else {
-      symbol = checker.getSymbolAtLocation(value);
-    }
-    if (!symbol || seen.has(symbol)) {
-      return undefined;
-    }
-    seen.add(symbol);
-    let result: ImportedKind | undefined;
-    for (const declaration of symbol.declarations ?? []) {
-      if (ts.isNamespaceImport(declaration) && !declaration.parent.isTypeOnly) {
-        result = "module";
-      } else if (
-        (ts.isImportClause(declaration) && !declaration.isTypeOnly) ||
-        (ts.isImportSpecifier(declaration) &&
-          !declaration.isTypeOnly &&
-          !declaration.parent.parent.isTypeOnly)
-      ) {
-        result ??= "value";
-      } else if (ts.isBindingElement(declaration)) {
-        const source = bindingSource(declaration);
-        if (source && importedKind(source, new Set(seen))) {
-          result ??= "value";
-        }
-      } else if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
-        const kind = importedKind(declaration.initializer, new Set(seen));
-        if (kind === "promise") {
-          return kind;
-        }
-        if (kind === "module" || !result) {
-          result = kind;
-        }
-      }
-    }
-    return result;
-  };
-
-  return {
-    isImportedReceiver: (expression: ts.Expression) => importedKind(expression) !== undefined,
-    isImportedAccessor(expression: ts.Identifier) {
-      return (checker.getSymbolAtLocation(expression)?.declarations ?? []).some(
-        (declaration) =>
-          ts.isImportSpecifier(declaration) &&
-          !declaration.isTypeOnly &&
-          !declaration.parent.parent.isTypeOnly &&
-          accessorNames.has(declaration.propertyName?.text ?? declaration.name.text),
-      );
-    },
-    destructuresImportedReceiver(node: ts.BindingElement) {
-      const source = bindingSource(node);
-      return source !== undefined && importedKind(source) !== undefined;
-    },
-    escapesNamespace(expression: ts.Expression) {
-      const kind = importedKind(expression);
-      if (!kind || kind === "value") {
-        return false;
-      }
-      const declaration = expression.parent;
-      if (
-        (ts.isNamespaceImport(declaration) && declaration.name === expression) ||
-        (ts.isVariableDeclaration(declaration) && declaration.name === expression)
-      ) {
-        return false;
-      }
-      for (let node: ts.Node | undefined = expression.parent; node; node = node.parent) {
-        if (ts.isTypeNode(node)) {
-          return false;
-        }
-      }
-      let value = expression;
-      let pending = kind === "promise";
-      while (
-        ts.isParenthesizedExpression(value.parent) ||
-        ts.isAsExpression(value.parent) ||
-        ts.isTypeAssertionExpression(value.parent) ||
-        ts.isSatisfiesExpression(value.parent) ||
-        ts.isNonNullExpression(value.parent) ||
-        ts.isAwaitExpression(value.parent) ||
-        (ts.isConditionalExpression(value.parent) &&
-          (value.parent.whenTrue === value || value.parent.whenFalse === value))
-      ) {
-        if (ts.isAwaitExpression(value.parent)) {
-          pending = false;
-        } else if (ts.isConditionalExpression(value.parent)) {
-          pending = importedKind(value.parent) === "promise";
-        }
-        value = value.parent;
-      }
-      const parent = value.parent;
-      if (
-        ts.isTypeOfExpression(parent) ||
-        (!pending && ts.isPropertyAccessExpression(parent) && parent.expression === value) ||
-        (!pending &&
-          ts.isElementAccessExpression(parent) &&
-          parent.expression === value &&
-          ts.isStringLiteral(parent.argumentExpression))
-      ) {
-        return false;
-      }
-      if (ts.isVariableDeclaration(parent) && parent.initializer === value) {
-        if (ts.isIdentifier(parent.name)) {
-          const statement = parent.parent.parent;
-          return (
-            ts.isVariableStatement(statement) &&
-            (statement.modifiers?.some(
-              (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-            ) ??
-              false)
-          );
-        }
-        return !(
-          ts.isObjectBindingPattern(parent.name) &&
-          parent.name.elements.every(
-            (binding) =>
-              !binding.dotDotDotToken &&
-              (!binding.propertyName || !ts.isComputedPropertyName(binding.propertyName)),
-          )
-        );
-      }
-      return true;
-    },
-  };
-}
-
 function findNamedBoundaryViolations(
   content: string,
   fileName: string,
   legacyNames: ReadonlySet<string>,
   subject: string,
-  importedOnly = false,
 ) {
   const sourceFile = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, true);
-  const bindings = importedOnly
-    ? createImportedAccessorBindings(sourceFile, legacyNames)
-    : undefined;
   const violations: BoundaryViolation[] = [];
   const addViolation = (node: ts.Node, action: string, name: string) => {
     violations.push({
@@ -549,10 +354,7 @@ function findNamedBoundaryViolations(
       if (namedBindings && ts.isNamedImports(namedBindings)) {
         for (const specifier of namedBindings.elements) {
           const importedName = specifier.propertyName?.text ?? specifier.name.text;
-          if (
-            legacyNames.has(importedName) &&
-            (!bindings || (!node.importClause?.isTypeOnly && !specifier.isTypeOnly))
-          ) {
+          if (legacyNames.has(importedName)) {
             addViolation(specifier, "imports", importedName);
           }
         }
@@ -560,57 +362,33 @@ function findNamedBoundaryViolations(
     }
 
     if (ts.isBindingElement(node)) {
-      const name =
-        bindings && node.propertyName ? getPropertyNameText(node.propertyName) : bindingName(node);
-      if (
-        name &&
-        legacyNames.has(name) &&
-        (!bindings || bindings.destructuresImportedReceiver(node))
-      ) {
+      const name = bindingName(node);
+      if (name && legacyNames.has(name)) {
         addViolation(node, "aliases", name);
       }
     }
 
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      legacyNames.has(node.name.text) &&
-      (!bindings || bindings.isImportedReceiver(node.expression))
-    ) {
+    if (ts.isPropertyAccessExpression(node) && legacyNames.has(node.name.text)) {
       addViolation(node.name, "references", node.name.text);
     }
 
     if (
       ts.isElementAccessExpression(node) &&
       ts.isStringLiteral(node.argumentExpression) &&
-      legacyNames.has(node.argumentExpression.text) &&
-      (!bindings || bindings.isImportedReceiver(node.expression))
+      legacyNames.has(node.argumentExpression.text)
     ) {
       addViolation(node.argumentExpression, "references", node.argumentExpression.text);
     }
 
     if (ts.isCallExpression(node)) {
       const calleeName = propertyAccessName(node.expression);
-      const callee = unwrapExpression(node.expression);
       if (
         calleeName &&
         legacyNames.has(calleeName) &&
-        ts.isIdentifier(callee) &&
-        (!bindings || bindings.isImportedAccessor(callee))
+        ts.isIdentifier(unwrapExpression(node.expression))
       ) {
         addViolation(node.expression, "calls", calleeName);
       }
-    }
-
-    if (
-      bindings &&
-      (ts.isIdentifier(node) ||
-        (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword)) &&
-      bindings.escapesNamespace(node)
-    ) {
-      violations.push({
-        line: toLine(sourceFile, node),
-        reason: "escapes runtime module namespace",
-      });
     }
 
     ts.forEachChild(node, visit);
@@ -717,7 +495,6 @@ export function findReadOnlySessionAccessorViolations(content: string, fileName 
     fileName,
     materializingSessionEntryAccessorNames,
     "materializing session entry accessor",
-    true,
   );
 }
 

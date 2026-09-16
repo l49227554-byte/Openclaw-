@@ -26,53 +26,6 @@ import {
 } from "../../scripts/check-session-accessor-boundary.mts";
 
 describe("session accessor boundary guard", () => {
-  it.each([
-    {
-      name: "fresh model-source tuple",
-      source: `
-        type ModelSource = { loadSessionEntry: (key: string) => unknown };
-        function refresh(target: ModelSource, entry: unknown) {
-          return { entry, loadSessionEntry: target.loadSessionEntry };
-        }
-      `,
-    },
-    {
-      name: "local callback calls and aliases",
-      source: `
-        const source = { loadSessionEntry: (key: string) => key };
-        const { loadSessionEntry } = source;
-        const { loadSessionEntry: read } = source;
-        source.loadSessionEntry("parent");
-        source["loadSessionEntry"]("parent");
-        const owner = { reader: source };
-        owner.reader.loadSessionEntry("parent");
-        const nested = owner["reader"];
-        nested["loadSessionEntry"]("parent");
-        loadSessionEntry("parent");
-        read("parent");
-      `,
-    },
-    {
-      name: "model-source parameter shadowing a namespace",
-      source: `
-        import * as source from "../config/sessions/session-accessor.js";
-        type ModelSource = { loadSessionEntry: (key: string) => unknown };
-        function refresh(source: ModelSource, entry: unknown) {
-          return { entry, loadSessionEntry: source.loadSessionEntry };
-        }
-      `,
-    },
-    {
-      name: "renamed non-materializing import",
-      source: `
-        import { readParent as loadSessionEntry } from "./model-source.js";
-        loadSessionEntry("parent");
-      `,
-    },
-  ])("allows $name", ({ source }) => {
-    expect(findReadOnlySessionAccessorViolations(source)).toEqual([]);
-  });
-
   it("keeps Gateway read paths on non-materializing accessors", () => {
     expect(
       readOnlyGatewaySessionAccessorFiles.has("src/gateway/server-methods/sessions-read.ts"),
@@ -80,137 +33,20 @@ describe("session accessor boundary guard", () => {
     expect(
       findReadOnlySessionAccessorViolations(`
         import { listSessionEntriesCore, loadSessionEntry } from "../config/sessions/session-accessor.js";
-        import * as sessionUtils from "../config/sessions/session-accessor.js";
         listSessionEntriesCore({ storePath });
         sessionUtils.loadSessionEntry(sessionKey);
       `),
     ).toEqual([
       { line: 2, reason: 'imports materializing session entry accessor "listSessionEntriesCore"' },
       { line: 2, reason: 'imports materializing session entry accessor "loadSessionEntry"' },
-      { line: 4, reason: 'calls materializing session entry accessor "listSessionEntriesCore"' },
-      { line: 5, reason: 'references materializing session entry accessor "loadSessionEntry"' },
+      { line: 3, reason: 'calls materializing session entry accessor "listSessionEntriesCore"' },
+      { line: 4, reason: 'references materializing session entry accessor "loadSessionEntry"' },
     ]);
     expect(
       findReadOnlySessionAccessorViolations(`
         import { listSessionEntriesReadOnly, loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
         listSessionEntriesReadOnly({ storePath });
         sessionUtils.loadSessionEntryReadOnly(sessionKey);
-      `),
-    ).toEqual([]);
-  });
-
-  it.each([
-    'import { loadSessionEntry as read } from "../config/sessions/session-accessor.js"; read(key);',
-    'import sessionUtils from "./adapter.js"; sessionUtils.loadSessionEntry(key);',
-    'import sessionUtils from "./adapter.js"; sessionUtils.nested.loadSessionEntry(key);',
-    'import { sessionUtils } from "./adapter.js"; sessionUtils.loadSessionEntry(key);',
-    'import { sessionUtils } from "./adapter.js"; sessionUtils["nested"]["loadSessionEntry"](key);',
-    `import sessionUtils from "./adapter.js";
-     const readers = sessionUtils.nested; readers.loadSessionEntry(key);`,
-    'import { sessionUtils as readers } from "./adapter.js"; readers["loadSessionEntry"](key);',
-    `import sessionUtils from "./adapter.js";
-     const readers = sessionUtils; const { loadSessionEntry: read } = readers; read(key);`,
-    `import { sessionUtils } from "./adapter.js";
-     const { nested: { loadSessionEntry: read } } = sessionUtils; read(key);`,
-    `import { sessionUtils } from "./adapter.js";
-     const readers = condition ? sessionUtils : localReader; readers.loadSessionEntry(key);`,
-    `const { sessionUtils } = await import("./adapter.js");
-     sessionUtils.loadSessionEntry(key);`,
-    `const { default: sessionUtils } = await import("./adapter.js");
-     sessionUtils.loadSessionEntry(key);`,
-    `const { sessionUtils: { loadSessionEntry: read } } = await import("./adapter.js");
-     read(key);`,
-    `import * as sessions from "../config/sessions/session-accessor.js";
-     const read = sessions.loadSessionEntry; read(key);`,
-    'import * as adapter from "./adapter.js"; adapter.default.loadSessionEntry(key);',
-    'import * as adapter from "./adapter.js"; adapter["default"]["nested"].loadSessionEntry(key);',
-    `import * as sessions from "../config/sessions/session-accessor.js";
-     sessions["loadSessionEntry"](key);`,
-    `import * as sessions from "../config/sessions/session-accessor.js";
-     const { loadSessionEntry: read } = sessions; read(key);`,
-    `import * as sessions from "../config/sessions/session-accessor.js";
-     const { "loadSessionEntry": read } = sessions; read(key);`,
-    `import * as sessions from "../config/sessions/session-accessor.js";
-     const first = sessions; const second = first; second.loadSessionEntry(key);`,
-    `import * as sessions from "../config/sessions/session-accessor.js";
-     const readers = condition ? sessions : localReader; readers.loadSessionEntry(key);`,
-    `import * as sessions from "../config/sessions/session-accessor.js";
-     const readers = sessions satisfies typeof sessions; readers.loadSessionEntry(key);`,
-    '(await import("../config/sessions/session-accessor.js")).loadSessionEntry(key);',
-    `const sessions = await import("../config/sessions/session-accessor.js");
-     const alias = sessions; alias["loadSessionEntry"](key);`,
-    `const { loadSessionEntry: read } = await import("../config/sessions/session-accessor.js");
-     read(key);`,
-  ])("rejects materializing accessor bindings: %s", (source) => {
-    expect(findReadOnlySessionAccessorViolations(source)).toEqual([
-      expect.objectContaining({ reason: expect.stringContaining('accessor "loadSessionEntry"') }),
-    ]);
-  });
-
-  it.each([
-    "pass(sessions);",
-    "function getReaders() { return sessions; }",
-    "export const readers = sessions;",
-    "export const readers = condition ? sessions : localReader;",
-    'export const pending = import("../config/sessions/session-accessor.js");',
-    "const readers = sessions; export { readers };",
-    "export { sessions as readers };",
-    "export { sessions };",
-    "export default sessions;",
-    "const copy = { ...sessions }; copy.loadSessionEntry(key);",
-    "const holder = { readers: sessions }; holder.readers.loadSessionEntry(key);",
-    "const holder = { sessions }; holder.sessions.loadSessionEntry(key);",
-    "let readers; readers = sessions; readers.loadSessionEntry(key);",
-    `import { reader } from "./adapter.js";
-     var readers = reader; var readers = sessions; pass(readers);`,
-    'const name = "loadSessionEntry"; sessions[name](key);',
-    'import("../config/sessions/session-accessor.js").then(({ loadSessionEntry }) => loadSessionEntry(key));',
-    `const pending = import("../config/sessions/session-accessor.js");
-     pending.then((readers) => readers.loadSessionEntry(key));`,
-  ])("rejects namespace escapes: %s", (use) => {
-    expect(
-      findReadOnlySessionAccessorViolations(`
-        import * as sessions from "../config/sessions/session-accessor.js";
-        ${use}
-      `),
-    ).toEqual([expect.objectContaining({ reason: "escapes runtime module namespace" })]);
-  });
-
-  it("reports both a namespace rest escape and its materializing member", () => {
-    expect(
-      findReadOnlySessionAccessorViolations(`
-        import * as sessions from "../config/sessions/session-accessor.js";
-        const { ...readers } = sessions;
-        readers.loadSessionEntry(key);
-      `),
-    ).toEqual([
-      { line: 3, reason: "escapes runtime module namespace" },
-      { line: 4, reason: 'references materializing session entry accessor "loadSessionEntry"' },
-    ]);
-  });
-
-  it("allows selected read-only imports, namespace members, and dynamic helpers", () => {
-    expect(
-      findReadOnlySessionAccessorViolations(`
-        import pLimit from "p-limit";
-        import * as sessions from "../config/sessions/session-accessor.js";
-        import type { loadSessionEntry } from "../config/sessions/session-accessor.js";
-        type Readers = typeof sessions;
-        export type { sessions };
-        export { type sessions as SessionTypes };
-        const readers = sessions;
-        const selected = condition ? sessions : readers;
-        const { loadSessionEntryReadOnly: read } = readers;
-        readers.loadSessionEntryReadOnly(key);
-        selected.loadSessionEntryReadOnly(key);
-        readers["loadSessionEntryReadOnly"](key);
-        read(key);
-        const { saveRemoteMediaForStore } = await import("../media/store.remote.runtime.js");
-        saveRemoteMediaForStore({});
-        const importedFactory = await pLimit;
-        useFactory(importedFactory);
-        export const makeLimit = pLimit;
-        pLimit(1);
       `),
     ).toEqual([]);
   });

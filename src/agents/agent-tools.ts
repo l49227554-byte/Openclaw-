@@ -45,6 +45,7 @@ import {
   filterToolsByMessageProvider,
   messageProviderExcludesTool,
 } from "./agent-tools.message-provider-policy.js";
+import { applyModelProviderToolPolicy } from "./agent-tools.model-provider-policy.js";
 import {
   type SkillInstructionDeliveryCache,
   wrapToolMemoryFlushAppendOnlyWrite,
@@ -61,7 +62,6 @@ import { resolveProcessToolScopeKey } from "./bash-process-scope.js";
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import type { ProcessToolDefaults } from "./bash-tools.process.js";
 import { listChannelAgentTools } from "./channel-tools.js";
-import { shouldSuppressManagedWebSearchTool } from "./codex-native-web-search.js";
 import {
   resolveConversationCapabilityProfile,
   type ResolvedConversationCapabilityProfile,
@@ -83,10 +83,7 @@ import { pinExecToolTarget } from "./exec-tool-target-pinning.js";
 import { prepareGitHubToolEnvironment } from "./github-tool-identity.js";
 import { resolveImageSanitizationLimits } from "./image-sanitization.js";
 import { resolveExecToolConfig } from "./lazy-exec-tool.js";
-import {
-  filterLocalModelLeanTools,
-  resolveLocalModelLeanPreserveToolNames,
-} from "./local-model-lean.js";
+import { resolveLocalModelLeanPreserveToolNames } from "./local-model-lean.js";
 import { createMemoryWriteProvenanceObserver } from "./memory-write-provenance.js";
 import type { ModelAuthMode } from "./model-auth.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
@@ -140,49 +137,6 @@ import { wrapToolWithGatewayCallerIdentity } from "./tools/gateway-caller-contex
 import type { QuestionPromptDelivery } from "./tools/question-prompt-send.js";
 
 const MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
-
-function applyModelProviderToolPolicy(
-  toolsInput: AnyAgentTool[],
-  params?: {
-    config?: OpenClawConfig;
-    modelProvider?: string;
-    modelApi?: string;
-    modelId?: string;
-    agentId?: string;
-    sessionKey?: string;
-    agentDir?: string;
-    modelCompat?: ModelCompatConfig;
-    suppressManagedWebSearch?: boolean;
-    runtimeToolAllowlist?: string[];
-    localModelLeanPreserveToolNames?: string[];
-  },
-): AnyAgentTool[] {
-  let tools = toolsInput;
-  tools = filterLocalModelLeanTools({
-    tools,
-    config: params?.config,
-    agentId: params?.agentId,
-    sessionKey: params?.sessionKey,
-    preserveToolNames: params?.localModelLeanPreserveToolNames ?? params?.runtimeToolAllowlist,
-  });
-
-  if (
-    params?.suppressManagedWebSearch !== false &&
-    shouldSuppressManagedWebSearchTool({
-      config: params?.config,
-      modelProvider: params?.modelProvider,
-      modelApi: params?.modelApi,
-      modelId: params?.modelId,
-      agentId: params?.agentId,
-      sessionKey: params?.sessionKey,
-      agentDir: params?.agentDir,
-    })
-  ) {
-    return tools.filter((tool) => tool.name !== "web_search");
-  }
-
-  return tools;
-}
 
 export { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 

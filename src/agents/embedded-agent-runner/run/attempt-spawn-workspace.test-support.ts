@@ -728,15 +728,11 @@ vi.mock("../../cache-trace.js", () => ({
   createCacheTrace: () => undefined,
 }));
 
-vi.mock("../../agent-tools.js", () => {
-  const createTools = (options?: { workspaceDir?: string; spawnWorkspaceDir?: string }) =>
-    hoisted.createOpenClawCodingToolsMock(options);
-  return {
-    createOpenClawCodingTools: createTools,
-    createOpenClawCodingToolsInternal: createTools,
-    resolveToolLoopDetectionConfig: () => undefined,
-  };
-});
+vi.mock("../../agent-tools.js", () => ({
+  createOpenClawCodingTools: hoisted.createOpenClawCodingToolsMock,
+  createOpenClawCodingToolsInternal: hoisted.createOpenClawCodingToolsMock,
+  resolveToolLoopDetectionConfig: () => undefined,
+}));
 
 vi.mock("../../agent-bundle-mcp-tools.js", () => ({
   createBundleMcpToolRuntime: async () => undefined,

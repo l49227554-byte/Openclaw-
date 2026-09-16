@@ -15,9 +15,10 @@ const suite = createControlUiE2eSuite({ name: "New Session draft navigation" });
 suite.define(() => {
   it("preserves route-owned drafts through Back without persisting Incognito input", async () => {
     for (const scenario of [
-      { name: "ordinary-query", incognito: false, destination: "new-session" },
-      { name: "incognito-settings", incognito: true, destination: "appearance" },
-      { name: "incognito-query", incognito: true, destination: "new-session" },
+      { name: "ordinary-query", incognito: false, turnOff: false, destination: "new-session" },
+      { name: "incognito-settings", incognito: true, turnOff: false, destination: "appearance" },
+      { name: "incognito-query", incognito: true, turnOff: false, destination: "new-session" },
+      { name: "incognito-off-query", incognito: true, turnOff: true, destination: "new-session" },
     ]) {
       await suite.withPage({ viewport: { width: 1440, height: 1000 } }, async ({ page }) => {
         const errors: string[] = [];
@@ -65,6 +66,15 @@ suite.define(() => {
         if (!scenario.incognito) {
           await waitForCommittedNewSessionDraft(page, text, 1);
         }
+        if (scenario.turnOff) {
+          await page.getByRole("switch", { name: "Incognito" }).click();
+          await expect
+            .poll(() =>
+              page.getByRole("switch", { name: "Incognito" }).getAttribute("aria-checked"),
+            )
+            .toBe("false");
+        }
+        const remainsIncognito = scenario.incognito && !scenario.turnOff;
         const observe = async () => ({
           url: page.url(),
           samePageElement: await original.evaluate(
@@ -142,7 +152,7 @@ suite.define(() => {
         // All outcomes are retained before judging the custody hypothesis.
         expect.soft(returned.text, scenario.name).toBe(text);
         expect.soft(returned.attachments, scenario.name).toContain(filename);
-        expect.soft(returned.incognito, scenario.name).toBe(String(scenario.incognito));
+        expect.soft(returned.incognito, scenario.name).toBe(String(remainsIncognito));
         expect.soft(new URL(returned.url).searchParams.get("agent"), scenario.name).toBe("main");
         expect.soft(errors, scenario.name).toEqual([]);
         expect
@@ -151,7 +161,7 @@ suite.define(() => {
             scenario.name,
           )
           .toEqual([]);
-        if (scenario.incognito) {
+        if (remainsIncognito) {
           await waitForCommittedNewSessionDraft(page, null, 0);
           await page.reload();
           await waitForControlUiRoute(page, { routeId: "new-session", pathname: "/new" });
@@ -162,6 +172,15 @@ suite.define(() => {
               page.getByRole("switch", { name: "Incognito" }).getAttribute("aria-checked"),
             )
             .toBe("false");
+        }
+        if (scenario.turnOff) {
+          await waitForCommittedNewSessionDraft(page, text, 1);
+          await page.reload();
+          await waitForControlUiRoute(page, { routeId: "new-session", pathname: "/new" });
+          await expect.poll(() => message.inputValue()).toBe(text);
+          await expect
+            .poll(() => page.locator(".chat-attachment-file__name").allTextContents())
+            .toContain(filename);
         }
         await original.dispose();
       });

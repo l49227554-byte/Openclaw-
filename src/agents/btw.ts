@@ -251,6 +251,7 @@ function collectBtwMessageText(content: Message["content"]): string {
 function buildBtwCliPrompt(params: {
   messages: Message[];
   question: string;
+  imageCount: number;
   inFlightPrompt?: string;
 }): string {
   const lines = [
@@ -268,6 +269,9 @@ function buildBtwCliPrompt(params: {
   }
   lines.push("</conversation_history>", "");
   lines.push(buildBtwQuestionPrompt(params.question, params.inFlightPrompt));
+  if (params.imageCount > 0) {
+    lines.push(`[${params.imageCount} attached image(s) omitted from CLI side-question input.]`);
+  }
   return lines.join("\n");
 }
 
@@ -602,6 +606,7 @@ type RunBtwSideQuestionParams = {
   provider: string;
   model: string;
   question: string;
+  images?: ImageContent[];
   sessionEntry: StoredSessionEntry;
   sessionStore?: Record<string, StoredSessionEntry>;
   sessionKey?: string;
@@ -646,6 +651,7 @@ async function runCliBtwSideQuestion(params: {
   cfg: OpenClawConfig;
   model: string;
   question: string;
+  imageCount: number;
   sessionId: string;
   sessionFile: string;
   sessionEntry: StoredSessionEntry;
@@ -690,6 +696,7 @@ async function runCliBtwSideQuestion(params: {
       prompt: buildBtwCliPrompt({
         messages: params.messages,
         question: params.question,
+        imageCount: params.imageCount,
         inFlightPrompt: params.inFlightPrompt,
       }),
       extraSystemPrompt: buildBtwSystemPrompt(),
@@ -1094,6 +1101,7 @@ export async function runBtwSideQuestion(
         });
         const sideParams = {
           ...hostAttempt,
+          images: params.images,
           hostCapabilities: host.capabilities,
           sandbox,
           provider: runtimeModel.provider,
@@ -1233,6 +1241,7 @@ export async function runBtwSideQuestion(
         cfg: params.cfg,
         model: params.model,
         question: params.question,
+        imageCount: params.images?.length ?? 0,
         sessionId,
         sessionFile,
         sessionEntry: params.sessionEntry,
@@ -1385,6 +1394,7 @@ export async function runBtwSideQuestion(
       await blockEmitChain;
     };
 
+    const { images } = await sanitizeImageBlocks(params.images ?? [], "btw:question", imageLimits);
     const stream = await streamWithPayloadPatch(
       streamFn,
       runtimeModel,
@@ -1399,6 +1409,7 @@ export async function runBtwSideQuestion(
                 type: "text",
                 text: buildBtwQuestionPrompt(params.question, inFlightPrompt),
               },
+              ...images,
             ],
             timestamp: Date.now(),
           },

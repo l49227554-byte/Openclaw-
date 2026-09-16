@@ -170,7 +170,7 @@ suite.define(() => {
         const sent = await gateway.waitForRequest(
           route.startsWith("new") ? "sessions.create" : "chat.send",
         );
-        expect(sent.params.message).toBe("😄");
+        expect(sent.params).toMatchObject({ message: "😄" });
       });
     },
   );

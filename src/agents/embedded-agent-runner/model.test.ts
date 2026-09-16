@@ -286,7 +286,6 @@ import type { ModelDefinitionConfig, ModelProviderConfig } from "../../config/ty
 import type { Model } from "../../llm/types.js";
 import { getModelProviderLocalService } from "../provider-local-service.js";
 import { getModelProviderRequestTransport } from "../provider-request-config.js";
-import { resolveTieredModel } from "./model-resolution.js";
 import {
   applyConfiguredProviderOverrides,
   findInlineModelMatch,
@@ -1254,14 +1253,9 @@ describe("resolveModel", () => {
     expect(resolveBundledStaticCatalogModelMock).toHaveBeenCalledOnce();
   });
 
-  it("resolves provider static capabilities before configured proxy fallback", async () => {
+  it("resolves opt-in provider static catalog rows while skipping agent discovery", async () => {
     const metadataSnapshot = createPluginMetadataSnapshotFixture();
-    const config = makeProviderConfig("google", {
-      api: "openai-completions",
-      baseUrl: "https://proxy.example/v1",
-      headers: { "X-Proxy": "configured" },
-      models: [],
-    });
+    const config = {};
     const preparedModelRuntime = {
       catalogOwner: undefined,
       agentDir: state.agentDir(),
@@ -1290,39 +1284,41 @@ describe("resolveModel", () => {
       maxTokens: 65_536,
     });
 
-    const { resolution: result } = await resolveTieredModel({
-      provider: "google",
-      modelId: "gemini-3.1-pro-preview",
-      agentDir: state.agentDir(),
-      config,
-      workspaceDir: state.workspaceDir,
-      preparedModelRuntime,
-    });
+    const result = await resolveModelAsync(
+      "google",
+      "gemini-3.1-pro-preview",
+      state.agentDir(),
+      undefined,
+      {
+        allowBundledStaticCatalogFallback: true,
+        preparedModelRuntime,
+        runtimeHooks: createRuntimeHooks(),
+        skipAgentDiscovery: true,
+      },
+    );
 
     expectRecordFields(expectResolvedModel(result), {
       provider: "google",
       id: "gemini-3.1-pro-preview",
-      api: "openai-completions",
-      baseUrl: "https://proxy.example/v1",
-      headers: { "X-Proxy": "configured" },
+      api: "google-generative-ai",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
       reasoning: true,
-      input: ["text", "image"],
       contextWindow: 1_048_576,
       maxTokens: 65_536,
     });
     expect(resolveBundledStaticCatalogModelMock).toHaveBeenCalledWith({
       provider: "google",
       modelId: "gemini-3.1-pro-preview",
-      cfg: config,
-      workspaceDir: state.workspaceDir,
+      cfg: undefined,
+      workspaceDir: undefined,
       includeRuntimeDiscovery: true,
       metadataSnapshot,
     });
     expect(resolveBundledProviderStaticCatalogModelMock).toHaveBeenCalledWith({
       provider: "google",
       modelId: "gemini-3.1-pro-preview",
-      cfg: config,
-      workspaceDir: state.workspaceDir,
+      cfg: undefined,
+      workspaceDir: undefined,
       metadataSnapshot,
     });
     expect(discoverAuthStorage).not.toHaveBeenCalled();

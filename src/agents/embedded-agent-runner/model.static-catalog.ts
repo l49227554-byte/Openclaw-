@@ -29,7 +29,6 @@ import {
   resolveOwningPluginIdsForProviderRef,
 } from "../../plugins/providers.js";
 import type { PluginRegistry } from "../../plugins/registry-types.js";
-import { getPluginRuntimeGenerationRegistry } from "../../plugins/runtime/generation-scope.js";
 import { dedupeByKey } from "../../shared/dedupe-by-key.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { buildInlineProviderModels, completeInlineProviderModel } from "./model.inline-provider.js";
@@ -376,8 +375,7 @@ async function loadBundledProviderStaticCatalogModels(params: {
           onlyPluginIds: missingPluginIds,
           includeUntrustedWorkspacePlugins: false,
           requireCompleteDiscoveryEntryCoverage: true,
-          // Exact generations can reuse registered static hooks without activating plugins.
-          discoveryEntriesOnly: !getPluginRuntimeGenerationRegistry(),
+          discoveryEntriesOnly: true,
           includeManifestModelCatalogProviders: false,
           ...(params.pluginMetadataSnapshot
             ? { pluginMetadataSnapshot: params.pluginMetadataSnapshot }

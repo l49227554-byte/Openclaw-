@@ -139,18 +139,25 @@ function reusableAgentRuntimeRegistry(
 
 function adoptAgentRuntimeRegistrations(
   pluginRegistry: PluginRegistry,
-  purpose: RuntimePluginLoadPurpose | undefined,
+  params: AgentRuntimePluginRegistryParams,
 ): {
   registry: PluginRegistry;
   donor?: PluginRegistry;
 } {
   const activeRegistry = getActivePluginRegistry();
-  if (!activeRegistry || purpose === "model-catalog") {
+  if (!activeRegistry || params.purpose === "model-catalog") {
     return { registry: pluginRegistry };
   }
+  const memoryRegistry =
+    params.metadataSnapshot &&
+    params.workspaceDir &&
+    params.config &&
+    getActivePluginRegistryWorkspaceDir() === resolveUserPath(params.workspaceDir)
+      ? adoptRuntimeMemoryRegistrations(pluginRegistry, activeRegistry, params.config)
+      : pluginRegistry;
   const registry = bindPluginRegistryResourceOwner(
     adoptRuntimeWidgetPresenterRegistrations(
-      adoptRuntimeContextEngineRegistrations(pluginRegistry, activeRegistry),
+      adoptRuntimeContextEngineRegistrations(memoryRegistry, activeRegistry),
       activeRegistry,
     ),
     pluginRegistry,
@@ -181,7 +188,7 @@ export async function acquireAgentRuntimePluginRegistry(
     ? withPluginMetadataSnapshotScope(params.metadataSnapshot, acquire)
     : acquire());
   try {
-    const { registry, donor } = adoptAgentRuntimeRegistrations(acquired.registry, params.purpose);
+    const { registry, donor } = adoptAgentRuntimeRegistrations(acquired.registry, params);
     const primaryResources = getPluginRegistryInspectionResources(acquired.registry);
     if (!primaryResources) {
       throw new Error("Acquired prepared registry has no registration resource owner");
@@ -232,7 +239,7 @@ export function loadAgentRuntimePluginRegistryHandle(
     : load();
   // Media providers remain owned by this source when full-only donors require a copy.
   onPrimaryRegistry?.(pluginRegistry);
-  return adoptAgentRuntimeRegistrations(pluginRegistry, params.purpose).registry;
+  return adoptAgentRuntimeRegistrations(pluginRegistry, params).registry;
 }
 
 /** Binds a scoped plugin generation when a direct host has no Gateway owner. */
@@ -270,19 +277,12 @@ export async function withAgentPluginRegistry<T>(params: {
     selections: params.selections,
     workspaceDir: params.workspaceDir,
   });
-  const activeRegistry = getActivePluginRegistry();
-  const scopedRegistry =
-    activeRegistry &&
-    context.metadataSnapshot &&
-    getActivePluginRegistryWorkspaceDir() === resolveUserPath(params.workspaceDir)
-      ? adoptRuntimeMemoryRegistrations(pluginRegistry, activeRegistry, context.config)
-      : pluginRegistry;
-  setPluginRuntimeLoadContext(scopedRegistry, context);
+  setPluginRuntimeLoadContext(pluginRegistry, context);
   const invocations = new PluginInvocationScope(
-    scopedRegistry,
-    collectRegistryInvocationInstances(scopedRegistry),
+    pluginRegistry,
+    collectRegistryInvocationInstances(pluginRegistry),
   );
-  return await withPluginRuntimeRegistryScope(scopedRegistry, () =>
-    invocations.run(() => params.run(scopedRegistry)),
+  return await withPluginRuntimeRegistryScope(pluginRegistry, () =>
+    invocations.run(() => params.run(pluginRegistry)),
   );
 }

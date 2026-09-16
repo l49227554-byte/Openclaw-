@@ -4,7 +4,6 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
-import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { connectUserModelAccount } from "../../state/user-model-accounts.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import {
@@ -351,94 +350,6 @@ describe("model runtime generation scope", () => {
     });
     expect(generationA.resolveDynamicModel).toHaveBeenCalled();
     expect(generationB.resolveDynamicModel).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    { scope: "captured", contextWindow: 1_000_000, reasoning: true },
-    { scope: "metadata-only", contextWindow: 200_000, reasoning: false },
-    { scope: "cold", contextWindow: 200_000, reasoning: false },
-  ])("keeps registered static catalogs inside the $scope owner", async (expected) => {
-    const provider = "generation-static";
-    const config = {
-      models: {
-        providers: {
-          [provider]: {
-            api: "openai-responses",
-            baseUrl: "https://proxy.example/v1",
-            headers: { "X-Proxy": "configured" },
-            models: [],
-          },
-        },
-      },
-    } satisfies OpenClawConfig;
-    const generation = createModelGenerationFixture({
-      agentDir: state.agentDir(),
-      workspaceDir: state.workspaceDir,
-      config,
-      label: "registered-static",
-      provider,
-      requestProvider: provider,
-      withRegistry: expected.scope === "captured",
-    });
-    const plugin = expectDefined(
-      generation.metadataSnapshot.manifestRegistry.plugins[0],
-      "registered static fixture",
-    );
-    const metadataSnapshot = {
-      ...createPluginMetadataSnapshotFixture({
-        plugins: [{ ...plugin, modelCatalog: { discovery: { [provider]: "runtime" } } }],
-      }),
-      workspaceDir: state.workspaceDir,
-    };
-    generation.metadataSnapshot = metadataSnapshot;
-    generation.preparedModelRuntime.metadataSnapshot = metadataSnapshot;
-    const staticModel = {
-      ...generation.resolveDynamicModel(),
-      api: "openai-completions" as const,
-      reasoning: true,
-      contextWindow: 1_000_000,
-      maxTokens: 128_000,
-    };
-    const staticCatalog = vi.fn(async () => ({
-      provider: {
-        api: staticModel.api,
-        baseUrl: staticModel.baseUrl,
-        models: [staticModel],
-      },
-    }));
-    const liveCatalog = vi.fn(async () => {
-      throw new Error("Static resolution must not run live discovery");
-    });
-    const registeredProvider = generation.pluginRegistry.providers[0]!.provider;
-    registeredProvider.resolveDynamicModel = () => undefined;
-    registeredProvider.staticCatalog = { run: staticCatalog };
-    registeredProvider.catalog = { run: liveCatalog };
-    publishCurrentModelGeneration(generation);
-    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network"));
-
-    const result =
-      expected.scope === "cold"
-        ? await resolveModelAsync(provider, generation.modelId, state.agentDir(), config, {
-            ...generation.preparedModelRuntime.createStores(),
-            workspaceDir: state.workspaceDir,
-            skipAgentDiscovery: true,
-            skipProviderRuntimeHooks: true,
-            allowBundledStaticCatalogFallback: true,
-          })
-        : await resolveGeneration(generation);
-
-    expect(result.model).toMatchObject({
-      provider,
-      id: generation.modelId,
-      api: "openai-responses",
-      baseUrl: "https://proxy.example/v1",
-      headers: { "X-Proxy": "configured" },
-      contextWindow: expected.contextWindow,
-      reasoning: expected.reasoning,
-    });
-    expect(staticCatalog).toHaveBeenCalledTimes(expected.scope === "captured" ? 1 : 0);
-    expect(liveCatalog).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("preserves the retirement remedy when the selected route has no discoverable model", async () => {

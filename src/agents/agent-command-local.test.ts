@@ -1,10 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { clearActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
+import { getPluginRuntimeGenerationRegistry } from "../plugins/runtime/generation-scope.js";
+import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import type { RuntimeEnv } from "../runtime.js";
+import {
+  createOpenClawTestState,
+  type OpenClawTestState,
+} from "../test-utils/openclaw-test-state.js";
 import { runLocalAgentCommand } from "./agent-command-local.js";
 import {
   bindActiveOperatorTurnAuthority,
   type CronCreatorAuthorityCapability,
 } from "./cron-creator-authority-context.js";
+import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -19,12 +28,24 @@ vi.mock("./command/runtime-loaders.js", () => ({
   resolveAgentCommandDeps: mocks.resolveDeps,
 }));
 
+let state: OpenClawTestState;
+beforeEach(async () => {
+  state = await createOpenClawTestState({ label: "local-command-authority" });
+});
+afterEach(async () => {
+  await resetPreparedModelRuntimeSnapshotsForTest();
+  clearActivePluginRegistry();
+  await state.cleanup();
+});
+
 function createPrepared(senderIsOwner: boolean) {
   return {
     cfg: {},
     opts: { runId: "run-local", senderIsOwner },
     runId: "run-local",
-    workspaceDir: "/tmp/openclaw-agent-command-local-test",
+    sessionAgentId: "main",
+    agentDir: state.agentDir(),
+    workspaceDir: state.workspaceDir,
   };
 }
 
@@ -66,5 +87,32 @@ describe("runLocalAgentCommand operator authority", () => {
         },
       });
     }
+  });
+});
+
+it("keeps runtime memory registrations through local command preparation", async () => {
+  const registry = createEmptyPluginRegistry();
+  const pluginId = "memory-fixture";
+  registry.plugins.push(createPluginRecord({ id: pluginId }));
+  const supplement = { search: async () => [], get: async () => null };
+  const prepare = async () => ["prepared memory"];
+  const builder = () => ["memory guidance"];
+  registry.memoryCorpusSupplements.push({ pluginId, supplement });
+  registry.memoryPromptPreparations.push({ pluginId, prepare });
+  registry.memoryPromptSupplements.push({ pluginId, builder });
+  setActivePluginRegistry(registry, undefined, "default", state.workspaceDir);
+  mocks.prepare.mockResolvedValueOnce({
+    ...createPrepared(false),
+    cfg: { plugins: { entries: { [pluginId]: { enabled: true } } } },
+  });
+  await runLocalAgentCommand({
+    opts: { message: "test", runId: "local-memory" },
+    runtime: {} as RuntimeEnv,
+    run: async () => {
+      const captured = getPluginRuntimeGenerationRegistry();
+      expect(captured?.memoryCorpusSupplements).toContainEqual({ pluginId, supplement });
+      expect(captured?.memoryPromptPreparations).toContainEqual({ pluginId, prepare });
+      expect(captured?.memoryPromptSupplements).toContainEqual({ pluginId, builder });
+    },
   });
 });

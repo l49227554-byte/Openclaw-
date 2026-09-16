@@ -27,13 +27,17 @@ import {
   readTranscriptStatsBatchReadOnlySync,
   readTranscriptStatsSync,
 } from "../config/sessions/session-accessor.js";
-import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
+import {
+  listDurableSqliteTargetPathsForSessionStorePath,
+  resolveSqliteTargetFromSessionStorePath,
+} from "../config/sessions/session-sqlite-target.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
 import { streamSessionTranscriptLines } from "../config/sessions/transcript-stream.js";
 import { selectVisibleTranscriptEvents } from "../config/sessions/transcript-visible-events.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
+import { resolveRealpathOrAbsolute } from "./boundary-path.js";
 
 const USAGE_COST_TRANSCRIPT_STAT_CONCURRENCY = 32;
 
@@ -92,13 +96,26 @@ async function listUsageCountedTranscriptFileStats(
   const transcripts = entries.filter(
     (entry) => entry.isFile() && isUsageCountedSessionTranscriptFileName(entry.name),
   );
+  const archiveNames = transcripts.map((entry) => entry.name);
+  const stores = new Map(
+    transcripts.length > 0
+      ? listDurableSqliteTargetPathsForSessionStorePath(storePath).map((databasePath) => [
+          resolveRealpathOrAbsolute(databasePath),
+          databasePath,
+        ])
+      : [],
+  );
   const archives = new Map(
-    listSessionTranscriptArchivesReadOnly({
-      agentId,
-      archiveNames: transcripts.map((entry) => entry.name),
-      includeAllAgents: true,
-      storePath,
-    }).map((archive) => [archive.archiveName, archive]),
+    [...stores.values()]
+      .flatMap((databasePath) =>
+        listSessionTranscriptArchivesReadOnly({
+          agentId,
+          archiveNames,
+          includeAllAgents: true,
+          storePath: databasePath,
+        }),
+      )
+      .map((archive) => [archive.archiveName, archive]),
   );
   const tasks = transcripts
     .filter((entry) => (archives.get(entry.name)?.agentId ?? agentId) === agentId)

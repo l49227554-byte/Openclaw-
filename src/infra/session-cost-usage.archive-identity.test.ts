@@ -153,46 +153,77 @@ describe("usage archive identity", () => {
     await state.cleanup();
   });
 
-  it("keeps shared-store usage with its logical agent before and after archival", async () => {
-    const storePath = state.statePath("shared.sqlite");
-    const scopedConfig = {
-      ...config,
-      session: { store: storePath },
-    };
-    await state.writeConfig(scopedConfig);
-    const fixtures = [
-      { agentId: "main", sessionId: "main-usage", tokens: 17 },
-      { agentId: "ops", sessionId: "ops-usage", tokens: 29 },
-    ];
-    for (const fixture of fixtures) {
-      const scope = {
-        ...fixture,
-        sessionKey: `agent:${fixture.agentId}:usage`,
-        storePath,
+  it.each(["shared.sqlite", "my-store.json", "shared-link.sqlite"])(
+    "keeps %s usage with its logical agent before and after archival",
+    async (storeName) => {
+      const storePath = state.statePath("custom", storeName);
+      if (storeName === "shared-link.sqlite") {
+        const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+        await fs.mkdir(path.dirname(storePath), { recursive: true });
+        await fs.symlink(database.path, storePath);
+      }
+      const scopedConfig = {
+        ...config,
+        session: { store: storePath },
       };
-      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: archiveTime });
-      await persistSessionTranscriptTurn(scope, {
-        messages: [{ message: assistant(fixture.tokens) }],
-      });
-    }
-    for (const archived of [false, true]) {
-      for (const { agentId, sessionId, tokens } of fixtures) {
+      await state.writeConfig(scopedConfig);
+      const fixtures = [
+        { agentId: "main", sessionId: "main-usage", tokens: 17 },
+        { agentId: "ops", sessionId: "ops-usage", tokens: 29 },
+      ];
+      for (const fixture of fixtures) {
+        const scope = {
+          ...fixture,
+          sessionKey: `agent:${fixture.agentId}:usage`,
+          storePath,
+        };
+        await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: archiveTime });
+        await persistSessionTranscriptTurn(scope, {
+          messages: [{ message: assistant(fixture.tokens) }],
+        });
+      }
+      for (const archived of [false, true]) {
         if (archived) {
-          const sessionKey = `agent:${agentId}:usage`;
-          await deleteSessionEntryLifecycle({
-            agentId,
-            storePath,
-            archiveTranscript: true,
-            target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
-          });
+          for (const { agentId } of fixtures) {
+            const sessionKey = `agent:${agentId}:usage`;
+            await deleteSessionEntryLifecycle({
+              agentId,
+              storePath,
+              archiveTranscript: true,
+              target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+            });
+          }
         }
+        for (const { agentId, sessionId, tokens } of fixtures) {
+          const files = await listUsageCountedTranscriptStats(agentId);
+          expect(files).toEqual([
+            expect.objectContaining({ sessionId, kind: archived ? "jsonl" : "sqlite" }),
+          ]);
+          if (!archived) {
+            expect(parseSqliteSessionFileMarker(files[0]?.filePath)).toMatchObject({ agentId });
+          }
+          expect(
+            await loadCostUsageSummary({
+              agentId,
+              config: scopedConfig,
+              startMs: 0,
+              endMs: Date.now(),
+            }),
+          ).toMatchObject({ totals: { totalTokens: tokens } });
+        }
+      }
+      const legacy = transcript(11);
+      const legacyPath = path.join(
+        path.dirname(storePath),
+        `${legacy.getSessionId()}.jsonl.reset.${archiveStamp}`,
+      );
+      await fs.writeFile(legacyPath, serialize(legacy));
+      for (const { agentId, sessionId, tokens } of fixtures) {
         const files = await listUsageCountedTranscriptStats(agentId);
-        expect(files).toEqual([
-          expect.objectContaining({ sessionId, kind: archived ? "jsonl" : "sqlite" }),
-        ]);
-        if (!archived) {
-          expect(parseSqliteSessionFileMarker(files[0]?.filePath)).toMatchObject({ agentId });
-        }
+        expect(files).toHaveLength(2);
+        expect(new Set(files.map((file) => file.sessionId))).toEqual(
+          new Set([sessionId, legacy.getSessionId()]),
+        );
         expect(
           await loadCostUsageSummary({
             agentId,
@@ -200,10 +231,10 @@ describe("usage archive identity", () => {
             startMs: 0,
             endMs: Date.now(),
           }),
-        ).toMatchObject({ totals: { totalTokens: tokens } });
+        ).toMatchObject({ totals: { totalTokens: tokens + 11 } });
       }
-    }
-  });
+    },
+  );
 
   it.each(["default", "runtime", "request"] as const)(
     "refreshes retained rollups in the %s-configured store",

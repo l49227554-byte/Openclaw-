@@ -1,7 +1,7 @@
 // Telegram plugin module implements lane delivery text deliverer behavior.
 import {
   createPreviewMessageReceipt,
-  isPotentialTruncatedFinal,
+  resolveTranscriptBackedChannelFinalText,
   selectLongerFinalText,
   type MessageReceipt,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -291,20 +291,23 @@ export function createLaneTextDeliverer(params: CreateLaneTextDelivererParams): 
     rotateFinalizedStream(lane);
 
     const finalText = text.trimEnd();
-    const candidateTexts = [stream.lastDeliveredText(), lane.lastPartialText];
-    if (useFinalTextRecovery && isPotentialTruncatedFinal(finalText)) {
-      const resolvedFullCandidate = await params.resolveFinalTextCandidate?.({
-        finalText: text,
-        laneName,
-      });
-      if (resolvedFullCandidate) {
-        candidateTexts.push(resolvedFullCandidate);
-      }
-    }
-    const previewText =
-      useFinalTextRecovery && isPotentialTruncatedFinal(finalText)
-        ? (selectLongerFinalText({ finalText, candidateTexts }) ?? finalText)
-        : finalText;
+    const previewText = useFinalTextRecovery
+      ? await resolveTranscriptBackedChannelFinalText({
+          payload,
+          finalText,
+          resolveCandidateText: async () => {
+            const candidateTexts = [stream.lastDeliveredText(), lane.lastPartialText];
+            const resolvedFullCandidate = await params.resolveFinalTextCandidate?.({
+              finalText: text,
+              laneName,
+            });
+            if (resolvedFullCandidate) {
+              candidateTexts.push(resolvedFullCandidate);
+            }
+            return selectLongerFinalText({ finalText, candidateTexts });
+          },
+        })
+      : finalText;
     lane.lastPartialText = previewText;
     lane.hasStreamedMessage = true;
     lane.finalized = false;

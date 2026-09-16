@@ -10,6 +10,7 @@ import {
   isShellToolDisplayName,
   resolveToolDisplay,
 } from "../agents/tool-display.js";
+import { getReplyPayloadMetadata, type ReplyPayload } from "../auto-reply/reply-payload.js";
 import { formatToolAggregate, formatToolAggregateParts } from "../auto-reply/tool-meta.js";
 import type {
   BlockStreamingChunkConfig,
@@ -154,10 +155,14 @@ export function selectLongerFinalText(params: {
 }
 
 export async function resolveTranscriptBackedChannelFinalText(params: {
+  payload: ReplyPayload;
   finalText: string;
   resolveCandidateText: () => Promise<string | undefined>;
 }): Promise<string> {
-  if (!isPotentialTruncatedFinal(params.finalText)) {
+  if (
+    getReplyPayloadMetadata(params.payload)?.precedingInputAnswer ||
+    !isPotentialTruncatedFinal(params.finalText)
+  ) {
     return params.finalText;
   }
   const candidateText = await params.resolveCandidateText();

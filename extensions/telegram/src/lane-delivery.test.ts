@@ -1,3 +1,4 @@
+import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
 // Telegram tests cover lane delivery plugin behavior.
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -168,6 +169,27 @@ function expectSentPayload(
 }
 
 describe("createLaneTextDeliverer", () => {
+  it("createLaneTextDeliverer preserves a preceding input answer when later text extends it", async () => {
+    const earlierAnswer =
+      "Here is the earlier answer with enough stable prefix text before the ellipsis...";
+    const latestAnswer =
+      "Here is the earlier answer with enough stable prefix text before the ellipsis and a much longer answer to the next question.";
+    const answer = createTestDraftStream({ messageId: 999 });
+    answer.update(latestAnswer);
+    const harness = createHarness({
+      answerStream: answer,
+      resolveFinalTextCandidate: () => latestAnswer,
+    });
+    harness.lanes.answer.hasStreamedMessage = true;
+    const result = await harness.deliverLaneText({
+      laneName: "answer",
+      text: earlierAnswer,
+      payload: setReplyPayloadMetadata({ text: earlierAnswer }, { precedingInputAnswer: true }),
+      infoKind: "final",
+    });
+    expect(expectPreviewFinalized(result).content).toBe(earlierAnswer);
+  });
+
   it("finalizes text-only replies in the active stream message", async () => {
     const harness = createHarness({ answerMessageId: 999 });
 

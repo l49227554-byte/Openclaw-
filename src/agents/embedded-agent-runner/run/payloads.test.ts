@@ -373,6 +373,9 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
       expect(
         payloads.map((payload) => getReplyPayloadMetadata(payload)?.assistantMessageIndex),
       ).toEqual(middleAnswer === "NO_REPLY" ? [2, 6] : [2, 4, 6]);
+      expect(
+        payloads.map((payload) => getReplyPayloadMetadata(payload)?.precedingInputAnswer),
+      ).toEqual(middleAnswer === "NO_REPLY" ? [true, undefined] : [true, true, undefined]);
     },
   );
 

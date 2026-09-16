@@ -378,12 +378,16 @@ export function buildEmbeddedRunPayloads(params: {
   };
   let textStart = 0;
   for (const segment of params.answerSegments ?? []) {
+    const replyStart = replyItems.length;
     appendSegmentAnswer({
       assistantTexts: params.assistantTexts.slice(textStart, segment.textEnd),
       lastAssistant: segment.lastAssistant,
       currentAssistant: segment.lastAssistant,
       assistantMessageIndex: segment.messageEnd,
     });
+    for (const reply of replyItems.slice(replyStart)) {
+      setReplyPayloadMetadata(reply, { precedingInputAnswer: true });
+    }
     textStart = segment.textEnd;
   }
   appendSegmentAnswer({

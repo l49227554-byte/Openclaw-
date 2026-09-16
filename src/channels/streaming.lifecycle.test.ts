@@ -2,6 +2,7 @@
  * Tests channel streaming helper lifecycle and event forwarding.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
 import {
   buildChannelProgressDraftLine,
   createChannelProgressDraftGate,
@@ -152,7 +153,11 @@ describe("channel-streaming", () => {
     const resolveCandidateText = vi.fn(async () => "unused");
     const started = performance.now();
     await expect(
-      resolveTranscriptBackedChannelFinalText({ finalText, resolveCandidateText }),
+      resolveTranscriptBackedChannelFinalText({
+        payload: { text: finalText },
+        finalText,
+        resolveCandidateText,
+      }),
     ).resolves.toBe(finalText);
     expect(performance.now() - started).toBeLessThan(1_000);
     expect(resolveCandidateText).not.toHaveBeenCalled();
@@ -173,10 +178,32 @@ describe("channel-streaming", () => {
     ).toBe(fullAnswer);
     await expect(
       resolveTranscriptBackedChannelFinalText({
+        payload: { text: truncatedFinal },
         finalText: truncatedFinal,
         resolveCandidateText: async () => fullAnswer,
       }),
     ).resolves.toBe(fullAnswer);
+  });
+
+  it("resolveTranscriptBackedChannelFinalText preserves a preceding input answer ending in ellipsis", async () => {
+    const finalText =
+      "Here is the earlier answer with enough stable prefix text before the ellipsis...";
+    const candidateText =
+      "Here is the earlier answer with enough stable prefix text before the ellipsis and a much longer answer to the next question.";
+    const resolveCandidateText = vi.fn(async () => candidateText);
+    const payload = setReplyPayloadMetadata({ text: finalText }, { precedingInputAnswer: true });
+
+    await expect(
+      resolveTranscriptBackedChannelFinalText({ payload, finalText, resolveCandidateText }),
+    ).resolves.toBe(finalText);
+    expect(resolveCandidateText).not.toHaveBeenCalled();
+    await expect(
+      resolveTranscriptBackedChannelFinalText({
+        payload: { text: finalText },
+        finalText,
+        resolveCandidateText,
+      }),
+    ).resolves.toBe(candidateText);
   });
 
   it("keeps intentional ellipsis finals when candidates do not prove truncation", async () => {
@@ -193,6 +220,7 @@ describe("channel-streaming", () => {
     ).toBeUndefined();
     await expect(
       resolveTranscriptBackedChannelFinalText({
+        payload: { text: finalText },
         finalText,
         resolveCandidateText: async () => candidateText,
       }),

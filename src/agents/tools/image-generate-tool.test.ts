@@ -6,16 +6,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
-const taskRuntimeInternalMocks = vi.hoisted(() => {
-  const mocks = {
-    listTasksForOwnerKey: vi.fn(),
-    listFreshTasksForOwnerKey: vi.fn(),
-  };
-  mocks.listFreshTasksForOwnerKey.mockImplementation((ownerKey) =>
-    mocks.listTasksForOwnerKey(ownerKey),
-  );
-  return mocks;
-});
+const taskRuntimeInternalMocks = vi.hoisted(() => ({
+  listTasksForOwnerKey: vi.fn(),
+  listFreshTasksForOwnerKey: vi.fn(),
+}));
 
 const taskRuntimeMocks = vi.hoisted(() => ({
   createRunningTaskRun: vi.fn(),
@@ -404,7 +398,7 @@ describe("createImageGenerateTool", () => {
     taskRuntimeInternalMocks.listTasksForOwnerKey.mockReset();
     taskRuntimeInternalMocks.listTasksForOwnerKey.mockReturnValue([]);
     taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockReset();
-    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockImplementation((ownerKey) =>
+    taskRuntimeInternalMocks.listFreshTasksForOwnerKey.mockImplementation((_context, ownerKey) =>
       taskRuntimeInternalMocks.listTasksForOwnerKey(ownerKey),
     );
     resetRecentMediaGenerationDuplicateGuardsForTests();
@@ -1044,6 +1038,7 @@ describe("createImageGenerateTool", () => {
 
     const pending = tool.execute("call-image-lookup", { prompt: "an image" }, controller.signal);
     expect(taskRuntimeInternalMocks.listFreshTasksForOwnerKey).toHaveBeenCalledWith(
+      expect.any(Object),
       agentSessionKey,
     );
     expect(acquireProviders).not.toHaveBeenCalled();

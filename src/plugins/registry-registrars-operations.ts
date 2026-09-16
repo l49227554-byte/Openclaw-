@@ -324,20 +324,10 @@ export function createOperationRegistrars(state: PluginRegistryState) {
     kind: "service" | "gateway discovery service",
   ) => {
     try {
-      const rawId = service.id;
-      const id = rawId.trim();
-      if (id && rawId !== id) {
-        // Normalize the received object in place: copies lose private fields and callback receivers.
-        service.id = id;
-        if (service.id !== id) {
-          throw new Error("service registration id normalization was ignored");
-        }
-      }
+      const id = service.id.trim();
       const registrations =
         kind === "service" ? registry.services : registry.gatewayDiscoveryServices;
-      const existing = id
-        ? registrations.find((entry) => entry.service.id.trim() === id)
-        : undefined;
+      const existing = id ? registrations.find((entry) => entry.id === id) : undefined;
       if (id && !existing) {
         return id;
       }
@@ -364,6 +354,7 @@ export function createOperationRegistrars(state: PluginRegistryState) {
     }
     record.services.push(id);
     registry.services.push({
+      id,
       pluginId: record.id,
       pluginName: record.name,
       service,
@@ -384,7 +375,7 @@ export function createOperationRegistrars(state: PluginRegistryState) {
     }
     record.gatewayDiscoveryServiceIds.push(id);
     registry.gatewayDiscoveryServices.push({
-      ...createRegistration(record, { service }),
+      ...createRegistration(record, { id, service }),
       // The advertiser can be native data; its registration still owns execution and cleanup.
       instance: getPluginInstance(record),
     });

@@ -98,6 +98,11 @@ export async function verifyManagedCandidateRetirement(
       shuttingDown = fixture.lifetime.stop();
     }
     await vi.advanceTimersByTimeAsync(5_000);
+    // The metadata owner now joins physical retirement instead of accepting a
+    // deferred-consumer acknowledgment; observe its separate bounded wait too.
+    expect(outcome).toBeUndefined();
+    expect(retired).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
     await reloading;
     expect(outcome).toMatchObject({
       details: { phase: "activate", committed: false },
@@ -429,6 +434,7 @@ export async function verifyCandidateCleanupRefusal(createRecoveryFixture: Recov
   let registrations = 0;
   const disposed: number[] = [];
   const fixture = await createRecoveryFixture({
+    expectedMetadataCloseError: stopFailure,
     register(api, owner) {
       if (owner !== "first") {
         return;
@@ -470,6 +476,15 @@ export async function verifyCandidateCleanupRefusal(createRecoveryFixture: Recov
     );
     assert(sibling);
     expect(sibling.run(() => "still serving")).toBe("still serving");
+    await expect(fixture.reload()).rejects.toMatchObject({
+      details: { phase: "prepare", committed: false },
+      message: expect.stringContaining(stopFailure.message),
+    });
+    expect(registrations).toBe(2);
+    expect(resourceOpen).toBe(true);
+    expect(sibling.run(() => "still serving after rejected retry")).toBe(
+      "still serving after rejected retry",
+    );
   } finally {
     // Model external cleanup of the resource whose plugin-owned stop failed.
     resourceOpen = false;

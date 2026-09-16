@@ -7,6 +7,7 @@ import { createHookRunner } from "../plugins/hooks.js";
 import { withPluginHostCleanupTimeout } from "../plugins/host-hook-cleanup-timeout.js";
 import type { PluginHostCleanupResult } from "../plugins/host-hook-cleanup.types.js";
 import { withPluginHttpRouteRegistry } from "../plugins/http-registry.js";
+import { PluginInstanceDrainTimeoutError } from "../plugins/plugin-instance-error.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { disposePluginRegistryInstances } from "../plugins/runtime.js";
@@ -24,6 +25,7 @@ export function createPluginReloadCleanup({
   getCron,
   log,
   recordCleanup,
+  retainRetirement,
 }: {
   previousRegistry: PluginRegistry;
   changedPluginIds: ReadonlySet<string>;
@@ -32,6 +34,7 @@ export function createPluginReloadCleanup({
   getCron: () => PluginHookGatewayCronService;
   log: ReturnType<typeof createSubsystemLogger>;
   recordCleanup: (result: PluginHostCleanupResult) => void;
+  retainRetirement: (retire: () => Promise<PluginHostCleanupResult>) => void;
 }) {
   const attempt = async (errors: unknown[], run: () => void | Promise<void>) => {
     try {
@@ -64,10 +67,14 @@ export function createPluginReloadCleanup({
         continue;
       }
       await attempt(failures, async () => {
-        const result = await withPluginHostCleanupTimeout(`plugin ${record.id} resources`, () =>
-          getPluginInstance(record)?.dispose(),
+        const errors = await withPluginHostCleanupTimeout(
+          `plugin ${record.id} resources`,
+          async () => {
+            const result = await getPluginInstance(record)?.dispose();
+            return collectResourceFailures(result?.errors ?? []);
+          },
         );
-        failures.push(...(result?.errors ?? []));
+        failures.push(...errors);
       });
     }
     if (failures.length) {
@@ -78,11 +85,12 @@ export function createPluginReloadCleanup({
     registry: PluginRegistry,
     start: boolean,
     config: OpenClawConfig,
+    pluginIds: ReadonlySet<string> = changedPluginIds,
   ) => {
     const hooks = createHookRunner(
       {
         ...registry,
-        typedHooks: registry.typedHooks.filter((hook) => changedPluginIds.has(hook.pluginId)),
+        typedHooks: registry.typedHooks.filter((hook) => pluginIds.has(hook.pluginId)),
       },
       {
         logger: log,
@@ -126,12 +134,33 @@ export function createPluginReloadCleanup({
     services: PluginServicesHandle | undefined,
   ) => {
     const errors: unknown[] = [];
+    // A caller's deadline cannot release rejected B/C ownership. Retain the raw
+    // completion with the Gateway, including failures that must block later retries.
+    retainRetirement(async () => {
+      const failures: unknown[] = [];
+      await attempt(failures, async () => {
+        await services?.stop({ strict: true, pluginIds: changedPluginIds });
+      });
+      const result = await disposePluginRegistryInstances(registry, previousRegistry);
+      for (const { error, hookId } of result.failures) {
+        failures.push(
+          ...(hookId === "instance" ? await collectResourceFailures([error]) : [error]),
+        );
+      }
+      if (failures.length) {
+        throw new AggregateError(failures, "Unpublished plugin resource cleanup failed");
+      }
+      return result;
+    });
     for (const record of registry.plugins) {
       if (!previousRegistry.plugins.includes(record)) {
         // Disposal joins admitted consumers before running the legacy stop hook,
         // including when the caller's bounded cleanup observation times out.
-        prepareRegistrationFailureCleanup(config)(registry, record);
-        getPluginInstance(record)?.quiesce();
+        const instance = getPluginInstance(record);
+        if (!instance?.disposing) {
+          prepareRegistrationFailureCleanup(config)(registry, record);
+          instance?.quiesce();
+        }
       }
     }
     await attempt(errors, async () => {
@@ -159,6 +188,20 @@ export function createPluginReloadCleanup({
     prepareRegistrationFailureCleanup,
     retireUnpublished,
   };
+}
+
+async function collectResourceFailures(errors: readonly unknown[]): Promise<unknown[]> {
+  const failures: unknown[] = [];
+  for (const error of errors) {
+    if (error instanceof PluginInstanceDrainTimeoutError) {
+      // Revoked tokens are not completion: retain the original diagnostic until
+      // its leases actually return, without forgiving any resource cleanup error.
+      await error.settled;
+    } else {
+      failures.push(error);
+    }
+  }
+  return failures;
 }
 
 /** Keeps cleanup warnings bounded in receipts while retaining full diagnostic logs. */

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
+import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { expect, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -17,6 +18,7 @@ import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { projectPluginContributions } from "../plugins/registry-contributions.js";
 import { createPluginRegistry } from "../plugins/registry.js";
+import { PluginRuntimeCloseRetainedError } from "../plugins/runtime-close-error.js";
 import {
   createPluginRegistryOwner,
   disposePluginRegistryInstances,
@@ -64,6 +66,7 @@ export async function createPluginReloadRecoveryFixture(
     candidateStop?: () => Promise<void>;
     recoveryStart?: () => Promise<void>;
     recoveryStop?: () => Promise<void>;
+    expectedMetadataCloseError?: Error;
   } = {},
 ) {
   let config: OpenClawConfig = options.config ?? {
@@ -200,7 +203,19 @@ export async function createPluginReloadRecoveryFixture(
     };
   };
   const lifetime = createGatewaySidecarStopOwner();
+  const metadataOwners: unknown = options.expectedMetadataCloseError
+    ? Reflect.get(globalThis, Symbol.for("openclaw.gatewayPluginMetadataOwners"))
+    : undefined;
+  assert(metadataOwners === undefined || metadataOwners instanceof Set);
+  const metadataOwnerSet: Set<unknown> | undefined = metadataOwners;
+  const precedingMetadataOwners = new Set(metadataOwnerSet);
   const metadata = retainGatewayPluginMetadata();
+  const fixtureMetadataOwners = metadataOwnerSet
+    ? [...metadataOwnerSet].filter((entry) => !precedingMetadataOwners.has(entry))
+    : [];
+  if (options.expectedMetadataCloseError) {
+    expect(fixtureMetadataOwners).toHaveLength(1);
+  }
   const snapshot =
     options.pluginMetadataSnapshot ??
     createPluginMetadataSnapshotFixture({ plugins: [{ id: "first" }, { id: "sibling" }] });
@@ -235,7 +250,22 @@ export async function createPluginReloadRecoveryFixture(
     await initial.stop().catch(() => {});
     const retirementFailure = await lifetime.stop().catch((error: unknown) => error);
     await registryOwner.close();
-    await metadata.close();
+    if (options.expectedMetadataCloseError) {
+      assert(metadataOwnerSet);
+      const [fixtureMetadataOwner] = fixtureMetadataOwners;
+      try {
+        const failure = await metadata.close().catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(PluginRuntimeCloseRetainedError);
+        expect(collectNestedErrorCandidates(failure)).toContain(options.expectedMetadataCloseError);
+        expect(metadataOwnerSet.has(fixtureMetadataOwner)).toBe(true);
+      } finally {
+        // This deliberately unrecoverable fixture has asserted the real shutdown
+        // fence. Isolate only its owned entry so later tests can create Gateways.
+        metadataOwnerSet.delete(fixtureMetadataOwner);
+      }
+    } else {
+      await metadata.close();
+    }
     for (const candidate of [...candidates, ...recoveries]) {
       try {
         await disposePluginRegistryInstances(candidate.registry, previous.registry);

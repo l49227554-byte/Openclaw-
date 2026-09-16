@@ -1,5 +1,6 @@
 import path from "node:path";
-import { expect, it } from "vitest";
+import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import { assert, expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -28,7 +29,8 @@ suite.define(() => {
       await page.locator(".agent-chat__input textarea").fill("Prepare the release");
       await page.getByRole("button", { name: "Send message" }).click();
       const send = await gateway.waitForRequest("chat.send");
-      const runId = String(send.params.idempotencyKey);
+      const runId = asNullableRecord(send.params)?.idempotencyKey;
+      assert.isString(runId);
       const timestamp = Date.now();
       const skipped = {
         role: "toolResult",

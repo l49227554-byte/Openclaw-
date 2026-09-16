@@ -348,6 +348,7 @@ export const en: TranslationMap & {
     receipt: {
       updating: "Updating progress",
       failed: "Progress update failed",
+      skipped: "Progress update skipped",
       updated: "Progress updated — {completed}/{total} · {current}",
       noteUpdated: "Progress note updated",
       cleared: "Progress cleared",
@@ -4975,6 +4976,8 @@ export const en: TranslationMap & {
       fileChanges: "File changes",
       attemptedChanges: "Attempted changes",
       failed: "failed",
+      skipped: "Skipped",
+      skippedCount: "{count} skipped",
       running: "Running",
       completed: "Completed",
       exitCode: "Exit code {code}",

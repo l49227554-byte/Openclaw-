@@ -12,6 +12,7 @@ import {
 } from "./agent-runtime-id.js";
 import { listAgentEntries, withAgentRosterFactsBatch } from "./agent-scope-config.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
+import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 
 // Harness runtime discovery feeds plugin preloading/setup. Only plugin runtimes
 // are selectable here; built-in OpenClaw/default runtime ids are excluded.
@@ -27,15 +28,14 @@ function isSelectablePluginRuntime(runtime: string | undefined): runtime is stri
   );
 }
 
-// Parses provider/model refs used in config maps before asking harness policy
-// which runtime owns that provider/model pair.
+// Runtime policy keys use the model identity, without a configured auth-profile pin.
 function parseConfiguredModelRef(
   value: unknown,
 ): { provider: string; modelId: string } | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  return parseModelCatalogRef(value) ?? undefined;
+  return parseModelCatalogRef(splitTrailingAuthProfile(value).model) ?? undefined;
 }
 
 export function resolveConfiguredModelHarnessRuntime(params: {

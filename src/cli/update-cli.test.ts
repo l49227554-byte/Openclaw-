@@ -1382,6 +1382,22 @@ describe("update-cli", () => {
     ]);
   };
 
+  const mockLegacyPostCoreDoctor = () => {
+    // Legacy parents run migration Doctor before the child probes the parent's start time.
+    vi.mocked(runExec).mockImplementationOnce(async (file, args) => {
+      expect(file).toBe(process.execPath);
+      expect(args).toEqual([
+        path.join(process.cwd(), "dist", "index.js"),
+        "doctor",
+        "--repair",
+        "--non-interactive",
+        "--no-workspace-suggestions",
+        "--yes",
+      ]);
+      return { stdout: "", stderr: "" };
+    });
+  };
+
   const writeNpmPackageInstall = async (
     argv: string[],
     packageRoot: string,
@@ -4403,7 +4419,7 @@ describe("update-cli", () => {
     },
   );
 
-  it("post-core resume returns package work without running core update or Doctor completion", async () => {
+  it("legacy post-core resume completes Doctor without running core update", async () => {
     readPackageVersion.mockResolvedValue("2026.9.4");
     await runPostCoreCommand({ restart: false }, { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" });
 
@@ -4421,7 +4437,13 @@ describe("update-cli", () => {
         ),
     ).toBe(true);
     expect(defaultRuntime.exit).toHaveBeenCalledWith(0);
-    expect(vi.mocked(runExec).mock.calls.filter(([, args]) => args[1] === "doctor")).toEqual([]);
+    // No ownership declaration preserves the shipped child-owned Doctor completion contract.
+    expect(
+      vi
+        .mocked(runExec)
+        .mock.calls.filter(([, args]) => args[1] === "doctor")
+        .map(([, args]) => args[1]),
+    ).toEqual(["doctor"]);
     expect(syncPluginsForUpdateChannel).toHaveBeenCalledTimes(1);
     expect(updateNpmInstalledPlugins).toHaveBeenCalledTimes(1);
     expect(lastNpmPluginUpdateCall()).toMatchObject({
@@ -4443,7 +4465,7 @@ describe("update-cli", () => {
     });
   });
 
-  it("returns convergence-only post-core changes for the parent to complete", async () => {
+  it("completes convergence-only post-core changes for a legacy parent", async () => {
     runPostCorePluginConvergenceSpy.mockResolvedValueOnce(
       postCoreConvergenceResult({
         changes: ["Repaired configured plugin install records."],
@@ -4454,11 +4476,13 @@ describe("update-cli", () => {
 
     expect(syncPluginCall()?.config).toBeDefined();
     expect(updateNpmInstalledPlugins).toHaveBeenCalledTimes(1);
+    // Without a parent ownership declaration, the child runs Doctor and final validation.
     expect(
       vi
         .mocked(runExec)
-        .mock.calls.filter(([, args]) => ["doctor", "config"].includes(args[1] ?? "")),
-    ).toEqual([]);
+        .mock.calls.filter(([, args]) => ["doctor", "config"].includes(args[1] ?? ""))
+        .map(([, args]) => args[1]),
+    ).toEqual(["doctor", "doctor", "config"]);
     expect(lastWriteJsonCall()).toMatchObject({
       status: "ok",
       postUpdate: { plugins: { changed: true } },
@@ -4760,16 +4784,20 @@ describe("update-cli", () => {
     expect(getLogOutput()).toContain("1 updated, 0 unchanged");
   });
 
-  it("returns changed package results without Doctor output during JSON post-core resume", async () => {
+  it("keeps Doctor diagnostics outside JSON during legacy post-core resume", async () => {
     mockNpmPluginOutcomes([], true);
+    vi.mocked(runExec).mockResolvedValueOnce({ stdout: "Migration Doctor output\n", stderr: "" });
 
     await runPostCoreCommand({ json: true, restart: false });
 
+    // Without a parent ownership declaration, the child runs Doctor and final validation.
     expect(
       vi
         .mocked(runExec)
-        .mock.calls.filter(([, args]) => ["doctor", "config"].includes(args[1] ?? "")),
-    ).toEqual([]);
+        .mock.calls.filter(([, args]) => ["doctor", "config"].includes(args[1] ?? ""))
+        .map(([, args]) => args[1]),
+    ).toEqual(["doctor", "doctor", "config"]);
+    expect(getErrorOutput()).toContain("Migration Doctor output");
     expect(JSON.parse(getLogOutput())).toEqual(lastWriteJsonCall());
     expect(defaultRuntime.writeJson).toHaveBeenCalledOnce();
     expect(defaultRuntime.writeJson).toHaveBeenCalledWith(
@@ -4825,6 +4853,11 @@ describe("update-cli", () => {
       demo: { source: "npm", spec: "@openclaw/demo@1.0.0", installPath },
     });
     pathExists.mockImplementation(async (candidate: string) => candidate === installPath);
+    // Child-owned completion needs the installed candidate's Doctor entrypoint.
+    vi.mocked(resolveGatewayInstallEntrypoint).mockImplementation(async (root) => {
+      expect(root).toBe(process.cwd());
+      return FRESH_POST_UPDATE_ENTRYPOINT;
+    });
 
     await runPostCoreCommand(
       { json: true, restart: false },
@@ -4915,11 +4948,13 @@ describe("update-cli", () => {
 
       if (mode === "resume") {
         await runPostCoreCommand({ restart: false, json: true });
+        // Legacy child completion does not change which downgrade configs may be written.
         expect(
           vi
             .mocked(runExec)
-            .mock.calls.filter(([, args]) => ["doctor", "config"].includes(args[1] ?? "")),
-        ).toEqual([]);
+            .mock.calls.filter(([, args]) => ["doctor", "config"].includes(args[1] ?? ""))
+            .map(([, args]) => args[1]),
+        ).toEqual(valid ? ["doctor", "config"] : ["doctor"]);
       } else {
         vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValue(FRESH_POST_UPDATE_ENTRYPOINT);
         if (valid) {
@@ -5451,6 +5486,11 @@ describe("update-cli", () => {
       vi.mocked(readConfigFileSnapshot).mockResolvedValue(configSnapshot(config));
       loadInstalledPluginIndexInstallRecords.mockResolvedValue(records);
       mockFileBackedPathExists();
+      // Child-owned completion needs the installed candidate's Doctor entrypoint.
+      vi.mocked(resolveGatewayInstallEntrypoint).mockImplementation(async (root) => {
+        expect(root).toBe(process.cwd());
+        return FRESH_POST_UPDATE_ENTRYPOINT;
+      });
       const repaired = {
         pluginId: "demo",
         status: "updated" as const,
@@ -12847,6 +12887,7 @@ describe("update-cli", () => {
         for (const suffix of [".pre-update", ".bak"]) {
           await writeJsonFixture(`${configPath}${suffix}`, preUpdateConfig);
         }
+        mockLegacyPostCoreDoctor();
         vi.mocked(runExec).mockRejectedValueOnce(new Error("ps unavailable"));
         return {};
       },
@@ -12886,6 +12927,7 @@ describe("update-cli", () => {
     const preUpdateConfig = stableWhatsAppConfig();
     const postDoctorConfig = stableConfig();
     await setupPostCoreConfigFixture({ preUpdateConfig, postDoctorConfig });
+    mockLegacyPostCoreDoctor();
     vi.mocked(runExec).mockImplementationOnce(async (file, commandArgs) => {
       expect(file).toBe("powershell.exe");
       expect(commandArgs).toContain("-NonInteractive");

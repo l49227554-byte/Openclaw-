@@ -522,10 +522,12 @@ export async function requestPluginConversationBinding(params: {
           accountId: state.ref.accountId,
         });
     assertCurrent();
-    state = resolvePluginConversationBindingState(conversation);
-    const conflict = pluginBindingOwnershipConflict(state, requestParams.pluginRoot);
-    if (conflict) {
-      return { status: "error", message: conflict };
+    if (!state.binding) {
+      state = resolvePluginConversationBindingState(conversation);
+      const conflict = pluginBindingOwnershipConflict(state, requestParams.pluginRoot);
+      if (conflict) {
+        return { status: "error", message: conflict };
+      }
     }
     if (state.isLegacyForeignBinding) {
       logPluginBindingLifecycleEvent({

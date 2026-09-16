@@ -63,6 +63,12 @@ struct DashboardExperienceTests {
         #expect(renewed.isHiddenForExperience)
         #expect(!primaryWindow.isVisible && primaryWindow.isExcludedFromWindowsMenu)
 
+        // Native ordering must not promote a window the experience owner has hidden.
+        primaryWindow.orderFront(nil)
+        #expect(!renewed.isWindowOpen)
+        #expect(manager.frontmostDashboard() == nil)
+        manager.hideWindows()
+
         renewed.show()
         try await AppKitTestSupport.performWindowTransition(
             primaryWindow, notification: NSWindow.didMiniaturizeNotification)

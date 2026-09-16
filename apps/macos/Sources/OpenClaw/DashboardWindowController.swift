@@ -438,7 +438,7 @@ final class DashboardWindowController: NSWindowController, WKNavigationDelegate,
     /// Miniaturized windows report `isVisible == false` but must still follow
     /// endpoint changes so deminiaturizing does not land on a dead port.
     var isWindowOpen: Bool {
-        guard let window else { return false }
+        guard let window, !self.isHiddenForExperience else { return false }
         return window.isVisible || window.isMiniaturized
     }
 

@@ -86,13 +86,19 @@ the CLI fallback on the Gateway host.
 
 ## Plugin repair warnings
 
-An unavailable configured plugin does not block Gateway readiness. The Gateway
-starts with that plugin marked unavailable and reports repair warnings; its
-configuration and pending migration inputs stay preserved. This also applies to
-plugin payload verification and host-link repair failures during updates.
+Doctor's configured-plugin repair and payload-verification warnings do not block
+Gateway readiness. A tracked plugin whose payload is unavailable is marked
+unavailable, and its configuration and pending migration inputs stay preserved.
+This includes host-link repair failures during updates.
 `openclaw update status --json` lists pending plugin migration warnings, and
 Doctor reports the affected plugin and repair command. Run `openclaw update repair`,
 then `openclaw doctor --fix` to retry after restoring access to the plugin source.
+
+Missing configured `plugins.load.paths` and other unattributed discovery errors
+still block update candidates before readiness. Discovery cannot identify the
+missing plugin from that path, and Doctor preserves configuration it could not
+inspect instead of removing it as stale. Restore the path or correct the
+`plugins.load.paths` entry, then run `openclaw doctor --fix` and retry the update.
 
 Official version-bound runtime plugins installed through ClawHub use their
 declared ClawHub source for the new core release cohort. The released 2026.9.4

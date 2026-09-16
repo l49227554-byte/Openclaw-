@@ -20,7 +20,10 @@ import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-rea
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../state/openclaw-state-ownership.js";
 import { noteDoctorConfigPreflightIssues } from "./doctor-config-analysis.js";
-import { resolveMigrationCheckpointIdentity } from "./doctor-config-preflight-checkpoint.js";
+import {
+  migrationCheckpointConfigIdentitiesMatch,
+  resolveMigrationCheckpointIdentity,
+} from "./doctor-config-preflight-checkpoint.js";
 import {
   createDoctorConfigRepairPlanner,
   createDoctorLegacyConfigMigration,
@@ -693,12 +696,7 @@ async function runDoctorConfigPreflightOperation(
         pluginMigrationFingerprint: persistedSnapshotRead.pluginMigrationFingerprint,
       });
       if (
-        !migrationCheckpointIdentity ||
-        !persistedIdentity ||
-        migrationCheckpointIdentity.effectiveConfigFingerprint !==
-          persistedIdentity.effectiveConfigFingerprint ||
-        migrationCheckpointIdentity.pluginDoctorConfigFingerprint !==
-          persistedIdentity.pluginDoctorConfigFingerprint
+        !migrationCheckpointConfigIdentitiesMatch(migrationCheckpointIdentity, persistedIdentity)
       ) {
         throw new Error(
           'OpenClaw config identity changed while persisting the refreshed plugin registry; refusing to write the migration checkpoint. Run "openclaw doctor --fix" and retry.',

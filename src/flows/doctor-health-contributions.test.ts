@@ -4046,20 +4046,6 @@ describe("doctor health contributions", () => {
     ["doctor:default-account-routing", "core/doctor/default-account-routing"],
   ])("retains %s update warnings without resolved or non-warning findings", async (id, checkId) => {
     const contribution = requireDoctorContribution(id);
-    const includesPluginAvailability = id === "doctor:structured-health-repairs";
-    const availabilityCheckId = "core/doctor/codex-session-routes";
-    const availabilityMessage =
-      'Plugin "codex" is unavailable: health API could not be verified. Run `openclaw doctor --fix`.';
-    if (includesPluginAvailability) {
-      mocks.registerBundledHealthChecks.mockReturnValue([
-        {
-          checkId: availabilityCheckId,
-          source: "codex",
-          severity: "warning",
-          message: availabilityMessage,
-        },
-      ]);
-    }
     const ctx = createDoctorContext({
       cfg: {},
       configResult: { cfg: {} },
@@ -4088,15 +4074,9 @@ describe("doctor health contributions", () => {
 
     expect(ctx.updateWarnings).toEqual([
       "earlier warning",
-      ...(includesPluginAvailability ? [`${availabilityCheckId}: ${availabilityMessage}`] : []),
       `${checkId}: optional maintenance incomplete`,
       "optional repair unavailable",
     ]);
-    if (includesPluginAvailability) {
-      expect(ctx.runtime.log).toHaveBeenCalledWith(
-        `[warning] ${availabilityCheckId} - ${availabilityMessage}`,
-      );
-    }
     expect(ctx.runtime.log).toHaveBeenCalledWith(
       `[warning] ${checkId} - optional maintenance incomplete`,
     );

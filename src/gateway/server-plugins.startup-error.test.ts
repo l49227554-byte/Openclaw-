@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
-import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
 import { getFreePort } from "../test-utils/ports.js";
 import {
   clearInstanceBindingProbeCoordinators,
@@ -12,11 +11,7 @@ import {
   INSTANCE_BINDING_PROBE_METHOD,
   writeInstanceBindingProbePlugin,
 } from "./server-plugins.lifecycle.test-fixtures.js";
-import {
-  installInstanceBindingConfigIo,
-  requestSettledInstanceBindingProbe,
-  requireBoundRuntime,
-} from "./server-plugins.lifecycle.test-support.js";
+import { installInstanceBindingConfigIo } from "./server-plugins.lifecycle.test-support.js";
 import {
   connectWebchatClient,
   installGatewayTestHooks,
@@ -44,7 +39,11 @@ it(
   async () => {
     const coordinator = installInstanceBindingProbeCoordinator({ reportReloadSettlement: true });
     const bundledRoot = tempDirs.make("openclaw-startup-error-");
-    await writeInstanceBindingProbePlugin(bundledRoot, coordinator.channelName);
+    // External code has captured source generations; bundled JS intentionally
+    // keeps process module identity and cannot model a changed candidate file.
+    const healthyRoot = tempDirs.make("openclaw-startup-healthy-");
+    await writeInstanceBindingProbePlugin(healthyRoot, coordinator.channelName);
+    const healthyPlugin = path.join(healthyRoot, "instance-binding-probe");
     const brokenDir = path.join(bundledRoot, "startup-broken");
     await fs.mkdir(brokenDir);
     await fs.writeFile(
@@ -80,6 +79,7 @@ it(
       JSON.stringify({
         plugins: {
           allow: ["startup-broken", "instance-binding-probe"],
+          load: { paths: [healthyPlugin] },
           entries: {
             "startup-broken": { enabled: true },
             "instance-binding-probe": { enabled: true },
@@ -98,9 +98,13 @@ it(
     let socket: Awaited<ReturnType<typeof connectWebchatClient>> | undefined;
     try {
       await server.startupSettled;
-      socket = await connectWebchatClient({ port, scopes: ["operator.admin"] });
-      const { runtime } = await requireBoundRuntime(coordinator.runtimes, "startup-error");
-      await requestSettledInstanceBindingProbe(runtime);
+      const connected = await connectWebchatClient({ port, scopes: ["operator.admin"] });
+      socket = connected;
+      await expect
+        .poll(async () => (await rpcReq(connected, INSTANCE_BINDING_PROBE_METHOD, {})).payload, {
+          timeout: 30_000,
+        })
+        .toMatchObject({ reloadSettled: true });
       const initial = getActivePluginRegistry();
       assert(initial);
       const broken = initial.plugins.find((record) => record.id === "startup-broken");
@@ -132,34 +136,50 @@ it(
       expect(after.ok, after.error?.message).toBe(true);
       expect(after.payload?.registryId).not.toBe(before.payload?.registryId);
 
-      coordinator.channel = {
-        ...createChannelTestPluginBase({ id: "replacement-channel" }),
-        get id(): string {
-          throw new Error("new candidate failure");
-        },
-      };
+      // Break only B's code; recovery must register captured A code under a fresh owner.
+      await fs.writeFile(
+        path.join(healthyPlugin, "index.js"),
+        'throw new Error("new candidate failure");',
+      );
       const rejected = await rpcReq(socket, "plugins.reload", {
         plugins: [{ pluginId: "instance-binding-probe" }],
       });
       expect(rejected).toMatchObject({
         ok: false,
-        error: { details: { runtime: { committed: false, phase: "prepare" } } },
+        error: { details: { runtime: { committed: false, phase: "activate" } } },
       });
       expect(rejected.error?.message).toContain("new candidate failure");
       expect(rejected.error?.message).not.toContain("startup-broken");
-      expect(getActivePluginRegistry()).toBe(current);
+      const recovered = getActivePluginRegistry();
+      expect(recovered).not.toBe(current);
+      expect(recovered?.plugins.find((record) => record.id === "startup-broken")).toBe(broken);
       const retained = await rpcReq(socket, INSTANCE_BINDING_PROBE_METHOD, {});
-      expect(retained.payload).toEqual(after.payload);
+      expect(retained.ok, retained.error?.message).toBe(true);
+      expect(retained.payload?.registryId).not.toBe(after.payload?.registryId);
+      expect(retained.payload).toMatchObject({
+        sessionsId: after.payload?.sessionsId,
+        placementId: after.payload?.placementId,
+      });
 
       const retryBroken = await rpcReq(socket, "plugins.reload", {
         plugins: [{ pluginId: "startup-broken" }],
       });
       expect(retryBroken).toMatchObject({
         ok: false,
-        error: { details: { runtime: { committed: false, phase: "prepare" } } },
+        error: { details: { runtime: { committed: false, phase: "activate" } } },
       });
       expect(retryBroken.error?.message).toContain("startup-broken");
-      expect(getActivePluginRegistry()).toBe(current);
+      expect(getActivePluginRegistry()?.gatewayHandlers[INSTANCE_BINDING_PROBE_METHOD]).toBe(
+        recovered?.gatewayHandlers[INSTANCE_BINDING_PROBE_METHOD],
+      );
+      expect(
+        getActivePluginRegistry()?.plugins.find((record) => record.id === "startup-broken"),
+      ).toBe(broken);
+      expect(
+        getActivePluginRegistry()?.diagnostics.filter(
+          (entry) => entry.pluginId === "startup-broken",
+        ),
+      ).toEqual(diagnostics);
 
       const disabled = await rpcReq(socket, "plugins.setEnabled", {
         pluginId: "instance-binding-probe",

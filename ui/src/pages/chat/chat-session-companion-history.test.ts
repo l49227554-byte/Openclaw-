@@ -253,21 +253,35 @@ describe("Side chat turn history", () => {
     expect(questions(threads)).toEqual(["A", "A", "B"]);
   });
 
-  it.each([false, true])(
-    "keeps unseen shared history between local answers (duplicate identities: %s)",
-    async (duplicates) => {
+  it.each([
+    { duplicates: false, pruned: false },
+    { duplicates: true, pruned: false },
+    { duplicates: false, pruned: true },
+    { duplicates: true, pruned: true },
+  ])(
+    "keeps shared-history order with duplicate identities=$duplicates and pruned anchors=$pruned",
+    async ({ duplicates, pruned }) => {
       const threads = new ChatSessionCompanionThreads();
       const first = { question: "A", answer: "First", ts: 1 };
-      const remote = { question: "X", answer: "Other client", ts: 2 };
-      const last = duplicates ? first : { question: "B", answer: "Last", ts: 3 };
+      const remote = [
+        { question: "X", answer: "Other client", ts: 2 },
+        { question: "Y", answer: "Another shared answer", ts: 3 },
+      ];
+      const last = duplicates ? first : { question: "B", answer: "Last", ts: 4 };
       await threads.submit("one", first.question, answered(first.answer, first.ts));
       await threads.submit("one", last.question, answered(last.answer, last.ts));
-      await threads.submit("one", "C", unavailable);
-      const load = async () => ({ exchanges: [first, remote, last] });
+      const failures = pruned
+        ? Array.from({ length: 24 }, (_, index) => `Failure ${index}`)
+        : ["C"];
+      for (const failure of failures) {
+        await threads.submit("one", failure, unavailable);
+      }
+      const expected = pruned ? failures : ["A", "X", "Y", last.question, "C"];
+      const load = async () => ({ exchanges: [first, ...remote, last] });
       await threads.hydrate("one", load);
-      expect(questions(threads)).toEqual(["A", "X", last.question, "C"]);
+      expect(questions(threads)).toEqual(expected);
       await threads.hydrate("one", load);
-      expect(questions(threads)).toEqual(["A", "X", last.question, "C"]);
+      expect(questions(threads)).toEqual(expected);
     },
   );
 

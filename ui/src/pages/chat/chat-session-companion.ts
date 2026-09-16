@@ -69,7 +69,13 @@ function reconcileTurns(thread: MutableCompanionThread, exchanges: SessionCompan
   });
   const remaining = [...entries];
   const positions = new Map<ChatSessionCompanionTurn, number>();
-  const turns = thread.turns.flatMap((turn) => {
+  // Pruned responses still anchor older unseen history before the retained turns.
+  const pruned = new Set(
+    entries
+      .filter(({ turn, fresh }) => !fresh && !thread.turns.includes(turn))
+      .map(({ turn }) => turn),
+  );
+  const turns = [...pruned, ...thread.turns].flatMap((turn) => {
     const index = remaining.findIndex(({ turn: answer, fresh }) =>
       turn.status === "answered"
         ? turn === answer
@@ -83,10 +89,7 @@ function reconcileTurns(thread: MutableCompanionThread, exchanges: SessionCompan
     }
     return !match && turn.status === "answered" ? [] : [turn];
   });
-  for (const { turn, position, fresh } of remaining) {
-    if (!fresh) {
-      continue;
-    }
+  for (const { turn, position } of remaining) {
     // Gateway order places new answers around retries that keep their original local slot.
     const last = turns.findLastIndex(
       (candidate) => (positions.get(candidate) ?? Infinity) < position,
@@ -97,7 +100,7 @@ function reconcileTurns(thread: MutableCompanionThread, exchanges: SessionCompan
     positions.set(turn, position);
     turns.splice(next < 0 ? turns.length : next, 0, turn);
   }
-  thread.turns = turns.slice(-MAX_COMPANION_EXCHANGES);
+  thread.turns = turns.filter((turn) => !pruned.has(turn)).slice(-MAX_COMPANION_EXCHANGES);
   thread.responses = new Map(
     entries.slice(-MAX_COMPANION_EXCHANGES).map(({ turn, key }) => [turn, key]),
   );

@@ -184,15 +184,17 @@ async function resolveGuildAdminActionPermissions(params: {
 
   const onlyReopen =
     params.values.archived === false &&
-    !("name" in params.values) &&
-    !("topic" in params.values) &&
-    !("position" in params.values) &&
-    !("parentId" in params.values) &&
-    !("clearParent" in params.values) &&
-    !("nsfw" in params.values) &&
-    !("rateLimitPerUser" in params.values) &&
-    !("locked" in params.values) &&
-    !("autoArchiveDuration" in params.values) &&
+    // The registered adapter materializes omitted options as undefined.
+    // Permission selection must describe the edit that will reach Discord.
+    params.values.name === undefined &&
+    params.values.topic === undefined &&
+    params.values.position === undefined &&
+    params.values.parentId === undefined &&
+    params.values.clearParent === undefined &&
+    params.values.nsfw === undefined &&
+    params.values.rateLimitPerUser === undefined &&
+    params.values.locked === undefined &&
+    params.values.autoArchiveDuration === undefined &&
     !isLockedThreadChannel(channel);
   return onlyReopen
     ? [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessagesInThreads]

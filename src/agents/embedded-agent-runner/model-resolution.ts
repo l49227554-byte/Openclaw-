@@ -9,7 +9,7 @@ import { resolveModelAsync } from "./model.js";
 
 type ModelResolution = Awaited<ReturnType<typeof resolveModelAsync>>;
 
-/** Resolves embedded-run models through discovery first, then the prepared static catalog. */
+/** Resolves embedded-run models with static capabilities before generic fallback. */
 export async function resolveTieredModel(params: {
   provider: string;
   fallbackProvider?: string;
@@ -53,7 +53,7 @@ export async function resolveTieredModel(params: {
   };
   const firstTier = await resolveCandidates({
     skipAgentDiscovery: true,
-    allowBundledStaticCatalogFallback: params.staticCatalogOwnsTransport,
+    allowBundledStaticCatalogFallback: true,
     preferBundledStaticCatalogTransport: params.staticCatalogOwnsTransport,
     preparedModelRuntime: params.preparedModelRuntime,
   });

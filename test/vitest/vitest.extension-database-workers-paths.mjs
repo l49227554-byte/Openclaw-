@@ -65,6 +65,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/matrix/src/matrix/sdk.test.ts",
   "extensions/matrix/src/matrix/monitor/startup-verification.test.ts",
   "extensions/matrix/src/matrix/sdk/idb-persistence.test.ts",
+  "extensions/matrix/src/matrix/sdk/recovery-key-store.test.ts",
   "extensions/matrix/src/matrix/thread-bindings.test.ts",
   "extensions/mattermost/src/mattermost/thread-participation.test.ts",
   "extensions/memory-lancedb/index.test.ts",

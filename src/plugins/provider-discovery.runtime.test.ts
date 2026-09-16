@@ -653,7 +653,7 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
   it.each([false, true])(
     "retains discovery-only auth beside captured runtime siblings (empty: %s)",
     (emptyRuntime) => {
-      const auth = { apiKey: "fixture-key", source: "fixture", mode: "api_key" as const };
+      const auth = { apiKey: "fixture-key", source: "fixture", mode: "api-key" as const };
       const authProvider: ProviderPlugin = {
         id: "fixture-login",
         label: "Fixture login",
@@ -706,7 +706,7 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
   it.each(["none", "sync", "async"] as const)(
     "composes lightweight auth with runtime catalog replacement (runtime auth: %s)",
     async (runtimeAuth) => {
-      const entryAuth = { apiKey: "entry-key", source: "entry", mode: "api_key" as const };
+      const entryAuth = { apiKey: "entry-key", source: "entry", mode: "api-key" as const };
       const runtimeAuthResult = { ...entryAuth, apiKey: "runtime-key", source: "runtime" };
       const entryProvider: ProviderPlugin = {
         ...createProvider({ id: "fixture", mode: "static" }),

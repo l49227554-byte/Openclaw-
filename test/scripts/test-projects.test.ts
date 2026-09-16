@@ -3759,7 +3759,7 @@ describe("scripts/test-projects changed-target routing", () => {
     ]);
   });
 
-  it("routes explicit active-memory and Codex extension tests to their shards", () => {
+  it("routes explicit active-memory and Codex index tests to the database worker", () => {
     expect(
       buildVitestRunPlans([
         "extensions/active-memory/index.test.ts",
@@ -3767,15 +3767,15 @@ describe("scripts/test-projects changed-target routing", () => {
       ]),
     ).toEqual([
       {
-        config: "test/vitest/vitest.extension-codex.config.ts",
+        config: "test/vitest/vitest.extension-database-workers.config.ts",
         forwardedArgs: [],
-        includePatterns: ["extensions/codex/index.test.ts"],
+        includePatterns: ["extensions/active-memory/index.test.ts"],
         watchMode: false,
       },
       {
         config: "test/vitest/vitest.extension-database-workers.config.ts",
         forwardedArgs: [],
-        includePatterns: ["extensions/active-memory/index.test.ts"],
+        includePatterns: ["extensions/codex/index.test.ts"],
         watchMode: false,
       },
     ]);

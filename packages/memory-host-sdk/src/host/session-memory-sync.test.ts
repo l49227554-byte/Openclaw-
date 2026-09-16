@@ -21,11 +21,13 @@ import type {
   MemoryPluginRuntime,
   RegisteredMemorySearchManager,
 } from "../../../../src/plugins/registry-contribution-types.js";
+import { runOpenClawAgentWriteTransaction } from "../../../../src/state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../../src/state/openclaw-agent-db.paths.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../../src/test-utils/openclaw-test-state.js";
+import { buildSessionEntry } from "./session-files.js";
 
 const { configureMemoryCoreDreamingState, getMemorySearchManager } = await vi.importActual<
   Pick<MemoryPluginRuntime, "getMemorySearchManager"> & {
@@ -137,30 +139,60 @@ describe("memory synchronization of canonical SQLite transcripts", () => {
     });
   });
 
-  it("replaces stale recall after an equal-size transcript rewrite while the manager is closed", async () => {
-    const original = await acquireManager();
-    await original.sync({ force: true });
-    expect(matches("violet")).toHaveLength(1);
-    const beforeStats = readTranscriptStatsSync(scope());
-    await original.manager.close?.();
+  it.each([false, true])(
+    "replaces stale recall after a closed-manager equal-size rewrite (legacy hash: %s)",
+    async (legacy) => {
+      const original = await acquireManager();
+      await original.sync({ force: true });
+      expect(matches("violet")).toHaveLength(1);
+      if (legacy) {
+        const entry = await buildSessionEntry(sessionKey, {
+          ...scope(),
+          updatedAtMs: 1,
+          sessionKind: "interactive",
+        });
+        if (!entry) {
+          throw new Error("Expected the previously indexed session export");
+        }
+        runOpenClawAgentWriteTransaction(
+          ({ db }) => {
+            db.prepare(
+              "UPDATE memory_index_sources SET hash = ? WHERE path = ? AND source = 'sessions'",
+            ).run(entry.hash, memoryPath);
+          },
+          { agentId: "main", path: scope().storePath },
+        );
+      }
+      const beforeStats = readTranscriptStatsSync(scope());
+      await original.manager.close?.();
 
-    await replaceTranscriptEvents(scope(), events("orange"));
-    await waitForSessionTranscriptIndexReconcile({ agentId: "main", path: scope().storePath });
-    const afterStats = readTranscriptStatsSync(scope());
-    expect(afterStats).toMatchObject({
-      sizeBytes: beforeStats.sizeBytes,
-      eventCount: beforeStats.eventCount,
-      maxSeq: beforeStats.maxSeq,
-    });
-    expect(afterStats.lastMutationAtMs).toBeGreaterThan(beforeStats.lastMutationAtMs ?? 0);
+      await replaceTranscriptEvents(scope(), events("orange"));
+      await waitForSessionTranscriptIndexReconcile({ agentId: "main", path: scope().storePath });
+      const afterStats = readTranscriptStatsSync(scope());
+      expect(afterStats).toMatchObject({
+        sizeBytes: beforeStats.sizeBytes,
+        eventCount: beforeStats.eventCount,
+        maxSeq: beforeStats.maxSeq,
+      });
+      expect(afterStats.lastMutationAtMs).toBeGreaterThan(beforeStats.lastMutationAtMs ?? 0);
 
-    const restarted = await acquireManager(true);
-    await restarted.sync({ reason: "cli" });
-    expect(matches("orange")).toEqual([{ text: "User: My orange preference is documented here." }]);
-    expect(matches("violet")).toEqual([]);
-    expect((await restarted.manager.search("orange")).map((hit) => hit.path)).toContain(memoryPath);
-    expect(restarted.manager.status().dirty).toBe(false);
-  });
+      const restarted = await acquireManager(true);
+      await restarted.sync({ reason: "cli" });
+      expect(matches("orange")).toEqual([
+        { text: "User: My orange preference is documented here." },
+      ]);
+      expect(matches("violet")).toEqual([]);
+      expect((await restarted.manager.search("orange")).map((hit) => hit.path)).toContain(
+        memoryPath,
+      );
+      expect(restarted.manager.status().dirty).toBe(false);
+      expect(
+        observer.prepare("SELECT mtime FROM memory_index_sources WHERE path = ?").get(memoryPath),
+      ).toEqual({ mtime: 1 });
+      await restarted.manager.close?.();
+      expect((await acquireManager(true)).manager.status().dirty).toBe(false);
+    },
+  );
 
   it.each([false, true])(
     "preserves published recall across a cold rebuild (damaged archive: %s)",

@@ -124,7 +124,11 @@ after a read reports cold storage; hot exports add no host SQLite reads.
 Unreadable canonical transcripts, worker admission, and transport failures
 preserve the published index and retry state. Startup checks batch transcript
 statistics and use the transcript mutation watermark, so same-size rewrites are
-detected independently of session activity. The existing chunking revision
+detected independently of session activity. The memory source hash carries this
+revision alongside its content hash; source modification times retain activity
+for temporal ranking. Legacy source hashes refresh once without rebuilding
+unchanged chunks. Transcript export hashes and provenance stay unchanged.
+The existing chunking revision
 triggers a one-time rebuild to repair
 previously indexed reset boundaries. Rebuilds reuse cached embeddings when
 available and retain the existing atomic publication path.

@@ -163,7 +163,7 @@ describe("SQLite session snapshots and reset content revision", () => {
         ...archive,
         absPath: scope.sessionKey,
         path: "sessions/main/parity.jsonl",
-        mtimeMs: readTranscriptStatsSync(scope).lastMutationAtMs,
+        revisionMs: readTranscriptStatsSync(scope).lastMutationAtMs,
       });
       expect(sqlite.content).toBe(
         kind === "interactive"

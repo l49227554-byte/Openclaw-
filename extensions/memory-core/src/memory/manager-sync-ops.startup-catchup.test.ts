@@ -267,7 +267,7 @@ describe("session startup catch-up", () => {
     const harness = new SessionStartupCatchupHarness([
       {
         path: state.path,
-        hash: "current-hash",
+        hash: `sqlite:${state.revisionMs}:current-hash`,
         mtime: state.mtimeMs,
         size: state.size,
       },
@@ -450,7 +450,7 @@ describe("session startup catch-up", () => {
     expect(harness.indexedContents).toEqual([]);
     expect(harness.getIndexedSourceState(entry.path)).toEqual({
       path: entry.path,
-      hash: entry.hash,
+      hash: `sqlite:${entry.revisionMs}:${entry.hash}`,
       mtime: entry.mtimeMs,
       size: entry.size,
     });

@@ -76,6 +76,8 @@ export type SessionFileEntry = {
   path: string;
   absPath: string;
   mtimeMs: number;
+  /** Canonical SQLite mutation watermark, independent of source activity. */
+  revisionMs?: number;
   size: number;
   hash: string;
   content: string;
@@ -92,7 +94,10 @@ export type SessionFileEntry = {
   sessionKind: MemorySessionKind;
 };
 
-export type SessionFileState = Pick<SessionFileEntry, "path" | "absPath" | "mtimeMs" | "size">;
+export type SessionFileState = Pick<
+  SessionFileEntry,
+  "path" | "absPath" | "mtimeMs" | "revisionMs" | "size"
+>;
 
 export type BuildSessionEntryOptions = {
   /** Optional preclassification from a caller-managed dreaming transcript lookup. */
@@ -614,7 +619,8 @@ function sqliteSessionFileState(
   return {
     absPath,
     path: sessionPathForSessionIdentity(identity.agentId, identity.sessionId),
-    mtimeMs: stats.lastMutationAtMs ?? updatedAtMs ?? stats.maxSeq,
+    mtimeMs: updatedAtMs ?? stats.maxSeq,
+    revisionMs: stats.lastMutationAtMs ?? stats.maxSeq,
     size: stats.sizeBytes,
   };
 }
@@ -711,7 +717,6 @@ export async function buildSessionEntryInProcess(
       snapshot && sqliteIdentity
         ? {
             ...sqliteSessionFileState(absPath, sqliteIdentity, snapshot.stats, opts.updatedAtMs),
-            observedAtMs: opts.updatedAtMs ?? snapshot.stats.maxSeq,
             records: snapshot.events,
             resetRecallCutoff: resolveSessionResetRecallCutoff(snapshot.events),
             sessionKey: snapshot.sessionKey,
@@ -764,7 +769,6 @@ export async function buildSessionEntryInProcess(
       memoryPath = sessionPathForFile(absPath);
     }
     const collected: string[] = [];
-    const observedAtMs = sqliteSource?.observedAtMs ?? mtimeMs;
     const lineMap: number[] = [];
     const messageTimestampsMs: number[] = [];
     const lineProvenance: MemoryEntryProvenance[] = [];
@@ -852,7 +856,7 @@ export async function buildSessionEntryInProcess(
         record as { timestamp?: unknown },
         message as { timestamp?: unknown },
       );
-      opts.onTranscriptMessage?.(message, Math.max(0, Math.floor(timestampMs || observedAtMs)));
+      opts.onTranscriptMessage?.(message, Math.max(0, Math.floor(timestampMs || mtimeMs)));
       const inputProvenance = message.provenance as
         | { kind?: unknown; sourceTool?: unknown }
         | undefined;
@@ -894,7 +898,7 @@ export async function buildSessionEntryInProcess(
       const memoryProvenance: MemoryEntryProvenance = {
         originClass: classifySessionMessageOrigin(message, turnOrigin),
         sessionKind,
-        observedAt: Math.max(0, Math.floor(timestampMs || observedAtMs)),
+        observedAt: Math.max(0, Math.floor(timestampMs || mtimeMs)),
       };
       collected.push(...renderedLines);
       lineMap.push(...renderedLines.map(() => jsonlIdx + 1));
@@ -906,6 +910,7 @@ export async function buildSessionEntryInProcess(
       path: memoryPath,
       absPath,
       mtimeMs,
+      ...(sqliteSource ? { revisionMs: sqliteSource.revisionMs } : {}),
       size,
       hash: hashSessionEntrySnapshot({
         content,

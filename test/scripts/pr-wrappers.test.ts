@@ -1250,6 +1250,8 @@ exit 99
     function makeAliasFixture() {
       const fixture = makeMismatchedWrapperRepo({ realModules: true });
       fixture.git(fixture.linked, ["checkout", "--detach", "refs/remotes/origin/main"]);
+      // Keep the Node recorder at the supervisor handoff, after dependency preparation.
+      linkPrWrapperDependencies(fixture.linked);
       for (const alias of ["pr-prepare", "pr-review", "pr-merge"]) {
         cpSync(join("scripts", alias), join(fixture.linked, "scripts", alias));
       }
@@ -1260,9 +1262,6 @@ exit 99
       );
       fixture.git(fixture.canonical, ["add", "scripts/pr"]);
       fixture.git(fixture.canonical, ["commit", "-m", "test: stale canonical wrapper"]);
-      // Install dependencies before recording Node calls so the fixture reaches
-      // supervisor handoff without entering dependency materialization first.
-      linkPrWrapperDependencies(fixture.linked);
       const recorder = join(fixture.bin, "node");
       writeFileSync(recorder, '#!/bin/sh\nprintf \'%s\\0\' "$PWD" "$@"\nexit 73\n');
       chmodSync(recorder, 0o755);

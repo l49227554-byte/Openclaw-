@@ -4,19 +4,31 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferredCore } from "../../../src/shared/deferred.js";
 import { createApplicationRouter, startApplicationRouter, type RouteId } from "../app-routes.ts";
 import { createApplicationGateway } from "../test-helpers/application-context.ts";
+import { createTestGatewayClient } from "../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../test-helpers/gateway-methods.ts";
-import type { ApplicationContext, ApplicationGatewaySnapshot } from "./context.ts";
+import type { ApplicationContext } from "./context.ts";
 
 afterEach(() => vi.restoreAllMocks());
 
-async function setup() {
+async function setup(pathname = "/chat/main/dashboard/12345678-90ab-cdef-1234-567890abcdef") {
+  const request = vi.fn(async (): Promise<{ ok: boolean; key?: string }> => ({ ok: true }));
   const fixture = createApplicationGateway({
     phase: "connected",
-    client: {},
+    client: createTestGatewayClient(request),
+    offlineStable: false,
+    canvasPluginSurfaceUrl: null,
+    assistantAgentId: "main",
+    sessionKey: "agent:main:main",
+    lastError: null,
+    lastErrorCode: null,
     hello: gatewayHelloForMethods([]),
     selfUser: { id: "reader" },
-  } as ApplicationGatewaySnapshot);
-  const context = { basePath: "", gateway: fixture.gateway } as ApplicationContext<RouteId>;
+  });
+  const context = {
+    basePath: "",
+    gateway: fixture.gateway,
+    agents: { state: { agentsList: { mainKey: "main" } } },
+  } as ApplicationContext<RouteId>;
   let location: RouteLocation = { pathname: "/activity", search: "", hash: "" };
   const writeHistory = vi.fn((next: RouteLocation) => {
     location = next;
@@ -37,7 +49,7 @@ async function setup() {
   const load = vi.spyOn(chat, "loader").mockResolvedValue({ sessionKey: "destination" });
   await startApplicationRouter(router, history, "", context);
   const destination: RouteLocation = {
-    pathname: "/chat/main/dashboard/12345678-90ab-cdef-1234-567890abcdef",
+    pathname,
     search: "?draft=keep-this",
     hash: "#message",
   };
@@ -68,10 +80,137 @@ async function setup() {
     reconnect,
     beginLoad,
     writeHistory,
+    request,
   };
 }
 
 describe("session route reconnect recovery", () => {
+  const referencePath = "/chat/main/research-12345678";
+  const session = {
+    kind: "session",
+    sessionKey: "agent:main:dashboard:12345678-90ab-cdef-1234-567890abcdef",
+  };
+
+  it("verifies a bridged startup route whose component finishes after reconnect", async () => {
+    const f = await setup(referencePath);
+    f.router.stop();
+    const component = createDeferredCore<{ render: () => null }>();
+    vi.spyOn(f.router.getRoute("chat")!, "component").mockReturnValue(component.promise);
+    f.load.mockResolvedValueOnce(session).mockResolvedValue({ kind: "missing-session" });
+    f.request.mockResolvedValue({ ok: false });
+    const startup = startApplicationRouter(
+      f.router,
+      {
+        location: () => f.destination,
+        push: f.writeHistory,
+        replace: f.writeHistory,
+        listen: () => () => {},
+      },
+      "",
+      f.context,
+    );
+    await vi.waitFor(() => expect(f.load).toHaveBeenCalledOnce());
+    f.disconnect();
+    f.reconnect();
+    component.resolve({ render: () => null });
+    await startup;
+    await vi.waitFor(() =>
+      expect(f.router.getState().matches[0]?.data).toEqual({ kind: "missing-session" }),
+    );
+    expect(f.request).toHaveBeenCalledExactlyOnceWith(
+      "sessions.resolve",
+      expect.objectContaining({ reference: { key: session.sessionKey } }),
+    );
+    expect(f.writeHistory).not.toHaveBeenCalled();
+  });
+
+  it.each(["before", "after"])(
+    "verifies an offline-resolved session that commits %s reconnect",
+    async (settlement) => {
+      const f = await setup(referencePath);
+      f.request.mockResolvedValue({ ok: false });
+      f.load.mockResolvedValue({ kind: "missing-session" });
+      const { deferred, navigation } = await f.beginLoad();
+      f.disconnect();
+      if (settlement === "after") {
+        f.reconnect();
+      }
+      deferred.resolve(session);
+      await navigation;
+      if (settlement === "before") {
+        f.reconnect();
+      }
+      await vi.waitFor(() =>
+        expect(f.router.getState().matches[0]?.data).toEqual({ kind: "missing-session" }),
+      );
+      expect(f.request).toHaveBeenCalledExactlyOnceWith(
+        "sessions.resolve",
+        expect.objectContaining({ reference: { key: session.sessionKey } }),
+      );
+      expect(f.writeHistory).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["/chat/main", "/chat/main/~key/research"])(
+    "preserves a creation route across reconnect: %s",
+    async (pathname) => {
+      const f = await setup(pathname);
+      f.load.mockResolvedValue(session);
+      await f.router.navigate("chat", f.context, {}, f.destination);
+      f.disconnect();
+      f.reconnect();
+      await Promise.resolve();
+      expect(f.request).not.toHaveBeenCalled();
+      expect(f.load).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["present", "unavailable"])(
+    "keeps established history when exact discovery is %s",
+    async (result) => {
+      const f = await setup(referencePath);
+      f.load.mockResolvedValue(session);
+      await f.router.navigate("chat", f.context, {}, f.destination);
+      const match = f.router.getState().matches[0];
+      if (result === "unavailable") {
+        f.request.mockRejectedValue(new Error("Gateway starting"));
+      } else {
+        f.request.mockResolvedValue({ ok: true, key: session.sessionKey });
+      }
+      f.disconnect();
+      f.reconnect();
+      await vi.waitFor(() => expect(f.request).toHaveBeenCalledOnce());
+      await Promise.resolve();
+      expect(f.router.getState().matches[0]).toBe(match);
+      expect(f.load).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["navigation", "connection", "stop"])(
+    "rejects a late missing result after %s",
+    async (change) => {
+      const f = await setup(referencePath);
+      f.load.mockResolvedValue(session);
+      await f.router.navigate("chat", f.context, {}, f.destination);
+      const pending = createDeferredCore<{ ok: boolean }>();
+      f.request.mockReturnValue(pending.promise);
+      f.disconnect();
+      f.reconnect();
+      await vi.waitFor(() => expect(f.request).toHaveBeenCalledOnce());
+      if (change === "navigation") {
+        await f.router.navigate("activity", f.context, {});
+      } else if (change === "connection") {
+        f.disconnect();
+      } else {
+        f.router.stop();
+      }
+      pending.resolve({ ok: false });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(f.load).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.each(["before", "after"])(
     "resumes a failed session load when its rejection settles %s reconnect",
     async (settlement) => {

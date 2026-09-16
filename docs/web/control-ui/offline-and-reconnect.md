@@ -70,6 +70,12 @@ keeps its last data and refreshes automatically once the Gateway accepts work ag
 failures remain visible inline with their message and are retried automatically when the Gateway
 becomes available again. These refresh callouts have no manual **Retry** button.
 
+After reconnect, an open conversation link is checked against the Gateway. If the
+Gateway confirms that the conversation no longer exists, such as an incognito
+conversation after a Gateway restart, the page shows **Session not found** with
+actions to open Main or browse sessions. A connection failure or a conversation
+missing from the current sidebar page does not count as deletion.
+
 If chat history times out, its **Retry** action reloads the saved conversation and restores
 its live session subscription, including approval updates.
 

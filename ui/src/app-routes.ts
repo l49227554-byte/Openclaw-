@@ -31,6 +31,7 @@ import { page as approvalsPage } from "./pages/approvals/route.ts";
 import { page as appsPage } from "./pages/apps/route.ts";
 import { page as channelsPage } from "./pages/channels/route.ts";
 import { pages as chatPages } from "./pages/chat/route.ts";
+import type { ChatRouteData } from "./pages/chat/session-route-data.ts";
 import { page as cloudWorkersPage } from "./pages/cloud-workers/route.ts";
 import { pages as configPages } from "./pages/config/route.ts";
 import { page as connectionPage } from "./pages/connection/route.ts";
@@ -260,6 +261,56 @@ export async function startApplicationRouter(
         const state = router.getState();
         return state.pendingMatches[0] ?? state.matches[0];
       };
+      const verifyReconnectedSession = async (
+        target: NonNullable<ReturnType<typeof currentTarget>>,
+      ) => {
+        const data = target.data as ChatRouteData | undefined;
+        if (data?.kind !== "session") {
+          return;
+        }
+        const { client, hello } = context.gateway.snapshot;
+        const scope = gatewayPresentationScope(context.gateway);
+        const current = () =>
+          listening &&
+          context.gateway.snapshot.phase === "connected" &&
+          context.gateway.snapshot.client === client &&
+          context.gateway.snapshot.hello === hello &&
+          gatewayPresentationScope(context.gateway) === scope &&
+          currentTarget()?.abortController === target.abortController &&
+          router.getState().pendingMatches.length === 0;
+        try {
+          const { sessionRouteTargetFromLocation } = await import("./pages/chat/route-loader.ts");
+          if (!current()) {
+            return;
+          }
+          const reference = sessionRouteTargetFromLocation(context, target.location)?.target;
+          // Home and explicit literal creation routes need not exist in storage.
+          if (
+            !reference ||
+            !(
+              reference.kind === "short" ||
+              (reference.kind === "literal" && reference.slugCandidate)
+            )
+          ) {
+            return;
+          }
+          const { querySessionReference } =
+            await import("./pages/chat/route-loader-session-reference.ts");
+          if (!current()) {
+            return;
+          }
+          const resolution = await querySessionReference(
+            context,
+            { key: data.sessionKey, agentId: reference.agentId },
+            target.abortController.signal,
+          );
+          if (resolution?.kind === "not-found" && current()) {
+            await router.revalidate(context, target.routeId);
+          }
+        } catch {
+          // Failed discovery is not deletion; keep the established conversation.
+        }
+      };
       const recoverSessionRoute = () => {
         const target = currentTarget();
         if (!target || !isSessionRouteId(target.routeId)) {
@@ -274,13 +325,21 @@ export async function startApplicationRouter(
           return;
         }
         if (context.gateway.snapshot.phase !== "connected") {
-          if (target.status === "pending" || target.isFetching === "loader") {
+          if (
+            target.status === "pending" ||
+            target.status === "success" ||
+            target.isFetching === "loader"
+          ) {
             interrupted = { controller: target.abortController, scope };
           }
           return;
         }
         if (target.status === "success" && !target.isFetching) {
+          const needsVerification = interrupted !== undefined;
           interrupted = undefined;
+          if (needsVerification) {
+            void verifyReconnectedSession(target);
+          }
         }
         if (!interrupted || recoveryQueued || target.status !== "error") {
           return;

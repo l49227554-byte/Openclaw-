@@ -404,7 +404,12 @@ function resolveInstalledPackageMetadata(
   const fallbackPackageManifest = recordPackageChannel
     ? { channel: recordPackageChannel }
     : undefined;
-  const fallback = fallbackPackageManifest ? { packageManifest: fallbackPackageManifest } : {};
+  // Discovery normalizes absent package metadata to empty dependency maps.
+  const fallback = {
+    packageDependencies: {},
+    packageOptionalDependencies: {},
+    ...(fallbackPackageManifest ? { packageManifest: fallbackPackageManifest } : {}),
+  };
   if (!record.packageJson?.path) {
     return fallback;
   }

@@ -31,9 +31,11 @@ afterEach(() => {
   cleanupTrackedTempDirs(tempDirs);
 });
 
-it.each(["global", "bundled"] as const)(
+it.each(["global", "bundled", "bundled without package.json"] as const)(
   "retains a %s runtime across persisted and fresh metadata, but replaces it when its inputs change",
-  async (origin) => {
+  async (kind) => {
+    const origin = kind === "global" ? "global" : "bundled";
+    const hasPackage = kind !== "bundled without package.json";
     const root = makeTrackedTempDir("openclaw-loader-metadata-retention", tempDirs);
     const stateDir = path.join(root, "state");
     const workspaceDir = path.join(root, "workspace");
@@ -52,7 +54,10 @@ it.each(["global", "bundled"] as const)(
             version: "1.0.0",
           })
         : path.join(bundledDir, "metadata-sibling");
-    fs.mkdirSync(path.join(packageDir, "dist"), { recursive: true });
+    const entryPath = hasPackage
+      ? path.join(packageDir, "dist", "index.js")
+      : path.join(packageDir, "index.js");
+    fs.mkdirSync(path.dirname(entryPath), { recursive: true });
     fs.writeFileSync(
       path.join(packageDir, "openclaw.plugin.json"),
       JSON.stringify({
@@ -71,12 +76,14 @@ it.each(["global", "bundled"] as const)(
           openclaw: { extensions: ["./dist/index.js"] },
         }),
       );
-    writeDescription("Original package description");
+    if (hasPackage) {
+      writeDescription("Original package description");
+    }
     const registrationEvent = `metadata-sibling-registration:${root}`;
     const registered = vi.fn();
     process.on(registrationEvent, registered);
     fs.writeFileSync(
-      path.join(packageDir, "dist", "index.js"),
+      entryPath,
       `module.exports = { id: 'metadata-sibling', register(api) {
       const instance = require('node:crypto').randomUUID();
       const lifetime = new AbortController();
@@ -163,11 +170,15 @@ it.each(["global", "bundled"] as const)(
             const handler = registry.gatewayHandlers["metadata-sibling.probe"];
             assert.ok(record && manifest && handler);
             expect(record.origin).toBe(origin);
+            expect.soft(manifest.packageDependencies).toEqual({});
+            expect.soft(manifest.packageOptionalDependencies).toEqual({});
             return { record, manifest, handler };
           });
         };
         const initial = load(true);
-        expect.soft(initial.manifest.packageDescription).toBe("Original package description");
+        expect
+          .soft(initial.manifest.packageDescription)
+          .toBe(hasPackage ? "Original package description" : undefined);
         const call = async (handler: typeof initial.handler) => {
           const respond = vi.fn();
           await handler({
@@ -190,12 +201,17 @@ it.each(["global", "bundled"] as const)(
         // First installation can derive metadata; the following settings reload hydrates it.
         for (const preferPersisted of [false, true]) {
           const current = load(preferPersisted);
-          expect.soft(current.manifest.packageDescription).toBe("Original package description");
+          expect
+            .soft(current.manifest.packageDescription)
+            .toBe(hasPackage ? "Original package description" : undefined);
           expect.soft(current.manifest).toEqual(initial.manifest);
           expect.soft(current.record).toBe(initial.record);
           expect.soft(current.handler).toBe(initial.handler);
           expect.soft(await call(current.handler)).toBe(initialResponse);
           expect.soft(registered).toHaveBeenCalledTimes(1);
+        }
+        if (!hasPackage) {
+          return;
         }
         let previous = initial;
         let nextWorkspace = workspaceDir;

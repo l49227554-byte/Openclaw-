@@ -56,7 +56,9 @@ import {
   createGatewayProjectShardVitestConfig,
   createGatewayVitestConfig,
 } from "./vitest/vitest.gateway.config.ts";
+import { createInfraVitestConfig } from "./vitest/vitest.infra.config.ts";
 import { createPluginSdkLightVitestConfig } from "./vitest/vitest.plugin-sdk-light.config.ts";
+import { createProjectShardVitestConfig } from "./vitest/vitest.project-shard-config.ts";
 import {
   repoRoot,
   resolveSharedVitestWorkerConfig,
@@ -76,7 +78,9 @@ const scopedGatewayMethodsIsolatedTestFiles = [
   "server-methods/agent.test.ts",
   "server-methods/board.runtime-boundaries.test.ts",
   "server-methods/chat.reset-visible-yield.test.ts",
+  "server-methods/environments.pairing-snapshot.test.ts",
   "server-methods/health.owner-routing.test.ts",
+  "server-methods/sessions.send-yield-resume.test.ts",
   "server-methods/system-agent-nested-inference.integration.test.ts",
   "server-methods/system-agent-setup-control-ui.test.ts",
   "server-methods/users-preferences.test.ts",
@@ -107,6 +111,28 @@ afterEach(() => {
 });
 
 describe("projects vitest config", () => {
+  it("pins an explicit full-suite project worker limit", () => {
+    const previous = process.env.OPENCLAW_VITEST_MAX_WORKERS;
+    try {
+      process.env.OPENCLAW_VITEST_MAX_WORKERS = "8";
+      const testConfig = requireTestConfig(
+        createProjectShardVitestConfig(["test/vitest/vitest.tooling.config.ts"], {
+          maxWorkers: 1,
+        }),
+      );
+
+      expect(testConfig.maxWorkers).toBe(1);
+      expect(testConfig.fileParallelism).toBe(false);
+      expect(process.env.OPENCLAW_VITEST_MAX_WORKERS).toBe("1");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENCLAW_VITEST_MAX_WORKERS;
+      } else {
+        process.env.OPENCLAW_VITEST_MAX_WORKERS = previous;
+      }
+    }
+  });
+
   it("resolves the complete root watch project graph", () => {
     const result = spawnNodeEvalSync(
       `
@@ -121,9 +147,10 @@ describe("projects vitest config", () => {
         timeout: DEFAULT_VITEST_TEST_TIMEOUT_MS,
       },
     );
-    expect(result.error, result.stderr).toBeUndefined();
-    expect(result.signal, result.stderr).toBeNull();
-    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.stringify({ stdout: result.stdout, stderr: result.stderr });
+    expect(result.error, output).toBeUndefined();
+    expect(result.signal, output).toBeNull();
+    expect(result.status, output).toBe(0);
     const report = result.stdout
       .split("\n")
       .find((line) => line.startsWith("ROOT_PROJECT_RESOLUTION "));
@@ -657,6 +684,19 @@ describe("projects vitest config", () => {
     expect(testConfig.sequence).toMatchObject({ groupOrder: 1 });
   });
 
+  it.each([
+    "src/wizard/setup.inference-recovery.integration.test.ts",
+    "src/plugins/loader.trust-diagnostics.test.ts",
+  ])("routes host-owned SQLite caller %s through the infra process", (file) => {
+    const project = "test/vitest/vitest.infra.config.ts";
+    const testConfig = requireTestConfig(createInfraVitestConfig({}));
+    expect(buildVitestRunPlans([file]).map((plan) => plan.config)).toEqual([project]);
+    expect(testConfig.include).toContain(file);
+    expect(testConfig.pool).toBe("forks");
+    expect(rootVitestProjects).toContain(project);
+    expect(fullSuiteVitestShards.flatMap((shard) => shard.projects ?? [])).toContain(project);
+  });
+
   it("keeps Slack's real cooldown store in its forked project", () => {
     const project = "test/vitest/vitest.extension-slack.config.ts";
     expect(requireTestConfig(createExtensionSlackVitestConfig({})).pool).toBe("forks");
@@ -716,7 +756,12 @@ describe("projects vitest config", () => {
       source: "approval-reactions.ts",
       siblings: ["approval-reactions.test.ts", "approval-reaction-poller.test.ts"],
     },
-    { file: "send.sqlite.test.ts", source: "send.ts", siblings: ["send.test.ts"] },
+    {
+      file: "send.sqlite.test.ts",
+      source: "send.ts",
+      siblings: ["outbound-tool-trace-sanitize.test.ts"],
+    },
+    { file: "send.test.ts", source: "send.ts", siblings: ["outbound-tool-trace-sanitize.test.ts"] },
   ])(
     "routes iMessage $file through its worker owner without moving sibling tests",
     ({ file: basename, source, siblings }) => {

@@ -33,6 +33,7 @@ import {
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { hasAuthoredProviderRequestParams } from "./model-extra-params.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
+import type { ModelRef } from "./model-ref-shared.js";
 import {
   createModelVisibilityPolicy,
   RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
@@ -92,7 +93,11 @@ export function createModelCatalogView(params: {
   return {
     logicalEntries: dedupeByKey(params.catalog, keyOf),
     variantsOf,
-    project(entry: ModelCatalogEntry, evaluation: ModelAuthAvailabilityEvaluation) {
+    project(
+      entry: ModelCatalogEntry,
+      evaluation: ModelAuthAvailabilityEvaluation,
+      routeVariants?: readonly ModelCatalogEntry[],
+    ) {
       const projection: ModelCatalogRouteProjection =
         evaluation.routeResolution === null
           ? { kind: "unmanaged" }
@@ -103,7 +108,8 @@ export function createModelCatalogView(params: {
                 policy: openAIModelCatalogRoutePolicy,
               }
             : { kind: "unresolved", policy: openAIModelCatalogRoutePolicy };
-      const variants = variantsOf(entry);
+      // Runtime selection can narrow donors without rebuilding the configured-row index.
+      const variants = routeVariants ?? variantsOf(entry);
       const overrides = resolveOverrides(entry);
       return projectModelCatalogEntryForRoute({
         entry,
@@ -129,6 +135,7 @@ export type ModelCatalogViewFacts = {
   pinnedProfileId?: string;
   profileProvider?: string;
   view?: ModelCatalogBrowseView;
+  retainedModel?: ModelRef;
 };
 
 /** Projects captured catalog facts while keeping native observations revocable. */
@@ -136,8 +143,11 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
   const defaultModel = resolveAgentEffectiveModelPrimary(params.cfg, params.agentId);
   const agentDir = params.agentDir ?? resolveAgentDir(params.cfg, params.agentId);
   const catalog = [...params.snapshot.entries];
-  if (params.view === "configured" && params.snapshot.staticEntries?.length) {
-    const { configuredKeys } = createModelVisibilityPolicy({
+  if (
+    (params.view === "configured" || params.view === "default") &&
+    params.snapshot.staticEntries?.length
+  ) {
+    const policy = createModelVisibilityPolicy({
       cfg: params.cfg,
       catalog,
       defaultProvider: DEFAULT_PROVIDER,
@@ -148,9 +158,19 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
     });
     const keyOf = createModelCatalogIdentityKeyResolver();
     const seen = new Set(catalog.map(keyOf));
+    const retainedKey = params.retainedModel
+      ? keyOf({
+          provider: params.retainedModel.provider,
+          id: params.retainedModel.model,
+        })
+      : undefined;
     for (const entry of params.snapshot.staticEntries) {
       const key = keyOf(entry);
-      if (!seen.has(key) && configuredKeys.has(key)) {
+      const include =
+        params.view === "configured"
+          ? policy.configuredKeys.has(key) || key === retainedKey
+          : policy.allows({ provider: entry.provider, model: entry.id });
+      if (!seen.has(key) && include) {
         seen.add(key);
         catalog.push(entry);
       }

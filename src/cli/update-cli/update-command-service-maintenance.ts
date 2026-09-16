@@ -27,7 +27,10 @@ import { defaultRuntime } from "../../runtime.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import { gatewayMaintenanceBlockMessage } from "./update-command-handoff.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
-import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
+import type {
+  ManagedGatewayUpdateVerdict,
+  PreManagedServiceStop,
+} from "./update-command-service-context-types.js";
 import {
   assertGatewayServiceAdmissionUnchanged,
   assertGatewayServiceManagementAllowedForUpdate,
@@ -36,7 +39,6 @@ import {
   resolveGatewayServiceManagementBlockMessageForUpdate,
   resolveManagedServiceNodeRunner,
   resolveUpdatedGatewayRestartPort,
-  type ManagedGatewayUpdateVerdict,
 } from "./update-command-service-plan.js";
 import {
   isManagedGatewayServiceOffline,
@@ -85,10 +87,10 @@ function serviceInspectionBlockMessage(state: GatewayServiceState): string {
   ) {
     return `The Gateway main process has stopped, but processes remain in its systemd service cgroup (${tasksCurrent} tasks). Inspect the unit with systemctl --user status and its journal, then have the process owner stop the remaining children before retrying Doctor or the update.`;
   }
-  const timeoutMs = state.runtime?.inspectionFailure?.timeoutMs;
-  return timeoutMs === undefined
-    ? GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE
-    : `Scheduled Task probe timed out after ${timeoutMs} ms (ETIMEDOUT). ${GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE}`;
+  const detail = runtime?.inspectionFailure?.detail;
+  return detail
+    ? `${detail} ${GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE}`
+    : GATEWAY_SERVICE_INSPECTION_BLOCK_MESSAGE;
 }
 
 export function resolvePreparedGatewayUpdatePolicy(

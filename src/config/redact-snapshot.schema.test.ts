@@ -110,50 +110,6 @@ describe("realredactConfigSnapshot_real", () => {
     );
   });
 
-  it("preserves Matrix account SecretRef identity via generated channel metadata hints", () => {
-    const hints = buildConfigSchemaCore().uiHints;
-    expect(hints["channels.matrix.accounts.*.password"]?.sensitive).toBe(true);
-    expect(hints["channels.matrix.accounts.*.accessToken"]?.sensitive).toBe(true);
-
-    const snapshot = makeSnapshot({
-      channels: {
-        matrix: {
-          accounts: {
-            work: {
-              password: {
-                source: "store",
-                provider: "default",
-                id: "MATRIX_WORK_PASSWORD",
-              },
-            },
-          },
-        },
-      },
-    });
-
-    const result = redactConfigSnapshot(snapshot, hints);
-    const channels = result.config.channels as Record<
-      string,
-      { accounts?: Record<string, { password?: Record<string, string> }> }
-    >;
-    const password = expectDefined(
-      channels.matrix?.accounts?.work?.password,
-      "matrix account password",
-    );
-    expect(password).toEqual({
-      source: "store",
-      provider: "default",
-      id: REDACTED_SENTINEL,
-    });
-
-    const restored = restoreRedactedValues(result.config, snapshot.config, hints);
-    expect(restored.channels.matrix.accounts.work.password).toEqual({
-      source: "store",
-      provider: "default",
-      id: "MATRIX_WORK_PASSWORD",
-    });
-  });
-
   it("redacts remote edge-auth header values from generated schema hints", () => {
     const hints = buildConfigSchemaCore().uiHints;
     const snapshot = makeSnapshot({

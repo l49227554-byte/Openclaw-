@@ -2,7 +2,7 @@
 set -euo pipefail
 
 node_version="24.19.0"
-pnpm_spec="pnpm@12.3.4+sha512.961aa41fb077da3a04a441d9f8e15ebc0c96da8ef710b2eb67bf9ee7cb0610eabd48f1fd85f51cffe73846785fa0f87c56a3a872a1d893f8446741b5cce45457"
+pnpm_spec="pnpm@12.4.0+sha512.37536c26ed40ab4134b6511e09f6b27f3ebb45687468f2406ca3805279a4e5ca158c1931350ad9774d6ab2108d71b3dbaeb39943159294375e4d053e8e05685c"
 # Trusted main's historical pin is needed to validate older contributor heads.
 historical_pnpm_spec="pnpm@12.1.0+sha512.d9b8276d97f6ec86e49815877f91ee9f63cee61f2063b304e43b6dab8fa07ce8a9afd46d2facd39f921e6a9d06b3c75a81349c7b888c2d22886bae0229901037"
 
@@ -126,11 +126,11 @@ pnpm_version="${pnpm_spec#pnpm@}"
 pnpm_version="${pnpm_version%%+*}"
 pnpm_native_sha512=""
 case "$pnpm_version:$node_arch" in
-  12.3.4:x64)
-    pnpm_native_sha512="d99a8e9523e47f05f5879711f853e259ff3e17eda1653ff74ef8542b9b22807ab06900888aaf11ec21b186774ab3adc9b5c2e2d9ad50a68fb05ff128c9f8f225"
+  12.4.0:x64)
+    pnpm_native_sha512="490560464711e17caa7fcf9535bb58d2bb5c1277c3ab8f11847df41d6a36fd47ea2847e57b6ace3321993a63750db330e19cc6e66598a02f353bb66a1c565c3f"
     ;;
-  12.3.4:arm64)
-    pnpm_native_sha512="b7bd40540ecb46a88a4f2679c4c61a65cda7e437dda4c6dfa2466e8883971c138cd371029c5d2de226306810ea26056394a6143b0685fdb4506a318d038709e3"
+  12.4.0:arm64)
+    pnpm_native_sha512="ea7a50530ab70ff5976d3811e1ebc0a44290f484f39d9e88cff769b5c8c1cc0efec122d369890af7c39ddb0b070a83e61056fdb46b4cf9cbc6f36fb0cb4a3db8"
     ;;
 esac
 pnpm_archive="pnpm-${pnpm_version}.tgz"

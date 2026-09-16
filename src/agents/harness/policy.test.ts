@@ -100,26 +100,6 @@ describe("resolveAgentHarnessPolicy", () => {
     ).toEqual({ runtime: "codex", runtimeSource: "provider" });
   });
 
-  it("preserves literal catalog model IDs containing an at sign", () => {
-    expect(
-      resolveAgentHarnessPolicy({
-        provider: "fixture",
-        modelId: "reader@variant",
-        config: {
-          agents: {
-            defaults: {
-              models: {
-                "fixture/reader": { agentRuntime: { id: "openclaw" } },
-                "fixture/reader@variant": { agentRuntime: { id: "fixture-harness" } },
-              },
-            },
-          },
-        },
-        env: {},
-      }),
-    ).toEqual({ runtime: "fixture-harness", runtimeSource: "model" });
-  });
-
   it.each(["default", "auto"] as const)(
     "treats configured %s runtime policy as implicit route selection",
     (runtime) => {

@@ -865,6 +865,31 @@ describe("applyPluginAutoEnable core", () => {
     expect(result.config.auth).toEqual(config.auth);
   });
 
+  it("preserves an OpenClaw preference on a literal model-map key", () => {
+    const result = applyPluginAutoEnable({
+      config: {
+        agents: {
+          entries: {
+            main: {
+              models: {
+                "openai/gpt-5.6-sol@variant": { agentRuntime: { id: "openclaw" } },
+              },
+            },
+          },
+        },
+        plugins: { allow: ["openai"], entries: { openai: { enabled: true } } },
+      },
+      env,
+      manifestRegistry: makeRegistry([
+        { id: "openai", channels: [], providers: ["openai"] },
+        { id: "codex", channels: [], activation: { onAgentHarnesses: ["codex"] } },
+      ]),
+    });
+
+    expect(result.config.plugins?.entries?.codex?.enabled).toBeUndefined();
+    expect(result.config.plugins?.allow).toEqual(["openai"]);
+  });
+
   it("auto-enables Codex only for the native Codex harness with OpenAI model refs", () => {
     const result = applyPluginAutoEnable({
       config: {

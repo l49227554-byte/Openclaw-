@@ -10,8 +10,9 @@ sidebarTitle: "Realtime sessions"
 
 ## Choose a Talk voice from chat
 
-During an active browser Talk call, choose a voice beside the call controls or
-ask the assistant to list the available voices or switch to one. The `talk_voice`
+During an active browser, iOS, or Android realtime Talk call, ask the assistant
+to list the available voices or switch to one. Browser Talk also offers a voice
+picker beside the call controls. The `talk_voice`
 tool lists the current provider, model, voice,
 and supported voice IDs for the call in the current conversation. Setting a
 voice reconnects that call while preserving its chat and captions. The replacement
@@ -25,6 +26,12 @@ change voices using the same tool. The change applies to that connected room,
 including subsequent speakers, and leaves its saved Discord voice configuration
 unchanged. The Discord connection and agent conversation remain active while the
 provider connection is replaced.
+
+iOS supports switching in WebRTC and Gateway-relay calls. Android supports it
+in Gateway-relay calls using its supported realtime models. Native speech and
+TTS fallback calls retain their existing voice settings. Switching uses the
+current Gateway connection and conversation; ending the call or changing
+Gateways cancels a pending switch.
 
 For Talk TTS playback, after setting `talk.provider` and the matching `talk.providers.<provider>` configuration, use `/voice status` to inspect the active provider and voice, `/voice list [limit]` to list its available voices, and `/voice set <voiceId|name>` to save a provider-scoped selection. Discord exposes the same command natively as `/talkvoice`.
 

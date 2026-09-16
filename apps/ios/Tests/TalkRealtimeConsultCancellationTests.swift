@@ -108,6 +108,155 @@ final class TalkRealtimeConsultCancellationTests: XCTestCase {
         }
     }
 
+    func testVoiceReplacementPreservesTheLateAcknowledgedRun() async throws {
+        let held = XCTestExpectation(description: "consult reached Gateway")
+        let aborted = XCTestExpectation(description: "replacement must not abort accepted work")
+        aborted.isInverted = true
+        let requests = ConsultRequestCapture()
+        let socket = GatewayTestWebSocketTask(sendHook: { _, message, _ in
+            let data: Data
+            switch message {
+            case let .data(value): data = value
+            case let .string(value): data = Data(value.utf8)
+            @unknown default: return
+            }
+            let frame = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            await requests.append(data)
+            if frame["method"] as? String == "talk.client.toolCall" {
+                held.fulfill()
+            }
+            if frame["method"] as? String == "chat.abort" {
+                aborted.fulfill()
+            }
+        })
+        let delegate = ConsultCancellationDelegate()
+        try await Self.withSubmittedConsult(socket: socket, delegate: delegate) { talk in
+            let sent = await XCTWaiter.fulfillment(of: [held], timeout: 5)
+            XCTAssertEqual(sent, .completed)
+            let capturedID = await requests.requestID(method: "talk.client.toolCall")
+            let requestID = try XCTUnwrap(capturedID)
+            talk.stop(preserveRuns: true)
+            let ack = try JSONSerialization.data(withJSONObject: [
+                "type": "res", "id": requestID, "ok": true,
+                "payload": ["runId": "run-1", "agentId": "voice", "agentSessionKey": "global"],
+            ])
+            socket.emitReceiveSuccess(.data(ack))
+            let retained = await XCTWaiter.fulfillment(of: [aborted], timeout: 1)
+            XCTAssertEqual(retained, .completed)
+            XCTAssertEqual(delegate.finishes, 1)
+            XCTAssertFalse(delegate.statuses.contains("Listening"))
+        }
+    }
+
+    func testManagerVoiceEventWaitsForOldCloseAndNeverFallsBackAfterReplacementFailure() async throws {
+        for stopDuringClose in [false, true] {
+            let closeStarted = XCTestExpectation(description: "old call close reached Gateway")
+            let completed = XCTestExpectation(description: "voice change failure was reported")
+            let requests = ConsultRequestCapture()
+            let socket = GatewayTestWebSocketTask(sendHook: { socket, message, _ in
+                let data: Data
+                switch message {
+                case let .data(value): data = value
+                case let .string(value): data = Data(value.utf8)
+                @unknown default: return
+                }
+                let frame = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                await requests.append(data)
+                let method = frame["method"] as? String
+                let payload: [String: Any]
+                if method == "talk.client.create" {
+                    let initial = await requests.count(method: "talk.client.create") == 1
+                    payload = [
+                        "provider": "openai", "transport": initial ? "webrtc" : "unsupported",
+                        "voiceSessionId": initial ? "voice-1" : "voice-2", "clientSecret": "synthetic",
+                    ]
+                } else if method == "talk.client.close",
+                          (frame["params"] as? [String: Any])?["voiceSessionId"] as? String == "voice-1"
+                {
+                    closeStarted.fulfill()
+                    return
+                } else if method == "talk.voice.complete" {
+                    completed.fulfill()
+                    payload = ["ok": true]
+                } else if method == "talk.client.close" {
+                    payload = ["ok": true]
+                } else { return }
+                try socket.emitReceiveSuccess(.data(JSONSerialization.data(withJSONObject: [
+                    "type": "res", "id": XCTUnwrap(frame["id"] as? String), "ok": true, "payload": payload,
+                ])))
+            })
+            let gateway = GatewayNodeSession()
+            let manager = TalkModeManager(allowSimulatorCapture: true)
+            do {
+                try await gateway.connect(
+                    url: XCTUnwrap(URL(string: "ws://talk-test.invalid")),
+                    credentials: .init(),
+                    connectOptions: GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions,
+                    sessionBox: WebSocketSessionBox(session: GatewayTestWebSocketSession(taskFactory: { socket })),
+                    onConnected: {}, onDisconnected: { _ in },
+                    onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
+                manager.attachGateway(gateway)
+                manager.updateGatewayConnected(true)
+                manager._test_applyLoadedTalkConfig(TalkModeGatewayConfigParser.parse(
+                    config: ["talk": ["realtime": [
+                        "mode": "realtime", "provider": "openai", "transport": "webrtc", "brain": "agent-consult",
+                    ]]],
+                    defaultProvider: "elevenlabs", defaultModelIdFallback: "eleven_v3",
+                    defaultRealtimeModelIdFallback: "gpt-realtime-2", defaultSilenceTimeoutMs: 900))
+                manager.gatewayTalkPermissionState = .ready
+                await manager.prefetchRealtimeSessionIfReady(reason: "synthetic handoff")
+                let deadline = Date().addingTimeInterval(5)
+                while !manager._test_hasPrefetchedRealtimeSession(), Date() < deadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                XCTAssertTrue(manager._test_hasPrefetchedRealtimeSession())
+                manager._test_prepareLiveRealtimeVoiceSession(
+                    gateway: gateway, voiceSessionId: "voice-1", prefetchedVoiceSessionId: "voice-1")
+                manager._test_prepareEnabledRealtimeSessionForClose()
+                try socket.emitReceiveSuccess(.data(JSONSerialization.data(withJSONObject: [
+                    "type": "event", "event": "talk.voice.change", "payload": [
+                        "changeId": "change-1", "voiceSessionId": "voice-1", "sessionKey": "main",
+                        "voice": "alloy", "phase": "requested",
+                    ],
+                ])))
+                let closed = await XCTWaiter.fulfillment(of: [closeStarted], timeout: 5)
+                XCTAssertEqual(closed, .completed)
+                let countBeforeClose = await requests.count(method: "talk.client.create")
+                XCTAssertEqual(countBeforeClose, 1)
+                if stopDuringClose { manager.stop() }
+                let closeID = await requests.requestID(method: "talk.client.close")
+                try socket.emitReceiveSuccess(.data(GatewayWebSocketTestSupport.okResponseData(id: XCTUnwrap(closeID))))
+                let finished = await XCTWaiter.fulfillment(of: [completed], timeout: 5)
+                XCTAssertEqual(finished, .completed)
+                let creates = await requests.count(method: "talk.client.create")
+                XCTAssertEqual(creates, stopDuringClose ? 1 : 2)
+                if !stopDuringClose {
+                    let created = await requests.request(method: "talk.client.create")
+                    let frame = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(created)) as? [String: Any])
+                    let params = try XCTUnwrap(frame["params"] as? [String: Any])
+                    XCTAssertEqual(params["voiceChangeId"] as? String, "change-1")
+                    XCTAssertEqual(params["voice"] as? String, "alloy")
+                    XCTAssertEqual(params["capabilities"] as? [String], ["voice-transcript", "voice-selection"])
+                    XCTAssertNil(params["voiceSessionId"])
+                }
+                let completion = await requests.request(method: "talk.voice.complete")
+                let frame = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(completion)) as? [String: Any])
+                XCTAssertEqual((frame["params"] as? [String: Any])?["outcome"] as? String, "failed")
+                let aborts = await requests.count(method: "chat.abort")
+                let sends = await requests.count(method: "chat.send")
+                XCTAssertEqual(aborts, 0)
+                XCTAssertEqual(sends, 0)
+                XCTAssertFalse(manager.isListening)
+                manager.stop()
+                await gateway.disconnect()
+            } catch {
+                manager.stop()
+                await gateway.disconnect()
+                throw error
+            }
+        }
+    }
+
     private static func withSubmittedConsult(
         socket: GatewayTestWebSocketTask,
         delegate: ConsultCancellationDelegate,
@@ -187,7 +336,9 @@ private final class ConsultCancellationDelegate: TalkRealtimeWebRTCSessionDelega
     var onListening: (() -> Void)?
     func realtimeSession(_: TalkRealtimeWebRTCSession, didChangeStatus status: String) {
         self.statuses.append(status)
-        if status == "Listening" { self.onListening?() }
+        if status == "Listening" {
+            self.onListening?()
+        }
     }
 
     func realtimeSession(_: TalkRealtimeWebRTCSession, didDetectInputSpeech _: Bool) {}

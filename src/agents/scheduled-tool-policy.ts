@@ -5,7 +5,7 @@ import {
   type CronScheduledToolCallerOrigin,
   type CronScheduledToolPolicy,
 } from "../cron/scheduled-tool-policy.js";
-import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
+import type { ExecAsk, ExecMode, ExecSecurity, ExecTarget } from "../infra/exec-approvals-core.js";
 
 /** Trusted runtime context for a scheduled run with a server-stamped tool cap. */
 export type ScheduledToolPolicyContext = (
@@ -19,7 +19,12 @@ export type ScheduledToolPolicyContext = (
   execTarget?: { host: "gateway"; ask?: "always" };
 };
 
-type ScheduledExecPolicy = Pick<ExecToolDefaults, "host" | "mode" | "security" | "ask">;
+type ScheduledExecPolicy = {
+  host?: ExecTarget;
+  mode?: ExecMode;
+  security?: ExecSecurity;
+  ask?: ExecAsk;
+};
 
 /** A captured target resolves auto placement but never replaces a current explicit host. */
 export function resolveScheduledExecPolicy(

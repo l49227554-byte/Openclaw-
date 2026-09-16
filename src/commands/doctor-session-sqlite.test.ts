@@ -2815,7 +2815,9 @@ describe("runDoctorSessionSqlite", () => {
     expect(report.targets[0]?.issues).toEqual([
       {
         code: "entry_invalid",
-        message: "Session entry is missing a valid sessionId.",
+        message: expect.stringContaining(
+          `${store.storePath}: session entry is missing a valid sessionId`,
+        ),
         sessionKey: cronStubKey,
       },
     ]);

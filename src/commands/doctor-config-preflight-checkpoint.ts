@@ -25,7 +25,7 @@ export function resolveMigrationCheckpointIdentity(params: {
   };
 }
 
-export function migrationCheckpointConfigIdentitiesMatch(
+export function migrationCheckpointIdentitiesMatch(
   left: MigrationCheckpointIdentity | null,
   right: MigrationCheckpointIdentity | null,
 ): boolean {
@@ -33,16 +33,7 @@ export function migrationCheckpointConfigIdentitiesMatch(
     left !== null &&
     right !== null &&
     left.effectiveConfigFingerprint === right.effectiveConfigFingerprint &&
-    left.pluginDoctorConfigFingerprint === right.pluginDoctorConfigFingerprint
-  );
-}
-
-export function migrationCheckpointIdentitiesMatch(
-  left: MigrationCheckpointIdentity | null,
-  right: MigrationCheckpointIdentity | null,
-): boolean {
-  return (
-    migrationCheckpointConfigIdentitiesMatch(left, right) &&
-    left?.pluginMigrationFingerprint === right?.pluginMigrationFingerprint
+    left.pluginDoctorConfigFingerprint === right.pluginDoctorConfigFingerprint &&
+    left.pluginMigrationFingerprint === right.pluginMigrationFingerprint
   );
 }

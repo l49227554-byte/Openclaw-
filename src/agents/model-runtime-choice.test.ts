@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import type { ModelCatalogEntry } from "./model-catalog.types.js";
 import { preparePublishedModelRuntimeChoice } from "./model-runtime-choice.js";
 import { setPreparedModelRuntimeAuthStore } from "./prepared-model-runtime-auth.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
@@ -22,35 +23,53 @@ const request = {
   runtimeId: "openclaw",
 };
 
-function publish(isCurrent = () => true, config = cfg) {
-  const entry = { provider: "fixture", id: "model", name: "Model" };
+function publishOwner(params: {
+  config: OpenClawConfig;
+  entries: readonly ModelCatalogEntry[];
+  authStore: Parameters<typeof setPreparedModelRuntimeAuthStore>[1];
+  isCurrent?: () => boolean;
+  authModes?: PreparedModelRuntimeSnapshot["authModes"];
+  metadataSnapshot?: PreparedModelRuntimeSnapshot["metadataSnapshot"];
+  pluginRegistry?: PreparedModelRuntimeSnapshot["pluginRegistry"];
+}) {
   const owner: PreparedModelRuntimeSnapshot = {
-    config,
-    observationConfig: config,
+    config: params.config,
+    observationConfig: params.config,
     catalogOwner: { agentId: "main", workspaceDir: "/tmp/runtime-choice" },
     agentId: "main",
     agentDir: "/tmp/runtime-choice/agent",
     workspaceDir: "/tmp/runtime-choice",
     activeProjectKeys: [],
-    authModes: {},
-    metadataSnapshot: createPluginMetadataSnapshotFixture(),
-    isCurrent,
+    authModes: params.authModes ?? {},
+    metadataSnapshot: params.metadataSnapshot ?? createPluginMetadataSnapshotFixture(),
+    isCurrent: params.isCurrent ?? (() => true),
     allowGatewaySubagentBinding: false,
-    modelCatalog: { entries: [entry], routeVariants: [entry] },
+    modelCatalog: { entries: [...params.entries], routeVariants: [...params.entries] },
     configuredRuntimeModels: [],
     inlineProviderModels: [],
+    // An absent registry is not an empty one: harness lookups take a different path.
+    ...(params.pluginRegistry ? { pluginRegistry: params.pluginRegistry } : {}),
     createStores() {
       const authStorage = AuthStorage.inMemory({});
       return { authStorage, modelRegistry: ModelRegistry.inMemory(authStorage) };
     },
   };
-  setPreparedModelRuntimeAuthStore(owner, {
-    version: 1,
-    profiles: {
-      "fixture:account": { type: "api_key", provider: "fixture", key: "synthetic-credential" },
+  setPreparedModelRuntimeAuthStore(owner, params.authStore);
+  published.owner = owner;
+}
+
+function publish(isCurrent = () => true, config = cfg) {
+  publishOwner({
+    config,
+    isCurrent,
+    entries: [{ provider: "fixture", id: "model", name: "Model" }],
+    authStore: {
+      version: 1,
+      profiles: {
+        "fixture:account": { type: "api_key", provider: "fixture", key: "synthetic-credential" },
+      },
     },
   });
-  published.owner = owner;
 }
 
 describe("published runtime choice", () => {
@@ -155,7 +174,7 @@ describe("colliding catalog display keys", () => {
     plugins: { entries: { "vendor-cli": { enabled: true }, "vendor-plain": { enabled: true } } },
   };
 
-  function publishRows(entries: (typeof plainRow)[]) {
+  function publishRows(entries: readonly (typeof plainRow)[]) {
     const pluginRegistry = createEmptyPluginRegistry();
     for (const row of [plainRow, namespacedRow]) {
       pluginRegistry.agentHarnesses.push({
@@ -173,14 +192,10 @@ describe("colliding catalog display keys", () => {
         },
       });
     }
-    const owner: PreparedModelRuntimeSnapshot = {
+    publishOwner({
       config: harnessConfig,
-      observationConfig: harnessConfig,
-      catalogOwner: { agentId: "main", workspaceDir: "/tmp/runtime-choice" },
-      agentId: "main",
-      agentDir: "/tmp/runtime-choice/agent",
-      workspaceDir: "/tmp/runtime-choice",
-      activeProjectKeys: [],
+      entries,
+      pluginRegistry,
       authModes: {
         "vendor-cli": { source: "native", mode: "oauth" },
         "vendor-plain": { source: "native", mode: "oauth" },
@@ -191,19 +206,8 @@ describe("colliding catalog display keys", () => {
           { id: "vendor-plain", providers: ["vendor"], syntheticAuthRefs: ["vendor-plain"] },
         ],
       }),
-      pluginRegistry,
-      isCurrent: () => true,
-      allowGatewaySubagentBinding: false,
-      modelCatalog: { entries, routeVariants: entries },
-      configuredRuntimeModels: [],
-      inlineProviderModels: [],
-      createStores() {
-        const authStorage = AuthStorage.inMemory({});
-        return { authStorage, modelRegistry: ModelRegistry.inMemory(authStorage) };
-      },
-    };
-    setPreparedModelRuntimeAuthStore(owner, { version: 1, profiles: {} });
-    published.owner = owner;
+      authStore: { version: 1, profiles: {} },
+    });
   }
 
   const select = (model: string, runtimeId: string) =>
@@ -221,7 +225,7 @@ describe("colliding catalog display keys", () => {
   ] as const;
 
   it.each(orders)("keeps each row's own native runtime available (%s)", async (_label, entries) => {
-    publishRows([...entries]);
+    publishRows(entries);
     for (const row of [plainRow, namespacedRow]) {
       const choice = await select(row.id, row.nativeRuntime);
       expect(choice.kind).toBe("ready");
@@ -235,7 +239,7 @@ describe("colliding catalog display keys", () => {
   it.each(orders)(
     "refuses a runtime only the sibling row carries (%s)",
     async (_label, entries) => {
-      publishRows([...entries]);
+      publishRows(entries);
       expect(await select(plainRow.id, namespacedRow.nativeRuntime)).toMatchObject({
         kind: "unavailable",
       });

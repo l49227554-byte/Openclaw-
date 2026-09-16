@@ -2,9 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPluginMetadataSnapshot } from "../../config/plugin-auto-enable.test-helpers.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { connectUserModelAccount } from "../../state/user-model-accounts.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import {
@@ -381,14 +381,12 @@ describe("model runtime generation scope", () => {
       withRegistry: expected.scope === "captured",
     });
     const plugin = expectDefined(generation.metadataSnapshot.manifestRegistry.plugins[0]);
-    const metadataSnapshot = createPluginMetadataSnapshot({
-      config,
-      workspaceDir: state.workspaceDir,
-      manifestRegistry: {
+    const metadataSnapshot = {
+      ...createPluginMetadataSnapshotFixture({
         plugins: [{ ...plugin, modelCatalog: { discovery: { [provider]: "runtime" } } }],
-        diagnostics: [],
-      },
-    });
+      }),
+      workspaceDir: state.workspaceDir,
+    };
     generation.metadataSnapshot = metadataSnapshot;
     generation.preparedModelRuntime.metadataSnapshot = metadataSnapshot;
     const staticModel = {

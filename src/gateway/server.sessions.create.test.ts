@@ -1659,19 +1659,34 @@ test("createGatewaySession infers the child owner from a prefixed parent", async
     );
 
     const { createGatewaySession } = await import("./session-create-service.js");
-    const created = await createGatewaySession({
+    const direct = await createGatewaySession({
       cfg,
       parentSessionKey,
       commandSource: "test",
     });
 
-    expect(created.ok, JSON.stringify(created)).toBe(true);
-    if (!created.ok) {
+    expect(direct.ok, JSON.stringify(direct)).toBe(true);
+    if (!direct.ok) {
       return;
     }
-    expect(created.agentId).toBe("ops");
-    expect(created.key).toMatch(/^agent:ops:dashboard:/);
-    expect(loadSessionEntry({ agentId: "ops", sessionKey: created.key, storePath })).toBeDefined();
+    expect(direct.agentId).toBe("ops");
+    expect(direct.key).toMatch(/^agent:ops:dashboard:/);
+    expect(loadSessionEntry({ agentId: "ops", sessionKey: direct.key, storePath })).toBeDefined();
+
+    const connection = await openClient();
+    try {
+      const rpc = await rpcReq<{ key: string }>(connection.ws, "sessions.create", {
+        agentId: "ops",
+        parentSessionKey,
+      });
+      expect(rpc.ok, JSON.stringify(rpc)).toBe(true);
+      expect(rpc.payload?.key).toMatch(/^agent:ops:dashboard:/);
+      expect(
+        loadSessionEntry({ agentId: "ops", sessionKey: rpc.payload?.key, storePath }),
+      ).toBeDefined();
+    } finally {
+      await closeGatewayTestWebSocket(connection.ws);
+    }
   });
 });
 

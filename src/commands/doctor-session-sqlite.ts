@@ -37,6 +37,7 @@ import {
   recordDeferredPluginSessionImport,
   resolveVerifiedSessionSource,
   type DeferredPluginSessionImport,
+  type SessionSourceVerification,
 } from "../infra/deferred-plugin-session-sources.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { prepareLegacyAcpMigrationSource } from "../infra/legacy-acp-migration-source.js";
@@ -663,13 +664,20 @@ async function inspectOrMigrateTarget(params: {
   // Keeping them out of the file path also prevents archiving a live database.
   const isSqliteStore = params.target.storePath.endsWith(".sqlite");
   let retainedImport: DeferredPluginSessionImport | undefined;
+  const retainedSourceTarget = {
+    ...params.target,
+    sqlitePath: resolveTargetSqlitePath(params.target, params.env),
+  };
+  // Receipt verification and retained counting are synchronous; later publication revalidates.
+  const sourceVerification: SessionSourceVerification = new Map();
   if (!isSqliteStore && fs.existsSync(params.target.storePath)) {
     try {
       retainedImport = readDeferredPluginSessionImport({
         cfg: params.cfg,
         target: params.target,
-        sqlitePath: resolveTargetSqlitePath(params.target, params.env),
+        sqlitePath: retainedSourceTarget.sqlitePath,
         env: params.env,
+        verification: sourceVerification,
       });
     } catch (error) {
       return createDoctorSessionSqliteTargetReport({
@@ -822,8 +830,9 @@ async function inspectOrMigrateTarget(params: {
         }
         const transcriptPath = resolveVerifiedSessionSource(
           source,
-          createMigrationTargetInput(params.target),
+          retainedSourceTarget,
           params.env,
+          sourceVerification,
         );
         if (!transcriptPath) {
           throw new Error(`Retained session migration source changed: ${record.transcriptPath}`);

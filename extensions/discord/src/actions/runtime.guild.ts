@@ -182,20 +182,13 @@ async function resolveGuildAdminActionPermissions(params: {
     return params.guard.permissions;
   }
 
+  const edit = readDiscordChannelEditParams(params.values);
   const onlyReopen =
-    params.values.archived === false &&
-    // The registered adapter materializes omitted options as undefined.
-    // Permission selection must describe the edit that will reach Discord.
-    params.values.name === undefined &&
-    params.values.topic === undefined &&
-    params.values.position === undefined &&
-    params.values.parentId === undefined &&
-    params.values.clearParent === undefined &&
-    params.values.nsfw === undefined &&
-    params.values.rateLimitPerUser === undefined &&
-    params.values.locked === undefined &&
-    params.values.autoArchiveDuration === undefined &&
-    params.values.availableTags === undefined &&
+    edit.archived === false &&
+    // Derive the exception from the normalized final payload so future edit fields fail closed.
+    Object.entries(edit).every(
+      ([field, value]) => value === undefined || field === "channelId" || field === "archived",
+    ) &&
     !isLockedThreadChannel(channel);
   return onlyReopen
     ? [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessages]

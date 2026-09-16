@@ -1,4 +1,4 @@
-import type { TranscriptDigest } from "./session-accessor.sqlite-transcript-digest.js";
+import type { TranscriptDigest } from "./session-accessor.sqlite-transcript-digest.types.js";
 import type { SessionEntry } from "./types.js";
 
 export type LegacyMainSessionMigrationMode = "automatic" | "detect" | "doctor-fix";

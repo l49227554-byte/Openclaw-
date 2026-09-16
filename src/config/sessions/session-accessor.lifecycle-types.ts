@@ -1,7 +1,7 @@
 import type { OpenClawConfig } from "../types.openclaw.js";
 import type { ConversationRouteContext } from "./conversation-route-context.js";
 import type { SessionStateDeleteSnapshot } from "./session-accessor.sqlite-delete-snapshot.types.js";
-import type { TranscriptDigest } from "./session-accessor.sqlite-transcript-digest.js";
+import type { TranscriptDigest } from "./session-accessor.sqlite-transcript-digest.types.js";
 import type { SessionResetBoundaryRequest } from "./session-reset-boundary-event.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 

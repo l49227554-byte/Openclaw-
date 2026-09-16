@@ -2,8 +2,7 @@ import { createHash } from "node:crypto";
 import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
-
-export type TranscriptDigest = { eventCount: number; rollingHash: string };
+import type { TranscriptDigest } from "./session-accessor.sqlite-transcript-digest.types.js";
 
 export function readSessionTranscriptDigest(
   database: Pick<OpenClawAgentDatabase, "db">,

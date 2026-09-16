@@ -31,10 +31,11 @@ function createLintFixture(mode: Mode, phase: string, timeout: boolean) {
     `
 import fs from "node:fs";
 export function waitForFile(file) {
-  return new Promise((resolve, reject) => {
-    const check = () => { if (fs.existsSync(file)) { watcher.close(); resolve(); } };
-    const watcher = fs.watch(".", { persistent: false }, check);
-    watcher.once("error", reject);
+  return new Promise((resolve) => {
+    const check = () => { if (fs.existsSync(file)) { clearInterval(poll); resolve(); } };
+    // Directory events can coalesce before the receipt rename; observe persistent state.
+    const poll = setInterval(check, 50);
+    poll.unref();
     check();
   });
 }
@@ -57,6 +58,12 @@ export function waitForFile(file) {
     "lib/repo-root.mjs",
   ]) {
     write(`scripts/${file}`, fs.readFileSync(path.resolve("scripts", file), "utf8"));
+  }
+  for (const file of [
+    "scripts/lib/process-memory.mts",
+    "packages/normalization-core/src/mountinfo-path.ts",
+  ]) {
+    write(file, fs.readFileSync(path.resolve(file), "utf8"));
   }
   // Only this disposable fixture gets synthetic binaries; installed tools stay untouched.
   for (const name of ["tsx", "p-map", "@openclaw/fs-safe"]) {

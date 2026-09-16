@@ -83,10 +83,10 @@ import {
 import { ToolInputError } from "../tool-input-error.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNonNegativeIntegerParam, readToolStringParam } from "./common.js";
-import { withGatewayToolCallerApprovalSignal } from "./gateway-caller-context.js";
 import {
   captureGatewayToolCallerAssertion,
   getGatewayToolCallerIdentity,
+  withGatewayToolCallerApprovalSignal,
 } from "./gateway-caller-context.js";
 import {
   callAgentToolGatewayRequest,

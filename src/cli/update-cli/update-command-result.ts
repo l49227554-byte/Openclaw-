@@ -20,6 +20,7 @@ import {
 import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
+import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -110,9 +111,26 @@ export async function withUpdateAdmissionReporting<T>(
   opts: UpdateCommandOptions,
   admit: () => Promise<T>,
 ): Promise<T> {
+  const startedAt = Date.now();
   try {
     return await admit();
   } catch (error) {
+    if (error instanceof UpdateRunAdmissionBusyError) {
+      if (opts.json) {
+        defaultRuntime.writeJson({
+          status: "skipped",
+          mode: "unknown",
+          reason: error.reason,
+          steps: [],
+          durationMs: Date.now() - startedAt,
+          ...(opts.dryRun ? { dryRun: true } : {}),
+          notes: [error.message],
+        });
+      } else {
+        defaultRuntime.log(theme.warn(error.message));
+      }
+      return exitCliAfterOutput(defaultRuntime, 0);
+    }
     if (error instanceof UpdateCommandPendingRecoveryFailure) {
       return reportUpdateCommandPendingRecovery(error, opts);
     }

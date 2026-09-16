@@ -360,10 +360,12 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     const lastGoodRegistry = runtime.pluginRuntime.registry;
     fs.writeFileSync(path.join(packageDir, "dist", "helper.cjs"), "module.exports = ;");
     await expect(reload()).rejects.toMatchObject({
-      details: { phase: "prepare", committed: false, pluginIds: ["installed-probe"] },
+      details: { phase: "activate", committed: false, pluginIds: ["installed-probe"] },
     });
-    expect(runtime.pluginRuntime.registry).toBe(lastGoodRegistry);
-    expect(await probe("installed-probe")).toEqual(current);
+    expect(runtime.pluginRuntime.registry).not.toBe(lastGoodRegistry);
+    const syntaxRecovery = await probe("installed-probe");
+    expect(syntaxRecovery).toEqual({ ...current, instance: expect.any(String) });
+    expect(syntaxRecovery.instance).not.toBe(current.instance);
     expect(runtime.pluginRuntime.registry.plugins.find((record) => record.id === "sibling")).toBe(
       siblingRecord,
     );
@@ -385,7 +387,11 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     await expect(reload(rejectedConfig, [])).rejects.toMatchObject({
       details: { phase: "activate", committed: false, pluginIds: ["installed-probe"] },
     });
-    expect(runtime.pluginRuntime.registry).toBe(lastGoodRegistry);
+    const activationRecoveryRegistry = runtime.pluginRuntime.registry;
+    expect(activationRecoveryRegistry).not.toBe(lastGoodRegistry);
+    const activationRecovery = await probe("installed-probe");
+    expect(activationRecovery).toEqual({ ...current, instance: expect.any(String) });
+    expect(activationRecovery.instance).not.toBe(syntaxRecovery.instance);
     expect(await probe("sibling")).toEqual(sibling);
     const invalidSettings: OpenClawConfig = {
       ...config,
@@ -397,7 +403,7 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
     await expect(reload(invalidSettings, [])).rejects.toMatchObject({
       details: { phase: "prepare", committed: false },
     });
-    expect(runtime.pluginRuntime.registry).toBe(lastGoodRegistry);
+    expect(runtime.pluginRuntime.registry).toBe(activationRecoveryRegistry);
     expect(await probe("sibling")).toEqual(sibling);
     const changedSettings: OpenClawConfig = {
       ...config,

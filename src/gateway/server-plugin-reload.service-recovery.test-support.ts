@@ -4,7 +4,7 @@ import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   verifyFailedRecoveryServiceOwnership,
-  verifyCandidateCleanupRecovery,
+  verifyCandidateCleanupRefusal,
 } from "./server-plugin-reload.managed-candidate.test-support.js";
 import type { RecoveryFixtureFactory } from "./server-plugin-reload.recovery.test-support.js";
 import {
@@ -35,7 +35,9 @@ export function registerPluginServiceRecoveryTests(createRecoveryFixture: Recove
         const recoveryStarted = createDeferredCore();
         const releaseRecovery = createDeferredCore();
         const rollback = vi.fn(async () => {
-          const record = fixture.previousRegistry.plugins.find((plugin) => plugin.id === "first");
+          const record = fixture.registryOwner.registry.plugins.find(
+            (plugin) => plugin.id === "first",
+          );
           expect(record && getPluginInstance(record)?.acceptingCalls).toBe(true);
         });
         const fixture = await createRecoveryFixture({
@@ -77,7 +79,7 @@ export function registerPluginServiceRecoveryTests(createRecoveryFixture: Recove
         const fixture = await createRecoveryFixture({
           abortOnCandidateStart: false,
           candidateStart,
-          ...(boundary === "prepare" ? { prepareAttached: pause } : {}),
+          ...(boundary === "prepare" ? { checkpoint: pause } : {}),
           ...(boundary === "drain" ? { initialStop: pause } : {}),
           ...(boundary === "publish" ? { beforePublish: pause } : {}),
           ...(boundary === "committed" ? { afterPublish: pause } : {}),
@@ -115,7 +117,9 @@ export function registerPluginServiceRecoveryTests(createRecoveryFixture: Recove
               details: { phase: boundary === "publish" ? "activate" : boundary, committed: false },
               cause: failure,
             });
-            expect(fixture.registryOwner.registry).toBe(fixture.previousRegistry);
+            expect(fixture.registryOwner.registry === fixture.previousRegistry).toBe(
+              boundary === "prepare",
+            );
             expect(fixture.firstStart).toHaveBeenCalledTimes(boundary === "prepare" ? 1 : 2);
             expect(fixture.candidateStop).toHaveBeenCalledTimes(boundary === "publish" ? 1 : 0);
           }
@@ -134,8 +138,8 @@ export function registerPluginServiceRecoveryTests(createRecoveryFixture: Recove
     it("keeps retained and failed-recovery services owned after recovery startup rejects", () =>
       verifyFailedRecoveryServiceOwnership(createRecoveryFixture));
 
-    it("restores the previous service after candidate cleanup fails and permits another attempt", () =>
-      verifyCandidateCleanupRecovery(createRecoveryFixture));
+    it("refuses recovery when candidate resource cleanup fails and retains its sibling", () =>
+      verifyCandidateCleanupRefusal(createRecoveryFixture));
 
     it.each(["suspension", "restart signal"] as const)(
       "restores the previous plugin runtime after failed replacement during reversible %s",

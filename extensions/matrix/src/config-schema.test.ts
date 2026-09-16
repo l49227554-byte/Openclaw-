@@ -56,11 +56,15 @@ describe("MatrixConfigSchema SecretInput", () => {
     if (!result.success) {
       throw new Error("expected schema parse to succeed");
     }
-    expect(result.data.accounts?.work).toMatchObject({
-      joinIntro: true,
-      accessToken: { source: "store", provider: "default", id: "MATRIX_WORK_TOKEN" },
-      password: { source: "store", provider: "default", id: "MATRIX_WORK_PASSWORD" },
-      userId: "@work:example.org",
+    expect(result.data).toMatchObject({
+      accounts: {
+        work: {
+          joinIntro: true,
+          accessToken: { source: "store", provider: "default", id: "MATRIX_WORK_TOKEN" },
+          password: { source: "store", provider: "default", id: "MATRIX_WORK_PASSWORD" },
+          userId: "@work:example.org",
+        },
+      },
     });
   });
 

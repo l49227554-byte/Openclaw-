@@ -37,8 +37,10 @@ import {
 } from "../agents/tool-policy.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import {
+  captureFinalEffectiveCronCreatorToolAllowlist,
   replaceWithEffectiveCronCreatorToolAllowlist,
   type CronCreatorToolAllowlistEntry,
+  type CronToolsAllowCaptureRef,
 } from "../agents/tools/cron-tool.js";
 import { createChannelQuestionPromptDelivery } from "../agents/tools/question-prompt-send.js";
 import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
@@ -262,6 +264,8 @@ export function resolveGatewayScopedTools(
   // pass so child sessions inherit the actual parent tool surface.
   const inheritedToolAllowlist: string[] = [];
   const cronCreatorToolAllowlist: CronCreatorToolAllowlistEntry[] = [];
+  const cronCreatorToolAllowlistCaptureRef: CronToolsAllowCaptureRef | undefined =
+    surface === "loopback" ? {} : undefined;
   const shouldInheritEffectiveToolAllowlist = [
     profilePolicy,
     providerProfilePolicy,
@@ -398,6 +402,7 @@ export function resolveGatewayScopedTools(
     ]),
     pluginToolDenylist: explicitDenylist,
     cronCreatorToolAllowlist,
+    cronCreatorToolAllowlistCaptureRef,
     inheritedToolAllowlist,
     inheritedToolDenylist,
   });
@@ -621,21 +626,32 @@ export function resolveGatewayScopedTools(
   if (shouldInheritEffectiveToolAllowlist) {
     replaceWithEffectiveToolAllowlist(inheritedToolAllowlist, inheritableTools);
   }
+  const nativeCapture = {
+    canonicalToolNames: params.nativeCronCreatorToolAllowlist,
+    // The loopback grant carries native authority only for Gateway-placed CLI runs.
+    nativeExecTarget: { host: "gateway" as const },
+  };
   replaceWithEffectiveCronCreatorToolAllowlist(
     cronCreatorToolAllowlist,
     inheritableTools,
     (tool) => getPluginToolMeta(tool),
-    {
-      canonicalToolNames: params.nativeCronCreatorToolAllowlist,
-      // The loopback grant only carries native authority for Gateway-placed
-      // CLI runs, so its native shell is pinned restrict-only to this host.
-      nativeExecTarget: { host: "gateway" },
-    },
+    nativeCapture,
   );
 
   return {
     agentId: sessionAgentId,
     tools: applyToolAvailabilityDescriptions(filterRequesterYieldTools(tools, params.sessionKey)),
     workspaceDir,
+    // Only the MCP owner knows which tools survived its grant and schema gates.
+    captureFinalCronCreatorTools: cronCreatorToolAllowlistCaptureRef
+      ? (callableToolNames: ReadonlySet<string>) =>
+          captureFinalEffectiveCronCreatorToolAllowlist(
+            cronCreatorToolAllowlist,
+            cronCreatorToolAllowlistCaptureRef,
+            inheritableTools.filter((tool) => callableToolNames.has(tool.name.trim())),
+            (tool) => getPluginToolMeta(tool),
+            nativeCapture,
+          )
+      : undefined,
   };
 }

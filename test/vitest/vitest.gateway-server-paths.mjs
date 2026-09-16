@@ -32,6 +32,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/session-swarm-summary.test.ts",
   "src/gateway/session-utils.subagent.test.ts",
   "src/gateway/setup-inference.first-signin.integration.test.ts",
+  "src/gateway/tool-resolution.cron-capture.test.ts",
   "src/gateway/worker-environments/provider-crabbox-runtime-preflight.test.ts",
 ];
 

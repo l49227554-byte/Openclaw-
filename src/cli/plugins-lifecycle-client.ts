@@ -61,31 +61,37 @@ export async function resolvePluginLifecycleGateway(): Promise<PluginLifecycleGa
     params: Record<string, unknown>,
     onCapabilityConsent?: PluginCapabilityConsentHandler,
   ) => {
-    try {
-      return await request<T>(method, params);
-    } catch (error) {
-      const consent = readCapabilityConsentErrorDetails(
-        error instanceof Error && "details" in error ? error.details : undefined,
-      );
-      if (!consent || !onCapabilityConsent) {
-        throw error;
+    const reviewedPluginIds = new Set<string>();
+    let requestParams = params;
+    for (;;) {
+      try {
+        return await request<T>(method, requestParams);
+      } catch (error) {
+        const consent = readCapabilityConsentErrorDetails(
+          error instanceof Error && "details" in error ? error.details : undefined,
+        );
+        if (!consent || !onCapabilityConsent || reviewedPluginIds.has(consent.pluginId)) {
+          throw error;
+        }
+        const { plugin, ...inspection } = await request<PluginsInspectResult>("plugins.inspect", {
+          pluginId: consent.pluginId,
+        });
+        const acknowledgeCapabilities = await onCapabilityConsent({
+          ...inspection,
+          pluginId: plugin.id,
+          name: plugin.name,
+          ...(plugin.version ? { version: plugin.version } : {}),
+          ...(consent.widened ? { widened: consent.widened } : {}),
+          ...(consent.acceptedAt ? { acceptedAt: consent.acceptedAt } : {}),
+        });
+        if (!acknowledgeCapabilities) {
+          throw error;
+        }
+        // A batch can need consent for each package. Never retry a transport failure
+        // or a repeated rejection after acknowledging the same plugin.
+        reviewedPluginIds.add(consent.pluginId);
+        requestParams = { ...params, acknowledgeCapabilities };
       }
-      const { plugin, ...inspection } = await request<PluginsInspectResult>("plugins.inspect", {
-        pluginId: consent.pluginId,
-      });
-      const acknowledgeCapabilities = await onCapabilityConsent({
-        ...inspection,
-        pluginId: plugin.id,
-        name: plugin.name,
-        ...(plugin.version ? { version: plugin.version } : {}),
-        ...(consent.widened ? { widened: consent.widened } : {}),
-        ...(consent.acceptedAt ? { acceptedAt: consent.acceptedAt } : {}),
-      });
-      if (!acknowledgeCapabilities) {
-        throw error;
-      }
-      // Only consent rejection is retryable. Connection failure is never proof of offline state.
-      return await request<T>(method, { ...params, acknowledgeCapabilities });
     }
   };
 }

@@ -143,4 +143,64 @@ describe("plugin lifecycle CLI transport", () => {
       );
     },
   );
+
+  it.each(["accepted", "declined", "rejected-again", "connection-lost"])(
+    "reviews successive batch capabilities without repeating uncertain mutations (%s)",
+    async (outcome) => {
+      const required = (pluginId: string, token: string) =>
+        Object.assign(new Error(`${pluginId} consent required`), {
+          details: buildCapabilityConsentErrorDetails({ pluginId, reviewToken: token }),
+        });
+      const firstToken = "a".repeat(64);
+      const secondToken = "b".repeat(64);
+      const secondFailure = required("beta", secondToken);
+      const finalFailure =
+        outcome === "connection-lost" ? new Error("connection lost") : secondFailure;
+      mocks.call
+        .mockRejectedValueOnce(required("alpha", firstToken))
+        .mockResolvedValueOnce({
+          plugin: { id: "alpha", name: "Alpha" },
+          reviewToken: firstToken,
+          declared: {},
+          grants: {},
+        })
+        .mockRejectedValueOnce(secondFailure)
+        .mockResolvedValueOnce({
+          plugin: { id: "beta", name: "Beta" },
+          reviewToken: secondToken,
+          declared: {},
+          grants: {},
+        });
+      if (outcome === "accepted") {
+        mocks.call.mockResolvedValueOnce({ runtime: { generation: 3 } });
+      } else {
+        mocks.call.mockRejectedValueOnce(finalFailure);
+      }
+      const consent = vi.fn(async (review: { pluginId: string; reviewToken: string }) =>
+        outcome === "declined" && review.pluginId === "beta"
+          ? undefined
+          : { reviewToken: review.reviewToken },
+      );
+      const gateway = await resolvePluginLifecycleGateway();
+      const params = { plugins: [{ pluginId: "alpha" }, { pluginId: "beta" }] };
+      const reload = gateway!("plugins.reload", params, consent);
+      if (outcome === "accepted") {
+        await expect(reload).resolves.toEqual({ runtime: { generation: 3 } });
+      } else {
+        await expect(reload).rejects.toBe(finalFailure);
+      }
+      expect(consent.mock.calls.map(([review]) => review.pluginId)).toEqual(["alpha", "beta"]);
+      expect(
+        mocks.call.mock.calls
+          .filter(([call]) => call.method === "plugins.reload")
+          .map(([call]) => call.params),
+      ).toEqual([
+        params,
+        { ...params, acknowledgeCapabilities: { reviewToken: firstToken } },
+        ...(outcome === "declined"
+          ? []
+          : [{ ...params, acknowledgeCapabilities: { reviewToken: secondToken } }]),
+      ]);
+    },
+  );
 });

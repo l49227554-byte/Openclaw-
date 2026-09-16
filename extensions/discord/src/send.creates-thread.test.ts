@@ -3,12 +3,7 @@ import { ChannelType, Routes } from "discord-api-types/v10";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerSendAssetsAndRetriesTests } from "./send.assets-and-retries.test-support.js";
-import {
-  makeDiscordRest,
-  requestBody,
-  requestPath,
-  type MockCallSource,
-} from "./send.test-harness.js";
+import { makeDiscordRest, requestBody, requestPath } from "./send.test-harness.js";
 
 vi.mock("openclaw/plugin-sdk/web-media", async () => {
   const { discordWebMediaMockFactory } = await import("./send.test-harness.js");
@@ -176,9 +171,11 @@ describe("sendMessageDiscord", () => {
         Routes.channelMessages("701"),
       ),
     ]);
-    expect(onDeliveryResult.mock.calls.map(([delivery]) => delivery.channelId)).toEqual(
-      Array.from({ length: testCase.expectedThreadMessages + 1 }, () => "701"),
-    );
+    expect(
+      onDeliveryResult.mock.calls.map(([delivery]) =>
+        delivery.target?.kind === "channel" ? delivery.target.id : undefined,
+      ),
+    ).toEqual(Array.from({ length: testCase.expectedThreadMessages + 1 }, () => "701"));
     expect(result?.receipt).toMatchObject({
       threadId: "701",
       platformMessageIds: [
@@ -242,14 +239,10 @@ describe("sendMessageDiscord", () => {
   it("creates a thread", async () => {
     const { rest, getMock, postMock } = makeDiscordRest();
     postMock.mockResolvedValue({ id: "t1" });
-    await createThreadDiscord(
-      "chan1",
-      { name: "thread", messageId: "m1" },
-      discordClientOpts(rest),
-    );
+    await createThreadDiscord("chan1", { name: "thread", messageId: "1" }, discordClientOpts(rest));
     expect(getMock).not.toHaveBeenCalled();
-    expect(requestPath(postMock as unknown as MockCallSource)).toBe(Routes.threads("chan1", "m1"));
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({ name: "thread" });
+    expect(requestPath(postMock)).toBe(Routes.threads("chan1", "1"));
+    expect(requestBody(postMock)).toEqual({ name: "thread" });
   });
 
   it("creates forum threads with an initial message", async () => {
@@ -258,8 +251,8 @@ describe("sendMessageDiscord", () => {
     postMock.mockResolvedValue({ id: "t1" });
     await createThreadDiscord("chan1", { name: "thread" }, discordClientOpts(rest));
     expect(getMock).toHaveBeenCalledWith(Routes.channel("chan1"));
-    expect(requestPath(postMock as unknown as MockCallSource)).toBe(Routes.threads("chan1"));
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({
+    expect(requestPath(postMock)).toBe(Routes.threads("chan1"));
+    expect(requestBody(postMock)).toEqual({
       name: "thread",
       message: { content: "thread" },
     });
@@ -273,7 +266,7 @@ describe("sendMessageDiscord", () => {
     });
     postMock.mockResolvedValue({ id: "t1" });
     await createThreadDiscord("chan1", { name: "thread" }, discordClientOpts(rest));
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({
+    expect(requestBody(postMock)).toEqual({
       name: "thread",
       auto_archive_duration: 1440,
       message: { content: "thread" },
@@ -288,7 +281,7 @@ describe("sendMessageDiscord", () => {
     });
     postMock.mockResolvedValue({ id: "t1" });
     await createThreadDiscord("chan1", { name: "thread" }, discordClientOpts(rest));
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({
+    expect(requestBody(postMock)).toEqual({
       name: "thread",
       auto_archive_duration: 10080,
       type: ChannelType.PublicThread,
@@ -307,7 +300,7 @@ describe("sendMessageDiscord", () => {
       { name: "thread", autoArchiveMinutes: 4320 },
       discordClientOpts(rest),
     );
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({
+    expect(requestBody(postMock)).toEqual({
       name: "thread",
       auto_archive_duration: 4320,
       message: { content: "thread" },
@@ -319,11 +312,11 @@ describe("sendMessageDiscord", () => {
     postMock.mockResolvedValue({ id: "t1" });
     await createThreadDiscord(
       "chan1",
-      { name: "thread", messageId: "m1", autoArchiveMinutes: 4320 },
+      { name: "thread", messageId: "1", autoArchiveMinutes: 4320 },
       discordClientOpts(rest),
     );
     expect(getMock).not.toHaveBeenCalled();
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({
+    expect(requestBody(postMock)).toEqual({
       name: "thread",
       auto_archive_duration: 4320,
     });
@@ -338,8 +331,8 @@ describe("sendMessageDiscord", () => {
       { name: "thread", content: "initial forum post" },
       discordClientOpts(rest),
     );
-    expect(requestPath(postMock as unknown as MockCallSource)).toBe(Routes.threads("chan1"));
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({
+    expect(requestPath(postMock)).toBe(Routes.threads("chan1"));
+    expect(requestBody(postMock)).toEqual({
       name: "thread",
       message: { content: "initial forum post" },
     });
@@ -354,8 +347,8 @@ describe("sendMessageDiscord", () => {
       { name: "tagged post", appliedTags: ["tag1", "tag2"] },
       discordClientOpts(rest),
     );
-    expect(requestPath(postMock as unknown as MockCallSource)).toBe(Routes.threads("chan1"));
-    expect(requestBody(postMock as unknown as MockCallSource)).toEqual({
+    expect(requestPath(postMock)).toBe(Routes.threads("chan1"));
+    expect(requestBody(postMock)).toEqual({
       name: "tagged post",
       message: { content: "tagged post" },
       applied_tags: ["tag1", "tag2"],
@@ -371,8 +364,8 @@ describe("sendMessageDiscord", () => {
       { name: "thread", appliedTags: ["tag1"] },
       discordClientOpts(rest),
     );
-    expect(requestPath(postMock as unknown as MockCallSource)).toBe(Routes.threads("chan1"));
-    expect("applied_tags" in requestBody(postMock as unknown as MockCallSource)).toBe(false);
+    expect(requestPath(postMock)).toBe(Routes.threads("chan1"));
+    expect("applied_tags" in requestBody(postMock)).toBe(false);
   });
 
   it("falls back when channel lookup is unavailable", async () => {
@@ -380,9 +373,9 @@ describe("sendMessageDiscord", () => {
     getMock.mockRejectedValue(new Error("lookup failed"));
     postMock.mockResolvedValue({ id: "t1" });
     await createThreadDiscord("chan1", { name: "thread" }, discordClientOpts(rest));
-    expect(requestPath(postMock as unknown as MockCallSource)).toBe(Routes.threads("chan1"));
-    expect(requestBody(postMock as unknown as MockCallSource).name).toBe("thread");
-    expect(requestBody(postMock as unknown as MockCallSource).type).toBe(ChannelType.PublicThread);
+    expect(requestPath(postMock)).toBe(Routes.threads("chan1"));
+    expect(requestBody(postMock).name).toBe("thread");
+    expect(requestBody(postMock).type).toBe(ChannelType.PublicThread);
   });
 
   it("respects explicit thread type for standalone threads", async () => {
@@ -395,9 +388,9 @@ describe("sendMessageDiscord", () => {
       discordClientOpts(rest),
     );
     expect(getMock).toHaveBeenCalledWith(Routes.channel("chan1"));
-    expect(requestPath(postMock as unknown as MockCallSource)).toBe(Routes.threads("chan1"));
-    expect(requestBody(postMock as unknown as MockCallSource).name).toBe("thread");
-    expect(requestBody(postMock as unknown as MockCallSource).type).toBe(ChannelType.PrivateThread);
+    expect(requestPath(postMock)).toBe(Routes.threads("chan1"));
+    expect(requestBody(postMock).name).toBe("thread");
+    expect(requestBody(postMock).type).toBe(ChannelType.PrivateThread);
   });
 
   it("sends initial message for non-forum threads with content", async () => {
@@ -411,16 +404,12 @@ describe("sendMessageDiscord", () => {
     );
     expect(postMock).toHaveBeenCalledTimes(2);
     // First call: create thread
-    expect(requestPath(postMock as unknown as MockCallSource, 0)).toBe(Routes.threads("chan1"));
-    expect(requestBody(postMock as unknown as MockCallSource, 0).name).toBe("thread");
-    expect(requestBody(postMock as unknown as MockCallSource, 0).type).toBe(
-      ChannelType.PublicThread,
-    );
+    expect(requestPath(postMock, 0)).toBe(Routes.threads("chan1"));
+    expect(requestBody(postMock, 0).name).toBe("thread");
+    expect(requestBody(postMock, 0).type).toBe(ChannelType.PublicThread);
     // Second call: send message to thread
-    expect(requestPath(postMock as unknown as MockCallSource, 1)).toBe(
-      Routes.channelMessages("t1"),
-    );
-    expect(requestBody(postMock as unknown as MockCallSource, 1)).toMatchObject({
+    expect(requestPath(postMock, 1)).toBe(Routes.channelMessages("t1"));
+    expect(requestBody(postMock, 1)).toMatchObject({
       content: "Hello thread!",
       enforce_nonce: true,
     });
@@ -457,22 +446,18 @@ describe("sendMessageDiscord", () => {
     postMock.mockResolvedValue({ id: "t1" });
     await createThreadDiscord(
       "chan1",
-      { name: "thread", messageId: "m1", content: "Discussion here" },
+      { name: "thread", messageId: "1", content: "Discussion here" },
       discordClientOpts(rest),
     );
     // Should not detect channel type for message-attached threads
     expect(getMock).not.toHaveBeenCalled();
     expect(postMock).toHaveBeenCalledTimes(2);
     // First call: create thread from message
-    expect(requestPath(postMock as unknown as MockCallSource, 0)).toBe(
-      Routes.threads("chan1", "m1"),
-    );
-    expect(requestBody(postMock as unknown as MockCallSource, 0)).toEqual({ name: "thread" });
+    expect(requestPath(postMock, 0)).toBe(Routes.threads("chan1", "1"));
+    expect(requestBody(postMock, 0)).toEqual({ name: "thread" });
     // Second call: send message to thread
-    expect(requestPath(postMock as unknown as MockCallSource, 1)).toBe(
-      Routes.channelMessages("t1"),
-    );
-    expect(requestBody(postMock as unknown as MockCallSource, 1)).toMatchObject({
+    expect(requestPath(postMock, 1)).toBe(Routes.channelMessages("t1"));
+    expect(requestBody(postMock, 1)).toMatchObject({
       content: "Discussion here",
       enforce_nonce: true,
     });
@@ -492,12 +477,8 @@ describe("sendMessageDiscord", () => {
       { guildId: "g1", userId: "u1", durationMinutes: 10 },
       discordClientOpts(rest),
     );
-    expect(requestPath(patchMock as unknown as MockCallSource)).toBe(
-      Routes.guildMember("g1", "u1"),
-    );
-    expect(
-      requestBody(patchMock as unknown as MockCallSource).communication_disabled_until,
-    ).toBeTypeOf("string");
+    expect(requestPath(patchMock)).toBe(Routes.guildMember("g1", "u1"));
+    expect(requestBody(patchMock).communication_disabled_until).toBeTypeOf("string");
   });
 
   it("rejects timeout durations outside Date range", async () => {
@@ -543,7 +524,7 @@ describe("sendMessageDiscord", () => {
       { guildId: "g1", userId: "u1", deleteMessageDays: 2 },
       discordClientOpts(rest),
     );
-    expect(requestPath(putMock as unknown as MockCallSource)).toBe(Routes.guildBan("g1", "u1"));
-    expect(requestBody(putMock as unknown as MockCallSource)).toEqual({ delete_message_days: 2 });
+    expect(requestPath(putMock)).toBe(Routes.guildBan("g1", "u1"));
+    expect(requestBody(putMock)).toEqual({ delete_message_days: 2 });
   });
 });

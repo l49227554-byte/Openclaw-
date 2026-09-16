@@ -1,8 +1,9 @@
-// Openrouter provider module implements model/runtime integration.
+import { normalizeOpenRouterModelPricing } from "openclaw/plugin-sdk/model-catalog-pricing";
 import {
   buildLiveModelProviderConfig,
   type LiveModelCatalogFetchGuard,
 } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
+import { normalizeOpenRouterModelReasoning } from "openclaw/plugin-sdk/provider-catalog-shared";
 import {
   normalizeBaseUrl,
   resolveProviderHttpRequestConfig,
@@ -22,8 +23,9 @@ import {
   filterStringEntries,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { OPENROUTER_BASE_URL } from "./provider-defaults.js";
 
-export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+export { OPENROUTER_BASE_URL } from "./provider-defaults.js";
 const OPENROUTER_LEGACY_BASE_URL = "https://openrouter.ai/v1";
 const OPENROUTER_MODELS_CACHE_TTL_MS = 60_000;
 const OPENROUTER_DEFAULT_MODEL_ID = "openrouter/auto";
@@ -144,13 +146,6 @@ function readStringArray(record: Record<string, unknown> | undefined, key: strin
   return filterStringEntries(record?.[key]);
 }
 
-function readTokenPrice(record: Record<string, unknown> | undefined, key: string): number {
-  const value = record?.[key];
-  const parsed =
-    typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed * 1_000_000 : 0;
-}
-
 function readOpenRouterModalities(
   architecture: Record<string, unknown> | undefined,
   direction: "input" | "output",
@@ -178,20 +173,15 @@ function buildOpenRouterLiveModel(row: unknown): ModelDefinitionConfig | undefin
   const inputModalities = readOpenRouterModalities(architecture, "input");
   const supportedParameters = readStringArray(record, "supported_parameters");
   const topProvider = asOptionalRecord(record?.top_provider);
-  const pricing = asOptionalRecord(record?.pricing);
   return {
     id,
     name: normalizeOptionalString(record?.name) ?? id,
     reasoning:
       supportedParameters.includes("reasoning") ||
       supportedParameters.includes("include_reasoning"),
+    ...normalizeOpenRouterModelReasoning(record?.reasoning),
     input: inputModalities.includes("image") ? ["text", "image"] : ["text"],
-    cost: {
-      input: readTokenPrice(pricing, "prompt"),
-      output: readTokenPrice(pricing, "completion"),
-      cacheRead: readTokenPrice(pricing, "input_cache_read"),
-      cacheWrite: readTokenPrice(pricing, "input_cache_write"),
-    },
+    cost: normalizeOpenRouterModelPricing(record?.pricing) ?? { ...OPENROUTER_DEFAULT_COST },
     contextWindow:
       asPositiveSafeInteger(topProvider?.context_length) ??
       asPositiveSafeInteger(record?.context_length) ??
@@ -230,6 +220,7 @@ export async function buildOpenrouterLiveProvider(params: {
   const requestConfig = resolveRequest();
   const endpoint = `${requestConfig.baseUrl}/models`;
   return await buildLiveModelProviderConfig({
+    discoveryMode: "strict",
     providerId: "openrouter",
     endpoint,
     providerConfig: {

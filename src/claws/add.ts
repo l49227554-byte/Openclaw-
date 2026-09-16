@@ -10,8 +10,10 @@ import type { AgentConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../infra/boundary-path.js";
 import { normalizeWindowsPathForComparison } from "../infra/path-guards.js";
+import type { PluginInstallBatchReload } from "../plugins/install-runtime-batch.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { recordAgentProvenance } from "../state/agent-provenance.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
 import {
@@ -53,6 +55,7 @@ export const CLAW_ADD_RESULT_SCHEMA_VERSION = "openclaw.clawAddResult.v1" as con
 
 type ConfigCommit = (transform: (config: OpenClawConfig) => OpenClawConfig) => Promise<void>;
 type ClawAddApplyOptions = OpenClawStateDatabaseOptions & {
+  reloadPlugins?: PluginInstallBatchReload;
   consentPlanIntegrity?: string;
   resumeRecord?: PersistedClawInstall;
   resumePlan?: ClawAddPlan;
@@ -442,7 +445,6 @@ export async function applyClawAddPlan(
       );
       if (existingAgent) {
         if (sameCommittedAgent(existingAgent, plan)) {
-          configCommitted = true;
           return config;
         }
         const nextConfig = replaceLegacyCommittedAgent({
@@ -455,7 +457,6 @@ export async function applyClawAddPlan(
           matchesPlan: sameCommittedAgent,
         });
         if (nextConfig) {
-          configCommitted = true;
           return nextConfig;
         }
         throw new ClawAddMutationError(
@@ -481,9 +482,16 @@ export async function applyClawAddPlan(
           ),
         },
       };
-      configCommitted = true;
       return nextConfig;
     });
+    // The transform runs before persistence can still fail; record the fact only after commit.
+    // Moving this into the callback retains the workspace and reports a write that never landed.
+    configCommitted = true;
+    try {
+      recordAgentProvenance(plan.agent.finalId, { createdVia: "claw" }, options);
+    } catch (error) {
+      throw new ClawAddMutationError("provenance_failed", coerceErrorMessage(error));
+    }
     if (options.resumePlan && installRecord.schemaVersion === "openclaw.clawInstallRecord.v1") {
       installRecord = persistRecord(plan, {
         ...options,

@@ -134,6 +134,7 @@ export async function loadSubagentSpawnModuleForTest(params: {
   getRuntimeConfig?: () => Record<string, unknown>;
   loadSessionStoreMock?: MockFn;
   loadPreparedModelCatalogMock?: MockFn;
+  resolveProviderRefOwnershipMock?: MockFn;
   ensureContextEnginesInitializedMock?: MockFn;
   updateSessionStoreMock?: MockFn;
   forkSessionEntryFromParentMock?: MockFn;
@@ -148,7 +149,6 @@ export async function loadSubagentSpawnModuleForTest(params: {
   hookRunner?: HookRunner;
   resolveAgentConfig?: (cfg: Record<string, unknown>, agentId: string) => unknown;
   resolveAgentWorkspaceDir?: (cfg: Record<string, unknown>, agentId: string) => string;
-  resolveSubagentSpawnModelSelection?: () => string | undefined;
   getSubagentDepthFromSessionStore?: (sessionKey: string, opts?: unknown) => number;
   countActiveRunsForSession?: (sessionKey: string) => number;
   listSwarmRunsForGroup?: (groupId: string) => unknown[];
@@ -220,7 +220,6 @@ export async function loadSubagentSpawnModuleForTest(params: {
     dispatchGatewayMethodInProcess: (...args: unknown[]) =>
       params.dispatchGatewayMethodInProcessMock?.(...args),
     hasInProcessGatewayContext: () => Boolean(params.hasInProcessGatewayContextMock?.()),
-    buildSubagentSystemPrompt: () => "system-prompt",
     forkSessionEntryFromParent:
       params.forkSessionEntryFromParentMock ??
       (async () => {
@@ -260,14 +259,18 @@ export async function loadSubagentSpawnModuleForTest(params: {
     formatThinkingLevels: (levels: string[]) => levels.join(", "),
     normalizeThinkLevel: (level: unknown) => normalizeOptionalString(level),
     DEFAULT_SUBAGENT_MAX_CHILDREN_PER_AGENT: 5,
-    DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH: 3,
     ADMIN_SCOPE: "operator.admin",
     AGENT_LANE_SUBAGENT: "subagent",
     getRuntimeConfig: () =>
       params.getRuntimeConfig?.() ??
       createSubagentSpawnTestConfig(params.workspaceDir ?? os.tmpdir()),
-    loadPreparedModelCatalog: (...args: unknown[]) =>
+    readPreparedModelCatalog: (...args: unknown[]) =>
       params.loadPreparedModelCatalogMock?.(...args) ?? [],
+    resolveProviderRefOwnership: (...args: unknown[]) =>
+      params.resolveProviderRefOwnershipMock?.(...args) ?? {
+        status: "owned",
+        pluginIds: ["test-provider"],
+      },
     loadSessionEntry: (scope: { storePath?: string; sessionKey: string }) =>
       ((params.loadSessionStoreMock?.(scope.storePath) ?? {}) as SessionStore)[scope.sessionKey],
     loadSessionStore: params.loadSessionStoreMock ?? (() => ({})),
@@ -372,12 +375,6 @@ export async function loadSubagentSpawnModuleForTest(params: {
     resolveAgentConfig: params.resolveAgentConfig ?? (() => undefined),
     resolveAgentWorkspaceDir:
       params.resolveAgentWorkspaceDir ?? (() => params.workspaceDir ?? os.tmpdir()),
-    resolveSubagentSpawnModelSelection:
-      params.resolveSubagentSpawnModelSelection ??
-      ((spawnParams: { modelOverride?: unknown }) =>
-        typeof spawnParams.modelOverride === "string" && spawnParams.modelOverride.trim()
-          ? spawnParams.modelOverride.trim()
-          : "openai/gpt-4"),
     resolveSandboxRuntimeStatus:
       params.resolveSandboxRuntimeStatus ?? (() => ({ sandboxed: false })),
     ...createDefaultSessionHelperMocks(),
@@ -390,6 +387,7 @@ export async function loadSubagentSpawnModuleForTest(params: {
   vi.doMock("../registry/subagent-registry.js", () => ({
     completeCollectorLaunchCleanup: params.completeCollectorLaunchCleanupMock ?? vi.fn(),
     countActiveRunsForSession: params.countActiveRunsForSession ?? (() => 0),
+    getSubagentDeliveryBacklogPressure: () => ({ suspended: 0, blocked: false }),
     listSwarmRunsForGroup: params.listSwarmRunsForGroup ?? vi.fn(() => []),
     registerSubagentRun:
       params.registerSubagentRunMock ?? vi.fn((_record: Record<string, unknown>) => undefined),

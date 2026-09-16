@@ -72,12 +72,10 @@ export function registerWebhooksCli(program: Command) {
         const parsed = parseGmailSetupOptions(opts);
         await runGmailSetup(parsed);
       } catch (err) {
-        const message = formatErrorMessage(err);
         if (opts.json) {
-          defaultRuntime.writeJson({ error: message });
-        } else {
-          defaultRuntime.error(danger(message));
+          throw new Error(formatErrorMessage(err), { cause: err });
         }
+        defaultRuntime.error(danger(formatErrorMessage(err)));
         defaultRuntime.exit(1);
       }
     });
@@ -127,7 +125,7 @@ function parseGmailSetupOptions(raw: Record<string, unknown>): GmailSetupOptions
   return {
     account,
     project: normalizeOptionalString(raw.project),
-    ...gmailOptionsFromCommon(common),
+    ...common,
     pushEndpoint: normalizeOptionalString(raw.pushEndpoint),
     json: Boolean(raw.json),
   };
@@ -137,11 +135,11 @@ function parseGmailRunOptions(raw: Record<string, unknown>): GmailRunOptions {
   const common = parseGmailCommonOptions(raw);
   return {
     account: normalizeOptionalString(raw.account),
-    ...gmailOptionsFromCommon(common),
+    ...common,
   };
 }
 
-function parseGmailCommonOptions(raw: Record<string, unknown>) {
+function parseGmailCommonOptions(raw: Record<string, unknown>): Omit<GmailRunOptions, "account"> {
   return {
     topic: normalizeOptionalString(raw.topic),
     subscription: normalizeOptionalString(raw.subscription),
@@ -158,28 +156,6 @@ function parseGmailCommonOptions(raw: Record<string, unknown>) {
     tailscale: tailscaleModeOption(raw.tailscale),
     tailscalePath: normalizeOptionalString(raw.tailscalePath),
     tailscaleTarget: normalizeOptionalString(raw.tailscaleTarget),
-  };
-}
-
-function gmailOptionsFromCommon(
-  common: ReturnType<typeof parseGmailCommonOptions>,
-): Omit<GmailRunOptions, "account"> {
-  return {
-    topic: common.topic,
-    subscription: common.subscription,
-    label: common.label,
-    hookUrl: common.hookUrl,
-    hookToken: common.hookToken,
-    pushToken: common.pushToken,
-    bind: common.bind,
-    port: common.port,
-    path: common.path,
-    includeBody: common.includeBody,
-    maxBytes: common.maxBytes,
-    renewEveryMinutes: common.renewEveryMinutes,
-    tailscale: common.tailscale,
-    tailscalePath: common.tailscalePath,
-    tailscaleTarget: common.tailscaleTarget,
   };
 }
 

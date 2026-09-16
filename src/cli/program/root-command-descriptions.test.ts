@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cliCommandCatalog } from "../command-catalog.js";
 import { isReservedNonPluginCommandRoot } from "../command-registration-policy.js";
 import { collectShellCompletionCommandTree } from "../completion-command-tree.js";
-import { getCoreCliCommandNames, registerCoreCliByName } from "./command-registry-core.js";
+import { registerCoreCliByName } from "./command-registry-core.js";
 import { createProgramContext } from "./context.js";
-import { getCoreCliCommandDescriptors } from "./core-command-descriptors.js";
+import {
+  getCoreCliCommandDescriptors,
+  getCoreCliCommandNamesCore,
+} from "./core-command-descriptors.js";
 import { registerSubCliByName, registerSubCliCommands } from "./register.subclis.js";
 import { getSubCliEntriesCore } from "./subcli-descriptors.js";
 
@@ -27,6 +30,7 @@ const JSON_NOT_APPLICABLE = {
   namespaces: {
     reason: "command group only; reporting subcommands declare JSON output individually",
     commands: [
+      "agents team",
       "backup",
       "backup git",
       "backup sqlite",
@@ -45,10 +49,10 @@ const JSON_NOT_APPLICABLE = {
       "transcripts",
       "gateway restart-handoff",
       "gateway diagnostics",
-      "daemon",
       "system",
       "system heartbeat",
       "promos",
+      "telemetry",
       "infer",
       "infer model",
       "infer model auth",
@@ -60,6 +64,7 @@ const JSON_NOT_APPLICABLE = {
       "infer embedding",
       "approvals",
       "approvals allowlist",
+      "approvals grants",
       "exec-policy",
       "nodes",
       "nodes camera",
@@ -93,7 +98,6 @@ const JSON_NOT_APPLICABLE = {
       "models image-fallbacks",
       "models auth",
       "models auth order",
-      "tasks flow",
       "skills workshop",
     ],
   },
@@ -146,6 +150,8 @@ const JSON_NOT_APPLICABLE = {
       "uninstall",
       "backup enable",
       "backup disable",
+      "telemetry on",
+      "telemetry off",
       "config set",
       "mcp add",
       "mcp set",
@@ -170,6 +176,7 @@ const JSON_NOT_APPLICABLE = {
       "models image-fallbacks add",
       "models image-fallbacks remove",
       "models image-fallbacks clear",
+      "models auth activate",
       "models auth logout",
       "models auth order set",
       "models auth order clear",
@@ -185,10 +192,6 @@ const JSON_NOT_APPLICABLE = {
       "fleet restart",
       "fleet upgrade",
       "fleet rm",
-      "cron enable",
-      "cron disable",
-      "cron run",
-      "cron edit",
       "dns setup",
       "proxy purge",
       "pairing approve",
@@ -226,8 +229,8 @@ async function registerAllBuiltInCommands(): Promise<Command> {
   const ctx = createProgramContext();
   const argv = ["node", "openclaw", "completion"];
 
-  for (const name of getCoreCliCommandNames()) {
-    await registerCoreCliByName(program, ctx, name, argv);
+  for (const name of getCoreCliCommandNamesCore()) {
+    await registerCoreCliByName(program, ctx, name);
   }
   for (const entry of getSubCliEntriesCore()) {
     await registerSubCliByName(program, entry.name, argv, { purpose: "completion" });
@@ -246,6 +249,29 @@ function supportsJsonOutput(path: string, command: Command): boolean {
     return false;
   }
   return hasOwnJsonOption(command) || JSON_OUTPUT_ROUTE_FIRST.has(path);
+}
+
+function requiredCommandArgs(command: Command): string[] {
+  const args = command.registeredArguments.flatMap((argument) => {
+    if (!argument.required) {
+      return [];
+    }
+    return ["guard-value"];
+  });
+  for (const option of command.options) {
+    if (!option.mandatory) {
+      continue;
+    }
+    const flag = option.long ?? option.short;
+    if (!flag) {
+      continue;
+    }
+    args.push(flag);
+    if (option.required || option.optional) {
+      args.push(option.argChoices?.[0] ?? "guard-value");
+    }
+  }
+  return args;
 }
 
 function collectRegisteredCommandPaths(...programs: Command[]): Set<string> {
@@ -402,5 +428,25 @@ describe("root command descriptions", () => {
       staleRouteFirstSupport,
       "route-first JSON entries must exist and remain absent from Commander options",
     ).toEqual([]);
+  });
+
+  it("accepts declared JSON output options through the registered command parsers", async () => {
+    const program = await registerAllBuiltInCommands();
+    const contexts = collectShellCompletionCommandTree(program).descendants.filter((context) => {
+      const path = context.pathVariants[0]?.join(" ") ?? "";
+      return supportsJsonOutput(path, context.command) && hasOwnJsonOption(context.command);
+    });
+
+    expect(contexts.length).toBeGreaterThan(0);
+    for (const context of contexts) {
+      const path = context.pathVariants[0]?.join(" ") ?? "";
+      const failure = new Error(`synthetic failure for ${path}`);
+      context.command.action(async () => {
+        throw failure;
+      });
+      const args = [...requiredCommandArgs(context.command), "--json"];
+
+      await expect(context.command.parseAsync(args, { from: "user" }), path).rejects.toBe(failure);
+    }
   });
 });

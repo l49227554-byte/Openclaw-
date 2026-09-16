@@ -2,6 +2,11 @@
 import type { Command, Option } from "commander";
 
 const activeErrorCommandByRoot = new WeakMap<Command, Command>();
+const lazyCommands = new WeakSet<Command>();
+
+export function markCommanderLazyCommand(command: Command): void {
+  lazyCommands.add(command);
+}
 
 function getCommandHierarchy(command: Command): Command[] {
   const hierarchy: Command[] = [];
@@ -35,11 +40,12 @@ function requiresFollowingValue(token: string, options: readonly Option[]): bool
   return false;
 }
 
-/** Return whether Commander consumed one of the supplied argv tokens as a required option value. */
-export function hasCommanderOptionValue(
+/** Match an argv token in its actual Commander role rather than its spelling alone. */
+export function hasCommanderOptionToken(
   command: Command,
   argv: readonly string[],
   tokens: ReadonlySet<string>,
+  kind: "flag" | "value",
 ): boolean {
   const hierarchy = getCommandHierarchy(command);
   const args = argv.slice(2);
@@ -58,10 +64,14 @@ export function hasCommanderOptionValue(
     // parses only the active command's options; ancestor flags there never reach pre-action.
     if (requiresFollowingValue(arg, hierarchy[commandIndex]?.options ?? [])) {
       const value = args[index + 1];
-      if (value && tokens.has(value)) {
+      if (kind === "value" && value && tokens.has(value)) {
         return true;
       }
       index += 1;
+      continue;
+    }
+    if (kind === "flag" && tokens.has(arg.split("=")[0] ?? arg)) {
+      return true;
     }
   }
   return false;
@@ -82,6 +92,30 @@ function getRootCommand(command: Command): Command {
     root = root.parent;
   }
   return root;
+}
+
+/** Resolve lazy help before classifying a possible child on Commander's active command node. */
+export function getCommanderSubcommandFact(
+  command: Command,
+  args: readonly string[],
+): { kind: "defer" } | { kind: "unknown"; name: string } | undefined {
+  const helpRequested = args.includes("-h") || args.includes("--help");
+  if (helpRequested && lazyCommands.has(command)) {
+    return { kind: "defer" };
+  }
+  const firstArgument = command.args[0];
+  const matchesChild = command.commands.some(
+    (child) => child.name() === firstArgument || child.aliases().includes(firstArgument ?? ""),
+  );
+  if (
+    command.registeredArguments.length > 0 ||
+    firstArgument === undefined ||
+    firstArgument.startsWith("-") ||
+    matchesChild
+  ) {
+    return undefined;
+  }
+  return command.commands.length > 0 ? { kind: "unknown", name: firstArgument } : undefined;
 }
 
 /** Scope the exact Commander node synchronously emitting an error. */

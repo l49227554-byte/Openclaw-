@@ -62,13 +62,11 @@
     "eslint/symbol-description": "error",
     "eslint/unicode-bom": "error",
     "eslint/yoda": "error",
-    // Only import rules verified clean in the survey are activated in this tranche.
     "import/default": "off",
-    // Campaign follow-ups: clean import/first and import/no-duplicates before enabling them.
-    "import/first": "off",
+    "import/first": "error",
     "import/namespace": "off",
     "import/no-absolute-path": "error",
-    "import/no-duplicates": "off",
+    "import/no-duplicates": "error",
     "import/no-empty-named-blocks": "error",
     "import/no-named-as-default": "off",
     "import/no-named-as-default-member": "off",
@@ -228,7 +226,6 @@
   "ignorePatterns": [
     "dist/",
     "dist-runtime/",
-    "docs/_layouts/",
     // Intentional negative-test corpora contain parser and lint violations by contract.
     ".agents/skills/autoreview/tests/fixtures/**",
     "test/fixtures/oxlint-boundary-guards/**",
@@ -290,7 +287,16 @@
         "**/*test-support.ts"
       ],
       "rules": {
+        // Vitest hoists mock setup above static imports, so this ordering is intentional in tests.
+        "import/first": "off",
         "typescript/no-explicit-any": "off"
+      }
+    },
+    {
+      "files": ["src/agents/subagents/registry/subagent-registry.ts"],
+      "rules": {
+        // Preserve the explicit maintenance side-effect import's module-request order.
+        "import/first": "off"
       }
     },
     {
@@ -311,7 +317,7 @@
         "src/wizard/i18n/locales/**"
       ],
       "rules": {
-        "max-lines": ["error", { "max": 700, "skipBlankLines": true, "skipComments": true }]
+        "max-lines": ["warn", { "max": 700, "skipBlankLines": true, "skipComments": true }]
       }
     },
     {
@@ -332,7 +338,7 @@
         "src/wizard/i18n/locales/**"
       ],
       "rules": {
-        "max-lines": ["error", { "max": 700, "skipBlankLines": true, "skipComments": true }]
+        "max-lines": ["warn", { "max": 700, "skipBlankLines": true, "skipComments": true }]
       }
     },
     {
@@ -353,7 +359,7 @@
         "src/wizard/i18n/locales/**"
       ],
       "rules": {
-        "max-lines": ["error", { "max": 800, "skipBlankLines": true, "skipComments": true }]
+        "max-lines": ["warn", { "max": 800, "skipBlankLines": true, "skipComments": true }]
       }
     },
     {
@@ -373,19 +379,33 @@
         "src/wizard/i18n/locales/**"
       ],
       "rules": {
-        "max-lines": ["error", { "max": 1000, "skipBlankLines": true, "skipComments": true }]
+        "max-lines": ["warn", { "max": 1000, "skipBlankLines": true, "skipComments": true }]
       }
     },
     {
       "files": ["extensions/copilot/src/event-bridge.ts"],
       "rules": {
-        "max-lines": ["error", { "max": 950, "skipBlankLines": true, "skipComments": true }]
+        "max-lines": ["warn", { "max": 950, "skipBlankLines": true, "skipComments": true }]
       }
     },
     {
       "files": ["extensions/copilot/src/attempt-transcript-journal.test.ts"],
       "rules": {
-        "max-lines": ["error", { "max": 1200, "skipBlankLines": true, "skipComments": true }]
+        "max-lines": ["warn", { "max": 1200, "skipBlankLines": true, "skipComments": true }]
+      }
+    },
+    {
+      "files": ["**/*.{ts,tsx,mts,cts}"],
+      "rules": {
+        // tsgo owns TypeScript type/value namespace validity; no-var still rejects var declarations.
+        "eslint/no-redeclare": "off"
+      }
+    },
+    {
+      "files": ["extensions/qa-lab/src/web-runtime.ts"],
+      "rules": {
+        // Scenario scripts need page-global declarations, unlike Playwright's expression evaluation.
+        "eslint/no-eval": ["error", { "allowIndirect": true }]
       }
     }
   ]

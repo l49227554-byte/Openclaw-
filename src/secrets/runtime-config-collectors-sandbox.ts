@@ -4,6 +4,7 @@ import { listAgentEntriesWithSource, resolveDefaultAgentId } from "../agents/age
 import { resolveSandboxScope } from "../agents/sandbox/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { appendConfigPathSegment } from "../shared/dot-path.js";
 import { runtimeSandboxSecretOwnerId } from "./runtime-sandbox-secret-owner.js";
 import {
   collectRuntimeSecretInputAssignment,
@@ -57,6 +58,7 @@ export function collectAgentSandboxAssignments(params: {
   config: OpenClawConfig;
   defaults: SecretDefaults | undefined;
   context: ResolverContext;
+  agentId?: string;
 }): void {
   const rawAgents: unknown = params.config.agents;
   const agents = isRecord(rawAgents) ? rawAgents : undefined;
@@ -71,7 +73,9 @@ export function collectAgentSandboxAssignments(params: {
     entry,
     entryId: entry.id,
     agentPath:
-      source.kind === "entries" ? `agents.entries.${source.key}` : `agents.list.${source.index}`,
+      source.kind === "entries"
+        ? appendConfigPathSegment("agents.entries", source.key)
+        : `agents.list[${source.index}]`,
   }));
   const activeDefaultKeys = new Set<SandboxSshSecretKey>();
   const seenAgentIds = new Set<string>();
@@ -177,6 +181,10 @@ export function collectAgentSandboxAssignments(params: {
     // Unlisted agents and stale registry entries still resolve through defaults,
     // even when every current list entry overrides this credential.
     const active = defaultsBackend === "ssh";
+    const fallbackAgentId =
+      params.agentId === undefined
+        ? resolveDefaultAgentId(params.config)
+        : normalizeAgentId(params.agentId);
     collectAssignment({
       target: defaultsSsh,
       key,
@@ -185,7 +193,7 @@ export function collectAgentSandboxAssignments(params: {
       context: params.context,
       active,
       inactiveReason: "no enabled agent uses the sandbox SSH material.",
-      owner: sandboxSecretOwner(resolveDefaultAgentId(params.config), {
+      owner: sandboxSecretOwner(fallbackAgentId, {
         defaults: defaultsSandbox,
       }),
     });

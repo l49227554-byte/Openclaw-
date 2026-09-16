@@ -1,8 +1,15 @@
-import type { Context, Model, StreamFn } from "@openclaw/llm-core";
+import { randomUUID } from "node:crypto";
+import type { Model, StreamFn } from "@openclaw/llm-core";
 import OpenAI from "openai";
 import { getEnvApiKey } from "../env-api-keys.js";
-import type { OpenAICompletionsOptions } from "../provider-options.js";
+import {
+  codeModeToolSurfaceObserver,
+  reasoningTagTextPolicy,
+  type OpenAICompletionsOptions,
+} from "../provider-options.js";
+import { resolveCacheRetention } from "../providers/cache-retention.js";
 import { finalizeOpenAICompletionsToolCalls } from "../providers/openai-completions-tool-calls.js";
+import { tagUnresolvedTextAsCommentary } from "../utils/assistant-text-phase.js";
 import {
   createFirstStreamEventAbortController,
   getFirstStreamEventTimeoutHandler,
@@ -26,10 +33,17 @@ import {
   resolveCodeModeResponsesVisibleToolNames,
 } from "./openai-transport-params.js";
 import {
-  createOpenAIResponseHook,
+  createOpenAIProviderAcceptanceHook,
+  resolveOpenAIClientBaseUrl,
+  resolvePromptCacheKey,
   type MutableAssistantOutput,
   type OpenAIModeModel,
 } from "./openai-transport-shared.js";
+import {
+  filterProviderTurnHeadersForExplicitOpencodeSession,
+  resolveProviderTransportTurnState,
+} from "./provider-transport-turn-state.js";
+import { resolveOpencodeSessionHeaders } from "./session-affinity.js";
 import {
   createWritableTransportEventStream,
   failTransportStream,
@@ -105,12 +119,11 @@ function createSseDoneDetector() {
 
 function createOpenAICompletionsClient(
   model: Model,
-  context: Context,
   apiKey: string,
-  optionHeaders?: Record<string, string>,
+  headers: Record<string, string>,
   opts?: { fetch?: typeof globalThis.fetch },
 ) {
-  const clientConfig = buildOpenAICompletionsClientConfig(model, context, optionHeaders);
+  const clientConfig = buildOpenAICompletionsClientConfig(model, headers);
   return new OpenAI({
     apiKey,
     baseURL: clientConfig.baseURL,
@@ -124,14 +137,12 @@ function createOpenAICompletionsClient(
 
 function buildOpenAICompletionsClientConfig(
   model: Model,
-  context: Context,
-  optionHeaders?: Record<string, string>,
+  headers: Record<string, string>,
 ): {
-  baseURL: string;
+  baseURL: string | undefined;
   defaultHeaders: Record<string, string>;
   defaultQuery?: Record<string, string>;
 } {
-  const headers = buildOpenAIClientHeaders(model, context, optionHeaders);
   const defaultQuery: Record<string, string> = {};
   let baseURL = model.baseUrl;
   let isAzureHost = false;
@@ -164,7 +175,7 @@ function buildOpenAICompletionsClientConfig(
   }
 
   return {
-    baseURL,
+    baseURL: resolveOpenAIClientBaseUrl(model, baseURL),
     defaultHeaders: headers,
     defaultQuery: Object.keys(defaultQuery).length > 0 ? defaultQuery : undefined,
   };
@@ -194,6 +205,18 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
       let firstEventAbort: ReturnType<typeof createFirstStreamEventAbortController> | undefined;
       try {
         const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
+        const turnState = resolveProviderTransportTurnState(model, {
+          sessionId: options?.sessionId,
+          turnId: randomUUID(),
+          attempt: 1,
+          transport: "stream",
+        });
+        const optionHeaders = resolveOpencodeSessionHeaders(model, options);
+        const turnHeaders = filterProviderTurnHeadersForExplicitOpencodeSession(
+          model,
+          options,
+          turnState?.headers,
+        );
         // The OpenAI SDK consumes the SSE terminal without yielding it. Observe
         // the raw body so native tool calls can distinguish clean DONE from EOF.
         const doneDetector = createSseDoneDetector();
@@ -223,9 +246,22 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
             statusText: response.statusText,
           });
         };
-        const client = createOpenAICompletionsClient(model, context, apiKey, options?.headers, {
-          fetch: doneDetectingFetch,
-        });
+        const cacheRetention = resolveCacheRetention(options?.cacheRetention);
+        const client = createOpenAICompletionsClient(
+          model,
+          apiKey,
+          buildOpenAIClientHeaders(
+            model,
+            context,
+            { ...turnHeaders, ...optionHeaders },
+            undefined,
+            resolvePromptCacheKey(options, cacheRetention),
+            cacheRetention,
+          ),
+          {
+            fetch: doneDetectingFetch,
+          },
+        );
         let params = buildOpenAICompletionsParams(
           model as OpenAIModeModel,
           context,
@@ -240,7 +276,12 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
             ?.openclawCodeModeToolSurface === true
         ) {
           const visibleToolNames = resolveCodeModeResponsesVisibleToolNames(context);
-          enforceCodeModeResponsesToolSurface(params, visibleToolNames);
+          enforceCodeModeResponsesToolSurface(
+            params,
+            visibleToolNames,
+            undefined,
+            codeModeToolSurfaceObserver.get(options),
+          );
           assertCodeModeResponsesToolSurface(params, visibleToolNames);
         }
         const compat = getCompat(model as OpenAIModeModel);
@@ -257,7 +298,6 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
             params as unknown as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
             buildOpenAISdkRequestOptions(model, firstEventAbort.signal, {
               timeoutMs: options?.timeoutMs,
-              maxRetries: options?.maxRetries,
             }),
           )
           .withResponse();
@@ -265,12 +305,13 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           stream: responseStream,
           signal: firstEventAbort.signal,
           abort: firstEventAbort.abort,
-          hook: createOpenAIResponseHook(options?.onResponse, response, model),
+          hook: createOpenAIProviderAcceptanceHook(options, response, model),
           onReady: () => stream.push({ type: "start", partial: output }),
         });
         await processCompletionsStream(hookedResponseStream, output, model, stream, {
           signal: options?.signal,
           emitReasoning,
+          strictReasoningTags: reasoningTagTextPolicy.isStrict(options),
           firstEventTimeoutMs: getFirstStreamEventTimeoutMs(options),
           abortFirstEventStream: firstEventAbort.abort,
           onFirstEventTimeout: getFirstStreamEventTimeoutHandler(options),
@@ -286,6 +327,7 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           cleanup: () => {
             output.stopReason = options?.signal?.aborted ? "aborted" : "error";
             finalizeOpenAICompletionsToolCalls(output, { allowSilentToolCallPromotion: false });
+            tagUnresolvedTextAsCommentary(output);
           },
         });
       } finally {

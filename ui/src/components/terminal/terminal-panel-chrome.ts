@@ -4,6 +4,7 @@ import { formatUiError } from "../../lib/format-error.ts";
 import type { DockPanelPlacement } from "../dock-panel-layout.ts";
 import { icons } from "../icons.ts";
 import { renderPanelEmptyState } from "../panel-empty-state.ts";
+import { renderPanelLoadingSkeleton } from "../panel-loading-skeleton.ts";
 import {
   TerminalOpenTimeoutError,
   TerminalOpenUnusableSessionError,
@@ -17,6 +18,13 @@ import {
 } from "./terminal-panel-upload.ts";
 
 type TerminalDock = Exclude<DockPanelPlacement, "left">;
+type TerminalPanelViewportParams = {
+  activeId: string | null;
+  tabsInHeader?: boolean;
+  connecting: boolean;
+  error: { text: string; retry?: () => void } | null;
+  uploadController: TerminalPanelUploadController;
+};
 
 export function renderTerminalPanelToolbar(
   fullscreen: boolean,
@@ -62,38 +70,62 @@ export function renderTerminalPanelHeader(
   </header>`;
 }
 
-export function renderTerminalPanelViewport(
-  activeId: string | null,
-  connecting: boolean,
-  errorText: string | null,
-  uploadController: TerminalPanelUploadController,
-): TemplateResult {
+export function renderTerminalPanelViewport({
+  activeId,
+  tabsInHeader = false,
+  connecting,
+  error,
+  uploadController,
+}: TerminalPanelViewportParams): TemplateResult {
   return html`
-    ${errorText ? html`<div class="tp-error" role="alert">${errorText}</div>` : nothing}
+    ${
+      error
+        ? html`<div class="tp-error" role="alert">
+            <span>${error.text}</span>
+            ${
+              error.retry
+                ? html`<button class="btn btn--sm" type="button" @click=${error.retry}>
+                    ${t("common.retry")}
+                  </button>`
+                : nothing
+            }
+          </div>`
+        : nothing
+    }
     <wa-tab-panel
       id="terminal-tab-panel"
       class="tp-viewport"
       name=${activeId ?? "terminal"}
       active
-      aria-labelledby=${activeId ? `terminal-tab-${activeId}` : nothing}
+      aria-labelledby=${activeId && !tabsInHeader ? `terminal-tab-${activeId}` : nothing}
+      aria-label=${tabsInHeader ? t("terminal.title") : nothing}
       @dragenter=${uploadController.handleDragEnter}
       @dragover=${uploadController.handleDragOver}
       @dragleave=${uploadController.handleDragLeave}
       @drop=${uploadController.handleDrop}
     >
-      ${connecting
-        ? html`<div class="tp-connecting" role="status">
-            <span class="tp-connecting__spinner" aria-hidden="true"></span>
-            <span>${t("terminal.connecting")}</span>
-          </div>`
-        : nothing}
-      ${!activeId && !connecting && !errorText
-        ? renderPanelEmptyState({
-            icon: icons.terminal,
-            heading: t("chat.sidePanel.terminal"),
-            description: t("chat.sidePanel.terminalEmpty"),
-          })
-        : nothing}
+      ${
+        connecting
+          ? renderPanelLoadingSkeleton("terminal", t("terminal.connecting"), false, true)
+          : nothing
+      }
+      ${
+        !activeId && !connecting && !error
+          ? renderPanelEmptyState({
+              icon: icons.terminal,
+              heading: t("chat.sidePanel.terminal"),
+              description: t("chat.sidePanel.terminalEmpty"),
+            })
+          : nothing
+      }
+      <input
+        class="tp-file-input"
+        type="file"
+        multiple
+        aria-hidden="true"
+        tabindex="-1"
+        @change=${uploadController.handleFileSelection}
+      />
       ${renderTerminalUploadLayer(uploadController)}
     </wa-tab-panel>
   `;
@@ -105,7 +137,7 @@ export function terminalOpenErrorText(error: unknown): string {
     return t("terminal.connectionTimedOut");
   }
   if (error instanceof TerminalOpenUnusableSessionError) {
-    return t("terminal.unavailable");
+    return t("terminal.unusableSession", { field: error.field });
   }
   return formatUiError(error);
 }

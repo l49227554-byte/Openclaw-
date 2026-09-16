@@ -19,12 +19,16 @@ export {
   loadSqliteTrajectoryRuntimeEvents,
   type SqliteTrajectoryRuntimeScope,
 } from "../trajectory/runtime-store.sqlite.js";
+export { createTrajectoryRuntimeRecorder as createTrajectoryRuntimeRecorderForTest } from "../trajectory/runtime.js";
+export { exportTrajectoryBundle as exportTrajectoryBundleForTest } from "../trajectory/export.js";
 export { type TrajectoryEvent as SqliteTrajectoryRuntimeEventForTest } from "../trajectory/types.js";
 export {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
 export {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";

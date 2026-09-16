@@ -15,19 +15,14 @@ import type {
   ChannelOutboundAdapter,
 } from "openclaw/plugin-sdk/channel-contract";
 import { createChatChannelPlugin, type ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
-import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
 import {
+  waitUntilAbort,
   createMessageReceiptFromOutboundResults,
   defineChannelMessageAdapter,
   type MessageReceipt,
   type MessageReceiptPartKind,
 } from "openclaw/plugin-sdk/channel-outbound";
-import {
-  composeWarningCollectors,
-  createConditionalWarningCollector,
-  projectAccountConfigWarningCollector,
-  projectAccountWarningCollector,
-} from "openclaw/plugin-sdk/channel-policy";
+import { createConditionalWarningCollector } from "openclaw/plugin-sdk/channel-policy";
 import { createEmptyChannelDirectoryAdapter } from "openclaw/plugin-sdk/directory-runtime";
 import {
   channelBlockedPatch,
@@ -56,7 +51,7 @@ import { SYNOLOGY_CHAT_TEXT_CHUNK_LIMIT, sendHostedFileUrl, sendMessage } from "
 import { SynologyChatChannelConfigSchema } from "./config-schema.js";
 import { synologyChatDoctor } from "./doctor.js";
 import {
-  collectSynologyGatewayRoutingWarnings,
+  collectSynologyGatewayRoutingFindings,
   registerSynologyWebhookRoute,
   validateSynologyGatewayAccountStartup,
 } from "./gateway-runtime.js";
@@ -114,11 +109,6 @@ type SynologyChannelOutboundContext = {
 };
 type SynologyChannelSendTextContext = SynologyChannelOutboundContext & { text: string };
 type SynologyChannelSendMediaContext = SynologyChannelOutboundContext & { mediaUrl: string };
-type SynologySecurityWarningContext = {
-  cfg: OpenClawConfig;
-  account: ResolvedSynologyChatAccount;
-};
-
 const synologyChatConfigAdapter = createHybridChannelConfigAdapter<ResolvedSynologyChatAccount>({
   sectionKey: CHANNEL_ID,
   listAccountIds,
@@ -163,6 +153,10 @@ const collectSynologyChatSecurityWarnings =
       account.dangerouslyAllowInheritedWebhookPath &&
       account.webhookPathSource === "inherited-base" &&
       "- Synology Chat: dangerouslyAllowInheritedWebhookPath=true opts a named account into a shared inherited webhook path. Prefer an explicit per-account webhookPath.",
+  );
+
+const collectSynologyChatCriticalFindings = createConditionalWarningCollector.findings({
+  collectWarnings: createConditionalWarningCollector<ResolvedSynologyChatAccount>(
     (account) =>
       account.dmPolicy === "open" &&
       account.allowedUserIds.length === 0 &&
@@ -175,12 +169,16 @@ const collectSynologyChatSecurityWarnings =
       account.dmPolicy === "allowlist" &&
       account.allowedUserIds.length === 0 &&
       '- Synology Chat: dmPolicy="allowlist" with empty allowedUserIds blocks all senders. Add users or set dmPolicy="open" with allowedUserIds=["*"].',
-  );
+  ),
+  checkId: "channels.synology-chat.dm.policy",
+  severity: "critical",
+  title: "Synology Chat security warning",
+});
 
 type SynologyChatOutboundResult = {
   channel: typeof CHANNEL_ID;
   messageId: string;
-  chatId: string;
+  target: { kind: "chat"; id: string };
   receipt: MessageReceipt;
 };
 
@@ -188,10 +186,8 @@ type SynologyChatPlugin = Omit<
   ChannelPlugin<ResolvedSynologyChatAccount>,
   "pairing" | "security" | "messaging" | "directory" | "outbound" | "gateway" | "agentPrompt"
 > & {
-  pairing: {
-    idLabel: string;
-    normalizeAllowEntry?: (entry: string) => string;
-    notifyApproval: (params: { cfg: OpenClawConfig; id: string }) => Promise<void>;
+  pairing: ChannelPlugin["pairing"] & {
+    notifyApproval: NonNullable<NonNullable<ChannelPlugin["pairing"]>["notifyApproval"]>;
   };
   security: {
     resolveDmPolicy: (params: { cfg: OpenClawConfig; account: ResolvedSynologyChatAccount }) => {
@@ -202,7 +198,7 @@ type SynologyChatPlugin = Omit<
     collectWarnings: (params: {
       cfg: OpenClawConfig;
       account: ResolvedSynologyChatAccount;
-    }) => string[];
+    }) => Array<string | ReturnType<typeof collectSynologyGatewayRoutingFindings>[number]>;
   };
   messaging: {
     targetPrefixes?: readonly string[];
@@ -242,15 +238,6 @@ type SynologyChatPlugin = Omit<
   };
 };
 
-const collectSynologyChatRoutingWarnings = projectAccountConfigWarningCollector<
-  ResolvedSynologyChatAccount,
-  OpenClawConfig,
-  SynologySecurityWarningContext
->(
-  (cfg) => cfg,
-  ({ account, cfg }) => collectSynologyGatewayRoutingWarnings({ account, cfg }),
-);
-
 function resolveOutboundAccount(
   cfg: OpenClawConfig,
   accountId?: string | null,
@@ -284,7 +271,7 @@ function createSynologyChatSendResult(params: {
     // The webhook acknowledges delivery without returning a platform message id.
     // Keep the empty receipt so a chat id cannot become a fabricated message id.
     messageId: "",
-    chatId: params.chatId,
+    target: { kind: "chat", id: params.chatId },
     receipt: createMessageReceiptFromOutboundResults({
       results: [],
       threadId: params.chatId,
@@ -535,23 +522,18 @@ function createSynologyChatPlugin(): SynologyChatPlugin {
         idLabel: "synologyChatUserId",
         message: "OpenClaw: your access has been approved.",
         normalizeAllowEntry: (entry: string) => normalizeLowercaseStringOrEmpty(entry),
-        notify: async ({ cfg, id, message }) => {
-          const account = resolveAccount(cfg);
-          if (!account.incomingUrl) {
-            return;
-          }
-          await sendMessage(account.incomingUrl, message, id, account.allowInsecureSsl);
+        notify: async (params) => {
+          await sendSynologyChatText({ ...params, to: params.id, text: params.message });
         },
       },
     },
     security: {
       resolveDmPolicy: resolveSynologyChatDmPolicy,
-      collectWarnings: composeWarningCollectors(
-        projectAccountWarningCollector<ResolvedSynologyChatAccount, SynologySecurityWarningContext>(
-          collectSynologyChatSecurityWarnings,
-        ),
-        collectSynologyChatRoutingWarnings,
-      ),
+      collectWarnings: ({ account, cfg }) => [
+        ...collectSynologyChatSecurityWarnings(account),
+        ...collectSynologyChatCriticalFindings(account),
+        ...collectSynologyGatewayRoutingFindings({ account, cfg }),
+      ],
       collectAuditFindings: collectSynologyChatSecurityAuditFindings,
     },
     outbound: {

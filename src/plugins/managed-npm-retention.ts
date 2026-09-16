@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { safePathSegmentHashed } from "../infra/install-safe-path.js";
+import { isPathInside } from "../infra/path-guards.js";
 import {
   isPluginNpmProjectDir,
   resolveDefaultPluginNpmDir,
@@ -65,22 +66,29 @@ export function hasRetainedManagedNpmInstallMarker(packageDir: string): boolean 
   return info ? fs.existsSync(info.markerPath) : false;
 }
 
-export async function clearRetainedManagedNpmInstallMarker(packageDir: string): Promise<boolean> {
+export async function clearRetainedManagedNpmInstallMarker(
+  packageDir: string,
+  assertCurrent?: () => void,
+): Promise<boolean> {
   const info = resolveRetainedManagedNpmInstallPackageInfo(packageDir);
   if (!info) {
     return false;
   }
+  assertCurrent?.();
   try {
     await fs.promises.rm(info.markerPath, { force: true });
   } catch (error) {
+    assertCurrent?.();
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return false;
     }
     throw error;
   }
+  assertCurrent?.();
   try {
     await fs.promises.rmdir(path.dirname(info.markerPath));
   } catch {
+    assertCurrent?.();
     // Best effort: keep the OpenClaw-owned marker directory if it is not empty.
   }
   return true;
@@ -91,6 +99,7 @@ export async function markRetainedManagedNpmInstall(params: {
   pluginId: string;
   retainedAt?: string;
   reason: string;
+  assertCurrent?: () => void;
 }): Promise<boolean> {
   const info = resolveRetainedManagedNpmInstallPackageInfo(params.packageDir);
   if (!info) {
@@ -108,7 +117,9 @@ export async function markRetainedManagedNpmInstall(params: {
   if (!stat.isDirectory()) {
     return false;
   }
+  params.assertCurrent?.();
   await fs.promises.mkdir(path.dirname(info.markerPath), { recursive: true });
+  params.assertCurrent?.();
   await fs.promises.writeFile(
     info.markerPath,
     `${JSON.stringify(
@@ -126,9 +137,22 @@ export async function markRetainedManagedNpmInstall(params: {
   return true;
 }
 
-function isPathEqualOrInside(parentPath: string, childPath: string): boolean {
-  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`));
+/** Restore markers only while the same index transaction still owns compensation. */
+export async function restoreRetainedManagedNpmInstallMarkers(params: {
+  clearedMarkerSnapshots: Array<{ markerPath: string; contents: string }>;
+  createdMarkerPaths: string[];
+  assertCurrent: () => void;
+}): Promise<void> {
+  for (const snapshot of params.clearedMarkerSnapshots) {
+    params.assertCurrent();
+    await fs.promises.mkdir(path.dirname(snapshot.markerPath), { recursive: true });
+    params.assertCurrent();
+    await fs.promises.writeFile(snapshot.markerPath, snapshot.contents, "utf8");
+  }
+  for (const markerPath of params.createdMarkerPaths) {
+    params.assertCurrent();
+    await fs.promises.rm(markerPath, { force: true });
+  }
 }
 
 function listManagedNpmPackageDirs(npmRoot: string): string[] {
@@ -185,7 +209,7 @@ async function cleanupRetainedLegacyNpmPackages(params: {
     if (
       !hasRetainedManagedNpmInstallMarker(packageDir) ||
       markerPreservesPackageFiles(resolveRetainedManagedNpmInstallMarkerPath(packageDir)) ||
-      params.activeInstallPaths.some((installPath) => isPathEqualOrInside(packageDir, installPath))
+      params.activeInstallPaths.some((installPath) => isPathInside(packageDir, installPath))
     ) {
       continue;
     }
@@ -243,13 +267,13 @@ export async function cleanupRetainedManagedNpmInstallGenerations(
       markerEntries.some((entry) =>
         markerPreservesPackageFiles(path.join(markerDir, entry.name)),
       ) ||
-      !isPathEqualOrInside(projectsDir, projectRoot) ||
+      !isPathInside(projectsDir, projectRoot) ||
       !isOwnedManagedNpmProject({
         markerNames: new Set(markerEntries.map((entry) => entry.name)),
         npmDir,
         projectRoot,
       }) ||
-      activeInstallPaths.some((installPath) => isPathEqualOrInside(projectRoot, installPath))
+      activeInstallPaths.some((installPath) => isPathInside(projectRoot, installPath))
     ) {
       continue;
     }

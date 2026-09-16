@@ -14,18 +14,22 @@ import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import { getTerminalTableWidth, renderTable } from "../../packages/terminal-core/src/table.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { buildGatewayConnectionDetails, formatGatewayTransportErrorJson } from "../gateway/call.js";
-import {
-  ADMIN_SCOPE,
-  PAIRING_SCOPE,
-  READ_SCOPE,
-  type OperatorScope,
-} from "../gateway/method-scopes.js";
+import type {
+  DevicePairingList as GatewayDevicePairingList,
+  DeviceTokenSummary,
+  PairedDevice,
+  PendingDevice,
+} from "../gateway/device-pairing-list.types.js";
+import { ADMIN_SCOPE, PAIRING_SCOPE, type OperatorScope } from "../gateway/method-scopes.js";
 import { isLoopbackHost } from "../gateway/net.js";
+import { isOperatorScope } from "../gateway/operator-scopes.js";
 import {
   approveDevicePairing,
   formatDevicePairingForbiddenMessage,
+} from "../infra/device-pairing-approval.js";
+import { summarizeDeviceTokens } from "../infra/device-pairing-tokens.js";
+import {
   listDevicePairing,
-  summarizeDeviceTokens,
   type PairedDevice as InfraPairedDevice,
 } from "../infra/device-pairing.js";
 import { formatTimeAgo } from "../infra/format-time/format-relative.ts";
@@ -36,10 +40,10 @@ import {
   type DevicePairingAccessSummary,
   type PendingDeviceApprovalKind,
 } from "../shared/device-pairing-access.js";
-import { parseNodeList } from "../shared/node-list-parse.js";
-import type { NodeListNode } from "../shared/node-list-types.js";
 import { formatCliCommand } from "./command-format.js";
 import { callGatewayFromCliWithTransport } from "./gateway-rpc.js";
+import { formatConnectionFlagReminder } from "./nodes-cli/cli-utils.js";
+import { formatPairingApproveCommand } from "./pairing-command-format.js";
 import { quoteCliArg } from "./quote-cli-arg.js";
 
 type DevicesRpcOpts = {
@@ -54,57 +58,21 @@ type DevicesRpcOpts = {
   device?: string;
   role?: string;
   scope?: string[];
+  scopes?: boolean;
   name?: string;
 };
 
-type DeviceTokenSummary = {
-  role: string;
-  scopes?: string[];
-  revokedAtMs?: number;
-};
-
-type PendingDevice = {
-  requestId: string;
-  deviceId: string;
-  publicKey?: string;
-  displayName?: string;
-  clientId?: string;
-  clientMode?: string;
-  role?: string;
-  roles?: string[];
-  scopes?: string[];
-  remoteIp?: string;
-  isRepair?: boolean;
-  ts?: number;
-};
-
-type PairedDevice = {
-  deviceId: string;
-  publicKey?: string;
-  displayName?: string;
-  operatorLabel?: string;
-  clientId?: string;
-  role?: string;
-  roles?: string[];
-  scopes?: string[];
-  remoteIp?: string;
-  tokens?: DeviceTokenSummary[];
-  createdAtMs?: number;
-  approvedAtMs?: number;
-};
-
-type DevicePairingList = {
-  pending?: PendingDevice[];
-  paired?: PairedDevice[];
-};
+type DevicePairingList = Partial<GatewayDevicePairingList>;
 
 type ApprovePairingGatewayContext = {
   originalRequest: PendingDevice | null;
+  pairingList: DevicePairingList | null;
   scopes?: OperatorScope[];
 };
 
 type PendingNodeApprovalNotice = {
-  node: NodeListNode;
+  action: "approval" | "reapproval";
+  label: string;
   command: string;
   connectionReminder: string | null;
 };
@@ -115,13 +83,6 @@ const FALLBACK_STATE_MISMATCH_MESSAGE =
   "Gateway requires device pairing, but local fallback pairing state does not contain the gateway request.";
 const OPERATOR_ROLE = "operator";
 const OPERATOR_SCOPE_PREFIX = "operator.";
-const KNOWN_NON_ADMIN_OPERATOR_SCOPES = new Set<OperatorScope>([
-  "operator.approvals",
-  "operator.pairing",
-  "operator.read",
-  "operator.talk.secrets",
-  "operator.write",
-]);
 
 const callGatewayCli = async (
   method: string,
@@ -133,52 +94,8 @@ const callGatewayCli = async (
     label: `Devices ${method}`,
     defaultTimeoutMs: DEFAULT_DEVICES_TIMEOUT_MS,
     scopes: callOpts?.scopes,
+    sharedStateMode: "read-only",
   });
-
-function isPendingNodeApprovalState(
-  state: unknown,
-): state is "pending-approval" | "pending-reapproval" {
-  return state === "pending-approval" || state === "pending-reapproval";
-}
-
-function buildNodeApproveCommand(opts: DevicesRpcOpts, requestId: string): string {
-  const args = ["openclaw", "nodes", "approve", requestId];
-  const timeout = normalizeOptionalString(opts.timeout);
-  if (timeout && timeout !== String(DEFAULT_DEVICES_TIMEOUT_MS)) {
-    args.push("--timeout", timeout);
-  }
-  return formatCliCommand(args.map(quoteCliArg).join(" "));
-}
-
-function formatNodeConnectionFlagReminder(opts: DevicesRpcOpts): string | null {
-  const flags = [
-    normalizeOptionalString(opts.url) ? "--url" : null,
-    normalizeOptionalString(opts.token) ? "--token" : null,
-  ].filter((flag) => flag !== null);
-  return flags.length > 0
-    ? `Reuse the same connection option${flags.length === 1 ? "" : "s"} when rerunning: ${flags.join(", ")}.`
-    : null;
-}
-
-async function tryReadPendingNodeApprovals(opts: DevicesRpcOpts): Promise<NodeListNode[]> {
-  try {
-    return parseNodeList(
-      await callGatewayCli("node.list", opts, {}, { scopes: [READ_SCOPE, PAIRING_SCOPE] }),
-    ).filter(
-      (node) =>
-        isPendingNodeApprovalState(node.approvalState) &&
-        Boolean(normalizeOptionalString(node.pendingRequestId)),
-    );
-  } catch {
-    return [];
-  }
-}
-
-function pairedDeviceCanBeNode(device: PairedDevice): boolean {
-  return [device.role, ...(device.roles ?? [])].some(
-    (role) => normalizeOptionalString(role) === "node",
-  );
-}
 
 function stringsMatch(left: unknown, right: unknown): boolean {
   const normalizedLeft = normalizeOptionalString(left);
@@ -186,94 +103,68 @@ function stringsMatch(left: unknown, right: unknown): boolean {
   return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
-function nodeMatchesPairedDevice(node: NodeListNode, device: PairedDevice): boolean {
-  return stringsMatch(node.nodeId, device.deviceId) || stringsMatch(node.remoteIp, device.remoteIp);
-}
-
-function nodeMatchesQuery(node: NodeListNode, query: string): boolean {
+function pairedDeviceMatchesNodeApprovalQuery(device: PairedDevice, query: string): boolean {
   return (
-    stringsMatch(node.nodeId, query) ||
-    stringsMatch(node.remoteIp, query) ||
-    stringsMatch(node.pendingRequestId, query)
+    stringsMatch(device.deviceId, query) ||
+    stringsMatch(device.remoteIp, query) ||
+    stringsMatch(device.pendingNodeSurface?.requestId, query) ||
+    stringsMatch(device.pendingNodeSurface?.remoteIp, query)
   );
 }
 
-function pairedDeviceMatchesQuery(device: PairedDevice, query: string): boolean {
-  return stringsMatch(device.deviceId, query) || stringsMatch(device.remoteIp, query);
-}
-
-async function tryReadGatewayPairingList(opts: DevicesRpcOpts): Promise<DevicePairingList | null> {
-  try {
-    return parseDevicePairingList(
-      await callGatewayCli("device.pair.list", opts, {}, { scopes: [PAIRING_SCOPE] }),
-    );
-  } catch {
+function buildPendingNodeApprovalNotice(
+  device: PairedDevice,
+  opts: DevicesRpcOpts,
+): PendingNodeApprovalNotice | null {
+  const pending = device.pendingNodeSurface;
+  const requestId = normalizeOptionalString(pending?.requestId);
+  if (!pending || !requestId) {
     return null;
   }
-}
-
-function buildPendingNodeApprovalNoticesForOpts(
-  nodes: NodeListNode[],
-  opts: DevicesRpcOpts,
-): PendingNodeApprovalNotice[] {
-  return nodes.flatMap((node) => {
-    const requestId = normalizeOptionalString(node.pendingRequestId);
-    return requestId
-      ? [
-          {
-            node,
-            command: buildNodeApproveCommand(opts, requestId),
-            connectionReminder: formatNodeConnectionFlagReminder(opts),
-          },
-        ]
-      : [];
-  });
+  return {
+    action: device.nodeSurface ? "reapproval" : "approval",
+    label:
+      normalizeOptionalString(device.operatorLabel) ??
+      normalizeOptionalString(pending.displayName) ??
+      normalizeOptionalString(device.nodeSurface?.displayName) ??
+      normalizeOptionalString(device.displayName) ??
+      device.deviceId,
+    command: formatPairingApproveCommand("nodes", requestId, { timeout: opts.timeout }),
+    connectionReminder: formatConnectionFlagReminder(opts),
+  };
 }
 
 function formatNodeApprovalNotice(notice: PendingNodeApprovalNotice): string {
-  const action = notice.node.approvalState === "pending-reapproval" ? "reapproval" : "approval";
-  const label = sanitizeForLog(
-    normalizeOptionalString(notice.node.displayName) ?? notice.node.nodeId,
-  );
-  const lines = [`Node ${action} pending for ${label}. Run ${sanitizeForLog(notice.command)}`];
+  const lines = [
+    `Node ${notice.action} pending for ${sanitizeForLog(notice.label)}. Run ${sanitizeForLog(notice.command)}`,
+  ];
   if (notice.connectionReminder) {
     lines.push(notice.connectionReminder);
   }
   return lines.join("\n");
 }
 
-async function findPairedDevicePendingNodeApprovalNotices(
+function findPairedDevicePendingNodeApprovalNotices(
   opts: DevicesRpcOpts,
   paired: PairedDevice[] | undefined,
-): Promise<PendingNodeApprovalNotice[]> {
-  const nodeDevices = (paired ?? []).filter(pairedDeviceCanBeNode);
-  if (nodeDevices.length === 0) {
-    return [];
-  }
-  const nodes = await tryReadPendingNodeApprovals(opts);
-  return buildPendingNodeApprovalNoticesForOpts(
-    nodes.filter((node) => nodeDevices.some((device) => nodeMatchesPairedDevice(node, device))),
-    opts,
-  );
+): PendingNodeApprovalNotice[] {
+  return (paired ?? []).flatMap((device) => {
+    const notice = buildPendingNodeApprovalNotice(device, opts);
+    return notice ? [notice] : [];
+  });
 }
 
-async function findQueryPendingNodeApprovalNotices(
+function findQueryPendingNodeApprovalNotices(
   opts: DevicesRpcOpts,
+  paired: PairedDevice[] | undefined,
   query: string,
-): Promise<PendingNodeApprovalNotice[]> {
-  const nodes = await tryReadPendingNodeApprovals(opts);
-  const directMatches = nodes.filter((node) => nodeMatchesQuery(node, query));
-  if (directMatches.length > 0) {
-    return buildPendingNodeApprovalNoticesForOpts(directMatches, opts);
-  }
-  const pairingList = await tryReadGatewayPairingList(opts);
-  const pairedMatches = (pairingList?.paired ?? []).filter((device) =>
-    pairedDeviceMatchesQuery(device, query),
-  );
-  return buildPendingNodeApprovalNoticesForOpts(
-    nodes.filter((node) => pairedMatches.some((device) => nodeMatchesPairedDevice(node, device))),
-    opts,
-  );
+): PendingNodeApprovalNotice[] {
+  return (paired ?? [])
+    .filter((device) => pairedDeviceMatchesNodeApprovalQuery(device, query))
+    .flatMap((device) => {
+      const notice = buildPendingNodeApprovalNotice(device, opts);
+      return notice ? [notice] : [];
+    });
 }
 
 function isDevicePairingApprovalDenied(error: unknown): boolean {
@@ -341,16 +232,16 @@ function buildFallbackStateMismatchError(
   // each rejected connect re-mints the request, so the held id is stale rather
   // than foreign. Only an empty list suggests a genuinely different store, and
   // shared-auth flags are only a fix when the gateway actually uses shared auth.
-  const guidance =
-    pendingRequestIds.length > 0
-      ? [
-          "That request was superseded by a newer pending request.",
-          `Approve the current request instead: openclaw devices approve ${pendingRequestIds[0]}`,
-        ]
-      : [
-          "The running gateway may be using a different OPENCLAW_PROFILE or OPENCLAW_STATE_DIR than this CLI.",
-          "Rerun with the gateway's profile/state-dir; if the gateway uses shared auth, pass --token/--password to approve through it.",
-        ];
+  const currentRequestId = pendingRequestIds[0];
+  const guidance = currentRequestId
+    ? [
+        "That request was superseded by a newer pending request.",
+        `Approve the current request instead: ${formatPairingApproveCommand("devices", currentRequestId)}`,
+      ]
+    : [
+        "The running gateway may be using a different OPENCLAW_PROFILE or OPENCLAW_STATE_DIR than this CLI.",
+        "Rerun with the gateway's profile/state-dir; if the gateway uses shared auth, pass --token/--password to approve through it.",
+      ];
   return new Error([heading, ...guidance].join("\n"));
 }
 
@@ -404,8 +295,9 @@ async function listPairingWithFallback(opts: DevicesRpcOpts): Promise<DevicePair
 async function approvePairingWithFallback(
   opts: DevicesRpcOpts,
   requestId: string,
+  context: ApprovePairingGatewayContext,
 ): Promise<Record<string, unknown> | null> {
-  const { scopes, originalRequest } = await resolveApprovePairingGatewayContext(opts, requestId);
+  const { scopes, originalRequest } = context;
   try {
     return await callGatewayCli(
       "device.pair.approve",
@@ -443,6 +335,7 @@ async function approvePairingWithFallback(
         pending: local.pending as PendingDevice[],
         paired: local.paired.map((device) => redactLocalPairedDevice(device)),
       };
+      context.pairingList = localList;
       const replacement = findSameDeviceReplacementRequest({
         originalRequest,
         originalRequestId: requestId,
@@ -677,29 +570,41 @@ function resolvePendingOperatorApprovalScopes(
   return requestedScopes.length > 0 ? requestedScopes : resolvePairedOperatorScopes(paired);
 }
 
-function isKnownNonAdminOperatorScope(scope: string): scope is OperatorScope {
-  return KNOWN_NON_ADMIN_OPERATOR_SCOPES.has(scope as OperatorScope);
-}
-
-function resolveApprovePairingScopesForRequest(
-  request: PendingDevice,
-  paired: PairedDevice | undefined,
-): OperatorScope[] | undefined {
-  const operatorScopes = resolvePendingOperatorApprovalScopes(request, paired);
+function resolvePairingCallScopes(operatorScopes: string[]): OperatorScope[] | undefined {
   if (operatorScopes.length === 0) {
     return undefined;
   }
-  if (operatorScopes.includes(ADMIN_SCOPE)) {
-    return [ADMIN_SCOPE];
-  }
   const out = new Set<OperatorScope>([PAIRING_SCOPE]);
   for (const scope of operatorScopes) {
-    if (!isKnownNonAdminOperatorScope(scope)) {
+    if (scope === ADMIN_SCOPE || !isOperatorScope(scope)) {
       return [ADMIN_SCOPE];
     }
     out.add(scope);
   }
   return [...out];
+}
+
+async function resolveTokenManagementScopes(
+  opts: DevicesRpcOpts,
+  target: { deviceId: string; role: string },
+  requestedScopes?: string[],
+): Promise<OperatorScope[] | undefined> {
+  if (target.role !== OPERATOR_ROLE) {
+    return [ADMIN_SCOPE];
+  }
+  const list = parseDevicePairingList(await callGatewayCli("device.pair.list", opts, {}));
+  const paired = list.paired?.find((device) => device.deviceId === target.deviceId);
+  if (!paired) {
+    // Pairing-scoped device-token lists expose only self; a hidden target needs
+    // cross-device admin authority. The server still validates existence and access.
+    return [ADMIN_SCOPE];
+  }
+  // Revoked tokens retain their scopes too. The approved device baseline is
+  // only a ceiling, never a replacement for a narrowed token's scopes.
+  const token = paired.tokens?.find((entry) => entry.role === target.role);
+  return resolvePairingCallScopes(
+    normalizeOperatorScopes(requestedScopes ?? token?.scopes ?? paired.scopes),
+  );
 }
 
 async function resolveApprovePairingGatewayContext(
@@ -710,17 +615,20 @@ async function resolveApprovePairingGatewayContext(
     const list = await listPairingWithFallback(opts);
     const request = findPendingRequestById(list.pending, requestId);
     if (!request) {
-      return { originalRequest: null, scopes: undefined };
+      return { originalRequest: null, pairingList: list, scopes: undefined };
     }
     return {
       originalRequest: request,
-      scopes: resolveApprovePairingScopesForRequest(
-        request,
-        lookupPairedDevice(indexPairedDevices(list.paired), request),
+      pairingList: list,
+      scopes: resolvePairingCallScopes(
+        resolvePendingOperatorApprovalScopes(
+          request,
+          lookupPairedDevice(indexPairedDevices(list.paired), request),
+        ),
       ),
     };
   } catch {
-    return { originalRequest: null, scopes: undefined };
+    return { originalRequest: null, pairingList: null, scopes: undefined };
   }
 }
 
@@ -811,22 +719,6 @@ function lookupPairedDevice(
     return undefined;
   }
   return paired;
-}
-
-function buildExplicitApproveCommand(opts: DevicesRpcOpts, requestId: string): string {
-  const args = ["openclaw", "devices", "approve", requestId];
-  const url = normalizeOptionalString(opts.url);
-  if (url) {
-    args.push("--url", url);
-  }
-  const timeout = normalizeOptionalString(opts.timeout);
-  if (timeout && timeout !== String(DEFAULT_DEVICES_TIMEOUT_MS)) {
-    args.push("--timeout", timeout);
-  }
-  if (opts.json === true) {
-    args.push("--json");
-  }
-  return args.map(quoteCliArg).join(" ");
 }
 
 function formatAuthFlagReminder(opts: DevicesRpcOpts): string {
@@ -948,7 +840,7 @@ export async function runDevicesListCommand(opts: DevicesRpcOpts): Promise<void>
     for (const row of rows) {
       defaultRuntime.log(`  ${row["Device ID"]}  ${row.Device}`);
     }
-    const nodeApprovalNotices = await findPairedDevicePendingNodeApprovalNotices(opts, list.paired);
+    const nodeApprovalNotices = findPairedDevicePendingNodeApprovalNotices(opts, list.paired);
     for (const notice of nodeApprovalNotices) {
       defaultRuntime.log(theme.warn(formatNodeApprovalNotice(notice)));
     }
@@ -1074,7 +966,7 @@ export async function runDevicesApproveCommand(
       req,
       lookupPairedDevice(indexPairedDevices(pairingList?.paired), req),
     );
-    const approveCommand = buildExplicitApproveCommand(opts, req.requestId);
+    const approveCommand = formatPairingApproveCommand("devices", req.requestId, opts);
     const authReminder = formatAuthFlagReminder(opts);
     if (opts.json) {
       defaultRuntime.writeJson({
@@ -1132,8 +1024,9 @@ export async function runDevicesApproveCommand(
     return;
   }
   let result: Record<string, unknown> | null;
+  const approvalContext = await resolveApprovePairingGatewayContext(opts, resolvedRequestId);
   try {
-    result = await approvePairingWithFallback(opts, resolvedRequestId);
+    result = await approvePairingWithFallback(opts, resolvedRequestId, approvalContext);
   } catch (error) {
     if (isScopeUpgradePendingApproval(error)) {
       defaultRuntime.error(
@@ -1148,7 +1041,11 @@ export async function runDevicesApproveCommand(
     defaultRuntime.error(
       `No pending device request matches ${sanitizeForLog(resolvedRequestId)}. Run ${formatCliCommand("openclaw devices list")} and retry with the current request ID.`,
     );
-    const nodeApprovalNotices = await findQueryPendingNodeApprovalNotices(opts, resolvedRequestId);
+    const nodeApprovalNotices = findQueryPendingNodeApprovalNotices(
+      opts,
+      approvalContext.pairingList?.paired,
+      resolvedRequestId,
+    );
     for (const notice of nodeApprovalNotices) {
       defaultRuntime.error(formatNodeApprovalNotice(notice));
     }
@@ -1218,11 +1115,9 @@ export async function runDevicesRotateCommand(opts: DevicesRpcOpts): Promise<voi
   if (!required) {
     return;
   }
-  const result = await callGatewayCli("device.token.rotate", opts, {
-    deviceId: required.deviceId,
-    role: required.role,
-    scopes: Array.isArray(opts.scope) ? opts.scope : undefined,
-  });
+  const params = { ...required, scopes: opts.scopes === false ? [] : opts.scope };
+  const scopes = await resolveTokenManagementScopes(opts, required, params.scopes);
+  const result = await callGatewayCli("device.token.rotate", opts, params, { scopes });
   defaultRuntime.writeJson(result);
 }
 
@@ -1231,10 +1126,8 @@ export async function runDevicesRevokeCommand(opts: DevicesRpcOpts): Promise<voi
   if (!required) {
     return;
   }
-  const result = await callGatewayCli("device.token.revoke", opts, {
-    deviceId: required.deviceId,
-    role: required.role,
-  });
+  const scopes = await resolveTokenManagementScopes(opts, required);
+  const result = await callGatewayCli("device.token.revoke", opts, required, { scopes });
   defaultRuntime.writeJson(result);
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

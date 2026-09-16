@@ -10,6 +10,7 @@ export {
   discordQaCanaryScenario,
   discordQaMentionGatingScenario,
   discordQaNativeHelpCommandRegistrationScenario,
+  discordQaProgressDraftLifecycleScenario,
   discordQaStatusReactionsToolOnlyScenario,
   discordQaThreadReplyFilepathAttachmentScenario,
   discordQaVoiceAutojoinScenario,
@@ -71,6 +72,91 @@ export async function runDiscordScenario(
     }
     return { details: result.details, artifacts: result.artifactPaths };
   }
+  if (run.kind === "progress-draft-lifecycle") {
+    const deadline = Date.now() + scenario.timeoutMs;
+    const remainingMs = () => Math.max(1, deadline - Date.now());
+    const observeProgressTurn = async (input: string, finalText: string) => {
+      const sent = await discordQaScenarioSupport.testing.sendChannelMessage(
+        environment.runtimeEnv.driverBotToken,
+        environment.runtimeEnv.channelId,
+        input,
+      );
+      const draft = await discordQaScenarioSupport.testing.pollChannelMessages({
+        token: environment.runtimeEnv.driverBotToken,
+        channelId: environment.runtimeEnv.channelId,
+        afterSnowflake: sent.id,
+        timeoutMs: remainingMs(),
+        observedMessages: environment.observedMessages,
+        observationScenarioId: scenario.id,
+        observationScenarioTitle: scenario.title,
+        triggerMessageId: sent.id,
+        triggerTimestamp: sent.timestamp,
+        predicate: (message) =>
+          message.senderId === environment.sutIdentity.id &&
+          message.text.includes(run.progressLabel) &&
+          message.text.includes("🛠️ Exec"),
+      });
+      await discordQaScenarioSupport.testing.waitForDiscordMessageText({
+        token: environment.runtimeEnv.driverBotToken,
+        channelId: environment.runtimeEnv.channelId,
+        messageId: draft.message.messageId,
+        textIncludes: [run.progressLabel, "🛠️ Exec"],
+        timeoutMs: remainingMs(),
+      });
+      const final = await discordQaScenarioSupport.testing.pollChannelMessages({
+        token: environment.runtimeEnv.driverBotToken,
+        channelId: environment.runtimeEnv.channelId,
+        afterSnowflake: draft.message.messageId,
+        timeoutMs: remainingMs(),
+        observedMessages: environment.observedMessages,
+        observationScenarioId: scenario.id,
+        observationScenarioTitle: scenario.title,
+        triggerMessageId: sent.id,
+        triggerTimestamp: sent.timestamp,
+        predicate: (message) =>
+          message.senderId === environment.sutIdentity.id && message.text.includes(finalText),
+      });
+      discordQaScenarioSupport.testing.assertDiscordScenarioReply({
+        expectedTextIncludes: [finalText],
+        message: final.message,
+      });
+      return { draft, final };
+    };
+
+    const success = await observeProgressTurn(run.input, run.finalMarker);
+    const forbiddenReceipt = [
+      /(?:^|\n)-#(?:\s|$)/u,
+      /🛠️\s*\d+\s+tool calls?/iu,
+      /⏱️\s*\d+(?:\.\d+)?s\b/u,
+    ].find((pattern) => pattern.test(success.final.message.text));
+    if (forbiddenReceipt) {
+      throw new Error(
+        `Discord final reply retained synthesized activity receipt ${forbiddenReceipt}`,
+      );
+    }
+    await discordQaScenarioSupport.testing.waitForDiscordMessageDeleted({
+      token: environment.runtimeEnv.driverBotToken,
+      channelId: environment.runtimeEnv.channelId,
+      messageId: success.draft.message.messageId,
+      timeoutMs: remainingMs(),
+    });
+
+    const failed = await observeProgressTurn(run.errorInput, run.errorFinalText);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 1_500);
+    });
+    await discordQaScenarioSupport.testing.waitForDiscordMessageText({
+      token: environment.runtimeEnv.driverBotToken,
+      channelId: environment.runtimeEnv.channelId,
+      messageId: failed.draft.message.messageId,
+      textIncludes: [run.progressLabel, "🛠️ Exec"],
+      timeoutMs: remainingMs(),
+    });
+    return {
+      details:
+        "success draft deleted after receipt-free final; error final landed with draft retained",
+    };
+  }
   const sent = await discordQaScenarioSupport.testing.sendChannelMessage(
     environment.runtimeEnv.driverBotToken,
     environment.runtimeEnv.channelId,
@@ -101,12 +187,15 @@ export async function runDiscordScenario(
       artifacts: evidence,
     };
   }
+  const replyTimeoutMs = run.expectReply
+    ? scenario.timeoutMs
+    : Math.max(1, Math.min(5_000, scenario.timeoutMs - 3_000));
   try {
     const matched = await discordQaScenarioSupport.testing.pollChannelMessages({
       token: environment.runtimeEnv.driverBotToken,
       channelId: environment.runtimeEnv.channelId,
       afterSnowflake: sent.id,
-      timeoutMs: scenario.timeoutMs,
+      timeoutMs: replyTimeoutMs,
       observedMessages: environment.observedMessages,
       observationScenarioId: scenario.id,
       observationScenarioTitle: scenario.title,
@@ -127,12 +216,33 @@ export async function runDiscordScenario(
       expectedTextIncludes: run.expectedTextIncludes,
       message: matched.message,
     });
-    return { details: "reply matched" };
+    const requestStartedAt = sent.timestamp;
+    const responseObservedAt = matched.message.timestamp;
+    const rttMs = discordQaScenarioSupport.testing.computeDiscordRttMs(
+      requestStartedAt,
+      responseObservedAt,
+    );
+    return {
+      details: "reply matched",
+      ...(requestStartedAt === undefined ? {} : { requestStartedAt }),
+      ...(responseObservedAt === undefined ? {} : { responseObservedAt }),
+      ...(rttMs === undefined || requestStartedAt === undefined || responseObservedAt === undefined
+        ? {}
+        : {
+            rttMs,
+            rttMeasurement: {
+              finalMatchedReplyRttMs: rttMs,
+              requestStartedAt,
+              responseObservedAt,
+              source: "request-to-observed-message" as const,
+            },
+          }),
+    };
   } catch (error) {
     if (
       !run.expectReply &&
       formatErrorMessage(error) ===
-        `timed out after ${scenario.timeoutMs}ms waiting for Discord message`
+        `timed out after ${replyTimeoutMs}ms waiting for Discord message`
     ) {
       return { details: "no reply" };
     }

@@ -99,7 +99,10 @@ export type PluginControlUiDescriptor = {
   surface: "session" | "tool" | "run" | "settings" | "tab" | "widget";
   label: string;
   description?: string;
+  /** Bundled plugins may claim their matching native route as `route:<pluginId>`. */
   placement?: string;
+  /** Optional single-segment Control UI address for a tab; does not register an HTTP route. */
+  slug?: string;
   schema?: PluginJsonValue;
   requiredScopes?: OperatorScope[];
   /** Icon name hint for tab descriptors; unknown names fall back to a generic icon. */
@@ -154,6 +157,11 @@ export type PluginSessionActionRegistration = {
 export type PluginRuntimeLifecycleRegistration = {
   id: string;
   description?: string;
+  /**
+   * Releases this registration's resources after an owned inspection or ephemeral prepared runtime.
+   * Raw loaders do not invoke this callback. Host cleanup notifications stay separate.
+   */
+  dispose?: () => void | Promise<void>;
   cleanup?: (ctx: {
     reason: PluginHostCleanupReason;
     sessionKey?: string;

@@ -302,6 +302,9 @@ export class NewSessionPage extends OpenClawLightDomElement {
     const resolvedAgentId = this.data?.agentId ?? "";
     const groupDefaults = catalog.groupDefaultsKey(this.data);
     if (this.openedFor !== openKey) {
+      if (this.openedFor !== null) {
+        retainDraft(this.context, this.submission, this.openedFor, this.messageOwnerKey);
+      }
       const ownedMessage = this.messageOwnerKey === openKey ? this.submission.message : "";
       const ownedMentions = this.messageOwnerKey === openKey ? this.submission.mentions : undefined;
       this.openedFor = openKey;

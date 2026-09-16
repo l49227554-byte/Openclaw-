@@ -2214,10 +2214,10 @@ describe("plugins cli install", () => {
 
     await runCapabilityAcceptedPluginsInstallCommand(["plugins", "install", "telnyx"]);
 
-    expect(npmInstallCall().spec).toBe("@telnyx/openclaw-provider@0.1.0");
+    expect(npmInstallCall().spec).toBe("@telnyx/openclaw-provider@0.2.0");
     expect(npmInstallCall().expectedPluginId).toBe("telnyx");
     expect(npmInstallCall().expectedIntegrity).toBe(
-      "sha512-NzIsRFvl/o0KlvOy+OzlXLfYSr6JYAhoaW4uQL2Obj817TXjG0rgguYsewVr7YvdNCukgS1mEK9OJVfYK8N1iQ==",
+      "sha512-htqOJfPx+TlLWE/nmpdJJVgrg8zDqRIX87smzY3CnKcdJPlx51Rc1kWzarvE+2hvhpm2lzD5sKkxRSIWKz2AaA==",
     );
     expect(npmInstallCall().trustedSourceLinkedOfficialInstall).toBe(true);
     expect(installPluginFromClawHubMock).not.toHaveBeenCalled();

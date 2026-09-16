@@ -571,12 +571,11 @@ describe("provider install catalog", () => {
             },
           ],
           install: {
-            clawhubSpec: "clawhub:@team-telnyx/openclaw-provider@0.1.0",
-            npmSpec: "@telnyx/openclaw-provider@0.1.0",
+            npmSpec: "@telnyx/openclaw-provider@0.2.0",
             defaultChoice: "npm",
             expectedIntegrity:
-              "sha512-NzIsRFvl/o0KlvOy+OzlXLfYSr6JYAhoaW4uQL2Obj817TXjG0rgguYsewVr7YvdNCukgS1mEK9OJVfYK8N1iQ==",
-            minHostVersion: ">=2026.7.2-beta.7",
+              "sha512-htqOJfPx+TlLWE/nmpdJJVgrg8zDqRIX87smzY3CnKcdJPlx51Rc1kWzarvE+2hvhpm2lzD5sKkxRSIWKz2AaA==",
+            minHostVersion: ">=2026.8.1",
           },
         },
       },
@@ -600,29 +599,22 @@ describe("provider install catalog", () => {
       label: "Telnyx",
       origin: "bundled",
       install: {
-        clawhubSpec: "clawhub:@team-telnyx/openclaw-provider@0.1.0",
-        npmSpec: "@telnyx/openclaw-provider@0.1.0",
+        npmSpec: "@telnyx/openclaw-provider@0.2.0",
         defaultChoice: "npm",
         expectedIntegrity:
-          "sha512-NzIsRFvl/o0KlvOy+OzlXLfYSr6JYAhoaW4uQL2Obj817TXjG0rgguYsewVr7YvdNCukgS1mEK9OJVfYK8N1iQ==",
-        minHostVersion: ">=2026.7.2-beta.7",
+          "sha512-htqOJfPx+TlLWE/nmpdJJVgrg8zDqRIX87smzY3CnKcdJPlx51Rc1kWzarvE+2hvhpm2lzD5sKkxRSIWKz2AaA==",
+        minHostVersion: ">=2026.8.1",
       },
       installSource: {
         defaultChoice: "npm",
-        clawhub: {
-          spec: "clawhub:@team-telnyx/openclaw-provider@0.1.0",
-          packageName: "@team-telnyx/openclaw-provider",
-          version: "0.1.0",
-          exactVersion: true,
-        },
         npm: {
-          spec: "@telnyx/openclaw-provider@0.1.0",
+          spec: "@telnyx/openclaw-provider@0.2.0",
           packageName: "@telnyx/openclaw-provider",
-          selector: "0.1.0",
+          selector: "0.2.0",
           selectorKind: "exact-version",
           exactVersion: true,
           expectedIntegrity:
-            "sha512-NzIsRFvl/o0KlvOy+OzlXLfYSr6JYAhoaW4uQL2Obj817TXjG0rgguYsewVr7YvdNCukgS1mEK9OJVfYK8N1iQ==",
+            "sha512-htqOJfPx+TlLWE/nmpdJJVgrg8zDqRIX87smzY3CnKcdJPlx51Rc1kWzarvE+2hvhpm2lzD5sKkxRSIWKz2AaA==",
           pinState: "exact-with-integrity",
         },
         warnings: [],

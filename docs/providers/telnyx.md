@@ -21,16 +21,12 @@ read_when:
 
 ## Requirements
 
-The catalog pin for `@telnyx/openclaw-provider@0.1.0` declares OpenClaw `2026.7.2-beta.7` as its minimum host. Upgrade OpenClaw before installing the plugin:
+The catalog pin for `@telnyx/openclaw-provider@0.2.0` requires OpenClaw `2026.8.1` or newer. Upgrade OpenClaw before installing the plugin:
 
 ```bash
 openclaw update
 openclaw --version
 ```
-
-<Warning>
-The currently published `0.1.0` plugin was built against an older provider-catalog SDK and does not load on current OpenClaw releases. Wait for Telnyx to publish a compatible release and for this catalog pin to be updated before using the install steps below.
-</Warning>
 
 ## Install plugin
 

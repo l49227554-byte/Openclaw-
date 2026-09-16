@@ -2129,12 +2129,11 @@ describe("official external plugin catalog", () => {
       },
     });
     expect(resolveOfficialExternalPluginInstall(entry)).toEqual({
-      clawhubSpec: "clawhub:@team-telnyx/openclaw-provider@0.1.0",
-      npmSpec: "@telnyx/openclaw-provider@0.1.0",
+      npmSpec: "@telnyx/openclaw-provider@0.2.0",
       defaultChoice: "npm",
       expectedIntegrity:
-        "sha512-NzIsRFvl/o0KlvOy+OzlXLfYSr6JYAhoaW4uQL2Obj817TXjG0rgguYsewVr7YvdNCukgS1mEK9OJVfYK8N1iQ==",
-      minHostVersion: ">=2026.7.2-beta.7",
+        "sha512-htqOJfPx+TlLWE/nmpdJJVgrg8zDqRIX87smzY3CnKcdJPlx51Rc1kWzarvE+2hvhpm2lzD5sKkxRSIWKz2AaA==",
+      minHostVersion: ">=2026.8.1",
     });
   });
 

@@ -161,8 +161,12 @@ describe.skipIf(process.platform === "win32")("systemd budgets across a wall-clo
       busctl.mockImplementation(async (serviceEnv) =>
         unitNotFound(serviceEnv.OPENCLAW_SYSTEMD_UNIT ?? "openclaw-owned"),
       );
+      // Filesystem scheduling must not consume this clock-contract fixture's budget.
+      let monotonicNow = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
       assertNoSystemOwnership.mockImplementation(async () => {
         offset = stepMs;
+        monotonicNow += 100;
       });
 
       await expect(refreshLegacySystemdServiceMetadata(env, BUDGET_MS)).resolves.toBe(true);
@@ -174,6 +178,7 @@ describe.skipIf(process.platform === "win32")("systemd budgets across a wall-clo
       ];
       expect(assertNoSystemOwnership).toHaveBeenCalledTimes(3);
       expectBudgetShares(timeouts, BUDGET_MS - 1_000);
+      expect(timeouts).toEqual([5_000, 4_900, 4_800, 4_700]);
     },
   );
 });

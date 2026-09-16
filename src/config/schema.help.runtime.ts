@@ -452,7 +452,7 @@ export const RUNTIME_FIELD_HELP: Record<string, string> = {
   "agents.entries.*.tools.byProvider":
     "Per-agent provider-specific tool policy overrides for channel-scoped capability control. Use this when a single agent needs tighter restrictions on one provider than others.",
   "agents.entries.*.tools.message.crossContext.allowWithinProvider":
-    "Per-agent message guard for sending to other conversations on the same provider. Set false for current-conversation-only public agents.",
+    "Per-agent message guard for sending to other conversations on the same provider. Set both this and allowAcrossProviders to false for current-conversation-only public agents.",
   "agents.entries.*.tools.message.crossContext.allowAcrossProviders":
     "Per-agent override for sending across providers. Inherits the global setting (default: true). Set false to block cross-provider messaging for this agent.",
   "agents.entries.*.tools.message.actions.allow":

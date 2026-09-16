@@ -60,6 +60,22 @@ joins worker cleanup before the send publishes its receipt. Numeric message IDs 
 rules, including the five-second polling deadline. This does not migrate
 iMessage's startup watermark or conversation-binding queries.
 
+iMessage persisted echo reads, writes, and failed-send cleanup use the plugin-state
+worker. Sends await provisional echo persistence before transport and cleanup
+before reporting failure. Inbound echo matching awaits persisted facts before
+choosing whether to dispatch. Hosts with plugin-state comparison methods use the
+worker for recovery cursor writes; conditional writes preserve the greatest
+admitted row for each account and database. The declared OpenClaw 2026.9.4 peer
+and plugin API floor remains supported: hosts without those comparison methods
+run the same row decision in the retained synchronous store's transactional
+`update` callback. Failures from an available comparison method never fall back
+to synchronous writes. Remove this fallback only when the declared host floor
+excludes hosts without comparison support. Durable ingress joins each cursor
+update before admitting the next row and joins admitted work on shutdown.
+Existing namespaces, stored values, expiry, migration, and best-effort failure
+policies remain unchanged. Reply-cache hydration and the synchronous action-alias
+lookup retain their existing owner.
+
 Discord presence cooldown reads, claims, and conditional rollback use the shared
 state worker. The listener rechecks current policy and Gateway generation after
 storage waits, queues greetings only after a durable claim, and joins admitted
@@ -75,6 +91,18 @@ the owner adds the sequence while preserving the existing stored JSON and keys.
 Reads use the existing-only worker path and do not create a missing database.
 Public event helpers and exports await durable completion. Cursor eviction,
 namespace-wide append ordering, sibling row budgets, and rollback remain unchanged.
+
+Reef registration binding reads, reservations, finalization, release, and setup-session
+persistence use the shared-state worker. Reservation mutations compare the current
+row before writing; a conflict rereads ownership before retrying. The CLI, setup
+wizard, and channel startup await these operations. Keys, migration gates, trust,
+audit, replay, review, delivery, and inbox-cursor state retain their existing native
+owners. Key creation still performs its synchronous guard checks and insert without
+an event-loop yield; those separate operations do not form a cross-process transaction.
+Stored registration JSON, reservation expiry, namespace limits, and Doctor imports
+are unchanged. Hosts predating the comparison API retain their existing atomic native
+registration callbacks until an approved minimum host version permits removal. A
+worker failure never switches an operation to that compatibility path.
 
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them
@@ -99,6 +127,17 @@ use one snapshot and bypass secondary indexes so stale indexes cannot hide rows.
 Only pending reads coalesce; completed results are not cached. Physical integrity
 verification remains with full registry restoration and Doctor, while known
 database failures and quarantine still refuse summary reads.
+
+Session listing loads complete persisted subagent metadata in the shared-state
+worker through a read-only connection. The existing cache coalesces pending fills
+and applies intervening named updates and deletions before publishing its first
+complete snapshot. Full replacement, registry ownership changes, and database
+retirement fence obsolete replies. Its 500 ms freshness policy and retention
+rules remain unchanged. Gateway, embedded, and TUI callers merge accepted rows
+with current host memory and scheduler facts before building the full topology.
+Pure topology grouping yields through the shared session-list work budget.
+Synchronous readers reuse the same SQL and row decoder; runtime reads do not
+repair storage.
 
 Gateway user-preference RPCs and Talk appearance reads resolve merged profile IDs
 and access preferences in the shared-state worker. Preference writes keep profile

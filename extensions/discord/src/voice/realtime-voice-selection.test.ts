@@ -35,6 +35,26 @@ defineDiscordVoiceTests(
         return session;
       });
     };
+    const useGoogleVoices = (voices = ["Puck", "Kore"]) => {
+      resolveConfiguredRealtimeVoiceProviderMock.mockImplementation((params) => ({
+        provider: { id: "google" },
+        capabilities: {
+          supportsActivationNameGating: false,
+          ...(voices.length > 0 ? { voices } : {}),
+        },
+        providerConfig: {
+          model: "gemini-3.1-flash-live-preview",
+          voice: "Puck",
+          ...params?.providerConfigOverrides,
+        },
+      }));
+      createRealtimeVoiceBridgeSessionMock.mockImplementation(() => {
+        const session = createRealtimeSessionMock();
+        session.bridge.supportsToolResultSuppression = false;
+        session.bridge.supportsToolResultContinuation = false;
+        return session;
+      });
+    };
     const selectionOwner = () => registerRealtimeVoiceSelectionMock.mock.calls.at(-1)![0];
     const selectionHandle = () => {
       const result = registerRealtimeVoiceSelectionMock.mock.results.at(-1);
@@ -44,44 +64,188 @@ defineDiscordVoiceTests(
       return result.value;
     };
 
-    it.each([false, true])(
-      "rejects voice replacement for an unsuppressed function-response bridge (catalog=%s)",
-      async (advertisesVoices) => {
-        resolveConfiguredRealtimeVoiceProviderMock.mockImplementation((params) => ({
-          provider: { id: "google" },
-          capabilities: {
-            supportsActivationNameGating: false,
-            ...(advertisesVoices ? { voices: ["Puck", "Kore"] } : {}),
-          },
-          providerConfig: {
-            model: "gemini-3.1-flash-live-preview",
-            voice: "Puck",
-            ...params?.providerConfigOverrides,
-          },
-        }));
-        createRealtimeVoiceBridgeSessionMock.mockImplementation(() => {
-          const session = createRealtimeSessionMock();
-          session.bridge.supportsToolResultSuppression = false;
-          return session;
+    it("rejects voice replacement when the provider has no voice catalog", async () => {
+      useGoogleVoices([]);
+      const { entry, manager } = await createJoinedAgentProxyFixture();
+      try {
+        beginSpeakerTurn(entry).close();
+        const original = lastRealtimeBridge();
+        const connections = createRealtimeVoiceBridgeSessionMock.mock.calls.length;
+        expect(selectionOwner().read()).toMatchObject({
+          provider: "google",
+          voice: "Puck",
+          canChange: false,
         });
-        const { entry, manager } = await createJoinedAgentProxyFixture();
+        await expect(
+          selectionOwner().changeVoice("Kore", { assertCurrent: () => {} }),
+        ).rejects.toThrow("cannot change voices");
+        expect(original.session.close).not.toHaveBeenCalled();
+        expect(createRealtimeVoiceBridgeSessionMock).toHaveBeenCalledTimes(connections);
+        expect(selectionOwner().read()).toMatchObject({ voice: "Puck" });
+        expect(manager.status()).toHaveLength(1);
+      } finally {
+        await manager.destroy();
+      }
+    });
+
+    it.each([false, true])(
+      "switches Gemini from its own function call and speaks the late answer once (transcript first=%s)",
+      async (transcriptFirst) => {
+        useGoogleVoices();
+        const answer = createDeferred<{ payloads: Array<{ text: string }> }>();
+        const { entry, manager } = await createJoinedAgentProxyFixture({
+          config: { voice: { realtime: { requireWakeName: false, consultPolicy: "always" } } },
+        });
+        let submission: Promise<void> | undefined;
         try {
           beginSpeakerTurn(entry).close();
           const original = lastRealtimeBridge();
-          const connections = createRealtimeVoiceBridgeSessionMock.mock.calls.length;
-          expect.soft(selectionOwner().read()).toMatchObject({
-            provider: "google",
-            voice: "Puck",
-            canChange: false,
+          agentCommandMock.mockImplementationOnce(async () => {
+            await selectionOwner().changeVoice("Kore", { assertCurrent: () => {} });
+            return await answer.promise;
           });
-          await expect
-            .soft(selectionOwner().changeVoice("Kore", { assertCurrent: () => {} }))
-            .rejects.toThrow("cannot change voices");
-          expect(original.session.close).not.toHaveBeenCalled();
-          expect(createRealtimeVoiceBridgeSessionMock).toHaveBeenCalledTimes(connections);
-          expect(selectionOwner().read()).toMatchObject({ voice: "Puck" });
-          expect(manager.status()).toHaveLength(1);
+          if (transcriptFirst) {
+            vi.useFakeTimers();
+            original.bridgeParams.onTranscript?.(
+              "user",
+              "Switch to Kore and check the agenda.",
+              true,
+            );
+            await vi.advanceTimersByTimeAsync(0);
+            expect(agentCommandMock).not.toHaveBeenCalled();
+          }
+          submission = Promise.resolve(
+            original.bridgeParams.onToolCall?.(
+              {
+                itemId: "gemini-switch-item",
+                callId: "gemini-switch-call",
+                name: "openclaw_agent_consult",
+                args: { question: "Switch to Kore and check the agenda." },
+              },
+              original.session,
+            ),
+          );
+          await vi.waitFor(() => expect(selectionOwner().read()).toMatchObject({ voice: "Kore" }));
+          const replacement = lastRealtimeBridge();
+          expect(replacement.session).not.toBe(original.session);
+          expect(original.session.close).toHaveBeenCalledExactlyOnceWith({ disposition: "detach" });
+          expect(sentUserMessages(replacement.session)).toHaveLength(0);
+          const signal = lastAgentCommandArgs().abortSignal;
+          expect(signal).toBeInstanceOf(AbortSignal);
+          if (signal instanceof AbortSignal) {
+            expect(signal.aborted).toBe(false);
+          }
+          answer.resolve({ payloads: [{ text: "The agenda starts with the budget review." }] });
+          await submission;
+          expect(sentUserMessages(replacement.session)).toEqual([
+            expect.stringContaining("The agenda starts with the budget review."),
+          ]);
+          expect(sentUserMessages(original.session)).toHaveLength(0);
+          expect(original.session.submitToolResult).not.toHaveBeenCalled();
+          expect(replacement.session.submitToolResult).not.toHaveBeenCalled();
+          expect(agentCommandMock).toHaveBeenCalledOnce();
         } finally {
+          answer.resolve({ payloads: [] });
+          await submission;
+          vi.useRealTimers();
+          await manager.destroy();
+        }
+      },
+    );
+
+    it("hands a pending Gemini forced consult joined by a function call to the new voice", async () => {
+      useGoogleVoices();
+      const answer = createDeferred<{ payloads: Array<{ text: string }> }>();
+      agentCommandMock.mockReturnValueOnce(answer.promise);
+      const { entry, manager } = await createJoinedAgentProxyFixture({
+        config: { voice: { realtime: { requireWakeName: false } } },
+      });
+      let submission: Promise<void> | undefined;
+      try {
+        beginSpeakerTurn(entry).close();
+        const original = lastRealtimeBridge();
+        await emitFinalRealtimeUserTranscript(original.bridgeParams, "Finish the agenda task.");
+        expect(agentCommandMock).toHaveBeenCalledOnce();
+        submission = Promise.resolve(
+          original.bridgeParams.onToolCall?.(
+            {
+              itemId: "gemini-join-item",
+              callId: "gemini-join-call",
+              name: "openclaw_agent_consult",
+              args: { question: "Finish the agenda task." },
+            },
+            original.session,
+          ),
+        );
+        await selectionOwner().changeVoice("Kore", { assertCurrent: () => {} });
+        const replacement = lastRealtimeBridge();
+        answer.resolve({ payloads: [{ text: "The agenda task is finished." }] });
+        await submission;
+        expect(sentUserMessages(replacement.session)).toEqual([
+          expect.stringContaining("The agenda task is finished."),
+        ]);
+        expect(sentUserMessages(original.session)).toHaveLength(0);
+        expect(original.session.submitToolResult).not.toHaveBeenCalled();
+        expect(agentCommandMock).toHaveBeenCalledOnce();
+      } finally {
+        answer.resolve({ payloads: [] });
+        await submission;
+        await manager.destroy();
+      }
+    });
+
+    it.each(["accepted", "pending"] as const)(
+      "does not replay a Gemini answer after provider submission starts (%s)",
+      async (submissionState) => {
+        useGoogleVoices();
+        const answer = createDeferred<{ payloads: Array<{ text: string }> }>();
+        const providerSubmission = createDeferred<void>();
+        const submissionStarted = createDeferred<void>();
+        agentCommandMock.mockReturnValueOnce(answer.promise);
+        const { entry, manager } = await createJoinedAgentProxyFixture({
+          config: { voice: { realtime: { requireWakeName: false } } },
+        });
+        let submission: Promise<void> | undefined;
+        try {
+          beginSpeakerTurn(entry).close();
+          const original = lastRealtimeBridge();
+          await emitFinalRealtimeUserTranscript(original.bridgeParams, "Read the agenda result.");
+          original.session.submitToolResult.mockImplementationOnce(() => {
+            submissionStarted.resolve();
+            return submissionState === "pending" ? providerSubmission.promise : undefined;
+          });
+          submission = Promise.resolve(
+            original.bridgeParams.onToolCall?.(
+              {
+                itemId: "gemini-submitted-item",
+                callId: "gemini-submitted-call",
+                name: "openclaw_agent_consult",
+                args: { question: "Read the agenda result." },
+              },
+              original.session,
+            ),
+          );
+          answer.resolve({ payloads: [{ text: "The agenda is ready." }] });
+          await submissionStarted.promise;
+          if (submissionState === "accepted") {
+            await submission;
+          }
+          await selectionOwner().changeVoice("Kore", { assertCurrent: () => {} });
+          const replacement = lastRealtimeBridge();
+          expect(sentUserMessages(replacement.session)).toHaveLength(0);
+          providerSubmission.resolve();
+          await submission;
+          expect(original.session.submitToolResult.mock.calls).toEqual([
+            ["gemini-submitted-call", { text: "The agenda is ready." }],
+          ]);
+          expect(sentUserMessages(original.session)).toHaveLength(0);
+          expect(sentUserMessages(replacement.session)).toHaveLength(0);
+          expect(replacement.session.submitToolResult).not.toHaveBeenCalled();
+          expect(agentCommandMock).toHaveBeenCalledOnce();
+        } finally {
+          answer.resolve({ payloads: [] });
+          providerSubmission.resolve();
+          await submission;
           await manager.destroy();
         }
       },

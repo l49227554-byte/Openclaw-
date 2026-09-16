@@ -540,9 +540,6 @@ export class DiscordRealtimeSpeakerSession implements VoiceRealtimeSession {
     return {
       ...this.selection,
       voices: [...this.selection.voices],
-      canChange:
-        this.selection.canChange &&
-        (this.handlesAgentConsult || this.bridge?.bridge.supportsToolResultSuppression !== false),
     };
   }
 

@@ -5,12 +5,10 @@ import {
   classifyRealtimeVoiceConsultToolCall,
   classifySkippableRealtimeVoiceConsultTranscript,
   createRealtimeVoiceAgentTalkbackQueue,
-  parseRealtimeVoiceAgentControlToolArgs,
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   REALTIME_VOICE_AGENT_CONTROL_TOOL_NAME,
   type RealtimeVoiceAgentConsultToolPolicy,
   type RealtimeVoiceAgentConsultRunner,
-  type RealtimeVoiceAgentControlResult,
   type RealtimeVoiceAgentTalkbackQueue,
   type RealtimeVoiceBridgeSession,
   type RealtimeVoiceForcedConsultHandle,
@@ -19,7 +17,11 @@ import {
   type RealtimeVoiceWakeNamePolicy,
 } from "openclaw/plugin-sdk/realtime-voice";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
-import { controlDiscordVoiceAgentRun, maybeControlDiscordVoiceAgentRun } from "./agent-control.js";
+import {
+  handleDiscordVoiceAgentControlToolCall,
+  logDiscordVoiceAgentControlResult,
+  maybeControlDiscordVoiceAgentRun,
+} from "./agent-control.js";
 import type { DiscordVoiceIngressContext } from "./ingress.js";
 import { formatVoiceLogPreview } from "./log-preview.js";
 import { formatVoiceIngressPrompt } from "./prompt.js";
@@ -45,12 +47,20 @@ type AgentProxyConsultResult =
   | { text: string }
   | ReturnType<typeof buildRealtimeVoiceAgentErrorProviderResult>;
 
-type AgentProxyProviderDelivery = ReturnType<typeof createDeferred<void>>;
+type AgentProxyProviderDelivery = ReturnType<typeof createDeferred<void>> & {
+  submissionStarted: boolean;
+};
 
 export type AgentProxyConsultState = {
   speaker: DiscordRealtimeSpeakerContext;
   providerEpoch: number;
-  delivery: "provider" | "forced-pending" | "playback" | "detached" | "retired";
+  delivery:
+    | "provider-pending"
+    | "provider"
+    | "forced-pending"
+    | "playback"
+    | "detached"
+    | "retired";
   promise?: Promise<AgentProxyConsultResult>;
   result?: AgentProxyConsultResult;
 };
@@ -153,7 +163,14 @@ export class DiscordRealtimeConsults {
       return;
     }
     if (event.name === REALTIME_VOICE_AGENT_CONTROL_TOOL_NAME) {
-      await this.handleAgentControlToolCall(event, session, callId, providerEpoch);
+      await handleDiscordVoiceAgentControlToolCall({
+        args: event.args,
+        session,
+        callId,
+        getControlParams: () => this.controlParams(providerEpoch),
+        isCurrent: () => !this.params.stopped() && providerEpoch === this.params.providerEpoch(),
+        entry: this.params.entry,
+      });
       return;
     }
     if (event.name !== REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME) {
@@ -230,28 +247,39 @@ export class DiscordRealtimeConsults {
         });
       }
     }
-    if (!context) {
+    const state = recent?.context;
+    if (!context || !state) {
       logger.warn(
         `discord voice: realtime consult has no speaker context call=${callId || "unknown"}`,
       );
       await session.submitToolResult(callId, { error: "No Discord speaker context available" });
       return;
     }
-    const result = await this.trackAgentProxyConsult(
-      recent,
-      this.runAgentTurn({ context, message: consultMessage }),
-    );
-    if (providerEpoch !== this.params.providerEpoch()) {
-      return;
-    }
-    if ("text" in result) {
-      logger.info(
-        `discord voice: realtime consult answer (${result.text.length} chars) voiceSession=${this.params.entry.voiceSessionKey} supervisorSession=${this.params.entry.route.sessionKey} agent=${this.params.entry.route.agentId} speaker=${context.speakerLabel} owner=${context.senderIsOwner}: ${formatVoiceLogPreview(result.text)}`,
+    state.delivery = "provider-pending";
+    const delivery = this.beginProviderDelivery(state);
+    try {
+      const result = await this.trackAgentProxyConsult(
+        recent,
+        this.runAgentTurn({ context, message: consultMessage, deliveryOwner: "consult" }),
       );
-    } else if ("error" in result) {
-      logger.warn(`discord voice: realtime consult failed call=${callId}: ${result.error}`);
+      if (this.params.stopped() || providerEpoch !== this.params.providerEpoch()) {
+        return;
+      }
+      if ("text" in result) {
+        logger.info(
+          `discord voice: realtime consult answer (${result.text.length} chars) voiceSession=${this.params.entry.voiceSessionKey} supervisorSession=${this.params.entry.route.sessionKey} agent=${this.params.entry.route.agentId} speaker=${context.speakerLabel} owner=${context.senderIsOwner}: ${formatVoiceLogPreview(result.text)}`,
+        );
+      } else if ("error" in result) {
+        logger.warn(`discord voice: realtime consult failed call=${callId}: ${result.error}`);
+      }
+      delivery.submissionStarted = true;
+      await this.submitAgentProxyConsultResult(callId, session, result);
+      if (state.delivery === "provider-pending") {
+        state.delivery = "provider";
+      }
+    } finally {
+      this.settleProviderDelivery(state, delivery);
     }
-    await this.submitAgentProxyConsultResult(callId, session, result);
   }
 
   async handleAcceptedTranscript(
@@ -299,7 +327,7 @@ export class DiscordRealtimeConsults {
       if (pendingForcedConsult) {
         this.params.harness.forcedConsults.remove(pendingForcedConsult);
       }
-      this.logAgentControlResult(control.result);
+      logDiscordVoiceAgentControlResult(this.params.entry, control.result);
       if (control.speakText) {
         this.params.playback.speakControlResult(control.speakText);
       }
@@ -344,34 +372,6 @@ export class DiscordRealtimeConsults {
     });
   }
 
-  private async handleAgentControlToolCall(
-    event: RealtimeVoiceToolCallEvent,
-    session: RealtimeVoiceBridgeSession,
-    callId: string,
-    providerEpoch: number,
-  ): Promise<void> {
-    let result: RealtimeVoiceAgentControlResult;
-    try {
-      const parsed = parseRealtimeVoiceAgentControlToolArgs(event.args);
-      result = await controlDiscordVoiceAgentRun({
-        ...this.controlParams(providerEpoch),
-        text: parsed.text,
-        mode: parsed.mode,
-      });
-    } catch (error) {
-      if (this.params.stopped() || providerEpoch !== this.params.providerEpoch()) {
-        return;
-      }
-      await session.submitToolResult(callId, { error: formatErrorMessage(error) });
-      return;
-    }
-    if (this.params.stopped() || providerEpoch !== this.params.providerEpoch()) {
-      return;
-    }
-    this.logAgentControlResult(result);
-    await session.submitToolResult(callId, result);
-  }
-
   private controlParams(providerEpoch: number) {
     const context = this.params.turns.speakerContext();
     if (!context) {
@@ -407,12 +407,6 @@ export class DiscordRealtimeConsults {
       deliveryOwner: params.deliveryOwner,
       ...(params.signal ? { signal: params.signal } : {}),
     });
-  }
-
-  private logAgentControlResult(result: RealtimeVoiceAgentControlResult): void {
-    logger.info(
-      `discord voice: realtime active-run control handled mode=${result.mode} ok=${result.ok} active=${result.active} reason=${result.reason ?? "none"} voiceSession=${this.params.entry.voiceSessionKey} supervisorSession=${this.params.entry.route.sessionKey} agent=${this.params.entry.route.agentId}`,
-    );
   }
 
   private prepareForcedAgentProxyConsult(
@@ -551,7 +545,7 @@ export class DiscordRealtimeConsults {
           state.result = result;
           if (
             this.detachedProviderEpoch === state.providerEpoch &&
-            state.delivery === "forced-pending"
+            (state.delivery === "forced-pending" || state.delivery === "provider-pending")
           ) {
             state.delivery = "detached";
           }
@@ -610,30 +604,27 @@ export class DiscordRealtimeConsults {
       return false;
     }
     const providerDelivery =
-      state.delivery === "forced-pending" &&
-      !state.result &&
-      session.bridge.supportsToolResultSuppression === false
-        ? createDeferred<void>()
+      state.delivery === "provider-pending" ||
+      (state.delivery === "forced-pending" &&
+        !state.result &&
+        session.bridge.supportsToolResultSuppression === false)
+        ? this.beginProviderDelivery(state)
         : undefined;
-    if (providerDelivery) {
-      // Keep every native attempt until settlement: one failed joiner cannot hand
-      // playback back while another may still accept the answer.
-      const deliveries =
-        this.providerDeliveries.get(state) ?? new Set<AgentProxyProviderDelivery>();
-      deliveries.add(providerDelivery);
-      this.providerDeliveries.set(state, deliveries);
-    }
     logger.info(
       `discord voice: realtime consult ${state.result ? "reused recent" : "joined in-flight"} agent result call=${callId} speaker=${state.speaker.speakerLabel} owner=${state.speaker.senderIsOwner}`,
     );
     try {
       const result = await pendingResult;
       if (
+        this.params.stopped() ||
         state.providerEpoch !== this.params.providerEpoch() ||
         state.delivery === "detached" ||
         state.delivery === "retired"
       ) {
         return true;
+      }
+      if (providerDelivery) {
+        providerDelivery.submissionStarted = true;
       }
       await this.submitAgentProxyConsultResult(
         callId,
@@ -645,21 +636,36 @@ export class DiscordRealtimeConsults {
         providerDelivery &&
         !("status" in result) &&
         state.providerEpoch === this.params.providerEpoch() &&
-        state.delivery === "forced-pending"
+        (state.delivery === "forced-pending" || state.delivery === "provider-pending")
       ) {
         state.delivery = "provider";
       }
     } finally {
       if (providerDelivery) {
-        providerDelivery.resolve();
-        const deliveries = this.providerDeliveries.get(state);
-        deliveries?.delete(providerDelivery);
-        if (deliveries?.size === 0) {
-          this.providerDeliveries.delete(state);
-        }
+        this.settleProviderDelivery(state, providerDelivery);
       }
     }
     return true;
+  }
+
+  private beginProviderDelivery(state: AgentProxyConsultState): AgentProxyProviderDelivery {
+    const delivery = { ...createDeferred<void>(), submissionStarted: false };
+    const deliveries = this.providerDeliveries.get(state) ?? new Set<AgentProxyProviderDelivery>();
+    deliveries.add(delivery);
+    this.providerDeliveries.set(state, deliveries);
+    return delivery;
+  }
+
+  private settleProviderDelivery(
+    state: AgentProxyConsultState,
+    delivery: AgentProxyProviderDelivery,
+  ): void {
+    delivery.resolve();
+    const deliveries = this.providerDeliveries.get(state);
+    deliveries?.delete(delivery);
+    if (deliveries?.size === 0) {
+      this.providerDeliveries.delete(state);
+    }
   }
 
   private async submitAgentProxyConsultResult(
@@ -701,7 +707,16 @@ export class DiscordRealtimeConsults {
       ...this.providerDeliveries.keys(),
     ]);
     for (const state of states) {
-      if (state.delivery === "forced-pending") {
+      if (state.delivery === "forced-pending" || state.delivery === "provider-pending") {
+        const submissions = this.providerDeliveries.get(state);
+        if (
+          preservePendingSpeech &&
+          Array.from(submissions ?? []).some((delivery) => delivery.submissionStarted)
+        ) {
+          // A submission may already have reached the old provider; replay could duplicate speech.
+          state.delivery = "provider";
+          continue;
+        }
         state.delivery =
           preservePendingSpeech && state.providerEpoch === this.params.providerEpoch()
             ? "detached"

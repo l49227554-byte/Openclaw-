@@ -3235,7 +3235,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "agentic-control-plane-runtime",
       "agentic-control-plane-runtime-config",
       "agentic-control-plane-runtime-cron",
-      "agentic-control-plane-runtime-network",
       "agentic-control-plane-runtime-server",
       "agentic-control-plane-runtime-shared-token",
       "agentic-control-plane-runtime-state",

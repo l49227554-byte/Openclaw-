@@ -1443,7 +1443,7 @@ export async function runCodeModeModelMatrix(
         value.inputsClean !== true
       ) {
         throw new Error(
-          `Frozen runtime ${stamp} does not match its committed source; rebuild it first.`,
+          `Frozen runtime ${stamp} must match its clean committed source and record clean build inputs. Choose a revision with provenance-capable stamp writers and run pnpm build; rebuilding older source without those writers cannot satisfy this check.`,
         );
       }
     }

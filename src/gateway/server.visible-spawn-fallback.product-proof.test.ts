@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { json } from "node:stream/consumers";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from "vitest";
 import {
   writeOpenAiResponsesSse,
   writeOpenAiResponsesText,
@@ -12,6 +12,7 @@ import { resolveAgentDir } from "../agents/agent-scope.js";
 import { upsertAuthProfile } from "../agents/auth-profiles.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as backoff from "../infra/backoff.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
 import { setTestEnvValue } from "../test-utils/env.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
@@ -232,7 +233,20 @@ const directAgentScenarios: Scenario[] = [
 ];
 
 describe("sessions_spawn model fallback through the Gateway", () => {
-  afterAll(resetGatewayTestState);
+  let retrySleep: MockInstance<typeof backoff.sleepWithAbort>;
+  beforeAll(() => {
+    const sleepWithAbort = backoff.sleepWithAbort;
+    // Exercise every retry, including abortable waits, without real provider backoff.
+    retrySleep = vi
+      .spyOn(backoff, "sleepWithAbort")
+      .mockImplementation((ms, signal, options) =>
+        sleepWithAbort(Math.min(ms, 1), signal, options),
+      );
+  });
+  afterAll(() => {
+    retrySleep.mockRestore();
+    resetGatewayTestState();
+  });
   it.each([...scenarios, ...directAgentScenarios])(
     "$name",
     async (scenario) => {

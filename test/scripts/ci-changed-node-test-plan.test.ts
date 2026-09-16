@@ -32,6 +32,10 @@ import {
   resolveChangedTestTargetPlan,
 } from "../../scripts/test-projects.test-support.mts";
 import { listGitTrackedFiles } from "../../src/test-utils/repo-files.js";
+import {
+  databaseWorkerExtensionTestFiles,
+  databaseWorkerExtensionTestRoots,
+} from "../vitest/vitest.extension-database-workers-paths.mjs";
 import { isGatewayServerTestFile } from "../vitest/vitest.gateway-server-paths.mjs";
 
 const CODEX_TEST_PROCESS_FILE_LIMIT = 12;
@@ -141,7 +145,10 @@ function expectBoundedCodexFallback(
   expect(
     groups.every(
       (shard) =>
-        shard.configs[0] === "test/vitest/vitest.extension-codex.config.ts" &&
+        shard.configs[0] ===
+          (shard.includePatterns?.every((file) => databaseWorkerExtensionTestFiles.includes(file))
+            ? "test/vitest/vitest.extension-database-workers.config.ts"
+            : "test/vitest/vitest.extension-codex.config.ts") &&
         (shard.includePatterns?.length ?? 0) > 0 &&
         (shard.includePatterns?.length ?? 0) <= CODEX_TEST_PROCESS_FILE_LIMIT,
     ),
@@ -417,7 +424,10 @@ describe("CI changed Node test plan", () => {
     expect(shards?.filter((shard) => shard.targets)).toHaveLength(1);
     expect(shards?.flatMap((shard) => shard.targets ?? [])).toEqual([hostTest]);
     expect(new Set(fallbackGroups(shards ?? []).flatMap((group) => group.configs))).toEqual(
-      new Set(["test/vitest/vitest.extensions.config.ts"]),
+      new Set([
+        "test/vitest/vitest.extensions.config.ts",
+        "test/vitest/vitest.extension-database-workers.config.ts",
+      ]),
     );
     expect(buildVitestRunPlans([hostTest])).toEqual([
       {
@@ -1153,17 +1163,50 @@ describe("CI changed Node test plan", () => {
   });
 
   it("keeps extension-only fallbacks scoped to the changed extension config", () => {
-    expect(createChangedExtensionFallbackShards(["extensions/discord/src/channel.ts"])).toEqual([
-      {
-        checkName: "checks-node-changed-extensions-config",
+    const shards = createChangedExtensionFallbackShards(["extensions/discord/src/channel.ts"]);
+    for (const shard of shards) {
+      expect(shard).toMatchObject({ planConcurrency: 1, predictedSeconds: expect.any(Number) });
+    }
+    const groups = fallbackGroups(shards);
+    expect(groups).toHaveLength(2);
+    expect(groups).toContainEqual(
+      expect.objectContaining({
         configs: ["test/vitest/vitest.extension-discord.config.ts"],
-        planConcurrency: 1,
-        predictedSeconds: expect.any(Number),
         requiresDist: false,
         runner: "blacksmith-8vcpu-ubuntu-2404",
-        shardName: "changed-extensions-config",
-      },
+      }),
+    );
+    expect(groups).toContainEqual(
+      expect.objectContaining({
+        configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
+        includePatterns: databaseWorkerExtensionTestFiles
+          .filter((file) => file.startsWith("extensions/discord/"))
+          .toSorted(),
+      }),
+    );
+  });
+
+  it("partitions every database-worker file exactly once in a broad fallback", () => {
+    const groups = fallbackGroups(
+      createChangedExtensionFallbackShards(["scripts/lib/ci-changed-node-test-plan.mts"]),
+    );
+    const workerGroups = groups.filter((group) =>
+      group.configs.includes("test/vitest/vitest.extension-database-workers.config.ts"),
+    );
+    const expectedFiles = listExtensionTestFilesForRoots([
+      ...databaseWorkerExtensionTestRoots,
+      ...databaseWorkerExtensionTestFiles,
     ]);
+    expect(workerGroups.length).toBeGreaterThan(1);
+    expect(workerGroups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(
+      expectedFiles.toSorted(),
+    );
+    expect(
+      groups
+        .filter((group) => !workerGroups.includes(group))
+        .flatMap((group) => group.includePatterns ?? [])
+        .filter((file) => expectedFiles.includes(file)),
+    ).toEqual([]);
   });
 
   it("does not create extension fallback shards for docs-only diffs", () => {
@@ -1247,7 +1290,12 @@ describe("CI changed Node test plan", () => {
       expect(
         groups.every(
           (group) =>
-            group.configs[0] === "test/vitest/vitest.extension-telegram.config.ts" &&
+            group.configs[0] ===
+              (group.includePatterns?.every((file) =>
+                databaseWorkerExtensionTestFiles.includes(file),
+              )
+                ? "test/vitest/vitest.extension-database-workers.config.ts"
+                : "test/vitest/vitest.extension-telegram.config.ts") &&
             (group.includePatterns?.length ?? 0) > 0 &&
             (group.includePatterns?.length ?? 0) <= 10,
         ),
@@ -1255,7 +1303,12 @@ describe("CI changed Node test plan", () => {
       expect(targets.toSorted()).toEqual(
         listExtensionTestFilesForRoots(["extensions/telegram"]).toSorted(),
       );
-      expect(groups).toHaveLength(Math.ceil(targets.length / 10));
+      const workerCount = targets.filter((file) =>
+        databaseWorkerExtensionTestFiles.includes(file),
+      ).length;
+      expect(groups).toHaveLength(
+        Math.ceil(workerCount / 10) + Math.ceil((targets.length - workerCount) / 10),
+      );
     },
   );
 
@@ -1303,7 +1356,10 @@ describe("CI changed Node test plan", () => {
     expect(
       groups.every(
         (shard) =>
-          shard.configs[0] === "test/vitest/vitest.extension-matrix.config.ts" &&
+          shard.configs[0] ===
+            (shard.includePatterns?.every((file) => databaseWorkerExtensionTestFiles.includes(file))
+              ? "test/vitest/vitest.extension-database-workers.config.ts"
+              : "test/vitest/vitest.extension-matrix.config.ts") &&
           (shard.includePatterns?.length ?? 0) > 0 &&
           (shard.includePatterns?.length ?? 0) <= 40,
       ),
@@ -1343,6 +1399,7 @@ describe("CI changed Node test plan", () => {
       {
         checkName: "checks-node-changed-extensions-config",
         configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
+        includePatterns: listExtensionTestFilesForRoots(["extensions/memory-core"]),
         planConcurrency: 1,
         predictedSeconds: expect.any(Number),
         requiresDist: false,
@@ -1478,6 +1535,7 @@ describe("CI changed Node test plan", () => {
     expect(shards).toContainEqual({
       checkName: "checks-node-changed-extensions-config",
       configs: ["test/vitest/vitest.extension-database-workers.config.ts"],
+      includePatterns: listExtensionTestFilesForRoots(["extensions/memory-core"]),
       planConcurrency: 1,
       predictedSeconds: expect.any(Number),
       requiresDist: false,

@@ -287,6 +287,7 @@ function createManifestChannelPlugin(params: {
   const commands = normalizeChannelCommandDefaults(
     channelConfig?.commands ?? catalogMeta?.commands,
   );
+  const reload = channelConfig?.reload;
   return {
     id: params.channelId,
     meta: {
@@ -304,6 +305,20 @@ function createManifestChannelPlugin(params: {
           : {}),
     },
     capabilities: { chatTypes: ["direct"] },
+    ...(reload
+      ? {
+          reload: {
+            configPrefixes: reload.configPrefixes ?? [],
+            ...(reload.noopPrefixes ? { noopPrefixes: reload.noopPrefixes } : {}),
+            ...(reload.accountIndexReloadPaths
+              ? { accountIndexReloadPaths: reload.accountIndexReloadPaths }
+              : {}),
+            ...(typeof reload.accountScopedRestart === "boolean"
+              ? { accountScopedRestart: reload.accountScopedRestart }
+              : {}),
+          },
+        }
+      : {}),
     ...(commands ? { commands } : {}),
     ...(channelConfig
       ? {

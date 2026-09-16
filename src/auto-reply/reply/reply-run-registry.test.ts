@@ -2180,104 +2180,36 @@ describe("reply run registry", () => {
     ).resolves.toEqual({ status: "accepted" });
   });
 
-  it.each(["device-a", "device-b", undefined])(
-    "projects inbound authority from reviewer %s without forwarding its approval destination",
-    async (approvalReviewerDeviceId) => {
-      const run = createQueueTestRun({ prompt: "projected inbound" });
-      run.run.approvalReviewerDeviceId = "device-a";
-      run.run.gatewayUiCommandTarget = { connId: "browser-a", profileId: "profile-a" };
-      run.run.clientCaps = ["ui-commands"];
-      run.run.senderIsOwner = true;
-      run.run.permissionMode = "full";
-      const route = { provider: "openai", model: "gpt-primary" };
-      const overlay = { ...toolAuthorityOverlay(run), approvalReviewerDeviceId };
-      const queueMessage = vi.fn(
-        async (_text: string, _options?: ReplyBackendQueueMessageOptions) => {},
-      );
-      const operation = createTestReplyOperation({ sessionId: "session-projected-authority" });
-      operation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(run));
-      operation.bindToolAuthorityRoute(route);
-      operation.attachBackend({
-        kind: "embedded",
-        cancel: vi.fn(),
-        isStreaming: () => true,
-        queueMessage,
-      });
-      operation.setPhase("running");
-
-      await expect(
-        queueCurrentReplyRunMessage("session-projected-authority", "same authority", {
-          isInboundUserMessage: true,
-          toolAuthorityFingerprint: "caller-cannot-override-projection",
-          toolAuthorityOverlay: overlay,
-        }),
-      ).resolves.toEqual({ status: "accepted" });
-      const forwardedOptions = queueMessage.mock.calls[0]?.[1];
-      expect(forwardedOptions).toMatchObject({
-        isInboundUserMessage: true,
-        toolAuthorityFingerprint: resolveFollowupRunToolAuthorityFingerprint(run, route),
-      });
-      expect(forwardedOptions).not.toHaveProperty("toolAuthorityOverlay");
-      expect(forwardedOptions).not.toHaveProperty("approvalReviewerDeviceId");
-      expect(queueMessage).toHaveBeenCalledOnce();
-
-      for (const restricted of [
-        { clientCaps: ["changed-capability"] },
-        { gatewayUiCommandTarget: { connId: "browser-b", profileId: "profile-a" } },
-        { gatewayUiCommandTarget: { connId: "browser-a", profileId: "profile-b" } },
-        { gatewayUiCommandTarget: undefined },
-        { toolBindings: { browser: { clientId: "different-browser" } } },
-        { permissionMode: "guarded" },
-      ] satisfies Partial<ReplyToolAuthorityOverlay>[]) {
-        await expect(
-          queueCurrentReplyRunMessage("session-projected-authority", "changed authority", {
-            isInboundUserMessage: true,
-            toolAuthorityOverlay: { ...overlay, ...restricted },
-          }),
-        ).resolves.toMatchObject({ status: "rejected", reason: "tool_authority_mismatch" });
-        expect(queueMessage).toHaveBeenCalledOnce();
-      }
-    },
-  );
-
-  it.each([
-    "disabled",
-    "no-capability",
-    "runtime-cap",
-    "runtime-intersection",
-    "policy-deny",
-    "profile",
-    "non-owner",
-  ])("preserves cross-browser steering when screen is unavailable: %s", async (restriction) => {
-    const run = createQueueTestRun({ prompt: "cross-browser steering" });
-    run.run.gatewayUiCommandTarget = { connId: "browser-a", profileId: "profile-a" };
-    run.run.clientCaps = ["ui-commands"];
-    run.run.senderIsOwner = restriction !== "non-owner";
-    if (restriction === "disabled") {
-      run.disableTools = true;
-    }
-    if (restriction === "no-capability") {
-      run.run.clientCaps = [];
-    }
-    if (restriction === "runtime-cap") {
-      run.toolsAllow = ["read"];
-    }
-    if (restriction === "runtime-intersection") {
-      run.toolsAllow = attachToolAllowlistIntersection(
-        ["read", "screen"],
-        [["read", "screen"], ["read"]],
-      );
-    }
-    if (restriction === "policy-deny") {
-      run.run.config = { tools: { deny: ["screen"] } };
-    }
-    if (restriction === "profile") {
-      run.run.config = { tools: { profile: "minimal" } };
-    }
+  it("rejects inbound steering when no authority fingerprint can be proven", async () => {
     const queueMessage = vi.fn(async () => {});
-    const operation = createTestReplyOperation({ sessionId: "screen-unavailable" });
-    operation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(run));
-    operation.bindToolAuthorityRoute({ provider: run.run.provider, model: run.run.model });
+    const operation = createTestReplyOperation({ sessionId: "session-missing-authority" });
+    operation.attachBackend({
+      kind: "embedded",
+      cancel: vi.fn(),
+      isStreaming: () => true,
+      queueMessage,
+    });
+    operation.setPhase("running");
+
+    await expect(
+      queueCurrentReplyRunMessage("session-missing-authority", "legacy inbound steer", {
+        isInboundUserMessage: true,
+      }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "tool_authority_mismatch" });
+    expect(queueMessage).not.toHaveBeenCalled();
+  });
+
+  it("projects inbound authority before backend admission without forwarding the overlay", async () => {
+    const run = createQueueTestRun({ prompt: "projected inbound" });
+    const route = { provider: "openai", model: "gpt-primary" };
+    const overlay = toolAuthorityOverlay(run);
+    const queueMessage = vi.fn(
+      async (_text: string, _options?: ReplyBackendQueueMessageOptions) => {},
+    );
+    const operation = createTestReplyOperation({ sessionId: "session-projected-authority" });
+    operation.bindToolAuthorityProjector(createFollowupRunToolAuthorityProjector(run));
+    operation.bindToolAuthorityRoute(route);
+    operation.bindToolAuthorityFingerprint(resolveFollowupRunToolAuthorityFingerprint(run, route));
     operation.attachBackend({
       kind: "embedded",
       cancel: vi.fn(),

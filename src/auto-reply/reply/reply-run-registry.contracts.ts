@@ -178,13 +178,9 @@ export const replyMessageInjectionTargetOperation = Symbol("replyMessageInjectio
 export type ReplyMessageInjectionTarget = {
   readonly [replyMessageInjectionTargetOperation]: ReplyOperation;
   readonly runId?: string;
-  /** Channel source-turn identity of the owning run (see the registry's `sourceTurnByKey`). */
-  readonly sourceTurnId?: string;
-};
-
-export const replyRunInterruptTargetOperation = Symbol("replyRunInterruptTargetOperation");
-export type ReplyRunInterruptTarget = {
-  readonly [replyRunInterruptTargetOperation]: ReplyOperation;
+  /** Tool authority proven when the active owner was captured for injection. */
+  readonly toolAuthorityFingerprint?: string;
+  readonly originatingLeafEntryId: string | null | undefined;
 };
 
 type ReplyMessageInjectionRejectionReason =

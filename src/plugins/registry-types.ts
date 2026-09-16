@@ -378,6 +378,7 @@ export type PluginRecord = {
   configUiHints?: Record<string, PluginConfigUiHint>;
   configJsonSchema?: JsonSchemaObject;
   contracts?: PluginManifestContracts;
+  channelConfigs?: PluginManifestRecord["channelConfigs"];
   dashboard?: PluginManifestDashboard;
   controlUi?: PluginManifestControlUi;
   mcpServers?: Record<string, PluginManifestMcpServer>;

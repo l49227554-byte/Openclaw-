@@ -143,11 +143,17 @@ export const replyRunRegistry: ReplyRunRegistry = {
     if (!operation || !("injection" in resolved) || !normalizedSessionKey) {
       return undefined;
     }
-    const sourceTurnId = replyRunState.sourceTurnByKey.get(normalizedSessionKey);
-    return {
-      [replyMessageInjectionTargetOperation]: operation,
+    const toolAuthorityFingerprint =
+      resolved.backend.toolAuthorityFingerprint ?? operation?.toolAuthorityFingerprint;
+    const target: ReplyMessageInjectionTarget = {
+      [replyMessageInjectionTargetOperation]: operation!,
+      identity: normalizeOptionalString(expectedRunId) ? "run" : "leaf",
       ...(resolved.backend.runId ? { runId: resolved.backend.runId } : {}),
-      ...(sourceTurnId ? { sourceTurnId } : {}),
+      ...(toolAuthorityFingerprint ? { toolAuthorityFingerprint } : {}),
+      originatingLeafEntryId,
+      ...(operation?.toolAuthorityFingerprint
+        ? { toolAuthorityFingerprint: operation.toolAuthorityFingerprint }
+        : {}),
     };
   },
   resolveCurrentInterruptTarget(sessionKey) {

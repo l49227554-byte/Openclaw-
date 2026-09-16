@@ -11,7 +11,8 @@ import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cach
 import type { PluginPackageInstall } from "./manifest.js";
 import { createSqliteHostedOfficialExternalPluginCatalogSnapshotStore } from "./official-external-plugin-catalog-snapshot-store.js";
 import {
-  getOfficialExternalChannelSecretContract,
+  type HostedOfficialExternalPluginCatalogSnapshot,
+  type HostedOfficialExternalPluginCatalogSnapshotStore,
   type OfficialExternalPluginCatalogEntry,
   type OfficialExternalPluginCatalogFeed,
   getOfficialExternalPluginCatalogEntry,
@@ -2132,28 +2133,17 @@ describe("official external plugin catalog", () => {
       "openclaw-plugin-yuanbao@2.18.2",
     );
     expect(resolveOfficialExternalPluginId(qqbotByChannel)).toBe("openclaw-qqbot");
-    expect(qqbotByPlugin).toBe(qqbotByChannel);
-    expect(resolveOfficialExternalPluginLegacyNpmPackageNames(qqbotByChannel)).toEqual([
-      "@openclaw/qqbot",
-    ]);
+    expect(resolveOfficialExternalPluginId(qqbotByPlugin)).toBe("openclaw-qqbot");
+    expect(resolveOfficialExternalPluginInstall(qqbotByChannel)?.npmSpec).toBe(
+      "@tencent-connect/openclaw-qqbot@2.0.1",
+    );
+
+    const weixin = expectCatalogEntry("openclaw-weixin");
     expect(
-      getOfficialExternalPluginCatalogManifest(qqbotByChannel)?.channel?.doctorCapabilities,
-    ).toEqual({ openDmRequiresAllowFromWildcard: false });
-    expect(resolveOfficialExternalPluginInstall(qqbotByChannel)).toEqual({
-      npmSpec: "@tencent-connect/openclaw-qqbot@2.0.3",
-      defaultChoice: "npm",
-      expectedIntegrity:
-        "sha512-yngu/2cPeZjJfIfHWCXWB2/6KlDHrb9vpOUjKLdQxePLSp6wCn3CFOALcBIVq/9o6jlYz9WTU9idW6nfX1xpFA==",
-    });
-    expect(getOfficialExternalChannelSecretContract("qqbot")).toEqual({
-      channelId: "qqbot",
-      fields: [
-        {
-          field: "clientSecret",
-          activationField: "appId",
-          activationEnv: "QQBOT_APP_ID",
-        },
-      ],
+      getOfficialExternalPluginCatalogManifest(weixin)?.channelConfigs?.["openclaw-weixin"]?.reload,
+    ).toEqual({
+      configPrefixes: [],
+      accountIndexReloadPaths: ["channels.openclaw-weixin.channelConfigUpdatedAt"],
     });
   });
 

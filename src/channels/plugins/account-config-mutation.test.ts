@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createChannelTestPluginBase } from "../../test-utils/channel-plugins.js";
@@ -166,6 +167,268 @@ describe("channel account config mutations", () => {
     });
 
     expect(prepared.ok).toBe(true);
+  });
+
+  it("reports missing setup env vars before plugin-owned input preparation", async () => {
+    const prepareAccountConfigInput = vi.fn(() => {
+      throw new Error("prepare should stay lazy when env metadata already rejects input");
+    });
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "env-chat" }),
+      setupContract: defineChannelSetupContract({
+        fields: {
+          useEnv: {
+            kind: "boolean",
+            cli: { flags: "--use-env", description: "Use environment credentials" },
+            envVars: ["ENV_CHAT_TOKEN"],
+          },
+        },
+        adapter: {
+          prepareAccountConfigInput,
+          applyAccountConfig: ({ cfg }) => cfg,
+        },
+      }),
+    } as ChannelPlugin;
+
+    const prepared = await prepareChannelAccountConfiguration({
+      cfg: {},
+      plugin,
+      resolveInput: () => ({ useEnv: true }),
+      runtime,
+    });
+
+    expect(prepared).toEqual({
+      ok: false,
+      error: {
+        kind: "invalid-input",
+        message: expect.stringContaining("ENV_CHAT_TOKEN"),
+      },
+    });
+    expect(prepareAccountConfigInput).not.toHaveBeenCalled();
+  });
+
+  it("preserves account-owner validation before generic missing-env setup advice", async () => {
+    const prepareAccountConfigInput = vi.fn(() => {
+      throw new Error("prepare should stay lazy when validation rejects input");
+    });
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "env-owner-chat" }),
+      setupContract: defineChannelSetupContract({
+        fields: {
+          useEnv: {
+            kind: "boolean",
+            cli: { flags: "--use-env", description: "Use environment credentials" },
+            envVars: ["ENV_OWNER_CHAT_TOKEN"],
+          },
+        },
+        adapter: {
+          prepareAccountConfigInput,
+          validateInput: ({ accountId }) =>
+            accountId === "default" ? null : "--use-env only supports the default account",
+          applyAccountConfig: ({ cfg }) => cfg,
+        },
+      }),
+    } as ChannelPlugin;
+
+    const prepared = await prepareChannelAccountConfiguration({
+      cfg: {},
+      plugin,
+      requestedAccountId: "work",
+      resolveInput: () => ({ useEnv: true }),
+      runtime,
+    });
+
+    expect(prepared).toEqual({
+      ok: false,
+      error: {
+        kind: "invalid-input",
+        message: "--use-env only supports the default account",
+      },
+    });
+    expect(prepareAccountConfigInput).not.toHaveBeenCalled();
+  });
+
+  it("preserves account-owner validation when shared setup name is present", async () => {
+    const prepareAccountConfigInput = vi.fn(() => {
+      throw new Error("prepare should stay lazy when validation rejects input");
+    });
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "env-owner-named-chat" }),
+      setupContract: defineChannelSetupContract({
+        fields: {
+          useEnv: {
+            kind: "boolean",
+            cli: { flags: "--use-env", description: "Use environment credentials" },
+            envVars: ["ENV_OWNER_NAMED_CHAT_TOKEN"],
+          },
+        },
+        adapter: {
+          prepareAccountConfigInput,
+          validateInput: ({ accountId }) =>
+            accountId === "default" ? null : "--use-env only supports the default account",
+          applyAccountConfig: ({ cfg }) => cfg,
+        },
+      }),
+    } as ChannelPlugin;
+
+    const prepared = await prepareChannelAccountConfiguration({
+      cfg: {},
+      plugin,
+      requestedAccountId: "work",
+      resolveInput: () => ({ name: "Work", useEnv: true }),
+      runtime,
+    });
+
+    expect(prepared).toEqual({
+      ok: false,
+      error: {
+        kind: "invalid-input",
+        message: "--use-env only supports the default account",
+      },
+    });
+    expect(prepareAccountConfigInput).not.toHaveBeenCalled();
+  });
+
+  it("preserves account-owner validation when other setup fields are present", async () => {
+    const prepareAccountConfigInput = vi.fn(() => {
+      throw new Error("prepare should stay lazy when validation rejects input");
+    });
+    const validateInput = vi.fn(({ accountId, input }: { accountId: string; input: unknown }) => {
+      if (isRecord(input) && input.useEnv === true && accountId !== "default") {
+        return "--use-env only supports the default account";
+      }
+      return isRecord(input) && typeof input.baseUrl === "string" ? null : "--base-url is required";
+    });
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "env-owner-field-chat" }),
+      setupContract: defineChannelSetupContract({
+        fields: {
+          audience: {
+            kind: "string",
+            cli: { flags: "--audience <audience>", description: "Google Chat audience" },
+          },
+          useEnv: {
+            kind: "boolean",
+            cli: { flags: "--use-env", description: "Use environment credentials" },
+            envVars: ["ENV_OWNER_FIELD_CHAT_TOKEN"],
+          },
+        },
+        adapter: {
+          prepareAccountConfigInput,
+          validateInput,
+          applyAccountConfig: ({ cfg }) => cfg,
+        },
+      }),
+    } as ChannelPlugin;
+
+    const prepared = await prepareChannelAccountConfiguration({
+      cfg: {},
+      plugin,
+      requestedAccountId: "work",
+      resolveInput: () => ({ audience: "team", useEnv: true }),
+      runtime,
+    });
+
+    expect(prepared).toEqual({
+      ok: false,
+      error: {
+        kind: "invalid-input",
+        message: "--use-env only supports the default account",
+      },
+    });
+    expect(prepareAccountConfigInput).not.toHaveBeenCalled();
+  });
+
+  it("reports missing setup env vars before raw alias validation", async () => {
+    const prepareAccountConfigInput = vi.fn(() => {
+      throw new Error("prepare should stay lazy when env metadata already rejects input");
+    });
+    const validateInput = vi.fn(({ input }: { input: unknown }) =>
+      isRecord(input) && typeof input.baseUrl === "string" ? null : "--base-url is required",
+    );
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "env-alias-chat" }),
+      setupContract: defineChannelSetupContract({
+        fields: {
+          url: {
+            kind: "string",
+            cli: { flags: "--url <url>", description: "Service URL alias" },
+          },
+          useEnv: {
+            kind: "boolean",
+            cli: { flags: "--use-env", description: "Use environment credentials" },
+            envVars: ["ENV_ALIAS_CHAT_TOKEN"],
+          },
+        },
+        adapter: {
+          prepareAccountConfigInput,
+          validateInput,
+          applyAccountConfig: ({ cfg }) => cfg,
+        },
+      }),
+    } as ChannelPlugin;
+
+    const prepared = await prepareChannelAccountConfiguration({
+      cfg: {},
+      plugin,
+      resolveInput: () => ({ url: "https://chat.example.test", useEnv: true }),
+      runtime,
+    });
+
+    expect(prepared).toEqual({
+      ok: false,
+      error: {
+        kind: "invalid-input",
+        message: expect.stringContaining("ENV_ALIAS_CHAT_TOKEN"),
+      },
+    });
+    expect(prepareAccountConfigInput).not.toHaveBeenCalled();
+    expect(validateInput).not.toHaveBeenCalled();
+  });
+
+  it("normalizes plugin-resolved account IDs only at the config mutation boundary", async () => {
+    const applyAccountConfig = vi.fn(({ cfg }) => cfg);
+    const onAccountConfigChanged = vi.fn();
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "test-chat" }),
+      setup: {
+        resolveAccountId: () => "Work",
+        applyAccountConfig,
+      },
+      lifecycle: { onAccountConfigChanged },
+    } as ChannelPlugin;
+
+    const prepared = await prepareChannelAccountConfiguration({
+      cfg: {},
+      plugin,
+      requestedAccountId: "ignored",
+      resolveInput: () => ({ token: "token-1" }),
+      runtime,
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) {
+      return;
+    }
+
+    const applied = await applyPreparedChannelAccountConfiguration({
+      cfg: {},
+      channel: "test-chat",
+      prepared: prepared.value,
+      runtime,
+    });
+
+    expect(applyAccountConfig).toHaveBeenCalledWith({
+      cfg: {},
+      accountId: "work",
+      input: { token: "token-1" },
+    });
+    expect(onAccountConfigChanged).toHaveBeenCalledWith({
+      prevCfg: {},
+      nextCfg: {},
+      accountId: "Work",
+      runtime,
+    });
+    expect(applied.accountId).toBe("Work");
   });
 
   it("does not resolve input when the channel has no account setup capability", async () => {

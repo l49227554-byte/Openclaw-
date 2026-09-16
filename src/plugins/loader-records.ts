@@ -50,6 +50,7 @@ export function createPluginRecord(params: {
   channelIds?: readonly string[];
   providerIds?: readonly string[];
   configSchema: boolean;
+  channelConfigs?: PluginRecord["channelConfigs"];
   contracts?: PluginManifestContracts;
   dashboard?: PluginManifestDashboard;
   controlUi?: PluginManifestControlUi;
@@ -110,6 +111,7 @@ export function createPluginRecord(params: {
     configSchema: params.configSchema,
     configUiHints: undefined,
     configJsonSchema: undefined,
+    channelConfigs: params.channelConfigs,
     contracts: params.contracts,
     dashboard: params.dashboard,
     controlUi: params.controlUi,

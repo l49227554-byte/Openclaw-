@@ -34,6 +34,13 @@ export type ChannelAccountStartOutcome =
     };
 
 export type StartChannelOptions = {
+  /**
+   * Include accounts that the manager already knows about in addition to the
+   * plugin's current account listing.
+   *
+   * Channel hot reload uses this as a safety net for externally managed account stores.
+   */
+  includeKnownAccounts?: boolean;
   preserveRestartAttempts?: boolean;
   preserveManualStop?: boolean;
   /** Reload leaves snapshot-cold accounts stopped without bypassing credential-file reinspection. */

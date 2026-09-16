@@ -33,6 +33,10 @@ TTS fallback calls retain their existing voice settings. Switching uses the
 current Gateway connection and conversation; ending the call or changing
 Gateways cancels a pending switch.
 
+Mobile apps enable switching when the connected Gateway advertises voice
+selection support. Calls still start on older Gateways, but switching remains
+unavailable until the Gateway is updated.
+
 For Talk TTS playback, after setting `talk.provider` and the matching `talk.providers.<provider>` configuration, use `/voice status` to inspect the active provider and voice, `/voice list [limit]` to list its available voices, and `/voice set <voiceId|name>` to save a provider-scoped selection. Discord exposes the same command natively as `/talkvoice`.
 
 Status and list are read-only. Setting a voice requires the message-channel owner or a Gateway client with `operator.admin`. Configuration, provider lookup, unknown-voice, and permission failures are returned visibly in chat. A masked API-key value in `/voice status` describes config only; it does not verify credential availability.

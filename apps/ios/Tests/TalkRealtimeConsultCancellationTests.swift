@@ -184,7 +184,7 @@ final class TalkRealtimeConsultCancellationTests: XCTestCase {
                 try socket.emitReceiveSuccess(.data(JSONSerialization.data(withJSONObject: [
                     "type": "res", "id": XCTUnwrap(frame["id"] as? String), "ok": true, "payload": payload,
                 ])))
-            })
+            }, receiveHook: Self.voiceSelectionHello(methods: Self.voiceSelectionMethods))
             let gateway = GatewayNodeSession()
             let manager = TalkModeManager(allowSimulatorCapture: true)
             do {
@@ -193,7 +193,8 @@ final class TalkRealtimeConsultCancellationTests: XCTestCase {
                     credentials: .init(),
                     connectOptions: GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions,
                     sessionBox: WebSocketSessionBox(session: GatewayTestWebSocketSession(taskFactory: { socket })),
-                    onConnected: {}, onDisconnected: { _ in },
+                    onConnected: {},
+                    onDisconnected: { _ in },
                     onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
                 manager.attachGateway(gateway)
                 manager.updateGatewayConnected(true)
@@ -201,8 +202,10 @@ final class TalkRealtimeConsultCancellationTests: XCTestCase {
                     config: ["talk": ["realtime": [
                         "mode": "realtime", "provider": "openai", "transport": "webrtc", "brain": "agent-consult",
                     ]]],
-                    defaultProvider: "elevenlabs", defaultModelIdFallback: "eleven_v3",
-                    defaultRealtimeModelIdFallback: "gpt-realtime-2", defaultSilenceTimeoutMs: 900))
+                    defaultProvider: "elevenlabs",
+                    defaultModelIdFallback: "eleven_v3",
+                    defaultRealtimeModelIdFallback: "gpt-realtime-2",
+                    defaultSilenceTimeoutMs: 900))
                 manager.gatewayTalkPermissionState = .ready
                 await manager.prefetchRealtimeSessionIfReady(reason: "synthetic handoff")
                 let deadline = Date().addingTimeInterval(5)
@@ -257,6 +260,114 @@ final class TalkRealtimeConsultCancellationTests: XCTestCase {
         }
     }
 
+    func testManagerNegotiatesVoiceSelectionForEveryRealtimeCreatePath() async throws {
+        for (methods, supportsSelection) in [
+            ([], false),
+            (["talk.voice.complete"], false),
+            (Self.voiceSelectionMethods, true),
+        ] {
+            for path in ["prefetch", "webrtc", "gateway-relay"] {
+                let created = XCTestExpectation(description: "\(path) create reached Gateway")
+                let requests = ConsultRequestCapture()
+                let createMethod = path == "gateway-relay" ? "talk.session.create" : "talk.client.create"
+                let socket = GatewayTestWebSocketTask(sendHook: { socket, message, _ in
+                    let data: Data
+                    switch message {
+                    case let .data(value): data = value
+                    case let .string(value): data = Data(value.utf8)
+                    @unknown default: return
+                    }
+                    let frame = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                    await requests.append(data)
+                    if frame["method"] as? String == createMethod {
+                        created.fulfill()
+                    } else if ["talk.client.close", "talk.session.close"].contains(frame["method"] as? String ?? "") {
+                        let id = try XCTUnwrap(frame["id"] as? String)
+                        socket.emitReceiveSuccess(.data(GatewayWebSocketTestSupport.okResponseData(id: id)))
+                    }
+                }, receiveHook: Self.voiceSelectionHello(methods: methods))
+                let gateway = GatewayNodeSession()
+                let manager = TalkModeManager(allowSimulatorCapture: true)
+                do {
+                    try await gateway.connect(
+                        url: XCTUnwrap(URL(string: "ws://talk-test.invalid")),
+                        credentials: .init(),
+                        connectOptions: GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions,
+                        sessionBox: WebSocketSessionBox(session: GatewayTestWebSocketSession(taskFactory: { socket })),
+                        onConnected: {},
+                        onDisconnected: { _ in },
+                        onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
+                    manager.attachGateway(gateway)
+                    manager.updateGatewayConnected(true)
+                    manager._test_applyLoadedTalkConfig(TalkModeGatewayConfigParser.parse(
+                        config: ["talk": ["realtime": [
+                            "mode": "realtime", "provider": "openai", "brain": "agent-consult",
+                            "transport": path == "gateway-relay" ? "gateway-relay" : "webrtc",
+                        ]]],
+                        defaultProvider: "elevenlabs",
+                        defaultModelIdFallback: "eleven_v3",
+                        defaultRealtimeModelIdFallback: "gpt-realtime-2",
+                        defaultSilenceTimeoutMs: 900))
+                    manager.gatewayTalkPermissionState = .ready
+                    if path != "prefetch" { manager._test_prepareEnabledRealtimeSessionForClose() }
+                    let start = Task { @MainActor in
+                        if path == "prefetch" {
+                            await manager.prefetchRealtimeSessionIfReady(reason: "synthetic compatibility")
+                        } else {
+                            await manager.start()
+                        }
+                    }
+                    let reachedGateway = await XCTWaiter.fulfillment(of: [created], timeout: 5)
+                    XCTAssertEqual(reachedGateway, .completed, path)
+                    let captured = await requests.request(method: createMethod)
+                    let frame = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(captured)) as? [String: Any])
+                    let params = try XCTUnwrap(frame["params"] as? [String: Any])
+                    if path == "gateway-relay" {
+                        if supportsSelection {
+                            XCTAssertEqual(params["capabilities"] as? [String], ["voice-selection"])
+                        } else {
+                            XCTAssertNil(params["capabilities"], "Released relay schemas reject this field")
+                        }
+                    } else {
+                        XCTAssertEqual(
+                            params["capabilities"] as? [String],
+                            supportsSelection ? ["voice-transcript", "voice-selection"] : ["voice-transcript"],
+                            path)
+                    }
+                    XCTAssertNil(params["voiceChangeId"])
+                    // Stop before the create response so this protocol test never opens a microphone or provider call.
+                    manager.stop()
+                    let payload: [String: Any] = path == "gateway-relay" ? [
+                        "sessionId": "voice-1", "relaySessionId": "voice-1", "provider": "openai",
+                        "mode": "realtime", "transport": "gateway-relay", "brain": "agent-consult",
+                    ] : [
+                        "provider": "openai", "transport": "webrtc", "voiceSessionId": "voice-1",
+                        "clientSecret": "synthetic",
+                    ]
+                    try socket.emitReceiveSuccess(.data(JSONSerialization.data(withJSONObject: [
+                        "type": "res", "id": XCTUnwrap(frame["id"] as? String), "ok": true, "payload": payload,
+                    ])))
+                    await start.value
+                    await gateway.disconnect()
+                } catch {
+                    manager.stop()
+                    await gateway.disconnect()
+                    throw error
+                }
+            }
+        }
+    }
+
+    private static let voiceSelectionMethods = ["talk.voice.get", "talk.voice.set", "talk.voice.complete"]
+
+    private static func voiceSelectionHello(methods: [String]) -> GatewayTestWebSocketTask.ReceiveHook {
+        { socket, index in
+            if index == 0 { return .data(GatewayWebSocketTestSupport.connectChallengeData()) }
+            return .data(GatewayWebSocketTestSupport.connectOkData(
+                id: socket.snapshotConnectRequestID() ?? "connect", methods: methods))
+        }
+    }
+
     private static func withSubmittedConsult(
         socket: GatewayTestWebSocketTask,
         delegate: ConsultCancellationDelegate,
@@ -290,7 +401,8 @@ final class TalkRealtimeConsultCancellationTests: XCTestCase {
             let channel = try XCTUnwrap(peer.dataChannel(
                 forLabel: "synthetic-consult",
                 configuration: RTCDataChannelConfiguration()))
-            let event = #"{"type":"response.function_call_arguments.done","call_id":"call-1","name":"openclaw_agent_consult","arguments":"{\"question\":\"Synthetic consult\"}"}"#
+            let event = #"{"type":"response.function_call_arguments.done","call_id":"call-1","#
+                + #""name":"openclaw_agent_consult","arguments":"{\"question\":\"Synthetic consult\"}"}"#
             talk.dataChannel(channel, didReceiveMessageWith: RTCDataBuffer(data: Data(event.utf8), isBinary: false))
             try await body(talk)
         } catch {

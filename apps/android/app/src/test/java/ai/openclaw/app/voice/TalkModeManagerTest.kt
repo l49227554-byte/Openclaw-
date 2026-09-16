@@ -64,7 +64,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -2541,6 +2543,50 @@ class TalkModeManagerTest {
     }
 
   @Test
+  fun realtimeStartupNegotiatesVoiceSelectionFromTheConnectedGatewayHello() =
+    runBlocking {
+      val voiceMethods = listOf("talk.voice.get", "talk.voice.set", "talk.voice.complete")
+      for ((methods, expectedCapability) in listOf(
+        null to false,
+        emptyList<String>() to false,
+        voiceMethods.dropLast(1) to false,
+        voiceMethods to true,
+      )) {
+        val creates = ConcurrentLinkedQueue<JsonObject>()
+        val hello =
+          buildJsonObject {
+            put("snapshot", buildJsonObject { put("sessionDefaults", buildJsonObject { put("mainSessionKey", "main") }) })
+            methods?.let { put("features", buildJsonObject { put("methods", JsonArray(it.map(::JsonPrimitive))) }) }
+          }.toString()
+        withStartedTalk(
+          responseForRequest = { request, _ ->
+            hello.takeIf { request["method"]?.jsonPrimitive?.content == "connect" }
+          },
+          interceptRequest = { request, socket ->
+            if (request["method"]?.jsonPrimitive?.content == "talk.session.create") {
+              val params = request.getValue("params").jsonObject
+              creates += params
+              val allowed = setOf("sessionKey", "mode", "transport", "brain", "language") + if (expectedCapability) setOf("capabilities") else emptySet()
+              if (params.keys.any { it !in allowed }) {
+                val id = request.getValue("id").jsonPrimitive.content
+                socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"INVALID_REQUEST","message":"invalid talk.session.create params: unexpected capabilities"}}""")
+                return@withStartedTalk true
+              }
+            }
+            false
+          },
+        ) { proof ->
+          assertTrue(proof.manager.isListening.value)
+          val create = creates.single()
+          assertEquals(expectedCapability, create.containsKey("capabilities"))
+          if (expectedCapability) assertEquals(JsonArray(listOf(JsonPrimitive("voice-selection"))), create["capabilities"])
+          assertEquals("gateway-relay", create.getValue("transport").jsonPrimitive.content)
+          assertEquals("main", create.getValue("sessionKey").jsonPrimitive.content)
+        }
+      }
+    }
+
+  @Test
   fun voiceChangeHandoffUsesItsOriginalLeaseAndWaitsForLocalReadiness() =
     runBlocking {
       for ((boundary, outcome) in listOf(
@@ -2829,7 +2875,7 @@ class TalkModeManagerTest {
                 val id = request.getValue("id").jsonPrimitive.content
                 val payload =
                   responseForRequest(request, webSocket) ?: when (request.getValue("method").jsonPrimitive.content) {
-                    "connect" -> """{"snapshot":{"sessionDefaults":{"mainSessionKey":"main"}}}"""
+                    "connect" -> """{"features":{"methods":["talk.voice.get","talk.voice.set","talk.voice.complete"]},"snapshot":{"sessionDefaults":{"mainSessionKey":"main"}}}"""
                     "talk.config" -> """{"config":{}}"""
                     "talk.session.create" -> """{"relaySessionId":"playback-relay"}"""
                     else -> "{}"

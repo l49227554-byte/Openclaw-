@@ -2155,7 +2155,7 @@ final class TalkModeManager: NSObject {
         guard let gatewayRoute = await gateway.currentRoute(), isCurrentStartAttempt(attemptID) else {
             return .ignored
         }
-        await self.ensureRealtimeVoiceSelection(gateway: gateway, route: gatewayRoute)
+        let supportsVoiceSelection = await self.ensureRealtimeVoiceSelection(gateway: gateway, route: gatewayRoute)
         guard self.isCurrentStartAttempt(attemptID) else { return .ignored }
         let startedAt = Self.nowSeconds()
         if self.prefetchedRealtimeSession == nil, let prefetchTask = realtimePrefetchTask {
@@ -2186,6 +2186,7 @@ final class TalkModeManager: NSObject {
                 provider: self.realtimeProvider,
                 model: self.realtimeModelId,
                 voice: voiceChange?.voice ?? self.realtimeVoiceSelection?.selectedVoice ?? self.realtimeVoiceId,
+                supportsVoiceSelection: supportsVoiceSelection,
                 voiceChangeID: voiceChange?.changeid,
                 prefetchedSession: prefetchedSession)
             if voiceChange != nil {
@@ -2311,7 +2312,7 @@ final class TalkModeManager: NSObject {
                 realtimeIssue(message: String(localized: "Gateway is not connected"), phase: "start"))
         }
         guard self.isCurrentStartAttempt(attemptID) else { return .ignored }
-        await self.ensureRealtimeVoiceSelection(gateway: gateway, route: gatewayRoute)
+        let supportsVoiceSelection = await self.ensureRealtimeVoiceSelection(gateway: gateway, route: gatewayRoute)
         guard self.isCurrentStartAttempt(attemptID) else { return .ignored }
         if self.realtimeRelaySession != nil {
             GatewayDiagnostics.log("talk realtime ignored: already active")
@@ -2340,7 +2341,7 @@ final class TalkModeManager: NSObject {
                 provider: self.realtimeProvider,
                 model: self.realtimeModelId,
                 voice: voiceChange?.voice ?? self.realtimeVoiceSelection?.selectedVoice ?? self.realtimeVoiceId,
-                supportsVoiceSelection: true,
+                supportsVoiceSelection: supportsVoiceSelection,
                 voiceChangeId: voiceChange?.changeid),
             audioCapture: IOSRealtimeTalkAudioCapture(),
             pcmPlayer: RealtimePCMStreamingAudioPlayer(),
@@ -2441,17 +2442,31 @@ final class TalkModeManager: NSObject {
 
     private func ensureRealtimeVoiceSelection(
         gateway: GatewayNodeSession,
-        route: GatewayNodeSessionRoute) async
+        route: GatewayNodeSessionRoute) async -> Bool
     {
         if self.realtimeVoiceSelection != nil, self.realtimeVoiceSelectionRoute == route,
            self.realtimeVoiceSelectionEvents != nil
         {
-            return
+            return true
+        }
+        let sessionKey = self.mainSessionKey
+        let voiceSessionGeneration = self.realtimeVoiceSessionGeneration
+        let previousSelection = self.realtimeVoiceSelection
+        for method in ["talk.voice.get", "talk.voice.set", "talk.voice.complete"] {
+            let supported = await gateway.supportsServerMethod(method, ifCurrentRoute: route)
+            guard self.gateway === gateway, self.gatewayConnected, self.mainSessionKey == sessionKey,
+                  self.realtimeVoiceSessionGeneration == voiceSessionGeneration,
+                  self.realtimeVoiceSelection === previousSelection,
+                  let supported
+            else { return false }
+            guard supported else {
+                self.invalidateRealtimeVoiceSelection()
+                return false
+            }
         }
         let selectedVoice = self.realtimeVoiceSelectionRoute?.hasSameConnectionContext(as: route) == true
             ? self.realtimeVoiceSelection?.selectedVoice : nil
         self.invalidateRealtimeVoiceSelection()
-        let sessionKey = self.mainSessionKey
         let selection = RealtimeTalkVoiceSelection(
             sessionKey: sessionKey,
             selectedVoice: selectedVoice,
@@ -2501,7 +2516,7 @@ final class TalkModeManager: NSObject {
             matching: { $0.event == "talk.voice.change" })
         guard self.realtimeVoiceSelection === selection, self.realtimeVoiceSelectionRoute == route else {
             subscription.cancel()
-            return
+            return false
         }
         self.realtimeVoiceSelectionSubscription = subscription
         self.realtimeVoiceSelectionEvents = Task { @MainActor [weak selection] in
@@ -2511,6 +2526,7 @@ final class TalkModeManager: NSObject {
                 selection.handle(event)
             }
         }
+        return true
     }
 
     private func replaceRealtimeVoice(
@@ -2695,7 +2711,7 @@ final class TalkModeManager: NSObject {
         model: String?,
         voice: String?) async throws -> TalkRealtimeClientSession
     {
-        await self.ensureRealtimeVoiceSelection(gateway: gateway, route: route)
+        let supportsVoiceSelection = await self.ensureRealtimeVoiceSelection(gateway: gateway, route: route)
         try Task.checkCancellation()
         guard self.gateway === gateway, self.mainSessionKey == sessionKey else { throw CancellationError() }
         let params = TalkRealtimeClientCreateParams(
@@ -2704,7 +2720,7 @@ final class TalkModeManager: NSObject {
             provider: provider,
             model: model,
             voice: voice,
-            capabilities: ["voice-transcript", "voice-selection"])
+            capabilities: supportsVoiceSelection ? ["voice-transcript", "voice-selection"] : ["voice-transcript"])
         let data = try JSONEncoder().encode(params)
         let json = String(data: data, encoding: .utf8)
         let res = try await gateway.request(

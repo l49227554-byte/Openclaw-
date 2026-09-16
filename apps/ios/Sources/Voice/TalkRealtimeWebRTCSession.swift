@@ -232,6 +232,7 @@ final class TalkRealtimeWebRTCSession: NSObject {
         provider: String?,
         model: String?,
         voice: String?,
+        supportsVoiceSelection: Bool,
         voiceChangeID: String? = nil,
         prefetchedSession: TalkRealtimeClientSession? = nil) async throws
     {
@@ -258,7 +259,11 @@ final class TalkRealtimeWebRTCSession: NSObject {
             session = prefetchedSession
         } else {
             session = try await createClientSession(
-                provider: provider, model: model, voice: voice, voiceChangeID: voiceChangeID)
+                provider: provider,
+                model: model,
+                voice: voice,
+                supportsVoiceSelection: supportsVoiceSelection,
+                voiceChangeID: voiceChangeID)
         }
         guard let returnedVoiceSessionId = session.voiceSessionId else {
             throw NSError(domain: "TalkRealtimeWebRTC", code: 11, userInfo: [
@@ -1173,6 +1178,7 @@ extension TalkRealtimeWebRTCSession {
         provider: String?,
         model: String?,
         voice: String?,
+        supportsVoiceSelection: Bool,
         voiceChangeID: String?) async throws -> TalkRealtimeClientSession
     {
         self.trace("gateway talk.client.create start")
@@ -1184,7 +1190,7 @@ extension TalkRealtimeWebRTCSession {
             model: model,
             voice: voice,
             voiceChangeId: voiceChangeID,
-            capabilities: ["voice-transcript", "voice-selection"])
+            capabilities: supportsVoiceSelection ? ["voice-transcript", "voice-selection"] : ["voice-transcript"])
         let data = try JSONEncoder().encode(params)
         let json = String(data: data, encoding: .utf8)
         let res = try await gateway.request(

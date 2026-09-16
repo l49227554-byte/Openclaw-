@@ -1144,6 +1144,7 @@ class TalkModeManager internal constructor(
     }
     val language = realtimeTranscriptionLanguage(resolvedSpeechLocaleTag())
     val lease = change?.lease ?: session.captureRequestLease(gatewayStableId()) ?: error("Gateway not connected")
+    val supportsVoiceSelection = listOf("talk.voice.get", "talk.voice.set", "talk.voice.complete").all(lease::supportsMethod)
     val transportGeneration = change?.gatewayGeneration ?: gatewayGeneration.get()
     val sessionKey = change?.sessionKey ?: mainSessionKey.ifBlank { "main" }
     val create: suspend (String?) -> String = { requestedLanguage ->
@@ -1153,7 +1154,7 @@ class TalkModeManager internal constructor(
           put("mode", JsonPrimitive("realtime"))
           put("transport", JsonPrimitive("gateway-relay"))
           put("brain", JsonPrimitive("agent-consult"))
-          put("capabilities", JsonArray(listOf(JsonPrimitive("voice-selection"))))
+          if (supportsVoiceSelection) put("capabilities", JsonArray(listOf(JsonPrimitive("voice-selection"))))
           if (change != null) {
             put("voiceChangeId", JsonPrimitive(change.id))
             put("voice", JsonPrimitive(change.voice))

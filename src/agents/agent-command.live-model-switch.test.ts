@@ -39,9 +39,7 @@ import {
   createCommandSessionEntry,
   createCommandSessionFixture,
   createConfiguredModelCompatRuntimeConfig,
-  createTestAgentScope,
   createTestModelSelection,
-  createTestRuntimePlugins,
   createTestModelVisibilityPolicy,
 } from "./agent-command.live-model-switch.test-helpers.js";
 import { createApiKeyCredential } from "./auth-profiles/credential-fixtures.test-support.js";
@@ -343,6 +341,8 @@ vi.mock("./harness/runtime-plugin.js", () => ({
 
 vi.mock("./runtime-plugins.js", async () => {
   const { createEmptyPluginRegistry } = await import("../plugins/registry-empty.js");
+  const { createTestRuntimePlugins } =
+    await import("./agent-command.live-model-switch.test-mocks.js");
   return createTestRuntimePlugins(createEmptyPluginRegistry);
 });
 
@@ -609,6 +609,7 @@ vi.mock("../utils/message-channel.js", () => ({
 vi.mock("./agent-scope.js", async () => {
   const { resolveAgentModelFallbacksOverride, resolveSubagentSpawnModelFallbacksOverride } =
     await vi.importActual<typeof import("./agent-scope.js")>("./agent-scope.js");
+  const { createTestAgentScope } = await import("./agent-command.live-model-switch.test-mocks.js");
   return createTestAgentScope(state, {
     resolveAgentModelFallbacksOverride,
     resolveSubagentSpawnModelFallbacksOverride,

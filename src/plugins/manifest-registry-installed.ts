@@ -51,6 +51,7 @@ import {
 } from "./status-dependencies-core.js";
 
 type InstalledPackageMetadata = {
+  packageDescription?: string;
   packageManifest?: OpenClawPackageManifest;
   packageDependencies?: PluginDependencySpecMap;
   packageOptionalDependencies?: PluginDependencySpecMap;
@@ -418,6 +419,7 @@ function resolveInstalledPackageMetadata(
     return fallback;
   }
   const packageJson = parsed.value;
+  const packageDescription = normalizeOptionalString(packageJson.description);
   const packageManifest = getPackageManifestMetadata(packageJson);
   const dependencies = normalizePluginDependencySpecs({
     dependencies: packageJson.dependencies,
@@ -426,6 +428,7 @@ function resolveInstalledPackageMetadata(
   if (!packageManifest) {
     return {
       ...fallback,
+      packageDescription,
       packageDependencies: dependencies.dependencies,
       packageOptionalDependencies: dependencies.optionalDependencies,
     };
@@ -437,6 +440,7 @@ function resolveInstalledPackageMetadata(
       : undefined;
   const { channel: _ignoredChannel, ...packageManifestWithoutChannel } = packageManifest;
   return {
+    packageDescription,
     packageManifest: {
       ...packageManifestWithoutChannel,
       ...(channel ? { channel } : {}),
@@ -464,6 +468,9 @@ function toPluginCandidate(
       ...(record.bundleFormat ? { bundleFormat: record.bundleFormat } : {}),
       ...(record.packageName ? { packageName: record.packageName } : {}),
       ...(record.packageVersion ? { packageVersion: record.packageVersion } : {}),
+      ...(packageMetadata.packageDescription
+        ? { packageDescription: packageMetadata.packageDescription }
+        : {}),
       ...(packageMetadata.packageManifest
         ? { packageManifest: packageMetadata.packageManifest }
         : {}),

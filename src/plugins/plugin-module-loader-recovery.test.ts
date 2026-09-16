@@ -109,6 +109,27 @@ it("releases unused recovery custody without disturbing the active loader", asyn
   expect(() => recovery.bind(new PluginInstance("recovery-fixture"))).toThrow("released");
 });
 
+it("captures quiesced code without admitting calls and refuses capture after disposal starts", async () => {
+  const { root, entry, captures, instance } = fixture();
+  expect((instance.loadModule(entry) as FixtureModule).dependency()).toBe("original dependency");
+  instance.quiesce();
+  fs.writeFileSync(entry, "throw new Error('changed disk bytes must not become recovery');");
+  const recovery = withPluginSourceCaptureDirectory(captures, () =>
+    instance.captureModuleLoaderRecovery(),
+  );
+  expect(() => instance.loadModule(entry)).toThrow(/reloaded or disabled/);
+  const disposing = instance.dispose();
+  expect(() => instance.captureModuleLoaderRecovery()).toThrow(/reloaded or disabled/);
+  await disposing;
+  fs.rmSync(root, { recursive: true });
+  const restored = new PluginInstance(instance.pluginId);
+  instances.push(restored);
+  recovery.bind(restored);
+  recovery.dispose();
+  expect((restored.loadModule(entry) as FixtureModule).dependency()).toBe("original dependency");
+  expect((restored.loadModule(entry) as FixtureModule).late()).toBe("original late import");
+});
+
 it.each(["cjs", "mjs"])(
   "reuses compiled bundled %s code while giving recovery fresh callback authority",
   async (extension) => {

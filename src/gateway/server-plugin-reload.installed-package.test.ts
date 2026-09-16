@@ -68,7 +68,8 @@ async function verifyInstalledPackageRetention(
     | "pending-disposal"
     | "candidate-disposal"
     | "recovery-disposal"
-    | "mixed-recovery",
+    | "mixed-recovery"
+    | "active-call",
 ) {
   const bootstrap = await import("./server-plugin-bootstrap.js");
   const root = makeTrackedTempDir("openclaw-gateway-plugin-ledger-reload", tempDirs);
@@ -421,6 +422,68 @@ module.exports = { id: ${JSON.stringify(id)}, register(api) {
       assert.ok(retiredRecord);
       const retiredInstance = getPluginInstance(retiredRecord);
       assert.ok(retiredInstance);
+      if (cleanupRetry === "active-call") {
+        const release = createDeferredCore();
+        const effectsPath = path.join(root, "completed-call.txt");
+        const call = retiredInstance.run(async () => {
+          await release.promise;
+          fs.writeFileSync(effectsPath, "completed once");
+        });
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        let failedSettled = false;
+        const failed = reload().catch((error: unknown) => {
+          failedSettled = true;
+          return error;
+        });
+        try {
+          await vi.waitFor(() => expect(retiredInstance.acceptingCalls).toBe(false));
+          await vi.advanceTimersByTimeAsync(5_000);
+          expect(failedSettled).toBe(false);
+          await vi.advanceTimersByTimeAsync(5_000);
+          expect(await failed).toMatchObject({
+            details: { phase: "drain", committed: false, pluginIds: ["installed-probe"] },
+          });
+          expect(retiredInstance.disposing).toBe(false);
+          expect(retiredInstance.lifecycle.signal.aborted).toBe(false);
+          expect(runtime.pluginRuntime.registry).toBe(retiredRegistry);
+          expect(registrations).toEqual([first.instance]);
+          expect(fs.existsSync(resourcePath)).toBe(true);
+          expect(fs.existsSync(effectsPath)).toBe(false);
+          expect(() => retiredInstance.run(() => "still fenced")).toThrow("reloaded or disabled");
+          expect(await probe("sibling")).toEqual(sibling);
+
+          // Both bounded drain attempts returned before this original write finishes.
+          release.resolve();
+          await call;
+          expect(fs.readFileSync(effectsPath, "utf8")).toBe("completed once");
+          expect(() => retiredInstance.run(() => "still fenced")).toThrow("reloaded or disabled");
+          fs.writeFileSync(
+            path.join(packageDir, "dist", "helper.cjs"),
+            'module.exports = "retry";',
+          );
+          await expect(reload()).resolves.toMatchObject({
+            runtime: { pluginIds: ["installed-probe"] },
+          });
+          const current = await probe("installed-probe");
+          expect(current.helper).toBe("retry");
+          expect(current.instance).not.toBe(first.instance);
+          expect(registrations).toEqual([first.instance, current.instance]);
+          expect(retiredInstance.disposing).toBe(true);
+          expect(fs.readFileSync(effectsPath, "utf8")).toBe("completed once");
+          expect(
+            runtime.pluginRuntime.registry.plugins.find((record) => record.id === "sibling"),
+          ).toBe(siblingRecord);
+          expect(runtime.pluginRuntime.registry.gatewayHandlers["sibling.probe"]).toBe(
+            siblingHandler,
+          );
+          expect(await probe("sibling")).toEqual(sibling);
+        } finally {
+          release.resolve();
+          await Promise.allSettled([call, failed]);
+          vi.useRealTimers();
+        }
+        return;
+      }
       const entered = createDeferredCore();
       const release = createDeferredCore();
       let blockedInstance = retiredInstance;
@@ -669,3 +732,6 @@ it.each(["gateway-stop", "pending-disposal", "candidate-disposal", "recovery-dis
 
 it("recovers a healthy changed plugin from captured code while excluding a previously retired plugin", () =>
   verifyInstalledPackageRetention("empty", "mixed-recovery"));
+
+it("retries after an admitted call outlasts both drain attempts without restarting its sibling", () =>
+  verifyInstalledPackageRetention("empty", "active-call"));

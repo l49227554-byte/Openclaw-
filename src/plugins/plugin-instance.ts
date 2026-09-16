@@ -360,7 +360,12 @@ export class PluginInstance {
   }
 
   captureModuleLoaderRecovery(): PluginModuleLoaderRecovery {
-    return this.run(() => {
+    if (this.disposing || this.owner?.revoked || this.controller.signal.aborted) {
+      throw new PluginInstanceUnavailableError(this.pluginId);
+    }
+    // A failed drain can leave this owner quiesced, still holding its original
+    // loader. Host capture may copy that code without reopening ordinary calls.
+    return this.runCleanup(() => {
       if (!this.captureModuleRecovery) {
         throw new Error(`Plugin ${this.pluginId} has no recoverable module loader`);
       }

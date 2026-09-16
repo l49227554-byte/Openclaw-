@@ -244,6 +244,14 @@ if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "taskflow-restoration"
   fi
 fi
 
+if [ "$SCENARIO" = "workshop-doctor-recovery" ] && {
+  [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" != "1" ] ||
+  [ "$UPDATE_RESTART_MODE" != "manual" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_OPENAI" != "0" ];
+}; then
+  echo "workshop-doctor-recovery requires the published baseline, manual restart, and no live provider" >&2
+  exit 1
+fi
+
 resolve_lane_artifact_suffix() {
   if [ -n "${OPENCLAW_DOCKER_ALL_LANE_NAME:-}" ]; then
     printf "%s" "$OPENCLAW_DOCKER_ALL_LANE_NAME"
@@ -362,19 +370,31 @@ if [ "${OPENCLAW_UPGRADE_SURVIVOR_PUBLISHED_BASELINE:-0}" = "1" ]; then
     exit 1
   fi
 
-  if [ "$CANDIDATE_IS_CURRENT" = "1" ] && [ "$SCENARIO" != "custom-plugin-siblings" ] &&
-    [ "$SCENARIO" != "projects-doctor" ] && [ "$SCENARIO" != "taskflow-restoration" ] &&
-    [ -z "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
-    AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT="$(
-      mktemp -d "${TMPDIR:-/tmp}/openclaw-upgrade-survivor-plugin-registry.XXXXXX"
+  if [ "$CANDIDATE_IS_CURRENT" = "1" ] && [ -z "${OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR:-}" ]; then
+    registry_required="$(
+      OPENCLAW_DOCKER_ALL_LANES=published-upgrade-survivor \
+        OPENCLAW_DOCKER_ALL_TIMINGS=0 \
+        OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS="$BASELINE_SPEC" \
+        OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS="$SCENARIO" \
+        node "$HARNESS_ROOT_DIR/scripts/test-docker-all.mjs" --plan-json | node -e '
+          const plan = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+          const required = plan.needs?.prepublishPluginRegistry;
+          if (typeof required !== "boolean") throw new Error("Docker planner omitted plugin registry requirements");
+          process.stdout.write(required ? "1" : "0");
+        '
     )"
-    OPENCLAW_DOCKER_ALL_LANES=published-upgrade-survivor \
-      OPENCLAW_DOCKER_ALL_LOG_DIR="$AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT" \
-      OPENCLAW_DOCKER_ALL_TIMINGS=0 \
-      OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS="$BASELINE_SPEC" \
-      OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS="$SCENARIO" \
-      node "$HARNESS_ROOT_DIR/scripts/test-docker-all.mjs" --prepare-plugin-registry
-    export OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR="$AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT/prepublish-plugin-registry"
+    if [ "$registry_required" = "1" ]; then
+      AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT="$(
+        mktemp -d "${TMPDIR:-/tmp}/openclaw-upgrade-survivor-plugin-registry.XXXXXX"
+      )"
+      OPENCLAW_DOCKER_ALL_LANES=published-upgrade-survivor \
+        OPENCLAW_DOCKER_ALL_LOG_DIR="$AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT" \
+        OPENCLAW_DOCKER_ALL_TIMINGS=0 \
+        OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS="$BASELINE_SPEC" \
+        OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS="$SCENARIO" \
+        node "$HARNESS_ROOT_DIR/scripts/test-docker-all.mjs" --prepare-plugin-registry
+      export OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR="$AUTO_PREPUBLISH_PLUGIN_REGISTRY_ROOT/prepublish-plugin-registry"
+    fi
   fi
 
   if [ -n "$PACKAGE_TGZ" ]; then

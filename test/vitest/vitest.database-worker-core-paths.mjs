@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "packages/memory-host-sdk/src/host/session-memory-sync.test.ts",
   "src/snapshot/git-backup.test.ts",
   "src/state/backup-run-records.test.ts",
   "src/claws/provenance-runtime-read.async.test.ts",
@@ -59,6 +60,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/sessions/sdk.auth-migration.test.ts",
   "src/agents/subagents/completion/subagent-completion-admission.store.test.ts",
   "src/commands/doctor-maintenance.worker.test.ts",
+  "src/flows/doctor-health.dangling-workshop-index.test.ts",
   "src/entry.memory-json.test.ts",
   "src/gateway/server-methods/memory-search.test.ts",
   "src/logging/diagnostic-session-context.test.ts",

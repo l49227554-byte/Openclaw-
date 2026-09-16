@@ -3,6 +3,7 @@ const UPGRADE_SURVIVOR_SCENARIOS = Object.freeze([
   "msteams-polls",
   "abandoned-update",
   "legacy-operator-state",
+  "workshop-doctor-recovery",
   "mobile-pairing-reconnect",
   "acpx-openclaw-tools-bridge",
   "feishu-channel",
@@ -46,6 +47,7 @@ const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set([
   "abandoned-update",
   "projects-doctor",
   "taskflow-restoration",
+  "workshop-doctor-recovery",
 ]);
 
 export function isTrustedHarnessOwnedUpgradeSurvivorScenario(scenario) {
@@ -64,6 +66,7 @@ const aggregateScenarios = UPGRADE_SURVIVOR_SCENARIOS.filter(
     scenario !== "missing-configured-plugin-migration" &&
     scenario !== "projects-doctor" &&
     scenario !== "taskflow-restoration" &&
+    scenario !== "workshop-doctor-recovery" &&
     scenario !== "mobile-pairing-reconnect" &&
     scenario !== "watchos-direct-node" &&
     scenario !== "prerelease-plugin-registry" &&
@@ -164,6 +167,9 @@ export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec
   }
   if (scenario === "abandoned-update" || scenario === "missing-configured-plugin-migration") {
     return baselineSpec === "openclaw@2026.9.2";
+  }
+  if (scenario === "workshop-doctor-recovery") {
+    return baselineSpec === "openclaw@2026.9.4";
   }
   const minimumBaseline = scenarioMinimumBaselines.get(scenario);
   return (

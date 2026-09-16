@@ -113,6 +113,10 @@ describe("plugin install plan helpers", () => {
           expectedIntegrity:
             "sha512-htqOJfPx+TlLWE/nmpdJJVgrg8zDqRIX87smzY3CnKcdJPlx51Rc1kWzarvE+2hvhpm2lzD5sKkxRSIWKz2AaA==",
         },
+        {
+          source: "clawhub",
+          spec: "clawhub:@telnyx/openclaw-provider@0.2.0",
+        },
       ],
     });
   });

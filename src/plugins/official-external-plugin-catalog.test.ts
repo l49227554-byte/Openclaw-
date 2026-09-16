@@ -2129,6 +2129,7 @@ describe("official external plugin catalog", () => {
       },
     });
     expect(resolveOfficialExternalPluginInstall(entry)).toEqual({
+      clawhubSpec: "clawhub:@telnyx/openclaw-provider@0.2.0",
       npmSpec: "@telnyx/openclaw-provider@0.2.0",
       defaultChoice: "npm",
       expectedIntegrity:

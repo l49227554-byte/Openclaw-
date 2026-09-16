@@ -1820,6 +1820,7 @@
           }
         ],
         "install": {
+          "clawhubSpec": "clawhub:@telnyx/openclaw-provider@0.2.0",
           "npmSpec": "@telnyx/openclaw-provider@0.2.0",
           "defaultChoice": "npm",
           "expectedIntegrity": "sha512-htqOJfPx+TlLWE/nmpdJJVgrg8zDqRIX87smzY3CnKcdJPlx51Rc1kWzarvE+2hvhpm2lzD5sKkxRSIWKz2AaA==",

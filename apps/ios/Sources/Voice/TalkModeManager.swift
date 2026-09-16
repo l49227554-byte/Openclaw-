@@ -5032,9 +5032,13 @@ extension TalkModeManager {
         persist: @escaping TalkRealtimeTranscriptWriteQueue.Persist)
     {
         self.realtimeTranscriptStore.enqueue(
-            sessionKey: self.mainSessionKey, voiceSessionId: voiceSessionId,
-            role: .user, text: "Synthetic transcript", timestamp: 1,
-            persist: persist, failureLog: { _, _ in })
+            sessionKey: self.mainSessionKey,
+            voiceSessionId: voiceSessionId,
+            role: .user,
+            text: "Synthetic transcript",
+            timestamp: 1,
+            persist: persist,
+            failureLog: { _, _ in })
     }
 
     func _test_closeLogicalRealtimeVoiceSessions() -> Task<Void, Never>? {

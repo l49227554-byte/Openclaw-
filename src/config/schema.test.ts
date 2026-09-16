@@ -1026,12 +1026,14 @@ describe("config schema", () => {
           },
           thinking: "low",
           fastMode: true,
+          maxTokens: 2_048,
           timeoutMs: 15_000,
         },
       },
     });
     expect(tools?.exec?.reviewer?.thinking).toBe("low");
     expect(tools?.exec?.reviewer?.fastMode).toBe(true);
+    expect(tools?.exec?.reviewer?.maxTokens).toBe(2_048);
     expect(tools?.exec?.reviewer?.model).toEqual({
       primary: "openrouter/anthropic/claude-sonnet-4-6",
     });
@@ -1060,6 +1062,8 @@ describe("config schema", () => {
     expect(ToolsSchema.safeParse({ exec: { reviewer: { fastMode: "priority" } } }).success).toBe(
       false,
     );
+    expect(ToolsSchema.safeParse({ exec: { reviewer: { maxTokens: 0 } } }).success).toBe(false);
+    expect(ToolsSchema.safeParse({ exec: { reviewer: { maxTokens: 1.5 } } }).success).toBe(false);
     expect(ToolsSchema.safeParse({ exec: { reviewer: { thinking: "turbo" } } }).success).toBe(
       false,
     );

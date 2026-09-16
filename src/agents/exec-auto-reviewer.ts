@@ -343,14 +343,22 @@ function resolveExecReviewerTimeoutMs(config?: ExecReviewerConfig): number {
 
 /**
  * Resolves a bounded completion budget for the exec auto-reviewer.
- * Uses the default 1,024 tokens while clamping downward to the provider model's
- * advertised maximum output token limit (floored to integer).
+ * Uses the configured `maxTokens`, or 1,024 by default, while clamping downward
+ * to the provider model's advertised maximum output token limit (floored to integer).
  */
-function resolveExecReviewerMaxTokens(modelMaxTokens?: number): number {
+function resolveExecReviewerMaxTokens(
+  config?: ExecReviewerConfig,
+  modelMaxTokens?: number,
+): number {
+  const configured = config?.maxTokens;
+  const requested =
+    typeof configured === "number" && Number.isInteger(configured) && configured > 0
+      ? configured
+      : EXEC_REVIEWER_MAX_TOKENS;
   if (typeof modelMaxTokens === "number" && Number.isFinite(modelMaxTokens) && modelMaxTokens > 0) {
-    return Math.max(1, Math.floor(Math.min(EXEC_REVIEWER_MAX_TOKENS, modelMaxTokens)));
+    return Math.max(1, Math.floor(Math.min(requested, modelMaxTokens)));
   }
-  return EXEC_REVIEWER_MAX_TOKENS;
+  return requested;
 }
 
 function buildReviewerTimeoutDecision(timeoutMs: number): ExecAutoReviewDecision {
@@ -509,7 +517,7 @@ export function createModelExecAutoReviewer(params: {
               ],
             },
             options: {
-              maxTokens: resolveExecReviewerMaxTokens(prepared.model.maxTokens),
+              maxTokens: resolveExecReviewerMaxTokens(params.reviewer, prepared.model.maxTokens),
               temperature: 0,
               ...(params.reviewer?.thinking ? { reasoning: params.reviewer.thinking } : {}),
               ...(params.reviewer?.fastMode !== undefined

@@ -420,6 +420,8 @@ const ToolExecBaseShape = {
       thinking: z.enum(["minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
       /** Optional Fast processing for supported provider requests. */
       fastMode: z.boolean().optional(),
+      /** Completion token budget for a review (default: 1024, clamped to the model's maxTokens). */
+      maxTokens: z.number().int().positive().optional(),
       /** Reviewer timeout in milliseconds (default: 30000). */
       timeoutMs: z.number().int().positive().optional(),
     })

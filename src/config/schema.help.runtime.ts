@@ -109,6 +109,8 @@ export const RUNTIME_FIELD_HELP: Record<string, string> = {
     "Optional reasoning effort for OpenClaw model-backed approval reviews: minimal, low, medium, high, xhigh, or max. Omit to preserve provider defaults. Supported levels are normalized for the selected model. Does not configure native Codex Guardian.",
   "tools.exec.reviewer.fastMode":
     "Optional Fast mode for OpenClaw approval reviews: true requests priority processing on supported OpenAI Responses and ChatGPT/OAuth routes; false requests standard processing. Omit to preserve provider defaults. Fast mode may cost more and is subject to provider availability. Does not configure native Codex Guardian.",
+  "tools.exec.reviewer.maxTokens":
+    "Completion token budget for one model-backed approval review (default: 1024). Raise it when the reviewer model thinks before answering and its verdict gets cut off; the value is clamped to the reviewer model's advertised maxTokens.",
   "tools.exec.reviewer.timeoutMs":
     "Per-stage exec reviewer timeout in milliseconds for model preparation and completion before falling back to human approval (default: 30000).",
   "tools.exec.node":

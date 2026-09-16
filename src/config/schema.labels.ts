@@ -270,6 +270,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "tools.exec.reviewer.model": "Exec Reviewer Model",
   "tools.exec.reviewer.thinking": "Exec Reviewer Thinking",
   "tools.exec.reviewer.fastMode": "Exec Reviewer Fast Mode",
+  "tools.exec.reviewer.maxTokens": "Exec Reviewer Max Tokens",
   "tools.exec.reviewer.timeoutMs": "Exec Reviewer Timeout (ms)",
   "tools.exec.node": "Exec Node Binding",
   "tools.agentToAgent": "Agent-to-Agent Tool Access",

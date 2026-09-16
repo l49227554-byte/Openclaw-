@@ -1,4 +1,5 @@
 import { readMcpOAuthStoreInDatabase } from "../agents/mcp-oauth-store.kernel.js";
+import { executeMcpOAuthWriteCommand } from "../agents/mcp-oauth-store.worker.js";
 import { readClawInstallSchemaVersionRows } from "../claws/provenance-runtime-read.kernel.js";
 import {
   patchConfigHealthEntryInDatabase,
@@ -79,6 +80,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
+import { executeOpenClawStateLeaseCommand } from "./openclaw-state-lease-worker.js";
 import type {
   OpenClawStateWorkerOperations,
   OpenClawStateWorkerInspectionOperations,
@@ -145,6 +147,24 @@ function createSharedStateWorkerBackend(
     execute(command) {
       if (closed) {
         throw new Error("Shared-state worker is closed");
+      }
+      if (
+        command.type === "stateLease.acquire" ||
+        command.type === "stateLease.verify" ||
+        command.type === "stateLease.renew" ||
+        command.type === "stateLease.release"
+      ) {
+        return executeOpenClawStateLeaseCommand(command, open());
+      }
+      if (
+        command.type === "mcpOAuth.mutate" ||
+        command.type === "mcpOAuth.consumePending" ||
+        command.type === "mcpOAuth.writePending" ||
+        command.type === "mcpOAuth.deletePending" ||
+        command.type === "mcpOAuth.clear" ||
+        command.type === "mcpOAuth.clearPendingPrefix"
+      ) {
+        return executeMcpOAuthWriteCommand(open(), command);
       }
       if (command.type === "mcpOAuth.read") {
         return readMcpOAuthStoreInDatabase(open().db, command.input);

@@ -1,4 +1,5 @@
 import type { McpOAuthReadOperations } from "../agents/mcp-oauth-store.kernel.js";
+import type { McpOAuthWriteOperations } from "../agents/mcp-oauth-store.types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
@@ -31,6 +32,7 @@ import type {
 } from "../tasks/task-registry.store.types.js";
 import type { TaskRecord, TaskRegistrySummary } from "../tasks/task-registry.types.js";
 import type { PreparedBackupRunRecord } from "./backup-run-records.kernel.js";
+import type { OpenClawStateLeaseLifecycleOperations } from "./openclaw-state-lease-context.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 
 type TaskLookupRecords = {
@@ -58,7 +60,9 @@ export type OpenClawStateWorkerOperations = PluginStateWorkerOperations &
   FleetRegistryWriteOperations &
   SessionDeliveryWorkerOperations &
   DeliveryQueueWorkerOperations &
-  McpOAuthReadOperations & {
+  McpOAuthReadOperations &
+  McpOAuthWriteOperations &
+  OpenClawStateLeaseLifecycleOperations & {
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "projects.findRoot": { input: { repoRoot: string }; output: string | undefined };
     "modelCatalog.remote.read": {

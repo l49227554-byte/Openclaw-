@@ -10,12 +10,13 @@ export function createPluginReloadRecovery(
   preparePlugins: typeof prepareGatewayPluginLoad,
 ) {
   const moduleRecoveries = new Map<string, PluginRuntimeRecovery>();
-  const previouslyRetiredIds = new Set(
+  // Entry-open errors can precede instance allocation and have no runnable source to recover.
+  const previouslyUnavailableIds = new Set(
     previousRegistry.plugins
-      .filter((record) => getPluginInstance(record)?.disposing)
+      .filter((record) => record.status === "error" || getPluginInstance(record)?.disposing)
       .map((record) => record.id),
   );
-  const selectedRetiredIds = new Set<string>();
+  const selectedUnavailableIds = new Set<string>();
   const previousHookIds = new Set<string>();
   return {
     get previousHookIds(): ReadonlySet<string> {
@@ -26,8 +27,8 @@ export function createPluginReloadRecovery(
         if (!pluginIds.has(record.id)) {
           continue;
         }
-        if (previouslyRetiredIds.has(record.id)) {
-          selectedRetiredIds.add(record.id);
+        if (previouslyUnavailableIds.has(record.id)) {
+          selectedUnavailableIds.add(record.id);
           continue;
         }
         previousHookIds.add(record.id);
@@ -43,7 +44,7 @@ export function createPluginReloadRecovery(
     ) {
       const retainedErrorIds = new Set(
         previousRegistry.plugins
-          .filter((record) => selectedRetiredIds.has(record.id) && record.status === "error")
+          .filter((record) => selectedUnavailableIds.has(record.id) && record.status === "error")
           .map((record) => record.id),
       );
       const recoveryParams = {
@@ -52,7 +53,9 @@ export function createPluginReloadRecovery(
         // subset without pretending current disk bytes are the retired code.
         // Unchanged startup-error siblings remain retained diagnostic records.
         pluginIds: previousRegistry.plugins
-          .filter((record) => !selectedRetiredIds.has(record.id) || retainedErrorIds.has(record.id))
+          .filter(
+            (record) => !selectedUnavailableIds.has(record.id) || retainedErrorIds.has(record.id),
+          )
           .map((record) => record.id),
         // Error records carry diagnostics, not callable runtimes. Preserve them
         // through normal retention so later sibling operations do not retry their code.
@@ -61,14 +64,14 @@ export function createPluginReloadRecovery(
         ),
         moduleRecoveries,
       };
-      if (selectedRetiredIds.size) {
+      if (selectedUnavailableIds.size) {
         const plan = preparePlugins({ ...recoveryParams, loadModules: false });
         plan.retireGatewayRuntimeBindings();
         // The loader can add dependencies outside the requested scope. Validate
         // its actual plan before any unavailable owner could run from disk.
         const unavailable = plan.pluginRegistry.plugins.filter(
           (record) =>
-            selectedRetiredIds.has(record.id) && record.enabled && record.status === "loaded",
+            selectedUnavailableIds.has(record.id) && record.enabled && record.status === "loaded",
         );
         if (unavailable.length) {
           throw new Error(

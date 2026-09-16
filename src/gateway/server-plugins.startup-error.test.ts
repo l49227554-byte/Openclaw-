@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { linkSync, unlinkSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { getFreePort } from "../test-utils/ports.js";
 import {
@@ -33,10 +35,10 @@ installGatewayTestHooks({ scope: "suite" });
 installInstanceBindingConfigIo();
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-it(
-  "keeps startup errors diagnostic while healthy plugins reload and disable",
+it.each(["module-load", "entry-open"] as const)(
+  "keeps %s startup errors diagnostic while healthy plugins reload and disable",
   { timeout: 120_000 },
-  async () => {
+  async (failureKind) => {
     const coordinator = installInstanceBindingProbeCoordinator({ reportReloadSettlement: true });
     const bundledRoot = tempDirs.make("openclaw-startup-error-");
     // External code has captured source generations; bundled JS intentionally
@@ -44,7 +46,10 @@ it(
     const healthyRoot = tempDirs.make("openclaw-startup-healthy-");
     await writeInstanceBindingProbePlugin(healthyRoot, coordinator.channelName);
     const healthyPlugin = path.join(healthyRoot, "instance-binding-probe");
-    const brokenDir = path.join(bundledRoot, "startup-broken");
+    const brokenDir = path.join(
+      failureKind === "entry-open" ? healthyRoot : bundledRoot,
+      "startup-broken",
+    );
     await fs.mkdir(brokenDir);
     await fs.writeFile(
       path.join(brokenDir, "package.json"),
@@ -66,6 +71,31 @@ it(
       path.join(brokenDir, "index.js"),
       'throw new Error("startup failure remains diagnostic");',
     );
+    if (failureKind === "entry-open") {
+      const boundary = await import("../infra/boundary-file-read.js");
+      const open = boundary.openRootFileSync;
+      let injected = false;
+      const entryOpen = vi.spyOn(boundary, "openRootFileSync").mockImplementation((options) => {
+        if (
+          !injected &&
+          options.absolutePath === path.join(brokenDir, "index.js") &&
+          options.boundaryLabel === "plugin root"
+        ) {
+          // Discovery has admitted metadata. Change the real inode only during
+          // the import boundary check, then leave later metadata reads valid.
+          injected = true;
+          const alias = path.join(healthyRoot, "entry-alias.js");
+          linkSync(options.absolutePath, alias);
+          try {
+            return open(options);
+          } finally {
+            unlinkSync(alias);
+          }
+        }
+        return open(options);
+      });
+      onTestFinished(() => entryOpen.mockRestore());
+    }
     process.env.OPENCLAW_TEST_MINIMAL_GATEWAY = "0";
     delete process.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS;
     process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledRoot;
@@ -79,7 +109,7 @@ it(
       JSON.stringify({
         plugins: {
           allow: ["startup-broken", "instance-binding-probe"],
-          load: { paths: [healthyPlugin] },
+          load: { paths: [healthyPlugin, ...(failureKind === "entry-open" ? [brokenDir] : [])] },
           entries: {
             "startup-broken": { enabled: true },
             "instance-binding-probe": { enabled: true },
@@ -110,8 +140,14 @@ it(
       const broken = initial.plugins.find((record) => record.id === "startup-broken");
       expect(broken).toMatchObject({
         status: "error",
-        error: expect.stringContaining("startup failure remains diagnostic"),
+        error: expect.stringContaining(
+          failureKind === "entry-open" ? "plugin entry path" : "startup failure remains diagnostic",
+        ),
       });
+      assert(broken);
+      if (failureKind === "entry-open") {
+        expect(getPluginInstance(broken)).toBeUndefined();
+      }
       const diagnostics = initial.diagnostics.filter(
         (entry) => entry.pluginId === "startup-broken",
       );
@@ -161,6 +197,26 @@ it(
         placementId: after.payload?.placementId,
       });
 
+      const registrationsBeforeRepair = coordinator.runtimes.length;
+      if (failureKind === "entry-open") {
+        // Repair the entry, then fail B activation. Reexecuting these current files
+        // as C would succeed, concealing that no old runnable source was captured.
+        await fs.unlink(path.join(brokenDir, "index.js"));
+        await fs.writeFile(
+          path.join(brokenDir, "index.js"),
+          `module.exports = { id: "startup-broken", register(api) {
+            const request = {};
+            require("node:diagnostics_channel").channel(${JSON.stringify(coordinator.channelName)}).publish(request);
+            const coordinator = request.coordinator;
+            coordinator.runtimes.push(api.runtime);
+            api.registerGatewayMethod("startupBroken.repaired", ({ respond }) => respond(true, { repaired: true }), { scope: "operator.read" });
+            api.registerService({ id: "repaired-startup", start() {
+              coordinator.serviceStarts++;
+              if (coordinator.serviceStarts === 1) throw new Error("repaired candidate activation failed");
+            } });
+          } };`,
+        );
+      }
       const retryBroken = await rpcReq(socket, "plugins.reload", {
         plugins: [{ pluginId: "startup-broken" }],
       });
@@ -168,7 +224,17 @@ it(
         ok: false,
         error: { details: { runtime: { committed: false, phase: "activate" } } },
       });
-      expect(retryBroken.error?.message).toContain("startup-broken");
+      if (failureKind === "module-load") {
+        expect(retryBroken.error?.message).toContain("startup-broken");
+      }
+      if (failureKind === "entry-open") {
+        expect(retryBroken.error?.message).toContain("repaired candidate activation failed");
+        expect(coordinator.runtimes).toHaveLength(registrationsBeforeRepair + 1);
+        expect(coordinator.serviceStarts).toBe(1);
+        expect(
+          getActivePluginRegistry()?.gatewayHandlers["startupBroken.repaired"],
+        ).toBeUndefined();
+      }
       expect(getActivePluginRegistry()?.gatewayHandlers[INSTANCE_BINDING_PROBE_METHOD]).toBe(
         recovered?.gatewayHandlers[INSTANCE_BINDING_PROBE_METHOD],
       );

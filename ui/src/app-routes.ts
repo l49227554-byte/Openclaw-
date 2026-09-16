@@ -264,6 +264,7 @@ export async function startApplicationRouter(
       const verifyReconnectedSession = async (
         target: NonNullable<ReturnType<typeof currentTarget>>,
       ) => {
+        // SAFETY: The caller accepts only chat/dashboard matches, both loaded by loadChatRoute.
         const data = target.data as ChatRouteData | undefined;
         if (data?.kind !== "session") {
           return;

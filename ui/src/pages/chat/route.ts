@@ -40,8 +40,9 @@ function sessionPage(face: BoardFace) {
               .getState()
               .matches.find((match) => match.routeId === face && match.deps === deps)
           : undefined;
-      // Revalidating an established link must not adopt another session with the same prefix.
+      // SAFETY: Matching this face selects only this page's loadChatRoute result.
       const data = current?.data as ChatRouteData | undefined;
+      // Revalidating an established link must not adopt another session with the same prefix.
       return await loadChatRoute(
         context,
         location,

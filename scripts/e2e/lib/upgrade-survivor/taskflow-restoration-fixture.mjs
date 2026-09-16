@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 
 export const TASKFLOW_PLUGIN_ID = "taskflow-survivor";
+export const TASKFLOW_PLUGIN_MANIFEST = {
+  id: TASKFLOW_PLUGIN_ID,
+  activation: { onStartup: true },
+  configSchema: { type: "object", properties: {}, additionalProperties: false },
+};
 export const TASKFLOW_METHOD = "taskflow-survivor.read";
 export const TASKFLOW_OWNER = "agent:main:taskflow-update-cell";
 export const TASKFLOW_TASK_IDS = [1, 2, 3].map((index) => `update-cell-task-0${index}`);

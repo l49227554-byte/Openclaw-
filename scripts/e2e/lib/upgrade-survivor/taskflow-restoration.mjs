@@ -12,6 +12,7 @@ import {
   createTaskflowFixture,
   normalizeTaskflowSnapshot,
   TASKFLOW_METHOD,
+  TASKFLOW_PLUGIN_MANIFEST,
   TASKFLOW_TASK_IDS,
 } from "./taskflow-restoration-fixture.mjs";
 import taskflowPlugin from "./taskflow-restoration-plugin.mjs";
@@ -209,10 +210,7 @@ async function seed() {
     type: "module",
     openclaw: { extensions: ["./taskflow-restoration-plugin.mjs"] },
   });
-  await writeJson(path.join(pluginRoot, "openclaw.plugin.json"), {
-    id: pluginId,
-    configSchema: { type: "object", properties: {}, additionalProperties: false },
-  });
+  await writeJson(path.join(pluginRoot, "openclaw.plugin.json"), TASKFLOW_PLUGIN_MANIFEST);
   const token = process.env.GATEWAY_AUTH_TOKEN_REF;
   assert(token, "Missing synthetic Gateway token");
   await writeJson(configPath, {

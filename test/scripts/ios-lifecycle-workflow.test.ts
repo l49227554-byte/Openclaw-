@@ -161,13 +161,17 @@ describe.skipIf(process.platform === "win32")("iOS voice cleanup workflow", () =
     expect(result.status, result.stderr).toBe(0);
     const builds = commands.filter((command) => command.tool === "xcodebuild");
     expect(builds).toHaveLength(1);
-    expect(builds[0].args.filter((arg) => arg.startsWith("-only-testing:"))).toEqual([
+    const build = builds[0];
+    if (!build) {
+      throw new Error("Missing voice cleanup xcodebuild command");
+    }
+    expect(build.args.filter((arg) => arg.startsWith("-only-testing:"))).toEqual([
       "-only-testing:OpenClawTests/TalkRealtimeVoiceSessionCleanupTests",
       "-only-testing:OpenClawTests/TalkRealtimeConsultCancellationTests",
       "-only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests",
       "-only-testing:OpenClawTests/TalkModeManagerTests",
     ]);
-    expect(builds[0].args).toEqual(expect.arrayContaining(["-configuration", "Debug", "test"]));
-    expect(builds[0].args.some((arg) => arg.startsWith("CODE_SIGN"))).toBe(false);
+    expect(build.args).toEqual(expect.arrayContaining(["-configuration", "Debug", "test"]));
+    expect(build.args.some((arg) => arg.startsWith("CODE_SIGN"))).toBe(false);
   });
 });

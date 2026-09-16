@@ -84,6 +84,7 @@ const state = vi.hoisted(() => ({
   acpRunTurnMock: vi.fn((..._args: unknown[]): unknown => undefined),
   buildAcpResultMock: vi.fn(),
   createAcpVisibleTextAccumulatorMock: vi.fn(),
+  emitAcpLifecycleStartMock: vi.fn(),
   emitAcpLifecycleEndMock: vi.fn(),
   emitAcpLifecycleErrorMock: vi.fn(),
   emitAcpRuntimeEventMock: vi.fn(),
@@ -206,7 +207,7 @@ vi.mock("./command/attempt-execution.runtime.js", () => ({
   emitAcpAssistantDelta: vi.fn(),
   emitAcpLifecycleEnd: (...args: unknown[]) => state.emitAcpLifecycleEndMock(...args),
   emitAcpLifecycleError: (...args: unknown[]) => state.emitAcpLifecycleErrorMock(...args),
-  emitAcpLifecycleStart: vi.fn(),
+  emitAcpLifecycleStart: (...args: unknown[]) => state.emitAcpLifecycleStartMock(...args),
   emitAcpPromptSubmitted: vi.fn(),
   emitAcpRuntimeEvent: (...args: unknown[]) => state.emitAcpRuntimeEventMock(...args),
   persistCliTurnTranscript: (...args: unknown[]) => state.persistCliTurnTranscriptMock(...args),
@@ -2006,10 +2007,32 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
     expect(store["agent:main:main"]?.pendingFinalDelivery).toBeUndefined();
   });
 
+  it("rejects pre-aborted ACP admission with the original restart cause", async () => {
+    setupAcpSession();
+    const controller = new AbortController();
+    const reason = createAgentRunRestartAbortError();
+    controller.abort(reason);
+
+    await expect(
+      agentCommand({
+        message: "hello",
+        sessionKey: "agent:main:main",
+        abortSignal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError", cause: reason });
+
+    expect(state.acpRunTurnMock).not.toHaveBeenCalled();
+    expect(state.emitAcpLifecycleStartMock).not.toHaveBeenCalled();
+    expect(state.emitAcpLifecycleEndMock).not.toHaveBeenCalled();
+    expect(state.deliverAgentCommandResultMock).not.toHaveBeenCalled();
+  });
+
   it("preserves restart ownership when an aborted ACP turn resolves normally", async () => {
     setupAcpSession();
     const controller = new AbortController();
-    controller.abort(createAgentRunRestartAbortError());
+    state.acpRunTurnMock.mockImplementationOnce(async () => {
+      controller.abort(createAgentRunRestartAbortError());
+    });
 
     await expect(
       agentCommand({
@@ -2019,6 +2042,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
       }),
     ).rejects.toThrow("agent run aborted for restart");
 
+    expect(state.acpRunTurnMock).toHaveBeenCalledOnce();
     expect(state.emitAcpLifecycleEndMock).not.toHaveBeenCalled();
     expect(state.deliverAgentCommandResultMock).not.toHaveBeenCalled();
   });

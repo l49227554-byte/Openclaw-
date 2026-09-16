@@ -540,6 +540,9 @@ export async function recoverStore(params: {
         );
         await resumeCurrent({
           pendingFinalDeliveryText: entry.pendingFinalDelivery.text,
+          // Pending final text is model input, not tool-free delivery. An unreadable
+          // transcript cannot clear a durable restriction or establish fresh authority.
+          forceRestartSafeTools: true,
         });
         continue;
       }

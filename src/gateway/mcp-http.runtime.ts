@@ -60,6 +60,7 @@ type McpLoopbackScopeParams = {
   authProfileStoreAgentDir?: string;
   skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
   rootedExecution?: PreparedRootedExecutionCapability;
+  messageActionTurnCapability?: string;
   grantToken?: string;
   /**
    * Liveness of the authenticating client grant. Deliberately absent from the
@@ -217,6 +218,7 @@ function resolveMcpLoopbackTools(
     sessionSendToolCapRef,
     ...context,
     rootedExecution: params.rootedExecution,
+    messageActionTurnCapability: params.messageActionTurnCapability,
     cfg: params.cfg,
     authProfileStore: params.authProfileStore,
     onYield: params.onYield,

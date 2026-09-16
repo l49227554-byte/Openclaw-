@@ -27,6 +27,7 @@ import { callGateway } from "../../gateway/call.js";
 import type { RestartRecoveryCandidate } from "../../gateway/chat-abort.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import { persistGatewaySessionLifecycleEvent } from "../../gateway/session-lifecycle-state.js";
+import * as sessionTranscriptReaders from "../../gateway/session-transcript-readers.js";
 import {
   getAgentEventLifecycleGeneration,
   resetAgentEventsForTest,
@@ -3298,6 +3299,67 @@ describe("main-session-restart-recovery", () => {
     expect(gatewayParams().message).toContain("The durable final answer.");
     expect(gatewayParams()).not.toHaveProperty("forceRestartSafeTools");
   });
+
+  it.each([
+    { failure: "recent", persistedRestriction: true },
+    { failure: "provenance", persistedRestriction: true },
+    { failure: "recent", persistedRestriction: undefined },
+    { failure: "provenance", persistedRestriction: undefined },
+    { failure: "none", persistedRestriction: undefined },
+  ] as const)(
+    "bounds pending-final file effects after $failure read failure (persisted=$persistedRestriction)",
+    async ({ failure, persistedRestriction }) => {
+      const { executeRecoveryToolEffects } =
+        await import("./restart-recovery-tool-effects.test-support.js");
+      const sessionsDir = await makeSessionsDir();
+      await writeStore(sessionsDir, {
+        "agent:main:main": runningSessionEntry("pending-final-session", {
+          abortedLastRun: true,
+          restartRecoveryForceSafeTools: persistedRestriction,
+          pendingFinalDelivery: makePendingFinalDelivery("The durable final answer."),
+        }),
+      });
+      await fs.writeFile(path.join(tmpDir, "safe.txt"), "safe recovery evidence");
+      const reader =
+        failure === "none"
+          ? undefined
+          : vi
+              .spyOn(
+                sessionTranscriptReaders,
+                failure === "recent"
+                  ? "readSessionMessagesAsync"
+                  : "readSessionMessagesPageWithStatsAsync",
+              )
+              .mockRejectedValueOnce(new Error("injected transcript inspection failure"));
+      let effects: Awaited<ReturnType<typeof executeRecoveryToolEffects>> | undefined;
+      vi.mocked(callGateway).mockImplementation(async ({ params }) => {
+        effects = await executeRecoveryToolEffects(expectRecord(params, "recovery params"), tmpDir);
+        return { runId: "run-resumed" };
+      });
+      try {
+        await expectRecovery({ started: 1, settled: 0, failed: 0, skipped: 0 });
+        expect(callGateway).toHaveBeenCalledOnce();
+        expect(JSON.stringify(effects?.readResult)).toContain("safe recovery evidence");
+        const stored = readStore(path.join(sessionsDir, "sessions.json"))["agent:main:main"];
+        if (failure === "none") {
+          expect(gatewayParams()).not.toHaveProperty("forceRestartSafeTools");
+          expect(stored?.restartRecoveryForceSafeTools).toBeUndefined();
+          expect(await fs.readFile(path.join(tmpDir, "effect.txt"), "utf8")).toBe(
+            "mutation reached the filesystem",
+          );
+        } else {
+          await expect(fs.stat(path.join(tmpDir, "effect.txt"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+          expect(gatewayParams()).toMatchObject({ forceRestartSafeTools: true });
+          expect(stored?.restartRecoveryForceSafeTools).toBe(true);
+          expect(effects?.toolNames).toEqual(["read"]);
+        }
+      } finally {
+        reader?.mockRestore();
+      }
+    },
+  );
 
   it("resumes pending final delivery even when the transcript tail is assistant output", async () => {
     const sessionsDir = await writeMainSessionTranscript(

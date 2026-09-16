@@ -85,6 +85,10 @@ import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNonNegativeIntegerParam, readToolStringParam } from "./common.js";
 import { withGatewayToolCallerApprovalSignal } from "./gateway-caller-context.js";
 import {
+  captureGatewayToolCallerAssertion,
+  getGatewayToolCallerIdentity,
+} from "./gateway-caller-context.js";
+import {
   callAgentToolGatewayRequest,
   callInProcessGatewayToolWithCreation,
   hasInProcessGatewayToolContext,
@@ -104,6 +108,7 @@ import {
   resolveVisibleSessionReference,
 } from "./sessions-helpers.js";
 import { buildAgentToAgentMessageContext, resolvePingPongTurns } from "./sessions-send-helpers.js";
+import { resumeSessionsSendTask } from "./sessions-send-resume.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 
 const SessionsSendToolSchema = Type.Object({
@@ -114,7 +119,12 @@ const SessionsSendToolSchema = Type.Object({
   timeoutSeconds: Type.Optional(Type.Integer({ minimum: 0 })),
   watch: Type.Optional(Type.Boolean()),
   mode: Type.Optional(
-    Type.Union([Type.Literal("notify"), Type.Literal("steer"), Type.Literal("followup")]),
+    Type.Union([
+      Type.Literal("notify"),
+      Type.Literal("steer"),
+      Type.Literal("followup"),
+      Type.Literal("resume"),
+    ]),
   ),
 });
 
@@ -129,6 +139,17 @@ const SessionsSendDeliverySchema = Type.Object(
 );
 
 const SessionsSendOutputSchema = Type.Union([
+  Type.Object(
+    {
+      status: Type.Literal("accepted"),
+      mode: Type.Literal("resume"),
+      runId: Type.String(),
+      taskRunId: Type.String(),
+      sessionKey: Type.String(),
+      completion: Type.Literal("task"),
+    },
+    { additionalProperties: false },
+  ),
   Type.Object(
     {
       status: Type.Literal("queued"),
@@ -571,11 +592,45 @@ export function createSessionsSendTool(opts?: {
         throw new ToolInputError("message required");
       }
       const mode = readToolStringParam(params, "mode");
-      if (mode !== undefined && mode !== "notify" && mode !== "steer" && mode !== "followup") {
-        throw new ToolInputError("mode must be notify, steer, or followup");
+      if (
+        mode !== undefined &&
+        mode !== "notify" &&
+        mode !== "steer" &&
+        mode !== "followup" &&
+        mode !== "resume"
+      ) {
+        throw new ToolInputError("mode must be notify, steer, followup, or resume");
+      }
+      const caller = mode === "resume" ? getGatewayToolCallerIdentity() : undefined;
+      const assertCallerCurrent =
+        mode === "resume" ? captureGatewayToolCallerAssertion() : undefined;
+      const resumeCaller =
+        caller && assertCallerCurrent
+          ? {
+              agentId: caller.agentId,
+              sessionKey: caller.sessionKey,
+              assertCurrent: assertCallerCurrent,
+            }
+          : undefined;
+      if (mode === "resume" && !resumeCaller) {
+        return jsonResult({
+          runId: crypto.randomUUID(),
+          status: "forbidden",
+          error: "Task resume requires an admitted parent tool caller.",
+        });
+      }
+      if (
+        mode === "resume" &&
+        (params.watch === true || (readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 0) > 0)
+      ) {
+        throw new ToolInputError(
+          "mode=resume returns admission only; omit watch and timeoutSeconds or set timeoutSeconds=0. The task owner delivers completion.",
+        );
       }
       const timeoutSeconds =
-        mode === "steer" ? 0 : (readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30);
+        mode === "steer" || mode === "resume"
+          ? 0
+          : (readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30);
       const {
         cfg,
         mainKey,
@@ -1022,12 +1077,12 @@ export function createSessionsSendTool(opts?: {
         targetSessionKey: resolvedKey,
         run: async () => {
           if (visibleSession.missing) {
-            if (mode === "steer" || mode === "notify") {
+            if (mode === "steer" || mode === "notify" || mode === "resume") {
               return jsonResult({
                 runId,
                 status: "error",
                 error:
-                  "Cannot notify or steer a missing session. Use mode=followup to start a new turn.",
+                  "Cannot notify, steer, or resume a missing session. Use mode=followup to start a new turn.",
                 sessionKey: displayKey,
               });
             }
@@ -1116,6 +1171,22 @@ export function createSessionsSendTool(opts?: {
             extraSystemPrompt: agentMessageContext,
             inputProvenance,
           };
+          if (mode === "resume") {
+            if (!resumeCaller) {
+              throw new ToolInputError("Task resume requires an admitted parent tool caller.");
+            }
+            return await resumeSessionsSendTask({
+              cfg,
+              caller: resumeCaller,
+              targetAgentId,
+              sessionKey: resolvedKey,
+              displayKey,
+              runId,
+              expectedSessionId,
+              sendParams,
+              callGateway: gatewayCall,
+            });
+          }
           const maxPingPongTurns = resolvePingPongTurns();
 
           // Skip the A2A ping-pong + announce flow when the current caller is the

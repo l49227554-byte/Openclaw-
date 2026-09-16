@@ -30,6 +30,8 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/imessage/src/monitor.approval-reaction-replay.test.ts",
   "extensions/imessage/src/monitor.behavior.test.ts",
   "extensions/imessage/src/monitor/cache-lifecycle.test.ts",
+  "extensions/imessage/src/monitor/recovery-cursor.test.ts",
+  "extensions/imessage/src/monitor/self-chat-dedupe.test.ts",
   "extensions/imessage/src/monitor/catchup-startup.test.ts",
   "extensions/imessage/src/monitor.debounce-policy.test.ts",
   "extensions/imessage/src/monitor.last-route.test.ts",
@@ -113,6 +115,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/zalouser/src/zalo-quote-metadata.test.ts",
   "extensions/imessage/src/approval-reactions.persistence.test.ts",
   "extensions/imessage/src/send.sqlite.test.ts",
+  "extensions/imessage/src/send.test.ts",
 ];
 
 export function isDatabaseWorkerExtensionRoot(root) {

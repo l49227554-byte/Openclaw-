@@ -13,6 +13,7 @@ import {
 import { listAgentEntries, withAgentRosterFactsBatch } from "./agent-scope-config.js";
 import { resolveAgentHarnessPolicy } from "./harness/policy.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
+import { resolveModelRuntimePolicy } from "./model-runtime-policy.js";
 
 // Harness runtime discovery feeds plugin preloading/setup. Only plugin runtimes
 // are selectable here; built-in OpenClaw/default runtime ids are excluded.
@@ -28,14 +29,15 @@ function isSelectablePluginRuntime(runtime: string | undefined): runtime is stri
   );
 }
 
-// Runtime policy keys use the model identity, without a configured auth-profile pin.
+// Parses provider/model refs used in config maps before asking harness policy
+// which runtime owns that provider/model pair.
 function parseConfiguredModelRef(
   value: unknown,
 ): { provider: string; modelId: string } | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
-  return parseModelCatalogRef(splitTrailingAuthProfile(value).model) ?? undefined;
+  return parseModelCatalogRef(value) ?? undefined;
 }
 
 export function resolveConfiguredModelHarnessRuntime(params: {
@@ -48,12 +50,23 @@ export function resolveConfiguredModelHarnessRuntime(params: {
   if (!parsed) {
     return undefined;
   }
-  const policy = resolveAgentHarnessPolicy({
+  const { model, profile } = splitTrailingAuthProfile(params.modelRef);
+  const policyModel = profile ? parseConfiguredModelRef(model) : parsed;
+  if (!policyModel) {
+    return undefined;
+  }
+  const policyParams = {
     config: params.config,
     provider: parsed.provider,
     modelId: parsed.modelId,
     agentId: params.agentId,
+  };
+  // Match preferences on the model while retaining the profile for implicit routing.
+  const configured = resolveModelRuntimePolicy({
+    ...policyParams,
+    modelId: policyModel.modelId,
   });
+  const policy = resolveAgentHarnessPolicy(policyParams, configured);
   if (!params.includeImplicitRuntimePreferences && policy.runtimeSource === "implicit") {
     return undefined;
   }

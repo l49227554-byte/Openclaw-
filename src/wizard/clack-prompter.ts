@@ -5,7 +5,6 @@ import {
   cancel,
   confirm,
   intro,
-  isCancel,
   multiselect,
   type Option,
   outro,
@@ -42,7 +41,7 @@ const CLAW_SPINNER_FRAMES = ["(\\/)", "(||)", "(--)", "(||)"];
 // Clack-backed WizardPrompter implementation for interactive CLI setup. It
 // converts the generic wizard prompt contract into styled Clack prompts.
 function guardCancel<T>(value: T | symbol, output: NodeJS.WriteStream, signal?: AbortSignal): T {
-  if (isCancel(value)) {
+  if (typeof value === "symbol") {
     if (!signal?.aborted) {
       cancel(stylePromptTitle("Setup cancelled.") ?? "Setup cancelled.", { output });
     }

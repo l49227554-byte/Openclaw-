@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { CANCEL_SYMBOL, isCancel } from "@clack/core";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { Command } from "commander";
@@ -74,7 +75,6 @@ const confirm = vi.fn();
 const select = vi.fn();
 const text = vi.fn();
 const spinner = vi.fn(() => ({ start: vi.fn(), stop: vi.fn(), clear: vi.fn() }));
-const isCancel = (value: unknown) => value === "cancel";
 const triageCommand = vi.fn<typeof import("../commands/triage.js").triageCommand>();
 const triageAfterFailure =
   vi.fn<typeof import("../commands/triage-failure.js").triageAfterFailure>();
@@ -105,6 +105,9 @@ const managedUpdateHandoff = vi.hoisted(() => ({
   cancel: vi.fn(),
 }));
 const candidateValidation = vi.hoisted(() => vi.fn());
+const sourceRuntimeCompletion = vi.hoisted(() =>
+  vi.fn<typeof import("./update-cli/update-command-runtime.js").completeSourceUpdateRuntime>(),
+);
 const pluginAvailabilityPreflight = vi.hoisted(() => vi.fn());
 vi.mock("./update-cli/update-command-plugin-preflight.js", () => ({
   preflightConfiguredNpmPluginTargets: pluginAvailabilityPreflight,
@@ -205,6 +208,11 @@ vi.mock("../infra/update-repair-agent.js", () => ({
 }));
 vi.mock("../infra/update-candidate-canary.js", () => ({
   validateUpdateCandidateCanary: candidateValidation,
+}));
+// Runtime generation and publication have real owner/process coverage; CLI
+// orchestration must not rebuild the checkout behind its simulated updater.
+vi.mock("./update-cli/update-command-runtime.js", () => ({
+  completeSourceUpdateRuntime: sourceRuntimeCompletion,
 }));
 vi.mock("../infra/update-candidate-state.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../infra/update-candidate-state.js")>()),
@@ -2150,6 +2158,7 @@ describe("update-cli", () => {
     const { getFileLockProcessStartTime } = await import("../shared/pid-alive.js");
     expect(getFileLockProcessStartTime(process.pid)).not.toBeNull();
     pluginAvailabilityPreflight.mockResolvedValue([]);
+    sourceRuntimeCompletion.mockResolvedValue({ changed: false });
     triageAfterFailure.mockResolvedValue(undefined);
     unattendedRepair.mockResolvedValue({
       status: "unavailable",
@@ -2422,6 +2431,7 @@ describe("update-cli", () => {
       });
       await invokeUpdateCli(yes ? { yes: true } : {});
       expect(runGatewayUpdate).toHaveBeenCalledOnce();
+      expect(sourceRuntimeCompletion).toHaveBeenCalledOnce();
       expect(confirm).not.toHaveBeenCalled();
       expect(select).not.toHaveBeenCalled();
       expect(updateFailureActionMocks.runInteractiveUpdateFailureAction).not.toHaveBeenCalled();
@@ -2697,6 +2707,7 @@ describe("update-cli", () => {
         expectPackageInstallSpec("openclaw@9999.0.0", true);
       } else {
         expect(runGatewayUpdate).toHaveBeenCalledOnce();
+        expect(sourceRuntimeCompletion).toHaveBeenCalledWith(expect.objectContaining({ root }));
       }
       expect(serviceStop).toHaveBeenCalledTimes(restart ? 1 : 0);
       expect(freshRestartCalls().length).toBe(restart ? 1 : 0);
@@ -14565,17 +14576,25 @@ describe("update-cli", () => {
     ).toBe(shouldRunPackageUpdate);
   });
 
-  it("opens and cancels the wizard without inspecting update freshness", async () => {
-    setTty(true);
-    select.mockResolvedValue("cancel");
-    vi.mocked(checkUpdateStatus).mockRejectedValue(new Error("Freshness inspection unavailable"));
+  it.each(["channel", "restart"])(
+    "cancels the wizard at %s without inspecting update freshness",
+    async (prompt) => {
+      setTty(true);
+      if (prompt === "channel") {
+        select.mockResolvedValue(CANCEL_SYMBOL);
+      } else {
+        confirm.mockResolvedValue(CANCEL_SYMBOL);
+      }
+      vi.mocked(checkUpdateStatus).mockRejectedValue(new Error("Freshness inspection unavailable"));
 
-    await updateWizardCommand();
+      await updateWizardCommand();
 
-    expect(select).toHaveBeenCalledWith(expect.objectContaining({ message: "Update channel" }));
-    expect(defaultRuntime.log).toHaveBeenCalledWith(expect.stringContaining("Update cancelled."));
-    expect(runGatewayUpdate).not.toHaveBeenCalled();
-  });
+      expect(select).toHaveBeenCalledWith(expect.objectContaining({ message: "Update channel" }));
+      expect(defaultRuntime.log).toHaveBeenCalledWith(expect.stringContaining("Update cancelled."));
+      expect(runGatewayUpdate).not.toHaveBeenCalled();
+      expect(sourceRuntimeCompletion).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["before", "after"])(
     "update wizard forwards explicit consent %s the subcommand",

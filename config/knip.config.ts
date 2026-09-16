@@ -105,6 +105,8 @@ const repositoryScriptEntries = [
   "scripts/e2e/lib/systemd-sealed-service-definition/paired-mounts.mjs!",
   // abandoned-update.sh invokes the upgrade ledger assertions through Node.
   "scripts/e2e/lib/upgrade-survivor/abandoned-update.mjs!",
+  // backup-rollback.sh invokes capture and verification through this CLI.
+  "scripts/e2e/lib/upgrade-survivor/backup-rollback.mjs!",
   "scripts/e2e/lib/upgrade-survivor/config-parking.mjs!",
   "scripts/e2e/lib/upgrade-survivor/custom-plugin-siblings.mjs!",
   // Capture runs in the container; sanitization runs only on the trusted host.
@@ -165,6 +167,8 @@ const repositoryScriptEntries = [
   "scripts/pr-lib/clawsweeper-review-gate.mjs!",
   "scripts/pr-lib/gh-api-preflight.mjs!",
   "scripts/pr-lib/merge-body.mjs!",
+  // merge.sh executes legacy capture qualification as a standalone Node CLI.
+  "scripts/pr-lib/merge-legacy-refusal.mjs!",
   "scripts/pr-lib/review-artifacts.mjs!",
   // worktree.sh invokes this journal-state validator by path before native replay.
   "scripts/pr-lib/review-transition-state.mjs!",

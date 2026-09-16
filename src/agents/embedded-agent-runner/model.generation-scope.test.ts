@@ -380,7 +380,10 @@ describe("model runtime generation scope", () => {
       requestProvider: provider,
       withRegistry: expected.scope === "captured",
     });
-    const plugin = expectDefined(generation.metadataSnapshot.manifestRegistry.plugins[0]);
+    const plugin = expectDefined(
+      generation.metadataSnapshot.manifestRegistry.plugins[0],
+      "registered static fixture",
+    );
     const metadataSnapshot = {
       ...createPluginMetadataSnapshotFixture({
         plugins: [{ ...plugin, modelCatalog: { discovery: { [provider]: "runtime" } } }],
@@ -391,6 +394,7 @@ describe("model runtime generation scope", () => {
     generation.preparedModelRuntime.metadataSnapshot = metadataSnapshot;
     const staticModel = {
       ...generation.resolveDynamicModel(),
+      api: "openai-completions" as const,
       reasoning: true,
       contextWindow: 1_000_000,
       maxTokens: 128_000,

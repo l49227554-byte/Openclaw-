@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { resolveSandboxDockerConfig } from "./config.js";
 import { resolveSandboxFileIdentity } from "./file-mutation-identity.js";
 import { SandboxFsPathGuard } from "./fs-bridge-path-safety.js";
@@ -223,6 +223,9 @@ describe("sandbox effective filesystem mounts", () => {
         });
         const open = mockedOpenRootFile.getMockImplementation()!;
         let fd: number | undefined;
+        // Observe the real close: another worker can reuse its descriptor number before we resume.
+        const close = vi.spyOn(fsSync, "closeSync");
+        onTestFinished(() => close.mockRestore());
         mockedOpenRootFile.mockImplementationOnce(async (request) => {
           await fs.unlink(path.join(workspaceDir, target));
           await fs.symlink(other, path.join(workspaceDir, target));
@@ -236,7 +239,8 @@ describe("sandbox effective filesystem mounts", () => {
           bridge.readFile({ filePath: path.join(workspaceDir, target) }),
         ).rejects.toThrow("hidden by another mount");
         expect(fd).toBeDefined();
-        expect(() => fsSync.fstatSync(fd!)).toThrow(expect.objectContaining({ code: "EBADF" }));
+        expect(close).toHaveBeenCalledExactlyOnceWith(fd);
+        expect(close).toHaveReturnedWith(undefined);
         expect(await fs.readFile(path.join(workspaceDir, other), "utf8")).toBe("HIDDEN");
         expectOnlyCanonicalPathCommands();
       });

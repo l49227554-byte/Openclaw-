@@ -34,21 +34,15 @@ import {
   type PreparedAgentRunAdmission,
 } from "./admitted-run-context.js";
 import {
-  buildTestAllowedModelSet,
   type CommandSessionEntryFixture,
-  buildTestConfiguredModelCatalog,
-  buildTestModelAliasIndex,
   createChannelModelRuntimeConfig,
   createCommandSessionEntry,
   createCommandSessionFixture,
   createConfiguredModelCompatRuntimeConfig,
+  createTestAgentScope,
+  createTestModelSelection,
+  createTestRuntimePlugins,
   createTestModelVisibilityPolicy,
-  isTestModelKeyAllowed,
-  normalizeTestProviderId,
-  resolveTestConfiguredModelRef,
-  resolveTestDefaultModelForAgent,
-  resolveTestModelAliasFromPair,
-  resolveTestModelRefFromString,
 } from "./agent-command.live-model-switch.test-helpers.js";
 import { createApiKeyCredential } from "./auth-profiles/credential-fixtures.test-support.js";
 import type { FailoverReason } from "./failover/signal.js";
@@ -349,14 +343,7 @@ vi.mock("./harness/runtime-plugin.js", () => ({
 
 vi.mock("./runtime-plugins.js", async () => {
   const { createEmptyPluginRegistry } = await import("../plugins/registry-empty.js");
-  return {
-    withAgentPluginRegistry: ({ run }: { run: () => unknown }) => run(),
-    loadAgentRuntimePluginRegistryHandle: () => createEmptyPluginRegistry(),
-    acquireAgentRuntimePluginRegistry: async () => {
-      const registry = createEmptyPluginRegistry();
-      return { registry, primaryRegistry: registry };
-    },
-  };
+  return createTestRuntimePlugins(createEmptyPluginRegistry);
 });
 
 // Harness selection has dedicated coverage; this command suite registers no auto harnesses.
@@ -622,33 +609,10 @@ vi.mock("../utils/message-channel.js", () => ({
 vi.mock("./agent-scope.js", async () => {
   const { resolveAgentModelFallbacksOverride, resolveSubagentSpawnModelFallbacksOverride } =
     await vi.importActual<typeof import("./agent-scope.js")>("./agent-scope.js");
-  return {
+  return createTestAgentScope(state, {
     resolveAgentModelFallbacksOverride,
     resolveSubagentSpawnModelFallbacksOverride,
-    clearAutoFallbackPrimaryProbeSelection: vi.fn(),
-    entryMatchesAutoFallbackPrimaryProbe: () => true,
-    hasLegacyAutoFallbackWithoutOrigin: (entry: unknown) =>
-      state.hasLegacyAutoFallbackWithoutOriginMock(entry),
-    hasSessionAutoModelFallbackProvenance: () => false,
-    listAgentEntries: () => [],
-    listAgentIds: () => ["default"],
-    markAutoFallbackPrimaryProbe: vi.fn(),
-    resolveAutoFallbackPrimaryProbe: (params: unknown) =>
-      state.resolveAutoFallbackPrimaryProbeMock(params),
-    resolveAgentConfig: () => undefined,
-    resolveAgentDir: () => "/tmp/agent",
-    resolveAgentEffectiveModelPrimary: (cfg: unknown) => {
-      const raw = (cfg as { agents?: { defaults?: { model?: string | { primary?: string } } } })
-        ?.agents?.defaults?.model;
-      return typeof raw === "string" ? raw : raw?.primary;
-    },
-    resolveDefaultAgentId: () => "default",
-    resolveEffectiveModelFallbacks: state.resolveEffectiveModelFallbacksMock,
-    resolveSessionAgentIds: () => ({ defaultAgentId: "default", sessionAgentId: "default" }),
-    resolveSessionAgentId: () => "default",
-    resolveAgentSkillsFilter: () => undefined,
-    resolveAgentWorkspaceDir: () => "/tmp/workspace",
-  };
+  });
 });
 
 vi.mock("./auth-profiles.js", async () => {
@@ -712,31 +676,7 @@ vi.mock("./model-catalog.runtime.js", () => ({
   loadPreparedModelCatalogSnapshot: state.loadPreparedModelCatalogSnapshotMock,
 }));
 
-vi.mock("./model-selection.js", () => ({
-  buildAllowedModelSet: buildTestAllowedModelSet,
-  createModelVisibilityPolicy: createTestModelVisibilityPolicy,
-  buildConfiguredModelCatalog: ({ cfg }: { cfg?: unknown }) => buildTestConfiguredModelCatalog(cfg),
-  isModelKeyAllowedBySet: isTestModelKeyAllowed,
-  buildModelAliasIndex: buildTestModelAliasIndex,
-  modelKey: (provider: string, model: string) => `${provider}/${model}`,
-  normalizeModelRef: (provider: string, model: string) => ({
-    provider: normalizeTestProviderId(provider),
-    model,
-  }),
-  normalizeProviderId: normalizeTestProviderId,
-  normalizeProviderIdForAuth: normalizeTestProviderId,
-  parseModelRef: (model: string, provider: string) => {
-    const slash = model.indexOf("/");
-    return slash > 0
-      ? { provider: model.slice(0, slash), model: model.slice(slash + 1) }
-      : { provider, model };
-  },
-  resolveModelRefFromString: resolveTestModelRefFromString,
-  resolveModelAliasFromPair: resolveTestModelAliasFromPair,
-  resolveConfiguredModelRef: resolveTestConfiguredModelRef,
-  resolveDefaultModelForAgent: resolveTestDefaultModelForAgent,
-  resolveThinkingDefault: (args: unknown) => state.resolveThinkingDefaultMock(args),
-}));
+vi.mock("./model-selection.js", () => createTestModelSelection(state));
 
 vi.mock("./model-visibility-policy.js", () => ({
   createModelVisibilityPolicy: createTestModelVisibilityPolicy,

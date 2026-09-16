@@ -63,6 +63,16 @@ function createManifestPlugin(id: string): PluginManifestRecord {
   };
 }
 
+function configureCapturedRuntimeManifest() {
+  mocks.resolveDiscoveredProviderPluginIds.mockReturnValue(["fixture"]);
+  const manifest = createManifestPlugin("fixture");
+  manifest.modelCatalog = { discovery: { fixture: "runtime" } };
+  mocks.loadPluginMetadataSnapshot.mockReturnValue({
+    index: { plugins: [] },
+    manifestRegistry: { plugins: [manifest], diagnostics: [] },
+  });
+}
+
 function createManifestPluginWithModelCatalog(
   id: string,
   discovery: "static" | "refreshable" | "runtime" = "static",
@@ -664,13 +674,7 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
         ...createProvider({ id: "fixture-static", mode: "static" }),
         pluginId: "fixture",
       };
-      mocks.resolveDiscoveredProviderPluginIds.mockReturnValue(["fixture"]);
-      const manifest = createManifestPlugin("fixture");
-      manifest.modelCatalog = { discovery: { fixture: "runtime" } };
-      mocks.loadPluginMetadataSnapshot.mockReturnValue({
-        index: { plugins: [] },
-        manifestRegistry: { plugins: [manifest], diagnostics: [] },
-      });
+      configureCapturedRuntimeManifest();
       mocks.loadSource.mockReturnValue(authProvider);
       const unrelatedAuth = {
         id: "runtime-only-login",
@@ -723,13 +727,7 @@ describe("resolvePluginDiscoveryProvidersRuntime", () => {
           ? { prepareSyntheticAuth: vi.fn(async () => runtimeAuthResult) }
           : {}),
       };
-      mocks.resolveDiscoveredProviderPluginIds.mockReturnValue(["fixture"]);
-      const manifest = createManifestPlugin("fixture");
-      manifest.modelCatalog = { discovery: { fixture: "runtime" } };
-      mocks.loadPluginMetadataSnapshot.mockReturnValue({
-        index: { plugins: [] },
-        manifestRegistry: { plugins: [manifest], diagnostics: [] },
-      });
+      configureCapturedRuntimeManifest();
       mocks.loadSource.mockReturnValue(entryProvider);
       mocks.resolvePluginProvidersCore.mockReturnValue([runtimeProvider]);
 

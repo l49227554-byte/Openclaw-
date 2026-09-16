@@ -195,6 +195,7 @@ async function resolveGuildAdminActionPermissions(params: {
     params.values.rateLimitPerUser === undefined &&
     params.values.locked === undefined &&
     params.values.autoArchiveDuration === undefined &&
+    params.values.availableTags === undefined &&
     !isLockedThreadChannel(channel);
   return onlyReopen
     ? [PermissionFlagsBits.ManageThreads, PermissionFlagsBits.SendMessages]
@@ -241,7 +242,20 @@ async function verifySenderGuildAdminPermission(params: {
         requiredPermissions,
         actionOptions,
       );
-  if (!hasPermission) {
+  const requiresCurrentThreadAccess =
+    params.action === "channelEdit" &&
+    requiredPermissions.includes(PermissionFlagsBits.SendMessages);
+  if (
+    !hasPermission ||
+    (requiresCurrentThreadAccess &&
+      (!targetChannelId ||
+        !(await discordGuildActionRuntime.canViewDiscordGuildChannel(
+          guildId,
+          targetChannelId,
+          senderUserId,
+          actionOptions,
+        ))))
+  ) {
     throw new Error("Sender does not have required permissions for this guild action.");
   }
 

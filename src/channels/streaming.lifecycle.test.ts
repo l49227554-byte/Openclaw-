@@ -204,6 +204,10 @@ describe("channel-streaming", () => {
         resolveCandidateText,
       }),
     ).resolves.toBe(candidateText);
+    // Shipped plugin callers pass no payload and keep the latest-answer recovery.
+    await expect(
+      resolveTranscriptBackedChannelFinalText({ finalText, resolveCandidateText }),
+    ).resolves.toBe(candidateText);
   });
 
   it("keeps intentional ellipsis finals when candidates do not prove truncation", async () => {

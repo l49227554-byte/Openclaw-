@@ -155,12 +155,13 @@ export function selectLongerFinalText(params: {
 }
 
 export async function resolveTranscriptBackedChannelFinalText(params: {
-  payload: ReplyPayload;
+  // Optional: shipped plugin callers pass only text; an answer to a preceding input keeps its own text.
+  payload?: ReplyPayload;
   finalText: string;
   resolveCandidateText: () => Promise<string | undefined>;
 }): Promise<string> {
   if (
-    getReplyPayloadMetadata(params.payload)?.precedingInputAnswer ||
+    (params.payload && getReplyPayloadMetadata(params.payload)?.precedingInputAnswer) ||
     !isPotentialTruncatedFinal(params.finalText)
   ) {
     return params.finalText;

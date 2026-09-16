@@ -15,6 +15,7 @@ import type {
   PluginInstanceConsumer,
   PluginInstanceDisposalResult,
   PluginInstanceLifecycle,
+  PluginModuleLoaderRecovery,
 } from "./plugin-instance.types.js";
 import { resolvePluginReturnPromise } from "./plugin-return-value.js";
 import type { PluginRecord, PluginRegistry } from "./registry-types.js";
@@ -33,6 +34,7 @@ export class PluginInstance {
   controlPlaneInitialized = false;
   sourceDigest?: string;
   private moduleLoader?: (source: string) => unknown;
+  private captureModuleRecovery?: () => PluginModuleLoaderRecovery;
   private moduleSourceExists?: false | ((source: string) => boolean);
   private accepting = true;
   private readonly calls = new Map<object, PluginRegistry | undefined>();
@@ -341,17 +343,35 @@ export class PluginInstance {
     return this.moduleSourceExists && this.moduleSourceExists(source);
   }
 
+  bindModuleLoaderRecovery(capture: () => PluginModuleLoaderRecovery): void {
+    this.captureModuleRecovery = capture;
+  }
+
+  captureModuleLoaderRecovery(): PluginModuleLoaderRecovery {
+    return this.run(() => {
+      if (!this.captureModuleRecovery) {
+        throw new Error(`Plugin ${this.pluginId} has no recoverable module loader`);
+      }
+      return this.captureModuleRecovery();
+    });
+  }
+
   quiesce(): boolean {
     const accepting = this.accepting;
     this.accepting = false;
     return accepting;
   }
 
-  async drain(): Promise<PluginInstanceDisposalResult> {
+  async drain(options?: { includeConsumers?: boolean }): Promise<PluginInstanceDisposalResult> {
     this.quiesce();
     const ownToken = this.activeCall()?.token;
     try {
       await this.waitForCalls(ownToken);
+      if (options?.includeConsumers) {
+        while (this.consumers.size > 0) {
+          await Promise.all([...this.consumers.values()].map(({ completion }) => completion));
+        }
+      }
       return { errors: [] };
     } catch (error) {
       // waitForCalls rejects only its own bounded drain deadline.
@@ -462,6 +482,7 @@ export class PluginInstance {
     this.calls.clear();
     this.waiters.forEach((wake) => wake());
     this.moduleLoader = undefined;
+    this.captureModuleRecovery = undefined;
     // Release captured paths without reopening the never-bound bundled-library fallback.
     this.moduleSourceExists &&= false;
     this.slots.clear();

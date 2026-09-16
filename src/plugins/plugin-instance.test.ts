@@ -50,6 +50,37 @@ describe("managed plugin instances", () => {
     }
   });
 
+  it("optionally drains retained consumers before resources stop while preserving default drain", async () => {
+    const instance = new PluginInstance("consumer-drain");
+    const consumer = instance.retainConsumer();
+    const cleanup = createDeferredCore();
+    let drained = false;
+    try {
+      await expect(instance.drain()).resolves.toEqual({ errors: [] });
+      const draining = instance.drain({ includeConsumers: true }).then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      expect(instance.lifecycle.signal.aborted).toBe(false);
+      expect(consumer.run(() => "existing work continues")).toBe("existing work continues");
+      expect(() => instance.run(() => undefined)).toThrow("reloaded or disabled");
+      const closing = consumer.close(() => cleanup.promise);
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      cleanup.resolve();
+      await closing;
+      await draining;
+      expect(instance.lifecycle.signal.aborted).toBe(false);
+      instance.resume();
+      expect(instance.run(() => "resumed")).toBe("resumed");
+    } finally {
+      cleanup.resolve();
+      consumer.release();
+      await instance.dispose();
+    }
+  });
+
   it("lets a self-retiring call finish before joined explicit cleanup", async () => {
     const instance = new PluginInstance("self");
     const events: string[] = [];

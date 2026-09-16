@@ -35,23 +35,19 @@ const KEY_ALIASES = new Map([
 ]);
 
 /**
- * KeyboardEvent.key for Space is the literal " ". Route helpers trim strings, so
- * map that exact character before empty rejection. Other whitespace still rejects.
+ * KeyboardEvent.key for Space is the literal " ". Map that exact whole value
+ * before trim so Browser panel Space presses survive. Keep trim-first chord
+ * splitting for every other input so whitespace-padded Plus (`" + "`, `"+ "`)
+ * still normalizes to `"+"`; use named `Ctrl+Space` for Space chords.
  */
 function normalizePressKeyChord(raw: unknown): string {
-  if (typeof raw !== "string" && typeof raw !== "number" && typeof raw !== "boolean") {
-    return "";
+  if (raw === " ") {
+    return "Space";
   }
   // Empty chord segments represent a literal plus key and must survive normalization.
-  return String(raw)
+  return toStringOrEmpty(raw)
     .split("+")
-    .map((part) => {
-      if (part === " ") {
-        return "Space";
-      }
-      const normalized = toStringOrEmpty(part);
-      return KEY_ALIASES.get(normalized.toLowerCase()) ?? normalized;
-    })
+    .map((part) => KEY_ALIASES.get(part.toLowerCase()) ?? part)
     .join("+");
 }
 

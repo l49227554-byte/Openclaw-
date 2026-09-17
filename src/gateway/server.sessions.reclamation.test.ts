@@ -55,8 +55,8 @@ function seedTranscriptState(storePath: string): void {
   );
   const insertActive = database.db.prepare(
     `INSERT INTO session_transcript_active_events
-       (session_id, active_position, event_seq, message_position)
-     VALUES (?, ?, ?, ?)`,
+       (session_id, active_position, event_seq, message_position, context_eligible)
+     VALUES (?, ?, ?, ?, 1)`,
   );
   const insertFts = database.db.prepare(
     `INSERT INTO session_transcript_fts (text, session_id, message_id, role, timestamp)

@@ -221,9 +221,11 @@ function withPluginResult(patch: Record<string, unknown>) {
   };
 }
 
-function missingCodexUpdateResult() {
+function missingCodexUpdateResult(source: "npm" | "clawhub") {
   const message =
-    'Failed to install missing configured plugin "codex" from @openclaw/codex: Package not found on npm: @openclaw/codex@2026.9.4. See https://docs.openclaw.ai/tools/plugin for installable plugins.';
+    source === "npm"
+      ? 'Failed to install missing configured plugin "codex" from @openclaw/codex: Package not found on npm: @openclaw/codex@2026.9.4. See https://docs.openclaw.ai/tools/plugin for installable plugins.'
+      : 'Failed to install missing configured plugin "codex" from clawhub:@openclaw/codex: Package not found on ClawHub.';
   const outcomes: PluginUpdateOutcome[] = [
     {
       pluginId: "discord",
@@ -483,7 +485,7 @@ describe("upgrade recovery result assertions", () => {
     },
   );
 
-  describe("missing Codex migration update result", () => {
+  describe.each(["npm", "clawhub"] as const)("missing Codex update (%s)", (source) => {
     const scenarioEnv = {
       OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "missing-configured-plugin-migration",
     };
@@ -493,13 +495,17 @@ describe("upgrade recovery result assertions", () => {
       );
 
     it("accepts the successful published update with its named unavailable-Codex warning", () => {
-      const result = check(missingCodexUpdateResult());
+      const result = check(missingCodexUpdateResult(source));
       expect(result.status, result.stderr).toBe(0);
     });
 
     it("keeps the same failed-attempt history invalid for the base scenario", () => {
       const result = withEnv({ OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "base" }, () =>
-        runJsonAssertion("assert-successful-update-json", missingCodexUpdateResult(), "2026.9.4"),
+        runJsonAssertion(
+          "assert-successful-update-json",
+          missingCodexUpdateResult(source),
+          "2026.9.4",
+        ),
       );
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("successful update failed plugin convergence");
@@ -509,6 +515,12 @@ describe("upgrade recovery result assertions", () => {
       name: string;
       mutate: (report: ReturnType<typeof missingCodexUpdateResult>) => void;
     }> = [
+      {
+        name: "wrong baseline",
+        mutate: (report) => {
+          report.before.version = "2026.9.3";
+        },
+      },
       {
         name: "failed update",
         mutate: (report) => {
@@ -640,11 +652,33 @@ describe("upgrade recovery result assertions", () => {
       },
     ];
     it.each(invalidReports)("rejects $name", ({ mutate }) => {
-      const report = missingCodexUpdateResult();
+      const report = missingCodexUpdateResult(source);
       mutate(report);
       const result = check(report);
       expect(result.status).not.toBe(0);
     });
+  });
+
+  it.each([
+    'Failed to install missing configured plugin "codex" from clawhub:@openclaw/other: Package not found on ClawHub.',
+    'Failed to install missing configured plugin "codex" from clawhub:@openclaw/codex: Request timed out.',
+    'Failed to install missing configured plugin "codex" from clawhub:@openclaw/codex: Version not found on ClawHub: @openclaw/codex@2026.9.4.',
+    'Failed to install missing configured plugin "codex" from clawhub:@openclaw/codex: Package not found on ClawHub. Another install failed.',
+  ])("rejects unrelated final-source failure: %s", (message) => {
+    const report = missingCodexUpdateResult("clawhub");
+    report.postUpdate.plugins.npm.outcomes = report.postUpdate.plugins.npm.outcomes.map(
+      (outcome) => (outcome.pluginId === "codex" ? { ...outcome, message } : outcome),
+    );
+    report.postUpdate.plugins.warnings = report.postUpdate.plugins.warnings.map((warning) => ({
+      ...warning,
+      reason: message,
+    }));
+    const result = withEnv(
+      { OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "missing-configured-plugin-migration" },
+      () => runJsonAssertion("assert-successful-update-json", report, "2026.9.4"),
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("missing Codex update retained an unexpected plugin failure");
   });
 
   it("accepts only a completed core swap stranded on capability consent", () => {

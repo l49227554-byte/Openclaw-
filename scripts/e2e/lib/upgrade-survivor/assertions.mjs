@@ -1633,14 +1633,16 @@ function assertExpectedMissingCodexOutcome(result, expectedVersion) {
     "missing Codex update must retain exactly its named failed attempt",
   );
   const failure = failures[0];
-  const missingPackage =
+  const missingNpmPackage =
     `Failed to install missing configured plugin "codex" from @openclaw/codex: ` +
     `Package not found on npm: @openclaw/codex@${expectedVersion}.`;
+  const missingClawHubPackage =
+    'Failed to install missing configured plugin "codex" from clawhub:@openclaw/codex: Package not found on ClawHub.';
   assert(
     failure.pluginId === "codex" &&
       failure.code === undefined &&
       typeof failure.message === "string" &&
-      failure.message.startsWith(missingPackage),
+      (failure.message.startsWith(missingNpmPackage) || failure.message === missingClawHubPackage),
     "missing Codex update retained an unexpected plugin failure",
   );
   const repairCommand = "openclaw plugins update codex";

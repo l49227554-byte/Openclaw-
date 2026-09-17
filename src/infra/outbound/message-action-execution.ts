@@ -85,9 +85,7 @@ function hasAcceptedDelivery(result: MessageActionResult): boolean {
     return false;
   }
   if (!resolveMessageActionOutcome(result).ok) {
-    return Boolean(
-      delivery?.partialDelivery || envelopes.some((envelope) => envelope?.partialDelivery),
-    );
+    return delivery?.partialDelivery || envelopes.some((envelope) => envelope?.partialDelivery);
   }
   if (
     values.some((value) => pluginEnvelopeHas(value, "failure")) ||

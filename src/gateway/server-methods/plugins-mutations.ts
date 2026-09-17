@@ -19,6 +19,7 @@ import {
   setManagedPluginEnabled,
 } from "../../plugins/management-mutations.js";
 import { uninstallManagedPlugin } from "../../plugins/management-uninstall.js";
+import { ADMIN_SCOPE } from "../operator-scopes.js";
 import {
   captureGatewayPluginRuntimeApplications,
   pluginLifecycleError,
@@ -45,7 +46,15 @@ function lifecycleHandler<T>(
     client: Parameters<GatewayRequestHandler>[0]["client"],
   ) => Promise<PluginLifecycleResult>,
 ): GatewayRequestHandler {
-  return async ({ params, respond, context, signal, sessionMutationCommitGuard, client }) => {
+  return async ({
+    params,
+    respond,
+    context,
+    signal,
+    sessionMutationCommitGuard,
+    client,
+    hasCurrentClientAuthority,
+  }) => {
     if (!assertValidParams(params, validate, method, respond)) {
       return;
     }
@@ -56,6 +65,16 @@ function lifecycleHandler<T>(
         throw new Error("Plugin lifecycle changes require a running Gateway.");
       }
       const beforePersistentApply = () => {
+        // Ordinary reconnects retain the request; credential revocation must fence every effect.
+        if (
+          hasCurrentClientAuthority?.() === false ||
+          (client &&
+            (client.invalidated ||
+              (client.connect.role ?? "operator") !== "operator" ||
+              !client.connect.scopes?.includes(ADMIN_SCOPE)))
+        ) {
+          throw new Error("Plugin mutation authority is no longer active.");
+        }
         signal?.throwIfAborted();
         sessionMutationCommitGuard?.();
       };
@@ -112,7 +131,16 @@ export const pluginMutationHandlers: GatewayRequestHandlers = {
           "Local plugin artifacts require a connection from the Gateway host. Run `openclaw plugins install` on that host.",
         );
       }
-      return installManagedPlugin({ request: params, ...lifecycle });
+      return installManagedPlugin({
+        request: params,
+        ...lifecycle,
+        // The admin's install request accepts this staged surface, not new grants.
+        // The artifact owner rechecks it before commit; no second request is needed.
+        onCapabilityConsent: async (review) => {
+          lifecycle.beforePersistentApply();
+          return { reviewToken: review.reviewToken };
+        },
+      });
     },
   ),
   "plugins.uninstall": lifecycleHandler(

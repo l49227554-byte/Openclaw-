@@ -35,6 +35,7 @@ const SQLITE_TITLE_TAIL_PROBE_MAX_BYTES = 64 * 1024;
 const SQLITE_TITLE_FIELD_CACHE_MAX_ENTRIES = 8192;
 
 type SqliteTitleFieldCacheEntry = ReturnType<typeof readSessionTranscriptWatermark> & {
+  boundarySeq?: number;
   totalMessages: number;
   firstUserMessages: Partial<
     Record<"default" | "includeInterSession", { text: string | null; scannedMessages: number }>
@@ -42,7 +43,7 @@ type SqliteTitleFieldCacheEntry = ReturnType<typeof readSessionTranscriptWaterma
   lastMessagePreview: string | null;
 };
 
-// Appends invalidate previews, but found titles remain valid until a rewrite rotates generation.
+// Found titles survive appends only while the rewrite generation and visible reset window stay fixed.
 const sqliteTitleFieldCache = new Map<string, SqliteTitleFieldCacheEntry>();
 
 function sqliteTitleFieldCacheKey(target: SessionTranscriptReadTarget): string {
@@ -68,7 +69,8 @@ function readSqliteTitleProbeRange(
   }
   return readSessionTranscriptMessageEventPage(scope, {
     maxMessages: end - boundedStart,
-    offset: totalMessages - end,
+    offset: boundedStart,
+    offsetFrom: "start",
   }).events;
 }
 
@@ -106,7 +108,7 @@ function readSqliteTitleTailProbe(
   scope: SessionTranscriptReadScope,
   maxMessages: number,
   offset: number,
-): { text: string | null; totalMessages: number } {
+) {
   const page = readSessionTranscriptBoundedMessageTailPage(scope, {
     maxMessages,
     maxBytes: SQLITE_TITLE_TAIL_PROBE_MAX_BYTES,
@@ -123,7 +125,13 @@ function readSqliteTitleTailProbe(
       readSessionTranscriptMessageEventPage(scope, { maxMessages, offset }).events,
     );
   }
-  return { text, totalMessages: page.totalMessages };
+  return {
+    text,
+    totalMessages: page.totalMessages,
+    generation: page.snapshot.generation ?? null,
+    maxSeq: page.snapshot.indexedSeq,
+    boundarySeq: page.snapshot.boundarySeq,
+  };
 }
 
 function copySessionTitleText(text: string | null): string | null {
@@ -163,7 +171,13 @@ function hydrateSqliteTitleFields(
       };
     }
     const tail = current
-      ? { text: cached.lastMessagePreview, totalMessages: cached.totalMessages }
+      ? {
+          text: cached.lastMessagePreview,
+          totalMessages: cached.totalMessages,
+          generation: cached.generation,
+          maxSeq: cached.maxSeq,
+          boundarySeq: cached.boundarySeq,
+        }
       : readSqliteTitleTailProbe(scope, SQLITE_TITLE_PROBE_INITIAL_MESSAGES, 0);
     let lastText = tail.text;
     if (!current && !lastText && tail.totalMessages > SQLITE_TITLE_PROBE_INITIAL_MESSAGES) {
@@ -173,8 +187,13 @@ function hydrateSqliteTitleFields(
         SQLITE_TITLE_PROBE_INITIAL_MESSAGES,
       ).text;
     }
-    let firstText = cachedTitle?.text ?? null;
-    let scannedMessages = cachedTitle?.scannedMessages ?? 0;
+    const firstUserMessages =
+      cached?.generation === tail.generation && cached.boundarySeq === tail.boundarySeq
+        ? cached.firstUserMessages
+        : {};
+    const head = firstUserMessages[variant];
+    let firstText = head?.text ?? null;
+    let scannedMessages = head?.scannedMessages ?? 0;
     // A missing title can appear on append. Inspect only new rows within the bounded head.
     for (const limit of [SQLITE_TITLE_PROBE_INITIAL_MESSAGES, SQLITE_TITLE_PROBE_MAX_MESSAGES]) {
       const end = Math.min(tail.totalMessages, limit);
@@ -190,12 +209,12 @@ function hydrateSqliteTitleFields(
       firstUserMessage: copySessionTitleText(firstText),
       lastMessagePreview: copySessionTitleText(lastText),
     };
-    const firstUserMessages = cached?.firstUserMessages ?? {};
     firstUserMessages[variant] = { text: fields.firstUserMessage, scannedMessages };
     // Retain only the watermark and bounded strings, never the probe's transcript payloads.
     setSqliteTitleFieldCache(cacheKey, {
-      generation: watermark.generation,
-      maxSeq: watermark.maxSeq,
+      generation: tail.generation,
+      maxSeq: tail.maxSeq,
+      boundarySeq: tail.boundarySeq,
       totalMessages: tail.totalMessages,
       firstUserMessages,
       lastMessagePreview: fields.lastMessagePreview,

@@ -81,7 +81,7 @@ async function writeTranscript(sessionId: string, events: unknown[]) {
 async function writeSqliteMessages(
   sessionId: string,
   messages: Array<{ content: unknown; provenance?: unknown; role: string }>,
-): Promise<SessionTranscriptReadScope> {
+) {
   const scope = {
     agentId: "main",
     sessionId,
@@ -282,46 +282,84 @@ describe("session transcript title hydration", () => {
     expect(sessionAccessor.readSessionTranscriptBoundedMessageTailPage).toHaveBeenCalledTimes(1);
   });
 
-  test("reads the canonical visible window for reset transcripts", async () => {
-    const sessionId = "reader-title-reset-window";
-    const scope = await writeTranscript(sessionId, [
-      { type: "session", version: 3, id: sessionId },
-      {
-        type: "message",
-        id: "old",
-        parentId: null,
-        message: { role: "user", content: "hidden old prompt" },
-      },
-      {
-        type: "message",
-        id: "kept-user",
-        parentId: "old",
-        message: { role: "user", content: "kept prompt" },
-      },
-      {
-        type: "message",
-        id: "kept-assistant",
-        parentId: "kept-user",
-        message: { role: "assistant", content: "kept answer" },
-      },
-      {
+  test.each([false, true])(
+    "invalidates both cached title variants after an appended reset (keep=%s)",
+    async (keep) => {
+      const sessionId = "reader-title-reset-window";
+      const scope = await writeTranscript(sessionId, [
+        { type: "session", version: 3, id: sessionId },
+        {
+          type: "message",
+          id: "old",
+          parentId: null,
+          message: { role: "user", content: "hidden old prompt" },
+        },
+        {
+          type: "message",
+          id: "kept-routed",
+          parentId: "old",
+          message: {
+            role: "user",
+            content: "kept routed prompt",
+            provenance: { kind: "inter_session" },
+          },
+        },
+        {
+          type: "message",
+          id: "kept-user",
+          parentId: "kept-routed",
+          message: { role: "user", content: "kept prompt" },
+        },
+        {
+          type: "message",
+          id: "kept-assistant",
+          parentId: "kept-user",
+          message: { role: "assistant", content: "kept answer" },
+        },
+      ]);
+      const before = sessionAccessor.readSessionTranscriptWatermark(scope);
+      for (const includeInterSession of [false, true]) {
+        expect(readSessionTitleFieldsFromTranscript(scope, { includeInterSession })).toEqual({
+          firstUserMessage: "hidden old prompt",
+          lastMessagePreview: "kept answer",
+        });
+      }
+      await sessionAccessor.appendTranscriptEvent(scope, {
         type: "reset",
         id: "reset-boundary",
         parentId: "kept-assistant",
-        firstKeptEntryId: "kept-user",
-      },
-      {
-        type: "message",
-        id: "post-reset",
-        parentId: "reset-boundary",
-        message: { role: "assistant", content: "newest answer" },
-      },
-    ]);
-    expect(readSessionTitleFieldsFromTranscript(scope)).toEqual({
-      firstUserMessage: "kept prompt",
-      lastMessagePreview: "newest answer",
-    });
-  });
+        ...(keep ? { firstKeptEntryId: "kept-routed" } : {}),
+      });
+      await persistSessionTranscriptTurn(scope, {
+        messages: [
+          {
+            eventId: "post-reset",
+            parentId: "reset-boundary",
+            message: { role: "user", content: "new question" },
+          },
+          {
+            eventId: "newest",
+            parentId: "post-reset",
+            message: { role: "assistant", content: "newest answer" },
+          },
+        ],
+        touchSessionEntry: false,
+      });
+      expect(sessionAccessor.readSessionTranscriptWatermark(scope).generation).toBe(
+        before.generation,
+      );
+      for (const includeInterSession of [false, true, false, true]) {
+        expect(readSessionTitleFieldsFromTranscript(scope, { includeInterSession })).toEqual({
+          firstUserMessage: keep
+            ? includeInterSession
+              ? "kept routed prompt"
+              : "kept prompt"
+            : "new question",
+          lastMessagePreview: "newest answer",
+        });
+      }
+    },
+  );
 
   test.each(["stale", "unclassified"] as const)(
     "degrades single title reads for a %s projection",
@@ -479,6 +517,36 @@ describe("session transcript title hydration", () => {
     expect(sessionAccessor.readSessionTranscriptBoundedMessageTailPage).toHaveBeenCalledTimes(1);
   });
 
+  test("keeps the first user title when an append lands between tail and head probes", async () => {
+    const scope = await writeSqliteMessages("reader-title-concurrent-append", [
+      { role: "user", content: "Original question" },
+      { role: "user", content: "Later question" },
+      ...Array.from({ length: 18 }, () => ({ role: "assistant", content: "Older reply" })),
+    ]);
+    await sessionAccessor.replaceSessionEntry(scope, { sessionId: scope.sessionId, updatedAt: 1 });
+    const actual = await vi.importActual<typeof import("../config/sessions/session-accessor.js")>(
+      "../config/sessions/session-accessor.js",
+    );
+    const pageReader = vi.mocked(sessionAccessor.readSessionTranscriptMessageEventPage);
+    pageReader.mockImplementationOnce((readScope, options) => {
+      expect(
+        sessionAccessor.appendTranscriptMessageSync(scope, {
+          message: { role: "assistant", content: "Concurrent reply" },
+        }),
+      ).toMatchObject({ ok: true, value: { appended: true } });
+      return actual.readSessionTranscriptMessageEventPage(readScope, options);
+    });
+
+    const first = readSessionTitleFieldsFromTranscript(scope);
+    const next = readSessionTitleFieldsFromTranscript(scope);
+    expect([first.firstUserMessage, next.firstUserMessage]).toEqual([
+      "Original question",
+      "Original question",
+    ]);
+    expect(next.lastMessagePreview).toBe("Concurrent reply");
+    expect(pageReader).toHaveBeenCalledTimes(1);
+  });
+
   test("retains cached title fields across more than 256 sessions", async () => {
     const scopes: SessionTranscriptReadScope[] = [];
     for (let index = 0; index < 300; index += 1) {
@@ -536,7 +604,7 @@ describe("session transcript title hydration", () => {
     });
     expect(sessionAccessor.readSessionTranscriptMessageEventPage).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId }),
-      { maxMessages: 20, offset: 7 },
+      { maxMessages: 20, offset: 0, offsetFrom: "start" },
     );
   });
 
@@ -567,7 +635,7 @@ describe("session transcript title hydration", () => {
       });
       const pageReader = vi.mocked(sessionAccessor.readSessionTranscriptMessageEventPage);
       expect(pageReader.mock.calls.map(([, options]) => options)).toEqual(
-        messageCount < 100 ? [{ maxMessages: 1, offset: 0 }] : [],
+        messageCount < 100 ? [{ maxMessages: 1, offset: messageCount, offsetFrom: "start" }] : [],
       );
       expect(sessionAccessor.readSessionTranscriptBoundedMessageTailPage).toHaveBeenCalledTimes(1);
     },

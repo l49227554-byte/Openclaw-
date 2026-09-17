@@ -132,6 +132,10 @@ export function clearToolStreamSegments(state: StreamReconciliationState) {
   if (Array.isArray(toolHost.chatStreamSegments)) {
     toolHost.chatStreamSegments = [];
   }
+  const reasoningHost = state as { chatReasoningSegments?: unknown[] };
+  if (reasoningHost.chatReasoningSegments?.length) {
+    reasoningHost.chatReasoningSegments = [];
+  }
 }
 
 function buildAssistantStreamMessage(

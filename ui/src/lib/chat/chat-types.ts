@@ -194,7 +194,29 @@ export type ChatItem =
       runId?: string;
       boundaryId?: string;
     }
+  | {
+      /** Live reasoning streamed for an active run (`/reasoning stream`). */
+      kind: "reasoning";
+      key: string;
+      text: string;
+      startedAt: number;
+      isStreaming: boolean;
+      runId?: string;
+      boundaryId?: string;
+    }
   | { kind: "question"; key: string; questionId: string; startedAt: number };
+
+/** One reasoning block streamed by the gateway `thinking` stream for a run. */
+export type ChatReasoningSegment = {
+  runId: string;
+  /** Cumulative reasoning text for this block, as last projected by the gateway. */
+  text: string;
+  ts: number;
+  /** Gateway sequence of the last accepted update. */
+  seq: number;
+  /** A later block started; this block receives no further updates. */
+  settled?: true;
+};
 
 export type ChatStreamSegment = {
   text: string;

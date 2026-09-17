@@ -23,7 +23,7 @@ import { renderChatWorkingIndicator } from "./chat-working-indicator.ts";
 /** A contiguous run of in-flight streaming items rendered under one assistant group. */
 export type StreamGroupPart = Extract<
   ChatItem,
-  { kind: "stream" } | { kind: "reading-indicator" } | { kind: "question" }
+  { kind: "stream" } | { kind: "reading-indicator" } | { kind: "reasoning" } | { kind: "question" }
 >;
 
 type StreamMessageOptions = Pick<
@@ -81,6 +81,21 @@ export function renderStreamGroupParts(
       const prompt = opts.questionPrompts?.get(part.questionId);
       return prompt ? renderChatQuestionSummary(prompt) : nothing;
     }
+    if (part.kind === "reasoning") {
+      // Live reasoning reuses the saved-reasoning bubble so `/reasoning stream`
+      // and the durable row that replaces it look the same.
+      const reasoningSource = prepareChatMessageRender({
+        role: "assistant",
+        content: [{ type: "thinking", thinking: part.text }],
+        timestamp: part.startedAt,
+      });
+      return renderGroupedMessage(
+        reasoningSource,
+        part.key,
+        { ...opts, isStreaming: part.isStreaming, showReasoning: true },
+        opts.onOpenSidebar,
+      );
+    }
     const source = prepareChatMessageRender({
       role: "assistant",
       content: [{ type: "text", text: part.text }],
@@ -113,15 +128,19 @@ export function renderStreamGroup(parts: StreamGroupPart[], opts: StreamGroupOpt
   const name = assistant?.name ?? "Assistant";
   // Footer (sender + time) anchors to the earliest streamed segment; a run that
   // is only the reading indicator has no timestamp and therefore no footer.
-  const streamStarts = parts.flatMap((part) => (part.kind === "stream" ? [part.startedAt] : []));
+  const streamStarts = parts.flatMap((part) =>
+    part.kind === "stream" || part.kind === "reasoning" ? [part.startedAt] : [],
+  );
   const footerStartedAt = streamStarts.length > 0 ? Math.min(...streamStarts) : null;
   const active = parts.some(
-    (part) => part.kind === "reading-indicator" || (part.kind === "stream" && part.isStreaming),
+    (part) =>
+      part.kind === "reading-indicator" ||
+      ((part.kind === "stream" || part.kind === "reasoning") && part.isStreaming),
   );
   // While the agent works with nothing streamed yet the run is pure claw: no
   // avatar next to it - the punching pincer is the whole signal. The avatar
   // arrives with the first stream part unless the presentation opts out.
-  const workingOnly = parts.every((part) => part.kind !== "stream");
+  const workingOnly = parts.every((part) => part.kind !== "stream" && part.kind !== "reasoning");
   const avatar =
     workingOnly || opts.showAssistantAvatar === false
       ? nothing

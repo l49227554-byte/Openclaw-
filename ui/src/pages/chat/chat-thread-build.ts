@@ -15,6 +15,7 @@ import {
   streamSegmentHasItemId,
   streamSegmentUsesAccumulatedText,
   trimAccumulatedStreamPrefix,
+  type ChatReasoningSegment,
   type ChatStreamSegment,
 } from "../../lib/chat/chat-types.ts";
 import {
@@ -75,6 +76,10 @@ import {
 import { coalesceToolActivityMessages } from "./chat-tool-activity-coalesce.ts";
 import { safeNormalizeMessage } from "./chat-turn-boundary.ts";
 import { selectChatInputDisplay } from "./history-merge.ts";
+import {
+  collectPersistedThinkingByRun,
+  isReasoningSegmentPersisted,
+} from "./reasoning-segments.ts";
 import { resolveSystemNoticeKind } from "./system-notice-kinds.ts";
 import { isLiveTerminalForRun } from "./terminal-message-identity.ts";
 import type { CompactionStatus } from "./tool-stream-contract.ts";
@@ -91,6 +96,8 @@ export type BuildChatItemsProps = {
   toolMessages: unknown[];
   guardianNotices?: ChatGuardianNotice[];
   streamSegments: ChatStreamSegment[];
+  /** Live reasoning blocks to render; already filtered by the pane's visibility rules. */
+  reasoningSegments?: readonly ChatReasoningSegment[];
   stream: string | null;
   streamStartedAt: number | null;
   queue?: ChatQueueItem[];
@@ -512,6 +519,27 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
       projections.push({
         item: buildGuardianNoticeItem(notice),
         bounds: resolveProjectionBounds(notice.runId),
+      });
+    }
+    // Live reasoning renders beside the tool cards of its run until the
+    // durable assistant row carrying the same thinking replaces it.
+    const persistedThinking = collectPersistedThinkingByRun(history);
+    for (const [index, segment] of (props.reasoningSegments ?? []).entries()) {
+      if (isReasoningSegmentPersisted(segment, persistedThinking)) {
+        continue;
+      }
+      projections.push({
+        item: {
+          kind: "reasoning",
+          key: `reasoning-seg:${props.sessionKey}:${segment.runId}:${index}`,
+          text: segment.text,
+          startedAt: segment.ts,
+          isStreaming:
+            segment.settled !== true && props.runActive === true && props.runId === segment.runId,
+          ...optionalRunIdentity(segment.runId),
+          ...optionalBoundaryIdentity(latestBoundaryRunId ?? segment.runId),
+        },
+        bounds: resolveProjectionBounds(segment.runId, undefined, latestBoundaryRunId),
       });
     }
   }

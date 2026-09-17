@@ -4,6 +4,7 @@
 import type {
   ChatGuardianNotice,
   ChatQueueItem,
+  ChatReasoningSegment,
   ChatStreamSegment,
 } from "../../lib/chat/chat-types.ts";
 import type { DiffStat } from "../../lib/chat/tool-call-diff.ts";
@@ -89,6 +90,8 @@ export type ToolStreamHost = {
   chatStreamStartedAt: number | null;
   chatRunStartup?: ChatRunStartupState | null;
   chatStreamSegments: ChatStreamSegment[];
+  /** Live reasoning blocks from the gateway `thinking` stream, oldest first. */
+  chatReasoningSegments?: ChatReasoningSegment[];
   toolStreamById: Map<string, ToolStreamEntry>;
   toolStreamOrder: string[];
   activityEventSeqById?: Map<string, number>;

@@ -31,6 +31,7 @@ import {
   type SessionWorkspaceProps,
 } from "./components/chat-session-workspace.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
+import { readTranscriptStreamSegments } from "./reasoning-segments.ts";
 import {
   SIDEBAR_NARROW_BREAKPOINT_PX,
   sidebarMainPanel,
@@ -58,6 +59,14 @@ type ChatPaneLayoutRenderParams = {
 };
 
 export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRender {
+  /** Transcript stream inputs for the thread; catalog panes render no live stream. */
+  protected transcriptStreamProps(
+    state: Parameters<typeof readTranscriptStreamSegments>[0],
+    catalog: boolean,
+  ): ReturnType<typeof readTranscriptStreamSegments> {
+    return readTranscriptStreamSegments(state, catalog ? [] : null);
+  }
+
   private readonly toolIcons = new ChatToolIconController(
     this,
     () => this.context,

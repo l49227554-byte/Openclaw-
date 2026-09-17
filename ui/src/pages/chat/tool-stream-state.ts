@@ -20,6 +20,7 @@ export function resetToolStream(host: ToolStreamHost) {
   host.activityEventSeqById?.clear();
   host.chatToolMessages = [];
   host.chatStreamSegments = [];
+  host.chatReasoningSegments = [];
   host.knownAgentRunIds?.clear();
   host.waitingApprovalStatuses?.clear();
   // Resolution can beat the overlay queue update. Keep tombstones across transient stream resets
@@ -50,6 +51,11 @@ export function resetToolStreamRun(host: ToolStreamHost, runId: string) {
   );
   syncToolStreamMessages(host);
   host.chatStreamSegments = host.chatStreamSegments.filter((segment) => segment.runId !== runId);
+  if (host.chatReasoningSegments?.some((segment) => segment.runId === runId)) {
+    host.chatReasoningSegments = host.chatReasoningSegments.filter(
+      (segment) => segment.runId !== runId,
+    );
+  }
   host.knownAgentRunIds?.delete(runId);
   for (const [approvalId, waitingApproval] of host.waitingApprovalStatuses ?? []) {
     if (waitingApproval.runId === runId) {

@@ -26,6 +26,7 @@ export function createHost(overrides?: Partial<MutableHost>): MutableHost {
     chatStreamStartedAt: null,
     chatRunStartup: null,
     chatStreamSegments: [],
+    chatReasoningSegments: [],
     toolStreamById: new Map<string, ToolStreamEntry>(),
     toolStreamOrder: [],
     chatToolMessages: [],

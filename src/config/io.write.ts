@@ -1,14 +1,11 @@
-import type fs from "node:fs";
 import path from "node:path";
 import { err, ok } from "@openclaw/normalization-core/result";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
-import { isVerbose } from "../global-state.js";
 import {
   readDeferredPluginMigrations,
   withDeferredPluginMigrationsCurrent,
 } from "../infra/deferred-plugin-migrations.js";
-import { isVitestRuntimeEnv } from "../infra/env.js";
-import { formatErrorMessage, hasErrnoCode } from "../infra/errors.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import {
   getUpdateDoctorConfigWriteAuthority,
   assertUpdateDoctorConfigInputHash,
@@ -39,23 +36,17 @@ import {
   restoreEnvVarRefs,
 } from "./env-preserve.js";
 import {
-  resolveKeyedAgentEntryIncludePreservation,
-  resolveKeyedProviderModelsIncludePreservation,
-} from "./include-write-boundary.js";
-import {
-  isInternalIncludeWriteTarget,
-  readConfigIncludeFileWithGuards,
-  resolveConfigIncludes,
-} from "./includes.js";
-import {
-  appendConfigAuditRecord,
-  capConfigAuditIssues,
-  capConfigAuditPaths,
-  createConfigWriteAuditRecordBase,
-  finalizeConfigWriteAuditRecord,
-  formatConfigOverwriteLogMessage,
-  type ConfigWriteAuditResult,
-} from "./io.audit.js";
+  publishStagedIncludeWrites,
+  resolveIncludeWriteThroughPaths,
+  restoreStagedIncludeWrites,
+  restoreStagedIncludeWritesOrFold,
+  stageIncludeWriteThrough,
+  type IncludeWriteRestorer,
+  type PendingIncludeWrite,
+  type StagedIncludeWrite,
+} from "./include-write-through.js";
+import { readConfigIncludeFileWithGuards, resolveConfigIncludes } from "./includes.js";
+import { appendConfigAuditRecord, capConfigAuditIssues, capConfigAuditPaths } from "./io.audit.js";
 import type { ConfigIoContext } from "./io.context.js";
 import { prepareCronOwnerWriteRefusal } from "./io.cron-owner-refusal.js";
 import { recordConfigWriteMetadata } from "./io.meta.js";
@@ -83,19 +74,18 @@ import {
   configWritePostCommitRollback,
 } from "./io.types.js";
 import { logConfigWarningsOnce } from "./io.warnings.js";
+import { createConfigWriteAuditLog } from "./io.write-audit-log.js";
 import {
   ConfigWritePostCommitError,
-  createConfigIncludeOwnershipError,
   createConfigValidationFailedError,
   type ConfigWriteRollbackStatus,
 } from "./io.write-errors.js";
-import { resolvePersistCandidateForWrite, type PendingIncludeWrite } from "./io.write-prepare.js";
+import { resolvePersistCandidateForWrite } from "./io.write-prepare.js";
 import {
   assertBaseSnapshotStillCurrent,
   createGuardedConfigFileSystem,
   formatConfigArtifactTimestamp,
   resolveConfigSizeBaselineBytes,
-  resolveConfigStatMetadata,
   resolveConfigWriteBlockingReasons,
   resolveConfigWriteSuspiciousReasons,
   rollbackConfigFileWriteIfUnchanged,
@@ -111,87 +101,6 @@ import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import type { OpenClawConfig } from "./types.js";
 import { validateConfigObjectRawWithPlugins } from "./validation.js";
 import { captureConfigWriteLockGuard } from "./write-lock.js";
-
-function includeConfigPathsEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((segment, index) => segment === right[index]);
-}
-
-function formatPendingIncludeJson(value: unknown): string {
-  rejectConfigNonFiniteNumbers(value);
-  return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-async function restorePendingIncludeWrites(
-  restorers: ReadonlyArray<{ restore: () => Promise<boolean> }>,
-): Promise<void> {
-  for (const restorer of restorers.toReversed()) {
-    try {
-      await restorer.restore();
-    } catch {
-      // Keep the original write failure; include restore is best-effort.
-    }
-  }
-}
-
-async function commitPendingKeyedIncludeWrites(params: {
-  snapshot: ReadConfigFileSnapshotInternalResult["snapshot"];
-  pendingIncludeWrites: readonly PendingIncludeWrite[];
-  fsModule: typeof fs;
-  assertConfigPathForWrite?: () => void;
-}): Promise<Array<{ restore: () => Promise<boolean> }>> {
-  const restorers: Array<{ restore: () => Promise<boolean> }> = [];
-  for (const pending of params.pendingIncludeWrites) {
-    const ownership = params.snapshot.includeProvenance?.find(
-      (entry) =>
-        includeConfigPathsEqual(entry.path, pending.includePath) &&
-        typeof entry.targetPath === "string",
-    );
-    const targetPath = ownership?.targetPath;
-    if (!targetPath) {
-      throw createConfigIncludeOwnershipError({
-        ownedConfigPath: pending.includePath.join("."),
-      });
-    }
-    if (
-      !isInternalIncludeWriteTarget({
-        configPath: params.snapshot.path,
-        includePath: targetPath,
-      })
-    ) {
-      throw new Error(
-        `Config mutation cannot update external $include target ${targetPath}; edit the included file directly or move it under the config directory.`,
-      );
-    }
-    params.assertConfigPathForWrite?.();
-    let previousRaw: string | null = null;
-    try {
-      previousRaw = await params.fsModule.promises.readFile(targetPath, "utf-8");
-    } catch (error) {
-      if (!hasErrnoCode(error, "ENOENT")) {
-        throw error;
-      }
-    }
-    await params.fsModule.promises.writeFile(targetPath, formatPendingIncludeJson(pending.value), {
-      encoding: "utf-8",
-      mode: 0o600,
-    });
-    restorers.push({
-      restore: async () => {
-        params.assertConfigPathForWrite?.();
-        if (previousRaw === null) {
-          await params.fsModule.promises.unlink(targetPath);
-          return true;
-        }
-        await params.fsModule.promises.writeFile(targetPath, previousRaw, {
-          encoding: "utf-8",
-          mode: 0o600,
-        });
-        return true;
-      },
-    });
-  }
-  return restorers;
-}
 
 export async function writeConfigFileFromContext(
   context: ConfigIoContext,
@@ -284,22 +193,18 @@ export async function writeConfigFileFromContext(
   const hasAuthoredIncludes = containsConfigIncludeDirective(snapshot.parsed);
   const hasIncludes = hasAuthoredIncludes && !containsConfigIncludeDirective(snapshot.sourceConfig);
   const pendingIncludeWrites: PendingIncludeWrite[] = [];
-  let pendingIncludeRestorers: Array<{ restore: () => Promise<boolean> }> = [];
+  const includeWriteRestorers: IncludeWriteRestorer[] = [];
+  const envForRestore = options.envSnapshotForRestore ?? deps.env;
+  let stagedIncludeWrites: StagedIncludeWrite[] = [];
+  let includeReadOverlay: ReadonlyMap<string, string> | undefined;
   // Doctor repairs need the same authored projection so roster moves preserve nested includes.
   // Missing snapshots also use this owner; exact bootstrap rosters carry explicitSetPaths.
   if (snapshot.valid || (snapshot.exists && hasAuthoredIncludes)) {
-    const keyedAgentEntryIncludes = resolveKeyedAgentEntryIncludePreservation({
-      configPath: snapshot.path,
-      provenance: snapshot.includeProvenance,
-    });
-    const keyedProviderModelsIncludes = resolveKeyedProviderModelsIncludePreservation({
-      configPath: snapshot.path,
-      provenance: snapshot.includeProvenance,
-    });
-    const includeWriteThroughPaths = [
-      ...(keyedAgentEntryIncludes?.includePaths ?? []),
-      ...(keyedProviderModelsIncludes?.includePaths ?? []),
-    ];
+    const { keyedAgentEntryIncludePaths, includeWriteThroughPaths } =
+      resolveIncludeWriteThroughPaths({
+        configPath: snapshot.path,
+        provenance: snapshot.includeProvenance,
+      });
     persistCandidate = resolvePersistCandidateForWrite({
       inputBasis,
       runtimeConfig: snapshot.config,
@@ -309,7 +214,7 @@ export async function writeConfigFileFromContext(
       nextConfig,
       rootAuthoredConfig: snapshot.parsed,
       agentRosterIncludeOwned: snapshot.agentRosterIncludeOwned,
-      keyedAgentEntryIncludePaths: keyedAgentEntryIncludes?.includePaths,
+      keyedAgentEntryIncludePaths,
       includeWriteThroughPaths:
         includeWriteThroughPaths.length > 0 ? includeWriteThroughPaths : undefined,
       pendingIncludeWrites: includeWriteThroughPaths.length > 0 ? pendingIncludeWrites : undefined,
@@ -321,17 +226,16 @@ export async function writeConfigFileFromContext(
       allowIncludeAncestorExplicitSetPaths: options.allowIncludeAncestorExplicitSetPaths,
       preserveLegacyAgentRoster,
     });
-    // Write include files before hash/preflight so revision hashes match the
-    // files that will exist. Restorers run if validation or preflight misses,
-    // or if the later publication try exits unpublished / rolls back the root.
-    if (pendingIncludeWrites.length > 0) {
-      pendingIncludeRestorers = await commitPendingKeyedIncludeWrites({
-        snapshot,
-        pendingIncludeWrites,
-        fsModule: deps.fs,
-        assertConfigPathForWrite: options.assertConfigPathForWrite,
-      });
-    }
+    // Stage only (no disk effects); staged bytes feed the read overlay below.
+    ({ staged: stagedIncludeWrites, overlay: includeReadOverlay } = await stageIncludeWriteThrough({
+      snapshot,
+      pendingIncludeWrites,
+      envForRestore,
+      snapshotIncludeHashes:
+        options.includeFileHashesForWrite ?? snapshotRead.includeFileHashesForWrite,
+      snapshotIncludeTargets:
+        options.includeFileTargetsForWrite ?? snapshotRead.includeFileTargetsForWrite,
+    }));
   }
   if (snapshot.exists && (snapshot.valid || hasIncludes)) {
     try {
@@ -361,13 +265,15 @@ export async function writeConfigFileFromContext(
     }
   }
 
-  const envForRestore = options.envSnapshotForRestore ?? deps.env;
   const resolveValidationCandidate = (candidate: unknown) => {
     // Validate removals now; apply them once to the final authored output after materialization.
     const config = applyUnsetPathsForWrite(candidate as OpenClawConfig, unsetPaths);
     return containsConfigIncludeDirective(config)
       ? context.resolveRuntimePreflightSourceConfig(
           restoreEnvVarRefs(config, snapshot.parsed, envForRestore) as OpenClawConfig,
+          undefined,
+          undefined,
+          includeReadOverlay,
         )
       : config;
   };
@@ -386,28 +292,23 @@ export async function writeConfigFileFromContext(
     return result;
   };
   // Validate authored structure before stamping can replace malformed parents.
-  let validated;
-  try {
-    validateCandidate(validationCandidate);
-    // SAFETY: the original resolved input was just validated; retain raw values, not parser defaults.
-    const validatedCandidate = validationCandidate as OpenClawConfig;
-    const materialized = stampConfigVersion(
-      snapshot.exists
-        ? validatedCandidate
-        : initializeNativeSessionCatalogPreferences(validatedCandidate),
-      options.lastTouchedVersionOverride,
-      snapshot.exists ? (snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig) : null,
-    );
-    // Resolve policy from included facts, but persist only its delta beside authored directives.
-    persistCandidate = applyMergePatch(
-      persistCandidate,
-      createMergePatch(validationCandidate, materialized),
-    );
-    validated = validateCandidate(resolveValidationCandidate(persistCandidate));
-  } catch (error) {
-    await restorePendingIncludeWrites(pendingIncludeRestorers);
-    throw error;
-  }
+  // Pre-disk: a throw here needs no include restore, propagates directly.
+  validateCandidate(validationCandidate);
+  // SAFETY: the original resolved input was just validated; retain raw values, not parser defaults.
+  const validatedCandidate = validationCandidate as OpenClawConfig;
+  const materialized = stampConfigVersion(
+    snapshot.exists
+      ? validatedCandidate
+      : initializeNativeSessionCatalogPreferences(validatedCandidate),
+    options.lastTouchedVersionOverride,
+    snapshot.exists ? (snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig) : null,
+  );
+  // Resolve policy from included facts, but persist only its delta beside authored directives.
+  persistCandidate = applyMergePatch(
+    persistCandidate,
+    createMergePatch(validationCandidate, materialized),
+  );
+  const validated = validateCandidate(resolveValidationCandidate(persistCandidate));
   const previousWarningFingerprint = loggedConfigWarningFingerprints.get(configPath);
   // Capture before commit so rollback cannot restore a watcher-updated slot.
   options.assertConfigPathForWrite?.();
@@ -429,7 +330,6 @@ export async function writeConfigFileFromContext(
     }
   } catch (error) {
     if (error instanceof EnvRefArrayMutationError) {
-      await restorePendingIncludeWrites(pendingIncludeRestorers);
       throw error;
     }
     // A failed current-file reread leaves the already validated candidate unchanged.
@@ -490,6 +390,7 @@ export async function writeConfigFileFromContext(
     stampedOutputConfig,
     includeFileHashes,
     includeFileTargets,
+    includeReadOverlay,
   );
   const committedRevision = hashConfigRevision(json, includeFileHashes, includeFileTargets);
   // Compare resolved modes: an unchanged authored $include has no local mode literal.
@@ -504,82 +405,29 @@ export async function writeConfigFileFromContext(
     gatewayModeAfter,
   });
 
-  const readTestLogFlag = (name: string) => isVitestRuntimeEnv(deps.env) && deps.env[name] === "1";
-  const logConfigOverwrite = () => {
-    if (
-      !snapshot.exists ||
-      options.skipOutputLogs ||
-      (isVitestRuntimeEnv(deps.env) && !readTestLogFlag("OPENCLAW_TEST_CONFIG_WRITE_LOG"))
-    ) {
-      return;
-    }
-    const testLog = readTestLogFlag("OPENCLAW_TEST_CONFIG_WRITE_LOG");
-    if (!isVerbose() && deps.env.OPENCLAW_CONFIG_OVERWRITE_LOG !== "1" && !testLog) {
-      return;
-    }
-    deps.logger.warn(
-      formatConfigOverwriteLogMessage({
-        configPath,
-        previousHash: previousHash ?? null,
-        nextHash,
-        changedPathCount,
-      }),
-    );
-  };
-  const logConfigWriteAnomalies = () => {
-    const testLog = readTestLogFlag("OPENCLAW_TEST_CONFIG_WRITE_LOG");
-    if (
-      suspiciousReasons.length === 0 ||
-      options.skipOutputLogs ||
-      (isVitestRuntimeEnv(deps.env) && !testLog)
-    ) {
-      return;
-    }
-    const showMissingMeta =
-      isVerbose() || deps.env.OPENCLAW_CONFIG_WRITE_ANOMALY_LOG === "1" || testLog;
-    const visibleReasons = showMissingMeta
-      ? suspiciousReasons
-      : suspiciousReasons.filter((reason) => reason !== "missing-meta-before-write");
-    if (visibleReasons.length > 0) {
-      deps.logger.warn(`Config write anomaly: ${configPath} (${visibleReasons.join(", ")})`);
-    }
-  };
-
-  const auditRecordBase = createConfigWriteAuditRecordBase({
-    configPath,
-    env: deps.env,
-    existsBefore: snapshot.exists,
-    previousHash: previousHash ?? null,
-    nextHash,
-    previousBytes,
-    nextBytes,
-    previousMetadata: resolveConfigStatMetadata(previousStat),
-    changedPathCount,
-    changedPaths: [...changedPaths],
-    origin: options.auditOrigin,
-    hasMetaBefore,
-    hasMetaAfter,
-    gatewayModeBefore,
-    gatewayModeAfter,
-    suspicious: suspiciousReasons,
-  });
-  const appendWriteAudit = async (
-    result: ConfigWriteAuditResult,
-    error?: unknown,
-    nextStat?: fs.Stats | null,
-  ) => {
-    options.assertConfigPathForWrite?.();
-    await appendConfigAuditRecord({
+  const { logConfigOverwrite, logConfigWriteAnomalies, appendWriteAudit } =
+    createConfigWriteAuditLog({
+      configPath,
       env: deps.env,
       homedir: deps.homedir,
-      record: finalizeConfigWriteAuditRecord({
-        base: auditRecordBase,
-        result,
-        err: error,
-        nextMetadata: resolveConfigStatMetadata(nextStat ?? null),
-      }),
+      logger: deps.logger,
+      skipOutputLogs: options.skipOutputLogs,
+      assertConfigPathForWrite: options.assertConfigPathForWrite,
+      existsBefore: snapshot.exists,
+      previousHash: previousHash ?? null,
+      nextHash,
+      previousBytes,
+      nextBytes,
+      previousStat,
+      changedPathCount,
+      changedPaths: [...changedPaths],
+      origin: options.auditOrigin,
+      hasMetaBefore,
+      hasMetaAfter,
+      gatewayModeBefore,
+      gatewayModeAfter,
+      suspiciousReasons,
     });
-  };
   const blockingReasons = resolveConfigWriteBlockingReasons(suspiciousReasons, options);
   if (blockingReasons.length > 0 && options.allowDestructiveWrite !== true) {
     const rejectedPath = `${configPath}.rejected.${formatConfigArtifactTimestamp(new Date().toISOString())}`;
@@ -599,7 +447,6 @@ export async function writeConfigFileFromContext(
     });
     deps.logger.warn(message);
     await appendWriteAudit("rejected", error);
-    await restorePendingIncludeWrites(pendingIncludeRestorers);
     throw error;
   }
 
@@ -617,12 +464,8 @@ export async function writeConfigFileFromContext(
           ),
       });
     });
-  try {
-    await preCommitRuntimePreflight(sourceConfigForPreflight);
-  } catch (error) {
-    await restorePendingIncludeWrites(pendingIncludeRestorers);
-    throw error;
-  }
+  // Still pre-disk: preflight failure propagates directly, same as above.
+  await preCommitRuntimePreflight(sourceConfigForPreflight);
 
   const publication: { phase: "unpublished" | "removed" | "published" | "accepted" } = {
     phase: "unpublished",
@@ -636,6 +479,14 @@ export async function writeConfigFileFromContext(
     options.assertConfigPathForWrite?.();
     await cronOwnerRefusal?.recheck();
     options.assertConfigPathForWrite?.();
+    // Includes publish before the root, in this guarded window (finding 6).
+    await publishStagedIncludeWrites({
+      staged: stagedIncludeWrites,
+      restorers: includeWriteRestorers,
+      configPath,
+      assertConfigPathForWrite: options.assertConfigPathForWrite,
+      skipOutputLogs: options.skipOutputLogs,
+    });
     warnIfJSON5CommentsWillBeStripped({
       raw: snapshot.raw,
       filePath: configPath,
@@ -745,8 +596,14 @@ export async function writeConfigFileFromContext(
         hash: committedRevision,
         sourceConfig: sourceConfigForPreflight,
       },
-      [configWritePostCommitRollback]: (assertCurrent) => {
+      [configWritePostCommitRollback]: async (assertCurrent) => {
         assertCurrent();
+        // Finding 4: restore includes with the root on runtime-finalization
+        // failure. A throw here is AggregateError'd by io.runtime.ts:677-712.
+        await restoreStagedIncludeWrites(includeWriteRestorers, {
+          configPath,
+          assertConfigPathForWrite: assertCurrent,
+        });
         restoreConfigSnapshotAuditRecord({
           env: deps.env,
           homedir: deps.homedir,
@@ -817,7 +674,10 @@ export async function writeConfigFileFromContext(
       failure = failureDuringAudit;
     }
     if (publication.phase === "unpublished" || rollbackStatus === "restored") {
-      await restorePendingIncludeWrites(pendingIncludeRestorers);
+      failure = await restoreStagedIncludeWritesOrFold(includeWriteRestorers, failure, {
+        configPath,
+        assertConfigPathForWrite: options.assertConfigPathForWrite,
+      });
     }
     if (publication.phase === "unpublished") {
       throw failure;

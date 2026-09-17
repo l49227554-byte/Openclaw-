@@ -16,6 +16,13 @@ import { parseConfigPathArrayIndex } from "../shared/path-array-index.js";
 import { isRecord } from "../utils.js";
 import { configIncludeOwnsAgentRosterValues } from "./agent-roster-provenance.js";
 import { containsEnvVarReference } from "./env-substitution.js";
+import {
+  captureIncludeWriteThrough,
+  getPathValue,
+  resolveIncludeOwnedWriteThroughPaths,
+  setPathValue,
+  type PendingIncludeWrite,
+} from "./include-write-through.js";
 import { coerceConfig } from "./io.read-helpers.js";
 import type { ConfigWriteInputBasis } from "./io.types.js";
 import { createConfigIncludeOwnershipError } from "./io.write-errors.js";
@@ -170,49 +177,6 @@ function hasNewEquivalentArraySibling(value: unknown, nextValue: unknown, index:
       isDeepStrictEqual(item, includedValue) &&
       !isDeepStrictEqual(value[itemIndex], includedValue),
   );
-}
-
-function getPathValue(value: unknown, path: string[]): unknown {
-  let current = value;
-  for (const segment of path) {
-    if (Array.isArray(current)) {
-      const index = parseConfigPathArrayIndex(segment);
-      if (index === undefined || index >= current.length) {
-        return undefined;
-      }
-      current = current[index];
-      continue;
-    }
-    if (!isRecord(current)) {
-      return undefined;
-    }
-    current = current[segment];
-  }
-  return current;
-}
-
-function setPathValue(value: unknown, path: string[], nextValue: unknown): unknown {
-  if (path.length === 0) {
-    return structuredClone(nextValue);
-  }
-  const head = expectDefined(path[0], "config path head");
-  const tail = path.slice(1);
-  if (Array.isArray(value)) {
-    const index = parseConfigPathArrayIndex(head);
-    if (index === undefined || index >= value.length) {
-      return value;
-    }
-    const next = [...value];
-    next[index] = setPathValue(value[index], tail, nextValue);
-    return next;
-  }
-  if (!isRecord(value)) {
-    return value;
-  }
-  return {
-    ...value,
-    [head]: setPathValue(value[head], tail, nextValue),
-  };
 }
 
 function pathStartsWith(path: readonly string[], prefix: readonly string[]): boolean {
@@ -856,29 +820,6 @@ function pathTouchesAgentRoster(path: readonly string[]): boolean {
 
 function pathTargetsAgentRoster(path: readonly string[]): boolean {
   return AGENT_ROSTER_PATHS.some((rosterPath) => pathStartsWith(path, rosterPath));
-}
-
-export type PendingIncludeWrite = {
-  includePath: string[];
-  value: unknown;
-};
-
-function isKeyedAgentEntryIncludePath(path: readonly string[]): boolean {
-  return path.length === 3 && path[0] === "agents" && path[1] === "entries";
-}
-
-function isKeyedProviderModelsIncludePath(path: readonly string[]): boolean {
-  return (
-    path.length === 4 && path[0] === "models" && path[1] === "providers" && path[3] === "models"
-  );
-}
-
-function collectKeyedAgentEntryIncludePaths(rootAuthoredConfig: unknown): string[][] {
-  return collectIncludeOwnedPaths(rootAuthoredConfig).filter(isKeyedAgentEntryIncludePath);
-}
-
-function collectKeyedProviderModelsIncludePaths(rootAuthoredConfig: unknown): string[][] {
-  return collectIncludeOwnedPaths(rootAuthoredConfig).filter(isKeyedProviderModelsIncludePath);
 }
 
 function hasOnlyPreparedKeyedAgentEntryRosterIncludes(
@@ -1643,39 +1584,24 @@ export function resolvePersistCandidateForWrite(
 ): unknown {
   const inputBasis = params.inputBasis ?? { kind: "runtime", config: params.runtimeConfig };
   const rootAuthoredConfig = params.rootAuthoredConfig ?? params.sourceConfig;
-  const keyedAgentEntryIncludePaths =
-    params.keyedAgentEntryIncludePaths ??
-    (params.pendingIncludeWrites && params.includeWriteThroughPaths === undefined
-      ? collectKeyedAgentEntryIncludePaths(rootAuthoredConfig)
-      : undefined);
-  const includeWriteThroughPaths =
-    params.includeWriteThroughPaths ??
-    (params.pendingIncludeWrites
-      ? [
-          ...collectKeyedAgentEntryIncludePaths(rootAuthoredConfig),
-          ...collectKeyedProviderModelsIncludePaths(rootAuthoredConfig),
-        ]
-      : undefined);
+  const includeOwnedPaths = params.pendingIncludeWrites
+    ? collectIncludeOwnedPaths(rootAuthoredConfig)
+    : undefined;
+  const { keyedAgentEntryIncludePaths, includeWriteThroughPaths } =
+    resolveIncludeOwnedWriteThroughPaths({
+      includeOwnedPaths,
+      keyedAgentEntryIncludePathsOverride: params.keyedAgentEntryIncludePaths,
+      includeWriteThroughPathsOverride: params.includeWriteThroughPaths,
+    });
   let nextConfig = params.nextConfig;
   if (params.pendingIncludeWrites && includeWriteThroughPaths) {
-    for (const includePath of includeWriteThroughPaths) {
-      const path = [...includePath];
-      const nextValue = getPathValue(nextConfig, path);
-      const sourceValue = getPathValue(params.sourceConfig, path);
-      const runtimeValue = getPathValue(inputBasis.config, path);
-      if (
-        nextValue === undefined ||
-        isDeepStrictEqual(nextValue, sourceValue) ||
-        isDeepStrictEqual(nextValue, runtimeValue)
-      ) {
-        continue;
-      }
-      params.pendingIncludeWrites.push({ includePath: path, value: nextValue });
-      const restoreValue = sourceValue !== undefined ? sourceValue : runtimeValue;
-      if (restoreValue !== undefined) {
-        nextConfig = setPathValue(nextConfig, path, restoreValue);
-      }
-    }
+    nextConfig = captureIncludeWriteThrough({
+      includeWriteThroughPaths,
+      nextConfig,
+      sourceConfig: params.sourceConfig,
+      runtimeConfig: inputBasis.config,
+      pendingIncludeWrites: params.pendingIncludeWrites,
+    });
   }
   const writeParams = {
     ...params,

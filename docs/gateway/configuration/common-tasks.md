@@ -405,10 +405,15 @@ read_when:
       nested object-map entries. Write-through only targets include files inside
       the top-level config directory; includes admitted through
       `OPENCLAW_INCLUDE_ROOTS` stay read-only for OpenClaw-owned writes.
+    - **Mixed root+include writes**: a write that touches keyed
+      `agents.entries.<id>` or `models.providers.<id>.models` paths owned by
+      an include, alongside other root-owned keys in the same operation,
+      writes through: each keyed entry/catalog lands in its owning include
+      file and the root keeps its `$include` pointer.
     - **Unsupported write-through**: root includes (every section of a config
       whose root object authors `$include`), actual array-entry includes,
       include arrays, sibling overrides, files shared by multiple logical paths,
-      changes spanning ownership boundaries,
+      any other change spanning ownership boundaries,
       any nested include beneath a merged owner, and any include whose own file
       still authors a nested `$include` directive fail closed instead of
       flattening the config. Numeric object keys are treated as map keys, not

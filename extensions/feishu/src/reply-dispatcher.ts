@@ -1537,7 +1537,37 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               text,
             );
           } catch (greenSendError: unknown) {
-            // The collapsed card is already settled; the answer must still ship.
+            // Case 1: Feishu accepted the green card but omitted its message_id.
+            // toFeishuSendResult raises this as a partial-delivery error with
+            // visibleReplySent=true. The answer is already delivered, so preserving
+            // the accepted send is mandatory; treating it as unsent would duplicate it.
+            const greenAccepted = isChannelPartialDeliveryError(greenSendError)
+              ? greenSendError.deliveryResult
+              : undefined;
+            if (greenAccepted?.visibleReplySent === true) {
+              params.runtime.error?.(
+                `feishu[${account.accountId}] two-phase result card accepted without a receipt; not resending: ${String(
+                  greenSendError,
+                )}`,
+              );
+              twoPhase.markFinalSent();
+              markVisibleReplySent();
+              deliveredFinalTexts.add(text);
+              const acceptedResult = createFeishuReplyDeliveryResult({
+                results: [],
+                visibleReplySent: true,
+                content: greenAccepted.content ?? text,
+                kind: "card",
+              });
+              return mergeFeishuReplyDeliveryResults(
+                [...deliveredResults, acceptedResult],
+                text,
+              );
+            }
+            // Case 2: genuine rejection. The collapsed card is already settled, so
+            // recover the answer through the standard static-card path. If that
+            // transport accepts some chunks and then fails, preserve those accepted
+            // receipts instead of falling through to a full resend.
             params.runtime.error?.(
               `feishu[${account.accountId}] two-phase result card failed; recovering the answer via static card: ${String(
                 greenSendError,
@@ -1549,34 +1579,56 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
               identity,
               responsePrefixContextProvider(),
             );
-            const recovered = await sendChunkedTextReply({
-              text,
-              useCard: true,
-              infoKind: info?.kind,
-              header: cardHeader,
-              note: cardNote,
-              chunkMentions: requiredMentionTargets,
-              sendChunk: async ({ chunk, mentions }) =>
-                await sendStructuredCardFeishu({
-                  cfg,
-                  to: sendTarget,
-                  text: chunk,
-                  replyToMessageId: sendReplyToMessageId,
-                  replyInThread: effectiveReplyInThread,
-                  allowTopLevelReplyFallback,
-                  accountId,
-                  header: cardHeader,
-                  note: cardNote,
-                  ...(mentions ? { mentions } : {}),
-                }),
-            });
-            twoPhase.markFinalSent();
-            markVisibleReplySent();
-            deliveredFinalTexts.add(text);
-            return mergeFeishuReplyDeliveryResults(
-              [...deliveredResults, recovered],
-              text,
-            );
+            try {
+              const recovered = await sendChunkedTextReply({
+                text,
+                useCard: true,
+                infoKind: info?.kind,
+                header: cardHeader,
+                note: cardNote,
+                chunkMentions: requiredMentionTargets,
+                sendChunk: async ({ chunk, mentions }) =>
+                  await sendStructuredCardFeishu({
+                    cfg,
+                    to: sendTarget,
+                    text: chunk,
+                    replyToMessageId: sendReplyToMessageId,
+                    replyInThread: effectiveReplyInThread,
+                    allowTopLevelReplyFallback,
+                    accountId,
+                    header: cardHeader,
+                    note: cardNote,
+                    ...(mentions ? { mentions } : {}),
+                  }),
+              });
+              twoPhase.markFinalSent();
+              markVisibleReplySent();
+              deliveredFinalTexts.add(text);
+              return mergeFeishuReplyDeliveryResults(
+                [...deliveredResults, recovered],
+                text,
+              );
+            } catch (recoveryError: unknown) {
+              const recoveryAccepted = isChannelPartialDeliveryError(recoveryError)
+                ? recoveryError.deliveryResult
+                : undefined;
+              if (recoveryAccepted?.visibleReplySent === true) {
+                // Some recovery chunks landed; account for them and stop. The outer
+                // catch must not resend the already-accepted portion.
+                twoPhase.markFinalSent();
+                markVisibleReplySent();
+                deliveredFinalTexts.add(text);
+                return mergeFeishuReplyDeliveryResults(
+                  [
+                    ...deliveredResults,
+                    { ...recoveryAccepted, content: recoveryAccepted.content ?? text },
+                  ],
+                  text,
+                );
+              }
+              // Nothing was accepted: safe to fall through to the official path.
+              throw recoveryError;
+            }
           }
         } catch (twoPhaseError: unknown) {
           // Before commit nothing was sent: drop the pending collapse and use the
@@ -1648,6 +1700,18 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       }
 
       if (shouldDeliverText) {
+        // Two-phase owns the answer lane: intermediate block text must never reach
+        // the timeline-only processing card (via the block streaming path) nor be
+        // sent as an independent post. The full answer ships once, on the final
+        // green result card. Block media is still delivered normally. Suppressing
+        // onPartialReply alone is insufficient because block payloads mirror text
+        // into streamText directly below.
+        if (twoPhaseActive && info?.kind === "block") {
+          if (hasMedia) {
+            await collectDelivery(sendMediaReplies(payload));
+          }
+          return mergeFeishuReplyDeliveryResults(deliveredResults);
+        }
         // Later finals replace stream text. Each presentation fallback owns a
         // separate message; ordinary blocks retain their streaming policy.
         if (hasPresentationFallback || (info?.kind === "block" && !useStreamingCard)) {
@@ -1814,6 +1878,14 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     try {
       const line = twoPhase.toolStart(payload);
       if (line && line !== " ") {
+        // Explicitly open the processing card on the first tool event. The
+        // default render mode is "auto", in which updateStreamingStatusLine
+        // refuses to start a session (it only renders once a card exists); the
+        // two-phase answer never streams, so without this the timeline would
+        // stay invisible until final delivery. startStreaming sets the start
+        // promise synchronously, which satisfies the active-session guard, and
+        // the queued flush applies the timeline once the session is ready.
+        startStreaming();
         return updateStreamingStatusLine(line);
       }
     } catch (error: unknown) {

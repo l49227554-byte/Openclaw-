@@ -23,6 +23,36 @@ export const TWO_PHASE_RESULT_TITLE = "结果";
 const RUNNING_ICON = "⏳";
 const DONE_ICON = "✅";
 
+/**
+ * `onItemEvent` is a broad "work item" channel: the host also emits assistant
+ * commentary (`preamble`), narration, reasoning, plan and approval items through
+ * it. None of those are tool calls and must never open a tool row (they would
+ * otherwise make `hasActivity` true on zero-tool turns and add phantom steps).
+ */
+const NON_TOOL_ITEM_KINDS = new Set([
+  "preamble",
+  "commentary",
+  "narration",
+  "narrator",
+  "reasoning",
+  "thinking",
+  "plan",
+  "approval",
+]);
+
+function isToolItemEvent(event: TwoPhaseItemEventPayload): boolean {
+  if (event.approvalId || event.approvalSlug) {
+    return false;
+  }
+  const kind = typeof event.kind === "string" ? event.kind.trim().toLowerCase() : "";
+  if (kind && NON_TOOL_ITEM_KINDS.has(kind)) {
+    return false;
+  }
+  // Genuine tool calls carry a tool-call id. For an item without one, require an
+  // explicit tool name; never open a row from a bare `kind` (e.g. "preamble").
+  return Boolean(event.toolCallId || (event.name && event.name.trim()));
+}
+
 /** Clock abstraction so timeline elapsed time is deterministic in tests. */
 export type TwoPhaseClock = () => number;
 
@@ -64,6 +94,8 @@ export type TwoPhaseItemEventPayload = {
   status?: string;
   summary?: string;
   progressText?: string;
+  approvalId?: string;
+  approvalSlug?: string;
 };
 
 export type TwoPhaseModelInfo = {
@@ -404,11 +436,11 @@ export function createTwoPhase(
         }
         return next;
       });
-      if (!matched && (event.name || event.kind)) {
+      if (!matched && isToolItemEvent(event)) {
         const done = event.phase === "end" || event.status === "completed" || event.status === "done";
         state.tools.push({
           toolCallId: id,
-          name: event.name ?? event.kind ?? "tool",
+          name: event.name ?? "tool",
           status: done ? "done" : "running",
           startedAt: now(),
           ...(done ? { endedAt: now() } : {}),

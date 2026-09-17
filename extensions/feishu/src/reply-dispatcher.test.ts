@@ -4450,5 +4450,122 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
       expect(sendStructuredCardFeishuMock).not.toHaveBeenCalled();
     });
   });
+
+  describe("opt-in two-phase result card", () => {
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    function useTwoPhaseAccount(extra: Record<string, unknown> = {}) {
+      resolveFeishuAccountMock.mockReturnValue({
+        accountId: "main",
+        appId: "app_id",
+        appSecret: "app_secret",
+        domain: "feishu",
+        config: {
+          renderMode: "auto",
+          streaming: { mode: "partial" },
+          twoPhase: { enabled: true },
+          ...extra,
+        },
+      });
+    }
+
+    async function driveToolTurn() {
+      const harness = createDispatcherHarness({ runtime: createRuntimeLogger() });
+      harness.result.replyOptions.onToolStart?.({ toolCallId: "t1", name: "exec" });
+      await flush();
+      return harness;
+    }
+
+    it("opens the processing card from the first tool event in default auto render mode", async () => {
+      useTwoPhaseAccount();
+      const { result } = await driveToolTurn();
+
+      // Regression: auto mode made updateStreamingStatusLine refuse to start, so the
+      // timeline stayed invisible until final delivery.
+      expect(streamingInstances).toHaveLength(1);
+      expect(requireStreamingInstance(0).start).toHaveBeenCalledTimes(1);
+      const updateCalls = requireStreamingInstance(0).update.mock.calls.flat();
+      expect(updateCalls.join("\n")).toMatch(/exec/);
+      expect(result.getVisibleReplyState().visibleReplySent).toBe(false);
+    });
+
+    it("settles the timeline card to a collapsed line and sends the answer as a green card", async () => {
+      useTwoPhaseAccount();
+      const { options } = await driveToolTurn();
+
+      const delivery = await options.deliver({ text: "the full answer" }, { kind: "final" });
+      await options.onIdle?.();
+      await delivery?.finalization;
+
+      // Processing card settles on the collapsed summary, never the answer.
+      const closeText = String(requireStreamingInstance(0).closeWithResult.mock.calls[0]?.[0]);
+      expect(closeText).toMatch(/已完成/);
+      expect(closeText).not.toMatch(/the full answer/);
+      // Answer ships exactly once, as the green result card.
+      expect(sendCardFeishuMock).toHaveBeenCalledTimes(1);
+      const greenCard = JSON.stringify(sendCardFeishuMock.mock.calls[0]?.[0]?.card);
+      expect(greenCard).toMatch(/the full answer/);
+      expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    });
+
+    it("keeps block answer text out of the timeline card when block streaming is enabled", async () => {
+      useTwoPhaseAccount({ streaming: { mode: "partial", block: { enabled: true } } });
+      const { options } = await driveToolTurn();
+
+      await options.deliver({ text: "partial block prose" }, { kind: "block" });
+      await flush();
+
+      // Blocks are suppressed in two-phase mode: no independent post, no block prose
+      // mirrored into the streaming card.
+      expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+      const blockUpdates = requireStreamingInstance(0).update.mock.calls.flat().join("\n");
+      expect(blockUpdates).not.toMatch(/partial block prose/);
+
+      const delivery = await options.deliver({ text: "the full answer" }, { kind: "final" });
+      await options.onIdle?.();
+      await delivery?.finalization;
+
+      expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+      const closeText = String(requireStreamingInstance(0).closeWithResult.mock.calls[0]?.[0]);
+      expect(closeText).not.toMatch(/partial block prose/);
+      expect(JSON.stringify(sendCardFeishuMock.mock.calls[0]?.[0]?.card)).toMatch(
+        /the full answer/,
+      );
+    });
+
+    it("does not resend the answer when the green card is accepted but omits its receipt", async () => {
+      useTwoPhaseAccount();
+      const { options } = await driveToolTurn();
+      const acceptedError = createChannelPartialDeliveryError(
+        new Error("Feishu card send failed: no message_id returned"),
+        { messageIds: [], visibleReplySent: true },
+      );
+      sendCardFeishuMock.mockRejectedValueOnce(acceptedError);
+
+      const delivery = await options.deliver({ text: "accepted once" }, { kind: "final" });
+      await options.onIdle?.();
+      await delivery?.finalization;
+
+      // The accepted green card must not trigger a static-card resend.
+      expect(sendCardFeishuMock).toHaveBeenCalledTimes(1);
+      expect(sendStructuredCardFeishuMock).not.toHaveBeenCalled();
+      expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    });
+
+    it("recovers the answer via the static card path on a genuine green-card rejection", async () => {
+      useTwoPhaseAccount();
+      const { options } = await driveToolTurn();
+      sendCardFeishuMock.mockRejectedValueOnce(new Error("Feishu card send failed: boom"));
+
+      const delivery = await options.deliver({ text: "recovered answer" }, { kind: "final" });
+      await options.onIdle?.();
+      await delivery?.finalization;
+
+      expect(sendCardFeishuMock).toHaveBeenCalledTimes(1);
+      expect(sendStructuredCardFeishuMock).toHaveBeenCalledTimes(1);
+      const recovered = JSON.stringify(sendStructuredCardFeishuMock.mock.calls[0]?.[0]);
+      expect(recovered).toMatch(/recovered answer/);
+    });
+  });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

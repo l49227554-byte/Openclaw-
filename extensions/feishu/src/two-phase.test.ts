@@ -113,6 +113,39 @@ describe("tool timeline", () => {
     tp.toolStart({ toolCallId: "a", name: "exec" });
     expect(tp.timeline().match(/exec/g)?.length ?? 0).toBe(1);
   });
+
+  it("never opens a tool row for non-tool item events (preamble/commentary/plan/approval)", () => {
+    const tp = make({ enabled: true });
+    // Bare-kind non-tool items (the host routes commentary through onItemEvent).
+    tp.itemEvent({ itemId: "p1", kind: "preamble", name: "preamble" });
+    tp.itemEvent({ itemId: "c1", kind: "commentary" });
+    tp.itemEvent({ itemId: "n1", kind: "narration" });
+    tp.itemEvent({ itemId: "r1", kind: "reasoning" });
+    tp.itemEvent({ itemId: "pl1", kind: "plan" });
+    // Approval-bearing items are not tools even if they carry an itemId.
+    tp.itemEvent({ itemId: "ap1", kind: "approval", approvalId: "apv1" });
+    expect(tp.hasActivity()).toBe(false);
+    expect(tp.timeline().trim()).toBe("");
+    const collapsed = tp.collapse();
+    expect(collapsed).not.toMatch(/步/);
+  });
+
+  it("still opens a row for a genuine tool item event carrying a toolCallId or name", () => {
+    const tp = make({ enabled: true });
+    tp.itemEvent({ toolCallId: "a", phase: "end", status: "completed", summary: "listed" });
+    expect(tp.hasActivity()).toBe(true);
+    const tp2 = make({ enabled: true });
+    tp2.itemEvent({ itemId: "b", name: "read", status: "completed" });
+    expect(tp2.hasActivity()).toBe(true);
+  });
+
+  it("updates an existing tool row from a preamble-kind completion event without adding a row", () => {
+    const tp = make({ enabled: true });
+    tp.toolStart({ toolCallId: "a", name: "exec" });
+    // Even if a completion arrives tagged with a non-tool kind, matching by id updates only.
+    tp.itemEvent({ toolCallId: "a", kind: "commentary", status: "completed" });
+    expect(tp.timeline().match(/exec/g)?.length ?? 0).toBe(1);
+  });
 });
 
 describe("collapse()", () => {

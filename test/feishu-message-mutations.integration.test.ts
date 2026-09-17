@@ -1,21 +1,21 @@
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { feishuPlugin } from "../../../extensions/feishu/channel-plugin-api.js";
-import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
-import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { feishuPlugin } from "../extensions/feishu/api.js";
+import { createMessageTool } from "../src/agents/tools/message-tool-execution.js";
+import { setRuntimeConfigSnapshot } from "../src/config/runtime-snapshot.js";
+import type { OpenClawConfig } from "../src/config/types.openclaw.js";
 import {
   mintMessageActionTurnCapability,
   revokeMessageActionTurnCapability,
-} from "../../gateway/message-action-turn-capability.js";
-import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
-import { runMessageAction } from "../../infra/outbound/message-action-runner.js";
-import { withServer } from "../../plugin-sdk/test-helpers/http-test-server.js";
-import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
-import { createTestRegistry } from "../../test-utils/channel-plugins.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { createMessageTool } from "./message-tool-execution.js";
+} from "../src/gateway/message-action-turn-capability.js";
+import { PlatformMessageNotDispatchedError } from "../src/infra/outbound/deliver-types.js";
+import { runMessageAction } from "../src/infra/outbound/message-action-runner.js";
+import { withServer } from "../src/plugin-sdk/test-helpers/http-test-server.js";
+import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../src/plugins/runtime.js";
+import { createTestRegistry } from "../src/test-utils/channel-plugins.js";
+import { withOpenClawTestState } from "../src/test-utils/openclaw-test-state.js";
+import { createDeferred, withTestTimeout } from "./helpers/promise.js";
 
 const AUTH_PATH = "/open-apis/auth/v3/tenant_access_token/internal";
 const TARGET = "oc_mutation";

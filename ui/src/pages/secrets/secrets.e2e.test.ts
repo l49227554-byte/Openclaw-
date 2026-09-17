@@ -32,6 +32,7 @@ const envEntry: SecretStoreEntry = {
   value: "https://service.test",
   scopeKind: "team",
   scopeId: "",
+  audience: "all",
   createdAtMs: 1_786_352_400_000,
   updatedAtMs: 1_786_352_400_000,
   updatedBy: "E2E Operator",
@@ -42,6 +43,7 @@ const secretEntry: SecretStoreEntry = {
   kind: "secret",
   scopeKind: "team",
   scopeId: "",
+  audience: "all",
   createdAtMs: 1_786_352_400_000,
   updatedAtMs: 1_786_352_400_000,
   updatedBy: "E2E Operator",
@@ -151,7 +153,7 @@ suite.define(() => {
         await page.goto(`${suite.server.baseUrl}settings/secrets`);
         const row = page.getByRole("row", { name: longNameSecretEntry.name });
         const name = row.locator(".secrets-store__name");
-        const access = row.locator(".secrets-store__mode");
+        const access = row.locator(".secrets-store__mode--secret");
 
         expect(await name.getAttribute("title")).toBe(longNameSecretEntry.name);
         const layout = await Promise.all([name.boundingBox(), access.boundingBox()]);
@@ -258,10 +260,21 @@ suite.define(() => {
       await existingSecretRow.getByRole("button", { name: "Actions: SERVICE_API_KEY" }).click();
       await existingSecretRow.locator('wa-dropdown-item[value="edit"]').click();
       const editSecretDialog = page.locator('openclaw-modal-dialog[label="Edit"]');
+      // A protected value is never re-disclosed into the form; saving the
+      // edit with the field left empty performs a metadata-only update that
+      // preserves the stored value server-side.
       await editSecretDialog.getByRole("button", { name: "Save", exact: true }).click();
-      await editSecretDialog.getByRole("alert").getByText("Enter a value.").waitFor();
-      expect(await gateway.getRequests("secrets.store.set")).toHaveLength(0);
-      await editSecretDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await page
+        .getByRole("status")
+        .getByText(/Saved SERVICE_API_KEY/u)
+        .waitFor();
+      const editRequests = await gateway.getRequests("secrets.store.set");
+      expect(editRequests).toHaveLength(1);
+      const editParams = (editRequests.at(-1) as { params: Record<string, unknown> }).params;
+      expect(editParams).toMatchObject({ name: "SERVICE_API_KEY", kind: "secret" });
+      // Metadata-only: no value is sent, so the stored credential is preserved.
+      expect("value" in editParams).toBe(false);
+      // A successful save closes the dialog; no Cancel click is possible.
 
       await page.getByRole("button", { name: "Add", exact: true }).click();
       const addSecretDialog = page.locator('openclaw-modal-dialog[label="Add"]');
@@ -271,7 +284,9 @@ suite.define(() => {
       ).toBe(true);
       await addSecretDialog.getByRole("button", { name: "Save", exact: true }).click();
       await addSecretDialog.getByRole("alert").getByText("Enter a value.").waitFor();
-      expect(await gateway.getRequests("secrets.store.set")).toHaveLength(0);
+      // The only set request so far is the metadata-only edit above; the
+      // blocked Add attempt must not add another.
+      expect(await gateway.getRequests("secrets.store.set")).toHaveLength(1);
       await capture(page, "04-empty-secret-local-validation.png");
       await addSecretDialog.getByRole("button", { name: "Cancel", exact: true }).click();
 
@@ -286,7 +301,8 @@ suite.define(() => {
         .getByRole("alert")
         .getByText("EMPTY_API_KEY: Enter a value.")
         .waitFor();
-      expect(await gateway.getRequests("secrets.store.set")).toHaveLength(0);
+      // Still only the metadata-only edit from the start of the test.
+      expect(await gateway.getRequests("secrets.store.set")).toHaveLength(1);
       await capture(page, "05-empty-bulk-local-validation.png");
       await protectedBulkDialog.getByRole("button", { name: "Cancel", exact: true }).click();
 
@@ -314,12 +330,33 @@ suite.define(() => {
         .getByText(/Saved 1 entries/u)
         .waitFor();
 
+      // Three requests: the metadata-only SERVICE_API_KEY edit (no value)
+      // followed by the two agent-readable env saves.
       expect(await gateway.getRequests("secrets.store.set")).toEqual([
         expect.objectContaining({
-          params: expect.objectContaining({ name: "EMPTY_ENV", value: "", kind: "env" }),
+          params: expect.objectContaining({
+            name: "SERVICE_API_KEY",
+            kind: "secret",
+            audience: "all",
+            allowedHosts: ["api.example.com"],
+          }),
         }),
         expect.objectContaining({
-          params: { name: "EMPTY_BULK_ENV", value: "", kind: "env" },
+          params: expect.objectContaining({
+            name: "EMPTY_ENV",
+            value: "",
+            kind: "env",
+            audience: "all",
+          }),
+        }),
+        expect.objectContaining({
+          params: expect.objectContaining({
+            name: "EMPTY_BULK_ENV",
+            value: "",
+            kind: "env",
+            // Bulk saves omit audience: new entries default to all-audience
+            // server-side, existing entries keep their stored audience.
+          }),
         }),
       ]);
     });
@@ -443,9 +480,15 @@ suite.define(() => {
         await page.getByRole("status").getByText("Deleted BULK_URL.").waitFor();
         expect(await page.getByRole("row", { name: /BULK_URL/u }).count()).toBe(0);
 
-        expect(await gateway.getRequests("secrets.store.set")).toHaveLength(4);
-        expect((await gateway.getRequests("secrets.store.set"))[1]?.params).toMatchObject({
-          name: "SERVICE_API_KEY",
+        // Four set requests: the initial saves plus the Add/Bulk saves; this
+        // flow performs no metadata-only edit.
+        const setRequests = await gateway.getRequests("secrets.store.set");
+        expect(setRequests).toHaveLength(4);
+        const secretSave = setRequests.find(
+          (request) => (request as { params: { name?: string } }).params.name === "SERVICE_API_KEY",
+        );
+        expect(secretSave).toBeDefined();
+        expect((secretSave as { params: Record<string, unknown> }).params).toMatchObject({
           allowedHosts: ["api.example.com"],
         });
         expect(await gateway.getRequests("secrets.store.delete")).toHaveLength(1);

@@ -16,6 +16,8 @@ import {
   consumeGitHubSetupHandoff,
   deleteHiddenGitHubSecretRecord,
   deleteSecretStoreEntry,
+  updateSecretStoreAudience,
+  updateSecretStoreEntryPolicy,
   listHiddenGitHubSecretRecordNames,
   listSecretStoreEntries,
   purgeExpiredSecretStoreEntries,
@@ -783,5 +785,272 @@ describe("secret store", () => {
         .get("secret_store_entries_live_idx"),
     ).toEqual({ name: "secret_store_entries_live_idx" });
     after.close();
+  });
+});
+
+describe("audience write semantics", () => {
+  it("replacement without audience preserves the stored selected audience; explicit audience edits still apply", () => {
+    const database = createDatabaseOptions();
+    writeSecretStoreEntry({
+      scope: team,
+      name: "ROTATED_KEY",
+      value: "v1",
+      kind: "secret",
+      audience: "selected",
+      updatedBy: "test",
+      database,
+    });
+    // Ordinary rotation: no audience supplied. The persisted audience must
+    // survive so a credential update cannot silently widen delivery.
+    writeSecretStoreEntry({
+      scope: team,
+      name: "ROTATED_KEY",
+      value: "v2",
+      kind: "secret",
+      updatedBy: "test",
+      database,
+    });
+    expect(readSecretStoreValue({ scope: team, name: "ROTATED_KEY", database })).toEqual({
+      ok: true,
+      value: "v2",
+    });
+    const stillSelected = listSecretStoreEntries({ scope: team, database }).find(
+      (entry) => entry.name === "ROTATED_KEY",
+    );
+    expect(stillSelected?.audience).toBe("selected");
+
+    // An explicit operator audience change is the only widening path.
+    writeSecretStoreEntry({
+      scope: team,
+      name: "ROTATED_KEY",
+      value: "v3",
+      kind: "secret",
+      audience: "all",
+      updatedBy: "test",
+      database,
+    });
+    const widened = listSecretStoreEntries({ scope: team, database }).find(
+      (entry) => entry.name === "ROTATED_KEY",
+    );
+    expect(widened?.audience).toBe("all");
+  });
+
+  it("new entries default to all-audience; a deleted-then-recreated entry starts fresh", () => {
+    const database = createDatabaseOptions();
+    writeSecretStoreEntry({
+      scope: team,
+      name: "FRESH_KEY",
+      value: "v1",
+      kind: "env",
+      updatedBy: "test",
+      database,
+    });
+    expect(
+      listSecretStoreEntries({ scope: team, database }).find((e) => e.name === "FRESH_KEY")
+        ?.audience,
+    ).toBe("all");
+    deleteSecretStoreEntry({ scope: team, name: "FRESH_KEY" });
+    writeSecretStoreEntry({
+      scope: team,
+      name: "FRESH_KEY",
+      value: "v2",
+      kind: "env",
+      audience: "selected",
+      updatedBy: "test",
+      database,
+    });
+    writeSecretStoreEntry({
+      scope: team,
+      name: "FRESH_KEY",
+      value: "v3",
+      kind: "env",
+      updatedBy: "test",
+      database,
+    });
+    expect(
+      listSecretStoreEntries({ scope: team, database }).find((e) => e.name === "FRESH_KEY")
+        ?.audience,
+    ).toBe("selected");
+  });
+
+  it("metadata-only audience edit preserves the stored protected value without re-entry", () => {
+    const database = createDatabaseOptions();
+    writeSecretStoreEntry({
+      scope: team,
+      name: "VAULT_KEY",
+      value: "vault-secret-value",
+      kind: "secret",
+      updatedBy: "test",
+      database,
+    });
+    updateSecretStoreAudience({
+      scope: team,
+      name: "VAULT_KEY",
+      audience: "selected",
+      updatedBy: "test",
+      database,
+    });
+    const entry = listSecretStoreEntries({ scope: team, database }).find(
+      (e) => e.name === "VAULT_KEY",
+    );
+    expect(entry?.audience).toBe("selected");
+    expect(readSecretStoreValue({ scope: team, name: "VAULT_KEY", database })).toEqual({
+      ok: true,
+      value: "vault-secret-value",
+    });
+    // Metadata edits only apply to existing entries.
+    expect(() =>
+      updateSecretStoreAudience({
+        scope: team,
+        name: "MISSING_KEY",
+        audience: "selected",
+        updatedBy: "test",
+        database,
+      }),
+    ).toThrow(/does not exist/);
+  });
+});
+
+it("atomically updates supplied policy metadata while preserving omitted fields and the value", () => {
+  const database = createDatabaseOptions();
+  writeSecretStoreEntry({
+    scope: team,
+    name: "POLICY_KEY",
+    value: "vault-secret-value",
+    kind: "secret",
+    audience: "all",
+    allowedHosts: ["old.example.test"],
+    updatedBy: "test",
+    database,
+  });
+  updateSecretStoreEntryPolicy({
+    scope: team,
+    name: "POLICY_KEY",
+    audience: "selected",
+    allowedHosts: ["new.example.test"],
+    updatedBy: "test",
+    database,
+  });
+  updateSecretStoreEntryPolicy({
+    scope: team,
+    name: "POLICY_KEY",
+    allowedHosts: ["final.example.test"],
+    updatedBy: "test",
+    database,
+  });
+  const entry = listSecretStoreEntries({ scope: team, database }).find(
+    (item) => item.name === "POLICY_KEY",
+  );
+  expect(entry).toMatchObject({ audience: "selected", allowedHosts: ["final.example.test"] });
+  expect(readSecretStoreValue({ scope: team, name: "POLICY_KEY", database })).toEqual({
+    ok: true,
+    value: "vault-secret-value",
+  });
+  writeSecretStoreEntry({
+    scope: team,
+    name: "ENV_KEY",
+    value: "env-value",
+    kind: "env",
+    updatedBy: "test",
+    database,
+  });
+  expect(() =>
+    updateSecretStoreEntryPolicy({
+      scope: team,
+      name: "ENV_KEY",
+      allowedHosts: ["blocked.example.test"],
+      updatedBy: "test",
+      database,
+    }),
+  ).toThrow(/not a secret entry/);
+});
+
+describe("old-schema secret store upgrade", () => {
+  it("a populated pre-audience database upgrades at open, preserves rows, and cold-reopens cleanly", () => {
+    const database = createDatabaseOptions();
+    // Build the store with current code, then strip the audience column and
+    // its data to reproduce a genuine pre-PR database file.
+    writeSecretStoreEntry({
+      scope: team,
+      name: "LEGACY_TOKEN",
+      value: "legacy-value",
+      kind: "secret",
+      updatedBy: "test",
+      database,
+    });
+    writeSecretStoreEntry({
+      scope: team,
+      name: "LEGACY_URL",
+      value: "https://legacy.test",
+      kind: "env",
+      updatedBy: "test",
+      database,
+    });
+    closeOpenClawStateDatabaseForTest();
+    const legacy = new (requireNodeSqlite().DatabaseSync)(database.path);
+    legacy.exec(
+      "CREATE TABLE secret_store_entries_old AS SELECT scope_kind, scope_id, name, value, kind, created_at_ms, updated_at_ms, updated_by, deleted_at_ms, allowed_hosts FROM secret_store_entries;",
+    );
+    legacy.exec("DROP TABLE secret_store_entries;");
+    legacy.exec(`CREATE TABLE secret_store_entries (
+  scope_kind TEXT NOT NULL CHECK (scope_kind IN ('team', 'identity')),
+  scope_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  value TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('secret', 'env')),
+  created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+  updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+  updated_by TEXT,
+  deleted_at_ms INTEGER,
+  allowed_hosts TEXT,
+  CHECK ((scope_kind = 'team' AND scope_id = '') OR (scope_kind = 'identity' AND length(scope_id) > 0)),
+  PRIMARY KEY (scope_kind, scope_id, name)
+) STRICT;`);
+    legacy.exec("INSERT INTO secret_store_entries SELECT * FROM secret_store_entries_old;");
+    legacy.exec("DROP TABLE secret_store_entries_old;");
+    legacy.close();
+
+    // Writable open + first store write performs the additive audience-column
+    // upgrade; existing rows keep their values and behave as all-audience.
+    writeSecretStoreEntry({
+      scope: team,
+      name: "LEGACY_TOKEN",
+      value: "rotated-value",
+      kind: "secret",
+      updatedBy: "test",
+      database,
+    });
+    const entries = listSecretStoreEntries({ scope: team, database });
+    expect(entries.find((e) => e.name === "LEGACY_TOKEN")).toMatchObject({
+      audience: "all",
+    });
+    expect(readSecretStoreValue({ scope: team, name: "LEGACY_TOKEN", database })).toEqual({
+      ok: true,
+      value: "rotated-value",
+    });
+    expect(entries.find((e) => e.name === "LEGACY_URL")).toMatchObject({
+      valuePreview: "https://legacy.test",
+      audience: "all",
+    });
+
+    // Cold reopen passes schema validation with the migrated shape.
+    closeOpenClawStateDatabaseForTest();
+    expect(
+      listSecretStoreEntries({ scope: team, database })
+        .map((entry) => entry.name)
+        .toSorted(),
+    ).toEqual(["LEGACY_TOKEN", "LEGACY_URL"]);
+
+    // The upgraded column is plain additive TEXT: a previous release's
+    // compatible-additive-column admission accepts it on downgrade.
+    closeOpenClawStateDatabaseForTest();
+    const reopened = new (requireNodeSqlite().DatabaseSync)(database.path, { readOnly: true });
+    const columns = String(
+      reopened
+        .prepare("SELECT sql FROM sqlite_schema WHERE type='table' AND name='secret_store_entries'")
+        .get()?.sql,
+    );
+    reopened.close();
+    expect(columns).toContain("audience TEXT");
   });
 });

@@ -23,7 +23,8 @@ import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-i
 import { QuestionManager } from "../question-manager.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { createQuestionHandlers } from "./question.js";
-import { createSecretsHandlers, createSecretStoreWriteService } from "./secrets.js";
+import { createSecretStoreWriteService } from "./secrets-store-write-service.js";
+import { createSecretsHandlers } from "./secrets.js";
 import type { GatewayClient, RespondFn } from "./types.js";
 
 afterEach(() => {
@@ -87,6 +88,10 @@ describe("secret store mutation lifecycle", () => {
           reloadSecrets,
           resolveSecrets,
           storeWriteService: createSecretStoreWriteService({ reloadSecrets }),
+          configAccess: {
+            readAgentAssignmentEnforcement: () => "off",
+            writeAgentAssignmentEnforcement: async () => {},
+          },
           log: {
             debug: () => {
               if (closure === "mutation logging") {
@@ -146,7 +151,15 @@ describe("secret store mutation lifecycle", () => {
       const storeWriteService = createSecretStoreWriteService({ reloadSecrets });
       const handlers = {
         ...createQuestionHandlers(manager, storeWriteService),
-        ...createSecretsHandlers({ reloadSecrets, resolveSecrets, storeWriteService }),
+        ...createSecretsHandlers({
+          reloadSecrets,
+          resolveSecrets,
+          storeWriteService,
+          configAccess: {
+            readAgentAssignmentEnforcement: () => "off",
+            writeAgentAssignmentEnforcement: async () => {},
+          },
+        }),
       };
       const methods: string[] = [];
       try {
@@ -195,7 +208,11 @@ describe("secret store mutation lifecycle", () => {
         });
         expect(JSON.stringify(result)).not.toContain("proposed.example.test");
         expect(JSON.stringify(result)).not.toContain("test-secret-operator-only");
-        expect(methods).toEqual(["question.request", "question.waitAnswer", "secrets.store.list"]);
+        expect(methods).toEqual([
+          "question.request",
+          "question.waitAnswer",
+          "secrets.assignments.entry",
+        ]);
       } finally {
         manager.close();
         releaseAgentRunDelegatedAuthority(authority);
@@ -260,6 +277,10 @@ describe("secret store mutation lifecycle", () => {
           reloadSecrets,
           resolveSecrets,
           storeWriteService: createSecretStoreWriteService({ reloadSecrets }),
+          configAccess: {
+            readAgentAssignmentEnforcement: () => "off",
+            writeAgentAssignmentEnforcement: async () => {},
+          },
         });
         for (const value of ["test-secret-created", "test-secret-rotated"]) {
           expect(

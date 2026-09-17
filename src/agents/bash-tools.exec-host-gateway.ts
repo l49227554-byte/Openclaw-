@@ -55,20 +55,18 @@ import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
 import { hasPosixShellStartupBeforeInlineCommand } from "../infra/exec-wrapper-resolution.js";
 import {
   prepareSystemRunMutableFileBinding,
-  revalidateSystemRunMutableFileBinding,
   type SystemRunMutableFileBinding,
 } from "../infra/system-run-approval-binding.js";
 import {
-  APPROVAL_CWD_DRIFT_DENIED_MESSAGE,
   type ApprovedCwdSnapshot,
   captureApprovedCwdSnapshotSync,
-  revalidateApprovedCwdSnapshot,
 } from "../infra/system-run-cwd-binding.js";
 import {
   GatewayDrainingError,
   runWithGatewayIndependentRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import { markBackgrounded, tail } from "./bash-process-registry.js";
+import { resolveGatewayExecApprovalDrift } from "./bash-tools.exec-approval-binding.js";
 import {
   buildExecAutoReviewDeniedToolResult,
   formatExecApprovalContinuationSourceOutput,
@@ -153,8 +151,10 @@ type ProcessGatewayAllowlistParams = {
   cleanupMs?: number;
   processContinuationAvailable?: boolean;
   trustedSafeBinDirs?: ReadonlySet<string>;
+  /** Rechecks secret-store authority immediately before a detached approved spawn. */ beforeSpawnSecretAuthority?: () => Promise<
+    AgentToolResult<ExecToolDetails> | undefined
+  >;
 };
-
 /** Gateway allowlist outcome before command execution continues. */
 type ProcessGatewayAllowlistResult = {
   execCommandOverride?: string;
@@ -458,26 +458,6 @@ function buildGatewayExecApprovalDeniedToolResult(params: {
       cwd: params.cwd,
     },
   };
-}
-
-async function resolveGatewayExecApprovalDrift(params: {
-  binding?: SystemRunMutableFileBinding;
-  cwdSnapshot?: ApprovedCwdSnapshot;
-  cwd: string;
-}): Promise<string | undefined> {
-  if (params.binding) {
-    const current = await revalidateSystemRunMutableFileBinding({
-      binding: params.binding,
-      cwd: params.cwd,
-    });
-    if (!current.ok) {
-      return current.message;
-    }
-  }
-  if (params.cwdSnapshot && !revalidateApprovedCwdSnapshot(params.cwdSnapshot)) {
-    return APPROVAL_CWD_DRIFT_DENIED_MESSAGE;
-  }
-  return undefined;
 }
 
 /** Rechecks a gateway approval binding at the caller's final spawn boundary. */
@@ -1651,14 +1631,14 @@ export async function processGatewayAllowlist(
               startupSignal: params.signal,
               assertCurrent,
               beforeSpawn: async () => {
+                const secretDenied = await params.beforeSpawnSecretAuthority?.();
+                if (secretDenied) return secretDenied;
                 finalBindingDenied = await resolveGatewayExecApprovalDrift({
                   binding: approvalMutableFileBinding,
                   cwdSnapshot: approvedCwdSnapshot,
                   cwd: params.workdir,
                 });
-                if (finalBindingDenied) {
-                  throw finalBindingDeniedError;
-                }
+                if (finalBindingDenied) throw finalBindingDeniedError;
                 return undefined;
               },
             });

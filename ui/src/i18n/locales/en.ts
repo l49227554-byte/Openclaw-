@@ -4922,6 +4922,7 @@ export const en: TranslationMap & {
     access: "Access",
     accessMode: "Access mode",
     value: "Value",
+    valueMetadataOnly: "Leave empty to keep the stored value and change only agent access.",
     allowedHosts: "Allowed hosts",
     allowedHostsPlaceholder: "api.example.com",
     allowedHostsHint:
@@ -4942,6 +4943,14 @@ export const en: TranslationMap & {
     hint: "Choose protected, write-only secrets or intentionally agent-readable Gateway environment values.",
     required: "Enter a value.",
     detect: "Protect credential-like names automatically",
+    agentAccess: "Agent access",
+    audienceAll: "All agents",
+    audienceSelected: "Selected agents",
+    audienceHint:
+      "Independent from value protection. All agents keeps legacy team-wide delivery; Selected agents restricts delivery to explicitly assigned agents.",
+    selectedAgentsHint:
+      "Only assigned agents receive this entry. Assign it in Agent secret assignments, or pick agents here.",
+    audienceSaved: "Saved {name} with agent access: {audience}.",
     detected: "{count} protected secrets detected",
     detectedOne: "{count} protected secret detected",
     unavail: "Gateway/admin required.",
@@ -4958,6 +4967,38 @@ export const en: TranslationMap & {
     confirmDelete: "Delete {name}?",
     deleted: "Deleted {name}.",
     deleteFailed: "The secret was not deleted. Reload the list and try again.",
+  },
+  secretsAssignments: {
+    title: "Agent secret assignments",
+    hint: "Assign shared secret names to agents. Subagent sessions inherit their owning agent's assignments. Assignment controls who may receive each entry; it never grants secret values to any human or model surface.",
+    agent: "Agent ID",
+    agentDefaultOption: "Select an agent…",
+    secretName: "Secret name",
+    secretNamePlaceholder: "SERVICE_API_KEY",
+    assign: "Assign",
+    unassign: "Unassign",
+    loadMore: "Load more",
+    none: "No agent secret assignments.",
+    assigned: "Assigned {name} to agent {agentId}.",
+    unassigned: "Removed assignment {name} from agent {agentId}.",
+    confirmUnassign: "Remove assignment {name} from agent {agentId}?",
+    failed: "The assignment change failed. Reload and try again.",
+    enforcementTitle: "Exec snapshot enforcement",
+    enforcementHint:
+      "Controls which team-store entries an agent exec run receives. Subagent sessions use their owning agent's identity. A same-user unsandboxed agent can still read host state directly: this is OpenClaw authorization, not OS isolation.",
+    enforceTitle: "Enable enforce mode?",
+    enforceWarning:
+      "Enforce mode fails closed: an exec run without a valid agent identity receives no store entries, and selected-audience entries reach only their assigned agents. All-audience entries keep shared delivery in every mode, including enforce. Advisory warns while applying the same withholding.",
+    enforceConfirm: "Enable enforce",
+    enforcementSet: "Agent assignment enforcement set to {mode}.",
+    mode: { off: "Off", advisory: "Advisory", enforce: "Enforce" },
+    modeHint: {
+      off: "All-audience entries reach every agent exec run; selected-audience entries stay withheld from unassigned agents.",
+      advisory:
+        "Same withholding as off: selected-audience entries stay withheld from unassigned agents, with a warning logged for each withheld entry.",
+      enforce:
+        "Fail closed: a missing or invalid agent identity receives nothing; all-audience entries stay shared, and selected-audience entries reach only their assigned agents.",
+    },
   },
   cron: {
     adminRequired: "Browsing only. Automation changes require operator.admin access.",

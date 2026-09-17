@@ -12,12 +12,22 @@ import { formatUiError } from "../format-error.ts";
 
 export type SecretsStoreDraft = {
   name: string;
-  value: string;
+  /**
+   * Omitted on a metadata-only audience edit of an existing entry; the stored
+   * value is preserved server-side and never needs re-entry.
+   */
+  value?: string;
   kind: "secret" | "env";
+  /** Agent access axis, independent from value protection (kind). */
+  audience: "all" | "selected";
   allowedHosts: string;
 };
 
-type SecretsStoreBulkEntry = Omit<SecretsStoreDraft, "allowedHosts">;
+// Bulk import is always a value write parsed from dotenv text; unlike a
+// metadata-only audience edit it can never omit the value.
+type SecretsStoreBulkEntry = Omit<SecretsStoreDraft, "allowedHosts" | "audience" | "value"> & {
+  value: string;
+};
 
 export type SecretsStoreState = {
   client: GatewayBrowserClient | null;
@@ -116,8 +126,9 @@ export function setSecretsStoreEntry(
   return mutateAndReload(state, (client) =>
     client.request<SecretsStoreMutationResult>("secrets.store.set", {
       name: draft.name,
-      value: draft.value,
+      ...(draft.value !== undefined ? { value: draft.value } : {}),
       kind: draft.kind,
+      audience: draft.audience,
       ...(draft.kind === "secret"
         ? {
             allowedHosts: draft.allowedHosts
@@ -149,6 +160,9 @@ export function parseSecretsStoreBulkInput(
     name,
     value,
     kind: autoDetectSecrets && isSensitiveEnvName(name) ? "secret" : "env",
+    // Bulk import omits audience: new entries default to all-audience
+    // server-side, while existing entries keep their stored audience — a
+    // bulk replacement can never silently widen a selected entry.
   }));
   return { entries, invalidNames };
 }

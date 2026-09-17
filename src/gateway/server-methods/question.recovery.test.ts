@@ -45,7 +45,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createAgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-identity-token.js";
 import { QuestionManager } from "../question-manager.js";
 import { createQuestionHandlers } from "./question.js";
-import { createSecretStoreWriteService } from "./secrets.js";
+import { createSecretStoreWriteService } from "./secrets-store-write-service.js";
 import type { GatewayClient, GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 
 const ref = {

@@ -15,10 +15,11 @@ import { i18n, t } from "../../i18n/index.ts";
 import { formatRelativeTimestamp } from "../../lib/format.ts";
 import type { SecretsStoreDraft } from "../../lib/secrets-store/index.ts";
 import "../../styles/secrets-store.css";
+import { renderAssignments } from "./view-assignments.ts";
 
 export type SecretsDialogMode = "add" | "edit" | null;
 
-type SecretsStoreViewProps = {
+export type SecretsStoreViewProps = {
   entries: SecretStoreEntry[];
   loading: boolean;
   busy: boolean;
@@ -44,6 +45,7 @@ type SecretsStoreViewProps = {
   onDraftValueChange: (value: string) => void;
   onDraftAllowedHostsChange: (allowedHosts: string) => void;
   onDraftKindChange: (kind: "secret" | "env") => void;
+  onDraftAudienceChange: (audience: "all" | "selected") => void;
   onSubmitDraft: () => void;
   onOpenBulk: () => void;
   onCloseBulk: () => void;
@@ -51,13 +53,42 @@ type SecretsStoreViewProps = {
   onBulkAutoDetectChange: (enabled: boolean) => void;
   onSubmitBulk: () => void;
   onDelete: (entry: SecretStoreEntry) => void;
+  canAdminAssignments: boolean;
+  assignments: Array<{ agentId: string; names: string[] }>;
+  assignmentsNextCursor: string | null;
+  assignmentsLoading: boolean;
+  assignmentsBusy: boolean;
+  assignmentsError: string | null;
+  /** Configured agents from the roster; the dropdown lists these first. */
+  assignmentRosterAgentIds: string[];
+  /**
+   * Legacy/deleted agent ids still present in assignment groups; merged after
+   * the roster so existing assignments remain selectable and operable.
+   */
+  assignmentLegacyAgentIds: string[];
+  assignmentStoreNames: string[];
+  assignmentAgent: string;
+  assignmentName: string;
+  assignmentNotice: string | null;
+  enforcementMode: "off" | "advisory" | "enforce";
+  enforcementBusy: boolean;
+  enforcementNotice: string | null;
+  enforcementErrorNotice: string | null;
+  onAssignmentAgentChange: (agent: string) => void;
+  onAssignmentNameChange: (name: string) => void;
+  onSubmitAssign: () => void;
+  onUnassign: (agentId: string, name: string) => void;
+  onLoadMoreAssignments: () => void;
+  onEnforcementChange: (mode: "off" | "advisory" | "enforce") => void;
 };
 
 const DOCS_URL = "https://docs.openclaw.ai/gateway/secrets#shared-secret-store";
 const SECRET_MASK = "••••••••";
 
 function updatedLabel(entry: SecretStoreEntry): string {
-  const relative = formatRelativeTimestamp(entry.updatedAtMs, { fallback: t("common.unknown") });
+  const relative = formatRelativeTimestamp(entry.updatedAtMs, {
+    fallback: t("common.unknown"),
+  });
   return entry.updatedBy
     ? t("secretsStore.by", { time: relative, name: entry.updatedBy })
     : relative;
@@ -151,6 +182,13 @@ function renderTable(props: SecretsStoreViewProps): TemplateResult {
                         : "secretsStore.agentReadable",
                     )}</span
                   >
+                  <span class="secrets-store__mode secrets-store__mode--audience"
+                    >${t(
+                      (entry.audience ?? "all") === "selected"
+                        ? "secretsStore.audienceSelected"
+                        : "secretsStore.audienceAll",
+                    )}</span
+                  >
                 </td>
                 <td data-label=${t("secretsStore.value")}>
                   <span
@@ -238,7 +276,8 @@ function renderEntryDialog(props: SecretsStoreViewProps): TemplateResult | typeo
             autocomplete="off"
             spellcheck="false"
             ?disabled=${props.busy}
-            .value=${props.draft.value}
+            placeholder=${editing ? t("secretsStore.valueMetadataOnly") : ""}
+            .value=${props.draft.value ?? ""}
             @input=${(event: Event) =>
               props.onDraftValueChange((event.currentTarget as HTMLTextAreaElement).value)}
           ></textarea>
@@ -281,6 +320,45 @@ function renderEntryDialog(props: SecretsStoreViewProps): TemplateResult | typeo
             <span>
               <strong>${t("secretsStore.agentReadable")}</strong>
               <small>${t("secretsStore.agentReadableHint")}</small>
+            </span>
+          </label>
+        </fieldset>
+        <fieldset class="secrets-store-modes">
+          <legend>${t("secretsStore.agentAccess")}</legend>
+          <label
+            class="secrets-store-mode ${
+              props.draft.audience === "all" ? "secrets-store-mode--selected" : ""
+            }"
+          >
+            <input
+              type="radio"
+              name="agent-access"
+              value="all"
+              .checked=${props.draft.audience === "all"}
+              ?disabled=${props.busy}
+              @change=${() => props.onDraftAudienceChange("all")}
+            />
+            <span>
+              <strong>${t("secretsStore.audienceAll")}</strong>
+              <small>${t("secretsStore.audienceHint")}</small>
+            </span>
+          </label>
+          <label
+            class="secrets-store-mode ${
+              props.draft.audience === "selected" ? "secrets-store-mode--selected" : ""
+            }"
+          >
+            <input
+              type="radio"
+              name="agent-access"
+              value="selected"
+              .checked=${props.draft.audience === "selected"}
+              ?disabled=${props.busy}
+              @change=${() => props.onDraftAudienceChange("selected")}
+            />
+            <span>
+              <strong>${t("secretsStore.audienceSelected")}</strong>
+              <small>${t("secretsStore.selectedAgentsHint")}</small>
             </span>
           </label>
         </fieldset>
@@ -459,6 +537,7 @@ export function renderSecretsStore(props: SecretsStoreViewProps): TemplateResult
           },
           renderTable(props),
         )}
+        ${renderAssignments(props)}
       `,
       { wide: true },
     )}

@@ -17,18 +17,33 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
-import { normalizeExactAllowedHost } from "../exact-hostname.js";
-import { sealSecretSentinel } from "../sentinel.js";
 import {
   classifyHiddenGitHubStoreName,
   GITHUB_DEVICE_STORE_MAX_AGE_MS,
   GITHUB_SETUP_HANDOFF_MAX_AGE_MS,
 } from "./secret-store-hidden-github.js";
 import {
-  SECRET_STORE_ALLOWED_HOSTS_MAX,
+  isMissingSecretStoreTableError as sharedIsMissingSecretStoreTableError,
+  isSecretStoreAudience,
+  normalizeSecretAllowedHosts,
+  normalizeSecretStoreAudience,
+  parseSecretAllowedHosts,
+  type SecretStoreAudience,
+  type SecretStoreDatabase as SharedSecretStoreDatabase,
+  type SecretStoreKind,
+  type SecretStoreScope,
+} from "./secret-store-shared.js";
+import {
   SECRET_STORE_VALUE_MAX_BYTES,
   SecretStoreValidationError,
 } from "./secret-store-validation-error.js";
+export {
+  normalizeSecretAllowedHosts,
+  resolveAgentSecretAssignmentEnforcement,
+  type AgentSecretAssignmentEnforcement,
+} from "./secret-store-shared.js";
+export { consumeGitHubSetupHandoff } from "./secret-store-hidden-github.js";
+export { readSecretStoreExecEnvironment } from "./secret-store-exec-environment.js";
 
 export {
   deleteHiddenGitHubSecretRecord,
@@ -42,16 +57,16 @@ export {
   SecretStoreValidationError,
 } from "./secret-store-validation-error.js";
 
-type SecretStoreDatabase = Pick<OpenClawStateKyselyDatabase, "secret_store_entries">;
+type SecretStoreDatabase = SharedSecretStoreDatabase;
 type SecretStoreRow = Selectable<OpenClawStateKyselyDatabase["secret_store_entries"]>;
-type SecretStoreScope = { kind: "team" };
-type SecretStoreKind = "secret" | "env";
 
 export type SecretStoreWriteParams = {
   scope: SecretStoreScope;
   name: string;
   value: string;
   kind: SecretStoreKind;
+  /** Entry audience; defaults to "all" (legacy team-wide delivery). */
+  audience?: SecretStoreAudience;
   allowedHosts?: readonly string[];
   updatedBy: string | null;
   database?: OpenClawStateDatabaseOptions;
@@ -60,6 +75,7 @@ export type SecretStoreWriteParams = {
 type SecretStoreWriteSnapshot = {
   value: string;
   kind: SecretStoreKind;
+  audience: SecretStoreAudience;
   allowedHosts: string | null;
   updatedBy: string | null;
 };
@@ -72,20 +88,9 @@ export type SecretStoreEntryMetadata = {
   updatedAtMs: number;
   createdAtMs: number;
   updatedBy: string | null;
+  audience: SecretStoreAudience;
   allowedHosts?: string[];
   valuePreview?: string;
-};
-
-type SecretStoreEgressBinding = {
-  name: string;
-  sentinel: string;
-  allowedHosts: string[];
-};
-
-export type SecretStoreExecEnvironment = {
-  env?: Record<string, string>;
-  secretSentinels?: Record<string, string>;
-  secretEgressBindings?: SecretStoreEgressBinding[];
 };
 
 type SecretStoreReadError =
@@ -137,49 +142,7 @@ export function assertSecretStoreValue(value: string, kind: SecretStoreKind): vo
   }
 }
 
-function normalizeSecretAllowedHost(raw: string): string {
-  try {
-    return normalizeExactAllowedHost(raw);
-  } catch (error) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_INVALID_ALLOWED_HOST",
-      error instanceof Error ? error.message : `Allowed host "${raw}" is not a valid hostname.`,
-    );
-  }
-}
-
-export function normalizeSecretAllowedHosts(hosts: readonly string[]): string[] {
-  if (hosts.length > SECRET_STORE_ALLOWED_HOSTS_MAX) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_INVALID_ALLOWED_HOST",
-      `A secret can allow at most ${SECRET_STORE_ALLOWED_HOSTS_MAX} hosts.`,
-    );
-  }
-  return [...new Set(hosts.map(normalizeSecretAllowedHost))].toSorted();
-}
-
-function parseSecretAllowedHosts(raw: string | null | undefined): string[] {
-  if (!raw) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) && parsed.every((host) => typeof host === "string")
-      ? normalizeSecretAllowedHosts(parsed)
-      : [];
-  } catch {
-    // Corrupt policy is never interpreted permissively: an empty list fails closed.
-    return [];
-  }
-}
-
-function isMissingSecretStoreTableError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error as NodeJS.ErrnoException).code === "ERR_SQLITE_ERROR" &&
-    error.message === "no such table: secret_store_entries"
-  );
-}
+const isMissingSecretStoreTableError = sharedIsMissingSecretStoreTableError;
 
 function toMetadata(row: SecretStoreRow): SecretStoreEntryMetadata {
   if (row.kind === "secret") {
@@ -190,6 +153,7 @@ function toMetadata(row: SecretStoreRow): SecretStoreEntryMetadata {
     kind: row.kind as SecretStoreKind,
     scopeKind: row.scope_kind as "team" | "identity",
     scopeId: row.scope_id,
+    audience: normalizeSecretStoreAudience(row.audience),
     updatedAtMs: normalizeSqliteNumber(row.updated_at_ms) ?? 0,
     createdAtMs: normalizeSqliteNumber(row.created_at_ms) ?? 0,
     updatedBy: row.updated_by,
@@ -230,123 +194,41 @@ export function listSecretStoreEntries(params: {
   }
 }
 
-/** Atomically returns and hard-deletes one exact fresh, non-egress GitHub setup handoff. */
-export function consumeGitHubSetupHandoff(params: {
+/**
+ * Reads one named team-store entry's metadata without the store inventory.
+ * Env-kind values stay internal: the protocol layer redacts to valuePreview
+ * for operator surfaces only; agent-scoped callers never receive them here.
+ */
+export function getSecretStoreEntryMetadata(params: {
+  scope: SecretStoreScope;
   name: string;
-  nowMs?: number;
   database?: OpenClawStateDatabaseOptions;
-}): string | undefined {
-  if (classifyHiddenGitHubStoreName(params.name) !== "setup") {
-    return undefined;
-  }
-  const now = params.nowMs ?? Date.now();
+}): SecretStoreEntryMetadata | null {
+  const { scopeKind, scopeId } = normalizeScope(params.scope);
   try {
-    let value: string | undefined;
-    runOpenClawStateWriteTransaction(
-      ({ db: sqlite }) => {
+    return (
+      withExistingOpenClawStateDatabaseReadOnly(({ db: sqlite }) => {
         const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
         const row = executeSqliteQueryTakeFirstSync(
           sqlite,
           db
             .selectFrom("secret_store_entries")
-            .select("value")
-            .where("scope_kind", "=", "team")
-            .where("scope_id", "=", "")
-            .where("name", "=", params.name)
-            .where("kind", "=", "secret")
-            .where("allowed_hosts", "is", null)
-            .where("created_at_ms", ">=", now - GITHUB_SETUP_HANDOFF_MAX_AGE_MS)
-            .where("created_at_ms", "<=", now)
-            .where("deleted_at_ms", "is", null),
-        );
-        if (!row) {
-          return;
-        }
-        executeSqliteQuerySync(
-          sqlite,
-          db
-            .deleteFrom("secret_store_entries")
-            .where("scope_kind", "=", "team")
-            .where("scope_id", "=", "")
-            .where("name", "=", params.name),
-        );
-        value = row.value;
-      },
-      params.database,
-      { operationLabel: "secrets.store.consume-github-setup-handoff" },
-    );
-    if (value !== undefined) {
-      registerSecretValueForRedaction(value);
-    }
-    return value;
-  } catch (error) {
-    if (isMissingSecretStoreTableError(error)) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-/** Captures one coherent team-store snapshot for an agent run's exec environment. */
-export function readSecretStoreExecEnvironment(params: {
-  includeSecretSentinels: boolean;
-  excludeNames?: readonly string[];
-  database?: OpenClawStateDatabaseOptions;
-}): SecretStoreExecEnvironment {
-  try {
-    return (
-      withExistingOpenClawStateDatabaseReadOnly(({ db: sqlite }) => {
-        const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
-        const rows = executeSqliteQuerySync(
-          sqlite,
-          db
-            .selectFrom("secret_store_entries")
             .selectAll()
-            .where("scope_kind", "=", "team")
-            .where("scope_id", "=", "")
+            .where("scope_kind", "=", scopeKind)
+            .where("scope_id", "=", scopeId)
+            .where("name", "=", params.name)
             .where("deleted_at_ms", "is", null)
-            .orderBy("name", "asc"),
-        ).rows;
-        const env: Record<string, string> = {};
-        const secretSentinels: Record<string, string> = {};
-        const secretEgressBindings: SecretStoreEgressBinding[] = [];
-        const excludedNames = new Set(params.excludeNames ?? []);
-        for (const row of rows) {
-          if (
-            classifyHiddenGitHubStoreName(row.name) !== undefined ||
-            excludedNames.has(row.name)
-          ) {
-            continue;
-          }
-          if (row.kind === "env") {
-            env[row.name] = row.value;
-            continue;
-          }
-          registerSecretValueForRedaction(row.value);
-          if (params.includeSecretSentinels) {
-            // Subprocesses must never receive plaintext, even when provider-auth
-            // sentinel masking is disabled for compatibility.
-            const sentinel = sealSecretSentinel(row.value, {
-              label: `exec-store:${row.name}`,
-            });
-            secretSentinels[row.name] = sentinel;
-            secretEgressBindings.push({
-              name: row.name,
-              sentinel,
-              allowedHosts: parseSecretAllowedHosts(row.allowed_hosts),
-            });
-          }
+            .limit(1),
+        );
+        if (!row || classifyHiddenGitHubStoreName(row.name) !== undefined) {
+          return null;
         }
-        return {
-          ...(Object.keys(env).length > 0 ? { env } : {}),
-          ...(Object.keys(secretSentinels).length > 0 ? { secretSentinels } : {}),
-          ...(secretEgressBindings.length > 0 ? { secretEgressBindings } : {}),
-        };
-      }, params.database ?? {}) ?? {}
+        return toMetadata(row);
+      }, params.database ?? {}) ?? null
     );
   } catch (error) {
     if (isMissingSecretStoreTableError(error)) {
-      return {};
+      return null;
     }
     throw error;
   }
@@ -424,18 +306,28 @@ function writeSecretStoreEntryInternal(
     ({ db: sqlite }) => {
       ensureSecretStoreSchema(sqlite);
       const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
-      const previous = capturePrevious
-        ? executeSqliteQueryTakeFirstSync(
-            sqlite,
-            db
-              .selectFrom("secret_store_entries")
-              .select(["value", "kind", "allowed_hosts", "updated_by"])
-              .where("scope_kind", "=", scopeKind)
-              .where("scope_id", "=", scopeId)
-              .where("name", "=", params.name)
-              .where("deleted_at_ms", "is", null),
-          )
-        : undefined;
+      // The prior row is read for the audience decision on every write path;
+      // it becomes a rollback snapshot only when the caller captures it.
+      const previousRow = executeSqliteQueryTakeFirstSync(
+        sqlite,
+        db
+          .selectFrom("secret_store_entries")
+          .select(["value", "kind", "audience", "allowed_hosts", "updated_by"])
+          .where("scope_kind", "=", scopeKind)
+          .where("scope_id", "=", scopeId)
+          .where("name", "=", params.name)
+          .where("deleted_at_ms", "is", null),
+      );
+      const previous = capturePrevious ? previousRow : undefined;
+      // Audience decision is separate from the value write: a replacement that
+      // omits `audience` preserves the stored audience, so routine credential
+      // rotation can never silently widen a "selected" entry to every agent.
+      // Only a brand-new entry defaults to "all" (legacy team-wide delivery).
+      const audience: SecretStoreAudience = isSecretStoreAudience(params.audience)
+        ? params.audience
+        : previousRow
+          ? normalizeSecretStoreAudience(previousRow.audience)
+          : "all";
       executeSqliteQuerySync(
         sqlite,
         db
@@ -446,6 +338,7 @@ function writeSecretStoreEntryInternal(
             name: params.name,
             value: params.value,
             kind: params.kind,
+            audience,
             created_at_ms: now,
             updated_at_ms: now,
             updated_by: params.updatedBy,
@@ -456,6 +349,7 @@ function writeSecretStoreEntryInternal(
             conflict.columns(["scope_kind", "scope_id", "name"]).doUpdateSet({
               value: params.value,
               kind: params.kind,
+              audience,
               updated_at_ms: now,
               updated_by: params.updatedBy,
               deleted_at_ms: null,
@@ -472,6 +366,7 @@ function writeSecretStoreEntryInternal(
             value: previous.value,
             // SAFETY: The canonical secret_store schema and write validation restrict kind to secret|env.
             kind: previous.kind as SecretStoreKind,
+            audience: normalizeSecretStoreAudience(previous.audience),
             allowedHosts: previous.allowed_hosts,
             updatedBy: previous.updated_by,
           }
@@ -515,6 +410,7 @@ function rollbackSecretStoreEntryWrite(params: {
                 .set({
                   value: params.previous.value,
                   kind: params.previous.kind,
+                  audience: params.previous.audience,
                   allowed_hosts: params.previous.allowedHosts,
                   updated_at_ms: now,
                   updated_by: params.previous.updatedBy,
@@ -561,6 +457,122 @@ export function writeSecretStoreEntryWithRollback(params: SecretStoreWriteParams
       return rollbackResult;
     },
   };
+}
+
+/**
+ * Metadata-only audience edit for an existing entry: preserves the stored
+ * value and kind, so protected credentials never need re-entry to change
+ * their audience. Refuses when the entry is missing or deleted.
+ */
+export function updateSecretStoreAudience(params: {
+  scope: SecretStoreScope;
+  name: string;
+  audience: SecretStoreAudience;
+  updatedBy: string | null;
+  database?: OpenClawStateDatabaseOptions;
+}): void {
+  assertSecretStoreEnvName(params.name);
+  const audience = isSecretStoreAudience(params.audience)
+    ? params.audience
+    : normalizeSecretStoreAudience(params.audience);
+  const { scopeKind, scopeId } = normalizeScope(params.scope);
+  const now = Date.now();
+  runOpenClawStateWriteTransaction(
+    ({ db: sqlite }) => {
+      ensureSecretStoreSchema(sqlite);
+      const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
+      const updated = executeSqliteQuerySync(
+        sqlite,
+        db
+          .updateTable("secret_store_entries")
+          .set({
+            audience,
+            updated_at_ms: now,
+            updated_by: params.updatedBy,
+          })
+          .where("scope_kind", "=", scopeKind)
+          .where("scope_id", "=", scopeId)
+          .where("name", "=", params.name)
+          .where("deleted_at_ms", "is", null),
+      );
+      if (Number(updated.numAffectedRows ?? 0n) !== 1) {
+        throw new SecretStoreValidationError(
+          "SECRET_STORE_INVALID_NAME",
+          `Secret store entry "${params.name}" does not exist; audience edits only apply to existing entries.`,
+        );
+      }
+    },
+    params.database,
+    { operationLabel: "secrets.store.audience" },
+  );
+}
+
+/** Atomically applies value-omitting policy edits without rewriting the stored value. */
+export function updateSecretStoreEntryPolicy(params: {
+  scope: SecretStoreScope;
+  name: string;
+  audience?: SecretStoreAudience;
+  allowedHosts?: readonly string[];
+  updatedBy: string | null;
+  database?: OpenClawStateDatabaseOptions;
+}): void {
+  assertSecretStoreEnvName(params.name);
+  if (params.audience === undefined && params.allowedHosts === undefined) {
+    throw new SecretStoreValidationError(
+      "SECRET_STORE_VALUE_EMPTY",
+      "A metadata-only store write must supply an audience or allowed hosts.",
+    );
+  }
+  const audience =
+    params.audience === undefined
+      ? undefined
+      : isSecretStoreAudience(params.audience)
+        ? params.audience
+        : normalizeSecretStoreAudience(params.audience);
+  const allowedHosts =
+    params.allowedHosts === undefined
+      ? undefined
+      : normalizeSecretAllowedHosts(params.allowedHosts);
+  const { scopeKind, scopeId } = normalizeScope(params.scope);
+  const now = Date.now();
+  runOpenClawStateWriteTransaction(
+    ({ db: sqlite }) => {
+      ensureSecretStoreSchema(sqlite);
+      const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
+      let query = db
+        .updateTable("secret_store_entries")
+        .set({
+          ...(audience !== undefined ? { audience } : {}),
+          ...(allowedHosts !== undefined
+            ? { allowed_hosts: allowedHosts.length ? JSON.stringify(allowedHosts) : null }
+            : {}),
+          updated_at_ms: now,
+          updated_by: params.updatedBy,
+        })
+        .where("scope_kind", "=", scopeKind)
+        .where("scope_id", "=", scopeId)
+        .where("name", "=", params.name)
+        .where("deleted_at_ms", "is", null);
+      if (allowedHosts !== undefined) {
+        query = query.where("kind", "=", "secret");
+      }
+      const updated = executeSqliteQuerySync(sqlite, query);
+      if (Number(updated.numAffectedRows ?? 0n) !== 1) {
+        throw new SecretStoreValidationError(
+          allowedHosts === undefined
+            ? "SECRET_STORE_INVALID_NAME"
+            : "SECRET_STORE_INVALID_ALLOWED_HOST",
+          allowedHosts === undefined
+            ? 'Secret store entry "' +
+                params.name +
+                '" does not exist; metadata edits only apply to existing entries.'
+            : 'Secret store entry "' + params.name + '" is missing or is not a secret entry.',
+        );
+      }
+    },
+    params.database,
+    { operationLabel: "secrets.store.policy" },
+  );
 }
 
 export function updateSecretStoreAllowedHosts(params: {

@@ -21,16 +21,17 @@ import {
 import { resolveExecSafeBinRuntimePolicy } from "../infra/exec-safe-bin-runtime-policy.js";
 import { logInfo } from "../logger.js";
 import { parseAgentSessionKey, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
-import {
-  isSecretEgressProxyActive,
-  registerSecretEgressProxyRun,
-} from "../secrets/egress-proxy/registry.js";
-import type { SecretStoreExecEnvironment } from "../secrets/store/secret-store.js";
+import { isSecretEgressProxyActive } from "../secrets/egress-proxy/registry.js";
+import type { SecretStoreExecEnvironment } from "../secrets/store/secret-store-shared.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
 import { captureAgentToolSourceExecutionGuard } from "./agent-tool-source-execution-guard.js";
 import { markBackgrounded } from "./bash-process-registry.js";
 import { describeExecTool } from "./bash-tools.descriptions.js";
+import {
+  assertLocalExecWorkdir,
+  resolveGatewayGitHubProfileDir,
+} from "./bash-tools.exec-gateway-launch.js";
 import { processGatewayAllowlist } from "./bash-tools.exec-host-gateway.js";
 import { executeNodeHostCommand } from "./bash-tools.exec-host-node.js";
 import {
@@ -41,6 +42,10 @@ import {
   resolveNotifyOnExitEmptySuccess,
   resolvePreparedExecEnvironment,
 } from "./bash-tools.exec-request-preparation.js";
+import {
+  armSecretEgressForLaunchFromHooks,
+  createExecRunSecretHooks,
+} from "./bash-tools.exec-run-secret-hooks.js";
 import {
   DEFAULT_MAX_OUTPUT,
   DEFAULT_PENDING_MAX_OUTPUT,
@@ -102,10 +107,11 @@ export function createExecTool(
   // A new run constructs a new instance and observes later store mutations.
   let storeEnvPromise: Promise<SecretStoreExecEnvironment>;
   const resolveStoreEnv = () =>
-    (storeEnvPromise ??= import("../secrets/store/secret-store.js").then((store) =>
-      store.readSecretStoreExecEnvironment({
+    (storeEnvPromise ??= import("../secrets/exec-store-snapshot.js").then((store) =>
+      store.readAssignedSecretStoreExecEnvironment({
         includeSecretSentinels: secretEgressEnabled,
         excludeNames: preparedRunEnvironment.excludedStoreNames,
+        ...secretAuthority,
       }),
     ));
   const defaultBackgroundMs = clampWithDefault(
@@ -159,6 +165,15 @@ export function createExecTool(
   const agentId =
     defaults?.agentId ??
     (parsedAgentSession ? resolveAgentIdFromSessionKey(defaults?.sessionKey) : undefined);
+  const secretHooks = createExecRunSecretHooks({
+    agentId,
+    config: defaults?.config,
+    database: defaults?.secretStoreDatabase,
+    cwd: defaults?.cwd,
+    secretEgressEnabled,
+    resolveStoreEnv,
+  });
+  const secretAuthority = secretHooks.authority;
   const resolveHostForParams = createExecHostResolver(defaults);
   const buildUnavailableWorkdirResult = (params: {
     cwd: string;
@@ -415,21 +430,16 @@ export function createExecTool(
         }
 
         const resolvedExecEnvState = requestPreparation.getResolvedExecEnvPreparedState(params);
-        const storeEnv = await resolveStoreEnv();
-        // The proxy is loopback-owned by the Gateway. Sandbox and node hosts
-        // cannot use its sentinels, so both sides of the contract stay absent.
-        const useSecretEgress = secretEgressEnabled && host === "gateway";
-        let secretEgressEnv: Record<string, string> | undefined;
-        if (useSecretEgress) {
-          if (!defaults?.operationalRunInstance) {
-            throw new Error("Secret egress proxy requires an admitted agent run instance");
-          }
-          assertSourceActive();
-          secretEgressEnv = registerSecretEgressProxyRun(
-            defaults.operationalRunInstance,
-            storeEnv.secretEgressBindings ?? [],
-          );
-        }
+        const { storeEnv, useSecretEgress, secretEgressEnv } =
+          await armSecretEgressForLaunchFromHooks({
+            secretEgressEnabled,
+            host,
+            resolveStoreEnv,
+            operationalRunInstance: defaults?.operationalRunInstance,
+            authority: secretAuthority,
+            cwd: workdir,
+          });
+        assertSourceActive();
         const { env, requestedEnv } = resolvePreparedExecEnvironment({
           execParams: params,
           host,
@@ -489,14 +499,8 @@ export function createExecTool(
           });
         }
 
-        if (!workdir) {
-          throw new Error("exec internal error: local execution requires a resolved workdir");
-        }
-
-        const githubProfileDir =
-          host === "gateway" && preparedRunEnvironment.managedLocalIdentity
-            ? preparedRunEnvironment.localIdentityEnv.GH_CONFIG_DIR
-            : undefined;
+        assertLocalExecWorkdir(workdir);
+        const githubProfileDir = resolveGatewayGitHubProfileDir({ host, preparedRunEnvironment });
 
         if (host === "gateway" && !bypassApprovals) {
           const gatewayResult = await processGatewayAllowlist({
@@ -546,6 +550,7 @@ export function createExecTool(
             cleanupMs,
             processContinuationAvailable: allowBackground,
             trustedSafeBinDirs,
+            beforeSpawnSecretAuthority: secretHooks.buildRecheck(),
           });
           const immediateResult = gatewayResult.pendingResult ?? gatewayResult.deniedResult;
           if (immediateResult) {
@@ -601,7 +606,7 @@ export function createExecTool(
           processContinuationAvailable: allowBackground,
           startupSignal: signal,
           onUpdate,
-          beforeSpawn: gatewayApproval?.revalidateBeforeExecution,
+          beforeSpawn: secretHooks.buildRecheck(gatewayApproval?.revalidateBeforeExecution),
           assertCurrent: gatewayApproval?.assertCurrent,
           onSettledBeforeNotify: settlement.settle,
         });

@@ -19,6 +19,7 @@ import {
   resolveAmbientOwnerAgentId,
   resolveDefaultAgentDir,
   resolveDefaultAgentId,
+  resolveEffectiveAgentDir,
   resolveSoleAgentId,
   tryResolveAmbientOwnerAgentId,
   tryResolveAgentOperationAgentId,
@@ -480,5 +481,30 @@ describe("resolveAgentConfig model policy", () => {
     expect(resolveAgentConfig(cfg, "main")?.modelPolicy).toEqual({
       allow: ["openai/gpt-5.6-sol"],
     });
+  });
+});
+
+describe("resolveEffectiveAgentDir blank agentDir rejection", () => {
+  it.each(["", "   ", "\t\n "])("rejects an explicitly blank agentDir %j", (agentDir) => {
+    const cfg = { agents: { entries: { alpha: { agentDir } } } };
+
+    expect(() => resolveEffectiveAgentDir(cfg, "alpha")).toThrow(
+      "agents.alpha.agentDir must not be blank",
+    );
+  });
+
+  it("keeps resolving a valid configured agentDir", () => {
+    const cfg = { agents: { entries: { alpha: { agentDir: "/tmp/openclaw-alpha" } } } };
+
+    expect(resolveEffectiveAgentDir(cfg, "alpha")).toBe(path.resolve("/tmp/openclaw-alpha"));
+  });
+
+  it("keeps falling back to the default agent dir when agentDir is absent", () => {
+    const cfg = { agents: { entries: { alpha: {} } } };
+    const stateDir = path.join("/tmp", "openclaw-state");
+
+    expect(resolveEffectiveAgentDir(cfg, "alpha", { env: { OPENCLAW_STATE_DIR: stateDir } })).toBe(
+      path.join(stateDir, "agents", "alpha", "agent"),
+    );
   });
 });

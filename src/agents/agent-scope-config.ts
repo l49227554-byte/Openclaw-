@@ -549,7 +549,13 @@ export function resolveEffectiveAgentDir(
   deps?: AgentDirResolutionEnv,
 ): string {
   const id = normalizeAgentId(agentId);
-  const configured = resolveAgentConfig(cfg, id)?.agentDir?.trim();
+  const rawAgentDir = resolveAgentConfig(cfg, id)?.agentDir;
+  const configured = typeof rawAgentDir === "string" ? rawAgentDir.trim() : undefined;
+  if (typeof rawAgentDir === "string" && !configured) {
+    // An explicitly configured agentDir must not be blank; silently falling back
+    // to the default would ignore the operator's intent.
+    throw new Error(`agents.${id}.agentDir must not be blank`);
+  }
   const env = deps?.env ?? process.env;
   return configured
     ? resolveUserPath(configured, env, deps?.homedir)

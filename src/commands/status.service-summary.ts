@@ -1,6 +1,7 @@
 // Reads service manager state for status reports.
 // Converts gateway/node launchd/systemd state into a compact summary shape.
 
+import fs from "node:fs/promises";
 import { OPENCLAW_WRAPPER_ENV_KEY } from "../daemon/program-args.js";
 import { formatServiceLabel } from "../daemon/runtime-format.js";
 import {
@@ -13,6 +14,7 @@ import type {
   GatewayServiceLoadState,
 } from "../daemon/service-types.js";
 import { readGatewayServiceState, type GatewayService } from "../daemon/service.js";
+import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
 
 type ServiceStatusSummary = {
   label: string;
@@ -23,6 +25,7 @@ type ServiceStatusSummary = {
   loadedText: string;
   runtime: GatewayServiceRuntime | undefined;
   layout?: GatewayServiceLayoutSummary;
+  cliPackageRoot?: string;
   wrapperPath?: string;
 };
 
@@ -44,6 +47,12 @@ export async function readServiceStatusSummary(
     // Layout is optional enrichment; a broken manifest or inaccessible path
     // must not erase service-manager evidence that the gateway is running.
     const layout = await summarizeGatewayServiceLayout(state.command).catch(() => undefined);
+    const cliPackageRoot =
+      layout && state.installed
+        ? await resolveOpenClawPackageRoot({ moduleUrl: import.meta.url, argv1: process.argv[1] })
+            .then((root) => (root ? fs.realpath(root) : undefined))
+            .catch(() => undefined)
+        : undefined;
     const wrapperPath = normalizeServiceWrapperPath(state.command);
     const managedByOpenClaw = state.installed;
     // A running unmanaged process still counts as installed for status display.
@@ -65,6 +74,7 @@ export async function readServiceStatusSummary(
       loadedText,
       runtime: state.runtime,
       ...(layout ? { layout } : {}),
+      ...(cliPackageRoot ? { cliPackageRoot } : {}),
       ...(wrapperPath ? { wrapperPath } : {}),
     };
   } catch (error) {

@@ -257,6 +257,45 @@ describe("readServiceStatusSummary", () => {
       expect(layout.packageVersion).toBe("0.0.0-test");
       expect(layout.entrypointSourceCheckout).toBe(true);
       expect(layout.execStart).toBe(`/usr/bin/node ${entrypoint} gateway run`);
+      expect(
+        getStatusOverviewRowValue("Service installation", {
+          gatewayMode: "local",
+          gatewayConnection: { url: "ws://127.0.0.1:18789", urlSource: "local loopback" },
+          gatewayService: summary,
+        }),
+      ).toContain("0.0.0-test (installed on disk)");
+      expect(
+        getStatusOverviewRowValue("Service installation warning", {
+          gatewayMode: "local",
+          gatewayConnection: { url: "ws://127.0.0.1:18789", urlSource: "local loopback" },
+          gatewayService: summary,
+        }),
+      ).toContain("openclaw gateway install --force");
+      const cliRoot = summary.cliPackageRoot;
+      expect(cliRoot).toBeTruthy();
+      if (!cliRoot) {
+        throw new Error("Expected CLI package root");
+      }
+      const alias = path.join(root, "cli-alias");
+      await fs.symlink(cliRoot, alias, "junction");
+      const matching = await readServiceStatusSummary(
+        createService({
+          isLoaded: vi.fn(async () => true),
+          readCommand: vi.fn(async () => ({
+            programArguments: [process.execPath, path.join(alias, "openclaw.mjs"), "gateway"],
+          })),
+          readRuntime: vi.fn(async () => ({ status: "running" })),
+        }),
+        "Daemon",
+      );
+      expect(matching.layout?.packageRootReal).toBe(cliRoot);
+      expect(
+        getStatusOverviewRowValue("Service installation warning", {
+          gatewayMode: "local",
+          gatewayConnection: { url: "ws://127.0.0.1:18789", urlSource: "local loopback" },
+          gatewayService: matching,
+        }),
+      ).toBeUndefined();
     });
   });
 });

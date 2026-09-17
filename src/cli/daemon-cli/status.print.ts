@@ -48,7 +48,9 @@ function formatCliVersionLine(cli: DaemonStatus["cli"]): string | null {
   if (!cli) {
     return null;
   }
-  return cli.entrypoint ? `${cli.version} (${shortenHomePath(cli.entrypoint)})` : cli.version;
+  return sanitizeTerminalText(
+    cli.entrypoint ? `${cli.version} (${shortenHomePath(cli.entrypoint)})` : cli.version,
+  );
 }
 
 function formatConnectionLine(
@@ -247,10 +249,20 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
 
   const gatewayVersion = rpc?.server?.version?.trim() || status.gateway?.version?.trim();
   const cliVersionLine = formatCliVersionLine(status.cli);
+  if (cliVersionLine) {
+    defaultRuntime.log(`${label("CLI version:")} ${infoText(cliVersionLine)}`);
+  }
+  if (service.layout?.packageVersion) {
+    defaultRuntime.log(
+      `${label("Service package version:")} ${infoText(sanitizeTerminalText(service.layout.packageVersion))} (installed on disk)${diagnosticOnlySuffix}`,
+    );
+  }
+  if (service.layout?.entrypoint) {
+    defaultRuntime.log(
+      `${label("Service entrypoint:")} ${infoText(sanitizeTerminalText(shortenHomePath(service.layout.entrypoint)))}${diagnosticOnlySuffix}`,
+    );
+  }
   if (gatewayVersion) {
-    if (cliVersionLine) {
-      defaultRuntime.log(`${label("CLI version:")} ${infoText(cliVersionLine)}`);
-    }
     defaultRuntime.log(`${label("Gateway version:")} ${infoText(gatewayVersion)}`);
     if (status.cli?.version && status.cli.version !== gatewayVersion) {
       defaultRuntime.error(
@@ -264,6 +276,8 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
         ),
       );
     }
+  }
+  if (cliVersionLine || service.layout || gatewayVersion) {
     spacer();
   }
 

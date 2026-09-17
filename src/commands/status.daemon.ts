@@ -17,6 +17,7 @@ type DaemonStatusSummary = {
   runtime: Awaited<ReturnType<typeof readServiceStatusSummary>>["runtime"];
   runtimeShort: string | null;
   layout: Awaited<ReturnType<typeof readServiceStatusSummary>>["layout"];
+  cliPackageRoot?: string;
   wrapperPath: Awaited<ReturnType<typeof readServiceStatusSummary>>["wrapperPath"];
 };
 
@@ -43,6 +44,7 @@ async function buildDaemonStatusSummary(
     runtime,
     runtimeShort: formatDaemonRuntimeShort(runtime),
     layout: summary.layout,
+    ...(summary.cliPackageRoot ? { cliPackageRoot: summary.cliPackageRoot } : {}),
     wrapperPath: summary.wrapperPath,
   };
 }

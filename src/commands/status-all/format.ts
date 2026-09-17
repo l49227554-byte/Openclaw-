@@ -2,8 +2,11 @@
 // These functions keep text and JSON status surfaces aligned without pulling in command orchestration.
 
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
+import { formatCliCommand } from "../../cli/command-format.js";
 import { resolveGatewayPort } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.js";
+import type { GatewayServiceLayoutSummary } from "../../daemon/service-layout.js";
 import type { GatewayServiceLoadState } from "../../daemon/service-types.js";
 import { projectGatewayUrlForDiagnostics } from "../../gateway/connection-details.js";
 import { resolveControlUiLinks } from "../../gateway/control-ui-links.js";
@@ -50,6 +53,8 @@ type StatusGatewaySelf =
   | undefined;
 
 type StatusManagedService = {
+  layout?: GatewayServiceLayoutSummary;
+  cliPackageRoot?: string;
   label: string;
   installed: boolean | null;
   loadState?: GatewayServiceLoadState;
@@ -194,6 +199,7 @@ function buildStatusOverviewRows(params: {
   gatewaySelfValue?: string | null;
   gatewayServiceValue: string;
   nodeServiceValue: string;
+  installationRows?: StatusOverviewRow[];
   agentsValue: string;
   suffixRows?: StatusOverviewRow[];
 }): StatusOverviewRow[] {
@@ -222,6 +228,7 @@ function buildStatusOverviewRows(params: {
   }
   rows.push(
     { Item: "Gateway service", Value: params.gatewayServiceValue },
+    ...(params.installationRows ?? []),
     { Item: "Node service", Value: params.nodeServiceValue },
     { Item: "Agents", Value: params.agentsValue },
   );
@@ -287,7 +294,44 @@ export function buildStatusOverviewSurfaceRows(params: {
       decorateOk: params.decorateOk,
       decorateWarn: params.decorateWarn,
     });
+  const installationRows: StatusOverviewRow[] = [];
+  const service = params.gatewayService;
+  const layout = service.layout;
+  if (
+    params.gatewayMode === "local" &&
+    !params.nodeOnlyGateway &&
+    service.managedByOpenClaw &&
+    layout
+  ) {
+    const cliPath = service.cliPackageRoot ?? process.argv[1];
+    installationRows.push(
+      {
+        Item: "CLI installation",
+        Value: sanitizeTerminalText(`${VERSION}${cliPath ? ` · ${cliPath}` : ""}`),
+      },
+      {
+        Item: "Service installation",
+        Value: sanitizeTerminalText(
+          `${layout.packageVersion ?? "version unknown"} (installed on disk)${layout.entrypoint ? ` · ${layout.entrypoint}` : ""}`,
+        ),
+      },
+    );
+    // Compare package roots, not launcher paths: openclaw.mjs and dist/index.js
+    // can belong to the same installation. Collection resolves symlinks first.
+    const serviceRoot = layout.packageRootReal ?? layout.packageRoot;
+    const differs =
+      (layout.packageVersion && layout.packageVersion !== VERSION) ||
+      (service.cliPackageRoot && serviceRoot && service.cliPackageRoot !== serviceRoot);
+    if (differs && params.gatewayConnection.urlSource === "local loopback") {
+      const warning = `The managed service uses a different OpenClaw installation or version.${!params.gatewayReachable ? " This may explain the connection failure." : ""} Run ${formatCliCommand("openclaw doctor")} to inspect it. If unintended, run ${formatCliCommand("openclaw gateway install --force")} from the intended installation, then ${formatCliCommand("openclaw gateway restart")}.`;
+      installationRows.push({
+        Item: "Service installation warning",
+        Value: (params.decorateWarn ?? ((value: string) => value))(warning),
+      });
+    }
+  }
   return buildStatusOverviewRows({
+    installationRows,
     prefixRows: params.prefixRows,
     dashboardValue: normalizeOptionalString(dashboardUrl) ?? "disabled",
     tailscaleValue: formatStatusTailscaleValue({

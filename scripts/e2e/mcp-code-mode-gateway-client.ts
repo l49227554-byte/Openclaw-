@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { readSessionTranscriptEvents } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { readBoundedResponseText } from "../lib/bounded-response.mjs";
-import { readPositiveIntEnv } from "./lib/env-limits.mjs";
+import { readPositiveIntEnv, readTimerMsEnv } from "./lib/env-limits.mjs";
 import { readMcpCodeModeDiagnostics } from "./lib/mcp-code-mode-diagnostics.ts";
 import {
   extractMcpCodeModePlannedTools,
@@ -34,7 +34,7 @@ export function readMcpCodeModeClientFetchLimits(
       1024 * 1024,
       env,
     ),
-    timeoutMs: readPositiveIntEnv("OPENCLAW_MCP_CODE_MODE_CLIENT_TIMEOUT_MS", 300_000, env),
+    timeoutMs: readTimerMsEnv("OPENCLAW_MCP_CODE_MODE_CLIENT_TIMEOUT_MS", 300_000, env),
   };
 }
 

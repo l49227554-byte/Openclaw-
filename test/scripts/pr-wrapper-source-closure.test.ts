@@ -3,7 +3,11 @@ import { dirname, relative, resolve } from "node:path";
 import ts from "typescript";
 import { expect, it } from "vitest";
 
-it.each(["src/infra/sqlite-coordinator.ts", "src/plugins/discovery.ts"])(
+it.each([
+  "src/infra/sqlite-coordinator.ts",
+  "src/plugins/discovery.ts",
+  "src/infra/sqlite-readonly-location.worker.ts",
+])(
   "retains %s and its relative ESM runtime dependencies in the wrapper inventory",
   (entrypoint) => {
     const root = process.cwd();

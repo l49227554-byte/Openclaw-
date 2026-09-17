@@ -51,7 +51,7 @@ interface SidebarMenusControllerState {
   identityMenuPosition: { x: number; bottom: number; width: number } | null;
 }
 
-export type SidebarFilterMenuView = "root" | "specific-owner" | "empty-groups";
+export type SidebarFilterMenuView = "root" | "specific-owner";
 
 type SidebarMenusRenderer = typeof import("./sidebar-menus-render.ts");
 
@@ -397,7 +397,7 @@ export class SidebarMenusController implements ReactiveController, SidebarMenusC
 
   private focusFilterMenuView() {
     void this.host.updateComplete.then(() => {
-      const trigger = this.sessionSortMenuTrigger ?? this.catalogViewMenuTrigger;
+      const trigger = this.catalogViewMenuTrigger;
       const dropdown = trigger
         ?.closest("openclaw-app-sidebar")
         ?.querySelector<HTMLElement>(".sidebar-session-sort-menu");

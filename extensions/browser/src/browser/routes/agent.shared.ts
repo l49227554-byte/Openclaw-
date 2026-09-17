@@ -6,6 +6,7 @@
  */
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveBrowserNavigationProxyMode } from "../browser-proxy-mode.js";
+import { redactCdpErrorText } from "../cdp.helpers.js";
 import { toBrowserErrorResponse } from "../errors.js";
 import {
   assertBrowserNavigationResultAllowed,
@@ -13,9 +14,16 @@ import {
 } from "../navigation-guard.js";
 import type { PwAiModule } from "../pw-ai-module.js";
 import { getPwAiModule as getPwAiModuleBase } from "../pw-ai-module.js";
+import type { InteractionTargetOptions } from "../pw-tools-core.interactions.navigation.js";
 import type { BrowserRouteContext, ProfileContext } from "../server-context.js";
+import { isProfileRestartRequiredError } from "../server-context.lifecycle.js";
 import type { BrowserRequest, BrowserResponse } from "./types.js";
-import { getProfileContext, jsonError } from "./utils.js";
+import {
+  getProfileContext,
+  jsonBrowserError,
+  jsonError,
+  runProfileRouteOperation,
+} from "./utils.js";
 
 export const SELECTOR_UNSUPPORTED_MESSAGE = [
   "Error: 'selector' is not supported. Use 'ref' from snapshot instead.",
@@ -50,15 +58,18 @@ export function resolveTargetIdFromQuery(query: Record<string, unknown>): string
 
 /** Map route-level browser errors to HTTP JSON responses. */
 export function handleRouteError(ctx: BrowserRouteContext, res: BrowserResponse, err: unknown) {
+  if (isProfileRestartRequiredError(err)) {
+    throw err;
+  }
   const mapped = ctx.mapTabError(err);
   if (mapped) {
-    return jsonError(res, mapped.status, mapped.message);
+    return jsonBrowserError(res, mapped);
   }
   const browserMapped = toBrowserErrorResponse(err);
   if (browserMapped) {
-    return jsonError(res, browserMapped.status, browserMapped.message);
+    return jsonBrowserError(res, browserMapped);
   }
-  jsonError(res, 500, String(err));
+  jsonError(res, 500, redactCdpErrorText(String(err)));
 }
 
 /** Resolve the requested browser profile and respond with JSON on failure. */
@@ -118,6 +129,8 @@ type RouteTabContext = {
   profileCtx: ProfileContext;
   tab: Awaited<ReturnType<ProfileContext["ensureTabAvailable"]>>;
   cdpUrl: string;
+  signal: AbortSignal;
+  assertCurrent?: InteractionTargetOptions["assertCurrent"];
   resolveTabUrl: (fallbackUrl?: string) => Promise<string | undefined>;
 };
 
@@ -129,6 +142,7 @@ type RouteWithTabParams<T> = {
   req: BrowserRequest;
   res: BrowserResponse;
   ctx: BrowserRouteContext;
+  profileCtx?: ProfileContext;
   targetId?: string;
   /**
    * Set for routes that read from or return data scoped to the selected tab.
@@ -142,38 +156,58 @@ type RouteWithTabParams<T> = {
 export async function withRouteTabContext<T>(
   params: RouteWithTabParams<T>,
 ): Promise<T | undefined> {
-  const profileCtx = resolveProfileContext(params.req, params.res, params.ctx);
+  const profileCtx = params.profileCtx ?? resolveProfileContext(params.req, params.res, params.ctx);
   if (!profileCtx) {
     return undefined;
   }
+  const requestAssertCurrent = params.req.assertCurrent;
+  const assertCurrent = requestAssertCurrent
+    ? () => requestAssertCurrent(profileCtx.profile)
+    : undefined;
   try {
-    // Agent routes can address local-managed tabs through Playwright when per-tab WS discovery lags.
-    const tab = await profileCtx.ensureTabAvailable(params.targetId, {
-      allowPlaywrightFallback: true,
-      signal: params.req.signal,
-      timeoutMs: params.ctx.state().resolved.actionTimeoutMs,
-    });
-    if (params.enforceCurrentUrlAllowed) {
-      await assertBrowserNavigationResultAllowed({
-        url: tab.url,
-        ...browserNavigationPolicyForProfile(params.ctx, profileCtx),
-      });
-    }
-    return await params.run({
+    return await runProfileRouteOperation({
       profileCtx,
-      tab,
-      cdpUrl: profileCtx.profile.cdpUrl,
-      resolveTabUrl: (fallbackUrl?: string) =>
-        resolveSafeRouteTabUrl({
-          ctx: params.ctx,
-          profileCtx,
-          targetId: tab.targetId,
-          fallbackUrl,
-          signal: params.req.signal,
+      signal: params.req.signal,
+      assertCurrent: params.req.assertCurrent,
+      run: async (signal) => {
+        // Agent routes can address local-managed tabs through Playwright when per-tab WS discovery lags.
+        const tab = await profileCtx.ensureTabAvailable(params.targetId, {
+          allowPlaywrightFallback: true,
+          signal,
           timeoutMs: params.ctx.state().resolved.actionTimeoutMs,
-        }),
+        });
+        if (params.enforceCurrentUrlAllowed) {
+          await assertBrowserNavigationResultAllowed({
+            url: tab.url,
+            signal,
+            ...browserNavigationPolicyForProfile(params.ctx, profileCtx),
+          });
+        }
+        if (assertCurrent) {
+          await assertCurrent();
+        }
+        return await params.run({
+          profileCtx,
+          tab,
+          cdpUrl: profileCtx.profile.cdpUrl,
+          signal,
+          ...(assertCurrent ? { assertCurrent } : {}),
+          resolveTabUrl: (fallbackUrl?: string) =>
+            resolveSafeRouteTabUrl({
+              ctx: params.ctx,
+              profileCtx,
+              targetId: tab.targetId,
+              fallbackUrl,
+              signal,
+              timeoutMs: params.ctx.state().resolved.actionTimeoutMs,
+            }),
+        });
+      },
     });
   } catch (err) {
+    if (isProfileRestartRequiredError(err)) {
+      throw err;
+    }
     handleRouteError(params.ctx, params.res, err);
     return undefined;
   }
@@ -206,10 +240,12 @@ export async function resolveSafeRouteTabUrl(params: {
   try {
     await assertBrowserNavigationResultAllowed({
       url: candidateUrl,
+      signal: params.signal,
       ...browserNavigationPolicyForProfile(params.ctx, params.profileCtx),
     });
     return candidateUrl;
   } catch {
+    params.signal?.throwIfAborted();
     return undefined;
   }
 }
@@ -218,6 +254,7 @@ type RouteWithPwParams<T> = {
   req: BrowserRequest;
   res: BrowserResponse;
   ctx: BrowserRouteContext;
+  profileCtx?: ProfileContext;
   targetId?: string;
   feature: string;
   /**
@@ -236,14 +273,15 @@ export async function withPlaywrightRouteContext<T>(
     req: params.req,
     res: params.res,
     ctx: params.ctx,
+    ...(params.profileCtx ? { profileCtx: params.profileCtx } : {}),
     targetId: params.targetId,
     enforceCurrentUrlAllowed: params.enforceCurrentUrlAllowed,
-    run: async ({ profileCtx, tab, cdpUrl, resolveTabUrl }) => {
+    run: async (routeCtx) => {
       const pw = await requirePwAi(params.res, params.feature);
       if (!pw) {
         return undefined as T | undefined;
       }
-      return await params.run({ profileCtx, tab, cdpUrl, resolveTabUrl, pw });
+      return await params.run({ ...routeCtx, pw });
     },
   });
 }

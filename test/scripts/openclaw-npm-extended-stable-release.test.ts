@@ -5,7 +5,9 @@ import {
   extendedStableSelectorRepairCommand,
   parseExtendedStableGuardBypass,
   parsePriorExtendedStableSelector,
+  resolveNpmPreflightSdkSelectors,
   validateFullReleaseValidationManifest,
+  validateNpmPreflightDistTag,
   validateNpmPublishBoundary,
   validateExtendedStableNpmReleaseRequest,
   validateExtendedStableRunIdentity,
@@ -14,6 +16,78 @@ import {
 
 const sha = "a".repeat(40);
 const branch = "extended-stable/2026.6.33";
+
+describe("npm preflight publication channels", () => {
+  it.each([
+    ["2026.8.1", "beta", ["beta", "latest"]],
+    ["2026.8.1-1", "latest", ["beta", "latest"]],
+    ["2026.8.1", "alpha", ["alpha"]],
+    ["2026.8.1-alpha.1", "alpha", ["alpha"]],
+    ["2026.8.1-beta.1", "beta", ["beta"]],
+    ["2026.6.33", "extended-stable", ["extended-stable"]],
+  ])("qualifies %s on %s against its supported selectors", (version, tag, selectors) => {
+    expect(resolveNpmPreflightSdkSelectors(version, tag)).toEqual(selectors);
+  });
+
+  it("allows only qualified regular releases with both SDK receipts to cross beta/latest", () => {
+    const receipt = { schema: "openclaw.plugin-sdk-api-release-evidence/v1" };
+    const manifest = {
+      version: 3,
+      packageVersion: "2026.8.1",
+      npmDistTag: "beta",
+      pluginSdkApi: {
+        schema: "openclaw.plugin-sdk-api-release-evidence-set/v1",
+        selectors: { beta: receipt, latest: receipt },
+      },
+    };
+    expect(() => validateNpmPreflightDistTag({ manifest, npmDistTag: "latest" })).not.toThrow();
+    expect(() =>
+      validateNpmPreflightDistTag({
+        manifest: {
+          ...manifest,
+          pluginSdkApi: {
+            ...manifest.pluginSdkApi,
+            schema: "openclaw.plugin-sdk-api-release-evidence-set/v2",
+          },
+        },
+        npmDistTag: "latest",
+      }),
+    ).not.toThrow();
+    for (const changed of [
+      { ...manifest, version: 2 },
+      { ...manifest, version: 1 },
+      { ...manifest, pluginSdkApi: receipt },
+      { ...manifest, packageVersion: "2026.8.1-beta.1" },
+      { ...manifest, packageVersion: "2026.8.1-alpha.1", npmDistTag: "alpha" },
+      { ...manifest, packageVersion: "2026.6.33", npmDistTag: "extended-stable" },
+      { ...manifest, pluginSdkApi: { ...manifest.pluginSdkApi, selectors: { beta: receipt } } },
+    ]) {
+      expect(() =>
+        validateNpmPreflightDistTag({ manifest: changed, npmDistTag: "latest" }),
+      ).toThrow("dist-tag mismatch");
+    }
+    expect(() => validateNpmPreflightDistTag({ manifest, npmDistTag: "alpha" })).toThrow(
+      "dist-tag mismatch",
+    );
+    expect(() =>
+      validateNpmPreflightDistTag({
+        manifest: { version: 1, npmDistTag: "beta" },
+        npmDistTag: "beta",
+      }),
+    ).not.toThrow();
+
+    const command = spawnSync(
+      process.execPath,
+      ["scripts/openclaw-npm-extended-stable-release.mjs", "verify-preflight-channel"],
+      {
+        encoding: "utf8",
+        input: JSON.stringify(manifest),
+        env: { ...process.env, RELEASE_NPM_DIST_TAG: "latest" },
+      },
+    );
+    expect(command.status, command.stderr).toBe(0);
+  });
+});
 
 describe("npm extended-stable publication boundary", () => {
   it("parses only explicit boolean extended-stable guard values", () => {
@@ -85,6 +159,11 @@ describe("npm extended-stable publication boundary", () => {
     expect(() => validateNpmPublishBoundary("2026.6.11", "extended-stable")).toThrow(
       /patch 33 or above/u,
     );
+    expect(() =>
+      validateNpmPublishBoundary("2026.6.11-1", "extended-stable", {
+        bypassExtendedStableGuard: true,
+      }),
+    ).toThrow(/does not allow correction suffixes/u);
   });
 
   it.each(["alpha", "beta", "latest"])(
@@ -145,7 +224,7 @@ describe("extended-stable npm release request", () => {
     mainPackageVersion: "2026.7.2",
   };
 
-  it("accepts .33, later patches, and any later protected-main calendar month", () => {
+  it("accepts .33 and later patches only in the trailing completed month", () => {
     expect(validateExtendedStableNpmReleaseRequest(valid)).toEqual({
       extendedStable: true,
       releaseVersion: "2026.6.33",
@@ -170,15 +249,31 @@ describe("extended-stable npm release request", () => {
       extendedStable: true,
       extendedStableBranch: "extended-stable/2026.12.33",
     });
-    expect(() =>
-      validateExtendedStableNpmReleaseRequest({ ...valid, mainPackageVersion: "2026.8.1" }),
-    ).not.toThrow();
-    expect(() =>
-      validateExtendedStableNpmReleaseRequest({ ...valid, mainPackageVersion: "2027.1.1" }),
-    ).not.toThrow();
-    expect(() =>
-      validateExtendedStableNpmReleaseRequest({ ...valid, mainPackageVersion: "2028.12.32" }),
-    ).not.toThrow();
+  });
+
+  it.each([
+    ["main two months ahead", "2026.8.1", "2026.7"],
+    ["main many months ahead", "2027.1.1", "2026.12"],
+    ["main a year-plus ahead", "2028.12.32", "2028.11"],
+  ])("rejects %s", (_label, mainPackageVersion, expectedMonth) => {
+    expect(() => validateExtendedStableNpmReleaseRequest({ ...valid, mainPackageVersion })).toThrow(
+      `Extended-stable publishes only the trailing completed month: protected main ${mainPackageVersion} allows ${expectedMonth}.PATCH, not 2026.6.33. Retire the older line or dispatch with BYPASS_EXTENDED_STABLE_GUARD for an explicitly approved exception.`,
+    );
+  });
+
+  it("accepts an explicitly bypassed stale monthly line", () => {
+    expect(
+      validateExtendedStableNpmReleaseRequest({
+        ...valid,
+        mainPackageVersion: "2027.1.1",
+        bypassExtendedStableGuard: true,
+      }),
+    ).toEqual({
+      extendedStable: true,
+      releaseVersion: "2026.6.33",
+      extendedStableBranch: "extended-stable/2026.6.33",
+      bypassExtendedStableGuard: true,
+    });
   });
 
   it.each([
@@ -209,12 +304,14 @@ describe("extended-stable npm release request", () => {
     ).toEqual({ extendedStable: false });
   });
 
-  it("accepts a SHA-only extended-stable preflight bound to the branch tip", () => {
+  it("accepts a SHA-only extended-stable preflight from an arbitrary workflow ref", () => {
     expect(
       validateExtendedStableNpmReleaseRequest({
         ...valid,
         preflightOnly: true,
         releaseTag: sha,
+        npmWorkflowRef: "refs/heads/main",
+        extendedStableBranchSha: "",
       }),
     ).toEqual({
       extendedStable: true,
@@ -226,8 +323,18 @@ describe("extended-stable npm release request", () => {
         ...valid,
         preflightOnly: true,
         releaseTag: "b".repeat(40),
+        npmWorkflowRef: "refs/heads/dev/preflight-candidate",
+        extendedStableBranchSha: "",
       }),
     ).toThrow(/must match the checked-out commit/u);
+    expect(() =>
+      validateExtendedStableNpmReleaseRequest({
+        ...valid,
+        preflightOnly: true,
+        releaseTag: sha,
+        checkoutSha: "",
+      }),
+    ).toThrow(/requires the full checked-out commit SHA/u);
     expect(() => validateExtendedStableNpmReleaseRequest({ ...valid, releaseTag: sha })).toThrow(
       /exact final vYYYY\.M\.P release tag/u,
     );
@@ -284,6 +391,43 @@ describe("extended-stable npm run identity", () => {
     headBranch: branch,
     headSha: sha,
   };
+
+  it("separates exact FRV tooling identity from the extended-stable source identity", () => {
+    const run = {
+      ...validPreflight,
+      workflowName: "Full Release Validation",
+      databaseId: 123,
+      attempt: 2,
+      status: "completed",
+      headBranch: `release-ci/${"b".repeat(12)}-123`,
+      headSha: "b".repeat(40),
+    };
+    const request = {
+      run,
+      kind: "preflight",
+      npmDistTag: "extended-stable",
+      expectedBranch: branch,
+      expectedSha: sha,
+      preflightRunId: "123",
+      preflightRunAttempt: "2",
+      fullReleaseRunId: "123",
+      fullReleaseRunAttempt: "2",
+      workflowPath: ".github/workflows/full-release-validation.yml",
+    };
+    expect(validateExtendedStableRunIdentity(request)).toBe(run);
+    for (const change of [
+      { fullReleaseRunId: "124" },
+      { fullReleaseRunAttempt: "1" },
+      { workflowPath: ".github/workflows/ci.yml" },
+      { run: { ...run, attempt: 1 } },
+      { run: { ...run, status: "in_progress" } },
+      { run: { ...run, conclusion: "failure" } },
+      { kind: "validation" },
+      { kind: "plugin" },
+    ]) {
+      expect(() => validateExtendedStableRunIdentity({ ...request, ...change })).toThrow();
+    }
+  });
 
   it("accepts exact extended-stable preflight and validation runs", () => {
     expect(
@@ -369,7 +513,13 @@ describe("extended-stable npm run identity", () => {
 });
 
 describe("Full Validation manifest identity", () => {
-  const valid = { workflowName: "Full Release Validation", workflowRef: branch, targetSha: sha };
+  const valid = {
+    workflowName: "Full Release Validation",
+    workflowRef: branch,
+    targetSha: sha,
+    runId: "123",
+    runAttempt: "2",
+  };
 
   it("accepts the exact branch and target SHA", () => {
     expect(
@@ -378,6 +528,8 @@ describe("Full Validation manifest identity", () => {
         npmDistTag: "extended-stable",
         expectedWorkflowRef: branch,
         expectedSha: sha,
+        expectedRunId: "123",
+        expectedRunAttempt: "2",
       }),
     ).toBe(valid);
   });
@@ -387,6 +539,8 @@ describe("Full Validation manifest identity", () => {
     ["missing workflow ref", { workflowRef: undefined }],
     ["wrong target SHA", { targetSha: "b".repeat(40) }],
     ["missing target SHA", { targetSha: undefined }],
+    ["wrong run ID", { runId: "124" }],
+    ["wrong run attempt", { runAttempt: "1" }],
   ])("rejects %s", (_label, changes) => {
     expect(() =>
       validateFullReleaseValidationManifest({
@@ -394,6 +548,8 @@ describe("Full Validation manifest identity", () => {
         npmDistTag: "extended-stable",
         expectedWorkflowRef: branch,
         expectedSha: sha,
+        expectedRunId: "123",
+        expectedRunAttempt: "2",
       }),
     ).toThrow();
   });
@@ -419,7 +575,7 @@ describe("extended-stable selector capture", () => {
 describe("extended-stable registry readback", () => {
   it("accepts eventual convergence and sleeps 10 seconds between attempts", async () => {
     let attempt = 0;
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_delay: number) => {});
     const result = await verifyExtendedStableRegistryReadback({
       expectedVersion: "2026.6.33",
       query: async (target: string) => {
@@ -441,7 +597,7 @@ describe("extended-stable registry readback", () => {
 
   it("exhausts exactly 12 dual-query attempts on mismatch or failure", async () => {
     const query = vi.fn(async () => ({ status: 1, stdout: "" }));
-    const sleep = vi.fn(async () => {});
+    const sleep = vi.fn(async (_delay: number) => {});
     await expect(
       verifyExtendedStableRegistryReadback({ expectedVersion: "2026.6.33", query, sleep }),
     ).rejects.toThrow(/after 12 attempts/u);

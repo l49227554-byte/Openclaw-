@@ -4,14 +4,11 @@
  * Validates theme JSON, resolves color variables, watches custom theme files, and exposes terminal styling helpers.
  */
 import * as fs from "node:fs";
-import * as path from "node:path";
 import { getCapabilities } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
-import { getCustomThemesDir, getThemesDir } from "../../../config.js";
 import type { SourceInfo } from "../../../sessions/source-info.js";
-import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.js";
 import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.js";
 
 // ============================================================================
@@ -102,7 +99,7 @@ type ThemeJson = Static<typeof ThemeJsonSchema>;
 
 const validateThemeJson = Compile(ThemeJsonSchema);
 
-export type ThemeColor =
+type ThemeColor =
   | "accent"
   | "border"
   | "borderAccent"
@@ -149,7 +146,7 @@ export type ThemeColor =
   | "thinkingXhigh"
   | "bashMode";
 
-export type ThemeBg =
+type ThemeBg =
   | "selectedBg"
   | "userMessageBg"
   | "customMessageBg"
@@ -183,24 +180,11 @@ const CUBE_VALUES = [0, 95, 135, 175, 215, 255];
 // Grayscale ramp values (indices 232-255, 24 grays from 8 to 238)
 const GRAY_VALUES = Array.from({ length: 24 }, (_, i) => 8 + i * 10);
 
-function findClosestCubeIndex(value: number): number {
+function findClosestPaletteIndex(value: number, palette: readonly number[]): number {
   let minDist = Infinity;
   let minIdx = 0;
-  for (let i = 0; i < CUBE_VALUES.length; i++) {
-    const dist = Math.abs(value - CUBE_VALUES[i]);
-    if (dist < minDist) {
-      minDist = dist;
-      minIdx = i;
-    }
-  }
-  return minIdx;
-}
-
-function findClosestGrayIndex(gray: number): number {
-  let minDist = Infinity;
-  let minIdx = 0;
-  for (let i = 0; i < GRAY_VALUES.length; i++) {
-    const dist = Math.abs(gray - GRAY_VALUES[i]);
+  for (const [i, paletteValue] of palette.entries()) {
+    const dist = Math.abs(value - paletteValue);
     if (dist < minDist) {
       minDist = dist;
       minIdx = i;
@@ -226,19 +210,25 @@ function colorDistance(
 
 function rgbTo256(r: number, g: number, b: number): number {
   // Find closest color in the 6x6x6 cube
-  const rIdx = findClosestCubeIndex(r);
-  const gIdx = findClosestCubeIndex(g);
-  const bIdx = findClosestCubeIndex(b);
+  const rIdx = findClosestPaletteIndex(r, CUBE_VALUES);
+  const gIdx = findClosestPaletteIndex(g, CUBE_VALUES);
+  const bIdx = findClosestPaletteIndex(b, CUBE_VALUES);
   const cubeR = CUBE_VALUES[rIdx];
   const cubeG = CUBE_VALUES[gIdx];
   const cubeB = CUBE_VALUES[bIdx];
+  if (cubeR === undefined || cubeG === undefined || cubeB === undefined) {
+    throw new Error("Invalid 256-color cube index");
+  }
   const cubeIndex = 16 + 36 * rIdx + 6 * gIdx + bIdx;
   const cubeDist = colorDistance(r, g, b, cubeR, cubeG, cubeB);
 
   // Find closest grayscale
   const gray = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-  const grayIdx = findClosestGrayIndex(gray);
+  const grayIdx = findClosestPaletteIndex(gray, GRAY_VALUES);
   const grayValue = GRAY_VALUES[grayIdx];
+  if (grayValue === undefined) {
+    throw new Error("Invalid 256-color grayscale index");
+  }
   const grayIndex = 232 + grayIdx;
   const grayDist = colorDistance(r, g, b, grayValue, grayValue, grayValue);
 
@@ -262,38 +252,21 @@ function hexTo256(hex: string): number {
   return rgbTo256(r, g, b);
 }
 
-function fgAnsi(color: string | number, mode: ColorMode): string {
+function colorAnsi(color: string | number, mode: ColorMode, layer: "fg" | "bg"): string {
+  const code = layer === "fg" ? 38 : 48;
   if (color === "") {
-    return "\x1b[39m";
+    return layer === "fg" ? "\x1b[39m" : "\x1b[49m";
   }
   if (typeof color === "number") {
-    return `\x1b[38;5;${color}m`;
+    return `\x1b[${code};5;${color}m`;
   }
   if (color.startsWith("#")) {
     if (mode === "truecolor") {
       const { r, g, b } = hexToRgb(color);
-      return `\x1b[38;2;${r};${g};${b}m`;
+      return `\x1b[${code};2;${r};${g};${b}m`;
     }
     const index = hexTo256(color);
-    return `\x1b[38;5;${index}m`;
-  }
-  throw new Error(`Invalid color value: ${color}`);
-}
-
-function bgAnsi(color: string | number, mode: ColorMode): string {
-  if (color === "") {
-    return "\x1b[49m";
-  }
-  if (typeof color === "number") {
-    return `\x1b[48;5;${color}m`;
-  }
-  if (color.startsWith("#")) {
-    if (mode === "truecolor") {
-      const { r, g, b } = hexToRgb(color);
-      return `\x1b[48;2;${r};${g};${b}m`;
-    }
-    const index = hexTo256(color);
-    return `\x1b[48;5;${index}m`;
+    return `\x1b[${code};5;${index}m`;
   }
   throw new Error(`Invalid color value: ${color}`);
 }
@@ -313,7 +286,11 @@ function resolveVarRefs(
     throw new Error(`Variable reference not found: ${value}`);
   }
   visited.add(value);
-  return resolveVarRefs(vars[value], vars, visited);
+  const resolved = vars[value];
+  if (resolved === undefined) {
+    throw new Error(`Variable reference not found: ${value}`);
+  }
+  return resolveVarRefs(resolved, vars, visited);
 }
 
 function resolveThemeColors<T extends Record<string, ColorValue>>(
@@ -330,6 +307,15 @@ function resolveThemeColors<T extends Record<string, ColorValue>>(
 // ============================================================================
 // Theme Class
 // ============================================================================
+
+// Keep formatting independent of overridable public ANSI getters.
+function getThemeAnsi(colors: ReadonlyMap<string, string>, color: string, label: string): string {
+  const ansi = colors.get(color);
+  if (!ansi) {
+    throw new Error(`Unknown theme ${label}: ${color}`);
+  }
+  return ansi;
+}
 
 export class Theme {
   readonly name?: string;
@@ -351,27 +337,21 @@ export class Theme {
     this.mode = mode;
     this.fgColors = new Map();
     for (const [key, value] of Object.entries(fgColors) as [ThemeColor, string | number][]) {
-      this.fgColors.set(key, fgAnsi(value, mode));
+      this.fgColors.set(key, colorAnsi(value, mode, "fg"));
     }
     this.bgColors = new Map();
     for (const [key, value] of Object.entries(bgColors) as [ThemeBg, string | number][]) {
-      this.bgColors.set(key, bgAnsi(value, mode));
+      this.bgColors.set(key, colorAnsi(value, mode, "bg"));
     }
   }
 
   fg(color: ThemeColor, text: string): string {
-    const ansi = this.fgColors.get(color);
-    if (!ansi) {
-      throw new Error(`Unknown theme color: ${color}`);
-    }
+    const ansi = getThemeAnsi(this.fgColors, color, "color");
     return `${ansi}${text}\x1b[39m`; // Reset only foreground color
   }
 
   bg(color: ThemeBg, text: string): string {
-    const ansi = this.bgColors.get(color);
-    if (!ansi) {
-      throw new Error(`Unknown theme background color: ${color}`);
-    }
+    const ansi = getThemeAnsi(this.bgColors, color, "background color");
     return `${ansi}${text}\x1b[49m`; // Reset only background color
   }
 
@@ -396,19 +376,11 @@ export class Theme {
   }
 
   getFgAnsi(color: ThemeColor): string {
-    const ansi = this.fgColors.get(color);
-    if (!ansi) {
-      throw new Error(`Unknown theme color: ${color}`);
-    }
-    return ansi;
+    return getThemeAnsi(this.fgColors, color, "color");
   }
 
   getBgAnsi(color: ThemeBg): string {
-    const ansi = this.bgColors.get(color);
-    if (!ansi) {
-      throw new Error(`Unknown theme background color: ${color}`);
-    }
-    return ansi;
+    return getThemeAnsi(this.bgColors, color, "background color");
   }
 
   getColorMode(): ColorMode {
@@ -445,21 +417,6 @@ export class Theme {
 // ============================================================================
 // Theme Loading
 // ============================================================================
-
-let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;
-
-function getBuiltinThemes(): Record<string, ThemeJson> {
-  if (!BUILTIN_THEMES) {
-    const themesDir = getThemesDir();
-    const darkPath = path.join(themesDir, "dark.json");
-    const lightPath = path.join(themesDir, "light.json");
-    BUILTIN_THEMES = {
-      dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")) as ThemeJson,
-      light: JSON.parse(fs.readFileSync(lightPath, "utf-8")) as ThemeJson,
-    };
-  }
-  return BUILTIN_THEMES;
-}
 
 function parseThemeJson(label: string, json: unknown): ThemeJson {
   if (!validateThemeJson.Check(json)) {
@@ -512,28 +469,6 @@ function parseThemeJsonContent(label: string, content: string): ThemeJson {
   return parseThemeJson(label, json);
 }
 
-function loadThemeJson(name: string): ThemeJson {
-  const builtinThemes = getBuiltinThemes();
-  if (name in builtinThemes) {
-    return builtinThemes[name];
-  }
-  const registeredTheme = registeredThemes.get(name);
-  if (registeredTheme?.sourcePath) {
-    const content = fs.readFileSync(registeredTheme.sourcePath, "utf-8");
-    return parseThemeJsonContent(registeredTheme.sourcePath, content);
-  }
-  if (registeredTheme) {
-    throw new Error(`Theme "${name}" does not have a source path for export`);
-  }
-  const customThemesDir = getCustomThemesDir();
-  const themePath = path.join(customThemesDir, `${name}.json`);
-  if (!fs.existsSync(themePath)) {
-    throw new Error(`Theme not found: ${name}`);
-  }
-  const content = fs.readFileSync(themePath, "utf-8");
-  return parseThemeJsonContent(name, content);
-}
-
 function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string): Theme {
   const colorMode = mode ?? (getCapabilities().trueColor ? "truecolor" : "256color");
   const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
@@ -566,15 +501,6 @@ export function loadThemeFromPath(themePath: string, mode?: ColorMode): Theme {
   return createTheme(themeJson, mode, themePath);
 }
 
-function loadTheme(name: string, mode?: ColorMode): Theme {
-  const registeredTheme = registeredThemes.get(name);
-  if (registeredTheme) {
-    return registeredTheme;
-  }
-  const themeJson = loadThemeJson(name);
-  return createTheme(themeJson, mode);
-}
-
 // ============================================================================
 // Global Theme Instance
 // ============================================================================
@@ -584,7 +510,7 @@ const THEME_KEY = Symbol.for("openclaw:agent-theme");
 
 // Export theme as a getter that reads from globalThis
 // This ensures all module instances (tsx, jiti) see the same theme
-export const theme: Theme = new Proxy({} as Theme, {
+export const interactiveAgentTheme: Theme = new Proxy({} as Theme, {
   get(_target, prop) {
     const t = (globalThis as Record<symbol, Theme>)[THEME_KEY];
     if (!t) {
@@ -593,116 +519,6 @@ export const theme: Theme = new Proxy({} as Theme, {
     return (t as unknown as Record<string | symbol, unknown>)[prop];
   },
 });
-
-function setGlobalTheme(t: Theme): void {
-  (globalThis as Record<symbol, Theme>)[THEME_KEY] = t;
-}
-
-let currentThemeName: string | undefined;
-let themeWatcher: fs.FSWatcher | undefined;
-let themeReloadTimer: NodeJS.Timeout | undefined;
-const registeredThemes = new Map<string, Theme>();
-
-export function setTheme(
-  name: string,
-  enableWatcher = false,
-): { success: boolean; error?: string } {
-  currentThemeName = name;
-  try {
-    setGlobalTheme(loadTheme(name));
-    if (enableWatcher) {
-      startThemeWatcher();
-    }
-    return { success: true };
-  } catch (error) {
-    // Theme is invalid - fall back to dark theme
-    currentThemeName = "dark";
-    setGlobalTheme(loadTheme("dark"));
-    // Don't start watcher for fallback theme
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function startThemeWatcher(): void {
-  stopThemeWatcher();
-
-  // Only watch if it's a custom theme (not built-in)
-  if (!currentThemeName || currentThemeName === "dark" || currentThemeName === "light") {
-    return;
-  }
-
-  const customThemesDir = getCustomThemesDir();
-  const watchedThemeName = currentThemeName;
-  const watchedFileName = `${watchedThemeName}.json`;
-  const themeFile = path.join(customThemesDir, watchedFileName);
-
-  // Only watch if the file exists
-  if (!fs.existsSync(themeFile)) {
-    return;
-  }
-
-  const scheduleReload = () => {
-    if (themeReloadTimer) {
-      clearTimeout(themeReloadTimer);
-    }
-    themeReloadTimer = setTimeout(() => {
-      themeReloadTimer = undefined;
-
-      // Ignore stale timers after switching themes or stopping the watcher
-      if (currentThemeName !== watchedThemeName) {
-        return;
-      }
-
-      // Keep the last successfully loaded theme active if the file is temporarily missing
-      if (!fs.existsSync(themeFile)) {
-        return;
-      }
-
-      try {
-        // Reload the theme from disk and refresh the registry cache
-        const reloadedTheme = loadThemeFromPath(themeFile);
-        registeredThemes.set(watchedThemeName, reloadedTheme);
-        setGlobalTheme(reloadedTheme);
-      } catch {
-        // Ignore errors (file might be in invalid state while being edited)
-      }
-    }, 100);
-  };
-
-  themeWatcher =
-    watchWithErrorHandler(
-      customThemesDir,
-      (_eventType, filename) => {
-        if (currentThemeName !== watchedThemeName) {
-          return;
-        }
-        if (!filename) {
-          scheduleReload();
-          return;
-        }
-        if (filename !== watchedFileName) {
-          return;
-        }
-        scheduleReload();
-      },
-      () => {
-        closeWatcher(themeWatcher);
-        themeWatcher = undefined;
-      },
-    ) ?? undefined;
-}
-
-function stopThemeWatcher(): void {
-  if (themeReloadTimer) {
-    clearTimeout(themeReloadTimer);
-    themeReloadTimer = undefined;
-  }
-  closeWatcher(themeWatcher);
-  themeWatcher = undefined;
-}
 
 // ============================================================================
 // HTML Export Helpers
@@ -756,12 +572,12 @@ export function highlightCode(code: string, lang?: string): string[] {
   // auto-detection is unreliable and can misidentify prose as AppleScript,
   // LiveCodeServer, etc., coloring random English words as keywords.
   if (!validLang) {
-    return code.split("\n").map((line) => theme.fg("mdCodeBlock", line));
+    return code.split("\n").map((line) => interactiveAgentTheme.fg("mdCodeBlock", line));
   }
   const opts = {
     language: validLang,
     ignoreIllegals: true,
-    theme: getCliHighlightTheme(theme),
+    theme: getCliHighlightTheme(interactiveAgentTheme),
   };
   try {
     return highlight(code, opts).split("\n");

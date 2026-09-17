@@ -4,46 +4,18 @@
  * Provides channel plugin metadata before the full runtime registry is installed.
  */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { listBundledChannelPluginIdsForRoot } from "./bundled-ids.js";
-import { resolveBundledChannelRootScope } from "./bundled-root.js";
 import {
   getBundledChannelPlugin,
   getBundledChannelSecrets,
   getBundledChannelSetupPlugin,
   getBundledChannelSetupSecrets,
 } from "./bundled.js";
+import { mergeChannelPluginSection } from "./merge-plugin-section.js";
 import type { ChannelPlugin } from "./types.plugin.js";
 import type { ChannelId } from "./types.public.js";
 
 function resolveBootstrapChannelId(id: ChannelId): string {
   return normalizeOptionalString(id) ?? "";
-}
-
-function mergePluginSection<T>(
-  runtimeValue: T | undefined,
-  setupValue: T | undefined,
-): T | undefined {
-  if (
-    runtimeValue &&
-    setupValue &&
-    typeof runtimeValue === "object" &&
-    typeof setupValue === "object"
-  ) {
-    // Setup artifacts can add lightweight setup/docs/secrets fields on top of
-    // runtime artifacts; undefined setup values should not erase runtime data.
-    const merged = {
-      ...(runtimeValue as Record<string, unknown>),
-    };
-    for (const [key, value] of Object.entries(setupValue as Record<string, unknown>)) {
-      if (value !== undefined) {
-        merged[key] = value;
-      }
-    }
-    return {
-      ...merged,
-    } as T;
-  }
-  return setupValue ?? runtimeValue;
 }
 
 function mergeBootstrapPlugin(
@@ -53,25 +25,16 @@ function mergeBootstrapPlugin(
   return {
     ...runtimePlugin,
     ...setupPlugin,
-    meta: mergePluginSection(runtimePlugin.meta, setupPlugin.meta),
-    capabilities: mergePluginSection(runtimePlugin.capabilities, setupPlugin.capabilities),
-    commands: mergePluginSection(runtimePlugin.commands, setupPlugin.commands),
-    doctor: mergePluginSection(runtimePlugin.doctor, setupPlugin.doctor),
-    reload: mergePluginSection(runtimePlugin.reload, setupPlugin.reload),
-    config: mergePluginSection(runtimePlugin.config, setupPlugin.config),
-    setup: mergePluginSection(runtimePlugin.setup, setupPlugin.setup),
-    messaging: mergePluginSection(runtimePlugin.messaging, setupPlugin.messaging),
-    actions: mergePluginSection(runtimePlugin.actions, setupPlugin.actions),
-    secrets: mergePluginSection(runtimePlugin.secrets, setupPlugin.secrets),
+    meta: mergeChannelPluginSection(runtimePlugin.meta, setupPlugin.meta),
+    capabilities: mergeChannelPluginSection(runtimePlugin.capabilities, setupPlugin.capabilities),
+    commands: mergeChannelPluginSection(runtimePlugin.commands, setupPlugin.commands),
+    doctor: mergeChannelPluginSection(runtimePlugin.doctor, setupPlugin.doctor),
+    reload: mergeChannelPluginSection(runtimePlugin.reload, setupPlugin.reload),
+    config: mergeChannelPluginSection(runtimePlugin.config, setupPlugin.config),
+    messaging: mergeChannelPluginSection(runtimePlugin.messaging, setupPlugin.messaging),
+    actions: mergeChannelPluginSection(runtimePlugin.actions, setupPlugin.actions),
+    secrets: mergeChannelPluginSection(runtimePlugin.secrets, setupPlugin.secrets),
   } as ChannelPlugin;
-}
-
-/**
- * Lists bundled channel ids visible to bootstrap for the current root scope.
- */
-export function listBootstrapChannelPluginIds(): readonly string[] {
-  const rootScope = resolveBundledChannelRootScope();
-  return listBundledChannelPluginIdsForRoot(rootScope.cacheKey);
 }
 
 /**
@@ -110,7 +73,7 @@ export function getBootstrapChannelSecrets(id: ChannelId): ChannelPlugin["secret
   try {
     const runtimeSecrets = getBundledChannelSecrets(resolvedId);
     const setupSecrets = getBundledChannelSetupSecrets(resolvedId);
-    return mergePluginSection(runtimeSecrets, setupSecrets);
+    return mergeChannelPluginSection(runtimeSecrets, setupSecrets);
   } catch {
     return undefined;
   }

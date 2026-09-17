@@ -7,13 +7,15 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { setDiscordRuntime, type DiscordRuntime } from "../runtime.js";
+import { setDiscordRuntime } from "../runtime.js";
 import {
-  buildDiscordModelPickerPreferenceKey,
   readDiscordModelPickerRecentModels,
   recordDiscordModelPickerRecentModel,
 } from "./model-picker-preferences.js";
+
+type DiscordRuntime = Parameters<typeof setDiscordRuntime>[0];
 
 const tempDirs: string[] = [];
 
@@ -34,6 +36,7 @@ async function createStateEnv(): Promise<NodeJS.ProcessEnv> {
 }
 
 afterEach(async () => {
+  await closeOpenClawStateDatabaseAsync();
   resetPluginStateStoreForTests();
   await Promise.all(
     tempDirs.splice(0).map(async (dir) => {
@@ -96,14 +99,19 @@ describe("discord model picker preferences", () => {
 
   it("falls back to empty recents when stored state is malformed", async () => {
     const env = await createStateEnv();
-    const key = buildDiscordModelPickerPreferenceKey({ userId: "789" });
-    expect(key).toBeTruthy();
     const store = createPluginStateKeyedStoreForTests<unknown>("discord", {
       namespace: "model-picker-preferences",
       maxEntries: 2_000,
       env,
     });
-    await store.register(key as string, "not-an-entry");
+    await recordDiscordModelPickerRecentModel({
+      env,
+      scope: { userId: "789" },
+      modelRef: "openai/gpt-4.1",
+    });
+    const [stored] = await store.entries();
+    expect(stored).toBeDefined();
+    await store.register(stored?.key ?? "missing", "not-an-entry");
 
     const recent = await readDiscordModelPickerRecentModels({
       env,
@@ -132,8 +140,6 @@ describe("discord model picker preferences", () => {
   it("ignores retired legacy JSON preferences at runtime", async () => {
     const env = await createStateEnv();
     const scope = { userId: "legacy-runtime-user" };
-    const key = buildDiscordModelPickerPreferenceKey(scope);
-    expect(key).toBeTruthy();
     const legacyPath = path.join(
       env.OPENCLAW_STATE_DIR as string,
       "discord",
@@ -145,7 +151,7 @@ describe("discord model picker preferences", () => {
       JSON.stringify({
         version: 1,
         entries: {
-          [key as string]: {
+          legacy: {
             recent: ["openai/gpt-4.1"],
             updatedAt: "2026-01-01T00:00:00.000Z",
           },

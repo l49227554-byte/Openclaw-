@@ -67,14 +67,17 @@ describe("createAgentToolResultMiddlewareRunner", () => {
     expect(result.details).toEqual({ status: "error", middlewareError: true });
   });
 
-  it("rejects oversized middleware details", async () => {
+  it.each([
+    { name: "multibyte", details: { payload: "é".repeat(60_000) } },
+    { name: "shape", details: Array.from({ length: 1_001 }, () => null) },
+  ])("rejects oversized $name middleware details", async ({ details }) => {
     // Details are serialized into harness/tool payloads; cap them before a
     // middleware result can create unbounded transcript growth.
     const runner = createAgentToolResultMiddlewareRunner({ runtime: "codex" }, [
       () => ({
         result: {
           content: [{ type: "text", text: "compacted" }],
-          details: { payload: "x".repeat(100_001) },
+          details,
         },
       }),
     ]);
@@ -550,6 +553,66 @@ describe("createAgentToolResultMiddlewareRunner", () => {
     expect(sanitized.originalSizeBytes ?? 0).toBeGreaterThan(100_000);
   });
 
+  it("measures multibyte incoming details by serialized UTF-8 bytes", async () => {
+    const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
+      () => undefined,
+    ]);
+    const details = { blob: "é".repeat(60_000) };
+
+    const result = await runner.applyToolResultMiddleware({
+      toolCallId: "call-1",
+      toolName: "exec",
+      args: {},
+      result: {
+        content: [{ type: "text", text: "ok" }],
+        details,
+      },
+    });
+
+    expect(result.details).toEqual({
+      truncated: true,
+      originalSizeBytes: Buffer.byteLength(JSON.stringify(details)),
+    });
+  });
+
+  it.each([10, 147])("preserves the wiki_lint summary with %i issues", async (count) => {
+    const runner = createAgentToolResultMiddlewareRunner({ runtime: "openclaw" }, [
+      (event) => ({ result: event.result }),
+    ]);
+    const issues = Array.from({ length: count }, (_, i) => ({
+      severity: "warning",
+      category: "quality",
+      code: "stale-page",
+      path: `sources/example-${i}.md`,
+      message: "Synthetic freshness warning.",
+    }));
+    const details = {
+      issueCount: count,
+      issues,
+      issuesByCategory: { quality: [...issues] },
+      reportPath: "reports/lint.md",
+    };
+    // The wiki shares issue objects; incoming normalization removes repeated references.
+    const normalizedDetails = {
+      ...details,
+      issuesByCategory: { quality: issues.map(() => null) },
+    };
+    const originalSizeBytes = Buffer.byteLength(JSON.stringify(normalizedDetails));
+    expect(originalSizeBytes).toBeLessThanOrEqual(100_000);
+    const summary = `Issues: ${count} total (0 errors, ${count} warnings)`;
+    const result = await runner.applyToolResultMiddleware({
+      toolCallId: "call-1",
+      toolName: "wiki_lint",
+      args: {},
+      result: { content: [{ type: "text", text: summary }], details },
+    });
+
+    expect(result.content).toEqual([{ type: "text", text: summary }]);
+    expect(result.details).toEqual(
+      count === 10 ? normalizedDetails : { truncated: true, originalSizeBytes },
+    );
+  });
+
   it("snapshots confirmed delivery before oversized details are collapsed", async () => {
     const runner = createAgentToolResultMiddlewareRunner({ runtime: "codex" }, [
       () => {
@@ -619,7 +682,7 @@ describe("createAgentToolResultMiddlewareRunner", () => {
       (eventValue, ctx) => ({
         result: {
           content: [{ type: "text", text: "compacted" }],
-          details: { compacted: true, runtime: ctx.runtime, harness: ctx.harness },
+          details: { compacted: true, runtime: ctx.runtime },
         },
       }),
     ]);
@@ -632,6 +695,6 @@ describe("createAgentToolResultMiddlewareRunner", () => {
     });
 
     expect(result.content).toEqual([{ type: "text", text: "compacted" }]);
-    expect(result.details).toEqual({ compacted: true, runtime: "codex", harness: "codex" });
+    expect(result.details).toEqual({ compacted: true, runtime: "codex" });
   });
 });

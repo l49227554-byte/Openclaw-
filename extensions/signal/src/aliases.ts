@@ -5,15 +5,15 @@ import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coer
 import { resolveSignalAccount } from "./accounts.js";
 import { looksLikeSignalTargetId, normalizeSignalMessagingTarget } from "./normalize.js";
 
-export type SignalResolvedTargetKind = "user" | "group";
+type SignalResolvedTargetKind = "user" | "group";
 
-export type ResolvedSignalAliasTarget = {
+type ResolvedSignalAliasTarget = {
   to: string;
   kind: SignalResolvedTargetKind;
   alias: string;
 };
 
-export type ResolvedSignalTarget =
+type ResolvedSignalTarget =
   | (ResolvedSignalAliasTarget & { source: "alias" })
   | {
       to: string;
@@ -111,7 +111,7 @@ function resolveSignalAliasTargetFromMap(params: {
   }
 }
 
-export function resolveSignalAliasTarget(params: {
+function resolveSignalAliasTarget(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
   input: string;
@@ -140,6 +140,28 @@ export function resolveSignalTarget(params: {
     return { ...aliasTarget, source: "alias" };
   }
   return null;
+}
+
+export function resolveSignalDeliveredConversationKey(params: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  to: string;
+}): string | null {
+  // Delivery already succeeded, so conversation-key recovery is fail-soft.
+  // Approval route revalidation stays fail-closed in approval-reaction-routes.ts.
+  try {
+    return (
+      resolveSignalTarget({
+        cfg: params.cfg,
+        accountId: params.accountId,
+        input: params.to,
+      })?.to ??
+      normalizeSignalMessagingTarget(params.to) ??
+      null
+    );
+  } catch {
+    return normalizeSignalMessagingTarget(params.to) ?? null;
+  }
 }
 
 export function listSignalAliasDirectoryEntries(params: {

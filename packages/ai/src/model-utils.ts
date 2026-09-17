@@ -1,18 +1,20 @@
 // Provides model selection, usage, and thinking-level utility helpers.
 import {
+  calculateUsageCost,
   resolveClaudeNativeThinkingLevelMap,
   requiresClaudeMandatoryAdaptiveThinking,
 } from "@openclaw/llm-core";
+import {
+  resolveOpenAIThinkingApi,
+  listMappedModelThinkingLevels,
+  MODEL_CATALOG_THINKING_LEVELS,
+} from "@openclaw/model-catalog-core/model-catalog-types";
+import { resolveOpenAIModelReasoningEfforts } from "./providers/openai-reasoning-effort.js";
 import type { Api, Model, ModelThinkingLevel, Usage } from "./types.js";
 
 /** Calculates and stores model cost fields from token usage and per-million pricing. */
 export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage): Usage["cost"] {
-  usage.cost.input = (model.cost.input / 1000000) * usage.input;
-  usage.cost.output = (model.cost.output / 1000000) * usage.output;
-  usage.cost.cacheRead = (model.cost.cacheRead / 1000000) * usage.cacheRead;
-  usage.cost.cacheWrite = (model.cost.cacheWrite / 1000000) * usage.cacheWrite;
-  usage.cost.total =
-    usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+  Object.assign(usage.cost, calculateUsageCost(usage, model.cost));
   return usage.cost;
 }
 
@@ -24,16 +26,6 @@ export function applyProviderReportedUsageCost(usage: Usage, reportedCost: unkno
   usage.cost.total = reportedCost;
   usage.cost.totalOrigin = "provider-billed";
 }
-
-const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-];
 
 function resolveThinkingLevelMap<TApi extends Api>(model: Model<TApi>) {
   return model.api === "anthropic-messages"
@@ -51,14 +43,22 @@ export function getSupportedThinkingLevels<TApi extends Api>(
     return ["off"];
   }
   const thinkingLevelMap = resolveThinkingLevelMap(model);
+  const reasoningEfforts = resolveOpenAIThinkingApi(model.api)
+    ? resolveOpenAIModelReasoningEfforts(model)
+    : undefined;
+  const mappedLevels = listMappedModelThinkingLevels(model);
 
-  return EXTENDED_THINKING_LEVELS.filter((level) => {
+  return MODEL_CATALOG_THINKING_LEVELS.filter((level) => {
     const mapped = thinkingLevelMap?.[level];
     if (mapped === null) {
       return false;
     }
     if (level === "xhigh" || level === "max") {
-      return mapped !== undefined;
+      return (
+        mapped !== undefined ||
+        mappedLevels.includes(level) ||
+        reasoningEfforts?.includes(level) === true
+      );
     }
     return true;
   });
@@ -74,7 +74,7 @@ export function clampThinkingLevel<TApi extends Api>(
     return level;
   }
 
-  const requestedIndex = EXTENDED_THINKING_LEVELS.indexOf(level);
+  const requestedIndex = MODEL_CATALOG_THINKING_LEVELS.indexOf(level);
   if (requestedIndex === -1) {
     return availableLevels[0] ?? "off";
   }
@@ -83,8 +83,7 @@ export function clampThinkingLevel<TApi extends Api>(
   // stronger levels so unsupported xhigh/max requests cannot increase cost.
   const thinkingLevelMap = resolveThinkingLevelMap(model);
   if ((level === "xhigh" || level === "max") && thinkingLevelMap?.[level] === null) {
-    for (let i = requestedIndex - 1; i >= 0; i--) {
-      const candidate = EXTENDED_THINKING_LEVELS[i];
+    for (const candidate of MODEL_CATALOG_THINKING_LEVELS.slice(0, requestedIndex).toReversed()) {
       if (availableLevels.includes(candidate)) {
         return candidate;
       }
@@ -92,14 +91,12 @@ export function clampThinkingLevel<TApi extends Api>(
   }
 
   // Prefer the next stronger available level, then walk down if the request was above the model cap.
-  for (let i = requestedIndex; i < EXTENDED_THINKING_LEVELS.length; i++) {
-    const candidate = EXTENDED_THINKING_LEVELS[i];
+  for (const candidate of MODEL_CATALOG_THINKING_LEVELS.slice(requestedIndex)) {
     if (availableLevels.includes(candidate)) {
       return candidate;
     }
   }
-  for (let i = requestedIndex - 1; i >= 0; i--) {
-    const candidate = EXTENDED_THINKING_LEVELS[i];
+  for (const candidate of MODEL_CATALOG_THINKING_LEVELS.slice(0, requestedIndex).toReversed()) {
     if (availableLevels.includes(candidate)) {
       return candidate;
     }

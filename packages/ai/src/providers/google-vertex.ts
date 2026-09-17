@@ -1,19 +1,18 @@
-// Google Vertex provider wires Google shared streaming through Vertex credentials.
 import {
   type GenerateContentParameters,
   GoogleGenAI,
   type HttpOptions,
   ResourceScope,
-  ThinkingLevel as VertexThinkingLevel,
 } from "@google/genai";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.js";
+// Google Vertex provider wires Google shared streaming through Vertex credentials.
+import { createAssistantOutput } from "../transports/assistant-output.js";
 import type { Context, Model, SimpleStreamOptions, StreamFunction } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import type { GoogleThinkingLevel } from "./google-shared.js";
 import {
   buildGoogleGenerateContentParams,
   buildGoogleSimpleThinking,
-  createGoogleAssistantOutput,
-  getDisabledGoogleThinkingConfig,
   type GoogleProviderOptions,
   runGoogleGenerateContentLifecycle,
 } from "./google-shared.js";
@@ -27,14 +26,6 @@ interface GoogleVertexOptions extends GoogleProviderOptions {
 const API_VERSION = "v1";
 const GCP_VERTEX_CREDENTIALS_MARKER = "gcp-vertex-credentials";
 
-const THINKING_LEVEL_MAP: Record<GoogleThinkingLevel, VertexThinkingLevel> = {
-  THINKING_LEVEL_UNSPECIFIED: VertexThinkingLevel.THINKING_LEVEL_UNSPECIFIED,
-  MINIMAL: VertexThinkingLevel.MINIMAL,
-  LOW: VertexThinkingLevel.LOW,
-  MEDIUM: VertexThinkingLevel.MEDIUM,
-  HIGH: VertexThinkingLevel.HIGH,
-};
-
 // Counter for generating unique tool call IDs
 let toolCallCounter = 0;
 
@@ -44,7 +35,7 @@ export const streamGoogleVertex: StreamFunction<"google-vertex", GoogleVertexOpt
   options?: GoogleVertexOptions,
 ) => {
   const stream = new AssistantMessageEventStream();
-  const output = createGoogleAssistantOutput(model, "google-vertex");
+  const output = createAssistantOutput(model, "google-vertex");
 
   void runGoogleGenerateContentLifecycle({
     stream,
@@ -97,9 +88,11 @@ function createClientWithApiKey(
   apiKey: string,
   optionsHeaders?: Record<string, string>,
 ): GoogleGenAI {
+  // @google/genai exposes RequestInit options but no custom fetch; unwrap at construction.
+  const resolvedApiKey = getAiTransportHost().resolveSecretSentinel(apiKey);
   return new GoogleGenAI({
     vertexai: true,
-    apiKey,
+    apiKey: resolvedApiKey,
     apiVersion: API_VERSION,
     httpOptions: buildHttpOptions(model, optionsHeaders),
   });
@@ -120,7 +113,10 @@ function buildHttpOptions(
   }
 
   if (model.headers || optionsHeaders) {
-    httpOptions.headers = { ...model.headers, ...optionsHeaders };
+    httpOptions.headers = resolveAiTransportHeaderSentinels({
+      ...model.headers,
+      ...optionsHeaders,
+    });
   }
 
   return Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
@@ -157,7 +153,9 @@ function isPlaceholderApiKey(apiKey: string): boolean {
 
 function resolveProject(options?: GoogleVertexOptions): string {
   const project =
-    options?.project || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+    normalizeOptionalString(options?.project) ||
+    normalizeOptionalString(process.env.GOOGLE_CLOUD_PROJECT) ||
+    normalizeOptionalString(process.env.GCLOUD_PROJECT);
   if (!project) {
     throw new Error(
       "Vertex AI requires a project ID. Set GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT or pass project in options.",
@@ -167,7 +165,9 @@ function resolveProject(options?: GoogleVertexOptions): string {
 }
 
 function resolveLocation(options?: GoogleVertexOptions): string {
-  const location = options?.location || process.env.GOOGLE_CLOUD_LOCATION;
+  const location =
+    normalizeOptionalString(options?.location) ||
+    normalizeOptionalString(process.env.GOOGLE_CLOUD_LOCATION);
   if (!location) {
     throw new Error(
       "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options.",
@@ -181,13 +181,5 @@ function buildParams(
   context: Context,
   options: GoogleVertexOptions = {},
 ): GenerateContentParameters {
-  return buildGoogleGenerateContentParams(model, context, options, {
-    mapThinkingLevel: mapVertexThinkingLevel,
-    getDisabledThinkingConfig: (modelLocal) =>
-      getDisabledGoogleThinkingConfig(modelLocal, { mapThinkingLevel: mapVertexThinkingLevel }),
-  });
-}
-
-function mapVertexThinkingLevel(level: GoogleThinkingLevel): VertexThinkingLevel {
-  return THINKING_LEVEL_MAP[level];
+  return buildGoogleGenerateContentParams(model, context, options);
 }

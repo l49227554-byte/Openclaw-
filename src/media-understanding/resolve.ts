@@ -12,6 +12,7 @@ import type {
   MediaUnderstandingScopeConfig,
 } from "../config/types.tools.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
+import { runtimeMediaModelSecretOwnerId } from "../secrets/runtime-media-secret-owner.js";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_CHARS_BY_CAPABILITY,
@@ -21,6 +22,11 @@ import {
 import { resolveEffectiveMediaEntryCapabilities } from "./entry-capabilities.js";
 import { normalizeMediaUnderstandingChatType, resolveMediaUnderstandingScope } from "./scope.js";
 import type { MediaUnderstandingCapability } from "./types.js";
+
+export type ResolvedMediaModelEntry = {
+  entry: MediaUnderstandingModelConfig;
+  secretOwnerId?: string;
+};
 
 /** Default per-provider media-understanding runtime timeout in milliseconds. */
 const DEFAULT_MEDIA_RUNTIME_TIMEOUT_MS = 30_000;
@@ -110,38 +116,50 @@ export function resolveModelEntries(params: {
   capability: MediaUnderstandingCapability;
   config?: MediaUnderstandingConfig;
   providerRegistry: Map<string, { capabilities?: MediaUnderstandingCapability[] }>;
-}): MediaUnderstandingModelConfig[] {
+}): ResolvedMediaModelEntry[] {
   const { cfg, capability, config } = params;
   const sharedModels = cfg.tools?.media?.models ?? [];
-  const entries = [
-    ...(config?.models ?? []).map((entry) => ({ entry, source: "capability" as const })),
-    ...sharedModels.map((entry) => ({ entry, source: "shared" as const })),
-  ];
-  if (entries.length === 0) {
-    return [];
-  }
-
-  return entries
-    .filter(({ entry, source }) => {
-      const caps = resolveEffectiveMediaEntryCapabilities({
-        entry,
-        source,
-        providerRegistry: params.providerRegistry,
-      });
-      if (!caps || caps.length === 0) {
-        if (source === "shared") {
-          if (shouldLogVerbose()) {
-            logVerbose(
-              `Skipping shared media model without capabilities: ${entry.provider ?? entry.command ?? "unknown"}`,
-            );
-          }
-          return false;
-        }
-        return true;
+  const entries: ResolvedMediaModelEntry[] = [];
+  sharedModels.forEach((entry, index) => {
+    const caps = resolveEffectiveMediaEntryCapabilities({
+      entry,
+      providerRegistry: params.providerRegistry,
+    });
+    if (!caps || caps.length === 0) {
+      if (shouldLogVerbose()) {
+        logVerbose(
+          `Skipping shared media model without capabilities: ${entry.provider ?? entry.command ?? "unknown"}`,
+        );
       }
-      return caps.includes(capability);
-    })
-    .map(({ entry }) => entry);
+      return;
+    }
+    if (caps.includes(capability)) {
+      entries.push({ entry, secretOwnerId: runtimeMediaModelSecretOwnerId(index) });
+    }
+  });
+  const preferred = config?.preferredModel?.trim();
+  if (preferred) {
+    entries.sort(
+      (left, right) =>
+        preferredMediaModelRank(right.entry, preferred) -
+        preferredMediaModelRank(left.entry, preferred),
+    );
+  }
+  return entries;
+}
+
+function preferredMediaModelRank(entry: MediaUnderstandingModelConfig, preferred: string): number {
+  if (entry.type === "cli" || entry.command) {
+    return preferred === `cli:${entry.command ?? ""}` ? 2 : 0;
+  }
+  const model = entry.model?.trim();
+  if (!model) {
+    return preferred === `provider:${entry.provider?.trim() ?? ""}` ? 2 : 0;
+  }
+  if (preferred === `${entry.provider?.trim() ?? ""}/${model}`) {
+    return 2;
+  }
+  return preferred === model ? 1 : 0;
 }
 
 /** Resolves the bounded media-understanding task concurrency from config. */

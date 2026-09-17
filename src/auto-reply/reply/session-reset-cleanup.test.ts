@@ -1,37 +1,62 @@
 // Tests session reset cleanup for stale files and persisted state.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  clearEmbeddedSessionPromptStates,
+  getEmbeddedSessionPromptState,
+} from "../../agents/embedded-agent-runner/session-prompt-state.js";
+import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
+import {
   enqueueSystemEvent,
   peekSystemEvents,
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
-import {
-  createReplyOperation,
-  replyRunRegistry,
-  testing as replyRunTesting,
-} from "./reply-run-registry.js";
+import { createReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
+import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { clearSessionResetRuntimeState } from "./session-reset-cleanup.js";
 
 afterEach(() => {
+  clearEmbeddedSessionPromptStates(["old-session"]);
   replyRunTesting.resetReplyRunRegistry();
   resetDiagnosticRunActivityForTest();
   resetSystemEventsForTest();
 });
 
 describe("clearSessionResetRuntimeState", () => {
+  it("disposes prompt projections with the archived session", () => {
+    const state = getEmbeddedSessionPromptState("old-session");
+    state.sentUserTurnIds.add("sent-user-turn");
+
+    clearSessionResetRuntimeState(["old-session"], { agentId: "main" });
+
+    expect(getEmbeddedSessionPromptState("old-session")).not.toBe(state);
+  });
+
   it("clears reset queues and drains system events for normalized keys", () => {
     enqueueSystemEvent("stale alpha", { sessionKey: "alpha" });
     enqueueSystemEvent("stale beta", { sessionKey: "beta" });
     enqueueSystemEvent("fresh gamma", { sessionKey: "gamma" });
 
-    const result = clearSessionResetRuntimeState([" alpha ", undefined, " ", "alpha", "beta"]);
+    const result = clearSessionResetRuntimeState([" alpha ", undefined, " ", "alpha", "beta"], {
+      agentId: "main",
+    });
 
     expect(result.keys).toEqual(["alpha", "beta"]);
     expect(result.systemEventsCleared).toBe(2);
     expect(peekSystemEvents("alpha")).toStrictEqual([]);
     expect(peekSystemEvents("beta")).toStrictEqual([]);
     expect(peekSystemEvents("gamma")).toEqual(["fresh gamma"]);
+  });
+
+  it("preserves events owned by other agents during an agent-scoped reset", () => {
+    enqueueSystemEvent("unowned", { sessionKey: "global" });
+    enqueueSystemEvent("alpha", withSystemEventOwner({ sessionKey: "global" }, "alpha"));
+    enqueueSystemEvent("beta", withSystemEventOwner({ sessionKey: "global" }, "beta"));
+
+    const result = clearSessionResetRuntimeState(["global"], { agentId: " Alpha " });
+
+    expect(result.systemEventsCleared).toBe(2);
+    expect(peekSystemEvents("global")).toEqual(["beta"]);
   });
 
   it("releases active reply work owned by the archived reset session id", () => {
@@ -49,6 +74,7 @@ describe("clearSessionResetRuntimeState", () => {
     operation.setPhase("running");
 
     clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
+      agentId: "main",
       activeReplySessionId: "old-session",
     });
 
@@ -71,6 +97,7 @@ describe("clearSessionResetRuntimeState", () => {
     operation.setPhase("running");
 
     clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
+      agentId: "main",
       activeReplySessionId: "old-session",
     });
 
@@ -100,6 +127,7 @@ describe("clearSessionResetRuntimeState", () => {
     operation.setPhase("running");
 
     clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
+      agentId: "main",
       activeReplySessionId: "old-session",
     });
 
@@ -115,6 +143,7 @@ describe("clearSessionResetRuntimeState", () => {
     });
 
     clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
+      agentId: "main",
       activeReplySessionId: "old-session",
     });
 

@@ -1,18 +1,20 @@
+import { emitModelTransportDebug, formatModelTransportDebugUrl } from "@openclaw/ai/diagnostics";
 /**
  * Guarded provider fetch transport utilities.
  *
  * Applies request timeouts, proxy/TLS overrides, SSRF policy, local-service leases, retry hints, and SSE normalization.
  */
+import { parseRetryAfterHeadersSeconds as parseRetryAfterSeconds } from "@openclaw/ai/internal/retry-after";
 import {
   isCloudMetadataIpAddress,
   isLinkLocalIpAddress,
+  isRfc8215LocalUseNat64Ipv6Address,
   parseCanonicalIpAddress,
 } from "@openclaw/net-policy/ip";
 import {
   asFiniteNumberInRange,
   clampTimerTimeoutMs,
   parseStrictFiniteNumber,
-  parseStrictNonNegativeInteger,
 } from "@openclaw/normalization-core/number-coercion";
 import {
   fetchWithSsrFGuard,
@@ -24,24 +26,29 @@ import {
   mergeSsrFPolicies,
   ssrfPolicyFromHttpBaseUrlFakeIpHostnameAllowlist,
   ssrfPolicyFromHttpBaseUrlAllowedOrigin,
+  SsrFBlockedError,
   type SsrFPolicy,
 } from "../infra/net/ssrf.js";
 import type { Model } from "../llm/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { resolveDebugProxySettings } from "../proxy-capture/env.js";
-import { emitModelTransportDebug } from "./model-transport-debug.js";
-import { formatModelTransportDebugUrl } from "./model-transport-url.js";
-import { ProviderHttpError, readResponseTextLimited } from "./provider-http-errors.js";
 import {
-  ensureModelProviderLocalService,
-  type ProviderLocalServiceLease,
-} from "./provider-local-service.js";
+  containsSecretSentinel,
+  resolveSecretSentinel,
+  SECRET_SENTINEL_PATTERN,
+  swapSecretSentinelsInText,
+} from "../secrets/sentinel.js";
+import { ProviderHttpError, readResponseTextLimited } from "./provider-http-errors.js";
+import type { ProviderLocalServiceLease } from "./provider-local-service-target.js";
+import { ensureModelProviderLocalService } from "./provider-local-service.js";
 import {
   buildProviderRequestDispatcherPolicy,
+  getModelProviderRequestRouteFacts,
   getModelProviderRequestTransport,
   mergeModelProviderRequestOverrides,
   resolveProviderRequestPolicyConfig,
 } from "./provider-request-config.js";
+import { getProviderTransportDispatcherPool } from "./provider-transport-dispatcher-pool.js";
 
 const DEFAULT_MAX_SDK_RETRY_WAIT_SECONDS = 60;
 const OPENAI_SDK_STREAM_CONTENT_SNIFF_BYTES = 2 * 1024;
@@ -60,15 +67,6 @@ const SSE_SANITIZE_BUFFER_MAX_CHARS = 16 * 1024 * 1024;
 
 const BLOCKED_EXACT_ORIGIN_TRUST_HOSTNAME_LABELS = new Set(["instance-data"]);
 const PLAIN_DECIMAL_NUMBER_RE = /^\d+(?:\.\d+)?$/;
-const RETRY_AFTER_HTTP_DATE_RE =
-  /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/;
-const HTTP_DATE_MONTH_INDEX = new Map(
-  ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map(
-    (month, index) => [month, index],
-  ),
-);
-const OBSOLETE_ASCTIME_HTTP_DATE_RE =
-  /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([ \d]\d) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/;
 
 function hasReadableSseData(block: string): boolean {
   const dataLines = block
@@ -98,30 +96,56 @@ function findSseEventBoundary(buffer: string): { index: number; length: number }
   return best;
 }
 
+async function cancelReaderBestEffort(
+  reader: ReadableStreamDefaultReader<Uint8Array> | undefined,
+  reason?: unknown,
+): Promise<void> {
+  // Reader cancellation is cleanup. An upstream cancel failure must not replace
+  // the wrapper's authoritative stream error or downstream cancellation.
+  await reader?.cancel(reason).catch(() => undefined);
+}
+
 function capNonOkResponseBodyLazily(response: Response, maxBytes: number): Response {
   const source = response.body;
   if (!source) {
     return response;
   }
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let total = 0;
-  const capped = source.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        const nextTotal = total + chunk.byteLength;
-        if (nextTotal > maxBytes) {
-          const remaining = maxBytes - total;
-          if (remaining > 0) {
-            controller.enqueue(chunk.subarray(0, remaining));
-          }
-          total = maxBytes;
-          controller.terminate();
+  // Own the reader: Node can leak an internal pipeThrough writer rejection when
+  // downstream cancellation races the cap terminating the transform.
+  const capped = new ReadableStream<Uint8Array>({
+    start() {
+      reader = source.getReader();
+    },
+    async pull(controller) {
+      try {
+        const chunk = await reader?.read();
+        if (!chunk || chunk.done) {
+          controller.close();
           return;
         }
-        total = nextTotal;
-        controller.enqueue(chunk);
-      },
-    }),
-  );
+        const remaining = maxBytes - total;
+        if (chunk.value.byteLength > remaining) {
+          if (remaining > 0) {
+            controller.enqueue(chunk.value.subarray(0, remaining));
+          }
+          total = maxBytes;
+          controller.close();
+          void cancelReaderBestEffort(reader);
+          return;
+        }
+        total += chunk.value.byteLength;
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        controller.error(error);
+        void cancelReaderBestEffort(reader, error);
+      }
+    },
+    async cancel(reason) {
+      await cancelReaderBestEffort(reader, reason);
+    },
+  });
   return new Response(capped, response);
 }
 
@@ -174,12 +198,12 @@ function sanitizeOpenAISdkSseResponse(
             buffer += decoder.decode(chunk.value, { stream: true });
           }
         } catch (error) {
-          await reader?.cancel(error).catch(() => {});
+          await cancelReaderBestEffort(reader, error);
           controller.error(error);
         }
       },
       async cancel(reason) {
-        await reader?.cancel(reason);
+        await cancelReaderBestEffort(reader, reason);
       },
     });
     const headers = new Headers(response.headers);
@@ -262,12 +286,12 @@ function sanitizeOpenAISdkSseResponse(
           }
         }
       } catch (error) {
-        await reader?.cancel(error).catch(() => {});
+        await cancelReaderBestEffort(reader, error);
         controller.error(error);
       }
     },
     async cancel(reason) {
-      await reader?.cancel(reason);
+      await cancelReaderBestEffort(reader, reason);
     },
   });
 
@@ -346,7 +370,7 @@ async function classifyOpenAISdkStreamBody(response: Response): Promise<OpenAISd
     text += decoder.decode();
     return classifyOpenAISdkStreamBodyPrefix(text);
   } finally {
-    void reader.cancel().catch(() => undefined);
+    void cancelReaderBestEffort(reader);
   }
 }
 
@@ -409,10 +433,10 @@ async function normalizeOpenAISdkStreamContentType(params: {
   });
 }
 
-async function requestBodyHasStreamTrue(
+function requestBodyHasStreamTrue(
   request: Request | undefined,
   init: RequestInit | undefined,
-): Promise<boolean> {
+): boolean {
   const method = request?.method ?? init?.method;
   if (method && method.toUpperCase() !== "POST") {
     return false;
@@ -435,83 +459,6 @@ async function requestBodyHasStreamTrue(
   } catch {
     return false;
   }
-}
-
-function parseRetryAfterSeconds(headers: Headers): number | undefined {
-  const retryAfterMs = headers.get("retry-after-ms");
-  if (retryAfterMs) {
-    const trimmedRetryAfterMs = retryAfterMs.trim();
-    if (/^\d+(?:\.\d+)?$/.test(trimmedRetryAfterMs)) {
-      const milliseconds = asFiniteNumberInRange(parseStrictFiniteNumber(trimmedRetryAfterMs), {
-        min: 0,
-        max: Number.MAX_SAFE_INTEGER,
-      });
-      return milliseconds === undefined ? Number.POSITIVE_INFINITY : milliseconds / 1000;
-    }
-  }
-
-  const retryAfter = headers.get("retry-after");
-  if (!retryAfter) {
-    return undefined;
-  }
-
-  const trimmedRetryAfterSeconds = retryAfter.trim();
-  if (/^\d+$/.test(trimmedRetryAfterSeconds)) {
-    return parseStrictNonNegativeInteger(trimmedRetryAfterSeconds) ?? Number.POSITIVE_INFINITY;
-  }
-
-  const trimmedRetryAfter = trimmedRetryAfterSeconds;
-  if (!RETRY_AFTER_HTTP_DATE_RE.test(trimmedRetryAfter)) {
-    return undefined;
-  }
-
-  const retryAt = parseRetryAfterHttpDateMs(trimmedRetryAfter);
-  if (Number.isNaN(retryAt)) {
-    return undefined;
-  }
-
-  return Math.max(0, (retryAt - Date.now()) / 1000);
-}
-
-function parseRetryAfterHttpDateMs(value: string): number {
-  const match = OBSOLETE_ASCTIME_HTTP_DATE_RE.exec(value);
-  if (match) {
-    const month = HTTP_DATE_MONTH_INDEX.get(match[1] ?? "");
-    if (month === undefined) {
-      return Number.NaN;
-    }
-    const year = Number.parseInt(match[6] ?? "", 10);
-    const day = Number.parseInt((match[2] ?? "").trim(), 10);
-    const hours = Number.parseInt(match[3] ?? "", 10);
-    const minutes = Number.parseInt(match[4] ?? "", 10);
-    const seconds = Number.parseInt(match[5] ?? "", 10);
-    if (
-      day < 1 ||
-      day > 31 ||
-      hours > 23 ||
-      minutes > 59 ||
-      seconds > 59 ||
-      [year, day, hours, minutes, seconds].some((component) => !Number.isFinite(component))
-    ) {
-      return Number.NaN;
-    }
-    const timestamp = Date.UTC(year, month, day, hours, minutes, seconds);
-    const parsedDate = new Date(timestamp);
-    return parsedDate.getUTCFullYear() === year &&
-      parsedDate.getUTCMonth() === month &&
-      parsedDate.getUTCDate() === day &&
-      parsedDate.getUTCHours() === hours &&
-      parsedDate.getUTCMinutes() === minutes &&
-      parsedDate.getUTCSeconds() === seconds
-      ? timestamp
-      : Number.NaN;
-  }
-
-  const parsed = Date.parse(value);
-  if (!Number.isNaN(parsed)) {
-    return parsed;
-  }
-  return Number.NaN;
 }
 
 function resolveMaxSdkRetryWaitSeconds(): number | undefined {
@@ -612,10 +559,12 @@ function resolveModelRequestPolicy(model: Model) {
         }
       : undefined,
   });
+  const routeFacts = getModelProviderRequestRouteFacts(model);
   return resolveProviderRequestPolicyConfig({
     provider: model.provider,
     api: model.api,
     baseUrl: model.baseUrl,
+    ...(routeFacts ? { routeFacts } : {}),
     capability: "llm",
     transport: "stream",
     request,
@@ -695,7 +644,8 @@ function canImplicitlyTrustConfiguredBaseUrlOrigin(value: unknown): value is str
         label.includes("metadata") || BLOCKED_EXACT_ORIGIN_TRUST_HOSTNAME_LABELS.has(label),
     ) &&
     !isLinkLocalIpAddress(hostname) &&
-    !isCloudMetadataIpAddress(hostname)
+    !isCloudMetadataIpAddress(hostname) &&
+    !isRfc8215LocalUseNat64Ipv6Address(hostname)
   );
 }
 
@@ -743,6 +693,92 @@ export function resolveProviderTransportSsrFPolicy(params: {
   );
 }
 
+function withModelProviderNetworkRemediation(
+  error: unknown,
+  params: {
+    baseUrl?: string;
+    providerId: string;
+    url: string;
+  },
+): unknown {
+  const baseOrigin = resolveHttpOrigin(params.baseUrl);
+  const requestOrigin = resolveHttpOrigin(params.url);
+  const hostname = normalizeProviderOriginHostname(params.baseUrl);
+  if (
+    !(error instanceof SsrFBlockedError) ||
+    !baseOrigin ||
+    requestOrigin !== baseOrigin ||
+    !hostname ||
+    !isRfc8215LocalUseNat64Ipv6Address(hostname)
+  ) {
+    return error;
+  }
+  return new SsrFBlockedError(
+    `Configured model provider ${params.providerId} uses local-use NAT64 origin ` +
+      `${baseOrigin}, which OpenClaw blocks by default. Move the provider to a ` +
+      `loopback, LAN, or tailnet address, or set ` +
+      `models.providers.${params.providerId}.request.allowPrivateNetwork=true only for an ` +
+      `operator-controlled endpoint. Original block: ${error.message}`,
+  );
+}
+
+function headersContainSecretSentinel(headers: HeadersInit | undefined): boolean {
+  if (!headers) {
+    return false;
+  }
+  for (const value of new Headers(headers).values()) {
+    if (containsSecretSentinel(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function swapSecretSentinelsInUrl(url: string): { text: string; unknown: string[] } {
+  if (!containsSecretSentinel(url)) {
+    return { text: url, unknown: [] };
+  }
+  const unknown = new Set<string>();
+  const text = url.replace(new RegExp(SECRET_SENTINEL_PATTERN.source, "g"), (sentinel) => {
+    const value = resolveSecretSentinel(sentinel);
+    if (value === undefined) {
+      unknown.add(sentinel);
+      return sentinel;
+    }
+    // Sentinels are URL-safe placeholders. Encode the real bytes so query/path structure is stable.
+    return encodeURIComponent(value);
+  });
+  return { text, unknown: [...unknown] };
+}
+
+function swapSecretSentinelsForEgress(params: { url: string; headers?: HeadersInit }): {
+  url: string;
+  headers?: Headers;
+} {
+  if (!containsSecretSentinel(params.url) && !headersContainSecretSentinel(params.headers)) {
+    return { url: params.url };
+  }
+  const urlSwap = swapSecretSentinelsInUrl(params.url);
+  const headers = params.headers ? new Headers(params.headers) : undefined;
+  const unknown = new Set(urlSwap.unknown);
+  if (headers) {
+    for (const [name, value] of headers.entries()) {
+      const swapped = swapSecretSentinelsInText(value);
+      headers.set(name, swapped.text);
+      for (const sentinel of swapped.unknown) {
+        unknown.add(sentinel);
+      }
+    }
+  }
+  const unresolved = unknown.values().next().value;
+  if (unresolved) {
+    throw new Error(
+      `Secret sentinel ${unresolved} is not registered in this process; refusing to send request`,
+    );
+  }
+  return { url: urlSwap.text, ...(headers ? { headers } : {}) };
+}
+
 export function buildGuardedModelFetch(
   model: Model,
   timeoutMs?: number,
@@ -772,7 +808,7 @@ export function buildGuardedModelFetch(
   return async (input, init) => {
     let localServiceLease: ProviderLocalServiceLease | undefined;
     const request = input instanceof Request ? new Request(input, init) : undefined;
-    const url =
+    const rawUrl =
       request?.url ??
       (input instanceof URL
         ? input.toString()
@@ -781,29 +817,33 @@ export function buildGuardedModelFetch(
           : (() => {
               throw new Error("Unsupported fetch input for transport-aware model request");
             })());
+    const rawHeaders = request?.headers ?? init?.headers;
+    const swappedEgress = swapSecretSentinelsForEgress({
+      url: rawUrl,
+      headers: rawHeaders,
+    });
+    const url = swappedEgress.url;
     const policy = resolveProviderTransportSsrFPolicy({
       baseUrl: model.baseUrl,
       url,
       allowPrivateNetwork: requestConfig.allowPrivateNetwork,
       // Only operator-configured custom/local endpoints get exact-origin trust;
       // known public/native providers keep the default rebinding checks.
-      trustConfiguredBaseUrlOrigin:
-        !requestConfig.privateNetworkExplicitlyDenied &&
-        (requestConfig.policy?.endpointClass === "custom" ||
-          requestConfig.policy?.endpointClass === "local"),
+      trustConfiguredBaseUrlOrigin: requestConfig.trustConfiguredBaseUrlOrigin,
     });
     const requestInit =
       request &&
       ({
         method: request.method,
-        headers: request.headers,
+        headers: swappedEgress.headers ?? request.headers,
         body: request.body ?? undefined,
         redirect: request.redirect,
         signal: request.signal,
         ...(request.body ? ({ duplex: "half" } as const) : {}),
       } satisfies RequestInit & { duplex?: "half" });
-    const baseInit = requestInit ?? init;
-    const synthesizeJsonAsSse = await requestBodyHasStreamTrue(request, baseInit);
+    const baseInit =
+      requestInit ??
+      (swappedEgress.headers && init ? { ...init, headers: swappedEgress.headers } : init);
     const baseSignal = baseInit?.signal ?? undefined;
     const localServiceSignal = buildModelRequestSignal(baseSignal, requestTimeoutMs);
     const guardedFetchOptions = {
@@ -817,6 +857,7 @@ export function buildGuardedModelFetch(
         },
       },
       dispatcherPolicy,
+      dispatcherPool: getProviderTransportDispatcherPool(),
       timeoutMs: requestTimeoutMs,
       ...(baseSignal ? { signal: baseSignal } : {}),
       // Provider transport intentionally keeps the secure default and never
@@ -830,14 +871,15 @@ export function buildGuardedModelFetch(
     emitModelTransportDebug(
       log,
       `[model-fetch] start provider=${model.provider} api=${model.api} model=${model.id} ` +
-        `method=${baseInit?.method ?? "GET"} url=${formatModelTransportDebugUrl(url)} timeoutMs=${requestTimeoutMs} ` +
+        // Log the pre-swap URL: the swapped URL can carry an injected credential in its path.
+        `method=${baseInit?.method ?? "GET"} url=${formatModelTransportDebugUrl(rawUrl)} timeoutMs=${requestTimeoutMs} ` +
         `proxy=${dispatcherPolicy ? "configured" : useEnvProxy ? "env" : "none"} ` +
         `policy=${policy ? "custom" : "default"}`,
     );
     try {
       localServiceLease = await ensureModelProviderLocalService(
         model,
-        baseInit?.headers,
+        rawHeaders,
         localServiceSignal,
       );
       result = await fetchWithSsrFGuard(
@@ -846,18 +888,24 @@ export function buildGuardedModelFetch(
           : guardedFetchOptions,
       );
     } catch (error) {
+      const remediatedError = withModelProviderNetworkRemediation(error, {
+        baseUrl: model.baseUrl,
+        providerId: model.provider,
+        url,
+      });
       log.warn(
         `[model-fetch] error provider=${model.provider} api=${model.api} model=${model.id} ` +
-          `elapsedMs=${Date.now() - fetchStartedAt} ${summarizeError(error)}`,
+          `elapsedMs=${Date.now() - fetchStartedAt} ${summarizeError(remediatedError)}`,
       );
       localServiceLease?.release();
-      throw error;
+      throw remediatedError;
     }
     let response = result.response;
     emitModelTransportDebug(
       log,
       `[model-fetch] response provider=${model.provider} api=${model.api} model=${model.id} ` +
         `status=${response.status} elapsedMs=${Date.now() - fetchStartedAt} ` +
+        `dispatcher=${result.dispatcherReused ? "reused" : "new"} ` +
         `contentType=${response.headers.get("content-type") ?? ""}`,
     );
     if (shouldBypassLongSdkRetry(response)) {
@@ -869,7 +917,11 @@ export function buildGuardedModelFetch(
         headers,
       });
     }
-    if (synthesizeJsonAsSse && options?.sanitizeSse !== false) {
+    const synthesizeJsonAsSse =
+      options?.sanitizeSse !== false &&
+      !/\btext\/event-stream\b/i.test(response.headers.get("content-type") ?? "") &&
+      requestBodyHasStreamTrue(request, baseInit);
+    if (synthesizeJsonAsSse) {
       response = await normalizeOpenAISdkStreamContentType({
         response,
         model,
@@ -888,3 +940,4 @@ export function buildGuardedModelFetch(
       : sanitizeOpenAISdkSseResponse(response, { synthesizeJsonAsSse });
   };
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

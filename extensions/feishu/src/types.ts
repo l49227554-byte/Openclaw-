@@ -41,6 +41,7 @@ export type FeishuMessageContext = {
   senderId: string;
   senderOpenId: string;
   senderName?: string;
+  senderType: "user" | "bot";
   chatType: FeishuChatType;
   mentionedBot: boolean;
   hasAnyMention?: boolean;
@@ -61,6 +62,12 @@ export type FeishuSendResult = {
 
 export type FeishuChatType = "p2p" | "group" | "topic_group" | "private";
 
+export function normalizeFeishuEventChatType(value: unknown): FeishuChatType | undefined {
+  return value === "group" || value === "topic_group" || value === "private" || value === "p2p"
+    ? value
+    : undefined;
+}
+
 export function isFeishuGroupChatType(chatType: FeishuChatType | undefined): boolean {
   return chatType === "group" || chatType === "topic_group";
 }
@@ -75,6 +82,8 @@ export type FeishuMessageInfo = {
   content: string;
   contentType: string;
   createTime?: number;
+  /** Root message ID for replies inside Feishu topics. */
+  rootId?: string;
   /** Feishu thread ID (omt_xxx) — present when the message belongs to a topic thread. */
   threadId?: string;
 };
@@ -86,9 +95,9 @@ export interface FeishuProbeResult extends BaseProbeResult {
 }
 
 export type FeishuMediaInfo = {
-  path: string;
+  path?: string;
   contentType?: string;
-  placeholder: string;
+  kind: Exclude<import("openclaw/plugin-sdk/media-runtime").MediaKind, "unknown">;
 };
 
 export type FeishuToolsConfig = {
@@ -100,8 +109,6 @@ export type FeishuToolsConfig = {
   scopes?: boolean;
   /** Bitable/Base operations (default: true). */
   bitable?: boolean;
-  /** @deprecated Use bitable. */
-  base?: boolean;
 };
 
 export type DynamicAgentCreationConfig = {

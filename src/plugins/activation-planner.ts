@@ -3,7 +3,7 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../config/types.js";
-import { normalizePluginsConfig } from "./config-state.js";
+import { normalizePluginsConfig, type NormalizedPluginsConfig } from "./config-state.js";
 import {
   hasExplicitManifestOwnerTrust,
   isBundledManifestOwner,
@@ -17,7 +17,7 @@ import { loadPluginManifestRegistryForPluginRegistry } from "./plugin-registry-c
 import { createPluginIdScopeSet, normalizePluginIdScope } from "./plugin-scope.js";
 
 /** Runtime surface that can request a lazily activated plugin owner. */
-export type PluginActivationPlannerTrigger =
+type PluginActivationPlannerTrigger =
   | { kind: "command"; command: string }
   | { kind: "provider"; provider: string }
   | { kind: "agentHarness"; runtime: string }
@@ -25,7 +25,7 @@ export type PluginActivationPlannerTrigger =
   | { kind: "route"; route: string }
   | { kind: "capability"; capability: PluginManifestActivationCapability };
 
-export type PluginActivationPlannerHintReason =
+type PluginActivationPlannerHintReason =
   | "activation-agent-harness-hint"
   | "activation-capability-hint"
   | "activation-channel-hint"
@@ -33,25 +33,26 @@ export type PluginActivationPlannerHintReason =
   | "activation-provider-hint"
   | "activation-route-hint";
 
-export type PluginActivationPlannerManifestReason =
+type PluginActivationPlannerManifestReason =
   | "manifest-channel-owner"
+  | "manifest-cli-command-owner"
   | "manifest-command-alias"
   | "manifest-hook-owner"
   | "manifest-provider-owner"
   | "manifest-setup-provider-owner"
   | "manifest-tool-contract";
 
-export type PluginActivationPlannerReason =
+type PluginActivationPlannerReason =
   | PluginActivationPlannerHintReason
   | PluginActivationPlannerManifestReason;
 
-export type PluginActivationPlanEntry = {
+type PluginActivationPlanEntry = {
   pluginId: string;
   origin: PluginOrigin;
   reasons: readonly PluginActivationPlannerReason[];
 };
 
-export type PluginActivationPlan = {
+type PluginActivationPlan = {
   trigger: PluginActivationPlannerTrigger;
   pluginIds: readonly string[];
   entries: readonly PluginActivationPlanEntry[];
@@ -61,6 +62,7 @@ export type PluginActivationPlan = {
 type ResolveManifestActivationPlanParams = {
   trigger: PluginActivationPlannerTrigger;
   config?: OpenClawConfig;
+  normalizedConfig?: NormalizedPluginsConfig;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   origin?: PluginOrigin;
@@ -83,7 +85,8 @@ export function resolveManifestActivationPlan(
         env: params.env,
         includeDisabled: true,
       });
-  const normalizedConfig = normalizePluginsConfig(params.config?.plugins);
+  const normalizedConfig =
+    params.normalizedConfig ?? normalizePluginsConfig(params.config?.plugins);
   const entries = registry.plugins
     .flatMap((plugin) => {
       if (params.origin && plugin.origin !== params.origin) {
@@ -194,6 +197,13 @@ function listCommandTriggerReasons(
   return dedupeReasons([
     listHasNormalizedValue(plugin.activation?.onCommands, command, normalizeCommandId)
       ? "activation-command-hint"
+      : null,
+    listHasNormalizedValue(
+      plugin.cliCommands?.map((descriptor) => descriptor.name),
+      command,
+      normalizeCommandId,
+    )
+      ? "manifest-cli-command-owner"
       : null,
     listHasNormalizedValue(
       (plugin.commandAliases ?? []).flatMap((alias) => alias.cliCommand ?? alias.name),

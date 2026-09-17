@@ -6,7 +6,7 @@ import {
   type ModelProviderConfig,
   type ProviderPlugin,
 } from "openclaw/plugin-sdk/provider-model-shared";
-import { OPENAI_RESPONSES_STREAM_HOOKS } from "openclaw/plugin-sdk/provider-stream-family";
+import { buildProviderStreamFamilyHooks } from "openclaw/plugin-sdk/provider-stream-family";
 import { apiKeyAuthMethod, entraIdAuthMethod } from "./auth.js";
 import { prepareFoundryRuntimeAuth } from "./runtime.js";
 import {
@@ -15,7 +15,6 @@ import {
   applyFoundryProviderConfig,
   buildFoundryProviderBaseUrl,
   extractFoundryEndpoint,
-  isFoundryClaudeMythosPreview,
   isFoundryProviderApi,
   mergeFoundryCanonicalModelParams,
   normalizeFoundryEndpoint,
@@ -25,7 +24,8 @@ import {
 
 type FoundryProviderHooks = Pick<ProviderPlugin, "wrapStreamFn">;
 
-const wrapOpenAIResponsesStreamFn = OPENAI_RESPONSES_STREAM_HOOKS.wrapStreamFn;
+const openAIResponsesStreamHooks = buildProviderStreamFamilyHooks("openai-responses-defaults");
+const wrapOpenAIResponsesStreamFn = openAIResponsesStreamHooks.wrapStreamFn;
 
 const wrapMicrosoftFoundryStreamFn: NonNullable<FoundryProviderHooks["wrapStreamFn"]> = (ctx) => {
   if (ctx.model?.api !== "openai-responses") {
@@ -191,20 +191,9 @@ export function buildMicrosoftFoundryProvider(): ProviderPlugin {
       if (!capabilities.reasoning || capabilities.api !== "anthropic-messages") {
         return undefined;
       }
-      const profile = resolveClaudeThinkingProfile(capabilities.modelName, undefined, {
+      return resolveClaudeThinkingProfile(capabilities.modelName, undefined, {
         includeNativeMax: supportsClaudeNativeMaxEffort({ id: capabilities.modelName }),
       });
-      if (!isFoundryClaudeMythosPreview(capabilities.modelName)) {
-        return profile;
-      }
-      const levels = profile.levels.filter((level) => level.id !== "off");
-      return {
-        ...profile,
-        defaultLevel: "adaptive",
-        levels: levels.some((level) => level.id === "adaptive")
-          ? levels
-          : [...levels, { id: "adaptive" }],
-      };
     },
     normalizeResolvedModel: ({ modelId, model }: ProviderNormalizeResolvedModelContext) => {
       const endpoint = extractFoundryEndpoint(model.baseUrl ?? "");

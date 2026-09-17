@@ -1,6 +1,6 @@
 // Matrix plugin module implements http client behavior.
 import type { PinnedDispatcherPolicy } from "openclaw/plugin-sdk/ssrf-dispatcher";
-import type { SsrFPolicy } from "../../runtime-api.js";
+import type { SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { buildHttpError } from "./event-helpers.js";
 import { type HttpMethod, type QueryParams, performMatrixRequest } from "./transport.js";
 
@@ -9,6 +9,8 @@ type MatrixAuthedHttpClientParams = {
   accessToken: string;
   ssrfPolicy?: SsrFPolicy;
   dispatcherPolicy?: PinnedDispatcherPolicy;
+  captureRequestAuthority?: () => (() => void) | undefined;
+  signal?: AbortSignal;
 };
 
 export class MatrixAuthedHttpClient {
@@ -16,12 +18,16 @@ export class MatrixAuthedHttpClient {
   private readonly accessToken: string;
   private readonly ssrfPolicy?: SsrFPolicy;
   private readonly dispatcherPolicy?: PinnedDispatcherPolicy;
+  private readonly captureRequestAuthority?: () => (() => void) | undefined;
+  private readonly signal?: AbortSignal;
 
   constructor(params: MatrixAuthedHttpClientParams) {
     this.homeserver = params.homeserver;
     this.accessToken = params.accessToken;
     this.ssrfPolicy = params.ssrfPolicy;
     this.dispatcherPolicy = params.dispatcherPolicy;
+    this.captureRequestAuthority = params.captureRequestAuthority;
+    this.signal = params.signal;
   }
 
   async requestJson(params: {
@@ -43,22 +49,24 @@ export class MatrixAuthedHttpClient {
       ssrfPolicy: this.ssrfPolicy,
       dispatcherPolicy: this.dispatcherPolicy,
       allowAbsoluteEndpoint: params.allowAbsoluteEndpoint,
+      assertCurrent: this.captureRequestAuthority?.(),
+      signal: this.signal,
     });
     if (!response.ok) {
       throw buildHttpError(response.status, text);
     }
     const contentType = response.headers.get("content-type") ?? "";
-    if (contentType.includes("application/json")) {
+    const mediaType = contentType.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType === "application/json") {
       if (!text.trim()) {
         return {};
       }
       try {
         return JSON.parse(text);
       } catch {
-        throw Object.assign(
-          new Error("Matrix homeserver returned malformed JSON"),
-          { statusCode: response.status },
-        );
+        throw Object.assign(new Error("Matrix homeserver returned malformed JSON"), {
+          statusCode: response.status,
+        });
       }
     }
     return text;
@@ -86,6 +94,8 @@ export class MatrixAuthedHttpClient {
       ssrfPolicy: this.ssrfPolicy,
       dispatcherPolicy: this.dispatcherPolicy,
       allowAbsoluteEndpoint: params.allowAbsoluteEndpoint,
+      assertCurrent: this.captureRequestAuthority?.(),
+      signal: this.signal,
     });
     if (!response.ok) {
       throw buildHttpError(response.status, buffer.toString("utf8"));

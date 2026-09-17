@@ -1,7 +1,9 @@
 // Qa Lab plugin module provides reusable fixture utilities.
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from "node:timers";
+import { openNodeSqliteDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
 
 export type QaFixtureFetchJsonOptions = {
   fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
@@ -229,7 +231,10 @@ export function countSystemPromptChars(body: unknown): number {
   return total;
 }
 
-function countOccurrences(haystack: string, needle: string): number {
+const TOOL_IDENTIFIER_CHARACTERS =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+
+function countOccurrences(haystack: string, needle: string, exactIdentifier = false): number {
   if (!needle) {
     return 0;
   }
@@ -240,9 +245,22 @@ function countOccurrences(haystack: string, needle: string): number {
     if (next < 0) {
       return count;
     }
-    count += 1;
+    const before = haystack[next - 1];
+    const after = haystack[next + needle.length];
+    if (
+      !exactIdentifier ||
+      ((before === undefined || !TOOL_IDENTIFIER_CHARACTERS.includes(before)) &&
+        (after === undefined || !TOOL_IDENTIFIER_CHARACTERS.includes(after)))
+    ) {
+      count += 1;
+    }
     offset = next + needle.length;
   }
+}
+
+/** Counts exact ASCII tool identifiers in diagnostic text without interpreting regex syntax. */
+export function countToolIdentifierMentions(text: string, identifier: string): number {
+  return countOccurrences(text, identifier, true);
 }
 
 function createCounts(needles: Record<string, string>): Record<string, number> {
@@ -264,50 +282,109 @@ function recordRole(record: unknown): string | undefined {
   return typeof message.role === "string" ? message.role : undefined;
 }
 
-function shouldScanSessionLogLine(line: string): boolean {
+function collectStringLeaves(value: unknown, output: string[]) {
+  if (typeof value === "string") {
+    output.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectStringLeaves(item, output);
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") {
+    return;
+  }
+  for (const item of Object.values(value)) {
+    collectStringLeaves(item, output);
+  }
+}
+
+function sessionLogScanText(line: string): string | null {
   const trimmed = line.trim();
   if (!trimmed) {
-    return false;
+    return null;
   }
   try {
-    return recordRole(JSON.parse(trimmed)) !== "user";
+    const record = JSON.parse(trimmed) as unknown;
+    if (recordRole(record) === "user") {
+      return null;
+    }
+    const strings: string[] = [];
+    collectStringLeaves(record, strings);
+    return strings.join("\n");
   } catch {
-    return true;
+    return line;
   }
 }
 
-async function countNeedlesInFile(filePath: string, needles: Record<string, string>) {
-  const text = await fs.readFile(filePath, "utf8").catch(() => "");
-  const counts = createCounts(needles);
-  for (const line of text.split(/\r?\n/u)) {
-    if (!shouldScanSessionLogLine(line)) {
-      continue;
-    }
-    for (const [key, needle] of Object.entries(needles)) {
-      counts[key] += countOccurrences(line, needle);
-    }
+function resolveAgentSqlitePathFromSessionsDir(sessionsDir: string): string | null {
+  if (path.basename(sessionsDir) !== "sessions") {
+    return null;
   }
-  return counts;
+  return path.join(path.dirname(sessionsDir), "agent", "openclaw-agent.sqlite");
 }
 
-export async function countSessionLogMentions(params: {
-  sessionsDir: string;
-  needles: Record<string, string>;
-}): Promise<Record<string, number>> {
-  const counts = createCounts(params.needles);
-  const files = await fs.readdir(params.sessionsDir, { recursive: true }).catch(() => []);
+async function visitSessionLogEvents(
+  sessionsDir: string,
+  visit: (eventJson: string) => void,
+): Promise<void> {
+  const files = await fs.readdir(sessionsDir, { recursive: true }).catch(() => []);
   for (const file of files) {
     if (typeof file !== "string" || !file.endsWith(".jsonl")) {
       continue;
     }
-    const fileCounts = await countNeedlesInFile(
-      path.join(params.sessionsDir, file),
-      params.needles,
-    );
-    for (const [key, count] of Object.entries(fileCounts)) {
-      counts[key] = (counts[key] ?? 0) + count;
+    const text = await fs.readFile(path.join(sessionsDir, file), "utf8").catch(() => "");
+    for (const line of text.split(/\r?\n/u)) {
+      visit(line);
     }
   }
+
+  const sqlitePath = resolveAgentSqlitePathFromSessionsDir(sessionsDir);
+  if (!sqlitePath) {
+    return;
+  }
+  let db: DatabaseSync | null = null;
+  try {
+    db = openNodeSqliteDatabase(sqlitePath, { readOnly: true });
+    const hasTranscriptEvents = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'transcript_events'")
+      .get();
+    if (!hasTranscriptEvents) {
+      return;
+    }
+    const rows = db.prepare("SELECT event_json FROM transcript_events ORDER BY session_id, seq");
+    for (const row of rows.iterate() as Iterable<{ event_json?: unknown }>) {
+      if (typeof row.event_json === "string") {
+        visit(row.event_json);
+      }
+    }
+  } catch {
+    // Missing or unreadable stores contribute no events.
+  } finally {
+    db?.close();
+  }
+}
+
+export async function countSessionLogMentions(params: {
+  identifierKeys?: ReadonlySet<string>;
+  sessionsDir: string;
+  needles: Record<string, string>;
+}): Promise<Record<string, number>> {
+  const counts = createCounts(params.needles);
+  await visitSessionLogEvents(params.sessionsDir, (eventJson) => {
+    const scanText = sessionLogScanText(eventJson);
+    if (scanText === null) {
+      return;
+    }
+    for (const [key, needle] of Object.entries(params.needles)) {
+      const count = params.identifierKeys?.has(key)
+        ? countToolIdentifierMentions(scanText, needle)
+        : countOccurrences(scanText, needle);
+      counts[key] = (counts[key] ?? 0) + count;
+    }
+  });
   return counts;
 }
 

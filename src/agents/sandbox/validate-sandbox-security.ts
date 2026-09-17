@@ -81,10 +81,9 @@ type ParsedBindSpec = {
 };
 
 function parseBindSpec(bind: string): ParsedBindSpec {
-  const trimmed = bind.trim();
-  const parsed = splitSandboxBindSpec(trimmed);
+  const parsed = splitSandboxBindSpec(bind);
   if (!parsed) {
-    return { source: trimmed, target: "" };
+    return { source: bind, target: "" };
   }
   return { source: parsed.host, target: parsed.container };
 }
@@ -94,11 +93,11 @@ function parseBindSpec(bind: string): ParsedBindSpec {
  * Format: `source:target[:mode]`
  */
 function parseBindSourcePath(bind: string): string {
-  return parseBindSpec(bind).source.trim();
+  return parseBindSpec(bind).source;
 }
 
 function parseBindTargetPath(bind: string): string {
-  return parseBindSpec(bind).target.trim();
+  return parseBindSpec(bind).target;
 }
 
 /**
@@ -205,10 +204,7 @@ function normalizeAllowedRoots(roots: string[] | undefined): string[] {
   if (!roots?.length) {
     return [];
   }
-  const normalized = roots
-    .map((entry) => entry.trim())
-    .filter(isSandboxHostPathAbsolute)
-    .map(normalizeHostPath);
+  const normalized = roots.filter(isSandboxHostPathAbsolute).map(normalizeHostPath);
   const expanded = new Set<string>();
   for (const root of normalized) {
     expanded.add(root);
@@ -320,7 +316,7 @@ function formatBindBlockedError(params: { bind: string; reason: BlockedBindReaso
  * Includes a symlink/realpath pass via existing ancestors so non-existent leaf
  * paths cannot bypass source-root and blocked-path checks.
  */
-export function validateBindMounts(
+function validateBindMounts(
   binds: string[] | undefined,
   options?: ValidateBindMountsOptions,
 ): void {
@@ -331,9 +327,8 @@ export function validateBindMounts(
   const allowedRoots = normalizeAllowedRoots(options?.allowedSourceRoots);
   const blockedHostPaths = getBlockedHostPaths();
 
-  for (const rawBind of binds) {
-    const bind = rawBind.trim();
-    if (!bind) {
+  for (const bind of binds) {
+    if (!bind.trim()) {
       continue;
     }
 
@@ -397,7 +392,7 @@ export function validateNetworkMode(
   }
 }
 
-export function validateSeccompProfile(profile: string | undefined): void {
+function validateSeccompProfile(profile: string | undefined): void {
   if (profile && BLOCKED_SECCOMP_PROFILES.has(normalizeOptionalLowercaseString(profile) ?? "")) {
     throw new Error(
       `Sandbox security: seccomp profile "${profile}" is blocked. ` +
@@ -407,7 +402,7 @@ export function validateSeccompProfile(profile: string | undefined): void {
   }
 }
 
-export function validateApparmorProfile(profile: string | undefined): void {
+function validateApparmorProfile(profile: string | undefined): void {
   if (profile && BLOCKED_APPARMOR_PROFILES.has(normalizeOptionalLowercaseString(profile) ?? "")) {
     throw new Error(
       `Sandbox security: apparmor profile "${profile}" is blocked. ` +

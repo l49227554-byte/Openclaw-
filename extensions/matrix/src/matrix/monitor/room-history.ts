@@ -51,89 +51,6 @@ type PreparedTriggerResult = {
   history: HistoryEntry[];
 } & HistorySnapshotToken;
 
-type RoomHistoryTracker = {
-  /**
-   * Record a non-trigger message for future context.
-   * Call this when a room message arrives but does not mention the bot.
-   */
-  recordPending: (roomId: string, entry: HistoryEntry, threadRootId?: string) => void;
-
-  /** Reserve an arrival-order slot for slow preflight work that finishes later. */
-  reservePending: (
-    agentId: string,
-    roomId: string,
-    entry: HistoryEntry,
-    threadRootId?: string,
-  ) => ReservedHistorySlot;
-
-  /** Replace a reserved slot with its final non-trigger history entry. */
-  finalizePending: (
-    roomId: string,
-    slot: ReservedHistorySlot,
-    entry: HistoryEntry,
-    threadRootId?: string,
-  ) => void;
-
-  /** Remove a reserved slot without changing later absolute indexes. */
-  discardPending: (roomId: string, slot: ReservedHistorySlot, threadRootId?: string) => void;
-
-  /**
-   * Capture pending history and append the trigger as one idempotent operation.
-   * Retries of the same Matrix event reuse the original prepared history window.
-   */
-  prepareTrigger: (
-    agentId: string,
-    roomId: string,
-    limit: number,
-    entry: HistoryEntry,
-    threadRootId?: string,
-  ) => PreparedTriggerResult;
-
-  /** Prepare a trigger using a previously reserved arrival-order slot. */
-  prepareReservedTrigger: (
-    agentId: string,
-    roomId: string,
-    limit: number,
-    slot: ReservedHistorySlot,
-    entry: HistoryEntry,
-    threadRootId?: string,
-  ) => PreparedTriggerResult;
-
-  /**
-   * Advance the agent's watermark to the snapshot index returned by prepareTrigger
-   * (or the lower-level recordTrigger helper used in tests).
-   * Only messages appended after that snapshot remain visible on the next trigger.
-   */
-  consumeHistory: (
-    agentId: string,
-    roomId: string,
-    snapshot: HistorySnapshotToken,
-    messageId?: string,
-    threadRootId?: string,
-  ) => void;
-};
-
-type RoomHistoryTrackerTestApi = RoomHistoryTracker & {
-  /**
-   * Test-only helper for inspecting pending room history directly.
-   */
-  getPendingHistory: (
-    agentId: string,
-    roomId: string,
-    limit: number,
-    threadRootId?: string,
-  ) => HistoryEntry[];
-
-  /**
-   * Test-only helper for manually appending a trigger entry and snapshot index.
-   */
-  recordTrigger: (
-    roomId: string,
-    entry: HistoryEntry,
-    threadRootId?: string,
-  ) => HistorySnapshotToken;
-};
-
 type HistoryQueue = {
   entries: QueuedHistoryEntry[];
   /** Absolute index of entries[0] — increases as old entries are trimmed. */
@@ -146,12 +63,12 @@ type RoomQueue = HistoryQueue & {
   threadQueues: Map<string, HistoryQueue>;
 };
 
-function createRoomHistoryTrackerInternal(
+export function createRoomHistoryTracker(
   maxQueueSize = DEFAULT_MAX_QUEUE_SIZE,
   maxRoomQueues = DEFAULT_MAX_ROOM_QUEUES,
   maxWatermarkEntries = MAX_WATERMARK_ENTRIES,
   maxPreparedTriggerEntries = MAX_PREPARED_TRIGGER_ENTRIES,
-): RoomHistoryTrackerTestApi {
+) {
   const roomQueues = new Map<string, RoomQueue>();
   /** Maps `{agentId, roomId, scope}` → absolute consumed-up-to index */
   const agentWatermarks = new Map<string, number>();
@@ -381,12 +298,12 @@ function createRoomHistoryTrackerInternal(
   }
 
   return {
-    recordPending(roomId, entry, threadRootId) {
+    recordPending(roomId: string, entry: HistoryEntry, threadRootId?: string) {
       const queue = getScopedQueue(roomId, threadRootId);
       appendToQueue(queue, entry);
     },
 
-    reservePending(agentId, roomId, entry, threadRootId) {
+    reservePending(agentId: string, roomId: string, entry: HistoryEntry, threadRootId?: string) {
       const queue = getScopedQueue(roomId, threadRootId);
       const snapshot = appendToQueue(queue, { ...entry, reserved: true });
       return {
@@ -396,7 +313,12 @@ function createRoomHistoryTrackerInternal(
       };
     },
 
-    finalizePending(roomId, slot, entry, threadRootId) {
+    finalizePending(
+      roomId: string,
+      slot: ReservedHistorySlot,
+      entry: HistoryEntry,
+      threadRootId?: string,
+    ) {
       const queue = findScopedQueue(roomId, threadRootId);
       if (!queue || queue.generation !== slot.queueGeneration) {
         return;
@@ -408,7 +330,7 @@ function createRoomHistoryTrackerInternal(
       queue.entries[rel] = entry;
     },
 
-    discardPending(roomId, slot, threadRootId) {
+    discardPending(roomId: string, slot: ReservedHistorySlot, threadRootId?: string) {
       const queue = findScopedQueue(roomId, threadRootId);
       if (!queue || queue.generation !== slot.queueGeneration) {
         return;
@@ -425,32 +347,24 @@ function createRoomHistoryTrackerInternal(
       };
     },
 
-    getPendingHistory(agentId, roomId, limit, threadRootId) {
-      const queue = findScopedQueue(roomId, threadRootId);
-      if (!queue) {
-        return [];
-      }
-      return computePendingHistory(
-        queue,
-        agentId,
-        roomId,
-        limit,
-        undefined,
-        undefined,
-        threadRootId,
-      );
-    },
-
-    recordTrigger(roomId, entry, threadRootId) {
-      const queue = getScopedQueue(roomId, threadRootId);
-      return appendToQueue(queue, entry);
-    },
-
-    prepareTrigger(agentId, roomId, limit, entry, threadRootId) {
+    prepareTrigger(
+      agentId: string,
+      roomId: string,
+      limit: number,
+      entry: HistoryEntry,
+      threadRootId?: string,
+    ) {
       return prepareTriggerInternal(agentId, roomId, limit, entry, threadRootId);
     },
 
-    prepareReservedTrigger(agentId, roomId, limit, slot, entry, threadRootId) {
+    prepareReservedTrigger(
+      agentId: string,
+      roomId: string,
+      limit: number,
+      slot: ReservedHistorySlot,
+      entry: HistoryEntry,
+      threadRootId?: string,
+    ) {
       const queue = findScopedQueue(roomId, threadRootId);
       if (!queue || queue.generation !== slot.queueGeneration) {
         return prepareTriggerInternal(agentId, roomId, limit, entry, threadRootId);
@@ -492,7 +406,13 @@ function createRoomHistoryTrackerInternal(
       return prepared;
     },
 
-    consumeHistory(agentId, roomId, snapshot, messageId, threadRootId) {
+    consumeHistory(
+      agentId: string,
+      roomId: string,
+      snapshot: HistorySnapshotToken,
+      messageId?: string,
+      threadRootId?: string,
+    ) {
       const key = wmKey(agentId, roomId, threadRootId);
       const queue = findScopedQueue(roomId, threadRootId);
       if (!queue) {
@@ -524,41 +444,4 @@ function createRoomHistoryTrackerInternal(
       }
     },
   };
-}
-
-export function createRoomHistoryTracker(
-  maxQueueSize = DEFAULT_MAX_QUEUE_SIZE,
-  maxRoomQueues = DEFAULT_MAX_ROOM_QUEUES,
-  maxWatermarkEntries = MAX_WATERMARK_ENTRIES,
-  maxPreparedTriggerEntries = MAX_PREPARED_TRIGGER_ENTRIES,
-): RoomHistoryTracker {
-  const tracker = createRoomHistoryTrackerInternal(
-    maxQueueSize,
-    maxRoomQueues,
-    maxWatermarkEntries,
-    maxPreparedTriggerEntries,
-  );
-  return {
-    recordPending: tracker.recordPending,
-    reservePending: tracker.reservePending,
-    finalizePending: tracker.finalizePending,
-    discardPending: tracker.discardPending,
-    prepareTrigger: tracker.prepareTrigger,
-    prepareReservedTrigger: tracker.prepareReservedTrigger,
-    consumeHistory: tracker.consumeHistory,
-  };
-}
-
-export function createRoomHistoryTrackerForTests(
-  maxQueueSize = DEFAULT_MAX_QUEUE_SIZE,
-  maxRoomQueues = DEFAULT_MAX_ROOM_QUEUES,
-  maxWatermarkEntries = MAX_WATERMARK_ENTRIES,
-  maxPreparedTriggerEntries = MAX_PREPARED_TRIGGER_ENTRIES,
-): RoomHistoryTrackerTestApi {
-  return createRoomHistoryTrackerInternal(
-    maxQueueSize,
-    maxRoomQueues,
-    maxWatermarkEntries,
-    maxPreparedTriggerEntries,
-  );
 }

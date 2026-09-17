@@ -5,39 +5,54 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
 } from "../../packages/normalization-core/src/string-coerce.js";
+import type { ThinkingLevelMap } from "../llm/types.js";
 
 export { normalizeFastMode };
 export type { FastMode };
 
 /** Canonical thinking level values accepted by chat commands and session state. */
-export type ThinkLevel =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh"
-  | "adaptive"
-  | "max";
+const ALL_THINKING_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "adaptive",
+  "max",
+  "ultra",
+] as const;
+export type ThinkLevel = (typeof ALL_THINKING_LEVELS)[number];
 export type VerboseLevel = "off" | "on" | "full";
 export type TraceLevel = "off" | "on" | "raw";
-export type NoticeLevel = "off" | "on" | "full";
 export type ElevatedLevel = "off" | "on" | "ask" | "full";
 export type ReasoningLevel = "off" | "on" | "stream";
 type UsageDisplayLevel = "off" | "tokens" | "full";
-/** Minimal model catalog entry needed to choose thinking defaults. */
+/** Prepared model catalog fields reused while choosing and dispatching a queued runtime. */
 export type ThinkingCatalogEntry = {
   provider: string;
   id: string;
+  nativeRuntime?: string;
   api?: string;
+  baseUrl?: string;
+  contextWindow?: number;
+  contextTokens?: number;
   reasoning?: boolean;
+  configuredReasoning?: boolean;
+  /** Concrete runtime owner of thinking policy; internal and never project to clients. */
+  thinkingPolicyProvider?: string;
+  thinkingLevelMap?: ThinkingLevelMap;
+  input?: readonly ("text" | "image" | "audio" | "video" | "document")[];
   params?: Record<string, unknown>;
   compat?: {
     thinkingFormat?: string;
+    supportsReasoningEffort?: boolean;
     supportedReasoningEfforts?: readonly string[] | null;
+    reasoningEffortMap?: Record<string, string>;
   } | null;
 };
 
+export const THINKING_LEVELS_HELP = ALL_THINKING_LEVELS.join("|");
 export const BASE_THINKING_LEVELS: ThinkLevel[] = ["off", "minimal", "low", "medium", "high"];
 export const THINKING_LEVEL_RANKS: Record<ThinkLevel, number> = {
   off: 0,
@@ -48,6 +63,7 @@ export const THINKING_LEVEL_RANKS: Record<ThinkLevel, number> = {
   adaptive: 30,
   xhigh: 60,
   max: 70,
+  ultra: 80,
 };
 
 /** Normalizes user-provided thinking level strings to the canonical enum. */
@@ -63,10 +79,14 @@ export function normalizeThinkLevel(raw?: string | null): ThinkLevel | undefined
   if (collapsed === "max") {
     return "max";
   }
+  if (collapsed === "ultra") {
+    return "ultra";
+  }
   if (collapsed === "xhigh" || collapsed === "extrahigh") {
     return "xhigh";
   }
-  if (["off"].includes(key)) {
+  // `none` is a documented provider-native spelling for disabled reasoning; store canonical off.
+  if (["off", "none"].includes(key)) {
     return "off";
   }
   if (["on", "enable", "enabled"].includes(key)) {
@@ -81,7 +101,7 @@ export function normalizeThinkLevel(raw?: string | null): ThinkLevel | undefined
   if (["mid", "med", "medium", "thinkharder", "think-harder", "harder"].includes(key)) {
     return "medium";
   }
-  if (["high", "ultra", "ultrathink", "think-hard", "thinkhardest", "highest"].includes(key)) {
+  if (["high", "ultrathink", "thinkhardest", "highest"].includes(key)) {
     return "high";
   }
   if (["think"].includes(key)) {
@@ -97,21 +117,6 @@ export function isSessionDefaultDirectiveValue(raw?: string | null): boolean {
     return false;
   }
   return ["default", "inherit", "inherited", "clear", "reset", "unpin"].includes(key);
-}
-
-/** Chooses the default thinking level for one provider/model catalog entry. */
-export function resolveThinkingDefaultForModel(params: {
-  provider: string;
-  model: string;
-  catalog?: ThinkingCatalogEntry[];
-}): ThinkLevel {
-  const candidate = params.catalog?.find(
-    (entry) => entry.provider === params.provider && entry.id === params.model,
-  );
-  if (candidate?.reasoning) {
-    return "low";
-  }
-  return "off";
 }
 
 type OnOffFullLevel = "off" | "on" | "full";
@@ -182,12 +187,12 @@ export function resolveResponseUsageMode(raw?: string | null): UsageDisplayLevel
   return normalizeUsageDisplay(raw) ?? "off";
 }
 
-export type ResponseUsageInput = "on" | "off" | "tokens" | "full";
-export type ResponseUsageDefaultConfig =
+type ResponseUsageInput = "on" | "off" | "tokens" | "full";
+type ResponseUsageDefaultConfig =
   | ResponseUsageInput
   | { default?: ResponseUsageInput; [channel: string]: ResponseUsageInput | undefined };
 
-export function resolveMessagesResponseUsageDefault(
+function resolveMessagesResponseUsageDefault(
   configured: ResponseUsageDefaultConfig | undefined,
   channel?: string,
 ): ResponseUsageInput | undefined {

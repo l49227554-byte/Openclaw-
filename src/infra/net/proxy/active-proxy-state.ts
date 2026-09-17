@@ -11,8 +11,6 @@ type ActiveManagedProxyLoopbackMode = NonNullable<NonNullable<ProxyConfig>["loop
 /** Ref-counted active proxy handle; callers must stop it when their proxy scope ends. */
 export type ActiveManagedProxyRegistration = {
   proxyUrl: ActiveManagedProxyUrl;
-  loopbackMode: ActiveManagedProxyLoopbackMode;
-  proxyTls?: ManagedProxyTlsOptions;
   stopped: boolean;
 };
 
@@ -79,19 +77,14 @@ export function registerActiveManagedProxyUrl(
     // Identical registrations are nested scopes; keep proxy state alive until
     // every owner stops its returned handle.
     activeProxyRegistrationCount += 1;
-    return {
-      proxyUrl: activeProxyUrl,
-      loopbackMode,
-      proxyTls: activeProxyTlsOptions,
-      stopped: false,
-    };
+    return { proxyUrl: activeProxyUrl, stopped: false };
   }
 
   activeProxyUrl = normalizedProxyUrl;
   activeProxyLoopbackMode = loopbackMode;
   activeProxyTlsOptions = proxyTls;
   activeProxyRegistrationCount = 1;
-  return { proxyUrl: activeProxyUrl, loopbackMode, proxyTls, stopped: false };
+  return { proxyUrl: activeProxyUrl, stopped: false };
 }
 
 function areProxyTlsOptionsEqual(
@@ -133,12 +126,4 @@ export function getActiveManagedProxyUrl(): ActiveManagedProxyUrl | undefined {
 /** Returns the active managed proxy TLS options used by undici/proxyline dispatchers. */
 export function getActiveManagedProxyTlsOptions(): ManagedProxyTlsOptions | undefined {
   return activeProxyTlsOptions;
-}
-
-/** Clears process-local proxy state for tests that share a worker process. */
-export function resetActiveManagedProxyStateForTests(): void {
-  activeProxyUrl = undefined;
-  activeProxyLoopbackMode = undefined;
-  activeProxyTlsOptions = undefined;
-  activeProxyRegistrationCount = 0;
 }

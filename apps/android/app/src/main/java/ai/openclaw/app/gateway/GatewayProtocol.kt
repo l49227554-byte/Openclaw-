@@ -949,6 +949,11 @@ enum class GatewayMethod(
   SessionsActivitySummaryEnsure("sessions.activitySummary.ensure"),
   ControlUiSessionPullRequestsChecks("controlUi.sessionPullRequests.checks"),
   DiagnosticsCpuProfile("diagnostics.cpuProfile"),
+  TalkVoiceGet("talk.voice.get"),
+  TalkVoiceSet("talk.voice.set"),
+  TalkVoiceComplete("talk.voice.complete"),
+  PluginsCredentialsInspect("plugins.credentials.inspect"),
+  PluginsSkillsRead("plugins.skills.read"),
 }
 
 enum class GatewayEvent(
@@ -976,6 +981,7 @@ enum class GatewayEvent(
   Tick("tick"),
   TalkMode("talk.mode"),
   TalkEvent("talk.event"),
+  TalkVoiceChange("talk.voice.change"),
   Shutdown("shutdown"),
   GatewaySuspension("gateway.suspension"),
   Health("health"),

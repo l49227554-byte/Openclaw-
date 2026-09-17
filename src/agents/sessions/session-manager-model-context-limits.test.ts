@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import {
+  appendTranscriptEvent,
   upsertSessionEntryCore,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
@@ -110,6 +112,50 @@ it.each(["sync", "async"])("bounds the prepared message tail by event count (%s)
   });
 });
 
+it.each([false, true])(
+  "bounds payload sizing by the event budget with retained compaction=%s",
+  async (compacted) => {
+    await withHistory(
+      `context-sizing-limit-${compacted}`,
+      async ({ scope, source, verifyRead }) => {
+        const first = source.appendMessage(makeUserMessage("first retained request", 0));
+        for (let index = 1; index < 40; index++) {
+          source.appendMessage(makeUserMessage(`retained request ${index}`, index));
+        }
+        const boundary = compacted
+          ? source.appendCompaction("required summary", first, 100)
+          : undefined;
+        source.appendMessage(makeUserMessage("current request", 40));
+        const full = source.buildSessionContext().messages;
+        await verifyRead(() => {
+          const database = openOpenClawAgentDatabase({ agentId: "main", path: scope.storePath });
+          const reads = trackSqliteStatementExecutions(database.db, ["sizes"], (query) =>
+            query.includes("octet_length(") && query.includes('as "bytes"') ? "sizes" : null,
+          );
+          try {
+            const selected = SessionManager.openModelContext(scope, {
+              limits: { maxBytes: 16_384, maxEvents: 3 },
+            });
+            expect(selected.buildSessionContext().messages).toEqual(
+              compacted ? [full[0], ...full.slice(-2)] : full.slice(-3),
+            );
+            if (boundary) {
+              expect(selected.getBranch().find((entry) => entry.id === boundary)).toMatchObject({
+                type: "compaction",
+                summary: "required summary",
+              });
+            }
+            expect(reads.rowCounts.sizes).toBeGreaterThan(0);
+            expect(reads.rowCounts.sizes).toBeLessThanOrEqual(compacted ? 4 : 3);
+          } finally {
+            reads.restore();
+          }
+        });
+      },
+    );
+  },
+);
+
 it("applies the aggregate byte budget before hydrating omitted message bodies", async () => {
   await withHistory("context-byte-limit", async ({ scope, source, verifyRead }) => {
     for (let index = 0; index < 8; index++) {
@@ -197,42 +243,60 @@ it("budgets projected context without hydrating large private evidence", async (
   });
 });
 
-it.each(["compaction", "reset"])(
-  "preserves the %s boundary and selected retained ancestry",
-  async (boundaryKind) => {
-    await withHistory(`context-retained-${boundaryKind}`, async ({ scope, source, verifyRead }) => {
-      source.appendMessage(makeUserMessage("obsolete", 0));
-      const firstKept = source.appendMessage(makeUserMessage("older retained request", 1));
-      source.appendMessage(makeUserMessage("newer retained request", 2));
-      const callId = appendCall(source, "retained");
-      const resultId = appendResult(source, "retained");
-      const boundaryId =
-        boundaryKind === "compaction"
-          ? source.appendCompaction("preserve this complete summary", firstKept, 100)
-          : source.appendResetBoundary("new", firstKept);
-      const currentId = source.appendMessage(makeUserMessage("current history", 3));
-      const full = source.buildSessionContext().messages;
-      const expected =
-        boundaryKind === "compaction" ? [full[0], ...full.slice(-3)] : full.slice(-3);
-      await verifyRead(() => {
-        const selected = SessionManager.openModelContext(scope, {
-          limits: { maxBytes: 16_384, maxEvents: 4 },
-        });
-        expect(selected.buildSessionContext().messages).toEqual(expected);
-        const branch = selected.getBranch();
-        expect(
-          branch
-            .filter((entry) => entry.type === "message" || entry.type === boundaryKind)
-            .map((entry) => entry.id),
-        ).toEqual([callId, resultId, boundaryId, currentId]);
-        expect(branch.find((entry) => entry.id === boundaryId)).toMatchObject({
-          firstKeptEntryId: callId,
-        });
-        for (const [index, entry] of branch.entries()) {
-          expect(entry.parentId).toBe(index === 0 ? null : branch[index - 1]!.id);
+it.each([
+  { boundaryKind: "compaction", keepMarker: "canonical" },
+  { boundaryKind: "compaction", keepMarker: "opaque" },
+  { boundaryKind: "reset", keepMarker: "canonical" },
+  { boundaryKind: "reset", keepMarker: "opaque" },
+])(
+  "preserves the $boundaryKind boundary and selected retained ancestry with a $keepMarker keep marker",
+  async ({ boundaryKind, keepMarker }) => {
+    await withHistory(
+      `context-retained-${boundaryKind}-${keepMarker}`,
+      async ({ scope, source, verifyRead }) => {
+        source.appendMessage(makeUserMessage("obsolete", 0));
+        const firstKept = source.appendMessage(makeUserMessage("older retained request", 1));
+        source.appendMessage(makeUserMessage("newer retained request", 2));
+        const callId = appendCall(source, "retained");
+        const resultId = appendResult(source, "retained");
+        let keepEntryId = firstKept;
+        if (keepMarker === "opaque") {
+          await appendTranscriptEvent(scope, {
+            type: "opaque-synthetic",
+            id: "opaque-keep",
+            parentId: firstKept,
+          });
+          source.reloadPersistedTranscript();
+          keepEntryId = "opaque-keep";
         }
-      });
-    });
+        const boundaryId =
+          boundaryKind === "compaction"
+            ? source.appendCompaction("preserve this complete summary", keepEntryId, 100)
+            : source.appendResetBoundary("new", keepEntryId);
+        const currentId = source.appendMessage(makeUserMessage("current history", 3));
+        const full = source.buildSessionContext().messages;
+        const expected =
+          boundaryKind === "compaction" ? [full[0], ...full.slice(-3)] : full.slice(-3);
+        await verifyRead(() => {
+          const selected = SessionManager.openModelContext(scope, {
+            limits: { maxBytes: 16_384, maxEvents: 4 },
+          });
+          expect(selected.buildSessionContext().messages).toEqual(expected);
+          const branch = selected.getBranch();
+          expect(
+            branch
+              .filter((entry) => entry.type === "message" || entry.type === boundaryKind)
+              .map((entry) => entry.id),
+          ).toEqual([callId, resultId, boundaryId, currentId]);
+          expect(branch.find((entry) => entry.id === boundaryId)).toMatchObject({
+            firstKeptEntryId: callId,
+          });
+          for (const [index, entry] of branch.entries()) {
+            expect(entry.parentId).toBe(index === 0 ? null : branch[index - 1]!.id);
+          }
+        });
+      },
+    );
   },
 );
 

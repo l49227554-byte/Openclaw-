@@ -30,6 +30,7 @@ import {
   readTranscriptContextVersionInTransaction,
   type SessionTranscriptContextVersion,
 } from "./session-accessor.sqlite-transcript-state.js";
+import { normalizeSessionContextEntryBoundaries } from "./session-entry-navigation.js";
 import {
   projectModelContextEventSql,
   projectModelContextNavigationSql,
@@ -156,20 +157,22 @@ export function validateSessionTranscriptContextAdmission(
 /** Select an owned suffix before SQLite payloads can enter JavaScript or cross a worker. */
 function selectBoundedModelRequests(
   requests: ModelContextRequest[],
-  sizes: Map<ContextEntry, number>,
+  readSizes: TranscriptContextSnapshot["readModelEntrySizes"],
   limits: SessionModelContextLimits,
 ): ModelContextRequest[] {
   const boundary = requests.find(
     ({ entry }) => entry.type === "compaction" || entry.type === "reset",
   );
   const candidates = requests.filter((request) => request !== boundary);
+  const sizingCandidates = candidates.slice(-limits.maxEvents);
+  const sizes = readSizes(boundary ? [boundary, ...sizingCandidates] : sizingCandidates);
   let bytes = boundary ? sizes.get(boundary.entry)! : 0;
   let events = boundary ? 1 : 0;
   if (bytes > limits.maxBytes || events > limits.maxEvents) {
     throw new RangeError("Required session context boundary exceeds the model-context limit");
   }
   let cut = candidates.length;
-  for (const request of candidates.toReversed()) {
+  for (const request of sizingCandidates.toReversed()) {
     const size = sizes.get(request.entry)!;
     if (bytes + size > limits.maxBytes || events + 1 > limits.maxEvents) {
       break;
@@ -264,7 +267,7 @@ export function readSessionTranscriptModelContext(
         requests.push({ entry, omitCheckpoint });
       }
       const selected = limits
-        ? selectBoundedModelRequests(requests, readModelEntrySizes(requests), limits)
+        ? selectBoundedModelRequests(requests, readModelEntrySizes, limits)
         : requests;
       const payloads = readModelEntries(selected);
       if (limits) {
@@ -414,13 +417,15 @@ function withTranscriptContextSnapshot<T>(
               "Completed-turn anchor is outside the admitted context",
             );
           }
-          const entries = selectSessionTranscriptTreePathNodes(
-            tree,
-            through?.entryId ?? tree.leafId,
-          ).map(({ entry, parentId }) => {
-            entry.parentId = parentId;
-            return entry;
-          });
+          const entries = normalizeSessionContextEntryBoundaries(
+            selectSessionTranscriptTreePathNodes(tree, through?.entryId ?? tree.leafId).map(
+              ({ entry, parentId }) => {
+                entry.parentId = parentId;
+                return entry;
+              },
+            ),
+            tree.nodes,
+          );
           const readPayload = prepareSqliteQuerySync<ContextEntry, { event_json: string }>(
             database.db,
             (parameter) =>
@@ -436,11 +441,7 @@ function withTranscriptContextSnapshot<T>(
             version,
             readEntry: (entry) => {
               const row = readPayload(entry).rows[0];
-              return {
-                // SAFETY: The canonical payload is selected by its navigation row in this snapshot.
-                ...(JSON.parse(row!.event_json) as SessionTreeEntry),
-                parentId: entry.parentId,
-              };
+              return hydrateContextEntry(row!.event_json, entry);
             },
             readModelEntrySizes: (requests) => {
               const sizes = new Map<ContextEntry, number>();
@@ -498,11 +499,7 @@ function withTranscriptContextSnapshot<T>(
                   .where("seq", "in", [...bySeq.keys()]);
                 for (const row of iterateSqliteQuerySync(database.db, query)) {
                   const entry = bySeq.get(row.seq)!;
-                  payloads.set(entry, {
-                    // SAFETY: This selected row uses the same event union as its navigation entry.
-                    ...(JSON.parse(row.event_json) as SessionTreeEntry),
-                    parentId: entry.parentId,
-                  });
+                  payloads.set(entry, hydrateContextEntry(row.event_json, entry));
                 }
               }
               return payloads;
@@ -515,4 +512,16 @@ function withTranscriptContextSnapshot<T>(
     { throwOnMissingTable: true },
   );
   return result;
+}
+
+function hydrateContextEntry(eventJson: string, entry: ContextEntry): SessionTreeEntry {
+  return {
+    // SAFETY: The canonical payload is selected by its navigation row in the same snapshot.
+    ...(JSON.parse(eventJson) as SessionTreeEntry),
+    parentId: entry.parentId,
+    ...((entry.type === "compaction" || entry.type === "reset") &&
+    entry.firstKeptEntryId !== undefined
+      ? { firstKeptEntryId: entry.firstKeptEntryId }
+      : {}),
+  };
 }

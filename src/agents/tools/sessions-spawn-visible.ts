@@ -34,6 +34,7 @@ import {
   resolveConfiguredSubagentRunTimeoutSeconds,
   resolveSubagentModelAndThinkingPlan,
 } from "../subagents/spawn/subagent-spawn-plan.js";
+import { readRequesterModel } from "../subagents/spawn/subagent-spawn-requester-prefs.js";
 import { buildSubagentTaskMessage } from "../subagents/spawn/subagent-system-prompt.js";
 import { resolveSubagentTargetPolicy } from "../subagents/spawn/subagent-target-policy.js";
 import { resolveAgentTimeoutMs } from "../timeout.js";
@@ -254,27 +255,6 @@ export async function maybeSpawnVisibleSession(params: {
   if (!targetPolicy.ok) {
     return { status: "forbidden", error: targetPolicy.error };
   }
-  const modelPlan = resolveSubagentModelAndThinkingPlan({
-    cfg,
-    targetAgentId,
-    modelOverride,
-  });
-  if (modelPlan.status === "error") {
-    return { status: "error", error: modelPlan.error };
-  }
-  const { resolvedModel, initialSessionPatch } = modelPlan;
-  const { authProfileOverride } = initialSessionPatch;
-  // Creation validates the complete profile-qualified selection.
-  const resolvedModelRef = authProfileOverride
-    ? `${resolvedModel}@${authProfileOverride}`
-    : resolvedModel;
-  const spawnModelAutoSelection =
-    initialSessionPatch.modelOverrideSource === "auto"
-      ? {
-          model: resolvedModelRef,
-          hasFallbackOrigin: initialSessionPatch.modelOverrideFallbackOriginModel !== undefined,
-        }
-      : undefined;
   const runTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
     cfg,
     runTimeoutSeconds: params.runTimeoutSeconds,
@@ -320,6 +300,36 @@ export async function maybeSpawnVisibleSession(params: {
     };
   }
 
+  const modelPlan = await resolveSubagentModelAndThinkingPlan({
+    cfg,
+    targetAgentId,
+    modelOverride,
+    workspaceDir: spawnedWorkspaceDir,
+    inheritedModel:
+      targetAgentId === requesterAgentId
+        ? (params.options?.requesterModel ??
+          readRequesterModel({
+            cfg,
+            requesterInternalKey: requesterKey,
+            requesterAgentId,
+          }))
+        : undefined,
+  });
+  if (modelPlan.status === "error") {
+    return { status: "error", error: modelPlan.error };
+  }
+  const { resolvedModel, inheritedModel, initialSessionPatch } = modelPlan;
+  const { authProfileOverride } = initialSessionPatch;
+  const resolvedModelRef = authProfileOverride
+    ? `${resolvedModel}@${authProfileOverride}`
+    : resolvedModel;
+  const spawnModelAutoSelection =
+    initialSessionPatch.modelOverrideSource === "auto"
+      ? {
+          model: resolvedModelRef,
+          hasFallbackOrigin: initialSessionPatch.modelOverrideFallbackOriginModel !== undefined,
+        }
+      : undefined;
   const reservation = reserveChildAdmissionSlot({
     controllerSessionKey: requesterKey,
     resolveAdmission: (pendingChildren) => {
@@ -356,6 +366,7 @@ export async function maybeSpawnVisibleSession(params: {
             allow: [...(params.options?.inheritedToolAllowlist ?? [])],
             deny: [...(params.options?.inheritedToolDenylist ?? [])],
           },
+          ...(inheritedModel ? { resolvedModel: inheritedModel } : {}),
         }));
     let response: {
       key?: string;

@@ -22,6 +22,7 @@ import {
 import {
   listSessionEntriesReadOnly,
   loadExactSessionEntryCandidatesReadOnlyBatch,
+  withSessionEntryReadOnlyScope,
 } from "../../config/sessions/session-accessor.js";
 import { SessionTranscriptColdError } from "../../config/sessions/session-cold-storage-state.js";
 import { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
@@ -154,21 +155,23 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         const targetSessionKeys =
           scopedSessionKeys ??
           (restrictVisibility
-            ? listSessionEntriesReadOnly({
-                agentId: target.agentId,
-                storePath: target.storePath,
-                projection: "list",
-                clone: false,
-              })
-                .map((entry) => entry.sessionKey)
-                .filter((sessionKey) => {
-                  // A shared physical store can include rows owned by another agent.
-                  const parsed = parseAgentSessionKey(sessionKey);
-                  if (parsed && normalizeAgentId(parsed.agentId) !== agentId) {
-                    return false;
-                  }
-                  return canSearchSessionKey(sessionKey);
+            ? withSessionEntryReadOnlyScope(target, () =>
+                listSessionEntriesReadOnly({
+                  agentId: target.agentId,
+                  storePath: target.storePath,
+                  projection: "list",
+                  clone: false,
                 })
+                  .map((entry) => entry.sessionKey)
+                  .filter((sessionKey) => {
+                    // A shared physical store can include rows owned by another agent.
+                    const parsed = parseAgentSessionKey(sessionKey);
+                    if (parsed && normalizeAgentId(parsed.agentId) !== agentId) {
+                      return false;
+                    }
+                    return canSearchSessionKey(sessionKey);
+                  }),
+              )
             : undefined);
         if (targetSessionKeys?.length === 0) {
           return [];
@@ -269,13 +272,19 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
           if (!loaded) {
             const loadedStore = measureDiagnosticsTimelineSpanSync(
               "gateway.sessions.list.store_load",
-              () =>
-                loadCombinedSessionStoreForGatewayCore(cfg, {
-                  agentId: p.agentId,
-                  configuredAgentsOnly,
-                  projection: "list",
-                  ...(p.activeOnly === true ? { preserveSentinelOwners: true } : {}),
-                }),
+              () => {
+                const storeCpu = diagnostics?.startSyncCpu();
+                try {
+                  return loadCombinedSessionStoreForGatewayCore(cfg, {
+                    agentId: p.agentId,
+                    configuredAgentsOnly,
+                    projection: "list",
+                    ...(p.activeOnly === true ? { preserveSentinelOwners: true } : {}),
+                  });
+                } finally {
+                  diagnostics?.finishSyncCpu("storeLoadThreadCpuMs", storeCpu);
+                }
+              },
               {
                 config: cfg,
                 phase: "sessions.list",
@@ -334,6 +343,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                 cfg,
                 workStartedAt,
                 projectionTiming,
+                cpuTiming: diagnostics,
                 durableStorePath,
                 ...(entryFilter ? { entryFilter } : {}),
                 storePath,
@@ -500,7 +510,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                   sessionKey: storeKey,
                   projectedAgentRuns,
                   modelSource: target
-                    ? { ...target.modelSource, entry: sharingTarget?.entry }
+                    ? { entry: sharingTarget?.entry, readSourceEntry: target.readSourceEntry }
                     : undefined,
                   entry: sharingTarget?.entry,
                   storePath: sharingTarget?.storePath,

@@ -488,7 +488,7 @@ function buildScaffoldTsconfig(type: PluginScaffoldType): JsonObject {
       outDir: "dist",
       skipLibCheck: true,
     },
-    include: ["src/index.ts"],
+    include: type === "feature" ? ["src/**/*.ts"] : ["src/index.ts"],
   };
 }
 

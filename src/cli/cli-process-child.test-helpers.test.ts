@@ -85,6 +85,7 @@ describe("runCliProcessChild", () => {
         [
           "process.stdout.write('partial');",
           "globalThis.pending = new Promise(() => {});",
+          "require('node:net').createServer().listen(0, '127.0.0.1');",
           "process.on('SIGUSR2', () => process.stderr.write('x'.repeat(8_100) + '\\nlast-stderr-line\\n'));",
           "setInterval(() => {}, 1_000);",
         ].join("\n"),
@@ -109,8 +110,10 @@ describe("runCliProcessChild", () => {
         nativeStack: expect.any(Array),
         libuv: expect.arrayContaining([
           expect.objectContaining({ type: "timer", is_active: true, is_referenced: true }),
+          expect.objectContaining({ type: "tcp", is_active: true, is_referenced: true }),
         ]),
       });
+      expect(report).not.toMatch(/"(?:local|remote)Endpoint"\s*:/u);
     }
   });
 

@@ -47,7 +47,14 @@ function projectDiagnosticReport(report: unknown): CliProcessReport | undefined 
     ...(typeof threadId === "number" ? { threadId } : {}),
     javascriptStack: report.javascriptStack,
     nativeStack: report.nativeStack,
-    libuv: report.libuv,
+    libuv: report.libuv.map((handle) => {
+      if (!isRecord(handle)) {
+        return handle;
+      }
+      // Node's network exclusion flag retains socket and named-pipe endpoints.
+      const { localEndpoint: _local, remoteEndpoint: _remote, ...execution } = handle;
+      return execution;
+    }),
     workers: Array.isArray(report.workers)
       ? report.workers.map(projectDiagnosticReport).filter((worker) => worker !== undefined)
       : [],

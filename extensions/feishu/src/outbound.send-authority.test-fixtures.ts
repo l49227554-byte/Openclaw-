@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { openNodeSqliteDatabase } from "openclaw/plugin-sdk/sqlite-runtime";
 import { withServer } from "openclaw/plugin-sdk/test-env";
 import type { ClawdbotConfig } from "../runtime-api.js";
 
@@ -125,7 +125,7 @@ export async function withFeishuTransport(
 }
 
 export function readFeishuQueueState(stateDir: string, id: string) {
-  const database = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"), {
+  const database = openNodeSqliteDatabase(path.join(stateDir, "state", "openclaw.sqlite"), {
     readOnly: true,
   });
   try {

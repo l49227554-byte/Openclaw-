@@ -34,7 +34,7 @@ export function resolveFeishuReceiptKind(msgType?: string): MessageReceiptPartKi
   }
 }
 
-export function createFeishuSendReceipt(params: {
+function createFeishuSendReceipt(params: {
   messageId?: string;
   chatId: string;
   kind?: MessageReceiptPartKind;

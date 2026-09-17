@@ -25,9 +25,8 @@ export class FeishuReplyCommentError extends Error {
     feishuCode?: number | string;
     feishuMsg?: string;
     feishuLogId?: string;
-    cause?: unknown;
   }) {
-    super(params.message, { cause: params.cause });
+    super(params.message);
     this.name = "FeishuReplyCommentError";
     this.httpStatus = params.httpStatus;
     this.feishuCode = params.feishuCode;

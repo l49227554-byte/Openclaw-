@@ -1,6 +1,9 @@
 // Feishu plugin module implements drive behavior.
 import type * as Lark from "@larksuiteoapi/node-sdk";
-import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import {
+  formatErrorMessage,
+  PlatformMessageNotDispatchedError,
+} from "openclaw/plugin-sdk/error-runtime";
 import { readPositiveIntegerParam } from "openclaw/plugin-sdk/param-readers";
 import { isRecord, readStringValue as readString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { OpenClawPluginApi } from "../runtime-api.js";
@@ -608,7 +611,10 @@ async function replyComment(
       feishuLogId: response.log_id,
     });
   } catch (error) {
-    if (error instanceof FeishuReplyCommentError) {
+    if (
+      error instanceof FeishuReplyCommentError ||
+      error instanceof PlatformMessageNotDispatchedError
+    ) {
       throw error;
     }
     const meta = extractDriveApiErrorMeta(error);
@@ -623,7 +629,6 @@ async function replyComment(
       feishuCode: meta.feishuCode,
       feishuMsg: meta.feishuMsg,
       feishuLogId: meta.feishuLogId,
-      cause: error,
     });
   }
 }

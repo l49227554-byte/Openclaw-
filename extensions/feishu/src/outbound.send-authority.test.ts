@@ -1,19 +1,33 @@
-import { randomUUID } from "node:crypto";
-import type { ServerResponse } from "node:http";
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { inspect } from "node:util";
-import * as Lark from "@larksuiteoapi/node-sdk";
 import { isChannelPartialDeliveryError } from "openclaw/plugin-sdk/channel-inbound";
-import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import { sendDurableMessageBatch } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createPluginRuntimeMock,
+  createTestRegistry,
+  resetGlobalHookRunner,
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "openclaw/plugin-sdk/channel-test-helpers";
+import { drainPendingDeliveries } from "openclaw/plugin-sdk/delivery-queue-runtime";
 import {
   collectErrorGraphCandidates,
   PlatformMessageNotDispatchedError,
 } from "openclaw/plugin-sdk/error-runtime";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { withServer } from "openclaw/plugin-sdk/test-env";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import type { ClawdbotConfig } from "../runtime-api.js";
+import { withStateDirEnv } from "openclaw/plugin-sdk/test-env";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { feishuPlugin } from "./channel.js";
 import { resetFeishuProxyAgentForTest } from "./client.js";
+import {
+  AUTH_PATH,
+  COMMENT_PATH,
+  FILE_PATH,
+  MESSAGE_PATH,
+  TARGET,
+  readFeishuQueueState,
+  withFeishuTransport,
+} from "./outbound.send-authority.test-fixtures.js";
 import { setFeishuRuntime } from "./runtime.js";
 
 const { resolveProxy } = vi.hoisted(() => ({
@@ -25,129 +39,11 @@ vi.mock("openclaw/plugin-sdk/extension-shared", async (importOriginal) => ({
   resolveAmbientNodeProxyAgent: resolveProxy,
 }));
 
-const AUTH_PATH = "/open-apis/auth/v3/tenant_access_token/internal";
-const MESSAGE_PATH = "/open-apis/im/v1/messages";
-const FILE_PATH = "/open-apis/im/v1/files";
-const COMMENT_PATH = "/open-apis/drive/v1/files/doc_fixture/comments";
 const COMMENT_TARGET = "comment:docx:doc_fixture:comment_fixture";
-const TARGET = "oc_delivery";
 const CARD = JSON.stringify({
   schema: "2.0",
   body: { elements: [{ tag: "markdown", content: "A card reply." }] },
 });
-type WireRequest = { method: string; path: string; body: string };
-
-async function withFeishuTransport(
-  run: (fixture: {
-    cfg: ClawdbotConfig;
-    requests: WireRequest[];
-    gate: () => ReturnType<typeof createDeferred<void>>;
-    track: <T>(operation: Promise<T>) => Promise<T>;
-    intercept: (path: string, wait: () => Promise<void>) => void;
-    respond: (
-      handler: (request: WireRequest, response: ServerResponse) => Promise<boolean>,
-    ) => void;
-  }) => Promise<void>,
-) {
-  vi.stubEnv("OPENCLAW_PROXY_ACTIVE", "0");
-  resolveProxy.mockResolvedValue(undefined);
-  resetFeishuProxyAgentForTest();
-  const requests: WireRequest[] = [];
-  const pending: Promise<unknown>[] = [];
-  const releases: Array<() => void> = [];
-  const interceptors: number[] = [];
-  let handleRequest: (
-    request: WireRequest,
-    response: ServerResponse,
-  ) => Promise<boolean> = async () => false;
-  await withServer(
-    (request, response) => {
-      void (async () => {
-        const chunks: Buffer[] = [];
-        for await (const chunk of request) {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        }
-        const record: WireRequest = {
-          method: request.method ?? "",
-          path: new URL(request.url ?? "/", "http://127.0.0.1").pathname,
-          body: Buffer.concat(chunks).toString("utf8"),
-        };
-        requests.push(record);
-        if (await handleRequest(record, response)) {
-          return;
-        }
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(
-          JSON.stringify(
-            record.path === AUTH_PATH
-              ? { code: 0, tenant_access_token: "loopback-token", expire: 7200 }
-              : record.path === FILE_PATH
-                ? { code: 0, data: { file_key: "file_uploaded" } }
-                : record.path === `${COMMENT_PATH}/batch_query`
-                  ? {
-                      code: 0,
-                      data: { items: [{ comment_id: "comment_fixture", is_whole: false }] },
-                    }
-                  : record.path === `${COMMENT_PATH}/comment_fixture/replies`
-                    ? { code: 0, data: { reply_id: "reply_accepted" } }
-                    : { code: 0, data: { message_id: "om_accepted", chat_id: TARGET } },
-          ),
-        );
-      })().catch((error: unknown) => {
-        response.writeHead(500).end(String(error));
-      });
-    },
-    async (origin) => {
-      const cfg: ClawdbotConfig = {
-        channels: {
-          feishu: {
-            enabled: true,
-            appId: `cli_delivery_${randomUUID()}`,
-            appSecret: "loopback-placeholder", // pragma: allowlist secret
-            domain: origin,
-            renderMode: "raw",
-          },
-        },
-      };
-      try {
-        await run({
-          cfg,
-          requests,
-          gate: () => {
-            const gate = createDeferred<void>();
-            releases.push(() => gate.resolve());
-            return gate;
-          },
-          track: (operation) => {
-            pending.push(operation);
-            return operation;
-          },
-          intercept: (path, wait) => {
-            interceptors.push(
-              Lark.defaultHttpInstance.interceptors.request.use(async (options) => {
-                if (new URL(options.url ?? "").pathname === path) {
-                  await wait();
-                }
-                return options;
-              }),
-            );
-          },
-          respond: (handler) => {
-            handleRequest = handler;
-          },
-        });
-      } finally {
-        for (const release of releases) {
-          release();
-        }
-        await Promise.allSettled(pending);
-        for (const interceptor of interceptors) {
-          Lark.defaultHttpInstance.interceptors.request.eject(interceptor);
-        }
-      }
-    },
-  );
-}
 
 function preferredTextSend() {
   const send = feishuPlugin.message?.send?.text;
@@ -241,7 +137,15 @@ function expectRetired(error: unknown) {
   );
 }
 
+beforeEach(() => {
+  vi.stubEnv("OPENCLAW_PROXY_ACTIVE", "0");
+  resolveProxy.mockResolvedValue(undefined);
+  resetFeishuProxyAgentForTest();
+});
+
 afterEach(() => {
+  resetGlobalHookRunner();
+  resetPluginRuntimeStateForTest();
   resetFeishuProxyAgentForTest();
   resolveProxy.mockReset();
   vi.unstubAllEnvs();
@@ -444,16 +348,16 @@ describe("Feishu delivery authority through the registered adapter and Lark tran
     },
   ])(
     "stops a $name redirect without misclassifying earlier I/O or logging request data",
-    async ({ path, visible, marker }) => {
+    async ({ path: redirectPath, visible, marker }) => {
       await withFeishuTransport(async (fixture) => {
         const logs = (["log", "warn", "error"] as const).map((level) =>
           vi.spyOn(console, level).mockImplementation(() => {}),
         );
         const sender = createSender();
         fixture.respond(async (request, response) => {
-          if (request.path === path) {
+          if (request.path === redirectPath) {
             sender.retire();
-            response.writeHead(307, { location: `${path}/redirected` }).end();
+            response.writeHead(307, { location: `${redirectPath}/redirected` }).end();
             return true;
           }
           return false;
@@ -616,29 +520,170 @@ describe("Feishu delivery authority through the registered adapter and Lark tran
     });
   });
 
-  it("marks a document-comment reply after metadata and keeps acceptance after retirement", async () => {
-    await withFeishuTransport(async (fixture) => {
-      const sender = createSender();
-      sender.onPlatformSendDispatch.mockImplementation(async () => {
-        expect(fixture.requests.map((request) => request.path)).toEqual([
-          AUTH_PATH,
-          `${COMMENT_PATH}/batch_query`,
+  it.each(["reply", "whole", "fallback"] as const)(
+    "marks a document-comment %s after preparation and keeps accepted results",
+    async (mode) => {
+      await withFeishuTransport(async (fixture) => {
+        const sender = createSender();
+        const replyPath = `${COMMENT_PATH}/comment_fixture/replies`;
+        const createPath = "/open-apis/drive/v1/files/doc_fixture/new_comments";
+        const dispatchRequests: string[][] = [];
+        sender.onPlatformSendDispatch.mockImplementation(async () => {
+          dispatchRequests.push(fixture.requests.map((request) => request.path));
+        });
+        fixture.respond(async (request, response) => {
+          if (mode === "whole" && request.path === `${COMMENT_PATH}/batch_query`) {
+            response.writeHead(200, { "content-type": "application/json" }).end(
+              JSON.stringify({
+                code: 0,
+                data: { items: [{ comment_id: "comment_fixture", is_whole: true }] },
+              }),
+            );
+            return true;
+          }
+          if (mode === "fallback" && request.path === replyPath) {
+            response
+              .writeHead(200, { "content-type": "application/json" })
+              .end(JSON.stringify({ code: 1069302 }));
+            return true;
+          }
+          if (request.path === (mode === "reply" ? replyPath : createPath)) {
+            sender.retire();
+            response.writeHead(200, { "content-type": "application/json" }).end(
+              JSON.stringify({
+                code: 0,
+                data:
+                  mode === "reply"
+                    ? { reply_id: "reply_accepted" }
+                    : { comment_id: "comment_accepted" },
+              }),
+            );
+            return true;
+          }
+          return false;
+        });
+        const result = await preferredTextSend()({
+          ...sender,
+          cfg: fixture.cfg,
+          to: COMMENT_TARGET,
+          text: "An accepted document reply.",
+        });
+        expect(result.receipt?.platformMessageIds).toEqual([
+          mode === "reply" ? "reply_accepted" : "comment_accepted",
+        ]);
+        expect(dispatchRequests).toEqual([
+          [AUTH_PATH, `${COMMENT_PATH}/batch_query`],
+          ...(mode === "fallback" ? [[AUTH_PATH, `${COMMENT_PATH}/batch_query`, replyPath]] : []),
         ]);
       });
-      fixture.respond(async (request) => {
-        if (request.path === `${COMMENT_PATH}/comment_fixture/replies`) {
-          sender.retire();
-        }
-        return false;
+    },
+  );
+
+  it.each([
+    { scenario: "token", result: "failed", queued: "failed", messages: 0 },
+    { scenario: "upload", result: "failed", queued: "failed", messages: 0 },
+    { scenario: "accepted", result: "sent", queued: "completed", messages: 1 },
+    { scenario: "partial", result: "partial_failed", queued: "pending", messages: 1 },
+    { scenario: "redirect", result: "failed", queued: "pending", messages: 1 },
+  ] as const)(
+    "settles durable $scenario delivery and prevents recovery replay",
+    async ({ scenario, result: expectedResult, queued, messages }) => {
+      await withStateDirEnv("openclaw-feishu-authority-", async ({ stateDir }) => {
+        await withFeishuTransport(async (fixture) => {
+          const sender = createSender();
+          const deliveryIntentId = `feishu-authority-${scenario}`;
+          setActivePluginRegistry(
+            createTestRegistry([{ pluginId: "feishu", plugin: feishuPlugin, source: "test" }]),
+          );
+          resetGlobalHookRunner();
+          const notePath = path.join(stateDir, "note.txt");
+          if (scenario === "upload") {
+            await writeFile(notePath, "attachment");
+            setFeishuRuntime(
+              createPluginRuntimeMock({
+                media: {
+                  loadWebMedia: async () => ({
+                    buffer: Buffer.from("attachment"),
+                    fileName: "note.txt",
+                    contentType: "text/plain",
+                    kind: undefined,
+                  }),
+                },
+              }),
+            );
+          }
+          fixture.respond(async (request, response) => {
+            if (
+              (scenario === "token" && request.path === AUTH_PATH) ||
+              (scenario === "upload" && request.path === FILE_PATH) ||
+              (scenario === "accepted" && request.path === MESSAGE_PATH)
+            ) {
+              sender.retire();
+            }
+            if (scenario === "redirect" && request.path === MESSAGE_PATH) {
+              sender.retire();
+              response.writeHead(307, { location: `${MESSAGE_PATH}/redirected` }).end();
+              return true;
+            }
+            return false;
+          });
+          const result = await sendDurableMessageBatch({
+            cfg: fixture.cfg,
+            channel: "feishu",
+            to: TARGET,
+            accountId: "default",
+            durability: "required",
+            deliveryIntentId,
+            completionRetention: {
+              idPrefix: "feishu-authority-",
+              maxAgeMs: 60_000,
+              maxEntries: 10,
+            },
+            maxRetries: 2,
+            assertDirectAdapterHandoff: sender.assertDirectAdapterHandoff,
+            ...(scenario === "partial" ? { onDeliveryResult: () => sender.retire() } : {}),
+            mediaAccess: {
+              localRoots: [stateDir],
+              workspaceDir: stateDir,
+              readFile: (filePath) => readFile(filePath),
+            },
+            // Core sees fewer than 4k characters; Feishu's post soft breaks grow
+            // this payload past its limit and exercise the adapter's own fanout.
+            payloads: [
+              scenario === "upload"
+                ? { mediaUrl: notePath }
+                : { text: scenario === "partial" ? "line\n".repeat(700) : "A durable reply." },
+            ],
+          });
+          expect(result.status).toBe(expectedResult);
+          if (result.status === "sent" || result.status === "partial_failed") {
+            expect(result.receipt.platformMessageIds).toEqual(["om_accepted"]);
+          }
+          if (scenario === "partial") {
+            expect(result).toHaveProperty("sentBeforeError", true);
+          }
+          expect(readFeishuQueueState(stateDir, deliveryIntentId)).toMatchObject({
+            status: queued,
+            ...(queued === "pending" ? { recovery_state: "unknown_after_send" } : {}),
+          });
+          const visibleRequests = () =>
+            fixture.requests.filter((request) => request.path.startsWith(MESSAGE_PATH));
+          const beforeRecovery = visibleRequests();
+          expect(beforeRecovery).toHaveLength(messages);
+          await drainPendingDeliveries({
+            drainKey: "feishu:default",
+            logLabel: "Feishu sender retirement recovery",
+            cfg: fixture.cfg,
+            stateDir,
+            log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+            selectEntry: (entry) => ({ match: entry.channel === "feishu", bypassBackoff: true }),
+          });
+          expect(visibleRequests()).toEqual(beforeRecovery);
+          expect(readFeishuQueueState(stateDir, deliveryIntentId)?.status).toBe(
+            queued === "completed" ? "completed" : "failed",
+          );
+        });
       });
-      const result = await preferredTextSend()({
-        ...sender,
-        cfg: fixture.cfg,
-        to: COMMENT_TARGET,
-        text: "An accepted document reply.",
-      });
-      expect(result.receipt?.platformMessageIds).toEqual(["reply_accepted"]);
-      expect(sender.onPlatformSendDispatch).toHaveBeenCalledOnce();
-    });
-  });
+    },
+  );
 });

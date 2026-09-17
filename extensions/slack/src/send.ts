@@ -61,10 +61,10 @@ import {
   SLACK_QUESTION_FINALIZATION_BLOCKS,
 } from "./reply-action-ids.js";
 import { recordSlackThreadParticipation } from "./sent-thread-cache.js";
+import { cacheSlackDmChannelId, readCachedSlackDmChannelId } from "./slack-dm-channel-cache.js";
 import { canonicalizeSlackApiTargetId, parseSlackTarget } from "./target-parsing.js";
 import { normalizeSlackThreadTsCandidate, resolveSlackThreadTsValue } from "./thread-ts.js";
 import { truncateSlackText, truncateSlackTextByUtf8Bytes } from "./truncate.js";
-const SLACK_DM_CHANNEL_CACHE_MAX = 1024;
 const SLACK_DELIVERY_METADATA_EVENT = "openclaw_delivery";
 const SLACK_DELIVERY_METADATA_KEY = "openclaw_delivery_id";
 const SLACK_DELIVERY_METADATA_PART_INDEX_KEY = "openclaw_delivery_part_index";
@@ -75,7 +75,6 @@ const SLACK_RECONCILE_CLOCK_SKEW_MS = 5 * 60_000;
 const SLACK_RECONCILE_LIMIT = 100;
 const SLACK_RECONCILE_MAX_PAGES = 10;
 const SLACK_ENTERPRISE_LISTENER_QUEUE_CREDENTIAL = "listener-scoped-enterprise";
-const slackDmChannelCaches = new WeakMap<WebClient, Map<string, string>>();
 const slackSendQueue = new KeyedAsyncQueue();
 
 type SlackRecipient =
@@ -544,38 +543,6 @@ async function runQueuedSlackSend<T>(key: string, task: () => Promise<T>): Promi
   return await slackSendQueue.enqueue(key, task);
 }
 
-function createSlackDmCacheKey(params: {
-  accountId?: string;
-  token: string;
-  recipientId: string;
-}): string {
-  return `${params.accountId ?? "default"}:${createSlackTokenCacheKey(params.token)}:${
-    params.recipientId
-  }`;
-}
-
-function getSlackDmChannelCache(client: WebClient): Map<string, string> {
-  const existing = slackDmChannelCaches.get(client);
-  if (existing) {
-    return existing;
-  }
-  const cache = new Map<string, string>();
-  slackDmChannelCaches.set(client, cache);
-  return cache;
-}
-
-function setSlackDmChannelCache(cache: Map<string, string>, key: string, channelId: string): void {
-  if (cache.has(key)) {
-    cache.delete(key);
-  } else if (cache.size >= SLACK_DM_CHANNEL_CACHE_MAX) {
-    const oldest = cache.keys().next().value;
-    if (oldest) {
-      cache.delete(oldest);
-    }
-  }
-  cache.set(key, channelId);
-}
-
 function isSlackUserRecipient(recipient: SlackRecipient): boolean {
   return recipient.kind === "user";
 }
@@ -611,13 +578,13 @@ async function resolveChannelId(
   if (!isSlackUserRecipient(recipient)) {
     return { channelId: recipient.id };
   }
-  const cacheKey = createSlackDmCacheKey({
+  const cacheParams = {
+    cacheOwner: params.dmCacheOwner ?? client,
     accountId: params.accountId,
     token: params.token,
     recipientId: recipient.id,
-  });
-  const cache = getSlackDmChannelCache(params.dmCacheOwner ?? client);
-  const cachedChannelId = cache.get(cacheKey);
+  };
+  const cachedChannelId = readCachedSlackDmChannelId(cacheParams);
   if (cachedChannelId) {
     return { channelId: cachedChannelId, isDm: true, cacheHit: true };
   }
@@ -628,7 +595,7 @@ async function resolveChannelId(
   if (!channelId) {
     throw new Error("Failed to open Slack DM channel");
   }
-  setSlackDmChannelCache(cache, cacheKey, channelId);
+  cacheSlackDmChannelId(cacheParams, channelId);
   return { channelId, isDm: true, cacheHit: false };
 }
 

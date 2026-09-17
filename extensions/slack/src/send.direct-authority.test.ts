@@ -100,6 +100,38 @@ describe("Slack direct-delivery request authority", () => {
     );
   });
 
+  it("reuses the credential-scoped DM cache across direct sends", async () => {
+    const paths: string[] = [];
+    await withServer(
+      (request, response) => {
+        paths.push(request.url ?? "");
+        request.resume();
+        sendSlackResponse(
+          response,
+          request.url === "/api/conversations.open"
+            ? { ok: true, channel: { id: "D123" } }
+            : { ok: true, ts: `${paths.length}.1`, channel: "D123" },
+        );
+      },
+      async (baseUrl) => {
+        const cfg = useSlackApi(baseUrl);
+        const sendOpts = {
+          cfg,
+          threadTs: "171234.1",
+          assertDirectAdapterHandoff: assertLive(() => true),
+        };
+
+        await sendMessageSlack("user:U123", "first", sendOpts);
+        await sendMessageSlack("user:U123", "second", sendOpts);
+        expect(paths).toEqual([
+          "/api/conversations.open",
+          "/api/chat.postMessage",
+          "/api/chat.postMessage",
+        ]);
+      },
+    );
+  });
+
   it("stops later chunks after direct authority is revoked", async () => {
     const paths: string[] = [];
     const onDeliveryResult = vi.fn();

@@ -5,8 +5,12 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient, GatewayEventListener } from "../../api/gateway.ts";
 import type { CronJob, CronJobsListResult } from "../../api/types.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
+import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import type { CronState } from "../../lib/cron/index.ts";
+import { createCronViewJob } from "./view.test-support.ts";
 import "./cron-page.ts";
+
+vi.mock("../../components/confirm-dialog.ts", () => ({ showConfirmDialog: vi.fn() }));
 
 type CronTestPage = HTMLElement & {
   context: ApplicationContext;
@@ -21,7 +25,21 @@ type CronTestPage = HTMLElement & {
   patchForm: (patch: Partial<CronState["cronForm"]>) => void;
   closePanel: () => void;
   submitForm: () => void;
+  selectJob: (job: CronJob) => void;
+  removeJob: (job: CronJob) => Promise<void>;
 };
+
+function conversationTarget(target: string): ConversationListItem {
+  return {
+    conversationRef: `conv_${target}`,
+    channel: "telegram",
+    accountId: "default",
+    kind: "group",
+    target,
+    firstSeenAt: 0,
+    lastSeenAt: 0,
+  };
+}
 
 function waitForCronPage(assertion: () => void) {
   return vi.waitFor(assertion, { interval: 1 });
@@ -672,4 +690,150 @@ describe("CronPage lifecycle", () => {
     expect(request).not.toHaveBeenCalled();
     expect(secondContext.channels.refresh).not.toHaveBeenCalled();
   });
+
+  it("drops an in-flight directory failure after the selected task is deleted", async () => {
+    const pending = createDeferred<{ conversations: ConversationListItem[] }>();
+    const fallbackRequest = createRequest();
+    const request = vi.fn(async (method: string) => {
+      if (method === "conversations.list") {
+        return pending.promise;
+      }
+      return fallbackRequest(method);
+    });
+    vi.mocked(showConfirmDialog).mockResolvedValue(true);
+    const gateway = createGateway({ request } as unknown as GatewayBrowserClient, true);
+    const page = createPage(createContext(gateway, "writer"));
+
+    await waitForCronPage(() => expect(page.cron.connected).toBe(true));
+    const job = createCronViewJob("daily-digest", {
+      configRevision: "rev-1",
+      sessionTarget: "isolated",
+      payload: { kind: "agentTurn", message: "Send the digest" },
+    });
+    page.selectJob(job);
+    page.patchForm({ deliveryMode: "announce", deliveryChannel: "telegram" });
+    await waitForCronPage(() =>
+      expect(request).toHaveBeenCalledWith("conversations.list", expect.anything()),
+    );
+
+    await page.removeJob(job);
+    await waitForCronPage(() => expect(page.cron.cronEditingJob).toBeNull());
+    expect(request).toHaveBeenCalledWith("cron.remove", { id: "daily-digest" });
+
+    pending.reject(new Error("late directory failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(page.deliveryConversations).toEqual([]);
+    expect(page.deliveryConversationsError).toBeNull();
+  });
+
+  it("clears a published directory error when the selected task is deleted", async () => {
+    const fallbackRequest = createRequest();
+    const request = vi.fn(async (method: string) => {
+      if (method === "conversations.list") {
+        throw new Error("temporary directory failure");
+      }
+      return fallbackRequest(method);
+    });
+    vi.mocked(showConfirmDialog).mockResolvedValue(true);
+    const gateway = createGateway({ request } as unknown as GatewayBrowserClient, true);
+    const page = createPage(createContext(gateway, "writer"), { render: true });
+
+    await waitForCronPage(() => expect(page.cron.connected).toBe(true));
+    const job = createCronViewJob("daily-digest", {
+      configRevision: "rev-1",
+      sessionTarget: "isolated",
+      payload: { kind: "agentTurn", message: "Send the digest" },
+    });
+    page.selectJob(job);
+    page.patchForm({ deliveryMode: "announce", deliveryChannel: "telegram" });
+    await waitForCronPage(() => expect(page.deliveryConversationsError).toContain("temporary"));
+
+    await page.removeJob(job);
+
+    await waitForCronPage(() => expect(page.deliveryConversationsError).toBeNull());
+    expect(page.deliveryConversations).toEqual([]);
+    // The published failure would otherwise survive onto the overview and
+    // suppress the starter automations shown for an empty scheduler.
+    await waitForCronPage(() =>
+      expect(page.querySelectorAll(".cron-suggestion").length).toBeGreaterThan(0),
+    );
+  });
+
+  it.each([
+    ["a reconnect", "reconnect"],
+    ["an agent scope change", "scope"],
+  ] as const)(
+    "leaves the replacement page's directory alone when a save outlives %s",
+    async (_label, rotation) => {
+      const save = createDeferred<{ id: string }>();
+      const staleDirectory = createDeferred<{ conversations: ConversationListItem[] }>();
+      const freshDirectory = createDeferred<{ conversations: ConversationListItem[] }>();
+      const fallbackRequest = createRequest();
+      let directoryCalls = 0;
+      const request = vi.fn(async (method: string) => {
+        if (method === "cron.add") {
+          return save.promise;
+        }
+        if (method === "conversations.list") {
+          directoryCalls += 1;
+          return directoryCalls === 1 ? staleDirectory.promise : freshDirectory.promise;
+        }
+        return fallbackRequest(method);
+      });
+      const gateway = createGateway({ request } as unknown as GatewayBrowserClient, true);
+      const context = createContext(gateway, "writer");
+      const page = createPage(context);
+
+      await waitForCronPage(() => expect(page.cron.connected).toBe(true));
+      page.cron.cronCreateOpen = true;
+      page.patchForm({
+        name: "Saved task",
+        payloadText: "Send the digest",
+        deliveryMode: "announce",
+        deliveryChannel: "telegram",
+        deliveryTo: "-100saved",
+      });
+      await waitForCronPage(() => expect(directoryCalls).toBe(1));
+      staleDirectory.resolve({ conversations: [conversationTarget("-100stale")] });
+      await waitForCronPage(() =>
+        expect(page.deliveryConversations.map((entry) => entry.target)).toEqual(["-100stale"]),
+      );
+
+      page.submitForm();
+      await waitForCronPage(() =>
+        expect(request).toHaveBeenCalledWith("cron.add", expect.anything()),
+      );
+
+      // A reconnect rotates page state and connection scope; an agent scope
+      // change rotates only the page state on the same live connection.
+      const retiredState = page.cron;
+      if (rotation === "reconnect") {
+        gateway.emitSnapshot({ phase: "stopped" });
+        gateway.emitSnapshot({
+          phase: "connected",
+          client: { request } as unknown as GatewayBrowserClient,
+        });
+      } else {
+        context.agentSelection.setScope("reader");
+      }
+      await waitForCronPage(() => expect(page.cron).not.toBe(retiredState));
+      page.cron.cronCreateOpen = true;
+      page.patchForm({ deliveryMode: "announce", deliveryChannel: "telegram" });
+      await waitForCronPage(() => expect(directoryCalls).toBe(2));
+
+      save.resolve({ id: "saved-1" });
+      // The retired save runs its own continuation to completion, which is what
+      // used to clear the replacement page's cache and advance its generation.
+      await waitForCronPage(() => expect(retiredState.cronCreateOpen).toBe(false));
+
+      freshDirectory.resolve({ conversations: [conversationTarget("-100fresh")] });
+      await waitForCronPage(() =>
+        expect(page.deliveryConversations.map((entry) => entry.target)).toEqual(["-100fresh"]),
+      );
+      expect(directoryCalls).toBe(2);
+      expect(page.deliveryConversationsError).toBeNull();
+    },
+  );
 });

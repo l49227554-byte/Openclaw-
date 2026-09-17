@@ -1,5 +1,5 @@
 import { consume } from "@lit/context";
-import type { ConversationListItem, ConversationListResult } from "@openclaw/gateway-protocol";
+import type { ConversationListItem } from "@openclaw/gateway-protocol";
 import { html, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { AgentsListResult, CronJob, CronScratchGetResult } from "../../api/types.ts";
@@ -43,6 +43,7 @@ import { resolveSessionNavigationAgentId } from "../../lib/sessions/route-naviga
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { CronDeliveryDirectory } from "./delivery-directory.ts";
 import {
   buildCronSuggestions,
   resolveConversationTargetSuggestions,
@@ -62,8 +63,6 @@ class CronPage extends OpenClawLightDomElement {
   @state() private cron = createInitialCronState();
   @state() private agentsList: AgentsListResult | null = null;
   @state() private cronModelSuggestions: string[] = [];
-  @state() private deliveryConversations: ConversationListItem[] = [];
-  @state() private deliveryConversationsError: string | null = null;
   @state() private modelSuggestionsError: string | null = null;
   @state() private listTab: CronListTab = "tasks";
   @state() private detailTab: CronDetailTab = "settings";
@@ -84,7 +83,19 @@ class CronPage extends OpenClawLightDomElement {
   private routeJobRequested = false;
   private highlightedRunId: string | null = null;
   private pendingRunScroll = false;
-  private deliveryConversationsRequest = 0;
+  private readonly deliveryDirectory = new CronDeliveryDirectory({
+    currentCronState: () => this.cron,
+    canManage: () => this.canManageCron,
+    captureConnection: () => this.gateway.capture(),
+    isCurrentConnection: (scope) => this.gateway.isCurrent(scope),
+    notify: (cronState) => this.requestCronUpdate(cronState),
+  });
+  private get deliveryConversations(): ConversationListItem[] {
+    return this.deliveryDirectory.conversations;
+  }
+  private get deliveryConversationsError(): string | null {
+    return this.deliveryDirectory.error;
+  }
   private modelSuggestionsRequest: { state: CronState; agentId: string } | null = null;
   private heartbeatScratchRequest = 0;
   private pageHidden = document.visibilityState === "hidden";
@@ -96,9 +107,7 @@ class CronPage extends OpenClawLightDomElement {
         this.resetGatewayState(change.snapshot);
       } else if (!readGatewayOperatorAccess(change.snapshot).canAdmin) {
         this.clearHeartbeatScratch();
-        this.deliveryConversationsRequest += 1;
-        this.deliveryConversations = [];
-        this.deliveryConversationsError = null;
+        this.deliveryDirectory.clear();
       }
     },
     ensureInitialData: () => this.ensureInitialData(),
@@ -192,22 +201,13 @@ class CronPage extends OpenClawLightDomElement {
     this.cron.cronAgentId = this.context.agentSelection.state.scopeId;
     this.agentsList = connected ? this.context.agents.state.agentsList : null;
     this.cronModelSuggestions = [];
-    this.deliveryConversationsRequest += 1;
-    this.deliveryConversations = [];
-    this.deliveryConversationsError = null;
+    this.deliveryDirectory.clear();
     this.modelSuggestionsError = null;
     this.modelSuggestionsRequest = null;
   }
 
   private syncAgentsState() {
     this.agentsList = this.context.agents.state.agentsList;
-  }
-
-  private clearDeliveryConversations(cronState: CronState = this.cron) {
-    this.deliveryConversationsRequest += 1;
-    this.deliveryConversations = [];
-    this.deliveryConversationsError = null;
-    this.requestCronUpdate(cronState);
   }
 
   private canRefreshCron(cron: CronState = this.cron) {
@@ -400,52 +400,9 @@ class CronPage extends OpenClawLightDomElement {
     this.cron.cronForm = next;
     this.cron.cronFieldErrors = validateCronForm(this.cron.cronForm);
     if (shouldReloadDeliveryConversations) {
-      void this.loadDeliveryConversations();
+      void this.deliveryDirectory.load();
     }
     this.requestCronUpdate();
-  }
-
-  private async loadDeliveryConversations(cronState: CronState = this.cron) {
-    const requestId = ++this.deliveryConversationsRequest;
-    this.deliveryConversations = [];
-    this.deliveryConversationsError = null;
-    this.requestCronUpdate(cronState);
-    const client = cronState.client;
-    const mode = cronState.cronForm.deliveryMode;
-    const channel = cronState.cronForm.deliveryChannel.trim();
-    const agentId = cronState.cronForm.agentId.trim() || cronState.cronAgentId?.trim() || "";
-    if (!this.canManageCron || !client || mode !== "announce" || !agentId || channel === "last") {
-      return;
-    }
-    const connectionScope = this.gateway.capture();
-    if (!connectionScope) {
-      return;
-    }
-    const isCurrent = () =>
-      requestId === this.deliveryConversationsRequest &&
-      this.cron === cronState &&
-      this.canManageCron &&
-      this.gateway.isCurrent(connectionScope);
-    try {
-      const result = await client.request<ConversationListResult>("conversations.list", {
-        agentId,
-        channel,
-        limit: 100,
-      });
-      if (isCurrent()) {
-        // The directory is bounded, so it is authoritative only as a source of
-        // target suggestions. Never infer hidden account or topic routing from it.
-        this.deliveryConversations = result.conversations;
-        this.deliveryConversationsError = null;
-        this.requestCronUpdate(cronState);
-      }
-    } catch (error) {
-      if (isCurrent()) {
-        this.deliveryConversations = [];
-        this.deliveryConversationsError = `Could not load recipient suggestions: ${formatUiError(error)}`;
-        this.requestCronUpdate(cronState);
-      }
-    }
   }
 
   private selectJob(job: CronJob, runId: string | null = null) {
@@ -458,7 +415,7 @@ class CronPage extends OpenClawLightDomElement {
     }
     this.cron.cronCreateOpen = false;
     startCronEdit(this.cron, job);
-    void this.loadDeliveryConversations();
+    void this.deliveryDirectory.load();
     this.requestCronUpdate();
     if (job.payload?.kind === "heartbeat") {
       void this.loadHeartbeatScratch(this.cron, job.id, this.heartbeatScratchRequest);
@@ -533,7 +490,7 @@ class CronPage extends OpenClawLightDomElement {
     // A clone is a prefilled create: the editor submits cron.add, not update.
     startCronClone(this.cron, job);
     this.cron.cronCreateOpen = true;
-    void this.loadDeliveryConversations();
+    void this.deliveryDirectory.load();
     this.requestCronUpdate();
   }
 
@@ -578,7 +535,16 @@ class CronPage extends OpenClawLightDomElement {
       return;
     }
     await this.runCronTask(async (current) => {
+      const removedSelectedJob = current.cronEditingJob?.id === selectedJobId;
       await removeCronJob(current, currentJob);
+      if (removedSelectedJob && this.deliveryDirectory.ownedBy(current, connectionScope)) {
+        // Deletion exits the editor that owned recipient discovery, so retire
+        // it too. Otherwise a pending directory failure still passes its own
+        // currency check and publishes onto the overview, where the page error
+        // suppresses the starter automations; an already-published error
+        // likewise survives the deletion.
+        this.deliveryDirectory.clear(current);
+      }
       // Removing the selected task drops the panel back to overview;
       // the runs scope must follow or recent activity stays empty.
       if (current.cronRunsScope === "job" && current.cronRunsJobId === null) {
@@ -591,7 +557,7 @@ class CronPage extends OpenClawLightDomElement {
   private closePanel() {
     this.clearHeartbeatScratch();
     this.pendingRouteData = null;
-    this.clearDeliveryConversations();
+    this.deliveryDirectory.clear();
     cancelCronEdit(this.cron, this.context.agentSelection.state.selectedId);
     this.cron.cronCreateOpen = false;
     this.requestCronUpdate();
@@ -603,14 +569,24 @@ class CronPage extends OpenClawLightDomElement {
   }
 
   private submitForm(options: { runNow?: boolean } = {}) {
+    const connectionScope = this.gateway.capture();
     this.runCronAdminTask(async (cronState) => {
       const result = await addCronJob(cronState);
       if (!result.saved) {
         return;
       }
-      this.clearDeliveryConversations(cronState);
+      // The save yields while the page, the connection, and the editor can all
+      // rotate. Only a save that still owns discovery may clear its cache or
+      // start another read; the rest of this continuation only touches the
+      // CronState it captured, which a replacement page no longer renders.
+      const ownsDiscovery = this.deliveryDirectory.ownedBy(cronState, connectionScope);
+      if (ownsDiscovery) {
+        this.deliveryDirectory.clear(cronState);
+      }
       if (cronState.cronEditingJob) {
-        void this.loadDeliveryConversations(cronState);
+        if (ownsDiscovery) {
+          void this.deliveryDirectory.load(cronState);
+        }
         return;
       }
       if (options.runNow && result.jobId) {

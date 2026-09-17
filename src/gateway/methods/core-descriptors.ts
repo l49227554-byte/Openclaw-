@@ -677,4 +677,13 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   // Plugin skill reads append without shifting previously advertised method indices.
   ["plugins.skills.read", "plugins", "operator.read", "2026.9"],
   ["diagnostics.heapProfile", "diagnostics", "operator.admin", "2026.9"],
+  // Secrets assignment rows (agent-scoped audiences).
+  ["secrets.assignments.list", null, "operator.admin", "2026.9"],
+  ["secrets.assignments.has", null, "operator.admin", "2026.9"],
+  ["secrets.assignments.entry", null, "operator.admin", "2026.9"],
+  ["secrets.assignments.admin.list", null, "operator.admin", "2026.9"],
+  ["secrets.assignments.admin.assign", null, "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
+  ["secrets.assignments.admin.unassign", null, "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
+  ["secrets.assignments.enforcement.get", null, "operator.admin", "2026.9"],
+  ["secrets.assignments.enforcement.set", null, "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

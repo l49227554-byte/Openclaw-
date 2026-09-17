@@ -17,6 +17,7 @@ type SetOptions = {
   value?: string;
   valueFile?: string;
   kind?: string;
+  audience?: string;
   scope?: string;
   dryRun?: boolean;
   allowHost?: string[];
@@ -24,6 +25,8 @@ type SetOptions = {
 };
 type RemoveOptions = { scope?: string; dryRun?: boolean; yes?: boolean };
 type ImportOptions = RemoveOptions & { from?: string; kind?: string };
+type AssignmentOptions = { agent: string; provider?: string; json?: boolean };
+type UnassignmentOptions = { agent: string; json?: boolean; yes?: boolean };
 type StoreKind = "secret" | "env";
 
 class SecretStoreCliFailure extends Error {
@@ -56,6 +59,14 @@ function storeKind(kind: string | undefined, name: string): StoreKind {
   throw new SecretStoreCliFailure(2, `Invalid kind "${kind}"; use "secret" or "env".`);
 }
 
+/** CLI audience option: "all" (legacy team-wide) or "selected" (assignment-gated). */
+function normalizeAudienceOption(value: string): "all" | "selected" {
+  if (value === "all" || value === "selected") {
+    return value;
+  }
+  throw new SecretStoreCliFailure(2, `Invalid audience "${value}"; use "all" or "selected".`);
+}
+
 function assertStoreName(name: string): void {
   if (!ENV_SECRET_REF_ID_RE.test(name)) {
     throw new SecretStoreCliFailure(2, `Name must match ${String(ENV_SECRET_REF_ID_RE)}.`);
@@ -81,6 +92,9 @@ function mapStoreError(error: unknown): SecretStoreCliFailure {
       validation.code === "SECRET_STORE_INVALID_ALLOWED_HOST")
   ) {
     return new SecretStoreCliFailure(2, validation.message ?? "Invalid secret store input.");
+  }
+  if (validation?.name === "AgentSecretAssignmentValidationError") {
+    return new SecretStoreCliFailure(2, validation.message ?? "Invalid secret assignment input.");
   }
   return new SecretStoreCliFailure(1, formatErrorMessage(error));
 }
@@ -160,6 +174,64 @@ async function confirmMutation(message: string, yes: boolean | undefined): Promi
 }
 
 export function registerSecretStoreCli(secrets: Command): void {
+  secrets
+    .command("assign <NAME>")
+    .description("Assign a secret name to one agent (metadata only)")
+    .requiredOption("--agent <id>", "Agent ID")
+    .option("--provider <alias>", "Optional SecretRef provider hint")
+    .option("--json", "Output JSON", false)
+    .action((name: string, options: AssignmentOptions) =>
+      runStoreAction(
+        async () => {
+          assertStoreName(name);
+          const { writeAgentSecretAssignment } = await import("../secrets/assignment-store.js");
+          writeAgentSecretAssignment({
+            agentId: options.agent,
+            secretName: name,
+            ...(options.provider ? { providerHint: options.provider } : {}),
+            assignedBy: "cli",
+          });
+          return {
+            ok: true as const,
+            agentId: options.agent.toLowerCase(),
+            name,
+          };
+        },
+        options.json,
+        () => defaultRuntime.log(`Assigned ${name} to agent ${options.agent.toLowerCase()}.`),
+      ),
+    );
+
+  secrets
+    .command("unassign <NAME>")
+    .description("Remove a secret-name assignment from one agent")
+    .requiredOption("--agent <id>", "Agent ID")
+    .option("--yes", "Skip confirmation", false)
+    .option("--json", "Output JSON", false)
+    .action((name: string, options: UnassignmentOptions) =>
+      runStoreAction(
+        async () => {
+          assertStoreName(name);
+          await confirmMutation(
+            `Remove assignment ${name} from agent ${options.agent.toLowerCase()}?`,
+            options.yes,
+          );
+          const { deleteAgentSecretAssignment } = await import("../secrets/assignment-store.js");
+          deleteAgentSecretAssignment({
+            agentId: options.agent,
+            secretName: name,
+          });
+          return {
+            ok: true as const,
+            agentId: options.agent.toLowerCase(),
+            name,
+          };
+        },
+        options.json,
+        () => defaultRuntime.log(`Unassigned ${name} from agent ${options.agent.toLowerCase()}.`),
+      ),
+    );
+
   const store = secrets
     .command("store")
     .description("Manage the team-scoped SQLite secret and environment store")
@@ -194,6 +266,10 @@ export function registerSecretStoreCli(secrets: Command): void {
     .option("--value <value>", "Literal value (env kind only)")
     .option("--value-file <path>", "Read value from a file; use - for stdin")
     .option("--kind <secret|env>", "Entry kind (defaults from NAME)")
+    .option(
+      "--audience <all|selected>",
+      "Agent access: all agents (default) or selected agents via assignments",
+    )
     .option(
       "--allow-host <host>",
       "Allow substitution only for this exact host (repeatable)",
@@ -241,6 +317,7 @@ export function registerSecretStoreCli(secrets: Command): void {
             "--value is refused for secret entries. Use a stdin pipe, --value-file, or the interactive no-echo prompt.",
           );
         }
+        const audience = options.audience ? normalizeAudienceOption(options.audience) : undefined;
         const policyOnly =
           allowedHosts !== undefined &&
           options.value === undefined &&
@@ -257,6 +334,14 @@ export function registerSecretStoreCli(secrets: Command): void {
             allowedHosts,
             updatedBy: "cli",
           });
+          if (audience !== undefined) {
+            storeModule.updateSecretStoreAudience({
+              scope,
+              name,
+              audience,
+              updatedBy: "cli",
+            });
+          }
           defaultRuntime.log(
             allowedHosts.length > 0
               ? `Allowed ${name} for ${allowedHosts.join(", ")}.`
@@ -282,6 +367,7 @@ export function registerSecretStoreCli(secrets: Command): void {
           name,
           value,
           kind,
+          ...(audience !== undefined ? { audience } : {}),
           ...(allowedHosts !== undefined ? { allowedHosts } : {}),
           updatedBy: "cli",
         });
@@ -405,7 +491,11 @@ export function registerSecretStoreCli(secrets: Command): void {
         }
         await confirmMutation(`Import ${normalized.length} team store entries?`, options.yes);
         for (const entry of normalized) {
-          storeModule.writeSecretStoreEntry({ scope, ...entry, updatedBy: "cli" });
+          storeModule.writeSecretStoreEntry({
+            scope,
+            ...entry,
+            updatedBy: "cli",
+          });
         }
         storeModule.purgeExpiredSecretStoreEntries();
         defaultRuntime.log(`Imported ${normalized.length} team store entries.`);

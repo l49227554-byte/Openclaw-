@@ -136,38 +136,55 @@ describe("WebChat message tool internal source reply", () => {
     );
   });
 
-  it("stages buffer media before acknowledging the current-source send", async () => {
-    await withOpenClawTestState(
-      { layout: "state-only", prefix: "message-tool-source-buffer-" },
-      async (state) => {
-        await fs.mkdir(state.workspaceDir, { recursive: true });
-        const tool = createCurrentSourceMessageTool({ workspaceDir: state.workspaceDir });
-        const attachment = Buffer.from("current-source attachment");
+  it.each([
+    { name: "ordinary caption", message: "Attached proof.", expectedText: "Attached proof." },
+    {
+      name: "internal runtime context",
+      message:
+        "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nBOOT.md:\nWake up and report.\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+      expectedText: "",
+    },
+    {
+      name: "inbound delivery metadata",
+      message:
+        "Delivery: Final assistant text is not automatically delivered in this run. Use the `message` tool to send user-visible output.",
+      expectedText: "",
+    },
+  ])(
+    "stages buffer media with $name before acknowledging the current-source send",
+    async ({ message, expectedText }) => {
+      await withOpenClawTestState(
+        { layout: "state-only", prefix: "message-tool-source-buffer-" },
+        async (state) => {
+          await fs.mkdir(state.workspaceDir, { recursive: true });
+          const tool = createCurrentSourceMessageTool({ workspaceDir: state.workspaceDir });
+          const attachment = Buffer.from("current-source attachment");
 
-        const toolResult = await tool.execute("message-buffer-call", {
-          action: "send",
-          message: "Attached proof.",
-          buffer: attachment.toString("base64"),
-          filename: "proof.txt",
-          contentType: "text/plain",
-        });
+          const toolResult = await tool.execute("message-buffer-call", {
+            action: "send",
+            message,
+            buffer: attachment.toString("base64"),
+            filename: "proof.txt",
+            contentType: "text/plain",
+          });
 
-        const sourceReply = extractMessagingToolSourceReplyPayload(toolResult);
-        expect(sourceReply).toMatchObject({ text: "Attached proof." });
-        expect(sourceReply?.mediaUrls).toHaveLength(1);
-        expect(sourceReply?.attachments).toEqual([
-          expect.objectContaining({
-            name: "proof.txt",
-            mimeType: "text/plain",
-            trustedLocalMedia: true,
-          }),
-        ]);
-        const mediaPath = sourceReply?.mediaUrls?.[0];
-        expect(mediaPath).toBeTruthy();
-        await expect(fs.readFile(mediaPath as string)).resolves.toEqual(attachment);
-      },
-    );
-  });
+          const sourceReply = extractMessagingToolSourceReplyPayload(toolResult);
+          expect(sourceReply?.text ?? "").toBe(expectedText);
+          expect(sourceReply?.mediaUrls).toHaveLength(1);
+          expect(sourceReply?.attachments).toEqual([
+            expect.objectContaining({
+              name: "proof.txt",
+              mimeType: "text/plain",
+              trustedLocalMedia: true,
+            }),
+          ]);
+          const mediaPath = sourceReply?.mediaUrls?.[0];
+          expect(mediaPath).toBeTruthy();
+          await expect(fs.readFile(mediaPath as string)).resolves.toEqual(attachment);
+        },
+      );
+    },
+  );
 
   it("uses policy-scoped bridge access for remote-only current-source media", async () => {
     await withOpenClawTestState(

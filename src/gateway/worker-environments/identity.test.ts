@@ -77,4 +77,27 @@ describe("resolveWorkerSshIdentity", () => {
     ).rejects.toThrow("provider identity unavailable");
     expect(resolveGeneric).not.toHaveBeenCalled();
   });
+
+  it.each(["provider", "generic"] as const)(
+    "rejects a late %s identity without falling back",
+    async (owner) => {
+      const controller = new AbortController();
+      const closed = new Error("identity invocation closed");
+      const resolve = async () => {
+        controller.abort(closed);
+        return { kind: "material" as const, contents: "synthetic-worker-key" };
+      };
+      const resolveGeneric = vi.fn(resolve);
+      const request = {
+        provider: provider(owner === "provider" ? { resolveSshIdentity: resolve } : {}),
+        leaseId: "lease-1",
+        profile: PROFILE,
+        keyRef: KEY_REF,
+        assertAuthorized: () => controller.signal.throwIfAborted(),
+        resolveGeneric,
+      };
+      await expect(resolveWorkerSshIdentity(request)).rejects.toBe(closed);
+      expect(resolveGeneric).toHaveBeenCalledTimes(owner === "generic" ? 1 : 0);
+    },
+  );
 });

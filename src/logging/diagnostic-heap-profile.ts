@@ -29,10 +29,12 @@ type Metadata = {
   rssBefore: number;
   rssAfter: number;
 };
-type HeapProfileResult = Metadata & { redactedNodeCount: number } & (
-    | { truncated: false; profile: SamplingProfile }
-    | { truncated: true; summary: AllocationSummary[] }
-  );
+type HeapProfileResult = Metadata & {
+  redactedNodeCount: number;
+  unattributedSampleCount: number;
+  unattributedSampleBytes: number;
+  truncated: boolean;
+} & ({ profile: SamplingProfile } | { summary: AllocationSummary[] });
 
 function boundProfile(
   profile: HeapProfiler.SamplingHeapProfile,
@@ -81,11 +83,14 @@ function boundProfile(
     }
   }
   const safeSamples: SamplingProfile["samples"] = [];
+  let unattributedSampleCount = 0;
+  let unattributedSampleBytes = 0;
   for (const sample of samples) {
     assertProfile(
       isRecord(sample) &&
         typeof sample.nodeId === "number" &&
-        rows.has(sample.nodeId) &&
+        Number.isSafeInteger(sample.nodeId) &&
+        sample.nodeId > 0 &&
         typeof sample.size === "number" &&
         Number.isSafeInteger(sample.size) &&
         sample.size >= 0 &&
@@ -93,7 +98,16 @@ function boundProfile(
         Number.isSafeInteger(sample.ordinal) &&
         sample.ordinal >= 0,
     );
-    rows.get(sample.nodeId)!.count++;
+    const row = rows.get(sample.nodeId);
+    if (!row) {
+      // V8 can sample profile construction after a call site was translated.
+      // Preserve native tree sizes and report the missing attribution separately.
+      unattributedSampleCount++;
+      unattributedSampleBytes += sample.size;
+      assertProfile(Number.isSafeInteger(unattributedSampleBytes));
+      continue;
+    }
+    row.count++;
     safeSamples.push({ size: sample.size, nodeId: sample.nodeId, ordinal: sample.ordinal });
   }
   const ordered = [...rows.values()];
@@ -105,10 +119,15 @@ function boundProfile(
   }
   const head = ordered[0]?.node;
   assertProfile(head !== undefined);
-  const common = { ...metadata, redactedNodeCount };
+  const common = {
+    ...metadata,
+    redactedNodeCount,
+    unattributedSampleCount,
+    unattributedSampleBytes,
+  };
   const raw: HeapProfileResult = {
     ...common,
-    truncated: false,
+    truncated: unattributedSampleCount > 0,
     profile: { head, samples: safeSamples },
   };
   if (boundedJsonUtf8Bytes(raw, DIAGNOSTIC_PROFILE_MAX_BYTES).complete) {

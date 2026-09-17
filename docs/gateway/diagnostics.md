@@ -264,10 +264,17 @@ pressure never starts a capture automatically.
 
 The result includes actual elapsed `durationMs`, `samplingIntervalBytes`,
 `heapUsedBefore`, `heapUsedAfter`, `rssBefore`, `rssAfter` (all memory values in
-bytes), `redactedNodeCount`, and `truncated`. When `truncated` is false, `profile`
-contains the sanitized V8 sampling tree and samples. Each node's `selfSize` is the
-estimated allocation bytes at that call site; sum its descendants for inclusive
+bytes), `redactedNodeCount`, `unattributedSampleCount`, `unattributedSampleBytes`,
+and `truncated`. When present, `profile` contains the sanitized V8 sampling tree
+and samples. Each node's `selfSize` is the estimated allocation bytes at that call
+site; sum its descendants for inclusive
 bytes. Samples link to nodes by `nodeId`.
+
+V8 can sample allocations made while constructing its own profile, after a call
+site has been translated into the returned tree. Samples without a matching tree
+node are omitted and reported in `unattributedSampleCount` and
+`unattributedSampleBytes`; native tree sizes remain unchanged. `truncated` is true
+when such references are omitted or a size-capped summary replaces the tree.
 
 The complete result is capped at 1 MiB. When the tree and samples exceed that cap,
 `truncated` is true and `summary` replaces `profile`. Summary entries combine

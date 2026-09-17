@@ -1,11 +1,8 @@
 // Diagnostics gateway methods expose bounded stability snapshots while keeping
 // malformed queries out of logging internals.
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  ErrorCodes,
-  errorShape,
-  validateDiagnosticsHeapProfileParams,
-} from "../../../packages/gateway-protocol/src/index.js";
+import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import { validateDiagnosticsHeapProfileParams } from "../../../packages/gateway-protocol/src/schema/diagnostics.js";
 import {
   getDiagnosticStabilitySnapshot,
   normalizeDiagnosticStabilityQuery,

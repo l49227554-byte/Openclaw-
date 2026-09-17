@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { lazyCompile } from "../protocol-validator.js";
 
 /** Integer inputs are clamped by the capture owner to safe sampling bounds. */
-export const DiagnosticsHeapProfileParamsSchema = Type.Object(
+const DiagnosticsHeapProfileParamsSchema = Type.Object(
   {
     durationMs: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
     samplingIntervalBytes: Type.Optional(

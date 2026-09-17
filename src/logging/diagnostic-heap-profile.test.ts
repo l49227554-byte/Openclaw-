@@ -90,6 +90,8 @@ describe("diagnostic heap profile owner", () => {
         rssAfter: expect.any(Number),
         truncated: false,
         redactedNodeCount: 1,
+        unattributedSampleCount: 0,
+        unattributedSampleBytes: 0,
         profile: { samples: profile().samples },
       },
     });
@@ -101,6 +103,38 @@ describe("diagnostic heap profile owner", () => {
       "HeapProfiler.stopSampling",
       "HeapProfiler.disable",
     ]);
+  });
+
+  it("keeps attributed samples when V8 samples profile construction after translating the tree", async () => {
+    const value = profile();
+    value.samples.push({ nodeId: 999, size: 4096, ordinal: 3 });
+    native.post.mockResolvedValue({ profile: value });
+    expect(await capture()).toMatchObject({
+      status: "complete",
+      result: {
+        truncated: true,
+        unattributedSampleCount: 1,
+        unattributedSampleBytes: 4096,
+        profile: {
+          samples: profile().samples,
+          head: {
+            children: expect.arrayContaining([expect.objectContaining({ id: 2, selfSize: 8192 })]),
+          },
+        },
+      },
+    });
+  });
+
+  it.each([
+    { nodeId: -1, size: 4096, ordinal: 3 },
+    { nodeId: 1.5, size: 4096, ordinal: 3 },
+    { nodeId: 999, size: -1, ordinal: 3 },
+    { nodeId: 999, size: 4096, ordinal: -1 },
+  ])("rejects malformed unattributed samples %j", async (sample) => {
+    const value = profile();
+    value.samples.push(sample);
+    native.post.mockResolvedValue({ profile: value });
+    expect(await capture()).toMatchObject({ status: "unavailable", reason: "invalid-profile" });
   });
 
   it.each([
@@ -210,7 +244,7 @@ describe("diagnostic heap profile owner", () => {
     value.samples = [];
     native.post.mockResolvedValue({ profile: value });
     const outcome = await capture();
-    if (outcome.status !== "complete" || !outcome.result.truncated) {
+    if (outcome.status !== "complete" || !("summary" in outcome.result)) {
       throw new Error("expected summary");
     }
     expect(outcome.result.summary.length).toBeLessThan(9000);
@@ -250,10 +284,13 @@ while (!complete) {
 const outcome = await pending;
 assert.equal(outcome.status, 'complete', JSON.stringify(outcome));
 const result = outcome.result;
-assert.equal(result.truncated, false);
+assert.ok(result.profile);
+assert.equal(result.truncated, result.unattributedSampleCount > 0);
 const nodes = [];
 const visit = node => { nodes.push(node); node.children.forEach(visit); };
 visit(result.profile.head);
+const allIds = new Set(nodes.map(node => node.id));
+assert.ok(result.profile.samples.every(sample => allIds.has(sample.nodeId)));
 const allocations = nodes.filter(node => node.callFrame.functionName === 'allocateHeapProfileWorkload' && node.selfSize > 0);
 assert.ok(allocations.length > 0, 'missing workload attribution');
 const selfBytes = allocations.reduce((sum, node) => sum + node.selfSize, 0);
@@ -265,7 +302,7 @@ const resultBytes = Buffer.byteLength(JSON.stringify(result));
 assert.ok(resultBytes <= 1024 * 1024);
 assert.ok(!JSON.stringify(result).includes(${JSON.stringify(root)}));
 assert.equal(url(), undefined);
-console.log(JSON.stringify({ functionName: 'allocateHeapProfileWorkload', selfBytes, count, resultBytes, durationMs: result.durationMs, samplingIntervalBytes: result.samplingIntervalBytes, heapUsedBefore: result.heapUsedBefore, heapUsedAfter: result.heapUsedAfter, rssBefore: result.rssBefore, rssAfter: result.rssAfter, truncated: result.truncated, listener: false }));
+console.log(JSON.stringify({ functionName: 'allocateHeapProfileWorkload', selfBytes, count, resultBytes, durationMs: result.durationMs, samplingIntervalBytes: result.samplingIntervalBytes, heapUsedBefore: result.heapUsedBefore, heapUsedAfter: result.heapUsedAfter, rssBefore: result.rssBefore, rssAfter: result.rssAfter, truncated: result.truncated, unattributedSampleCount: result.unattributedSampleCount, unattributedSampleBytes: result.unattributedSampleBytes, listener: false }));
 assert.ok(retained.length > 0);
 `;
       const result = await runNodeScript(

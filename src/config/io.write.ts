@@ -231,6 +231,7 @@ export async function writeConfigFileFromContext(
       snapshot,
       pendingIncludeWrites,
       envForRestore,
+      homedir: deps.homedir(),
       snapshotIncludeHashes:
         options.includeFileHashesForWrite ?? snapshotRead.includeFileHashesForWrite,
       snapshotIncludeTargets:
@@ -484,6 +485,7 @@ export async function writeConfigFileFromContext(
       staged: stagedIncludeWrites,
       restorers: includeWriteRestorers,
       configPath,
+      env: deps.env,
       assertConfigPathForWrite: options.assertConfigPathForWrite,
       skipOutputLogs: options.skipOutputLogs,
     });
@@ -597,13 +599,15 @@ export async function writeConfigFileFromContext(
         sourceConfig: sourceConfigForPreflight,
       },
       [configWritePostCommitRollback]: async (assertCurrent) => {
-        assertCurrent();
-        // Finding 4: restore includes with the root on runtime-finalization
-        // failure. A throw here is AggregateError'd by io.runtime.ts:677-712.
+        // Include compensation authorizes on the original source owner plus
+        // per-target path proofs, before assertCurrent: a selection change
+        // must not strand new include values under a rolled-back root.
         await restoreStagedIncludeWrites(includeWriteRestorers, {
           configPath,
-          assertConfigPathForWrite: assertCurrent,
+          env: deps.env,
+          restoreAuthority: sourceGuard,
         });
+        assertCurrent();
         restoreConfigSnapshotAuditRecord({
           env: deps.env,
           homedir: deps.homedir,
@@ -676,7 +680,8 @@ export async function writeConfigFileFromContext(
     if (publication.phase === "unpublished" || rollbackStatus === "restored") {
       failure = await restoreStagedIncludeWritesOrFold(includeWriteRestorers, failure, {
         configPath,
-        assertConfigPathForWrite: options.assertConfigPathForWrite,
+        env: deps.env,
+        restoreAuthority: sourceGuard,
       });
     }
     if (publication.phase === "unpublished") {

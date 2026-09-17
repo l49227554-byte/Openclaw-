@@ -23,6 +23,7 @@ import {
 } from "./io.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
+import { withConfigWriteLock } from "./write-lock.js";
 
 // Mock the plugin manifest registry so we can register a fake channel whose
 // AJV JSON Schema carries a `default` value.  This lets the #56772 regression
@@ -834,6 +835,122 @@ describe("config io write / include write-through publish", () => {
 
       await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRootRaw);
       await expect(fs.readFile(tonyPath, "utf-8")).resolves.toBe(externalRaw);
+    },
+  );
+
+  itWithHome("publishes include-owned writes from a guarded mutation flow", async (home) => {
+    const configPath = configPathForHome(home);
+    const tonyPath = path.join(home, ".openclaw", "tony.json5");
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await writeConfigJson(tonyPath, { workspace: "/w/tony" });
+    await writeConfigJson(configPath, {
+      agents: { ownership: "explicit", entries: { tony: { $include: "./tony.json5" } } },
+    });
+    const io = createFastConfigIO(home);
+    const snapshot = await io.readConfigFileSnapshot();
+    expect(snapshot.valid).toBe(true);
+
+    // Mutation flows hold the root's write lock with a live source guard;
+    // the include's child lock must inherit that authority instead of
+    // refusing with "no live source ownership".
+    await withConfigWriteLock(
+      configPath,
+      async () => {
+        await io.writeConfigFile({
+          agents: {
+            ownership: "explicit",
+            entries: { tony: { workspace: "/w/tony-next" } },
+          },
+        } as unknown as OpenClawConfig);
+      },
+      process.env,
+      () => {},
+    );
+
+    expect(JSON.parse(await fs.readFile(tonyPath, "utf-8"))).toMatchObject({
+      workspace: "/w/tony-next",
+    });
+    const rootAfter = JSON.parse(await fs.readFile(configPath, "utf-8")) as {
+      agents?: { entries?: { tony?: { $include?: string } } };
+    };
+    expect(rootAfter.agents?.entries?.tony).toEqual({ $include: "./tony.json5" });
+  });
+
+  itWithHome(
+    "restores includes when root commit fails after config selection changes",
+    async (home) => {
+      const configPath = configPathForHome(home);
+      const tonyPath = path.join(home, ".openclaw", "tony.json5");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await writeConfigJson(tonyPath, { workspace: "/w/tony" });
+      await writeConfigJson(configPath, {
+        agents: { ownership: "explicit", entries: { tony: { $include: "./tony.json5" } } },
+      });
+      const originalRootRaw = await fs.readFile(configPath, "utf-8");
+      const originalTonyRaw = await fs.readFile(tonyPath, "utf-8");
+      const io = createFastConfigIO(home);
+      const snapshot = await io.readConfigFileSnapshot();
+      expect(snapshot.valid).toBe(true);
+
+      // beforeCommit both fails the root commit and revokes selection;
+      // compensation must still restore the published include.
+      let selectionLost = false;
+      await expect(
+        io.writeConfigFile(
+          {
+            agents: {
+              ownership: "explicit",
+              entries: { tony: { workspace: "/w/tony-next" } },
+            },
+          } as unknown as OpenClawConfig,
+          {
+            assertConfigPathForWrite: () => {
+              if (selectionLost) {
+                throw new Error("config selection changed");
+              }
+            },
+            beforeCommit: async () => {
+              selectionLost = true;
+              throw new Error("root commit refused");
+            },
+          },
+        ),
+      ).rejects.toThrow();
+
+      await expect(fs.readFile(tonyPath, "utf-8")).resolves.toBe(originalTonyRaw);
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRootRaw);
+    },
+  );
+
+  itWithHome(
+    "preserves an authored tilde workspace through a sibling-field mixed write",
+    async (home) => {
+      const configPath = configPathForHome(home);
+      const tonyPath = path.join(home, ".openclaw", "tony.json5");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await writeConfigJson(tonyPath, { name: "tony", workspace: "~/agent-w" });
+      await writeConfigJson(configPath, {
+        agents: { ownership: "explicit", entries: { tony: { $include: "./tony.json5" } } },
+      });
+      const io = createFastConfigIO(home);
+      const snapshot = await io.readConfigFileSnapshot();
+      expect(snapshot.valid).toBe(true);
+
+      // Runtime materialization expands ~; changing a sibling field queues the
+      // whole entry, and the staged bytes must keep the portable authored path.
+      await io.writeConfigFile({
+        agents: {
+          ownership: "explicit",
+          entries: { tony: { name: "tony-two", workspace: path.join(home, "agent-w") } },
+        },
+      } as unknown as OpenClawConfig);
+
+      const tonyAfter = JSON.parse(await fs.readFile(tonyPath, "utf-8")) as {
+        name?: string;
+        workspace?: string;
+      };
+      expect(tonyAfter.name).toBe("tony-two");
+      expect(tonyAfter.workspace).toBe("~/agent-w");
     },
   );
 

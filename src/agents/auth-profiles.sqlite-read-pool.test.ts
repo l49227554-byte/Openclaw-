@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -36,7 +37,7 @@ describe("auth profile sqlite reader lifecycle", () => {
     await withAgentDirEnv("openclaw-auth-sqlite-read-reuse-", (agentDir) => {
       const agentDirs = [
         agentDir,
-        ...Array.from({ length: 7 }, (_, index) =>
+        ...Array.from({ length: 63 }, (_, index) =>
           path.join(path.dirname(path.dirname(agentDir)), `secondary-${index}`, "agent"),
         ),
       ];
@@ -64,11 +65,11 @@ describe("auth profile sqlite reader lifecycle", () => {
           expect(loadPersistedAuthProfileStore(directory)).toMatchObject(apiKeyStore("sk-test"));
         }
         expect(openSpy.mock.calls.filter(([, options]) => options?.readOnly === true)).toHaveLength(
-          9,
+          65,
         );
-        expect(statementCacheSpy).toHaveBeenCalledTimes(8);
-        const firstDatabase = openSpy.mock.results[0]?.value as DatabaseSync | undefined;
-        const secondDatabase = openSpy.mock.results[1]?.value as DatabaseSync | undefined;
+        expect(statementCacheSpy).toHaveBeenCalledTimes(64);
+        const firstDatabase = openSpy.mock.results[0]?.value;
+        const secondDatabase = openSpy.mock.results[1]?.value;
         expect(firstDatabase?.isOpen).toBe(true);
         expect(secondDatabase?.isOpen).toBe(true);
         const prepare = vi.spyOn(
@@ -126,12 +127,157 @@ describe("auth profile sqlite reader lifecycle", () => {
         expect(secondDatabase?.isOpen).toBe(false);
         expect(loadPersistedAuthProfileStore(agentDir)).not.toBeNull();
         expect(openSpy.mock.calls.filter(([, options]) => options?.readOnly === true)).toHaveLength(
-          11,
+          67,
         );
-        expect(statementCacheSpy).toHaveBeenCalledTimes(10);
+        expect(statementCacheSpy).toHaveBeenCalledTimes(66);
       } finally {
         statementCacheSpy.mockRestore();
         openSpy.mockRestore();
+      }
+    });
+  });
+
+  it("closes each idle reader after thirty minutes and refreshes only reused readers", async () => {
+    await withAgentDirEnv("openclaw-auth-reader-idle-", (agentDir) => {
+      const sibling = `${agentDir}-sibling`;
+      saveAuthProfileStore(apiKeyStore("qa-main"), agentDir);
+      saveAuthProfileStore(apiKeyStore("qa-sibling"), sibling);
+      closeOpenClawAgentDatabasesForTest();
+      clearRuntimeAuthProfileStoreSnapshots();
+      vi.useFakeTimers();
+      const schedule = vi.spyOn(globalThis, "setTimeout");
+      const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+      try {
+        expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+        expect(loadPersistedAuthProfileStore(sibling)).toMatchObject(apiKeyStore("qa-sibling"));
+        const first = expectDefined(open.mock.results[0]?.value);
+        const staleCallback = expectDefined(schedule.mock.calls[0])[0];
+        const second = expectDefined(open.mock.results[1]?.value);
+        vi.advanceTimersByTime(20 * 60_000);
+        expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+        vi.advanceTimersByTime(10 * 60_000);
+        expect(second.isOpen).toBe(false);
+        expect(first.isOpen).toBe(true);
+        vi.advanceTimersByTime(20 * 60_000);
+        expect(first.isOpen).toBe(false);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+        // A previously queued expiry must not close the replacement at the same path.
+        staleCallback();
+        expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+        expect(open).toHaveBeenCalledTimes(3);
+        closeAuthProfileReadPool();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        closeAuthProfileReadPool();
+        open.mockRestore();
+        schedule.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("retries failed idle closes without losing native custody or exit cleanup", async () => {
+    await withAgentDirEnv("openclaw-auth-reader-idle-retry-", (agentDir) => {
+      saveAuthProfileStore(apiKeyStore("qa-main"), agentDir);
+      closeOpenClawAgentDatabasesForTest();
+      clearRuntimeAuthProfileStoreSnapshots();
+      const exitListeners = process.listenerCount("exit");
+      vi.useFakeTimers();
+      const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+      const warning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+      let close: MockInstance<DatabaseSync["close"]> | undefined;
+      try {
+        expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+        const reader = expectDefined(open.mock.results[0]?.value);
+        close = vi.spyOn(reader, "close").mockImplementationOnce(() => {
+          throw new Error("native idle close failed");
+        });
+        vi.advanceTimersByTime(30 * 60_000);
+        expect(reader.isOpen).toBe(true);
+        expect(close).toHaveBeenCalledTimes(1);
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(process.listenerCount("exit")).toBe(exitListeners + 1);
+        vi.advanceTimersByTime(30 * 60_000 - 1);
+        expect(close).toHaveBeenCalledTimes(1);
+        vi.advanceTimersByTime(1);
+        expect(reader.isOpen).toBe(false);
+        expect(process.listenerCount("exit")).toBe(exitListeners);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        close?.mockRestore();
+        closeAuthProfileReadPool();
+        warning.mockRestore();
+        open.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("allocates unref idle timers outside request contexts and reuses them on reads", async () => {
+    await withAgentDirEnv("openclaw-auth-reader-idle-context-", (agentDir) => {
+      saveAuthProfileStore(apiKeyStore("qa-main"), agentDir);
+      closeOpenClawAgentDatabasesForTest();
+      clearRuntimeAuthProfileStoreSnapshots();
+      const requestScope = new AsyncLocalStorage<object>();
+      const contexts: Array<object | undefined> = [];
+      const timers: ReturnType<typeof setTimeout>[] = [];
+      const setTimeoutNative = globalThis.setTimeout;
+      const schedule = vi
+        .spyOn(globalThis, "setTimeout")
+        .mockImplementation((callback, delay, ...args) => {
+          const timer = setTimeoutNative(callback, delay, ...args);
+          if (delay === 30 * 60_000) {
+            contexts.push(requestScope.getStore());
+            timers.push(timer);
+          }
+          return timer;
+        });
+      try {
+        requestScope.run({}, () => {
+          expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+          expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+        });
+        expect(contexts).toEqual([undefined]);
+        expect(timers).toHaveLength(1);
+        expect(timers[0]?.hasRef()).toBe(false);
+      } finally {
+        closeAuthProfileReadPool();
+        schedule.mockRestore();
+        requestScope.disable();
+      }
+    });
+  });
+
+  it("keeps exit cleanup registered when an unscoped close fails", async () => {
+    await withAgentDirEnv("openclaw-auth-reader-exit-retry-", (agentDir) => {
+      saveAuthProfileStore(apiKeyStore("qa-main"), agentDir);
+      closeOpenClawAgentDatabasesForTest();
+      clearRuntimeAuthProfileStoreSnapshots();
+      const listeners = process.listeners("exit");
+      const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
+      try {
+        expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
+        const reader = expectDefined(open.mock.results[0]?.value);
+        const close = vi.spyOn(reader, "close").mockImplementationOnce(() => {
+          throw new Error("native unscoped close failed");
+        });
+        try {
+          expect(() => closeAuthProfileReadPool()).toThrow("native unscoped close failed");
+          expect(reader.isOpen).toBe(true);
+          const exitClosers = process
+            .listeners("exit")
+            .filter((listener) => !listeners.includes(listener));
+          expect(exitClosers).toHaveLength(1);
+          expectDefined(exitClosers[0])(0);
+          expect(reader.isOpen).toBe(false);
+          expect(process.listeners("exit")).toEqual(listeners);
+        } finally {
+          close.mockRestore();
+        }
+      } finally {
+        closeAuthProfileReadPool();
+        open.mockRestore();
       }
     });
   });
@@ -177,7 +323,7 @@ describe("auth profile sqlite reader lifecycle", () => {
 
   it("retains failed admission handles without opening more readers until cleanup succeeds", async () => {
     await withAgentDirEnv("openclaw-auth-reader-admission-", (agentDir) => {
-      const agentDirs = Array.from({ length: 10 }, (_, index) =>
+      const agentDirs = Array.from({ length: 66 }, (_, index) =>
         path.join(path.dirname(path.dirname(agentDir)), `reader-${index}`, "agent"),
       );
       for (const directory of agentDirs) {
@@ -188,7 +334,7 @@ describe("auth profile sqlite reader lifecycle", () => {
       const openDatabase = nodeSqlite.openNodeSqliteDatabase;
       const openSpy = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
       try {
-        for (const directory of agentDirs.slice(0, 8)) {
+        for (const directory of agentDirs.slice(0, 64)) {
           expect(loadPersistedAuthProfileStore(directory)).toMatchObject(
             apiKeyStore("qa-synthetic"),
           );
@@ -197,7 +343,7 @@ describe("auth profile sqlite reader lifecycle", () => {
         const evictionClose = vi.spyOn(oldest, "close").mockImplementation(() => {
           throw new Error("eviction close failed");
         });
-        const candidateAgentDir = expectDefined(agentDirs[8], "candidate agent directory");
+        const candidateAgentDir = expectDefined(agentDirs[64], "candidate agent directory");
         const candidatePath = resolveAuthProfileDatabasePath(candidateAgentDir);
         let candidate: DatabaseSync | undefined;
         let candidateClose: MockInstance<DatabaseSync["close"]> | undefined;
@@ -212,13 +358,13 @@ describe("auth profile sqlite reader lifecycle", () => {
           expect(() => loadPersistedAuthProfileStore(candidateAgentDir)).toThrow(AggregateError);
           expect(oldest.isOpen).toBe(true);
           expect(candidate?.isOpen).toBe(true);
-          expect(() => loadPersistedAuthProfileStore(agentDirs[9])).toThrow(
+          expect(() => loadPersistedAuthProfileStore(agentDirs[65])).toThrow(
             "candidate close failed",
           );
           expect(() => loadPersistedAuthProfileStore(candidateAgentDir)).toThrow(
             "candidate close failed",
           );
-          expect(openSpy).toHaveBeenCalledTimes(9);
+          expect(openSpy).toHaveBeenCalledTimes(65);
           expect(loadPersistedAuthProfileStore(agentDirs[0])).toMatchObject(
             apiKeyStore("qa-synthetic"),
           );
@@ -226,10 +372,10 @@ describe("auth profile sqlite reader lifecycle", () => {
           closeAuthProfileReadPool({ kind: "database", databasePath: candidatePath });
           expect(candidate?.isOpen).toBe(false);
           evictionClose.mockRestore();
-          expect(loadPersistedAuthProfileStore(agentDirs[9])).toMatchObject(
+          expect(loadPersistedAuthProfileStore(agentDirs[65])).toMatchObject(
             apiKeyStore("qa-synthetic"),
           );
-          expect(openSpy).toHaveBeenCalledTimes(10);
+          expect(openSpy).toHaveBeenCalledTimes(66);
         } finally {
           candidateClose?.mockRestore();
           evictionClose.mockRestore();

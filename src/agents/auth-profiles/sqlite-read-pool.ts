@@ -10,12 +10,21 @@ import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { setSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
 import { readSqliteUserVersion } from "../../infra/sqlite-user-version.js";
-import { registerSqliteCacheExitClose } from "../../infra/sqlite-wal.js";
+import {
+  registerSqliteCacheExitClose,
+  runInSqliteMaintenanceContext,
+} from "../../infra/sqlite-wal.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../../state/openclaw-state-db-contract.js";
 
-const AUTH_PROFILE_READ_HANDLE_CAP = 8;
-const authProfileReadDatabases = new Map<string, { db: DatabaseSync; ready: boolean }>();
+const AUTH_PROFILE_READ_HANDLE_CAP = 64;
+const AUTH_PROFILE_READ_IDLE_MS = 30 * 60_000;
+type AuthProfileReadHandle = {
+  db: DatabaseSync;
+  ready: boolean;
+  idleTimer?: ReturnType<typeof setTimeout>;
+};
+const authProfileReadDatabases = new Map<string, AuthProfileReadHandle>();
 let unregisterReadHandleExitClose: (() => void) | null = null;
 
 type AuthProfileReadPoolCloseScope =
@@ -32,6 +41,8 @@ export function closeAuthProfileReadDatabase(databasePath: string): void {
   if (entry.db.isOpen) {
     entry.db.close();
   }
+  clearTimeout(entry.idleTimer);
+  entry.idleTimer = undefined;
   // Failed closes remain owned so scoped disposal can retain the root and retry.
   authProfileReadDatabases.delete(pathname);
   if (authProfileReadDatabases.size === 0) {
@@ -54,11 +65,34 @@ export function closeAuthProfileReadPool(scope?: AuthProfileReadPoolCloseScope):
     }
     return;
   }
-  unregisterReadHandleExitClose?.();
-  unregisterReadHandleExitClose = null;
   for (const pathname of authProfileReadDatabases.keys()) {
     closeAuthProfileReadDatabase(pathname);
   }
+}
+
+function armReadHandleIdleClose(pathname: string, entry: AuthProfileReadHandle): void {
+  if (entry.idleTimer) {
+    entry.idleTimer.refresh();
+    return;
+  }
+  const timer = runInSqliteMaintenanceContext(() =>
+    setTimeout(() => {
+      if (authProfileReadDatabases.get(pathname) !== entry || entry.idleTimer !== timer) {
+        return;
+      }
+      try {
+        closeAuthProfileReadDatabase(pathname);
+      } catch (error) {
+        // Retain native custody and retry at the same bounded idle interval.
+        timer.refresh();
+        process.emitWarning(`Failed to close idle auth profile reader: ${String(error)}`, {
+          type: "AuthProfileReadPoolError",
+        });
+      }
+    }, AUTH_PROFILE_READ_IDLE_MS),
+  );
+  timer.unref();
+  entry.idleTimer = timer;
 }
 
 export function isMissingDatabasePath(pathname: string): boolean {
@@ -78,6 +112,7 @@ export function acquireAuthProfileReadDatabase(
   if (cached?.ready && cached.db.isOpen) {
     authProfileReadDatabases.delete(resolvedPath);
     authProfileReadDatabases.set(resolvedPath, cached);
+    armReadHandleIdleClose(resolvedPath, cached);
     return { status: "readable", db: cached.db };
   }
   if (cached) {
@@ -96,9 +131,10 @@ export function acquireAuthProfileReadDatabase(
   } catch {
     return isMissingDatabasePath(resolvedPath) ? { status: "missing" } : { status: "unreadable" };
   }
-  const candidate = { db, ready: false };
+  const candidate: AuthProfileReadHandle = { db, ready: false };
   authProfileReadDatabases.set(resolvedPath, candidate);
   unregisterReadHandleExitClose ??= registerSqliteCacheExitClose(closeAuthProfileReadPool);
+  armReadHandleIdleClose(resolvedPath, candidate);
   let readable = false;
   try {
     enableNodeSqliteKyselyStatementCache(db);

@@ -30,6 +30,7 @@ import { tryReadJson } from "../../infra/json-files.js";
 import { probePortUsage } from "../../infra/ports-probe.js";
 import { nodeVersionSatisfiesEngine } from "../../infra/runtime-guard.js";
 import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
+import type { UpdateChannel } from "../../infra/update-channels.js";
 import {
   createUpdateFailureFact,
   type UpdateFailureFact,
@@ -291,6 +292,7 @@ type PackageRuntimePreflight = {
 };
 
 export async function resolvePackageRuntimePreflight(params: {
+  channel?: UpdateChannel;
   target?: { version: string; nodeEngine: string | null };
   installedRoot?: string;
   timeoutMs?: number;
@@ -394,11 +396,13 @@ export async function resolvePackageRuntimePreflight(params: {
       : undefined;
   const env = context?.env ?? params.service?.serviceEnv ?? process.env;
   const recoveryVersion = valid(targetVersion);
+  const recoveryTarget =
+    params.channel === "extended-stable" ? "--channel extended-stable" : `--tag ${recoveryVersion}`;
   const retainedRoot = params.sourceRoot ?? params.root ?? params.installedRoot;
   const retainedEntry = retainedRoot ? path.resolve(retainedRoot, "openclaw.mjs") : undefined;
   const continuation = retainedEntry
     ? formatCliCommand(
-        params.sourceRoot ? "openclaw update" : `openclaw update --tag ${recoveryVersion}`,
+        params.sourceRoot ? "openclaw update" : `openclaw update ${recoveryTarget}`,
         env,
       ).replace(
         /^openclaw\b/,

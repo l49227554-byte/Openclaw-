@@ -93,7 +93,9 @@ that intersection. Follow the recovery steps for the detected runtime manager
 (nvm, fnm, Volta, or system Node). The next step runs `update` through the
 original installation's absolute `openclaw.mjs` launcher using the selected Node.
 It does not rely on `openclaw` remaining on PATH after a version-manager switch,
-or recommend a global install into an uninspected prefix.
+or recommend a global install into an uninspected prefix. Extended-stable recovery
+uses `--channel extended-stable` so the resolver selects the supported monthly
+release; other package channels retain the inspected version with `--tag`.
 
 Keep the same service account, profile, and state/config overrides. Recovery
 restores the recorded service selectors, including overrides absent from your

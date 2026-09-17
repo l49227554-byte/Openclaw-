@@ -118,6 +118,9 @@ describe("Matrix read policy", () => {
   ])("resolves $name without changing m.direct", async (scenario) => {
     const roomId = "!resolved:example.org";
     let directMapping: Record<string, unknown> = {};
+    const setAccountData = vi.fn(async (_eventType: string, content: Record<string, unknown>) => {
+      directMapping = content;
+    });
     const client = createClient(
       ["@bot:example.org", scenario.userId],
       scenario.directFlag,
@@ -126,9 +129,7 @@ describe("Matrix read policy", () => {
       {
         getAccountData: vi.fn(async () => directMapping),
         getJoinedRooms: vi.fn(async () => [roomId]),
-        setAccountData: vi.fn(async (_eventType: string, content: Record<string, unknown>) => {
-          directMapping = content;
-        }),
+        setAccountData,
       },
     );
     // The production client refreshes its DM cache after an account-data write.
@@ -168,7 +169,7 @@ describe("Matrix read policy", () => {
       await expect(result).rejects.toThrow("Matrix read target is not allowed.");
       expect(read).not.toHaveBeenCalled();
     }
-    expect(client.setAccountData).not.toHaveBeenCalled();
+    expect(setAccountData).not.toHaveBeenCalled();
   });
 
   it("keeps a restrictive DM allowlist effective under open policy", async () => {

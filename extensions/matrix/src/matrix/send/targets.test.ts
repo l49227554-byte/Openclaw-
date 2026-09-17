@@ -74,22 +74,28 @@ describe("resolveMatrixRoomId", () => {
     async (target) => {
       const userId = "@fallback:example.org";
       const roomId = "!room:example.org";
-      const client = makeFallbackDirectClient({ userId, roomIds: [roomId] });
+      const getJoinedRooms = vi.fn<MatrixClient["getJoinedRooms"]>().mockResolvedValue([roomId]);
+      const setAccountData = vi.fn<MatrixClient["setAccountData"]>().mockResolvedValue(undefined);
+      const client = makeFallbackDirectClient({
+        userId,
+        roomIds: [roomId],
+        extra: { getJoinedRooms, setAccountData },
+      });
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await expect(
           resolveMatrixRoomId(client, target, { persistDirectMapping: false }),
         ).resolves.toBe(roomId);
       }
-      expect(client.getJoinedRooms).toHaveBeenCalledTimes(1);
-      expect(client.setAccountData).not.toHaveBeenCalled();
+      expect(getJoinedRooms).toHaveBeenCalledTimes(1);
+      expect(setAccountData).not.toHaveBeenCalled();
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         await expect(resolveMatrixRoomId(client, target)).resolves.toBe(roomId);
       }
-      expect(client.getJoinedRooms).toHaveBeenCalledTimes(2);
-      expect(client.setAccountData).toHaveBeenCalledTimes(1);
-      expect(client.setAccountData).toHaveBeenCalledWith(EventType.Direct, { [userId]: [roomId] });
+      expect(getJoinedRooms).toHaveBeenCalledTimes(2);
+      expect(setAccountData).toHaveBeenCalledTimes(1);
+      expect(setAccountData).toHaveBeenCalledWith(EventType.Direct, { [userId]: [roomId] });
     },
   );
 

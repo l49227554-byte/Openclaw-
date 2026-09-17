@@ -67,7 +67,6 @@ import {
   revealSessionWorkspaceFile,
 } from "./components/chat-session-workspace.ts";
 import { resolveChatLinkFaviconFetcher } from "./link-favicon-loader.ts";
-import { renderPendingSessionCreate } from "./pending-session-create.ts";
 import { hasAbortableSessionRun, hasDirectSessionRun } from "./run-lifecycle.ts";
 import { lockChatScroll, scheduleChatScroll } from "./scroll.ts";
 import { resolveChatProjectionRunId } from "./tool-stream-status.ts";
@@ -82,9 +81,6 @@ export class ChatPane extends ChatPaneLayoutRender {
     const state = this.state;
     if (!state) {
       return html`<main class="app-shell app-shell--booting" aria-busy="true"></main>`;
-    }
-    if (this.context.chatSubmissions.hasCreate(state.sessionKey)) {
-      return renderPendingSessionCreate(this.context, state);
     }
     const selectedSession = selectedChatSessionRow(state);
     const readTarget = this.resolveChatReadTarget();
@@ -242,8 +238,6 @@ export class ChatPane extends ChatPaneLayoutRender {
       activeRunIds: selectedSession?.activeRunIds,
       queue: state.chatQueue,
     });
-    const attachmentReads = this.chatState.attachmentReads;
-    const attachmentReadSignal = attachmentReads.readSignal;
     const historyHasMore = catalogKey
       ? Boolean(this.catalogCursor)
       : state.chatHistoryPagination.hasMore;
@@ -579,17 +573,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           : (command) => void state.handleSendChat(command),
       showNewMessages: state.chatNewMessagesBelow,
       onScrollToBottom: state.scrollToBottom,
-      attachments: state.chatAttachments,
-      attachmentLimits: state.hello?.policy?.attachments,
-      getAttachments: () => state.chatAttachments,
-      pendingAttachmentReads: attachmentReads.pendingReads,
-      getPendingAttachmentReads: () => attachmentReads.pendingReads,
-      readSignal: attachmentReadSignal,
-      onPendingReadsChange: (delta) => attachmentReads.updatePending(attachmentReadSignal, delta),
-      onAttachmentsChange: (next) => {
-        state.chatAttachments = next;
-        state.requestUpdate?.();
-      },
+      ...this.chatState.attachmentInputProps(state),
       onRemoveAttachment: this.removeBrowserAnnotation,
       onSend: (followUpModeOverride, submissionAction) =>
         !composerAvailability.canSend ||

@@ -1,6 +1,12 @@
 import type { ApplicationContext } from "../../app/context.ts";
-import type { RetainedNewSessionDraft } from "./instant-thread-handoff.ts";
 import type { NewSessionRouteData } from "./location.ts";
+
+export type RetainedNewSessionDraft = {
+  page: HTMLElement;
+  data: NewSessionRouteData;
+  synchronizeGateway: () => void;
+  release: () => void;
+};
 
 export type InstantThreadRestore = {
   draft: RetainedNewSessionDraft;

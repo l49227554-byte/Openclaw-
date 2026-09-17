@@ -109,7 +109,10 @@ export type ApplicationContext<TRouteId extends string = string> = {
   readonly basePath: string;
   readonly resourceBasePath: string;
   readonly lifecycleAbortSignal?: AbortSignal;
-  readonly router: Pick<Router<RouteId, unknown, unknown, unknown>, "getState" | "subscribe">;
+  readonly router: Pick<
+    Router<RouteId, ApplicationContext<RouteId>, unknown, unknown>,
+    "getState" | "subscribe" | "navigate"
+  >;
   readonly gateway: ApplicationGateway;
   /** App-owned queue for automatic Gateway reconnect bootstrap work. */
   readonly connectionBootstrap: ConnectionBootstrapCoordinator;
@@ -139,11 +142,6 @@ export type ApplicationContext<TRouteId extends string = string> = {
   readonly navigate: (routeId: TRouteId, options?: ApplicationNavigationOptions) => void;
   /** Navigates and resolves after any route-specific handoff completes. */
   readonly navigateAndWait: (
-    routeId: TRouteId,
-    options?: ApplicationNavigationOptions,
-  ) => Promise<void>;
-  /** Render a route without committing browser history until admission succeeds. */
-  readonly transition?: (
     routeId: TRouteId,
     options?: ApplicationNavigationOptions,
   ) => Promise<void>;

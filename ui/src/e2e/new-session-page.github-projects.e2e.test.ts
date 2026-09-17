@@ -335,7 +335,9 @@ suite.define(() => {
       expect(await gateway.getRequests("projects.add")).toHaveLength(0);
 
       await expect.poll(() => chatModuleRequested).toBe(true);
-      expect(new URL(page.url()).pathname).toBe(controlUiSessionPath(sessionKey));
+      // The blocked preview module has not rendered; only confirmed navigation
+      // may publish the accepted URL once that preview load settles.
+      expect(new URL(page.url()).pathname).toBe("/new");
       expect(await gateway.getRequests("chat.startup")).toHaveLength(0);
       await gateway.emitGatewayEvent("chat", {
         runId,

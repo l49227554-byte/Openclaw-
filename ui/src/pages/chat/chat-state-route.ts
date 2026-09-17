@@ -21,15 +21,10 @@ export function bindChatPageSession(
   routeKey: string,
   routeAgentId?: string,
 ): void {
-  // A pending route is display-only. Neither preference writer may adopt its
-  // provisional key, including while authentication is being re-established.
-  if (context.chatSubmissions.hasCreate(routeKey)) {
-    return;
-  }
   const agentId = parseAgentSessionKey(routeKey)?.agentId ?? routeAgentId?.trim();
   if (parseCatalogSessionKey(routeKey)) {
     if (agentId) {
-      context.agentSelection.set(agentId);
+      context.agentSelection.set(agentId, { background: true });
     }
     return;
   }
@@ -48,6 +43,7 @@ export function bindChatPageSession(
       gateway: context.gateway,
       sessionKey,
       agentId,
+      background: true,
     });
   }
 }

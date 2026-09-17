@@ -15,18 +15,23 @@ type Submission = {
 );
 export type RetainedChatSubmission = Submission & { pending: boolean };
 
+type PendingChatCreate = Readonly<{
+  creation: Readonly<{ sessionKey: string; admitted: boolean }>;
+  message: RetainedMessage | null;
+  canDisplay: () => boolean;
+}>;
+
 export type ApplicationChatSubmissions = ReturnType<typeof createChatSubmissions>;
 /** App-owned display bytes only. Outbox payloads, attempts, and retries stay with the outbox. */
 export function createChatSubmissions() {
   const initial = new Map<string, RetainedChatSubmission>();
-  const pendingCreates = new Map<
-    string,
-    { owner: object; recoveryScope: string | undefined; message: RetainedMessage | null }
-  >();
-  const initialListeners = new Set<(sessionKey: string, owner: object) => void>();
-  const notifyInitial = (sessionKey: string, owner: object) => {
-    for (const listener of initialListeners) {
-      listener(sessionKey, owner);
+  // Only the foreground handoff owns a provisional display; accepted turns are separate.
+  let pendingCreate: PendingChatCreate | undefined;
+  const createListeners = new Set<() => void>();
+  const setPendingCreate = (pending: typeof pendingCreate) => {
+    pendingCreate = pending;
+    for (const listener of createListeners) {
+      listener();
     }
   };
   let delivered = new WeakMap<object, Map<string, RetainedChatSubmission>>();
@@ -40,62 +45,48 @@ export function createChatSubmissions() {
     if (!submission) {
       return undefined;
     }
-    const entries =
-      submission.kind === "initial"
-        ? initial
-        : (delivered.get(submission.owner) ?? new Map<string, RetainedChatSubmission>());
-    const key =
-      submission.kind === "initial"
-        ? (initialKey(submission.sessionKey) ?? submission.sessionKey)
-        : submission.deliveryKey;
-    if (submission.kind === "delivered") {
+    const isInitial = submission.kind === "initial";
+    const entries = isInitial
+      ? initial
+      : (delivered.get(submission.owner) ?? new Map<string, RetainedChatSubmission>());
+    const key = isInitial
+      ? (initialKey(submission.sessionKey) ?? submission.sessionKey)
+      : submission.deliveryKey;
+    if (!isInitial) {
       delivered.set(submission.owner, entries);
     }
     const retained = { ...submission, pending: true };
     entries.delete(key);
     entries.set(key, retained);
     // Preserve the initial app limit and delivered per-client lifetime/limit.
-    const limit = submission.kind === "initial" ? 32 : 64;
+    const limit = isInitial ? 32 : 64;
     if (entries.size > limit) {
       entries.delete(entries.keys().next().value!);
-    }
-    if (submission.kind === "initial") {
-      notifyInitial(submission.sessionKey, submission.owner);
     }
     return retained;
   };
   return {
     retain,
     // Display-only admission state; no run id, outbox attempt or accepted send.
-    beginCreate: (
-      sessionKey: string,
-      owner: object,
-      recoveryScope: string | undefined,
-      message: RetainedMessage | null,
-    ) => {
-      const pending = { owner, recoveryScope, message };
-      pendingCreates.set(sessionKey, pending);
-      notifyInitial(sessionKey, owner);
+    beginCreate: (pending: PendingChatCreate) => {
+      setPendingCreate(pending);
       return () => {
-        if (pendingCreates.get(sessionKey) === pending) {
-          pendingCreates.delete(sessionKey);
-          notifyInitial(sessionKey, owner);
+        if (pendingCreate === pending) {
+          setPendingCreate(undefined);
         }
       };
     },
-    hasCreate: (sessionKey: string) => pendingCreates.has(sessionKey),
-    readCreate: (sessionKey: string, owner: object | null, recoveryScope: string | undefined) => {
-      const pending = pendingCreates.get(sessionKey);
-      return recoveryScope && pending?.owner === owner && pending.recoveryScope === recoveryScope
-        ? pending
-        : null;
+    // Routes retain only admission metadata after private display bytes are revoked.
+    get creation(): Readonly<{ sessionKey: string; admitted: boolean }> | undefined {
+      return pendingCreate?.creation;
     },
-    notifyInitial,
-    subscribeInitial: (listener: (sessionKey: string, owner: object) => void) => {
-      initialListeners.add(listener);
-      return () => {
-        initialListeners.delete(listener);
-      };
+    readCreateMessage: (sessionKey: string) =>
+      pendingCreate?.creation.sessionKey === sessionKey && pendingCreate.canDisplay()
+        ? pendingCreate.message
+        : null,
+    subscribeCreate: (listener: () => void) => {
+      createListeners.add(listener);
+      return () => createListeners.delete(listener);
     },
     readInitial,
     readDelivered: (key: string, owner: object) => delivered.get(owner)?.get(key),
@@ -107,8 +98,8 @@ export function createChatSubmissions() {
     },
     clear: () => {
       initial.clear();
-      pendingCreates.clear();
       delivered = new WeakMap();
+      setPendingCreate(undefined);
     },
   };
 }

@@ -1,19 +1,15 @@
-import type { ApplicationContext, ApplicationNavigationOptions } from "../../app/context.ts";
+import type { RouteLocation } from "@openclaw/uirouter";
+import type { ApplicationContext } from "../../app/context.ts";
 import { waitForGatewayClient } from "../../app/gateway-readiness.ts";
 import type { SessionCreateParams } from "../../lib/sessions/create.ts";
-import { prepareSessionNavigationHandoff } from "../../lib/sessions/navigation-handoff.ts";
 import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import { beginInstantThreadNavigation } from "./instant-thread-navigation.ts";
-import { retainInstantThreadRestore, type InstantThreadRestore } from "./instant-thread-restore.ts";
-import type { NewSessionRouteData } from "./location.ts";
-
-export type RetainedNewSessionDraft = {
-  page: HTMLElement;
-  data: NewSessionRouteData;
-  synchronizeGateway: () => void;
-  release: () => void;
-};
+import {
+  retainInstantThreadRestore,
+  type InstantThreadRestore,
+  type RetainedNewSessionDraft,
+} from "./instant-thread-restore.ts";
 
 const active = new WeakMap<ApplicationContext, InstantThreadHandoff>();
 
@@ -25,15 +21,10 @@ export function prepareInstantThreadHandoff(options: {
   enabled: boolean;
   agentId: string;
   retainDraft: (() => RetainedNewSessionDraft | undefined) | undefined;
-  message: Parameters<ApplicationContext["chatSubmissions"]["beginCreate"]>[3];
+  message: Parameters<ApplicationContext["chatSubmissions"]["beginCreate"]>[0]["message"];
 }): (() => InstantThreadHandoff | undefined) | undefined {
   const { context, params, agentId, retainDraft } = options;
-  if (
-    !options.enabled ||
-    !context.transition ||
-    !context.gateway.snapshot.hello?.auth?.recoveryScope ||
-    !retainDraft
-  ) {
+  if (!options.enabled || !context.gateway.snapshot.hello?.auth?.recoveryScope || !retainDraft) {
     return undefined;
   }
   const key =
@@ -56,13 +47,14 @@ export function prepareInstantThreadHandoff(options: {
  * No draft bytes are persisted here, including incognito drafts.
  */
 export class InstantThreadHandoff {
+  private readonly creation;
   private readonly client;
   private readonly hello;
   private readonly gatewayUrl;
   private readonly recoveryScope;
   private readonly previousSessionKey: ApplicationContext["gateway"]["snapshot"]["sessionKey"];
   private readonly previousAgentId: ApplicationContext["agentSelection"]["state"]["selectedId"];
-  private readonly returnLocation: ApplicationNavigationOptions;
+  private readonly returnLocation: RouteLocation;
   private readonly transition;
   private stopGateway = () => {};
   private clearPendingCreate = () => {};
@@ -76,12 +68,9 @@ export class InstantThreadHandoff {
     readonly key: string,
     agentId: string,
     private readonly draft: RetainedNewSessionDraft,
-    message: Parameters<ApplicationContext["chatSubmissions"]["beginCreate"]>[3],
+    message: Parameters<ApplicationContext["chatSubmissions"]["beginCreate"]>[0]["message"],
   ) {
-    const transition = context.transition;
-    if (!transition) {
-      throw new Error("Transient route navigation is unavailable");
-    }
+    this.creation = { sessionKey: key, admitted: false };
     this.client = context.gateway.snapshot.client;
     this.hello = context.gateway.snapshot.hello;
     this.gatewayUrl = context.gateway.connection.gatewayUrl;
@@ -96,26 +85,26 @@ export class InstantThreadHandoff {
       hash: globalThis.location.hash,
     };
     active.set(context, this);
-    if (this.client) {
-      this.clearPendingCreate = context.chatSubmissions.beginCreate(
-        key,
-        this.client,
-        this.recoveryScope,
-        message,
-      );
-    }
     const options = sessionNavigationTarget({
       context,
       face: "chat",
       sessionKey: key,
       agentId,
+      // A never-admitted preview cannot depend on an expiring short-key lookup.
+      exactKey: true,
     }).options;
     // Do not carry URL hints or focus cleanup that would commit this transient URL.
     const target = { pathname: options.pathname, search: "", hash: "" };
     // The route renders the provisional key, but saved/global selection stays
     // on the last admitted session until StartedSessionNavigation adopts it.
-    prepareSessionNavigationHandoff(context.gateway, target.pathname!, key);
     this.transition = beginInstantThreadNavigation(context, "chat", target);
+    this.clearPendingCreate = context.chatSubmissions.beginCreate({
+      creation: this.creation,
+      message,
+      // This transaction owns live identity/navigation authority. The display store
+      // consumes that decision instead of maintaining a second authentication snapshot.
+      canDisplay: () => this.canDisplay(),
+    });
     this.transition.signal.addEventListener("abort", this.onLeave, { once: true });
     this.stopGateway = context.gateway.subscribe(() => {
       const snapshot = context.gateway.snapshot;
@@ -149,6 +138,14 @@ export class InstantThreadHandoff {
     );
   }
 
+  private canDisplay() {
+    return (
+      this.sameIdentity() &&
+      this.context.gateway.snapshot.client === this.client &&
+      this.context.gateway.snapshot.hello === this.hello
+    );
+  }
+
   private ownsSelection() {
     const sessionKey = this.admittedSelection?.key ?? this.previousSessionKey;
     const agentId = this.admittedSelection?.agentId ?? this.previousAgentId;
@@ -175,10 +172,8 @@ export class InstantThreadHandoff {
       !this.rollingBack &&
       active.get(this.context) === this &&
       this.transition.isActive() &&
-      this.sameIdentity() &&
-      this.ownsSelection() &&
-      this.context.gateway.snapshot.client === this.client &&
-      this.context.gateway.snapshot.hello === this.hello
+      this.canDisplay() &&
+      this.ownsSelection()
     );
   }
 
@@ -237,19 +232,16 @@ export class InstantThreadHandoff {
     // Confirmed navigation adopts selection synchronously. If navigation fails,
     // rollback may retain that admitted session for a navigation-only retry.
     this.admittedSelection = { key, agentId };
-    this.clearPendingCreate();
+    // A canonical replacement must not activate the never-admitted preview key.
+    if (!this.disposed && key === this.key) {
+      this.creation.admitted = true;
+      this.clearPendingCreate();
+    }
   }
 
   /** Stop navigation tracking before committing the confirmed key. */
   commit() {
-    if (
-      this.disposed ||
-      this.rollingBack ||
-      !this.transition.isActive() ||
-      !this.sameIdentity() ||
-      this.context.gateway.snapshot.client !== this.client ||
-      this.context.gateway.snapshot.hello !== this.hello
-    ) {
+    if (this.disposed || this.rollingBack || !this.transition.isActive() || !this.canDisplay()) {
       return false;
     }
     this.transition.dispose();

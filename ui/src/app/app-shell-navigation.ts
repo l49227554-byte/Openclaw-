@@ -201,8 +201,7 @@ export class ShellNavigationOwner {
       // in-flight navigation: it wins over the one-shot restore, and the stale
       // committed route must not be persisted over the remembered destination.
       const pendingDiffers =
-        (routeState.committedSessionKey !== undefined &&
-          routeContext.chatSubmissions.hasCreate(routeState.committedSessionKey)) ||
+        routeContext.chatSubmissions.creation ||
         routeState.routeId !== committedRouteId ||
         (routeState.location?.pathname ?? "") !== committedPathname ||
         (routeState.location?.search ?? "") !== committedSearch;
@@ -239,6 +238,7 @@ export class ShellNavigationOwner {
             selection: routeContext.agentSelection,
             gateway: routeContext.gateway,
             sessionKey: committedSessionKey,
+            background: true,
           });
         }
       }

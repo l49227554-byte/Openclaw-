@@ -164,29 +164,54 @@ describe("initial user message handoff", () => {
   });
 });
 
-describe("pending create authentication boundary", () => {
-  it("never exposes pre-admission bytes through a same-client authentication change", () => {
+describe("pending create display authority", () => {
+  it("retains unadmitted route metadata after private display disposal", () => {
     const submissions = createChatSubmissions();
-    const client = {};
-    const key = "agent:main:dashboard:private";
-    submissions.beginCreate(key, client, "first-principal", message("private synthetic draft"));
-    expect(submissions.readCreate(key, client, "first-principal")?.message?.content).toEqual([
-      { type: "text", text: "private synthetic draft" },
-    ]);
-    expect(submissions.readCreate(key, client, undefined)).toBeNull();
-    expect(submissions.readCreate(key, client, "second-principal")).toBeNull();
-    expect(submissions.readCreate(key, {}, "first-principal")).toBeNull();
+    const creation = { sessionKey: "agent:main:dashboard:pending", admitted: false };
+    const release = submissions.beginCreate({ creation, message: null, canDisplay: () => true });
+    const routeCreation = submissions.creation;
+    release();
+    expect(submissions.readCreateMessage(creation.sessionKey)).toBeNull();
+    expect(submissions.creation).toBeUndefined();
+    expect(routeCreation?.admitted).toBe(false);
   });
 
-  it("does not let a retired attempt clear its successor's pending display", () => {
+  it("checks the live transaction owner before exposing pre-admission bytes", () => {
     const submissions = createChatSubmissions();
-    const client = {};
-    const key = "agent:main:dashboard:resumed";
-    const releaseOld = submissions.beginCreate(key, client, "principal", null);
-    const releaseCurrent = submissions.beginCreate(key, client, "principal", null);
-    releaseOld();
-    expect(submissions.readCreate(key, client, "principal")).not.toBeNull();
-    releaseCurrent();
-    expect(submissions.readCreate(key, client, "principal")).toBeNull();
+    const key = "agent:main:dashboard:private";
+    let authorized = true;
+    submissions.beginCreate({
+      creation: { sessionKey: key, admitted: false },
+      message: message("private synthetic draft"),
+      canDisplay: () => authorized,
+    });
+    expect(submissions.readCreateMessage(key)?.content).toEqual([
+      { type: "text", text: "private synthetic draft" },
+    ]);
+    expect(submissions.readCreateMessage("agent:main:dashboard:other")).toBeNull();
+    authorized = false;
+    expect(submissions.readCreateMessage(key)).toBeNull();
   });
+
+  it.each(["agent:main:dashboard:resumed", "agent:main:dashboard:newer"])(
+    "a retired attempt cannot clear successor %s",
+    (nextKey) => {
+      const submissions = createChatSubmissions();
+      const key = "agent:main:dashboard:resumed";
+      const releaseOld = submissions.beginCreate({
+        creation: { sessionKey: key, admitted: false },
+        message: null,
+        canDisplay: () => true,
+      });
+      const releaseCurrent = submissions.beginCreate({
+        creation: { sessionKey: nextKey, admitted: false },
+        message: message("current draft"),
+        canDisplay: () => true,
+      });
+      releaseOld();
+      expect(submissions.readCreateMessage(nextKey)).not.toBeNull();
+      releaseCurrent();
+      expect(submissions.readCreateMessage(nextKey)).toBeNull();
+    },
+  );
 });

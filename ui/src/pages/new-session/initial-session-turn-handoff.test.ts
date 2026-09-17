@@ -18,9 +18,12 @@ describe.each(["started", "rejected"] as const)("%s first-turn publication", (st
       const { context } = createDraftFixture();
       Object.defineProperties(context, {
         router: {
-          value: { getState: () => ({ location: undefined }), subscribe: () => () => {} },
+          value: {
+            getState: () => ({ location: undefined }),
+            subscribe: () => () => {},
+            navigate: () => Promise.resolve(),
+          },
         },
-        transition: { value: () => Promise.resolve() },
       });
       Object.defineProperty(context.gateway, "subscribe", { value: () => () => {} });
       const key = "agent:main:dashboard:incognito-private";

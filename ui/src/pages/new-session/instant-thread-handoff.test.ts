@@ -29,16 +29,22 @@ describe("retained page render ownership", () => {
       const routeReady = new Promise<void>((resolve) => {
         releaseRoute = resolve;
       });
-      const transition: NonNullable<ApplicationContext["transition"]> = (routeId, options) => {
+      const navigate: ApplicationContext["router"]["navigate"] = (
+        routeId,
+        _context,
+        _options,
+        location,
+      ) => {
         if (routeId === "new-session") {
-          consumed = takeInstantThreadRestore(context, options?.search ?? "");
+          consumed = takeInstantThreadRestore(context, location?.search ?? "");
         }
         return routeId === "new-session" ? routeReady : Promise.resolve();
       };
       Object.defineProperties(context, {
         basePath: { value: "" },
-        router: { value: { getState: () => ({ location: undefined }), subscribe: () => () => {} } },
-        transition: { value: transition },
+        router: {
+          value: { getState: () => ({ location: undefined }), subscribe: () => () => {}, navigate },
+        },
       });
       Object.defineProperty(context.gateway, "subscribe", { value: () => () => {} });
       const release = vi.fn();

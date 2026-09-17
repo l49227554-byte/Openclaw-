@@ -21,9 +21,14 @@ function createParams(request: { params?: unknown }): Record<string, unknown> {
 }
 
 suite.define(() => {
-  it.each([false, true])(
-    "attaches chat before admission and commits only the confirmed URL (incognito: %s)",
-    async (incognito) => {
+  it.each([
+    { incognito: false, canonicalReplacement: false },
+    { incognito: true, canonicalReplacement: false },
+    { incognito: false, canonicalReplacement: true },
+    { incognito: true, canonicalReplacement: true },
+  ])(
+    "attaches chat before admission and commits only the confirmed URL (incognito: $incognito, replacement: $canonicalReplacement)",
+    async ({ incognito, canonicalReplacement }) => {
       const browser = await suite.browser.newContext({ locale: "en-US", serviceWorkers: "block" });
       try {
         const page = await browser.newPage();
@@ -45,7 +50,9 @@ suite.define(() => {
         await expect
           .poll(() => page.locator(".chat-thread").textContent())
           .toContain("start the synthetic thread");
+        expect(await page.locator("openclaw-chat-pane").count()).toBe(0);
         expect(await page.locator(".chat-compose textarea").count()).toBe(0);
+        expect(await gateway.getRequests("chat.startup")).toHaveLength(0);
         expect(page.url()).toBe(originalUrl);
         expect(await page.evaluate(() => history.length)).toBe(historyLength);
         expect(params.key).toEqual(
@@ -62,13 +69,30 @@ suite.define(() => {
         expect(savedSettings.join("\n")).not.toContain(String(params.key));
 
         await captureUiProof(suite, page, `instant-${incognito}-pending.png`);
+        const confirmedKey = canonicalReplacement
+          ? "agent:main:canonical-instant-thread"
+          : String(params.key);
         await gateway.resolveDeferred("sessions.create", {
-          key: params.key,
+          key: confirmedKey,
           runStarted: true,
           runId: "synthetic-initial-run",
         });
         await waitForCommittedChatRoute(page);
-        expect(new URL(page.url()).pathname).toBe(controlUiSessionPath(String(params.key)));
+        expect(new URL(page.url()).pathname).toBe(controlUiSessionPath(confirmedKey));
+        await gateway.waitForRequest("chat.startup", { match: { sessionKey: confirmedKey } });
+        await expect.poll(() => page.locator("openclaw-chat-pane").count()).toBe(1);
+        expect(await gateway.getRequests("chat.startup")).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              params: expect.objectContaining({ sessionKey: confirmedKey }),
+            }),
+          ]),
+        );
+        expect(
+          (await gateway.getRequests("chat.startup")).every(
+            (request) => createParams(request).sessionKey === confirmedKey,
+          ),
+        ).toBe(true);
         expect(await page.evaluate(() => history.length)).toBe(historyLength + 1);
         await expect
           .poll(() => page.locator(".chat-thread").textContent())
@@ -323,20 +347,22 @@ suite.define(() => {
           runtime: { context: ApplicationContext };
         };
         const context = app.runtime.context;
-        const original = context.transition!;
+        const original = context.router.navigate.bind(context.router);
         const gate = { entered: false, release: () => {} };
         const wait = new Promise<void>((resolve) => {
           gate.release = resolve;
         });
         Object.defineProperty(window, "instantReadyGate", { value: gate, configurable: true });
-        Object.defineProperty(context, "transition", {
+        Object.defineProperty(context.router, "navigate", {
           configurable: true,
           value: (...args: Parameters<typeof original>) => {
             const transition = original(...args);
-            return transition.then(async () => {
-              gate.entered = true;
-              await wait;
-            });
+            return args[2]?.history === "none"
+              ? transition.then(async () => {
+                  gate.entered = true;
+                  await wait;
+                })
+              : transition;
           },
         });
       });
@@ -586,15 +612,12 @@ suite.define(() => {
           runtime: { context: ApplicationContext };
         };
         const context = app.runtime.context;
-        const original = context.transition;
-        if (!original) {
-          throw new Error("application must support transient routes");
-        }
-        Object.defineProperty(context, "transition", {
+        const original = context.router.navigate.bind(context.router);
+        Object.defineProperty(context.router, "navigate", {
           configurable: true,
           value: (...args: Parameters<typeof original>) => {
             const transition = original(...args);
-            return args[0] === "chat"
+            return args[0] === "chat" && args[2]?.history === "none"
               ? transition.then(() => {
                   throw new Error("Synthetic preview readiness failed");
                 })

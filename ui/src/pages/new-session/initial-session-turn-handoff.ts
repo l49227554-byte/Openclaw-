@@ -29,9 +29,6 @@ function retainInitialSessionTurn(options: InitialTurn): boolean {
       mentions: turn.mentions,
       sessionKey: result.key,
     });
-  if (handedOffAttachments) {
-    context.chatSubmissions.notifyInitial(result.key, client);
-  }
   if (result.initialRun.status === "started") {
     context.chatSubmissions.retain(
       buildInitialChatSubmission(result.key, turn, client, result.initialRun.runId),

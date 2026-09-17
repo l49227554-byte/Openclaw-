@@ -1,14 +1,15 @@
-import type { ApplicationContext, ApplicationNavigationOptions } from "../../app/context.ts";
+import type { RouteLocation } from "@openclaw/uirouter";
+import type { ApplicationContext } from "../../app/context.ts";
 
 /** A history-free route remains owned until a newer navigation or app shutdown. */
 export function beginInstantThreadNavigation(
   context: ApplicationContext,
-  routeId: string,
-  options: ApplicationNavigationOptions,
+  routeId: "chat" | "new-session",
+  options: RouteLocation,
 ) {
   const { router, lifecycleAbortSignal } = context;
   const controller = new AbortController();
-  const navigation = context.transition!(routeId, options);
+  const navigation = router.navigate(routeId, context, { history: "none" }, options);
   // Router locations are unique per navigation, including navigation to the same URL.
   const ownedLocation = router.getState().location;
   const signal = lifecycleAbortSignal

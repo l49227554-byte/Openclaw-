@@ -420,12 +420,16 @@ read_when:
       array positions.
       Include targets and contents are rechecked around persistence; a concurrent
       edit to an intermediate include refuses the write or rolls back its unchanged leaf.
-    - **Doctor repairs**: `openclaw doctor --fix` writes through the same
-      boundary. A run whose candidate mixes a root-owned repair with an
-      include-owned repair is refused as a whole. That refused write leaves every
-      file unchanged (earlier writes in the same run stay saved), and Doctor names
-      the boundary to repair by hand before rerunning, plus the included file or
-      files when the root file authors that boundary's `$include` (an agent-roster
+    - **Doctor repairs**: `openclaw doctor --fix` writes repaired config
+      through the same guarded include-aware writer as other config writes. A
+      repair touching keyed `agents.entries.<id>` or
+      `models.providers.<id>.models` paths owned by an include writes through
+      to that include file, alongside any root-owned repairs in the same run,
+      following the mixed-write contract above. Any other include-owned repair
+      fails closed like a manual write: every file stays unchanged (earlier
+      writes in the same run stay saved), and Doctor names the boundary to
+      repair by hand before rerunning, plus the included file or files when
+      the root file authors that boundary's `$include` (an agent-roster
       boundary is named without its file).
     - **Confinement**: `$include` paths must resolve under the directory holding
       `openclaw.json`. To share a tree across machines or users, set

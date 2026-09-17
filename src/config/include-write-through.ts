@@ -279,6 +279,11 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
   previousRaw: string | null;
   committedRaw: string | null;
   assertCurrent?: () => void;
+  // No committed hash exists to compare against a copy-fallback removal that
+  // recreated (possibly partially) the target before throwing: force restores
+  // previousRaw unconditionally instead of skipping when currentRaw's hash
+  // cannot match a real committed state.
+  forceRestore?: boolean;
 }): Promise<boolean> {
   return await rollbackConfigFileWriteIfUnchanged({
     configPath: params.target.absolutePath,
@@ -291,6 +296,7 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
     // hashConfigRaw (io.write-safety.ts:343), not hashConfigIncludeRaw --
     // the two hash different byte layouts for the same non-null input.
     committedHash: hashConfigRaw(params.committedRaw),
+    force: params.forceRestore,
     fsModule: fsNode,
     assertCurrent: params.assertCurrent,
     preserveDirectoryMode: true,
@@ -412,6 +418,10 @@ export type IncludeWriteRestorer = {
   // Same hardlink/inode identity proof publish itself relied on, carried
   // forward so restore verifies the file is still the one it wrote.
   pathProof: ReturnType<typeof captureConfigFileWritePathProof>;
+  // Set when publish threw after the copy-fallback already recreated the
+  // target: no committedRaw can describe those (possibly partial) bytes, so
+  // restore must overwrite them with previousRaw unconditionally.
+  forceRestore?: boolean;
 };
 
 /** Publish inside the caller's commit window, before the root file. Per
@@ -489,7 +499,8 @@ export async function publishStagedIncludeWrites(params: {
         });
         // publish()'s copy fallback removes the target (guarded rmSync ->
         // onRootRemoved) before rewriting it; a throw after that removal must
-        // register the null-content restorer or the include file's bytes are lost.
+        // register a forced restorer -- the fallback may have recreated the
+        // target with partial bytes, which no committedRaw hash can describe.
         try {
           preparedFile.publish();
         } catch (error) {
@@ -499,6 +510,7 @@ export async function publishStagedIncludeWrites(params: {
               previousRaw: entry.previousRaw,
               committedRaw: null,
               pathProof,
+              forceRestore: true,
             });
           }
           throw error;
@@ -547,6 +559,7 @@ export async function restoreStagedIncludeWrites(
             target,
             previousRaw: restorer.previousRaw,
             committedRaw: restorer.committedRaw,
+            forceRestore: restorer.forceRestore,
             assertCurrent: () => {
               params.restoreAuthority?.();
               restorer.pathProof.assertCurrent();

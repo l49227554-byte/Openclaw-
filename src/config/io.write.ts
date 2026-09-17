@@ -599,13 +599,17 @@ export async function writeConfigFileFromContext(
         sourceConfig: sourceConfigForPreflight,
       },
       [configWritePostCommitRollback]: async (assertCurrent) => {
-        // Include compensation authorizes on the original source owner plus
-        // per-target path proofs, before assertCurrent: a selection change
-        // must not strand new include values under a rolled-back root.
+        // sourceGuard is scoped to createConfigIO's nested lock (io.factory.ts),
+        // which closes the moment writeConfigFileFromContext returns -- dead
+        // long before post-commit finalization can invoke this rollback. Use
+        // the caller-supplied assertCurrent instead: it is the outer lock
+        // guard (io.runtime.ts's assertPostCommitCurrent), still live here,
+        // and -- like sourceGuard -- an ownership check, not a config-selection
+        // check, so it still authorizes restoration after a selection change.
         await restoreStagedIncludeWrites(includeWriteRestorers, {
           configPath,
           env: deps.env,
-          restoreAuthority: sourceGuard,
+          restoreAuthority: assertCurrent,
         });
         assertCurrent();
         restoreConfigSnapshotAuditRecord({
@@ -678,6 +682,9 @@ export async function writeConfigFileFromContext(
       failure = failureDuringAudit;
     }
     if (publication.phase === "unpublished" || rollbackStatus === "restored") {
+      // Still inside writeConfigFileFromContext's own synchronous catch, so
+      // sourceGuard's nested factory-lock scope has not closed yet -- unlike
+      // the post-commit rollback path above, sourceGuard is live here.
       failure = await restoreStagedIncludeWritesOrFold(includeWriteRestorers, failure, {
         configPath,
         env: deps.env,

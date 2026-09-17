@@ -320,6 +320,11 @@ export async function rollbackConfigFileWriteIfUnchanged(params: {
   configPath: string;
   previousSnapshot: Pick<ConfigFileSnapshot, "path" | "exists" | "raw" | "readError">;
   committedHash: string;
+  // Skips the committed-hash comparison below: for a copy-fallback removal
+  // that recreated the target before a later throw, no committed hash can
+  // describe the resulting (possibly partial) bytes, so the only safe
+  // compensation is restoring previousSnapshot.raw unconditionally.
+  force?: boolean;
   preserveDirectoryMode?: boolean;
   durable?: boolean;
   destinationHardlinks?: "reject";
@@ -340,7 +345,7 @@ export async function rollbackConfigFileWriteIfUnchanged(params: {
     }
   }
   assertCurrent?.();
-  if (hashConfigRaw(currentRaw) !== params.committedHash) {
+  if (!params.force && hashConfigRaw(currentRaw) !== params.committedHash) {
     return false;
   }
   if (params.previousSnapshot.exists && typeof params.previousSnapshot.raw === "string") {

@@ -293,6 +293,7 @@ type PackageRuntimePreflight = {
 
 export async function resolvePackageRuntimePreflight(params: {
   channel?: UpdateChannel;
+  requestedChannel?: UpdateChannel | null;
   target?: { version: string; nodeEngine: string | null };
   installedRoot?: string;
   timeoutMs?: number;
@@ -396,15 +397,19 @@ export async function resolvePackageRuntimePreflight(params: {
       : undefined;
   const env = context?.env ?? params.service?.serviceEnv ?? process.env;
   const recoveryVersion = valid(targetVersion);
-  const recoveryTarget =
-    params.channel === "extended-stable" ? "--channel extended-stable" : `--tag ${recoveryVersion}`;
+  const recoveryChannel =
+    params.requestedChannel ?? (params.channel === "extended-stable" ? params.channel : undefined);
+  const recoveryTarget = [
+    "openclaw update",
+    recoveryChannel ? `--channel ${recoveryChannel}` : "",
+    params.sourceRoot || params.channel === "extended-stable" ? "" : `--tag ${recoveryVersion}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
   const retainedRoot = params.sourceRoot ?? params.root ?? params.installedRoot;
   const retainedEntry = retainedRoot ? path.resolve(retainedRoot, "openclaw.mjs") : undefined;
   const continuation = retainedEntry
-    ? formatCliCommand(
-        params.sourceRoot ? "openclaw update" : `openclaw update ${recoveryTarget}`,
-        env,
-      ).replace(
+    ? formatCliCommand(recoveryTarget, env).replace(
         /^openclaw\b/,
         () =>
           `node ${process.platform === "win32" ? quotePowerShellArg(retainedEntry) : quoteCliArg(retainedEntry)}`,

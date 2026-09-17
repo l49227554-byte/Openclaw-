@@ -22,13 +22,15 @@ vi.mock("../../infra/container-environment.js", () => ({ isContainerEnvironment:
 const { fixture } = installFreshUpdateFixture();
 
 it.each([
-  ["extended-stable", "2026.8.33", "--channel extended-stable"],
-  ["stable", "2026.9.4", "--tag 2026.9.4"],
-  ["beta", "2026.9.4-beta.1", "--tag 2026.9.4-beta.1"],
-  ["dev", "2026.9.4-dev.1", "--tag 2026.9.4-dev.1"],
+  ["extended-stable", "2026.8.33", "--channel extended-stable", null],
+  ["stable", "2026.9.4", "--tag 2026.9.4", null],
+  ["beta", "2026.9.4-beta.1", "--tag 2026.9.4-beta.1", null],
+  ["dev", "2026.9.4-dev.1", "--tag 2026.9.4-dev.1", null],
+  ["extended-stable", "2026.9.4", "--channel stable --tag 2026.9.4", "stable"],
+  ["extended-stable", "2026.9.4-beta.1", "--channel beta --tag 2026.9.4-beta.1", "beta"],
 ] as const)(
-  "replays runtime recovery for saved %s through the target resolver",
-  async (channel, version, selector) => {
+  "replays runtime recovery for saved %s (%s, %s, requested=%s) through the target resolver",
+  async (channel, version, selector, requestedChannel) => {
     vi.stubEnv("OPENCLAW_PROFILE", undefined);
     const configPath = expectDefined(process.env.OPENCLAW_CONFIG_PATH, "isolated config path");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -58,6 +60,7 @@ it.each([
     const preflight = vi.spyOn(servicePlan, "resolvePackageRuntimePreflight");
 
     const options = {
+      channel: requestedChannel ?? undefined,
       json: true,
       yes: true,
       restart: false,
@@ -118,7 +121,10 @@ it.each([
     );
 
     expect(defaultRuntime.writeJson).toHaveBeenLastCalledWith(
-      expect.objectContaining({ effectiveChannel: channel, targetVersion: version }),
+      expect.objectContaining({
+        effectiveChannel: requestedChannel ?? channel,
+        targetVersion: version,
+      }),
     );
     expect(vi.mocked(defaultRuntime.writeJson).mock.calls.at(-1)?.[0]).not.toHaveProperty(
       "failures",

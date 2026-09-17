@@ -96,6 +96,8 @@ It does not rely on `openclaw` remaining on PATH after a version-manager switch,
 or recommend a global install into an uninspected prefix. Extended-stable recovery
 uses `--channel extended-stable` so the resolver selects the supported monthly
 release; other package channels retain the inspected version with `--tag`.
+An explicit channel switch is included in recovery because the runtime refusal
+happens before that preference is saved.
 
 Keep the same service account, profile, and state/config overrides. Recovery
 restores the recorded service selectors, including overrides absent from your

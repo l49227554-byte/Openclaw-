@@ -6,6 +6,7 @@ const resolveUtilityModelRefForAgent = vi.hoisted(() => vi.fn());
 const readSessionTitleFieldsFromTranscript = vi.hoisted(() => vi.fn());
 const updateSessionEntry = vi.hoisted(() => vi.fn());
 const loadSessionEntry = vi.hoisted(() => vi.fn());
+const emitSessionLifecycleEvent = vi.hoisted(() => vi.fn());
 
 vi.mock("../agents/utility-model.js", () => ({ resolveUtilityModelRefForAgent }));
 vi.mock("../auto-reply/reply/conversation-label-generator.js", () => ({
@@ -16,6 +17,7 @@ vi.mock("../config/sessions/session-accessor.js", () => ({
   loadSessionEntry,
 }));
 vi.mock("./session-transcript-title-reader.js", () => ({ readSessionTitleFieldsFromTranscript }));
+vi.mock("../sessions/session-lifecycle-events.js", () => ({ emitSessionLifecycleEvent }));
 
 import { testing as cliBackendsTesting } from "../agents/cli-backends.test-support.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -26,6 +28,8 @@ import {
   buildDashboardSessionTitleSource,
   generateWorktreeSessionTitle,
   hasExplicitSessionName,
+  isChannelSessionTitleCandidate,
+  maybeGenerateChannelSessionTitle,
   maybeGenerateDashboardSessionTitle,
   prepareDashboardSessionTitle,
   resolveExplicitSessionName,
@@ -39,6 +43,32 @@ const baseEntry: SessionEntry = {
   sessionId: "session-1",
   updatedAt: 1,
 };
+
+describe("channel session title eligibility", () => {
+  it("accepts only a first Slack thread turn with root text", () => {
+    expect(
+      isChannelSessionTitleCandidate({
+        channel: "slack",
+        isFirstThreadTurn: true,
+        threadStarterBody: "Plan the release rollout",
+      }),
+    ).toBe(true);
+    expect(
+      isChannelSessionTitleCandidate({
+        channel: "slack",
+        isFirstThreadTurn: false,
+        threadStarterBody: "Plan the release rollout",
+      }),
+    ).toBe(false);
+    expect(
+      isChannelSessionTitleCandidate({
+        channel: "discord",
+        isFirstThreadTurn: true,
+        threadStarterBody: "Plan the release rollout",
+      }),
+    ).toBe(false);
+  });
+});
 
 function titleParams(entry: SessionEntry | undefined = baseEntry) {
   loadSessionEntry.mockReturnValue(entry);
@@ -590,6 +620,69 @@ describe("hasExplicitSessionName", () => {
       expect(hasExplicitSessionName({ ...baseEntry, label })).toBe(true);
     },
   );
+});
+
+describe("maybeGenerateChannelSessionTitle", () => {
+  beforeEach(() => {
+    generateConversationLabelWithFallback.mockReset();
+    updateSessionEntry.mockReset();
+    loadSessionEntry.mockReset();
+    emitSessionLifecycleEvent.mockReset();
+    readSessionTitleFieldsFromTranscript.mockReset().mockReturnValue({
+      firstUserMessage: null,
+      lastMessagePreview: null,
+    });
+    resolveUtilityModelRefForAgent.mockReturnValue("openai/gpt-5.6-luna");
+  });
+
+  it("persists over transport metadata and publishes the committed title", async () => {
+    const entry = { ...baseEntry, groupChannel: "#engineering" };
+    loadSessionEntry.mockReturnValue(entry);
+    readSessionTitleFieldsFromTranscript.mockReturnValue({
+      firstUserMessage: "A later thread reply",
+      lastMessagePreview: null,
+    });
+    generateConversationLabelWithFallback.mockResolvedValue("Release rollout planning");
+    mockSessionUpdate(entry);
+
+    await expect(
+      maybeGenerateChannelSessionTitle({
+        cfg,
+        agentId: "main",
+        sessionKey: "agent:main:slack:channel:C1:thread:171234.001",
+        storePath: "/tmp/openclaw/sessions.json",
+        userMessage: "Plan the release rollout",
+      }),
+    ).resolves.toBe(true);
+
+    expect(generateConversationLabelWithFallback).toHaveBeenCalledWith(
+      expect.objectContaining({ userMessage: "Plan the release rollout" }),
+    );
+    expect(loadSessionEntry()).toMatchObject({ displayName: "Release rollout planning" });
+    expect(emitSessionLifecycleEvent).toHaveBeenCalledWith({
+      sessionKey: "agent:main:slack:channel:C1:thread:171234.001",
+      agentId: "main",
+      reason: "channel.title",
+    });
+  });
+
+  it("never replaces a manual label", async () => {
+    loadSessionEntry.mockReturnValue({ ...baseEntry, label: "Manual release title" });
+
+    await expect(
+      maybeGenerateChannelSessionTitle({
+        cfg,
+        agentId: "main",
+        sessionKey: "agent:main:slack:channel:C1:thread:171234.001",
+        storePath: "/tmp/openclaw/sessions.json",
+        userMessage: "Plan the release rollout",
+      }),
+    ).resolves.toBe(false);
+
+    expect(generateConversationLabelWithFallback).not.toHaveBeenCalled();
+    expect(updateSessionEntry).not.toHaveBeenCalled();
+    expect(emitSessionLifecycleEvent).not.toHaveBeenCalled();
+  });
 });
 
 function textAttachment(text: string): ChatAttachment {

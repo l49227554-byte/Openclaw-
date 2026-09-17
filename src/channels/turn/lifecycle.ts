@@ -437,6 +437,8 @@ async function dispatchChannelTurnWithDeliveryOwner(
     {
       channel: params.channel,
       accountId: params.accountId,
+      cfg: params.cfg,
+      agentId: params.agentId,
       routeSessionKey: params.routeSessionKey,
       storePath: params.storePath,
       ctxPayload: params.ctxPayload,

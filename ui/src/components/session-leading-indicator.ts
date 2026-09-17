@@ -2,6 +2,7 @@ import { html, nothing, type TemplateResult } from "lit";
 import type { SessionParticipantIdentity } from "../../../packages/gateway-protocol/src/schema/session-participant.js";
 import { t } from "../i18n/index.ts";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
+import { renderChannelIcon } from "./channel-icon.ts";
 import {
   renderSessionAttentionIcon,
   renderSessionIdleState,
@@ -28,6 +29,14 @@ function renderPersistentSessionIcon(icon: string) {
   return graphic
     ? html`<span class="session-glyph__icon" aria-hidden="true">${graphic}</span>`
     : html`<span class="session-glyph__emoji" aria-hidden="true">${icon}</span>`;
+}
+
+function renderSourceChannel(session: SidebarRecentSession) {
+  return session.channelSession && session.channel
+    ? html`${renderChannelIcon(session.channel, session.channel, "glyph")}<span class="sr-only"
+          >${session.channel}</span
+        >`
+    : undefined;
 }
 
 export function describeSessionState(session: SidebarRecentSession) {
@@ -100,6 +109,17 @@ export function renderSessionLeadingState(
           ></openclaw-channel-avatar>`,
           ...runState,
           circular: true,
+          badge: session.unread && !running ? renderSessionUnreadBadge() : nothing,
+        }),
+      };
+    }
+    const sourceChannel = renderSourceChannel(session);
+    if (sourceChannel) {
+      return {
+        running,
+        leadingIndicator: renderSessionGlyph({
+          content: sourceChannel,
+          ...runState,
           badge: session.unread && !running ? renderSessionUnreadBadge() : nothing,
         }),
       };
@@ -181,6 +201,17 @@ export function renderSessionLeadingState(
           ? (participants ?? []).slice(0, 1).map((participant) => participant.identity)
           : []),
       ],
+    };
+  }
+  const sourceChannel = trailingState ? undefined : renderSourceChannel(session);
+  if (sourceChannel) {
+    return {
+      running,
+      leadingIndicator: renderSessionGlyph({
+        content: sourceChannel,
+        ...runState,
+        badge: session.unread && !running ? renderSessionUnreadBadge() : nothing,
+      }),
     };
   }
   return {

@@ -4281,6 +4281,11 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
     expect(root.ctxPayload.SessionKey).toBe(expectedSessionKey);
     expect(followUp.ctxPayload.SessionKey).toBe(expectedSessionKey);
     expect(new Set([root.ctxPayload.SessionKey, followUp.ctxPayload.SessionKey]).size).toBe(1);
+    const ownsThreadSession = expectedSessionKey.includes(":thread:");
+    expect(root.ctxPayload.IsFirstThreadTurn).toBe(ownsThreadSession ? true : undefined);
+    expect(root.ctxPayload.ThreadTitleSource).toEqual(
+      ownsThreadSession ? expect.any(String) : undefined,
+    );
     expect(root.ctxPayload).not.toHaveProperty("SystemEventSessionKey");
     expect(followUp.ctxPayload).not.toHaveProperty("SystemEventSessionKey");
     if (expectedAgentId) {

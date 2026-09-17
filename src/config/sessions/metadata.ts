@@ -221,7 +221,13 @@ function deriveGroupSessionPatch(params: {
     id: resolution.id,
     key: params.sessionKey,
   });
-  if (displayName) {
+  const isSlackThread =
+    channel === "slack" && params.ctx.MessageThreadId != null && params.ctx.MessageThreadId !== "";
+  // Slack thread sessions use displayName for their semantic/manual title. The
+  // room and thread identity remain available in group/origin metadata, while
+  // omitting this derived transport label prevents later inbound turns from
+  // replacing an asynchronously generated title.
+  if (displayName && !isSlackThread) {
     patch.displayName = displayName;
   }
 

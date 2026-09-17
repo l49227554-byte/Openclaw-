@@ -39,6 +39,8 @@ const createMessageSentEmitter = vi.hoisted(() =>
   vi.fn(() => ({ emitMessageSent, hasMessageSentHooks: true })),
 );
 const readRecentUserAssistantTextForSession = vi.hoisted(() => vi.fn());
+const maybeGenerateChannelSessionTitle = vi.hoisted(() => vi.fn());
+const isChannelSessionTitleCandidate = vi.hoisted(() => vi.fn(() => true));
 
 vi.mock("../../auto-reply/reply/provider-dispatcher.js", async (importOriginal) => {
   const actual =
@@ -90,6 +92,11 @@ vi.mock("../../plugins/hook-runner-global.js", async (importOriginal) => {
 
 vi.mock("../../config/sessions/transcript.js", () => ({
   readRecentUserAssistantTextForSession,
+}));
+
+vi.mock("../../gateway/dashboard-session-title.js", () => ({
+  isChannelSessionTitleCandidate,
+  maybeGenerateChannelSessionTitle,
 }));
 
 const cfg = {} as OpenClawConfig;
@@ -581,6 +588,48 @@ describe("channel turn finalize", () => {
     });
 
     expect(events).toEqual(["record", "afterRecord", "dispatch"]);
+  });
+
+  it("starts Slack thread title generation after metadata without blocking dispatch", async () => {
+    let releaseMetadata!: () => void;
+    const metadata = new Promise<void>((resolve) => {
+      releaseMetadata = resolve;
+    });
+    const recordInboundSession = vi.fn<RecordInboundSession>(async (params) => {
+      params.trackSessionMetaTask?.(metadata);
+    });
+    const runDispatch = vi.fn(async () => ({ visibleReplySent: true }));
+
+    await runPreparedChannelTurn({
+      cfg,
+      agentId: "main",
+      channel: "slack",
+      routeSessionKey: "agent:main:slack:channel:C1:thread:171234.001",
+      storePath,
+      ctxPayload: createCtx({
+        Provider: "slack",
+        Surface: "slack",
+        SessionKey: "agent:main:slack:channel:C1:thread:171234.001",
+        IsFirstThreadTurn: true,
+        // Current-bot Slack roots are intentionally omitted from prompt context,
+        // but remain available as the semantic title source.
+        ThreadTitleSource: "Plan the release rollout",
+      }),
+      recordInboundSession,
+      runDispatch,
+    });
+
+    expect(runDispatch).toHaveBeenCalledOnce();
+    expect(maybeGenerateChannelSessionTitle).not.toHaveBeenCalled();
+    releaseMetadata();
+    await vi.waitFor(() => expect(maybeGenerateChannelSessionTitle).toHaveBeenCalledOnce());
+    expect(maybeGenerateChannelSessionTitle).toHaveBeenCalledWith({
+      cfg,
+      agentId: "main",
+      sessionKey: "agent:main:slack:channel:C1:thread:171234.001",
+      storePath,
+      userMessage: "Plan the release rollout",
+    });
   });
 
   it("threads turnAdoptionLifecycle into assembled reply options and fires after recovery persist attempt", async () => {

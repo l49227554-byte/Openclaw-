@@ -35,6 +35,7 @@ const loadSlackMediaModule = createLazyRuntimeModule(() => import("../media.js")
 
 type SlackThreadContextData = {
   threadStarterBody: string | undefined;
+  threadTitleSource: string | undefined;
   threadHistoryBody: string | undefined;
   shouldSeedInitialThreadContext: boolean;
   threadLabel: string | undefined;
@@ -224,6 +225,7 @@ export async function resolveSlackThreadContextData(params: {
   if (!params.isThreadReply || !params.threadTs) {
     return {
       threadStarterBody,
+      threadTitleSource: undefined,
       threadHistoryBody,
       shouldSeedInitialThreadContext,
       threadLabel,
@@ -305,6 +307,13 @@ export async function resolveSlackThreadContextData(params: {
     isNewThreadSession: shouldSeedInitialThreadContext,
     hasStarterText: Boolean(starter?.text),
   });
+  // Title generation needs the semantic root even when a current-bot starter is
+  // deliberately omitted from ThreadStarterBody to avoid duplicating prompt context.
+  // Keep the same visibility gate for user and third-party bot roots.
+  const threadTitleSource =
+    starter?.text && (includeStarterContext || includeBotStarterAsRootContext)
+      ? starter.text
+      : undefined;
 
   if (starter?.text && starterIsCurrentBot && !includeBotStarterAsRootContext) {
     logVerbose("slack: omitted current-bot thread starter from context");
@@ -456,6 +465,7 @@ export async function resolveSlackThreadContextData(params: {
 
   return {
     threadStarterBody,
+    threadTitleSource,
     threadHistoryBody,
     shouldSeedInitialThreadContext,
     threadLabel,

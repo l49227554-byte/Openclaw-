@@ -232,6 +232,8 @@ export type MsgContext = Partial<CanonicalInboundText> & {
   ForwardedFromMessageId?: number;
   ForwardedDate?: number;
   ThreadStarterBody?: string;
+  /** Root text reserved for semantic naming, even when omitted from prompt context. */
+  ThreadTitleSource?: string;
   /** Full thread history when starting a new thread session. */
   ThreadHistoryBody?: string;
   IsFirstThreadTurn?: boolean;

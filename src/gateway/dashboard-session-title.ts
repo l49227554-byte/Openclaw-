@@ -12,6 +12,7 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { withTimeout } from "../infra/fs-safe.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
+import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import type { ChatAttachment } from "./chat-attachments.js";
 import { deriveGoalSessionTitle } from "./derive-goal-session-title.js";
@@ -115,6 +116,10 @@ export function hasExplicitSessionName(entry: SessionEntry | undefined): boolean
   return Boolean(resolveExplicitSessionName(entry));
 }
 
+function hasOwnedSessionTitle(entry: SessionEntry | undefined): boolean {
+  return Boolean(entry?.label?.trim() || entry?.displayName?.trim());
+}
+
 function isAutoTitleSessionKey(sessionKey: string): boolean {
   const rest = parseAgentSessionKey(sessionKey)?.rest ?? "";
   return rest.startsWith("dashboard:") || rest.startsWith("ios-") || rest.startsWith("node-");
@@ -128,6 +133,19 @@ export function isDashboardSessionTitleCandidate(params: {
   const sourceText = params.userMessage.trim();
   return Boolean(
     sourceText && !sourceText.startsWith("/") && isAutoTitleSessionKey(params.sessionKey),
+  );
+}
+
+/** True only for a newly materialized Slack thread with a visible root message. */
+export function isChannelSessionTitleCandidate(params: {
+  channel: string;
+  isFirstThreadTurn?: boolean;
+  threadStarterBody?: string;
+}): boolean {
+  return Boolean(
+    params.channel === "slack" &&
+    params.isFirstThreadTurn === true &&
+    params.threadStarterBody?.trim(),
   );
 }
 
@@ -331,11 +349,18 @@ export async function maybeGenerateSessionTitle(params: {
   userMessage: string;
   worktree?: boolean;
   commitGuard?: () => void;
+  /** Channel/group metadata is a fallback, not title ownership, for this request. */
+  ignoreChannelMetadata?: boolean;
+  /** Use the caller's bounded semantic source even if the transcript has already advanced. */
+  suppliedSourceAuthoritative?: boolean;
 }): Promise<SessionTitleAttempt> {
   const sessionKey = resolveStoredSessionKeyForAgentStore(params);
   const scope = { agentId: params.agentId, sessionKey, storePath: params.storePath };
   const entry = loadSessionEntry(scope);
-  if (hasExplicitSessionName(entry) || entry?.sessionId !== params.sessionId) {
+  const hasOwnedName = params.ignoreChannelMetadata
+    ? hasOwnedSessionTitle(entry)
+    : hasExplicitSessionName(entry);
+  if (hasOwnedName || entry?.sessionId !== params.sessionId) {
     return { kind: "skipped" };
   }
 
@@ -358,11 +383,12 @@ export async function maybeGenerateSessionTitle(params: {
   const currentText = params.currentUserMessage?.trim() ?? "";
   // A first-turn transcript may win the persistence race before title work starts.
   // When it is the current turn, retain the supplied attachment-enriched source.
-  const sourceText =
-    entry.pendingWorktree?.titleSource?.trim() ??
-    (!transcriptText || (currentText && currentText === transcriptText)
-      ? params.userMessage.trim()
-      : transcriptText);
+  const sourceText = params.suppliedSourceAuthoritative
+    ? params.userMessage.trim()
+    : (entry.pendingWorktree?.titleSource?.trim() ??
+      (!transcriptText || (currentText && currentText === transcriptText)
+        ? params.userMessage.trim()
+        : transcriptText));
   if (!sourceText) {
     return { kind: "skipped" };
   }
@@ -391,7 +417,10 @@ export async function maybeGenerateSessionTitle(params: {
         await patchSessionEntryCore(
           scope,
           (current) => {
-            if (current.sessionId !== params.sessionId || hasExplicitSessionName(current)) {
+            const currentHasOwnedName = params.ignoreChannelMetadata
+              ? hasOwnedSessionTitle(current)
+              : hasExplicitSessionName(current);
+            if (current.sessionId !== params.sessionId || currentHasOwnedName) {
               return null;
             }
             persisted = true;
@@ -407,4 +436,34 @@ export async function maybeGenerateSessionTitle(params: {
     { evictOnSettled: true },
   );
   return (await request) ? { kind: "persisted" } : { kind: "skipped" };
+}
+
+/** Generates a channel title after ingress persistence and publishes its committed update. */
+export async function maybeGenerateChannelSessionTitle(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  sessionKey: string;
+  storePath: string;
+  userMessage: string;
+}): Promise<boolean> {
+  const entry = loadSessionEntry(params);
+  if (!entry?.sessionId) {
+    return false;
+  }
+  const attempt = await maybeGenerateSessionTitle({
+    ...params,
+    entry,
+    sessionId: entry.sessionId,
+    ignoreChannelMetadata: true,
+    suppliedSourceAuthoritative: true,
+  });
+  if (attempt.kind !== "persisted") {
+    return false;
+  }
+  emitSessionLifecycleEvent({
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    reason: "channel.title",
+  });
+  return true;
 }

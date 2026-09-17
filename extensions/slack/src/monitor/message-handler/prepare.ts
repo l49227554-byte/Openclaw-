@@ -1506,6 +1506,14 @@ export async function prepareSlackMessage(params: {
     sessionKey,
   });
   const previousTimestamp = sessionEntry?.updatedAt;
+  const ownsSlackThreadSession = sessionKey !== route.sessionKey;
+  const isNewSeededTopLevelThread = Boolean(
+    !isThreadReply &&
+    isRoom &&
+    message.ts &&
+    ownsSlackThreadSession &&
+    previousTimestamp === undefined,
+  );
   if (opts.source === "app_mention" && !ctx.botUserId && message.ts) {
     // The Slack message event can arrive first and queue the same timestamp as dropped history.
     // Remove only this route's copy before the trusted app_mention builds prompt context.
@@ -1584,6 +1592,7 @@ export async function prepareSlackMessage(params: {
 
   const {
     threadStarterBody,
+    threadTitleSource,
     threadHistoryBody,
     shouldSeedInitialThreadContext,
     threadLabel,
@@ -1757,11 +1766,14 @@ export async function prepareSlackMessage(params: {
       SlackAssistantThreadContextTeamId: assistantThreadContext?.teamId,
       SlackAssistantThreadContextEnterpriseId: assistantThreadContext?.enterpriseId ?? undefined,
       Transcript: preflightAudioTranscript,
+      ThreadTitleSource: isNewSeededTopLevelThread ? bodyForAgent : threadTitleSource,
       IsFirstThreadTurn:
-        isThreadReply &&
-        threadTs &&
-        !directThreadRoutedToDmSession &&
-        shouldSeedInitialThreadContext
+        ownsSlackThreadSession &&
+        (isNewSeededTopLevelThread ||
+          (isThreadReply &&
+            threadTs &&
+            !directThreadRoutedToDmSession &&
+            shouldSeedInitialThreadContext))
           ? true
           : undefined,
       ...(isRoomish

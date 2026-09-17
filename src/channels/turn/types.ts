@@ -363,6 +363,9 @@ type PreparedChannelTurnDispatchLifecycle = {
 
 /** Channel turn with dispatch runner already prepared. */
 export type PreparedChannelTurn<TDispatchResult = DispatchFromConfigResult> = {
+  /** Present for core-assembled turns; used by detached session metadata enrichments. */
+  cfg?: OpenClawConfig;
+  agentId?: string;
   channel: string;
   accountId?: string;
   routeSessionKey: string;

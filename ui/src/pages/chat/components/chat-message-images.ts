@@ -179,20 +179,24 @@ class MessageImageResourceDirective extends AsyncDirective {
         return this.present(this.renderImagePlaceholder(image));
       }
       return this.present(
-        renderAssistantAttachmentStatusCard({
-          label: image.fileName ?? image.alt ?? t("chat.imageLightbox.untitled"),
-          badge: t("chat.attachments.unavailable"),
-          reason,
-          path: isLocalAssistantAttachmentSource(image.url) ? image.url : undefined,
-          onAllow:
-            !decodeFailed && availability.status === "unavailable" && availability.canAllow
-              ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions, true)
-              : undefined,
-          onRetry:
-            !decodeFailed && availability.status === "unavailable" && availability.recoverable
-              ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions)
-              : undefined,
-        }),
+        this.renderImageFrame(
+          image,
+          renderAssistantAttachmentStatusCard({
+            label: image.fileName ?? image.alt ?? t("chat.imageLightbox.untitled"),
+            badge: t("chat.attachments.unavailable"),
+            reason,
+            path: isLocalAssistantAttachmentSource(image.url) ? image.url : undefined,
+            onAllow:
+              !decodeFailed && availability.status === "unavailable" && availability.canAllow
+                ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions, true)
+                : undefined,
+            onRetry:
+              !decodeFailed && availability.status === "unavailable" && availability.recoverable
+                ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions)
+                : undefined,
+          }),
+          "unavailable",
+        ),
       );
     }
     if (!this.managed) {
@@ -285,7 +289,7 @@ class MessageImageResourceDirective extends AsyncDirective {
   private renderImageFrame(
     img: ImageBlock,
     content: TemplateResult | typeof nothing,
-    loading = false,
+    state?: "loading" | "unavailable",
   ) {
     const sized =
       Number.isFinite(img.width) &&
@@ -302,11 +306,11 @@ class MessageImageResourceDirective extends AsyncDirective {
     // Frame geometry survives metadata, fetch, and IMG decode. CSS gallery
     // dimensions still override these single-image presentation values.
     return html`<span
-      class="chat-image-frame chat-image-frame--image ${this.managed ? "chat-image-frame--managed" : ""}"
+      class="chat-image-frame chat-image-frame--image ${this.managed ? "chat-image-frame--managed" : ""} ${state === "unavailable" ? "chat-image-frame--unavailable" : ""}"
       style=${`--chat-image-width: ${width}px; --chat-image-ratio: ${width} / ${height}`}
-      aria-busy=${loading ? "true" : "false"}
-      role=${loading ? "status" : nothing}
-      aria-label=${loading ? t("common.loading") : nothing}
+      aria-busy=${state === "loading" ? "true" : "false"}
+      role=${state === "loading" ? "status" : nothing}
+      aria-label=${state === "loading" ? t("common.loading") : nothing}
       >${content}</span
     >`;
   }
@@ -316,7 +320,7 @@ class MessageImageResourceDirective extends AsyncDirective {
       return this.renderImageFrame(
         image,
         html`<span class="chat-image-skeleton skeleton" aria-hidden="true"></span>`,
-        true,
+        "loading",
       );
     }
     return this.renderImageFrame(

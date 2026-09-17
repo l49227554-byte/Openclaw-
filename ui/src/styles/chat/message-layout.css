@@ -287,10 +287,19 @@
 .chat-image-frame--image {
   display: block;
   flex: none;
+  container-type: inline-size;
   /* A definite intrinsic width keeps fit-content user grids from collapsing. */
   width: var(--chat-image-width);
+  /* Panoramas must also fit the compact status header without moving the next row. */
+  min-height: 74px;
   aspect-ratio: var(--chat-image-ratio);
   background: color-mix(in srgb, var(--bg-muted) 45%, var(--bg));
+}
+
+/* Reserve the preview slot without painting or clipping an empty preview card. */
+.chat-image-frame--unavailable {
+  overflow: visible;
+  background: transparent;
 }
 
 .chat-image-skeleton.skeleton {
@@ -542,11 +551,6 @@
   justify-items: var(--chat-user-content-align);
 }
 
-.chat-group.user .chat-message-images > .chat-assistant-attachment-card {
-  grid-column: 1 / -1;
-  align-self: start;
-}
-
 .chat-group.user .chat-message-images--two-column {
   grid-template-columns: repeat(2, var(--chat-user-image-grid-size));
 }
@@ -787,7 +791,9 @@
   }
 }
 
-.chat-message-images > .chat-assistant-attachment-card {
+.chat-image-frame--unavailable > .chat-assistant-attachment-card {
+  align-self: start;
+
   .chat-assistant-attachment-card__status-meta {
     display: inline-flex;
     gap: 0.5em;
@@ -803,6 +809,38 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+}
+
+@container (max-width: 240px) {
+  .chat-image-frame--unavailable > .chat-assistant-attachment-card {
+    .chat-assistant-attachment-card__header {
+      height: 72px;
+      box-sizing: border-box;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 2px;
+      padding: 4px;
+    }
+
+    .chat-attachment-file-icon {
+      display: none;
+    }
+
+    .chat-assistant-attachment-card__identity {
+      flex: none;
+    }
+
+    .chat-assistant-attachment-card__details {
+      width: 100%;
+      gap: 0;
+    }
+
+    .chat-assistant-attachment-card__action {
+      height: 26px;
+      padding: 0;
+      font-size: clamp(8px, 14cqi, 12px);
+    }
   }
 }
 

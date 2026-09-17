@@ -261,11 +261,7 @@ test("Docker confines subagent attachments to the authorized session", async () 
     await expect(
       fs.readFile(
         path.join(
-          resolveSubagentAttachmentDir({
-            agentId: "main",
-            childSessionKey: attachedSessionKey,
-            attachmentId,
-          }),
+          resolveSubagentAttachmentDir("main", attachedSessionKey, attachmentId),
           "proof.txt",
         ),
         "utf8",

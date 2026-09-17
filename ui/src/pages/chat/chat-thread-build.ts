@@ -331,8 +331,6 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
     pendingInputs,
     props.searchOpen ? props.searchQuery : undefined,
     props.queue,
-    props.workspaceSyncPendingRunIds,
-    props.workerSetupPending,
     props.messageRecovery,
   );
   const projections: ChatProjection[] = pendingInputItems.map((item) => ({ item }));

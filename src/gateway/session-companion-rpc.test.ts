@@ -216,50 +216,53 @@ describe("session companion RPC", () => {
     );
   });
 
-  it.each(["sessions.companion.ask", "sessions.companion.state"] as const)(
-    "hides a foreign draft before dispatching %s",
-    async (method) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const cfg = rolePolicyConfig();
-        const owner = ensureProfileForEmail("owner@example.test");
-        const viewer = roleClient("view", "foreign-viewer");
-        viewer.connId = "foreign-viewer-connection";
-        await upsertSessionEntryCore(
-          {
-            agentId: "main",
-            sessionKey: "agent:main:owner-private",
-          },
-          {
-            sessionId: "owner-private-session",
-            updatedAt: 1,
-            visibility: "draft",
-            createdActor: { type: "human", source: "profile", id: owner.id },
-          },
-        );
-        const ask = vi.fn(async () => ({ answer: "private", ts: 1 }));
-        const state = vi.fn(() => ({ exchanges: [] }));
-        const respond = await invoke(
-          method,
-          {
-            sessionKey: "agent:main:owner-private",
-            ...(method === "sessions.companion.ask" ? { question: "What is private?" } : {}),
-          },
-          { ask, state },
-          viewer,
-          undefined,
-          cfg,
-        );
+  it.each([
+    "sessions.companion.ask",
+    "sessions.companion.state",
+    "sessions.companion.reset",
+  ] as const)("hides a foreign draft before dispatching %s", async (method) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const cfg = rolePolicyConfig();
+      const owner = ensureProfileForEmail("owner@example.test");
+      const viewer = roleClient("view", "foreign-viewer");
+      viewer.connId = "foreign-viewer-connection";
+      await upsertSessionEntryCore(
+        {
+          agentId: "main",
+          sessionKey: "agent:main:owner-private",
+        },
+        {
+          sessionId: "owner-private-session",
+          updatedAt: 1,
+          visibility: "draft",
+          createdActor: { type: "human", source: "profile", id: owner.id },
+        },
+      );
+      const ask = vi.fn(async () => ({ answer: "private", ts: 1 }));
+      const state = vi.fn(() => ({ exchanges: [] }));
+      const reset = vi.fn();
+      const respond = await invoke(
+        method,
+        {
+          sessionKey: "agent:main:owner-private",
+          ...(method === "sessions.companion.ask" ? { question: "What is private?" } : {}),
+        },
+        { ask, state, reset },
+        viewer,
+        undefined,
+        cfg,
+      );
 
-        expect(ask).not.toHaveBeenCalled();
-        expect(state).not.toHaveBeenCalled();
-        expect(respond).toHaveBeenCalledWith(
-          false,
-          undefined,
-          expect.objectContaining({ code: "INVALID_REQUEST" }),
-        );
-      });
-    },
-  );
+      expect(ask).not.toHaveBeenCalled();
+      expect(state).not.toHaveBeenCalled();
+      expect(reset).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ code: "INVALID_REQUEST" }),
+      );
+    });
+  });
 
   it("fails closed for an unresolved session under a roles boundary", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {

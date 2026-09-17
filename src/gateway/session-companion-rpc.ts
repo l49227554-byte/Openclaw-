@@ -180,7 +180,7 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
     );
   },
 
-  "sessions.companion.reset": ({ params, respond, context }) => {
+  "sessions.companion.reset": ({ params, respond, client, context }) => {
     if (!validateSessionsCompanionResetParams(params)) {
       respond(
         false,
@@ -200,6 +200,10 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
     const target = resolveCompanionTarget({ sessionKey, agentId }, context);
     if (!target.ok) {
       respond(false, undefined, target.error);
+      return;
+    }
+    if (!companionTargetIsVisible(target, client, context)) {
+      respond(false, undefined, hiddenSessionNotFound(target.sessionKey));
       return;
     }
     context.sessionCompanion.reset({

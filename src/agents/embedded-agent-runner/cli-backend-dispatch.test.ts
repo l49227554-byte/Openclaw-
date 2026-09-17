@@ -415,6 +415,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible execution", () => {
 
   it("maps the embedded run onto a one-shot restricted CLI run", async () => {
     runCliAgent.mockResolvedValue(cliRunResult());
+    const assertRunAuthorization = vi.fn();
     const sessionTarget = {
       agentId: "main",
       sessionId: "recall-session",
@@ -428,6 +429,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible execution", () => {
       fastModeStartedAtMs: 1000,
       fastModeAutoOnSeconds: 15,
       authProfileId: "selected-subscription-profile",
+      assertRunAuthorization,
     });
 
     const result = await runEmbeddedAgentViaCliBackendIfEligible(params);
@@ -436,6 +438,7 @@ describe("runEmbeddedAgentViaCliBackendIfEligible execution", () => {
     expect(runCliAgent).toHaveBeenCalledTimes(1);
     const cliParams = runCliAgent.mock.calls[0]?.[0];
     expect(cliParams?.sessionTarget).toBe(sessionTarget);
+    expect(cliParams?.assertCurrent).toBe(assertRunAuthorization);
     expect(cliParams).toMatchObject({
       provider: "claude-cli",
       model: "claude-opus-4-8",

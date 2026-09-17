@@ -994,10 +994,7 @@ export function createSessionsSendTool(opts?: {
           // post-return work or durable watches that could follow a reused key.
           // Child reports are one-way; even a late parent answer must not wake the child again.
           const skipDelayedReplyFlow =
-            requesterIsSubagent ||
-            (isIsolatedCronRequester && targetIsSubagent) ||
-            skipTaskReplyFlow ||
-            Boolean(expectedSessionId);
+            requesterIsSubagent || skipTaskReplyFlow || Boolean(expectedSessionId);
           // Ordinary child follow-ups have no registered task completion. Preserve one
           // late reply for their requester, but never duplicate a reply returned inline.
           const skipInlineReplyFlow = skipDelayedReplyFlow || targetIsSubagent;
@@ -1029,14 +1026,17 @@ export function createSessionsSendTool(opts?: {
                         // Cron runs are isolated jobs; target replies must not become new
                         // requester turns, but the target-side announce still runs.
                         maxPingPongTurns: isIsolatedCronRequester ? 0 : maxPingPongTurns,
-                        ...(targetIsSubagent ? { replyMode: "one-way" as const } : {}),
+                        ...(targetIsSubagent && !isIsolatedCronRequester
+                          ? { replyMode: "one-way" as const }
+                          : {}),
                         requesterSessionKey: replyRequesterSessionKey,
                         requesterAgentId,
                         requesterChannel,
                         roundOneReply: reply?.replyText,
                         sourceReplyDelivered: reply?.sourceReplyDelivered,
                         waitRunId,
-                        notifyRequesterOnWaitFailure,
+                        notifyRequesterOnWaitFailure:
+                          notifyRequesterOnWaitFailure && !isIsolatedCronRequester,
                       }),
                     ),
                   ),

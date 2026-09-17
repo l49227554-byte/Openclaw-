@@ -456,26 +456,12 @@ describe("sessions_send child coordination", () => {
         entry: { parentSessionKey: "agent:main:main" },
         acpMeta: { backend: "acpx" },
       },
-      {
-        name: "isolated Cron requester",
-        requesterKey: "agent:main:cron:nightly:run:one",
-        targetKey: "agent:main:subagent:child",
-        entry: {},
-        childSource: false,
-      },
     ].flatMap((source) =>
       [0, 1].map((timeoutSeconds) => Object.assign({}, source, { timeoutSeconds })),
     ),
   )(
     "sessions_send does not start reply turns for $name after timeoutSeconds=$timeoutSeconds",
-    async ({
-      requesterKey,
-      entry,
-      timeoutSeconds,
-      targetKey = "agent:main:main",
-      childSource = true,
-      acpMeta,
-    }) => {
+    async ({ requesterKey, entry, timeoutSeconds, targetKey = "agent:main:main", acpMeta }) => {
       const calls: GatewayCall[] = [];
       await writeEntry(requesterKey, { sessionId: "child", updatedAt: 1, ...entry });
       readAcpSessionMetaMock.mockImplementation((params: { sessionKey?: string }) =>
@@ -512,9 +498,7 @@ describe("sessions_send child coordination", () => {
           sourceTool: "sessions_send",
         },
       });
-      expect(agentParams(agentCalls[0] ?? {}).inputProvenance?.sourceRole).toBe(
-        childSource ? "subagent" : undefined,
-      );
+      expect(agentParams(agentCalls[0] ?? {}).inputProvenance?.sourceRole).toBe("subagent");
       expect(calls.filter((call) => call.method === "agent.wait")).toHaveLength(
         timeoutSeconds === 0 ? 0 : 1,
       );

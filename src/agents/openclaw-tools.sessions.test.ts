@@ -1877,7 +1877,16 @@ describe("sessions tools", () => {
     expect(sendParams.message).toBe("announce now");
   });
 
-  it.each([
+  it.each<{
+    targetKind: string;
+    targetKey: string;
+    spawned: boolean;
+    timeoutSeconds?: number;
+    pendingError?: boolean;
+    failure?: string;
+    stopReason?: string;
+    cronRequester?: boolean;
+  }>([
     { targetKind: "peer", targetKey: "agent:director1:main", spawned: false },
     { targetKind: "visible child", targetKey: "agent:director1:dashboard:child", spawned: true },
     { targetKind: "hidden child", targetKey: "agent:director1:subagent:child", spawned: true },
@@ -1913,11 +1922,31 @@ describe("sessions tools", () => {
       failure: "child run cancelled",
       stopReason: "aborted",
     },
+    ...["dashboard", "subagent"].flatMap((kind) =>
+      [0, 1].flatMap((timeoutSeconds) =>
+        [false, true].map((failed) => ({
+          targetKind: `${kind} child of Cron, timeout=${timeoutSeconds}, failed=${failed}`,
+          targetKey: `agent:director1:${kind}:child`,
+          spawned: true,
+          cronRequester: true,
+          timeoutSeconds,
+          failure: failed ? "Cron child run failed" : undefined,
+        })),
+      ),
+    ),
   ])(
     "sessions_send delivers the late reply from a $targetKind after the parent root releases",
-    async ({ targetKey, spawned, timeoutSeconds = 1, pendingError, failure, stopReason }) => {
+    async ({
+      targetKey,
+      spawned,
+      timeoutSeconds = 1,
+      pendingError,
+      failure,
+      stopReason,
+      cronRequester = false,
+    }) => {
       const calls: Array<{ method?: string; params?: unknown }> = [];
-      const requesterKey = "agent:main:main";
+      const requesterKey = cronRequester ? "agent:main:cron:job:run:once" : "agent:main:main";
       if (spawned) {
         await upsertSessionEntryCore(
           { agentId: "director1", sessionKey: targetKey },
@@ -1954,7 +1983,7 @@ describe("sessions tools", () => {
           const params = request.params as { runId?: string } | undefined;
           if (params?.runId === "run-target") {
             targetWaitCount += 1;
-            if (targetWaitCount === 1) {
+            if (timeoutSeconds !== 0 && targetWaitCount === 1) {
               return {
                 runId: "run-target",
                 status: "timeout",
@@ -1982,7 +2011,9 @@ describe("sessions tools", () => {
         return {};
       });
       agentStepTesting.setDepsForTest({
-        agentCommandFromIngress: async () => {
+        agentCommandFromIngress: async (opts) => {
+          expect(opts.sessionKey).toBe(targetKey);
+          expect(opts.extraSystemPrompt).toContain("Agent-to-agent announce step");
           finalAnnounceAdmissionClosed = isGatewaySubordinateWorkAdmissionClosed();
           if (finalAnnounceAdmissionClosed) {
             throw new GatewayDrainingError();
@@ -2020,47 +2051,56 @@ describe("sessions tools", () => {
       expect(requesterProviderStarts).toBe(0);
       releaseDelayedWait();
 
-      await vi.waitFor(
-        () => {
-          expect(requesterAdmissionClosed).toBe(false);
-        },
-        { timeout: 2_000, interval: 5 },
-      );
+      if (!cronRequester) {
+        await vi.waitFor(
+          () => {
+            expect(requesterAdmissionClosed).toBe(false);
+          },
+          { timeout: 2_000, interval: 5 },
+        );
+      }
       await vi.waitFor(() => {
         expect(getActiveGatewayRootWorkCount()).toBe(0);
       });
-      expect(requesterProviderStarts).toBe(spawned ? 1 : 3);
+      expect(requesterProviderStarts).toBe(cronRequester ? 0 : spawned ? 1 : 3);
 
       const requesterReplyCall = calls.find(
         (call) =>
           call.method === "agent" &&
           (call.params as { sessionKey?: string } | undefined)?.sessionKey === requesterKey,
       );
-      const replyParams = requesterReplyCall?.params as
-        | {
-            extraSystemPrompt?: string;
-            inputProvenance?: { sourceSessionKey?: string; sourceRole?: string };
-            message?: string;
-            sessionKey?: string;
-          }
-        | undefined;
-      expect(replyParams?.sessionKey).toBe(requesterKey);
-      expect(replyParams?.inputProvenance?.sourceSessionKey).toBe(targetKey);
-      expect(replyParams?.message).toContain(failure ?? "late director reply");
-      expect(replyParams?.inputProvenance?.sourceRole).toBe(spawned ? "subagent" : undefined);
-      expect(
-        isCompletionReportInputProvenance(replyParams?.inputProvenance),
-        "requested child results use the completion boundary so parent answers remain visible",
-      ).toBe(spawned);
-      if (spawned) {
-        expect(replyParams?.extraSystemPrompt).not.toContain("REPLY_SKIP");
+      if (cronRequester) {
+        expect(requesterReplyCall).toBeUndefined();
+        expect(requesterAdmissionClosed).toBeUndefined();
+        expect(calls.filter((call) => call.method === "agent")).toHaveLength(1);
       } else {
-        expect(replyParams?.extraSystemPrompt).toContain("Agent-to-agent reply step");
-        expect(replyParams?.extraSystemPrompt).toContain("Current agent: Agent 1 (requester)");
+        const replyParams = requesterReplyCall?.params as
+          | {
+              extraSystemPrompt?: string;
+              inputProvenance?: { sourceSessionKey?: string; sourceRole?: string };
+              message?: string;
+              sessionKey?: string;
+            }
+          | undefined;
+        expect(replyParams?.sessionKey).toBe(requesterKey);
+        expect(replyParams?.inputProvenance?.sourceSessionKey).toBe(targetKey);
+        expect(replyParams?.message).toContain(failure ?? "late director reply");
+        expect(replyParams?.inputProvenance?.sourceRole).toBe(spawned ? "subagent" : undefined);
+        expect(
+          isCompletionReportInputProvenance(replyParams?.inputProvenance),
+          "requested child results use the completion boundary so parent answers remain visible",
+        ).toBe(spawned);
+        if (spawned) {
+          expect(replyParams?.extraSystemPrompt).not.toContain("REPLY_SKIP");
+        } else {
+          expect(replyParams?.extraSystemPrompt).toContain("Agent-to-agent reply step");
+          expect(replyParams?.extraSystemPrompt).toContain("Current agent: Agent 1 (requester)");
+        }
       }
       expect(calls.find((call) => call.method === "send")).toBeUndefined();
-      expect(finalAnnounceAdmissionClosed).toBe(spawned ? undefined : false);
-      expect(finalAnnounceProviderStarts).toBe(spawned ? 0 : 1);
+      const announces = !spawned || (cronRequester && !failure);
+      expect(finalAnnounceAdmissionClosed).toBe(announces ? false : undefined);
+      expect(finalAnnounceProviderStarts).toBe(announces ? 1 : 0);
     },
   );
 

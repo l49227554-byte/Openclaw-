@@ -12,9 +12,9 @@ import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime
 import { createPluginRuntimeStore, type PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { withServer, withStateDirEnv } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as mattermostPublicApi from "../../extensions/mattermost/channel-plugin-api.js";
 import mattermostEntry from "../../extensions/mattermost/index.js";
 import * as bootstrapRegistry from "../../src/channels/plugins/bootstrap-registry.js";
+import { importBundledChannelContractSourceArtifact } from "../../src/channels/plugins/contracts/test-helpers/runtime-artifacts.js";
 import type { OpenClawConfig } from "../../src/config/types.openclaw.js";
 import { getDeliveryQueueEntryStatus } from "../../src/infra/delivery-queue-sqlite.js";
 import { PlatformMessageNotDispatchedError } from "../../src/infra/outbound/deliver-types.js";
@@ -32,6 +32,9 @@ import { createDeferred } from "../helpers/promise.js";
 
 // Keep the declared public artifact in the host's module graph so error classes
 // and retry history have the same identity across the adapter boundary.
+const mattermostPublicApi = await importBundledChannelContractSourceArtifact<{
+  mattermostPlugin: ReturnType<typeof mattermostEntry.loadChannelPlugin>;
+}>("mattermost", "channel-plugin-api.js", {});
 const createEntryLoader: typeof createJiti = (...loaderArgs) =>
   new Proxy(createJiti(...loaderArgs), {
     apply(target, thisArg, args) {

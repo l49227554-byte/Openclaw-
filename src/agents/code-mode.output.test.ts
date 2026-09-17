@@ -262,14 +262,16 @@ describe("Code Mode output provenance", () => {
           output: [...(first.output as unknown[]), ...(final.output as unknown[])],
         };
       }
-      expect(result.status).toBe("completed");
-      expect({ value: result.value, output: result.output }).toEqual({
-        value: expected,
-        output: [
-          { type: "json", value: expected },
-          { type: "json", value: expected },
-        ],
-      });
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: "completed",
+          value: expected,
+          output: [
+            { type: "json", value: expected },
+            { type: "json", value: expected },
+          ],
+        }),
+      );
     },
   );
 

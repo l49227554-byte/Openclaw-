@@ -31,12 +31,13 @@ describe.each(["interactive", "headless"] as const)("Code Mode %s search", (mode
   it("round-trips exact plugin and client callable names that differ only in case", async () => {
     const { config, catalogRef, ctx, tools } = createCodeModeHarness();
     const plugin = pluginTool("listURL", "List plugin URLs");
+    const clientExecute = vi.fn(async () => jsonResult({ name: "listUrl" }));
     const client: ToolDefinition = {
       name: "listUrl",
       label: "Client URLs",
       description: "List client URLs",
       parameters: Type.Object({}),
-      execute: vi.fn(async () => jsonResult({ name: "listUrl" })),
+      execute: clientExecute,
     };
     applyCodeModeCatalog({ tools: [...tools, plugin], config, catalogRef });
     addClientToolsToCodeModeCatalog({ tools: [client], config, catalogRef });
@@ -61,7 +62,7 @@ describe.each(["interactive", "headless"] as const)("Code Mode %s search", (mode
       ]),
     });
     expect(plugin.execute).toHaveBeenCalledOnce();
-    expect(client.execute).toHaveBeenCalledOnce();
+    expect(clientExecute).toHaveBeenCalledOnce();
   });
 
   function setup(maxOutputBytes = 1_024, maxSearchLimit = 50) {

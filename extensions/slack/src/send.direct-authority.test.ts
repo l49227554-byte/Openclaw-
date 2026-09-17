@@ -235,7 +235,7 @@ describe("Slack direct-delivery request authority", () => {
                   [{ type: "raw_text", text: "Acme" }],
                 ],
               },
-            ],
+            ] as never,
             assertDirectAdapterHandoff: assertLive(() => isLive),
           }),
         ).rejects.toThrow("direct delivery is no longer active");

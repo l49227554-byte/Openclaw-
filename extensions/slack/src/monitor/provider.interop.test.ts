@@ -507,9 +507,9 @@ describe("createSlackBoltApp", () => {
         socket.on("message", (data) => {
           const bytes = Array.isArray(data)
             ? Buffer.concat(data)
-            : data instanceof ArrayBuffer
-              ? Buffer.from(data)
-              : data;
+            : Buffer.isBuffer(data)
+              ? data
+              : Buffer.from(data);
           acknowledgements.push(JSON.parse(bytes.toString("utf8")).envelope_id);
         });
         socket.send(JSON.stringify({ type: "hello" }));

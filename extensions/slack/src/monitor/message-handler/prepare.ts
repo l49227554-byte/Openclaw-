@@ -58,11 +58,7 @@ import {
 } from "../auth.js";
 import { resolveSlackChannelConfig } from "../channel-config.js";
 import { stripSlackMentionsForCommandDetection } from "../commands.js";
-import {
-  getSessionEntry,
-  resolveChannelContextVisibilityMode,
-  resolveStorePath,
-} from "../config.runtime.js";
+import { resolveChannelContextVisibilityMode } from "../config.runtime.js";
 import {
   buildSlackAssistantThreadMetadata,
   normalizeSlackChannelType,
@@ -89,7 +85,9 @@ import {
 import { resolveSlackMessageContent } from "./prepare-content.js";
 import { resolveSlackDmHistoryContext, resolveSlackDmHistoryLimit } from "./prepare-dm-history.js";
 import { resolveSlackRoutingContext } from "./prepare-routing.js";
+import { resolveSlackSessionState } from "./prepare-session-state.js";
 import { resolveSlackThreadContextData } from "./prepare-thread-context.js";
+import { resolveSlackThreadTurnMetadata } from "./prepare-thread-turn-metadata.js";
 import { isSlackSubteamMentionForBot, normalizeSlackId } from "./subteam-mentions.js";
 import { resolveSlackTimestampMs } from "./timestamp.js";
 import type { PreparedSlackMessage } from "./types.js";
@@ -1497,23 +1495,9 @@ export async function prepareSlackMessage(params: {
       ? ` thread_ts: ${threadTs}${message.parent_user_id ? ` parent_user_id: ${message.parent_user_id}` : ""}`
       : "";
   const textWithId = `${bodyForAgent}\n[slack message id: ${message.ts} channel: ${message.channel}${threadInfo}]`;
-  const storePath = resolveStorePath(ctx.cfg.session?.store, {
-    agentId: route.agentId,
-  });
+  const sessionState = resolveSlackSessionState(ctx.cfg, route, sessionKey);
+  const { storePath, previousTimestamp } = sessionState;
   const envelopeOptions = resolveEnvelopeFormatOptions(ctx.cfg);
-  const sessionEntry = getSessionEntry({
-    storePath,
-    sessionKey,
-  });
-  const previousTimestamp = sessionEntry?.updatedAt;
-  const ownsSlackThreadSession = sessionKey !== route.sessionKey;
-  const isNewSeededTopLevelThread = Boolean(
-    !isThreadReply &&
-    isRoom &&
-    message.ts &&
-    ownsSlackThreadSession &&
-    previousTimestamp === undefined,
-  );
   if (opts.source === "app_mention" && !ctx.botUserId && message.ts) {
     // The Slack message event can arrive first and queue the same timestamp as dropped history.
     // Remove only this route's copy before the trusted app_mention builds prompt context.
@@ -1766,16 +1750,19 @@ export async function prepareSlackMessage(params: {
       SlackAssistantThreadContextTeamId: assistantThreadContext?.teamId,
       SlackAssistantThreadContextEnterpriseId: assistantThreadContext?.enterpriseId ?? undefined,
       Transcript: preflightAudioTranscript,
-      ThreadTitleSource: isNewSeededTopLevelThread ? bodyForAgent : threadTitleSource,
-      IsFirstThreadTurn:
-        ownsSlackThreadSession &&
-        (isNewSeededTopLevelThread ||
-          (isThreadReply &&
-            threadTs &&
-            !directThreadRoutedToDmSession &&
-            shouldSeedInitialThreadContext))
-          ? true
-          : undefined,
+      ...resolveSlackThreadTurnMetadata({
+        sessionKey,
+        baseSessionKey: route.sessionKey,
+        isThreadReply,
+        isRoom,
+        messageTs: message.ts,
+        previousTimestamp,
+        threadTs,
+        directThreadRoutedToDmSession: Boolean(directThreadRoutedToDmSession),
+        shouldSeedInitialThreadContext,
+        bodyForAgent,
+        threadTitleSource,
+      }),
       ...(isRoomish
         ? {
             WasMentioned: effectiveWasMentioned,
@@ -1847,7 +1834,7 @@ export async function prepareSlackMessage(params: {
     channelConfig,
     replyTarget,
     ctxPayload,
-    sessionDisplayName: sessionEntry?.displayName,
+    sessionDisplayName: sessionState.sessionDisplayName,
     turn: {
       storePath,
       record: {

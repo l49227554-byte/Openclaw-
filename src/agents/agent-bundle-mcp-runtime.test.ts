@@ -25,6 +25,7 @@ import { completeDeferredSessionMcpRuntimeRetirement } from "./agent-bundle-mcp-
 import {
   createSessionMcpRuntimeManager,
   getOrCreateSessionMcpRuntime,
+  unopenedMcpConfig,
 } from "./agent-bundle-mcp-manager.test-support.js";
 import { createMcpProbeFixture } from "./agent-bundle-mcp-probe.test-support.js";
 import { runWithSessionMcpRequestSignal } from "./agent-bundle-mcp-request-context.js";
@@ -88,10 +89,6 @@ type RuntimeParams = Parameters<typeof getOrCreateSessionMcpRuntime>[0];
 type ConfiguredMcpServer = NonNullable<
   NonNullable<NonNullable<RuntimeParams["cfg"]>["mcp"]>["servers"]
 >[string];
-const unopenedMcpConfig = {
-  plugins: { enabled: false },
-  mcp: { servers: { fixture: { command: process.execPath } } },
-} satisfies NonNullable<RuntimeParams["cfg"]>;
 
 const LIST_TOOLS_SERVER_LOG_TIMEOUT_MS = 2_000;
 const LIST_TOOLS_TEST_DEADLINE_MS = 4_000;

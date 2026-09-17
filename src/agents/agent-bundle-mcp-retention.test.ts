@@ -12,6 +12,34 @@ const repoRoot = path.resolve(import.meta.dirname, "../..");
 it("does not retain memory-session MCP runtimes across shared-worker files", async ({ signal }) => {
   const root = tempDirs.make("mcp-retention-");
   const reportPath = path.join(root, "report.json");
+  const configPath = path.join(root, "vitest.config.mts");
+  await fs.writeFile(
+    configPath,
+    `import { BaseSequencer } from ${JSON.stringify(import.meta.resolve("vitest/node"))};
+import { createUnitFastVitestConfig } from ${JSON.stringify(path.join(repoRoot, "test/vitest/vitest.unit-fast.config.ts"))};
+const memoryTest = "src/auto-reply/reply/agent-runner-memory.private-transcript.test.ts";
+class MemoryBeforeRequesterSequencer extends BaseSequencer {
+  async sort(files) {
+    return files.toSorted(
+      (a, b) => Number(b.moduleId.endsWith(memoryTest)) - Number(a.moduleId.endsWith(memoryTest)),
+    );
+  }
+}
+const config = createUnitFastVitestConfig();
+export default {
+  ...config,
+  test: {
+    ...config.test,
+    include: [memoryTest, "src/agents/cli-runner/bundle-mcp.requester-lifecycle.test.ts"],
+    maxWorkers: 1,
+    fileParallelism: false,
+    isolate: false,
+    passWithNoTests: false,
+    sequence: { sequencer: MemoryBeforeRequesterSequencer },
+  },
+};
+`,
+  );
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith("VITEST") || key.startsWith("OPENCLAW_VITEST") || key === "GITHUB_ACTIONS") {
@@ -28,7 +56,7 @@ it("does not retain memory-session MCP runtimes across shared-worker files", asy
       "scripts/run-vitest.mjs",
       "run",
       "--config",
-      "src/agents/agent-bundle-mcp-retention.test-support.ts",
+      configPath,
       "--reporter=verbose",
       "--reporter=json",
       `--outputFile.json=${reportPath}`,

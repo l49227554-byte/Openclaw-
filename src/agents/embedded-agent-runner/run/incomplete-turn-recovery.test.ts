@@ -5,6 +5,7 @@ import {
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import {
   resolveEmptyResponseRetryInstruction,
+  resolveProgressOnlyContinuationInstruction,
   resolveReasoningOnlyRetryInstruction,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn-recovery.js";
@@ -308,5 +309,145 @@ describe("incomplete-turn recovery policy", () => {
         attempt,
       }),
     ).toBe(false);
+  });
+});
+
+function progressAttempt(
+  text: string,
+  overrides: Parameters<typeof makeEmbeddedRunnerAttempt>[0] = {},
+) {
+  const assistant = buildEmbeddedRunnerAssistant({
+    content: [{ type: "text", text }],
+    stopReason: "stop",
+  });
+  return makeEmbeddedRunnerAttempt({
+    assistantTexts: [text],
+    lastAssistant: assistant,
+    currentAttemptAssistant: assistant,
+    // Committed tool work from earlier iterations of the same run must not
+    // block a text-only continuation of the current attempt.
+    replayMetadata: { hadPotentialSideEffects: true, replaySafe: true },
+    currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    ...overrides,
+  });
+}
+
+const PROGRESS_RESOLVER_BASE = {
+  provider: "nvcf2",
+  modelId: "ds-flash-v4",
+  modelApi: "openai-completions",
+  aborted: false,
+  timedOut: false,
+};
+
+describe("progress-only continuation policy", () => {
+  it("continues a turn that promises future work and stops", () => {
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt(
+          "Fair — the paths are templated, so let me pull the actual string values from the configs.",
+        ),
+      }),
+    ).toBeTruthy();
+  });
+
+  it("continues despite committed side effects earlier in the run", () => {
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt(
+          "The journal returned nothing. Let me find where the logs actually go.",
+          {
+            toolMetas: [{ toolName: "exec", replaySafe: false }],
+          },
+        ),
+      }),
+    ).toBeTruthy();
+  });
+
+  it("does not continue a complete short answer", () => {
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt("The base URL is /api/v1 and the paths are /a and /b."),
+      }),
+    ).toBeNull();
+  });
+
+  it("does not continue when the final message settled tool calls", () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      content: [
+        { type: "text", text: "Ran the checks. Let me summarize." },
+        { type: "toolCall", id: "call_1", name: "read", arguments: {} },
+      ],
+      stopReason: "toolUse",
+    });
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt("Ran the checks. Let me summarize.", {
+          lastAssistant: assistant,
+          currentAttemptAssistant: assistant,
+        }),
+      }),
+    ).toBeNull();
+  });
+
+  it("does not continue non-stop terminal reasons", () => {
+    const assistant = buildEmbeddedRunnerAssistant({
+      content: [{ type: "text", text: "Let me check the logs." }],
+      stopReason: "error",
+    });
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt("Let me check the logs.", {
+          lastAssistant: assistant,
+          currentAttemptAssistant: assistant,
+        }),
+      }),
+    ).toBeNull();
+  });
+
+  it("does not continue when the current attempt is not replay-safe", () => {
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt("Let me check the logs.", {
+          currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        }),
+      }),
+    ).toBeNull();
+  });
+
+  it("does not continue aborted turns", () => {
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        aborted: true,
+        attempt: progressAttempt("Let me check the logs."),
+      }),
+    ).toBeNull();
+  });
+
+  it("does not continue long answers that merely mention future work", () => {
+    const filler =
+      "Here is the full configuration inventory with every resolved value in order.\n".repeat(12);
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt(`${filler}Let me know if you want more detail.`),
+      }),
+    ).toBeNull();
+  });
+
+  it("does not continue silent replies", () => {
+    expect(
+      resolveProgressOnlyContinuationInstruction({
+        ...PROGRESS_RESOLVER_BASE,
+        attempt: progressAttempt("NO_REPLY"),
+      }),
+    ).toBeNull();
   });
 });

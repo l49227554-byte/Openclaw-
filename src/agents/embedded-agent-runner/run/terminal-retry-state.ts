@@ -3,6 +3,7 @@ export const MAX_BEFORE_AGENT_FINALIZE_REVISIONS = 3;
 export type EmbeddedRunTerminalRetryState = {
   reasoningOnlyAttempts: number;
   emptyResponseAttempts: number;
+  progressOnlyAttempts: number;
   missingAssistantAttempts: number;
   compactionContinuationAttempts: number;
   compactionContinuationInstruction: string | null;
@@ -13,6 +14,7 @@ export function createEmbeddedRunTerminalRetryState(): EmbeddedRunTerminalRetryS
   return {
     reasoningOnlyAttempts: 0,
     emptyResponseAttempts: 0,
+    progressOnlyAttempts: 0,
     missingAssistantAttempts: 0,
     compactionContinuationAttempts: 0,
     compactionContinuationInstruction: null,

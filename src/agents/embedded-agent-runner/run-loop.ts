@@ -39,6 +39,7 @@ import { buildErrorAgentMeta, resolveMaxRunRetryIterations } from "./run/helpers
 import { createIdleTimeoutBreakerState } from "./run/idle-timeout-breaker.js";
 import {
   DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
+  DEFAULT_PROGRESS_ONLY_RETRY_LIMIT,
   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
 } from "./run/incomplete-turn-recovery.js";
 import { createEmbeddedRunPermissionChanges } from "./run/permission-change.js";
@@ -653,6 +654,7 @@ export async function runPreparedEmbeddedLoop(
         terminalToolFailure,
         maxReasoningOnlyRetryAttempts: DEFAULT_REASONING_ONLY_RETRY_LIMIT,
         maxEmptyResponseRetryAttempts: DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
+        maxProgressOnlyRetryAttempts: DEFAULT_PROGRESS_ONLY_RETRY_LIMIT,
         attemptCompactionCount: terminalAttemptCompactionCount,
         replayState: accumulatedReplayState,
         activePromptPersisted: sessionPromptState.activePrompt.persisted,

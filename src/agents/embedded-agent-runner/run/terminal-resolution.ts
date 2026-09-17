@@ -35,6 +35,7 @@ import type { EmbeddedRunContextRecoveryState } from "./context-recovery-state.j
 import { resolveFinalAssistantVisibleText } from "./helpers.js";
 import {
   resolveEmptyResponseRetryInstruction,
+  resolveProgressOnlyContinuationInstruction,
   resolveReasoningOnlyRetryInstruction,
   resolveSettledToolBatchEvidence,
   resolveSettledToolTerminalContinuationInstruction,
@@ -201,6 +202,7 @@ export async function resolveEmbeddedRunTerminal(input: {
   terminalToolFailure?: EmbeddedAgentRunResult["meta"]["terminalToolFailure"];
   maxReasoningOnlyRetryAttempts: number;
   maxEmptyResponseRetryAttempts: number;
+  maxProgressOnlyRetryAttempts: number;
   attemptCompactionCount: number;
   replayState: EmbeddedRunReplayState;
   activePromptPersisted: boolean;
@@ -300,6 +302,21 @@ export async function resolveEmbeddedRunTerminal(input: {
           timedOut: terminalTimedOut,
           attempt,
         });
+  const nextProgressOnlyContinuationInstruction =
+    emptyAssistantReplyIsSilent ||
+    settledTurnFinalizationAttempted ||
+    payloadCount === 0 ||
+    !requiresVisibleTerminalReply(runParams)
+      ? null
+      : resolveProgressOnlyContinuationInstruction({
+          provider: input.activeErrorContext.provider,
+          modelId: input.activeErrorContext.model,
+          modelApi: input.modelApi,
+          executionContract: input.executionContract,
+          aborted: terminalAborted,
+          timedOut: terminalTimedOut,
+          attempt,
+        });
   if (
     nextReasoningOnlyRetryInstruction &&
     retryState.reasoningOnlyAttempts < input.maxReasoningOnlyRetryAttempts
@@ -348,6 +365,19 @@ export async function resolveEmbeddedRunTerminal(input: {
       `empty response detected: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
         `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.emptyResponseAttempts}/${input.maxEmptyResponseRetryAttempts} ` +
         `with visible-answer continuation`,
+    );
+    return { action: "retry" };
+  }
+  if (
+    nextProgressOnlyContinuationInstruction &&
+    retryState.progressOnlyAttempts < input.maxProgressOnlyRetryAttempts
+  ) {
+    retryState.progressOnlyAttempts += 1;
+    input.activateInternalPrompt(nextProgressOnlyContinuationInstruction);
+    log.warn(
+      `progress-only assistant turn detected: runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
+        `provider=${input.activeErrorContext.provider}/${input.activeErrorContext.model} — retrying ${retryState.progressOnlyAttempts}/${input.maxProgressOnlyRetryAttempts} ` +
+        `with promised-work continuation`,
     );
     return { action: "retry" };
   }

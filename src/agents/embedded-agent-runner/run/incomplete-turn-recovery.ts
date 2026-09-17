@@ -31,10 +31,13 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 // surfacing the existing incomplete-turn error path.
 export const DEFAULT_REASONING_ONLY_RETRY_LIMIT = 2;
 export const DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 1;
+export const DEFAULT_PROGRESS_ONLY_RETRY_LIMIT = 1;
 const REASONING_ONLY_RETRY_INSTRUCTION =
   "The previous assistant turn recorded reasoning but did not produce a user-visible answer. Continue from that partial turn and produce the visible answer now. Do not restate the reasoning or restart from scratch.";
 const EMPTY_RESPONSE_RETRY_INSTRUCTION =
   "The previous attempt did not produce a user-visible answer. Continue from the current state and produce the visible answer now. Do not restart from scratch.";
+const PROGRESS_ONLY_CONTINUATION_INSTRUCTION =
+  'Your previous message promised further work (for example "let me check" or "I\'ll pull that now") but ended the turn without doing it. Continue from the current transcript now: either perform the promised work with the available tools and then produce the final user-visible answer, or, if the work is genuinely already complete, produce that complete final answer instead of promising more. Do not restart from scratch and do not repeat completed tool calls.';
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch.";
 
@@ -188,6 +191,78 @@ export function resolveReasoningOnlyRetryInstruction(params: {
   }
 
   return REASONING_ONLY_RETRY_INSTRUCTION;
+}
+
+const PROGRESS_ONLY_PHRASE_PATTERN =
+  /\b(?:let me|i['’]ll|i am going to|i['’]?m going to|checking|looking into|digging into|pulling|fetching|searching|hold on|one moment|one sec|give me a (?:moment|second|sec)|working on|about to|next,? i|now i['’]?ll|going to (?:check|look|pull|find|search|read|run|grab|inspect|verify))\b/i;
+const PROGRESS_ONLY_TRAILING_ELLIPSIS_PATTERN = /(?:\.\.\.|…)\s*$/;
+const PROGRESS_ONLY_MAX_TEXT_LENGTH = 600;
+
+/**
+ * Detects a turn that ended with a progress-only promise ("let me check ...")
+ * instead of either tool work or a final answer. Unlike the non-visible-turn
+ * retries this continuation does not replay the prompt: earlier tool side
+ * effects are already committed in the transcript, so only the current attempt
+ * must be replay-safe before continuing.
+ */
+export function resolveProgressOnlyContinuationInstruction(params: {
+  provider?: string;
+  modelId?: string;
+  modelApi?: string;
+  executionContract?: string;
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): string | null {
+  if (
+    params.aborted ||
+    params.timedOut ||
+    params.attempt.terminal.kind === "failed" ||
+    params.attempt.clientToolCalls ||
+    params.attempt.yieldDetected ||
+    params.attempt.didSendDeterministicApprovalPrompt ||
+    params.attempt.lastToolError ||
+    hasAcceptedSessionSpawn(params.attempt.acceptedSessionSpawns) ||
+    hasAsyncActivity(params.attempt.toolMetas) ||
+    hasAttemptTerminalState(params.attempt) ||
+    !isCurrentAttemptReplaySafe(params.attempt)
+  ) {
+    return null;
+  }
+  if (
+    !shouldApplyNonVisibleTurnRetryGuard({
+      provider: params.provider,
+      modelId: params.modelId,
+      modelApi: params.modelApi,
+      executionContract: params.executionContract,
+    })
+  ) {
+    return null;
+  }
+  const assistant = resolveCurrentAttemptAssistant(params.attempt);
+  if (!assistant || assistant.stopReason !== "stop") {
+    return null;
+  }
+  // A settled tool-call batch in the final message belongs to the settled-turn
+  // finalization path, not to a text-only continuation.
+  if (readSettledToolCalls(assistant).length > 0) {
+    return null;
+  }
+  const visibleText = joinAssistantTexts(params.attempt.assistantTexts).trim();
+  if (
+    visibleText.length === 0 ||
+    visibleText.length > PROGRESS_ONLY_MAX_TEXT_LENGTH ||
+    hasOnlySilentAssistantReply(params.attempt.assistantTexts)
+  ) {
+    return null;
+  }
+  if (
+    !PROGRESS_ONLY_PHRASE_PATTERN.test(visibleText) &&
+    !PROGRESS_ONLY_TRAILING_ELLIPSIS_PATTERN.test(visibleText)
+  ) {
+    return null;
+  }
+  return PROGRESS_ONLY_CONTINUATION_INSTRUCTION;
 }
 
 type SettledToolCall = { id: string | null; name: string | null };

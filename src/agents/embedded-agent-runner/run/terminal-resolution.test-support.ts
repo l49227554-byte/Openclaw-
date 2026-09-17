@@ -67,6 +67,7 @@ export function makeTerminalInput(overrides: TerminalInputOverrides = {}): Termi
     failureSignal: undefined,
     maxReasoningOnlyRetryAttempts: 2,
     maxEmptyResponseRetryAttempts: 1,
+    maxProgressOnlyRetryAttempts: 1,
     attemptCompactionCount: 0,
     replayState: { ...attempt.replayMetadata, replayInvalid: false },
     activePromptPersisted: true,

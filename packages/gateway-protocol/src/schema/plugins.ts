@@ -6,6 +6,13 @@ import { PluginCredentialDescriptorSchema } from "./plugin-credentials.js";
 import type { PluginDeclaredSurfaceGroup } from "./plugin-declared-surface-groups.js";
 import { NonEmptyString } from "./primitives.js";
 
+export {
+  PluginInstallActivitySchema,
+  PluginsInstallProgressEventSchema,
+  type PluginInstallActivity,
+  type PluginsInstallProgressEvent,
+} from "./plugin-install-progress.js";
+
 /**
  * Plugin control-surface protocol schemas.
  *

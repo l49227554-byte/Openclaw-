@@ -1,8 +1,17 @@
+import { sendDurableMessageBatch } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createOutboundTestPlugin,
+  createTestRegistry,
+  resetPluginRuntimeStateForTest,
+  setActivePluginRegistry,
+} from "openclaw/plugin-sdk/channel-test-helpers";
 // Slack tests cover the real send queue, send owner, SDK and loopback transport.
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { withServer } from "openclaw/plugin-sdk/test-env";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { slackOutbound } from "./outbound-adapter.js";
 import { sendMessageSlack } from "./send.js";
+import { clearSlackThreadParticipationCache } from "./sent-thread-cache.js";
 
 const BOT_TOKEN = "xoxb-direct-authority";
 const PROXY_ENV_KEYS = ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] as const;
@@ -31,9 +40,54 @@ function assertLive(resolveLive: () => boolean): () => void {
   };
 }
 
-afterEach(() => vi.unstubAllEnvs());
+beforeEach(() => {
+  setActivePluginRegistry(
+    createTestRegistry([
+      {
+        pluginId: "slack",
+        plugin: createOutboundTestPlugin({ id: "slack", outbound: slackOutbound }),
+        source: "test",
+      },
+    ]),
+  );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  clearSlackThreadParticipationCache();
+  resetPluginRuntimeStateForTest();
+});
 
 describe("Slack direct-delivery request authority", () => {
+  it("carries core currentness through the adapter and actual transport", async () => {
+    const paths: string[] = [];
+    let isLive = true;
+    await withServer(
+      (request, response) => {
+        paths.push(request.url ?? "");
+        request.resume();
+        isLive = false;
+        sendSlackResponse(response, { ok: true, ts: "171234.1", channel: "C123" });
+      },
+      async (baseUrl) => {
+        const result = await sendDurableMessageBatch({
+          cfg: useSlackApi(baseUrl, 5),
+          channel: "slack",
+          to: "channel:C123",
+          payloads: [{ text: "alpha beta" }],
+          skipQueue: true,
+          assertDirectAdapterHandoff: assertLive(() => isLive),
+        });
+
+        expect(result).toMatchObject({
+          status: "partial_failed",
+          results: [expect.objectContaining({ messageId: "171234.1" })],
+        });
+        expect(paths).toEqual(["/api/chat.postMessage"]);
+      },
+    );
+  });
+
   it("stops a revoked direct send after the per-target queue", async () => {
     const paths: string[] = [];
     const firstRequest = createDeferred<void>();

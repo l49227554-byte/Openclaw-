@@ -586,7 +586,7 @@ type LoadedToolReferenceMedia = WebMediaResult | ReturnType<typeof decodeDataUrl
 
 export type MediaToolSandbox = Pick<
   SandboxedBridgeMediaPathConfig,
-  "root" | "bridge" | "stagedMediaPaths"
+  "root" | "bridge" | "stagedMediaPaths" | "readOnlyResourceMounts"
 >;
 
 export function resolveMediaToolSandboxConfig(

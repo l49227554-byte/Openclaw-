@@ -110,15 +110,15 @@ describe("resolveMediaToolLocalRoots", () => {
     const sandbox = resolveMediaToolSandboxConfig(
       {
         root,
-        bridge: createSandboxFsBridge(
-          createSandboxTestContext({
+        bridge: createSandboxFsBridge({
+          sandbox: createSandboxTestContext({
             overrides: {
               workspaceDir: root,
               agentWorkspaceDir: root,
               readOnlyResourceMounts: [mount],
             },
           }),
-        ),
+        }),
         readOnlyResourceMounts: [mount],
       },
       true,

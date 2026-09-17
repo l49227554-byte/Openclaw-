@@ -5,6 +5,7 @@ import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { retireCommandProcessJobForHandoff } from "../../process/exec-spawn.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { resolveNodeRunner, type UpdateCommandOptions } from "./shared.js";
 import {
@@ -17,7 +18,6 @@ import {
   runGatewayInstallWithLoadBoundary,
   type UpdateServiceLoadBoundary,
 } from "./update-command-service-load.js";
-
 export const DEFINITION_DENIAL = /\bSERVICE_DEFINITION_(?:SEALED|UNKNOWN):[^\n]*/;
 
 /** The installed CLI observed failed health after accepting activation, not a refusal. */
@@ -130,6 +130,8 @@ export async function runUpdatedInstallGatewayCommand(
     executor?.assertCurrent();
     params.assertCurrent?.();
   };
+  assertCurrent();
+  await retireCommandProcessJobForHandoff();
   assertCurrent();
   const installing = action === "install";
   const entrypoint = await resolveGatewayInstallEntrypoint(params.result.root);

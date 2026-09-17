@@ -52,6 +52,7 @@ import {
   type MSTeamsSsoStoredToken,
 } from "./src/sso-token-store.js";
 import { msteamsRuntimeStub } from "./src/test-support/runtime.js";
+// Msteams tests cover doctor contract api plugin behavior.
 
 function createDoctorContext(env: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
   return {
@@ -94,6 +95,49 @@ describe("msteams doctor state migration", () => {
     await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  it("inventories all JSON and feedback migration sources without importing them", async () => {
+    const sessionDir = path.join(stateDir, "custom-sessions");
+    await fs.mkdir(sessionDir, { recursive: true });
+    const learningPath = path.join(
+      sessionDir,
+      `${encodeSessionKey("agent:main:msteams:direct:fixture")}.learnings.json`,
+    );
+    await fs.writeFile(learningPath, '["retained"]');
+    const params = {
+      config: { session: { store: sessionDir } },
+      env,
+      stateDir,
+      requireLocalResources: true,
+    };
+    const before = await fs.readdir(stateDir, { recursive: true });
+    for (const entry of stateMigrations) {
+      const resources = await entry.collectBackupResources?.(params);
+      expect(resources, entry.id).toBeDefined();
+      expect(resources?.length, entry.id).toBeGreaterThan(0);
+      if (entry.id === "msteams-feedback-learnings-json-to-plugin-state") {
+        expect(
+          resources?.some(
+            (resource) =>
+              resource.path === learningPath ||
+              (resource.kind === "directory" &&
+                learningPath.startsWith(`${resource.path}${path.sep}`)),
+          ),
+        ).toBe(true);
+      }
+    }
+    const missing = path.join(stateDir, "missing-sessions");
+    expect(
+      await migrationById(
+        "msteams-feedback-learnings-json-to-plugin-state",
+      ).collectBackupResources?.({
+        ...params,
+        config: { session: { store: missing } },
+      }),
+    ).toContainEqual({ path: missing, kind: "directory" });
+    expect(await fs.readdir(stateDir, { recursive: true })).toEqual(before);
+    expect(await fs.readFile(learningPath, "utf8")).toBe('["retained"]');
   });
 
   it("imports legacy conversations into plugin state", async () => {

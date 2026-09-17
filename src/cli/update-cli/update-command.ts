@@ -1,7 +1,9 @@
+// Main update orchestration for source checkouts and package installs.
 import { randomUUID } from "node:crypto";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
+import { bindBridgeExecutor } from "../../infra/update-bridge-binding.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
@@ -11,31 +13,28 @@ import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-con
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { VERSION } from "../../version.js";
 import { createUpdateProgress, type UpdateDisplayProgress } from "./progress.js";
-import {
-  confirmUpdateDowngrade,
-  tryResolveInvocationCwd,
-  type UpdateCommandOptions,
-} from "./shared.js";
+import { confirmUpdateDowngrade, type UpdateCommandOptions } from "./shared.js";
+import { runUpdateCommandAdmission } from "./update-command-admission.js";
 import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
   withUpdateCommandExecutor,
 } from "./update-command-executor.js";
 import type { InitializedUpdate } from "./update-command-initialization.js";
-import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
+import { UpdateCommandFailure } from "./update-command-result.js";
 import {
   admitUpdateCommandRun,
+  beginBridgeMutation,
+  assertBridgePackageTarget,
   assertUpdatePackageActivationAdmission,
   createUpdateRunProgress,
   failUpdateCommandRun,
   prepareUpdateCommand,
   prepareMutableUpdateRuntime,
-  resolveUpdateCommandAdmissionEnv,
   withUpdatePreviewSignals,
 } from "./update-command-run.js";
 import { preflightUpdateCommandSchemas, previewUpdateCommand } from "./update-command-schema.js";
 import {
-  resolveServiceRefreshEnv,
   withOwnedManagedUpdateEnv,
   resolveUpdateTargetEnv,
   withUpdateInProgressEnv,
@@ -53,43 +52,19 @@ import {
   withUpdateFailureTriage,
 } from "./update-command-triage.js";
 import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
+// Main update orchestration for source checkouts and package installs.
 
 type PreparedUpdate = NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>;
 
 export async function updateCommand(inputOpts: UpdateCommandOptions): Promise<void> {
-  const invocationCwd = tryResolveInvocationCwd();
-  const recoveryState: UpdateCommandRecoveryState = {
-    triageTarget: { env: resolveServiceRefreshEnv(process.env, invocationCwd) },
-  };
-  // Rejected arguments and handoffs must not open or recover persistent state.
-  const prepared = await withUpdateAdmissionReporting(inputOpts, () =>
-    withUpdateInProgressEnv(invocationCwd, () => prepareUpdateCommand(inputOpts)),
+  return await runUpdateCommandAdmission(
+    inputOpts,
+    {
+      initialize: initializeAndRunUpdate,
+      run: runAdmittedUpdate,
+    },
+    DEFAULT_UPDATE_STEP_TIMEOUT_MS,
   );
-  // Post-core children report phase results; the outer updater owns the run ledger.
-  if (prepared.postCoreUpdateResume) {
-    return await withUpdateInProgressEnv(invocationCwd, async () => {
-      const { resumePostCoreUpdate } = await import("./update-execution.runtime.js");
-      await resumePostCoreUpdate({
-        root: prepared.discoveredRoot,
-        channel: prepared.postCoreUpdateChannel,
-        opts: inputOpts,
-        timeoutMs: prepared.timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS,
-      });
-    });
-  }
-  return await withUpdateAdmissionReporting(inputOpts, async () => {
-    const env = await resolveUpdateCommandAdmissionEnv({
-      opts: inputOpts,
-      root: prepared.servicePlan?.rootRedirect?.root ?? prepared.discoveredRoot,
-      invocationCwd,
-      pkgOwnership: prepared.pkgOwnership,
-    });
-    const { updateStateNeedsInitialization } = await import("./update-command-initialization.js");
-    if (await updateStateNeedsInitialization(env)) {
-      return await initializeAndRunUpdate(inputOpts, prepared, recoveryState, invocationCwd, env);
-    }
-    return await runAdmittedUpdate(inputOpts, prepared, recoveryState, invocationCwd);
-  });
 }
 
 async function runAdmittedUpdate(
@@ -123,7 +98,8 @@ async function runAdmittedUpdate(
     }
     const presentation = createUpdateProgress(!opts.json, run);
     disposePresentation = presentation.dispose;
-    const executeWith = (executor: UpdateCommandExecutor) => {
+    const executeWith = (unboundExecutor: UpdateCommandExecutor) => {
+      const executor = bindBridgeExecutor(opts, unboundExecutor);
       executionStarted = true;
       return withUpdateCommandRecoveryUnwind(opts, recoveryState, () =>
         updateCommandInternal(
@@ -173,7 +149,8 @@ async function initializeAndRunUpdate(
     await withUpdateCommandTerminalResult(
       (registerRun) =>
         withUpdateInProgressEnv(invocationCwd, () =>
-          withUpdateCommandExecutor(runId, async (executor) => {
+          withUpdateCommandExecutor(runId, async (unboundExecutor) => {
+            const executor = bindBridgeExecutor(opts, unboundExecutor);
             const target = await withOwnedManagedUpdateEnv(env, () =>
               resolveUpdateCommandTarget(
                 opts,
@@ -187,6 +164,7 @@ async function initializeAndRunUpdate(
             if (!target) {
               return;
             }
+            assertBridgePackageTarget(opts, target);
             const initialization: InitializedUpdate = {
               env,
               runId,
@@ -202,8 +180,18 @@ async function initializeAndRunUpdate(
               databasePath: resolvePathViaExistingAncestorSync(resolveOpenClawStateSqlitePath(env)),
               configPath: resolvePathViaExistingAncestorSync(resolveConfigPath(env)),
             };
-            const runInitialized = () =>
-              runAdmittedUpdate(opts, prepared, recoveryState, invocationCwd, initialization);
+            const runInitialized = async () => {
+              if (!opts.dryRun) {
+                await beginBridgeMutation(opts, executor, target.root, env);
+              }
+              return await runAdmittedUpdate(
+                opts,
+                prepared,
+                recoveryState,
+                invocationCwd,
+                initialization,
+              );
+            };
             if (opts.dryRun) {
               return await previewUpdateCommand({
                 target,
@@ -302,6 +290,7 @@ async function initializeAndRunUpdate(
               const fence = await executor.enter(target.root, { preflight: true });
               fence.assertCurrent();
               const { stagePackageInstallUpdate } = await import("./update-command-package.js");
+              await beginBridgeMutation(opts, executor, target.root, env);
               const legacyFence = initializationRuntime.acquireLegacyUpdateInitializationFence({
                 env,
                 targetVersion: target.targetVersion,
@@ -399,6 +388,7 @@ async function updateCommandInternal(
   if (!target) {
     return;
   }
+  assertBridgePackageTarget(opts, target);
   const {
     root,
     updateInstallKind,
@@ -500,6 +490,7 @@ async function updateCommandInternal(
         { env: run.env, pluginCount },
       )),
     });
+    await beginBridgeMutation(opts, executor, root, run.env);
   };
   if (packageAlreadyCurrent) {
     await activateCurrentCore();
@@ -588,6 +579,13 @@ async function updateCommandInternal(
       return;
     }
     assertUpdatePackageActivationAdmission(captureUpdateCommandExecutorAuthority(fence).installKey);
+    await withOwnedManagedUpdateEnv(env, async () => {
+      const { assertUpdateCommandBackupRecovery } =
+        await import("./update-command-backup-lifecycle.js");
+      await assertUpdateCommandBackupRecovery({ opts, root, env: process.env });
+      fence.assertCurrent();
+    });
+    await beginBridgeMutation(opts, executor, root, env ?? run.env);
     preUpdatePluginInstallRecords = await prepareMutableUpdateRuntime(env, fence);
     mutableUpdatePrepared = true;
   };
@@ -684,8 +682,13 @@ async function updateCommandInternal(
         timeoutMs: updateStepTimeoutMs,
       });
   run.executorFence?.assertCurrent();
-  if (opts.recovery || rollbackBlockedReason) {
-    // Only candidate code may reopen migrated state, including during reporting and cleanup.
+  if (
+    opts.recovery ||
+    rollbackBlockedReason ||
+    (finalization.updateRecoveryBackup && finalization.candidateUpdateRecovery === "parent-v1")
+  ) {
+    // The target runtime owns protected convergence even when schemas did not change.
+    // The parent retains capture restoration until that mutating child has settled.
     recoveryState.ledgerHandoffOwned = true;
     const continued = await continueMigratedUpdateInFreshProcess(
       { ...finalization, rollbackBlockedReason },

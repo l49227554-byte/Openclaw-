@@ -1,10 +1,15 @@
+import path from "node:path";
 import type { LegacyConfigUpdatePlan } from "../../commands/doctor/legacy-config-repair.js";
+import { tryReadJson } from "../../infra/json-files.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
 import type { DevUpdateTarget } from "../../infra/update-dev-target.js";
 import { canResolveRegistryVersionForPackageTarget } from "../../infra/update-global.js";
 import { recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { OpenClawDatabaseSchemaPreflight } from "../../state/openclaw-database-preflight.js";
-import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
+import {
+  parsePackageOpenClawSchemaVersions,
+  type OpenClawSchemaVersions,
+} from "../../state/openclaw-schema-versions.js";
 import {
   checkTargetDatabaseSchemasForContexts,
   formatSchemaRefusalLines,
@@ -22,6 +27,13 @@ import {
   type ManagedServiceRootRedirect,
 } from "./update-command-service-plan.js";
 import type { resolveUpdateCommandTarget } from "./update-command-target.js";
+export async function readInstalledUpdateSchemaVersions(
+  root: string,
+): Promise<OpenClawSchemaVersions | undefined> {
+  return parsePackageOpenClawSchemaVersions(
+    await tryReadJson<unknown>(path.join(root, "package.json"), { maxBytes: 1024 * 1024 }),
+  );
+}
 
 /** Render prepared preview facts without initializing runtime state. */
 export async function previewUpdateCommand(params: {
@@ -78,10 +90,10 @@ export async function preflightUpdateCommandSchemas(params: {
   channel: UpdateChannel;
   devTarget?: DevUpdateTarget;
   packageTargetSchemaVersions?: OpenClawSchemaVersions;
+  packageAlreadyCurrent: boolean;
   packageTargetVersion?: string;
   packageInstallSpec?: string | null;
   packageRuntimeTarget?: { version: string; nodeEngine: string | null };
-  packageAlreadyCurrent?: boolean;
   managedServiceNodeRunner?: string;
   opts: Pick<UpdateCommandOptions, "dryRun" | "json" | "run">;
   refuseUpdate: RefuseUpdate;
@@ -134,7 +146,13 @@ export async function preflightUpdateCommandSchemas(params: {
               channel,
               devTarget,
             })
-          : { schemaVersions: packageTargetSchemaVersions };
+          : {
+              // A current core keeps running its installed package; registry metadata
+              // for an uninstalled build cannot describe its schema capability.
+              schemaVersions: params.packageAlreadyCurrent
+                ? await readInstalledUpdateSchemaVersions(root)
+                : packageTargetSchemaVersions,
+            };
       if ("metadataUnreadable" in target && target.metadataUnreadable) {
         throw new UpdatePreMutationError(
           "target-metadata-preflight",

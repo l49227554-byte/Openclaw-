@@ -13,7 +13,6 @@ import {
   definePluginDoctorMigrationFromPlans,
   type PluginDoctorStateMigrationContext,
 } from "./runtime-doctor-migrations.js";
-
 const runLegacyMigrationPlans = vi.hoisted(() => vi.fn());
 const executorModuleLoads = vi.hoisted(() => vi.fn());
 
@@ -72,6 +71,11 @@ describe("defineLegacyJsonStateMigration retention", () => {
       });
       const params = { config: {}, env, stateDir, oauthDir: stateDir, context };
 
+      expect(await migration.collectBackupResources?.(params)).toEqual([
+        { path: sourcePath, kind: "file" },
+        { path: `${sourcePath}.migrated`, kind: "file" },
+      ]);
+
       const result = await migration.migrateLegacyState(params);
 
       expect(await store.entries()).toHaveLength(2);
@@ -106,6 +110,7 @@ describe("definePluginDoctorMigrationFromPlans", () => {
         namespace: "cache",
         maxEntries: 10,
         scopeKey: "",
+        cleanupSource: "rename",
         readEntries: () => [],
       },
       {
@@ -126,6 +131,16 @@ describe("definePluginDoctorMigrationFromPlans", () => {
       label: "Demo state",
       resolvePlans: () => plans,
     });
+
+    expect(await migration.collectBackupResources?.(migrationInput)).toEqual([
+      { path: "/state/cache.json", kind: "file" },
+      { path: "/state/cache.json.migrated", kind: "file" },
+      { path: path.resolve("/state", "state", "openclaw.sqlite"), kind: "sqlite" },
+      { path: "/oauth/creds.json", kind: "file" },
+      { path: "/oauth/demo/creds.json", kind: "file" },
+      { path: "/state/backup.json", kind: "file" },
+      { path: "/state/demo/backup.json", kind: "file" },
+    ]);
 
     await expect(migration.detectLegacyState(migrationInput)).resolves.toEqual({
       preview: [

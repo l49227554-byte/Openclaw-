@@ -58,9 +58,10 @@ Validation failures leave the serving Gateway untouched. If stopping the managed
 service unloads it and then fails before activation, OpenClaw attempts to restore
 the verified original runtime after rechecking service ownership. After activation, a
 failed verification can [restore the previous package](/cli/update/how-updates-run#validation-and-activation)
-when database schemas are unchanged and the config file still matches the
-candidate’s activation Doctor output. Preserve migrated state and
-history; replacing the code alone cannot undo a migration. The original
+and its verified recovery set, including migrated databases. Without a verified
+set, the compatibility-only path requires unchanged database schemas and config
+that still matches the candidate's activation Doctor output. Preserve migrated
+state and history; replacing the code alone cannot undo a migration. The original
 failed update still exits nonzero after the agent finishes, even if the repair
 succeeds.
 
@@ -175,6 +176,21 @@ restore a service stopped for maintenance by a verified repair invocation,
 including standalone repair, as described above.
 Human output ends with a finalization result that distinguishes completion,
 completion with warnings, and failure.
+
+Full finalization verifies one private
+[update recovery set](/cli/backup#update-recovery-sets) before requested channel
+writes, plugin changes, or Doctor migrations. Both Doctor phases use that same
+set. If protected finalization fails, state restoration waits until every
+mutating child has settled; uncertain child cleanup leaves the set retained
+and refuses restoration. The core package stays unchanged during this
+state-only recovery, and the Gateway stays stopped.
+
+Successful repair also retains the set: it has not started the Gateway or
+verified runtime health. Inspect with `openclaw update status --json`, then run
+`npx openclaw@latest doctor --fix` with the same profile and state/config
+selection to resolve the retained capture. Another protected mutation cannot
+adopt or overwrite it automatically. History-only reconciliation described
+above creates no capture and does not stop the Gateway.
 
 When repair finds a configured npm plugin payload but cannot recover its install
 record, it reinstalls from the selected registry source, using the active channel
@@ -376,8 +392,9 @@ parent directories are synchronized where supported. Windows does not provide th
 same parent-directory durability guarantee.
 
 Doctor restore reports intentionally disposed originals and pending cleanup
-explicitly. Neither update nor cleanup creates an automatic full-state backup;
-these recovery originals are **not a full pre-upgrade backup**. See
+explicitly. Migration cleanup does not create a backup, and these recovery
+originals are **not a full pre-upgrade backup**. Protected updates create their
+separate transaction-scoped [recovery sets](/cli/backup#update-recovery-sets). See
 [Before updating: create a verified backup](/install/updating#before-updating-create-a-verified-backup)
 for backup coverage and [Doctor recovery](/cli/doctor#session-sqlite-migration)
 for restoring retained originals.

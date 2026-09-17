@@ -9,7 +9,6 @@ import type {
   RuntimeConfigWriteNotification,
 } from "./runtime-snapshot.js";
 import type { ConfigFileSnapshot, ConfigValidationIssue, OpenClawConfig } from "./types.js";
-
 export type ParseConfigJson5Result = { ok: true; parsed: unknown } | { ok: false; error: string };
 
 export const configWriteCommittedSnapshot = Symbol("configWriteCommittedSnapshot");
@@ -26,6 +25,7 @@ export type ConfigWriteResult = {
 export type ConfigWriteInputBasis = { kind: ConfigMutationBase; config: unknown };
 
 export const configWritePostCommitRollback = Symbol("configWritePostCommitRollback");
+export const configWritePostCommitCapture = Symbol("configWritePostCommitCapture");
 
 export type InternalConfigWriteResult = ConfigWriteResult & {
   [configWritePostCommitRollback]?: (assertCurrent: () => void) => void;
@@ -39,6 +39,8 @@ export type ConfigWriteAuditOrigin =
   | "cli";
 
 export type ConfigWriteOptions = {
+  /** Runtime finalization releases the physical writer's receipt only after validation succeeds. */
+  [configWritePostCommitCapture]?: (record: () => void) => void;
   /** Candidate's source/runtime basis within its write snapshot; omitted inputs use active globals. */
   inputBase?: ConfigMutationBase;
   /** Semantic writer label recorded in the config audit journal. */

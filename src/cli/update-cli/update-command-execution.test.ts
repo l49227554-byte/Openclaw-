@@ -1,5 +1,3 @@
-// Install the fixture mocks before loading the execution owner and its dependencies.
-import "./update-command-execution.test-support.js";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
@@ -33,6 +31,8 @@ import {
   gatewayServiceCommandUsesRoot,
   GatewayServiceUpdateOwnershipError,
 } from "./update-command-service-plan.js";
+// Install the fixture mocks before loading the execution owner and its dependencies.
+import "./update-command-execution.test-support.js";
 
 const { executionParams, inspectOrStopService, mocks, schemaContext, successfulUpdate } =
   await import("./update-command-execution.test-support.js");
@@ -332,6 +332,21 @@ describe("mutable update execution", () => {
         expect(mocks.runPackageUpdate).not.toHaveBeenCalled();
       });
     });
+  });
+
+  it("refuses another protected update before housekeeping or service stop", async () => {
+    const detail =
+      "Unresolved capture /fixture/state.update-captures/failed-run. Run openclaw update status --json; resolve with npx openclaw@latest doctor --fix.";
+    mocks.assertNoUnresolvedCapture.mockRejectedValue(new Error(detail));
+    const execution = await executeMutableUpdate(executionParams("package"));
+    expect(execution).toMatchObject({
+      mutationStarted: false,
+      result: { status: "error", reason: "update-recovery-pending" },
+      failure: { detail },
+    });
+    expect(mocks.prepareMutableUpdate).not.toHaveBeenCalled();
+    expect(mocks.runPackageUpdate).not.toHaveBeenCalled();
+    expect(mocks.serviceStopped).toBe(false);
   });
 
   it("refuses service admission before mutable startup housekeeping", async () => {

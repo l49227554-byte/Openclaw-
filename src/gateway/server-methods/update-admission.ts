@@ -5,6 +5,10 @@ import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { resolveUpdateInstallSurface } from "../../infra/update-runner.js";
 import { initializeGatewayUpdateStatus } from "../../infra/update-startup.js";
+import {
+  isBrowserOperatorUiClient,
+  isInternalMessageChannel,
+} from "../../utils/message-channel.js";
 
 export async function resolveGatewayUpdateAdmission(timeoutMs?: number) {
   const { root, status } = await initializeGatewayUpdateStatus();
@@ -38,4 +42,18 @@ export function recordHandoffFailure(
   };
   recordUpdateRunStep(runId, { step: step.name, status: "failed", reason, failureFacts });
   return { ...previous, status: "error", reason, steps: [...previous.steps, step] };
+}
+
+export function resolveGatewayUpdateTrigger(
+  client: Parameters<typeof isBrowserOperatorUiClient>[0],
+  sessionKey: string | undefined,
+  requesterChannel: string | undefined,
+  deliveryChannel: string | undefined,
+): "chat" | "control-ui" | "api" {
+  return requesterChannel && !isInternalMessageChannel(requesterChannel)
+    ? "chat"
+    : isBrowserOperatorUiClient(client) ||
+        (sessionKey && isInternalMessageChannel(requesterChannel ?? deliveryChannel))
+      ? "control-ui"
+      : "api";
 }

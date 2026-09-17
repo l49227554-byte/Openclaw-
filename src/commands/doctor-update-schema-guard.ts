@@ -4,10 +4,12 @@ import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
+import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import {
   preflightOpenClawDatabaseSchemas,
   type OpenClawDatabaseSchemaPreflight,
 } from "../state/openclaw-database-preflight.js";
+import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { openDoctorStateSchemaReadAdmission } from "../state/openclaw-state-db-doctor-schema.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -18,7 +20,6 @@ import {
   recordUpdateDoctorRefusal,
   resolveUpdateDoctorGitRecovery,
 } from "./doctor-update-refusal.js";
-
 async function readDrivingUpdater(): Promise<
   { version: string; canDeferStateSchema: boolean } | undefined
 > {
@@ -57,14 +58,26 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   schemas?: OpenClawDatabaseSchemaPreflight;
   runtime: RuntimeEnv;
   json?: boolean;
+  statePublicationOnly?: boolean;
 }): Promise<void> {
   if (process.env.OPENCLAW_UPDATE_IN_PROGRESS !== "1") {
     return;
   }
+  const { getDoctorUpdateRecoveryMode } = await import("./doctor-update-recovery.js");
+  const recoveryMode = getDoctorUpdateRecoveryMode();
+  if (recoveryMode === "legacy-rehearsal") {
+    return;
+  }
+  const recoveryProtected = recoveryMode === "capture";
   const schemas =
     options.schemas ??
     (await preflightOpenClawDatabaseSchemas({
       env: process.env,
+      ...(options.statePublicationOnly ? { scope: "state" as const } : {}),
+      supportedVersions: {
+        state: OPENCLAW_STATE_SCHEMA_VERSION,
+        agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+      },
       openStateSchemaReadAdmission: openDoctorStateSchemaReadAdmission,
     }));
   if (!schemas.pendingMigrations?.length) {
@@ -79,8 +92,10 @@ export async function guardUpdateDoctorSchemaUpgrade(options: {
   if (!updater) {
     return;
   }
-  const blockedMigrations = schemas.pendingMigrations.filter(
-    (database) => database.kind === "agent" || !updater.canDeferStateSchema,
+  const blockedMigrations = schemas.pendingMigrations.filter((database) =>
+    database.kind === "agent"
+      ? !options.statePublicationOnly && !recoveryProtected
+      : !updater.canDeferStateSchema,
   );
   if (blockedMigrations.length === 0) {
     return;

@@ -32,6 +32,7 @@ import {
   ZALOUSER_CREDENTIALS_NAMESPACE,
   type StoredZaloCredentials,
 } from "./src/session-state.js";
+// Zalouser tests cover Doctor-owned state migration.
 
 function createDoctorContext(env: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
   return {
@@ -72,6 +73,21 @@ describe("zalouser doctor state migration", () => {
     await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  it("declares credential files separately from host-owned session mutations", async () => {
+    const params = { config: {}, env, stateDir };
+    expect(
+      await findMigration("zalouser-credentials-json-to-plugin-state").collectBackupResources?.(
+        params,
+      ),
+    ).toEqual([{ path: path.join(stateDir, "credentials/zalouser"), kind: "directory" }]);
+    expect(
+      await findMigration("zalouser-direct-session-keys").collectBackupResources?.(params),
+    ).toEqual([]);
+    await expect(fs.stat(path.join(stateDir, "credentials"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("imports a profile credential blob into SQLite before archiving it", async () => {

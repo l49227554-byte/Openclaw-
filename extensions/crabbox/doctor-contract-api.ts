@@ -14,7 +14,6 @@ import type {
   WarmImageRecord,
   WarmProfileRecord,
 } from "./src/crabbox-worker-warm-image-store.js";
-
 type LegacyWarmImageRecord = Omit<
   WarmImageRecord,
   "lastDemandAtMs" | "preparationKey" | "cacheKey" | "purpose"
@@ -167,6 +166,8 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     id: "crabbox-warm-profile-v3",
     label: "Crabbox warm profiles",
     doctorOnly: true,
+    // Only shared plugin-state rows are modified; core already captures them.
+    collectBackupResources: () => [],
     async detectLegacyState({ context }) {
       const images = await context
         .openPluginStateKeyedStore<unknown>({

@@ -72,6 +72,7 @@ import type {
 } from "./io.types.js";
 import {
   ConfigRuntimeRefreshError,
+  configWritePostCommitCapture,
   configWriteCommittedSnapshot,
   configWritePostCommitRollback,
 } from "./io.types.js";
@@ -102,8 +103,8 @@ import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import type { OpenClawConfig } from "./types.js";
 import { validateConfigObjectRawWithPlugins } from "./validation.js";
+import { getConfigFileWriteCapture, recordConfigFileWrite } from "./write-capture.js";
 import { captureConfigWriteLockGuard } from "./write-lock.js";
-
 export async function writeConfigFileFromContext(
   context: ConfigIoContext,
   cfg: OpenClawConfig,
@@ -609,6 +610,17 @@ export async function writeConfigFileFromContext(
     });
     if (!options.skipPluginValidation) {
       logConfigWarningsOnce({ configPath, warnings: validated.warnings, logger: deps.logger });
+    }
+    if (getConfigFileWriteCapture() && (!snapshot.exists || typeof snapshot.raw === "string")) {
+      const beforeHash =
+        snapshot.exists && typeof snapshot.raw === "string" ? hashConfigRaw(snapshot.raw) : null;
+      const record = () => recordConfigFileWrite(configPath, beforeHash, nextHash);
+      const deferCapture = options[configWritePostCommitCapture];
+      if (deferCapture) {
+        deferCapture(record);
+      } else {
+        record();
+      }
     }
     setDeferredPluginMigrationConfigFacts(sourceConfigForPreflight, deferredPluginMigrations);
     return {

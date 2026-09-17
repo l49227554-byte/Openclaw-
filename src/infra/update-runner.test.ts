@@ -13,13 +13,12 @@ import { resolveStableNodePath } from "./stable-node-path.js";
 import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
-import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
 import {
-  resolveUpdateDoctorExecutionPolicy,
   resolveUpdateInstallSurface,
   runGatewayUpdate,
   runGatewayUpdatePreflight,
 } from "./update-runner.js";
+// Covers gateway update runner scenarios.
 
 const { runCommandWithTimeout } = processExec;
 const execFileSyncMock = vi.hoisted(() => vi.fn(() => "/tmp/openclaw-test-global-npmrc\n"));
@@ -55,86 +54,6 @@ function createRunner(responses: Record<string, CommandResponse>) {
   };
   return { runner, calls };
 }
-
-describe("resolveUpdateDoctorExecutionPolicy", () => {
-  it("keeps fix mode when service repair is authorized", () => {
-    expect(
-      resolveUpdateDoctorExecutionPolicy({
-        targetVersion: "2026.4.1",
-        allowGatewayServiceRepair: true,
-      }),
-    ).toEqual({ fix: true });
-  });
-
-  it("uses the external policy for targets that support it", () => {
-    for (const targetVersion of ["2026.4.25-beta.1", "2026.4.25-beta.11", "2026.4.25"]) {
-      expect(
-        resolveUpdateDoctorExecutionPolicy({
-          targetVersion,
-          allowGatewayServiceRepair: false,
-        }),
-      ).toEqual({ fix: true, serviceRepairPolicy: "external" });
-    }
-  });
-
-  it("does not run fix mode on older targets that cannot honor ownership", () => {
-    expect(
-      resolveUpdateDoctorExecutionPolicy({
-        targetVersion: "2026.4.24",
-        allowGatewayServiceRepair: false,
-      }),
-    ).toEqual({ fix: false });
-  });
-
-  it.each([
-    {
-      name: "authorized service repair",
-      targetVersion: "2026.4.1",
-      allowGatewayServiceRepair: true,
-      expectedPolicy: null,
-    },
-    {
-      name: "an older target without service repair",
-      targetVersion: "2026.4.24",
-      allowGatewayServiceRepair: false,
-      expectedPolicy: null,
-    },
-    {
-      name: "a supported target without service repair",
-      targetVersion: "2026.4.25",
-      allowGatewayServiceRepair: false,
-      expectedPolicy: "external",
-    },
-  ])(
-    "passes the selected Doctor policy to a real child for $name",
-    async ({ targetVersion, allowGatewayServiceRepair, expectedPolicy }) => {
-      const policy = resolveUpdateDoctorExecutionPolicy({
-        targetVersion,
-        allowGatewayServiceRepair,
-      });
-      const result = await withEnvAsync({ OPENCLAW_SERVICE_REPAIR_POLICY: "external" }, () =>
-        runCommandWithTimeout(
-          [
-            process.execPath,
-            "-e",
-            "process.stdout.write(JSON.stringify(process.env.OPENCLAW_SERVICE_REPAIR_POLICY ?? null))",
-          ],
-          {
-            timeoutMs: 5000,
-            env: buildUpdateDoctorEnv({
-              allowGatewayServiceRepair,
-              allowGatewayActivation: false,
-              serviceRepairPolicy: policy.serviceRepairPolicy,
-            }),
-          },
-        ),
-      );
-
-      expect(result.code).toBe(0);
-      expect(result.stdout).toBe(JSON.stringify(expectedPolicy));
-    },
-  );
-});
 
 describe("runGatewayUpdate", () => {
   const preflightPrefixPattern = /(?:openclaw-update-preflight-|ocu-pf-)/;
@@ -789,6 +708,10 @@ describe("runGatewayUpdate", () => {
       cwd?: string;
       devTarget?: DevUpdateTarget;
       progress?: NonNullable<Parameters<typeof runGatewayUpdate>[0]>["progress"];
+      getDoctorEnv?: NonNullable<Parameters<typeof runGatewayUpdate>[0]>["getDoctorEnv"];
+      getUpdateRecoveryBackup?: NonNullable<
+        Parameters<typeof runGatewayUpdate>[0]
+      >["getUpdateRecoveryBackup"];
       deferConfiguredPluginInstallRepair?: boolean;
       allowGatewayServiceRepair?: boolean;
       allowGatewayActivation?: boolean;
@@ -847,6 +770,8 @@ describe("runGatewayUpdate", () => {
       ...(options?.allowGatewayActivation ? { allowGatewayActivation: true } : {}),
       ...(options?.beforeGitMutation ? { beforeGitMutation: options.beforeGitMutation } : {}),
       ...(options?.progress ? { progress: options.progress } : {}),
+      getDoctorEnv: options?.getDoctorEnv,
+      getUpdateRecoveryBackup: options?.getUpdateRecoveryBackup,
     });
   }
 
@@ -1667,9 +1592,15 @@ describe("runGatewayUpdate", () => {
     await setupUiIndex();
     const stableTag = "v1.0.1-1";
     let doctorEnv: NodeJS.ProcessEnv | undefined;
+    const managedStateDir = path.join(tempDir, "managed-state");
+    const backup = {
+      directory: path.join(tempDir, "recovery"),
+      manifestPath: path.join(tempDir, "recovery", "manifest.json"),
+      manifestSha256: "a".repeat(64),
+    };
     const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
-    const { runCommand } = createGitInstallRunner({
+    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix --update-recovery-owner=driver --update-recovery-backup=${JSON.stringify(backup)}`;
+    const { calls, runCommand } = createGitInstallRunner({
       stableTag,
       installCommand: "pnpm install",
       buildCommand: "pnpm build",
@@ -1688,9 +1619,13 @@ describe("runGatewayUpdate", () => {
       deferConfiguredPluginInstallRepair: true,
       allowGatewayServiceRepair: true,
       allowGatewayActivation: true,
+      getDoctorEnv: () => ({ OPENCLAW_STATE_DIR: managedStateDir }),
+      getUpdateRecoveryBackup: () => backup,
     });
 
+    expect(calls).toContain(doctorCommand);
     expect(result.status).toBe("ok");
+    expect(doctorEnv?.OPENCLAW_STATE_DIR).toBe(managedStateDir);
     expect(doctorEnv?.OPENCLAW_UPDATE_IN_PROGRESS).toBe("1");
     expect(doctorEnv?.OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR).toBe("1");
     expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE).toBe("1");

@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { asFiniteNumber } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { normalizeNostrStateAccountId } from "./src/state-account-id.js";
+// Nostr API module exposes the plugin public contract.
 
 type NostrBusState = {
   version: 2;
@@ -140,6 +141,9 @@ function createNostrStateMigration(options: {
   return {
     id: `nostr-${options.namespace}-json-to-plugin-state`,
     label: options.label,
+    collectBackupResources({ stateDir }) {
+      return [{ path: path.join(stateDir, "nostr"), kind: "directory" }];
+    },
     async detectLegacyState(params) {
       const files = await listLegacyFiles({
         stateDir: params.stateDir,

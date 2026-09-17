@@ -12,6 +12,7 @@ import { flushLogger, resetLogger, setLoggerOverride } from "../logging/logger.j
 import {
   assertNoOpenClawAgentDatabaseLeasesReadOnly,
   claimOpenClawAgentDatabaseLease,
+  readActiveOpenClawAgentDatabaseLeasesReadOnly,
 } from "../state/openclaw-agent-db-lease.js";
 import { recordOpenClawDatabaseQuarantine } from "../state/openclaw-quarantine-store.js";
 import { closeOpenClawStateDatabaseByPath } from "../state/openclaw-state-db-cache.js";
@@ -19,7 +20,6 @@ import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { runDoctorHealthFlow } from "./doctor-health.js";
 import { mocks } from "./doctor-health.test-support.js";
-
 const snapshotProcesses = vi.hoisted(() => ({
   execFile: vi.fn<typeof import("node:child_process").execFile>(),
 }));
@@ -34,6 +34,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const maintenance = vi.hoisted(() => ({
+  assertCurrent: vi.fn(),
+  closeStores: vi.fn(async () => {}),
   run: <T>(operation: () => T): T => operation(),
   finish: vi.fn(),
   release: vi.fn(),
@@ -203,6 +205,51 @@ describe("Doctor maintenance admission", () => {
 });
 
 describe("Doctor agent lease admission", () => {
+  it.each([false, true])(
+    "reports active writers without pruning stale claims (cached=%s)",
+    async (cached) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const database = openOpenClawStateDatabase({ env: state.env });
+        const agentPath = state.statePath("agents/main/agent/openclaw-agent.sqlite");
+        const activeId = claimOpenClawAgentDatabaseLease({
+          agentId: "main",
+          path: agentPath,
+          env: state.env,
+        });
+        database.db
+          .prepare(
+            `INSERT INTO agent_database_leases
+               (lease_id,agent_id,path,owner_pid,owner_start_time,opened_at)
+             VALUES ('stale','retained',?,-1,NULL,0)`,
+          )
+          .run(agentPath);
+        const before = database.db.prepare("SELECT * FROM agent_database_leases").all();
+        if (!cached) {
+          closeOpenClawStateDatabaseByPath(database.path);
+        }
+
+        expect(readActiveOpenClawAgentDatabaseLeasesReadOnly({ env: state.env })).toEqual([
+          {
+            agent_id: "main",
+            lease_id: activeId,
+            owner_pid: process.pid,
+            owner_start_time: before.find((row) => row.lease_id === activeId)?.owner_start_time,
+            path: agentPath,
+          },
+        ]);
+        expect(() => assertNoOpenClawAgentDatabaseLeasesReadOnly({ env: state.env })).toThrow(
+          `Agent main database is still open in process ${process.pid}; stop that process before Doctor repair.`,
+        );
+        const after = openNodeSqliteDatabase(database.path, { readOnly: true });
+        try {
+          expect(after.prepare("SELECT * FROM agent_database_leases").all()).toEqual(before);
+        } finally {
+          after.close();
+        }
+      });
+    },
+  );
+
   it("reserves dangling Workshop index admission for Doctor without mutating state", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const opened = openOpenClawStateDatabase({ env: state.env });

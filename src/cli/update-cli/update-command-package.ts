@@ -2,6 +2,7 @@ import path from "node:path";
 import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveConfigPath } from "../../config/paths.js";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import { createPackageIntegrityReader } from "../../infra/package-update-integrity.js";
 import {
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
@@ -26,10 +27,14 @@ import {
   verifyPackageUpdateRecovery,
   type ResolvedGlobalInstallTarget,
 } from "../../infra/update-global.js";
+import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import type { UpdateRequester } from "../../infra/update-requester-authority.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { normalizeFallbackFailureReason } from "../../infra/update-runner-command.js";
-import { buildUpdateDoctorEnv } from "../../infra/update-runner-doctor.js";
+import {
+  buildUpdateDoctorEnv,
+  buildUpdateRecoveryDoctorArgs,
+} from "../../infra/update-runner-doctor.js";
 import {
   resolveUpdateDoctorExecutionPolicy,
   type UpdateRunResult,
@@ -57,6 +62,7 @@ import {
   withUpdateCommandExecutorChild,
   type UpdateCommandChildGrant,
 } from "./update-command-executor.js";
+import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import type { UpdateDoctorInput } from "./update-command-migrated-types.js";
 import { resolveUpdateTargetEnv } from "./update-command-service-env.js";
 export async function readPackageUpdateIdentity(root: string) {
@@ -68,6 +74,7 @@ export async function readPackageUpdateIdentity(root: string) {
 }
 
 type PackageDoctorOptions = {
+  updateRecoveryBackup?: UpdateRecoveryBackupRef;
   root: string;
   timeoutMs: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
@@ -148,7 +155,13 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
           ),
           "--doctor",
         ]
-      : [entryPath, "doctor", "--non-interactive", ...(doctorPolicy.fix ? ["--fix"] : [])]),
+      : [
+          entryPath,
+          "doctor",
+          "--non-interactive",
+          ...(doctorPolicy.fix ? ["--fix"] : []),
+          ...buildUpdateRecoveryDoctorArgs(params.updateRecoveryBackup),
+        ]),
   ];
   const doctorProgressInfo = {
     name: `${CLI_NAME} doctor`,
@@ -174,6 +187,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
             configInputHash: context.inputHash,
             requester: context.requester,
             repair: doctorPolicy.fix,
+            updateRecoveryBackup: params.updateRecoveryBackup,
           }
         : undefined;
     return runUpdateStep({
@@ -287,9 +301,14 @@ export async function prepareGitPackageExposure(
   const prepared = createDeferredCore();
   const activation = createDeferredCore<boolean>();
   const cancellation = new Error("Source activation cancelled before global exposure");
+  let unchangedCore: FinishUpdateParams["unchangedCore"];
   const completed = runGlobalPackageUpdateSteps({
     ...params,
     beforeActivate: async () => {
+      const root = params.installTarget.packageRoot;
+      if (root) {
+        unchangedCore = { root, fingerprint: await createPackageIntegrityReader().tree(root) };
+      }
       prepared.resolve();
       if (!(await activation.promise)) {
         throw cancellation;
@@ -316,7 +335,7 @@ export async function prepareGitPackageExposure(
     cancel: async () => {
       activation.resolve(false);
       try {
-        return await completed;
+        return { ...(await completed), unchangedCore: undefined };
       } catch (error) {
         if (error !== cancellation) {
           throw error;
@@ -326,6 +345,7 @@ export async function prepareGitPackageExposure(
         return {
           steps: [],
           recovery: await verifyPackageUpdateRecovery(params.installTarget.packageRoot),
+          unchangedCore,
         };
       }
     },
@@ -334,6 +354,7 @@ export async function prepareGitPackageExposure(
 
 export type PackageInstallUpdateParams = {
   reapplyLocalOverrides?: boolean;
+  updateRecoveryBackup?: UpdateRecoveryBackupRef;
   requirePackageReplacement?: boolean;
   root: string;
   installKind: "git" | "package" | "unknown";

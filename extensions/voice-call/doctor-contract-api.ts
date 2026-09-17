@@ -29,6 +29,10 @@ import {
   resolveVoiceCallLegacyCallLogPath,
 } from "./src/manager/store.js";
 import { resolveDefaultVoiceCallStoreDir } from "./src/store-path.js";
+// Voice Call API module exposes the plugin public contract.
+
+// Doctor enumeration cold-loads this closure; the state-DB helpers stay behind a
+// lazy doctor-repair-runtime import so enumeration never pulls the kysely/state-db graph.
 
 // Doctor state migration for Voice Call legacy JSONL call logs.
 
@@ -270,6 +274,9 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
   {
     id: "voice-call-calls-jsonl-to-plugin-state",
     label: "Voice Call call log",
+    collectBackupResources(params) {
+      return [{ path: resolveVoiceCallStorePath(params), kind: "directory" }];
+    },
     async detectLegacyState(params) {
       const storePath = resolveVoiceCallStorePath(params);
       // An absent store has neither legacy logs nor a plugin-local database.

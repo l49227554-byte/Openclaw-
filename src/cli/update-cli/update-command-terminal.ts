@@ -27,10 +27,15 @@ import {
   writeControlPlaneUpdateRestartSentinelBestEffort,
 } from "./update-command-result.js";
 import { completeUpdateCommandRun } from "./update-command-run.js";
-
 type Run = NonNullable<UpdateCommandOptions["run"]>;
 type Publisher = (failure?: unknown) => Promise<UpdateRunResult>;
-const terminalOwners = new WeakMap<Run, { publish?: Publisher }>();
+type TerminalOwner = {
+  publish?: Publisher;
+  retireCapture?: (result: UpdateRunResult) => Promise<void>;
+  captureResult?: UpdateRunResult;
+  settled: boolean;
+};
+const terminalOwners = new WeakMap<Run, TerminalOwner>();
 
 /** Finalization prepares a report; the outer invocation owns its publication. */
 export function deferUpdateCommandTerminalResult(
@@ -45,6 +50,21 @@ export function deferUpdateCommandTerminalResult(
   return true;
 }
 
+/** Only the enclosing settled invocation may retire its own recovery capture. */
+export function deferUpdateCommandCaptureRetirement(
+  run: Run | undefined,
+  result: UpdateRunResult,
+  retire: (result: UpdateRunResult) => Promise<void>,
+): boolean {
+  const owner = run && terminalOwners.get(run);
+  if (!owner || owner.settled) {
+    return false;
+  }
+  owner.retireCapture = retire;
+  owner.captureResult = result;
+  return true;
+}
+
 export function hasDeferredUpdateCommandTerminalResult(run: Run): boolean {
   return terminalOwners.get(run)?.publish !== undefined;
 }
@@ -54,7 +74,7 @@ export async function withUpdateCommandTerminalResult<T>(
   operation: (registerRun: (run: Run) => void) => Promise<T>,
   opts: Pick<UpdateCommandOptions, "json"> = {},
 ): Promise<T> {
-  const owner: { publish?: Publisher } = {};
+  const owner: TerminalOwner = { settled: false };
   let run: Run | undefined;
   let registrationOpen = true;
   const registerRun = (admitted: Run) => {
@@ -71,65 +91,72 @@ export async function withUpdateCommandTerminalResult<T>(
     outcome = { error };
   } finally {
     registrationOpen = false;
+  }
+  owner.settled = !("error" in outcome);
+  try {
+    const activationTimeout =
+      "error" in outcome
+        ? collectNestedErrorCandidates(outcome.error).find(
+            (error): error is UpdateActivationTimeoutError =>
+              error instanceof UpdateActivationTimeoutError,
+          )
+        : undefined;
+    if (run && activationTimeout && !owner.publish) {
+      const admittedRun = run;
+      owner.publish = async (failure) => {
+        const params = { opts: { ...opts, run: admittedRun }, root: activationTimeout.root };
+        const { result } = await resolveSettledUpdateCommandResult(
+          params,
+          {
+            status: "error",
+            mode: "unknown",
+            root: activationTimeout.root,
+            steps: [],
+            durationMs: activationTimeout.timeoutMs,
+          },
+          failure,
+        );
+        return publishUpdateCommandTerminalResult(params, result, { rolledBack: false });
+      };
+    }
+    if (owner.publish) {
+      const result = await owner.publish("error" in outcome ? outcome.error : undefined);
+      if ("error" in outcome) {
+        const failure = outcome.error;
+        if (
+          failure instanceof UpdateCommandPendingRecoveryFailure ||
+          failure instanceof UpdateCommandRecoveryPendingError ||
+          activationTimeout
+        ) {
+          // Publication does not restore authority for outer failure triage.
+          throw new UpdateCommandFinalizedRecoveryFailure(result);
+        }
+        // This report has already been printed. Do not let pending-recovery triage
+        // print it a second time or launch recovery using a now-released fence.
+        throw new UpdateCommandFailure(
+          result,
+          failure instanceof UpdateCommandFailure ? failure.exitCode : 1,
+          formatErrorMessage(failure),
+          {
+            cause: failure,
+            automaticTriage:
+              failure instanceof UpdateCommandFailure ? failure.automaticTriage : undefined,
+          },
+        );
+      }
+    }
+    if ("error" in outcome) {
+      throw outcome.error;
+    }
+    if (!owner.publish && owner.captureResult) {
+      await owner.retireCapture?.(owner.captureResult);
+    }
+    return outcome.value;
+  } finally {
     if (run) {
       terminalOwners.delete(run);
     }
   }
-  const activationTimeout =
-    "error" in outcome
-      ? collectNestedErrorCandidates(outcome.error).find(
-          (error): error is UpdateActivationTimeoutError =>
-            error instanceof UpdateActivationTimeoutError,
-        )
-      : undefined;
-  if (run && activationTimeout && !owner.publish) {
-    const admittedRun = run;
-    owner.publish = async (failure) => {
-      const params = { opts: { ...opts, run: admittedRun }, root: activationTimeout.root };
-      const { result } = await resolveSettledUpdateCommandResult(
-        params,
-        {
-          status: "error",
-          mode: "unknown",
-          root: activationTimeout.root,
-          steps: [],
-          durationMs: activationTimeout.timeoutMs,
-        },
-        failure,
-      );
-      return publishUpdateCommandTerminalResult(params, result, { rolledBack: false });
-    };
-  }
-  if (owner.publish) {
-    const result = await owner.publish("error" in outcome ? outcome.error : undefined);
-    if ("error" in outcome) {
-      const failure = outcome.error;
-      if (
-        failure instanceof UpdateCommandPendingRecoveryFailure ||
-        failure instanceof UpdateCommandRecoveryPendingError ||
-        activationTimeout
-      ) {
-        // Publication does not restore authority for outer failure triage.
-        throw new UpdateCommandFinalizedRecoveryFailure(result);
-      }
-      // This report has already been printed. Do not let pending-recovery triage
-      // print it a second time or launch recovery using a now-released fence.
-      throw new UpdateCommandFailure(
-        result,
-        failure instanceof UpdateCommandFailure ? failure.exitCode : 1,
-        formatErrorMessage(failure),
-        {
-          cause: failure,
-          automaticTriage:
-            failure instanceof UpdateCommandFailure ? failure.automaticTriage : undefined,
-        },
-      );
-    }
-  }
-  if ("error" in outcome) {
-    throw outcome.error;
-  }
-  return outcome.value;
 }
 
 /** Resolve diagnostic output without reusing a released mutation fence. */
@@ -142,29 +169,28 @@ export async function resolveSettledUpdateCommandResult(
     failure !== undefined &&
     (!(failure instanceof UpdateCommandFailure) ||
       failure instanceof UpdateCommandPendingRecoveryFailure);
+  const base = failure instanceof UpdateCommandFailure ? failure.result : pendingResult;
   const activationTimeout = collectNestedErrorCandidates(failure).find(
     (error): error is UpdateActivationTimeoutError => error instanceof UpdateActivationTimeoutError,
   );
   const result: UpdateRunResult = settlementFailed
     ? {
-        ...pendingResult,
+        ...base,
         status: "error",
         reason: activationTimeout?.reason ?? "update-executor-settlement-failed",
         steps: [
-          ...pendingResult.steps,
+          ...base.steps,
           {
             name: "update executor settlement",
             command: "openclaw update",
-            cwd: pendingResult.root ?? params.root,
+            cwd: base.root ?? params.root,
             durationMs: 0,
             exitCode: 1,
             stderrTail: activationTimeout?.message ?? formatErrorMessage(failure),
           },
         ],
       }
-    : failure instanceof UpdateCommandFailure
-      ? failure.result
-      : pendingResult;
+    : base;
   // The mutation owner is now closed. This is diagnostic publication only,
   // never authority to reopen displaced state or replace another terminal row.
   try {
@@ -378,13 +404,18 @@ async function publishPreMutationUpdateOutcome(
 }
 
 /** Write the terminal ledger and its visible result together after settlement. */
-export function publishUpdateCommandTerminalResult(
+export async function publishUpdateCommandTerminalResult(
   params: Pick<FinishUpdateParams, "opts" | "coreAlreadyCurrent" | "ownedManagedUpdateEnv">,
   input: UpdateRunResult,
   outcome: { rolledBack: boolean; downtimeMs?: number },
-): UpdateRunResult {
+): Promise<UpdateRunResult> {
   const nextAction = recordUpdateResultNextAction(params, input);
-  const result = completeUpdateCommandRun(input, params.opts.run, outcome);
+  const run = params.opts.run;
+  const result = completeUpdateCommandRun(input, run, outcome);
+  const owner = run && terminalOwners.get(run);
+  if (owner?.settled) {
+    await owner.retireCapture?.(result);
+  }
   printResult(result, params.opts, { nextAction });
   return result;
 }

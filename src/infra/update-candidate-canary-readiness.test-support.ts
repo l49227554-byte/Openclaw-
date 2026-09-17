@@ -1,7 +1,10 @@
 import { once } from "node:events";
+import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import { getGlobalDispatcher, setGlobalDispatcher } from "undici";
+import type { Mock } from "vitest";
 import { expect, it, vi } from "vitest";
+import * as diskSpace from "./disk-space.js";
 import { startProxy, stopProxy, type ProxyHandle } from "./net/proxy/proxy-lifecycle.js";
 import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import { prepareUpdateCandidateRehearsal } from "./update-candidate-rehearsal.js";
@@ -28,7 +31,67 @@ export function expectCanaryReadinessWarning(
   });
 }
 
-export function registerCanaryReadinessBudgetTests(root: () => string) {
+export function registerCanaryReadinessBudgetTests(
+  root: () => string,
+  mocks: { snapshot: Mock; spawn: Mock },
+) {
+  it("aborts further validation and removes private state when recording a step fails", async () => {
+    await expect(
+      validateUpdateCandidateCanary({
+        root: root(),
+        stateDir: root(),
+        config: {},
+        env: {},
+        timeoutMs: 3_000,
+        onStep: () => {
+          throw new Error("ledger unavailable");
+        },
+      }),
+    ).rejects.toThrow("ledger unavailable");
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    const snapshotInput = JSON.parse(mocks.snapshot.mock.calls.at(-1)![1].input) as {
+      targetStateDir: string;
+    };
+    await expect(fs.access(snapshotInput.targetStateDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("records a typed capacity refusal before notifying the snapshot failure", async () => {
+    const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
+      targetPath,
+      checkedPath: targetPath,
+      availableBytes: 0,
+      totalBytes: 1024,
+    }));
+    const onStep = vi.fn();
+    try {
+      const result = await validateUpdateCandidateCanary({
+        root: root(),
+        stateDir: root(),
+        config: {},
+        env: { TMPDIR: "/synthetic/tmp" },
+        onStep,
+      });
+      expect(result).toMatchObject({ status: "error", phase: "snapshot" });
+      const failed = result.steps.at(-1);
+      expect(failed).toMatchObject({
+        name: "candidate snapshot",
+        exitCode: 1,
+        snapshotCapacity: {
+          reason: "snapshot-capacity-insufficient",
+          selection: null,
+        },
+      });
+      expect(
+        failed?.snapshotCapacity?.candidates.map((candidate) => candidate.availableBytes),
+      ).toEqual([0, 0, 0]);
+      expect(onStep).toHaveBeenCalledExactlyOnceWith(failed);
+      expect(mocks.snapshot).not.toHaveBeenCalled();
+      expect(mocks.spawn).not.toHaveBeenCalled();
+    } finally {
+      capacity.mockRestore();
+    }
+  });
+
   it.each(["gateway-only", "proxy", "block"] as const)(
     "probes the canary with managed proxy mode %s",
     async (loopbackMode) => {

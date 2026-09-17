@@ -1,4 +1,3 @@
-import "../flows/doctor-health.test-support.js";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -18,6 +17,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
+import "../flows/doctor-health.test-support.js";
 
 const { mocks } = await import("../flows/doctor-health.test-support.js");
 beforeEach(() => {
@@ -29,6 +29,27 @@ beforeEach(() => {
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.unstubAllEnvs());
+
+it("closes stores reopened after restoration while maintenance remains held", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const maintenance = await beginDoctorMaintenance({
+      options: { repair: true },
+      root: null,
+      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    });
+    expect(maintenance).toBeDefined();
+    try {
+      const beforeRestore = openOpenClawStateDatabase({ env: state.env });
+      await maintenance?.closeStores();
+      expect(beforeRestore.db.isOpen).toBe(false);
+      const afterRestore = openOpenClawStateDatabase({ env: state.env });
+      await maintenance?.closeStores();
+      expect(afterRestore.db.isOpen).toBe(false);
+    } finally {
+      await maintenance?.release();
+    }
+  });
+});
 
 function createLegacyRegistryFixture() {
   const root = tempDirs.make("openclaw-doctor-legacy-registry-");

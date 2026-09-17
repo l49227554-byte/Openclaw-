@@ -20,7 +20,6 @@ import {
   applyConfigEnvVars,
   cloneEnvWithPlatformSemantics,
   createConfigRuntimeEnvBase,
-  getPublishedConfigRuntimeEnvState,
 } from "./config-env-vars.js";
 import {
   applyUnsetPathsForWrite,
@@ -75,6 +74,11 @@ import {
 import { warnIfJSON5CommentsWillBeStripped } from "./json5-comments.js";
 import { projectIncludeModelPolicyWrite } from "./model-policy-allowlist-migration.js";
 import {
+  assertManagedRuntimeEnvGeneration,
+  assertBaseHashMatches,
+  assertExpectedConfigPathMatches,
+} from "./mutate-guards.js";
+import {
   ConfigMutationConflictError,
   GUARDED_CONFIG_INCLUDE_WRITE_ERROR,
 } from "./mutation-conflict.js";
@@ -104,11 +108,13 @@ import {
 } from "./runtime-write-application.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "./types.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
+import { getConfigFileWriteCapture, recordConfigFileWrite } from "./write-capture.js";
 import {
   captureConfigWriteLockGuard,
   markActiveConfigMutationPath,
   withConfigWriteLock,
 } from "./write-lock.js";
+// Applies scoped config mutations while preserving IO and observer state.
 
 const DEFAULT_CONFIG_MUTATION_RETRY_ATTEMPTS = 5;
 
@@ -199,33 +205,6 @@ type ConfigMutationOwnership = {
   ownedConfigPathForWrite?: string;
   assertConfigPathForWrite?: () => void;
 };
-
-function assertManagedRuntimeEnvGeneration(generation: number): void {
-  if (getPublishedConfigRuntimeEnvState().generation !== generation) {
-    throw new ConfigMutationConflictError(
-      "active config environment changed while preparing write",
-    );
-  }
-}
-
-function assertBaseHashMatches(snapshot: ConfigFileSnapshot, expectedHash?: string): string | null {
-  const currentHash = resolveConfigSnapshotHash(snapshot) ?? null;
-  if (expectedHash !== undefined && expectedHash !== currentHash) {
-    throw new ConfigMutationConflictError("config changed since last load");
-  }
-  return currentHash;
-}
-
-function assertExpectedConfigPathMatches(
-  snapshot: ConfigFileSnapshot,
-  expectedConfigPath?: string,
-): void {
-  if (expectedConfigPath !== undefined && expectedConfigPath !== snapshot.path) {
-    throw new ConfigMutationConflictError("config path changed since last load", {
-      retryable: false,
-    });
-  }
-}
 
 /** Serialize config writers without requiring a schema-valid snapshot. */
 export async function withConfigMutationLock<T>(
@@ -999,6 +978,13 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
           !hadRuntimeSnapshot &&
           !getRuntimeConfigSnapshotRefreshHandler()
         ) {
+          if (getConfigFileWriteCapture()) {
+            recordConfigFileWrite(
+              includeTarget.absolutePath,
+              previousIncludeRaw === null ? null : hashConfigRaw(previousIncludeRaw),
+              hashConfigRaw(committedIncludeRaw),
+            );
+          }
           return {
             persistedHash: null,
             persistedConfig: runtimeConfigToWrite,
@@ -1085,6 +1071,13 @@ async function tryWriteIncludeOwnedConfigMutation(params: {
           createRefreshError: (detail, cause) =>
             new Error(`runtime snapshot refresh failed: ${detail}`, { cause }),
         });
+        if (getConfigFileWriteCapture()) {
+          recordConfigFileWrite(
+            includeTarget.absolutePath,
+            previousIncludeRaw === null ? null : hashConfigRaw(previousIncludeRaw),
+            hashConfigRaw(committedIncludeRaw),
+          );
+        }
         return {
           persistedHash,
           persistedConfig: refreshedSnapshot.sourceConfig,

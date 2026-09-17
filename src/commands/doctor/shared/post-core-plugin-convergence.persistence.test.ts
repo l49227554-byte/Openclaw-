@@ -4,6 +4,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withUpdateCommandExecutor } from "../../../cli/update-cli/update-command-executor.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../../../config/types.plugins.js";
 import { cleanupRetainedPluginInstallGenerations } from "../../../gateway/server-retained-plugin-cleanup.js";
 import * as temporaryState from "../../../infra/tmp-openclaw-dir.js";
@@ -14,6 +15,7 @@ import {
   readPersistedInstalledPluginIndexInstallRecords,
 } from "../../../plugins/installed-plugin-index-records.js";
 import { readPersistedInstalledPluginIndexRowSync } from "../../../plugins/installed-plugin-index-row.js";
+import { readPersistedInstalledPluginIndexSync } from "../../../plugins/installed-plugin-index-store.js";
 import { resolveRetainedManagedNpmInstallMarkerPath } from "../../../plugins/managed-npm-retention.js";
 import { withPluginLifecycleLease } from "../../../plugins/plugin-lifecycle-lease.js";
 import { seedInstalledPluginIndex } from "../../../plugins/test-helpers/installed-plugin-index.js";
@@ -23,13 +25,54 @@ import * as pluginUpdates from "../../../plugins/update.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { repairMissingConfiguredPluginInstalls } from "./missing-configured-plugin-install.js";
 import { runPostCorePluginConvergence } from "./post-core-plugin-convergence.js";
-
 afterEach(() => {
   vi.restoreAllMocks();
   syncBuiltinESMExports();
 });
 
 describe("post-core plugin persistence cancellation", () => {
+  it.each(["unchanged", "records", "policy"] as const)(
+    "requires protection only for semantic plugin changes: %s",
+    async (change) => {
+      await withOpenClawTestState({ label: "plugin-convergence-intent" }, async (state) => {
+        const cfg: OpenClawConfig = { plugins: { enabled: false } };
+        const previous: Record<string, PluginInstallRecord> = { previous: { source: "archive" } };
+        await seedInstalledPluginIndex(previous, {
+          config: cfg,
+          env: state.env,
+        });
+        const previousPolicy = readPersistedInstalledPluginIndexSync({
+          env: state.env,
+        })?.policyHash;
+        const refusal = new Error("an unresolved recovery set forbids plugin mutations");
+        const beforePersistentEffect = vi.fn(async () => {
+          throw refusal;
+        });
+        const convergence = runPostCorePluginConvergence({
+          cfg: change === "policy" ? { plugins: { enabled: false, allow: ["previous"] } } : cfg,
+          env: state.env,
+          baselineInstallRecords:
+            change === "records" ? { next: { source: "archive" } } : structuredClone(previous),
+          preparePersistentEffect: beforePersistentEffect,
+        });
+        if (change === "unchanged") {
+          const result = await convergence;
+          expect(result.changes).toEqual([]);
+          expect(beforePersistentEffect).not.toHaveBeenCalled();
+        } else {
+          await expect(convergence).rejects.toBe(refusal);
+          expect(beforePersistentEffect).toHaveBeenCalledOnce();
+        }
+        expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
+          previous,
+        );
+        expect(readPersistedInstalledPluginIndexSync({ env: state.env })?.policyHash).toBe(
+          previousPolicy,
+        );
+      });
+    },
+  );
+
   it.each(["managed", "registered"] as const)(
     "fences %s host-link effects when only the raw plugin lease is revoked",
     async (layout) => {
@@ -297,7 +340,8 @@ describe("post-core plugin persistence cancellation", () => {
             logger: {},
             installNpmSpecForUpdate: async () => {
               await Promise.resolve();
-              await params.beforePersistentEffect?.();
+              await params.preparePersistentEffect?.();
+              params.beforePersistentEffect?.();
               return { ok: false, error: "fixture installer did not publish" };
             },
           });

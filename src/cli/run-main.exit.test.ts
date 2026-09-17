@@ -22,8 +22,11 @@ import { captureEnv, withEnvAsync } from "../test-utils/env.js";
 import { ExpectedCliError } from "./failure-output.js";
 import { getGatewayRunRuntimeHooks } from "./gateway-cli/runtime-hooks.js";
 import type { RootHelpRenderOptions } from "./program/root-help.js";
+import type { ConfigSnapshotStub } from "./run-main-config.test-support.js";
+import { registerDoctorBootstrapRecoveryTests } from "./run-main-doctor-recovery.suite.js";
 import { getPendingCliDisposers } from "./runtime-cleanup.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "./signal-exit-barrier.js";
+// Run main exit tests cover process exit behavior for CLI failures.
 
 const TLS_FINGERPRINT = "ab".repeat(32);
 const PREFIXED_TLS_FINGERPRINT = `sha256:${TLS_FINGERPRINT.toUpperCase()}`;
@@ -32,17 +35,6 @@ type RunMainModule = typeof import("./run-main.js");
 
 let runCli: RunMainModule["runCli"];
 let shouldStartProxyForCli: RunMainModule["shouldStartProxyForCli"];
-
-type ConfigSnapshotStub = {
-  exists: boolean;
-  hash?: string;
-  issues?: Array<{ message: string; path: string }>;
-  legacyIssues?: Array<{ message: string; path: string }>;
-  path?: string;
-  raw?: string | null;
-  valid: boolean;
-  sourceConfig: Record<string, unknown>;
-};
 
 const tryRouteCliMock = vi.hoisted(() => vi.fn());
 const loadDotEnvMock = vi.hoisted(() => vi.fn());
@@ -58,6 +50,12 @@ const pinConfigDirMock = vi.hoisted(() => vi.fn());
 const pinRuntimePathsMock = vi.hoisted(() => vi.fn());
 const ensurePathMock = vi.hoisted(() => vi.fn());
 const assertRuntimeMock = vi.hoisted(() => vi.fn(async () => {}));
+const prepareDoctorUpdateRecoveryMock = vi.hoisted(() => vi.fn(async () => {}));
+const withDoctorUpdateRecoveryMock = vi.hoisted(() =>
+  vi.fn(async (_runtime: unknown, run: () => Promise<unknown>) => run()),
+);
+const guardUpdateDoctorSchemaUpgradeMock = vi.hoisted(() => vi.fn(async () => {}));
+const initializeDebugProxyCaptureMock = vi.hoisted(() => vi.fn());
 const isCurrentRuntimeSupportedMock = vi.hoisted(() => vi.fn(async () => true));
 const closeActiveMemorySearchManagersMock = vi.hoisted(() => vi.fn(async () => {}));
 const hasMemoryRuntimeMock = vi.hoisted(() => vi.fn(() => false));
@@ -326,6 +324,20 @@ vi.mock("../infra/runtime-guard.js", async (importOriginal) => ({
   isCurrentRuntimeSupported: isCurrentRuntimeSupportedMock,
 }));
 
+vi.mock("../commands/doctor-update-recovery.js", () => ({
+  prepareDoctorUpdateRecovery: prepareDoctorUpdateRecoveryMock,
+  withDoctorUpdateRecovery: withDoctorUpdateRecoveryMock,
+  doctorUpdateRecoveryRuntime: (runtime: unknown) => runtime,
+}));
+vi.mock("../commands/doctor-update-schema-guard.js", () => ({
+  guardUpdateDoctorSchemaUpgrade: guardUpdateDoctorSchemaUpgradeMock,
+}));
+vi.mock("../proxy-capture/runtime.js", () => ({
+  initializeDebugProxyCapture: initializeDebugProxyCaptureMock,
+  finalizeDebugProxyCapture: vi.fn(),
+}));
+vi.mock("../proxy-capture/coverage.js", () => ({ maybeWarnAboutDebugProxyCoverage: vi.fn() }));
+
 vi.mock("../plugins/memory-runtime.js", () => ({
   closeActiveMemorySearchManagersCore: closeActiveMemorySearchManagersMock,
 }));
@@ -582,6 +594,7 @@ describe("runCli exit behavior", () => {
     delete process.env[GATEWAY_SERVICE_RUNTIME_PID_ENV];
     existsSyncOverride.value = undefined;
     vi.clearAllMocks();
+    isCurrentRuntimeSupportedMock.mockResolvedValue(true);
     readConfigFileSnapshotMock.mockResolvedValue({
       exists: true,
       valid: true,
@@ -2425,48 +2438,20 @@ describe("runCli exit behavior", () => {
     },
   );
 
-  it.each([
-    ["root command", ["node", "openclaw", "update", "--dry-run", "--json"]],
-    ["root shorthand", ["node", "openclaw", "--update", "--dry-run", "--json"]],
-  ])("reads source-only proxy config for the update dry-run %s", async (_name, argv) => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-    readSourceConfigBestEffortMock.mockResolvedValueOnce({ proxy: { selected: "dry-run" } });
-
-    await runCli(argv);
-
-    expect(readSourceConfigBestEffortMock).toHaveBeenCalledOnce();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-    expect(startProxyMock).toHaveBeenCalledWith({ selected: "dry-run" });
-  });
-
-  it("reads source-only proxy config for mutable updates", async () => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-
-    await runCli(["node", "openclaw", "update"]);
-
-    expect(readSourceConfigBestEffortMock).toHaveBeenCalledOnce();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-    expect(startProxyMock).toHaveBeenCalledWith(undefined);
-  });
-
-  it.each([
-    ["lint", ["--lint", "--json"]],
-    ["repair", ["--fix", "--non-interactive"]],
-    ["diagnosis", []],
-  ])("reads source-only proxy config before Doctor %s owns state access", async (_mode, args) => {
-    tryRouteCliMock.mockResolvedValueOnce(true);
-    readSourceConfigBestEffortMock.mockResolvedValueOnce({ proxy: { selected: "doctor" } });
-    loadConfigMock.mockImplementation(() => {
-      throw new Error("Shared state requires Doctor repair");
-    });
-
-    await runCli(["node", "openclaw", "doctor", ...args]);
-
-    expect(readSourceConfigBestEffortMock).toHaveBeenCalledOnce();
-    expect(loadConfigMock).not.toHaveBeenCalled();
-    expect(startProxyMock).toHaveBeenCalledWith({ selected: "doctor" });
-  });
-
+  registerDoctorBootstrapRecoveryTests(() => ({
+    runCli,
+    tryRouteCliMock,
+    readSourceConfigBestEffortMock,
+    loadConfigMock,
+    startProxyMock,
+    outputPrecomputedSubcommandHelpTextMock,
+    buildProgramMock,
+    prepareDoctorUpdateRecoveryMock,
+    withDoctorUpdateRecoveryMock,
+    guardUpdateDoctorSchemaUpgradeMock,
+    initializeDebugProxyCaptureMock,
+    isCurrentRuntimeSupportedMock,
+  }));
   it.each([
     {
       name: "version-pinned skill install",

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { repairLegacyConfigForUpdateChannel } from "../../commands/doctor/legacy-config-repair.js";
 import {
   createConfigIO,
   readConfigFileSnapshot,
@@ -12,6 +13,11 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { POST_CORE_UPDATE_REQUESTED_CHANNEL_ENV } from "../../infra/update-post-core-context.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { convergeUpdatePlugins } from "./update-command-convergence.js";
+import { updateFinalizeCommand } from "./update-command-finalize.js";
+import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
+import { resumePostCoreUpdate } from "./update-command-resume.js";
+// Real config IO; update packages, provider authentication, and host actions are stubbed.
 
 const controls = vi.hoisted(() => ({ root: "" }));
 
@@ -74,12 +80,6 @@ vi.mock("./update-command-fresh-doctor.js", async (importOriginal) => ({
     configSnapshot: await readConfigFileSnapshot(),
   }),
 }));
-
-import { repairLegacyConfigForUpdateChannel } from "../../commands/doctor/legacy-config-repair.js";
-import { convergeUpdatePlugins } from "./update-command-convergence.js";
-import { updateFinalizeCommand } from "./update-command-finalize.js";
-import { updatePluginsAfterCoreUpdate } from "./update-command-plugins.js";
-import { resumePostCoreUpdate } from "./update-command-resume.js";
 
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
@@ -181,6 +181,9 @@ describe("update config provenance", () => {
             json: true,
             deferCompletionCache: true,
           });
+          // Finalization restores its caller environment; rotate that caller after it returns.
+          expect(process.env.UPDATE_PROVENANCE_TOKEN).toBe("synthetic-before");
+          vi.stubEnv("UPDATE_PROVENANCE_TOKEN", "synthetic-after");
         }
         const saved = JSON.parse(await fs.readFile(configPath, "utf8")) as OpenClawConfig;
         expect(saved.gateway?.auth?.token).toBe("${UPDATE_PROVENANCE_TOKEN}");

@@ -14,16 +14,19 @@ import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import type { readUpdateStateSchemaVersions } from "../../infra/update-candidate-state.js";
 import {
   markControlPlaneUpdateRestartSentinelFailure,
+  resolveManagedServiceUpdateFailureExitCode,
   writeControlPlaneUpdateRestartSentinel,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "../../infra/update-control-plane-sentinel.js";
 import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
+import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
+import { UPDATE_ACTIVATION_TIMEOUT_REASON } from "../../shared/update-outcome.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
@@ -34,6 +37,7 @@ import type { OwnedManagedUpdateContext } from "./update-command-managed-context
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
+// Update failures and control-plane results share one reporting boundary.
 
 /** Terminal worker diagnostics do not participate in recovery decisions. */
 export function formatUpdateFinalizationError(error: unknown): string {
@@ -57,12 +61,31 @@ export type MutableUpdateExecutionResult = {
   ownedManagedUpdateContext: OwnedManagedUpdateContext | undefined;
   recoveryEnv: NodeJS.ProcessEnv | undefined;
   packageTransaction?: PackageUpdateTransaction;
+  unchangedCore?: FinishUpdateParams["unchangedCore"];
+  updateRecoveryBackup?: import("../../infra/update-recovery-backup-contract.js").UpdateRecoveryBackupRef;
   schemaVersions?: Awaited<ReturnType<typeof readUpdateStateSchemaVersions>>;
   candidateSchemaVersions?: OpenClawSchemaVersions;
+  candidateUpdateRecovery?: "parent-v1";
   previousSchemaVersions?: OpenClawSchemaVersions;
   previousVerified?: boolean;
   activationConfig?: UpdateConfigSnapshot;
 };
+
+export function resolveCompletedUpdateResult(
+  params: Pick<FinishUpdateParams, "startedAt" | "rollbackBlockedReason" | "updateRecoveryBackup">,
+  result: UpdateRunResult,
+): UpdateRunResult {
+  return normalizeControlPlaneUpdateResult({
+    ...result,
+    ...(result.status === "error" &&
+    result.reason !== UPDATE_ACTIVATION_TIMEOUT_REASON &&
+    params.rollbackBlockedReason &&
+    !params.updateRecoveryBackup
+      ? { reason: params.rollbackBlockedReason }
+      : {}),
+    durationMs: Math.max(0, Date.now() - params.startedAt),
+  });
+}
 
 export function createUpdateCommandFailureResult(
   params: Pick<UpdateRunResult, "mode" | "root" | "recovery" | "durationMs"> & {
@@ -183,16 +206,12 @@ export class UpdateCommandFailure extends Error {
 /** A conservative pending outcome, never a grant of recovery or mutation authority. */
 export class UpdateCommandPendingRecoveryFailure extends UpdateCommandFailure {
   constructor(result: UpdateRunResult, detail?: string, options?: ErrorOptions) {
-    super(
-      {
-        ...result,
-        status: "error",
-        recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-      },
-      1,
-      detail,
-      options,
-    );
+    const unsafeResult: UpdateRunResult = {
+      ...result,
+      status: "error",
+      recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+    };
+    super(unsafeResult, resolveManagedServiceUpdateFailureExitCode(unsafeResult), detail, options);
     this.name = "UpdateCommandPendingRecoveryFailure";
   }
 }
@@ -214,8 +233,23 @@ export function reportUpdateCommandPendingRecovery(
 /** Reporting-only marker: the outcome was recorded and printed; no follow-up triage. */
 export class UpdateCommandFinalizedRecoveryFailure extends UpdateCommandFailure {
   constructor(result: UpdateRunResult) {
-    super(result, 1);
+    super(result, resolveManagedServiceUpdateFailureExitCode(result));
   }
+}
+
+export function describeWindowsTaskRecoveryFailure(
+  result: UpdateRunResult,
+  failure: FinishUpdateParams["failure"],
+  recoveryCause: unknown,
+): { detail: string; cause: unknown } {
+  const priorDetail = [result.reason, failure?.detail].filter(Boolean).join(": ");
+  const detail =
+    `${priorDetail ? `${priorDetail}; ` : ""}Windows Scheduled Task autostart recovery failed: ` +
+    formatErrorMessage(recoveryCause);
+  const cause = failure
+    ? new AggregateError([failure.cause, recoveryCause], detail, { cause: recoveryCause })
+    : recoveryCause;
+  return { detail, cause };
 }
 
 export function mergeWindowsTaskRecoveryFailure(

@@ -17,7 +17,6 @@ import type {
   PluginUpdateOutcome,
   PluginUpdateSummary,
 } from "./update-source.js";
-
 export function recordPluginUpdateFailure(params: {
   config: OpenClawConfig;
   disableOnFailure?: boolean;
@@ -47,10 +46,8 @@ export function recordPluginUpdateFailure(params: {
       message,
       ...(options.channelFallback ? { channelFallback: options.channelFallback } : {}),
     });
-    return {
-      config: disablePluginAfterUpdateFailure(params.config, params.pluginId),
-      changed: true,
-    };
+    const config = disablePluginAfterUpdateFailure(params.config, params.pluginId);
+    return { config, changed: config !== params.config };
   }
   params.outcomes.push({
     pluginId: params.pluginId,
@@ -93,6 +90,7 @@ export async function finalizePluginUpdateSummary(params: {
   logger: PluginUpdateLogger;
   transactionState: ReturnType<typeof createPluginUpdateTransactionState>;
   beforePersistentEffect?: () => void;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<PluginUpdateSummary> {
   let changed = params.changed;
   if (params.ranNpmInstaller) {
@@ -102,6 +100,7 @@ export async function finalizePluginUpdateSummary(params: {
           config: params.config,
           logger: params.logger,
           beforePersistentEffect: params.beforePersistentEffect,
+          preparePersistentEffect: params.preparePersistentEffect,
         })) || changed;
     } catch (error) {
       await settlePluginInstallTransactions(params.transactionState.transactions, "rollback", {

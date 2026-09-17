@@ -57,6 +57,7 @@ import { repairStaleOAuthProfileShadows } from "./shared/stale-oauth-profile-sha
 import { maybeRepairStalePluginConfig } from "./shared/stale-plugin-config.js";
 import { maybeRepairStaleSubagentAllowlists } from "./shared/stale-subagent-allowlist.js";
 import { isUpdatePackageSwapInProgress } from "./shared/update-phase.js";
+// Doctor repair sequence coordinator for config, auth, plugin, and warning repairs.
 
 /** Run doctor auto-repairs in dependency order and collect sanitized user notes. */
 export async function runDoctorRepairSequence(params: {
@@ -164,7 +165,7 @@ export async function runDoctorRepairSequence(params: {
     applyMutation(mutation);
   }
   applyMutation(maybeRepairBundledPluginLoadPaths(state.candidate, env));
-  const staleManagedNpmBundledPluginRepair = maybeRepairStaleManagedNpmBundledPlugins({
+  const staleManagedNpmBundledPluginRepair = await maybeRepairStaleManagedNpmBundledPlugins({
     config: state.candidate,
     env,
     prompter: { shouldRepair: true },

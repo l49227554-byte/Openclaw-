@@ -16,6 +16,7 @@
     "../../dist",
     "../../**/dist/**",
     "../../src/cli/daemon-cli/**",
+    "../../src/cli/update-cli/**",
     "../../src/config/sessions/**"
   ]
 }

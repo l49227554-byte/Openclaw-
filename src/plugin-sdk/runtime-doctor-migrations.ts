@@ -14,6 +14,14 @@ import { hasErrnoCode } from "../infra/errno.js";
 import type { OpenKeyedStoreOptions } from "../plugin-state/plugin-state-store.js";
 import type { PluginDoctorStateMigration } from "../plugins/doctor-contract-module.js";
 import { archiveLegacyStateSource } from "../plugins/doctor-state-migration-fs.js";
+/**
+ * Dependency-light doctor migration helpers for plugin doctor contracts.
+ *
+ * Doctor contract enumeration cold-loads plugin `doctor-contract-api` closures, so
+ * this subpath must stay off heavy runtime graphs (state DB, plugin state stores,
+ * uninstall flows). Those stay on focused repair and plugin-state-store subpaths;
+ * the deprecated `runtime-doctor` package facade re-exports only this light module.
+ */
 
 export { mergeMissing } from "../config/merge-missing.js";
 export { collectProviderDangerousNameMatchingScopes } from "../config/dangerous-name-matching.js";
@@ -55,6 +63,7 @@ export type {
 } from "../plugin-state/plugin-state-store.js";
 export type {
   PluginDoctorChannelIngressQueueAccess,
+  PluginDoctorMigrationBackupResource,
   PluginDoctorStateMigration,
   PluginDoctorStateMigrationContext,
 } from "../plugins/doctor-contract-module.js";
@@ -429,6 +438,13 @@ export function defineLegacyJsonStateMigration<TSource>(params: {
   return {
     id: params.id,
     label: params.label,
+    collectBackupResources({ stateDir }) {
+      const filePath = params.resolvePath(stateDir);
+      return [
+        { path: filePath, kind: "file" },
+        { path: `${filePath}.migrated`, kind: "file" },
+      ];
+    },
     async detectLegacyState({ stateDir }) {
       const filePath = params.resolvePath(stateDir);
       const source = await readSource(filePath);

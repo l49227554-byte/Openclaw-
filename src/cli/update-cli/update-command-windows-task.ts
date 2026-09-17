@@ -10,7 +10,6 @@ import {
   waitForSignalExitBarriers,
 } from "../signal-exit-barrier.js";
 import type { UpdateCommandOptions } from "./shared.js";
-
 export class UpdateCommandAbort extends Error {
   constructor() {
     super("openclaw-update-abort");
@@ -36,12 +35,13 @@ export function createWindowsTaskAutoStartRecovery(params: {
   assertCurrentService?: () => Promise<void>;
   assertCurrent?: () => void;
   alreadySuspended?: true;
+  restoreOnFailure?: false;
   updateRun?: UpdateCommandOptions["run"];
 }): WindowsTaskAutoStartRecovery {
   let guard = params.assertCurrentService;
   let restorePromise: Promise<void> | undefined;
   let settlement: Promise<void> | undefined;
-  let restoreAllowed = !params.alreadySuspended;
+  let restoreAllowed = !params.alreadySuspended && params.restoreOnFailure !== false;
   let restorationAttempted = false;
   let restorationFailed = false;
   let delegated = false;
@@ -190,6 +190,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
   const suspensionPromise = params.alreadySuspended
     ? Promise.resolve(true)
     : suspendScheduledTaskAutoStartForUpdate(params.serviceEnv, {
+        ...(params.restoreOnFailure === false ? { restoreOnFailure: false } : {}),
         assertCurrent: params.assertCurrent,
         beforeMutation: async () => {
           params.assertCurrent?.();

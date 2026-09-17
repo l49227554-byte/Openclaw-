@@ -14,6 +14,7 @@ import type {
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
+// Nostr tests cover doctor contract api plugin behavior.
 
 function requireStateMigration(index: number) {
   return expectDefined(stateMigrations[index], `Nostr state migration ${index}`);
@@ -45,6 +46,15 @@ describe("nostr doctor state migration", () => {
     await closeOpenClawStateDatabaseAsync();
     resetPluginStateStoreForTests();
     await fs.rm(stateDir, { recursive: true, force: true });
+  });
+
+  it("declares the legacy state directory before migration", async () => {
+    for (const migration of stateMigrations) {
+      expect(await migration.collectBackupResources?.({ config: {}, env, stateDir })).toEqual([
+        { path: path.join(stateDir, "nostr"), kind: "directory" },
+      ]);
+    }
+    await expect(fs.stat(path.join(stateDir, "nostr"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   async function writeOrderedLegacyFiles(

@@ -14,11 +14,7 @@ import {
 } from "../../infra/gateway-supervision.js";
 import { readPackageVersion } from "../../infra/package-json.js";
 import type { GatewayRestartIntent } from "../../infra/restart-intent.js";
-import {
-  type RestartSentinelPayload,
-  writeRestartSentinel,
-  formatDoctorNonInteractiveHint,
-} from "../../infra/restart-sentinel.js";
+import { type RestartSentinelPayload, writeRestartSentinel } from "../../infra/restart-sentinel.js";
 import {
   normalizeGatewayRestartDelayMs,
   resolveGatewayRestartDeferralTimeoutMs,
@@ -30,7 +26,10 @@ import {
   normalizeUpdateChannel,
   resolveEffectiveUpdateChannel,
 } from "../../infra/update-channels.js";
-import { CONTROL_PLANE_UPDATE_HANDOFF_STARTED_REASON } from "../../infra/update-control-plane-sentinel.js";
+import {
+  CONTROL_PLANE_UPDATE_HANDOFF_STARTED_REASON,
+  UPDATE_RUN_ID_ENV,
+} from "../../infra/update-control-plane-sentinel.js";
 import { devUpdateTargetFromGitTarget } from "../../infra/update-dev-target.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
@@ -48,12 +47,14 @@ import {
 } from "../../infra/update-post-core-finalize.js";
 import {
   buildUpdateRestartSentinelPayload,
+  createControlPlaneUpdateRefusal,
   normalizeControlPlaneUpdateResult,
   type UpdateRestartSentinelMeta,
 } from "../../infra/update-restart-sentinel-payload.js";
 import {
   adoptUpdateRun,
   createUpdateRun,
+  declareUnprotectedGatewayUpdate,
   finishUpdateRun,
   getUpdateRun,
   heartbeatUpdateRun,
@@ -61,16 +62,13 @@ import {
   recordUpdateRunStep,
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
+import { withUnprotectedGatewayUpdateAdvisory } from "../../infra/update-run-record.js";
 import { renderUpdateRunNotice } from "../../infra/update-run-report.js";
 import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import { runGatewayUpdate, runGatewayUpdatePreflight } from "../../infra/update-runner.js";
 import { getUpdateAvailable } from "../../infra/update-startup.js";
 import { mergeDeliveryContext } from "../../utils/delivery-context.shared.js";
-import {
-  INTERNAL_MESSAGE_CHANNEL,
-  isBrowserOperatorUiClient,
-  isInternalMessageChannel,
-} from "../../utils/message-channel.js";
+import { INTERNAL_MESSAGE_CHANNEL, isInternalMessageChannel } from "../../utils/message-channel.js";
 import { VERSION } from "../../version.js";
 import { formatControlPlaneActor, resolveControlPlaneActor } from "../control-plane-audit.js";
 import { recordLatestUpdateRestartSentinel } from "../server-restart-sentinel.js";
@@ -78,10 +76,17 @@ import { resolveUpdateRunNoticeTarget } from "../update-run-notice-target.js";
 import { wakeUpdateRunWatcher } from "../update-run-watcher.js";
 import { parseRestartRequestParams } from "./restart-request.js";
 import type { GatewayRequestHandlers } from "./types.js";
-import { recordHandoffFailure, resolveGatewayUpdateAdmission } from "./update-admission.js";
+import {
+  recordHandoffFailure,
+  resolveGatewayUpdateAdmission,
+  resolveGatewayUpdateTrigger,
+} from "./update-admission.js";
+import { buildGatewayUpdateRunOrigin } from "./update-origin.js";
 import { updateReportHandler } from "./update-report.js";
 import { updateStatusHandlers } from "./update-status.js";
 import { assertValidParams } from "./validation.js";
+// Update gateway methods run self-update flows, report status, write restart
+// sentinels, and hand off managed-service restarts when needed.
 
 const MANAGED_HANDOFF_ALREADY_RUNNING_REASON = "managed-service-handoff-already-running";
 
@@ -108,14 +113,12 @@ export const updateHandlers: GatewayRequestHandlers = {
     const threadId = requestedThreadId ?? sessionThreadId;
     const timeoutMs = params.timeoutMs === undefined ? undefined : Math.max(1000, params.timeoutMs);
 
-    const requesterChannel = params.requester?.channel;
-    const trigger =
-      requesterChannel && !isInternalMessageChannel(requesterChannel)
-        ? "chat"
-        : isBrowserOperatorUiClient(client?.connect.client) ||
-            (sessionKey && isInternalMessageChannel(requesterChannel ?? deliveryContext?.channel))
-          ? "control-ui"
-          : "api";
+    const trigger = resolveGatewayUpdateTrigger(
+      client?.connect.client,
+      sessionKey,
+      params.requester?.channel,
+      deliveryContext?.channel,
+    );
     const getConfig = context.getRuntimeConfig;
     const config = getConfig();
     const noticeTarget = resolveUpdateRunNoticeTarget({
@@ -128,23 +131,12 @@ export const updateHandlers: GatewayRequestHandlers = {
     if (noticeTarget.kind === "internal") {
       deliveryContext = { channel: INTERNAL_MESSAGE_CHANNEL };
     }
-    const origin = {
-      doctorHint: formatDoctorNonInteractiveHint(),
-      ...(params.requester ? { requester: params.requester } : {}),
-      ...(sessionKey ? { sessionKey } : {}),
-      ...(deliveryContext
-        ? {
-            deliveryContext: {
-              channel: deliveryContext.channel,
-              to: deliveryContext.to,
-              accountId: deliveryContext.accountId,
-              threadId:
-                threadId ??
-                (deliveryContext.threadId != null ? String(deliveryContext.threadId) : undefined),
-            },
-          }
-        : {}),
-    };
+    const origin = buildGatewayUpdateRunOrigin({
+      requester: params.requester,
+      sessionKey,
+      deliveryContext,
+      threadId,
+    });
     const run = createUpdateRun({
       trigger,
       origin,
@@ -160,6 +152,7 @@ export const updateHandlers: GatewayRequestHandlers = {
     wakeUpdateRunWatcher();
 
     let result: Awaited<ReturnType<typeof runGatewayUpdate>>;
+    let unprotectedGatewayUpdate = false;
     let handoff:
       | { status: "started"; pid?: number; command: string }
       | { status: "already-running" | "unavailable"; command: string; message: string }
@@ -228,19 +221,7 @@ export const updateHandlers: GatewayRequestHandlers = {
       const configChannel = normalizeUpdateChannel(config.update?.channel);
       const { status, installSurface } = await resolveGatewayUpdateAdmission(timeoutMs);
       const installRoot = installSurface.root;
-      const refusedUpdate = (
-        outcome: "error" | "skipped",
-        reason: string,
-        beforeVersion?: string | null,
-      ): Awaited<ReturnType<typeof runGatewayUpdate>> => ({
-        status: outcome,
-        mode: installSurface.mode,
-        ...(installRoot ? { root: installRoot } : {}),
-        ...(beforeVersion ? { before: { version: beforeVersion } } : {}),
-        reason,
-        steps: [],
-        durationMs: 0,
-      });
+      const refusedUpdate = createControlPlaneUpdateRefusal(installSurface);
       const effectiveChannel = resolveEffectiveUpdateChannel({
         configChannel,
         currentVersion: VERSION,
@@ -514,9 +495,17 @@ export const updateHandlers: GatewayRequestHandlers = {
           return;
         }
         const driver = adoptUpdateRun(runId).origin.driver;
+        if (installSurface.kind === "git") {
+          declareUnprotectedGatewayUpdate(runId);
+          unprotectedGatewayUpdate = true;
+        }
         recordUpdateRunPhase(runId, "staging");
         result = await runGatewayUpdate({
           runId,
+          updateRecoveryOwner: unprotectedGatewayUpdate ? "unprotected" : undefined,
+          getDoctorEnv: unprotectedGatewayUpdate
+            ? () => ({ [UPDATE_RUN_ID_ENV]: runId })
+            : undefined,
           progress: {
             onHeartbeat: () => heartbeatUpdateRun(runId, driver),
             onStepStart: (step) =>
@@ -548,6 +537,9 @@ export const updateHandlers: GatewayRequestHandlers = {
         recordUpdateRunPhase(runId, "validating");
         const finalizeOutcome = await runPostCoreFinalizeAfterGatewayUpdate({
           result,
+          ...(unprotectedGatewayUpdate
+            ? { env: { ...process.env, [UPDATE_RUN_ID_ENV]: runId } }
+            : {}),
           channel: configChannel ?? undefined,
           serviceRepairPolicy: "external",
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
@@ -574,6 +566,9 @@ export const updateHandlers: GatewayRequestHandlers = {
       };
     }
 
+    if (unprotectedGatewayUpdate) {
+      result = withUnprotectedGatewayUpdateAdvisory(result);
+    }
     result = normalizeControlPlaneUpdateResult(result);
     if (result.status === "ok") {
       const activating = recordUpdateRunPhase(runId, "activating", {

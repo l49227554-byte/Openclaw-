@@ -12,7 +12,15 @@ import { resolvePluginArtifactDeclaredSurface } from "./capability-artifact.js";
 import { computeDeclaredSurfaceHash } from "./capability-summary.js";
 import { resolvePluginInstallOwnerMigrations } from "./install-transaction.js";
 import { makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
-
+import {
+  createSuccessfulNpmUpdateResult,
+  createSuccessfulClawHubUpdateResult,
+  createNpmInstallConfig,
+  createMarketplaceInstallConfig,
+  createClawHubInstallConfig,
+  createGitInstallConfig,
+  createCodexAppServerInstallConfig,
+} from "./update-fixtures.test-support.js";
 const APP_ROOT = "/app";
 
 type NpmInstallIntegrityDrift = {
@@ -185,145 +193,6 @@ vi.mock("./package-entry-resolution.js", async (importOriginal) => {
 
 const { syncPluginsForUpdateChannel, updateNpmInstalledPlugins } = await import("./update.js");
 
-function createSuccessfulNpmUpdateResult(params?: {
-  pluginId?: string;
-  targetDir?: string;
-  version?: string;
-  npmResolution?: {
-    name: string;
-    version: string;
-    resolvedSpec: string;
-  };
-}) {
-  return {
-    ok: true,
-    pluginId: params?.pluginId ?? "opik-openclaw",
-    targetDir: params?.targetDir ?? "/tmp/opik-openclaw",
-    version: params?.version ?? "0.2.6",
-    extensions: ["index.ts"],
-    ...(params?.npmResolution ? { npmResolution: params.npmResolution } : {}),
-  };
-}
-
-function createSuccessfulClawHubUpdateResult(params?: {
-  pluginId?: string;
-  targetDir?: string;
-  version?: string;
-  clawhubPackage?: string;
-}) {
-  return {
-    ok: true,
-    pluginId: params?.pluginId ?? "legacy-chat",
-    targetDir: params?.targetDir ?? "/tmp/openclaw-plugins/legacy-chat",
-    version: params?.version ?? "2026.5.1-beta.2",
-    extensions: ["index.ts"],
-    packageName: params?.clawhubPackage ?? "legacy-chat",
-    clawhub: {
-      source: "clawhub" as const,
-      clawhubUrl: "https://clawhub.ai",
-      clawhubPackage: params?.clawhubPackage ?? "legacy-chat",
-      clawhubFamily: "code-plugin" as const,
-      clawhubChannel: "official" as const,
-      version: params?.version ?? "2026.5.1-beta.2",
-      integrity: "sha256-clawpack",
-      resolvedAt: "2026-05-01T00:00:00.000Z",
-      artifactKind: "npm-pack" as const,
-      artifactFormat: "tgz" as const,
-      npmIntegrity: "sha512-clawpack",
-      npmShasum: "2".repeat(40),
-      npmTarballName: `${params?.clawhubPackage ?? "legacy-chat"}-${params?.version ?? "2026.5.1-beta.2"}.tgz`,
-      clawpackSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      clawpackSpecVersion: 1,
-      clawpackManifestSha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      clawpackSize: 4096,
-    },
-  };
-}
-
-function createNpmInstallConfig(params: {
-  pluginId: string;
-  spec: string;
-  installPath: string;
-  integrity?: string;
-  shasum?: string;
-  installedAt?: string;
-  resolvedAt?: string;
-  resolvedName?: string;
-  resolvedSpec?: string;
-  resolvedVersion?: string;
-}): OpenClawConfig {
-  return {
-    plugins: {
-      installs: {
-        [params.pluginId]: {
-          source: "npm" as const,
-          spec: params.spec,
-          installPath: params.installPath,
-          ...(params.integrity ? { integrity: params.integrity } : {}),
-          ...(params.shasum ? { shasum: params.shasum } : {}),
-          ...(params.resolvedName ? { resolvedName: params.resolvedName } : {}),
-          ...(params.resolvedSpec ? { resolvedSpec: params.resolvedSpec } : {}),
-          ...(params.resolvedVersion ? { resolvedVersion: params.resolvedVersion } : {}),
-          ...(params.installedAt ? { installedAt: params.installedAt } : {}),
-          ...(params.resolvedAt ? { resolvedAt: params.resolvedAt } : {}),
-        },
-      },
-    },
-  };
-}
-
-function createMarketplaceInstallConfig(params: {
-  pluginId: string;
-  installPath: string;
-  marketplaceSource: string;
-  marketplacePlugin: string;
-  marketplaceName?: string;
-}): OpenClawConfig {
-  return {
-    plugins: {
-      installs: {
-        [params.pluginId]: {
-          source: "marketplace" as const,
-          installPath: params.installPath,
-          marketplaceSource: params.marketplaceSource,
-          marketplacePlugin: params.marketplacePlugin,
-          ...(params.marketplaceName ? { marketplaceName: params.marketplaceName } : {}),
-        },
-      },
-    },
-  };
-}
-
-function createClawHubInstallConfig(
-  params: {
-    pluginId?: string;
-    installPath?: string;
-    clawhubUrl?: string;
-    clawhubPackage?: string;
-    clawhubFamily?: "bundle-plugin" | "code-plugin";
-    clawhubChannel?: "community" | "official" | "private";
-    spec?: string;
-  } = {},
-): OpenClawConfig {
-  const pluginId = params.pluginId ?? "demo";
-  const clawhubPackage = params.clawhubPackage ?? pluginId;
-  return {
-    plugins: {
-      installs: {
-        [pluginId]: {
-          source: "clawhub" as const,
-          spec: params.spec ?? `clawhub:${clawhubPackage}`,
-          installPath: params.installPath ?? `/tmp/${pluginId}`,
-          clawhubUrl: params.clawhubUrl ?? "https://clawhub.ai",
-          clawhubPackage,
-          clawhubFamily: params.clawhubFamily ?? "code-plugin",
-          clawhubChannel: params.clawhubChannel ?? "official",
-        },
-      },
-    },
-  };
-}
-
 function createEnabledDemoClawHubInstallConfig(): OpenClawConfig {
   const installPath = createInstalledPackageDir({
     name: "demo",
@@ -346,26 +215,6 @@ function createEnabledDemoClawHubInstallConfig(): OpenClawConfig {
   return config;
 }
 
-function createGitInstallConfig(params: {
-  pluginId: string;
-  spec: string;
-  installPath: string;
-  commit?: string;
-}): OpenClawConfig {
-  return {
-    plugins: {
-      installs: {
-        [params.pluginId]: {
-          source: "git" as const,
-          spec: params.spec,
-          installPath: params.installPath,
-          ...(params.commit ? { gitCommit: params.commit } : {}),
-        },
-      },
-    },
-  };
-}
-
 function createBundledPathInstallConfig(params: {
   loadPaths: string[];
   installPath: string;
@@ -381,26 +230,6 @@ function createBundledPathInstallConfig(params: {
           sourcePath: params.sourcePath ?? appBundledPluginRoot("feishu"),
           installPath: params.installPath,
           ...(params.spec ? { spec: params.spec } : {}),
-        },
-      },
-    },
-  };
-}
-
-function createCodexAppServerInstallConfig(params: {
-  spec: string;
-  resolvedName?: string;
-  resolvedSpec?: string;
-}) {
-  return {
-    plugins: {
-      installs: {
-        "openclaw-codex-app-server": {
-          source: "npm" as const,
-          spec: params.spec,
-          installPath: "/tmp/openclaw-codex-app-server",
-          ...(params.resolvedName ? { resolvedName: params.resolvedName } : {}),
-          ...(params.resolvedSpec ? { resolvedSpec: params.resolvedSpec } : {}),
         },
       },
     },
@@ -932,6 +761,7 @@ describe("updateNpmInstalledPlugins", () => {
     const onCapabilityConsent =
       vi.fn<NonNullable<UpdateInstalledPluginParams["onCapabilityConsent"]>>();
     const beforePersistentEffect = vi.fn();
+    const preparePersistentEffect = vi.fn();
     const warn = vi.fn();
     const consent = createManagedPluginArtifactConsentHandler({
       config,
@@ -966,6 +796,7 @@ describe("updateNpmInstalledPlugins", () => {
         pluginIds: [pluginId, "later"],
         onCapabilityConsent,
         beforePersistentEffect,
+        preparePersistentEffect,
         disableOnFailure: true,
         logger: { warn },
       }),
@@ -978,7 +809,9 @@ describe("updateNpmInstalledPlugins", () => {
 
     expect(installPluginFromNpmSpecMock).toHaveBeenCalledOnce();
     expect(onCapabilityConsent).not.toHaveBeenCalled();
-    expect(beforePersistentEffect).not.toHaveBeenCalled();
+    // The outer lease checks current authority even when the installer refuses ownership.
+    expect(beforePersistentEffect).toHaveBeenCalled();
+    expect(preparePersistentEffect).not.toHaveBeenCalled();
     expect(warn).not.toHaveBeenCalled();
     expect(config).toEqual(originalConfig);
     for (const { file, bytes } of originalFiles) {
@@ -1134,6 +967,16 @@ describe("updateNpmInstalledPlugins", () => {
       childEnabled: false,
       reviewRetryStage: true,
     },
+    {
+      label: "preserves persistent-effect refusal instead of disabling the installed plugin",
+      nextProviders: ["existing-child-provider", "new-child-provider"],
+      review: "persistent-throw",
+      priorAcceptance: "valid",
+      rejected: false,
+      ownerEnabled: true,
+      childEnabled: false,
+      disableOnFailure: true,
+    },
     ...(["throw", "throw-undefined"] as const).map((review) => ({
       label: `preserves the original consent callback failure (${review})`,
       nextProviders: ["existing-child-provider", "new-child-provider"],
@@ -1265,7 +1108,11 @@ describe("updateNpmInstalledPlugins", () => {
 
       const callbackFailure =
         review === "throw-undefined" ? undefined : new Error("consent guard cancelled");
-      const beforePersistentEffect = vi.fn();
+      const beforePersistentEffect = vi.fn(async () => {
+        if (review === "persistent-throw") {
+          throw new Error("recovery capture refused");
+        }
+      });
       let reviewed = false;
       const onCapabilityConsent: UpdateInstalledPluginParams["onCapabilityConsent"] =
         review === "none"
@@ -1293,10 +1140,17 @@ describe("updateNpmInstalledPlugins", () => {
             };
       const pendingUpdate = updatePlugin(config, pluginId, {
         onCapabilityConsent,
-        beforePersistentEffect,
+        preparePersistentEffect: beforePersistentEffect,
         disableOnFailure,
         packagePluginIds: { [pluginId]: [rootPluginId, `${pluginId}-addon`] },
       });
+      if (review === "persistent-throw") {
+        await expect(pendingUpdate).rejects.toThrow("recovery capture refused");
+        expect(beforePersistentEffect).toHaveBeenCalledOnce();
+        expect(fs.readFileSync(childManifestPath, "utf8")).toBe(previousChildManifest);
+        expect(config.plugins.entries[rootPluginId].enabled).toBe(ownerEnabled);
+        return;
+      }
       if (omitStageReview) {
         await expect(pendingUpdate).rejects.toThrow("did not expose its verified artifact");
         return;
@@ -2691,20 +2545,19 @@ describe("updateNpmInstalledPlugins", () => {
         peerDependencies: { openclaw: ">=2026.5.4" },
         installPath: path.join(stateDir, "extensions", "clawhub"),
       });
-      const copiedHosts = [
+      const unmanagedInstallPaths = [
         outsideInstallPath,
         developerInstallPath,
         marketplaceInstallPath,
-        clawhubInstallPath,
-      ].map((installPath) => {
+      ];
+      for (const installPath of [...unmanagedInstallPaths, clawhubInstallPath]) {
         const copiedHostDir = path.join(installPath, "node_modules", "openclaw");
         fs.mkdirSync(copiedHostDir, { recursive: true });
         fs.writeFileSync(
           path.join(copiedHostDir, "package.json"),
           JSON.stringify({ name: "openclaw", version: "2026.4.1" }),
         );
-        return copiedHostDir;
-      });
+      }
       const outsideAliasPath = path.join(stateDir, "extensions", "outside-alias");
       const developerAliasPath = path.join(stateDir, "extensions", "developer-alias");
       fs.symlinkSync(outsideInstallPath, outsideAliasPath, "dir");
@@ -2755,12 +2608,16 @@ describe("updateNpmInstalledPlugins", () => {
       expect(installPluginFromNpmSpecMock).toHaveBeenCalledTimes(1);
       expect(fs.lstatSync(peerLinkPath("sibling")).isSymbolicLink()).toBe(true);
       expect(fs.lstatSync(peerLinkPath("updated")).isSymbolicLink()).toBe(true);
-      expect(
-        copiedHosts.map((copiedHostDir) => fs.lstatSync(copiedHostDir).isSymbolicLink()),
-      ).toEqual([false, false, false, true]);
-      expect(fs.realpathSync(expectDefined(copiedHosts[3], "clawhub copied host fixture"))).toBe(
-        fs.realpathSync(process.cwd()),
-      );
+      const clawhubHost = path.join(clawhubInstallPath, "node_modules", "openclaw");
+      expect(fs.lstatSync(clawhubHost).isSymbolicLink()).toBe(true);
+      expect(fs.realpathSync(clawhubHost)).toBe(fs.realpathSync(peerLinkPath("updated")));
+      for (const installPath of unmanagedInstallPaths) {
+        const copiedHostDir = path.join(installPath, "node_modules", "openclaw");
+        expect(fs.lstatSync(copiedHostDir).isDirectory()).toBe(true);
+        expect(
+          JSON.parse(fs.readFileSync(path.join(copiedHostDir, "package.json"), "utf8")),
+        ).toEqual({ name: "openclaw", version: "2026.4.1" });
+      }
     },
   );
 
@@ -4158,6 +4015,75 @@ describe("updateNpmInstalledPlugins", () => {
         status: "skipped",
         message,
       },
+    ]);
+  });
+
+  it.each<{
+    name: string;
+    slots?: NonNullable<OpenClawConfig["plugins"]>["slots"];
+    expectedSlots?: NonNullable<OpenClawConfig["plugins"]>["slots"];
+    entryId?: string;
+    enabled?: boolean;
+    changed: boolean;
+  }>([
+    { name: "already disabled without slots", changed: false },
+    {
+      name: "already disabled with unrelated slots",
+      slots: { memory: "other" },
+      expectedSlots: { memory: "other" },
+      changed: false,
+    },
+    {
+      name: "already disabled with a slot to reset",
+      slots: { memory: "feishu", contextEngine: "other" },
+      expectedSlots: { contextEngine: "other" },
+      changed: true,
+    },
+    { name: "already disabled with an alias to normalize", entryId: "FEISHU", changed: true },
+    { name: "enabled before the failed update", enabled: true, changed: true },
+  ])("reports actual mutation after incompatible update: $name", async (scenario) => {
+    const installPath = createInstalledPackageDir({
+      name: "@openclaw/feishu",
+      version: "2026.9.3",
+    });
+    mockNpmViewMetadata({ name: "@openclaw/feishu", version: "2026.9.4" });
+    installPluginFromNpmSpecMock.mockResolvedValue({
+      ok: false,
+      code: "incompatible_plugin_api",
+      error: "plugin API requires a newer OpenClaw runtime",
+    });
+    const config: OpenClawConfig = {
+      plugins: {
+        entries: {
+          [scenario.entryId ?? "feishu"]: {
+            enabled: scenario.enabled ?? false,
+            config: { preserved: true },
+          },
+        },
+        ...(scenario.slots ? { slots: scenario.slots } : {}),
+        installs: {
+          feishu: { source: "npm", spec: "@openclaw/feishu@beta", installPath },
+        },
+      },
+    };
+
+    const result = await updateNpmInstalledPlugins({
+      config,
+      skipDisabledPlugins: true,
+      syncOfficialPluginInstalls: true,
+      disableOnFailure: true,
+    });
+
+    expect(installPluginFromNpmSpecMock).toHaveBeenCalledOnce();
+    expect(result.changed).toBe(scenario.changed);
+    expect(result.config === config).toBe(!scenario.changed);
+    expect(result.config.plugins?.entries).toEqual({
+      feishu: { enabled: false, config: { preserved: true } },
+    });
+    expect(result.config.plugins?.slots).toEqual(scenario.expectedSlots);
+    expect(result.config.plugins?.installs).toEqual(config.plugins?.installs);
+    expect(result.outcomes).toMatchObject([
+      { pluginId: "feishu", status: "skipped", message: expect.stringContaining("plugin API") },
     ]);
   });
 

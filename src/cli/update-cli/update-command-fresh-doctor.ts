@@ -27,10 +27,17 @@ import {
   createUpdateFailureFact,
   type UpdateFailureFact,
 } from "../../infra/update-failure-facts.js";
-import { buildUpdateDoctorEnv } from "../../infra/update-runner-doctor.js";
+import {
+  buildUpdateDoctorEnv,
+  buildUpdateRecoveryDoctorArgs,
+} from "../../infra/update-runner-doctor.js";
 import { redactSupportString } from "../../logging/diagnostic-support-redaction.js";
 import { formatCommandOutput } from "../../process/command-error.js";
-import { isPlainCommandExitFailure, runExec } from "../../process/exec.js";
+import {
+  isPlainCommandExitFailure,
+  runExec,
+  runUtf8CommandWithTimeout,
+} from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import { truncateUtf8Prefix, truncateUtf8Suffix } from "../../utils/utf8-truncate.js";
 import { resolveNodeRunner } from "./shared.js";
@@ -45,8 +52,20 @@ import {
   stripGatewayServiceMarkerEnv,
 } from "./update-command-service-env.js";
 import { captureUpdateFinalizationDoctorOutput } from "./update-finalization-output.js";
+// Runs post-plugin convergence checks without retaining pre-update plugin modules.
 
 type UpdateDoctorPhase = "pre-plugin" | "post-plugin";
+
+export class UpdateDoctorProcessUnsettledError extends Error {
+  override name = "UpdateDoctorProcessUnsettledError";
+
+  constructor(cause?: unknown) {
+    super(
+      "Doctor child processes have not been proven settled; retain the recovery capture and do not restore state.",
+      { cause },
+    );
+  }
+}
 
 export async function withPrePluginUpdateDoctorEnv<T>(run: () => Promise<T>): Promise<T> {
   const previousValues = [
@@ -108,6 +127,8 @@ function createPostPluginDoctorExecutionFailure(
 }
 
 export async function runUpdateFinalizationDoctorInFreshProcess(params: {
+  updateRecoveryBackup?: import("../../infra/update-recovery-backup-contract.js").UpdateRecoveryBackupRef;
+  updateRecoveryOwner?: "unprotected";
   phase: UpdateDoctorPhase;
   root: string;
   runId?: string;
@@ -130,6 +151,7 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
     "--non-interactive",
     ...(params.workspaceSuggestions ? [] : ["--no-workspace-suggestions"]),
     ...(params.yes ? ["--yes"] : []),
+    ...buildUpdateRecoveryDoctorArgs(params.updateRecoveryBackup, params.updateRecoveryOwner),
   ];
   const baseEnv = stripGatewayServiceMarkerEnv(disableUpdatedPackageCompileCacheEnv(process.env));
   delete baseEnv[UPDATE_POST_CORE_CONVERGENCE_ENV];
@@ -137,27 +159,69 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
   let doctorResult: UpdatePostInstallDoctorResult | null = null;
   let result: { stdout?: unknown; stderr?: unknown } | undefined;
   try {
-    result = await runExec(params.nodeRunner ?? resolveNodeRunner(), args, {
-      cwd: params.root,
-      timeoutMs: params.timeoutMs,
-      maxBuffer: 4 * 1024 * 1024,
-      logOutput: false,
-      onOutputChunk: captureUpdateFinalizationDoctorOutput(params.phase),
-      baseEnv,
-      env: {
-        [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: doctorResultPath,
-        ...(params.runId ? { [UPDATE_RUN_ID_ENV]: params.runId } : {}),
-        // The outer updater owns service refresh and activation after every
-        // migration finishes; a fresh Doctor must not resume its parked service.
-        ...buildUpdateDoctorEnv({
-          allowGatewayServiceRepair: false,
-          allowGatewayActivation: false,
-          deferConfiguredPluginInstallRepair: true,
-        }),
-        ...(params.phase === "post-plugin" ? { [UPDATE_POST_CORE_CONVERGENCE_ENV]: "1" } : {}),
+    const command = await runUtf8CommandWithTimeout(
+      [params.nodeRunner ?? resolveNodeRunner(), ...args],
+      {
+        cwd: params.root,
+        timeoutMs: params.timeoutMs,
+        maxOutputBytes: 4 * 1024 * 1024,
+        killProcessTree: true,
+        requireProcessTreeExtinction: true,
+        onOutputChunk: captureUpdateFinalizationDoctorOutput(params.phase),
+        baseEnv,
+        env: {
+          [UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]: doctorResultPath,
+          ...(params.runId ? { [UPDATE_RUN_ID_ENV]: params.runId } : {}),
+          // The outer updater owns service refresh and activation after every
+          // migration finishes; a fresh Doctor must not resume its parked service.
+          ...buildUpdateDoctorEnv({
+            allowGatewayServiceRepair: false,
+            allowGatewayActivation: false,
+            deferConfiguredPluginInstallRepair: true,
+          }),
+          ...(params.phase === "post-plugin" ? { [UPDATE_POST_CORE_CONVERGENCE_ENV]: "1" } : {}),
+        },
       },
+    ).catch((error: unknown) => {
+      if (
+        !isRecord(error) ||
+        (error.cleanup !== "normal" &&
+          error.cleanup !== "cooperative" &&
+          error.cleanup !== "forced")
+      ) {
+        throw new UpdateDoctorProcessUnsettledError(error);
+      }
+      throw error;
     });
+    result = command;
+    if (command.cleanup === undefined || command.cleanup === "uncertain") {
+      throw new UpdateDoctorProcessUnsettledError();
+    }
+    if (
+      command.code !== 0 ||
+      command.termination !== "exit" ||
+      command.cleanup !== "normal" ||
+      command.outputLimitExceeded ||
+      command.outputErrorStream
+    ) {
+      throw Object.assign(
+        new Error(`Doctor command failed (${command.termination}, exit ${command.code})`),
+        {
+          failed: true,
+          exitCode: command.code,
+          signal: command.signal ?? undefined,
+          timedOut: command.termination !== "exit",
+          isMaxBuffer: command.outputLimitExceeded,
+          isTerminated: command.cleanup !== "normal",
+          stdout: command.stdout,
+          stderr: command.stderr,
+        },
+      );
+    }
   } catch (error) {
+    if (error instanceof UpdateDoctorProcessUnsettledError) {
+      throw error;
+    }
     doctorResult = await consumeUpdatePostInstallDoctorResult(doctorResultPath);
     if (isRecord(error)) {
       result = error;
@@ -259,6 +323,8 @@ async function validatePostPluginConfigInFreshProcess(params: {
 }
 
 export async function completePostCorePluginUpdate(params: {
+  updateRecoveryBackup?: import("../../infra/update-recovery-backup-contract.js").UpdateRecoveryBackupRef;
+  updateRecoveryOwner?: "unprotected";
   root: string;
   runId?: string;
   pluginUpdate: PostCorePluginUpdateResult;
@@ -291,6 +357,9 @@ export async function completePostCorePluginUpdate(params: {
         });
       }
     } catch (err) {
+      if (err instanceof UpdateDoctorProcessUnsettledError) {
+        throw err;
+      }
       pluginUpdate = createPostPluginDoctorExecutionFailure(
         params.pluginUpdate,
         String(err),

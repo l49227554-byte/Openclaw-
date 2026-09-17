@@ -31,6 +31,7 @@ import {
   recordUpdateDoctorRefusal,
   resolveUpdateDoctorGitRecovery,
 } from "./doctor-update-refusal.js";
+/** Coordinates explicit Doctor repair with the managed Gateway lifecycle. */
 
 function assertDoctorServiceSelection(env: NodeJS.ProcessEnv, serviceEnv: NodeJS.ProcessEnv): void {
   const selection = (candidate: NodeJS.ProcessEnv) => {
@@ -73,6 +74,8 @@ export async function beginDoctorMaintenance(params: {
   runtime: RuntimeEnv;
 }): Promise<
   | {
+      assertCurrent(): void;
+      closeStores(): Promise<void>;
       run<T>(operation: () => T): T;
       release(): Promise<void>;
       finish(cfg: OpenClawConfig): Promise<void>;
@@ -251,6 +254,15 @@ export async function beginDoctorMaintenance(params: {
   }
   return {
     run: (operation) => resources!.run(operation),
+    assertCurrent() {
+      if (coordinators.length !== 2) {
+        throw new Error("Doctor maintenance authority has expired.");
+      }
+      assertUpdateAdmissionCurrent?.();
+    },
+    closeStores: async () => {
+      await resources?.close();
+    },
     release,
     async finish(cfg) {
       await release();

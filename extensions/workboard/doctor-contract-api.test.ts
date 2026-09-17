@@ -14,6 +14,7 @@ import type { PersistedWorkboardCard } from "./src/persistence-types.js";
 import { createWorkboardSqliteStores } from "./src/sqlite-store.js";
 import { WorkboardStore } from "./src/store.js";
 import { sqliteTestAuxStores } from "./src/test/sqlite-store.js";
+// Workboard tests cover doctor contract api plugin behavior.
 
 const workerModuleUrl = new URL("./src/sqlite-store.worker.ts", import.meta.url);
 
@@ -33,6 +34,19 @@ function createDoctorContext(
 }
 
 describe("workboard doctor contract", () => {
+  it("declares its destination database before migration", async () => {
+    const stateDir = path.resolve("/tmp/openclaw-workboard-capture");
+    expect(
+      await stateMigrations[0]?.collectBackupResources?.({
+        config: {},
+        env: { OPENCLAW_STATE_DIR: path.join(stateDir, "unselected") },
+        stateDir,
+      }),
+    ).toEqual([
+      { path: path.join(stateDir, "plugins/workboard/workboard.sqlite"), kind: "sqlite" },
+    ]);
+  });
+
   it.each([true, false])("migrates .28 data with count support %s", async (supportsCount) => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-workboard-doctor-"));
     const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };

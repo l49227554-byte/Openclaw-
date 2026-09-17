@@ -14,6 +14,8 @@ import {
   type LegacyMemoryHostEventSource,
   type ReadyLegacyMemoryHostEventSource,
 } from "./doctor-host-event-sources.js";
+// Doctor enumeration cold-loads this closure; memory-host-events pulls the
+// event-store/kysely graph, so values load lazily inside the async migration.
 
 type StoredMemoryHostEvent = {
   kind: "event";
@@ -545,6 +547,13 @@ export const hostEventsStateMigration: PluginDoctorStateMigration = {
   id: "memory-core-host-events-jsonl-to-sqlite",
   label: "Memory Core host events",
   doctorOnly: true,
+  async collectBackupResources({ config, env }) {
+    const sources = await collectLegacyMemoryHostEventSources(config, env);
+    // The source directory also owns claimed generations and numbered archives.
+    return [...new Set(sources.map(({ filePath }) => path.dirname(filePath)))]
+      .toSorted()
+      .map((directory) => ({ path: directory, kind: "directory" as const }));
+  },
   async detectLegacyState(params) {
     const sources = await collectLegacyMemoryHostEventSources(params.config, params.env);
     const pending: LegacyMemoryHostEventSource[] = [];

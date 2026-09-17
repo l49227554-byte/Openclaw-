@@ -9,7 +9,6 @@ import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { publishUpdateCommandTerminalResult } from "./update-command-terminal.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
-
 vi.mock("../../infra/container-environment.js", () => ({ isContainerEnvironment: vi.fn() }));
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
@@ -48,36 +47,39 @@ afterEach(() => {
 });
 
 describe("update recovery reporting", () => {
-  it.each(["error", "skipped"] as const)("records an untouched dirty checkout (%s)", (status) => {
-    const state = dirs.make("dirty-update-report-");
-    const env = {
-      OPENCLAW_STATE_DIR: state,
-      OPENCLAW_CONFIG_PATH: path.join(state, "openclaw.json"),
-    };
-    const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
-    const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
-    publishUpdateCommandTerminalResult(
-      { opts: { json: true, run }, coreAlreadyCurrent: false },
-      failure({
-        status,
-        mode: "git",
-        reason: "dirty",
-        steps: [],
-        recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
-      }),
-      { rolledBack: false },
-    );
-    const stored = getUpdateRun(run.runId, { env });
-    const action = stored?.origin.nextAction;
-    expect(action).toContain("before installation");
-    expect(action).toContain("checkout was preserved");
-    expect(action).toContain("Commit your changes and retry");
-    expect(action).not.toContain("could not prove a runnable installation");
-    expect(output.mock.calls[0]?.[0]).toMatchObject({ run: { origin: { nextAction: action } } });
-    expect(stored && renderUpdateRunReport(stored).markdown).toContain(action);
-  });
+  it.each(["error", "skipped"] as const)(
+    "records an untouched dirty checkout (%s)",
+    async (status) => {
+      const state = dirs.make("dirty-update-report-");
+      const env = {
+        OPENCLAW_STATE_DIR: state,
+        OPENCLAW_CONFIG_PATH: path.join(state, "openclaw.json"),
+      };
+      const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
+      const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+      await publishUpdateCommandTerminalResult(
+        { opts: { json: true, run }, coreAlreadyCurrent: false },
+        failure({
+          status,
+          mode: "git",
+          reason: "dirty",
+          steps: [],
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        }),
+        { rolledBack: false },
+      );
+      const stored = getUpdateRun(run.runId, { env });
+      const action = stored?.origin.nextAction;
+      expect(action).toContain("before installation");
+      expect(action).toContain("checkout was preserved");
+      expect(action).toContain("Commit your changes and retry");
+      expect(action).not.toContain("could not prove a runnable installation");
+      expect(output.mock.calls[0]?.[0]).toMatchObject({ run: { origin: { nextAction: action } } });
+      expect(stored && renderUpdateRunReport(stored).markdown).toContain(action);
+    },
+  );
 
-  it("persists activation timeout guidance for the owning profile", () => {
+  it("persists activation timeout guidance for the owning profile", async () => {
     const state = dirs.make("activation-timeout-report-");
     const env = {
       OPENCLAW_STATE_DIR: state,
@@ -87,7 +89,7 @@ describe("update recovery reporting", () => {
     const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
     const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
 
-    publishUpdateCommandTerminalResult(
+    await publishUpdateCommandTerminalResult(
       { opts: { json: true, run }, coreAlreadyCurrent: false },
       failure({ reason: "update-activation-timeout", steps: [] }),
       { rolledBack: false },
@@ -117,7 +119,7 @@ describe("update recovery reporting", () => {
     ["npm", true, false],
   ] as const)(
     "publishes consistent %s recovery (json=%s, container=%s)",
-    (mode, json, container) => {
+    async (mode, json, container) => {
       vi.mocked(isContainerEnvironment).mockReturnValue(container);
       const state = dirs.make("container-update-report-");
       const env = {
@@ -127,7 +129,7 @@ describe("update recovery reporting", () => {
       const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
       const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
       const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
-      const result = publishUpdateCommandTerminalResult(
+      const result = await publishUpdateCommandTerminalResult(
         { opts: { json, run }, coreAlreadyCurrent: false },
         failure({ mode }),
         { rolledBack: false },

@@ -5,9 +5,9 @@ import { loggingState } from "../logging/state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
-
 const fixture = vi.hoisted(() => ({
   close: vi.fn<() => Promise<void>>(),
+  doctor: vi.fn(),
   budget: vi.fn(),
   finish: vi.fn(),
   terminal: vi.fn(),
@@ -16,6 +16,7 @@ const fixture = vi.hoisted(() => ({
 
 // Exercise the executable's output boundary without update, service, or database effects.
 vi.mock("node:fs/promises", () => ({ default: { writeFile: fixture.writeFile } }));
+vi.mock("../flows/doctor-health.js", () => ({ runDoctorHealthFlow: fixture.doctor }));
 vi.mock("../cli/daemon-cli.js", () => ({ finishUpdateRun: vi.fn() }));
 vi.mock("../cli/runtime-cleanup-scope.js", () => ({
   retainCliProcessJobUntilExit: vi.fn(),
@@ -106,6 +107,7 @@ afterEach(() => {
   loggingState.rawConsole = originalConsole;
   setLoggerOverride(null);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 it.each(["json", "human", "check"] as const)(
@@ -172,5 +174,48 @@ it.each(["json", "human", "check"] as const)(
         expect(stderr.join("")).toContain("terminal snapshot diagnostic");
       }
     }
+  },
+);
+
+it.each([false, true])(
+  "passes delegated Doctor recovery ownership only with a backup (%s)",
+  async (hasBackup) => {
+    const backup = {
+      directory: "/synthetic/recovery",
+      manifestPath: "/synthetic/recovery/manifest.json",
+      manifestSha256: "a".repeat(64),
+    };
+    const settled = createDeferredCore();
+    fixture.close.mockImplementation(async () => {
+      settled.resolve();
+    });
+    fixture.doctor.mockResolvedValue(undefined);
+    vi.stubEnv("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH", "/synthetic/doctor-result.json");
+    process.argv = [process.execPath, "update-migrated-finalize.worker.js", "--doctor"];
+    vi.spyOn(process.stdin, Symbol.asyncIterator).mockImplementation(async function* () {
+      yield JSON.stringify({
+        executor: {},
+        runId: "synthetic-run",
+        root: "/synthetic",
+        repair: true,
+        configInputHash: "captured-config-hash",
+        ...(hasBackup ? { updateRecoveryBackup: backup } : {}),
+      });
+      return undefined;
+    });
+    await import("./update-migrated-finalize.worker.js");
+    await settled.promise;
+    expect(fixture.doctor).toHaveBeenCalledExactlyOnceWith(
+      expect.any(Object),
+      {
+        repair: true,
+        nonInteractive: true,
+        ...(hasBackup
+          ? { updateRecoveryOwner: "driver", updateRecoveryBackup: JSON.stringify(backup) }
+          : {}),
+      },
+      { inputHash: "captured-config-hash", assertCurrent: expect.any(Function) },
+    );
+    expect(process.exitCode).toBe(originalExitCode);
   },
 );

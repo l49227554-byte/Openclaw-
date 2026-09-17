@@ -15,6 +15,7 @@ import type {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { afterEach, describe, expect, it } from "vitest";
 import { stateMigrations } from "./doctor-contract-api.js";
+// Line tests cover the doctor state migration for pre-drain webhook spool rows.
 
 const migration = stateMigrations[0]!;
 
@@ -103,6 +104,16 @@ async function seedLegacyRow(stateDir: string, accountId: string, webhookEventId
 }
 
 describe("LINE doctor state migration", () => {
+  it("declares that spool migration only mutates host-owned database state", async () => {
+    expect(
+      await migration.collectBackupResources?.({
+        config: {},
+        env: {},
+        stateDir: path.resolve("/tmp/openclaw-line-capture"),
+      }),
+    ).toEqual([]);
+  });
+
   afterEach(() => {
     closeOpenClawStateDatabaseForTest();
   });

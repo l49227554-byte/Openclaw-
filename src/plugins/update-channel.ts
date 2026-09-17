@@ -58,7 +58,6 @@ import {
   type PluginUpdateLogger,
   type PluginUpdateOutcome,
 } from "./update-source.js";
-
 type PluginChannelSyncSummary = {
   switchedToBundled: string[];
   switchedToClawHub: string[];
@@ -83,6 +82,7 @@ export async function syncPluginsForUpdateChannel(params: {
   externalizedBundledPluginBridges?: readonly ExternalizedBundledPluginBridge[];
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<PluginChannelSyncResult> {
   return await withPluginLifecycleLease(
     { env: params.env, assertCurrent: params.beforePersistentEffect },
@@ -100,7 +100,13 @@ async function syncPluginsForUpdateChannelWithLease(
 ): Promise<PluginChannelSyncResult> {
   const env = params.env ?? process.env;
   const logger = params.logger ?? {};
-  const consent = capturePluginCapabilityConsentHandlerErrors(params.onCapabilityConsent);
+  const consent = capturePluginCapabilityConsentHandlerErrors(
+    params.onCapabilityConsent,
+    async () => {
+      await params.preparePersistentEffect?.();
+      params.beforePersistentEffect?.();
+    },
+  );
   const summary: PluginChannelSyncSummary = {
     switchedToBundled: [],
     switchedToClawHub: [],
@@ -264,7 +270,7 @@ async function syncPluginsForUpdateChannelWithLease(
           previousRecords: installs,
           expectedIntegrity,
           onCapabilityConsent: consent.onCapabilityConsent,
-          beforePersistentEffect: params.beforePersistentEffect,
+          beforePersistentEffect: consent.beforePersistentEffect,
         });
         const options = copyPluginInstallTransactionRequest(params, {
           spec,

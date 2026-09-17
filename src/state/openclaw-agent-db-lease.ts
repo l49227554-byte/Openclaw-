@@ -43,7 +43,6 @@ import {
 } from "./openclaw-state-db.paths.js";
 import type { OpenClawStateLeaseContext } from "./openclaw-state-lease.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
-
 type AgentDatabaseLeaseDatabase = Pick<
   OpenClawStateKyselyDatabase,
   "agent_database_leases" | "agent_deletion_journal" | "state_leases"
@@ -349,17 +348,17 @@ function isAgentDatabaseLeaseStale(row: {
   );
 }
 
-/** Doctor holds both lifecycle coordinators before checking writers, without schema repair. */
-export function assertNoOpenClawAgentDatabaseLeasesReadOnly(
+/** Observe live agent writers without schema repair or stale-claim deletion. */
+export function readActiveOpenClawAgentDatabaseLeasesReadOnly(
   options: OpenClawStateDatabaseOptions = {},
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
-): void {
+): ReturnType<typeof readAgentDatabaseLeases> {
   const pathname = path.resolve(options.path ?? resolveOpenClawStateSqlitePath(options.env));
   try {
     fs.statSync(pathname);
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT")) {
-      return;
+      return [];
     }
     throw error;
   }
@@ -372,16 +371,11 @@ export function assertNoOpenClawAgentDatabaseLeasesReadOnly(
   let closeSchemaReadAdmission: (() => void) | undefined;
   try {
     closeSchemaReadAdmission = openStateSchemaReadAdmission?.(db);
-    runWithSqliteBusyTimeout(db, 250, () => {
+    return runWithSqliteBusyTimeout(db, 250, () => {
       if (!tableExists(db, "agent_database_leases")) {
-        return;
+        return [];
       }
-      const owner = readAgentDatabaseLeases(db).find((row) => !isAgentDatabaseLeaseStale(row));
-      if (owner) {
-        throw new OpenClawAgentDatabaseLeaseActiveError(
-          `Agent ${owner.agent_id} database is still open in process ${owner.owner_pid}; stop that process before Doctor repair.`,
-        );
-      }
+      return readAgentDatabaseLeases(db).filter((row) => !isAgentDatabaseLeaseStale(row));
     });
   } finally {
     try {
@@ -392,6 +386,22 @@ export function assertNoOpenClawAgentDatabaseLeasesReadOnly(
         db.close();
       }
     }
+  }
+}
+
+/** Doctor holds both lifecycle coordinators before checking writers, without exemptions. */
+export function assertNoOpenClawAgentDatabaseLeasesReadOnly(
+  options: OpenClawStateDatabaseOptions = {},
+  openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
+): void {
+  const owner = readActiveOpenClawAgentDatabaseLeasesReadOnly(
+    options,
+    openStateSchemaReadAdmission,
+  )[0];
+  if (owner) {
+    throw new OpenClawAgentDatabaseLeaseActiveError(
+      `Agent ${owner.agent_id} database is still open in process ${owner.owner_pid}; stop that process before Doctor repair.`,
+    );
   }
 }
 

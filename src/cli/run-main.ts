@@ -57,7 +57,12 @@ import {
 } from "./program/core-command-descriptors.js";
 import { getSubCliEntriesCore } from "./program/subcli-descriptors.js";
 import {
+  prepareDoctorBootstrapRecovery,
+  withDoctorBootstrapRecovery,
+} from "./run-main-doctor-recovery.js";
+import {
   resolveMissingPluginCommandMessage,
+  isDoctorStateMutationInvocation,
   rewriteUpdateFlagArgv,
   shouldHandleBareRoot,
   shouldEnsureCliPath,
@@ -73,6 +78,7 @@ import {
   createGatewayDispatchStartupTrace,
 } from "./startup-trace.js";
 import { normalizeWindowsArgv } from "./windows-argv.js";
+// Main CLI entry orchestration: fast paths, env setup, plugin aliases, and Commander dispatch.
 
 export {
   rewriteUpdateFlagArgv,
@@ -935,12 +941,12 @@ async function createExpectedPluginPolicyError(message: string): Promise<Error> 
 
 async function bootstrapCliProxyCaptureAndDispatcher(
   startupTrace: ReturnType<typeof createGatewayDispatchStartupTrace>,
-  options: { ensureDispatcher?: boolean } = {},
+  options: { ensureDispatcher?: boolean; capture?: boolean } = {},
 ): Promise<void> {
   // Capture init, exit finalize, and coverage warnings all no-op unless the
   // debug-proxy env requests capture; importing their sqlite-store graph anyway
   // costs ~100 MB RSS on metadata-only commands such as `plugins list --json`.
-  if (isDebugProxyCaptureEnvEnabled()) {
+  if (options.capture !== false && isDebugProxyCaptureEnvEnabled()) {
     const [
       { initializeDebugProxyCapture, finalizeDebugProxyCapture },
       { maybeWarnAboutDebugProxyCoverage },
@@ -1011,8 +1017,10 @@ export async function runCli(
       // Nested registrars and late actions share this lightweight owner, even when no
       // top-level plugin preparation is needed. Gateway retains its boot/process owner.
       const gatewayRun = isGatewayRunInvocationArgv(originalArgv);
+      const runWithRecovery = (cleanup?: CliHarnessCleanup) =>
+        withDoctorBootstrapRecovery(originalArgv, () => run(cleanup));
       return withCliCommandCleanup(gatewayRun, (cleanup) =>
-        gatewayRun ? run() : withPluginCache(createPluginCache(), () => run(cleanup)),
+        gatewayRun ? run() : withPluginCache(createPluginCache(), () => runWithRecovery(cleanup)),
       );
     },
     {
@@ -1121,6 +1129,9 @@ async function runCliWithPreparedOutputMode(
     true,
     options.runtimeRecoveryEnv,
   );
+  const runtimeSupported = await isCurrentRuntimeSupported();
+  const mutatingDoctor = isDoctorStateMutationInvocation(normalizedArgv, runtimeSupported);
+  const readOnlyDoctor = normalizedInvocation.primary === "doctor" && !mutatingDoctor;
 
   if (await tryRunGatewayServiceUpdateCapabilityProbe(normalizedArgv)) {
     return;
@@ -1142,21 +1153,8 @@ async function runCliWithPreparedOutputMode(
       }
     });
   }
-  if (
-    !isHelpOrVersionInvocation &&
-    normalizedInvocation.primary === "doctor" &&
-    process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1"
-  ) {
-    // Debug capture can migrate shared state before Commander reaches Doctor.
-    // Resolve the update guard after selectors settle, before any bootstrap writer.
-    const [{ guardUpdateDoctorSchemaUpgrade }, { defaultRuntime }] = await Promise.all([
-      import("../commands/doctor-update-schema-guard.js"),
-      import("../runtime.js"),
-    ]);
-    await guardUpdateDoctorSchemaUpgrade({
-      runtime: defaultRuntime,
-      json: options.builtInMachineOutput,
-    });
+  if (mutatingDoctor) {
+    await prepareDoctorBootstrapRecovery(normalizedArgv, options.builtInMachineOutput);
   }
   await configureStartupTraces();
   if (!isHelpOrVersionInvocation && isGatewayRunInvocation) {
@@ -1206,7 +1204,7 @@ async function runCliWithPreparedOutputMode(
     env: process.env,
   });
   const useSourceOnlyBestEffortConfig =
-    !(await isCurrentRuntimeSupported()) ||
+    !runtimeSupported ||
     normalizedInvocation.primary === "update" ||
     normalizedInvocation.primary === "doctor";
   const readBestEffortCliConfig = async (): Promise<OpenClawConfig> => {
@@ -1526,6 +1524,7 @@ async function runCliWithPreparedOutputMode(
     if (!isHelpOrVersionInvocation && !isDatabaseInvocation) {
       await bootstrapCliProxyCaptureAndDispatcher(startupTrace, {
         ensureDispatcher: shouldUseCliEnvProxy,
+        capture: !readOnlyDoctor,
       });
     }
 

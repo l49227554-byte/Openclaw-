@@ -5,6 +5,9 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginDoctorStateMigration } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { asNullableRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { codexOrphanedSessionBindingMigration } from "./src/migration/session-binding-orphans.js";
+/**
+ * Doctor contract hooks for Codex plugin config and state migrations.
+ */
 
 type LegacyConfigRule = {
   path: string[];
@@ -176,6 +179,10 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
     label: "Codex app-server thread bindings",
     // Config normalization loads this artifact too; state-only imports belong
     // behind the detection and migration callbacks.
+    collectBackupResources: async (params) =>
+      (
+        await import("./src/migration/session-binding-sidecars.js")
+      ).collectLegacySessionBindingBackupResources(params),
     detectLegacyState: async (params) =>
       (
         await import("./src/migration/session-binding-sidecars.js")

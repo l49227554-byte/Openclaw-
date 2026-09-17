@@ -11,9 +11,9 @@ import type {
 import type { PackageUpdateStepAdvisory } from "./update-doctor-result.js";
 import type { UpdateFailureFact } from "./update-failure-facts.js";
 import type { GlobalInstallManager } from "./update-global.js";
+import type { UpdateRecoveryBackupRef } from "./update-recovery-backup-contract.js";
 import type { UpdateRecovery } from "./update-recovery.js";
 import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
-
 export type UpdateStepAdvisory =
   | PackageUpdateStepAdvisory
   | { kind: "candidate-runtime-unavailable" | "recoverable-maintenance"; message: string };
@@ -137,6 +137,9 @@ export type UpdateRunnerOptions = {
   deferConfiguredPluginInstallRepair?: boolean;
   allowGatewayServiceRepair?: boolean;
   allowGatewayActivation?: boolean;
+  getDoctorEnv?: () => NodeJS.ProcessEnv | undefined;
+  getUpdateRecoveryBackup?: () => UpdateRecoveryBackupRef | undefined;
+  updateRecoveryOwner?: "unprotected";
   /** Expose a new checkout only after target admission; subsequent work uses the published path. */
   publishGitCheckout?: () => Promise<string>;
   /** Read-only admission before executing a fetched candidate; never stops a service. */

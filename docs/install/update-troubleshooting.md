@@ -122,7 +122,8 @@ retry through the retained absolute launcher. Alternatively, with the destinatio
 owner's agreement, explicitly select that installation for the intended service
 using a printed `gateway install --force` command when available, then update. This changes
 the service binding; it is not permission to overwrite another deployment's
-package. Dry-run returns the same refusal. Recorded attempts remain in update
+package. A protected service definition uses deployment-owner instructions instead;
+`--force` cannot replace a sealed mount. Dry-run returns the same refusal. Recorded attempts remain in update
 history and are shown by Doctor.
 
 If the ranges do not overlap, install a supported Node and select a compatible

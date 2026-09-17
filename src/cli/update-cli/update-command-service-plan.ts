@@ -253,9 +253,7 @@ export async function inspectManagedGatewayServiceBeforeUpdate(params: {
 }
 
 /** Recorded launchers cannot select an update's package, Node, or state without live inspection. */
-export async function readManagedGatewayServiceCommandForUpdate(
-  env: NodeJS.ProcessEnv,
-): Promise<GatewayServiceCommandConfig | null> {
+export async function readManagedGatewayServiceForUpdate(env: NodeJS.ProcessEnv) {
   let service: ReturnType<typeof resolveGatewayService> | undefined;
   try {
     service = resolveGatewayService();
@@ -269,7 +267,7 @@ export async function readManagedGatewayServiceCommandForUpdate(
       return null;
     }
     const inspection = await inspectManagedGatewayServiceBeforeUpdate({ state });
-    return inspection.kind === "owned" ? state.command : null;
+    return inspection.kind === "owned" ? { command: state.command, verdict: inspection } : null;
   } catch (error) {
     if (error instanceof GatewayServiceUpdateOwnershipError && service) {
       // Probe only the invoker's manager; rejected record selectors must not route it.
@@ -537,7 +535,7 @@ export async function resolveManagedServicePackageUpdatePlan(params: {
   }
   // Root and runtime planning share one effective command; mutation and restart
   // revalidate independently so this snapshot cannot grant later service authority.
-  const command = await readManagedGatewayServiceCommandForUpdate(process.env);
+  const command = (await readManagedGatewayServiceForUpdate(process.env))?.command ?? null;
   const layout = await summarizeGatewayServiceLayout(command);
   if (!layout?.packageRootReal) {
     return { rootRedirect: null };
@@ -581,7 +579,7 @@ export async function gatewayServiceCommandUsesRoot(params: {
   const command =
     params.command === undefined
       ? isGatewayServiceManagementAllowedForUpdate(params.env ?? process.env)
-        ? await readManagedGatewayServiceCommandForUpdate(params.env ?? process.env)
+        ? ((await readManagedGatewayServiceForUpdate(params.env ?? process.env))?.command ?? null)
         : null
       : params.command;
   const layout = await summarizeGatewayServiceLayout(command);

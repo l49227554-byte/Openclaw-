@@ -64,6 +64,26 @@ describe("slack outbound shared hook wiring", () => {
     resetPluginRuntimeStateForTest();
   });
 
+  it("forwards direct-delivery authority into the Slack transport", async () => {
+    const assertDirectAdapterHandoff = vi.fn();
+
+    const result = await sendDurableMessageBatch({
+      cfg,
+      channel: "slack",
+      to: "C123",
+      payloads: [{ text: "Scheduled answer" }],
+      accountId: "default",
+      assertDirectAdapterHandoff,
+    });
+
+    assert(result.status === "sent", "error" in result ? String(result.error) : result.status);
+    const sendOptions = sendMessageSlackMock.mock.calls[0]?.[2];
+    expect(sendOptions?.assertDirectAdapterHandoff).toEqual(expect.any(Function));
+    expect(assertDirectAdapterHandoff).toHaveBeenCalledOnce();
+    sendOptions?.assertDirectAdapterHandoff?.();
+    expect(assertDirectAdapterHandoff).toHaveBeenCalledTimes(2);
+  });
+
   describe.each([
     {
       name: "raw blocks",

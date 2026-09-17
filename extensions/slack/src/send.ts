@@ -39,7 +39,12 @@ import {
   uploadSlackFile,
   withSlackDnsRequestRetry,
 } from "./client-delivery.js";
-import { createSlackReadClient, createSlackTokenCacheKey, getSlackWriteClient } from "./client.js";
+import {
+  createSlackReadClient,
+  createSlackTokenCacheKey,
+  createSlackWriteClient,
+  getSlackWriteClient,
+} from "./client.js";
 import { assertSlackDetachedTargetAllowed } from "./detached-target-admission.js";
 import { chunkSlackMrkdwnText, markdownToSlackMrkdwnChunks } from "./format.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES, SLACK_TEXT_LIMIT } from "./limits.js";
@@ -93,6 +98,8 @@ export type SlackSendIdentity = {
 
 type SlackResolvedDelivery = Readonly<{
   client: WebClient;
+  /** Request-free identity for preserving the shared per-credential DM cache. */
+  dmCacheOwner?: WebClient;
   credential: string;
   identity?: SlackSendIdentity;
   recipient: SlackRecipient;
@@ -143,6 +150,8 @@ type SlackSendOpts = {
   deliveryQueueId?: string;
   /** Refresh durable timing after the per-target queue and before Slack API work. */
   onPlatformSendDispatch?: () => Promise<void>;
+  /** Caller-owned currentness checked at every Slack request boundary. */
+  assertDirectAdapterHandoff?: () => void;
   /** Persist each concrete platform send before any later chunk can fail. */
   onDeliveryResult?: (result: SlackSendResult) => Promise<void> | void;
 };
@@ -438,10 +447,19 @@ function resolveSlackDelivery(params: {
         ? params.account.userTokenSource
         : params.account.botTokenSource,
   });
+  const cachedClient = params.recipient.teamId
+    ? getSlackWriteClient(credential, { teamId: params.recipient.teamId })
+    : (params.opts.client ?? getSlackWriteClient(credential));
+  const client = params.opts.assertDirectAdapterHandoff
+    ? createSlackWriteClient(
+        credential,
+        { teamId: params.recipient.teamId },
+        params.opts.assertDirectAdapterHandoff,
+      )
+    : cachedClient;
   return Object.freeze({
-    client: params.recipient.teamId
-      ? getSlackWriteClient(credential, { teamId: params.recipient.teamId })
-      : (params.opts.client ?? getSlackWriteClient(credential)),
+    client,
+    ...(client !== cachedClient ? { dmCacheOwner: cachedClient } : {}),
     credential,
     identity: resolveSlackSendIdentity({
       accountId: params.account.accountId,
@@ -583,7 +601,7 @@ function resolvePostedMessageChannelId(response: { channel?: unknown }, fallback
 async function resolveChannelId(
   client: WebClient,
   recipient: SlackRecipient,
-  params: { accountId?: string; token: string },
+  params: { accountId?: string; token: string; dmCacheOwner?: WebClient },
 ): Promise<{ channelId: string; isDm?: boolean; cacheHit?: boolean }> {
   // Bare Slack user IDs are classified as user recipients by target parsing.
   // chat.postMessage tolerates user IDs directly, but
@@ -598,7 +616,7 @@ async function resolveChannelId(
     token: params.token,
     recipientId: recipient.id,
   });
-  const cache = getSlackDmChannelCache(client);
+  const cache = getSlackDmChannelCache(params.dmCacheOwner ?? client);
   const cachedChannelId = cache.get(cacheKey);
   if (cachedChannelId) {
     return { channelId: cachedChannelId, isDm: true, cacheHit: true };
@@ -1142,6 +1160,7 @@ async function sendMessageSlackQueuedInner(params: {
     : await resolveChannelId(client, recipient, {
         accountId: account.accountId,
         token: delivery.credential,
+        ...(delivery.dmCacheOwner ? { dmCacheOwner: delivery.dmCacheOwner } : {}),
       });
   const deliveredResults: SlackSendResult[] = [];
   const reportDelivery = async (
@@ -1392,6 +1411,7 @@ async function sendMessageSlackQueuedInner(params: {
       maxBytes: mediaMaxBytes,
       ...(opts.forceDocument ? { optimizeImages: false } : {}),
       onPlatformSendDispatch: dispatchOnce,
+      assertDirectAdapterHandoff: opts.assertDirectAdapterHandoff,
       ...(delivery.upload ? { auditContext: delivery.upload.auditContext } : {}),
     });
     await reportDelivery({

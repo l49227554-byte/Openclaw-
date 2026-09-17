@@ -12,11 +12,11 @@ import {
   type SessionEntry,
   type SessionStoreTarget,
 } from "../config/sessions.js";
-import {
-  listSessionChildEntriesReadOnly,
-  type SessionEntryListScope,
-  type SessionEntryReadSource,
-} from "../config/sessions/session-accessor.js";
+import { listSessionChildEntriesReadOnly } from "../config/sessions/session-accessor.js";
+import type {
+  SessionEntryListScope,
+  SessionEntryReadSource,
+} from "../config/sessions/session-accessor.types.js";
 import { canonicalSessionKeyMigrationRequiredError } from "../config/sessions/session-canonical-key.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -30,59 +30,22 @@ import {
   resolveSessionStoreIdentity,
   resolveStoredSessionKeyForAgentStore,
 } from "./session-store-key.js";
-import type {
-  GatewaySessionStoreTarget,
-  GatewaySessionStoreTargetWithStore,
-} from "./session-utils-contracts.js";
 import {
   loadGatewaySessionStoreReads,
   readGatewaySessionStore,
   type GatewaySessionStoreRead,
   type GatewaySessionStoreCache,
 } from "./session-utils-store-read.js";
+import {
+  findCanonicalStoreMatch,
+  resolveGatewaySessionStoreReadResults,
+  type GatewaySessionStoreLookup,
+} from "./session-utils-store-selection.js";
+import type {
+  GatewaySessionStoreTarget,
+  GatewaySessionStoreTargetWithStore,
+} from "./session-utils-store.types.js";
 export type { GatewaySessionStoreCache } from "./session-utils-store-read.js";
-
-function findCanonicalStoreMatch(
-  store: Record<string, SessionEntry>,
-  candidates: readonly string[],
-  onCanonicalError?: (error: Error) => void,
-): { entry: SessionEntry; key: string } | undefined {
-  const matches = new Map<string, { entry: SessionEntry; key: string }>();
-  for (const candidate of candidates) {
-    const trimmed = normalizeOptionalString(candidate) ?? "";
-    if (!trimmed) {
-      continue;
-    }
-    const exact = store[trimmed];
-    if (exact) {
-      matches.set(trimmed, { entry: exact, key: trimmed });
-    }
-  }
-  if (matches.size === 0) {
-    return undefined;
-  }
-  const canonicalKey = candidates[0] ?? "";
-  const selected = matches.get(canonicalKey) ?? matches.values().next().value;
-  if (matches.size > 1) {
-    const error = canonicalSessionKeyMigrationRequiredError(
-      `duplicate rows resolve to canonical session key ${canonicalKey || selected?.key || ""}`,
-    );
-    if (!onCanonicalError) {
-      throw error;
-    }
-    onCanonicalError(error);
-  }
-  if (selected && selected.key !== canonicalKey) {
-    const error = canonicalSessionKeyMigrationRequiredError(
-      `non-canonical persisted row resolves to session key ${canonicalKey || selected.key}`,
-    );
-    if (!onCanonicalError) {
-      throw error;
-    }
-    onCanonicalError(error);
-  }
-  return selected;
-}
 
 function buildGatewaySessionStoreScanTargets(params: {
   cfg: OpenClawConfig;
@@ -223,67 +186,6 @@ type GatewaySessionStorePlan<T> = {
   resolve: () => T;
 };
 
-type GatewaySessionStoreLookup = {
-  storePath: string;
-  store: Record<string, SessionEntry>;
-  readSource?: SessionEntryReadSource;
-  match: { entry: SessionEntry; key: string } | undefined;
-  canonicalValidationError?: Error;
-};
-
-export function resolveGatewaySessionStoreReadResults(params: {
-  reads: GatewaySessionStoreRead[];
-  scanTargets: readonly string[];
-  canonicalKey: string;
-  deferCanonicalValidation?: boolean;
-}): GatewaySessionStoreLookup {
-  const first = expectDefined(params.reads[0], "first configured or discovered session store");
-  let selectedStorePath = first.storePath;
-  let selectedStore = readGatewaySessionStore(first);
-  let selectedReadSource = first.readSource;
-  let canonicalValidationError: Error | undefined;
-  const recordCanonicalError = params.deferCanonicalValidation
-    ? (error: Error) => {
-        canonicalValidationError ??= error;
-      }
-    : undefined;
-  let selectedMatch = findCanonicalStoreMatch(
-    selectedStore,
-    params.scanTargets,
-    recordCanonicalError,
-  );
-  for (const candidate of params.reads.slice(1)) {
-    const store = readGatewaySessionStore(candidate);
-    const match = findCanonicalStoreMatch(store, params.scanTargets, recordCanonicalError);
-    if (!match) {
-      continue;
-    }
-    if (selectedMatch) {
-      const error = canonicalSessionKeyMigrationRequiredError(
-        `duplicate rows resolve to canonical session key ${params.canonicalKey}`,
-      );
-      if (!recordCanonicalError) {
-        throw error;
-      }
-      recordCanonicalError(error);
-      if (match.key !== params.canonicalKey || selectedMatch.key === params.canonicalKey) {
-        continue;
-      }
-    }
-    selectedStorePath = candidate.storePath;
-    selectedStore = store;
-    selectedReadSource = candidate.readSource;
-    selectedMatch = match;
-  }
-  return {
-    storePath: selectedStorePath,
-    store: selectedStore,
-    ...(selectedReadSource ? { readSource: selectedReadSource } : {}),
-    match: selectedMatch,
-    ...(canonicalValidationError ? { canonicalValidationError } : {}),
-  };
-}
-
 function prepareGatewaySessionStoreLookup(
   params: GatewaySessionStoreLookupParams & { canonicalKey: string; agentId: string },
 ): GatewaySessionStorePlan<GatewaySessionStoreLookup> {
@@ -311,7 +213,13 @@ function prepareGatewaySessionStoreLookup(
   }));
   return {
     reads,
-    resolve: () => resolveGatewaySessionStoreReadResults({ ...params, reads, scanTargets }),
+    resolve: () =>
+      resolveGatewaySessionStoreReadResults({
+        ...params,
+        reads,
+        readStore: readGatewaySessionStore,
+        scanTargets,
+      }),
   };
 }
 

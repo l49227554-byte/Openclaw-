@@ -10,7 +10,7 @@ import {
   isAssistantTtsSupplementMessage,
 } from "../chat-display-projection.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
-import { createSessionHistorySubagentProjection } from "../session-history-readonly-reader.js";
+import { createSessionHistorySubagentProjection } from "../session-history-subagent-projection.js";
 import { projectTranscriptEntryMessage } from "../session-transcript-entry-message.js";
 import {
   projectSessionMessagePayload,

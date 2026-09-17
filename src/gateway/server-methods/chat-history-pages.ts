@@ -13,7 +13,7 @@ import {
 } from "../chat-display-projection.core.js";
 import { dropPreSessionStartAnnouncePairs } from "../chat-display-projection.history.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
-import { createSessionHistorySubagentProjection } from "../session-history-readonly-reader.js";
+import { createSessionHistorySubagentProjection } from "../session-history-subagent-projection.js";
 import { readChatHistoryMessageId } from "../session-history-tail.js";
 import * as sessionTranscriptReaders from "../session-transcript-readers.js";
 import { readChatHistoryPageKernel } from "./chat-history-page-kernel.js";

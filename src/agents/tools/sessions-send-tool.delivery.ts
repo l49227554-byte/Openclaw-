@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-contracts.js";
+import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-store.types.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import {

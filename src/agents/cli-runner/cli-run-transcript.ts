@@ -6,10 +6,12 @@ import {
   patchSessionEntryCore,
   resolveSessionEntrySelection,
   resolveSessionTranscriptDatabasePath,
-  type SessionEntryReadSource,
-  type SessionTranscriptReadScope,
-  type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
+import type {
+  SessionEntryReadSource,
+  SessionTranscriptReadScope,
+  SessionTranscriptRuntimeTarget,
+} from "../../config/sessions/session-accessor.types.js";
 import { resolvePersistedSessionStoreOwnerForTarget } from "../../config/sessions/session-store-owner.js";
 import {
   captureOwnedTranscriptWriteAssertion,

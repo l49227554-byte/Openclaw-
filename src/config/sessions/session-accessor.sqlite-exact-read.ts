@@ -18,7 +18,7 @@ import {
   toDatabaseOptions,
   type SessionSqliteTargetResolutionCache,
 } from "./session-accessor.sqlite-scope.js";
-import type { SessionEntryReadScope } from "./session-accessor.types.js";
+import type { SessionEntryReadScope, SessionEntryReadSource } from "./session-accessor.types.js";
 import {
   assertCanonicalSqliteSessionKeysCurrent,
   readWithCanonicalSessionAdmission,
@@ -61,9 +61,6 @@ export function resolveSessionEntry(
   }
   return read(openOpenClawAgentDatabase(toDatabaseOptions(resolved)));
 }
-
-/** Address of the physical store admitted by an entry read; never retains its handle. */
-export type SessionEntryReadSource = Readonly<{ agentId: string; path: string }>;
 
 type PhysicalSessionEntryReadScope = {
   readSource: SessionEntryReadSource;

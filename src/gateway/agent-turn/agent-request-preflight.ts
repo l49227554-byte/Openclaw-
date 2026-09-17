@@ -1,7 +1,7 @@
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
-import { readAcpSessionMetaForEntry } from "../../acp/runtime/session-meta.js";
+import { readAcpSessionMetaForEntry } from "../../acp/runtime/session-meta-readonly.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../agents/agent-scope.js";
 import { parseExecApprovalFollowupApprovalId } from "../../agents/bash-tools.exec-approval-followup-state.js";
 import { normalizeSpawnedRunMetadata } from "../../agents/spawned-context.js";
@@ -9,7 +9,7 @@ import {
   findAuthorizedSwarmCollectorRequest,
   findSwarmCollectorSession,
 } from "../../agents/subagents/registry/subagent-registry-memory.js";
-import { isSubagentSessionFromEntry } from "../../agents/subagents/spawn/subagent-depth.js";
+import { isSubagentSessionFromEntry } from "../../agents/subagents/spawn/subagent-depth-policy.js";
 import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js";
 import { validateStructuredOutputSchema } from "../../agents/subagents/swarm/swarm-output-schema.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";

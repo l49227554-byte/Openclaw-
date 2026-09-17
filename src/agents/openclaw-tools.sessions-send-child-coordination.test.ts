@@ -28,8 +28,16 @@ const { config, callGatewayMock, readAcpSessionMetaMock, readAcpSessionMetaForEn
   }));
 vi.mock("../acp/runtime/session-meta.js", () => ({
   readAcpSessionMeta: (params: unknown) => readAcpSessionMetaMock(params),
-  readAcpSessionMetaForEntry: (params: unknown) => readAcpSessionMetaForEntryMock(params),
 }));
+vi.mock("../acp/runtime/session-meta-readonly.js", async () => {
+  const { rowToAcpSessionMeta } = await vi.importActual<
+    typeof import("../acp/runtime/session-meta-readonly.js")
+  >("../acp/runtime/session-meta-readonly.js");
+  return {
+    rowToAcpSessionMeta,
+    readAcpSessionMetaForEntry: (params: unknown) => readAcpSessionMetaForEntryMock(params),
+  };
+});
 vi.mock("../gateway/call.js", () => ({ callGateway: (opts: unknown) => callGatewayMock(opts) }));
 vi.mock("../config/config.js", () => ({
   getRuntimeConfig: () => config,
@@ -90,6 +98,7 @@ describe("sessions_send child coordination", () => {
     config.session = {
       mainKey: "main",
       scope: "per-sender",
+      dmScope: "main",
       store: state.path("configured", "agents", "{agentId}", "sessions", "sessions.json"),
     };
     resetGatewayWorkAdmission();
@@ -248,6 +257,9 @@ describe("sessions_send child coordination", () => {
       const metadata = await vi.importActual<typeof import("../acp/runtime/session-meta.js")>(
         "../acp/runtime/session-meta.js",
       );
+      const metadataRead = await vi.importActual<
+        typeof import("../acp/runtime/session-meta-readonly.js")
+      >("../acp/runtime/session-meta-readonly.js");
       const databasePath = path.join(
         tempDirs.make("sessions-send-acp-binding-"),
         "openclaw.sqlite",
@@ -282,15 +294,15 @@ describe("sessions_send child coordination", () => {
       // join its metadata against the entry already selected by sessions_send.
       readAcpSessionMetaMock.mockImplementation(
         (params: Parameters<typeof metadata.readAcpSessionMeta>[0]) =>
-          metadata.readAcpSessionMetaForEntry({
+          metadataRead.readAcpSessionMetaForEntry({
             ...params,
             databasePath,
             entry: { sessionId, lifecycleRevision, sessionStartedAt: 50 },
           }),
       );
       readAcpSessionMetaForEntryMock.mockImplementation(
-        (params: Parameters<typeof metadata.readAcpSessionMetaForEntry>[0]) =>
-          metadata.readAcpSessionMetaForEntry({ ...params, databasePath }),
+        (params: Parameters<typeof metadataRead.readAcpSessionMetaForEntry>[0]) =>
+          metadataRead.readAcpSessionMetaForEntry({ ...params, databasePath }),
       );
       await writeEntry(reusedKey, currentEntry);
       const calls: GatewayCall[] = [];
@@ -428,6 +440,12 @@ describe("sessions_send child coordination", () => {
         entry: { spawnedBy: "agent:main:main" },
       },
       {
+        name: "hidden child with opaque direct token under main DM scope",
+        requesterKey: "agent:main:subagent:direct:peer-1",
+        targetKey: "agent:peer:main",
+        entry: {},
+      },
+      {
         name: "visible child",
         requesterKey: "agent:main:dashboard:child",
         entry: { spawnedBy: "agent:main:main", spawnDepth: 1 },
@@ -486,8 +504,13 @@ describe("sessions_send child coordination", () => {
       expect(getActiveGatewayRootWorkCount()).toBe(0);
       const agentCalls = calls.filter((call) => call.method === "agent");
       expect(agentCalls).toHaveLength(1);
-      expect(agentParams(agentCalls[0] ?? {}).inputProvenance).toMatchObject({
-        sourceSessionKey: requesterKey,
+      expect(agentCalls[0]?.params).toMatchObject({
+        sessionKey: targetKey,
+        inputProvenance: {
+          kind: "inter_session",
+          sourceSessionKey: requesterKey,
+          sourceTool: "sessions_send",
+        },
       });
       expect(agentParams(agentCalls[0] ?? {}).inputProvenance?.sourceRole).toBe(
         childSource ? "subagent" : undefined,

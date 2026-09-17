@@ -1,4 +1,4 @@
-import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-readonly-reader.js";
+import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-read.types.js";
 import { prepareGatewaySessionStoreReadSources } from "../../gateway/session-utils-store-sources.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
@@ -120,9 +120,14 @@ export async function readSessionHistoryPageInWorker(
   };
   const readScope = resolveSqliteTranscriptReadScope(transcript, targetCache);
   const databaseOptions = toDatabaseOptions(resolved);
+  const currentSource = {
+    agentId: databaseOptions.agentId,
+    path: resolveOpenClawAgentSqlitePath(databaseOptions),
+  };
   const stateContext = captureOpenClawStateWorkerContext();
   const sourceReads = prepareGatewaySessionStoreReadSources({
     cfg: getRuntimeConfig(),
+    currentSource,
     env: process.env,
     registryPath: stateContext.admission.databasePath,
   });
@@ -152,10 +157,7 @@ export async function readSessionHistoryPageInWorker(
 
   const input: SessionTranscriptHistoryWorkerInput = {
     kind: "history-page",
-    database: {
-      agentId: databaseOptions.agentId,
-      path: resolveOpenClawAgentSqlitePath(databaseOptions),
-    },
+    database: currentSource,
     request,
     target,
     ...(admission ? { admission: { ...admission } } : {}),

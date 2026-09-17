@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import * as acpSessionMeta from "../../acp/runtime/session-meta.js";
+import * as acpSessionMeta from "../../acp/runtime/session-meta-readonly.js";
 import { subagentRuns } from "../../agents/subagents/registry/subagent-registry-memory.js";
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import * as sessionStoreLookup from "../session-utils-store-lookup.js";

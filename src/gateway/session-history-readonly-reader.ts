@@ -1,9 +1,6 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { readAcpSessionMetaForEntry } from "../acp/runtime/session-meta.js";
-import { isSubagentSessionFromEntry } from "../agents/subagents/spawn/subagent-depth.js";
-import { getRuntimeConfig } from "../config/config.js";
-import { withCurrentProjectionSnapshot } from "../config/sessions/session-accessor.sqlite-active-projection.js";
-import type { SessionTranscriptReadScope } from "../config/sessions/session-accessor.sqlite-contract.js";
+import { readAcpSessionMetaForEntry } from "../acp/runtime/session-meta-readonly.js";
+import { isSubagentSessionFromEntry } from "../agents/subagents/spawn/subagent-depth-policy.js";
 import {
   readExactSessionEntryRow,
   readSessionEntryRow,
@@ -15,81 +12,27 @@ import {
 } from "../config/sessions/session-accessor.sqlite-projection-read.js";
 import { readWithCanonicalSessionAdmission } from "../config/sessions/session-canonical-key.js";
 import { SessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
-import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { buildRunUserTurnIdempotencyKey } from "../sessions/user-turn-transcript.metadata.js";
 import { readOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly-open.js";
 import { withScopedOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly-scope.js";
-import { createOpenClawAgentDatabasePathMatcher } from "../state/openclaw-agent-db-registry.js";
-import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import {
   isSubagentCoordinationHistoryInput,
   type SubagentCoordinationDisplayResolver,
 } from "./chat-display-projection.history.js";
+import type { PreparedSessionHistoryReadTarget } from "./session-history-read.types.js";
 import { createSessionTranscriptReader } from "./session-transcript-read-kernel.js";
-import type { ResolvedTranscriptReadTarget } from "./session-transcript-read-target.js";
-import {
-  prepareGatewaySessionStoreReadSources,
-  readGatewaySessionEntryFromSources,
-  type GatewaySessionStoreReadSources,
-} from "./session-utils-store-sources.js";
-
-/** Serializable host bindings; no open handle, ambient config, or secrets cross isolates. */
-export type PreparedSessionHistoryReadTarget = {
-  transcript: ResolvedTranscriptReadTarget & { agentId: string; storePath: string };
-  database: { agentId: string; path: string };
-  stateDatabase?: SqliteWorkerStateContext & { path: string };
-  sourceDatabases?: GatewaySessionStoreReadSources;
-  entryValidationKey?: string;
-};
-
-/** Bind host-owned stores and retain their admission for one display operation. */
-export function createSessionHistorySubagentProjection(
-  scope: SessionTranscriptReadScope,
-): SubagentCoordinationDisplayResolver {
-  const context = captureOpenClawStateWorkerContext();
-  const sourceReads = prepareGatewaySessionStoreReadSources({
-    cfg: getRuntimeConfig(),
-    env: process.env,
-    registryPath: context.admission.databasePath,
-  });
-  const bound = createBoundSessionHistorySubagentProjection(
-    (read) => withCurrentProjectionSnapshot(scope, read, { readOnly: true }),
-    {
-      path: context.admission.databasePath,
-      environment: context.environment,
-      coordinatorRuntime: context.coordinatorRuntime,
-    },
-    sourceReads.sources,
-  );
-  const assertCurrent = () => {
-    context.maintenanceScope?.assertAdmission();
-    context.admission.assertCurrent();
-    sourceReads.assertCurrent();
-  };
-  const readCurrent = <T>(read: () => T): T => {
-    assertCurrent();
-    const result = read();
-    assertCurrent();
-    return result;
-  };
-  return {
-    assertCurrent,
-    isSubagentSession: (sessionKey) => readCurrent(() => bound.isSubagentSession(sessionKey)),
-    isSubagentRunMessage: (runId, messageSeq) =>
-      readCurrent(() => bound.isSubagentRunMessage(runId, messageSeq)),
-  };
-}
+import { readGatewaySessionEntryFromSources } from "./session-utils-store-readonly.js";
+import type { GatewaySessionStoreReadSources } from "./session-utils-store.types.js";
 
 /** Source and run facts live only for one history operation, on its admitted database. */
-function createBoundSessionHistorySubagentProjection(
+export function createBoundSessionHistorySubagentProjection(
   readSnapshot: <T>(read: (projection: CurrentTranscriptProjection) => T) => T,
   stateDatabase: PreparedSessionHistoryReadTarget["stateDatabase"],
   sourceDatabases: GatewaySessionStoreReadSources | undefined,
 ): SubagentCoordinationDisplayResolver {
   const sources = new Map<string, boolean>();
-  const isSameDatabasePath = createOpenClawAgentDatabasePathMatcher();
   const runs = new Map<
     string,
     ReturnType<typeof readSessionTranscriptRunInputVisibilityFromProjection>
@@ -117,16 +60,14 @@ function createBoundSessionHistorySubagentProjection(
     if (!sourceAgentId || sourceAgentId === projection.resolved.agentId || !hasPreparedSource) {
       if (
         !candidates.some(
-          (source) =>
-            source.agentId === ownSource.agentId && isSameDatabasePath(source.path, ownSource.path),
+          (source) => source.agentId === ownSource.agentId && source.path === ownSource.path,
         )
       ) {
         candidates.unshift(ownSource);
       }
     }
     const ownCandidate = candidates.find(
-      (source) =>
-        source.agentId === ownSource.agentId && isSameDatabasePath(source.path, ownSource.path),
+      (source) => source.agentId === ownSource.agentId && source.path === ownSource.path,
     );
     const ownEntry = ownCandidate
       ? readExactSessionEntryRow(projection.database, sessionKey, "list")?.entry

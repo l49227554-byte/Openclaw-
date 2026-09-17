@@ -1536,7 +1536,6 @@ src/acp/event-mapper.ts	1
 src/acp/permission-relay.ts	1
 src/acp/persistent-bindings.types.ts	3
 src/acp/runtime/registry.ts	2
-src/acp/runtime/session-meta.ts	2
 src/acp/server.ts	2
 src/acp/session-mapper.ts	1
 src/acp/tool-status.ts	1

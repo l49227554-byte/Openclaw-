@@ -17,11 +17,11 @@ import {
 import { DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS } from "./chat-display-projection.helpers.js";
 import { createSubagentCoordinationHistoryProjection } from "./chat-display-projection.history.js";
 import { resolveCurrentUserProfileDisplay } from "./current-user-profile-display.js";
-import { createSessionHistorySubagentProjection } from "./session-history-readonly-reader.js";
 import {
   buildPaginatedSessionHistory,
   readSessionHistorySnapshotKernel,
 } from "./session-history-snapshot.js";
+import { createSessionHistorySubagentProjection } from "./session-history-subagent-projection.js";
 import { readChatHistoryMessageSeq as resolveMessageSeq } from "./session-history-tail.js";
 import {
   readTranscriptMessageIdempotencyKey,

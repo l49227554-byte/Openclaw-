@@ -20,15 +20,13 @@ import {
 import { projectChatDisplayMessages } from "./chat-display-projection.js";
 import { readChatHistoryDelta } from "./server-methods/chat-history-delta.js";
 import { readChatHistoryPageKernel } from "./server-methods/chat-history-page-kernel.js";
-import {
-  createReadonlySessionHistoryReader,
-  createSessionHistorySubagentProjection,
-} from "./session-history-readonly-reader.js";
+import { createReadonlySessionHistoryReader } from "./session-history-readonly-reader.js";
 import { readSessionHistorySnapshotKernel } from "./session-history-snapshot.js";
 import {
   readSessionHistorySnapshotAsync,
   SessionHistorySseState,
 } from "./session-history-state.js";
+import { createSessionHistorySubagentProjection } from "./session-history-subagent-projection.js";
 import { readChatHistoryMessageId } from "./session-history-tail.js";
 
 const childKey = "agent:main:dashboard:spawned-worker";

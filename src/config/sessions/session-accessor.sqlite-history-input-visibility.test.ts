@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
-import { createSessionHistorySubagentProjection } from "../../gateway/session-history-readonly-reader.js";
+import { createSessionHistorySubagentProjection } from "../../gateway/session-history-subagent-projection.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {

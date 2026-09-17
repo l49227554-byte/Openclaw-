@@ -102,13 +102,13 @@ class HoverMarqueeDirective extends AsyncDirective {
       return;
     }
     const fade = Number.parseFloat(style.getPropertyValue("--hover-marquee-fade-width"));
-    const shift = overflow + fade;
+    const shift = (overflow + fade) * (style.direction === "rtl" ? 1 : -1);
     if (shift !== this.shift || !label.classList.contains("hover-marquee--scrolling")) {
       const transform = getComputedStyle(text).transform;
       const offset = transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m41;
       const duration =
-        (Math.abs(shift + offset) / (this.options.speed ?? MARQUEE_SPEED_PX_PER_SEC)) * 1000;
-      label.style.setProperty("--hover-marquee-shift", `${-shift}px`);
+        (Math.abs(shift - offset) / (this.options.speed ?? MARQUEE_SPEED_PX_PER_SEC)) * 1000;
+      label.style.setProperty("--hover-marquee-shift", `${shift}px`);
       label.style.setProperty("--hover-marquee-duration", `${duration}ms`);
       this.shift = shift;
     }

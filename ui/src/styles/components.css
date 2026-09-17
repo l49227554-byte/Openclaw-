@@ -5845,10 +5845,16 @@ td.data-table-key-col {
    Extra travel equal to the fade width leaves the complete tail opaque. */
 .hover-marquee {
   --hover-marquee-fade-width: 12px;
+  --hover-marquee-fade-direction: to right;
 
   overflow: hidden;
+  text-align: start;
   text-overflow: clip;
   white-space: nowrap;
+}
+
+.hover-marquee:dir(rtl) {
+  --hover-marquee-fade-direction: to left;
 }
 
 .hover-marquee__text {
@@ -5860,7 +5866,7 @@ td.data-table-key-col {
 
 .hover-marquee--overflowing {
   mask-image: linear-gradient(
-    to right,
+    var(--hover-marquee-fade-direction),
     black calc(100% - var(--hover-marquee-fade-width)),
     transparent
   );

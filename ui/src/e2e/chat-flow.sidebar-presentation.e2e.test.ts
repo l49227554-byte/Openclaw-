@@ -253,112 +253,134 @@ suite.define(() => {
     }
   });
 
-  it("fades overflowing sidebar titles and reveals their tail with pointer and keyboard controls", async () => {
-    const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
-    const page = await context.newPage();
-    const sessions = chatSessionListResponse();
-    const firstSession = expectDefined(sessions.sessions[0], "first chat session fixture");
-    const secondSession = expectDefined(sessions.sessions[1], "second chat session fixture");
-    firstSession.label = "Short";
-    secondSession.label = "Review sidebar title clipping and reveal this ending";
-    await installMockGateway(page, {
-      methodResponses: { "sessions.list": sessions },
-      sessionKey: "agent:main:session-a",
-    });
-
-    try {
-      await page.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:main:session-a"));
-      const row = page.locator('.sidebar-recent-session[data-session-key="agent:main:session-b"]');
-      const label = row.locator(".sidebar-recent-session__name");
-      const text = label.locator(".hover-marquee__text");
-      const shortLabel = page.locator(
-        '.sidebar-recent-session[data-session-key="agent:main:session-a"] .sidebar-recent-session__name',
-      );
-      const offset = () =>
-        text.evaluate((element) => {
-          const transform = getComputedStyle(element).transform;
-          return transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m41;
-        });
-      await label.waitFor({ state: "visible", timeout: 10_000 });
-      await expect
-        .poll(() => label.evaluate((element) => getComputedStyle(element).maskImage))
-        .toContain("linear-gradient");
-      expect(await shortLabel.evaluate((element) => getComputedStyle(element).maskImage)).toBe(
-        "none",
-      );
-      const rowWidth = await row.evaluate((element) => element.getBoundingClientRect().width);
-
-      await row.hover();
-      await expect.poll(offset).toBeLessThan(-2);
-      const movingOffset = await offset();
-      await expect.poll(offset).toBeLessThan(movingOffset - 5);
-      const controls = row.getByRole("button", { name: "Open session menu" });
-      await expect
-        .poll(() => controls.evaluate((element) => Number(getComputedStyle(element).opacity)))
-        .toBe(1);
-      const geometry = await label.evaluate((element) => {
-        const actions = element
-          .closest(".sidebar-recent-session")!
-          .querySelector(".session-row-actions")!;
-        return {
-          right: element.getBoundingClientRect().right,
-          controlsLeft: actions.getBoundingClientRect().left,
-        };
+  it.each([
+    {
+      locale: "en",
+      direction: "ltr",
+      title: "Review sidebar title clipping and reveal this ending",
+    },
+    {
+      locale: "ar",
+      direction: "rtl",
+      title: "مراجعة عناوين الجلسات الطويلة وإظهار النهاية عند التركيز",
+    },
+  ])(
+    "reveals overflowing $direction sidebar titles with pointer and keyboard controls",
+    async ({ locale, direction, title }) => {
+      const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
+      const page = await context.newPage();
+      await page.addInitScript((value) => {
+        localStorage.setItem("openclaw.i18n.locale", value);
+      }, locale);
+      const sessions = chatSessionListResponse();
+      const firstSession = expectDefined(sessions.sessions[0], "first chat session fixture");
+      const secondSession = expectDefined(sessions.sessions[1], "second chat session fixture");
+      firstSession.label = "Short";
+      secondSession.label = title;
+      await installMockGateway(page, {
+        methodResponses: { "sessions.list": sessions },
+        sessionKey: "agent:main:session-a",
       });
-      expect(geometry.right).toBeLessThanOrEqual(geometry.controlsLeft + 1);
-      // At the endpoint, even the final glyph is inside the opaque part of the mask.
-      await expect
-        .poll(
-          () =>
-            label.evaluate((element) => {
-              const titleText = element.querySelector(".hover-marquee__text")!;
-              const fade = Number.parseFloat(
-                getComputedStyle(element).getPropertyValue("--hover-marquee-fade-width"),
-              );
-              return (
-                titleText.getBoundingClientRect().right -
-                (element.getBoundingClientRect().right - fade)
-              );
-            }),
-          { timeout: 15_000 },
-        )
-        .toBeLessThanOrEqual(1);
-      expect(await row.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(
-        rowWidth,
-        1,
-      );
 
-      await page.mouse.move(900, 600);
-      await expect.poll(offset).toBe(0);
-      await page.keyboard.press("Tab");
-      await row.locator("a.sidebar-recent-session__link").focus();
-      await expect.poll(offset).toBeLessThan(-2);
-      const focusedOffset = await offset();
-      await row.getByRole("button", { name: "Open session menu" }).focus();
-      await expect.poll(offset).toBeLessThan(focusedOffset - 5);
+      try {
+        await page.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:main:session-a"));
+        await expect.poll(() => page.locator("html").getAttribute("dir")).toBe(direction);
+        const row = page.locator(
+          '.sidebar-recent-session[data-session-key="agent:main:session-b"]',
+        );
+        const label = row.locator(".sidebar-recent-session__name");
+        const text = label.locator(".hover-marquee__text");
+        const shortLabel = page.locator(
+          '.sidebar-recent-session[data-session-key="agent:main:session-a"] .sidebar-recent-session__name',
+        );
+        const offset = () =>
+          text.evaluate((element, readingDirection) => {
+            const transform = getComputedStyle(element).transform;
+            const x = transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m41;
+            return x === 0 ? 0 : readingDirection === "rtl" ? -x : x;
+          }, direction);
+        await label.waitFor({ state: "visible", timeout: 10_000 });
+        await expect
+          .poll(() => label.evaluate((element) => getComputedStyle(element).maskImage))
+          .toContain(direction === "rtl" ? "to left" : "to right");
+        expect(await shortLabel.evaluate((element) => getComputedStyle(element).maskImage)).toBe(
+          "none",
+        );
+        const rowWidth = await row.evaluate((element) => element.getBoundingClientRect().width);
 
-      await page.emulateMedia({ reducedMotion: "reduce" });
-      await expect.poll(offset).toBe(0);
-      await row.hover();
-      await page.waitForTimeout(750);
-      expect(await offset()).toBe(0);
-      expect(await label.evaluate((element) => getComputedStyle(element).maskImage)).toContain(
-        "linear-gradient",
-      );
-      expect(await shortLabel.evaluate((element) => getComputedStyle(element).maskImage)).toBe(
-        "none",
-      );
+        await row.hover();
+        await expect.poll(offset).toBeLessThan(-2);
+        const movingOffset = await offset();
+        await expect.poll(offset).toBeLessThan(movingOffset - 5);
+        const controls = row.locator("button[data-session-menu]");
+        await expect
+          .poll(() => controls.evaluate((element) => Number(getComputedStyle(element).opacity)))
+          .toBe(1);
+        const geometry = await label.evaluate((element) => {
+          const actions = element
+            .closest(".sidebar-recent-session")!
+            .querySelector(".session-row-actions")!;
+          return {
+            right: element.getBoundingClientRect().right,
+            controlsLeft: actions.getBoundingClientRect().left,
+          };
+        });
+        expect(geometry.right).toBeLessThanOrEqual(geometry.controlsLeft + 1);
+        // At the endpoint, even the final glyph is inside the opaque part of the mask.
+        await expect
+          .poll(
+            () =>
+              label.evaluate((element, readingDirection) => {
+                const titleText = element.querySelector(".hover-marquee__text")!;
+                const fade = Number.parseFloat(
+                  getComputedStyle(element).getPropertyValue("--hover-marquee-fade-width"),
+                );
+                const bounds = element.getBoundingClientRect();
+                const textBounds = titleText.getBoundingClientRect();
+                return readingDirection === "rtl"
+                  ? bounds.left + fade - textBounds.left
+                  : textBounds.right - (bounds.right - fade);
+              }, direction),
+            { timeout: 15_000 },
+          )
+          .toBeLessThanOrEqual(1);
+        expect(await row.evaluate((element) => element.getBoundingClientRect().width)).toBeCloseTo(
+          rowWidth,
+          1,
+        );
 
-      await row.locator("a.sidebar-recent-session__link").click();
-      await expect.poll(() => row.getAttribute("class")).toContain("--active");
-      expect(await offset()).toBe(0);
-      expect(await label.evaluate((element) => getComputedStyle(element).maskImage)).toContain(
-        "linear-gradient",
-      );
-    } finally {
-      await suite.closeBrowserContext(context);
-    }
-  });
+        await page.mouse.move(900, 600);
+        await expect.poll(offset).toBe(0);
+        await page.keyboard.press("Tab");
+        await row.locator("a.sidebar-recent-session__link").focus();
+        await expect.poll(offset).toBeLessThan(-2);
+        const focusedOffset = await offset();
+        await row.locator("button[data-session-menu]").focus();
+        await expect.poll(offset).toBeLessThan(focusedOffset - 5);
+
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await expect.poll(offset).toBe(0);
+        await row.hover();
+        await page.waitForTimeout(750);
+        expect(await offset()).toBe(0);
+        expect(await label.evaluate((element) => getComputedStyle(element).maskImage)).toContain(
+          "linear-gradient",
+        );
+        expect(await shortLabel.evaluate((element) => getComputedStyle(element).maskImage)).toBe(
+          "none",
+        );
+
+        await row.locator("a.sidebar-recent-session__link").click();
+        await expect.poll(() => row.getAttribute("class")).toContain("--active");
+        expect(await offset()).toBe(0);
+        expect(await label.evaluate((element) => getComputedStyle(element).maskImage)).toContain(
+          "linear-gradient",
+        );
+      } finally {
+        await suite.closeBrowserContext(context);
+      }
+    },
+  );
 
   it("keeps session titles on the first line and collapses rows that have no second line", async () => {
     if (captureUiProofEnabled) {

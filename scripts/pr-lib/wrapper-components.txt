@@ -254,6 +254,7 @@ src/commands/doctor/shared/codex-route-agent-entries.ts
 src/commands/doctor/shared/codex-route-model-ref.ts
 src/commands/doctor/shared/configured-channel-ids.ts
 src/commands/doctor/shared/include-migration-ownership.ts
+src/commands/doctor/shared/legacy-config-binding-repair-input.ts
 src/commands/doctor/shared/legacy-config-compat.ts
 src/commands/doctor/shared/legacy-config-issues.ts
 src/commands/doctor/shared/legacy-config-migrations.audio.ts

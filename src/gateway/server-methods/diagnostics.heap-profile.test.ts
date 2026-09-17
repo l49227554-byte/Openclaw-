@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { captureDiagnosticCpuProfile } from "../../logging/diagnostic-cpu-profile.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { handleGatewayRequest } from "../server-methods.js";
@@ -8,46 +7,18 @@ import { GatewayRequestEntryLifetime } from "../server-request-entry.js";
 import type { GatewayRequestOptions } from "./types.js";
 
 const capture = vi.hoisted(() => vi.fn());
-vi.mock("../../logging/diagnostic-cpu-profile.js", () => ({
-  captureDiagnosticCpuProfile: capture,
+vi.mock("../../logging/diagnostic-heap-profile.js", () => ({
+  captureDiagnosticHeapProfile: capture,
 }));
 
 const result = {
-  requestedDurationMs: 5_000,
-  actualDurationMs: 5_015,
-  samplingIntervalMicros: 10_000,
-  sampleLossCount: null,
-  redactedNodeCount: 1,
-  profile: {
-    nodes: [
-      {
-        id: 1,
-        callFrame: {
-          functionName: "(root)",
-          scriptId: "0",
-          url: "",
-          lineNumber: -1,
-          columnNumber: -1,
-        },
-        children: [2],
-      },
-      {
-        id: 2,
-        callFrame: {
-          functionName: "[redacted]",
-          scriptId: "12",
-          url: "",
-          lineNumber: -10,
-          columnNumber: -200,
-        },
-        positionTicks: [{ line: -9, ticks: 1 }],
-      },
-    ],
-    startTime: 0,
-    endTime: 5_015_000,
-    samples: [2],
-    timeDeltas: [10_000],
-  },
+  durationMs: 5_000,
+  samplingIntervalBytes: 32_768,
+  heapUsedBefore: 100,
+  heapUsedAfter: 200,
+  rssBefore: 300,
+  rssAfter: 400,
+  truncated: false,
 };
 
 function request(
@@ -65,8 +36,8 @@ function request(
   const pending = handleGatewayRequest({
     req: {
       type: "req",
-      id: "cpu-profile",
-      method: "diagnostics.cpuProfile",
+      id: "heap-profile",
+      method: "diagnostics.heapProfile",
       params: options.params,
     },
     respond,
@@ -94,15 +65,11 @@ function request(
 
 beforeEach(() => {
   setActivePluginRegistry(createEmptyPluginRegistry());
-  capture
-    .mockReset()
-    .mockResolvedValue({ status: "complete", result } satisfies Awaited<
-      ReturnType<typeof captureDiagnosticCpuProfile>
-    >);
+  capture.mockReset().mockResolvedValue({ status: "complete", result });
 });
 afterEach(() => setActivePluginRegistry(createEmptyPluginRegistry()));
 
-describe("diagnostics.cpuProfile dispatch", () => {
+describe("diagnostics.heapProfile dispatch", () => {
   it.each([
     { role: "operator", scopes: [] },
     { role: "operator", scopes: ["operator.read"] },
@@ -119,8 +86,8 @@ describe("diagnostics.cpuProfile dispatch", () => {
     );
   });
 
-  it.each([undefined, {}])(
-    "preserves signed-origin profiles for admin requests with empty params %j",
+  it.each([undefined, {}, { durationMs: 200, samplingIntervalBytes: 4096 }])(
+    "serves allocation attribution through the registered admin RPC with params %j",
     async (params) => {
       const call = request({ params });
       await call.pending;
@@ -129,19 +96,27 @@ describe("diagnostics.cpuProfile dispatch", () => {
     },
   );
 
-  it.each([null, [], "", 1, { durationMs: 1 }, { filename: "profile" }])(
-    "rejects nonempty/nonobject params %j before capture",
-    async (params) => {
-      const call = request({ params });
-      await call.pending;
-      expect(capture).not.toHaveBeenCalled();
-      expect(call.respond).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({ code: "INVALID_REQUEST" }),
-      );
-    },
-  );
+  it.each([
+    null,
+    [],
+    "",
+    1,
+    { durationMs: 0 },
+    { durationMs: 1.5 },
+    { durationMs: "5" },
+    { samplingIntervalBytes: -1 },
+    { samplingIntervalBytes: Infinity },
+    { filename: "profile" },
+  ])("rejects invalid params %j before capture", async (params) => {
+    const call = request({ params });
+    await call.pending;
+    expect(capture).not.toHaveBeenCalled();
+    expect(call.respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+  });
 
   it.each(["connection", "gateway", "request"])(
     "cancels through the existing %s lifetime and waits for cleanup",
@@ -205,7 +180,7 @@ describe("diagnostics.cpuProfile dispatch", () => {
     await call.pending;
     expect(call.respond).toHaveBeenCalledWith(false, undefined, {
       code: "UNAVAILABLE",
-      message: "CPU profile unavailable: capture-failed",
+      message: "Heap profile unavailable: capture-failed",
       details: { reason: "capture-failed", cleanupFailed: true },
     });
   });
@@ -224,7 +199,7 @@ describe("diagnostics.cpuProfile dispatch", () => {
       expect.objectContaining({
         code: "UNAVAILABLE",
         message:
-          "CPU profile unavailable: stop active Node tracing, including non-CPU categories, before requesting a profile",
+          "Heap profile unavailable: stop active Node tracing, including non-CPU categories, before requesting a profile",
         details: { reason: "tracing-active", cleanupFailed: false },
       }),
     );

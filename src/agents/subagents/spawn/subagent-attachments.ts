@@ -383,15 +383,12 @@ export async function materializeSubagentAttachments(params: {
     store = attachmentStore;
 
     const files: SubagentAttachmentReceiptFile[] = [];
-    const writeJobs: Array<{ outPath: string; buf: Buffer }> = [];
     for (const { name, buf, bytes } of prepared.attachments) {
       const sha256 = crypto.createHash("sha256").update(buf).digest("hex");
-      writeJobs.push({ outPath: path.posix.join(attachmentId, name), buf });
+      params.assertActive?.();
+      await attachmentStore.writeText(path.posix.join(attachmentId, name), buf);
       files.push({ name, bytes, sha256 });
     }
-
-    params.assertActive?.();
-    await Promise.all(writeJobs.map(({ outPath, buf }) => attachmentStore.writeText(outPath, buf)));
 
     const manifest = {
       relDir,

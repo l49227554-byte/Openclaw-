@@ -197,7 +197,8 @@ describe("auth profile sqlite reader lifecycle", () => {
         const evictionClose = vi.spyOn(oldest, "close").mockImplementation(() => {
           throw new Error("eviction close failed");
         });
-        const candidatePath = resolveAuthProfileDatabasePath(agentDirs[8]);
+        const candidateAgentDir = expectDefined(agentDirs[8], "candidate agent directory");
+        const candidatePath = resolveAuthProfileDatabasePath(candidateAgentDir);
         let candidate: DatabaseSync | undefined;
         let candidateClose: MockInstance<DatabaseSync["close"]> | undefined;
         openSpy.mockImplementationOnce((...args) => {
@@ -208,13 +209,13 @@ describe("auth profile sqlite reader lifecycle", () => {
           return candidate;
         });
         try {
-          expect(() => loadPersistedAuthProfileStore(agentDirs[8])).toThrow(AggregateError);
+          expect(() => loadPersistedAuthProfileStore(candidateAgentDir)).toThrow(AggregateError);
           expect(oldest.isOpen).toBe(true);
           expect(candidate?.isOpen).toBe(true);
           expect(() => loadPersistedAuthProfileStore(agentDirs[9])).toThrow(
             "candidate close failed",
           );
-          expect(() => loadPersistedAuthProfileStore(agentDirs[8])).toThrow(
+          expect(() => loadPersistedAuthProfileStore(candidateAgentDir)).toThrow(
             "candidate close failed",
           );
           expect(openSpy).toHaveBeenCalledTimes(9);

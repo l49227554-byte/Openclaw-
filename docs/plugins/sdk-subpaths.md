@@ -355,7 +355,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/gateway-config-runtime` | Private-local bundled runtime facade for dependency-light Gateway port resolution (`resolveGatewayPort`); not for third-party plugins |
     | `plugin-sdk/gateway-method-runtime` | Reserved Gateway method dispatch helper for plugin HTTP routes that declare `contracts.gatewayMethodDispatch: ["authenticated-request"]` |
     | `plugin-sdk/gateway-runtime` | Gateway client, event-loop-ready client start helper, gateway CLI RPC, gateway protocol errors, advertised LAN host resolution, and channel-status patch helpers |
-    | `plugin-sdk/websocket-runtime` | Private-local bundled helpers for one-time observer tickets (`createOneTimeTicketStore`, `OneTimeTicketStore`), `startWebSocketKeepalive`, `rejectWebSocketUpgrade`, and their structural types; JavaScript-only host runtime export, not part of the typed public SDK |
+    | `plugin-sdk/websocket-runtime` | Node-compatible `WebSocket`, `WebSocketServer`, and `createWebSocketStream` exports backed by the installed `ws` package, plus one-time observer tickets, WebSocket keepalive, and upgrade rejection helpers. Use this subpath when a plugin needs the full Node `ws` option and event contract across supported runtimes. |
     | `plugin-sdk/config-contracts` | Focused config surface for plugin config shapes such as `OpenClawConfig` and channel/provider config types, plus the dependency-light runtime helper `resolveGatewayPublicOrigin(cfg)` which returns the normalized `gateway.publicOrigin` (bare http(s) origin, optional reverse-proxy path, no query/hash) or `undefined` when unset, for building links back to the Gateway |
     | `plugin-sdk/config-runtime` | Retained broad config compatibility facade; prefer passed config, `api.pluginConfig`, `config-contracts`, `config-mutation`, and `runtime-config-snapshot` where they cover the needed contract. Named types and private-runtime helpers are not blanket replacements; see [migration guidance](/plugins/sdk-migration#how-to-migrate). |
     | `plugin-sdk/plugin-config-runtime` | Deprecated compatibility facade for runtime plugin-config helpers; new plugins use `api.pluginConfig` plus focused config contracts, snapshots, and mutation helpers |
@@ -415,7 +415,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/concurrency-runtime` | Private-local after July 2026; Bounded async task concurrency (`runTasksWithConcurrency`) and cancellable permit admission (`createPermitPool`) with caller-owned release |
     | `plugin-sdk/dedupe-runtime` | In-memory and persistent-backed dedupe cache helpers |
     | `plugin-sdk/delivery-queue-runtime` | Private-local after July 2026; Outbound pending-delivery drain helper |
-    | `plugin-sdk/file-access-runtime` | Private-local after July 2026; Safe local-file, path-containment, temp-root, media-source path, and directory-durability helpers |
+    | `plugin-sdk/file-access-runtime` | Private-local after July 2026; Safe local-file, path-containment, temp-root, media-source path, directory-durability, and borrowed-handle readers: `readFileHandleBounded` reads through EOF under a byte cap; `readFileWindowFully` fills a positional buffer through short reads. Both leave the handle open. |
     | `plugin-sdk/heartbeat-runtime` | Private-local after July 2026; Heartbeat wake, event, and visibility helpers |
     | `plugin-sdk/expect-runtime` | Private-local after July 2026; Required-value assertion helper for provable runtime invariants |
     | `plugin-sdk/number-runtime` | Private-local after July 2026; Numeric coercion helper |
@@ -440,7 +440,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/html-entity-runtime` | Private-local after July 2026; Single-pass semicolon-terminated HTML5 entity decoding without broad text utilities |
     | `plugin-sdk/text-utility-runtime` | Private-local after July 2026; Low-level text and path helpers, including UTF-8 prefix truncation and five-entity HTML escaping |
     | `plugin-sdk/simple-completion-runtime` | Private-local after July 2026; Prepared simple-completion model helpers and assistant text extraction for lightweight agent tasks |
-    | `plugin-sdk/widget-html` | Complete-document detection, size validation, and tool input errors for self-contained HTML widgets |
+    | `plugin-sdk/widget-html` | Widget CDN origins, complete-document detection, size validation, and tool input errors |
     | `plugin-sdk/host-runtime` | Private-local after July 2026; Hostname and SCP host normalization helpers |
     | `plugin-sdk/retry-runtime` | Private-local after July 2026; Retry config and retry runner helpers |
     | `plugin-sdk/agent-runtime` | Deprecated broad barrel for agent dir/identity/workspace helpers, including `resolveAgentDir`, `resolveDefaultAgentDir`, and the deprecated `resolveOpenClawAgentDir` compatibility export; prefer focused agent/runtime subpaths |
@@ -479,7 +479,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/realtime-voice-audio-queue` | Private-local JavaScript-only host runtime for bundled or separately published official plugins; narrow bounded audio queue seam for lazy realtime voice provider facades without importing the broader realtime voice runtime; not for third-party plugins |
     | `plugin-sdk/realtime-voice-provider` | Private-local JavaScript-only host runtime for official plugins; provider types, audio formats/codecs, response outcomes, and connection lifecycle primitives without host provider registries or agent-consult execution. |
     | `plugin-sdk/realtime-voice-activation` | Private-local; dependency-light realtime-voice activation-name helpers (normalize, match, word-count, sort) for doctor contract closures and other control-plane paths that must not load the realtime voice runtime |
-    | `plugin-sdk/realtime-voice` | Private-local after July 2026; Realtime voice provider types, registry helpers, shared audio-energy/speech-onset gates, and realtime voice behavior helpers, including the transport-independent session harness and output activity tracking. For official runtime consumers, sender-auth contract revision 1 forwards ingress-authenticated `senderId` and `senderIsOwner` unchanged; ingress owns authentication, and consumers requiring the handoff must fail closed on other revisions. |
+    | `plugin-sdk/realtime-voice` | Private-local after July 2026; Realtime voice provider types, registry helpers, shared audio-energy/speech-onset gates, and realtime voice behavior helpers, including the transport-independent session harness, output activity tracking, and `registerRealtimeVoiceSelection` for a channel-owned call. Bind each agent run to the exact call and current speaker authority; release its binding after the turn and unregister when the call closes. Replacements must revalidate the supplied request before adopting a ready connection. For official runtime consumers, sender-auth contract revision 1 forwards ingress-authenticated `senderId` and `senderIsOwner` unchanged; ingress owns authentication, and consumers requiring the handoff must fail closed on other revisions. |
     | `plugin-sdk/meeting-page-script-runtime` | Private-local JavaScript-only host runtime for official browser-meeting plugins; shared transcript and leave page-script source builders; not a third-party plugin API |
     | `plugin-sdk/meeting-runtime` | Browser-meeting session runtime, realtime audio engines/transports, `MeetingPlatformAdapter`, browser/node control, agent-consult, voice-call delegation, setup checks, and SoX command helpers |
     | `plugin-sdk/image-generation` | Private-local after July 2026; Image generation provider types plus image asset/data URL helpers and the OpenAI-compatible image provider builder |
@@ -503,6 +503,13 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/test-state` | Repo-local isolated OpenClaw state, config, workspace, environment, and auth-profile fixtures for plugin tests |
     | `plugin-sdk/test-fixtures` | Repo-local generic CLI runtime capture, direct-import smoke, sandbox context, skill writer, agent-message, system-event, module reload, bundled plugin path, terminal-text, chunking, auth-token, and typed-case fixtures |
     | `plugin-sdk/test-node-mocks` | Repo-local focused Node builtin mock helpers for use inside Vitest `vi.mock("node:*")` factories |
+
+    For bundled plugins, `markdown-table-runtime` exposes `getMarkdownTableSource(table)` for tables returned by
+    `markdownToIRWithMeta(text, { tableMode: "block" })`. It returns source `start`/`end`
+    offsets, a continuation `prefix`, and the original cell Markdown in `headers`/`rows`.
+    Slice the same input string to preserve table bytes without reparsing Markdown containers.
+    This metadata is non-enumerable; the getter returns `undefined` for tables without it.
+
   </Accordion>
 
   <Accordion title="Memory subpaths">

@@ -86,8 +86,9 @@ Enable the `codex` plugin and its supervision capability in `openclaw.json`:
 }
 ```
 
-If `plugins.allow` is present, include `codex`. Restart the Gateway after
-changing plugin activation.
+If `plugins.allow` is present, include `codex`. Gateway plugin activation applies
+automatically in the default hybrid reload mode; see
+[Apply changes and inspect](/plugins/manage-plugins#apply-changes-and-inspect).
 
 With no explicit `appServer` connection settings, supervision uses managed
 stdio connections for the available local Codex stores. The catalog combines
@@ -186,14 +187,23 @@ does not change a thread's native status to `offline`. Session rows use Codex
 statuses such as `idle`, `active`, `notLoaded`, or error. A failed host does not
 hide results from healthy hosts.
 
+Concurrent reads of the same local source page share one native request. After
+two consecutive source failures, local catalog refreshes back off for 5 seconds,
+doubling after each failed recovery attempt up to 60 seconds. One recovery probe
+runs per agent and source home; other pages return the previous source error
+without waiting for another timeout. Previously cached pages remain available.
+A successful probe or configuration reload resets backoff. Paired nodes retain
+their separate eight-second foreground response deadline.
+
 The sidebar hides the Codex group when it has no visible sessions, including
 when discovery fails. Normal discovery refreshes continue, so the group appears
 when sessions become available. A populated group remains visible when another
 host fails.
 
 The sidebar warning includes the catalog error code and the safe underlying
-Gateway error. Open **Settings > Automation > Plugins > Codex > Native Session
-Discovery** to disable discovery without disabling Codex. For
+Gateway error. Open the sidebar's **Filter & sort > Session sources…** menu,
+or **Settings > Appearance > Session sources**, and turn off **Show Codex sessions**
+to disable discovery without disabling Codex. For
 `NODE_LIST_FAILED`, compare `openclaw nodes list` and **Settings > Devices**.
 The detailed cause identifies the pairing-store, node-registry, permission, or
 Gateway lifecycle failure that needs repair.
@@ -343,8 +353,8 @@ or local label.
 
 Disabling or uninstalling the `codex` plugin does not release that ownership or
 make the Chat eligible for another model. The locked Chat remains preserved but
-unavailable. Reinstall or re-enable the same plugin and restart the Gateway to
-resume it. This deliberate fail-closed behavior prevents retention cleanup or a
+unavailable. Reinstall or re-enable the same plugin, confirm runtime application,
+then resume it. This deliberate fail-closed behavior prevents retention cleanup or a
 temporary plugin outage from silently orphaning the native binding.
 
 The `codex_threads` agent tool follows the same boundary. It cannot attach a
@@ -600,8 +610,9 @@ For every supervision config field, see
 
 **No sessions appear:** verify that `@openclaw/codex` is installed, both the
 plugin and `supervision.enabled` are true, the current plugin allowlist permits
-`codex`, and the sessions are not archived. Restart the Gateway or node after
-changing activation.
+`codex`, and the sessions are not archived. Gateway activation changes hot-apply;
+refresh the catalog after they finish. Restart a node if its local activation
+change has not refreshed its advertised capabilities.
 
 **Continue is disabled or refused:** an unmapped row is active or in an
 ineligible state, its host is offline, or another action is pending. For a

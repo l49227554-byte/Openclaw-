@@ -35,11 +35,11 @@ import { planOpenClawModelsJson, type PreparedModelsConfigContext } from "./mode
 import { repairPluginModelCatalogTransportMetadata } from "./plugin-model-catalog-repair.js";
 import {
   decodePluginModelCatalogRelativePathPluginId,
-  loadPersistedPluginModelCatalogs,
   loadPersistedPluginModelCatalogsReadOnly,
   replacePersistedPluginModelCatalogs,
   type PersistedPluginModelCatalog,
 } from "./plugin-model-catalog.js";
+import type { ProviderCatalogInventoryCapture } from "./provider-model-membership.js";
 
 type ModelsConfigPluginMetadataSnapshot = Pick<
   PluginMetadataSnapshot,
@@ -59,6 +59,7 @@ type EnsureOpenClawModelsJsonOptions = {
 
 type PlanOpenClawModelsJsonSourceOptions = EnsureOpenClawModelsJsonOptions & {
   authStore?: AuthProfileStore;
+  providerCatalogInventory?: ProviderCatalogInventoryCapture;
 };
 
 type PlannedOpenClawModelsJsonSource = Readonly<{
@@ -66,16 +67,6 @@ type PlannedOpenClawModelsJsonSource = Readonly<{
   modelsJsonContents: string | null;
   pluginCatalogs: readonly PersistedPluginModelCatalog[];
 }>;
-
-function listPreparedPluginModelCatalogs(agentDir: string) {
-  const { catalogs, warnings } = loadPersistedPluginModelCatalogs(agentDir);
-  if (warnings.length > 0) {
-    throw new Error(
-      `Cannot safely prepare provider models until legacy catalog migration succeeds: ${warnings.join("; ")}. Run openclaw doctor --fix.`,
-    );
-  }
-  return catalogs;
-}
 
 async function readFileMtimeMs(pathname: string): Promise<number | null> {
   try {
@@ -92,7 +83,7 @@ async function buildModelsJsonFingerprint(context: PreparedModelsConfigContext):
   const authProfilesWalMtimeMs = await readFileMtimeMs(`${authProfilesSqlitePath}-wal`);
   const modelsFileMtimeMs = await readFileMtimeMs(path.join(context.agentDir, "models.json"));
   const pluginCatalogFingerprint = createHash("sha256")
-    .update(stableStringify(listPreparedPluginModelCatalogs(context.agentDir)))
+    .update(stableStringify(loadPersistedPluginModelCatalogsReadOnly(context.agentDir)))
     .digest("base64url");
   const pluginMetadataSnapshotIndexFingerprint = context.pluginMetadataSnapshot
     ? resolveInstalledManifestRegistryIndexFingerprint(context.pluginMetadataSnapshot.index)
@@ -297,7 +288,7 @@ export async function ensureOpenClawModelsJson(
       context,
       existingRaw: existingModelsFile.raw,
       existingParsed: existingModelsFile.parsed,
-      pluginCatalogs: listPreparedPluginModelCatalogs(agentDir),
+      pluginCatalogs: loadPersistedPluginModelCatalogsReadOnly(agentDir),
     });
 
     if (plan.action === "skip") {
@@ -358,7 +349,10 @@ export async function planOpenClawModelsJsonSource(
   agentDirOverride?: string,
   options: PlanOpenClawModelsJsonSourceOptions = {},
 ): Promise<PlannedOpenClawModelsJsonSource> {
-  const context = prepareModelsConfigContext(config, agentDirOverride, options);
+  const context = {
+    ...prepareModelsConfigContext(config, agentDirOverride, options),
+    providerCatalogInventory: options.providerCatalogInventory,
+  };
   const { agentDir } = context;
   const existingModelsFile = await readExistingModelsFile(path.join(agentDir, "models.json"));
   const existingPluginCatalogs = loadPersistedPluginModelCatalogsReadOnly(agentDir);

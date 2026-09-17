@@ -1,7 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { performance } from "node:perf_hooks";
-import { isMainThread, threadId } from "node:worker_threads";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../plugin-sdk/keyed-async-queue.js";
 import { createCommandError } from "../process/command-error.js";
@@ -9,16 +7,15 @@ import type { SpawnResult } from "../process/exec-result.js";
 import { runCommandBuffersWithTimeout, type BufferSpawnResult } from "../process/exec-runner.js";
 import {
   runCommandWithTimeout,
+  runCommandBuffered,
+  type BufferedCommandOptions,
   type BufferedCommandResult,
   type CommandOptions,
 } from "../process/exec.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { areDiagnosticsEnabledForProcess } from "./diagnostic-events.js";
-import {
-  getActiveDiagnosticTraceContext,
-  runWithDiagnosticTraceContext,
-} from "./diagnostic-trace-context.js";
-import { createFixedWindowBudget } from "./fixed-window-rate-limit.js";
+import { retryableGitNetworkOperation, withGitNetworkRetry } from "./git-network-retry.js";
+import { startGitOperationTiming } from "./git-operation-timing.js";
 
 export const GIT_TIMEOUT_MS = 120_000;
 // Keep live writers ordered across runtime chunks and shutdown. Settled tails
@@ -29,103 +26,53 @@ const gitRefMutations = resolveGlobalSingleton(
 );
 const refMutationLog = createSubsystemLogger("git/ref-mutation");
 
-function startRefMutationTiming() {
-  try {
-    if (!areDiagnosticsEnabledForProcess() || !refMutationLog.isEnabled("info")) {
-      return undefined;
-    }
-    const startedAt = performance.now();
-    const trace = getActiveDiagnosticTraceContext();
-    let enqueuedAt: number | undefined;
-    let enteredAt: number | undefined;
-    return {
-      enqueue() {
-        enqueuedAt = performance.now();
-      },
-      enter() {
-        enteredAt = performance.now();
-      },
-      finish(outcome: "returned" | "threw") {
-        try {
-          const endedAt = performance.now();
-          const durationMs = endedAt - startedAt;
-          if (
-            durationMs < 1_000 ||
-            !areDiagnosticsEnabledForProcess() ||
-            !refMutationLog.isEnabled("info")
-          ) {
-            return;
-          }
-          const state = resolveGlobalSingleton(
-            Symbol.for("openclaw.gitRefMutationDiagnostics"),
-            () => ({
-              budget: createFixedWindowBudget({
-                maxRequests: 60,
-                windowMs: 60_000,
-                now: () => performance.now(),
-              }),
-              omitted: 0,
-            }),
-          );
-          if (!state.budget.consume().allowed) {
-            state.omitted = Math.min(Number.MAX_SAFE_INTEGER, state.omitted + 1);
-            return;
-          }
-          runWithDiagnosticTraceContext(trace, () =>
-            refMutationLog.info("slow Git ref mutation", {
-              pid: process.pid,
-              threadId,
-              isMainThread,
-              durationMs: Math.round(durationMs),
-              resolveMs: Math.round((enqueuedAt ?? endedAt) - startedAt),
-              ...(enqueuedAt !== undefined && enteredAt !== undefined
-                ? {
-                    queueWaitMs: Math.round(enteredAt - enqueuedAt),
-                    queuedOperationMs: Math.round(endedAt - enteredAt),
-                  }
-                : {}),
-              callbackEntered: enteredAt !== undefined,
-              outcome,
-              omittedObservations: state.omitted,
-            }),
-          );
-          state.omitted = 0;
-        } catch {
-          // Diagnostics must preserve the queued operation's result or original error.
-        }
-      },
-    };
-  } catch {
-    return undefined;
-  }
-}
-
 export async function enqueueGitRefMutation<T>(
   cwd: string,
   commonDirectory: string,
   run: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const timing = startRefMutationTiming();
+  const timing = startGitOperationTiming("ref-mutation", refMutationLog);
   let outcome: "returned" | "threw" = "threw";
+  const admitted = { run, signal, timing, completion: createDeferredCore<T>() };
+  let waiting: typeof admitted | undefined = admitted;
+  const abort = () => {
+    const cancelled = waiting;
+    waiting = undefined;
+    cancelled?.completion.reject(cancelled.signal?.reason);
+  };
   try {
+    signal?.throwIfAborted();
     const commonPath = normalizeGitPathForFilesystem(commonDirectory);
     const commonDir = await fs.realpath(path.resolve(cwd, commonPath));
+    signal?.throwIfAborted();
     const key = process.platform === "win32" ? commonDir.toLowerCase() : commonDir;
     // Even deleting a loose ref locks shared packed-refs. Queue every ref owner
     // across linked worktrees; external contention retains its native error.
-    timing?.enqueue();
-    const result = await gitRefMutations.enqueue(
-      key,
-      timing
-        ? () => {
-            timing.enter();
-            return run();
-          }
-        : run,
-    );
+    timing?.markPhase();
+    signal?.addEventListener("abort", abort, { once: true });
+    const queued = gitRefMutations.enqueue(key, async () => {
+      // Cancellation drops the entire caller, including its rejected promise and reason.
+      // Once started, the process owner must finish cleanup before we settle.
+      const active = waiting;
+      waiting = undefined;
+      if (!active) {
+        return;
+      }
+      try {
+        active.signal?.removeEventListener("abort", abort);
+        active.timing?.markPhase();
+        active.completion.resolve(await active.run());
+      } catch (error) {
+        active.completion.reject(error);
+      }
+    });
+    void queued.catch((error: unknown) => waiting?.completion.reject(error));
+    const result = await admitted.completion.promise;
     outcome = "returned";
     return result;
   } finally {
+    signal?.removeEventListener("abort", abort);
     timing?.finish(outcome);
   }
 }
@@ -166,7 +113,10 @@ export type GitCommandOptions = Pick<
   | "killProcessTree"
   | "maxOutputBytes"
   | "terminateOnOutputLimit"
->;
+> & {
+  /** Recheck caller authority immediately before each attempt. */
+  beforeRun?: () => void;
+};
 export type GitCommandBytesResult = BufferSpawnResult & { timeoutMs: number };
 
 export async function executeGitCommand(
@@ -176,9 +126,14 @@ export async function executeGitCommand(
 ): Promise<GitCommandResult> {
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const argv = ["git", "-C", cwd, ...args];
-  const result = await runCommandWithTimeout(
-    options.killProcessTree ? withForegroundGitMaintenance(argv) : argv,
+  const result = await withGitNetworkRetry(
+    retryableGitNetworkOperation(args),
     { ...options, timeoutMs },
+    (attemptTimeoutMs) =>
+      runCommandWithTimeout(options.killProcessTree ? withForegroundGitMaintenance(argv) : argv, {
+        ...options,
+        timeoutMs: attemptTimeoutMs,
+      }),
   );
   return { ...result, timeoutMs };
 }
@@ -191,11 +146,33 @@ export async function executeGitCommandBytes(
 ): Promise<GitCommandBytesResult> {
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const argv = ["git", "-C", cwd, ...args];
-  const result = await runCommandBuffersWithTimeout(
-    options.killProcessTree ? withForegroundGitMaintenance(argv) : argv,
+  const result = await withGitNetworkRetry(
+    retryableGitNetworkOperation(args),
     { ...options, timeoutMs },
+    (attemptTimeoutMs) =>
+      runCommandBuffersWithTimeout(
+        options.killProcessTree ? withForegroundGitMaintenance(argv) : argv,
+        { ...options, timeoutMs: attemptTimeoutMs },
+      ),
   );
   return { ...result, timeoutMs };
+}
+
+export async function executeGitCommandBuffered(
+  cwd: string,
+  args: string[],
+  options: BufferedCommandOptions & { beforeRun?: () => void } = {},
+): Promise<BufferedCommandResult> {
+  const argv = ["git", "-C", cwd, ...args];
+  return await withGitNetworkRetry(
+    retryableGitNetworkOperation(args),
+    { ...options, timeoutMs: options.timeoutMs ?? GIT_TIMEOUT_MS },
+    (timeoutMs) =>
+      runCommandBuffered(
+        options.killProcessTree === false ? argv : withForegroundGitMaintenance(argv),
+        { ...options, timeoutMs },
+      ),
+  );
 }
 
 export function createGitCommandError(

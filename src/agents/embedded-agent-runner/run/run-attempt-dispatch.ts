@@ -7,6 +7,7 @@ import { attachModelProviderRuntimePluginHandle } from "../../../plugins/provide
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { createAgentHarnessTaskRuntimeScope } from "../../../tasks/agent-harness-task-runtime-scope.js";
 import { createTrajectoryRuntimeRecorder } from "../../../trajectory/runtime.js";
+import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import type { ToolOutcomeObserver } from "../../agent-tools.before-tool-call.js";
 import { resolveDelegationCapability } from "../../delegation-capability.js";
 import { resolveSessionGitCoauthorPrompt } from "../../git-coauthor-prompt.js";
@@ -49,7 +50,7 @@ import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type PreparedRuntime = Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>;
 type ContextEngine = Awaited<ReturnType<typeof resolveContextEngine>>;
-type SessionPromptState = ReturnType<typeof createEmbeddedRunSessionPromptState>;
+type SessionPromptState = Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
 type TerminalRetryState = ReturnType<typeof createEmbeddedRunTerminalRetryState>;
 
 export async function prepareAndDispatchEmbeddedRunAttempt(input: {
@@ -350,7 +351,15 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     readPath: path.posix.join(mount.containerPath, "SKILL.md"),
   }));
   if (pluginSandbox?.enabled && !pluginSandbox.readOnlyResourceMounts?.length && skillsSnapshot) {
-    const prepared = prepareEmbeddedSkills({
+    const assertActiveRun = resolveAdmittedRunActiveAssertion(
+      admittedRunContext,
+      attemptAbortController.signal,
+    );
+    const prepared = await prepareEmbeddedSkills({
+      assertCurrent: () => {
+        attemptAbortController.signal.throwIfAborted();
+        assertActiveRun?.();
+      },
       applySkillEnvironment: false,
       includeCodeModeSkills: false,
       attempt: {
@@ -405,6 +414,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     messageChannel: params.messageChannel,
     messageProvider: params.messageProvider,
     clientCaps: params.clientCaps,
+    gatewayUiCommandTarget: params.gatewayUiCommandTarget,
     pinnedWidgetAuthoring: params.pinnedWidgetAuthoring,
     toolBindings: params.toolBindings,
     // Preserve the Gateway's tri-state capability; undefined hides both GitHub tools.
@@ -640,6 +650,8 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     forceRestartSafeTools: params.forceRestartSafeTools,
     forceCodeModeTools: params.forceCodeModeTools,
     codeModeOverride: params.codeModeOverride,
+    disableToolSearch: params.disableToolSearch,
+    sessionReadScopeKey: params.sessionReadScopeKey,
     forceMessageTool: params.forceMessageTool,
     enableHeartbeatTool: params.enableHeartbeatTool,
     forceHeartbeatTool: params.forceHeartbeatTool,

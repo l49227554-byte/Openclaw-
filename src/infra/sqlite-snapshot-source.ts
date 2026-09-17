@@ -6,16 +6,22 @@ import {
 } from "./sqlite-private-directory.js";
 import {
   adoptPreparedLocation,
+  removeTempDirectory,
+  removeTempDirectoryAsync,
+  SqliteSnapshotCleanupError,
+} from "./sqlite-readonly-location-cleanup.js";
+import {
   createSqliteSnapshotStagingDirectory,
   prepareSqliteReadOnlyLocationInProcess,
   prepareSqliteReadOnlyLocationSyncInProcess,
-  readSqliteSchemaHeaderFromSnapshot,
-  removeTempDirectory,
   SQLITE_SNAPSHOT_STAGING_PREFIX,
-  type PreparedSqliteReadOnlyLocation,
 } from "./sqlite-readonly-location.js";
+import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
 import { runSqliteReadOnlyWorker, runSqliteReadOnlyWorkerSync } from "./sqlite-readonly-worker.js";
-import type { SqliteSchemaHeader } from "./sqlite-schema-header.js";
+import {
+  readSqliteSchemaHeaderFromSnapshotAsync,
+  type SqliteSchemaHeader,
+} from "./sqlite-schema-header.js";
 import { withSqliteSourceHandleAsync } from "./sqlite-source-handle.js";
 import {
   hasStateDatabaseSourceExclusion,
@@ -35,7 +41,7 @@ export async function inspectSqliteSchemaHeader(
     hasStateDatabaseSourceExclusion(pathname)
   ) {
     const prepared = await prepareSqliteReadOnlyLocation(pathname, options);
-    return readSqliteSchemaHeaderFromSnapshot(
+    return readSqliteSchemaHeaderFromSnapshotAsync(
       prepared,
       options.signal,
       options.agentSchemaVersionForOwnership,
@@ -55,16 +61,17 @@ export async function inspectSqliteSchemaHeader(
     });
     options.signal?.throwIfAborted();
   } catch (error) {
-    if (!removeTempDirectory(stagingRoot)) {
+    if (!(await removeTempDirectoryAsync(stagingRoot))) {
       throw new Error(`SQLite read-only worker snapshot cleanup failed: ${stagingRoot}`, {
         cause: error,
       });
     }
     throw error;
   }
-  if (!removeTempDirectory(stagingRoot)) {
+  if (!(await removeTempDirectoryAsync(stagingRoot))) {
     throw new Error(`SQLite read-only worker snapshot cleanup failed: ${stagingRoot}`);
   }
+  options.signal?.throwIfAborted();
   return header;
 }
 
@@ -83,7 +90,7 @@ export async function prepareSqliteReadOnlyLocation(
         options.signal?.throwIfAborted();
         return prepared;
       } catch (error) {
-        prepared.cleanup();
+        await prepared.cleanupAsync();
         throw error;
       }
     }
@@ -95,7 +102,7 @@ export async function prepareSqliteReadOnlyLocation(
         options.signal?.throwIfAborted();
         return prepared;
       } catch (error) {
-        prepared.cleanup();
+        await prepared.cleanupAsync();
         throw error;
       }
     }
@@ -113,7 +120,7 @@ export async function prepareSqliteReadOnlyLocation(
     // read-only handles report false so their owner can retry close.
     return adoptPreparedLocation(location, stagingRoot, options.signal !== undefined);
   } catch (error) {
-    if (stagingRoot && !removeTempDirectory(stagingRoot)) {
+    if (stagingRoot && !(await removeTempDirectoryAsync(stagingRoot))) {
       throw new Error(`SQLite read-only worker snapshot cleanup failed: ${stagingRoot}`, {
         cause: error,
       });
@@ -137,9 +144,12 @@ export function prepareSqliteReadOnlyLocationSync(
     return adoptPreparedLocation(runSqliteReadOnlyWorkerSync(pathname, stagingRoot), stagingRoot);
   } catch (error) {
     if (!removeTempDirectory(stagingRoot)) {
-      throw new Error(`SQLite read-only worker snapshot cleanup failed: ${stagingRoot}`, {
-        cause: error,
-      });
+      throw new SqliteSnapshotCleanupError(
+        `SQLite read-only worker snapshot cleanup failed: ${stagingRoot}`,
+        {
+          cause: error,
+        },
+      );
     }
     throw error;
   }
@@ -187,6 +197,6 @@ export async function withSqliteSnapshotSource<T>(
       return await operation(prepared.location);
     }
   } finally {
-    prepared?.cleanup();
+    await prepared?.cleanupAsync();
   }
 }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import type { AuthProfileStore } from "./auth-profiles/types.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { setPreparedModelFullCatalogAuth } from "./prepared-model-runtime-auth.js";
 import type { ModelRegistry } from "./sessions/model-registry.js";
@@ -149,6 +150,8 @@ vi.mock("./prepared-model-catalog-worker.js", () => ({
       return {
         modelCatalog: catalog,
         runtimeModels: new Map(),
+        providerExpiries: new Map(),
+        configuredProviderModelIds: new Map(),
         configuredRuntimeModels: agentFacts.configuredRuntimeModels,
       };
     },
@@ -199,6 +202,8 @@ vi.mock("./agent-scope-config.js", async (importOriginal) => ({
 }));
 
 vi.mock("./auth-profiles/runtime-snapshots.js", () => ({
+  // This fixture has no published auth owner, so usage stays with its captured store.
+  createPreparedRuntimeAuthProfileUsageReader: () => (store: AuthProfileStore) => store,
   getPreparedRuntimeAuthProfileStoreSnapshotCore: () => undefined,
   getRuntimeAuthProfileStoreCredentialsRevision: () => 0,
   registerRuntimeAuthProfileStoreMutationListener: (
@@ -263,6 +268,10 @@ describe("prepared model runtime Gateway catalog mode", () => {
         levels: [{ id: "off" }, { id: "max" }, { id: "ultra" }],
         defaultLevel: "ultra",
       },
+      expectedLevels: [
+        { id: "max", label: "max" },
+        { id: "ultra", label: "ultra" },
+      ],
     },
     {
       name: "binary thinking",
@@ -270,10 +279,11 @@ describe("prepared model runtime Gateway catalog mode", () => {
         levels: [{ id: "off" }, { id: "low", label: "on" }],
         defaultLevel: "low",
       },
+      expectedLevels: [{ id: "low", label: "on" }],
     },
   ] as const)(
-    "publishes $name policy for lightweight configured and full catalog reads",
-    async ({ profile }) => {
+    "publishes $name policy with model caps for lightweight configured and full catalog reads",
+    async ({ profile, expectedLevels }) => {
       const config = { agents: { defaults: { model: { primary: "openai/gpt-5.5" } } } };
       const policy = { resolveThinkingProfile: () => profile };
       mocks.resolveProviderPolicySurface.mockReturnValue(policy);
@@ -311,10 +321,7 @@ describe("prepared model runtime Gateway catalog mode", () => {
         };
       };
       const expected = {
-        levels: profile.levels.map((level) => ({
-          id: level.id,
-          label: "label" in level ? level.label : level.id,
-        })),
+        levels: expectedLevels,
         defaultLevel: profile.defaultLevel,
       };
       mocks.resolveProviderPolicySurface.mockImplementation(() => {

@@ -53,6 +53,7 @@
           }
         ],
         "install": {
+          "clawhubSpec": "clawhub:@openclaw/brave-plugin",
           "npmSpec": "@openclaw/brave-plugin",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.4.10",
@@ -76,6 +77,7 @@
           ]
         },
         "install": {
+          "clawhubSpec": "clawhub:@openclaw/codex",
           "npmSpec": "@openclaw/codex",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.5.1-beta.1"
@@ -368,6 +370,7 @@
           "label": "Google Meet"
         },
         "install": {
+          "clawhubSpec": "clawhub:@openclaw/google-meet",
           "npmSpec": "@openclaw/google-meet",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.4.20"
@@ -443,6 +446,24 @@
       }
     },
     {
+      "name": "@openclaw/logbook",
+      "description": "OpenClaw automatic work journal plugin",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "logbook",
+          "label": "Logbook"
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/logbook",
+          "npmSpec": "@openclaw/logbook",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.5"
+        }
+      }
+    },
+    {
       "name": "@openclaw/memory-lancedb",
       "description": "OpenClaw LanceDB-backed long-term memory plugin with auto-recall/capture",
       "source": "official",
@@ -465,6 +486,28 @@
       }
     },
     {
+      "name": "@openclaw/memory-wiki",
+      "description": "OpenClaw persistent wiki plugin",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "memory-wiki",
+          "label": "Memory Wiki"
+        },
+        "catalog": {
+          "featured": true,
+          "order": 30
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/memory-wiki",
+          "npmSpec": "@openclaw/memory-wiki",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.4"
+        }
+      }
+    },
+    {
       "name": "@openclaw/llama-cpp-provider",
       "description": "OpenClaw managed llama.cpp server provider plugin",
       "source": "official",
@@ -480,6 +523,7 @@
           ]
         },
         "install": {
+          "clawhubSpec": "clawhub:@openclaw/llama-cpp-provider",
           "npmSpec": "@openclaw/llama-cpp-provider",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.6.2"
@@ -497,6 +541,7 @@
           "label": "MXC Sandbox Execution"
         },
         "install": {
+          "clawhubSpec": "clawhub:@openclaw/mxc-sandbox",
           "npmSpec": "@openclaw/mxc-sandbox",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.6.11"
@@ -518,6 +563,29 @@
           "npmSpec": "@openclaw/openshell-sandbox",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.5.12-beta.1"
+        }
+      }
+    },
+    {
+      "name": "@openclaw/onepassword",
+      "description": "1Password SecretRef resolver and audited agent secrets broker for OpenClaw",
+      "source": "official",
+      "kind": "plugin",
+      "openclaw": {
+        "plugin": {
+          "id": "onepassword",
+          "label": "1Password"
+        },
+        "contracts": {
+          "tools": [
+            "onepassword"
+          ]
+        },
+        "install": {
+          "clawhubSpec": "clawhub:@openclaw/onepassword",
+          "npmSpec": "@openclaw/onepassword",
+          "defaultChoice": "clawhub",
+          "minHostVersion": ">=2026.9.4"
         }
       }
     },
@@ -789,6 +857,7 @@
           "label": "Voice Call"
         },
         "install": {
+          "clawhubSpec": "clawhub:@openclaw/voice-call",
           "npmSpec": "@openclaw/voice-call",
           "defaultChoice": "npm",
           "minHostVersion": ">=2026.4.10"

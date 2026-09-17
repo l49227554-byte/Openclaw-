@@ -1,3 +1,4 @@
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.js";
@@ -90,6 +91,7 @@ async function createRealMetadataLifecycle(
   let revision = 0;
   let latestRefresh = Promise.resolve();
   const buildCommands = vi.fn(async () => ({ commands: [] }));
+  const broadcast = vi.fn();
   mocks.createRuntime.mockImplementation(
     (params: Parameters<typeof actual.createGatewayChatMetadataRuntime>[0]) => {
       const runtime = actual.createGatewayChatMetadataRuntime({
@@ -121,7 +123,7 @@ async function createRealMetadataLifecycle(
   const lifecycle = await pendingLifecycle;
   const attach = () =>
     lifecycle.attachContext(
-      { broadcast: vi.fn() } as unknown as GatewayRequestContext,
+      { broadcast } as unknown as GatewayRequestContext,
       sidecarOwner.publish,
     );
   if (options.attach !== false) {
@@ -134,6 +136,7 @@ async function createRealMetadataLifecycle(
     lifecycle,
     attach,
     buildCommands,
+    broadcast,
     warn,
     modelEvent,
     queueRefresh(stage: "queued" | "building") {
@@ -145,15 +148,16 @@ async function createRealMetadataLifecycle(
           await release.promise;
           return { commands: [] };
         });
-      } else {
-        entered.resolve();
       }
       revision += 1;
       authEvent();
+      const reading =
+        stage === "building" ? lifecycle.read({ agentId: "main" }).catch(() => {}) : undefined;
       return {
-        entered: entered.promise,
+        entered: stage === "building" ? entered.promise : Promise.resolve(),
         release: () => release.resolve(),
         obsolete: latestRefresh,
+        reading,
       };
     },
     replaceOwner() {
@@ -178,6 +182,22 @@ async function createRealMetadataLifecycle(
 }
 
 describe("gateway chat metadata lifecycle", () => {
+  it("does not rebuild or broadcast unchanged metadata after unrelated skill and catalog events", async () => {
+    const harness = await createRealMetadataLifecycle();
+    try {
+      const before = await harness.lifecycle.read({ agentId: "main" });
+      for (let event = 0; event < 14; event += 1) {
+        harness.events.skills();
+        harness.events.catalog();
+        expect(await harness.lifecycle.read({ agentId: "main" })).toEqual(before);
+      }
+      expect(harness.buildCommands).toHaveBeenCalledOnce();
+      expect(harness.broadcast).toHaveBeenCalledOnce();
+    } finally {
+      await harness.stop();
+    }
+  });
+
   it.each(["queued", "building"] as const)(
     "keeps readers waiting when %s metadata refresh is superseded by owner publication",
     async (stage) => {
@@ -200,9 +220,7 @@ describe("gateway chat metadata lifecycle", () => {
         );
         queued.release();
         await queued.obsolete.catch(() => undefined);
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+        await nextEventLoopTurn();
 
         expect(harness.warn).not.toHaveBeenCalled();
         expect(settled).toBe(false);
@@ -213,7 +231,7 @@ describe("gateway chat metadata lifecycle", () => {
       } finally {
         queued.release();
         await harness.stop();
-        await read;
+        await Promise.all([read, queued.reading]);
       }
     },
   );
@@ -238,9 +256,7 @@ describe("gateway chat metadata lifecycle", () => {
             outcome = error;
           },
         );
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+        await nextEventLoopTurn();
 
         expect(outcome).toBe(failure);
         harness.replaceOwner();
@@ -254,7 +270,7 @@ describe("gateway chat metadata lifecycle", () => {
     },
   );
 
-  it("keeps an initial catch-up waiting when its already-published owner is replaced", async () => {
+  it("publishes initial facts before agent work and fences its read during owner replacement", async () => {
     const harness = await createRealMetadataLifecycle({ attach: false });
     const entered = createDeferred();
     const release = createDeferred();
@@ -263,11 +279,9 @@ describe("gateway chat metadata lifecycle", () => {
       await release.promise;
       return { commands: [] };
     });
-    const attachment = harness.attach();
+    await harness.attach();
     let read: Promise<unknown> | undefined;
     try {
-      await entered.promise;
-      harness.invalidateOwner();
       let settled = false;
       read = harness.lifecycle.read({ agentId: "main" }).then(
         (value) => {
@@ -279,11 +293,10 @@ describe("gateway chat metadata lifecycle", () => {
           return error;
         },
       );
+      await entered.promise;
+      harness.invalidateOwner();
       release.resolve();
-      await attachment;
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      await nextEventLoopTurn();
       expect(settled).toBe(false);
       expect(harness.warn).not.toHaveBeenCalled();
       harness.replaceOwner();
@@ -293,7 +306,6 @@ describe("gateway chat metadata lifecycle", () => {
     } finally {
       release.resolve();
       await harness.stop();
-      await attachment;
       await read;
     }
   });
@@ -318,9 +330,7 @@ describe("gateway chat metadata lifecycle", () => {
           return error;
         },
       );
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      await nextEventLoopTurn();
       expect(settled).toBe(false);
       harness.replaceOwner();
       await expect(read).resolves.toMatchObject({
@@ -444,16 +454,19 @@ describe("gateway chat metadata lifecycle", () => {
     revision += 1;
     modelListener({ phase: "published" });
     gate.resolve();
-    await vi.waitFor(() => expect(outcomes).toHaveLength(5));
-    expect(outcomes[4]).toEqual([expect.objectContaining({ available: true })]);
+    await vi.waitFor(() => expect(outcomes).toHaveLength(6));
+    expect(outcomes.slice(4)).toEqual([
+      [expect.objectContaining({ available: true })],
+      [expect.objectContaining({ available: true })],
+    ]);
 
     modelListener({ phase: "invalidated" });
     modelListener({ phase: "failed", error: new Error("owner publication failed") });
     await Promise.all(reads);
     await expect(lifecycle.read({ agentId: "main" })).rejects.toThrow("owner publication failed");
-    expect(outcomes[5]).toBe("owner publication failed");
+    expect(outcomes[6]).toBe("owner publication failed");
     expect(broadcast.mock.calls).toEqual(
-      Array.from({ length: 6 }, () => ["chat.metadata.changed", {}, { dropIfSlow: true }]),
+      Array.from({ length: 7 }, () => ["chat.metadata.changed", {}, { dropIfSlow: true }]),
     );
   });
 
@@ -688,7 +701,7 @@ describe("gateway chat metadata lifecycle", () => {
 
     modelListener({ phase: "catalog-published" });
 
-    expect(mocks.invalidate).toHaveBeenCalledOnce();
+    expect(mocks.invalidate).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(mocks.refresh).toHaveBeenCalledTimes(3));
   });
 

@@ -29,8 +29,8 @@ defineDiscordVoiceTests(
       resolveConfiguredRealtimeVoiceProviderMock.mockReturnValue({
         provider: {
           id: "openai",
-          capabilities: { supportsActivationNameGating: false, handlesAgentConsult: true },
         },
+        capabilities: { supportsActivationNameGating: false, handlesAgentConsult: true },
         providerConfig: { model: "gpt-live-1", voice: "marin" },
       });
 
@@ -69,7 +69,7 @@ defineDiscordVoiceTests(
           expect(agentCommandArgsAt(index)).toMatchObject({
             senderIsOwner: index === 1,
             sessionKey: "discord:g1:c1",
-            abortSignal: signal,
+            abortSignal: expect.any(AbortSignal),
           });
         }
         await manager.destroy();

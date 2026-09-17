@@ -47,6 +47,10 @@ behaviors:
 | Admission      | Optional. Set `acceptUnknownModel: ({ id, record }) => boolean` when your request shaping is model-version specific, so discovery cannot publish a model you cannot yet build a valid request for. It is called only for IDs your static catalog does not already publish; known IDs bypass it and keep their published metadata. Return `false` to drop the row. Providers that omit it keep the previous behavior unchanged. Prefer comparing the vendor's advertised capabilities against your own contract checks over a hand-maintained model list, and fail closed when the row carries no capability data. |
 | Failure        | Live discovery is advisory. Auth, network, timeout, pagination, parsing, empty-catalog, and filtering failures return the provider-owned static seed instead of removing the provider.                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
+Relative catalog cache TTLs start when a successful load completes. Cache hits
+preserve that deadline, and explicit absolute provider deadlines remain unchanged.
+Pending loads retain their initial expiry so stalled work can be replaced.
+
 Bundled providers set `discoveryMode: "strict"` in their catalog options.
 This code option keeps successful empty results empty and reports failed
 acquisition through `ProviderCatalogResult.outcomes`, rather than returning
@@ -228,6 +232,24 @@ in the owning plugin. Derive static fallback eligibility after refreshing
 metadata so the first failed or fully filtered discovery uses current status.
 Public metadata never establishes account entitlement or expands the
 credential scope of discovery.
+
+The private `createUpstreamProviderCatalog` helper keeps this snapshot lifecycle in one prepared
+owner. Supply the trusted seed, provider routes, metadata and model-list
+endpoints, static-entry eligibility, and any model decoration. An optional
+`upstreamSeed` controls which seed lifecycle facts survive an upstream refresh.
+The owner exposes `getSnapshot`, `refreshMetadata`, `buildStaticProvider`, and
+`buildLiveProvider`; credentials belong to each build call. Live builds refresh
+metadata before deriving static eligibility and intersecting advertised IDs.
+Metadata acquisition failure retains the previous snapshot; model-list failures
+and empty results remain strict. `refreshMetadata` returns `undefined` when the
+feed lacks the provider, so explicit model preparation cannot mistake retained
+metadata for a successful refresh. Plugin policy still owns which models may
+resolve directly from the seed or current snapshot.
+
+Upstream reasoning metadata preserves omitted controls as unspecified and an
+empty options or effort list as no effort control. A native `null` effort maps
+to `none`; provider-native effort names retain their casing. These facts remain
+separate from whether a model performs reasoning internally.
 
 Official plugins use the private, pure
 `openclaw/plugin-sdk/model-catalog-pricing` runtime subpath. It exposes

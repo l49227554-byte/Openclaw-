@@ -112,11 +112,13 @@ type ChannelAccountLifetime = {
 type ChannelRuntimeStore = {
   startFence?: {
     paused: boolean;
-    snapshot?: () => {
-      accounts: Record<string, ChannelAccountSnapshot>;
-      listedAccountIds: readonly string[];
-      defaultAccountId: string;
-      defaultAccount: ChannelAccountSnapshot;
+    snapshot?: {
+      listedAccountIds: ReadonlySet<string>;
+      read: () => {
+        accounts: Record<string, ChannelAccountSnapshot>;
+        defaultAccountId: string;
+        defaultAccount: ChannelAccountSnapshot;
+      };
     };
   };
   lifetimes: Map<string, ChannelAccountLifetime>;
@@ -264,7 +266,7 @@ export type ChannelManager = {
   getRuntimeSnapshot: (options?: ChannelRuntimeSnapshotOptions) => ChannelRuntimeSnapshot;
   pauseChannelStarts: (
     channelIds: Iterable<ChannelId>,
-  ) => (outcome: "published" | "rollback") => void;
+  ) => (outcome: "published" | "rollback", channelIds?: ReadonlySet<ChannelId>) => void;
   startChannels: () => Promise<void>;
   startChannel: (
     channel: ChannelId,
@@ -1646,17 +1648,21 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         );
       };
     });
-    return () => {
-      const snapshots = Object.fromEntries(accountIds.map((id, index) => [id, accounts[index]!()]));
-      return {
-        accounts: snapshots,
-        listedAccountIds: configuredAccountIds,
-        defaultAccountId,
-        defaultAccount: snapshots[defaultAccountId] ?? {
-          ...defaultRuntime,
-          accountId: defaultAccountId,
-        },
-      };
+    return {
+      listedAccountIds: configuredAccountIdSet,
+      read: () => {
+        const snapshots = Object.fromEntries(
+          accountIds.map((id, index) => [id, accounts[index]!()]),
+        );
+        return {
+          accounts: snapshots,
+          defaultAccountId,
+          defaultAccount: snapshots[defaultAccountId] ?? {
+            ...defaultRuntime,
+            accountId: defaultAccountId,
+          },
+        };
+      },
     };
   };
 
@@ -1674,7 +1680,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
       const fence = getStore(plugin.id).startFence;
       const snapshot = (
         fence?.paused ? fence.snapshot : captureChannelSnapshot(plugin, inspectAccounts)
-      )?.();
+      )?.read();
       if (fence?.paused) {
         reloadingChannels.set(plugin.id, snapshot?.defaultAccountId);
       }
@@ -1713,14 +1719,17 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
               ? captureChannelSnapshot(plugin)
               : undefined,
         };
-        return { store, previous, fence };
+        return { channelId, store, previous, fence };
       });
       // Capture every target before pausing any of them; a failed capture must not strand a sibling.
       for (const { store, fence } of reservations) {
         store.startFence = fence;
       }
-      return (outcome) => {
-        for (const { store, previous, fence } of reservations) {
+      return (outcome, selected) => {
+        for (const { channelId, store, previous, fence } of reservations) {
+          if (selected && !selected.has(channelId)) {
+            continue;
+          }
           if (store.startFence === fence && fence.paused) {
             // Publication keeps the token so delayed predecessor preparation stays stale.
             // A cancelled retry restores an earlier failed replacement's pause.
@@ -1768,7 +1777,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
       const fence = channelStores.get(channelId)?.startFence;
       // Health and thaw read captured configuration while plugin callbacks are paused.
       return fence?.paused
-        ? (fence.snapshot?.().listedAccountIds.includes(accountId) ?? false)
+        ? (fence.snapshot?.listedAccountIds.has(accountId) ?? false)
         : withRegistry(
             (registry) =>
               getLoadedChannelPluginEntryById(channelId, registry)

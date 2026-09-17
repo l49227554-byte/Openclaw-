@@ -1,8 +1,9 @@
 import type { ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { HeapProfiler, Profiler } from "node:inspector";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { startGatewayBenchDiagnostics } from "./gateway-bench-diagnostics.ts";
 
 export const GATEWAY_PROFILE_CHANNEL = "openclaw-gateway-bench-profile";
 export const GATEWAY_HEAP_SAMPLE_INTERVAL = 32 * 1024;
@@ -13,13 +14,37 @@ export type GatewayProfileCommand = {
   kind: "heap" | "cpu";
   action: "start" | "stop";
   profilePath: string;
+  includeWorkers?: boolean;
 };
+
+export type GatewayCpuUsageSnapshot = {
+  pid: number;
+  atMonotonicMicros: number;
+  process: NodeJS.CpuUsage;
+  mainThread: NodeJS.CpuUsage;
+};
+
+export type GatewayBenchCommand =
+  | GatewayProfileCommand
+  | { channel: typeof GATEWAY_PROFILE_CHANNEL; kind: "cpu-usage"; action: "sample" };
 
 type GatewayProfileReply = {
   channel: typeof GATEWAY_PROFILE_CHANNEL;
-  kind: GatewayProfileCommand["kind"];
-  action: "start" | "stop";
+  kind: GatewayBenchCommand["kind"];
+  action: GatewayBenchCommand["action"];
   error?: string;
+  cpuUsage?: GatewayCpuUsageSnapshot;
+};
+
+type CpuUsageMilliseconds = { userMs: number; systemMs: number; totalMs: number };
+
+export type GatewayCpuUsage = {
+  pid: number;
+  startMonotonicMicros: number;
+  endMonotonicMicros: number;
+  wallMs: number;
+  process: CpuUsageMilliseconds;
+  mainThread: CpuUsageMilliseconds;
 };
 
 export type GatewayHeapProfile = {
@@ -31,31 +56,96 @@ export type GatewayHeapProfile = {
     sampledBytes: number;
     stack: string[];
   }>;
-};
+} & GatewayProfileArtifacts;
 
 export type GatewayCpuProfile = {
   profilePath: string;
   samplingIntervalMicros: number;
   durationMs: number;
   sampleCount: number;
+} & GatewayProfileArtifacts;
+
+type GatewayProfileArtifacts = {
+  diagnosticsPath?: string;
+  diagnostics?: ReturnType<ReturnType<typeof startGatewayBenchDiagnostics>>;
 };
+
+function readProfileArtifacts(profilePath: string): GatewayProfileArtifacts {
+  const diagnosticsPath = `${profilePath}.diagnostics.json`;
+  return existsSync(diagnosticsPath)
+    ? { diagnosticsPath, diagnostics: JSON.parse(readFileSync(diagnosticsPath, "utf8")) }
+    : {};
+}
 
 export async function controlGatewayProfile(
   child: ChildProcess,
   kind: GatewayProfileCommand["kind"],
   action: GatewayProfileCommand["action"],
   profilePath: string,
+  options: { includeWorkers?: boolean } = {},
 ): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const finish = (error?: Error) => {
+  await sendGatewayBenchCommand(child, {
+    channel: GATEWAY_PROFILE_CHANNEL,
+    kind,
+    action,
+    profilePath,
+    ...options,
+  });
+}
+
+export async function readGatewayCpuUsage(child: ChildProcess): Promise<GatewayCpuUsageSnapshot> {
+  const reply = await sendGatewayBenchCommand(child, {
+    channel: GATEWAY_PROFILE_CHANNEL,
+    kind: "cpu-usage",
+    action: "sample",
+  });
+  if (!reply.cpuUsage) {
+    throw new Error("Gateway did not report CPU usage");
+  }
+  return reply.cpuUsage;
+}
+
+export function measureGatewayCpuUsage(
+  before: GatewayCpuUsageSnapshot,
+  after: GatewayCpuUsageSnapshot,
+): GatewayCpuUsage {
+  if (before.pid !== after.pid || after.atMonotonicMicros <= before.atMonotonicMicros) {
+    throw new Error("Gateway CPU samples must span one process and a positive interval");
+  }
+  const delta = (start: NodeJS.CpuUsage, end: NodeJS.CpuUsage): CpuUsageMilliseconds => {
+    const userMs = (end.user - start.user) / 1_000;
+    const systemMs = (end.system - start.system) / 1_000;
+    if (userMs < 0 || systemMs < 0) {
+      throw new Error("Gateway CPU counters decreased during the measured interval");
+    }
+    return { userMs, systemMs, totalMs: userMs + systemMs };
+  };
+  return {
+    pid: after.pid,
+    startMonotonicMicros: before.atMonotonicMicros,
+    endMonotonicMicros: after.atMonotonicMicros,
+    wallMs: (after.atMonotonicMicros - before.atMonotonicMicros) / 1_000,
+    process: delta(before.process, after.process),
+    mainThread: delta(before.mainThread, after.mainThread),
+  };
+}
+
+async function sendGatewayBenchCommand(
+  child: ChildProcess,
+  command: GatewayBenchCommand,
+): Promise<GatewayProfileReply> {
+  const { kind, action } = command;
+  return await new Promise<GatewayProfileReply>((resolve, reject) => {
+    const finish = (result: Error | GatewayProfileReply) => {
       clearTimeout(timer);
       child.off("message", onMessage);
       child.off("exit", onExit);
       child.off("disconnect", onDisconnect);
-      if (error) {
-        reject(error);
+      child.off("error", finish);
+      if (result instanceof Error) {
+        reject(result);
       } else {
-        resolve();
+        resolve(result);
       }
     };
     const onMessage = (message: GatewayProfileReply) => {
@@ -66,7 +156,7 @@ export async function controlGatewayProfile(
       ) {
         return;
       }
-      finish(message.error ? new Error(message.error) : undefined);
+      finish(message.error ? new Error(message.error) : message);
     };
     const onExit = () => finish(new Error(`Gateway exited during ${kind} profile ${action}`));
     const onDisconnect = () =>
@@ -78,11 +168,12 @@ export async function controlGatewayProfile(
     child.on("message", onMessage);
     child.once("exit", onExit);
     child.once("disconnect", onDisconnect);
+    child.once("error", finish);
     if (!child.connected) {
       onDisconnect();
       return;
     }
-    child.send({ channel: GATEWAY_PROFILE_CHANNEL, kind, action, profilePath }, (error) => {
+    child.send(command, (error) => {
       if (error) {
         finish(error);
       }
@@ -93,6 +184,7 @@ export async function controlGatewayProfile(
 export function readGatewayCpuProfile(profilePath: string): GatewayCpuProfile {
   const profile: Profiler.Profile = JSON.parse(readFileSync(profilePath, "utf8"));
   return {
+    ...readProfileArtifacts(profilePath),
     profilePath,
     samplingIntervalMicros: GATEWAY_CPU_SAMPLE_INTERVAL_MICROS,
     durationMs: (profile.endTime - profile.startTime) / 1_000,
@@ -121,6 +213,7 @@ export function readGatewayHeapProfile(profilePath: string): GatewayHeapProfile 
   };
   visit(profile.head, []);
   return {
+    ...readProfileArtifacts(profilePath),
     profilePath,
     samplingIntervalBytes: GATEWAY_HEAP_SAMPLE_INTERVAL,
     includesCollectedObjects: true,

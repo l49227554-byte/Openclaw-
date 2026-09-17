@@ -7,6 +7,7 @@ import type { GatewayEventFrame } from "../api/gateway.ts";
 import { invalidateChatMetadataStore } from "../lib/chat/chat-metadata-cache.ts";
 import { invalidateModelAuthStatusRequests } from "../lib/model-auth-request-state.ts";
 import {
+  clearModelCatalogCache,
   beginModelCatalogRead,
   publishModelCatalogResult,
   type ModelCatalogRead,
@@ -17,6 +18,7 @@ import {
   type UiSessionDefaultsHost,
 } from "../lib/sessions/session-key.ts";
 import type { ApplicationGatewaySnapshot } from "./gateway.ts";
+import { invalidateUserPreferences } from "./user-prefs-cache.ts";
 
 export function createGatewayEventObserver(options: {
   isAttached: () => boolean;
@@ -123,7 +125,9 @@ export function createGatewayMetadataObserver(
           previous.selfUser?.id !== next.selfUser?.id ||
           (previous.phase === "connected" && next.phase !== "connected"))
       ) {
+        invalidateUserPreferences(previous.client);
         invalidateModelAuthStatusRequests(previous.client);
+        clearModelCatalogCache(previous.client);
         invalidateChatMetadataStore(previous.client);
         if (!isCurrent(next)) {
           return false;

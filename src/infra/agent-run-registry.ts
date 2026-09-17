@@ -1,7 +1,6 @@
 // Owns process-local agent run context, ownership, and projection state.
 import { randomUUID } from "node:crypto";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { registerListener } from "../shared/listeners.js";
 import { recordAgentEventRouting } from "./agent-event-execution-context.js";
 import {
@@ -9,9 +8,17 @@ import {
   type AgentRunApprovalClosureReason,
 } from "./agent-run-approval-leases.js";
 import type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
+import {
+  areAgentRunModelsEqual,
+  buildAgentRunProjectionIndex,
+  projectedAgentRunInputKey,
+  projectedRunIdentity,
+} from "./agent-run-projection.js";
+import { getAgentRunRegistryState, bumpAgentRunIndexVersion } from "./agent-run-registry-state.js";
 import type {
   AgentRunContext,
   AgentRunContextOwnership,
+  AgentRunModel,
   AgentRunRegistryState,
   ProjectedAgentRunIndex,
   ProjectedAgentRunState,
@@ -20,21 +27,6 @@ import { clearAgentRunUsage, resetAgentRunUsageForTest } from "./agent-run-usage
 
 export type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
 export type { ProjectedAgentRunIndex } from "./agent-run-registry.types.js";
-
-const AGENT_RUN_REGISTRY_STATE_KEY = Symbol.for("openclaw.agentRunRegistry.state");
-
-function getAgentRunRegistryState(): AgentRunRegistryState {
-  return resolveGlobalSingleton<AgentRunRegistryState>(AGENT_RUN_REGISTRY_STATE_KEY, () => ({
-    contexts: new Map<string, AgentRunContext>(),
-    owners: new Map<string, AgentRunContextOwnership>(),
-    lifecycleGeneration: randomUUID(),
-    version: 0,
-  }));
-}
-
-function bumpAgentRunIndexVersion(): void {
-  getAgentRunRegistryState().version += 1;
-}
 
 /** Reads the process-local version of the active-run projection inputs. */
 export function readAgentRunIndexVersion(): number {
@@ -135,14 +127,12 @@ export function registerAgentRunContext(
   ) {
     return;
   }
-  let runIndexChanged = false;
+  const runIndexInputBefore = projectedAgentRunInputKey(existing);
   if (context.sessionKey && existing.sessionKey !== context.sessionKey) {
     existing.sessionKey = context.sessionKey;
-    runIndexChanged = true;
   }
   if (context.sessionId && existing.sessionId !== context.sessionId) {
     existing.sessionId = context.sessionId;
-    runIndexChanged = true;
   }
   if (context.agentId && existing.agentId !== context.agentId) {
     existing.agentId = context.agentId;
@@ -159,7 +149,6 @@ export function registerAgentRunContext(
     existing.projectSessionActive !== context.projectSessionActive
   ) {
     existing.projectSessionActive = context.projectSessionActive;
-    runIndexChanged = true;
   }
   if (context.projectSessionLifecycle !== undefined) {
     existing.projectSessionLifecycle = context.projectSessionLifecycle;
@@ -185,7 +174,7 @@ export function registerAgentRunContext(
   if (context.lastActiveAt !== undefined) {
     existing.lastActiveAt = context.lastActiveAt;
   }
-  if (runIndexChanged) {
+  if (runIndexInputBefore !== projectedAgentRunInputKey(existing)) {
     bumpAgentRunIndexVersion();
   }
   recordAgentEventRouting(runId, existing);
@@ -524,7 +513,31 @@ export function releaseAgentRunDelegatedAuthority(authority: AgentRunDelegatedAu
   return true;
 }
 
-/** Lists active runs bound to one current session identity. */
+/** Exact execution claims and scheduler queue leases, excluding UI projection metadata. */
+export function hasAgentRunContextExecutionOwner(runId: string): boolean {
+  const state = getAgentRunRegistryState();
+  const context = state.contexts.get(runId);
+  if (!context || context.lifecycleGeneration !== state.lifecycleGeneration) {
+    return false;
+  }
+  const owners = state.owners.get(runId);
+  return (
+    (owners?.lifecycleGeneration === state.lifecycleGeneration && owners.claimIds.size > 0) ||
+    (state.queuedRunContextLeases?.get(context) ?? 0) > 0
+  );
+}
+
+/** Live display projection also includes a producer's active-session marker. */
+export function hasLiveAgentRunContext(runId: string): boolean {
+  const state = getAgentRunRegistryState();
+  const context = state.contexts.get(runId);
+  return (
+    context?.lifecycleGeneration === state.lifecycleGeneration &&
+    (hasAgentRunContextExecutionOwner(runId) || context.projectSessionActive === true)
+  );
+}
+
+/** Lists registered runs bound to one current session identity. */
 export function listAgentRunsForSession(params: {
   sessionKey: string;
   sessionId?: string;
@@ -542,55 +555,37 @@ export function listAgentRunsForSession(params: {
   return runs.toSorted((a, b) => a.runId.localeCompare(b.runId));
 }
 
-function projectedRunIdentity(agentId: string, value: string): string {
-  return `${normalizeAgentId(agentId)}\0${value}`;
+export function recordAgentRunModel(runId: string, model: AgentRunModel | undefined): void {
+  const context = getAgentRunContext(runId);
+  if (!context || context.lifecycleGeneration !== getAgentRunLifecycleGeneration()) {
+    return;
+  }
+  if (areAgentRunModelsEqual(context.activeModel, model)) {
+    return;
+  }
+  if (model) {
+    context.activeModel = model;
+  } else {
+    delete context.activeModel;
+  }
+  bumpAgentRunIndexVersion();
+}
+
+export function resolveProjectedAgentRunModel(params: {
+  agentId: string;
+  sessionId?: string;
+  index?: ProjectedAgentRunIndex;
+}): AgentRunModel | null | undefined {
+  return params.sessionId === undefined
+    ? undefined
+    : (params.index ?? buildProjectedAgentRunIndex()).modelsBySessionId.get(
+        projectedRunIdentity(params.agentId, params.sessionId),
+      );
 }
 
 export function buildProjectedAgentRunIndex(): ProjectedAgentRunIndex {
-  const state = getAgentRunRegistryState();
-  const sessionKeys = new Map<string, ProjectedAgentRunState>();
-  const sessionIds = new Map<string, ProjectedAgentRunState>();
-  const ownerlessSessionKeys = new Map<string, ProjectedAgentRunState>();
-  const ownerlessSessionIds = new Map<string, ProjectedAgentRunState>();
-  const add = (
-    index: Map<string, ProjectedAgentRunState>,
-    key: string,
-    status: ProjectedAgentRunState,
-  ) => {
-    const previous = index.get(key);
-    if (previous !== "running" && !(previous === "queued" && status === "capacity-wait")) {
-      index.set(key, status);
-    }
-  };
-  for (const context of state.contexts.values()) {
-    const queued = (context.capacityWaits?.size ?? 0) > 0;
-    if (
-      context.lifecycleGeneration !== state.lifecycleGeneration ||
-      (context.projectSessionActive !== true &&
-        (!queued ||
-          context.projectSessionActive === false ||
-          context.projectSessionLifecycle === false))
-    ) {
-      continue;
-    }
-    const status = !queued
-      ? "running"
-      : context.projectSessionActive === true
-        ? "queued"
-        : "capacity-wait";
-    const agentId = context.agentId ?? parseAgentSessionKey(context.sessionKey)?.agentId;
-    if (context.sessionKey !== undefined && agentId) {
-      add(sessionKeys, projectedRunIdentity(agentId, context.sessionKey), status);
-    } else if (context.sessionKey !== undefined) {
-      add(ownerlessSessionKeys, context.sessionKey, status);
-    }
-    if (context.sessionId !== undefined && agentId) {
-      add(sessionIds, projectedRunIdentity(agentId, context.sessionId), status);
-    } else if (context.sessionId !== undefined) {
-      add(ownerlessSessionIds, context.sessionId, status);
-    }
-  }
-  return { sessionKeys, sessionIds, ownerlessSessionKeys, ownerlessSessionIds };
+  const { contexts, lifecycleGeneration } = getAgentRunRegistryState();
+  return buildAgentRunProjectionIndex({ contexts: contexts.values(), lifecycleGeneration });
 }
 
 export function resolveProjectedAgentRunProgressState(params: {

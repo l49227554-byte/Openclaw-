@@ -10,6 +10,7 @@ import {
   cleanupMaterializedSubagentAttachments,
   materializeSubagentAttachments,
 } from "./subagent-attachments.js";
+import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import {
   createSubagentSpawnTestConfig,
   loadSubagentSpawnModuleForTest,
@@ -442,6 +443,7 @@ describe("spawnSubagentDirect filename validation", () => {
         expect(persistedStore?.[childSessionKey]?.spawnedCwd).toBe(expectedCwd);
       });
     } finally {
+      await cleanupSessionStateForTest({ stateDir: path.join(homeDir, ".openclaw") });
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });

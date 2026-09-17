@@ -1,4 +1,4 @@
-// Session transcript facade resolves transcript files, appends mirror messages, and reads tails.
+// Session transcript facade appends mirror messages and reads tails.
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import type { SessionManager } from "../../agents/sessions/session-manager.js";
@@ -43,6 +43,7 @@ import {
   type SessionTranscriptTurnWriteContext,
   type SessionTranscriptTurnExpectedState,
   type TranscriptEntryAnchor,
+  type TranscriptEvent,
 } from "./session-accessor.js";
 import type {
   SessionLifecycleRevisionExpectation,
@@ -156,8 +157,6 @@ class SessionTranscriptAgentScopeMismatchError extends Error {
 
 export type LatestAssistantTranscriptText = AssistantTranscriptText;
 
-export { resolveSessionTranscriptFile } from "./transcript-file-resolve.js";
-
 function parseAssistantTranscriptText(
   line: string,
   options?: { excludeTranscriptOnlyOpenClawAssistant?: boolean },
@@ -195,11 +194,11 @@ type SessionConversationTranscriptTarget = {
   sqliteScope?: SqliteSessionFileMarker;
 };
 
-function parseRecentConversationText(
-  line: string,
+function extractRecentConversationText(
+  event: TranscriptEvent,
   options: ReadRecentSessionConversationTextOptions = {},
 ): SessionRecentConversationText | undefined {
-  const parsed = JSON.parse(line) as {
+  const parsed = event as {
     id?: unknown;
     message?: unknown;
   };
@@ -291,7 +290,7 @@ async function readRecentUserAssistantTextFromSqliteTranscript(
           break;
         }
         for (const event of page.events.toReversed()) {
-          const entry = parseRecentConversationText(JSON.stringify(event.event), options);
+          const entry = extractRecentConversationText(event.event, options);
           if (entry && isWithinTranscriptWindow(entry.timestamp, options)) {
             recent.push(entry);
             if (recent.length >= limit) {

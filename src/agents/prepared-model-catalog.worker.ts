@@ -13,6 +13,8 @@ import { listRuntimePluginIdsFromRegistry } from "../plugins/active-runtime-regi
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { isManifestPluginAvailableForControlPlane } from "../plugins/manifest-contract-eligibility.js";
 import { restorePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { withPluginSourceCaptureDirectory } from "../plugins/plugin-package-metadata-capture.js";
+import { captureProviderCatalogExpiries } from "../plugins/provider-catalog-expiry.js";
 import { planRuntimePluginDiscovery } from "../plugins/provider-discovery.js";
 import { restorePreparedSyntheticAuthFacts } from "../plugins/provider-synthetic-auth.js";
 import { manifestPluginResolvesRuntimeModelCatalogAugment } from "../plugins/providers.js";
@@ -36,10 +38,16 @@ import {
   fingerprintPreparedModelCatalogGeneration,
   fingerprintPreparedModelWorkerRequest,
   type PreparedModelCatalogWorkerInput,
+  type PreparedModelCatalogWorkerData,
+  type PreparedModelCatalogWorkerTask,
   type PreparedModelWorkerRequest,
   type PreparedModelWorkerResult,
 } from "./prepared-model-catalog-worker.js";
 import { prepareOwnedPluginLoadContext } from "./prepared-model-runtime.plugin-context.js";
+import {
+  discardPreparedPluginGeneration,
+  retainPreparedPluginGeneration,
+} from "./prepared-model-runtime.plugin-lifetime.js";
 import { scopeSyntheticAuthProviderRefs } from "./prepared-model-runtime.synthetic-auth.js";
 import { loadAgentRuntimePluginRegistryHandle } from "./runtime-plugins.js";
 import { AuthStorage } from "./sessions/auth-storage.js";
@@ -126,13 +134,13 @@ async function prepareWorkerGeneration(value: PreparedModelCatalogWorkerInput) {
     .map((plugin) => plugin.id)
     .toSorted((left, right) => left.localeCompare(right));
   const prepared = await prepareWorkspaceBuildGroup(
-    [{ ...value.input, runtimePluginSelections: [] }],
+    [value.input],
     "static",
     {
       preferBuiltPluginArtifacts: value.preferBuiltPluginArtifacts,
       basePluginIds,
       providerDiscoveryProviderIds: value.providerIds,
-      getConfiguredHarnessRuntimes: () => [],
+      purpose: "model-catalog",
     },
     undefined,
     undefined,
@@ -282,8 +290,7 @@ export async function runPreparedModelCatalogWorkerRequest(
       // catalog owners from the captured metadata before binding the authoritative registry.
       const catalogRegistry = loadAgentRuntimePluginRegistryHandle({
         ...value.input,
-        selections: [],
-        configuredHarnessRuntimes: [],
+        purpose: "model-catalog",
         metadataSnapshot: pluginMetadataSnapshot,
         preferBuiltPluginArtifacts: value.preferBuiltPluginArtifacts,
         reusableRegistry: pluginRegistry,
@@ -306,16 +313,14 @@ export async function runPreparedModelCatalogWorkerRequest(
         providerStaticModels: undefined,
       });
     }
-    const source = await prepareAgentCatalogSource(
-      exactAgentFacts,
-      catalogGeneration,
-      "live",
-      false,
-      {
+    const configuredProviderModelIds = new Map<string, readonly string[]>();
+    const { value: source, providerExpiries } = await captureProviderCatalogExpiries(() =>
+      prepareAgentCatalogSource(exactAgentFacts, catalogGeneration, "live", false, {
         authStore,
         providerDiscoveryProviderIds: request.providerIds,
         providerDiscoveryTimeoutMs: PREPARED_MODEL_CATALOG_WORKER_TIMEOUT_MS,
-      },
+        providerCatalogInventory: { agentId: value.input.agentId, configuredProviderModelIds },
+      }),
     );
     const facts = await prepareFullCatalogFacts(
       exactAgentFacts,
@@ -360,6 +365,8 @@ export async function runPreparedModelCatalogWorkerRequest(
       generationFingerprint,
       snapshot: facts.modelCatalog,
       runtimeModels,
+      providerExpiries,
+      configuredProviderModelIds,
       configuredRuntimeModels: facts.configuredRuntimeModels,
       credentials: catalogCredentials,
       providerAuthLabels: withPluginRuntimeGenerationScope(pluginGenerationScope, () =>
@@ -409,16 +416,43 @@ function isWorkerRequest(value: unknown): value is PreparedModelWorkerRequest {
 }
 
 if (parentPort) {
-  const value = workerData as PreparedModelCatalogWorkerInput;
+  const data = workerData as PreparedModelCatalogWorkerData;
   let preparedGeneration: ReturnType<typeof prepareWorkerGeneration> | undefined;
-  serveWorkerTasks((request) => {
-    if (!isWorkerRequest(request)) {
+  // Registrations and captured modules are inventory-owned. Agent/auth facts only live for
+  // their task; retaining one generation per registry prevents disposal between borrowers.
+  const retainedRegistries = new Set<
+    Awaited<ReturnType<typeof prepareWorkerGeneration>>["pluginGeneration"]["pluginRegistry"]
+  >();
+  serveWorkerTasks(async (input) => {
+    // SAFETY: The Gateway pool is the sole producer of this private task envelope.
+    const task = data.kind === "gateway" ? (input as PreparedModelCatalogWorkerTask) : undefined;
+    const value = task?.value ?? data;
+    const request = task?.request ?? input;
+    if (value.kind !== "catalog" || !isWorkerRequest(request)) {
       throw new Error("invalid prepared model catalog worker request");
     }
-    return runPreparedModelCatalogWorkerRequest(
-      value,
-      request,
-      () => (preparedGeneration ??= prepareWorkerGeneration(value)),
-    );
+    return withPluginSourceCaptureDirectory(data.sourceCaptureDirectory, async () => {
+      let taskGeneration: Awaited<ReturnType<typeof prepareWorkerGeneration>> | undefined;
+      try {
+        return await runPreparedModelCatalogWorkerRequest(value, request, () => {
+          if (!task) {
+            return (preparedGeneration ??= prepareWorkerGeneration(value));
+          }
+          return prepareWorkerGeneration(value).then((prepared) => {
+            taskGeneration = prepared;
+            const registry = prepared.pluginGeneration.pluginRegistry;
+            if (!retainedRegistries.has(registry)) {
+              retainedRegistries.add(registry);
+              retainPreparedPluginGeneration(prepared.pluginGeneration);
+            }
+            return prepared;
+          });
+        });
+      } finally {
+        if (taskGeneration) {
+          await discardPreparedPluginGeneration(taskGeneration.pluginGeneration);
+        }
+      }
+    });
   });
 }

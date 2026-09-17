@@ -263,28 +263,50 @@ describe("Codex app-server dynamic tool build", () => {
     );
   });
 
-  it("hands the question tools this run's own way to show a prompt", async () => {
-    // Codex dispatches dynamic tools itself, so no tool-start handler reserves the
-    // prompt for a blocking question. Without this the question is never shown and
-    // the turn waits out its full timeout.
-    const workspaceDir = path.join(tempDir, "question-prompt-workspace");
-    const params = createParams(path.join(tempDir, "question-prompt-session.jsonl"), workspaceDir);
-    params.disableTools = false;
-    params.runtimePlan = createCodexRuntimePlanFixture();
-    params.messageChannel = "telegram";
-    const onToolResult = vi.fn();
-    params.onToolResult = onToolResult;
-    let capturedQuestionPrompt: OpenClawCodingToolsOptionsForTest["questionPrompt"];
-    setOpenClawCodingToolsFactoryForTests((options) => {
-      capturedQuestionPrompt = options?.questionPrompt;
-      return [];
-    });
+  it.each<[string, string | undefined, string | undefined, string | undefined, boolean]>([
+    ["provider-only Telegram", undefined, "telegram", "telegram", true],
+    ["explicit Telegram", "telegram", undefined, "telegram", true],
+    ["explicit Telegram before another provider", "telegram", "discord", "telegram", true],
+    ["explicit webchat before Telegram provider", "webchat", "telegram", "webchat", true],
+    ["both channels absent", undefined, undefined, undefined, true],
+    ["callback absent", undefined, "telegram", "telegram", false],
+  ])(
+    "hands the question tools this run's own way to show a prompt: %s",
+    async (_name, messageChannel, messageProvider, expectedChannel, hasCallback) => {
+      // Codex dispatches dynamic tools itself, so no tool-start handler reserves the
+      // prompt for a blocking question. Without this the question is never shown and
+      // the turn waits out its full timeout.
+      const workspaceDir = path.join(tempDir, "question-prompt-workspace");
+      const params = createParams(
+        path.join(tempDir, "question-prompt-session.jsonl"),
+        workspaceDir,
+      );
+      params.disableTools = false;
+      params.runtimePlan = createCodexRuntimePlanFixture();
+      params.messageChannel = messageChannel;
+      params.messageProvider = messageProvider;
+      const onToolResult = vi.fn();
+      params.onToolResult = hasCallback ? onToolResult : undefined;
+      let capturedQuestionPrompt: OpenClawCodingToolsOptionsForTest["questionPrompt"];
+      setOpenClawCodingToolsFactoryForTests((options) => {
+        capturedQuestionPrompt = options?.questionPrompt;
+        return [];
+      });
 
-    await buildDynamicToolsForTest(params, workspaceDir);
+      await buildDynamicToolsForTest(params, workspaceDir);
 
-    expect(capturedQuestionPrompt?.send).toBe(onToolResult);
-    expect(capturedQuestionPrompt?.messageChannel).toBe("telegram");
-  });
+      if (!hasCallback) {
+        expect(capturedQuestionPrompt).toBeUndefined();
+        return;
+      }
+      expect(capturedQuestionPrompt?.send).toBe(onToolResult);
+      expect(capturedQuestionPrompt?.messageChannel).toBe(expectedChannel);
+      await expectDefined(capturedQuestionPrompt, "captured question prompt").send({
+        text: "Question for you:",
+      });
+      expect(onToolResult).toHaveBeenCalledExactlyOnceWith({ text: "Question for you:" });
+    },
+  );
 
   it("binds a resolver-backed constructed tool surface exactly once", async () => {
     const workspaceDir = path.join(tempDir, "resolver-bound-workspace");

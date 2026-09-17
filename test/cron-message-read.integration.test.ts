@@ -165,10 +165,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     void (async () => {
       const sessionId = message.session_id || argument("--session-id");
       send({ type: "system", subtype: "init", session_id: sessionId, tools: [] });
-      const gap = await fetch(process.env.OPENCLAW_SCHEDULED_READ_CLOCK_URL, { method: "POST" });
-      if (!gap.ok) throw new Error("Could not advance the scheduled-read fixture clock.");
-      const listed = await rpc("tools/list");
       const createJob = process.env.OPENCLAW_SCHEDULED_CREATE_JOB;
+      if (!createJob) {
+        const gap = await fetch(process.env.OPENCLAW_SCHEDULED_READ_CLOCK_URL, { method: "POST" });
+        if (!gap.ok) throw new Error("Could not advance the scheduled-read fixture clock.");
+      }
+      const listed = await rpc("tools/list");
       const reply = await rpc("tools/call", {
         name: createJob ? "${AUTOMATIONS_TOOL_NAME}" : "message",
         arguments: createJob

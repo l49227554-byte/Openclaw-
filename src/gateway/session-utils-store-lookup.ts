@@ -117,6 +117,8 @@ function resolveGatewaySessionStoreCandidates(
   agentId: string,
   cache?: GatewaySessionStoreDiscoveryCache,
   excludeConfiguredFallback = false,
+  env: NodeJS.ProcessEnv = process.env,
+  registeredDatabases?: readonly { agentId: string; path: string }[],
 ): GatewaySessionStoreDiscovery {
   const cached = cache?.get(agentId);
   if (cached) {
@@ -125,10 +127,12 @@ function resolveGatewaySessionStoreCandidates(
   const storeConfig = cfg.session?.store;
   const fallback = {
     agentId,
-    storePath: resolveSessionStorePathCore(storeConfig, { agentId }),
+    storePath: resolveSessionStorePathCore(storeConfig, { agentId, env }),
   };
   const discovery = {
     existing: resolveExistingAgentSessionStoreTargetsSync(cfg, agentId, {
+      env,
+      registeredDatabases,
       // Cached discovery also serves existing-only deleted-main lookups.
       excludeStorePath:
         !cache && excludeConfiguredFallback && !isPerAgentSessionStoreConfig(storeConfig)
@@ -146,6 +150,57 @@ function resolveGatewaySessionStoreCandidates(
  * Keep discovery agent-scoped here or each row repeats registry probes and agent-root scans.
  */
 export type GatewaySessionStoreDiscoveryCache = Map<string, GatewaySessionStoreDiscovery>;
+
+export function resolveGatewaySessionStoreLookupCandidates(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  targetDiscoveryCache?: GatewaySessionStoreDiscoveryCache;
+  env?: NodeJS.ProcessEnv;
+  registeredDatabases?: readonly { agentId: string; path: string }[];
+}): {
+  configured: boolean;
+  fallback: SessionStoreTarget;
+  candidates: SessionStoreTarget[];
+  readSources?: SessionEntryReadSource[];
+} {
+  const configured = isConfiguredSessionStoreAgentId(params.cfg, params.agentId);
+  if (!configured && params.registeredDatabases) {
+    // Prepared discovery already holds registered owners; don't rescan retired roots per page.
+    const readSources = params.registeredDatabases
+      .filter((source) => normalizeAgentId(source.agentId) === params.agentId)
+      .map((source) => ({ agentId: source.agentId, path: source.path }));
+    return {
+      configured,
+      fallback: {
+        agentId: params.agentId,
+        storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
+          agentId: params.agentId,
+          env: params.env,
+        }),
+      },
+      candidates: readSources.map((source) => ({
+        agentId: source.agentId,
+        storePath: source.path,
+      })),
+      readSources,
+    };
+  }
+  const { existing, fallback } = resolveGatewaySessionStoreCandidates(
+    params.cfg,
+    params.agentId,
+    params.targetDiscoveryCache,
+    configured,
+    params.env,
+    params.registeredDatabases,
+  );
+  return {
+    configured,
+    fallback,
+    candidates: configured
+      ? [fallback, ...existing.filter((target) => target.storePath !== fallback.storePath)]
+      : existing,
+  };
+}
 
 type GatewaySessionStoreLookupParams = {
   cfg: OpenClawConfig;
@@ -176,21 +231,64 @@ type GatewaySessionStoreLookup = {
   canonicalValidationError?: Error;
 };
 
+export function resolveGatewaySessionStoreReadResults(params: {
+  reads: GatewaySessionStoreRead[];
+  scanTargets: readonly string[];
+  canonicalKey: string;
+  deferCanonicalValidation?: boolean;
+}): GatewaySessionStoreLookup {
+  const first = expectDefined(params.reads[0], "first configured or discovered session store");
+  let selectedStorePath = first.storePath;
+  let selectedStore = readGatewaySessionStore(first);
+  let selectedReadSource = first.readSource;
+  let canonicalValidationError: Error | undefined;
+  const recordCanonicalError = params.deferCanonicalValidation
+    ? (error: Error) => {
+        canonicalValidationError ??= error;
+      }
+    : undefined;
+  let selectedMatch = findCanonicalStoreMatch(
+    selectedStore,
+    params.scanTargets,
+    recordCanonicalError,
+  );
+  for (const candidate of params.reads.slice(1)) {
+    const store = readGatewaySessionStore(candidate);
+    const match = findCanonicalStoreMatch(store, params.scanTargets, recordCanonicalError);
+    if (!match) {
+      continue;
+    }
+    if (selectedMatch) {
+      const error = canonicalSessionKeyMigrationRequiredError(
+        `duplicate rows resolve to canonical session key ${params.canonicalKey}`,
+      );
+      if (!recordCanonicalError) {
+        throw error;
+      }
+      recordCanonicalError(error);
+      if (match.key !== params.canonicalKey || selectedMatch.key === params.canonicalKey) {
+        continue;
+      }
+    }
+    selectedStorePath = candidate.storePath;
+    selectedStore = store;
+    selectedReadSource = candidate.readSource;
+    selectedMatch = match;
+  }
+  return {
+    storePath: selectedStorePath,
+    store: selectedStore,
+    ...(selectedReadSource ? { readSource: selectedReadSource } : {}),
+    match: selectedMatch,
+    ...(canonicalValidationError ? { canonicalValidationError } : {}),
+  };
+}
+
 function prepareGatewaySessionStoreLookup(
   params: GatewaySessionStoreLookupParams & { canonicalKey: string; agentId: string },
 ): GatewaySessionStorePlan<GatewaySessionStoreLookup> {
   const scanTargets = buildGatewaySessionStoreScanTargets(params);
-  const configured = isConfiguredSessionStoreAgentId(params.cfg, params.agentId);
-  const discovery = resolveGatewaySessionStoreCandidates(
-    params.cfg,
-    params.agentId,
-    params.targetDiscoveryCache,
-    configured,
-  );
-  const { existing, fallback } = discovery;
-  const candidates = configured
-    ? [fallback, ...existing.filter((target) => target.storePath !== fallback.storePath)]
-    : existing;
+  const { configured, fallback, candidates } = resolveGatewaySessionStoreLookupCandidates(params);
   if (candidates.length === 0) {
     // Retired/manual agents require an existing discovered store; lookup never creates one.
     return {
@@ -213,49 +311,7 @@ function prepareGatewaySessionStoreLookup(
   }));
   return {
     reads,
-    resolve: () => {
-      const first = expectDefined(reads[0], "first configured or discovered session store");
-      let selectedStorePath = first.storePath;
-      let selectedStore = readGatewaySessionStore(first);
-      let selectedReadSource = first.readSource;
-      let canonicalValidationError: Error | undefined;
-      const recordCanonicalError = params.deferCanonicalValidation
-        ? (error: Error) => {
-            canonicalValidationError ??= error;
-          }
-        : undefined;
-      let selectedMatch = findCanonicalStoreMatch(selectedStore, scanTargets, recordCanonicalError);
-      for (const candidate of reads.slice(1)) {
-        const store = readGatewaySessionStore(candidate);
-        const match = findCanonicalStoreMatch(store, scanTargets, recordCanonicalError);
-        if (!match) {
-          continue;
-        }
-        if (selectedMatch) {
-          const error = canonicalSessionKeyMigrationRequiredError(
-            `duplicate rows resolve to canonical session key ${params.canonicalKey}`,
-          );
-          if (!recordCanonicalError) {
-            throw error;
-          }
-          recordCanonicalError(error);
-          if (match.key !== params.canonicalKey || selectedMatch.key === params.canonicalKey) {
-            continue;
-          }
-        }
-        selectedStorePath = candidate.storePath;
-        selectedStore = store;
-        selectedReadSource = candidate.readSource;
-        selectedMatch = match;
-      }
-      return {
-        storePath: selectedStorePath,
-        store: selectedStore,
-        ...(selectedReadSource ? { readSource: selectedReadSource } : {}),
-        match: selectedMatch,
-        ...(canonicalValidationError ? { canonicalValidationError } : {}),
-      };
-    },
+    resolve: () => resolveGatewaySessionStoreReadResults({ ...params, reads, scanTargets }),
   };
 }
 

@@ -1,4 +1,5 @@
 import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-readonly-reader.js";
+import { prepareGatewaySessionStoreReadSources } from "../../gateway/session-utils-store-sources.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
   DEFAULT_WORKER_PENDING_TASKS,
@@ -6,6 +7,8 @@ import {
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import { getRuntimeConfig } from "../config.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.js";
 import {
   resolveSqliteTranscriptReadScope,
@@ -117,6 +120,18 @@ export async function readSessionHistoryPageInWorker(
   };
   const readScope = resolveSqliteTranscriptReadScope(transcript, targetCache);
   const databaseOptions = toDatabaseOptions(resolved);
+  const stateContext = captureOpenClawStateWorkerContext();
+  const sourceReads = prepareGatewaySessionStoreReadSources({
+    cfg: getRuntimeConfig(),
+    env: process.env,
+    registryPath: stateContext.admission.databasePath,
+  });
+  const assertStateCurrent = () => {
+    stateContext.maintenanceScope?.assertAdmission();
+    stateContext.admission.assertCurrent();
+    sourceReads.assertCurrent();
+  };
+  assertStateCurrent();
   const target: Omit<PreparedSessionHistoryReadTarget, "database"> = {
     transcript: {
       agentId: readScope.agentId,
@@ -126,6 +141,12 @@ export async function readSessionHistoryPageInWorker(
       // Projection/fence identity is normalized; archive and presentation hints retain their input.
       sessionFile: sessionKey ?? scope.sessionId,
     },
+    stateDatabase: {
+      path: stateContext.admission.databasePath,
+      environment: stateContext.environment,
+      coordinatorRuntime: stateContext.coordinatorRuntime,
+    },
+    sourceDatabases: sourceReads.sources,
     ...(entryValidationKey ? { entryValidationKey } : {}),
   };
 
@@ -154,10 +175,14 @@ export async function readSessionHistoryPageInWorker(
     const result = await withSessionHistoryWorkerDatabase(input.database, (owner) =>
       readRestoredSessionTranscript(
         scope,
-        () => readQueuedPage(input, `${owner.generation}:${key}`, owner, signal),
+        () => {
+          assertStateCurrent();
+          return readQueuedPage(input, `${owner.generation}:${key}`, owner, signal);
+        },
         { assertCurrent: owner.assertCurrent },
       ),
     );
+    assertStateCurrent();
     if (result.kind !== request.kind) {
       throw new Error("Session history worker returned the wrong page type");
     }

@@ -1018,13 +1018,11 @@ export function createAgentEventHandler({
         return;
       }
       const projected = chatRunState.resolveBuffer(clientRunId);
-      if (
-        projected.suppress ||
-        shouldHideHeartbeatChatOutput(clientRunId, sourceRunId, isHeartbeat)
-      ) {
-        return;
-      }
-      broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, projected.text, {
+      const text =
+        projected.suppress || shouldHideHeartbeatChatOutput(clientRunId, sourceRunId, isHeartbeat)
+          ? ""
+          : projected.text;
+      broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, text, {
         controlUiVisible,
       });
     };
@@ -1081,14 +1079,12 @@ export function createAgentEventHandler({
       return;
     }
     const projected = chatRunState.resolveBuffer(clientRunId);
-    const mergedText = projected.text;
-    if (
+    const text =
       projected.suppress ||
       shouldHideHeartbeatChatOutput(clientRunId, sourceRunId, opts?.isHeartbeat)
-    ) {
-      return;
-    }
-    broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, mergedText, opts);
+        ? ""
+        : projected.text;
+    broadcastChatDelta(sessionKey, agentId, clientRunId, sourceRunId, seq, text, opts);
   };
 
   const resolveBufferedChatTextState = (

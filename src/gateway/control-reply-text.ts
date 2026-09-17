@@ -12,6 +12,11 @@ const MAX_CONTROL_REPLY_TOKEN_LENGTH = Math.max(
   ...SUPPRESSED_CONTROL_REPLY_TOKENS.map((token) => token.length),
 );
 
+const CONTROL_REPLY_SEQUENCE_PREFIX = new RegExp(
+  `^(?:(?:${SUPPRESSED_CONTROL_REPLY_TOKENS.join("|")})\\s+)+([A-Z_]+)$`,
+  "i",
+);
+
 const MIN_BARE_PREFIX_LENGTH_BY_TOKEN: Readonly<
   Record<(typeof SUPPRESSED_CONTROL_REPLY_TOKENS)[number], number>
 > = {
@@ -21,11 +26,16 @@ const MIN_BARE_PREFIX_LENGTH_BY_TOKEN: Readonly<
 };
 
 /**
- * Return true when a chat-visible reply is exactly an internal control token.
+ * Recognize control-only replies, including a repeated marker's unfinished tail.
  */
 export function isSuppressedControlReplyText(text: string): boolean {
   const normalized = text.trim();
-  return SUPPRESSED_CONTROL_REPLY_TOKENS.some((token) => isSilentReplyText(normalized, token));
+  const repeatedFragment = CONTROL_REPLY_SEQUENCE_PREFIX.exec(normalized)?.[1]?.toUpperCase();
+  return SUPPRESSED_CONTROL_REPLY_TOKENS.some(
+    (token) =>
+      isSilentReplyText(normalized, token) ||
+      (repeatedFragment !== undefined && token.startsWith(repeatedFragment)),
+  );
 }
 
 /** Remove internal control tokens when a model appends one to visible reply text. */

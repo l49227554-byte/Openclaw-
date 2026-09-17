@@ -1,3 +1,4 @@
+import { isParentOwnedBackgroundAcpSession } from "@openclaw/acp-core/session-interaction-mode";
 import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
 /**
  * Subagent spawn-depth lookup helpers.
@@ -196,4 +197,17 @@ export function getSubagentDepthFromSessionStore(
   };
 
   return depthFromStore(raw) ?? fallbackDepth;
+}
+
+/** Classifies coordination from the exact session entry and its canonical ACP metadata. */
+export function isSubagentSessionFromEntry(
+  sessionKey: string,
+  entry: SessionEntry | null | undefined,
+  acpMeta?: unknown,
+): boolean {
+  return (
+    getSubagentDepthFromSessionStore(sessionKey, {
+      store: { [sessionKey]: entry ?? {} },
+    }) > 0 || isParentOwnedBackgroundAcpSession(entry ? { ...entry, acp: acpMeta } : entry)
+  );
 }

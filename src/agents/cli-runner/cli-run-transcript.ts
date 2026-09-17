@@ -37,6 +37,7 @@ import {
   runHarnessContextEngineMaintenance,
 } from "../harness/context-engine-lifecycle.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../harness/hook-helpers.js";
+import { projectAgentHarnessTranscriptMessageForDisplay } from "../harness/transcript-visibility.js";
 import type { AgentMessage } from "../runtime/index.js";
 import { withSessionManagerWrite } from "../sessions/session-manager-write-admission.js";
 import { SessionManager } from "../sessions/session-manager.js";
@@ -195,11 +196,24 @@ export async function persistCliAssistantTranscript(params: {
       storePath: runParams.storePath,
       idempotencyKey,
       config: runParams.config,
-      beforeMessageWrite: (write) =>
-        runAgentHarnessBeforeMessageWriteHook({
+      beforeMessageWrite: (write) => {
+        const message = runAgentHarnessBeforeMessageWriteHook({
           ...write,
+          message: projectAgentHarnessTranscriptMessageForDisplay({
+            hidden: false,
+            inputProvenance: runParams.inputProvenance,
+            message: write.message,
+          }),
           prepareAssistantTranscriptMessage: runParams.prepareAssistantTranscriptMessage,
-        }),
+        });
+        return message
+          ? projectAgentHarnessTranscriptMessageForDisplay({
+              hidden: false,
+              inputProvenance: runParams.inputProvenance,
+              message,
+            })
+          : null;
+      },
       message: {
         ...buildAssistantMessage({
           model: {

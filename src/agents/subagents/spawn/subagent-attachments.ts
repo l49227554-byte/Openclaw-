@@ -4,7 +4,6 @@
  * Validates base64/utf8 payloads, writes private receipt files, and resolves inherited workspace paths.
  */
 import crypto from "node:crypto";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -425,7 +424,7 @@ export async function materializeSubagentAttachments(params: {
   } catch (err) {
     if (store) {
       try {
-        await fs.rm(absDir, { recursive: true, force: true });
+        await store.remove(attachmentId);
       } catch {
         // Best-effort cleanup only.
       }

@@ -221,6 +221,7 @@ export async function loadImageGenerationReferences(params: {
   imageInputs: string[];
   maxBytes: number;
   workspaceDir?: string;
+  additionalRoots?: readonly string[];
   sandboxConfig: ReturnType<typeof resolveMediaToolSandboxConfig>;
   ssrfPolicy?: SsrFPolicy;
   signal?: AbortSignal;
@@ -237,6 +238,7 @@ export async function loadImageGenerationReferences(params: {
     expectedKind: "image",
     sandbox: params.sandboxConfig,
     workspaceDir: params.workspaceDir,
+    additionalRoots: params.additionalRoots,
     maxBytes: params.maxBytes,
     ssrfPolicy: params.ssrfPolicy,
     signal: params.signal,

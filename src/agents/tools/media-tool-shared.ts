@@ -619,6 +619,7 @@ export async function loadMediaToolReferences<T>(params: {
   expectedKind: "image" | "video" | "audio";
   sandbox: SandboxedBridgeMediaPathConfig | null;
   workspaceDir?: string;
+  additionalRoots?: readonly string[];
   maxBytes: number;
   ssrfPolicy?: SsrFPolicy;
   timeoutMs?: number;
@@ -653,6 +654,10 @@ export async function loadMediaToolReferences<T>(params: {
       isDataUrl: reference.isDataUrl,
       workspaceDir: params.workspaceDir,
       sandbox: params.sandbox,
+      rootOptions: {
+        workspaceOnly: params.sandbox?.workspaceOnly === true,
+        ...(params.additionalRoots ? { additionalRoots: params.additionalRoots } : {}),
+      },
     });
     params.signal?.throwIfAborted();
     if (reference.isDataUrl && params.expectedKind !== "image") {

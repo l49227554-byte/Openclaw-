@@ -587,6 +587,7 @@ export function createImageGenerateTool(options?: {
           imageInputs,
           maxBytes: referenceMaxBytes,
           workspaceDir: options?.workspaceDir,
+          additionalRoots: options?.fsPolicy?.readOnlyRoots,
           sandboxConfig,
           ssrfPolicy: remoteMediaSsrfPolicy,
           signal,

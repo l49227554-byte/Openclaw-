@@ -190,6 +190,7 @@ async function loadReferenceImages(params: {
   inputs: string[];
   maxBytes: number;
   workspaceDir?: string;
+  additionalRoots?: readonly string[];
   sandboxConfig: ReturnType<typeof resolveMediaToolSandboxConfig>;
   ssrfPolicy?: SsrFPolicy;
   timeoutMs?: number;
@@ -207,6 +208,7 @@ async function loadReferenceImages(params: {
     expectedKind: "image",
     sandbox: params.sandboxConfig,
     workspaceDir: params.workspaceDir,
+    additionalRoots: params.additionalRoots,
     maxBytes: params.maxBytes,
     ssrfPolicy: params.ssrfPolicy,
     timeoutMs: params.timeoutMs,
@@ -412,6 +414,7 @@ export function createMusicGenerateTool(options?: {
           inputs: imageInputs,
           maxBytes: resolveGeneratedMediaMaxBytes(effectiveCfg, "image"),
           workspaceDir: options?.workspaceDir,
+          additionalRoots: options?.fsPolicy?.readOnlyRoots,
           sandboxConfig,
           ssrfPolicy: remoteMediaSsrfPolicy,
           signal,

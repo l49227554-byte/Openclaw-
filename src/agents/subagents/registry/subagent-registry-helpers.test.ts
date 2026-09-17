@@ -206,6 +206,9 @@ describe("safeRemoveAttachmentsDir", () => {
       safeRemoveAttachmentsDir(createRunEntry({ attachmentId, childSessionKey })),
     ).resolves.toBe(true);
     await expect(fs.access(attachmentDir)).rejects.toHaveProperty("code", "ENOENT");
+    await expect(
+      safeRemoveAttachmentsDir(createRunEntry({ attachmentId, childSessionKey })),
+    ).resolves.toBe(true);
     await expect(fs.access(siblingDir)).resolves.toBeUndefined();
 
     vi.unstubAllEnvs();

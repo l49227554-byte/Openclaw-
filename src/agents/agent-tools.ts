@@ -577,7 +577,7 @@ export function createOpenClawCodingToolsInternal(
   const fsPolicy = {
     workspaceOnly,
     ...(sessionPermissionPolicy ? { root: sessionPermissionPolicy.root } : {}),
-    ...(!sandbox && attachmentReadRoot ? { readOnlyRoots: [attachmentReadRoot] } : {}),
+    ...(attachmentReadRoot ? { readOnlyRoots: [attachmentReadRoot] } : {}),
   };
   const readOnly = sessionCoreToolPolicy?.readOnly ?? false;
   const applyPatchConfig = execConfig.applyPatch;
@@ -877,6 +877,7 @@ export function createOpenClawCodingToolsInternal(
             sandboxRoot,
             sandboxContainerWorkdir: sandbox?.containerWorkdir,
             sandboxFsBridge,
+            sandboxReadOnlyResourceMounts: sandbox?.readOnlyResourceMounts,
             stagedMediaPaths: options?.stagedMediaPaths,
             sandboxWorkspaceMediaReadAllowed,
             fsPolicy,

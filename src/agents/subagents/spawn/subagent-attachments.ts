@@ -14,6 +14,7 @@ import {
   hasPromptUnsafeControlCharacter,
   wrapUntrustedPromptDataBlock,
 } from "../../sanitize-for-prompt.js";
+import { removeSubagentAttachmentTree } from "../subagent-attachment-cleanup.js";
 import {
   resolveSubagentAttachmentDir,
   resolveSubagentSessionAttachmentRootDir,
@@ -366,8 +367,6 @@ export async function materializeSubagentAttachments(params: {
     params.childSessionKey,
     attachmentId,
   );
-  let store: ReturnType<typeof privateFileStore> | undefined;
-
   try {
     const prepared = prepareSubagentAttachments({
       attachments: request.attachments,
@@ -385,7 +384,6 @@ export async function materializeSubagentAttachments(params: {
     // the next write after closure or leave its directory outside cleanup.
     params.assertActive?.();
     const attachmentStore = privateFileStore(absRootDir);
-    store = attachmentStore;
 
     const files: SubagentAttachmentReceiptFile[] = [];
     for (const { name, buf, bytes } of prepared.attachments) {
@@ -424,12 +422,10 @@ export async function materializeSubagentAttachments(params: {
         (params.mountPathHint ? `\nRequested mountPath hint: ${params.mountPathHint}.\n` : ""),
     };
   } catch (err) {
-    if (store) {
-      try {
-        await store.remove(attachmentId);
-      } catch {
-        // Best-effort cleanup only.
-      }
+    try {
+      await removeSubagentAttachmentTree(absRootDir, attachmentId);
+    } catch {
+      // Best-effort cleanup only.
     }
     return {
       status: "error",

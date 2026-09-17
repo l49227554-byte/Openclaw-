@@ -173,6 +173,7 @@ type MessageToolOptions = {
   sandboxRoot?: string;
   sandboxContainerWorkdir?: string;
   sandboxFsBridge?: SandboxFsBridge;
+  sandboxReadOnlyResourceMounts?: readonly { hostPath: string; containerPath: string }[];
   sandboxWorkspaceMediaReadAllowed?: boolean;
   requireExplicitTarget?: boolean;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
@@ -291,6 +292,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           localRoots: [
             sandboxRoot,
             ...(options?.sandboxContainerWorkdir ? [options.sandboxContainerWorkdir] : []),
+            ...(options?.sandboxReadOnlyResourceMounts?.map((mount) => mount.containerPath) ?? []),
           ],
           readFile: createSandboxBridgeReadFile({
             sandbox: { root: sandboxRoot, bridge: options.sandboxFsBridge },

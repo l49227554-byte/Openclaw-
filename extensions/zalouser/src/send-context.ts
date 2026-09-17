@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { resolveFetch } from "openclaw/plugin-sdk/fetch-runtime";
 import type { ZaloSendHandoff } from "./types.js";
 
 type SendContext = ZaloSendHandoff & { active: boolean };
@@ -37,6 +38,10 @@ export async function withZaloSendContext<T>(
 }
 
 export const fetchWithZaloSendContext: typeof fetch = async (input, init) => {
+  const fetchImpl = resolveFetch();
+  if (!fetchImpl) {
+    throw new Error("fetch is not available");
+  }
   const context = sendContext.getStore();
   if (context) {
     assertCurrent(context);
@@ -50,5 +55,5 @@ export const fetchWithZaloSendContext: typeof fetch = async (input, init) => {
       }
     }
   }
-  return fetch(input, init);
+  return fetchImpl(input, init);
 };

@@ -56,7 +56,7 @@ const { CookieJar, MemoryCookieStore } = sdkRequire("tough-cookie") as {
 const secretKey = Buffer.alloc(16, 1);
 export const serviceUrl = "https://zalo.test";
 export const imageUrl = "https://media.test/photo.png";
-export const voiceUrl = "https://zalo.test/voice.aac";
+const voiceUrl = "https://zalo.test/voice.aac";
 
 type Gate = {
   entered: ReturnType<typeof createDeferred<void>>;
@@ -213,7 +213,7 @@ export class SendHarness {
     uploads.set = (fileId, callback) => {
       setUpload(fileId, callback);
       // Model a socket completion outside the sending caller without opening a socket or expiry timer.
-      this.track(
+      void this.track(
         this.uploadEvents.runInAsyncScope(async () => {
           if (this.uploadWait) {
             this.uploadWait.entered.resolve();
@@ -269,6 +269,10 @@ export class SendHarness {
             payload: { text: ctx.text, ...(input.mediaUrl ? { mediaUrl: input.mediaUrl } : {}) },
           }),
         );
+      default: {
+        const unexpectedRoute: never = route;
+        throw new Error("Unsupported send route", { cause: unexpectedRoute });
+      }
     }
   }
 

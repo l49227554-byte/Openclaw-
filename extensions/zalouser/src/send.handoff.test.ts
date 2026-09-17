@@ -190,7 +190,9 @@ describe("Zalouser registered send handoff", () => {
     await cookie.entered.promise;
     await expect(send).rejects.toThrow("503");
     cookie.release.resolve();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
     expect(harness.requests).toEqual([
       expect.objectContaining({
         path: "/api/message/photo_original/upload",

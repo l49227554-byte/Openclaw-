@@ -1,8 +1,6 @@
 import { createRequire } from "node:module";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { fetchWithZaloSendContext } from "./send-context.js";
-// Zalouser plugin module implements zca client behavior.
-import { TextStyle } from "./zca-constants.js";
 
 type ZcaJsRuntime = Pick<typeof import("zca-js"), "Zalo">;
 
@@ -15,8 +13,6 @@ const loadZcaJsRuntime = createLazyRuntimeModule(async () => {
   const runtime: unknown = require("zca-js");
   return runtime as ZcaJsRuntime;
 });
-
-export { TextStyle };
 
 export type Credentials = {
   imei: string;

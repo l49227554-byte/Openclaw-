@@ -78,11 +78,21 @@ describe("Zalo listener startup lifecycle", () => {
         const listener = new TestListener();
         const failure = new Error("start failed");
         listener.start.mockImplementation(() => {
-          if (event === "connected") listener.emit("connected");
-          if (event === "throw") throw failure;
-          if (event === "abort") abort.abort();
-          if (event === "error") listener.emit("error", failure);
-          if (event === "message rejection") listener.emit("message", { isSelf: false });
+          if (event === "connected") {
+            listener.emit("connected");
+          }
+          if (event === "throw") {
+            throw failure;
+          }
+          if (event === "abort") {
+            abort.abort();
+          }
+          if (event === "error") {
+            listener.emit("error", failure);
+          }
+          if (event === "message rejection") {
+            listener.emit("message", { isSelf: false });
+          }
         });
         createZaloMock.mockResolvedValue({ login: async () => sessionApi(listener) });
         const onError = vi.fn();
@@ -152,11 +162,17 @@ it("settles a real zca-js handshake timeout and reconnects the same monitor prof
   server.on("upgrade", (request, socket, head) => {
     upgrades++;
     trace.push(`transport:upgrade:${upgrades}`);
-    if (upgrades > 1) websocketServer.handleUpgrade(request, socket, head, () => {});
+    if (upgrades > 1) {
+      websocketServer.handleUpgrade(request, socket, head, () => {});
+    }
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Expected loopback address");
+  if (!address || typeof address === "string") {
+    throw new Error("Expected loopback address");
+  }
   const listeners: Array<API["listener"] & EventEmitter> = [];
   const abort = new AbortController();
   let second: ReturnType<typeof monitorZalouserProvider> | undefined;
@@ -221,9 +237,17 @@ it("settles a real zca-js handshake timeout and reconnects the same monitor prof
   } finally {
     abort.abort();
     await second?.catch(() => {});
-    for (const listener of listeners) listener.stop();
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve) => websocketServer.close(() => resolve()));
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    for (const listener of listeners) {
+      listener.stop();
+    }
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await new Promise<void>((resolve) => {
+      websocketServer.close(() => resolve());
+    });
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
   }
 }, 60_000);

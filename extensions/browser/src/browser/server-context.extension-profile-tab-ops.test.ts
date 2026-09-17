@@ -8,16 +8,16 @@ import {
 const deps: RemoteProfileTestDeps = await loadRemoteProfileTestDeps();
 installRemoteProfileTestLifecycle(deps);
 
-function mockExtensionPage(): void {
+function mockExtensionPage(targetIds = ["TARGET-41"]): void {
   vi.spyOn(deps.pwAiModule, "getPwAiModule").mockResolvedValue({
-    listPagesViaPlaywright: vi.fn(async () => [
-      {
-        targetId: "TARGET-41",
+    listPagesViaPlaywright: vi.fn(async () =>
+      targetIds.map((targetId) => ({
+        targetId,
         title: "Extension test",
         url: "https://example.com/login",
         type: "page",
-      },
-    ]),
+      })),
+    ),
   } as unknown as Awaited<ReturnType<typeof deps.pwAiModule.getPwAiModule>>);
 }
 
@@ -38,28 +38,36 @@ function createExtensionProfile() {
 }
 
 describe("browser extension profile tab ops", () => {
-  it("exposes the native WebExtension tab id with its matching CDP target", async () => {
-    mockExtensionPage();
+  it("matches native ids by CDP target despite identical page metadata and different order", async () => {
+    mockExtensionPage(["TARGET-41", "TARGET-42", "TARGET-43"]);
     globalThis.fetch = vi.fn(async () =>
-      Response.json([
-        {
-          id: "TARGET-41",
-          tabId: 41,
+      Response.json(
+        [42, 99, 41].map((tabId) => ({
+          id: `TARGET-${tabId}`,
+          tabId,
           title: "Extension test",
           url: "https://example.com/login",
           type: "page",
-        },
-      ]),
+        })),
+      ),
     );
-    const extension = createExtensionProfile();
 
-    await expect(extension.listTabs()).resolves.toEqual([
+    const tabs = await createExtensionProfile().listTabs();
+
+    expect(tabs).toEqual([
       expect.objectContaining({
         targetId: "TARGET-41",
         tabId: "t1",
         webExtensionTabId: 41,
       }),
+      expect.objectContaining({
+        targetId: "TARGET-42",
+        tabId: "t2",
+        webExtensionTabId: 42,
+      }),
+      expect.objectContaining({ targetId: "TARGET-43", tabId: "t3" }),
     ]);
+    expect(tabs[2]).not.toHaveProperty("webExtensionTabId");
   });
 
   it("does not expose a malformed native WebExtension tab id", async () => {
@@ -80,6 +88,23 @@ describe("browser extension profile tab ops", () => {
 
     expect(tabs).toHaveLength(1);
     expect(tabs[0]).not.toHaveProperty("webExtensionTabId");
+  });
+
+  it("preserves caller cancellation during the native extension metadata request", async () => {
+    mockExtensionPage();
+    const controller = new AbortController();
+    const reason = new Error("tab listing cancelled");
+    let fetchSignal: AbortSignal | null | undefined;
+    globalThis.fetch = vi.fn(async (_input, init) => {
+      fetchSignal = init?.signal;
+      controller.abort(reason);
+      throw reason;
+    });
+
+    await expect(createExtensionProfile().listTabs({ signal: controller.signal })).rejects.toBe(
+      reason,
+    );
+    expect(fetchSignal?.aborted).toBe(true);
   });
 
   it("keeps tab listing available when native extension metadata cannot be read", async () => {

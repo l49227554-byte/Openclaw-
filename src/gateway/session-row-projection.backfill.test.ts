@@ -1,5 +1,6 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
+import { noteSessionTranscriptHealth } from "../commands/doctor-session-transcripts.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import {
   loadSessionEntry,
@@ -17,7 +18,7 @@ import * as transcriptBackfill from "./session-row-transcript-backfill.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-it("eventually fills legacy titles and previews without waiting during startup or changing activity", async () => {
+it("keeps legacy titles unchanged during preview reads and repairs them only through Doctor", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const cfg = { agents: { list: [{ id: "main", default: true }] } };
     setRuntimeConfigSnapshot(cfg);
@@ -30,14 +31,11 @@ it("eventually fills legacy titles and previews without waiting during startup o
       ],
       touchSessionEntry: false,
     });
+    const before = loadSessionEntry(target);
     const projection = await createSessionRowProjection({ cfg });
     try {
       expect(loadSessionEntry(target)?.displayName).toBeUndefined();
       await vi.waitFor(() => {
-        expect(loadSessionEntry(target)).toMatchObject({
-          displayName: "Investigate the slow session query",
-          updatedAt: 1,
-        });
         expect(
           projection.snapshot(
             { agentId: "main", key: target.sessionKey },
@@ -45,6 +43,44 @@ it("eventually fills legacy titles and previews without waiting during startup o
               includeDerivedTitles: true,
               includeLastMessage: true,
             },
+          ).row,
+        ).toMatchObject({
+          lastMessagePreview: "The query is now bounded.",
+        });
+      });
+      expect(loadSessionEntry(target)).toEqual(before);
+      expect(
+        projection.snapshot(
+          { agentId: "main", key: target.sessionKey },
+          { includeDerivedTitles: true },
+        ).row?.derivedTitle,
+      ).toBeUndefined();
+    } finally {
+      projection.dispose();
+    }
+    await nextTurn();
+    await noteSessionTranscriptHealth({
+      cfg,
+      shouldRepair: false,
+      postSessionPluginMigrationPlanBound: true,
+    });
+    expect(loadSessionEntry(target)).toEqual(before);
+    const expected = { ...before, displayName: "Investigate the slow session query" };
+    for (let pass = 0; pass < 2; pass++) {
+      await noteSessionTranscriptHealth({
+        cfg,
+        shouldRepair: true,
+        postSessionPluginMigrationPlanBound: true,
+      });
+      expect(loadSessionEntry(target)).toEqual(expected);
+    }
+    const repairedProjection = await createSessionRowProjection({ cfg });
+    try {
+      await vi.waitFor(() => {
+        expect(
+          repairedProjection.snapshot(
+            { agentId: "main", key: target.sessionKey },
+            { includeDerivedTitles: true, includeLastMessage: true },
           ).row,
         ).toMatchObject({
           derivedTitle: "Investigate the slow session query",
@@ -59,7 +95,7 @@ it("eventually fills legacy titles and previews without waiting during startup o
         current: { sessionId: "replacement", sessionKeys: [target.sessionKey] },
       });
       expect(
-        projection.snapshot(
+        repairedProjection.snapshot(
           { agentId: "main", key: target.sessionKey },
           {
             includeLastMessage: true,
@@ -67,7 +103,7 @@ it("eventually fills legacy titles and previews without waiting during startup o
         ).row,
       ).toMatchObject({ sessionId: "replacement", lastMessagePreview: undefined });
     } finally {
-      projection.dispose();
+      repairedProjection.dispose();
     }
   });
 });

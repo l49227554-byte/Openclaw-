@@ -19,7 +19,6 @@ import type { InternalSessionEntry as SessionEntry } from "../config/sessions/ty
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildProjectedAgentRunIndex } from "../infra/agent-run-registry.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
-import { isAcpSessionKey } from "../sessions/session-key-utils.js";
 import {
   onSessionIdentityMutation,
   onSessionLifecycleEvent,
@@ -46,7 +45,6 @@ import * as records from "./session-row-projection-record.js";
 import { prepareSessionRowScopes } from "./session-row-scope.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import { buildSessionListRowMetadataContext } from "./session-utils-projection.js";
-import { resolveDeletedAgentIdFromSessionKey } from "./session-utils-store.js";
 
 /** Committed publications own invalidation; each admitted physical store is hydrated once. */
 export async function createSessionRowProjection(params: {
@@ -302,12 +300,6 @@ export async function createSessionRowProjection(params: {
       const id = records.identity(fields);
       admitted.add(id);
       if (!rows.has(id) || replaced.has(target.storeTarget.storePath)) {
-        if (replaced.has(target.storeTarget.storePath) && isAcpSessionKey(fields.key)) {
-          // Retain partial ACP-key migration at physical admission, never on a clean read.
-          resolveDeletedAgentIdFromSessionKey(cfg, fields.key, entry, {
-            acpMetadataSessionKey: fields.key,
-          });
-        }
         remove(id);
         acquireEntry(records.create(fields), entry);
         dirty.add(id);

@@ -221,11 +221,15 @@ function withPluginResult(patch: Record<string, unknown>) {
   };
 }
 
-function missingCodexUpdateResult(source: "npm" | "clawhub") {
-  const message =
+function missingCodexUpdateResult(source: "npm" | "clawhub" | "fallback") {
+  const finalMessage =
     source === "npm"
       ? 'Failed to install missing configured plugin "codex" from @openclaw/codex: Package not found on npm: @openclaw/codex@2026.9.4. See https://docs.openclaw.ai/tools/plugin for installable plugins.'
       : 'Failed to install missing configured plugin "codex" from clawhub:@openclaw/codex: Package not found on ClawHub.';
+  const messages =
+    source === "fallback"
+      ? ["@openclaw/codex unavailable; using clawhub:@openclaw/codex instead.", finalMessage]
+      : [finalMessage];
   const outcomes: PluginUpdateOutcome[] = [
     {
       pluginId: "discord",
@@ -239,7 +243,11 @@ function missingCodexUpdateResult(source: "npm" | "clawhub") {
       nextVersion: "2026.9.4",
       message: "Repaired WhatsApp.",
     },
-    { pluginId: "codex", status: "error", message },
+    ...messages.map((message): PluginUpdateOutcome => ({
+      pluginId: "codex",
+      status: "error",
+      message,
+    })),
   ];
   const errors: string[] = [];
   const integrityDrifts: Array<{ pluginId: string }> = [];
@@ -256,15 +264,13 @@ function missingCodexUpdateResult(source: "npm" | "clawhub") {
     postUpdate: {
       plugins: {
         status: "warning",
-        warnings: [
-          {
-            pluginId: "codex",
-            reason: message,
-            message:
-              'Plugin "codex" could not be updated. Run `openclaw plugins update codex` to retry.',
-            guidance: ["openclaw plugins update codex"],
-          },
-        ],
+        warnings: messages.map((message) => ({
+          pluginId: "codex",
+          reason: message,
+          message:
+            'Plugin "codex" could not be updated. Run `openclaw plugins update codex` to retry.',
+          guidance: ["openclaw plugins update codex"],
+        })),
         sync: { errors },
         npm: { outcomes },
         integrityDrifts,
@@ -485,7 +491,7 @@ describe("upgrade recovery result assertions", () => {
     },
   );
 
-  describe.each(["npm", "clawhub"] as const)("missing Codex update (%s)", (source) => {
+  describe.each(["npm", "clawhub", "fallback"] as const)("missing Codex (%s)", (source) => {
     const scenarioEnv = {
       OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "missing-configured-plugin-migration",
     };
@@ -657,6 +663,68 @@ describe("upgrade recovery result assertions", () => {
       const result = check(report);
       expect(result.status).not.toBe(0);
     });
+  });
+
+  it.each([
+    { name: "duplicate transition", change: "duplicate" },
+    { name: "duplicate terminal failure", change: "duplicate-final" },
+    { name: "reversed history", change: "reverse" },
+    { name: "missing terminal failure", change: "missing-final" },
+    { name: "typed transition", change: "typed" },
+    { name: "another plugin transition", change: "plugin" },
+    { name: "another target transition", change: "target" },
+    { name: "another source transition", change: "source" },
+    { name: "npm terminal failure after ClawHub transition", change: "npm-final" },
+    { name: "appended transition failure", change: "appended" },
+    { name: "missing transition guidance", change: "guidance" },
+  ])("rejects missing-Codex history with $name", ({ change }) => {
+    const report = missingCodexUpdateResult("fallback");
+    const outcomes = report.postUpdate.plugins.npm.outcomes;
+    const transition = outcomes[2]!;
+    switch (change) {
+      case "duplicate":
+        outcomes.splice(2, 0, { ...transition });
+        break;
+      case "duplicate-final":
+        transition.message = outcomes[3]!.message;
+        break;
+      case "reverse":
+        outcomes.splice(2, 2, outcomes[3]!, transition);
+        break;
+      case "missing-final":
+        outcomes.pop();
+        break;
+      case "typed":
+        transition.code = "PLUGIN_CAPABILITY_CONSENT_REQUIRED";
+        break;
+      case "plugin":
+        transition.pluginId = "slack";
+        break;
+      case "target":
+        transition.message = "@openclaw/codex unavailable; using clawhub:@openclaw/other instead.";
+        break;
+      case "source":
+        transition.message = "@openclaw/other unavailable; using clawhub:@openclaw/codex instead.";
+        break;
+      case "npm-final":
+        outcomes[3]!.message =
+          missingCodexUpdateResult("npm").postUpdate.plugins.npm.outcomes[2]!.message;
+        report.postUpdate.plugins.warnings[1]!.reason = outcomes[3]!.message;
+        break;
+      case "appended":
+        transition.message += " Another install failed.";
+        break;
+      case "guidance":
+        report.postUpdate.plugins.warnings[0]!.guidance = [];
+        break;
+    }
+    report.postUpdate.plugins.warnings[0]!.reason = transition.message;
+    report.postUpdate.plugins.warnings[0]!.pluginId = transition.pluginId;
+    const result = withEnv(
+      { OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: "missing-configured-plugin-migration" },
+      () => runJsonAssertion("assert-successful-update-json", report, "2026.9.4"),
+    );
+    expect(result.status).not.toBe(0);
   });
 
   it.each([

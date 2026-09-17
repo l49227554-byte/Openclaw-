@@ -119,9 +119,7 @@ wa-dropdown-item.session-menu__item:not([disabled]):not([aria-disabled="true"]) 
   cursor: var(--cursor-action);
 }
 
-wa-dropdown-item.session-menu__item[data-new-tab-action]:not([disabled]):not(
-    [aria-disabled="true"]
-  ) {
+wa-dropdown-item.session-menu__item[data-new-tab-action]:not([disabled], [aria-disabled="true"]) {
   cursor: pointer;
 }
 

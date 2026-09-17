@@ -5,6 +5,11 @@ import { GatewayErrorDetailCodes } from "../../../packages/gateway-protocol/src/
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/schema/error-codes.js";
 import { stripPlainTextToolCallBlocks } from "../../../packages/tool-call-repair/src/index.js";
 import {
+  pluginEnvelopeHas,
+  projectEmbeddedMessageDeliveryFact,
+  projectPluginMessageDeliveryFact,
+} from "../../agents/embedded-agent-message-delivery.js";
+import {
   readPositiveIntegerParam,
   readStringArrayParam,
   readToolStringParam,
@@ -28,10 +33,11 @@ import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citati
 import { formatErrorMessage } from "../errors.js";
 import { throwIfAborted } from "./abort.js";
 import { assertOutboundHandoffCurrent, OutboundHandoffRejectedError } from "./deliver-handoff.js";
-import type {
-  MessageActionGateway,
-  MessageActionResult,
-  ResolvedActionContext,
+import {
+  resolveMessageActionOutcome,
+  type MessageActionGateway,
+  type MessageActionResult,
+  type ResolvedActionContext,
 } from "./message-action-contracts.js";
 import { resolveAndApplyOutboundThreadId } from "./message-action-threading.js";
 import {
@@ -60,6 +66,30 @@ const loadMessageActionGatewayRuntime = createLazyRuntimeModule(
   () => import("./message.gateway.runtime.js"),
 );
 
+function isCompleteAcceptedDelivery(result: MessageActionResult): boolean {
+  if (
+    result.kind === "broadcast" ||
+    result.dryRun ||
+    (result.kind === "action" && result.action !== "reply" && result.action !== "thread-reply") ||
+    !resolveMessageActionOutcome(result).ok ||
+    pluginEnvelopeHas(result, "failure") ||
+    (result.handledBy === "plugin" && !pluginEnvelopeHas(result.payload, "ok"))
+  ) {
+    return false;
+  }
+  const envelope = projectPluginMessageDeliveryFact(result);
+  if (envelope && (envelope.status !== "settled" || envelope.partialDelivery)) {
+    return false;
+  }
+  const delivery = projectEmbeddedMessageDeliveryFact(result, true);
+  return Boolean(
+    delivery?.status === "settled" &&
+    !delivery.partialDelivery &&
+    delivery.primaryPlatformMessageId &&
+    delivery.primaryPlatformMessageId.toLowerCase() !== "unknown",
+  );
+}
+
 export async function annotateSourceDelivery<T extends MessageActionResult>(
   result: T,
   ctx: ResolvedActionContext,
@@ -85,8 +115,21 @@ export async function annotateSourceDelivery<T extends MessageActionResult>(
     deliveredPayload: result.payload,
     replyToIsExplicit,
   };
-  const matches = await isDeliveredCurrentSourceReplyAsync(mirrorParams);
-  ctx.input.assertDirectAdapterHandoff?.();
+  let matches: boolean;
+  try {
+    throwIfAborted(ctx.abortSignal);
+    ctx.input.assertDirectAdapterHandoff?.();
+    matches = await isDeliveredCurrentSourceReplyAsync(mirrorParams);
+    throwIfAborted(ctx.abortSignal);
+    ctx.input.assertDirectAdapterHandoff?.();
+  } catch (error) {
+    // Optional source annotation cannot undo an identified, complete delivery.
+    // Preserve its result without claiming a new source route after a failed lookup.
+    if (isCompleteAcceptedDelivery(result)) {
+      return result;
+    }
+    throw error;
+  }
   if (!matches) {
     return result;
   }

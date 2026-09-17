@@ -14,12 +14,19 @@ import {
 } from "./tools-card-mutations.js";
 import { createWorkboardOrchestrationTools } from "./tools-orchestration.js";
 
+// Claim ownership is scoped to the calling *session*, not the agent. Two concurrent
+// sessions of one agent are independent workers: if agentId were preferred here, a
+// sibling session would satisfy the `claim.ownerId === ownerId` check in
+// canMutateCard() / assertCanMutateClaimedCard() and could mutate — or terminally
+// complete — a card claimed by another live session while holding no claim token.
+// Token-less owner release/reclaim (the intended path) still works, for the session
+// that actually holds the claim.
 function contextOwner(ctx: OpenClawPluginToolContext | undefined): string {
   const record = (ctx ?? {}) as Record<string, unknown>;
   return (
-    (typeof record.agentId === "string" && record.agentId) ||
     (typeof record.sessionKey === "string" && record.sessionKey) ||
     (typeof record.sessionId === "string" && record.sessionId) ||
+    (typeof record.agentId === "string" && record.agentId) ||
     "agent"
   );
 }

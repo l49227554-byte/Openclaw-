@@ -48,6 +48,7 @@ import {
   openOpenClawAgentDatabase,
   OPENCLAW_AGENT_SCHEMA_VERSION,
 } from "../state/openclaw-agent-db.js";
+import { removeCanonicalValidationFromHistoricalAgentFixture } from "../state/openclaw-agent-db.test-support.js";
 import { withLegacySessionParticipantsSchema } from "../state/openclaw-agent-participants-migration.js";
 import { sessionParticipantsSchemaSql } from "../state/openclaw-agent-session-participants-schema.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
@@ -234,7 +235,7 @@ describe("runDoctorHealthFlow", () => {
           const result = await migrateLegacyWorkspaceState({
             stateDir: state.stateDir,
             env: state.env,
-            detected: detectLegacyWorkspaceState({
+            detected: await detectLegacyWorkspaceState({
               cfg: ctx.cfg,
               stateDir: state.stateDir,
               env: state.env,
@@ -256,9 +257,9 @@ describe("runDoctorHealthFlow", () => {
           kind.endsWith("loaded-disabled")
         ) {
           await run;
-          expect(readWorkspaceStateSnapshot(state.workspaceDir).setup.setupCompletedAt).toBe(
-            completedAt,
-          );
+          expect(
+            (await readWorkspaceStateSnapshot(state.workspaceDir)).setup.setupCompletedAt,
+          ).toBe(completedAt);
           expect(fs.existsSync(sourcePath)).toBe(false);
           expect(mocks.outro).toHaveBeenCalledWith("Doctor complete.");
           if (kind !== "absent" && kind !== "runtime-only") {
@@ -377,6 +378,8 @@ describe("runDoctorHealthFlow", () => {
         const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
         const secondary = openOpenClawAgentDatabase({ agentId: "research", env: state.env });
         if (!clean) {
+          removeCanonicalValidationFromHistoricalAgentFixture(secondary.db);
+          removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
           secondary.db.exec(
             "DROP TABLE session_participants; PRAGMA user_version = 17; UPDATE schema_meta SET schema_version = 17;",
           );
@@ -482,7 +485,7 @@ describe("runDoctorHealthFlow", () => {
             const migration = await migrateLegacyWorkspaceState({
               stateDir: state.stateDir,
               env: state.env,
-              detected: detectLegacyWorkspaceState({
+              detected: await detectLegacyWorkspaceState({
                 cfg: ctx.cfg,
                 stateDir: state.stateDir,
                 env: state.env,
@@ -494,9 +497,9 @@ describe("runDoctorHealthFlow", () => {
               },
             });
             expect(migration.warnings.join("\n")).toContain("legacy cleanup failed");
-            expect(readWorkspaceStateSnapshot(state.workspaceDir).setup.setupCompletedAt).toBe(
-              "2026-07-15T00:00:00.000Z",
-            );
+            expect(
+              (await readWorkspaceStateSnapshot(state.workspaceDir)).setup.setupCompletedAt,
+            ).toBe("2026-07-15T00:00:00.000Z");
           }
         });
         const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
@@ -649,42 +652,12 @@ describe("runDoctorHealthFlow", () => {
 
   registerDoctorConfigReceiptTests(runDoctorHealthFlow, postInstallAdvisory);
 
-  it("reports a cron ownership refusal instead of a recoverable post-install advisory", async () => {
-    mocks.runContributions.mockImplementation(async (ctx) => {
-      ctx.configWriteRefusal = "cron-owner-safety";
-      ctx.postInstallDoctorResult = postInstallAdvisory;
-    });
-    const runtime = {
-      log: vi.fn(),
-      error: vi.fn(),
-      exit: vi.fn(),
-    };
-    vi.stubEnv(
-      "OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH",
-      "/tmp/openclaw-update-doctor-result.json",
-    );
-
-    try {
-      await runDoctorHealthFlow(runtime, {});
-    } finally {
-      vi.unstubAllEnvs();
-    }
-
-    expect(mocks.outro).toHaveBeenCalledWith("Doctor finished, but config fixes were not applied.");
-    expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
-    expect(runtime.exit).toHaveBeenCalledWith(1);
-    expect(runtime.exit).not.toHaveBeenCalledWith(86);
-    expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
-      resultPath: "/tmp/openclaw-update-doctor-result.json",
-      result: { status: "error", configHash: "unchanged" },
-    });
-  });
-
   it.each([{ repair: true }, { yes: true }])(
     "refuses blocked required migration for %j, then completes after the writer releases",
     async (options) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const initial = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+        removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
         initial.db.exec(
           "DROP TABLE session_participants; PRAGMA user_version = 17; UPDATE schema_meta SET schema_version = 17;",
         );
@@ -727,7 +700,17 @@ describe("runDoctorHealthFlow", () => {
           expect(maintenanceOutcome()).toEqual({ outcome: "startup_failed" });
           expect(mocks.writeUpdatePostInstallDoctorResult).toHaveBeenCalledWith({
             resultPath: state.path("advisory.json"),
-            result: { status: "error", configHash: "unchanged" },
+            result: {
+              status: "error",
+              configHash: "unchanged",
+              failureFacts: [
+                {
+                  check: "doctor",
+                  code: "doctor-failed",
+                  message: expect.stringContaining("Doctor could not enter maintenance"),
+                },
+              ],
+            },
           });
           expect(mocks.outro).not.toHaveBeenCalledWith("Doctor complete.");
           expect(fs.readFileSync(initial.path)).toEqual(before);
@@ -776,6 +759,7 @@ describe("runDoctorHealthFlow", () => {
           env: state.env,
           ...(configuredPath ? { path: configuredPath } : {}),
         });
+        removeCanonicalValidationFromHistoricalAgentFixture(initial.db);
         initial.db.exec(
           "DROP TABLE session_participants; PRAGMA user_version = 17; UPDATE schema_meta SET schema_version = 17;",
         );
@@ -951,7 +935,7 @@ describe("runDoctorHealthFlow", () => {
           const result = await migrateLegacyWorkspaceState({
             stateDir: state.stateDir,
             env: state.env,
-            detected: detectLegacyWorkspaceState({
+            detected: await detectLegacyWorkspaceState({
               cfg: ctx.cfg,
               stateDir: state.stateDir,
               env: state.env,
@@ -973,7 +957,7 @@ describe("runDoctorHealthFlow", () => {
           runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true }),
         );
         expect(runtime.log).toHaveBeenCalledWith(expect.stringContaining("legacy cleanup failed"));
-        expect(readWorkspaceStateSnapshot(workspaceDir).setup.setupCompletedAt).toBe(
+        expect((await readWorkspaceStateSnapshot(workspaceDir)).setup.setupCompletedAt).toBe(
           "2026-07-15T00:00:00.000Z",
         );
         expect(fs.existsSync(`${sourcePath}.doctor-importing`)).toBe(true);

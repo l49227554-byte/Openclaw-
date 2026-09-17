@@ -1,7 +1,7 @@
 // Update-channel config repair for legacy config files before normal command startup.
 import { readConfigFileSnapshot, replaceConfigFile } from "../../config/config.js";
 import type { ConfigWriteOptions } from "../../config/io.types.js";
-import { configWriteTargetsIncludeBoundary } from "../../config/mutate.js";
+import { resolveConfigIncludeWriteBoundary } from "../../config/mutate.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { validateConfigObjectRawWithPlugins } from "../../config/validation.js";
 import { containsAuthoredInclude } from "./shared/include-migration-ownership.js";
@@ -25,7 +25,10 @@ export function planLegacyConfigForUpdateChannel(
   includeIdentity: LegacyConfigUpdatePlan["includeIdentity"] = {},
 ): LegacyConfigUpdatePlan | undefined {
   const hasAuthoredIncludes = containsAuthoredInclude(configSnapshot.parsed);
-  const migrated = migrateLegacyConfig(configSnapshot.sourceConfig);
+  const migrated = migrateLegacyConfig(configSnapshot.sourceConfig, {
+    authoredRaw: configSnapshot.parsed,
+    resolvedRaw: configSnapshot.sourceConfig,
+  });
   if (!migrated.config) {
     return undefined;
   }
@@ -38,7 +41,7 @@ export function planLegacyConfigForUpdateChannel(
   const nextConfig = migrated.sourceConfig ?? migrated.config;
   if (
     hasAuthoredIncludes &&
-    !configWriteTargetsIncludeBoundary({ snapshot: configSnapshot, nextConfig })
+    !resolveConfigIncludeWriteBoundary({ snapshot: configSnapshot, nextConfig })
   ) {
     return undefined;
   }

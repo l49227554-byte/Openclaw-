@@ -1,6 +1,13 @@
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
 import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
-import { ownerKey, resolveConfiguredOwner } from "./prepared-model-runtime.owner.js";
+import {
+  normalizeOptionalDir,
+  normalizePreparedModelRuntimeInput,
+  ownerKey,
+  prepareModelRuntimeOwner,
+  resolveConfiguredOwner,
+} from "./prepared-model-runtime.owner.js";
 import type {
   PreparedModelRuntimeOwner,
   PreparedModelRuntimeReplacementGateId,
@@ -306,9 +313,18 @@ export function invalidatePreparedModelRuntimeOwnersForAuthMutation(
   const invalidatedConfiguredAgentIds = new Set<string>();
   for (const owner of owners.values()) {
     if (
-      !normalizedEvent.affectsInheritedStores &&
-      owner.input.agentDir !== normalizedEvent.agentDir &&
-      owner.input.inheritedAuthDir !== normalizedEvent.agentDir
+      // An initial active build will read current credentials; failed owners still need recovery.
+      (!owner.snapshot &&
+        owner.buildCompletion &&
+        !owner.authCaptureStarted &&
+        !owner.refreshError &&
+        owner.input.inheritedAuthDir ===
+          normalizeOptionalDir(
+            resolveLegacyInheritedAuthDir(owner.input.config, owner.input.env),
+          )) ||
+      (!normalizedEvent.affectsInheritedStores &&
+        owner.input.agentDir !== normalizedEvent.agentDir &&
+        owner.input.inheritedAuthDir !== normalizedEvent.agentDir)
     ) {
       continue;
     }
@@ -322,6 +338,23 @@ export function invalidatePreparedModelRuntimeOwnersForAuthMutation(
     if (owner.provenance === "configured" && owner.input.agentId) {
       invalidatedConfiguredAgentIds.add(owner.input.agentId);
     }
+  }
+  // Rebind before queueing: readers must find the pending owner while an older build settles.
+  for (const owner of invalidatedOwners) {
+    if (owner.provenance !== "configured") {
+      continue;
+    }
+    const inheritedAuthDir = normalizeOptionalDir(
+      resolveLegacyInheritedAuthDir(owner.input.config, owner.input.env),
+    );
+    if (owner.input.inheritedAuthDir === inheritedAuthDir) {
+      continue;
+    }
+    const previousKey = ownerKey(owner.input);
+    const input = normalizePreparedModelRuntimeInput({ ...owner.input, inheritedAuthDir });
+    prepareModelRuntimeOwner(input, "configured", owner.catalogMode, owner);
+    owners.delete(previousKey);
+    owners.set(ownerKey(input), owner);
   }
   return { invalidatedOwners, invalidatedConfiguredAgentIds };
 }

@@ -10,20 +10,23 @@ import type {
   ModelAuthAvailabilityRef,
 } from "./model-auth-availability.js";
 import { compareModelCatalogEntries } from "./model-catalog-order.js";
-import {
-  type ModelCatalogRoutePolicy,
-  type ModelCatalogRouteProjection,
-  projectModelCatalogEntryForRoute,
-  resolveConfiguredModelCatalogOverrides,
+import type {
+  ModelCatalogRoutePolicy,
+  ModelCatalogRouteProjection,
 } from "./model-catalog-route.js";
+import { createModelCatalogView } from "./model-catalog-view.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
+import type { ModelRef } from "./model-ref-shared.js";
 import { dedupeModelCatalogEntries } from "./model-selection-shared.js";
 import {
   RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
   createModelVisibilityPolicy,
   type ModelVisibilityPolicy,
 } from "./model-visibility-policy.js";
-import { resolveModelCatalogIdentityKey } from "./openai-model-routes.js";
+import {
+  createModelCatalogIdentityKeyResolver,
+  resolveModelCatalogIdentityKey,
+} from "./openai-model-routes.js";
 
 type ModelCatalogVisibilityView = "default" | "configured" | "all";
 export type ModelCatalogAuthChecker = (
@@ -63,29 +66,18 @@ function sortModelCatalogEntries(entries: ModelCatalogEntry[]): ModelCatalogEntr
   return entries.toSorted(compareModelCatalogEntries);
 }
 
-function isPickerVisibleCatalogEntry(
-  entry: ModelCatalogEntry,
-  configuredKeys: ReadonlySet<string>,
-): boolean {
-  // Deprecated and disabled rows stay selectable but are picker-hidden.
-  // Exact configured refs always remain visible so pinned models never disappear.
-  return (
-    (entry.status !== "deprecated" && entry.status !== "disabled") ||
-    configuredKeys.has(resolveModelCatalogIdentityKey(entry))
-  );
-}
-
 type LogicalModelCatalogParams = {
   cfg: OpenClawConfig;
   catalog: ModelCatalogEntry[];
   defaultProvider: string;
-  defaultModel?: string;
+  defaultModel?: string | ModelRef;
   agentId?: string;
   workspaceDir?: string;
   view?: ModelCatalogVisibilityView;
   policy?: ModelVisibilityPolicy;
   routePolicy: ModelCatalogRoutePolicy;
   routeVariants?: readonly ModelCatalogEntry[];
+  retainedModel?: ModelRef;
 };
 
 /** Resolves logical rows while keeping provider-owned physical route precedence. */
@@ -126,18 +118,21 @@ export async function prepareLogicalVisibleModelCatalog(
       agentId: params.agentId,
       ...RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
     });
-  const keyOf = resolveModelCatalogIdentityKey;
-  const projectionCatalog = params.routeVariants?.length ? params.routeVariants : params.catalog;
-  const routeVariantsByKey = new Map<string, ModelCatalogEntry[]>();
-  for (const entry of projectionCatalog) {
-    const key = keyOf(entry);
-    const variants = routeVariantsByKey.get(key) ?? [];
-    variants.push(entry);
-    routeVariantsByKey.set(key, variants);
-  }
-  const variantsOf = (entry: ModelCatalogEntry) => routeVariantsByKey.get(keyOf(entry)) ?? [entry];
+  const keyOf = createModelCatalogIdentityKeyResolver();
+  const catalogView = createModelCatalogView({
+    cfg: params.cfg,
+    catalog: params.catalog,
+    routeVariants: params.routeVariants?.length ? params.routeVariants : params.catalog,
+    routePolicy: params.routePolicy,
+    keyOf,
+  });
   const { configuredKeys, retainedKeys } = policy;
-  const retained = params.catalog.filter((entry) => retainedKeys.has(keyOf(entry)));
+  const retainedKey = params.retainedModel
+    ? keyOf({ provider: params.retainedModel.provider, id: params.retainedModel.model })
+    : undefined;
+  const retained = params.catalog.filter(
+    (entry) => retainedKeys.has(keyOf(entry)) || keyOf(entry) === retainedKey,
+  );
   const wildcard = policy.allowAny || policy.hasProviderWildcards;
   const configuredCatalog = wildcard ? sortModelCatalogEntries([...policy.configuredCatalog]) : [];
   const candidates =
@@ -151,63 +146,35 @@ export async function prepareLogicalVisibleModelCatalog(
         ];
   const readers = new Map<string, () => LogicalModelCatalogEntryState>();
   for (const entry of candidates) {
-    const key = keyOf(entry);
+    // Preparation can mutate later rows or replace the policy owner across each await.
+    const key = resolveModelCatalogIdentityKey(entry);
     if (!readers.has(key)) {
-      const variants = variantsOf(entry);
+      const variants = catalogView.variantsOf(entry, key) ?? [entry];
       readers.set(key, await params.prepareEntry(variants[0] ?? entry, variants));
     }
   }
-  const catalogKeys = new Set(params.catalog.map(keyOf));
-  const projections = new Map<
-    ModelCatalogEntry,
-    {
-      overrides: ReturnType<typeof resolveConfiguredModelCatalogOverrides>;
-      rows: Map<
-        | ModelCatalogRouteProjection["kind"]
-        | Extract<ModelCatalogRouteProjection, { kind: "selected" }>["route"],
-        ModelCatalogEntry
-      >;
-    }
-  >();
+  const catalogKeys = new Set(params.catalog.map(createModelCatalogIdentityKeyResolver()));
   return () => {
     // Membership and row availability consume this one observation after every await.
     const states = new Map([...readers].map(([key, read]) => [key, read()]));
+    const publicationKeyOf = createModelCatalogIdentityKeyResolver();
     const getEntryState = (entry: ModelCatalogEntry) => {
-      const state = states.get(keyOf(entry));
+      const state = states.get(publicationKeyOf(entry));
       if (!state) {
         throw new Error("Model catalog publication omitted prepared entry state");
       }
       return state;
     };
     const projectEntries = (entries: readonly ModelCatalogEntry[]) => {
-      const projected = entries.map((entry) => {
-        const projection = getEntryState(entry).routeProjection;
-        let cached = projections.get(entry);
-        if (!cached) {
-          cached = {
-            overrides: resolveConfiguredModelCatalogOverrides({
-              cfg: params.cfg,
-              entry,
-              policy: params.routePolicy,
-            }),
-            rows: new Map(),
-          };
-          projections.set(entry, cached);
-        }
-        const route = projection.kind === "selected" ? projection.route : projection.kind;
-        let row = cached.rows.get(route);
-        if (!row) {
-          row = projectModelCatalogEntryForRoute({
+      const projected = entries.map(
+        (entry) =>
+          catalogView.readProjection(
             entry,
-            projection,
-            catalog: variantsOf(entry),
-            ...(cached.overrides ? { overrides: cached.overrides } : {}),
-          }).entry;
-          cached.rows.set(route, row);
-        }
-        return row;
-      });
-      return sortModelCatalogEntries(dedupeByKey(projected, resolveModelCatalogIdentityKey));
+            getEntryState(entry).routeProjection,
+            publicationKeyOf(entry),
+          ).entry,
+      );
+      return sortModelCatalogEntries(dedupeByKey(projected, publicationKeyOf));
     };
     if (params.view === "all") {
       return projectEntries(params.catalog);
@@ -228,12 +195,15 @@ export async function prepareLogicalVisibleModelCatalog(
           view: params.view,
         }),
       ),
-    ).filter((entry) => catalogKeys.has(keyOf(entry)) || configuredKeys.has(keyOf(entry)));
-    const preferredKeys = new Set([...visible, ...retained].map(keyOf));
+    ).filter(
+      (entry) =>
+        catalogKeys.has(publicationKeyOf(entry)) || configuredKeys.has(publicationKeyOf(entry)),
+    );
+    const preferredKeys = new Set([...visible, ...retained].map(publicationKeyOf));
     const preferred: ModelCatalogEntry[] = [];
     const routeBacked = new Set<ModelCatalogEntry>();
     for (const entry of params.catalog) {
-      const key = keyOf(entry);
+      const key = publicationKeyOf(entry);
       const preferredKey = preferredKeys.has(key);
       const wildcardRoute =
         policy.allowAny ||
@@ -259,15 +229,21 @@ export async function prepareLogicalVisibleModelCatalog(
     }
     const kept = visible.filter((entry) => {
       const state = getEntryState(entry);
-      const configured = configuredKeys.has(keyOf(entry));
+      const configured = configuredKeys.has(publicationKeyOf(entry));
       return (
         (state.compatible || configured) &&
         (!state.routeManaged || configured || routeBacked.has(entry))
       );
     });
     // Selected physical routes must lead dedupe so sibling metadata cannot win.
-    return projectEntries([...preferred, ...kept, ...retained, ...routeBacked]).filter((entry) =>
-      isPickerVisibleCatalogEntry(entry, configuredKeys),
+    // Deprecated/disabled rows stay selectable; configured and current refs remain picker-visible.
+    return projectEntries([...preferred, ...kept, ...retained, ...routeBacked]).filter(
+      (entry) =>
+        (params.view === "configured" ||
+          policy.allows({ provider: entry.provider, model: entry.id })) &&
+        (publicationKeyOf(entry) === retainedKey ||
+          (entry.status !== "deprecated" && entry.status !== "disabled") ||
+          configuredKeys.has(publicationKeyOf(entry))),
     );
   };
 }

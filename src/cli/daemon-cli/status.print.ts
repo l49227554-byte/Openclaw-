@@ -15,6 +15,7 @@ import {
   resolveGatewaySupervisorLogPaths,
 } from "../../daemon/restart-logs.js";
 import { buildGatewayRuntimeRecoveryHints } from "../../daemon/runtime-hints.js";
+import { formatServiceInspectionReason } from "../../daemon/service-inspection-error.js";
 import { isSystemdStartLimitHit } from "../../daemon/service-runtime.js";
 import {
   isSystemdUnavailableDetail,
@@ -28,6 +29,7 @@ import { resolvePluginVersionDriftUpdateCommand } from "../../plugins/plugin-ver
 import { defaultRuntime } from "../../runtime.js";
 import { shortenHomePath } from "../../utils.js";
 import { formatCliCommand } from "../command-format.js";
+import { quoteCliArg } from "../quote-cli-arg.js";
 import {
   createCliStatusTextStyles,
   formatRuntimeStatus,
@@ -92,6 +94,12 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
   defaultRuntime.log(
     `${label("Service:")} ${accent(service.label)} (${serviceStatus})${diagnosticOnlySuffix}`,
   );
+  const transport = service.runtime?.systemd?.transport;
+  if (opts.deep && transport) {
+    defaultRuntime.log(
+      `${label("Systemd transport:")} ${infoText(`${transport.kind} (${transport.kind === "machine" ? transport.user : transport.address})`)}`,
+    );
+  }
   if (status.logFile) {
     defaultRuntime.log(`${label("File logs:")} ${infoText(shortenHomePath(status.logFile))}`);
   }
@@ -106,7 +114,9 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     );
   }
   if (service.command?.reloadPending) {
-    defaultRuntime.log(warnText("Systemd reload: pending (run systemctl --user daemon-reload)"));
+    const systemctl =
+      service.runtime?.systemd?.scope === "system" ? "sudo systemctl --system" : "systemctl --user";
+    defaultRuntime.log(warnText(`Systemd reload: pending (run ${systemctl} daemon-reload)`));
   }
   if (service.command?.workingDirectory) {
     defaultRuntime.log(
@@ -248,7 +258,9 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     spacer();
   }
 
-  const runtimeLine = formatRuntimeStatus(service.runtime);
+  const runtimeLine = formatRuntimeStatus(
+    service.inspectionReason ? { ...service.runtime, detail: undefined } : service.runtime,
+  );
   if (runtimeLine) {
     const runtimeColor = resolveRuntimeStatusColor(service.runtime?.status);
     defaultRuntime.log(
@@ -257,6 +269,15 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
   }
   if (service.restartHandoff) {
     defaultRuntime.log(infoText(formatGatewayRestartHandoffDiagnostic(service.restartHandoff)));
+  }
+  if (status.gateway?.lastShutdown) {
+    const { reason, completedAtMs } = status.gateway.lastShutdown;
+    defaultRuntime.log(
+      `${label("Last shutdown:")} ${infoText(sanitizeTerminalText(reason ?? "unknown"))} at ${new Date(completedAtMs).toISOString()}`,
+    );
+  }
+  if (status.gateway?.duelingScopesWarning) {
+    defaultRuntime.error(warnText(sanitizeTerminalText(status.gateway.duelingScopesWarning)));
   }
 
   if (
@@ -357,8 +378,11 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     spacer();
   }
 
-  const serviceInspectionDetail =
-    service.loadState.status === "unknown" ? service.loadState.detail : undefined;
+  const serviceInspectionDetail = service.inspectionReason
+    ? formatServiceInspectionReason(service.inspectionReason)
+    : service.loadState.status === "unknown"
+      ? service.loadState.detail
+      : undefined;
   if (serviceInspectionDetail) {
     defaultRuntime.error(errorText(`Service inspection failed: ${serviceInspectionDetail}`));
     defaultRuntime.error(errorText(`Retry: ${formatCliCommand("openclaw gateway status --deep")}`));
@@ -370,6 +394,7 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     service.runtime?.detail;
   const systemdUnavailable =
     process.platform === "linux" &&
+    !service.inspectionReason &&
     (serviceInspectionDetail !== undefined || rpc?.ok !== true) &&
     isSystemdUnavailableDetail(systemdUnavailableDetail);
   if (systemdUnavailable) {
@@ -386,9 +411,15 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
   }
 
   if (service.runtime?.missingUnit) {
-    defaultRuntime.error(errorText("Service unit not found."));
-    const recovery = installBlock ?? `Run: ${installCommand}`;
-    defaultRuntime.error(errorText(recovery));
+    if (serviceTargetsProbe) {
+      defaultRuntime.error(errorText("Service unit not found."));
+      const recovery = installBlock ?? `Run: ${installCommand}`;
+      defaultRuntime.error(errorText(recovery));
+    } else {
+      defaultRuntime.log(
+        infoText("Native service is not installed; diagnostic only, not the probe target."),
+      );
+    }
   } else if (
     service.runtime?.missingGuiSession ||
     (serviceLoaded && service.runtime?.status === "stopped")
@@ -414,6 +445,7 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
       restartCommand: formatCliCommand("openclaw gateway restart", env),
       env,
       logFile: status.logFile,
+      systemd: service.runtime?.systemd,
     })) {
       defaultRuntime.error(errorText(hint));
     }
@@ -520,9 +552,12 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
       defaultRuntime.error(`${errorText("Last gateway error:")} ${status.lastError}`);
     }
     if (process.platform === "linux") {
-      const unit = resolveGatewaySystemdServiceName(serviceEnv.OPENCLAW_PROFILE);
+      const unit =
+        service.runtime?.systemd?.unit ??
+        `${resolveGatewaySystemdServiceName(serviceEnv.OPENCLAW_PROFILE)}.service`;
+      const scope = service.runtime?.systemd?.scope === "system" ? "--system" : "--user";
       defaultRuntime.error(
-        errorText(`Logs: journalctl --user -u ${unit}.service -n 200 --no-pager`),
+        errorText(`Logs: journalctl ${scope} -u ${quoteCliArg(unit)} -n 200 --no-pager`),
       );
     } else if (process.platform === "darwin") {
       const logs = resolveGatewaySupervisorLogPaths(serviceEnv, { platform: "darwin" });
@@ -543,8 +578,11 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     for (const svc of extraServices) {
       defaultRuntime.log(`- ${warnText(svc.label)} (${svc.scope}, ${svc.detail})`);
     }
-    for (const hint of renderGatewayServiceCleanupHints(extraServices)) {
-      defaultRuntime.log(`${infoText("Cleanup hint:")} ${hint}`);
+    for (const svc of extraServices) {
+      const hintLabel = svc.platform === "linux" ? "Inspection hint:" : "Cleanup hint:";
+      for (const hint of renderGatewayServiceCleanupHints([svc])) {
+        defaultRuntime.log(`${infoText(hintLabel)} ${hint}`);
+      }
     }
     spacer();
   }

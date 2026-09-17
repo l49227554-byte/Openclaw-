@@ -18,6 +18,7 @@ import {
   shouldPreferActiveRuntimeAliasAuthLabel,
 } from "../agents/model-runtime-aliases.js";
 import { resolveDefaultModelForAgent } from "../agents/model-selection.js";
+import { resolveConfiguredThinkingDefault } from "../agents/model-thinking-default.js";
 import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../agents/openai-routing.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
 import {
@@ -26,7 +27,7 @@ import {
 } from "../agents/tools/sessions-helpers.js";
 import { normalizeGroupActivation } from "../auto-reply/group-activation.js";
 import { resolveSelectedAndActiveModel } from "../auto-reply/model-runtime.js";
-import type { ThinkLevel } from "../auto-reply/thinking.js";
+import { normalizeThinkLevel } from "../auto-reply/thinking.shared.js";
 import { toAgentModelListLike } from "../config/model-input.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { hasSessionAutoModelFallbackProvenance } from "../config/sessions/model-override-provenance.js";
@@ -61,6 +62,7 @@ import {
   shouldUseCodexSyntheticUsageForRuntime,
 } from "./codex-synthetic-usage.js";
 import { resolveActiveFallbackState } from "./fallback-notice-state.js";
+import { readSessionFallbackModel } from "./session-fallback-model.js";
 import type { StatusMessageParts } from "./status-message.js";
 import { createStatusModelAuthResolver } from "./status-model-auth.js";
 import { formatCompactPluginHealthLine } from "./status-plugin-health.js";
@@ -320,11 +322,15 @@ export async function buildStatusReplyParts(
   const parseSelectedProvider = Boolean(
     sessionEntry?.modelOverride?.trim() && !sessionEntry?.providerOverride?.trim(),
   );
+  const modelParams = { selectedProvider, selectedModel, sessionEntry, parseSelectedProvider };
+  const activeModel = readSessionFallbackModel({
+    ...modelParams,
+    config: cfg,
+    sessionScope: { agentId: statusAgentId, sessionKey, storePath },
+  });
   const modelRefs = resolveSelectedAndActiveModel({
-    selectedProvider,
-    selectedModel,
-    sessionEntry,
-    parseSelectedProvider,
+    ...modelParams,
+    sessionEntry: activeModel ?? sessionEntry,
   });
   const selectedLookupProvider = modelRefs.selected.provider || selectedProvider || provider;
   const selectedLookupModel = modelRefs.selected.model || selectedModel || model;
@@ -573,9 +579,12 @@ export async function buildStatusReplyParts(
   });
   const { buildStatusMessageParts } = await loadStatusMessageRuntime();
   await waitForContextWindowCacheLoad();
-  const explicitThinkingDefault =
-    (agentConfig?.thinkingDefault as ThinkLevel | undefined) ??
-    (agentDefaults.thinkingDefault as ThinkLevel | undefined);
+  const configuredThinkingDefault = resolveConfiguredThinkingDefault({
+    cfg,
+    agentId: statusAgentId,
+    provider: selectedLookupProvider,
+    model: selectedLookupModel,
+  });
   const preparedContextTokens =
     typeof contextTokens === "number" && contextTokens > 0 ? contextTokens : undefined;
   const selectedCatalogEntry = findModelInCatalog(
@@ -590,9 +599,13 @@ export async function buildStatusReplyParts(
   );
   const requestedThinkLevel =
     resolvedThinkLevel ??
-    explicitThinkingDefault ??
-    (await resolveDefaultThinkingLevel()) ??
-    (sessionEntry?.thinkingLevel as ThinkLevel | undefined) ??
+    normalizeThinkLevel(sessionEntry?.thinkingLevel) ??
+    configuredThinkingDefault ??
+    (await resolveDefaultThinkingLevel({
+      provider: selectedLookupProvider,
+      model: selectedLookupModel,
+      agentRuntime: effectiveHarness,
+    })) ??
     "off";
   // Active profiles can forbid `off` (for example, always-thinking models). Absence means
   // there is no prepared policy fact, so status must not fall back to manifest discovery.
@@ -638,13 +651,15 @@ export async function buildStatusReplyParts(
         primary: params.primaryModelLabelOverride ?? `${provider}/${model}`,
         ...(agentFallbacksOverride === undefined ? {} : { fallbacks: agentFallbacksOverride }),
       },
-      thinkingDefault: explicitThinkingDefault,
+      thinkingDefault: configuredThinkingDefault,
       verboseDefault: agentDefaults.verboseDefault,
       reasoningDefault: agentConfig?.reasoningDefault ?? agentDefaults.reasoningDefault,
       elevatedDefault: agentDefaults.elevatedDefault,
     },
     agentId: statusAgentId,
     configuredDefaultModelLabel,
+    modelRefs,
+    activeModel,
     selectedContextWindow: selectedCatalogEntry?.contextWindow,
     selectedContextTokens:
       selectedCatalogEntry?.contextTokens ??
@@ -652,7 +667,9 @@ export async function buildStatusReplyParts(
     thinkingCatalog,
     runtimeContextProvider: activeRuntimeIsAuthoritative ? activeStatusProvider : undefined,
     runtimeContextTokens:
-      activeRuntimeIsAuthoritative && (initialActiveCatalogEntry || fallbackState.active)
+      activeRuntimeIsAuthoritative &&
+      (initialActiveCatalogEntry || fallbackState.active) &&
+      (!activeModel || (activeModel.modelProvider === provider && activeModel.model === model))
         ? preparedContextTokens
         : undefined,
     sessionEntry,

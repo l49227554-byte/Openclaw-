@@ -40,15 +40,6 @@ import {
   shouldEnableCodexAppServerNativeToolSurface,
 } from "./dynamic-tool-build.js";
 import {
-  buildDynamicToolsForTest,
-  createCodexRuntimePlanFixture,
-  createParams,
-  hoisted,
-  resetOpenClawCodingToolsFactoryForTests,
-  setOpenClawCodingToolsFactoryForTests,
-  type OpenClawCodingToolsOptionsForTest,
-} from "./dynamic-tool-build.test-support.js";
-import {
   filterCodexDynamicTools,
   filterCodexDynamicToolsForDisabledNativeSurface,
   resolveCodexDynamicToolsLoading,
@@ -62,6 +53,15 @@ import {
 } from "./protocol.js";
 import { resolveCodexDynamicToolDirectNames } from "./run-attempt-tools.js";
 import { createCodexTestModel } from "./test-support.js";
+
+const {
+  buildDynamicToolsForTest,
+  createCodexRuntimePlanFixture,
+  createParams,
+  hoisted,
+  resetOpenClawCodingToolsFactoryForTests,
+  setOpenClawCodingToolsFactoryForTests,
+} = await import("./dynamic-tool-build.test-support.js");
 
 let tempDir: string;
 const hostCapabilityClosers: Array<() => void> = [];

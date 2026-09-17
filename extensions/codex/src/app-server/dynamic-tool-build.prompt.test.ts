@@ -4,15 +4,17 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
+
+const {
   buildDynamicToolsForTest,
   createCodexRuntimePlanFixture,
   createParams,
   hoisted,
   resetOpenClawCodingToolsFactoryForTests,
   setOpenClawCodingToolsFactoryForTests,
-  type OpenClawCodingToolsOptionsForTest,
-} from "./dynamic-tool-build.test-support.js";
+} = await import("./dynamic-tool-build.test-support.js");
+type OpenClawCodingToolsOptionsForTest =
+  import("./dynamic-tool-build.test-support.js").OpenClawCodingToolsOptionsForTest;
 
 describe("Codex app-server dynamic tool question prompts", () => {
   let tempDir: string;

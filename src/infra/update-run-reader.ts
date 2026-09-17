@@ -85,9 +85,10 @@ function readRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
   if (input.reason) {
     query = query.where("reason", "=", input.reason);
   }
-  if (input.excludeReason) {
+  const excludeReason = input.excludeReason;
+  if (excludeReason) {
     query = query.where((eb) =>
-      eb.or([eb("reason", "is", null), eb("reason", "!=", input.excludeReason)]),
+      eb.or([eb("reason", "is", null), eb("reason", "!=", excludeReason)]),
     );
   }
   const runs = executeSqliteQuerySync(

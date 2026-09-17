@@ -157,10 +157,11 @@ export function createSessionMcpRuntimeManagerLifecycle(store: SessionMcpRuntime
     // Replacement transfers the slot before cleanup yields; only its current owner may release it.
     if (store.runtimesBySessionId.get(runtimeKey) === runtime && owner?.hasServers() !== true) {
       store.liveRuntimeSlots.delete(slot);
-      // Empty facades must leave the manager even if they never used capacity.
-      // Sign-in-only requester capabilities stay owned so reload can revoke them.
+      // A drained transport releases capacity, but a retained handle still owns
+      // its binding. Final handle release reaps it; sign-in capabilities stay owned.
       if (
         owner?.hasServers() === false &&
+        (runtime.activeLeases ?? 0) === 0 &&
         Object.keys(runtime.requesterConnect?.catalog.servers ?? {}).length === 0
       ) {
         store.runtimesBySessionId.delete(runtimeKey);

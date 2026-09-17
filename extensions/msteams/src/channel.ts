@@ -43,6 +43,7 @@ import {
   DEFAULT_ACCOUNT_ID,
   PAIRING_APPROVED_MESSAGE,
 } from "../runtime-api.js";
+import { resolveActionContent, resolveActionUploadFilePath } from "./action-params.js";
 import {
   extractMSTeamsToolSendResult,
   msteamsContextTargetsMatch,
@@ -241,33 +242,11 @@ function resolveActionQuery(params: Record<string, unknown>): string {
   return normalizeOptionalString(params.query) ?? "";
 }
 
-function resolveActionContent(params: Record<string, unknown>): string {
-  return typeof params.text === "string"
-    ? params.text
-    : typeof params.content === "string"
-      ? params.content
-      : typeof params.message === "string"
-        ? params.message
-        : "";
-}
-
 function readOptionalTrimmedString(
   params: Record<string, unknown>,
   key: string,
 ): string | undefined {
   return normalizeOptionalString(params[key]);
-}
-
-function resolveActionUploadFilePath(params: Record<string, unknown>): string | undefined {
-  for (const key of ["filePath", "path", "media"] as const) {
-    if (typeof params[key] === "string") {
-      const value = params[key];
-      if (value.trim()) {
-        return value;
-      }
-    }
-  }
-  return undefined;
 }
 
 type MSTeamsActionTargetParams = {
@@ -636,6 +615,8 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                   cfg: ctx.cfg,
                   to,
                   card,
+                  assertDirectAdapterHandoff: ctx.assertDirectAdapterHandoff,
+                  onPlatformSendDispatch: ctx.onPlatformSendDispatch,
                 });
                 return jsonActionResultWithDetails(
                   {
@@ -671,6 +652,8 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
                   mediaAccess: ctx.mediaAccess,
                   mediaLocalRoots: ctx.mediaLocalRoots,
                   mediaReadFile: ctx.mediaReadFile,
+                  assertDirectAdapterHandoff: ctx.assertDirectAdapterHandoff,
+                  onPlatformSendDispatch: ctx.onPlatformSendDispatch,
                 });
                 return jsonActionResultWithDetails(
                   {

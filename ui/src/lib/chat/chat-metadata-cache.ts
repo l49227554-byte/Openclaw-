@@ -114,6 +114,8 @@ export function invalidateChatMetadataForSessionEvent(
 
 export function isSessionMetadataInvalidation(event?: Record<string, unknown> | null): boolean {
   return (
-    event?.phase !== "reset" && (event?.reason === "patch" || event?.reason === "command-metadata")
+    event?.catalogChanged !== true &&
+    event?.phase !== "reset" &&
+    (event?.reason === "patch" || event?.reason === "command-metadata")
   );
 }

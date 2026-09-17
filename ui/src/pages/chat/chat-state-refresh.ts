@@ -242,7 +242,7 @@ export async function refreshChatMetadata(
     const refresh = loadChatMetadataRefresh(binding.client, binding.scope, {
       kind: options.startup ? "startup" : undefined,
     });
-    const freshCatalog = applyCachedChatModelCatalog(host, binding);
+    const freshCatalog = applyChatModelCatalogSnapshot(host);
     if (binding.refreshPending?.refresh === refresh) {
       return binding.refreshPending.promise;
     }

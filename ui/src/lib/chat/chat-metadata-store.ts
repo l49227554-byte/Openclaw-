@@ -68,6 +68,7 @@ function metadataEntryFor(
     ) => {
       if (
         sessionEvent !== undefined &&
+        sessionEvent?.catalogChanged !== true &&
         ((!scope && sessionEvent?.reason !== "delete" && sessionEvent?.reason !== "cleanup") ||
           (sessionEvent?.phase !== "reset" &&
             ![

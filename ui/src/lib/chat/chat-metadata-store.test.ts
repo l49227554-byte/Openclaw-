@@ -100,9 +100,15 @@ describe("chat metadata store", () => {
     },
   );
 
-  it.each(["patch", "command-metadata", "reset", "new", "create", "delete", "recovery", "cleanup"])(
-    "classifies %s invalidation without discarding unrelated catalogs",
-    async (reason) => {
+  it.each([
+    ...["patch", "command-metadata", "reset", "new", "create", "delete", "recovery", "cleanup"].map(
+      (reason) => ({ reason, catalogChanged: undefined }),
+    ),
+    { reason: "patch", catalogChanged: true },
+    { reason: "mark-read", catalogChanged: true },
+  ])(
+    "classifies $reason invalidation (catalogChanged=$catalogChanged) without discarding unrelated catalogs",
+    async ({ reason, catalogChanged }) => {
       const client = clientWith(vi.fn().mockResolvedValue({ models: [] }));
       const scope = { agentId: "main", sessionKey: "agent:main:current" };
       const other = { agentId: "main", sessionKey: "agent:main:other" };
@@ -110,8 +116,8 @@ describe("chat metadata store", () => {
       const release = subscribeChatMetadata(client, scope, listener);
       beginChatMetadataPublication(client, scope).publish(metadata("before"));
       await Promise.all([loadModelCatalog(client, scope), loadModelCatalog(client, other)]);
-      const sessionOnly = reason === "patch" || reason === "command-metadata";
-      invalidateChatMetadataForSessionEvent(client, { ...scope, reason }, {});
+      const sessionOnly = !catalogChanged && (reason === "patch" || reason === "command-metadata");
+      invalidateChatMetadataForSessionEvent(client, { ...scope, reason, catalogChanged }, {});
       expect(listener).toHaveBeenLastCalledWith({
         type: "invalidated",
         scope: sessionOnly ? "session" : "full",

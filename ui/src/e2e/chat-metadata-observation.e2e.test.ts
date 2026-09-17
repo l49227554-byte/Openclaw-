@@ -309,35 +309,52 @@ suite.define(() => {
           "models.list": visibleCounts["models.list"],
         });
 
-        // Account-only patches have the same model/runtime row. Metadata signals
-        // the changed projection, but only models.list may replace picker data.
-        const accountSelection = {
-          kind: "shared",
-          authProfileId: "fixture:replacement",
-          label: "Replacement account",
-          source: "user",
-        };
-        await gateway.setMethodResponse("chat.metadata", {
-          commands: [],
-          models: [metadataModel],
-          accountSelection,
-        });
-        await gateway.setMethodResponse("models.list", { models: [freshModel], accountSelection });
-        const beforeAccount = await requestCounts(gateway);
-        await gateway.emitGatewayEvent("sessions.changed", {
-          key: sessionKeys[0],
-          agentId: "main",
-          reason,
-        });
-        await page.clock.runFor(3_000);
-        await Promise.all([
-          expectCatalog(panes.nth(0), freshModel.name),
-          expectCatalog(panes.nth(1), freshModel.name),
-        ]);
-        expect(await requestCounts(gateway)).toEqual({
-          "chat.metadata": beforeAccount["chat.metadata"] + 1,
-          "models.list": beforeAccount["models.list"] + 1,
-        });
+        // Metadata still detects unmarked projection changes; explicit selections
+        // carry the owner's hint and must refresh before the debounce elapses.
+        for (const catalogChanged of [false, true]) {
+          const selectedModel = catalogChanged ? { ...model, name: "Selected model" } : freshModel;
+          const accountSelection = {
+            kind: "shared",
+            authProfileId: "fixture:replacement",
+            label: "Replacement account",
+            source: "user",
+          };
+          await gateway.setMethodResponse("chat.metadata", {
+            commands: [],
+            models: [metadataModel],
+            accountSelection,
+          });
+          await gateway.setMethodResponse("models.list", {
+            models: [selectedModel],
+            accountSelection,
+          });
+          const beforeAccount = await requestCounts(gateway);
+          const proof =
+            catalogChanged && reason === "patch" && process.env.OPENCLAW_UI_E2E_RECORD === "1"
+              ? createControlUiE2eArtifactDir("chat-metadata-selection")
+              : undefined;
+          if (proof) {
+            await page.screenshot({ path: path.join(proof, "before.png") });
+          }
+          await gateway.emitGatewayEvent("sessions.changed", {
+            key: sessionKeys[0],
+            agentId: "main",
+            reason,
+            ...(catalogChanged ? { catalogChanged: true } : {}),
+          });
+          await page.clock.runFor(catalogChanged ? 100 : 3_000);
+          await Promise.all([
+            expectCatalog(panes.nth(0), selectedModel.name),
+            expectCatalog(panes.nth(1), selectedModel.name),
+          ]);
+          expect(await requestCounts(gateway)).toEqual({
+            "chat.metadata": beforeAccount["chat.metadata"] + 1,
+            "models.list": beforeAccount["models.list"] + 1,
+          });
+          if (proof) {
+            await page.screenshot({ path: path.join(proof, "after.png") });
+          }
+        }
         expect(await gateway.getRequests("models.authStatus")).toHaveLength(authBefore);
       });
     },

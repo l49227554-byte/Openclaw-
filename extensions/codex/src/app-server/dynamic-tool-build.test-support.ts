@@ -44,10 +44,6 @@ vi.mock("openclaw/plugin-sdk/node-selection-runtime", async (importOriginal) => 
   return { ...actual, loadNodeExecAvailability: hoisted.loadNodeExecAvailability };
 });
 
-export type OpenClawCodingToolsOptionsForTest = NonNullable<
-  Parameters<NonNullable<typeof dynamicToolBuildState.openClawCodingToolsFactory>>[0]
->;
-
 export function setOpenClawCodingToolsFactoryForTests(
   factory: NonNullable<typeof dynamicToolBuildState.openClawCodingToolsFactory>,
 ): void {

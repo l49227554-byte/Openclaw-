@@ -13,8 +13,9 @@ const {
   resetOpenClawCodingToolsFactoryForTests,
   setOpenClawCodingToolsFactoryForTests,
 } = await import("./dynamic-tool-build.test-support.js");
-type OpenClawCodingToolsOptionsForTest =
-  import("./dynamic-tool-build.test-support.js").OpenClawCodingToolsOptionsForTest;
+type OpenClawCodingToolsOptionsForTest = NonNullable<
+  Parameters<Parameters<typeof setOpenClawCodingToolsFactoryForTests>[0]>[0]
+>;
 
 describe("Codex app-server dynamic tool question prompts", () => {
   let tempDir: string;

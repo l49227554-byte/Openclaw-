@@ -165,7 +165,7 @@ describe("computeSandboxConfigHash", () => {
     const withoutResources = computeSandboxConfigHash(shared);
     const withResources = computeSandboxConfigHash({
       ...shared,
-      readOnlyResourceMounts: ["/host/attachments:/openclaw/attachments:ro"],
+      managedMounts: ["/host/attachments:/openclaw/attachments:ro"],
     });
     expect(withoutResources).not.toBe(withResources);
   });

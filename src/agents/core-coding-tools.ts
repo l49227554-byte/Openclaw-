@@ -59,7 +59,6 @@ function guardHostWorkspaceTool(
 type CoreCodingToolsOptions = {
   abortSignal?: AbortSignal;
   attachmentReadRoot?: string;
-  agentId?: string;
   codingRoot: string;
   containmentRoot: string;
   includeBaseCodingTools: boolean;

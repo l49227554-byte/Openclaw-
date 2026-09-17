@@ -5,12 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withEnvAsync } from "../../../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import { resolveSubagentAttachmentDir } from "../subagent-attachment-paths.js";
 import {
   cleanupMaterializedSubagentAttachments,
   materializeSubagentAttachments,
 } from "./subagent-attachments.js";
-import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import {
   createSubagentSpawnTestConfig,
   loadSubagentSpawnModuleForTest,
@@ -100,11 +100,9 @@ describe("spawnSubagentDirect filename validation", () => {
   }
 
   function resolveStagedDir(relDir: string, childSessionKey: string): string {
-    return resolveSubagentAttachmentDir({
-      agentId: "main",
-      childSessionKey,
-      attachmentId: path.basename(relDir),
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDirOverride },
+    return resolveSubagentAttachmentDir("main", childSessionKey, path.basename(relDir), {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDirOverride,
     });
   }
 

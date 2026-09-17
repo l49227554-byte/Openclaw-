@@ -574,9 +574,10 @@ export async function resolveMediaToolReferenceAccess(params: {
       : { resolved: resolveHostPath() };
   return {
     resolvedPath: params.isDataUrl ? null : pathInfo.resolved,
-    localRoots: workspaceOnly
-      ? workspaceRoots
-      : uniqueStrings([...getDefaultLocalRootsCore(), ...workspaceRoots]),
+    localRoots: uniqueStrings([
+      ...(workspaceOnly ? workspaceRoots : [...getDefaultLocalRootsCore(), ...workspaceRoots]),
+      ...(params.fsPolicy?.readOnlyRoots ?? []),
+    ]),
     ...(pathInfo.rewrittenFrom ? { rewrittenFrom: pathInfo.rewrittenFrom } : {}),
   };
 }

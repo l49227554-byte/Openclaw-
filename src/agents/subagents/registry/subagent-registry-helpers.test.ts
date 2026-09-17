@@ -192,11 +192,9 @@ describe("safeRemoveAttachmentsDir", () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-attachment-state-"));
     const attachmentId = "2d4a8398-4d5a-4c20-9c16-0a5f6627cf92";
     const childSessionKey = "agent:main:subagent:child";
-    const attachmentDir = resolveSubagentAttachmentDir({
-      agentId: "main",
-      childSessionKey,
-      attachmentId,
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+    const attachmentDir = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId, {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDir,
     });
     const siblingDir = path.join(stateDir, "attachments", "subagents", "main", "sibling");
     await fs.mkdir(attachmentDir, { recursive: true });

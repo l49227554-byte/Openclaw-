@@ -268,11 +268,11 @@ describe("pending spawn preparation authority", () => {
           expect(
             await fs.readFile(
               path.join(
-                resolveSubagentAttachmentDir({
-                  agentId: "main",
+                resolveSubagentAttachmentDir(
+                  "main",
                   childSessionKey,
-                  attachmentId: path.basename(details.attachments.relDir),
-                }),
+                  path.basename(details.attachments.relDir),
+                ),
                 "synthetic.txt",
               ),
               "utf8",

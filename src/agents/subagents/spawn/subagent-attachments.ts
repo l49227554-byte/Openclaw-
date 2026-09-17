@@ -15,6 +15,7 @@ import {
   wrapUntrustedPromptDataBlock,
 } from "../../sanitize-for-prompt.js";
 import {
+  resolveSubagentAttachmentDir,
   resolveSubagentSessionAttachmentRootDir,
   SANDBOX_SUBAGENT_ATTACHMENTS_MOUNT,
 } from "../subagent-attachment-paths.js";
@@ -360,7 +361,11 @@ export async function materializeSubagentAttachments(params: {
   // workspace-relative, and the child prompt carries the usable sandbox mount or
   // absolute Gateway path; consumers must not resolve relDir as a location.
   const relDir = path.posix.join(".openclaw", "attachments", attachmentId);
-  const absDir = path.join(absRootDir, attachmentId);
+  const absDir = resolveSubagentAttachmentDir(
+    params.targetAgentId,
+    params.childSessionKey,
+    attachmentId,
+  );
   let store: ReturnType<typeof privateFileStore> | undefined;
 
   try {

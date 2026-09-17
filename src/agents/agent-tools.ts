@@ -67,7 +67,7 @@ import {
   type ResolvedConversationCapabilityProfile,
 } from "./conversation-capability-profile.js";
 import type { ConversationRecallContext } from "./conversation-recall.types.js";
-import { projectConversationToolNames } from "./conversation-tool-policy-pipeline.js";
+import { isConversationToolAllowed } from "./conversation-tool-policy-pipeline.js";
 import { createCoreCodingTools } from "./core-coding-tools.js";
 import type { OpenClawCodingToolConstructionPlan } from "./core-tool-factory-descriptors.js";
 import {
@@ -102,7 +102,7 @@ import {
 import { resolveSessionPlacementComputer } from "./session-placement-computer.js";
 import type { SpawnedToolContext } from "./spawned-context.js";
 import type { TrustedSubagentCompletionHandoff } from "./subagents/announce/subagent-announce-handoff.js";
-import { resolveSubagentSessionAttachmentRootDir } from "./subagents/subagent-attachment-paths.js";
+import { subagentAttachmentRootForRun } from "./subagents/subagent-attachment-paths.js";
 import { resolveToolFsConfig } from "./tool-fs-policy.js";
 import type { PreparedSessionPermissionPolicy } from "./tool-fs-policy.js";
 import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
@@ -451,13 +451,7 @@ export function createOpenClawCodingToolsInternal(
       ? resolveSessionAgentId({ config: options.config, sessionKey: options.runSessionKey })
       : agentId);
   const executionSessionKey = options?.runSessionKey ?? options?.sessionKey;
-  const attachmentReadRoot =
-    executionAgentId && executionSessionKey
-      ? resolveSubagentSessionAttachmentRootDir({
-          agentId: executionAgentId,
-          childSessionKey: executionSessionKey,
-        })
-      : undefined;
+  const attachmentReadRoot = subagentAttachmentRootForRun(executionAgentId, executionSessionKey);
 
   const enableHeartbeatTool =
     options?.enableHeartbeatTool === true ||
@@ -497,12 +491,7 @@ export function createOpenClawCodingToolsInternal(
     ...(forceHeartbeatTool ? [HEARTBEAT_RESPONSE_TOOL_NAME] : []),
     ...toolSearchControlAllowlist,
   ];
-  const sandboxWorkspaceMediaReadAllowed =
-    projectConversationToolNames({
-      capabilityProfile,
-      toolNames: ["read"],
-      warn: () => undefined,
-    }).length === 1;
+  const sandboxWorkspaceMediaReadAllowed = isConversationToolAllowed(capabilityProfile, "read");
   // Borrowed tool restrictions do not transfer ownership of the policy session's processes.
   const scopeKey = resolveProcessToolScopeKey({
     scopeKey: options?.exec?.scopeKey,
@@ -624,7 +613,6 @@ export function createOpenClawCodingToolsInternal(
   const coreTools = createCoreCodingTools({
     abortSignal: options?.abortSignal,
     attachmentReadRoot,
-    agentId,
     codingRoot,
     containmentRoot,
     includeBaseCodingTools,

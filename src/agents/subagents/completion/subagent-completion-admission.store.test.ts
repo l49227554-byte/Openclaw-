@@ -943,21 +943,17 @@ describe("atomic subagent completion admission store", () => {
       });
 
       const cappedSubagent = structuredClone(subagentRuns.get(input.subagent.runId)!);
+      const { childSessionKey } = cappedSubagent;
       const attachmentId = "2d4a8398-4d5a-4c20-9c16-0a5f6627cf92";
-      const attachmentsDir = resolveSubagentAttachmentDir({
-        agentId: "main",
-        childSessionKey: cappedSubagent.childSessionKey,
-        attachmentId,
-      });
+      const attachmentsDir = resolveSubagentAttachmentDir("main", childSessionKey, attachmentId);
       await fs.mkdir(attachmentsDir, { recursive: true });
       await fs.writeFile(path.join(attachmentsDir, "result.txt"), "retained result");
       cappedSubagent.attachmentId = attachmentId;
-      Object.assign(cappedSubagent.delivery!, {
-        status: "suspended",
-        generation: 10,
-        suspendedAt: now,
-        suspendedReason: "expiry",
-      });
+      const delivery = cappedSubagent.delivery!;
+      delivery.status = "suspended";
+      delivery.generation = 10;
+      delivery.suspendedAt = now;
+      delivery.suspendedReason = "expiry";
       const cappedTask: TaskRecord = {
         ...result.task!,
         deliveryStatus: "failed",

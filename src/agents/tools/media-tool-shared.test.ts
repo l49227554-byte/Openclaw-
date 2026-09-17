@@ -78,7 +78,7 @@ describe("resolveMediaToolLocalRoots", () => {
       input: path.join(attachmentRoot, "receipt.png"),
       isDataUrl: false,
       workspaceDir,
-      rootOptions: { workspaceOnly: true, additionalRoots: [attachmentRoot] },
+      fsPolicy: { workspaceOnly: true, readOnlyRoots: [attachmentRoot] },
     });
 
     expect(localRoots.map(normalizeHostPath)).toEqual([
@@ -95,7 +95,7 @@ describe("resolveMediaToolLocalRoots", () => {
       input: path.join(attachmentRoot, "receipt.png"),
       isDataUrl: false,
       workspaceDir,
-      rootOptions: { additionalRoots: [attachmentRoot] },
+      fsPolicy: { workspaceOnly: false, readOnlyRoots: [attachmentRoot] },
     });
 
     expect(localRoots.map(normalizeHostPath)).toContain(normalizeHostPath(attachmentRoot));

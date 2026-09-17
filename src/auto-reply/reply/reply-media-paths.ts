@@ -157,10 +157,8 @@ export function createReplyMediaPathNormalizer(params: {
     ? Promise.resolve({
         root: explicitSandboxRoot,
         containerWorkdir: params.sandboxContainerWorkdir,
-        // Explicit sandbox roots carry no access metadata; fail closed so host-workspace
-        // staging cannot be reached through sandboxed send paths.
-        // SAFETY: explicit roots have no access metadata, so the fail-closed "none" default preserves the explicit-root compatibility posture.
-        workspaceAccess: "none" as SandboxWorkspaceAccess,
+        // A caller-held workspace reader is proof of a mounted read path; otherwise fail closed.
+        workspaceAccess: params.workspaceMediaAccess?.readFile ? "ro" : "none",
       })
     : undefined;
   const persistedMediaBySource = new Map<string, Promise<{ path: string; contentType?: string }>>();

@@ -9,6 +9,7 @@ import {
 } from "../agents/tool-fs-policy.js";
 import { resolveDeliveryQueueMediaDir, resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.js";
+import { resolveLocalPathFromRootsSync } from "../infra/fs-safe.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { resolveConfigDir } from "../utils.js";
@@ -19,6 +20,14 @@ type BuildMediaLocalRootsOptions = {
 };
 
 let cachedPreferredTmpDir: string | undefined;
+
+function resolveCanonicalRoot(root: string): string {
+  const resolved = path.resolve(root);
+  return (
+    resolveLocalPathFromRootsSync({ filePath: resolved, roots: [resolved], allowMissing: true })
+      ?.path ?? resolved
+  );
+}
 
 function resolveCachedPreferredTmpDir(): string {
   if (!cachedPreferredTmpDir) {
@@ -72,10 +81,10 @@ function filterSharedMediaLocalRoots(
   roots: readonly string[],
   context: { resolvedStateDir: string; sessionWorkspaceDir?: string },
 ): string[] {
-  const sandboxesDir = path.join(context.resolvedStateDir, "sandboxes");
-  const workspaceDir = path.join(context.resolvedStateDir, "workspace");
+  const sandboxesDir = resolveCanonicalRoot(path.join(context.resolvedStateDir, "sandboxes"));
+  const workspaceDir = resolveCanonicalRoot(path.join(context.resolvedStateDir, "workspace"));
   const sessionWorkspaceDir = context.sessionWorkspaceDir
-    ? path.resolve(context.sessionWorkspaceDir)
+    ? resolveCanonicalRoot(context.sessionWorkspaceDir)
     : undefined;
   const isInsideOrEqual = (parent: string, child: string): boolean =>
     child === parent || isPathInside(parent, child);
@@ -89,7 +98,7 @@ function filterSharedMediaLocalRoots(
     isInsideOrEqual(sharedDir, root) || isInsideOrEqual(root, sharedDir);
   const filtered: string[] = [];
   for (const root of roots) {
-    const resolvedRoot = path.resolve(root);
+    const resolvedRoot = resolveCanonicalRoot(root);
     const withinSessionWorkspace =
       validSessionWorkspaceDir !== undefined &&
       isInsideOrEqual(validSessionWorkspaceDir, resolvedRoot);
@@ -148,8 +157,8 @@ export function getAgentScopedMediaLocalRoots(
   if (!workspaceDir) {
     return roots;
   }
-  const normalizedWorkspaceDir = path.resolve(workspaceDir);
-  if (normalizedWorkspaceDir === path.join(resolvedStateDir, "sandboxes")) {
+  const normalizedWorkspaceDir = resolveCanonicalRoot(workspaceDir);
+  if (normalizedWorkspaceDir === resolveCanonicalRoot(path.join(resolvedStateDir, "sandboxes"))) {
     return roots;
   }
   if (!roots.includes(normalizedWorkspaceDir)) {
@@ -173,7 +182,7 @@ export function appendLocalMediaParentRoots(
     if (parentDir === path.parse(parentDir).root) {
       continue;
     }
-    const normalizedParent = path.resolve(parentDir);
+    const normalizedParent = resolveCanonicalRoot(parentDir);
     if (!appended.includes(normalizedParent)) {
       appended.push(normalizedParent);
     }

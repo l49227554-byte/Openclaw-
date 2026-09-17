@@ -619,11 +619,11 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
   );
 
   it("does not treat an earlier silent steered input as the current answer", () => {
-    const silent = makeAgentAssistantMessage({ content: [{ type: "text", text: "NO_REPLY" }] });
+    const prior = makeAgentAssistantMessage({ content: [{ type: "text", text: "NO_REPLY" }] });
     expectSingleToolErrorPayload(
       buildPayloads({
         assistantTexts: ["NO_REPLY"],
-        answerSegments: [{ textEnd: 1, messageEnd: 2, lastAssistant: silent }],
+        answerSegments: [{ textEnd: 1, messageEnd: 2, finalMessageStart: 2, lastAssistant: prior }],
         lastToolError: { toolName: "read", error: "failed", mutatingAction: false },
       }),
       { title: "Read" },

@@ -15,6 +15,14 @@ type FeishuSendScope = {
 
 const sendScope = new AsyncLocalStorage<FeishuSendScope>();
 
+/** Mutation errors preserve uncertainty after earlier requests reached the provider. */
+export function withFeishuRequestContext<T>(
+  assertCurrent: (() => void) | undefined,
+  request: () => Promise<T>,
+): Promise<T> {
+  return assertCurrent ? sendScope.run({ assertCurrent }, request) : request();
+}
+
 /** Keep invocation authority out of the shared, account-cached SDK client. */
 export function withFeishuSendContext<T>(
   context: FeishuSendContext,

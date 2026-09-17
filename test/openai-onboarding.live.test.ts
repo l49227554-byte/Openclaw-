@@ -266,8 +266,6 @@ describeLive("fresh OpenAI onboarding live", () => {
           "openai-onboarding-live-default",
           "--message",
           `Return exactly ${replyMarker} and no other text.`,
-          "--thinking",
-          "off",
           "--json",
         ],
         state.env,

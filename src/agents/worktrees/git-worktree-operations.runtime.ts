@@ -4,7 +4,7 @@ import {
   estimateCheckoutTransitionBytes,
   measureDirectoryTreeBytes,
 } from "./capacity.runtime.js";
-import { splitNullBuffer } from "./git-path-inventory.js";
+import { gitPathspecBatches, splitNullBuffer } from "./git-path-inventory.js";
 import type {
   GitWorktreeOperation,
   GitWorktreeOperationResult,
@@ -27,29 +27,34 @@ async function inspectProvisioning(
   if (!(await worktreePathExists(includePath))) {
     return { paths: [], estimatedBytes: 0 };
   }
-  const candidates = splitNullBuffer(
+  const included = splitNullBuffer(
     await requireGitBuffer(sourceRoot, [
+      "ls-files",
+      "--others",
+      "--ignored",
+      `--exclude-from=${includePath}`,
+      "-z",
+    ]),
+  ).map((entry) => entry.toString("utf8"));
+  // Check only manifest matches against the ignore rules: listing every ignored file
+  // would buffer whole dependency trees and can exceed the Git output cap.
+  const ignored = new Set<string>();
+  for (const batch of gitPathspecBatches(included)) {
+    const output = await requireGitBuffer(sourceRoot, [
+      "--literal-pathspecs",
       "ls-files",
       "--others",
       "--ignored",
       "--exclude-standard",
       "-z",
-    ]),
-  );
-  const included = new Set(
-    splitNullBuffer(
-      await requireGitBuffer(sourceRoot, [
-        "ls-files",
-        "--others",
-        "--ignored",
-        `--exclude-from=${includePath}`,
-        "-z",
-      ]),
-    ).map((entry) => entry.toString("utf8")),
-  );
-  const paths = candidates
-    .map((entry) => entry.toString("utf8"))
-    .filter((entry) => included.has(entry));
+      "--",
+      ...batch,
+    ]);
+    for (const entry of splitNullBuffer(output)) {
+      ignored.add(entry.toString("utf8"));
+    }
+  }
+  const paths = included.filter((entry) => ignored.has(entry));
   let estimatedBytes = 0;
   for (const relativePath of paths) {
     const normalized = normalizeProvisionedRelativePath(relativePath);

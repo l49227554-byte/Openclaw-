@@ -10,6 +10,7 @@ import * as commandSpawner from "../../process/exec-spawn.js";
 import { isPidAlive } from "../../shared/pid-alive.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { killPidIfAlive, waitForPidFile } from "../../test-utils/process-tree.js";
+import * as worktreeGit from "./git.js";
 import { snapshotProvisionedFiles } from "./provisioned-files.js";
 import {
   getRegistryWorktree,
@@ -452,6 +453,60 @@ describe("ManagedWorktreeService provisioned state", () => {
       );
     },
   );
+
+  it("provisions included files beside ignored dependency trees under the Git output cap", async () => {
+    await fs.writeFile(path.join(repo, ".gitignore"), "dependencies/\n.env.local\n");
+    await fs.writeFile(
+      path.join(repo, ".worktreeinclude"),
+      ".env.local\nvisible.local\ndependencies/package/settings.local\n",
+    );
+    await git(repo, "add", ".gitignore", ".worktreeinclude");
+    await git(repo, "commit", "-m", "configure provisioning beside dependencies");
+    const dependencies = path.join(repo, "dependencies", "package");
+    await fs.mkdir(dependencies, { recursive: true });
+    for (let index = 0; index < 64; index++) {
+      await fs.writeFile(path.join(dependencies, `generated-dependency-file-${index}.txt`), "");
+    }
+    await fs.writeFile(path.join(dependencies, "settings.local"), "nested provisioned\n");
+    await fs.writeFile(path.join(repo, ".env.local"), "synthetic provisioned\n");
+    await fs.writeFile(path.join(repo, "visible.local"), "not ignored\n");
+    const realRun = worktreeGit.runGitBuffered;
+    let ignoredReads = 0;
+    const capped = vi
+      .spyOn(worktreeGit, "runGitBuffered")
+      .mockImplementation(async (cwd, args, options) => {
+        if (cwd === repo && args.includes("ls-files") && args.includes("--ignored")) {
+          ignoredReads++;
+          return await realRun(cwd, args, { ...options, maxOutputBytes: 256 });
+        }
+        return await realRun(cwd, args, options);
+      });
+    try {
+      const created = await service.create({
+        repoRoot: repo,
+        name: "dependencies",
+        baseRef: "HEAD",
+      });
+      expect(ignoredReads).toBeGreaterThan(0);
+      expect(await fs.readFile(path.join(created.path, ".env.local"), "utf8")).toBe(
+        "synthetic provisioned\n",
+      );
+      expect(
+        await fs.readFile(
+          path.join(created.path, "dependencies", "package", "settings.local"),
+          "utf8",
+        ),
+      ).toBe("nested provisioned\n");
+      await expect(fs.stat(path.join(created.path, "visible.local"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await fs.readdir(path.join(created.path, "dependencies", "package"))).toEqual([
+        "settings.local",
+      ]);
+    } finally {
+      capped.mockRestore();
+    }
+  });
 
   it("snapshots deleted skip-worktree files still included by sparse rules", async () => {
     const created = await service.create({

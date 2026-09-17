@@ -279,11 +279,6 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
   previousRaw: string | null;
   committedRaw: string | null;
   assertCurrent?: () => void;
-  // No committed hash exists to compare against a copy-fallback removal that
-  // recreated (possibly partially) the target before throwing: force restores
-  // previousRaw unconditionally instead of skipping when currentRaw's hash
-  // cannot match a real committed state.
-  forceRestore?: boolean;
 }): Promise<boolean> {
   return await rollbackConfigFileWriteIfUnchanged({
     configPath: params.target.absolutePath,
@@ -296,7 +291,6 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
     // hashConfigRaw (io.write-safety.ts:343), not hashConfigIncludeRaw --
     // the two hash different byte layouts for the same non-null input.
     committedHash: hashConfigRaw(params.committedRaw),
-    force: params.forceRestore,
     fsModule: fsNode,
     assertCurrent: params.assertCurrent,
     preserveDirectoryMode: true,
@@ -418,10 +412,6 @@ export type IncludeWriteRestorer = {
   // Same hardlink/inode identity proof publish itself relied on, carried
   // forward so restore verifies the file is still the one it wrote.
   pathProof: ReturnType<typeof captureConfigFileWritePathProof>;
-  // Set when publish threw after the copy-fallback already recreated the
-  // target: no committedRaw can describe those (possibly partial) bytes, so
-  // restore must overwrite them with previousRaw unconditionally.
-  forceRestore?: boolean;
 };
 
 /** Publish inside the caller's commit window, before the root file. Per
@@ -499,18 +489,23 @@ export async function publishStagedIncludeWrites(params: {
         });
         // publish()'s copy fallback removes the target (guarded rmSync ->
         // onRootRemoved) before rewriting it; a throw after that removal must
-        // register a forced restorer -- the fallback may have recreated the
-        // target with partial bytes, which no committedRaw hash can describe.
+        // still register a restorer, fenced on what the failure actually left
+        // behind -- not on entry.bytes (never committed) and not unconditional
+        // (a writer could land in the gap before restoration runs). Reading
+        // the target now, while this per-target lock is still held, captures
+        // exactly the failure's own damage as the fence: restoration later
+        // proceeds only if the file still matches this snapshot, so a
+        // concurrent save after this point makes the fence miss and survives.
         try {
           preparedFile.publish();
         } catch (error) {
           if (removal.removed) {
+            const damageRaw = await readRootBoundFileRawIfExists(target);
             params.restorers.push({
               targetPath: target.absolutePath,
               previousRaw: entry.previousRaw,
-              committedRaw: null,
+              committedRaw: damageRaw,
               pathProof,
-              forceRestore: true,
             });
           }
           throw error;
@@ -559,7 +554,6 @@ export async function restoreStagedIncludeWrites(
             target,
             previousRaw: restorer.previousRaw,
             committedRaw: restorer.committedRaw,
-            forceRestore: restorer.forceRestore,
             assertCurrent: () => {
               params.restoreAuthority?.();
               restorer.pathProof.assertCurrent();

@@ -15,6 +15,12 @@ import {
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
+  publishStagedIncludeWrites,
+  restoreStagedIncludeWrites,
+  type IncludeWriteRestorer,
+} from "./include-write-through.js";
+import { hashConfigIncludeRaw } from "./includes.js";
+import {
   createConfigIO as createObservedConfigIO,
   resetConfigRuntimeState,
   setRuntimeConfigSnapshotRefreshHandler,
@@ -236,10 +242,69 @@ describe("config io write / include write-through restore authority", () => {
         } as unknown as OpenClawConfig),
       ).rejects.toThrow("synthetic copy-fallback write failure after recreate");
 
-      // The forced restorer must overwrite the fallback's recreated bytes
-      // with previousRaw; no committed hash can describe partial wreckage,
-      // so restoration must not be skipped for a hash mismatch.
+      // The restorer is fenced on the failure's own damage (captured while the
+      // per-target lock was still held), not entry.bytes or an unconditional
+      // force: since nothing touched the file afterward, current bytes still
+      // match that captured damage, so restoration proceeds normally.
       await expect(fs.readFile(tonyPath, "utf-8")).resolves.toBe(originalTonyRaw);
+    },
+  );
+
+  itWithHome(
+    "leaves a concurrent writer's newer content in place when it lands before restoration runs",
+    async (home) => {
+      const configPath = configPathForHome(home);
+      const tonyPath = path.join(home, ".openclaw", "tony.json5");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await writeConfigJson(tonyPath, { workspace: "/w/tony" });
+      const originalTonyRaw = await fs.readFile(tonyPath, "utf-8");
+      const previousHash = hashConfigIncludeRaw(originalTonyRaw);
+
+      // Simulates fs-safe's permission-error copy fallback: it removes the
+      // existing target (firing onRootRemoved), then recreates it -- here
+      // with garbage bytes -- before the write itself throws.
+      mockPrepareConfigFileWrite.mockImplementationOnce(
+        async (params: { configPath: string; fsModule: typeof import("node:fs") }) => ({
+          publish: () => {
+            params.fsModule.rmSync(params.configPath, { force: true });
+            params.fsModule.writeFileSync(params.configPath, "{not the previous content}", "utf-8");
+            throw new Error("synthetic copy-fallback write failure after recreate");
+          },
+          [Symbol.asyncDispose]: async () => {},
+        }),
+      );
+
+      const restorers: IncludeWriteRestorer[] = [];
+      await expect(
+        publishStagedIncludeWrites({
+          staged: [
+            {
+              includePath: ["agents", "entries", "tony"],
+              targetPath: tonyPath,
+              bytes: '{\n  "workspace": "/w/tony-next"\n}\n',
+              previousRaw: originalTonyRaw,
+              previousHash,
+            },
+          ],
+          restorers,
+          configPath,
+        }),
+      ).rejects.toThrow("synthetic copy-fallback write failure after recreate");
+      expect(restorers).toHaveLength(1);
+
+      // A writer saves newer content in the exact gap the fix must fence:
+      // after the failed publish's own per-target lock released, before
+      // restoration (below) re-acquires it.
+      const concurrentWriterRaw = '{\n  "workspace": "/w/concurrent-writer"\n}\n';
+      await fs.writeFile(tonyPath, concurrentWriterRaw, "utf-8");
+
+      await restoreStagedIncludeWrites(restorers, { configPath });
+
+      // The restorer's fence was captured against the failed publish's own
+      // damage, not the concurrent writer's save: current bytes no longer
+      // match that captured damage, so restoration must miss and the newer
+      // save must survive untouched.
+      await expect(fs.readFile(tonyPath, "utf-8")).resolves.toBe(concurrentWriterRaw);
     },
   );
 });

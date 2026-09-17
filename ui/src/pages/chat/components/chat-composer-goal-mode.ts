@@ -107,7 +107,7 @@ export function createGoalComposerController(
     // Argument selection commits the draft before requesting command submission.
     submitCommand: () => {
       if (!activateDraft(props.getDraft?.() ?? props.draft, true)) {
-        props.onSend();
+        void props.onSend();
       }
     },
     activateCommand(command: SlashCommandDef) {

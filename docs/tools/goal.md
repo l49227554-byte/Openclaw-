@@ -176,7 +176,7 @@ so an operator stop remains in effect until the goal is resumed.
 ## Control UI
 
 Select **Goal** from the command picker with Enter, Tab, or a click, then type
-the objective and choose **Start goal**. Typing `/goal start ` with a trailing
+the objective and choose **Start goal**. Typing `/goal start` followed by a
 space, or submitting `/goal start` without an objective, also opens Goal mode.
 Sending bare `/goal`, even after dismissing
 the picker, opens the composer instead of adding a command to the conversation.

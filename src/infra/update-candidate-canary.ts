@@ -240,7 +240,7 @@ export async function validateUpdateCandidateCanary(params: {
       advisory: {
         kind: "recoverable-maintenance",
         message:
-          "Candidate cleanup deadline elapsed before process close and termination requests both completed. Update validation results are unchanged.",
+          "Update cleanup deadline elapsed before process close and termination requests both completed. Update validation results are unchanged.",
       },
     };
     steps.push(step);
@@ -602,7 +602,7 @@ export async function validateUpdateCandidateCanary(params: {
       steps.push(step);
       params.onStep?.(step);
     } finally {
-      await stopCanary(running, "candidate gateway canary", deadline);
+      await stopCanary(running, "Checking Gateway startup", deadline);
     }
     return {
       status: "ok",

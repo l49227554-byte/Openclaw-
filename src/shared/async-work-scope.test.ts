@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { Worker } from "node:worker_threads";
 import { describe, expect, it, vi } from "vitest";
 import {
   AsyncWorkScope,
@@ -10,6 +11,72 @@ import {
 import { createDeferredCore } from "./deferred.js";
 
 describe("async work scope", () => {
+  it("drains cancellation cleanup with the original Worker error", async () => {
+    const reason = await new Promise<Error>((resolve, reject) => {
+      const worker = new Worker('throw new Error("worker cancellation");', { eval: true });
+      let failure: unknown;
+      worker.once("error", (error) => {
+        failure = error;
+      });
+      worker.once("exit", () => {
+        if (failure instanceof Error) {
+          resolve(failure);
+        } else {
+          reject(new Error("Worker exited without its expected error"));
+        }
+      });
+    });
+    expect(reason).toBeInstanceOf(Error);
+    const stack = reason.stack;
+    const scope = new AsyncWorkScope();
+    const cleanup = vi.fn();
+    const work = scope.track(() =>
+      new Promise<void>((resolve) => {
+        scope.signal.addEventListener("abort", () => resolve(), { once: true });
+      }).then(cleanup),
+    );
+    try {
+      scope.beginClose(reason);
+      await scope.drain();
+      expect(scope.signal.reason).toBe(reason);
+      expect(reason.stack).toBe(stack);
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(scope.hasPendingWork).toBe(false);
+      expect(() => scope.run(() => {})).toThrow("Async work scope is closed");
+    } finally {
+      scope.beginClose();
+      await work;
+      await scope.drain();
+    }
+  });
+
+  it("preserves cancellation identity when stack formatting throws", async () => {
+    const scope = new AsyncWorkScope();
+    const reason = new Error("caller cancellation");
+    const cause = new Error("underlying cancellation", { cause: reason });
+    reason.cause = cause;
+    const formatter = Object.getOwnPropertyDescriptor(Error, "prepareStackTrace");
+    try {
+      Error.prepareStackTrace = () => {
+        throw new Error("custom formatter failed");
+      };
+      scope.beginClose(reason);
+      expect(scope.signal.reason).toBe(reason);
+      expect(typeof reason.stack).toBe("string");
+      expect(typeof cause.stack).toBe("string");
+    } finally {
+      if (formatter) {
+        Object.defineProperty(Error, "prepareStackTrace", formatter);
+      } else {
+        Reflect.deleteProperty(Error, "prepareStackTrace");
+      }
+      await scope.drain();
+    }
+    expect(reason.cause).toBe(cause);
+    expect(cause.cause).toBe(reason);
+    expect(scope.signal.reason).toBe(reason);
+  });
+
   it("excludes newly admitted disposal work while another owner enters its next phase", async () => {
     const first = new AsyncWorkScope();
     const second = new AsyncWorkScope();

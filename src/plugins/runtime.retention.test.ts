@@ -16,6 +16,40 @@ it.each([
   { mode: "cache", name: "releases callback captures while a retired cache remains reachable" },
   { mode: "formatter", name: "finishes cache retirement when a custom stack formatter throws" },
   {
+    mode: "early-startup",
+    name: "releases initial plugins while early runtime handles remain live",
+  },
+  { mode: "channel-fence", name: "releases published channel fence snapshots" },
+  { mode: "discovery-timer", name: "releases discovery startup request state" },
+  ...["settled", "late"].map((kind) => ({
+    mode: `discovery-startup-${kind}`,
+    name: `releases retired startup discovery registrations after ${kind} acquisition`,
+  })),
+  ...["default", "cause"].map((kind) => ({
+    mode: `work-scope-${kind}`,
+    name: `releases closed work scope ${kind} callers`,
+  })),
+  ...[false, true].map((retired) => ({
+    mode: retired ? "policy-cache-retired" : "policy-cache",
+    name: `releases retired policy cache state with a ${retired ? "retired" : "live"} cache owner`,
+  })),
+  {
+    mode: "policy-cache-managed",
+    name: "releases a retired managed policy instance from its cache",
+  },
+  ...[
+    "reload-policy",
+    "channel-lookup",
+    "session-catalog",
+    "session-catalog-scoped",
+    "session-list",
+    "session-list-retired",
+  ].map((kind) => ({
+    mode: `projection-${kind}`,
+    name: `releases retired ${kind} state without another projection read`,
+  })),
+  { mode: "catalog-cache-lifetime", name: "keeps live catalog caches and retires selected work" },
+  {
     mode: "instance",
     name: "releases captured source lookups while a retired instance remains reachable",
   },

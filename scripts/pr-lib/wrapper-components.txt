@@ -421,7 +421,6 @@ src/config/validation-issues.ts
 src/config/validation-plugin-config.ts
 src/config/validation-plugin-registry.ts
 src/config/validation-plugin-rules.ts
-src/config/validation-plugin-registry.ts
 src/config/validation.ts
 src/config/version.ts
 src/config/web-search-legacy-provider-keys.ts
@@ -1002,6 +1001,7 @@ src/shared/incognito-session-key.ts
 src/shared/json-schema-defaults.ts
 src/shared/lazy-promise.ts
 src/shared/lazy-runtime.ts
+src/shared/materialize-error-stack.ts
 src/shared/model-key.ts
 src/shared/path-array-index.ts
 src/shared/pid-alive.ts

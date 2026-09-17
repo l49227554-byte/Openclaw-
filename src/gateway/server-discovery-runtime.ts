@@ -36,8 +36,12 @@ type DiscoveryGeneration = {
   waiting: boolean;
 };
 
-/** One owner replaces local advertisements and keeps wide-area TXT policy in sync. */
-export async function startGatewayDiscovery(params: {
+/** Mutable discovery owners stay outside retained host options so startup generations can collect. */
+export async function startGatewayDiscovery({
+  gatewayDiscoveryServices: initialServices = [],
+  pluginRuntimeClaim: initialClaim,
+  ...params
+}: {
   discovery?: DiscoveryConfig;
   gatewayDiscoveryServices?: readonly PluginGatewayDiscoveryServiceRegistration[];
   pluginRuntimeClaim: GatewayPluginRuntimeClaim;
@@ -48,11 +52,11 @@ export async function startGatewayDiscovery(params: {
   tailscaleMode: "off" | "serve" | "funnel";
   logDiscovery: { info: (msg: string) => void; warn: (msg: string) => void };
 }): Promise<GatewayDiscovery> {
+  let services = initialServices;
+  let claim = initialClaim;
   let mode = params.discovery?.mdns?.mode ?? "minimal";
   let tlsFingerprint = params.gatewayTls?.fingerprintSha256;
   const wideAreaDomain = params.discovery?.wideArea?.domain;
-  let services = params.gatewayDiscoveryServices ?? [];
-  let claim = params.pluginRuntimeClaim;
   let current: DiscoveryGeneration | undefined;
   let closed = false;
   let pending = Promise.resolve();
@@ -94,15 +98,15 @@ export async function startGatewayDiscovery(params: {
       return;
     }
     generation.waiting = true;
-    // A reservation may reject. Wait outside the operation queue: committing its
-    // successor can itself await a mode update on this owner.
+    // Claims fence acquisition; discovery updates/stop own retained handles.
+    // Wait outside the queue: a successor can itself await a mode update.
     void generation.claim
       .waitForUnblocked()
       .then((accepted) =>
         enqueue(async () => {
           generation.waiting = false;
-          if (isCurrent(generation)) {
-            await (accepted ? advertise(generation) : stopGeneration(generation));
+          if (accepted && isCurrent(generation)) {
+            await advertise(generation);
           }
         }),
       )
@@ -243,7 +247,9 @@ export async function startGatewayDiscovery(params: {
           timer.unref?.();
         }),
       ]);
+      // Even cleared timers retain Node async context; stopOwned shares this scope.
       clearTimeout(timer);
+      timer = undefined;
     }
   };
   const update: GatewayDiscovery["update"] = (next, nextClaim = claim) => {

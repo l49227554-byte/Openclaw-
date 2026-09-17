@@ -27,7 +27,7 @@ export function pluginPathFailureDiagnostic(
   origin: PluginOrigin,
   error: unknown,
 ): PluginDiagnostic {
-  if (origin === "config" && !isMissingPathError(error)) {
+  if (origin === "config" && error !== undefined && !isMissingPathError(error)) {
     const errorCode = extractErrorCode(error) ?? "UNKNOWN";
     const recovery =
       errorCode === "EACCES" || errorCode === "EPERM"
@@ -63,7 +63,7 @@ export function inspectPluginLoadPath(
   diagnostics: PluginDiagnostic[],
 ): fs.Stats | null {
   try {
-    const stat = pluginCacheStatSync(source, origin === "config");
+    const stat = pluginCacheStatSync(source, { throwOnError: origin === "config" });
     if (!stat && !pluginCacheExistsSync(source)) {
       diagnostics.push(pluginPathFailureDiagnostic(source, origin, undefined));
     }

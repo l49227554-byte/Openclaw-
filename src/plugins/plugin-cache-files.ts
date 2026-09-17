@@ -1,21 +1,19 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { err, ok } from "@openclaw/normalization-core/result";
 import { openRootFileSync, readFileDescriptorBoundedSync } from "../infra/boundary-file-read.js";
 import { resolveRootPathSync } from "../infra/boundary-path.js";
 import { FsSafeError } from "../infra/fs-safe.js";
 import { readRegularFileSync } from "../infra/regular-file.js";
+import { materializeErrorStack } from "../shared/materialize-error-stack.js";
 import { parseJsonWithJson5Fallback } from "../utils/parse-json-compat.js";
 import type {
   PluginEntryCheck,
   PluginFileCacheEntry,
   PluginJsonCacheResult,
 } from "./plugin-cache-files.types.js";
-import {
-  bindPluginCacheRoot,
-  getPluginCacheRoot,
-  materializePluginCacheError,
-} from "./plugin-cache.js";
+import { bindPluginCacheRoot, getPluginCacheRoot } from "./plugin-cache.js";
 
 const DEFAULT_PLUGIN_METADATA_MAX_BYTES = 16 * 1024 * 1024;
 
@@ -90,23 +88,31 @@ export function refreshPluginCacheStat(targetPath: string): fs.Stats | null {
   return pluginCacheStatSync(targetPath);
 }
 
-export function pluginCacheStatSync(targetPath: string, throwOnError = false): fs.Stats | null {
+export function pluginCacheStatSync(
+  targetPath: string,
+  options?: { throwOnError: boolean },
+): fs.Stats | null {
   const facts = pathFacts(targetPath);
   if (facts.stat === undefined) {
-    facts.statError = undefined;
     try {
-      facts.stat = fs.statSync(targetPath);
-      facts.exists = true;
+      // Absence needs no Error; keep access failures distinct for optional artifact probes.
+      const stat = fs.statSync(targetPath, { throwIfNoEntry: false }) ?? null;
+      facts.stat = ok(stat);
+      if (stat) {
+        facts.exists = true;
+      }
     } catch (error) {
-      materializePluginCacheError(error);
-      facts.statError = error;
-      facts.stat = null;
+      materializeErrorStack(error);
+      facts.stat = err(error);
     }
   }
-  if (facts.stat === null && throwOnError) {
-    throw facts.statError;
+  if (facts.stat.ok) {
+    return facts.stat.value;
   }
-  return facts.stat;
+  if (options?.throwOnError) {
+    throw facts.stat.error;
+  }
+  return null;
 }
 
 /** Final symlink checks must retain lstat facts separately from followed target stats. */
@@ -128,7 +134,7 @@ export function readPluginCacheDirectory(targetPath: string): fs.Dirent[] {
     try {
       root.directory = { ok: true, entries: fs.readdirSync(targetPath, { withFileTypes: true }) };
     } catch (error) {
-      materializePluginCacheError(error);
+      materializeErrorStack(error);
       root.directory = { ok: false, error };
     }
   }
@@ -184,12 +190,12 @@ export function checkPluginCacheEntry(params: {
     } else {
       fs.closeSync(opened.fd);
       root = bindPluginCacheRoot(params.rootDir, opened.rootRealPath);
-      Object.assign(pathFacts(opened.path), { exists: true, stat: opened.stat });
+      Object.assign(pathFacts(opened.path), { exists: true, stat: ok(opened.stat) });
       checked = { ok: true, path: opened.path, rootRealPath: opened.rootRealPath, exists: true };
     }
   }
   if (!checked.ok) {
-    materializePluginCacheError(checked.error);
+    materializeErrorStack(checked.error);
   }
   root.checkedEntries.set(key, checked);
   return checked;
@@ -277,7 +283,7 @@ export function readPluginCacheFile(params: {
           ctimeMs: opened.stat.ctimeMs,
         },
       };
-      Object.assign(pathFacts(absolutePath), { exists: true, stat: opened.stat });
+      Object.assign(pathFacts(absolutePath), { exists: true, stat: ok(opened.stat) });
       root.checkedEntries.set(key, {
         ok: true,
         path: opened.path,
@@ -297,7 +303,7 @@ export function readPluginCacheFile(params: {
   // fs-safe can report size rejection as a generic validation failure. Only successful
   // bytes satisfy other limits; failures retain the policy under which they were checked.
   if (!entry.ok) {
-    materializePluginCacheError(entry.failure.error);
+    materializeErrorStack(entry.failure.error);
   }
   root.files.set(entry.ok ? key : limitKey, entry);
   return entry;
@@ -335,10 +341,10 @@ function readPluginCacheRegularFile(params: {
         hash: crypto.createHash("sha256").update(contents).digest("hex"),
         signature: { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs },
       };
-      Object.assign(pathFacts(absolutePath), { exists: true, stat });
+      Object.assign(pathFacts(absolutePath), { exists: true, stat: ok(stat) });
       root.files.set(key, entry);
     } catch (error) {
-      materializePluginCacheError(error);
+      materializeErrorStack(error);
       entry = { ok: false, failure: { ok: false, reason: "io", error } };
       // A size rejection cannot stand in for an uncapped reader's policy.
       root.files.set(
@@ -391,7 +397,7 @@ export function parsePluginCacheJson(
         value: options.json5 ? parseJsonWithJson5Fallback(source) : JSON.parse(source),
       };
     } catch (error) {
-      materializePluginCacheError(error);
+      materializeErrorStack(error);
       file[key] = { ok: false, error };
     }
   }

@@ -15,6 +15,18 @@ export function resolveWorkerPlacementCapabilities(runtime: string): {
       devicePlacement: { requiredNodeCommands: [], consumesWorkerSlot: true },
     };
   }
+  // Codex can be resolved before its extension registers the harness. Keep the
+  // placement contract available so a paired device starts the exec-server,
+  // rather than falling back to the OpenClaw worker-turn default.
+  if (runtimeId === "codex") {
+    return {
+      executionMode: "remote-exec",
+      devicePlacement: {
+        requiredNodeCommands: ["codex.exec-server.stdio.v1"],
+        consumesWorkerSlot: false,
+      },
+    };
+  }
   const placement = getRegisteredAgentHarness(runtimeId)?.harness.cloudPlacement;
   if (!placement) {
     return {};

@@ -103,6 +103,16 @@ describe("worker placement runtime capabilities", () => {
       devicePlacement: { requiredNodeCommands: [], consumesWorkerSlot: true },
     },
     {
+      name: "Codex remote execution supports paired devices without a loaded harness registry",
+      runtimeId: "codex",
+      executionMode: "remote-exec",
+      devicePlacementSupported: true,
+      devicePlacement: {
+        requiredNodeCommands: ["codex.exec-server.stdio.v1"],
+        consumesWorkerSlot: false,
+      },
+    },
+    {
       name: "remote execution projects exact device commands without consuming a worker slot",
       runtimeId: "device-harness",
       cloudPlacement: {

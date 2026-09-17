@@ -2,10 +2,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-sdk/llm";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   configureExecutionDecisionWorkSink,
@@ -65,21 +63,8 @@ vi.mock("../config/config.js", () => ({
 import "./test-helpers/fast-openclaw-tools-sessions.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createOperationalRunInstanceRef } from "./admitted-run-context.js";
-import { steerActiveSessionWithOptionalDeliveryWait } from "./embedded-agent-runner/run/attempt-queue-message.js";
-import {
-  setActiveEmbeddedRun,
-  type EmbeddedAgentQueueMessageOptions,
-} from "./embedded-agent-runner/runs.js";
+import { setActiveEmbeddedRun } from "./embedded-agent-runner/runs.js";
 import { testing as embeddedRunsTesting } from "./embedded-agent-runner/runs.test-support.js";
-import { guardSessionManager } from "./session-tool-result-guard-wrapper.js";
-import {
-  createAssistant,
-  createAssistantResultStream,
-  createTestSession,
-  registerAgentSessionLoopTestLifecycle,
-  streamMocks,
-} from "./sessions/agent-session-loop-correctness.test-support.js";
-import { SessionManager } from "./sessions/session-manager.js";
 import { subagentRuns } from "./subagents/registry/subagent-registry-memory.js";
 import { addSubagentRunForTests } from "./subagents/registry/subagent-registry.test-helpers.js";
 import { textAssistant } from "./test-helpers/sparse-transcript.test-support.js";
@@ -301,8 +286,6 @@ function expectInterSessionAgentCall(call: { params?: unknown }): void {
 function sessionsSendDetails(details: unknown): SessionsSendDetails {
   return details as SessionsSendDetails;
 }
-
-registerAgentSessionLoopTestLifecycle();
 
 describe("sessions tools", () => {
   beforeEach(() => {
@@ -2437,158 +2420,6 @@ describe("sessions tools", () => {
     expect(queueMessage).not.toHaveBeenCalled();
     expect(calls.some((call) => call.method === "agent")).toBe(false);
   });
-
-  it.each([
-    { supportsTranscriptCommitWait: true },
-    { supportsTranscriptCommitWait: false },
-    { supportsTranscriptCommitWait: true, mode: "steer" as const },
-    { supportsTranscriptCommitWait: true, mode: "steer" as const, alternateStore: true },
-  ])(
-    "sessions_send persists steered provenance with transcript wait support $supportsTranscriptCommitWait and mode $mode, alternate store $alternateStore",
-    async ({ supportsTranscriptCommitWait, mode, alternateStore }) => {
-      const calls: Array<{ method?: string }> = [];
-      const runScopedCallerKey =
-        mode === "steer"
-          ? "agent:leasing-ops:dashboard:active-target"
-          : "agent:leasing-ops:cron:monthly-utility:run:run-fast";
-      const requesterKey = "agent:re-portal:main";
-      const dir = tempDirs.make("openclaw-sessions-steered-provenance-");
-      const scope = {
-        agentId: "leasing-ops",
-        sessionId: "caller-active-session",
-        sessionKey: runScopedCallerKey,
-        storePath: alternateStore
-          ? resolveSessionStorePathCore(undefined, { agentId: "leasing-ops" })
-          : path.join(dir, "sessions.json"),
-      };
-      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: Date.now() });
-      const sessionManager = SessionManager.open(scope, dir);
-      guardSessionManager(sessionManager);
-      const { session } = await createTestSession({ sessionManager });
-      let finishInitialResponse: (() => void) | undefined;
-      let closing = false;
-      const initialResponseStarted = createDeferred();
-      const queued = createDeferred();
-      const unsubscribe = session.subscribe((event) => {
-        if (event.type === "queue_update") {
-          queued.resolve();
-        }
-      });
-      streamMocks.streamSimple.mockImplementation((model: Model) => {
-        if (finishInitialResponse || closing) {
-          return createAssistantResultStream(
-            createAssistant(model, [{ type: "text", text: "received" }]),
-          );
-        }
-        const stream = createAssistantMessageEventStream();
-        finishInitialResponse = () => {
-          stream.push({
-            type: "done",
-            reason: "stop",
-            message: createAssistant(model, [{ type: "text", text: "ready" }]),
-          });
-          stream.end();
-        };
-        initialResponseStarted.resolve();
-        return stream;
-      });
-      const prompt = session.prompt("wait for another session");
-      const pending: Promise<unknown>[] = [prompt];
-      try {
-        // Dispatch can await transport initialization; synchronize on provider entry.
-        await Promise.race([initialResponseStarted.promise, prompt]);
-        expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
-        const queueMessage = vi.fn((text: string, options?: EmbeddedAgentQueueMessageOptions) =>
-          steerActiveSessionWithOptionalDeliveryWait(session, text, options, runScopedCallerKey),
-        );
-        setActiveEmbeddedRun(
-          "caller-active-session",
-          {
-            queueMessage,
-            isStreaming: () => true,
-            isCompacting: () => false,
-            supportsTranscriptCommitWait,
-            sourceReplyDeliveryMode: mode === "steer" ? "automatic" : "message_tool_only",
-            abort: () => {},
-          },
-          runScopedCallerKey,
-        );
-        callGatewayMock.mockImplementation(async (opts: unknown) => {
-          const request = opts as { method?: string };
-          calls.push(request);
-          if (request.method === "agent") {
-            throw new Error("fallback agent should not start");
-          }
-          return {};
-        });
-
-        const tool = getSessionTool("sessions_send", {
-          agentSessionKey: requesterKey,
-          agentChannel: "telegram",
-          config: {
-            ...TEST_CONFIG,
-            session: {
-              ...TEST_CONFIG.session,
-              store: alternateStore
-                ? path.join(dir, "agents", "{agentId}", "sessions", "sessions.json")
-                : scope.storePath,
-            },
-          },
-        });
-
-        const send = tool.execute("call-run-scoped-caller", {
-          mode,
-          sessionKey: runScopedCallerKey,
-          message: "[TASK-COMPLETE] re-portal occupancy ready",
-          timeoutSeconds: 0,
-        });
-        pending.push(send);
-        await Promise.race([queued.promise, send, prompt]);
-        expect(session.pendingMessageCount).toBe(1);
-        finishInitialResponse?.();
-        const [result] = await Promise.all([send, prompt]);
-
-        const details = sessionsSendDetails(result.details);
-        expect(details.status).toBe("accepted");
-        expect(details.sessionKey).toBe(runScopedCallerKey);
-        expect(details.targetDisposition).toBe("steered");
-        expect(details.delivery?.status).toBe("skipped");
-        expect(details.delivery?.mode).toBe("announce");
-        expect(queueMessage).toHaveBeenCalledOnce();
-        expect(queueMessage.mock.calls[0]?.[1]?.waitForTranscriptCommit).toBe(
-          supportsTranscriptCommitWait ? true : undefined,
-        );
-        expect(SessionManager.open(scope, dir).getEntries()).toContainEqual(
-          expect.objectContaining({
-            type: "message",
-            message: expect.objectContaining({
-              role: "user",
-              provenance: {
-                kind: "inter_session",
-                sourceSessionKey: requesterKey,
-                sourceChannel: "telegram",
-                sourceTool: "sessions_send",
-              },
-            }),
-          }),
-        );
-        expect(calls.some((call) => call.method === "agent")).toBe(false);
-        expect(listSessionParticipantsReadOnly(scope).get(runScopedCallerKey)).toEqual([
-          expect.objectContaining({
-            identity: { type: "agent", id: "re-portal" },
-            contributionCount: 1,
-          }),
-        ]);
-      } finally {
-        // Release even a late provider callback, then join work before fixture teardown.
-        closing = true;
-        unsubscribe();
-        finishInitialResponse?.();
-        await session.abort();
-        await Promise.allSettled(pending);
-      }
-    },
-  );
 
   it("sessions_send reports run-scoped queue admission failures without gateway fallback", async () => {
     const runScopedCallerKey = "agent:leasing-ops:cron:monthly-utility:run:run-fast";

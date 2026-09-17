@@ -57,13 +57,13 @@ export function resolveReplyBackendQueueMessageMismatch(
   options?: ReplyBackendQueueMessageOptions,
   authority?: { toolAuthorityFingerprint?: string },
 ): ReplyBackendQueueMessageMismatch | undefined {
-  const runContext = backend.runId ? getAgentRunContext(backend.runId) : undefined;
-  // A new human turn must keep its own visible answer. Steering shares the
-  // active turn's output owner, so leave this input with FIFO followup admission.
-  if (runContext?.isControlUiVisible === false && runContext.projectSessionMessages === false) {
-    return "input_visibility_mismatch";
-  }
   if (options?.isInboundUserMessage === true) {
+    const runContext = backend.runId ? getAgentRunContext(backend.runId) : undefined;
+    // A new human turn must keep its own visible answer. Steering shares the
+    // active turn's output owner, so leave this input with FIFO followup admission.
+    if (runContext?.isControlUiVisible === false && runContext.projectSessionMessages === false) {
+      return "input_visibility_mismatch";
+    }
     const activeFingerprint = normalizeOptionalString(
       backend.toolAuthorityFingerprint ?? authority?.toolAuthorityFingerprint,
     );

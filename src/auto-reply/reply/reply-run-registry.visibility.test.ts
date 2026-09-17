@@ -33,7 +33,9 @@ it("leaves new human input for a visible followup instead of a hidden coordinati
   }
   registerAgentRunContext(runId, { isControlUiVisible: false, projectSessionMessages: false });
   try {
-    expect(replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)).toBeUndefined();
+    expect(replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)).toMatchObject({
+      runId,
+    });
     await expect(
       beginReplyMessageInjectionTarget(target, "What is the status?", {
         isInboundUserMessage: true,

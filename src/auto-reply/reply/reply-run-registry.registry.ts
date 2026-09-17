@@ -140,16 +140,7 @@ export const replyRunRegistry: ReplyRunRegistry = {
     const resolved = resolveReplyMessageInjectionRejection({
       operation,
     });
-    // Question-only discovery still requires final, guarded answer admission;
-    // generic input remains in the visible followup queue.
-    const backend =
-      "injection" in resolved
-        ? resolved.backend
-        : resolved.reason === "input_visibility_mismatch" &&
-            resolved.backend?.messageInjectionV2?.version === 2 &&
-            resolved.backend.messageInjectionV2.claimPendingUserInputAnswer
-          ? resolved.backend
-          : undefined;
+    const backend = "injection" in resolved ? resolved.backend : undefined;
     if (!operation || !backend || !normalizedSessionKey) {
       return undefined;
     }

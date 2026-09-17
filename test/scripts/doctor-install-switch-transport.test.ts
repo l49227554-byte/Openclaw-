@@ -107,6 +107,11 @@ it.runIf(process.platform === "linux")(
     delete env.DBUS_SESSION_BUS_ADDRESS;
     const invocations: string[][] = [];
     vi.mocked(execFileUtf8).mockImplementation(async (command, args) => {
+      if (command === "systemctl") {
+        expect(args).toEqual(["--system", "is-system-running"]);
+        // The system manager exists; only the user-bus route is unavailable.
+        return { code: 0, termination: "exit", stdout: "running\n", stderr: "" };
+      }
       expect(command).toBe("busctl");
       invocations.push([...args]);
       const result = spawnSync(process.execPath, [shim, ...args], { encoding: "utf8", env });

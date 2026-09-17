@@ -150,9 +150,12 @@ describe("auth profile sqlite reader lifecycle", () => {
       try {
         expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
         expect(loadPersistedAuthProfileStore(sibling)).toMatchObject(apiKeyStore("qa-sibling"));
-        const first = expectDefined(open.mock.results[0]?.value);
-        const staleCallback = expectDefined(schedule.mock.calls[0])[0];
-        const second = expectDefined(open.mock.results[1]?.value);
+        const first = expectDefined(open.mock.results[0]?.value, "first pooled auth reader");
+        const staleCallback = expectDefined(
+          schedule.mock.calls[0],
+          "first auth reader idle timer",
+        )[0];
+        const second = expectDefined(open.mock.results[1]?.value, "sibling pooled auth reader");
         vi.advanceTimersByTime(20 * 60_000);
         expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
         vi.advanceTimersByTime(10 * 60_000);
@@ -189,7 +192,10 @@ describe("auth profile sqlite reader lifecycle", () => {
       let close: MockInstance<DatabaseSync["close"]> | undefined;
       try {
         expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
-        const reader = expectDefined(open.mock.results[0]?.value);
+        const reader = expectDefined(
+          open.mock.results[0]?.value,
+          "auth reader awaiting idle close",
+        );
         close = vi.spyOn(reader, "close").mockImplementationOnce(() => {
           throw new Error("native idle close failed");
         });
@@ -258,7 +264,10 @@ describe("auth profile sqlite reader lifecycle", () => {
       const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
       try {
         expect(loadPersistedAuthProfileStore(agentDir)).toMatchObject(apiKeyStore("qa-main"));
-        const reader = expectDefined(open.mock.results[0]?.value);
+        const reader = expectDefined(
+          open.mock.results[0]?.value,
+          "auth reader awaiting exit cleanup",
+        );
         const close = vi.spyOn(reader, "close").mockImplementationOnce(() => {
           throw new Error("native unscoped close failed");
         });
@@ -269,7 +278,7 @@ describe("auth profile sqlite reader lifecycle", () => {
             .listeners("exit")
             .filter((listener) => !listeners.includes(listener));
           expect(exitClosers).toHaveLength(1);
-          expectDefined(exitClosers[0])(0);
+          expectDefined(exitClosers[0], "auth reader exit cleanup listener")(0);
           expect(reader.isOpen).toBe(false);
           expect(process.listeners("exit")).toEqual(listeners);
         } finally {

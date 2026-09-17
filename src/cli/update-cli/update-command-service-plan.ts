@@ -350,13 +350,15 @@ export async function resolvePackageRuntimePreflight(params: {
   if (satisfies === true) {
     return ok(unchangedRuntime);
   }
+  const canRefreshCurrentService =
+    params.service?.running &&
+    params.service.serviceUpdateVerdict?.kind === "owned" &&
+    params.service.serviceUpdateVerdict.refreshDefinition;
   const fallbackNodeRunner =
     params.shouldRestart &&
     nodeRunner &&
     (params.alreadyCurrent
-      ? params.service?.running &&
-        params.service.serviceUpdateVerdict?.kind === "owned" &&
-        params.service.serviceUpdateVerdict.refreshDefinition
+      ? canRefreshCurrentService
       : await gatewayServiceCommandUsesRoot({ root: params.root }))
       ? resolveNodeRunner()
       : undefined;
@@ -429,6 +431,18 @@ export async function resolvePackageRuntimePreflight(params: {
           continuation,
         })
       : undefined;
+  if (
+    recoverySteps?.at(-1)?.kind === "continue-update" &&
+    params.alreadyCurrent &&
+    nodeRunner &&
+    params.service?.serviceNodeRunner &&
+    !canRefreshCurrentService
+  ) {
+    recoverySteps.splice(-1, 0, {
+      kind: "select-runtime",
+      instruction: `The Gateway service still selects ${nodeRunner}. Before continuing, have its deployment owner select Node ${recommendation} in the service definition while retaining its installation, service account, and state/config selectors. Switching the shell runtime alone does not update that service definition.`,
+    });
+  }
   const upgrade = recoverySteps
     ? `Recovery:\n${formatUpdateRecoverySteps(recoverySteps)}`
     : recommendation

@@ -97,7 +97,10 @@ or recommend a global install into an uninspected prefix. Extended-stable recove
 uses `--channel extended-stable` so the resolver selects the supported monthly
 release; other package channels retain the inspected version with `--tag`.
 An explicit channel switch is included in recovery because the runtime refusal
-happens before that preference is saved.
+happens before that preference is saved. If an already-current service is stopped
+or its definition cannot be refreshed, have its deployment owner select the
+supported Node in that definition before retrying. Switching the shell runtime
+does not change a service's pinned Node path.
 
 Keep the same service account, profile, and state/config overrides. Recovery
 restores the recorded service selectors, including overrides absent from your

@@ -4026,7 +4026,6 @@ async function verifyGatewayUltraSubagentHandoff(params: {
   const childToken = `ULTRA-CHILD-${nonce}`;
   const parentToken = `ULTRA-PARENT-${nonce}`;
   const message = [
-    "Ultra orchestration live proof.",
     "Call sessions_spawn exactly once with these exact arguments:",
     JSON.stringify({
       runtime: "subagent",

@@ -179,23 +179,20 @@ class MessageImageResourceDirective extends AsyncDirective {
         return this.present(this.renderImagePlaceholder(image));
       }
       return this.present(
-        this.renderImageFrame(
-          image,
-          renderAssistantAttachmentStatusCard({
-            label: image.fileName ?? image.alt ?? t("chat.imageLightbox.untitled"),
-            badge: t("chat.attachments.unavailable"),
-            reason,
-            path: isLocalAssistantAttachmentSource(image.url) ? image.url : undefined,
-            onAllow:
-              !decodeFailed && availability.status === "unavailable" && availability.canAllow
-                ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions, true)
-                : undefined,
-            onRetry:
-              !decodeFailed && availability.status === "unavailable" && availability.recoverable
-                ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions)
-                : undefined,
-          }),
-        ),
+        renderAssistantAttachmentStatusCard({
+          label: image.fileName ?? image.alt ?? t("chat.imageLightbox.untitled"),
+          badge: t("chat.attachments.unavailable"),
+          reason,
+          path: isLocalAssistantAttachmentSource(image.url) ? image.url : undefined,
+          onAllow:
+            !decodeFailed && availability.status === "unavailable" && availability.canAllow
+              ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions, true)
+              : undefined,
+          onRetry:
+            !decodeFailed && availability.status === "unavailable" && availability.recoverable
+              ? () => retryAssistantAttachmentAvailability(image.url, subscriptionOptions)
+              : undefined,
+        }),
       );
     }
     if (!this.managed) {

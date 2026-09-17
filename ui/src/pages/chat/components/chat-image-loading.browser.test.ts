@@ -1,6 +1,7 @@
 import { html, nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
+import { renderCompactAttachmentCard } from "./chat-attachment-card.ts";
 import { renderAssistantAttachments } from "./chat-message-attachments.ts";
 import { renderMessageImages } from "./chat-message-images.ts";
 import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
@@ -340,6 +341,122 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       expect(getComputedStyle(element).overflow).toBe("hidden");
     }
   });
+
+  it.each(
+    [1440, 390].flatMap((viewport) => ["assistant", "user"].map((role) => ({ viewport, role }))),
+  )(
+    "sizes unavailable $role images like file cards at $viewport px",
+    async ({ viewport, role }) => {
+      const { page } = await import("vitest/browser");
+      await page.viewport(viewport, 1000);
+      const container = mount(Math.min(700, viewport - 32));
+      const allowed = createDeferred<Response>();
+      const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return allowed.promise;
+        }
+        return Promise.resolve(
+          Response.json({
+            available: false,
+            code: "outside-allowed-folders",
+            canAllow: true,
+            retryable: false,
+          }),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const images = ["first", "second"].map((name) => ({
+        url: `/outside/${crypto.randomUUID()}.png`,
+        fileName: `${name}.png`,
+        width: 1200,
+        height: 800,
+      }));
+      const draw = () =>
+        render(
+          html`<div class="chat-group ${role}">
+            <div class="chat-group-messages">
+              ${renderMessageImages(images, {
+                sessionKey: "unavailable-geometry",
+                agentId: "main",
+                onRequestUpdate: draw,
+              })}
+              ${renderCompactAttachmentCard({ kind: "document", label: "notes.pdf" })}
+            </div>
+          </div>`,
+          container,
+        );
+      subscribers.push(draw);
+      draw();
+      await vi.waitFor(() =>
+        expect(container.querySelectorAll(".chat-assistant-attachment-card--blocked")).toHaveLength(
+          2,
+        ),
+      );
+      const file = container.querySelector<HTMLElement>(
+        ".chat-assistant-attachment-card--compact",
+      )!;
+      const cards = [
+        ...container.querySelectorAll<HTMLElement>(".chat-assistant-attachment-card--blocked"),
+      ];
+      const fileHeight = file.getBoundingClientRect().height;
+      const cornerInsets = (element: HTMLElement) => {
+        const rect = element.getBoundingClientRect();
+        const radius = Number.parseFloat(getComputedStyle(element).borderTopLeftRadius);
+        return [
+          [1, 1],
+          [-1, 1],
+          [1, -1],
+          [-1, -1],
+        ].map(([dx, dy]) => {
+          for (let inset = 0; inset <= radius; inset += 0.5) {
+            const x = dx === 1 ? rect.left + inset : rect.right - inset;
+            const y = dy === 1 ? rect.top + inset : rect.bottom - inset;
+            if (element.contains(document.elementFromPoint(x, y))) {
+              return inset;
+            }
+          }
+          return radius;
+        });
+      };
+      for (const card of cards) {
+        expect
+          .soft(Math.abs(card.getBoundingClientRect().height - fileHeight))
+          .toBeLessThanOrEqual(1);
+        const cardCorners = cornerInsets(card);
+        const rect = card.getBoundingClientRect();
+        // Compare both outlines at the same subpixel coordinates so browser hit
+        // testing cannot round two equivalent corners onto different pixels.
+        const fileParent = file.parentNode!;
+        const fileNext = file.nextSibling;
+        document.body.append(file);
+        file.style.cssText = `position: fixed; left: ${rect.left}px; top: ${rect.top}px; width: ${rect.width}px; height: ${rect.height}px; z-index: 1`;
+        const fileCorners = cornerInsets(file);
+        file.removeAttribute("style");
+        fileParent.insertBefore(file, fileNext);
+        expect.soft(cardCorners).toEqual(fileCorners);
+        expect(getComputedStyle(card).borderTopWidth).toBe(getComputedStyle(file).borderTopWidth);
+      }
+      expect(cards[1]!.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+        cards[0]!.getBoundingClientRect().bottom,
+      );
+      await page.getByRole("button", { name: "Allow image", exact: true }).first().click();
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        expect.stringContaining("&allow=1"),
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(frame(container).getAttribute("aria-busy")).toBe("true");
+      const loading = frame(container).getBoundingClientRect();
+      allowed.resolve(Response.json({ available: true }));
+      await vi.waitFor(() => expect(container.querySelector("img")).not.toBeNull());
+      expect(frame(container).getBoundingClientRect().height).toBe(loading.height);
+      const remaining = container.querySelector<HTMLElement>(
+        ".chat-assistant-attachment-card--blocked",
+      )!;
+      expect(Math.abs(remaining.getBoundingClientRect().height - fileHeight)).toBeLessThanOrEqual(
+        1,
+      );
+    },
+  );
 
   it("retains an explained image slot after a failed thumbnail fetch", async () => {
     const container = mount(500);

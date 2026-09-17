@@ -318,12 +318,6 @@
   max-height: none;
 }
 
-.chat-image-frame--image > .chat-assistant-attachment-card {
-  position: absolute;
-  inset: 0;
-  overflow: auto;
-}
-
 .chat-image-status {
   position: absolute;
   inset: 0;
@@ -546,6 +540,11 @@
 .chat-group.user .chat-message-images > * {
   display: grid;
   justify-items: var(--chat-user-content-align);
+}
+
+.chat-group.user .chat-message-images > .chat-assistant-attachment-card {
+  grid-column: 1 / -1;
+  align-self: start;
 }
 
 .chat-group.user .chat-message-images--two-column {
@@ -785,6 +784,25 @@
     overflow: visible;
     text-overflow: clip;
     white-space: normal;
+  }
+}
+
+.chat-message-images > .chat-assistant-attachment-card {
+  .chat-assistant-attachment-card__status-meta {
+    display: inline-flex;
+    gap: 0.5em;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .chat-assistant-attachment-card__status-separator {
+    display: inline;
+  }
+
+  .chat-assistant-attachment-card__status-reason {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

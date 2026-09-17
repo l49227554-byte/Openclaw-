@@ -12594,6 +12594,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     const { result, manifest } = runDependencyFreePreflight(
       manifestSource,
       tempDirs.make("ci-preflight-dependencies-"),
+      testNodeExecPath,
     );
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(manifest).toContain("run_node=true\n");

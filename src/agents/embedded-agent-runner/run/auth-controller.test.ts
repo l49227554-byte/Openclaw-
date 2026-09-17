@@ -2,8 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Model } from "openclaw/plugin-sdk/llm";
-import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { isSecretValueRegisteredForRedaction } from "../../../logging/secret-redaction-registry.js";
 import { SecretSurfaceUnavailableError } from "../../../secrets/runtime-degraded-state.js";
@@ -17,11 +16,11 @@ import { OAuthRefreshFailureError } from "../../auth-profiles/oauth-refresh-fail
 import { resolveAuthProfileOrder } from "../../auth-profiles/order.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "../../auth-profiles/store-runtime.js";
 import { FailoverError } from "../../failover-error.js";
-import type { RuntimeAuthState } from "./helpers.js";
 
 const mocks = vi.hoisted(() => ({
   prepareProviderRuntimeAuth: vi.fn(),
   getApiKeyForModelCore: vi.fn(),
+  createRuntimeProviderAuthLookup: vi.fn(),
 }));
 
 vi.mock("../../../plugins/provider-runtime.js", async () => {
@@ -39,40 +38,17 @@ vi.mock("../../model-auth.js", async () => {
   return {
     ...actual,
     getApiKeyForModelCore: mocks.getApiKeyForModelCore,
+    createRuntimeProviderAuthLookup: mocks.createRuntimeProviderAuthLookup,
   };
 });
 
+import { resolveEmbeddedAuthCooldownProbePolicy } from "./auth-controller.js";
 import {
-  createEmbeddedRunAuthController,
-  resolveEmbeddedAuthCooldownProbePolicy,
-  type EmbeddedRunAuthState,
-} from "./auth-controller.js";
-
-function createTestModel(): Model {
-  return {
-    id: "test-model",
-    name: "test-model",
-    provider: "custom-openai",
-    api: "openai-responses",
-    baseUrl: "https://old.example.com/v1",
-    headers: {
-      Authorization: "Bearer stale-token",
-    },
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 8_000,
-    maxTokens: 4_000,
-  } as Model;
-}
-
-function getRuntimeAuthSnapshot(
-  state: RuntimeAuthState | null,
-): Pick<RuntimeAuthState, "profileId" | "refreshInFlight"> | null {
-  return state ? { profileId: state.profileId, refreshInFlight: state.refreshInFlight } : null;
-}
-
-type RuntimeApiKeySetter = Mock<(provider: string, apiKey: string) => void>;
+  createMutableAuthControllerHarness,
+  createMutableEmbeddedRunAuthController,
+  createTestModel,
+  getRuntimeAuthSnapshot,
+} from "./auth-controller.test-harness.js";
 
 function expectProtectedRuntimeValue(value: string | undefined, plaintext: string): void {
   expect(value).not.toBe(plaintext);
@@ -80,67 +56,11 @@ function expectProtectedRuntimeValue(value: string | undefined, plaintext: strin
   expect(resolveSecretSentinel(value ?? "")).toBe(plaintext);
 }
 
-function createMutableAuthControllerHarness(): EmbeddedRunAuthState {
-  return {
-    models: { runtime: createTestModel(), effective: createTestModel() },
-    apiKeyInfo: null,
-    lastProfileId: undefined,
-    runtimeAuthState: null,
-    runtimeAuthRefreshCancelled: false,
-    profileIndex: 0,
-    thinkLevel: "medium",
-  };
-}
-
-function createMutableEmbeddedRunAuthController(params: {
-  harness: EmbeddedRunAuthState;
-  setRuntimeApiKey: RuntimeApiKeySetter;
-  profileCandidates?: Array<string | undefined>;
-  authStore?: AuthProfileStore;
-  fallbackConfigured?: boolean;
-  lockedProfileId?: string;
-  allowTransientCooldownProbe?: boolean;
-  warn?: (message: string) => void;
-  agentDir?: string;
-  prepareModelForAuthProfile?: Parameters<
-    typeof createEmbeddedRunAuthController
-  >[0]["prepareModelForAuthProfile"];
-}) {
-  return createEmbeddedRunAuthController({
-    config: undefined,
-    agentDir: params.agentDir ?? "/tmp/agent",
-    workspaceDir: "/tmp/workspace",
-    authStore:
-      params.authStore ??
-      ({
-        version: 1,
-        profiles: {},
-      } as AuthProfileStore),
-    authStorage: { setRuntimeApiKey: params.setRuntimeApiKey },
-    profileCandidates: params.profileCandidates ?? ["default"],
-    lockedProfileId: params.lockedProfileId,
-    initialThinkLevel: "medium",
-    attemptedThinking: new Set(),
-    fallbackConfigured: params.fallbackConfigured ?? false,
-    allowTransientCooldownProbe: params.allowTransientCooldownProbe ?? false,
-    provider: "custom-openai",
-    modelId: "test-model",
-    state: params.harness,
-    ...(params.prepareModelForAuthProfile
-      ? { prepareModelForAuthProfile: params.prepareModelForAuthProfile }
-      : {}),
-    log: {
-      debug: () => undefined,
-      info: () => undefined,
-      warn: params.warn ?? (() => undefined),
-    },
-  });
-}
-
 describe("createEmbeddedRunAuthController", () => {
   beforeEach(() => {
     mocks.prepareProviderRuntimeAuth.mockReset();
     mocks.getApiKeyForModelCore.mockReset();
+    mocks.createRuntimeProviderAuthLookup.mockReset();
   });
 
   it("commits a prepared route only after its credential resolves", async () => {
@@ -210,6 +130,77 @@ describe("createEmbeddedRunAuthController", () => {
       "api-key credentials are incompatible with the selected subscription route",
     );
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  // Regression coverage for the ordinary embedded path (review follow-up on
+  // #110179): with profile fallback enabled the controller must not attach the
+  // prepared synthetic-auth lookup, so pre-existing unrestricted behavior is
+  // unchanged.
+  it("leaves the ordinary profile path without a prepared synthetic-auth lookup", async () => {
+    const harness = createMutableAuthControllerHarness();
+    mocks.getApiKeyForModelCore.mockResolvedValue({
+      apiKey: "platform-key",
+      mode: "api-key",
+      source: "config",
+    });
+
+    const controller = createMutableEmbeddedRunAuthController({
+      harness,
+      setRuntimeApiKey: vi.fn(),
+      profileCandidates: ["default"],
+      // No prepared route metadata: profile fallback stays enabled.
+      prepareModelForAuthProfile: async () => ({
+        runtimeModel: createTestModel(),
+        commit: () => undefined,
+      }),
+    });
+
+    await controller.initializeAuthProfile();
+    const calls = mocks.getApiKeyForModelCore.mock.calls;
+    expect(calls).toHaveLength(1);
+    const call = calls[0]![0] as Record<string, unknown>;
+    expect(call.allowAuthProfileFallback).toBeUndefined();
+    expect("allowPluginSyntheticAuth" in call).toBe(false);
+    expect("runtimeLookup" in call).toBe(false);
+    expect(mocks.createRuntimeProviderAuthLookup).not.toHaveBeenCalled();
+  });
+
+  // The isolated direct attempt is the path the lookup exists for: a prepared
+  // route that disabled profile fallback keeps plugin synthetic-auth reachable
+  // on its own flag, scoped by the prepared runtimeLookup.
+  it("passes plugin synthetic-auth and a prepared lookup on an isolated direct attempt", async () => {
+    const harness = createMutableAuthControllerHarness();
+    mocks.getApiKeyForModelCore.mockResolvedValue({
+      apiKey: "gcp-adc-token",
+      mode: "oauth",
+      source: "plugin-synthetic",
+    });
+    const lookup = {
+      envApiKey: { skipSetupProviderFallback: true },
+      syntheticAuthProviderRefs: ["anthropic-vertex"],
+      syntheticAuthProviderRefsComplete: true,
+    };
+    mocks.createRuntimeProviderAuthLookup.mockReturnValue(lookup);
+
+    const controller = createMutableEmbeddedRunAuthController({
+      harness,
+      setRuntimeApiKey: vi.fn(),
+      profileCandidates: ["default"],
+      prepareModelForAuthProfile: async () => ({
+        runtimeModel: createTestModel(),
+        allowAuthProfileFallback: false,
+        commit: () => undefined,
+      }),
+    });
+
+    await controller.initializeAuthProfile();
+    expect(mocks.getApiKeyForModelCore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowAuthProfileFallback: false,
+        allowPluginSyntheticAuth: true,
+        runtimeLookup: lookup,
+      }),
+    );
   });
 
   it("applies runtime request overrides on the first auth exchange", async () => {

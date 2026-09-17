@@ -1,6 +1,3 @@
-/**
- * Test harness mocks for embedded-run overflow compaction coverage.
- */
 import { matchesContextOverflowMessage } from "@openclaw/ai/internal/runtime";
 import { type Mock, vi } from "vitest";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
@@ -27,6 +24,10 @@ import { clearAgentHarnesses, registerAgentHarness } from "../harness/registry.j
 import type { AgentHarnessAttemptParams } from "../harness/types.js";
 import type { ResolvedProviderAuth } from "../model-auth-runtime-shared.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
+/**
+ * Test harness mocks for embedded-run overflow compaction coverage.
+ */
+import { createModelAuthFixtureDefaults } from "./model-auth.mock-harness.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
 import type { buildEmbeddedRunPayloads } from "./run/payloads.js";
@@ -937,8 +938,7 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
   }));
 
   vi.doMock("../model-auth.js", () => ({
-    applyAuthHeaderOverride: vi.fn((model: unknown) => model),
-    applyLocalNoAuthHeaderOverride: vi.fn((model: unknown) => model),
+    ...createModelAuthFixtureDefaults(),
     ensureAuthProfileStore: mockedEnsureAuthProfileStore,
     ensureAuthProfileStoreWithoutExternalProfiles:
       mockedEnsureAuthProfileStoreWithoutExternalProfiles,

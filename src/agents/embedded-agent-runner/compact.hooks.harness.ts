@@ -1,6 +1,3 @@
-/**
- * Test harness mocks for embedded-agent compaction hook coverage.
- */
 import { join } from "node:path";
 import { vi, type Mock } from "vitest";
 import type { ContextEngine } from "../../context-engine/types.js";
@@ -20,6 +17,10 @@ import {
   agentSessionSetContextReplacementHook,
 } from "../sessions/agent-session-compaction.js";
 import type { SessionManager } from "../sessions/session-manager.js";
+/**
+ * Test harness mocks for embedded-agent compaction hook coverage.
+ */
+import { createModelAuthFixtureDefaults } from "./model-auth.mock-harness.js";
 import type { resolveModelAsync } from "./model.js";
 import type { attemptServerEndpointCompaction } from "./server-endpoint-compaction.js";
 import type { buildEmbeddedSystemPrompt } from "./system-prompt.js";
@@ -862,8 +863,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
   }));
 
   vi.doMock("../model-auth.js", () => ({
-    applyAuthHeaderOverride: vi.fn((model: unknown) => model),
-    applyLocalNoAuthHeaderOverride: vi.fn((model: unknown) => model),
+    ...createModelAuthFixtureDefaults(),
     ensureAuthProfileStore: ensureAuthProfileStoreMock,
     ensureAuthProfileStoreWithoutExternalProfiles:
       ensureAuthProfileStoreWithoutExternalProfilesMock,

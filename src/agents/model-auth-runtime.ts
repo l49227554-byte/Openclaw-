@@ -44,7 +44,7 @@ export function createRuntimeProviderAuthLookup(params: {
     workspaceDir: params.workspaceDir,
     env,
   };
-  const syntheticAuthProviderRefs =
+  const syntheticAuthProviderRefState =
     params.includePluginSyntheticAuth === false
       ? undefined
       : resolveRuntimeSyntheticAuthProviderRefState(lookupParams);
@@ -57,10 +57,8 @@ export function createRuntimeProviderAuthLookup(params: {
       skipSetupProviderFallback: true,
     },
     setupProviderFallbackRefs: authLookupMaps.setupProviderFallbackRefs,
-    syntheticAuthProviderRefs: syntheticAuthProviderRefs?.complete
-      ? syntheticAuthProviderRefs.refs
-      : undefined,
-    syntheticAuthProviderRefsComplete: syntheticAuthProviderRefs?.complete,
+    syntheticAuthProviderRefs: syntheticAuthProviderRefState?.refs,
+    syntheticAuthProviderRefsComplete: syntheticAuthProviderRefState?.complete,
   };
 }
 
@@ -121,10 +119,23 @@ function shouldResolvePluginSyntheticAuth(params: {
   provider: string;
   modelApi?: string;
   runtimeLookup?: RuntimeProviderAuthLookup;
+  allowPluginSyntheticAuth?: boolean;
 }): boolean {
-  const syntheticAuthProviderRefs = params.runtimeLookup?.syntheticAuthProviderRefs;
-  if (!syntheticAuthProviderRefs) {
+  if (params.allowPluginSyntheticAuth === false) {
+    return false;
+  }
+  if (!params.runtimeLookup) {
     return true;
+  }
+  // A prepared lookup that omitted refs used to mean "unrestricted", so an
+  // incomplete registry fell through to dynamic plugin discovery. Keep that
+  // unrestricted path only when no lookup was supplied.
+  if (params.runtimeLookup.syntheticAuthProviderRefsComplete !== true) {
+    return false;
+  }
+  const syntheticAuthProviderRefs = params.runtimeLookup.syntheticAuthProviderRefs;
+  if (!syntheticAuthProviderRefs) {
+    return false;
   }
   const eligibleRefs = new Set(
     normalizeUniqueStringEntries(syntheticAuthProviderRefs.map((ref) => normalizeProviderId(ref))),
@@ -223,14 +234,7 @@ function resolveRuntimeAvailableProviderAuth<T>(
   if (authConfig.hasSyntheticLocalProviderAuthConfig({ cfg: params.cfg, provider })) {
     return true;
   }
-  if (
-    params.allowPluginSyntheticAuth !== false &&
-    shouldResolvePluginSyntheticAuth({
-      cfg: params.cfg,
-      provider,
-      runtimeLookup: params.runtimeLookup,
-    })
-  ) {
+  if (shouldResolvePluginSyntheticAuth({ ...params, cfg: params.cfg, provider })) {
     return resolveSyntheticAuth(provider);
   }
   return false;
@@ -241,10 +245,9 @@ export function hasRuntimeAvailableProviderAuth(params: RuntimeProviderAuthParam
   return resolveRuntimeAvailableProviderAuth(params, (provider) =>
     Boolean(
       resolveSyntheticLocalProviderAuth({
+        ...params,
         cfg: params.cfg,
         provider,
-        workspaceDir: params.workspaceDir,
-        env: params.env,
       }),
     ),
   );
@@ -273,6 +276,7 @@ type SyntheticProviderAuthParams = {
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   allowPluginSyntheticAuth?: boolean;
+  runtimeLookup?: RuntimeProviderAuthLookup;
 };
 
 type ResolveSyntheticProviderAuth = (
@@ -345,7 +349,7 @@ export async function prepareSyntheticLocalProviderAuth(
   params: SyntheticProviderAuthParams & { signal?: AbortSignal },
 ): Promise<ResolvedProviderAuth | null> {
   if (
-    params.allowPluginSyntheticAuth === false ||
+    !shouldResolvePluginSyntheticAuth(params) ||
     authConfig.hasSecretRefProviderApiKey(params.cfg, params.provider)
   ) {
     return resolveSyntheticLocalProviderAuth(params);
@@ -377,10 +381,9 @@ function resolveSyntheticLocalProviderAuth(
 ): ResolvedProviderAuth | null {
   // Prepared direct attempts may use local no-auth config, but must not widen
   // back into an unprepared plugin-owned credential source.
-  const syntheticProviderAuth =
-    params.allowPluginSyntheticAuth === false
-      ? {}
-      : resolveProviderSyntheticRuntimeAuth(params, resolveFromConfig);
+  const syntheticProviderAuth = shouldResolvePluginSyntheticAuth(params)
+    ? resolveProviderSyntheticRuntimeAuth(params, resolveFromConfig)
+    : {};
   if (syntheticProviderAuth.auth) {
     return syntheticProviderAuth.auth;
   }

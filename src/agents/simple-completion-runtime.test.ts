@@ -78,7 +78,10 @@ vi.mock("../plugins/current-plugin-metadata-snapshot.js", async (importOriginal)
   getCurrentPluginMetadataSnapshot: hoisted.getCurrentPluginMetadataSnapshotMock,
 }));
 
-vi.mock("./model-auth.js", () => ({
+vi.mock("./model-auth.js", async () => ({
+  ...(
+    await import("./embedded-agent-runner/model-auth.mock-harness.js")
+  ).createModelAuthFixtureDefaults(),
   applySecretRefHeaderSentinels: (model: unknown) => model,
   formatMissingAuthError: vi.fn(
     (auth: { source: string; mode: string }, provider: string) =>

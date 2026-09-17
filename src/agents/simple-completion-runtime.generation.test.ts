@@ -39,7 +39,10 @@ vi.mock("../plugins/runtime/generation-scope.js", async () => {
   };
 });
 
-vi.mock("./model-auth.js", () => ({
+vi.mock("./model-auth.js", async () => ({
+  ...(
+    await import("./embedded-agent-runner/model-auth.mock-harness.js")
+  ).createModelAuthFixtureDefaults(),
   applySecretRefHeaderSentinels: (model: Model) => model,
   applyLocalNoAuthHeaderOverride: (model: Model) => model,
   formatMissingAuthError: vi.fn(),

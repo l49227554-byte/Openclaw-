@@ -40,6 +40,7 @@ beforeAll(async () => {
 installProviderHttpMockCleanup();
 
 afterEach(() => {
+  vi.restoreAllMocks();
   clearRuntimeAuthProfileStoreSnapshots();
   vi.unstubAllEnvs();
 });
@@ -235,6 +236,8 @@ describe("qwen video generation provider", () => {
   });
 
   it("submits async Wan generation, polls task status, and downloads the resulting video", async () => {
+    // The exact initial timeout assertion assumes no elapsed setup time.
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
     mockSuccessfulDashscopeVideoTask({ postJsonRequestMock, fetchWithTimeoutMock });
 
     const provider = qwenVideoGenerationProvider;

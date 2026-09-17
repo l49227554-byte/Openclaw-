@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import type { Socket } from "node:net";
 import path from "node:path";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import {
   createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
@@ -30,13 +31,15 @@ class TestListener extends EventEmitter {
   stop = vi.fn(() => this.emit("closed", 1000, "stopped"));
 }
 
-function sessionApi(listener: API["listener"]): API {
+function sessionApi(
+  listener: API["listener"],
+): Pick<API, "listener" | "getContext" | "getCookie" | "getOwnId"> {
   return {
     listener,
     getContext: () => ({ imei: "fixture", userAgent: "openclaw-test" }),
     getCookie: () => ({ toJSON: () => ({ cookies: [] }) }),
     getOwnId: () => "fixture-owner",
-  } as API;
+  };
 }
 
 async function seedSession() {
@@ -137,10 +140,10 @@ it("settles a real zca-js handshake timeout and reconnects the same monitor prof
     path.resolve(path.dirname(require.resolve("zca-js")), "context.cjs"),
   ) as { createContext: () => Record<string, unknown> };
   const server = createServer();
-  const websocketServer = new WebSocketServer({ noServer: true });
+  const websocketServer = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   const sockets = new Set<Socket>();
   const trace: string[] = [];
-  const connected = Promise.withResolvers<void>();
+  const connected = createDeferred<void>();
   let upgrades = 0;
   server.on("connection", (socket) => {
     sockets.add(socket);
@@ -182,8 +185,8 @@ it("settles a real zca-js handshake timeout and reconnects the same monitor prof
         },
       }));
       const runtime = createZalouserRuntimeEnv();
-      const errors = vi.fn((message: string) => {
-        trace.push(message);
+      const errors = vi.fn((...args: unknown[]) => {
+        trace.push(args.map(String).join(" "));
       });
       runtime.error = errors;
       const options = {

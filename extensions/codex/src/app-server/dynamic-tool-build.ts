@@ -283,10 +283,7 @@ export async function buildDynamicTools(
     // blocking question's prompt. Hand the tools this run's own way to show one.
     ...(params.onToolResult
       ? {
-          questionPrompt: {
-            send: params.onToolResult,
-            ...(messageToolProvider ? { messageChannel: messageToolProvider } : {}),
-          },
+          questionPrompt: { send: params.onToolResult, messageChannel: messageToolProvider },
         }
       : {}),
     inputProvenance: params.inputProvenance,

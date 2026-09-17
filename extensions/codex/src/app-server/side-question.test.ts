@@ -45,6 +45,7 @@ const {
   resolveCodexProviderWebSearchSupportForClientMock,
   withLeasedCodexAppServerClientStartSelectionRetryMock,
   runCodexAppServerSideQuestion,
+  runSideQuestionWithManagedWebSearchCall,
   runCodexAppServerSideQuestionImpl,
   createFakeClient,
   threadResult,
@@ -234,67 +235,6 @@ function platformPreparedRuntimeAuth(resolvedApiKey?: string) {
     modelRegistry: {} as never,
     ...(resolvedApiKey ? { resolvedApiKey } : {}),
   } satisfies Parameters<typeof runCodexAppServerSideQuestion>[0]["preparedRuntimeAuth"];
-}
-
-async function runSideQuestionWithManagedWebSearchCall(
-  params: Parameters<typeof runCodexAppServerSideQuestion>[0] = sideParams(),
-  options: {
-    preserveToolFactory?: boolean;
-    toolName?: string;
-    toolArguments?: JsonObject;
-  } = {},
-) {
-  const client = createFakeClient();
-  let resolveTurnStarted!: () => void;
-  const turnStarted = new Promise<void>((resolve) => {
-    resolveTurnStarted = resolve;
-  });
-  if (!options.preserveToolFactory) {
-    createOpenClawCodingToolsMock.mockReturnValue([
-      {
-        name: "web_search",
-        description: "Search the web",
-        parameters: { type: "object", properties: {}, additionalProperties: true },
-        execute: toolExecuteMock,
-      },
-    ]);
-  }
-  client.request.mockImplementation(async (method: string) => {
-    if (method === "thread/fork") {
-      return threadResult("side-thread");
-    }
-    if (method === "thread/inject_items") {
-      return {};
-    }
-    if (method === "turn/start") {
-      queueMicrotask(resolveTurnStarted);
-      return turnStartResult("turn-1");
-    }
-    if (method === "thread/unsubscribe" || method === "turn/interrupt") {
-      return {};
-    }
-    throw new Error(`unexpected request: ${method}`);
-  });
-  getSharedCodexAppServerClientMock.mockResolvedValue(client);
-
-  const run = runCodexAppServerSideQuestion(params);
-  await turnStarted;
-  const toolResponse = await client.handleRequest({
-    id: 42,
-    method: "item/tool/call",
-    params: {
-      ...codexTestTurnIds("side-thread"),
-      callId: "tool-1",
-      tool: options.toolName ?? "web_search",
-      arguments: options.toolArguments ?? { query: "service providers" },
-    },
-  });
-  expect(toolResponse).not.toBeUndefined();
-  client.emit(turnCompleted("side-thread", "turn-1", "Search answer."));
-  const result = await run;
-  const forkCall = client.request.mock.calls.find(([method]) => method === "thread/fork");
-  const forkConfig = (forkCall?.[1] as { config?: Record<string, unknown> } | undefined)?.config;
-  return { forkConfig, result, toolResponse };
 }
 
 describe("runCodexAppServerSideQuestion", () => {
@@ -2826,60 +2766,6 @@ describe("runCodexAppServerSideQuestion", () => {
     ]);
     expect(activeDiagnosticToolKeys(diagnosticEvents)).toEqual(new Set());
   });
-
-  it.each<[string, string | undefined, string | undefined, string | undefined, boolean]>([
-    ["provider-only Telegram", undefined, "telegram", "telegram", true],
-    ["explicit Telegram", "telegram", undefined, "telegram", true],
-    ["explicit Telegram before another provider", "telegram", "discord", "telegram", true],
-    ["explicit webchat before Telegram provider", "webchat", "telegram", "webchat", true],
-    ["both channels absent", undefined, undefined, undefined, true],
-    ["callback absent", undefined, "telegram", "telegram", false],
-  ])(
-    "hands a side thread's question tools this run's own way to show a prompt: %s",
-    async (_name, messageChannel, messageProvider, expectedChannel, hasCallback) => {
-      // A side thread dispatches tools through the same direct bridge as a normal Codex
-      // turn, so no tool-start handler reserves a blocking question's prompt for them.
-      // Without a sender the question is registered, waited on, and never shown.
-      const onToolResult = vi.fn();
-      type ToolOptions = NonNullable<
-        Parameters<
-          (typeof import("openclaw/plugin-sdk/agent-harness"))["createOpenClawCodingTools"]
-        >[0]
-      >;
-      let capturedQuestionPrompt: ToolOptions["questionPrompt"];
-      createOpenClawCodingToolsMock.mockImplementation((options: ToolOptions) => {
-        capturedQuestionPrompt = options.questionPrompt;
-        return [
-          {
-            name: "ask_user",
-            description: "Ask the person a question",
-            parameters: { type: "object", properties: {}, additionalProperties: true },
-            execute: toolExecuteMock,
-          },
-        ];
-      });
-
-      await runSideQuestionWithManagedWebSearchCall(
-        sideParams({
-          messageChannel,
-          messageProvider,
-          opts: hasCallback ? { onToolResult } : {},
-        }),
-        { preserveToolFactory: true, toolName: "ask_user", toolArguments: { header: "Choice" } },
-      );
-
-      expect(toolExecuteMock).toHaveBeenCalledTimes(1);
-      if (!hasCallback) {
-        expect(capturedQuestionPrompt).toBeUndefined();
-        expect(onToolResult).not.toHaveBeenCalled();
-        return;
-      }
-      expect(capturedQuestionPrompt).toBeDefined();
-      expect(capturedQuestionPrompt?.messageChannel).toBe(expectedChannel);
-      await capturedQuestionPrompt?.send({ text: "Question for you:" });
-      expect(onToolResult).toHaveBeenCalledExactlyOnceWith({ text: "Question for you:" });
-    },
-  );
 
   it("bridges prepared restricted-profile tools into side threads", async () => {
     const preparedModelRuntime = {

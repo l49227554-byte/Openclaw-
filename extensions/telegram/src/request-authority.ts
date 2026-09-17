@@ -76,10 +76,14 @@ export function bindTelegramRequestAuthority(
   fetchImpl: TelegramClientFetch,
   assertCurrent: () => void,
 ): TelegramClientFetch {
-  return (input, init) => {
+  const guardedFetch = (
+    input: Parameters<TelegramClientFetch>[0],
+    init?: Parameters<TelegramClientFetch>[1],
+  ) => {
     const guardedInit = { ...init, [requestAuthority]: assertCurrent };
     return fetchImpl(input, guardedInit);
   };
+  return Object.assign(guardedFetch, fetchImpl);
 }
 
 export function getTelegramRequestAuthority(init: object | undefined): (() => void) | undefined {
@@ -94,7 +98,7 @@ export function withoutTelegramRequestAuthority<T extends object>(
   if (!init || !(requestAuthority in init)) {
     return init;
   }
-  const requestInit: T & RequestAuthority = { ...init };
+  const requestInit: T & Partial<Record<typeof requestAuthority, unknown>> = { ...init };
   delete requestInit[requestAuthority];
   return requestInit;
 }

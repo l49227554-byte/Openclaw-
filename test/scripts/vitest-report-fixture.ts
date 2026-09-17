@@ -148,6 +148,7 @@ export function createVitestReportFixture(root: string, evidence = path.join(roo
     }
     const isParallel = ["parallel", "batch-parallel", "failure", "overlap"].includes(mode);
     for (const [index, name] of ["alpha", "beta"].entries()) {
+      // Report attempts exist before spawn, even if a watchdog interrupts config loading.
       const prelude = `import fs from 'node:fs';
 ${mode === "teardown-timeout" && index === 0 ? "setInterval(()=>{},1000);" : ""}
 const merging = process.argv.includes('--mergeReports');
@@ -159,7 +160,7 @@ ${mode === "merge-failure" ? `if(merging)throw new Error('owned native merge fai
 ${mode === "config-error" && index === 1 ? "throw new Error('owned configuration failure');" : ""}
 ${mode === "final-write" ? `if(merging&&output)fs.mkdirSync(output);` : ""}
 ${mode === "child-write" && index === 0 ? `if(!merging&&output)fs.mkdirSync(output);` : ""}
-${mode === "watchdog" && index === 0 ? `if(!merging&&!fs.existsSync(${JSON.stringify(ready)})){fs.writeFileSync(${JSON.stringify(ready)},'started');await new Promise(()=>setInterval(()=>{},1000));}` : ""}
+${mode === "watchdog" && index === 0 ? `if(!merging&&output?.endsWith(${JSON.stringify(path.join(path.sep, "1", "report.json"))})){await new Promise(()=>setInterval(()=>{},1000));}` : ""}
 ${["missing", "corrupt"].includes(mode) && index === 0 ? `if(!merging)process.once('exit',()=>{const file=${mode === "missing" ? "output" : "process.argv.find(arg=>arg.startsWith('--outputFile.blob='))?.slice('--outputFile.blob='.length)"};if(file&&fs.existsSync(file)){fs.copyFileSync(file,file+'.native-original');${mode === "missing" ? "fs.unlinkSync(file)" : "fs.writeFileSync(file,'owned corruption')"};}});` : ""}
 `;
       write(

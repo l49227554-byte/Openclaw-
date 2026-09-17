@@ -141,7 +141,9 @@ describe("models.authRefresh learned catalog", () => {
           return result.models.filter((model) => model.provider === provider);
         };
         // A refresh can return the static catalog while account discovery continues.
+        const initialRequest = once(discovery, "request");
         await list(true);
+        await initialRequest;
         await expect
           .poll(async () => (await list()).map((model) => model.id))
           .toEqual(["account-one-learned"]);

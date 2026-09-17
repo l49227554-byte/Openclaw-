@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import path from "node:path";
-import { withTempHome as withBaseTempHome } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import type { McpServerConfig } from "../config/types.mcp.js";
 import { handleMcpOAuthCallback } from "../gateway/mcp-oauth-callback.js";
 import { createRequest, createResponse } from "../gateway/server-http.test-harness.js";
@@ -14,22 +11,15 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { getFreePort } from "../test-utils/ports.js";
-import {
-  operatorMcpOAuthIdentity,
-  requesterMcpOAuthIdentity,
-  requesterMcpOAuthStoreKeyPrefix,
-  type McpOAuthIdentity,
-} from "./mcp-oauth-identity.js";
+import { operatorMcpOAuthIdentity, type McpOAuthIdentity } from "./mcp-oauth-identity.js";
 import { createMcpOAuthClientProvider } from "./mcp-oauth-provider.js";
 import {
-  listMcpOAuthStoreKeysByPrefix,
   readMcpOAuthPendingAuthorization as readPending,
   readMcpOAuthStore,
   updateMcpOAuthStore,
 } from "./mcp-oauth-store.js";
 import {
   clearMcpOAuthCredentials,
-  clearMcpOAuthServer,
   completeMcpOAuthAuthorization,
   countMcpOAuthPrincipals,
   readMcpOAuthCredentialsStatus,
@@ -37,6 +27,7 @@ import {
   resolveMcpOAuthAccessToken,
   startMcpOAuthAuthorization,
 } from "./mcp-oauth.js";
+import { requesterIdentity, withTempHome } from "./mcp-oauth.test-harness.js";
 import { resolveMcpTransportConfig } from "./mcp-transport-config.js";
 
 const authMock = vi.hoisted(() => vi.fn());
@@ -44,23 +35,6 @@ const ROTATED_ACCESS = "gateway-token";
 const LEGACY_ACCESS = "example";
 const REMOTE_IDENTITY = operatorMcpOAuthIdentity("Remote Docs", "https://mcp.example.com/mcp");
 const CALENDLY_IDENTITY = operatorMcpOAuthIdentity("Calendly", "https://mcp.calendly.com/");
-const REQUESTER_SCOPE = { messageChannel: "telegram", agentAccountId: "bot" } as const;
-
-function requesterIdentity(serverName: string, serverUrl: string, requesterSenderId: string) {
-  return requesterMcpOAuthIdentity(serverName, serverUrl, {
-    ...REQUESTER_SCOPE,
-    requesterSenderId,
-  });
-}
-
-async function saveAccessToken(identity: McpOAuthIdentity, accessToken: string): Promise<void> {
-  await createMcpOAuthClientProvider({ identity }).saveTokens({
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: 3600,
-  });
-}
-
 async function runGatewayOAuthCallback(params: {
   serverName: string;
   server: McpServerConfig;
@@ -190,27 +164,6 @@ function authorizationCode(authorizationUrl: string): string {
 vi.mock("@modelcontextprotocol/sdk/client/auth.js", () => ({
   auth: authMock,
 }));
-
-async function withTempHome<T>(
-  run: (home: string) => T | Promise<T>,
-  options: Parameters<typeof withBaseTempHome>[1],
-): Promise<T> {
-  return withBaseTempHome(async (home) => {
-    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
-    process.env.OPENCLAW_STATE_DIR = path.join(home, ".openclaw");
-    closeOpenClawStateDatabaseForTest();
-    try {
-      return await run(home);
-    } finally {
-      closeOpenClawStateDatabaseForTest();
-      if (previousStateDir === undefined) {
-        delete process.env.OPENCLAW_STATE_DIR;
-      } else {
-        process.env.OPENCLAW_STATE_DIR = previousStateDir;
-      }
-    }
-  }, options);
-}
 
 describe("MCP OAuth provider", () => {
   beforeEach(() => {
@@ -740,34 +693,6 @@ describe("MCP OAuth provider", () => {
     );
   });
 
-  it("fails closed when canonical SQLite JSON is malformed", async () => {
-    await withTempHome(
-      async () => {
-        const identity = requesterIdentity(
-          REMOTE_IDENTITY.serverName,
-          REMOTE_IDENTITY.serverUrl,
-          "alice",
-        );
-        const provider = createMcpOAuthClientProvider({ identity });
-        await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
-        const storeKey = identity.storeKey;
-        openOpenClawStateDatabase()
-          .db.prepare("UPDATE mcp_oauth_stores SET store_json = ? WHERE store_key = ?")
-          .run("{", storeKey);
-
-        expect(() => provider.tokens()).toThrow("store_json is not valid JSON");
-        expect(() => countMcpOAuthPrincipals(REMOTE_IDENTITY)).toThrow(
-          `MCP OAuth store ${storeKey} is invalid: store_json is not valid JSON`,
-        );
-      },
-      {
-        prefix: "openclaw-mcp-oauth-corrupt-row-",
-        skipSessionCleanup: true,
-        env: { OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: undefined },
-      },
-    );
-  });
-
   it("fails closed when canonical token expiry has no token state", async () => {
     await withTempHome(
       async () => {
@@ -784,75 +709,6 @@ describe("MCP OAuth provider", () => {
       },
       {
         prefix: "openclaw-mcp-oauth-orphan-expiry-",
-        skipSessionCleanup: true,
-        env: { OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: undefined },
-      },
-    );
-  });
-
-  it("isolates, counts, and clears requester credentials by configured server", async () => {
-    await withTempHome(
-      async () => {
-        const serverName = "Shared_Team";
-        const serverUrl = "https://mcp.example.com/shared";
-        const operator = operatorMcpOAuthIdentity(serverName, serverUrl);
-        const alice = requesterIdentity(serverName, serverUrl, "alice");
-        const bob = requesterIdentity(serverName, serverUrl, "bob");
-        const other = requesterIdentity(serverName, "https://other.example.com/mcp", "alice");
-        await saveAccessToken(alice, "alice-token");
-        await saveAccessToken(bob, "bob-token");
-        await saveAccessToken(other, "other-token");
-        const prefix = requesterMcpOAuthStoreKeyPrefix(serverName, serverUrl);
-        const unrelatedKeys = [
-          ...Array.from({ length: 64 }, (_, index) => `unrelated-${index}`),
-          `${prefix.toLowerCase()}case-neighbor`,
-          `${prefix.replace("_", "X")}underscore-neighbor`,
-        ];
-        const insert = openOpenClawStateDatabase().db.prepare(
-          "INSERT INTO mcp_oauth_stores (store_key, format_version, store_json, updated_at) VALUES (?, 1, ?, 0)",
-        );
-        for (const key of unrelatedKeys) {
-          insert.run(key, "{");
-        }
-
-        closeOpenClawStateDatabaseForTest();
-        await expect(resolveMcpOAuthAccessToken({ identity: alice })).resolves.toBe("alice-token");
-        await expect(resolveMcpOAuthAccessToken({ identity: bob })).resolves.toBe("bob-token");
-        expect(alice.storeKey).not.toBe(bob.storeKey);
-        expect(listMcpOAuthStoreKeysByPrefix(prefix)).toEqual(
-          [alice.storeKey, bob.storeKey].toSorted(),
-        );
-        const reads = trackSqliteStatementExecutions(
-          openOpenClawStateDatabase().db,
-          ["keys"],
-          (sql) =>
-            /^select "store_key" from "mcp_oauth_stores"(?:\s|$)/iu.test(sql) ? "keys" : null,
-        );
-        try {
-          expect(countMcpOAuthPrincipals(operator)).toBe(2);
-          await clearMcpOAuthServer(operator);
-        } finally {
-          reads.restore();
-        }
-        closeOpenClawStateDatabaseForTest();
-        for (const identity of [alice, bob]) {
-          await expect(readMcpOAuthCredentialsStatus(identity)).resolves.toEqual({
-            state: "unauthenticated",
-          });
-        }
-        await expect(resolveMcpOAuthAccessToken({ identity: other })).resolves.toBe("other-token");
-        expect(
-          openOpenClawStateDatabase()
-            .db.prepare(
-              "SELECT store_key FROM mcp_oauth_stores WHERE store_json = ? ORDER BY store_key",
-            )
-            .all("{"),
-        ).toEqual(unrelatedKeys.toSorted().map((store_key) => ({ store_key })));
-        expect(reads.counts.keys).toBeGreaterThan(0);
-        expect(reads.rowCounts.keys).toBeLessThanOrEqual(8);
-      },
-      {
-        prefix: "openclaw-mcp-oauth-requesters-",
         skipSessionCleanup: true,
         env: { OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: undefined },
       },

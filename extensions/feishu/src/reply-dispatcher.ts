@@ -32,9 +32,11 @@ import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.
 import type { MentionTarget } from "./mention-target.types.js";
 import {
   consumeFeishuPresentationFallbackMarker,
+  isFeishuCardWithinEnvelope,
   renderFeishuReplyPayload,
   withinCardTableLimit,
 } from "./presentation-card.js";
+import { createTwoPhase, eligible as twoPhaseEligible } from "./two-phase.js";
 import {
   createFeishuPartialReplyDeliveryError,
   createFeishuReplyDeliveryResult,
@@ -303,6 +305,15 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   let lastPartial = "";
   let reasoningText = "";
   let statusLine = "";
+  // Opt-in two-phase UX: the streaming card shows a tool timeline while the turn
+  // runs and settles to a one-line summary on the final reply; the full answer is
+  // then sent as a separate green result card. The controller is per dispatcher
+  // instance (one per inbound message), so rows and the final-sent guard never
+  // leak across turns. `pendingTwoPhaseCollapseLine` is consumed once by the next
+  // streaming close so the collapsed summary, never the answer, settles that card.
+  const twoPhase = createTwoPhase(account.config.twoPhase);
+  const twoPhaseActive = previewStreamingEnabled && twoPhase.enabled;
+  let pendingTwoPhaseCollapseLine: string | undefined;
   let snapshotBaseText = "";
   let lastSnapshotTextLength = 0;
   // Partial previews are replaceable; only committed final text may precede an error notice.
@@ -567,13 +578,21 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       if (streamingToClose?.isActive()) {
         statusLine = "";
         const text = buildCombinedStreamText(finalizedReasoningText, finalizedAnswerText);
+        // Consume a pending two-phase collapse: settle the processing card on the
+        // one-line summary rather than the answer (the answer ships separately as
+        // the green result card). Any other close settles with the official text.
+        const twoPhaseCloseLine = pendingTwoPhaseCollapseLine;
+        if (twoPhaseCloseLine !== undefined) {
+          pendingTwoPhaseCollapseLine = undefined;
+        }
+        const closeText = twoPhaseCloseLine ?? text;
         let closed;
         try {
           if (disposition === "discarded") {
             closed = await streamingToClose.discard();
           } else {
             const finalNote = resolveCardNote(agentId, identity, responsePrefixContextProvider());
-            closed = await streamingToClose.closeWithResult(text, { note: finalNote });
+            closed = await streamingToClose.closeWithResult(closeText, { note: finalNote });
           }
         } catch (error: unknown) {
           if (!(error instanceof FeishuStreamingFinalizationError)) {
@@ -1439,6 +1458,142 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       const deliveredResults: FeishuReplyDeliveryResult[] = priorClosedStreamingSettlement
         ? [priorClosedStreamingSettlement.result]
         : [];
+
+      // Opt-in two-phase final: settle the processing card with the collapsed
+      // one-line summary, then send the full answer as a separate green result
+      // card. Any ineligible input, duplicate, or pre-commit failure falls through
+      // to the exact official delivery path below. If the green card send fails
+      // after the collapse is committed, the answer is recovered through the
+      // ordinary static-card path so content is never silently dropped.
+      //
+      // Build the exact result card (footer included) up front so the eligibility
+      // guard measures the bytes that will actually be sent on the wire.
+      const twoPhaseResultCard = twoPhaseActive
+        ? twoPhase.buildResultCard(text, {
+            footer: twoPhase.footer({ agent: agentId }),
+          })
+        : undefined;
+      if (
+        twoPhaseActive &&
+        twoPhaseResultCard !== undefined &&
+        info?.kind === "final" &&
+        !twoPhase.finalSent &&
+        !skipTextForDuplicateFinal &&
+        twoPhaseEligible({
+          twoPhaseEnabled: true,
+          kind: info.kind,
+          text,
+          hasActivity: twoPhase.hasActivity(),
+          hasIndependentPresentation,
+          hasMedia,
+          isError: payload.isError === true,
+          withinCardLimit:
+            withinCardTableLimit(text) && isFeishuCardWithinEnvelope(twoPhaseResultCard),
+        })
+      ) {
+        let twoPhaseCommitted = false;
+        try {
+          pendingTwoPhaseCollapseLine = twoPhase.collapse();
+          startStreaming();
+          if (streamingStartPromise) {
+            await streamingStartPromise;
+          }
+          // Withhold the answer from the live card: streamed text was suppressed
+          // for the whole turn, and clearing here makes the close settle on the
+          // pending collapsed one-liner only.
+          streamText = "";
+          hasStreamingFinalText = false;
+          const closeOutcome = await closeStreaming("closed");
+          if (closeOutcome.error !== undefined) {
+            throw closeOutcome.error;
+          }
+          // Track the settled processing card's receipt alongside the answer card
+          // so downstream accounting keeps both message ids.
+          deliveredResults.push(closeOutcome.result);
+          twoPhaseCommitted = true;
+          try {
+            const greenSend = await sendCardFeishu({
+              cfg,
+              to: sendTarget,
+              card: twoPhaseResultCard,
+              replyToMessageId: sendReplyToMessageId,
+              replyInThread: effectiveReplyInThread,
+              allowTopLevelReplyFallback,
+              accountId,
+            });
+            twoPhase.markFinalSent();
+            markVisibleReplySent();
+            // A later duplicate final must not re-deliver the answer through the
+            // official streaming path after the processing card was settled.
+            deliveredFinalTexts.add(text);
+            const greenResult = createFeishuReplyDeliveryResult({
+              results: [greenSend],
+              visibleReplySent: true,
+              content: text,
+              kind: "card",
+            });
+            return mergeFeishuReplyDeliveryResults(
+              [...deliveredResults, greenResult],
+              text,
+            );
+          } catch (greenSendError: unknown) {
+            // The collapsed card is already settled; the answer must still ship.
+            params.runtime.error?.(
+              `feishu[${account.accountId}] two-phase result card failed; recovering the answer via static card: ${String(
+                greenSendError,
+              )}`,
+            );
+            const cardHeader = resolveCardHeader(agentId, identity);
+            const cardNote = resolveCardNote(
+              agentId,
+              identity,
+              responsePrefixContextProvider(),
+            );
+            const recovered = await sendChunkedTextReply({
+              text,
+              useCard: true,
+              infoKind: info?.kind,
+              header: cardHeader,
+              note: cardNote,
+              chunkMentions: requiredMentionTargets,
+              sendChunk: async ({ chunk, mentions }) =>
+                await sendStructuredCardFeishu({
+                  cfg,
+                  to: sendTarget,
+                  text: chunk,
+                  replyToMessageId: sendReplyToMessageId,
+                  replyInThread: effectiveReplyInThread,
+                  allowTopLevelReplyFallback,
+                  accountId,
+                  header: cardHeader,
+                  note: cardNote,
+                  ...(mentions ? { mentions } : {}),
+                }),
+            });
+            twoPhase.markFinalSent();
+            markVisibleReplySent();
+            deliveredFinalTexts.add(text);
+            return mergeFeishuReplyDeliveryResults(
+              [...deliveredResults, recovered],
+              text,
+            );
+          }
+        } catch (twoPhaseError: unknown) {
+          // Before commit nothing was sent: drop the pending collapse and use the
+          // untouched official delivery path (no answer text was ever streamed).
+          pendingTwoPhaseCollapseLine = undefined;
+          if (!twoPhaseCommitted) {
+            streamText = "";
+            hasStreamingFinalText = false;
+          }
+          params.runtime.error?.(
+            `feishu[${account.accountId}] two-phase final failed; using official delivery: ${String(
+              twoPhaseError,
+            )}`,
+          );
+        }
+      }
+
       const collectDelivery = async (
         pending: Promise<FeishuReplyDeliveryResult>,
         acceptedContent?: string,
@@ -1641,75 +1796,178 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     onError: handleDeliveryError as NonNullable<ChannelInboundTurnPlan["delivery"]["onError"]>,
   };
 
+  // Two-phase turns own the preview lane: answer/reasoning snapshots and block
+  // payloads must never reach the processing card, which shows the timeline only.
+  const handleTwoPhasePartialReply = (): boolean => {
+    // Deliberately drop the answer text. Do not start the card here either: it is
+    // created lazily by the first timeline row (onToolStart/onItemEvent), so a
+    // no-tool turn never flashes an empty processing card and stays on the
+    // official delivery path end to end.
+    return false;
+  };
+  const handleTwoPhaseToolStart = (payload: {
+    itemId?: string;
+    toolCallId?: string;
+    name?: string;
+    phase?: string;
+  }): boolean => {
+    try {
+      const line = twoPhase.toolStart(payload);
+      if (line && line !== " ") {
+        return updateStreamingStatusLine(line);
+      }
+    } catch (error: unknown) {
+      params.runtime.log?.(
+        `feishu[${account.accountId}] two-phase tool timeline update failed: ${String(error)}`,
+      );
+    }
+    return false;
+  };
+
   return {
     dispatcherOptions,
     delivery,
     replyOptions: {
-      onModelSelected,
+      // Feed model selection to the official prefix pipeline and the result-card
+      // footer capture; the footer renders provider/model only when actually seen.
+      onModelSelected: twoPhase.enabled
+        ? (ctx: Parameters<NonNullable<typeof onModelSelected>>[0]) => {
+            try {
+              twoPhase.noteModel(ctx);
+            } catch {
+              // Footer capture is best-effort and must never affect the reply.
+            }
+            onModelSelected?.(ctx);
+          }
+        : onModelSelected,
       disableBlockStreaming:
         typeof blockStreamingEnabled === "boolean" ? !blockStreamingEnabled : true,
-      onPartialReply: previewStreamingEnabled
-        ? (payload: ReplyPayload) => {
-            if (!payload.text) {
+      onPartialReply: twoPhaseActive
+        ? handleTwoPhasePartialReply
+        : previewStreamingEnabled
+          ? (payload: ReplyPayload) => {
+              if (!payload.text) {
+                return false;
+              }
+              const cleaned = stripReasoningTagsFromText(payload.text, {
+                mode: "strict",
+                trim: "both",
+              });
+              if (!cleaned) {
+                return false;
+              }
+              startStreaming();
+              queueStreamingUpdate(cleaned, {
+                dedupeWithLastPartial: true,
+                mode: "snapshot",
+              });
               return false;
             }
-            const cleaned = stripReasoningTagsFromText(payload.text, {
-              mode: "strict",
-              trim: "both",
-            });
-            if (!cleaned) {
+          : undefined,
+      onReasoningStream:
+        twoPhaseActive || !reasoningPreviewEnabled
+          ? undefined
+          : (payload: ReplyPayload) => {
+              if (!payload.text) {
+                return false;
+              }
+              startStreaming();
+              queueReasoningUpdate(formatReasoningMessage(payload.text));
+              return false;
+            },
+      onReasoningEnd: twoPhaseActive || !reasoningPreviewEnabled ? undefined : () => false,
+      onToolStart: twoPhaseActive
+        ? handleTwoPhaseToolStart
+        : previewStreamingEnabled
+          ? (payload: {
+              name?: string;
+              phase?: string;
+              args?: Record<string, unknown>;
+              detailMode?: "explain" | "raw";
+            }) => {
+              if (!isChannelProgressDraftWorkToolName(payload.name)) {
+                return false;
+              }
+              const statusLineLocal = formatChannelProgressDraftLineForEntry(
+                account.config,
+                {
+                  event: "tool",
+                  name: payload.name,
+                  phase: payload.phase,
+                  args: payload.args,
+                },
+                {
+                  detailMode: payload.detailMode,
+                },
+              );
+              if (statusLineLocal) {
+                return updateStreamingStatusLine(statusLineLocal);
+              }
               return false;
             }
-            startStreaming();
-            queueStreamingUpdate(cleaned, {
-              dedupeWithLastPartial: true,
-              mode: "snapshot",
-            });
-            return false;
-          }
-        : undefined,
-      onReasoningStream: reasoningPreviewEnabled
-        ? (payload: ReplyPayload) => {
-            if (!payload.text) {
-              return false;
-            }
-            startStreaming();
-            queueReasoningUpdate(formatReasoningMessage(payload.text));
-            return false;
-          }
-        : undefined,
-      onReasoningEnd: reasoningPreviewEnabled ? () => false : undefined,
-      onToolStart: previewStreamingEnabled
+          : undefined,
+      // Flip timeline rows to done as host item events complete; fail-open by
+      // leaving the official preview behaviour untouched on any error.
+      onItemEvent: twoPhaseActive
         ? (payload: {
+            itemId?: string;
+            toolCallId?: string;
+            kind?: string;
             name?: string;
             phase?: string;
-            args?: Record<string, unknown>;
-            detailMode?: "explain" | "raw";
+            status?: string;
+            summary?: string;
+            progressText?: string;
           }) => {
-            if (!isChannelProgressDraftWorkToolName(payload.name)) {
-              return false;
-            }
-            const statusLineLocal = formatChannelProgressDraftLineForEntry(
-              account.config,
-              {
-                event: "tool",
-                name: payload.name,
-                phase: payload.phase,
-                args: payload.args,
-              },
-              {
-                detailMode: payload.detailMode,
-              },
-            );
-            if (statusLineLocal) {
-              return updateStreamingStatusLine(statusLineLocal);
+            try {
+              const line = twoPhase.itemEvent(payload);
+              if (line && line !== " ") {
+                updateStreamingStatusLine(line, { startIfNeeded: false });
+              }
+            } catch (error: unknown) {
+              params.runtime.log?.(
+                `feishu[${account.accountId}] two-phase item event update failed: ${String(
+                  error,
+                )}`,
+              );
             }
             return false;
           }
         : undefined,
-      onAssistantMessageStart: previewStreamingEnabled
-        ? () => updateStreamingStatusLine("", { startIfNeeded: false })
+      // Utility-model narration becomes the timeline headline; providing this
+      // callback opts in only when the host resolves a narration model.
+      onNarrationUpdate: twoPhaseActive
+        ? (payload: { text: string }) => {
+            try {
+              const line = twoPhase.setNarration(payload.text);
+              if (line && line !== " ") {
+                updateStreamingStatusLine(line, { startIfNeeded: false });
+              }
+            } catch (error: unknown) {
+              params.runtime.log?.(
+                `feishu[${account.accountId}] two-phase narration update failed: ${String(
+                  error,
+                )}`,
+              );
+            }
+          }
         : undefined,
+      onAssistantMessageStart: twoPhaseActive
+        ? () => {
+            // Keep the tool timeline (and not the answer) visible across blocks.
+            try {
+              const line = twoPhase.timeline();
+              if (line && line !== " ") {
+                return updateStreamingStatusLine(line, { startIfNeeded: false });
+              }
+            } catch {
+              // Degrade to the official no-op behaviour below.
+            }
+            return false;
+          }
+        : previewStreamingEnabled
+          ? () => updateStreamingStatusLine("", { startIfNeeded: false })
+          : undefined,
       onCompactionStart: previewStreamingEnabled
         ? () => updateStreamingStatusLine("📦 **Compacting context...**")
         : undefined,

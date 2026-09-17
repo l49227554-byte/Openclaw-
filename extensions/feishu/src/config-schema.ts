@@ -157,6 +157,23 @@ const ChannelHeartbeatVisibilitySchema = z
   .strict()
   .optional();
 
+// Opt-in two-phase reply UX for DMs: while a turn runs, the streaming card shows
+// only a tool timeline; on the final reply it collapses to a one-line summary and
+// the full answer is sent as a separate green result card. Disabled by default;
+// when disabled (or whenever an eligibility guard fails: media, native cards,
+// over-long/error/duplicate text, zero-tool turns) delivery is byte-for-byte the
+// official path. Configurable at the channel top level and per account.
+const FeishuTwoPhaseSchema = z
+  .object({
+    // Master switch (default: false).
+    enabled: z.boolean().optional(),
+    // Show the grey agent/model/provider/token/duration footer on the result card
+    // when real values are available (default: true; values are never invented).
+    footerMeta: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
+
 /**
  * Dynamic agent creation configuration.
  * When enabled, a new agent is created for each unique DM user.
@@ -266,6 +283,7 @@ const FeishuSharedConfigShape = {
   reactionNotifications: ReactionNotificationModeSchema,
   typingIndicator: z.boolean().optional(),
   resolveSenderNames: z.boolean().optional(),
+  twoPhase: FeishuTwoPhaseSchema,
   allowBots: z.boolean().optional(),
   vcAutoJoin: z.boolean().optional(),
   tts: TtsOverrideSchema,

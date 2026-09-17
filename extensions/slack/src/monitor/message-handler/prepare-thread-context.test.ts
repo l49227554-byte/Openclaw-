@@ -283,6 +283,7 @@ describe("resolveSlackThreadContextData", () => {
       });
 
       expect(result.threadStarterBody).toBe("starter from Alice");
+      expect(result.threadTitleSource).toBe("starter from Alice");
       expect(result.threadHistoryBody).toContain("starter from Alice");
       expect(result.threadHistoryBody).toContain("allowed follow-up");
       if (retained) {
@@ -378,6 +379,7 @@ describe("resolveSlackThreadContextData", () => {
     });
 
     expect(result.threadStarterBody).toBeUndefined();
+    expect(result.threadTitleSource).toBe("bot starter");
     expect(result.threadLabel).toBe("Slack thread #general (assistant root): bot starter");
     expect(result.threadHistoryBody).toContain("allowed follow-up");
     expect(result.threadHistoryBody).toContain("bot starter");
@@ -496,6 +498,7 @@ describe("resolveSlackThreadContextData", () => {
     });
 
     expect(result.threadStarterBody).toBe("other bot starter");
+    expect(result.threadTitleSource).toBe("other bot starter");
     expect(result.threadLabel).toContain("other bot starter");
     expect(result.threadHistoryBody).toContain("other bot starter");
     expect(result.threadHistoryBody).toContain("Bot (B2) (assistant)");

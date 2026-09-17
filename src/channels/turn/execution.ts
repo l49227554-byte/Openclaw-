@@ -8,6 +8,7 @@ import {
   runWithDiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { isRecentOutboundMessageIdentity } from "../message/outbound-echo.js";
 import { recordChannelBotPairLoopAndCheckSuppression } from "./bot-loop-protection.js";
 import {
@@ -253,6 +254,7 @@ async function runPreparedChannelTurnCoreInTrace<
   // path before the next group turn can replay stale context.
   try {
     const recordSessionKey = resolveRecordSessionKey(params);
+    const sessionMetaTasks: Promise<unknown>[] = [];
     if (params.ctxPayload.SessionTranscriptContext) {
       const { mergeSessionTranscriptContext } =
         await import("../inbound-event/session-transcript-context.runtime.js");
@@ -282,7 +284,10 @@ async function runPreparedChannelTurnCoreInTrace<
         createIfMissing: params.record?.createIfMissing,
         updateLastRoute: params.record?.updateLastRoute,
         onRecordError: params.record?.onRecordError ?? (() => undefined),
-        trackSessionMetaTask: params.record?.trackSessionMetaTask,
+        trackSessionMetaTask: (task) => {
+          sessionMetaTasks.push(task);
+          params.record?.trackSessionMetaTask?.(task);
+        },
       });
       emit({
         ...params,
@@ -295,6 +300,46 @@ async function runPreparedChannelTurnCoreInTrace<
         },
       });
       await params.afterRecord?.();
+      const titleSource =
+        params.ctxPayload.ThreadTitleSource?.trim() ?? params.ctxPayload.ThreadStarterBody?.trim();
+      const titleConfig = params.cfg;
+      const titleAgentId = params.agentId;
+      if (
+        titleConfig &&
+        titleAgentId &&
+        titleSource &&
+        params.channel === "slack" &&
+        params.ctxPayload.IsFirstThreadTurn === true
+      ) {
+        // Metadata persistence and title generation are detached from dispatch.
+        // Waiting on the recorded task only orders the background work after the
+        // session generation exists; provider latency never delays the reply path.
+        void runWithGatewayIndependentRootWorkContinuation(async () => {
+          await Promise.all(sessionMetaTasks);
+          const { isChannelSessionTitleCandidate, maybeGenerateChannelSessionTitle } =
+            await import("../../gateway/dashboard-session-title.js");
+          if (
+            !isChannelSessionTitleCandidate({
+              channel: params.channel,
+              isFirstThreadTurn: params.ctxPayload.IsFirstThreadTurn,
+              threadStarterBody: titleSource,
+            })
+          ) {
+            return;
+          }
+          await maybeGenerateChannelSessionTitle({
+            cfg: titleConfig,
+            agentId: titleAgentId,
+            sessionKey: recordSessionKey,
+            storePath: params.storePath,
+            userMessage: titleSource,
+          });
+        }, "channel-turn:title").catch(() => {
+          log.warn(
+            `channel session title generation failed: channel=${params.channel} sessionKey=${recordSessionKey}`,
+          );
+        });
+      }
       await deliverPendingDeliveryNotice(recordSessionKey, params.storePath);
     } catch (err) {
       emit({

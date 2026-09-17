@@ -152,7 +152,7 @@ suite.define(() => {
     const chatModuleBlocked = new Promise<void>((resolve) => {
       releaseChatModule = resolve;
     });
-    await page.route("**/assets/chat-page-*.js*", async (route) => {
+    await page.route("**/assets/route-entry-*.js*", async (route) => {
       chatModuleRequested = true;
       await chatModuleBlocked;
       await route.continue();

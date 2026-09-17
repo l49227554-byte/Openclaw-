@@ -9,15 +9,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
 import type { ImageContent } from "../agents/command/types.js";
 import type { ClientToolDefinition } from "../agents/embedded-agent-runner/run/params.js";
 import { toOpenAiResponsesUsage } from "../agents/usage.js";
 import { readAgentRunTerminalOutcome } from "../channels/turn/agent-run-terminal-outcome.js";
 import { createDefaultDeps } from "../cli/deps.js";
-import type { CliDeps } from "../cli/deps.types.js";
-import { agentCommandFromGatewayIngress } from "../commands/agent.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
 import { emitAgentEvent, onAgentEventForRun } from "../infra/agent-events.js";
@@ -37,9 +34,7 @@ import {
   type InputImageLimits,
   type InputImageSource,
 } from "../media/input-files.js";
-import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../process/gateway-work-admission.js";
-import { defaultRuntime } from "../runtime.js";
 import {
   mergeAssistantText,
   mergePendingAssistantText,
@@ -95,6 +90,7 @@ import {
   type ToolChoiceConstraint,
 } from "./openai-tool-choice.js";
 import { wrapUntrustedFileContent } from "./openresponses-file-content.js";
+import { runOpenResponsesAgentCommand } from "./openresponses-http-agent-command.js";
 import { buildAgentPrompt } from "./openresponses-prompt.js";
 import { createAssistantOutputItem, createFunctionCallOutputItem } from "./openresponses-shape.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
@@ -374,50 +370,6 @@ function createResponseResource(params: {
       ? { incomplete_details: { reason: "max_output_tokens" as const } }
       : {}),
   };
-}
-
-async function runResponsesAgentCommand(params: {
-  message: string;
-  images: ImageContent[];
-  clientTools: ClientToolDefinition[];
-  extraSystemPrompt: string;
-  modelOverride?: string;
-  streamParams: { maxTokens?: number; temperature?: number; topP?: number } | undefined;
-  sessionKey: string;
-  runId: string;
-  messageChannel: string;
-  senderIsOwner: boolean;
-  deps: CliDeps;
-  resolveGatewayContext?: GatewayContextResolver;
-  abortSignal?: AbortSignal;
-}) {
-  return agentCommandFromGatewayIngress(
-    {
-      message: params.message,
-      images: params.images.length > 0 ? params.images : undefined,
-      clientTools: params.clientTools.length > 0 ? params.clientTools : undefined,
-      extraSystemPrompt: params.extraSystemPrompt || undefined,
-      model: params.modelOverride,
-      streamParams: params.streamParams ?? undefined,
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      deliver: false,
-      messageChannel: params.messageChannel,
-      senderIsOwner: params.senderIsOwner,
-      bestEffortDeliver: false,
-      allowModelOverride: params.modelOverride !== undefined,
-      abortSignal: params.abortSignal,
-      ...(params.resolveGatewayContext
-        ? {
-            onAdmittedRunContext: (context: AdmittedRunContext) =>
-              bindGatewayContextResolver(context, params.resolveGatewayContext),
-          }
-        : {}),
-    },
-    defaultRuntime,
-    params.deps,
-    {},
-  );
 }
 
 export async function handleOpenResponsesHttpRequest(
@@ -717,7 +669,7 @@ export async function handleOpenResponsesHttpRequest(
 
   if (!stream) {
     try {
-      const result = await runResponsesAgentCommand({
+      const result = await runOpenResponsesAgentCommand({
         message: prompt.message,
         images,
         clientTools: resolvedClientTools,
@@ -1162,7 +1114,7 @@ export async function handleOpenResponsesHttpRequest(
 
   void (async () => {
     try {
-      const result = await runResponsesAgentCommand({
+      const result = await runOpenResponsesAgentCommand({
         message: prompt.message,
         images,
         clientTools: resolvedClientTools,

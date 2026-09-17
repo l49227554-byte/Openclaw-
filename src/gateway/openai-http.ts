@@ -13,7 +13,7 @@ import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/ut
 import { z } from "zod";
 import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 import { isClientToolNameConflictError } from "../agents/agent-tool-definition-adapter.js";
-import type { AgentStreamParams, ClientToolDefinition } from "../agents/command/shared-types.js";
+import type { ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
 import { toOpenAiChatCompletionsUsage, type OpenAiChatCompletionsUsage } from "../agents/usage.js";
 import { readAgentRunTerminalOutcome } from "../channels/turn/agent-run-terminal-outcome.js";
@@ -80,6 +80,7 @@ import {
 import { normalizeInputHostnameAllowlist } from "./input-allowlist.js";
 import { resolveAgentRunUsage } from "./openai-agent-run-usage.js";
 import { resolveOpenAiCompatError, validateOpenAiSamplingParams } from "./openai-compat-errors.js";
+import { buildOpenAiHttpAgentCommandInput } from "./openai-http-agent-command.js";
 import {
   applyToolChoice,
   isToolChoiceConstraintSatisfied,
@@ -168,35 +169,6 @@ function resolveOpenAiChatCompletionsLimits(
 
 function writeSse(res: ServerResponse, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
-}
-
-function buildAgentCommandInput(params: {
-  prompt: { message: string; extraSystemPrompt?: string; images?: ImageContent[] };
-  clientTools?: ClientToolDefinition[];
-  modelOverride?: string;
-  sessionKey: string;
-  runId: string;
-  messageChannel: string;
-  senderIsOwner: boolean;
-  abortSignal?: AbortSignal;
-  streamParams?: AgentStreamParams;
-}) {
-  return {
-    message: params.prompt.message,
-    extraSystemPrompt: params.prompt.extraSystemPrompt,
-    images: params.prompt.images,
-    clientTools: params.clientTools,
-    model: params.modelOverride,
-    sessionKey: params.sessionKey,
-    runId: params.runId,
-    deliver: false as const,
-    messageChannel: params.messageChannel,
-    senderIsOwner: params.senderIsOwner,
-    bestEffortDeliver: false as const,
-    allowModelOverride: params.modelOverride !== undefined,
-    abortSignal: params.abortSignal,
-    streamParams: params.streamParams,
-  };
 }
 
 function extractClientToolsFromChatRequest(tools: unknown): ClientToolDefinition[] {
@@ -1001,7 +973,7 @@ export async function handleOpenAiHttpRequest(
   const mergedExtraSystemPrompt = [prompt.extraSystemPrompt, toolChoicePrompt]
     .filter((part): part is string => Boolean(part))
     .join("\n\n");
-  const commandInput = buildAgentCommandInput({
+  const commandInput = buildOpenAiHttpAgentCommandInput({
     prompt: {
       message: prompt.message,
       extraSystemPrompt: mergedExtraSystemPrompt || undefined,
@@ -1015,6 +987,7 @@ export async function handleOpenAiHttpRequest(
     senderIsOwner,
     abortSignal: abortController.signal,
     streamParams,
+    promptModeFromToolsProfile: true,
   });
   const gatewayCommandInput = opts.resolveGatewayContext
     ? {

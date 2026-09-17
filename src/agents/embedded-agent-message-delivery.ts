@@ -103,7 +103,7 @@ function visitPluginEnvelope(
 
 const PLUGIN_SIGNALS = {
   dryRun: (record: Record<string, unknown>, status: string | undefined) =>
-    record.dryRun === true || status === "dry_run",
+    record.dryRun === true || status === "dry_run" || normalizeStatus(record.status) === "dry_run",
   failure: (record: Record<string, unknown>) =>
     record.ok === false ||
     record.success === false ||

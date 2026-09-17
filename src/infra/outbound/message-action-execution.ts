@@ -9,6 +9,7 @@ import {
   projectEmbeddedMessageDeliveryFact,
   projectPluginMessageDeliveryFact,
 } from "../../agents/embedded-agent-message-delivery.js";
+import { isMessagingToolDeliveryAction } from "../../agents/embedded-agent-messaging.js";
 import {
   readPositiveIntegerParam,
   readStringArrayParam,
@@ -66,27 +67,45 @@ const loadMessageActionGatewayRuntime = createLazyRuntimeModule(
   () => import("./message.gateway.runtime.js"),
 );
 
-function isCompleteAcceptedDelivery(result: MessageActionResult): boolean {
+function hasAcceptedDelivery(result: MessageActionResult): boolean {
   if (
     result.kind === "broadcast" ||
     result.dryRun ||
-    (result.kind === "action" && result.action !== "reply" && result.action !== "thread-reply") ||
-    !resolveMessageActionOutcome(result).ok ||
-    pluginEnvelopeHas(result, "failure") ||
+    !isMessagingToolDeliveryAction("message", { action: result.action })
+  ) {
+    return false;
+  }
+  const values = [result.payload, result.toolResult];
+  const envelopes = values.map(projectPluginMessageDeliveryFact);
+  const delivery = projectEmbeddedMessageDeliveryFact(result, true);
+  if (
+    delivery?.status === "dryRun" ||
+    envelopes.some((envelope) => envelope?.status === "dryRun")
+  ) {
+    return false;
+  }
+  if (!resolveMessageActionOutcome(result).ok) {
+    return Boolean(
+      delivery?.partialDelivery || envelopes.some((envelope) => envelope?.partialDelivery),
+    );
+  }
+  if (
+    values.some((value) => pluginEnvelopeHas(value, "failure")) ||
+    envelopes.some(
+      (envelope) => envelope && (envelope.status !== "settled" || envelope.partialDelivery),
+    ) ||
     (result.handledBy === "plugin" && !pluginEnvelopeHas(result.payload, "ok"))
   ) {
     return false;
   }
-  const envelope = projectPluginMessageDeliveryFact(result);
-  if (envelope && (envelope.status !== "settled" || envelope.partialDelivery)) {
-    return false;
-  }
-  const delivery = projectEmbeddedMessageDeliveryFact(result, true);
   return Boolean(
     delivery?.status === "settled" &&
     !delivery.partialDelivery &&
-    delivery.primaryPlatformMessageId &&
-    delivery.primaryPlatformMessageId.toLowerCase() !== "unknown",
+    ((result.kind === "send" &&
+      result.handledBy === "core" &&
+      result.sendResult?.deliveryStatus === "sent") ||
+      (delivery.primaryPlatformMessageId &&
+        delivery.primaryPlatformMessageId.toLowerCase() !== "unknown")),
   );
 }
 
@@ -123,9 +142,9 @@ export async function annotateSourceDelivery<T extends MessageActionResult>(
     throwIfAborted(ctx.abortSignal);
     ctx.input.assertDirectAdapterHandoff?.();
   } catch (error) {
-    // Optional source annotation cannot undo an identified, complete delivery.
-    // Preserve its result without claiming a new source route after a failed lookup.
-    if (isCompleteAcceptedDelivery(result)) {
+    // Optional annotation cannot erase accepted delivery or known partial progress.
+    // Keep the original result and error without adding an unproven source route.
+    if (hasAcceptedDelivery(result)) {
       return result;
     }
     throw error;

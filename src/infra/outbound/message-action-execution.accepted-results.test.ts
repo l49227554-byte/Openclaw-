@@ -1,4 +1,5 @@
 import { jsonResult } from "openclaw/plugin-sdk/channel-actions";
+import { createMessageReceiptFromOutboundResults } from "openclaw/plugin-sdk/channel-outbound";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -7,9 +8,14 @@ import {
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
-import type { MessageActionResult, ResolvedActionContext } from "./message-action-contracts.js";
+import {
+  resolveMessageActionOutcome,
+  type MessageActionResult,
+  type ResolvedActionContext,
+} from "./message-action-contracts.js";
 import { annotateSourceDelivery } from "./message-action-execution.js";
 import { runMessageAction } from "./message-action-runner.js";
+import type { MessageSendResult } from "./message.js";
 
 const channel = "accepted-results";
 const toolContext = {
@@ -48,9 +54,73 @@ describe("accepted results through registered message actions", () => {
   afterEach(() => resetPluginRuntimeStateForTest());
   afterAll(async () => tempHome.restore());
 
-  it.each(["plugin", "core"] as const)(
-    "retains an accepted %s send when its caller closes before annotation",
-    async (mode) => {
+  it.each(["sent", "partial_failed"] as const)(
+    "keeps the matched core %s result accurate while its caller stays current",
+    async (deliveryStatus) => {
+      const plugin = registerPlugin();
+      const sendResult: MessageSendResult = {
+        channel,
+        to: "room-1",
+        via: "direct",
+        mediaUrl: null,
+        deliveryStatus,
+        ...(deliveryStatus === "partial_failed"
+          ? { error: "second part failed", sentBeforeError: true as const }
+          : {}),
+        result: { channel, messageId: "part-1" },
+      };
+      const result: MessageActionResult = {
+        kind: "send",
+        channel,
+        action: "send",
+        to: "room-1",
+        handledBy: "core",
+        payload: sendResult,
+        sendResult,
+        dryRun: false,
+      };
+      const ctx: ResolvedActionContext = {
+        cfg: {},
+        params: { to: "room-1" },
+        channel,
+        channelPlugin: plugin,
+        accountId: "default",
+        mediaAccess: { localRoots: [] },
+        dryRun: false,
+        input: {
+          cfg: {},
+          action: "send",
+          params: {},
+          sessionKey,
+          messageActionAuthorization: {
+            requesterAccountId: "default",
+            toolContext: { currentChannelProvider: channel, currentChannelId: "room-1" },
+          },
+        },
+      };
+      const annotated = await annotateSourceDelivery(result, ctx, false);
+      expect(annotated.sendResult).toBe(sendResult);
+      if (deliveryStatus === "sent") {
+        expect(annotated.payload).toHaveProperty("sourceReplyRoute", "current-source");
+        expect(resolveMessageActionOutcome(annotated)).toEqual({ ok: true });
+      } else {
+        expect(annotated.payload).toHaveProperty("sourceReplyRoute", "current-source");
+        expect(resolveMessageActionOutcome(annotated)).toEqual({
+          ok: false,
+          sentBeforeError: true,
+          error: "second part failed",
+        });
+      }
+    },
+  );
+
+  it.each([
+    { mode: "plugin", messageId: "accepted-1" },
+    { mode: "core", messageId: "accepted-1" },
+    { mode: "core", messageId: "unknown" },
+  ] as const)(
+    "retains an accepted $mode send ($messageId) when its caller closes before annotation",
+    async ({ mode, messageId }) => {
       let active = true;
       const submitted: string[] = [];
       const onPlatformSendDispatch = vi.fn(async () => {});
@@ -67,7 +137,7 @@ describe("accepted results through registered message actions", () => {
                 handleAction: async (ctx) => {
                   ctx.assertDirectAdapterHandoff?.();
                   await ctx.onPlatformSendDispatch?.();
-                  submitted.push("accepted-1");
+                  submitted.push(messageId);
                   active = false;
                   return jsonResult(acceptedPayload);
                 },
@@ -79,9 +149,16 @@ describe("accepted results through registered message actions", () => {
                 sendText: async (ctx) => {
                   ctx.assertDirectAdapterHandoff?.();
                   await ctx.onPlatformSendDispatch?.();
-                  submitted.push("accepted-1");
+                  submitted.push(messageId);
                   active = false;
-                  return { channel, messageId: "accepted-1" };
+                  return {
+                    channel,
+                    messageId,
+                    receipt: createMessageReceiptFromOutboundResults({
+                      results: messageId === "unknown" ? [] : [{ channel, messageId }],
+                      kind: "text",
+                    }),
+                  };
                 },
               },
             },
@@ -101,7 +178,7 @@ describe("accepted results through registered message actions", () => {
       });
 
       expect(result).toMatchObject({ kind: "send", handledBy: mode, dryRun: false });
-      expect(submitted).toEqual(["accepted-1"]);
+      expect(submitted).toEqual([messageId]);
       expect(result.payload).not.toHaveProperty("sourceReplyRoute");
       if (result.kind !== "send") {
         throw new Error("Expected send result");
@@ -112,9 +189,64 @@ describe("accepted results through registered message actions", () => {
       } else {
         expect(result.sendResult).toMatchObject({
           deliveryStatus: "sent",
-          result: { messageId: "accepted-1" },
+          result: { messageId },
         });
       }
+    },
+  );
+
+  it.each(["send", "poll", "set-presence"] as const)(
+    "returns known partial %s facts to the caller with their failure outcome",
+    async (action) => {
+      const payload = {
+        ok: false,
+        deliveryStatus: "partial_failed",
+        sentBeforeError: true,
+        error: "second part failed",
+        ...(action === "send"
+          ? { messageId: "part-1" }
+          : { result: { messageIds: ["part-1"], visibleReplySent: true } }),
+      };
+      let active = true;
+      const handleAction = vi.fn(async () => {
+        active = false;
+        return jsonResult(payload);
+      });
+      registerPlugin({
+        actions: {
+          describeMessageTool: () => ({ actions: [action] }),
+          handleAction,
+        },
+      });
+
+      const result = await runMessageAction({
+        cfg: {},
+        action,
+        params: {
+          channel,
+          ...(action === "set-presence" ? {} : { target: "room-1" }),
+          message: "partial reply",
+        },
+        conversationReadOrigin: "direct-operator",
+        messageActionAuthorization: authorization,
+        sessionKey,
+        defaultAccountId: "default",
+        suppressTranscriptMirror: true,
+        assertDirectAdapterHandoff: () => {
+          if (!active) {
+            throw closed;
+          }
+        },
+      });
+
+      expect(handleAction).toHaveBeenCalledOnce();
+      expect(result.payload).toBe(payload);
+      expect(result.payload).not.toHaveProperty("sourceReplyRoute");
+      expect(resolveMessageActionOutcome(result)).toEqual({
+        ok: false,
+        sentBeforeError: true,
+        error: "second part failed",
+      });
     },
   );
 
@@ -203,6 +335,13 @@ describe("accepted results through registered message actions", () => {
       payload: { ok: true, result: { ok: false, messageId: "rejected-1" } },
     },
     {
+      name: "failure at the supported payload depth",
+      payload: {
+        ...acceptedPayload,
+        result: { result: { result: { result: { ok: false } } } },
+      },
+    },
+    {
       name: "nested error",
       payload: { ok: true, result: { error: "rejected", messageId: "rejected-1" } },
     },
@@ -215,17 +354,17 @@ describe("accepted results through registered message actions", () => {
       payload: { ok: true, result: { status: "incomplete", messageId: "part-1" } },
     },
     {
-      name: "partial delivery",
-      payload: {
-        ok: false,
-        sentBeforeError: true,
-        messageId: "part-1",
-        error: "second part failed",
-      },
+      name: "conflicting partial status",
+      payload: { ok: true, deliveryStatus: "partial_failed", messageId: "part-1" },
     },
     {
-      name: "partial status",
-      payload: { ok: true, deliveryStatus: "partial_failed", messageId: "part-1" },
+      name: "conflicting partial and dry-run status",
+      payload: {
+        ok: false,
+        deliveryStatus: "partial_failed",
+        status: "dry_run",
+        sentBeforeError: true,
+      },
     },
     { name: "tool error", payload: acceptedPayload, toolError: true },
     {
@@ -243,9 +382,24 @@ describe("accepted results through registered message actions", () => {
     { name: "tool failure status", payload: acceptedPayload, toolStatus: "failed" },
     { name: "tool partial status", payload: acceptedPayload, toolStatus: "partial_failed" },
     { name: "tool partial delivery", payload: acceptedPayload, toolPartial: true },
+    {
+      name: "partial delivery at the supported tool-result depth",
+      payload: acceptedPayload,
+      toolDetails: { result: { result: { result: { sentBeforeError: true } } } },
+    },
     { name: "tool dry run", payload: acceptedPayload, toolDryRun: true },
     { name: "dry run", payload: acceptedPayload, dryRun: true },
     { name: "read", payload: acceptedPayload, action: "read" as const },
+    {
+      name: "dry-run partial",
+      payload: { ok: false, sentBeforeError: true, messageId: "part-1" },
+      dryRun: true,
+    },
+    {
+      name: "read partial",
+      payload: { ok: false, sentBeforeError: true, messageId: "part-1" },
+      action: "read" as const,
+    },
   ])("keeps $name strict when annotation loses authority", async (testCase) => {
     const plugin = registerPlugin();
     const result: MessageActionResult = {
@@ -256,7 +410,7 @@ describe("accepted results through registered message actions", () => {
       handledBy: "plugin",
       payload: testCase.payload,
       toolResult: {
-        ...jsonResult(testCase.payload),
+        ...jsonResult(testCase.toolDetails ?? testCase.payload),
         ...(testCase.toolError ? { isError: true } : {}),
         ...(testCase.toolStatus ? { status: testCase.toolStatus } : {}),
         ...(testCase.toolPartial ? { sentBeforeError: true } : {}),

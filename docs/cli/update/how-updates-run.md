@@ -53,6 +53,13 @@ installed name as the same selection, including names with or without the
 `.service` suffix. The updater still rechecks service ownership before stopping
 the Gateway.
 
+Unavailable service inspection produces a recorded `managed-service` warning,
+including the manual restart action. A stale, uninspectable service record cannot
+select the update's package root, Node executable, or state directory. Staging,
+validation, installation, and Doctor finalization continue in the invoking
+installation. Doctor leaves unverified service records unchanged and reports an
+advisory; state coordinators and database leases still protect active writers.
+
 The baseline package fingerprint is best effort. If its bounded scan times out,
 the update records a warning and continues with the retained package copy.
 Rollback then verifies the restored directory identity, package version, and
@@ -348,7 +355,10 @@ When an agent runs `openclaw update` inside a systemd user service or macOS
 LaunchAgent Gateway, the CLI hands the update to the same managed-service helper
 before stopping the Gateway. It prints the helper log path and follow-up commands
 for update status and Gateway health, then exits; this acknowledges the handoff,
-not a completed update. The helper launches staging and validation outside the
+not a completed update. The acknowledging CLI exits with code `75` (`EX_TEMPFAIL`)
+so scripts cannot mistake accepted background work for a completed update. The
+detached helper remains the settlement authority; use the printed status and
+health commands to retrieve its terminal result. The helper launches staging and validation outside the
 Gateway process tree while the old Gateway keeps serving, including during
 bounded update repair. It parks the Gateway
 only when the orchestrator reaches `activating`, then completes the existing
@@ -424,15 +434,16 @@ service untouched, and print guidance to inspect ownership and restart manually.
 
 On Linux without a service manager, updates proceed when native inspection proves
 the service is absent and the selected Gateway has no active lock or listener.
-The command reports that there is no Gateway to restart. Existing service files,
-manager runtime state, or failed filesystem inspection still require service access.
+The command reports that there is no Gateway to restart.
 
 If service inspection is unavailable or installation ownership is unresolved,
-the update refuses to mutate the checkout or package tree, including with
-`--no-restart`. It cannot assess another service-owned profile's databases from
-the invoking profile alone. Run `openclaw gateway status --deep` and retry when
-ownership can be inspected. Proven-absent services and inspectable stopped
-services remain supported. Services owned by another install remain untouched.
+the update continues with a warning and leaves the recorded service unchanged.
+An unverified record cannot select the update's package, Node runtime,
+configuration, or state directory. Restart the Gateway you launched manually
+after the update, and use `openclaw gateway status --deep` to inspect the record.
+Verified services still select their own installation and state directory;
+ownership conflicts, pending recovery, and active state writers retain their
+existing admission checks. Services owned by another install remain untouched.
 
 The published 2026.8.2 CLI also refuses updates on service-less Linux installs.
 Use `openclaw update --no-restart` for that upgrade after confirming that no Gateway

@@ -23,6 +23,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sleep, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { normalizeZaloReactionIcon } from "./reaction.js";
+import { fetchWithZaloSendContext, withZaloSendContext } from "./send-context.js";
 import { createZalouserSendReceipt } from "./send-receipt.js";
 import {
   clearStoredZaloCredentials,
@@ -41,6 +42,7 @@ import type {
   ZaloGroupMember,
   ZaloInboundMessage,
   ZaloSendOptions,
+  ZaloSendHandoff,
   ZaloSendResult,
   ZcaFriend,
   ZcaUserInfo,
@@ -724,12 +726,18 @@ async function withZaloApi<T>(
     timeoutMs?: number;
     shouldPersist?: (result: T) => boolean;
     credentialPersistence?: CredentialPersistenceMode;
+    handoff?: ZaloSendHandoff;
   } = {},
 ): Promise<T> {
   const profile = normalizeProfile(profileInput);
   const credentialPersistence = options.credentialPersistence ?? "persist";
+  options.handoff?.signal?.throwIfAborted();
+  options.handoff?.assertDirectAdapterHandoff?.();
   const api = await ensureApi(profile, options.timeoutMs, credentialPersistence);
-  const result = await operation(api);
+  // Shared profile restoration must not inherit one waiting sender's lifetime.
+  const result = options.handoff
+    ? await withZaloSendContext(options.handoff, () => operation(api))
+    : await operation(api);
   if (credentialPersistence === "persist" && (options.shouldPersist?.(result) ?? true)) {
     await persistApiCredentialsIfChanged(profile, api);
   }
@@ -1173,6 +1181,7 @@ export async function sendZaloTextMessage(
   threadId: string,
   text: string,
   options: ZaloSendOptions = {},
+  onDeliveryResult?: (result: ZaloSendResult) => Promise<void> | void,
 ): Promise<ZaloSendResult> {
   const profile = normalizeProfile(options.profile);
   const trimmedThreadId = threadId.trim();
@@ -1188,6 +1197,7 @@ export async function sendZaloTextMessage(
     profile,
     async (api) => {
       const type = options.isGroup ? ThreadType.Group : ThreadType.User;
+      let textMessageId: string | undefined;
 
       try {
         if (options.mediaUrl?.trim()) {
@@ -1195,6 +1205,7 @@ export async function sendZaloTextMessage(
             maxBytes: options.mediaMaxBytes,
             mediaLocalRoots: options.mediaLocalRoots,
             mediaReadFile: options.mediaReadFile,
+            fetchImpl: fetchWithZaloSendContext,
           });
           const fileName = resolveMediaFileName({
             mediaUrl: options.mediaUrl,
@@ -1206,7 +1217,6 @@ export async function sendZaloTextMessage(
           const textStyles = clampTextStyles(payloadText, options.textStyles);
 
           if (media.kind === "audio") {
-            let textMessageId: string | undefined;
             if (payloadText) {
               const textResponse = await api.sendMessage(
                 textStyles ? { msg: payloadText, styles: textStyles } : payloadText,
@@ -1214,6 +1224,15 @@ export async function sendZaloTextMessage(
                 type,
               );
               textMessageId = extractSendMessageId(textResponse);
+              await onDeliveryResult?.({
+                ok: true,
+                messageId: textMessageId,
+                receipt: createZalouserSendReceipt({
+                  messageId: textMessageId,
+                  threadId: trimmedThreadId,
+                  kind: "text",
+                }),
+              });
             }
 
             const attachmentFileName = fileName.includes(".") ? fileName : `${fileName}.bin`;
@@ -1298,11 +1317,15 @@ export async function sendZaloTextMessage(
         return {
           ok: false,
           error: formatErrorMessage(error),
-          receipt: createZalouserSendReceipt({ threadId: trimmedThreadId, kind: "unknown" }),
+          receipt: createZalouserSendReceipt({
+            messageId: textMessageId,
+            threadId: trimmedThreadId,
+            kind: textMessageId ? "text" : "unknown",
+          }),
         };
       }
     },
-    { shouldPersist: (result) => result.ok },
+    { shouldPersist: (result) => result.ok, handoff: options },
   );
 }
 
@@ -1455,7 +1478,7 @@ export async function sendZaloLink(
           }),
         };
       },
-      { shouldPersist: (result) => result.ok },
+      { shouldPersist: (result) => result.ok, handoff: options },
     );
   } catch (error) {
     return {

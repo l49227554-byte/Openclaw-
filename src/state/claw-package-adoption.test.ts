@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { runNodeScript } from "../../test/helpers/run-node-script.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { applyClawPackageRemovals, planClawPackageRemovals } from "../claws/package-remove.js";
 import {
@@ -9,12 +10,17 @@ import {
   readClawPackageRefs,
 } from "../claws/provenance.js";
 import type { ClawAddPlan } from "../claws/types.js";
+import { createNodeEvalArgs } from "../test-utils/node-process.js";
 import { markClawPackageIndependentlyOwned } from "./claw-package-adoption.js";
 import { acquireClawPackageLifecycleLease } from "./claw-package-lifecycle-lease.js";
 import { closeOpenClawStateDatabaseForTest } from "./openclaw-state-db.js";
 
-afterEach(() => closeOpenClawStateDatabaseForTest());
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
+  afterEach(() => {
+    closeOpenClawStateDatabaseForTest();
+    cleanup();
+  });
+});
 
 const packageIntegrity = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -83,39 +89,46 @@ describe("Claw package independent adoption", () => {
     for (const agentId of ["first", "second"]) {
       const current = plan(agentId, `/tmp/${agentId}`);
       persistClawInstallRecord(current, { env });
-      persistClawPackageRef(
-        current,
-        {
-          kind: "plugin",
-          source: "clawhub",
-          ref: "@acme/audit",
-          version: "1.0.0",
-          integrity: packageIntegrity,
-        },
-        {
-          env,
-          relationship: "referenced",
-          origin: "claw-introduced",
-          independentOwner: false,
-        },
-      );
+      for (const version of ["1.0.0", "2.0.0"]) {
+        persistClawPackageRef(
+          current,
+          {
+            kind: "plugin",
+            source: "clawhub",
+            ref: "@acme/audit",
+            version,
+            integrity: packageIntegrity,
+          },
+          {
+            env,
+            nowMs: 10,
+            relationship: "referenced",
+            origin: "claw-introduced",
+            independentOwner: false,
+          },
+        );
+      }
     }
 
-    expect(
-      markClawPackageIndependentlyOwned(
-        {
-          kind: "plugin",
-          source: "clawhub",
-          ref: "@acme/audit",
-          version: "1.0.0",
-        },
-        { env, nowMs: 42 },
-      ),
-    ).toBe(2);
-    expect(readClawPackageRefs({ env })).toMatchObject([
-      { origin: "claw-introduced", independentOwner: true, updatedAtMs: 42 },
-      { origin: "claw-introduced", independentOwner: true, updatedAtMs: 42 },
+    const artifact = {
+      kind: "plugin",
+      source: "clawhub",
+      ref: "@acme/audit",
+      version: "1.0.0",
+    } as const;
+    expect(markClawPackageIndependentlyOwned(artifact, { env, nowMs: 42 })).toBe(2);
+    expect(markClawPackageIndependentlyOwned(artifact, { env, nowMs: 99 })).toBe(0);
+    const refs = readClawPackageRefs({ env }).toSorted(
+      (left, right) =>
+        left.agentId.localeCompare(right.agentId) || left.version.localeCompare(right.version),
+    );
+    expect(refs).toMatchObject([
+      { version: "1.0.0", independentOwner: true, updatedAtMs: 42 },
+      { version: "2.0.0", independentOwner: false, updatedAtMs: 10 },
+      { version: "1.0.0", independentOwner: true, updatedAtMs: 42 },
+      { version: "2.0.0", independentOwner: false, updatedAtMs: 10 },
     ]);
+    expect(refs.every((ref) => ref.origin === "claw-introduced")).toBe(true);
   });
 
   it("scopes skill adoption to the owning agent workspace", () => {
@@ -185,7 +198,7 @@ describe("Claw package independent adoption", () => {
 
     const results = await applyClawPackageRemovals(decisions, { env });
 
-    expect(results).toMatchObject([{ action: "retained" }]);
+    expect(results).toMatchObject({ packages: [{ action: "retained" }] });
     const directLease = acquireClawPackageLifecycleLease(
       { kind: "plugin", source: "clawhub", ref: "@acme/audit" },
       { env, required: true },
@@ -235,6 +248,32 @@ describe("Claw package independent adoption", () => {
       ),
     ).toThrow("being changed by another OpenClaw lifecycle");
     directLease?.release();
+  });
+
+  it("releases a package lease when process exit bypasses async cleanup", async () => {
+    const env = { OPENCLAW_STATE_DIR: tempDirs.make("claw-exit-lease-") };
+    const artifact = { kind: "plugin", source: "clawhub", ref: "@acme/audit" } as const;
+    const moduleUrl = new URL("./claw-package-lifecycle-lease.ts", import.meta.url).href;
+    const result = await runNodeScript(
+      createNodeEvalArgs(
+        `
+          import { withClawPackageLifecycleLease } from ${JSON.stringify(moduleUrl)};
+          await withClawPackageLifecycleLease(
+            ${JSON.stringify(artifact)},
+            async () => { process.exit(23); },
+            { required: true },
+          );
+        `,
+        { imports: ["tsx"] },
+      ),
+      { ...process.env, ...env },
+      60_000,
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(23);
+    const nextLease = acquireClawPackageLifecycleLease(artifact, { env, required: true });
+    expect(nextLease).not.toBeNull();
+    nextLease?.release();
   });
 
   it("fails open only for optional direct leases when lifecycle state is unavailable", () => {

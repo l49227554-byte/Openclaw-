@@ -5,6 +5,7 @@ import ai.openclaw.app.chat.OutgoingAttachment
 import ai.openclaw.app.chat.SessionEditorAttachment
 import ai.openclaw.app.chat.VOICE_NOTE_MIME_TYPE
 import ai.openclaw.app.chat.VoiceNoteRecording
+import androidx.compose.runtime.mutableStateMapOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +20,7 @@ data class PendingAttachment(
   val mimeType: String,
   val base64: String,
   val durationMs: Long? = null,
+  val videoThumbnailBase64: String? = null,
 )
 
 internal data class ChatComposerAttachmentMigration(
@@ -38,7 +40,7 @@ internal class ChatComposerAttachmentStore(
 
   private val lock = Any()
   private val importSequence = AtomicLong()
-  private val importOwners = mutableMapOf<Long, ChatComposerOwner>()
+  private val importOwners = mutableStateMapOf<Long, ChatComposerOwner>()
   private val _attachments = MutableStateFlow<Map<ChatComposerOwner, List<PendingAttachment>>>(emptyMap())
   val attachments: StateFlow<Map<ChatComposerOwner, List<PendingAttachment>>> = _attachments.asStateFlow()
 
@@ -65,13 +67,18 @@ internal class ChatComposerAttachmentStore(
       importSequence.incrementAndGet().also { importOwners[it] = owner }
     }
 
+  fun hasPendingImport(owner: ChatComposerOwner): Boolean = synchronized(lock) { importOwners.containsValue(owner) }
+
   fun completeImport(
     id: Long,
     candidates: List<PendingAttachment>,
   ): Pair<ChatComposerOwner, Int>? =
     synchronized(lock) {
-      val owner = importOwners.remove(id) ?: return@synchronized null
-      owner to addLocked(owner, candidates)
+      val owner = importOwners[id] ?: return@synchronized null
+      val result = owner to addLocked(owner, candidates)
+      // Publish the payload before releasing the observable Send gate.
+      importOwners.remove(id)
+      result
     }
 
   fun cancelImport(id: Long) {
@@ -205,6 +212,7 @@ internal fun List<SessionEditorAttachment>.toPendingAttachments(): List<PendingA
 internal fun attachmentTypeForMimeType(mimeType: String): String =
   when {
     mimeType.startsWith("audio/") -> "audio"
+    mimeType.startsWith("video/") -> "video"
     mimeType.startsWith("image/") -> "image"
     else -> "file"
   }

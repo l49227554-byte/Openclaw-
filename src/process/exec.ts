@@ -1,11 +1,5 @@
-// Exec helpers run subprocesses with normalized output, timeout, and abort handling.
-import { danger, shouldLogVerbose } from "../globals.js";
-import {
-  decodeWindowsOutputBuffer,
-  resolveWindowsConsoleEncoding,
-} from "../infra/windows-encoding.js";
-import { logDebug, logError } from "../logger.js";
-import { resolveTimerTimeoutMs } from "../shared/number-coercion.js";
+import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+import { decodeWindowsOutputBuffer } from "../infra/windows-encoding.js";
 import { releaseChildProcessOutputAfterExit } from "./child-process.js";
 import { resolveMaxOutputBytes, type CommandOutputStream } from "./exec-output.js";
 import { runCommandWithTimeout } from "./exec-runner.js";
@@ -26,10 +20,18 @@ export type RunExecOptions = {
   baseEnv?: NodeJS.ProcessEnv;
   env?: NodeJS.ProcessEnv;
   input?: string | Uint8Array;
+  stdinFileDescriptor?: number;
   signal?: AbortSignal;
+  /** Observe received bytes without changing buffering, completion or cancellation. */
+  onOutputChunk?: (chunk: Buffer, stream: CommandOutputStream) => void;
 };
 
-// Simple promise-wrapped execFile with optional verbosity logging.
+function decodeExecOutput(buffer: Uint8Array): string {
+  return decodeWindowsOutputBuffer({
+    buffer: Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength),
+  });
+}
+
 export async function runExec(
   command: string,
   args: string[],
@@ -46,6 +48,9 @@ export async function runExec(
       ? DEFAULT_EXEC_MAX_BUFFER_BYTES
       : (opts.maxBuffer ?? DEFAULT_EXEC_MAX_BUFFER_BYTES);
   const resolvedOptions = typeof opts === "number" ? undefined : opts;
+  if (resolvedOptions?.input !== undefined && resolvedOptions.stdinFileDescriptor !== undefined) {
+    throw new Error("runExec accepts either input or stdinFileDescriptor, not both");
+  }
   try {
     const subprocess = spawnCommand([command, ...args], {
       baseEnv: resolvedOptions?.baseEnv,
@@ -57,32 +62,54 @@ export async function runExec(
       ...(resolvedOptions?.input !== undefined ? { input: resolvedOptions.input } : {}),
       maxBuffer,
       reject: true,
-      stdin: resolvedOptions?.input === undefined ? "ignore" : undefined,
+      ...(resolvedOptions?.stdinFileDescriptor === undefined
+        ? { stdin: resolvedOptions?.input === undefined ? "ignore" : undefined }
+        : {
+            // Execa forwards arbitrary numeric stdin descriptors to Node, but its type narrows them to fd 0.
+            stdin: resolvedOptions.stdinFileDescriptor as 0,
+          }),
       stripFinalNewline: false,
       timeout,
     });
     const releaseOutput = releaseChildProcessOutputAfterExit(subprocess.nodeChildProcess);
-    const { stdout, stderr } = await subprocess.finally(releaseOutput);
-    const windowsEncoding = resolveWindowsConsoleEncoding();
-    const decodedStdout = decodeWindowsOutputBuffer({
-      buffer: Buffer.from(stdout),
-      windowsEncoding,
-    });
-    const decodedStderr = decodeWindowsOutputBuffer({
-      buffer: Buffer.from(stderr),
-      windowsEncoding,
-    });
-    if (resolvedOptions?.logOutput !== false && shouldLogVerbose()) {
-      if (decodedStdout.trim()) {
-        logDebug(decodedStdout.trim());
+    let observer = resolvedOptions?.onOutputChunk;
+    const observe = (chunk: Buffer, stream: CommandOutputStream) => {
+      try {
+        observer?.(chunk, stream);
+      } catch {
+        // Diagnostic observers cannot replace the command's outcome.
+        observer = undefined;
       }
-      if (decodedStderr.trim()) {
-        logError(decodedStderr.trim());
+    };
+    const onStdout = (chunk: Buffer) => observe(chunk, "stdout");
+    const onStderr = (chunk: Buffer) => observe(chunk, "stderr");
+    if (observer) {
+      subprocess.nodeChildProcess.stdout?.on("data", onStdout);
+      subprocess.nodeChildProcess.stderr?.on("data", onStderr);
+    }
+    const { stdout, stderr } = await subprocess.finally(() => {
+      releaseOutput();
+      subprocess.nodeChildProcess.stdout?.off("data", onStdout);
+      subprocess.nodeChildProcess.stderr?.off("data", onStderr);
+    });
+    const decodedStdout = decodeExecOutput(stdout);
+    const decodedStderr = decodeExecOutput(stderr);
+    if (resolvedOptions?.logOutput !== false) {
+      const [{ shouldLogVerbose }, { logDebug, logError }] = await Promise.all([
+        import("../globals.js"),
+        import("../logger.js"),
+      ]);
+      if (shouldLogVerbose()) {
+        if (decodedStdout.trim()) {
+          logDebug(decodedStdout.trim());
+        }
+        if (decodedStderr.trim()) {
+          logError(decodedStderr.trim());
+        }
       }
     }
     return { stdout: decodedStdout, stderr: decodedStderr };
   } catch (err) {
-    const windowsEncoding = resolveWindowsConsoleEncoding();
     if (err && typeof err === "object") {
       const errorWithOutput = err as {
         code?: string | number;
@@ -94,26 +121,29 @@ export async function runExec(
         errorWithOutput.code = errorWithOutput.exitCode;
       }
       if (errorWithOutput.stdout instanceof Uint8Array) {
-        errorWithOutput.stdout = decodeWindowsOutputBuffer({
-          buffer: Buffer.from(errorWithOutput.stdout),
-          windowsEncoding,
-        });
+        errorWithOutput.stdout = decodeExecOutput(errorWithOutput.stdout);
       }
       if (errorWithOutput.stderr instanceof Uint8Array) {
-        errorWithOutput.stderr = decodeWindowsOutputBuffer({
-          buffer: Buffer.from(errorWithOutput.stderr),
-          windowsEncoding,
-        });
+        errorWithOutput.stderr = decodeExecOutput(errorWithOutput.stderr);
       }
     }
-    if (resolvedOptions?.logOutput !== false && shouldLogVerbose()) {
-      logError(danger(`Command failed: ${command}`));
+    if (resolvedOptions?.logOutput !== false) {
+      // Logging imports must not replace the original command failure.
+      const logging = await Promise.all([import("../globals.js"), import("../logger.js")]).catch(
+        () => undefined,
+      );
+      if (logging) {
+        const [{ danger, shouldLogVerbose }, { logError }] = logging;
+        if (shouldLogVerbose()) {
+          logError(danger(`Command failed: ${command}`));
+        }
+      }
     }
     throw err;
   }
 }
 
-type BufferedCommandOptions = {
+export type BufferedCommandOptions = {
   timeoutMs?: number;
   cwd?: string;
   input?: string | Uint8Array;
@@ -121,11 +151,15 @@ type BufferedCommandOptions = {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   maxOutputBytes?: number | { stdout?: number; stderr?: number };
+  maxCombinedOutputBytes?: number;
   discardOutput?: { stdout?: boolean; stderr?: boolean };
   tolerateOutputError?: { stdout?: boolean; stderr?: boolean };
+  terminateOnOutputError?: boolean | { stdout?: boolean; stderr?: boolean };
+  killProcessTree?: boolean;
+  killGraceMs?: number;
 };
 
-type BufferedCommandResult = {
+export type BufferedCommandResult = {
   stdout: Buffer;
   stderr: Buffer;
   code: number | null;
@@ -156,13 +190,24 @@ export async function runCommandBuffered(
 
   const chunks: Record<CommandOutputStream, Buffer[]> = { stdout: [], stderr: [] };
   const capturedBytes: Record<CommandOutputStream, number> = { stdout: 0, stderr: 0 };
+  const maxCombinedOutputBytes =
+    typeof options.maxCombinedOutputBytes === "number" &&
+    Number.isFinite(options.maxCombinedOutputBytes) &&
+    options.maxCombinedOutputBytes > 0
+      ? Math.max(1, Math.floor(options.maxCombinedOutputBytes))
+      : undefined;
   let outputLimitStream: CommandOutputStream | undefined;
   const appendChunk = (chunk: Buffer, stream: CommandOutputStream): boolean => {
     if (options.discardOutput?.[stream]) {
       return true;
     }
     const maxBytes = resolveMaxOutputBytes(options.maxOutputBytes, stream);
-    const remaining = Math.max(0, maxBytes - capturedBytes[stream]);
+    const combinedBytes = capturedBytes.stdout + capturedBytes.stderr;
+    const combinedRemaining =
+      maxCombinedOutputBytes === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, maxCombinedOutputBytes - combinedBytes);
+    const remaining = Math.max(0, Math.min(maxBytes - capturedBytes[stream], combinedRemaining));
     if (remaining > 0) {
       const captured = Buffer.from(chunk.subarray(0, remaining));
       chunks[stream].push(captured);
@@ -183,7 +228,8 @@ export async function runCommandBuffered(
       cwd: options.cwd,
       env: options.env,
       input: options.input,
-      killProcessTree: true,
+      killProcessTree: options.killProcessTree ?? true,
+      killGraceMs: options.killGraceMs,
       onOutputChunk: appendChunk,
       outputCapture: "discard",
       signal: options.signal,
@@ -192,6 +238,7 @@ export async function runCommandBuffered(
         stdout: options.discardOutput?.stdout || options.tolerateOutputError?.stdout,
         stderr: options.discardOutput?.stderr || options.tolerateOutputError?.stderr,
       },
+      terminateOnOutputError: options.terminateOnOutputError,
     });
     const termination: BufferedCommandResult["termination"] = result.outputLimitExceeded
       ? "output-limit"

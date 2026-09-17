@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { hostname as readHostName } from "node:os";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
 import type {
   CodexAppServerConnectionClass,
   CodexAppServerDefaultPolicy,
@@ -134,9 +136,36 @@ function stableStringifyJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
+/** Explicit MCP prompting must bypass Codex's unconditional Never-policy approval. */
+export function hasCodexMcpToolApprovalOverrides(
+  servers: NonNullable<OpenClawConfig["mcp"]>["servers"],
+  serverNames?: readonly string[],
+  projectedMcpServers?: Record<string, Record<string, unknown>>,
+): boolean {
+  const modes = new Map(
+    Object.entries(projectedMcpServers ?? {}).map(([name, server]) => [
+      name,
+      server.default_tools_approval_mode,
+    ]),
+  );
+  for (const name of serverNames ?? Object.keys(servers ?? {})) {
+    const server = servers?.[name];
+    const mode = server?.codex?.defaultToolsApprovalMode;
+    // Prepared names already include session overrides that can re-enable a saved disabled server.
+    if (mode !== undefined && (serverNames !== undefined || server?.enabled !== false)) {
+      modes.set(name, mode);
+    }
+  }
+  return [...modes.values()].some((mode) => mode === "auto" || mode === "prompt");
+}
+
 export function withMcpElicitationsApprovalPolicy(
   policy: CodexAppServerEffectiveApprovalPolicy,
 ): CodexAppServerEffectiveApprovalPolicy {
+  // UnlessTrusted already allows MCP elicitation; granular would erase per-command approvals.
+  if (policy === "untrusted") {
+    return policy;
+  }
   if (typeof policy !== "string") {
     return {
       granular: {
@@ -227,14 +256,7 @@ function isLoopbackWebSocketUrl(value: string): boolean {
   if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
     return false;
   }
-  const host = parsed.hostname.toLowerCase();
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "[::1]" ||
-    host.startsWith("127.")
-  );
+  return isLoopbackHost(parsed.hostname);
 }
 
 function hasIdentityBearingWebSocketAuth(params: {
@@ -300,7 +322,8 @@ export function resolveDefaultCodexAppServerPolicy(params: {
   const yoloSandboxAllowed =
     allowedSandboxModes === undefined || allowedSandboxModes.has("danger-full-access");
   const yoloApprovalAllowed =
-    allowedApprovalPolicies === undefined || allowedApprovalPolicies.has("never");
+    allowedApprovalPolicies === undefined ||
+    (allowedApprovalPolicies.has("never") && !allowedApprovalPolicies.has("untrusted"));
   const yoloReviewerAllowed =
     allowedApprovalsReviewers === undefined || allowedApprovalsReviewers.has("user");
   if (!params.forceGuardian && yoloSandboxAllowed && yoloApprovalAllowed && yoloReviewerAllowed) {

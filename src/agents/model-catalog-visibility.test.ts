@@ -4,14 +4,157 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as providerPolicySurface from "../plugins/provider-policy-surface.js";
 import {
+  prepareLogicalVisibleModelCatalog,
   resolveLogicalModelCatalogEntryState,
   resolveLogicalVisibleModelCatalog,
 } from "./model-catalog-visibility.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
+import { createModelVisibilityPolicy } from "./model-visibility-policy.js";
 import { openAIModelCatalogRoutePolicy } from "./openai-model-routes.js";
 
 describe("resolveLogicalVisibleModelCatalog", () => {
+  it("bounds identity discovery before asynchronous entry preparation", async () => {
+    const catalog = Array.from({ length: 64 }, (_, index) => ({
+      provider: "fixture",
+      id: `model-${index}`,
+      name: `Model ${index}`,
+    }));
+    const policy = createModelVisibilityPolicy({
+      cfg: {},
+      catalog,
+      defaultProvider: "fixture",
+      allowManifestNormalization: false,
+      allowPluginNormalization: false,
+    });
+    const resolvePolicy = vi
+      .spyOn(providerPolicySurface, "resolveDirectBundledProviderPolicySurface")
+      .mockReturnValue(null);
+    try {
+      const prepared = prepareLogicalVisibleModelCatalog({
+        cfg: {},
+        catalog,
+        policy,
+        defaultProvider: "fixture",
+        view: "all",
+        routePolicy: openAIModelCatalogRoutePolicy,
+        prepareEntry: async () => () =>
+          resolveLogicalModelCatalogEntryState({
+            evaluation: { availability: true, routeResolution: null },
+            routePolicy: openAIModelCatalogRoutePolicy,
+          }),
+      });
+      const initialPolicyReads = resolvePolicy.mock.calls.length;
+      const read = await prepared;
+
+      const rows = read();
+      expect(rows).toEqual(expect.arrayContaining(catalog));
+      expect(rows).toHaveLength(catalog.length);
+      expect(initialPolicyReads).toBeLessThanOrEqual(2);
+      const normalize = vi.fn(({ modelId }: { modelId: string }) => modelId);
+      resolvePolicy.mockReturnValue({ normalizeModelCatalogId: normalize });
+      expect(read()).toEqual(rows);
+      expect(normalize).toHaveBeenCalled();
+    } finally {
+      resolvePolicy.mockRestore();
+    }
+  });
+
+  it("rereads later row identities and policy after entry preparation suspends", async () => {
+    const first = { provider: "fixture", id: "first", name: "First" };
+    const later = { provider: "fixture", id: "vendor/first", name: "Later" };
+    const catalog = [first, later];
+    const policy = createModelVisibilityPolicy({
+      cfg: {},
+      catalog,
+      defaultProvider: "fixture",
+      allowManifestNormalization: false,
+      allowPluginNormalization: false,
+    });
+    const resolvePolicy = vi
+      .spyOn(providerPolicySurface, "resolveDirectBundledProviderPolicySurface")
+      .mockReturnValue({
+        normalizeModelCatalogId: ({ modelId }) => modelId.replace(/^vendor\//u, ""),
+      });
+    try {
+      const preparedEntries: ModelCatalogEntry[] = [];
+      const read = await prepareLogicalVisibleModelCatalog({
+        cfg: {},
+        catalog,
+        policy,
+        defaultProvider: "fixture",
+        view: "all",
+        routePolicy: openAIModelCatalogRoutePolicy,
+        prepareEntry: async (entry) => {
+          preparedEntries.push(entry);
+          if (entry === first) {
+            await Promise.resolve();
+            later.id = "vendor/second";
+            resolvePolicy.mockReturnValue(null);
+          }
+          return () =>
+            resolveLogicalModelCatalogEntryState({
+              evaluation: { availability: true, routeResolution: null },
+              routePolicy: openAIModelCatalogRoutePolicy,
+            });
+        },
+      });
+      expect(preparedEntries).toEqual([first, later]);
+      expect(read()).toEqual([first, later]);
+    } finally {
+      resolvePolicy.mockRestore();
+    }
+  });
+
+  it.each(["all", "configured", "default"] as const)(
+    "keeps case-distinct and literal provider-prefixed identities in the %s view",
+    async (view) => {
+      const catalog: ModelCatalogEntry[] = [
+        { provider: "fixture", id: "MixedCase", name: "Large", contextWindow: 64_000 },
+        { provider: "fixture", id: "mixedcase", name: "Small", contextWindow: 16_000 },
+        { provider: "fixture", id: "fixture/MixedCase", name: "Namespaced", contextWindow: 32_000 },
+      ];
+      const result = await resolveLogicalVisibleModelCatalog({
+        cfg: { agents: { defaults: { modelPolicy: { allow: ["fixture/*"] } } } },
+        catalog,
+        defaultProvider: "fixture",
+        view,
+        routePolicy: openAIModelCatalogRoutePolicy,
+        evaluateEntry: async () =>
+          resolveLogicalModelCatalogEntryState({
+            evaluation: { availability: true, routeResolution: null },
+            routePolicy: openAIModelCatalogRoutePolicy,
+          }),
+      });
+
+      expect(result).toEqual(expect.arrayContaining(catalog));
+      expect(result).toHaveLength(3);
+    },
+  );
+
+  it("keeps a literal catalog suffix distinct from its base model", async () => {
+    const catalog: ModelCatalogEntry[] = [
+      { provider: "fixture", id: "reader", name: "Base" },
+      { provider: "fixture", id: "reader@variant", name: "Literal variant" },
+    ];
+    const result = await resolveLogicalVisibleModelCatalog({
+      cfg: {},
+      catalog,
+      defaultProvider: "fixture",
+      view: "all",
+      routePolicy: openAIModelCatalogRoutePolicy,
+      evaluateEntry: async () =>
+        resolveLogicalModelCatalogEntryState({
+          evaluation: { availability: true, routeResolution: null },
+          routePolicy: openAIModelCatalogRoutePolicy,
+        }),
+    });
+
+    expect(result).toEqual(expect.arrayContaining(catalog));
+    expect(result).toHaveLength(2);
+  });
+
   const selectedRoute = {
     api: "openai-chatgpt-responses" as const,
     baseUrl: "https://chatgpt.com/backend-api/codex",
@@ -39,9 +182,8 @@ describe("resolveLogicalVisibleModelCatalog", () => {
     input: ["text"],
   };
 
-  const evaluateAvailableEntry = async (entry: ModelCatalogEntry) =>
+  const evaluateAvailableEntry = async () =>
     resolveLogicalModelCatalogEntryState({
-      entry,
       evaluation: { availability: true, routeResolution: null },
       routePolicy: openAIModelCatalogRoutePolicy,
     });
@@ -86,6 +228,39 @@ describe("resolveLogicalVisibleModelCatalog", () => {
     expect(result.map((entry) => entry.id)).toEqual(["off", "old"]);
   });
 
+  it("preserves provider-owned strongest-first order through route projection", async () => {
+    const catalog: ModelCatalogEntry[] = [
+      { provider: "openai", id: "gpt-5.4", name: "GPT-5.4", providerOrder: 3 },
+      { provider: "openai", id: "gpt-5.6-luna", name: "GPT-5.6 Luna", providerOrder: 2 },
+      { provider: "openai", id: "gpt-5.6-sol", name: "GPT-5.6 Sol", providerOrder: 0 },
+      { provider: "openai", id: "gpt-5.6-terra", name: "GPT-5.6 Terra", providerOrder: 1 },
+    ];
+
+    const result = await resolveLogicalVisibleModelCatalog({
+      cfg: {} as OpenClawConfig,
+      catalog,
+      defaultProvider: "openai",
+      view: "all",
+      routePolicy: openAIModelCatalogRoutePolicy,
+      evaluateEntry: async () =>
+        resolveLogicalModelCatalogEntryState({
+          evaluation: {
+            availability: true,
+            routeResolution: { kind: "routes", routes: [selectedRoute] },
+            selectedRoute,
+          },
+          routePolicy: openAIModelCatalogRoutePolicy,
+        }),
+    });
+
+    expect(result.map((entry) => entry.id)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.4",
+    ]);
+  });
+
   it("keeps deprecated configured primary and alias-key rows visible", async () => {
     const catalog: ModelCatalogEntry[] = [
       { provider: "demo", id: "primary", name: "Primary", status: "deprecated" },
@@ -97,9 +272,20 @@ describe("resolveLogicalVisibleModelCatalog", () => {
         defaults: {
           model: { primary: "demo/primary" },
           models: { "demo/alias-key": { alias: "legacy" } },
+          modelPolicy: {},
         },
       },
     } as OpenClawConfig;
+    // This unit test covers configured-row retention, not runtime plugin
+    // discovery. Keep fake provider refs on the deterministic static path.
+    const policy = createModelVisibilityPolicy({
+      cfg,
+      catalog,
+      defaultProvider: "demo",
+      defaultModel: "primary",
+      allowManifestNormalization: false,
+      allowPluginNormalization: false,
+    });
 
     const result = await resolveLogicalVisibleModelCatalog({
       cfg,
@@ -107,6 +293,7 @@ describe("resolveLogicalVisibleModelCatalog", () => {
       defaultProvider: "demo",
       defaultModel: "primary",
       view: "configured",
+      policy,
       routePolicy: openAIModelCatalogRoutePolicy,
       evaluateEntry: evaluateAvailableEntry,
     });
@@ -114,39 +301,45 @@ describe("resolveLogicalVisibleModelCatalog", () => {
     expect(result.map((entry) => entry.id)).toEqual(["alias-key", "primary"]);
   });
 
-  it("dedupes physical routes after selected-route projection", async () => {
-    const catalog = [platform, chatGPT];
-    const result = await resolveLogicalVisibleModelCatalog({
-      cfg: {} as OpenClawConfig,
-      catalog,
-      defaultProvider: "openai",
-      view: "all",
-      routePolicy: openAIModelCatalogRoutePolicy,
-      evaluateEntry: async (entry) =>
-        resolveLogicalModelCatalogEntryState({
-          entry,
-          evaluation: {
-            availability: true,
-            routeResolution: { kind: "routes", routes: [selectedRoute] },
-            selectedRoute,
-          },
-          routePolicy: openAIModelCatalogRoutePolicy,
-        }),
-    });
+  it.each(["all", "default", "configured"] as const)(
+    "dedupes physical routes after selected-route projection in the %s view",
+    async (view) => {
+      const catalog = [
+        { ...platform, alias: "platform" },
+        { ...chatGPT, alias: "selected" },
+      ];
+      const result = await resolveLogicalVisibleModelCatalog({
+        cfg: {} as OpenClawConfig,
+        catalog,
+        defaultProvider: "openai",
+        view,
+        routePolicy: openAIModelCatalogRoutePolicy,
+        evaluateEntry: async () =>
+          resolveLogicalModelCatalogEntryState({
+            evaluation: {
+              availability: true,
+              routeResolution: { kind: "routes", routes: [selectedRoute] },
+              selectedRoute,
+            },
+            routePolicy: openAIModelCatalogRoutePolicy,
+          }),
+      });
 
-    expect(result).toEqual([
-      {
-        provider: "openai",
-        id: "gpt-5.5",
-        name: "ChatGPT GPT-5.5",
-        api: "openai-chatgpt-responses",
-        baseUrl: "https://chatgpt.com/backend-api/codex",
-        contextWindow: 400_000,
-        reasoning: false,
-        input: ["text"],
-      },
-    ]);
-  });
+      expect(result).toEqual([
+        {
+          provider: "openai",
+          id: "gpt-5.5",
+          name: "ChatGPT GPT-5.5",
+          alias: view === "all" ? "platform" : "selected",
+          api: "openai-chatgpt-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          contextWindow: 400_000,
+          reasoning: false,
+          input: ["text"],
+        },
+      ]);
+    },
+  );
 
   it.each([
     ["deprecated", []],
@@ -161,9 +354,8 @@ describe("resolveLogicalVisibleModelCatalog", () => {
       routeVariants: catalog,
       defaultProvider: "openai",
       routePolicy: openAIModelCatalogRoutePolicy,
-      evaluateEntry: async (entry) =>
+      evaluateEntry: async () =>
         resolveLogicalModelCatalogEntryState({
-          entry,
           evaluation: {
             availability: true,
             routeResolution: { kind: "routes", routes: [selectedRoute] },
@@ -183,9 +375,8 @@ describe("resolveLogicalVisibleModelCatalog", () => {
       defaultProvider: "openai",
       view: "all",
       routePolicy: openAIModelCatalogRoutePolicy,
-      evaluateEntry: async (entry) =>
+      evaluateEntry: async () =>
         resolveLogicalModelCatalogEntryState({
-          entry,
           evaluation: {
             availability: false,
             routeResolution: { kind: "indeterminate", defaultRuntimeId: "codex" },
@@ -212,9 +403,8 @@ describe("resolveLogicalVisibleModelCatalog", () => {
       };
       const routeVariants = reverse ? [platformNano, chatGPTNano] : [chatGPTNano, platformNano];
       const evaluateEntry = vi.fn(
-        async (entry: ModelCatalogEntry, _variants: readonly ModelCatalogEntry[]) =>
+        async (_entry: ModelCatalogEntry, _variants: readonly ModelCatalogEntry[]) =>
           resolveLogicalModelCatalogEntryState({
-            entry,
             evaluation: {
               availability: true,
               routeResolution: { kind: "routes", routes: [selectedRoute] },

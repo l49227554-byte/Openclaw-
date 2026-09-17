@@ -12,26 +12,20 @@ import {
 import {
   isSubagentEnvelopeSession,
   resolveSubagentCapabilityStore,
-} from "../../agents/subagent-capabilities.js";
+} from "../../agents/subagents/spawn/subagent-capabilities.js";
 import { isToolAllowedByPolicies } from "../../agents/tool-policy-match.js";
 import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "../../agents/tool-policy.js";
-import { resolveConversationBindingRecord } from "../../bindings/records.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
+import { claimSessionPendingInputDedupeRecovery } from "../../config/sessions/session-accessor.pending-inputs.js";
 import { logVerbose } from "../../globals.js";
-import { fireAndForgetHook } from "../../hooks/fire-and-forget.js";
-import {
-  toInternalMessageReceivedContext,
-  toPluginMessageContext,
-  toPluginMessageReceivedEvent,
-} from "../../hooks/message-hook-mappers.js";
-import {
-  isPluginOwnedSessionBindingRecord,
-  toPluginConversationBinding,
-} from "../../plugins/conversation-binding.js";
+import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
+import { toPluginConversationBinding } from "../../plugins/conversation-binding.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { resolveSilentReplyPolicyFromPolicies } from "../../shared/silent-reply-policy.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
+import { resolveCommandTurnContext } from "../command-turn-context.js";
+import { isActiveRunSafeCommandTurn } from "../commands-registry.js";
 import type { ReplyPayload } from "../reply-payload.js";
 import { resolveConversationBindingContextFromMessage } from "./conversation-binding-input.js";
 import { capturePendingConversationTurnReply } from "./conversation-turn-capture.js";
@@ -41,22 +35,26 @@ import {
 } from "./dispatch-from-config.context.js";
 import type { PluginBindingTranscriptOwner } from "./dispatch-from-config.events.js";
 import {
-  resolveHarnessSourceVisibleRepliesDefault,
   resolveTurnModelOverride,
+  resolveVisibleRepliesPolicy,
 } from "./dispatch-from-config.harness-defaults.js";
 import { extendPreparedDispatchState } from "./dispatch-from-config.phase-state.js";
 import type { PrepareDispatchDeliveryReadyState } from "./dispatch-from-config.prepare-delivery.js";
-import { createInternalHookEvent, triggerInternalHook } from "./dispatch-from-config.runtime.js";
 import type { DispatchFromConfigResult } from "./dispatch-from-config.types.js";
-import { claimInboundDedupe, commitInboundDedupe, releaseInboundDedupe } from "./inbound-dedupe.js";
+import { claimInboundDedupe } from "./inbound-dedupe.js";
+import { emitMessageReceivedHooks as emitSharedMessageReceivedHooks } from "./message-received-hooks.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { waitForReplyDispatcherIdle } from "./reply-dispatcher.js";
+import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
 import { isDuplicateRestartRecoverySource } from "./restart-recovery-claim.js";
+import { resolveStableMessageToolAvailability } from "./session-stable-reply-mode.js";
 import {
+  isDirectedSourceReplyTurn,
   isExplicitSourceReplyCommand,
   isUnauthorizedTextSlashCommand,
   resolveSourceReplyVisibilityPolicy,
 } from "./source-reply-delivery-mode.js";
+import type { SourceReplyDeliveryRuntimeOptions } from "./source-reply-delivery-runtime.js";
 import {
   buildChannelSourceTurnId,
   readChannelSourceTurnId,
@@ -69,54 +67,45 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     acpDispatchSessionKey,
     buildMessageReceivedHookContext,
     cfg,
-    completeDispatchReplyOperation,
     ctx,
-    deliverBindingPayload,
     dispatcher,
     hookRunner,
     isInternalWebchatTurn,
     markIdle,
-    markProcessing,
     params,
     recordAgentDispatchCompleted,
     recordProcessed,
-    releasePreDispatchLifecycleAdmission,
     replyRoute,
-    routeReplyChannel,
     sessionAgentId,
     sessionKey,
     sessionStoreEntry,
-    shouldRouteToOriginating,
-    shouldSuppressTyping,
-    suppressAcpChildUserDelivery,
-    timestamp,
   } = state;
   const sendBindingNotice = async (
     payload: ReplyPayload,
     mode: "additive" | "terminal",
     transcriptOwner?: PluginBindingTranscriptOwner,
   ): Promise<boolean> => {
-    if (suppressAutomaticSourceDelivery) {
+    if (sourceReplyPolicy.suppressAutomaticSourceDelivery) {
       return false;
     }
-    return await deliverBindingPayload(payload, mode, transcriptOwner);
+    return await state.deliverBindingPayload(payload, mode, transcriptOwner);
   };
 
   // Hook contexts use transport-native ids (for example Slack `U123`), while
   // binding records use the channel's canonical target (`user:U123`). Resolve
   // through the binding contract instead of reusing the hook projection.
-  const pluginBindingConversation = resolveConversationBindingContextFromMessage({ cfg, ctx });
+  const pluginBindingConversation = state.allowInboundHandlers
+    ? resolveConversationBindingContextFromMessage({ cfg, ctx })
+    : undefined;
   const pluginOwnedBindingRecord = pluginBindingConversation
-    ? resolveConversationBindingRecord({
+    ? getSessionBindingService().resolveByConversation({
         channel: pluginBindingConversation.channel,
         accountId: pluginBindingConversation.accountId,
         conversationId: pluginBindingConversation.conversationId,
         parentConversationId: pluginBindingConversation.parentConversationId,
       })
     : null;
-  const pluginOwnedBinding = isPluginOwnedSessionBindingRecord(pluginOwnedBindingRecord)
-    ? toPluginConversationBinding(pluginOwnedBindingRecord)
-    : null;
+  const pluginOwnedBinding = toPluginConversationBinding(pluginOwnedBindingRecord);
   const pluginBindingSessionKey = normalizeOptionalString(
     pluginOwnedBindingRecord?.targetSessionKey,
   );
@@ -198,7 +187,7 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     entry: sessionStoreEntry.entry,
     sessionKey: sessionStoreEntry.sessionKey ?? sessionKey,
     channel:
-      (shouldRouteToOriginating ? routeReplyChannel : undefined) ??
+      (state.shouldRouteToOriginating ? state.routeReplyChannel : undefined) ??
       sessionDeliveryChannel(sessionStoreEntry.entry) ??
       replyRoute.channel ??
       ctx.Surface ??
@@ -223,7 +212,11 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
   const chatType = normalizeChatType(ctx.ChatType);
   const silentReplyConversationType = resolveRoutedPolicyConversationType(ctx);
   const silentReplySurface = normalizeLowercaseStringOrEmpty(ctx.Surface ?? ctx.Provider);
+  // Group silent-reply policy sanctions silence for ambient chatter only. A turn
+  // that explicitly addressed the bot (mention) must never end silently, matching
+  // the hard-coded direct-chat rule in resolveSilentReplyPolicyFromPolicies.
   const emptyFinalAllowedAsSilent =
+    ctx.WasMentioned !== true &&
     silentReplyConversationType !== undefined &&
     resolveSilentReplyPolicyFromPolicies({
       conversationType: silentReplyConversationType,
@@ -232,22 +225,16 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
         ? cfg.surfaces?.[silentReplySurface]?.silentReply
         : undefined,
     }) === "allow";
-  const configuredVisibleReplies =
-    chatType === "group" || chatType === "channel"
-      ? (cfg.messages?.groupChat?.visibleReplies ?? cfg.messages?.visibleReplies)
-      : cfg.messages?.visibleReplies;
-  const harnessDefaultVisibleReplies =
-    configuredVisibleReplies === undefined && chatType !== "group" && chatType !== "channel"
-      ? resolveHarnessSourceVisibleRepliesDefault({
-          cfg,
-          ctx,
-          entry: sessionStoreEntry.entry,
-          sessionAgentId,
-          sessionKey: acpDispatchSessionKey,
-          sessionStore: sessionStoreEntry.store,
-          turnModelOverride: resolveTurnModelOverride(params.replyOptions),
-        })
-      : undefined;
+  const { configuredVisibleReplies, harnessDefaultVisibleReplies } = resolveVisibleRepliesPolicy({
+    cfg,
+    chatType,
+    ctx,
+    entry: sessionStoreEntry.entry,
+    sessionAgentId,
+    sessionKey: acpDispatchSessionKey,
+    sessionStore: sessionStoreEntry.store,
+    turnModelOverride: resolveTurnModelOverride(params.replyOptions),
+  });
   const effectiveVisibleReplies = configuredVisibleReplies ?? harnessDefaultVisibleReplies;
   const prefersMessageToolDelivery =
     params.replyOptions?.sourceReplyDeliveryMode === "message_tool_only" ||
@@ -309,18 +296,62 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     subagentPolicy,
     inheritedToolPolicy,
   ]);
-  const sourceReplyPolicy = resolveSourceReplyVisibilityPolicy({
+  // The stable mode's tool-only downgrade must be sender-independent, or a
+  // sender-scoped message denial hashes a different binding policy than the
+  // sender-less synthetic turns on the same session. Only tool-only candidates
+  // can downgrade, so skip the second policy pass otherwise.
+  const sessionStableMessageToolAvailable =
+    effectiveVisibleReplies === "message_tool"
+      ? resolveStableMessageToolAvailability({
+          cfg,
+          ctx,
+          sessionEntry: sessionStoreEntry.entry,
+          sessionAgentId,
+          sessionKey: acpDispatchSessionKey,
+        })
+      : undefined;
+  const sourceReplyPolicyParams = {
     cfg,
     ctx,
-    requested: params.replyOptions?.sourceReplyDeliveryMode,
     strictMessageToolOnly: ctx.InboundEventKind === "room_event" && !isInternalWebchatTurn,
     sendPolicy,
-    suppressAcpChildUserDelivery,
+    suppressAcpChildUserDelivery: state.suppressAcpChildUserDelivery,
     explicitSuppressTyping: params.replyOptions?.suppressTyping === true,
-    shouldSuppressTyping,
+    shouldSuppressTyping: state.shouldSuppressTyping,
     messageToolAvailable,
+    sessionStableMessageToolAvailable,
+    isHeartbeat: params.replyOptions?.isHeartbeat,
+  } as const;
+  let sourceReplyPolicy = resolveSourceReplyVisibilityPolicy({
+    ...sourceReplyPolicyParams,
+    requested: params.replyOptions?.sourceReplyDeliveryMode,
     defaultVisibleReplies: harnessDefaultVisibleReplies,
   });
+  const alternateHarnessDefault =
+    harnessDefaultVisibleReplies === "message_tool" ? "automatic" : "message_tool";
+  const alternateSourceReplyDeliveryMode = resolveSourceReplyVisibilityPolicy({
+    ...sourceReplyPolicyParams,
+    requested: params.replyOptions?.sourceReplyDeliveryMode,
+    defaultVisibleReplies: alternateHarnessDefault,
+  }).sourceReplyDeliveryMode;
+  const sourceReplyDeliveryModeOrigin =
+    alternateSourceReplyDeliveryMode === sourceReplyPolicy.sourceReplyDeliveryMode
+      ? "stable_policy"
+      : "runtime_default";
+  const sourceReplyDeliveryRuntimeOptions: SourceReplyDeliveryRuntimeOptions = {
+    sourceReplyDeliveryModeOrigin,
+    onSourceReplyDeliveryModeResolved: (mode) => {
+      const stableMode = sourceReplyPolicy.sessionStableSourceReplyDeliveryMode;
+      sourceReplyPolicy = resolveSourceReplyVisibilityPolicy({
+        ...sourceReplyPolicyParams,
+        requested: mode,
+      });
+      // A candidate can change live ownership, but not the reusable CLI session prompt.
+      sourceReplyPolicy.sessionStableSourceReplyDeliveryMode = stableMode;
+      Object.assign(state, sourceReplyPolicy, { sourceReplyPolicy });
+    },
+  };
+  Object.assign(sourceReplyPolicy, sourceReplyDeliveryRuntimeOptions);
   const {
     sourceReplyDeliveryMode,
     sessionStableSourceReplyDeliveryMode,
@@ -336,16 +367,27 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
   const attachSourceReplyDeliveryMode = (
     result: DispatchFromConfigResult,
   ): DispatchFromConfigResult =>
-    sourceReplyDeliveryMode === "message_tool_only" || sendPolicyDenied
+    sourceReplyPolicy.sourceReplyDeliveryMode === "message_tool_only" ||
+    sourceReplyPolicy.sendPolicyDenied
       ? {
           ...result,
-          ...(sourceReplyDeliveryMode === "message_tool_only" ? { sourceReplyDeliveryMode } : {}),
-          ...(sendPolicyDenied ? { sendPolicyDenied: true } : {}),
+          ...(sourceReplyPolicy.sourceReplyDeliveryMode === "message_tool_only"
+            ? { sourceReplyDeliveryMode: sourceReplyPolicy.sourceReplyDeliveryMode }
+            : {}),
+          ...(sourceReplyPolicy.sendPolicyDenied ? { sendPolicyDenied: true } : {}),
         }
       : result;
   const explicitCommandTurnCtx = isExplicitSourceReplyCommand(ctx, cfg);
+  const activeRunSafeCommandTurn =
+    explicitCommandTurnCtx &&
+    isActiveRunSafeCommandTurn({
+      commandTurn: resolveCommandTurnContext(ctx),
+      cfg,
+      provider: ctx.Provider ?? ctx.Surface,
+    });
   const unauthorizedTextSlashSourceReplyCtx =
     (chatType === "group" || chatType === "channel") && isUnauthorizedTextSlashCommand(ctx);
+  const noVisibleReplyFallbackDirected = isDirectedSourceReplyTurn(ctx, cfg, chatType === "direct");
   const shouldDeliverPluginBindingReply =
     !suppressAutomaticSourceDelivery ||
     explicitCommandTurnCtx ||
@@ -380,7 +422,27 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     };
   }
 
-  const inboundDedupeClaim = claimInboundDedupe(ctx);
+  const inboundDedupeClaim = claimInboundDedupe(ctx, {
+    reclaimPendingInput: () => {
+      const sourceRunId = normalizeOptionalString(ctx.MessageSid);
+      return Boolean(
+        params.replyOptions?.userTurnTranscriptRecorder?.getPendingInputMessage?.() &&
+        !params.replyOptions.userTurnTranscriptRecorder.hasPersisted() &&
+        sourceRunId &&
+        sessionStoreEntry.sessionKey &&
+        sessionStoreEntry.entry?.sessionId &&
+        claimSessionPendingInputDedupeRecovery(
+          {
+            agentId: sessionStoreEntry.agentId ?? sessionAgentId,
+            storePath: sessionStoreEntry.storePath,
+            sessionKey: sessionStoreEntry.sessionKey,
+            sessionId: sessionStoreEntry.entry.sessionId,
+          },
+          sourceRunId,
+        ),
+      );
+    },
+  });
   if (inboundDedupeClaim.status === "duplicate" || inboundDedupeClaim.status === "inflight") {
     recordProcessed("skipped", { reason: "duplicate" });
     return {
@@ -391,22 +453,25 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
       }),
     };
   }
-  const commitInboundDedupeIfClaimed = () => {
-    if (inboundDedupeClaim.status === "claimed") {
-      commitInboundDedupe(inboundDedupeClaim.key);
-    }
-  };
-  const releaseInboundDedupeIfClaimed = () => {
-    if (inboundDedupeClaim.status === "claimed") {
-      releaseInboundDedupe(inboundDedupeClaim.key);
-    }
-  };
+  const commitInboundDedupeIfClaimed = () => inboundDedupeClaim.commit?.();
+  const releaseInboundDedupeIfClaimed = () => inboundDedupeClaim.release?.();
+  const lifecycle = params.replyOptions?.turnAdoptionLifecycle;
+  if (lifecycle && inboundDedupeClaim.status === "claimed") {
+    const onAbandoned = lifecycle.onAbandoned;
+    lifecycle.onAbandoned = () => {
+      // Release before ingress retries, including abandonment before commit.
+      if (!state.inboundDedupeReplayUnsafe && !state.turnAdoptionState?.adopted) {
+        inboundDedupeClaim.release();
+      }
+      onAbandoned?.();
+    };
+  }
   const finishReplyOperationBusyDispatch = (opts?: {
     dedupeDisposition?: "commit" | "release";
     recordAgentDispatchCompleted?: boolean;
     sessionMetadataChanges?: DispatchFromConfigResult["sessionMetadataChanges"];
   }): DispatchFromConfigResult => {
-    void releasePreDispatchLifecycleAdmission(() => waitForReplyDispatcherIdle(dispatcher));
+    void state.releasePreDispatchLifecycleAdmission(() => waitForReplyDispatcherIdle(dispatcher));
     if (opts?.recordAgentDispatchCompleted) {
       recordAgentDispatchCompleted("completed", { reason: "reply-operation-active" });
     }
@@ -426,49 +491,59 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     });
   };
   const finishReplyOperationAbortedDispatch = (): DispatchFromConfigResult => {
-    commitInboundDedupeIfClaimed();
-    recordProcessed("completed", { reason: "reply_operation_aborted" });
+    const operation = state.getDispatchReplyOperation();
+    recordReplyOperationAgentTurn([state.replyOperationRunState], operation);
+    // Feedback only for pre-run drops: the user never saw output. Finalization or
+    // terminal-settle stalls already produced/settled output, so a notice is noise.
+    const droppedBeforeOutput =
+      operation?.result?.kind === "failed" &&
+      operation.result.code === "run_stalled" &&
+      (operation.staleExpiryReason === "no_activity" ||
+        operation.staleExpiryReason === "stuck_recovery");
+    const queuedFinal = droppedBeforeOutput
+      ? dispatcher.sendFinalReply({
+          text: "⚠️ This turn was interrupted because it stopped making progress. Please try again.",
+          isError: true,
+        })
+      : false;
+    if (
+      state.turnAdoptionState &&
+      !state.turnAdoptionState.adopted &&
+      !state.inboundDedupeReplayUnsafe
+    ) {
+      releaseInboundDedupeIfClaimed();
+    } else {
+      commitInboundDedupeIfClaimed();
+    }
+    recordProcessed("skipped", { reason: "reply_operation_aborted" });
     markIdle("message_completed");
-    completeDispatchReplyOperation();
+    state.completeDispatchReplyOperation();
     return attachSourceReplyDeliveryMode({
-      queuedFinal: false,
+      queuedFinal,
       counts: dispatcher.getQueuedCounts(),
+      ...(state.turnLedger.hasObservedDelivery() ? { observedReplyDelivery: true } : {}),
     });
   };
 
-  let pluginFallbackReason:
-    | "plugin-bound-fallback-missing-plugin"
-    | "plugin-bound-fallback-no-handler"
-    | undefined;
+  const bindingState: {
+    pluginFallbackReason?:
+      | "plugin-bound-fallback-missing-plugin"
+      | "plugin-bound-fallback-no-handler";
+  } = {};
   const emitMessageReceivedHooks = () => {
-    if (
-      ctx.SuppressMessageReceivedHooks !== true &&
-      hookRunner?.hasHooks("message_received") === true
-    ) {
-      const messageReceivedHookContext = buildMessageReceivedHookContext();
-      fireAndForgetHook(
-        hookRunner.runMessageReceived(
-          toPluginMessageReceivedEvent(messageReceivedHookContext),
-          toPluginMessageContext(messageReceivedHookContext),
-        ),
-        "dispatch-from-config: message_received plugin hook failed",
-      );
+    if (!state.allowInboundHandlers) {
+      return;
     }
-    if (ctx.SuppressMessageReceivedHooks !== true && sessionKey) {
-      const messageReceivedHookContext = buildMessageReceivedHookContext();
-      fireAndForgetHook(
-        triggerInternalHook(
-          createInternalHookEvent("message", "received", sessionKey, {
-            ...toInternalMessageReceivedContext(messageReceivedHookContext),
-            timestamp,
-          }),
-        ),
-        "dispatch-from-config: message_received internal hook failed",
-      );
-    }
+    emitSharedMessageReceivedHooks({
+      ctx,
+      hookRunner,
+      sessionKey,
+      timestamp: state.timestamp,
+      buildContext: buildMessageReceivedHookContext,
+    });
   };
-  markProcessing();
-  if (await capturePendingConversationTurnReply({ cfg, ctx })) {
+  state.markProcessing();
+  if (state.allowInboundHandlers && (await capturePendingConversationTurnReply({ cfg, ctx }))) {
     emitMessageReceivedHooks();
     commitInboundDedupeIfClaimed();
     recordProcessed("completed", { reason: "conversation-turn-reply" });
@@ -482,49 +557,37 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
       }),
     };
   }
-  const nextState = extendPreparedDispatchState(
-    state,
-    {
-      sendBindingNotice,
-      pluginOwnedBinding,
-      persistPluginBindingUserTurn,
-      sendPolicy,
-      chatType,
-      emptyFinalAllowedAsSilent,
-      sourceReplyPolicy,
-      sourceReplyDeliveryMode,
-      sessionStableSourceReplyDeliveryMode,
-      suppressAutomaticSourceDelivery,
-      suppressDelivery,
-      sendPolicyDenied,
-      deliverySuppressionReason,
-      suppressHookUserDelivery,
-      suppressHookReplyLifecycle,
-      reasoningPayloadsEnabled,
-      commentaryPayloadsEnabled,
-      attachSourceReplyDeliveryMode,
-      explicitCommandTurnCtx,
-      shouldDeliverPluginBindingReply,
-      inboundDedupeClaim,
-      commitInboundDedupeIfClaimed,
-      finishReplyOperationBusyDispatch,
-      finishReplyOperationAbortedDispatch,
-      emitMessageReceivedHooks,
-    },
-    {
-      pluginFallbackReason: {
-        get: () => pluginFallbackReason,
-        set: (
-          value:
-            | "plugin-bound-fallback-missing-plugin"
-            | "plugin-bound-fallback-no-handler"
-            | undefined,
-        ) => {
-          pluginFallbackReason = value;
-        },
-      },
-    },
-  );
+  const nextState = extendPreparedDispatchState(state, {
+    sendBindingNotice,
+    pluginOwnedBinding,
+    persistPluginBindingUserTurn,
+    sendPolicy,
+    chatType,
+    emptyFinalAllowedAsSilent,
+    noVisibleReplyFallbackDirected,
+    sourceReplyPolicy,
+    sourceReplyDeliveryRuntimeOptions,
+    sourceReplyDeliveryMode,
+    sessionStableSourceReplyDeliveryMode,
+    suppressAutomaticSourceDelivery,
+    suppressDelivery,
+    sendPolicyDenied,
+    deliverySuppressionReason,
+    suppressHookUserDelivery,
+    suppressHookReplyLifecycle,
+    reasoningPayloadsEnabled,
+    commentaryPayloadsEnabled,
+    attachSourceReplyDeliveryMode,
+    explicitCommandTurnCtx,
+    activeRunSafeCommandTurn,
+    shouldDeliverPluginBindingReply,
+    inboundDedupeClaim,
+    commitInboundDedupeIfClaimed,
+    finishReplyOperationBusyDispatch,
+    finishReplyOperationAbortedDispatch,
+    emitMessageReceivedHooks,
+    bindingState,
+  });
   return { status: "ready" as const, state: nextState };
 }
 

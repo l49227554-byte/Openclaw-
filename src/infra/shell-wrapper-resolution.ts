@@ -9,8 +9,11 @@ import { normalizeExecutableToken } from "./exec-wrapper-tokens.js";
 import {
   hasFishAttachedCommandOption,
   hasFishInitCommandOption,
+  hasPowerShellProfileStartupBeforeInlineCommand,
   hasPosixInteractiveStartupBeforeInlineCommand,
   hasPosixLoginStartupBeforeInlineCommand,
+  isPowerShellInlineEncodedCommandFlag,
+  isPowerShellInlineFileCommandFlag,
   NUSHELL_INLINE_COMMAND_FLAGS,
   POSIX_INLINE_COMMAND_FLAGS,
   resolveInlineCommandMatch,
@@ -194,6 +197,17 @@ export function isShellWrapperInvocation(argv: string[]): boolean {
   return isShellWrapperInvocationInternal(argv, 0);
 }
 
+/** Detect implicit POSIX startup in the requested shell, including dispatch wrappers. */
+export function hasPosixShellStartupBeforeInlineCommand(argv: string[]): boolean {
+  const candidate = resolveShellWrapperCandidate({ argv, depth: 0, state: null });
+  return Boolean(
+    candidate &&
+    POSIX_SHELL_WRAPPER_CANONICAL.has(normalizeExecutableToken(candidate.token0)) &&
+    (hasPosixLoginStartupBeforeInlineCommand(candidate.argv, POSIX_INLINE_COMMAND_FLAGS) ||
+      hasPosixInteractiveStartupBeforeInlineCommand(candidate.argv, POSIX_INLINE_COMMAND_FLAGS)),
+  );
+}
+
 function normalizeRawCommand(rawCommand?: string | null): string | null {
   const trimmed = rawCommand?.trim() ?? "";
   return trimmed.length > 0 ? trimmed : null;
@@ -324,6 +338,43 @@ function extractCmdInlineCommand(argv: string[]): string | null {
   }
   const cmd = tail.join(" ").trim();
   return cmd.length > 0 ? cmd : null;
+}
+
+function hasCmdUnreviewedStartupBeforeInlineCommand(argv: string[]): boolean {
+  let autoRunDisabled = false;
+  for (let index = 1; index < argv.length; index += 1) {
+    const token = normalizeLowercaseStringOrEmpty(argv[index]);
+    if (!token) {
+      continue;
+    }
+    if (token === "/d") {
+      autoRunDisabled = true;
+      continue;
+    }
+    if (token === "/k") {
+      return true;
+    }
+    if (token === "/c") {
+      return !autoRunDisabled || !argv.slice(index + 1).some((value) => value.trim().length > 0);
+    }
+    if (
+      token === "/s" ||
+      token === "/q" ||
+      token === "/a" ||
+      token === "/u" ||
+      /^\/t:[\da-f]{1,2}$/u.test(token) ||
+      token === "/e:on" ||
+      token === "/e:off" ||
+      token === "/f:on" ||
+      token === "/f:off" ||
+      token === "/v:on" ||
+      token === "/v:off"
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return true;
 }
 
 function extractPowerShellInlineCommand(argv: string[]): string | null {
@@ -574,12 +625,35 @@ export function isBlockedShellWrapperCommand(argv: string[], rawCommand?: string
   if (!wrapper) {
     return false;
   }
-  if (
-    wrapper.kind === "posix" &&
-    baseExecutable === "nu" &&
-    hasNushellStartupOptionBeforeInlineCommand(candidate.argv)
-  ) {
+  // cmd.exe runs registry AutoRun before /c; /k and bare invocations keep
+  // consuming unreviewed stdin. Only an explicit /d /c payload is bindable.
+  if (wrapper.kind === "cmd" && hasCmdUnreviewedStartupBeforeInlineCommand(candidate.argv)) {
     return true;
+  }
+  if (wrapper.kind === "powershell") {
+    const { command, valueTokenIndex } = resolvePowerShellInlineCommandMatch(candidate.argv);
+    // Profiles run before the payload; encoded commands and mutable script
+    // files have no content bound to the approval. Escalate each to a human.
+    if (
+      hasPowerShellProfileStartupBeforeInlineCommand(candidate.argv, valueTokenIndex) ||
+      (valueTokenIndex !== null &&
+        (command === "-" ||
+          isPowerShellInlineEncodedCommandFlag(candidate.argv[valueTokenIndex - 1] ?? "") ||
+          isPowerShellInlineFileCommandFlag(candidate.argv[valueTokenIndex - 1] ?? "")))
+    ) {
+      return true;
+    }
+  }
+  if (wrapper.kind === "posix") {
+    // Startup options can consume their own payload before -c is reachable.
+    // Classify them first so profile/init execution never disappears as an
+    // unrecognized shell invocation.
+    if (
+      (baseExecutable === "fish" && hasFishInitCommandOption(candidate.argv)) ||
+      (baseExecutable === "nu" && hasNushellStartupOptionBeforeInlineCommand(candidate.argv))
+    ) {
+      return true;
+    }
   }
   if (wrapper.kind === "posix" && OPAQUE_STARTUP_FILE_SHELL_WRAPPERS.has(baseExecutable)) {
     return true;

@@ -10,11 +10,28 @@ import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { recordGatewayRestartTraceDetail, recordGatewayRestartTraceSpan } from "./restart-trace.js";
 
 type GatewayLogger = ReturnType<typeof createSubsystemLogger>;
+type Awaitable<T> = T | Promise<T>;
 
-export function createGatewayStartupTrace(log: GatewayLogger) {
+export type GatewayStartupTrace = {
+  detail: (name: string, metrics: ReadonlyArray<readonly [string, number | string]>) => void;
+  mark: (name: string) => void;
+  measure: <T>(name: string, run: () => Awaitable<T>) => Promise<T>;
+};
+
+/** Measure a startup step when tracing is active, otherwise run it directly. */
+export async function measureStartup<T>(
+  startupTrace: GatewayStartupTrace | undefined,
+  name: string,
+  run: () => Awaitable<T>,
+): Promise<T> {
+  return startupTrace ? startupTrace.measure(name, run) : await run();
+}
+
+export function createGatewayStartupTrace(log: GatewayLogger, startedAt = performance.now()) {
   const logEnabled = isTruthyEnvValue(process.env.OPENCLAW_GATEWAY_STARTUP_TRACE);
   let timelineConfig: OpenClawConfig | undefined;
   let eventLoopDelay: ReturnType<typeof monitorEventLoopDelay> | undefined;
+  let closed = false;
   const timelineOptions = () => ({
     ...(timelineConfig ? { config: timelineConfig } : {}),
     env: process.env,
@@ -23,14 +40,19 @@ export function createGatewayStartupTrace(log: GatewayLogger) {
     isDiagnosticsTimelineEnabled(timelineOptions()) &&
     isTruthyEnvValue(process.env.OPENCLAW_DIAGNOSTICS_EVENT_LOOP);
   const ensureEventLoopDelay = () => {
-    if (eventLoopDelay || (!logEnabled && !eventLoopTimelineEnabled())) {
+    if (closed || eventLoopDelay || (!logEnabled && !eventLoopTimelineEnabled())) {
       return;
     }
     eventLoopDelay = monitorEventLoopDelay({ resolution: 10 });
     eventLoopDelay.enable();
   };
   ensureEventLoopDelay();
-  const started = performance.now();
+  const close = () => {
+    eventLoopDelay?.disable();
+    eventLoopDelay = undefined;
+    closed = true;
+  };
+  const started = startedAt;
   let last = started;
   let spanSequence = 0;
   const formatMetric = (key: string, value: number | string) =>
@@ -40,7 +62,6 @@ export function createGatewayStartupTrace(log: GatewayLogger) {
       case "config.snapshot":
         return "config.load";
       case "config.auth":
-      case "config.final-snapshot":
       case "runtime.config":
         return "config.normalize";
       case "plugins.bootstrap":
@@ -106,6 +127,7 @@ export function createGatewayStartupTrace(log: GatewayLogger) {
     }
   };
   return {
+    close,
     setConfig(config: OpenClawConfig) {
       timelineConfig = config;
       ensureEventLoopDelay();
@@ -127,7 +149,7 @@ export function createGatewayStartupTrace(log: GatewayLogger) {
       emitEventLoopTimelineSample(name, eventLoopSample);
       last = now;
       if (name === "ready") {
-        eventLoopDelay?.disable();
+        close();
       }
     },
     detail(name: string, metrics: ReadonlyArray<readonly [string, number | string]>) {

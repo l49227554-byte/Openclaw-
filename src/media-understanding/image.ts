@@ -1,15 +1,21 @@
+import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 // Model-backed image understanding runtime for providers without a native media
 // provider hook.
-import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeMediaProviderId } from "../../packages/media-understanding-common/src/provider-id.js";
 import { isMinimaxVlmModel, minimaxUnderstandImage } from "../agents/minimax-vlm.js";
-import { requireApiKey, resolveApiKeyForProvider } from "../agents/model-auth.js";
+import { requireApiKey, resolveApiKeyForProviderCore } from "../agents/model-auth.js";
 import { resolveProviderRequestCapabilities } from "../agents/provider-attribution.js";
 import {
+  getModelProviderRequestRouteFacts,
   getModelProviderRequestTransport,
   type ModelProviderRequestTransportOverrides,
 } from "../agents/provider-request-config.js";
-import { unwrapSecretSentinelsForProviderEgress } from "../agents/provider-secret-egress.js";
+import {
+  unwrapModelHeaderSentinelsForProviderEgress,
+  unwrapSecretSentinelsForProviderEgress,
+} from "../agents/provider-secret-egress.js";
 import { registerProviderStreamForModel } from "../agents/provider-stream.js";
 import {
   coerceImageAssistantText,
@@ -18,9 +24,10 @@ import {
 import { isSecretRef } from "../config/types.secrets.js";
 import { complete } from "../llm/stream.js";
 import type { AssistantMessage, Context, Model, ProviderStreamOptions } from "../llm/types.js";
-import { buildCopilotIdeHeaders, COPILOT_INTEGRATION_ID } from "../plugin-sdk/provider-auth.js";
+import { runPluginStreamConsumer } from "../plugins/plugin-instance-scope.js";
+import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { getResolvedImageRuntimeContext, resolveImageRuntime } from "./image-model-runtime.js";
-import { normalizeMediaProviderId } from "./provider-id.js";
 import type {
   ImageDescriptionRequest,
   ImageDescriptionResult,
@@ -53,6 +60,7 @@ function isNativeResponsesReasoningPayload(model: Model): boolean {
     baseUrl: model.baseUrl,
     capability: "image",
     transport: "media-understanding",
+    providerMetadataOwners: getModelProviderRequestRouteFacts(model)?.providerMetadataOwners,
   }).usesKnownNativeOpenAIRoute;
 }
 
@@ -89,10 +97,6 @@ function disableReasoningForImageRetryPayload(payload: unknown, model: Model): u
 
 function isImageModelNoTextError(err: unknown): boolean {
   return err instanceof Error && /^Image model returned no text\b/.test(err.message);
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return Boolean(value) && typeof (value as { then?: unknown }).then === "function";
 }
 
 function composeImageDescriptionPayloadHandlers(
@@ -163,6 +167,7 @@ function shouldPlaceImagePromptInUserContent(model: Model): boolean {
     baseUrl: model.baseUrl,
     capability: "image",
     transport: "media-understanding",
+    providerMetadataOwners: getModelProviderRequestRouteFacts(model)?.providerMetadataOwners,
   });
   return (
     capabilities.endpointClass === "openrouter" ||
@@ -176,9 +181,6 @@ function buildImageRequestHeaders(model: Model): Record<string, string> | undefi
     return undefined;
   }
   return {
-    ...buildCopilotIdeHeaders(),
-    "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
-    "Openai-Organization": "github-copilot",
     "x-initiator": "user",
     "Copilot-Vision-Request": "true",
   };
@@ -195,6 +197,7 @@ async function describeImagesWithMinimax(params: {
   allowPrivateNetwork?: boolean;
   request?: ModelProviderRequestTransportOverrides;
   signal?: AbortSignal;
+  assertResourcesOpen?: () => void;
 }): Promise<ImagesDescriptionResult> {
   const responses: string[] = [];
   // MiniMax VLM handles its own outbound fetch, so unwrap only at this final handoff.
@@ -207,6 +210,7 @@ async function describeImagesWithMinimax(params: {
     // One MiniMax request is issued per image, so cancellation must gate every
     // iteration or a dead run can continue buying calls after the first image.
     params.signal?.throwIfAborted();
+    params.assertResourcesOpen?.();
     const prompt =
       params.images.length > 1
         ? `${params.prompt}\n\nDescribe image ${index + 1} of ${params.images.length} independently.`
@@ -314,7 +318,7 @@ async function resolveMinimaxVlmFallbackRuntime(params: {
   preferredProfile?: string;
 }): Promise<{ runtimeValue: string; modelBaseUrl?: string }> {
   const authProvider = resolveMinimaxVlmAuthProvider(params.cfg, params.provider);
-  const auth = await resolveApiKeyForProvider({
+  const auth = await resolveApiKeyForProviderCore({
     provider: authProvider,
     cfg: params.cfg,
     secretSentinels: true,
@@ -414,74 +418,75 @@ async function describeImagesWithModelInternal(
   params: ImagesDescriptionRequest,
   options: { onPayload?: ProviderStreamOptions["onPayload"] } = {},
 ): Promise<ImagesDescriptionResult> {
-  const prompt = params.prompt ?? "Describe the image.";
-  params.signal?.throwIfAborted();
-  const startedAtMs = Date.now();
-  const controller = new AbortController();
-  const requestSignal = params.signal
-    ? AbortSignal.any([params.signal, controller.signal])
-    : controller.signal;
-  const configuredTimeoutMs = resolveImageDescriptionTimeoutMs(params.timeoutMs);
-  const allowPrivateNetwork = resolveConfiguredProviderAllowPrivateNetwork(
-    params.cfg,
-    params.provider,
-  );
-  let runtimeValue: string;
-  let model: Model | undefined;
-  let releaseRuntime: (() => void) | undefined;
-  const resolutionTask = resolveImageRuntime(params);
-
-  try {
-    const resolved = await withImageDescriptionTimeout({
-      controller,
-      signal: params.signal,
-      timeoutMs: configuredTimeoutMs,
-      createTimeoutError: (timeoutMs) =>
-        buildImageDescriptionTimeoutError({ phase: "setup", timeoutMs }),
-      task: resolutionTask,
-    });
-    runtimeValue = resolved.runtimeValue;
-    model = resolved.model;
-    releaseRuntime = resolved.release;
-  } catch (err) {
-    // The setup timeout does not cancel catalog preparation. If it wins the race, release any
-    // generation that resolves afterward instead of abandoning its retained lease.
-    void resolutionTask.then(
-      (late) => late.release(),
-      () => undefined,
+  return await runWithAsyncWorkResources(async (onAcquired) => {
+    let assertResourcesOpen: (() => void) | undefined;
+    const prompt = params.prompt ?? "Describe the image.";
+    params.signal?.throwIfAborted();
+    const startedAtMs = Date.now();
+    const controller = new AbortController();
+    const requestSignal = params.signal
+      ? AbortSignal.any([params.signal, controller.signal])
+      : controller.signal;
+    const configuredTimeoutMs = resolveImageDescriptionTimeoutMs(params.timeoutMs);
+    const allowPrivateNetwork = resolveConfiguredProviderAllowPrivateNetwork(
+      params.cfg,
+      params.provider,
     );
-    params.signal?.throwIfAborted();
-    if (!isMinimaxVlmModel(params.provider, params.model) || !isUnknownModelError(err)) {
-      throw err;
-    }
-    const fallback = await withImageDescriptionTimeout({
-      controller,
-      signal: params.signal,
-      timeoutMs: configuredTimeoutMs,
-      createTimeoutError: (timeoutMs) =>
-        buildImageDescriptionTimeoutError({ phase: "setup", timeoutMs }),
-      task: resolveMinimaxVlmFallbackRuntime(params),
-    });
-    return await describeImagesWithMinimax({
-      runtimeValue: fallback.runtimeValue,
-      provider: params.provider,
-      modelId: params.model,
-      modelBaseUrl: fallback.modelBaseUrl,
-      prompt,
-      timeoutMs: params.timeoutMs,
-      images: params.images,
-      allowPrivateNetwork,
-      signal: params.signal,
-    });
-  }
+    let runtimeValue: string;
+    let model: Model | undefined;
+    const resolutionTask = trackAsyncWork(() =>
+      resolveImageRuntime({ ...params, signal: requestSignal }, (resources) => {
+        onAcquired({ release: async () => await resources[Symbol.asyncDispose]() });
+        assertResourcesOpen = resources.assertResourcesOpen;
+      }),
+    );
 
-  const apiKey = runtimeValue;
-  try {
+    try {
+      const resolved = await withImageDescriptionTimeout({
+        controller,
+        signal: params.signal,
+        timeoutMs: configuredTimeoutMs,
+        createTimeoutError: (timeoutMs) =>
+          buildImageDescriptionTimeoutError({ phase: "setup", timeoutMs }),
+        task: resolutionTask,
+      });
+      runtimeValue = resolved.runtimeValue;
+      model = resolved.model;
+    } catch (err) {
+      params.signal?.throwIfAborted();
+      if (!isMinimaxVlmModel(params.provider, params.model) || !isUnknownModelError(err)) {
+        throw err;
+      }
+      const fallback = await withImageDescriptionTimeout({
+        controller,
+        signal: params.signal,
+        timeoutMs: configuredTimeoutMs,
+        createTimeoutError: (timeoutMs) =>
+          buildImageDescriptionTimeoutError({ phase: "setup", timeoutMs }),
+        task: trackAsyncWork(() => resolveMinimaxVlmFallbackRuntime(params)),
+      });
+      return await describeImagesWithMinimax({
+        assertResourcesOpen,
+        runtimeValue: fallback.runtimeValue,
+        provider: params.provider,
+        modelId: params.model,
+        modelBaseUrl: fallback.modelBaseUrl,
+        prompt,
+        timeoutMs: params.timeoutMs,
+        images: params.images,
+        allowPrivateNetwork,
+        signal: params.signal,
+      });
+    }
+
+    const apiKey = runtimeValue;
     params.signal?.throwIfAborted();
+    assertResourcesOpen?.();
     const setupDurationMs = Date.now() - startedAtMs;
 
     if (isMinimaxVlmModel(model.provider, model.id)) {
       return await describeImagesWithMinimax({
+        assertResourcesOpen,
         runtimeValue,
         provider: model.provider,
         modelId: model.id,
@@ -495,10 +500,17 @@ async function describeImagesWithModelInternal(
     }
 
     const resolvedRuntimeContext = getResolvedImageRuntimeContext(model);
-    const providerStreamFn = registerProviderStreamForModel({
+    // Prepared auth may carry sentinel-protected request headers. Resolve them only at this
+    // final direct-completion boundary so provider SDKs never receive sentinel placeholders.
+    const requestModel = unwrapModelHeaderSentinelsForProviderEgress(
       model,
+      "image description provider request",
+    );
+    const providerStreamFn = registerProviderStreamForModel({
+      model: requestModel,
       cfg: resolvedRuntimeContext?.cfg ?? params.cfg,
       agentDir: resolvedRuntimeContext?.agentDir ?? params.agentDir,
+      wrapProviderStream: true,
       ...(resolvedRuntimeContext?.workspaceDir
         ? { workspaceDir: resolvedRuntimeContext.workspaceDir }
         : params.workspaceDir
@@ -513,9 +525,10 @@ async function describeImagesWithModelInternal(
     const maxTokens = resolveImageToolMaxTokens(model.maxTokens, params.maxTokens);
     const completeImage = async (onPayload?: ProviderStreamOptions["onPayload"]) => {
       params.signal?.throwIfAborted();
+      assertResourcesOpen?.();
       const payloadHandler = composeImageDescriptionPayloadHandlers(onPayload, options.onPayload);
       const timeoutMs = configuredTimeoutMs;
-      const headers = buildImageRequestHeaders(model);
+      const headers = buildImageRequestHeaders(requestModel);
       const streamOptions = {
         apiKey,
         maxTokens,
@@ -524,9 +537,14 @@ async function describeImagesWithModelInternal(
         ...(headers ? { headers } : {}),
         ...(payloadHandler ? { onPayload: payloadHandler } : {}),
       };
-      const task: Promise<AssistantMessage> = providerStreamFn
-        ? (async () => await (await providerStreamFn(model, context, streamOptions)).result())()
-        : complete(model, context, streamOptions);
+      const task: Promise<AssistantMessage> = trackAsyncWork(() => {
+        if (!providerStreamFn) {
+          return complete(requestModel, context, streamOptions);
+        }
+        const stream = providerStreamFn(requestModel, context, streamOptions);
+        // Acquire consumption before yielding so retirement cannot strand the returned stream.
+        return runPluginStreamConsumer(stream, async () => await (await stream).result());
+      });
       return await withImageDescriptionTimeout({
         controller,
         signal: params.signal,
@@ -563,9 +581,7 @@ async function describeImagesWithModelInternal(
       model: model.id,
     });
     return { text, model: model.id };
-  } finally {
-    releaseRuntime?.();
-  }
+  });
 }
 
 function toImagesDescriptionRequest(params: ImageDescriptionRequest): ImagesDescriptionRequest {
@@ -594,30 +610,30 @@ function toImagesDescriptionRequest(params: ImageDescriptionRequest): ImagesDesc
   };
 }
 
-export async function describeImagesWithModel(
+export async function describeImagesWithModelCore(
   params: ImagesDescriptionRequest,
 ): Promise<ImagesDescriptionResult> {
   return await describeImagesWithModelInternal(params);
 }
 
-export async function describeImagesWithModelPayloadTransform(
+export async function describeImagesWithModelPayloadTransformCore(
   params: ImagesDescriptionRequest,
   onPayload: ProviderStreamOptions["onPayload"],
 ): Promise<ImagesDescriptionResult> {
   return await describeImagesWithModelInternal(params, { onPayload });
 }
 
-export async function describeImageWithModel(
+export async function describeImageWithModelCore(
   params: ImageDescriptionRequest,
 ): Promise<ImageDescriptionResult> {
-  return await describeImagesWithModel(toImagesDescriptionRequest(params));
+  return await describeImagesWithModelCore(toImagesDescriptionRequest(params));
 }
 
-export async function describeImageWithModelPayloadTransform(
+export async function describeImageWithModelPayloadTransformCore(
   params: ImageDescriptionRequest,
   onPayload: ProviderStreamOptions["onPayload"],
 ): Promise<ImageDescriptionResult> {
-  return await describeImagesWithModelPayloadTransform(
+  return await describeImagesWithModelPayloadTransformCore(
     toImagesDescriptionRequest(params),
     onPayload,
   );

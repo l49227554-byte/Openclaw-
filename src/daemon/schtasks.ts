@@ -1,17 +1,20 @@
-/** Public Windows Task Scheduler service adapter. */
+/** Windows Task Scheduler installer, startup fallback, and lifecycle controls. */
 export {
-  isScheduledTaskInstalled,
-  installScheduledTask,
   restartScheduledTask,
-  stageScheduledTask,
+  resumeScheduledTaskAutoStartAfterUpdate,
   startScheduledTask,
   stopScheduledTask,
+  suspendScheduledTaskAutoStartForUpdate,
+} from "./schtasks-control.js";
+export {
+  installScheduledTask,
+  stageScheduledTask,
   uninstallScheduledTask,
 } from "./schtasks-install.js";
+export { readScheduledTaskCommand, resolveTaskScriptPath } from "./schtasks-layout.js";
 export {
+  isScheduledTaskEnabled,
+  isScheduledTaskInstalled,
   readScheduledTaskRuntime,
   readWindowsStartupFallbackRuntimeForUpdate,
-  resumeScheduledTaskAutoStartAfterUpdate,
-  suspendScheduledTaskAutoStartForUpdate,
 } from "./schtasks-runtime.js";
-export { readScheduledTaskCommand, resolveTaskScriptPath } from "./schtasks-script.js";

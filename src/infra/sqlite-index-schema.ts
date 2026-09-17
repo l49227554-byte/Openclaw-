@@ -1,8 +1,13 @@
+import { performance } from "node:perf_hooks";
 import type { DatabaseSync } from "node:sqlite";
 import {
   assertSqliteIntegrity,
   assertSqliteTableIntegrity,
   isTerminalSqliteIntegrityError,
+  runSqliteIntegrityOperationSync,
+  sqliteIntegrityCheckSteps,
+  type SqliteIntegrityDiagnostics,
+  type SqliteIntegrityOperation,
 } from "./sqlite-integrity.js";
 import {
   collectSqliteNamedIndexContract,
@@ -19,6 +24,75 @@ type SqliteIndexListRow = {
   unique: number;
 };
 
+type RepairCanonicalSqliteIndexesOptions = {
+  /**
+   * A recognized schema migration may add a column before recreating its
+   * canonical index. No other repair failure is deferred.
+   */
+  allowMissingColumns?: boolean;
+  /** Keep index repair atomic with the caller's whole-schema validation. */
+  validateAfterRepair?: () => void;
+  verifyPhysicalIntegrity?: boolean;
+};
+
+/**
+ * Verify the whole file once, then use table scans only to locate repairable
+ * index damage. Healthy opens must not multiply integrity work by table count.
+ */
+export function verifyAndRepairCanonicalSqliteIndexes(
+  db: DatabaseSync,
+  databaseLabel: string,
+  schemaSql: string,
+  options: Omit<RepairCanonicalSqliteIndexesOptions, "verifyPhysicalIntegrity"> = {},
+): string[] {
+  return runSqliteIntegrityOperationSync(
+    verifyAndRepairCanonicalSqliteIndexSteps(db, databaseLabel, schemaSql, options),
+  );
+}
+
+export function* verifyAndRepairCanonicalSqliteIndexSteps(
+  db: DatabaseSync,
+  databaseLabel: string,
+  schemaSql: string,
+  options: Omit<RepairCanonicalSqliteIndexesOptions, "verifyPhysicalIntegrity"> & {
+    diagnostics?: SqliteIntegrityDiagnostics;
+    reuseIntegrity?: boolean;
+  } = {},
+): SqliteIntegrityOperation<string[]> {
+  const { diagnostics, reuseIntegrity, ...repairOptions } = options;
+  let integrityFailure: Error | undefined;
+  try {
+    if (reuseIntegrity) {
+      if (diagnostics) {
+        diagnostics.integrityGateOutcome = "cached";
+      }
+    } else {
+      yield* sqliteIntegrityCheckSteps(db, databaseLabel, diagnostics);
+    }
+  } catch (error) {
+    if (!(error instanceof Error) || !isTerminalSqliteIntegrityError(error)) {
+      throw error;
+    }
+    integrityFailure = error;
+  }
+
+  const indexesStartedAt = performance.now();
+  const repairedIndexes = repairCanonicalSqliteIndexes(db, databaseLabel, schemaSql, {
+    ...repairOptions,
+    verifyPhysicalIntegrity: integrityFailure !== undefined,
+  });
+  // A non-empty repair result already passed table and whole-file integrity
+  // checks inside the repair savepoint, so it supersedes the initial failure.
+  if (integrityFailure && repairedIndexes.length === 0) {
+    throw integrityFailure;
+  }
+  if (diagnostics) {
+    diagnostics.canonicalIndexMs = Math.floor(performance.now() - indexesStartedAt);
+    diagnostics.repairedIndexCount = repairedIndexes.length;
+  }
+  return repairedIndexes;
+}
+
 /**
  * Restore every named index when SQLite's IF NOT EXISTS semantics preserve a
  * same-name definition or b-tree that no longer matches the committed schema.
@@ -27,16 +101,7 @@ export function repairCanonicalSqliteIndexes(
   db: DatabaseSync,
   databaseLabel: string,
   schemaSql: string,
-  options: {
-    /**
-     * A recognized schema migration may add a column before recreating its
-     * canonical index. No other repair failure is deferred.
-     */
-    allowMissingColumns?: boolean;
-    /** Keep index repair atomic with the caller's whole-schema validation. */
-    validateAfterRepair?: () => void;
-    verifyPhysicalIntegrity?: boolean;
-  } = {},
+  options: RepairCanonicalSqliteIndexesOptions = {},
 ): string[] {
   const indexes = getCanonicalSqliteNamedIndexContracts(schemaSql);
   const indexesByTable = new Map<string, CanonicalSqliteNamedIndexContract[]>();

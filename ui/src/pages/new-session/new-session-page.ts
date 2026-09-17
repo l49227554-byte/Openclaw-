@@ -1,1751 +1,502 @@
 import { consume } from "@lit/context";
 import { html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
-import type {
-  FsListDirResult,
-  WorktreesBranchesResult,
-} from "../../../../packages/gateway-protocol/src/index.js";
+import { selectApplicationSession } from "../../app/agent-selection.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
-import { beginNativeWindowDragFromTopInset } from "../../app/native-window-drag.ts";
-import { hasOperatorAdminAccess } from "../../app/operator-access.ts";
-import { loadSettings } from "../../app/settings.ts";
-import "../../components/tooltip.ts";
-import "../../components/web-awesome-popover.ts";
+import { readPresenceEntries } from "../../app/user-profile.ts";
+import type { ImageLightboxItem } from "../../components/image-lightbox.ts";
 import { t } from "../../i18n/index.ts";
-import { listSelectableAgents } from "../../lib/agents/display.ts";
-import { searchForSession } from "../../lib/sessions/index.ts";
-import { buildAgentMainSessionKey, normalizeAgentId } from "../../lib/sessions/session-key.ts";
-import { normalizeOptionalString } from "../../lib/string-coerce.ts";
-import { generateUUID } from "../../lib/uuid.ts";
+import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
+import { normalizeAgentTargetLabel, resolveAgentTextAvatar } from "../../lib/agents/display.ts";
+import { resolveAgentAvatarUrl } from "../../lib/avatar.ts";
+import type { HumanMention } from "../../lib/chat/chat-types.ts";
+import "../../components/web-awesome-popover.ts";
+import { createIdleImport } from "../../lib/idle-import.ts";
+import { sessionNavigationTarget } from "../../lib/sessions/route-navigation.ts";
+import { buildAgentMainSessionKey } from "../../lib/sessions/session-key.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
-import "../../styles/chat.css";
+import { focusChatComposerFromPrintableKeydown } from "../chat/chat-pane-shared.ts";
+import "../../styles/chat/composer.css";
+import "../../styles/chat/composer-surface.css";
 import "../../styles/new-session.css";
-import { buildChatApiAttachments, restoreChatApiAttachments } from "../chat/attachment-api.ts";
+import { renderChatImageLightbox } from "../chat/components/chat-image-lightbox.ts";
 import { renderWelcomeState } from "../chat/components/chat-welcome.ts";
-import { prepareInitialUserMessageHandoff } from "../chat/initial-turn-handoff.ts";
-import { NewSessionAttachmentDraft } from "./attachment-draft.ts";
 import * as catalog from "./catalog-target.ts";
-import { CloudProfileDiscovery, selectProfiles } from "./cloud-profile-discovery.ts";
-import { PendingCloudRecoveryState, resolveScope } from "./cloud-recovery-state.ts";
-import { advanceCloudDraftSession } from "./cloud-submit.ts";
-import { renderDraftError, renderNewSessionDraftComposer } from "./composer.ts";
-import {
-  buildDraftSessionCreateParams,
-  canStartSessionAsDraft,
-  isWorktreeNameValid,
-  type NewSessionVisibility,
-} from "./create-params.ts";
-import {
-  type BrowserTarget,
-  type DraftCloudProfile,
-  type DraftNode,
-  type DraftRepositoryState,
-  readDraftNodes,
-} from "./discovery.ts";
-import { GatewayNameDiscovery } from "./gateway-name-discovery.ts";
+import { NewSessionDictationControl } from "./composer-dictation-control.ts";
+import { ConnectMachineSetupState, renderConnectMachineDialog } from "./connect-machine-dialog.ts";
+import { renderNewSessionBody } from "./draft-composer.ts";
+import { DraftGatewayState } from "./draft-gateway-state.ts";
+import * as drafts from "./draft-navigation-handoff.ts";
+import { DraftPlaceBrowser } from "./draft-place-browser.ts";
+import { DraftPlaceState } from "./draft-place-state.ts";
+import { DraftSubmissionFlow } from "./draft-submission-flow.ts";
+import { NewSessionTitleController } from "./draft-title.ts";
+import { renderNewSessionDraftView } from "./draft-view.ts";
+import { renderNewSessionIncognitoControl } from "./incognito-control.ts";
+import { forgetInstantThreadPage } from "./instant-thread-restore.ts";
 import type { NewSessionRouteData } from "./location.ts";
-import { NewSessionModelControl } from "./model-control.ts";
-import { isAbsolutePath } from "./path.ts";
-import { renderPlaceSelect } from "./place-picker.ts";
-import { retainRejectedInitialTurn } from "./rejected-initial-turn.ts";
-import { renderAgentSelect } from "./target-controls.ts";
+import {
+  closeAgentPicker,
+  closeSessionMenus,
+  createControllerHost,
+  isPlaceTopologyEvent,
+  nodePresenceStateSignature,
+} from "./new-session-runtime.ts";
+import type { SubmissionOutcomeReason } from "./session-placement-recovery-state.ts";
+import { renderAgentSelect, renderNewSessionPlaceControls } from "./target-controls.ts";
 
-const CATALOG_RETRY_DELAYS_MS = [0, 1_000, 3_000] as const;
+registerNewSessionSetupEnglish();
 
-type FailedOptimisticDraft = {
-  routeKey: string;
-  gatewayUrl: string;
-  recoveryScope: string;
-  agentId: string;
-  agentSelectedByUser: boolean;
-  folder: string;
-  folderSelectedByUser: boolean;
-  worktree: boolean;
-  visibility: NewSessionVisibility;
-  worktreeName: string;
-  baseRef: string;
-  repository: DraftRepositoryState;
-  execNode: string;
-  message: string;
-  attachments: unknown[] | undefined;
-  model: string;
-  thinkingLevel: string;
-  error: string;
-  outcomeUnknown: boolean;
-};
+const { activateDraft, restoreDraft, restoreDraftOwner, retainDraft } = drafts;
 
-type ActiveOptimisticSubmission = {
-  sessionKey: string;
-  gatewayUrl: string;
-  recoveryScope: string;
-  previousSessionKey: string;
-};
-
-// Optimistic navigation unmounts this route before creation settles. Keep one
-// failed draft for the replacement /new route to consume during rollback.
-let failedOptimisticDraft: FailedOptimisticDraft | null = null;
-let activeOptimisticSubmission: ActiveOptimisticSubmission | null = null;
-
-class NewSessionPage extends OpenClawLightDomElement {
+export class NewSessionPage extends OpenClawLightDomElement {
   @property({ attribute: false }) data: NewSessionRouteData | undefined;
 
   @consume({ context: applicationContext, subscribe: true })
   private context?: ApplicationContext;
 
-  @state() private agentId = "";
-  @state() private folder = "";
-  @state() private worktree = false;
-  @state() private visibility: NewSessionVisibility = "normal";
-  @state() private worktreeName = "";
-  @state() private baseRef = "";
-  @state() private repository: DraftRepositoryState = { kind: "idle" };
-  @state() private nodes: DraftNode[] = [];
-  @state() private gatewayName = "";
-  @state() private execNode = "";
-  @state() private cloudProfiles: DraftCloudProfile[] = [];
-  @state() private cloudProfilesHydrated = false;
-  @state() private cloudProfileId = "";
-  @state() private message = "";
-  @state() private submitting = false;
-  @state() private submissionOutcomeUnknown = false;
-  @state() private error: string | null = null;
-  @state() private catalogRetrying = false;
-  @state() private browserLoading = false;
-  @state() private browserError: string | null = null;
-  @state() private browserListing: FsListDirResult | null = null;
-  @state() private browserTarget: BrowserTarget | null = null;
-  @state() private placePopoverOpen = false;
-  @state() private placePopoverHiding = false;
-  // Live head input; absolute paths stay applicable even without fs.listDir.
-  @state() private browserPathDraft = "";
-
+  private retainedForHandoff: object | null = null;
   private openedFor: string | null = null;
-  private agentsHydrated = false;
-  private nodesHydrated = false;
-  // Discovery retry provenance separates user choices from Gateway-derived defaults.
-  private agentSelectedByUser = false;
-  private folderSelectedByUser = false;
-  private submitRequestToken = 0;
-  private draftInteractionGeneration = 0;
-  private nodesRequestToken = 0;
-  private readonly gatewayNameDiscovery = new GatewayNameDiscovery(
-    () => this.context?.gateway.snapshot,
-    (name) => (this.gatewayName = name),
+  private readonly critterImport = createIdleImport(
+    () => import("../../components/lobster-pet.runtime.ts"),
   );
-  private readonly pendingCloud = new PendingCloudRecoveryState();
-  private readonly cloudProfileDiscovery = new CloudProfileDiscovery({
-    snapshot: () => ({
-      connected: this.gatewayConnected,
-      client: this.gatewayClient,
-      admin: this.isAdmin(),
-      pendingCloud: Boolean(this.pendingCloud.sessionKey),
-      selectedId: this.cloudProfileId,
-    }),
-    update: ({ profiles, hydrated, clearSelection, selectionUnavailable }) => {
-      const recovery = selectProfiles(profiles, this.gatewayClient, this.gatewayRecoveryScope);
-      this.cloudProfiles = recovery.profiles;
-      this.cloudProfilesHydrated = hydrated;
-      if (clearSelection) {
-        this.cloudProfileId = "";
-        this.closeBrowser();
-      }
-      if (selectionUnavailable) {
-        this.error = t("newSession.catalogUnavailable");
-      } else if (recovery.unsupported) {
-        this.error = t("newSession.cloudSecureContextRequired");
-      } else if (this.error === t("newSession.cloudSecureContextRequired")) {
-        this.error = null;
-      }
-    },
-  });
-  private branchesRequestToken = 0;
-  private baseRefEditGeneration = 0;
-  private browserRequestToken = 0;
-  private readonly attachmentDraft = new NewSessionAttachmentDraft(() => this.requestUpdate());
-  private readonly modelControl = new NewSessionModelControl(() => this.requestUpdate());
-  private gatewaySource: ApplicationContext["gateway"] | null = null;
-  private gatewayClient: ApplicationContext["gateway"]["snapshot"]["client"] = null;
-  private gatewayUrl = "";
-  private gatewayRecoveryScope = "";
-  private gatewayRecoveryScopeReady = false;
-  private gatewayConnected = false;
-  private gatewayConnectionEpoch = 0;
-  private catalogRetryScope = "";
-  private catalogRetryAttempt = 0;
-  private catalogRetryTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+  private openedGroupDefaults = "";
+  private openedAgentId = "";
+  private messageOwnerKey = "";
+  private presenceSignature = "";
+  private readonly connectMachine: ConnectMachineSetupState;
+  @state() private imageLightbox: ImageLightboxItem | null = null;
+  @state() private agentPickerOpen = false;
+  private readonly groupRouteRevalidation = new catalog.GroupRouteRevalidation(
+    () => this.data,
+    () => this.context?.revalidate("new-session"),
+  );
+  private readonly gateway: DraftGatewayState;
+  private readonly browser: DraftPlaceBrowser;
+  private readonly place: DraftPlaceState;
+  private readonly submission: DraftSubmissionFlow;
+  private readonly dictation: NewSessionDictationControl;
+  private readonly subscriptions: SubscriptionsController;
+  private readonly titlePreparation = new NewSessionTitleController(this, () => ({
+    context: this.context,
+    data: this.data,
+    place: this.place,
+    submission: this.submission,
+    dictating: this.dictation.active,
+  }));
+  private readonly flushDraft = () => this.submission.draftPersistence.persistNow();
+  private readonly setImageLightbox = (item: ImageLightboxItem | null) => {
+    this.imageLightbox = item;
+  };
 
-  // Re-render when agents/sessions hydrate so the hero identity and the
-  // recent-chats list appear without a route change.
-  private readonly subscriptions = new SubscriptionsController(this)
-    .watch(
-      () => this.context?.gateway,
-      (gateway, notify) => gateway.subscribe(notify),
-      (gateway) => this.synchronizeGateway(gateway),
-    )
-    .watch(
-      () => this.context?.agents,
-      (agents, notify) => agents.subscribe(notify),
-    )
-    .watch(
-      () => this.context?.sessions,
-      (sessions, notify) => sessions.subscribe(notify),
+  constructor() {
+    super();
+    const host = createControllerHost(this);
+    this.gateway = new DraftGatewayState(
+      host,
+      () => ({
+        context: this.context,
+        data: this.data,
+        isConnected: this.isConnected,
+        isAdmin: this.place?.isAdmin() ?? false,
+        canStartAsDraft: this.submission?.capabilities.canStartAsDraft(this.context) ?? false,
+        visibility: this.submission?.visibility ?? "normal",
+        cloudProfileId: this.place?.cloudProfileId ?? "",
+        pendingPlacement: this.submission?.pendingPlacement ?? {
+          sessionKey: "",
+          gatewayUrl: "",
+          recoveryScope: "",
+        },
+        agentsHydrated: this.place?.agentsHydrated ?? false,
+        runtimeId: this.place?.devicePlacementRuntime()?.id ?? "",
+      }),
+      {
+        requestUpdate: () => this.requestUpdate(),
+        updateComplete: () => this.updateComplete,
+        onInvalidate: (resetHostSelection, outcome) =>
+          this.invalidateGatewayDiscovery(resetHostSelection, outcome),
+        onVisibilityRetired: () => this.submission.setVisibility("normal"),
+        onCloudProfileCleared: () => this.place.clearCloudProfile(),
+        onCloudState: (error) => this.submission.setError(error),
+        onPendingPlacementReset: () => this.submission.releasePendingPlacementOwner(),
+        onRecoveryReady: (gatewayUrl, recoveryScope) =>
+          restoreDraftOwner(this.submission, gatewayUrl, recoveryScope),
+        onAdoptAgentDefaults: () =>
+          this.place.adoptAgentDefaults({
+            preserveSelectedAgent: true,
+            preserveSelectedFolder: true,
+          }),
+      },
     );
-
-  private synchronizeGateway(gateway: ApplicationContext["gateway"]) {
-    const snapshot = gateway.snapshot;
-    const connected = snapshot.phase === "connected";
-    const firstBind = this.gatewaySource === null;
-    const gatewayUrlChanged = !firstBind && this.gatewayUrl !== gateway.connection.gatewayUrl;
-    const identityChanged =
-      !firstBind && (this.gatewaySource !== gateway || this.gatewayClient !== snapshot.client);
-    const connectionChanged = !firstBind && this.gatewayConnected !== connected;
-    const becameConnected = connected && (identityChanged || !this.gatewayConnected);
-    const recoveryScopeBecameReady =
-      connected && snapshot.client?.recoveryScopeReady === true && !this.gatewayRecoveryScopeReady;
-    const recoveryScope = resolveScope(
-      { client: snapshot.client, connected },
-      this.gatewayRecoveryScope,
-      firstBind,
+    this.browser = new DraftPlaceBrowser(
+      host,
+      this.gateway,
+      () => ({
+        context: this.context,
+        isAdmin: this.place?.isAdmin() ?? false,
+      }),
+      {
+        requestUpdate: () => this.requestUpdate(),
+        onProjectMissing: () => this.place.clearProjectSelection(),
+        onSelectProject: (projectId) => this.place.selectProjectId(projectId),
+        onApprovedListing: (listing) => this.place.recordGatewayApprovedListing(listing),
+        querySelector: (selector) => this.querySelector(selector),
+        activeElement: () => this.ownerDocument.activeElement,
+        body: () => this.ownerDocument.body,
+      },
     );
-    this.gatewaySource = gateway;
-    this.gatewayClient = snapshot.client;
-    this.gatewayUrl = gateway.connection.gatewayUrl;
-    this.gatewayRecoveryScope = recoveryScope.next;
-    this.gatewayRecoveryScopeReady = snapshot.client?.recoveryScopeReady === true;
-    this.gatewayConnected = connected;
-    if (this.visibility === "draft" && !this.canStartAsDraft()) {
-      this.visibility = "normal";
-    }
-    if (gatewayUrlChanged || identityChanged || connectionChanged || recoveryScope.changed) {
-      this.invalidateGatewayDiscovery(gatewayUrlChanged || recoveryScope.changed);
-    }
-    if (
-      firstBind ||
-      gatewayUrlChanged ||
-      recoveryScope.changed ||
-      recoveryScopeBecameReady ||
-      becameConnected
-    ) {
-      if (
-        this.pendingCloud.gatewayUrl &&
-        (this.pendingCloud.gatewayUrl !== this.gatewayUrl ||
-          this.pendingCloud.recoveryScope !== this.gatewayRecoveryScope)
-      ) {
-        this.pendingCloud.reset();
-        this.submissionOutcomeUnknown = false;
-      }
-      if (connected && snapshot.client?.recoveryScopeReady) {
-        this.restorePendingCloudRecovery(this.gatewayUrl, this.gatewayRecoveryScope);
-      }
-    }
-    if (becameConnected || recoveryScope.changed) {
-      if (becameConnected) {
-        this.gatewayConnectionEpoch += 1;
-        this.retryPendingCatalogTarget();
-        void this.gatewayNameDiscovery.load();
-      }
-      void this.cloudProfileDiscovery.load();
-    }
-  }
-
-  private invalidateGatewayDiscovery(resetHostSelection: boolean) {
-    this.nodesRequestToken += 1;
-    this.nodesHydrated = false;
-    this.gatewayNameDiscovery.invalidate();
-    this.cloudProfileDiscovery.invalidate();
-    this.branchesRequestToken += 1;
-    this.repository = { kind: "idle" };
-    this.baseRef = ""; // Never carry a derived ref across a transport epoch.
-    this.agentsHydrated = false;
-    this.modelControl.invalidate(resetHostSelection);
-    this.attachmentDraft.abortReads();
-    this.closeBrowser();
-    this.invalidateSubmission(true); // Transport loss makes an in-flight create outcome unknowable.
-    if (!resetHostSelection) {
-      return;
-    }
-    if (this.pendingCloud.sessionKey) {
-      // Keep the original Gateway identity so a failed teardown cannot hide a worker elsewhere.
-      this.pendingCloud.retryAllowed = false;
-      this.submissionOutcomeUnknown = true;
-    }
-    // A replacement client may target another Gateway. Keep the user's task,
-    // but retire every selection and discovery result owned by the old host.
-    this.agentId = "";
-    this.agentSelectedByUser = false;
-    this.folder = "";
-    this.folderSelectedByUser = false;
-    this.worktree = false;
-    this.visibility = "normal";
-    this.worktreeName = "";
-    this.baseRefEditGeneration += 1;
-    this.nodes = [];
-    this.execNode = "";
-    this.cloudProfileId = "";
-    this.error = null;
-  }
-
-  private retryPendingCatalogTarget() {
-    if (this.catalogRetrying) {
-      return;
-    }
-    if (
-      !this.gatewayConnected ||
-      !catalog.isTarget(this.data) ||
-      catalog.isResolvedTarget(this.data)
-    ) {
-      globalThis.clearTimeout(this.catalogRetryTimer);
-      this.catalogRetryTimer = undefined;
-      this.catalogRetryScope = "";
-      this.catalogRetryAttempt = 0;
-      return;
-    }
-    const retryScope = `${this.gatewayConnectionEpoch}:${catalog.routeKey(this.data)}`;
-    if (this.catalogRetryScope !== retryScope) {
-      globalThis.clearTimeout(this.catalogRetryTimer);
-      this.catalogRetryTimer = undefined;
-      this.catalogRetryScope = retryScope;
-      this.catalogRetryAttempt = 0;
-    }
-    if (this.catalogRetryTimer || this.catalogRetryAttempt >= CATALOG_RETRY_DELAYS_MS.length) {
-      return;
-    }
-    const delayMs = CATALOG_RETRY_DELAYS_MS[this.catalogRetryAttempt];
-    this.catalogRetryAttempt += 1;
-    this.catalogRetryTimer = globalThis.setTimeout(() => {
-      this.catalogRetryTimer = undefined;
-      if (
-        this.catalogRetryScope !== retryScope ||
-        !this.gatewayConnected ||
-        !catalog.isTarget(this.data) ||
-        catalog.isResolvedTarget(this.data)
-      ) {
-        return;
-      }
-      const revalidation = this.context?.revalidate("new-session");
-      if (!revalidation) {
-        return;
-      }
-      void revalidation
-        .catch(() => undefined)
-        .then(() => this.updateComplete)
-        .then(() => this.retryPendingCatalogTarget());
-    }, delayMs);
+    this.place = new DraftPlaceState(
+      this.gateway,
+      this.browser,
+      () => ({
+        context: this.context,
+        data: this.data,
+        submitting: this.submission?.submitting ?? false,
+        pendingPlacementSessionKey: this.submission?.pendingPlacement.sessionKey ?? "",
+      }),
+      {
+        requestUpdate: () => this.requestUpdate(),
+        onError: (error) =>
+          error === null ? this.submission.clearError() : this.submission.setError(error),
+        onClearError: (error) => this.submission.clearError(error),
+      },
+    );
+    this.submission = new DraftSubmissionFlow(
+      this.gateway,
+      this.place,
+      () => ({ context: this.context, data: this.data, isConnected: this.isConnected }),
+      {
+        requestUpdate: () => this.requestUpdate(),
+        closeTransientUi: () => closeSessionMenus(this),
+        takePreparedTitle: () => this.titlePreparation.takePreparedTitle(),
+        retainForHandoff: () => {
+          if (!this.data || !this.isConnected) {
+            return undefined;
+          }
+          const retention = {};
+          this.retainedForHandoff = retention;
+          return {
+            page: this,
+            data: this.data,
+            synchronizeGateway: () => {
+              if (this.context) {
+                this.gateway.synchronize(this.context.gateway);
+              }
+            },
+            release: () => {
+              if (this.retainedForHandoff !== retention) {
+                return;
+              }
+              this.retainedForHandoff = null;
+              if (!this.isConnected) {
+                this.disposeDraft();
+              }
+            },
+          };
+        },
+      },
+    );
+    this.connectMachine = new ConnectMachineSetupState(
+      () => ({ client: this.gateway.client, connected: this.gateway.connected }),
+      () => this.requestUpdate(),
+    );
+    this.dictation = new NewSessionDictationControl({
+      textarea: this.submission.composerTextarea,
+      getClient: () => this.gateway.client,
+      isConnected: () => this.gateway.connected,
+      canCommit: () => !this.submission.submitting && !this.submission.pendingPlacement.sessionKey,
+      onMessage: (message) => this.setMessageFromUser(message),
+      onError: (message) => this.submission.setError(message),
+      onSubmit: () => void this.submission.submit(),
+      requestUpdate: () => this.requestUpdate(),
+    });
+    this.subscriptions = new SubscriptionsController(this)
+      .watch(
+        () => this.context?.theme,
+        (theme, notify) => theme.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.gateway,
+        (gateway, notify) => gateway.subscribe(notify),
+        (gateway) => this.gateway.synchronize(gateway),
+      )
+      .effect(
+        () => this.context?.gateway,
+        (gateway) => {
+          this.presenceSignature = nodePresenceStateSignature(
+            readPresenceEntries(gateway.snapshot.hello?.snapshot) ?? [],
+          );
+          return gateway.subscribeEvents((event) => {
+            if (this.context?.gateway !== gateway) {
+              return;
+            }
+            if (isPlaceTopologyEvent(event.event)) {
+              void this.gateway.refreshCloudProfiles();
+              this.gateway.handleCatalogRetry();
+              return;
+            }
+            const presence = event.event === "presence" ? readPresenceEntries(event.payload) : null;
+            if (!presence) {
+              return;
+            }
+            const signature = nodePresenceStateSignature(presence);
+            if (signature !== this.presenceSignature) {
+              this.presenceSignature = signature;
+              void this.gateway.refreshCloudProfiles();
+              this.gateway.handleCatalogRetry();
+            }
+          });
+        },
+      )
+      .watch(
+        () => this.context?.agents,
+        (agents, notify) => agents.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.agentIdentity,
+        (agentIdentity, notify) => agentIdentity.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.sessions,
+        (sessions, notify) => sessions.subscribe(notify),
+        (sessions) => this.groupRouteRevalidation.synchronize(sessions),
+      )
+      .watch(
+        () => this.context?.runtimeConfig,
+        (runtimeConfig, notify) => runtimeConfig.subscribe(notify),
+      )
+      .watch(
+        () => this.context?.config,
+        (config, notify) => config.subscribe(() => notify()),
+      );
   }
 
   handleEvent(event: Event) {
-    if (event.currentTarget === this && (event.type === "input" || event.type === "change")) {
-      this.draftInteractionGeneration += 1;
-    }
-    const picker = this.querySelector<HTMLDetailsElement>(".chat-controls__model[open]");
-    if (!picker) {
-      return;
-    }
-    if (event.type === "keydown") {
-      const keyEvent = event as KeyboardEvent;
-      if (keyEvent.defaultPrevented || keyEvent.key !== "Escape") {
-        return;
-      }
-      const restoreFocus = event.composedPath().includes(picker);
-      keyEvent.preventDefault();
-      picker.open = false;
-      // Closing details does not move focus out of its now-hidden controls.
-      if (restoreFocus) {
-        picker.querySelector<HTMLElement>("summary")?.focus();
-      }
-      return;
-    }
-    if (!event.composedPath().includes(picker)) {
-      picker.open = false;
+    if (event instanceof KeyboardEvent) {
+      focusChatComposerFromPrintableKeydown(this, event);
     }
   }
 
   override connectedCallback() {
     super.connectedCallback();
-    this.addEventListener("input", this);
-    this.addEventListener("change", this);
-    // /new renders chat controls without ChatPane, so the route owns both
-    // pointer and Escape light-dismissal for the combined picker.
+    this.submission.draftPersistence.connect();
+    this.critterImport.schedule();
     document.addEventListener("keydown", this, true);
-    document.addEventListener("pointerdown", this, true);
+    window.addEventListener("beforeunload", this.flushDraft);
   }
 
   override disconnectedCallback() {
-    this.removeEventListener("input", this);
-    this.removeEventListener("change", this);
+    this.critterImport.dispose();
     document.removeEventListener("keydown", this, true);
-    document.removeEventListener("pointerdown", this, true);
+    window.removeEventListener("beforeunload", this.flushDraft);
     this.subscriptions.clear();
-    // This invalidates submitRequestToken before payload release below, so a
-    // late sessions.create result cannot navigate with attachments we no longer own.
-    this.invalidateGatewayDiscovery(true);
-    this.gatewaySource = null;
-    this.gatewayClient = null;
-    this.gatewayConnected = false;
-    this.gatewayConnectionEpoch = 0;
-    this.catalogRetryScope = "";
-    this.catalogRetryAttempt = 0;
-    globalThis.clearTimeout(this.catalogRetryTimer);
-    this.catalogRetryTimer = undefined;
-    this.attachmentDraft.reset({ release: true });
-    this.cloudProfileDiscovery.stop();
+    this.dictation.dispose();
+    this.connectMachine.close();
+    if (!this.retainedForHandoff) {
+      this.disposeDraft();
+    }
     super.disconnectedCallback();
   }
 
+  private disposeDraft() {
+    forgetInstantThreadPage(this.data, this);
+    retainDraft(this.context, this.submission, this.openedFor, this.messageOwnerKey);
+    this.gateway.invalidateDiscovery(
+      true,
+      this.submission.pendingPlacement.sessionKey ? "placement-interrupted" : "gateway-changed",
+    );
+    this.gateway.disconnect();
+    this.browser.disconnect();
+    this.submission.disconnect();
+  }
+
   override updated() {
-    this.retryPendingCatalogTarget();
+    if (this.connectMachine.open && !this.place.isAdmin()) {
+      this.connectMachine.close();
+    }
+    this.gateway.retryPendingCatalogTarget();
+    void this.context?.agentIdentity.ensure(
+      this.agentPickerOpen ? this.place.agents().map((agent) => agent.id) : [this.place.agentId],
+    );
     const agentState = this.context?.agents.state;
     const agentsReady = Boolean(
-      this.gatewayConnected &&
-      this.gatewayClient &&
+      this.gateway.connected &&
+      this.gateway.client &&
       agentState?.connected &&
-      agentState.client === this.gatewayClient &&
-      this.agents().length > 0,
+      agentState.client === this.gateway.client &&
+      this.place.agents().length > 0,
     );
-    const openKey = catalog.routeKey(this.data);
+    this.place.modelControl.loadCatalogTargets(
+      this.context,
+      agentsReady && this.place.agentId ? (this.place.selectedAgent()?.id ?? "") : "",
+      this.context?.config.current.cliAgentsEnabled === true && !catalog.isTarget(this.data),
+    );
+    const openKey = this.routeOwnerKey();
+    const resolvedAgentId = this.data?.agentId ?? "";
+    const groupDefaults = catalog.groupDefaultsKey(this.data);
     if (this.openedFor !== openKey) {
+      // Ordinary drafts release previews on reset and restore through durable storage.
+      if (this.openedFor !== null && this.submission.visibility === "incognito") {
+        retainDraft(this.context, this.submission, this.openedFor, this.messageOwnerKey);
+      }
+      const ownedMessage = this.messageOwnerKey === openKey ? this.submission.message : "";
+      const ownedMentions = this.messageOwnerKey === openKey ? this.submission.mentions : undefined;
       this.openedFor = openKey;
-      this.agentsHydrated = agentsReady;
+      this.openedGroupDefaults = groupDefaults;
+      this.openedAgentId = resolvedAgentId;
+      this.place.setAgentsHydrated(agentsReady);
       this.resetDraft();
+      this.messageOwnerKey = restoreDraft(
+        this.context,
+        this.submission,
+        openKey,
+        ownedMessage,
+        ownedMentions,
+      );
       return;
     }
-    // A hard reload can land here before agents.list resolves. Once the list
-    // arrives, adopt only agent-derived defaults; a full reset would discard
-    // anything the user already typed while the list was loading.
-    if (!this.agentsHydrated && agentsReady) {
-      this.agentsHydrated = true;
-      this.adoptAgentDefaults({ preserveSelectedAgent: true, preserveSelectedFolder: true });
+    if (this.openedGroupDefaults !== groupDefaults) {
+      this.openedGroupDefaults = groupDefaults;
+      this.place.adoptGroupDefaults();
     }
-  }
-
-  private readonly handleCatalogRetry = () => {
-    if (
-      this.catalogRetrying ||
-      !this.gatewayConnected ||
-      !catalog.isTarget(this.data) ||
-      catalog.isResolvedTarget(this.data)
-    ) {
-      return;
+    if (this.openedAgentId !== resolvedAgentId) {
+      this.openedAgentId = resolvedAgentId;
+      this.place.setAgentsHydrated(false);
     }
-    const revalidation = this.context?.revalidate("new-session");
-    if (!revalidation) {
-      return;
-    }
-    globalThis.clearTimeout(this.catalogRetryTimer);
-    this.catalogRetryTimer = undefined;
-    this.catalogRetrying = true;
-    void revalidation
-      .catch(() => undefined)
-      .then(() => this.updateComplete)
-      .finally(() => {
-        this.catalogRetrying = false;
-        this.retryPendingCatalogTarget();
+    if (!this.place.agentsHydrated && agentsReady) {
+      this.place.setAgentsHydrated(true);
+      this.place.adoptAgentDefaults({
+        preserveSelectedAgent: true,
+        preserveSelectedFolder: true,
       });
-  };
-
-  private agents() {
-    return listSelectableAgents(this.context?.agents.state.agentsList?.agents ?? []);
+    }
+    this.place.restorePreferenceSelections();
+    this.place.synchronizeTerminalHosts();
+    activateDraft(this.submission, openKey);
+    this.submission.resumeInterruptedSubmission();
   }
 
-  private selectedAgent() {
-    const agentId = normalizeAgentId(this.agentId);
-    return this.agents().find((agent) => normalizeAgentId(agent.id) === agentId);
-  }
-
-  private execNodes(): DraftNode[] {
-    return this.nodes.filter((node) => node.canExec);
-  }
-
-  private isAdmin(): boolean {
-    return hasOperatorAdminAccess(this.context?.gateway.snapshot.hello?.auth ?? null);
-  }
-
-  private canStartAsDraft(): boolean {
-    return canStartSessionAsDraft({
-      allowedVisibilities: this.context?.gateway.snapshot.hello?.policy?.allowedSessionVisibilities,
-      hasMultipleIdentities:
-        this.context?.gateway.snapshot.hello?.policy?.hasMultipleSessionSharingIdentities,
-    });
-  }
-
-  private workspacePath(): string {
-    return normalizeOptionalString(this.selectedAgent()?.workspace) ?? "";
-  }
-
-  private usesCustomFolder(): boolean {
-    const folder = this.folder.trim();
-    return Boolean(folder) && folder !== this.workspacePath();
-  }
-
-  private adoptAgentDefaults(
-    options: { preserveSelectedAgent?: boolean; preserveSelectedFolder?: boolean } = {},
+  private invalidateGatewayDiscovery(
+    resetHostSelection: boolean,
+    submissionOutcome: SubmissionOutcomeReason,
   ) {
-    const agents = this.agents();
-    const configuredDefault = this.context?.agents.state.agentsList?.defaultId;
-    const fallback = agents.some((agent) => agent.id === configuredDefault)
-      ? (configuredDefault ?? "main")
-      : (agents[0]?.id ?? "main");
-    const keepSelectedAgent =
-      options.preserveSelectedAgent && this.agentSelectedByUser && Boolean(this.selectedAgent());
-    if (!keepSelectedAgent) {
-      this.agentId = catalog.resolveAgentId(this.data, agents, fallback);
-      this.agentSelectedByUser = false;
+    this.place.invalidateGatewayDiscovery(resetHostSelection);
+    this.submission.attachmentDraft.abortReads();
+    this.submission.invalidate(submissionOutcome);
+    if (resetHostSelection && this.submission.pendingPlacement.sessionKey) {
+      this.submission.markPendingPlacementUnavailable(submissionOutcome);
     }
-    const keepSelectedFolder = options.preserveSelectedFolder && this.folderSelectedByUser;
-    // A node cwd belongs to node discovery, and a locked cloud-recovery draft
-    // shows its staged repo; neither may be replaced by a workspace refresh.
-    if (!this.execNode && !keepSelectedFolder && !this.pendingCloud.sessionKey) {
-      this.folder = this.workspacePath();
-      this.folderSelectedByUser = false;
+    if (resetHostSelection) {
+      this.submission.clearError();
     }
-    void this.loadNodes();
-    this.modelControl.load(this.context, this.agentId, !catalog.isTarget(this.data));
-    this.maybeLoadBranches();
+    this.connectMachine.close();
   }
 
   private resetDraft() {
-    this.draftInteractionGeneration = 0;
-    const preservePendingCloud = Boolean(this.pendingCloud.sessionKey);
-    const recoveryCandidate =
-      failedOptimisticDraft?.routeKey === catalog.routeKey(this.data)
-        ? failedOptimisticDraft
-        : null;
-    const optimisticRecovery =
-      recoveryCandidate &&
-      recoveryCandidate.gatewayUrl === this.context?.gateway.connection.gatewayUrl &&
-      recoveryCandidate.recoveryScope === this.context?.gateway.snapshot.client?.recoveryScope
-        ? recoveryCandidate
-        : null;
-    if (recoveryCandidate) {
-      failedOptimisticDraft = null;
-    }
-    this.invalidateSubmission();
-    this.submissionOutcomeUnknown = preservePendingCloud;
-    this.agentSelectedByUser = false;
-    this.folder = "";
-    this.folderSelectedByUser = false;
-    this.worktree = false;
-    this.visibility = "normal";
-    this.worktreeName = "";
-    this.baseRef = "";
-    this.repository = { kind: "idle" };
-    this.execNode = "";
-    this.modelControl.reset();
-    this.attachmentDraft.reset({ release: true });
-    this.cloudProfileId = "";
-    if (preservePendingCloud) {
-      if (!this.pendingCloud.restored) {
-        this.pendingCloud.retryAllowed = false;
-      }
-      this.agentId = this.pendingCloud.agentId;
-      this.cloudProfileId = this.pendingCloud.profileId;
-      this.worktree = true;
-      this.visibility = this.pendingCloud.createParams?.incognito === true ? "incognito" : "normal";
-      // Show the staged repo (not the agent workspace) while the draft is locked.
-      this.folder = this.pendingCloud.createParams?.cwd ?? "";
-      this.pendingCloud.restored = false;
-      this.message = this.pendingCloud.message;
-      this.attachmentDraft.replace(restoreChatApiAttachments(this.pendingCloud.attachments));
-    } else if (optimisticRecovery) {
-      this.clearPendingCloudRecovery();
-      this.agentId = optimisticRecovery.agentId;
-      this.agentSelectedByUser = optimisticRecovery.agentSelectedByUser;
-      this.folder = optimisticRecovery.folder;
-      this.folderSelectedByUser = optimisticRecovery.folderSelectedByUser;
-      this.worktree = optimisticRecovery.worktree;
-      this.visibility = optimisticRecovery.visibility;
-      this.worktreeName = optimisticRecovery.worktreeName;
-      this.baseRef = optimisticRecovery.baseRef;
-      this.repository = optimisticRecovery.repository;
-      this.execNode = optimisticRecovery.execNode;
-      this.message = optimisticRecovery.message;
-      this.attachmentDraft.replace(restoreChatApiAttachments(optimisticRecovery.attachments));
-      this.modelControl.selected = optimisticRecovery.model;
-      this.modelControl.thinkingLevel = optimisticRecovery.thinkingLevel;
-    } else {
-      this.clearPendingCloudRecovery();
-      this.message = "";
-    }
-    this.submissionOutcomeUnknown =
-      preservePendingCloud || optimisticRecovery?.outcomeUnknown === true;
-    this.error = optimisticRecovery?.outcomeUnknown ? null : (optimisticRecovery?.error ?? null);
-    this.placePopoverHiding = false;
-    this.closeAgentDropdown();
-    this.closeBrowser();
-    if (optimisticRecovery && this.selectedAgent()) {
-      void this.loadNodes();
-      this.modelControl.load(this.context, this.agentId, !catalog.isTarget(this.data));
-    } else {
-      this.adoptAgentDefaults();
-    }
-    void this.updateComplete.then(() => {
-      this.querySelector<HTMLTextAreaElement>(".new-session-page__message")?.focus();
-    });
+    this.place.resetDraft();
+    this.submission.resetDraft();
+    this.messageOwnerKey = catalog.routeKey(this.data);
+    this.browser.clearPopoverHiding();
+    closeAgentPicker(this);
+    this.browser.close();
+    this.connectMachine.close();
+    this.place.adoptAgentDefaults();
   }
 
-  private invalidateSubmission(outcomeUnknown = false) {
-    this.submitRequestToken += 1;
-    if (outcomeUnknown && this.submitting) {
-      this.submissionOutcomeUnknown = true;
-    }
-    this.submitting = false;
+  private routeOwnerKey(): string {
+    return this.data
+      ? catalog.routeKey(this.data)
+      : catalog.routeKeyFromSearch(window.location.search);
   }
 
-  private clearPendingCloudRecovery() {
-    this.pendingCloud.clear();
-    this.submissionOutcomeUnknown = false;
-  }
-
-  private clearPendingCloudRecoveryFor(
-    gatewayUrl: string,
-    recoveryScope: string,
-    sessionKey: string,
-  ) {
-    this.pendingCloud.clearFor(gatewayUrl, recoveryScope, sessionKey);
-    if (!this.pendingCloud.sessionKey) {
-      this.submissionOutcomeUnknown = false;
+  private setMessageFromUser(message: string, mentions?: readonly HumanMention[]) {
+    if (!this.submission.submitting && !this.submission.pendingPlacement.sessionKey) {
+      this.submission.setMessage(message, mentions);
+      this.messageOwnerKey = catalog.routeKeyFromSearch(window.location.search);
     }
-  }
-
-  private restorePendingCloudRecovery(gatewayUrl: string, recoveryScope: string) {
-    const recovery = this.pendingCloud.restore(gatewayUrl, recoveryScope);
-    if (!recovery) {
-      return;
-    }
-    this.agentId = recovery.agentId;
-    this.cloudProfileId = recovery.profileId;
-    this.worktree = true;
-    this.visibility = recovery.createParams?.incognito === true ? "incognito" : "normal";
-    // Show the staged repo (not the agent workspace) while the draft is locked.
-    this.folder = recovery.createParams?.cwd ?? "";
-    this.message = recovery.message;
-    this.attachmentDraft.replace(restoreChatApiAttachments(recovery.attachments));
-  }
-
-  private async loadNodes() {
-    const requestId = ++this.nodesRequestToken;
-    this.nodesHydrated = false;
-    const snapshot = this.context?.gateway.snapshot;
-    const client = snapshot?.client;
-    if (snapshot?.phase !== "connected" || !client || !this.isAdmin()) {
-      this.nodes = [];
-      this.nodesHydrated = true;
-      return;
-    }
-    try {
-      const result = await client.request<{ nodes?: unknown }>("node.list", {});
-      if (requestId !== this.nodesRequestToken) {
-        return;
-      }
-      const nodes = readDraftNodes(result?.nodes);
-      this.nodes = nodes;
-      this.nodesHydrated = true;
-      if (this.execNode && !nodes.some((node) => node.nodeId === this.execNode && node.canExec)) {
-        // A reconnect can remove a device. Its cwd is not meaningful on the
-        // Gateway, so fall back to the selected agent's workspace as one unit.
-        this.execNode = "";
-        this.folder = this.workspacePath();
-        this.folderSelectedByUser = false;
-        this.worktree = false;
-        this.worktreeName = "";
-        this.closeBrowser();
-        this.maybeLoadBranches();
-      }
-    } catch {
-      if (requestId === this.nodesRequestToken) {
-        this.nodes = [];
-        this.nodesHydrated = true;
-      }
-    }
-  }
-
-  private maybeLoadBranches() {
-    // Repository capability and branch data belong to one Gateway folder.
-    // Reset them together so a previous checkout can never leak into create params.
-    const requestId = ++this.branchesRequestToken;
-    const baseRefEditGeneration = this.baseRefEditGeneration;
-    this.repository = { kind: "idle" };
-    this.baseRef = "";
-    if (this.execNode) {
-      return;
-    }
-    const repoRoot = this.folder.trim() || this.workspacePath();
-    const agent = this.selectedAgent();
-    const usesWorkspace = repoRoot === this.workspacePath();
-    if (!repoRoot) {
-      return;
-    }
-    if (usesWorkspace && agent?.workspaceGit !== true) {
-      this.repository = { kind: "direct", repoRoot };
-      if (!this.cloudProfileId) {
-        this.worktree = false;
-      }
-      return;
-    }
-    const snapshot = this.context?.gateway.snapshot;
-    const client = snapshot?.client;
-    if (snapshot?.phase !== "connected" || !client) {
-      return;
-    }
-    this.repository = { kind: "checking", repoRoot };
-    void client
-      .request<WorktreesBranchesResult>("worktrees.branches", {
-        repoRoot,
-        includeRepositoryStatus: true,
-      })
-      .then((result) => {
-        if (requestId !== this.branchesRequestToken) {
-          return;
-        }
-        if (result?.repositoryStatus !== "git") {
-          this.repository = {
-            kind: result?.repositoryStatus === "not_git" ? "direct" : "unavailable",
-            repoRoot,
-          };
-          if (result?.repositoryStatus === "not_git" && !this.cloudProfileId) {
-            this.worktree = false;
-          }
-          return;
-        }
-        this.repository = {
-          kind: "git",
-          repoRoot,
-          branches: result.branches,
-          ...(result.defaultBranch ? { defaultBranch: result.defaultBranch } : {}),
-          ...(result.headBranch ? { headBranch: result.headBranch } : {}),
-        };
-        // Discovery supplies a default only while the field is untouched;
-        // a user edit made during the request remains authoritative.
-        if (baseRefEditGeneration === this.baseRefEditGeneration) {
-          this.baseRef = result.defaultBranch ?? result.headBranch ?? "";
-        }
-      })
-      .catch(() => {
-        if (requestId !== this.branchesRequestToken) {
-          return;
-        }
-        this.repository = { kind: "unavailable", repoRoot };
-      });
-  }
-
-  private worktreeAvailable(): boolean {
-    if (this.execNode) {
-      return false;
-    }
-    if (this.repository.kind === "git") {
-      return true;
-    }
-    return (
-      this.repository.kind === "unavailable" &&
-      this.repository.repoRoot === this.workspacePath() &&
-      this.selectedAgent()?.workspaceGit === true
-    );
-  }
-
-  private cloudProfileForSubmission(): string {
-    return this.pendingCloud.sessionKey ? this.pendingCloud.profileId : this.cloudProfileId;
-  }
-
-  private cloudRuntimeUnsupportedReason(): string | undefined {
-    const runtime = this.modelControl.resolveAgentRuntimeId({
-      agent: this.selectedAgent(),
-      context: this.context,
-    });
-    return runtime && runtime !== "openclaw"
-      ? t("newSession.cloudRequiresOpenClawRuntime", { runtime })
-      : undefined;
-  }
-
-  private cloudDisabledReason(): string | undefined {
-    const runtimeReason = this.cloudRuntimeUnsupportedReason();
-    if (runtimeReason) {
-      return runtimeReason;
-    }
-    if (this.repository.kind === "checking") {
-      return t("newSession.checkingGit");
-    }
-    if (this.repository.kind === "unavailable" && !this.worktreeAvailable()) {
-      return t("newSession.gitCheckUnavailable");
-    }
-    return this.worktreeAvailable() ? undefined : t("newSession.cloudRequiresWorktree");
-  }
-
-  private canSubmit(): boolean {
-    const pendingCloud = Boolean(this.pendingCloud.sessionKey);
-    const cloudProfileId = this.cloudProfileForSubmission();
-    const message = pendingCloud ? this.pendingCloud.message : this.message.trim();
-    const hasAttachments = pendingCloud
-      ? Boolean(this.pendingCloud.attachments?.length)
-      : this.attachmentDraft.attachments.length > 0;
-    const gateway = this.context?.gateway;
-    if (
-      this.submitting ||
-      this.attachmentDraft.pendingReads > 0 ||
-      (!pendingCloud && this.submissionOutcomeUnknown) ||
-      (!message && !hasAttachments) ||
-      gateway?.snapshot.phase !== "connected" ||
-      !gateway.snapshot.client
-    ) {
-      return false;
-    }
-    if (pendingCloud) {
-      return Boolean(
-        this.pendingCloud.retryAllowed &&
-        gateway.snapshot.client.recoveryScopeReady &&
-        cloudProfileId &&
-        this.pendingCloud.agentId &&
-        this.pendingCloud.gatewayUrl === gateway.connection.gatewayUrl &&
-        this.pendingCloud.recoveryScope === gateway.snapshot.client?.recoveryScope &&
-        this.isAdmin(),
-      );
-    }
-    // Pre-hydration the selection is a provisional fallback; submitting then
-    // would create the session under the wrong agent.
-    if (this.agents().length === 0) {
-      return false;
-    }
-    if (!catalog.allowsSelectedAgent(this.data, this.selectedAgent())) {
-      return false;
-    }
-    if (
-      this.execNode &&
-      (!this.nodesHydrated || !this.execNodes().some((node) => node.nodeId === this.execNode))
-    ) {
-      return false;
-    }
-    if (
-      cloudProfileId &&
-      (!this.isAdmin() ||
-        !gateway.snapshot.client.recoveryScope ||
-        !gateway.snapshot.client.recoveryScopeReady ||
-        !this.cloudProfilesHydrated ||
-        !this.worktree ||
-        !this.cloudProfiles.some((profile) => profile.id === cloudProfileId) ||
-        Boolean(this.cloudRuntimeUnsupportedReason()))
-    ) {
-      return false;
-    }
-    if (this.usesCustomFolder() && !this.isAdmin()) {
-      return false;
-    }
-    if (this.execNode && this.worktree) {
-      return false;
-    }
-    if (this.worktree && !this.worktreeAvailable()) {
-      return false;
-    }
-    if (this.worktree && !isWorktreeNameValid(this.worktreeName)) {
-      return false;
-    }
-    return true;
-  }
-
-  private async submit() {
-    const context = this.context;
-    if (!context || !this.canSubmit()) {
-      return;
-    }
-    const pendingCloud = Boolean(this.pendingCloud.sessionKey);
-    const message = pendingCloud ? this.pendingCloud.message : this.message.trim();
-    const attachments = this.attachmentDraft.attachments;
-    const apiAttachments = pendingCloud
-      ? this.pendingCloud.attachments
-      : buildChatApiAttachments(attachments);
-    const submissionAgentId = pendingCloud
-      ? this.pendingCloud.agentId
-      : normalizeAgentId(this.agentId);
-    const submissionGatewayUrl = pendingCloud
-      ? this.pendingCloud.gatewayUrl
-      : context.gateway.connection.gatewayUrl;
-    const submissionClient = context.gateway.snapshot.client;
-    const submissionConnection = context.gateway.snapshot.hello;
-    if (!submissionClient || !submissionConnection) {
-      return;
-    }
-    const submissionRecoveryScope = pendingCloud
-      ? this.pendingCloud.recoveryScope
-      : submissionClient.recoveryScope;
-    const selectedSessionKey = context.gateway.snapshot.sessionKey;
-    const previousSessionKey =
-      activeOptimisticSubmission?.sessionKey === selectedSessionKey &&
-      activeOptimisticSubmission.gatewayUrl === submissionGatewayUrl &&
-      activeOptimisticSubmission.recoveryScope === submissionRecoveryScope
-        ? activeOptimisticSubmission.previousSessionKey
-        : selectedSessionKey;
-    const returnLocation = {
-      pathname: globalThis.location?.pathname ?? "",
-      search: globalThis.location?.search ?? "",
-      hash: globalThis.location?.hash ?? "",
-    };
-    const requestId = ++this.submitRequestToken;
-    const submittedAt = Date.now();
-    this.submitting = true;
-    this.error = null;
-    // Retire hidden pickers before their late requests can mutate this submitted draft.
-    this.closeBrowser();
-    for (const dropdown of this.querySelectorAll<HTMLElement & { open: boolean }>(
-      "wa-dropdown[open]",
-    )) {
-      dropdown.open = false;
-    }
-    try {
-      const cloudProfileId = this.cloudProfileForSubmission();
-      // Draft mode can go stale if sharing policy changed since it was selected.
-      const draftRetired = this.visibility === "draft" && !this.canStartAsDraft();
-      const submissionVisibility = draftRetired ? "normal" : this.visibility;
-      const optimisticSessionKey = cloudProfileId
-        ? ""
-        : `agent:${submissionAgentId}:dashboard:${submissionVisibility === "incognito" ? "incognito-" : ""}${generateUUID()}`;
-      const createParams = buildDraftSessionCreateParams({
-        // Catalog owners mint their final key; their temporary dashboard key
-        // exists only so the chat route can open while creation is pending.
-        key: catalog.isTarget(this.data) ? undefined : optimisticSessionKey || undefined,
-        agentId: this.agentId,
-        message: cloudProfileId ? "" : message,
-        model: this.modelControl.selected,
-        thinkingLevel: this.modelControl.thinkingLevel,
-        visibility: submissionVisibility,
-        attachments: cloudProfileId ? undefined : apiAttachments,
-        worktree: this.worktree,
-        baseRef: this.baseRef,
-        worktreeName: this.worktreeName,
-        cwd: this.folder,
-        workspace: this.workspacePath(),
-        execNode: this.execNode,
-        catalogId: this.data?.catalogId,
-      });
-      const cloudCreateParams = cloudProfileId
-        ? pendingCloud
-          ? this.pendingCloud.createParams
-          : this.pendingCloud.stageCreate({
-              agentId: submissionAgentId,
-              profileId: cloudProfileId,
-              message,
-              attachments: apiAttachments,
-              gatewayUrl: submissionGatewayUrl,
-              recoveryScope: submissionRecoveryScope,
-              createParams,
-              persistent: submissionVisibility !== "incognito",
-            })
-        : undefined;
-      if (cloudProfileId && !pendingCloud && !cloudCreateParams) {
-        this.error = t("newSession.cloudStartFailed", {
-          error: "cloud recovery storage is unavailable",
-        });
-        return;
-      }
-      const submissionCloudRecovery = cloudProfileId ? this.pendingCloud.capture() : null;
-      if (cloudProfileId && !submissionCloudRecovery) {
-        this.error = t("newSession.cloudStartFailed", {
-          error: "cloud recovery storage is unavailable",
-        });
-        return;
-      }
-      let recoveryOwnerKey = submissionCloudRecovery?.sessionKey ?? "";
-      const ownsSubmissionRecovery = () =>
-        this.pendingCloud.owns(submissionGatewayUrl, submissionRecoveryScope, recoveryOwnerKey);
-      const isSubmissionCurrent = () =>
-        this.isConnected &&
-        submissionClient.recoveryScopeReady &&
-        requestId === this.submitRequestToken &&
-        this.gatewayClient === submissionClient &&
-        this.gatewayUrl === submissionGatewayUrl &&
-        this.gatewayRecoveryScope === submissionRecoveryScope &&
-        ownsSubmissionRecovery();
-      const optimisticDraft = optimisticSessionKey
-        ? {
-            routeKey: catalog.routeKey(this.data),
-            agentId: this.agentId,
-            agentSelectedByUser: this.agentSelectedByUser,
-            folder: this.folder,
-            folderSelectedByUser: this.folderSelectedByUser,
-            worktree: this.worktree,
-            visibility: submissionVisibility,
-            worktreeName: this.worktreeName,
-            baseRef: this.baseRef,
-            repository: this.repository,
-            execNode: this.execNode,
-            message,
-            attachments: apiAttachments,
-            model: this.modelControl.selected,
-            thinkingLevel: this.modelControl.thinkingLevel,
-          }
-        : null;
-      const createRequest =
-        pendingCloud && this.pendingCloud.phase !== "creating"
-          ? Promise.resolve({
-              key: this.pendingCloud.sessionKey,
-              initialRun: { status: "idle" as const },
-            })
-          : context.sessions.createResult(cloudCreateParams ?? createParams, {
-              reconciliation: "background",
-            });
-      let submissionConnectionChanged = false;
-      const stopTrackingSubmissionConnection = optimisticSessionKey
-        ? context.gateway.subscribe((snapshot) => {
-            if (
-              snapshot.phase !== "connected" ||
-              snapshot.client !== submissionClient ||
-              context.gateway.connection.gatewayUrl !== submissionGatewayUrl
-            ) {
-              submissionConnectionChanged = true;
-            }
-          })
-        : () => undefined;
-      const optimisticSubmission: ActiveOptimisticSubmission | null = optimisticSessionKey
-        ? {
-            sessionKey: optimisticSessionKey,
-            gatewayUrl: submissionGatewayUrl,
-            recoveryScope: submissionRecoveryScope,
-            previousSessionKey,
-          }
-        : null;
-      let optimisticTransition: ReturnType<typeof context.transition> | null = null;
-      if (optimisticSessionKey) {
-        // The router renders chat immediately but does not write the temporary
-        // client-owned key into browser history before creation is confirmed.
-        activeOptimisticSubmission = optimisticSubmission;
-        context.gateway.setSessionKey(optimisticSessionKey);
-        optimisticTransition = context.transition("chat", {
-          search: searchForSession(optimisticSessionKey),
-        });
-      }
-      const result = await createRequest;
-      const transitionReady = (await optimisticTransition?.ready) ?? true;
-      stopTrackingSubmissionConnection();
-      if (optimisticSessionKey && !result) {
-        const ownsOptimisticSubmission = () => activeOptimisticSubmission === optimisticSubmission;
-        if (!ownsOptimisticSubmission()) {
-          return;
-        }
-        const isViewingOptimisticSession = () =>
-          transitionReady
-            ? optimisticTransition?.isActive() === true
-            : globalThis.location?.pathname === returnLocation.pathname &&
-              globalThis.location?.search === returnLocation.search &&
-              globalThis.location?.hash === returnLocation.hash;
-        const hasSubmissionGatewayIdentity = () =>
-          context.gateway.connection.gatewayUrl === optimisticSubmission?.gatewayUrl &&
-          context.gateway.snapshot.client?.recoveryScopeReady === true &&
-          context.gateway.snapshot.client.recoveryScope === optimisticSubmission?.recoveryScope;
-        const retireOptimisticSubmission = () => {
-          if (ownsOptimisticSubmission()) {
-            activeOptimisticSubmission = null;
-          }
-        };
-        const restoreOwnedGatewaySession = (sameIdentity: boolean) => {
-          if (context.gateway.snapshot.sessionKey !== optimisticSubmission?.sessionKey) {
-            return;
-          }
-          const defaultAgentId = normalizeAgentId(
-            context.agents.state.agentsList?.defaultId ?? "main",
-          );
-          context.gateway.setSessionKey(
-            sameIdentity
-              ? previousSessionKey
-              : buildAgentMainSessionKey({
-                  agentId: defaultAgentId,
-                  mainKey: context.agents.state.agentsList?.mainKey ?? undefined,
-                }),
-          );
-        };
-        const outcomeUnknown =
-          submissionConnectionChanged ||
-          context.gateway.snapshot.client !== submissionClient ||
-          context.gateway.connection.gatewayUrl !== submissionGatewayUrl;
-        const settleFailure = () => {
-          if (!ownsOptimisticSubmission()) {
-            return;
-          }
-          const sameIdentity = hasSubmissionGatewayIdentity();
-          const shouldRollback = isViewingOptimisticSession();
-          restoreOwnedGatewaySession(sameIdentity);
-          retireOptimisticSubmission();
-          if (!sameIdentity || !optimisticDraft) {
-            if (shouldRollback) {
-              this.openedFor = null;
-              context.replace("new-session", returnLocation);
-            }
-            return;
-          }
-          const isOnDifferentPage =
-            globalThis.location?.pathname !== returnLocation.pathname ||
-            globalThis.location?.search !== returnLocation.search ||
-            globalThis.location?.hash !== returnLocation.hash;
-          const returnedPage = globalThis.document?.querySelector<NewSessionPage>(
-            "openclaw-new-session-page",
-          );
-          const returnedToEmptyComposer =
-            !shouldRollback &&
-            !isOnDifferentPage &&
-            returnedPage?.isConnected === true &&
-            returnedPage.draftInteractionGeneration === 0 &&
-            !returnedPage.message.trim() &&
-            returnedPage.attachmentDraft.attachments.length === 0;
-          if (shouldRollback || isOnDifferentPage || returnedToEmptyComposer) {
-            failedOptimisticDraft = {
-              ...optimisticDraft,
-              gatewayUrl: submissionGatewayUrl,
-              recoveryScope: submissionRecoveryScope,
-              error:
-                context.sessions.state.error ??
-                (outcomeUnknown
-                  ? t("newSession.createOutcomeUnknown")
-                  : t("newSession.createFailed")),
-              outcomeUnknown,
-            };
-          }
-          if (shouldRollback) {
-            // The router may reconnect this same element. Retire its prior route
-            // key so updated() consumes the rollback draft instead of stale state.
-            this.openedFor = null;
-            context.replace("new-session", returnLocation);
-          } else if (returnedToEmptyComposer) {
-            returnedPage.resetDraft();
-          }
-        };
-        if (
-          outcomeUnknown &&
-          (context.gateway.snapshot.phase !== "connected" ||
-            context.gateway.snapshot.client?.recoveryScopeReady !== true)
-        ) {
-          // An offline route load cannot hydrate /new. Wait for the Gateway so
-          // rollback commits the page instead of leaving chat under a /new URL.
-          let unsubscribe: () => void = () => {};
-          unsubscribe = context.gateway.subscribe((snapshot) => {
-            if (!ownsOptimisticSubmission()) {
-              unsubscribe();
-            } else if (
-              snapshot.phase === "connected" &&
-              snapshot.client?.recoveryScopeReady === true
-            ) {
-              unsubscribe();
-              settleFailure();
-            }
-          });
-        } else {
-          settleFailure();
-        }
-        return;
-      }
-      if (requestId !== this.submitRequestToken && !cloudProfileId && !optimisticSessionKey) {
-        return;
-      }
-      if (!result) {
-        if (requestId !== this.submitRequestToken) {
-          return;
-        }
-        this.error = context.sessions.state.error ?? t("newSession.createFailed");
-        return;
-      }
-      if (cloudProfileId && submissionCloudRecovery) {
-        const recoveryPhase =
-          submissionCloudRecovery.phase === "creating"
-            ? "dispatching"
-            : submissionCloudRecovery.phase;
-        if (submissionCloudRecovery.phase === "creating" && isSubmissionCurrent()) {
-          if (!this.pendingCloud.promoteToDispatching(result.key)) {
-            this.error = t("newSession.cloudStartFailed", {
-              error: "cloud recovery storage is unavailable",
-            });
-            return;
-          }
-          recoveryOwnerKey = result.key;
-        }
-        const cloudStart = await advanceCloudDraftSession({
-          client: submissionClient,
-          key: result.key,
-          agentId: submissionAgentId,
-          profileId: cloudProfileId,
-          message: submissionCloudRecovery.message,
-          attachments: submissionCloudRecovery.attachments,
-          messageId: submissionCloudRecovery.messageId,
-          gatewayUrl: submissionGatewayUrl,
-          recoveryScope: submissionRecoveryScope,
-          recoveryPhase,
-          persistRecovery: this.pendingCloud.persistent,
-          recovering: pendingCloud,
-          isCurrent: isSubmissionCurrent,
-          ownsRecovery: ownsSubmissionRecovery,
-          clearRecovery: () =>
-            this.clearPendingCloudRecoveryFor(
-              submissionGatewayUrl,
-              submissionRecoveryScope,
-              result.key,
-            ),
-          setRecoveryPhase: (phase) => {
-            if (ownsSubmissionRecovery()) {
-              this.pendingCloud.phase = phase;
-            }
-          },
-        });
-        if (cloudStart.status === "cancelled") {
-          if (!ownsSubmissionRecovery()) {
-            return;
-          }
-          if (cloudStart.cleanupError) {
-            this.pendingCloud.retryAllowed = cloudStart.recoveryPersisted;
-            this.submissionOutcomeUnknown = !cloudStart.recoveryPersisted;
-            this.error = t("newSession.cloudStartFailed", { error: cloudStart.cleanupError });
-          } else if (!cloudStart.recoveryPersisted) {
-            this.error = t("newSession.createFailed");
-          }
-          return;
-        }
-        if (cloudStart.status === "cleanup-rejected") {
-          if (!this.pendingCloud.owns(submissionGatewayUrl, submissionRecoveryScope, result.key)) {
-            return;
-          }
-          // Retain durable identity; clearing it could hide a failed teardown's billable worker.
-          this.pendingCloud.sessionKey = result.key;
-          if (cloudStart.messageId) {
-            this.pendingCloud.messageId = cloudStart.messageId;
-          }
-          const retryAllowed = requestId === this.submitRequestToken;
-          this.pendingCloud.retryAllowed = retryAllowed;
-          this.submissionOutcomeUnknown = !retryAllowed;
-          this.message = this.pendingCloud.message;
-          this.error = t("newSession.cloudStartFailed", { error: cloudStart.error });
-          return;
-        }
-        if (cloudStart.status === "dispatch-rejected") {
-          this.error = t("newSession.cloudStartFailed", {
-            error: cloudStart.error || t("newSession.createFailed"),
-          });
-          return;
-        }
-        if (cloudStart.status === "ownership-lost") {
-          return;
-        }
-        if (cloudStart.status === "send-rejected") {
-          if (!this.pendingCloud.owns(submissionGatewayUrl, submissionRecoveryScope, result.key)) {
-            return;
-          }
-          this.pendingCloud.messageId = cloudStart.messageId;
-          this.pendingCloud.retryAllowed = true;
-          this.error = cloudStart.error || t("newSession.createFailed");
-          return;
-        }
-        if (requestId !== this.submitRequestToken) {
-          return;
-        }
-        prepareInitialUserMessageHandoff(
-          context.initialUserMessage,
-          result.key,
-          {
-            text: submissionCloudRecovery.message,
-            attachments,
-            createdAt: submittedAt,
-          },
-          submissionConnection,
-          { messageId: cloudStart.messageId, messageSeq: cloudStart.messageSeq },
-        );
-        this.attachmentDraft.clearAfterSubmit(true);
-      } else {
-        if (requestId !== this.submitRequestToken && !optimisticSessionKey) {
-          return;
-        }
-        // Route teardown releases composer payloads. Rebuild them from the
-        // submitted wire payload before handing a late result to chat.
-        const submittedAttachments = optimisticSessionKey
-          ? restoreChatApiAttachments(apiAttachments)
-          : attachments;
-        const handedOffAttachments =
-          result.initialRun.status === "rejected" &&
-          retainRejectedInitialTurn({
-            agentId: submissionAgentId,
-            attachments: submittedAttachments,
-            context,
-            error: result.initialRun.error,
-            message,
-            sessionKey: result.key,
-          });
-        if (result.initialRun.status === "started") {
-          prepareInitialUserMessageHandoff(
-            context.initialUserMessage,
-            result.key,
-            {
-              text: message,
-              attachments: submittedAttachments,
-              createdAt: submittedAt,
-            },
-            submissionConnection,
-            {
-              messageId: result.initialRun.messageId,
-              messageSeq: result.initialRun.messageSeq,
-            },
-          );
-        }
-        if (!optimisticSessionKey) {
-          this.attachmentDraft.clearAfterSubmit(!handedOffAttachments);
-        }
-      }
-      if (optimisticSessionKey) {
-        if (activeOptimisticSubmission !== optimisticSubmission || !optimisticSubmission) {
-          return;
-        }
-        const sameIdentity =
-          context.gateway.connection.gatewayUrl === optimisticSubmission.gatewayUrl &&
-          context.gateway.snapshot.client?.recoveryScopeReady === true &&
-          context.gateway.snapshot.client.recoveryScope === optimisticSubmission.recoveryScope;
-        const ownsGatewaySession =
-          context.gateway.snapshot.sessionKey === optimisticSubmission.sessionKey;
-        const isViewingOptimisticSession = transitionReady
-          ? optimisticTransition?.isActive() === true
-          : globalThis.location?.pathname === returnLocation.pathname &&
-            globalThis.location?.search === returnLocation.search &&
-            globalThis.location?.hash === returnLocation.hash;
-        activeOptimisticSubmission = null;
-        if (ownsGatewaySession) {
-          const defaultAgentId = normalizeAgentId(
-            context.agents.state.agentsList?.defaultId ?? "main",
-          );
-          context.gateway.setSessionKey(
-            sameIdentity
-              ? result.key
-              : buildAgentMainSessionKey({
-                  agentId: defaultAgentId,
-                  mainKey: context.agents.state.agentsList?.mainKey ?? undefined,
-                }),
-          );
-        }
-        if (sameIdentity && isViewingOptimisticSession) {
-          context.navigate("chat", { search: searchForSession(result.key) });
-        } else if (isViewingOptimisticSession) {
-          this.openedFor = null;
-          context.replace("new-session", returnLocation);
-        }
-        return;
-      }
-      if (requestId !== this.submitRequestToken) {
-        return;
-      }
-      context.gateway.setSessionKey(result.key);
-      context.navigate("chat", { search: searchForSession(result.key) });
-    } finally {
-      if (requestId === this.submitRequestToken) {
-        this.submitting = false;
-      }
-    }
-  }
-
-  private selectAgentId(agentId: string) {
-    if (this.submitting || this.pendingCloud.sessionKey || catalog.isTarget(this.data)) {
-      return;
-    }
-    // Re-picking the checked agent must not reset the draft (the native
-    // select never fired change for the same option).
-    if (normalizeAgentId(agentId) === normalizeAgentId(this.agentId)) {
-      return;
-    }
-    this.draftInteractionGeneration += 1;
-    this.agentId = normalizeAgentId(agentId);
-    this.modelControl.reset();
-    this.error = null;
-    this.agentSelectedByUser = true;
-    this.folder = this.execNode ? "" : this.workspacePath();
-    this.folderSelectedByUser = false;
-    this.cloudProfileId = "";
-    this.worktree = false;
-    this.worktreeName = "";
-    this.closeBrowser();
-    this.modelControl.load(this.context, this.agentId, true);
-    this.maybeLoadBranches();
-  }
-
-  /**
-   * Loaded branch data already covers the effective Gateway repo selection.
-   * Branch data is always Gateway-owned: maybeLoadBranches clears and never
-   * requests while a node is selected, so a path match cannot cross hosts.
-   */
-  private branchesMatchCurrentRepo(): boolean {
-    if (this.execNode || this.repository.kind === "idle") {
-      return false;
-    }
-    const repoRoot = this.folder.trim() || this.workspacePath();
-    return this.repository.repoRoot === repoRoot;
-  }
-
-  private applyFolder(folder: string, execNode = this.execNode) {
-    if (this.submitting || this.pendingCloud.sessionKey) {
-      return;
-    }
-    this.draftInteractionGeneration += 1;
-    this.execNode = execNode;
-    if (execNode) {
-      // Node sessions run on that device; a cloud worker cannot sync a node path.
-      this.cloudProfileId = "";
-    }
-    this.error = null;
-    this.folder = folder.trim();
-    this.folderSelectedByUser = true;
-    if (this.execNode) {
-      this.worktree = false;
-    } else if (!this.cloudProfileId) {
-      // A newly selected Gateway folder starts direct. Git capability discovery
-      // may reveal the optional managed-worktree control afterward.
-      this.worktree = false;
-    }
-    this.worktreeName = "";
-    this.maybeLoadBranches();
-  }
-
-  private selectExecNode(execNode: string) {
-    if (this.submitting || this.pendingCloud.sessionKey) {
-      return;
-    }
-    if (execNode === this.execNode && !this.cloudProfileId) {
-      return;
-    }
-    this.draftInteractionGeneration += 1;
-    // Turning a cloud selection back into a plain Gateway session keeps the
-    // picked repo; only a host change retires the folder path.
-    const keepGatewayFolder = !execNode && !this.execNode;
-    const keepWorktree = keepGatewayFolder && this.worktree && this.worktreeAvailable();
-    this.execNode = execNode;
-    this.cloudProfileId = "";
-    if (!keepGatewayFolder) {
-      // Folder paths belong to one host; never carry a Gateway or node path to another host.
-      this.folder = execNode ? "" : this.workspacePath();
-      this.folderSelectedByUser = false;
-    }
-    this.worktree = keepWorktree;
-    this.closeBrowser();
-    if (!this.branchesMatchCurrentRepo()) {
-      this.maybeLoadBranches();
-    }
-  }
-
-  private selectCloudProfile(profileId: string) {
-    if (
-      this.submitting ||
-      this.pendingCloud.sessionKey ||
-      !this.worktreeAvailable() ||
-      !this.cloudProfiles.some((profile) => profile.id === profileId)
-    ) {
-      return;
-    }
-    this.draftInteractionGeneration += 1;
-    // worktreeAvailable() is false for node targets, so this transition always
-    // starts from a Gateway selection and the folder is a Gateway path. It
-    // stays selected: its repo is what the managed worktree checks out and the
-    // dispatch tunnel syncs to the cloud worker.
-    this.cloudProfileId = profileId;
-    this.error = null;
-    this.worktree = true;
-    this.closeBrowser();
-    if (!this.branchesMatchCurrentRepo()) {
-      this.maybeLoadBranches();
-    }
-  }
-
-  private browseAvailable(): boolean {
-    return this.isAdmin();
-  }
-
-  private closeAgentDropdown() {
-    const dropdown = this.querySelector<HTMLElement & { open: boolean }>(
-      ".new-session-page__select--agent wa-dropdown",
-    );
-    if (dropdown) {
-      dropdown.open = false;
-    }
-  }
-
-  private closeBrowser() {
-    this.browserRequestToken += 1;
-    this.browserLoading = false;
-    this.browserError = null;
-    this.browserListing = null;
-    this.browserTarget = null;
-    this.browserPathDraft = "";
-    this.placePopoverOpen = false;
-    const popover = this.querySelector<HTMLElement & { open: boolean }>(
-      ".new-session-page__place-popover",
-    );
-    if (popover) {
-      popover.open = false;
-    }
-  }
-
-  private guardPopoverTransition(event: Event, hiding: boolean) {
-    if (!hiding) {
-      return;
-    }
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }
-
-  private restorePopoverTrigger(id: string, popoverSelector: string) {
-    const active = this.ownerDocument.activeElement;
-    const popover = this.querySelector(popoverSelector);
-    // Light-dismissal may already have moved focus to another control. Only
-    // recover when focus stayed in the closing popover or fell back to body.
-    if (active && active !== this.ownerDocument.body && !popover?.contains(active)) {
-      return;
-    }
-    this.querySelector<HTMLButtonElement>(`#${id}`)?.focus();
-  }
-
-  private showBrowserRoot() {
-    this.browserRequestToken += 1;
-    this.browserLoading = false;
-    this.browserError = null;
-    this.browserListing = null;
-    this.browserTarget = null;
-    this.browserPathDraft = "";
-  }
-
-  /** Use applies the live path; empty means host default, null disables. */
-  private usableBrowserPath(): string | null {
-    const draft = this.browserPathDraft.trim();
-    if (draft.length === 0) {
-      return "";
-    }
-    return isAbsolutePath(draft) ? draft : null;
-  }
-
-  private selectBrowserTarget(target: BrowserTarget) {
-    const folder = this.folder.trim();
-    const matchesCurrentTarget = target.nodeId === this.execNode;
-    const path = matchesCurrentTarget && isAbsolutePath(folder) ? folder : undefined;
-    this.browserTarget = target;
-    this.loadBrowser(path);
-  }
-
-  private loadBrowser(path: string | undefined) {
-    const snapshot = this.context?.gateway.snapshot;
-    const client = snapshot?.client;
-    const target = this.browserTarget;
-    if (snapshot?.phase !== "connected" || !client || !target) {
-      return;
-    }
-    // Exec-only nodes still accept a typed cwd; never probe an unsupported fs.listDir.
-    const targetNode = this.nodes.find((node) => node.nodeId === target.nodeId);
-    if (targetNode?.canExec && !targetNode.canBrowse) {
-      this.showBrowserRoot();
-      this.browserTarget = target;
-      this.browserPathDraft = path ?? "";
-      return;
-    }
-    const requestId = ++this.browserRequestToken;
-    this.browserLoading = true;
-    this.browserError = null;
-    // Clear the previous directory immediately: keeping it clickable while the
-    // request is in flight would let "Use this folder" apply the stale path.
-    this.browserListing = null;
-    // Navigation owns the shown path at once, so a mid-flight "Use this
-    // folder" applies where the user is heading, never the directory they
-    // just left ("" = the host default while heading home).
-    this.browserPathDraft = path ?? "";
-    const draftAtRequest = this.browserPathDraft;
-    void client
-      .request<FsListDirResult>("fs.listDir", {
-        ...(path ? { path } : {}),
-        ...(target.nodeId ? { nodeId: target.nodeId } : {}),
-      })
-      .then((result) => {
-        if (requestId !== this.browserRequestToken) {
-          return;
-        }
-        this.browserListing = result ?? null;
-        // Sync the head input to the listed directory unless the user typed
-        // while this request was in flight; their edit wins.
-        if (result?.path && this.browserPathDraft === draftAtRequest) {
-          this.browserPathDraft = result.path;
-        }
-      })
-      .catch(() => {
-        if (requestId !== this.browserRequestToken) {
-          return;
-        }
-        // A stale or mistyped folder should not strand the picker: fall back home.
-        if (path) {
-          this.loadBrowser(undefined);
-          return;
-        }
-        this.browserError = t("newSession.browserLoadFailed");
-      })
-      .finally(() => {
-        if (requestId === this.browserRequestToken) {
-          this.browserLoading = false;
-        }
-      });
-  }
-
-  private renderAgentSelect(agents: ReturnType<NewSessionPage["agents"]>) {
-    return renderAgentSelect({
-      agents,
-      agentId: this.agentId,
-      disabled: this.submitting || Boolean(this.pendingCloud.sessionKey),
-      onSelect: (agentId) => this.selectAgentId(agentId),
-    });
-  }
-
-  private renderPlaceSelect() {
-    const execNodes = this.execNodes();
-    const cloudProfiles = catalog.isTarget(this.data) ? [] : this.cloudProfiles;
-    const branches = this.repository.kind === "git" ? this.repository : null;
-    const cloudDisabledReason = this.cloudDisabledReason();
-    return renderPlaceSelect({
-      browseAvailable: this.browseAvailable(),
-      folder: this.folder,
-      workspace: this.workspacePath(),
-      sessions: this.context?.sessions.state.result?.sessions ?? [],
-      execNodes: this.isAdmin() ? execNodes : [],
-      gatewayName: this.gatewayName,
-      cloudProfiles: this.isAdmin() ? cloudProfiles : [],
-      cloudProfileId: this.cloudProfileId,
-      execNode: this.execNode,
-      syncFolder: this.folder.trim() || this.workspacePath(),
-      worktree: this.worktree,
-      worktreeVisible: this.worktreeAvailable() || Boolean(this.cloudProfileId) || this.worktree,
-      worktreeAvailable: this.worktreeAvailable(),
-      worktreeDisabledReason:
-        this.repository.kind === "checking"
-          ? t("newSession.checkingGit")
-          : this.repository.kind === "unavailable"
-            ? t("newSession.gitCheckUnavailable")
-            : undefined,
-      cloudDisabledReason,
-      branches,
-      branchesLoading: this.repository.kind === "checking",
-      baseRef: this.baseRef,
-      worktreeName: this.worktreeName,
-      submitting: this.submitting,
-      pendingCloud: Boolean(this.pendingCloud.sessionKey),
-      // Admin gates only the discovered choices. An existing node or cloud
-      // selection always keeps the destination axis visible — hiding it (e.g.
-      // after a failed node.list or an auth downgrade) would misreport a
-      // remote-targeted draft as Gateway-local.
-      showDestinations:
-        Boolean(this.execNode) ||
-        Boolean(this.cloudProfileId) ||
-        (this.isAdmin() && (execNodes.length > 0 || cloudProfiles.length > 0)),
-      popoverOpen: this.placePopoverOpen,
-      popoverHiding: this.placePopoverHiding,
-      browserTarget: this.browserTarget,
-      browserListing: this.browserListing,
-      browserLoading: this.browserLoading,
-      browserError: this.browserError,
-      browserPathDraft: this.browserPathDraft,
-      usableBrowserPath: this.usableBrowserPath(),
-      onGuardTransition: (event) => this.guardPopoverTransition(event, this.placePopoverHiding),
-      onPopoverShow: () => {
-        this.placePopoverOpen = true;
-        this.showBrowserRoot();
-      },
-      onPopoverHide: () => {
-        this.placePopoverOpen = false;
-        this.placePopoverHiding = true;
-        this.showBrowserRoot();
-      },
-      onPopoverAfterHide: () => {
-        this.placePopoverHiding = false;
-        this.restorePopoverTrigger("new-session-place-trigger", ".new-session-page__place-popover");
-      },
-      onSelectExecNode: (nodeId) => this.selectExecNode(nodeId),
-      onSelectCloudProfile: (profileId) => this.selectCloudProfile(profileId),
-      onApplyFolder: (folder, execNode) => this.applyFolder(folder, execNode),
-      onBrowse: (target) => this.selectBrowserTarget(target),
-      onBrowserPathDraftChange: (value) => {
-        this.browserPathDraft = value;
-      },
-      onBrowserNavigate: (path) => this.loadBrowser(path),
-      onBrowserBack: () => this.showBrowserRoot(),
-      onClose: () => this.closeBrowser(),
-      onToggleWorktree: () => {
-        if (this.cloudProfileId) {
-          return;
-        }
-        this.draftInteractionGeneration += 1;
-        this.worktree = !this.worktree;
-        if (this.worktree) {
-          this.maybeLoadBranches();
-        }
-      },
-      onBaseRefInput: (baseRef) => {
-        if (!this.submitting) {
-          this.baseRefEditGeneration += 1;
-          this.baseRef = baseRef;
-        }
-      },
-      onWorktreeNameInput: (worktreeName) => {
-        if (!this.submitting) {
-          this.worktreeName = worktreeName;
-        }
-      },
-    });
   }
 
   private renderTargetBar() {
-    const agents = this.agents();
+    const agents = this.place.agents();
+    const sessions = this.context?.sessions;
     return catalog.renderBar({
       data: this.data,
-      agentSelect: agents.length > 1 ? this.renderAgentSelect(agents) : nothing,
-      placeSelect: this.renderPlaceSelect(),
-      retrying: this.catalogRetrying,
-      onRetry: this.handleCatalogRetry,
+      groupPending: catalog.isGroupRoutePending(this.data, sessions),
+      agentSelect:
+        agents.length > 1
+          ? renderAgentSelect({
+              agents,
+              agentId: this.place.agentId,
+              agentIdentity: this.context?.agentIdentity,
+              disabled:
+                this.submission.submitting || Boolean(this.submission.pendingPlacement.sessionKey),
+              onSelect: (agentId) => this.place.selectAgentId(agentId),
+              onOpenChange: (open) => {
+                this.agentPickerOpen = open;
+              },
+            })
+          : nothing,
+      placeSelect: renderNewSessionPlaceControls({
+        context: this.context,
+        data: this.data,
+        gateway: this.gateway,
+        place: this.place,
+        submitting: this.submission.submitting,
+        pendingPlacement: Boolean(this.submission.pendingPlacement.sessionKey),
+        onConnectMachine: () => this.openConnectMachine(),
+        requestUpdate: () => this.requestUpdate(),
+      }),
+      retrying:
+        this.gateway.catalogRetrying ||
+        Boolean(this.data?.group && sessions?.groupsStatus() === "loading"),
+      onRetry: this.gateway.handleCatalogRetry,
     });
   }
 
-  /** Target row + composer, rendered mid-screen between the hero and recents. */
-  private renderDraftBlock() {
-    const worktreeNameInvalid = this.worktree && !isWorktreeNameValid(this.worktreeName);
-    return html`
-      <div class="new-session-page__draft" aria-busy=${String(this.submitting)}>
-        ${this.renderTargetBar()}
-        ${worktreeNameInvalid ? renderDraftError(t("newSession.worktreeNameInvalid")) : nothing}
-        ${this.error ? renderDraftError(this.error) : nothing}
-        ${this.submissionOutcomeUnknown
-          ? renderDraftError(t("newSession.createOutcomeUnknown"))
-          : nothing}
-        ${renderNewSessionDraftComposer({
-          agent: this.selectedAgent(),
-          agentId: this.agentId,
-          attachmentDraft: this.attachmentDraft,
-          canSubmit: this.canSubmit(),
-          context: this.context,
-          isCatalogTarget: catalog.isTarget(this.data),
-          message: this.message,
-          visibility: this.visibility,
-          draftAvailable: this.canStartAsDraft(),
-          modelControl: this.modelControl,
-          requiresModifier: loadSettings().chatSendShortcut === "modifier-enter",
-          submitting: this.submitting,
-          messageLocked: Boolean(this.pendingCloud.sessionKey),
-          onInput: (message) => {
-            if (!this.submitting && !this.pendingCloud.sessionKey) {
-              this.message = message;
-            }
-          },
-          onVisibilityChange: (visibility) => {
-            if (!this.submitting && !this.pendingCloud.sessionKey) {
-              this.draftInteractionGeneration += 1;
-              this.visibility = visibility;
-            }
-          },
-          onSubmit: () => void this.submit(),
-        })}
-      </div>
-    `;
+  private openConnectMachine() {
+    if (!this.place.isAdmin()) {
+      return;
+    }
+    this.browser.close();
+    this.connectMachine.start();
   }
 
-  /** Same welcome block as the empty-chat start screen, keyed to the draft's agent. */
+  private renderDraftBlock() {
+    return renderNewSessionDraftView({
+      context: this.context,
+      gateway: this.gateway,
+      place: this.place,
+      submission: this.submission,
+      dictation: this.dictation,
+      titlePreparation: this.titlePreparation,
+      draftOwnerKey: this.routeOwnerKey(),
+      isCatalogTarget: catalog.isTarget(this.data),
+      renderTargetBar: () => this.renderTargetBar(),
+      requestUpdate: () => this.requestUpdate(),
+      onMessage: (message, mentions) => this.setMessageFromUser(message, mentions),
+      onOpenImage: this.setImageLightbox,
+    });
+  }
+
   private renderWelcome() {
-    const agent = this.selectedAgent();
-    const identity = agent?.identity;
+    const agent = this.place.selectedAgent();
+    const identity = this.context?.agentIdentity.get(this.place.agentId);
     const gateway = this.context?.gateway.snapshot;
     return renderWelcomeState({
-      assistantName: identity?.name ?? agent?.name ?? agent?.id ?? "",
-      assistantAvatar: identity?.avatar ?? identity?.emoji ?? null,
-      assistantAvatarUrl: identity?.avatarUrl ?? null,
-      hint: t("newSession.hint"),
+      currentAgentId: this.place.agentId,
+      assistantName: agent ? normalizeAgentTargetLabel(agent, identity) : "",
+      assistantAvatar: resolveAgentTextAvatar(agent ?? {}, identity),
+      assistantAvatarUrl: resolveAgentAvatarUrl(agent ?? {}, identity),
+      hint: t(catalog.isTarget(this.data) ? "newSession.nativeTerminalHint" : "newSession.hint"),
       composer: this.renderDraftBlock(),
+      hideSecondaryContent: this.submission.visibility === "incognito",
+      fadeSecondaryContent: this.submission.message.trim().length > 0,
+      modelSetupRequired: this.submission.requiresModelSetup(),
+      onModelSetup: () => this.context?.navigate("model-setup"),
       sessions: this.context?.sessions.state.result,
       sessionKey: buildAgentMainSessionKey({
-        agentId: this.agentId || "main",
+        agentId: this.place.agentId || "main",
         mainKey: this.context?.agents.state.agentsList?.mainKey,
       }),
       sessionHost: {
@@ -1753,41 +504,70 @@ class NewSessionPage extends OpenClawLightDomElement {
         agentsList: this.context?.agents.state.agentsList ?? null,
         hello: gateway?.hello ?? null,
       },
-      onDraftChange: (next) => {
-        if (!this.submitting && !this.pendingCloud.sessionKey) {
-          this.message = next;
-        }
-      },
-      onSend: () => void this.submit(),
+      onDraftChange: (next) => this.setMessageFromUser(next),
+      onSend: () => void this.submission.submit(),
       onOpenSession: (sessionKey) => {
-        if (this.submitting || this.pendingCloud.sessionKey) {
+        const { context, submission } = this;
+        if (!context || submission.submitting || submission.pendingPlacement.sessionKey) {
           return;
         }
-        this.context?.gateway.setSessionKey(sessionKey);
-        this.context?.navigate("chat", { search: searchForSession(sessionKey) });
+        selectApplicationSession({
+          selection: context.agentSelection,
+          gateway: context.gateway,
+          sessionKey,
+          agentId: this.place.agentId,
+        });
+        context.navigate(
+          "chat",
+          sessionNavigationTarget({ context, face: "chat", sessionKey }).options,
+        );
       },
     });
   }
 
   override render() {
+    const pendingMessage = this.submission.pendingMessage;
+    const identity = this.context?.gateway.snapshot.selfUser?.identity;
+    const incognito = this.submission.visibility === "incognito";
     return html`
-      <div class="new-session-page">
-        <div
-          class="new-session-page__scroll"
-          ?inert=${this.submitting}
-          aria-busy=${String(this.submitting)}
-          @mousedown=${beginNativeWindowDragFromTopInset}
-        >
-          ${this.renderWelcome()}
-        </div>
+      <div
+        class="new-session-page ${pendingMessage ? "chat" : ""} ${
+          incognito ? "new-session-page--incognito" : ""
+        }"
+      >
+        ${
+          catalog.isTarget(this.data)
+            ? nothing
+            : renderNewSessionIncognitoControl(
+                this.submission,
+                this.submission.capabilities.canStartAsDraft(this.context),
+              )
+        }
+        ${renderNewSessionBody({
+          error: this.submission.error,
+          pendingMessage,
+          userId: identity?.type === "profile" ? identity.id : null,
+          submitting: this.submission.submitting,
+          renderDraft: () => this.renderWelcome(),
+          onOpenImage: this.setImageLightbox,
+        })}
+        ${renderConnectMachineDialog({
+          open: this.connectMachine.open && this.place.isAdmin(),
+          loading: this.connectMachine.loading,
+          error: this.connectMachine.error,
+          setup: this.connectMachine.setup,
+          onRefresh: () => void this.connectMachine.refresh(),
+          onClose: () => {
+            this.connectMachine.close();
+            this.requestUpdate();
+          },
+          onManageDevices: () => {
+            this.connectMachine.close();
+            this.context?.navigate("devices");
+          },
+        })}
+        ${renderChatImageLightbox(this.imageLightbox, () => this.setImageLightbox(null))}
       </div>
     `;
   }
 }
-
-if (!customElements.get("openclaw-new-session-page")) {
-  customElements.define("openclaw-new-session-page", NewSessionPage);
-}
-
-export type { NewSessionPage };
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

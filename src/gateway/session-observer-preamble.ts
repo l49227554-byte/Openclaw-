@@ -46,6 +46,9 @@ export function createSessionObserverPreamblePublisher(params: {
     state.revision += 1;
     const digest: SessionObserverDigest = {
       sessionKey: state.sessionKey,
+      agentId: state.agentId,
+      ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+      ...(state.lifecycleRevision ? { lifecycleRevision: state.lifecycleRevision } : {}),
       runId: state.runId,
       revision: state.revision,
       updatedAt: Math.max(entry.updatedAt, (previous?.updatedAt ?? -1) + 1),

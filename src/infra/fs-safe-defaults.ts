@@ -1,11 +1,16 @@
 // Applies OpenClaw's default fs-safe runtime configuration.
-import { configureFsSafePython } from "@openclaw/fs-safe/config";
+import { configureFsSafeNative } from "@openclaw/fs-safe/config";
 
-// OpenClaw does not rely on Python helpers for normal filesystem safety. Tests
-// and operators can still opt in with fs-safe's documented env override.
-const hasPythonModeOverride =
-  process.env.FS_SAFE_PYTHON_MODE != null || process.env.OPENCLAW_FS_SAFE_PYTHON_MODE != null;
+export { configureFsSafeNative };
 
-if (!hasPythonModeOverride) {
-  configureFsSafePython({ mode: "off" });
+// Windows secure reads need descriptor-bound native ACL checks. Retain fs-safe's
+// auto default there; POSIX keeps JavaScript unless an operator selects a mode.
+const hasModeOverride = Object.keys(process.env).some((key) =>
+  /^(?:OPENCLAW_)?FS_SAFE_(?:NATIVE|PYTHON)_MODE$/u.test(
+    process.platform === "win32" ? key.toUpperCase() : key,
+  ),
+);
+
+if (!hasModeOverride && process.platform !== "win32") {
+  configureFsSafeNative({ mode: "off" });
 }

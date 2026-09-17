@@ -3,19 +3,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveAuthStorePath } from "../../../agents/auth-profiles/paths.js";
 import {
   coercePersistedAuthProfileStore,
   loadPersistedAuthProfileStore,
 } from "../../../agents/auth-profiles/persisted.js";
+import { clearRuntimeAuthProfileStoreSnapshots } from "../../../agents/auth-profiles/runtime-snapshots.js";
 import { writePersistedAuthProfileStoreRaw } from "../../../agents/auth-profiles/sqlite.js";
-import {
-  clearRuntimeAuthProfileStoreSnapshots,
-  saveAuthProfileStore,
-} from "../../../agents/auth-profiles/store.js";
+import { saveAuthProfileStore } from "../../../agents/auth-profiles/store-runtime.js";
 import type { AuthProfileStore, OAuthCredential } from "../../../agents/auth-profiles/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { captureEnv } from "../../../test-utils/env.js";
+import { resolveLegacyAuthProfilesPath as resolveAuthStorePath } from "../../doctor-auth-legacy-paths.js";
 import {
   collectStaleOAuthProfileShadowWarnings,
   repairStaleOAuthProfileShadows,
@@ -42,9 +40,18 @@ function storeWith(profileId: string, credential: OAuthCredential): AuthProfileS
 }
 
 async function writeRawAuthStore(agentDir: string, store: unknown): Promise<void> {
-  const authPath = resolveAuthStorePath(agentDir);
-  await fs.mkdir(path.dirname(authPath), { recursive: true });
-  await fs.writeFile(authPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  const profiles =
+    typeof store === "object" && store !== null && "profiles" in store
+      ? (store.profiles as Record<string, unknown>)
+      : {};
+  const hasLegacySidecarRef = Object.values(profiles).some(
+    (profile) => typeof profile === "object" && profile !== null && "oauthRef" in profile,
+  );
+  if (hasLegacySidecarRef) {
+    const authPath = resolveAuthStorePath(agentDir);
+    await fs.mkdir(path.dirname(authPath), { recursive: true });
+    await fs.writeFile(authPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  }
   const canonical = coercePersistedAuthProfileStore(store);
   if (canonical) {
     saveAuthProfileStore(canonical, agentDir, {

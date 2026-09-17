@@ -20,10 +20,18 @@ const validBundle = {
           id: "claude-test",
           baseUrl: "https://evil.test/model",
           headers: { "X-Evil": "yes" },
+          contextWindows: [
+            { id: "200k", label: "200K", contextWindow: 200_000 },
+            { id: "1m", label: "1M", contextWindow: 1_000_000 },
+          ],
+          contextWindowDefault: "1m",
           compat: { nested: { baseUrl: "https://evil.test/nested", headers: { X: "y" } } },
         },
       ],
     },
+  },
+  pricing: {
+    "openai/gpt-external": { input: 2.5, output: 10, cacheRead: 1.25 },
   },
 } as const;
 
@@ -31,7 +39,6 @@ describe("remote model catalog bundle", () => {
   it("accepts schema v1 and deeply strips endpoint and header fields", () => {
     const parsed = validateAndSanitizeRemoteModelCatalogBundle(validBundle);
     const anthropic = parsed.providers.anthropic;
-    expect(anthropic).toBeDefined();
     if (!anthropic) {
       throw new Error("expected anthropic provider");
     }
@@ -44,6 +51,18 @@ describe("remote model catalog bundle", () => {
     expect(anthropic.models[0]).not.toHaveProperty("baseUrl");
     expect(anthropic.models[0]).not.toHaveProperty("headers");
     expect(anthropic.models[0]?.compat).toEqual({ nested: {} });
+    expect(anthropic.models[0]).toMatchObject({
+      contextWindows: [
+        { id: "200k", label: "200K", contextWindow: 200_000 },
+        { id: "1m", label: "1M", contextWindow: 1_000_000 },
+      ],
+      contextWindowDefault: "1m",
+    });
+    expect(parsed.pricing?.["openai/gpt-external"]).toEqual({
+      input: 2.5,
+      output: 10,
+      cacheRead: 1.25,
+    });
   });
 
   it("rejects unsupported versions, invalid timestamps, and malformed providers", () => {
@@ -64,5 +83,33 @@ describe("remote model catalog bundle", () => {
         providers: { anthropic: { models: [{ id: " duplicate " }, { id: "duplicate" }] } },
       }),
     ).toThrow("duplicate model id: duplicate");
+    expect(() =>
+      parseRemoteModelCatalogBundle({
+        ...validBundle,
+        pricing: { "openai/bad": { input: -1, output: 2 } },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseRemoteModelCatalogBundle({
+        ...validBundle,
+        pricing: { "openai/bad": { input: 1, output: 2, baseUrl: "https://bad.test" } },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseRemoteModelCatalogBundle({
+        ...validBundle,
+        providers: {
+          anthropic: {
+            models: [
+              {
+                id: "bad-default",
+                contextWindows: [{ id: "200k", label: "200K", contextWindow: 200_000 }],
+                contextWindowDefault: "1m",
+              },
+            ],
+          },
+        },
+      }),
+    ).toThrow("contextWindowDefault must reference a declared contextWindows option");
   });
 });

@@ -2,9 +2,12 @@ export type {
   SessionCatalogArchiveProviderParams,
   SessionCatalogContinueProviderParams,
   SessionCatalogContinueProviderResult,
+  SessionCatalogEntrySnapshot,
+  SessionCatalogEntrySummary,
   SessionCatalogListProviderParams,
   SessionCatalogProvider,
   SessionCatalogReadProviderParams,
+  SessionCatalogStartTerminalProviderParams,
   SessionCatalogTerminalPlan,
   SessionUpstreamActivity,
   SessionUpstreamJsonValue,
@@ -15,10 +18,12 @@ export {
   createSessionCatalogAdoptionCoordinator,
   isExternalUserText,
   listAdoptedSessionCatalogSessions,
+  listSessionCatalogEntries,
   normalizeUserText,
   sessionCatalogAdoptedSessionKey,
   sessionCatalogAdoptedSourceKey,
 } from "../plugins/session-catalog.js";
+export { importSessionCatalogHistory } from "../plugins/session-catalog-history-import.js";
 export type {
   SessionCatalog,
   SessionCatalogCapabilities,
@@ -36,6 +41,8 @@ export type {
   SessionsCatalogListResult,
   SessionsCatalogReadParams,
   SessionsCatalogReadResult,
+  SessionsCatalogStartTerminalParams,
+  SessionsCatalogStartTerminalResult,
 } from "../../packages/gateway-protocol/src/schema/sessions-catalog.js";
 export {
   deleteSessionUpstreamLink,
@@ -46,3 +53,11 @@ export {
   classifyClaudeCliHistoryLine,
   type ClaudeCliHistoryLineClassification,
 } from "../gateway/cli-session-history.claude-activity.js";
+export {
+  createSessionCatalogFamily,
+  createSessionCatalogNodeHostBindings,
+  type SessionCatalogFamilyOptions,
+  type SessionCatalogNodeHostBindingsOptions,
+} from "../plugins/session-catalog-family.js";
+
+export { publishSessionCatalogHost, sessionCatalogPaging } from "./session-catalog-paging.js";

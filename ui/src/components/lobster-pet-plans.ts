@@ -8,14 +8,8 @@ import type {
   LobsterPetPersonalityId,
   LobsterRunOutcome,
 } from "./lobster-pet-contract.ts";
-import {
-  LOBSTER_PET_PALETTES,
-  lobsterPetName,
-  mulberry32,
-  SPOT_ZONES,
-} from "./lobster-pet-look.ts";
-
-export { SPOT_ZONES };
+import { canonicalLobsterLook, lobsterPetName, mulberry32 } from "./lobster-pet-look.ts";
+import { LOBSTER_PET_PALETTES } from "./lobster-pet-palettes.ts";
 
 export type LobsterPetAct =
   | "wave"
@@ -170,21 +164,16 @@ export const LOBSTER_PASSER_CROSS_MS: Record<LobsterPasserKind, number> = {
   jellyfish: 16_000,
 };
 
-export type LobsterPetAnchor = "ledge" | "bar";
-
-// The historical bar visit keeps its compact left-to-center roaming and scale
-// cap, while CSS places it on the same ledge as regular visits.
-export const BAR_ZONE = [18, 50] as const;
-export const BAR_MAX_SCALE = 1.7;
+export type LobsterPetAnchor = "top" | "floor";
 
 // Visit cadence: seeded per load, the pet is a guest, not a fixture. A share
-// of loads gets no visit at all; the rest get a first arrival within minutes,
+// of loads gets no visit at all; the rest get a delayed first arrival,
 // stays of a few minutes, and long gaps between returns. Disconnects summon
 // the pet regardless of schedule (unless dismissed or disabled).
-export const VISIT_SHY_CHANCE = 0.25;
-export const VISIT_FIRST_DELAY_MS = [15_000, 180_000] as const;
+export const VISIT_SHY_CHANCE = 0.5;
+export const VISIT_FIRST_DELAY_MS = [1800, 7500] as const;
 export const VISIT_STAY_MS = [90_000, 300_000] as const;
-export const VISIT_GAP_MS = [360_000, 1_080_000] as const;
+export const VISIT_GAP_MS = [1_800_000, 3_600_000] as const;
 
 // Rare-event loads, planned per seed so tests can probe them purely: a molt
 // load sheds its shell during the first idle act and sizes up one tier; a
@@ -201,6 +190,8 @@ export type LobsterPasserPlan = {
   kind: LobsterPasserKind;
   atMs: number;
   direction: 1 | -1;
+  floor: boolean;
+  hops: boolean;
 };
 
 // Once per load, someone else might just... pass through. Strangers are
@@ -224,9 +215,11 @@ export function planLobsterPasser(seed: number): LobsterPasserPlan | null {
           : roll < 0.05
             ? "jellyfish"
             : "stranger";
-  const atMs = Math.round(60_000 + rng() * 840_000);
+  const atMs = Math.round(2500 + rng() * 6500);
   const direction: 1 | -1 = rng() < 0.5 ? 1 : -1;
-  return { kind, atMs, direction };
+  const floor = rng() < 0.55;
+  const hops = rng() < 0.35 && kind !== "snail";
+  return { kind, atMs, direction, floor, hops };
 }
 
 // A very rare load hosts the Elder: a huge, barnacled, unhurried lobster.
@@ -260,8 +253,8 @@ export type LobsterLoadIdentity = {
 };
 
 // Rare per-load identities, resolved on top of the seeded look: the Elder
-// outranks an old-friend return, and retro looks (grail or anniversary dress
-// code) are never repainted. Lobsterdex completion is snapshotted here too,
+// outranks an old-friend return, and retro-geometry looks (grail or anniversary
+// dress code) are never repainted. Lobsterdex completion is snapshotted here too,
 // so the golden ledge trim appears between loads, never mid-visit.
 export function resolveLobsterLoadIdentity(
   seed: number,
@@ -291,7 +284,7 @@ export function resolveLobsterLoadIdentity(
       },
     };
   }
-  if (look.palette.id === "retro") {
+  if (look.palette.id === "retro" || look.palette.id === "goldenretro") {
     return base;
   }
   const known = [...seen]
@@ -308,7 +301,11 @@ export function resolveLobsterLoadIdentity(
     ...base,
     oldFriend: true,
     friendName: getLobsterdexEntries().get(palette.id)?.name ?? null,
-    look: { ...look, palette },
+    look: {
+      ...look,
+      palette,
+      chimeraParts: palette.id === "chimera" ? canonicalLobsterLook(palette).chimeraParts : null,
+    },
   };
 }
 
@@ -330,7 +327,7 @@ export const LOBSTER_BOTTLE_FORTUNES = [
   "somewhere, a test is green because of you",
   "swim sideways when forward fails",
   "the reef remembers kind commits",
-  "even the abyss keeps a night light",
+  "even the deep keeps a night light",
   "barnacles are only patient passengers",
   "no current lasts forever",
   "bury your treasure in version control",
@@ -353,7 +350,7 @@ export function planLobsterBottle(seed: number): LobsterBottlePlan | null {
   if (rng() >= 0.03) {
     return null;
   }
-  const atMs = Math.round(45_000 + rng() * 855_000);
+  const atMs = Math.round(3500 + rng() * 6500);
   const spotPct = Math.round(15 + rng() * 70);
   const fortuneIndex = Math.floor(rng() * LOBSTER_BOTTLE_FORTUNES.length);
   return { atMs, spotPct, fortuneIndex };

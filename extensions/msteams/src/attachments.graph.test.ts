@@ -1,6 +1,7 @@
 // Msteams tests cover attachments.graph plugin behavior.
 import { mockPinnedHostnameResolution } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cancelTrackedTextResponse } from "../../test-support/streaming-error-response.js";
 import type { PluginRuntime } from "../runtime-api.js";
 import { readRemoteMediaResponse } from "./attachments.test-helpers.js";
 import { downloadMSTeamsGraphMedia } from "./attachments/graph.js";
@@ -323,6 +324,32 @@ describe("msteams graph attachments", () => {
   });
 
   it.each<GraphMediaSuccessCase>(GRAPH_MEDIA_SUCCESS_CASES)("$label", runGraphMediaSuccessCase);
+
+  it("cancels non-OK Graph collection bodies before returning empty hosted content", async () => {
+    const tracked = cancelTrackedTextResponse("missing hosted contents", { status: 404 });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = resolveRequestUrl(input);
+      if (url === DEFAULT_MESSAGE_URL) {
+        return createJsonResponse({ attachments: [] });
+      }
+      if (url === `${DEFAULT_MESSAGE_URL}/hostedContents`) {
+        return tracked.response;
+      }
+      return createNotFoundResponse();
+    });
+
+    const media = await downloadMSTeamsGraphMedia({
+      messageUrl: DEFAULT_MESSAGE_URL,
+      tokenProvider: createTokenProvider(),
+      maxBytes: DEFAULT_MAX_BYTES,
+      fetchFn: asFetchFn(fetchMock),
+      resolveFn: resolvePublicHost,
+    });
+
+    expect(media.media).toEqual([]);
+    expect(media.hostedStatus).toBe(404);
+    expect(tracked.wasCanceled()).toBe(true);
+  });
 
   it("does not forward Authorization for SharePoint redirects outside auth allowlist", async () => {
     const tokenProvider = createTokenProvider("top-secret-token");

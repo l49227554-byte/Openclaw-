@@ -1,3 +1,4 @@
+import { getGroupThreadDispatchContext } from "../../auto-reply/group-thread-context.js";
 import { copyReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import {
@@ -17,6 +18,7 @@ import {
 import { hasOutboundReplyContent } from "../../plugin-sdk/reply-payload.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { formatErrorMessage } from "../errors.js";
+import { normalizeEmptyPayloadForDelivery } from "./deliver-payload.js";
 import {
   OutboundDeliveryError,
   type OutboundDeliveryFailureStage,
@@ -24,10 +26,11 @@ import {
   type OutboundPayloadDeliveryOutcome,
   type OutboundPayloadDeliverySuppressionReason,
 } from "./deliver-types.js";
-import type { QueuedReplyPayloadSendingHook } from "./delivery-queue.js";
-import type { NormalizedOutboundPayload } from "./payloads.js";
-
-export { createMessageSentEmitter } from "./message-sent-hook.js";
+import type { QueuedReplyPayloadSendingHook } from "./delivery-queue-storage.js";
+import {
+  summarizeOutboundPayloadForTransport,
+  type NormalizedOutboundPayload,
+} from "./payloads.js";
 
 export type ReplyPayloadSuppressedObserver = (
   payload: ReplyPayload,
@@ -43,15 +46,18 @@ export function buildInboundReplyPayloadSendingBeforeDeliver(
   const finalized = finalizeInboundContext(ctx);
   const hookCtx = deriveInboundMessageHookContext(finalized);
   return markReplyDispatchBeforeDeliverDeadlineOwned(async (payload, info) => {
-    const runId = runState.runId;
+    const group = getGroupThreadDispatchContext();
+    const deliveryContext = group?.ctx ?? finalized;
+    const deliveryHookContext = group ? deriveInboundMessageHookContext(group.ctx) : hookCtx;
+    const runId = group ? group.runState.runId : runState.runId;
     const hookedPayload = await runReplyPayloadSendingHook({
       payload,
       kind: info.kind,
-      channel: finalized.Surface ?? finalized.Provider,
-      sessionKey: finalized.SessionKey,
+      channel: deliveryContext.Surface ?? deliveryContext.Provider,
+      sessionKey: deliveryContext.SessionKey,
       runId,
       usageState: consumeReplyUsageState(runId),
-      context: { ...toPluginMessageContext(hookCtx), runId },
+      context: { ...toPluginMessageContext(deliveryHookContext), runId },
     });
     if (!hookedPayload) {
       await onSuppressed?.(payload, info, "cancelled_by_reply_payload_sending_hook");
@@ -81,9 +87,13 @@ export function buildLegacyInboundMessageSendingBeforeDeliver(
       if (!payload.text) {
         return payload;
       }
+      const group = getGroupThreadDispatchContext();
       const result = await hookRunner.runMessageSending(
         { content: payload.text, to: replyTarget },
-        toPluginMessageContext(hookCtx),
+        {
+          ...toPluginMessageContext(hookCtx),
+          ...(group ? { sessionKey: group.ctx.SessionKey, runId: group.runState.runId } : {}),
+        },
       );
       if (result?.cancel) {
         return null;
@@ -93,6 +103,34 @@ export function buildLegacyInboundMessageSendingBeforeDeliver(
         : copyReplyPayloadMetadata(payload, { ...payload, text: result.content });
     },
   );
+}
+
+/** Run media-aware message policy before a core owner can capture projected output. */
+export function buildProjectedInboundMessageSendingBeforeDeliver(
+  ctx: MsgContext | FinalizedMsgContext,
+): ReplyDispatchBeforeDeliver {
+  const finalized = finalizeInboundContext(ctx);
+  const hookCtx = deriveInboundMessageHookContext(finalized);
+  const replyTarget = resolveInboundReplyHookTarget(finalized, hookCtx);
+  return markReplyDispatchBeforeDeliverDeadlineOwned(async (payload) => {
+    const hookRunner = getGlobalHookRunner();
+    const hookResult = await applyMessageSendingHook({
+      hookRunner,
+      enabled: hookRunner?.hasHooks("message_sending") ?? false,
+      payload,
+      payloadSummary: summarizeOutboundPayloadForTransport(payload),
+      to: replyTarget,
+      channel: hookCtx.channelId,
+      accountId: hookCtx.accountId,
+      replyToId: payload.replyToId ?? finalized.ReplyToIdFull ?? finalized.ReplyToId,
+      threadId: finalized.MessageThreadId,
+      sessionKey: finalized.SessionKey,
+    });
+    if (hookResult.cancelled) {
+      return null;
+    }
+    return normalizeEmptyPayloadForDelivery(hookResult.payload);
+  });
 }
 
 export async function applyMessageSendingHook(params: {
@@ -123,6 +161,7 @@ export async function applyMessageSendingHook(params: {
     };
   }
   try {
+    const group = getGroupThreadDispatchContext();
     const sendingResult = await params.hookRunner!.runMessageSending(
       {
         to: params.to,
@@ -140,6 +179,7 @@ export async function applyMessageSendingHook(params: {
         accountId: params.accountId ?? undefined,
         conversationId: params.to,
         ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+        ...(group ? { sessionKey: group.ctx.SessionKey, runId: group.runState.runId } : {}),
       },
     );
     if (sendingResult?.cancel) {

@@ -1,6 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { repairCanonicalSqliteIndexes } from "./sqlite-index-schema.js";
+import {
+  repairCanonicalSqliteIndexes,
+  verifyAndRepairCanonicalSqliteIndexes,
+} from "./sqlite-index-schema.js";
 
 const CANONICAL_SCHEMA = `
   CREATE TABLE records (
@@ -25,15 +28,97 @@ function createDatabase(): DatabaseSync {
   return db;
 }
 
+function tracePreparedSql(database: DatabaseSync): {
+  database: DatabaseSync;
+  statements: string[];
+  readonly materializedIndexSqlBytes: number;
+} {
+  const statements: string[] = [];
+  let materializedIndexSqlBytes = 0;
+  function observe(row: unknown) {
+    if (
+      row &&
+      typeof row === "object" &&
+      "sql" in row &&
+      typeof row.sql === "string" &&
+      /^CREATE (?:UNIQUE )?INDEX\b/iu.test(row.sql)
+    ) {
+      materializedIndexSqlBytes += Buffer.byteLength(row.sql, "utf8");
+    }
+  }
+  return {
+    database: new Proxy(database, {
+      get(target, property) {
+        if (property === "prepare") {
+          return (sql: string) => {
+            statements.push(sql);
+            return new Proxy(target.prepare(sql), {
+              get(statement, method) {
+                if (method === "get" || method === "all") {
+                  return (...args: unknown[]) => {
+                    const result = Reflect.apply(statement[method], statement, args);
+                    if (method === "all") {
+                      for (const row of result) {
+                        observe(row);
+                      }
+                    } else {
+                      observe(result);
+                    }
+                    return result;
+                  };
+                }
+                const value = Reflect.get(statement, method, statement) as unknown;
+                return typeof value === "function" ? value.bind(statement) : value;
+              },
+            });
+          };
+        }
+        const value = Reflect.get(target, property, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as DatabaseSync,
+    statements,
+    get materializedIndexSqlBytes() {
+      return materializedIndexSqlBytes;
+    },
+  };
+}
+
 describe("repairCanonicalSqliteIndexes", () => {
+  it("runs one whole-file integrity check for healthy indexes", () => {
+    const db = createDatabase();
+    try {
+      const traced = tracePreparedSql(db);
+
+      verifyAndRepairCanonicalSqliteIndexes(traced.database, "test database", CANONICAL_SCHEMA);
+
+      expect(traced.statements.filter((sql) => sql.startsWith("PRAGMA integrity_check"))).toEqual([
+        "PRAGMA integrity_check;",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("does not rewrite an already canonical index", () => {
     const db = createDatabase();
     try {
       const before = db.prepare("PRAGMA schema_version").get();
+      const indexSqlBytes = db
+        .prepare("SELECT sql FROM main.sqlite_schema WHERE type = 'index' AND sql IS NOT NULL")
+        .all()
+        .reduce((sum, row) => {
+          if (typeof row.sql !== "string") {
+            throw new Error("Expected fixture index DDL");
+          }
+          return sum + Buffer.byteLength(row.sql, "utf8");
+        }, 0);
+      const traced = tracePreparedSql(db);
 
-      repairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
+      verifyAndRepairCanonicalSqliteIndexes(traced.database, "test database", CANONICAL_SCHEMA);
 
       expect(db.prepare("PRAGMA schema_version").get()).toEqual(before);
+      expect(traced.materializedIndexSqlBytes).toBeLessThanOrEqual(indexSqlBytes);
     } finally {
       db.close();
     }
@@ -159,7 +244,7 @@ describe("repairCanonicalSqliteIndexes", () => {
           .all(),
       ).toEqual([]);
 
-      repairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
+      verifyAndRepairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
 
       expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
       expect(

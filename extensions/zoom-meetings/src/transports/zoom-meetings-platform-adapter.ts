@@ -6,6 +6,7 @@ import {
 import type { ZoomMeetingsMode } from "../config.js";
 import type { ZoomMeetingsChromeHealth, ZoomMeetingsTranscriptSnapshot } from "./types.js";
 import {
+  zoomMeetingAudioCaptureScript,
   zoomMeetingLeaveScript,
   zoomMeetingStatusScript,
   zoomMeetingTranscriptScript,
@@ -20,24 +21,6 @@ import {
 
 function zoomMeetingOrigin(meetingUrl: string): string | undefined {
   return normalizeZoomMeetingUrlForReuse(meetingUrl) ? "https://app.zoom.us" : undefined;
-}
-
-export function isZoomMeetingsTalkBackMode(mode: ZoomMeetingsMode): boolean {
-  return mode === "agent" || mode === "bidi";
-}
-
-export function isZoomMeetingsRealtimeRouteReady(
-  mode: ZoomMeetingsMode,
-  health: ZoomMeetingsChromeHealth | undefined,
-): boolean {
-  return (
-    isZoomMeetingsTalkBackMode(mode) &&
-    health?.inCall === true &&
-    health.micMuted === false &&
-    health.audioInputRouted === true &&
-    health.audioOutputRouted === true &&
-    health.manualActionRequired !== true
-  );
 }
 
 function classifyManualActionReason(reason: string): MeetingManualActionCategory {
@@ -105,10 +88,11 @@ export const ZOOM_MEETINGS_PLATFORM_ADAPTER = MeetingPlatformAdapter.create<
     localeAction: () => undefined,
   },
   browser: {
-    allowsMicrophone: isZoomMeetingsTalkBackMode,
+    buildAudioCaptureScript: zoomMeetingAudioCaptureScript,
+    allowsMicrophone: MeetingPlatformAdapter.isTalkBackMode,
     buildStatusJoinScript: (params) =>
       zoomMeetingStatusScript({
-        allowMicrophone: isZoomMeetingsTalkBackMode(params.mode),
+        allowMicrophone: MeetingPlatformAdapter.isTalkBackMode(params.mode),
         allowSessionAdoption: params.allowSessionAdoption,
         autoJoin: params.autoJoin,
         captureCaptions: params.captureCaptions,
@@ -120,10 +104,10 @@ export const ZOOM_MEETINGS_PLATFORM_ADAPTER = MeetingPlatformAdapter.create<
       }),
     shouldRetryJoinStatus: (health) =>
       health.inCall === true &&
-      ((health.manualActionReason === "zoom-audio-choice-required" &&
+      ((health.manualAction?.reason === "zoom-audio-choice-required" &&
         health.audioInputRouted === true &&
         health.audioOutputRouteRetryable === true) ||
-        (health.manualActionRequired !== true &&
+        (health.manualAction === undefined &&
           health.captionCaptureRequested === true &&
           health.captioning !== true)),
     browserControlUnavailable: () => ({

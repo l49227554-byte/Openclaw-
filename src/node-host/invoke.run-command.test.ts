@@ -32,6 +32,38 @@ describe("runCommand", () => {
     });
   });
 
+  it.each(["before", "after"] as const)(
+    "checks node launch policy %s native execution",
+    async (timing) => {
+      let allowed = timing === "after";
+      const pending = testing.runCommand(
+        [
+          process.execPath,
+          "-e",
+          "process.stdin.resume(); process.stdin.once('end', () => process.stdout.write('completed'))",
+        ],
+        undefined,
+        { PATH: process.env.PATH ?? "" },
+        5_000,
+        undefined,
+        () => {
+          if (!allowed) {
+            throw new Error("exec approval changed before execution");
+          }
+        },
+      );
+      // The canonical node runner spawns synchronously before returning its promise.
+      allowed = false;
+      if (timing === "before") {
+        await expect(pending).rejects.toThrow("exec approval changed before execution");
+      } else {
+        const result = await pending;
+        expect(result.success).toBe(true);
+        expect(result.stdout).toBe("completed");
+      }
+    },
+  );
+
   it("closes stdin for commands that wait for EOF", async () => {
     await expect(
       testing.runCommand(
@@ -74,6 +106,26 @@ describe("runCommand", () => {
     );
     expect(result).toMatchObject({ timedOut: true, success: false, error: null });
     expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it.runIf(process.platform !== "win32")("force-kills cancelled command trees", async () => {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const cancelling = setTimeout(() => controller.abort(), 25);
+    try {
+      const result = await testing.runCommand(
+        [process.execPath, "-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+        undefined,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+
+      expect(result).toMatchObject({ timedOut: false, success: false, error: null });
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    } finally {
+      clearTimeout(cancelling);
+    }
   });
 
   it("keeps the combined output prefix bounded", async () => {

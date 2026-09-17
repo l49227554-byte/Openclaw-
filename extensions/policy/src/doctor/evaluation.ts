@@ -17,6 +17,7 @@ import { dataHandlingFindings, secretAuthProvenanceFindings } from "./data-auth-
 import { execApprovalsFindings } from "./exec-approval-findings.js";
 import { ingressFindings } from "./ingress-findings.js";
 import { SUPPORTED_TOOL_METADATA } from "./policy-constants.js";
+import { policyEvidenceFinding } from "./policy-evidence-finding.js";
 import {
   execApprovalsDisplayName,
   parsePolicyFile,
@@ -187,8 +188,26 @@ async function evaluatePolicyUncached(ctx: HealthCheckContext): Promise<PolicyEv
       ? policyRoutingRules(policy)
       : undefined;
   const execApprovalsFile = includeExecApprovals ? await readExecApprovalsFile(ctx) : undefined;
+  let unmigratedToolsFinding: HealthFinding | undefined;
   if (requiredMetadata.size > 0) {
-    const toolsFile = await readWorkspaceFile(ctx, "TOOLS.md");
+    const [toolsFile, legacyToolsFile] = await Promise.all([
+      readWorkspaceFile(ctx, "AGENTS.md"),
+      readWorkspaceFile(ctx, "TOOLS.md"),
+    ]);
+    if (legacyToolsFile !== null) {
+      unmigratedToolsFinding = {
+        checkId: CHECK_IDS.policyUnmigratedToolsFile,
+        severity: "error",
+        message:
+          "TOOLS.md contains unmigrated governed tool declarations; run `openclaw doctor --fix` to migrate them into the AGENTS.md `## Tools` section before policy evaluation can pass.",
+        source: "policy",
+        path: "TOOLS.md",
+        target: "oc://TOOLS.md/tools",
+        requirement: `oc://${policyFile.ocDocName}/tools/requireMetadata`,
+        fixHint:
+          "Run `openclaw doctor --fix` to migrate TOOLS.md into the AGENTS.md `## Tools` section.",
+      };
+    }
     evidence = await collectPolicyEvidence(ctx.cfg as Record<string, unknown>, {
       toolsRaw: toolsFile?.raw ?? "",
       includeIngress,
@@ -242,6 +261,7 @@ async function evaluatePolicyUncached(ctx: HealthCheckContext): Promise<PolicyEv
     ),
     ...authMetadataRequirementFindings,
     ...metadataRequirementFindings,
+    ...(unmigratedToolsFinding === undefined ? [] : [unmigratedToolsFinding]),
   ];
   if (requiredMetadata.has("risk")) {
     policyFindings.push(...toolRiskFindings(policyFile.ocDocName, evidence));
@@ -302,7 +322,11 @@ export function findingsForCheck(
 }
 
 function hasPolicyValidationFinding(findings: readonly HealthFinding[]): boolean {
-  return findings.some((finding) => finding.checkId === CHECK_IDS.policyInvalidFile);
+  return findings.some(
+    (finding) =>
+      finding.checkId === CHECK_IDS.policyInvalidFile ||
+      finding.checkId === CHECK_IDS.policyUnmigratedToolsFile,
+  );
 }
 
 function channelFindings(
@@ -328,19 +352,14 @@ function channelFindings(
       return [];
     }
     return [
-      {
+      policyEvidenceFinding(channel, {
         checkId: CHECK_IDS.policyDeniedChannelProvider,
-        severity: "error",
         message: `Channel '${channel.id}' uses denied provider '${channel.provider}'.`,
-        source: "policy",
-        path: "openclaw config",
-        ocPath: channel.source,
-        target: channel.source,
         requirement: rule.requirement,
         fixHint:
           rule.reason ??
           "Disable this channel, remove it from config, or update the policy deny rule.",
-      },
+      }),
     ];
   });
 }

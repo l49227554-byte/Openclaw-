@@ -1,5 +1,6 @@
 import { GatewayErrorDetailCodes } from "@openclaw/gateway-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../test/helpers/promise.js";
 import { i18n } from "../i18n/index.ts";
 import {
   MCP_APP_VIEW_EXPIRED_EVENT,
@@ -77,14 +78,6 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
 
 const { McpAppView } = await import("./mcp-app-view.ts");
 type McpAppViewElement = InstanceType<typeof McpAppView>;
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => {
-    resolve = promiseResolve;
-  });
-  return { promise, resolve };
-}
 
 const MCP_APP_VIEW_ELEMENT_NAME = `test-mcp-app-view-${crypto.randomUUID()}`;
 
@@ -198,7 +191,10 @@ describe("mcp-app-view localization", () => {
 
   it("accepts only focused visible plain-text ui/message requests through the chat seam", async () => {
     const { bridge, frame, view } = await mountBridge(`view-message-${crypto.randomUUID()}`);
-    expect(bridge.capabilities).toMatchObject({ message: { text: {} } });
+    expect(bridge.capabilities).toMatchObject({
+      message: { text: {} },
+      serverResources: {},
+    });
     expect(bridge.messageHandler).toBeTypeOf("function");
 
     const received: string[] = [];
@@ -297,6 +293,7 @@ describe("mcp-app-view localization", () => {
     expect(bridge.capabilities).not.toHaveProperty("message");
     expect(bridge.messageHandler).toBeUndefined();
     expect(bridge.capabilities).not.toHaveProperty("updateModelContext");
+    expect(bridge.capabilities).not.toHaveProperty("serverResources");
     expect(bridge.updateModelContextHandler).toBeUndefined();
   });
 
@@ -461,6 +458,9 @@ describe("mcp-app-view localization", () => {
       mcpApp: {
         title: "Aplicativo MCP",
         unavailable: "Aplicativo MCP indisponível: {error}",
+        errors: {
+          gatewayUnavailable: "Gateway do aplicativo MCP indisponível",
+        },
       },
     });
     await i18n.setLocale("pt-BR");
@@ -472,7 +472,7 @@ describe("mcp-app-view localization", () => {
 
     await expect
       .poll(() => view.shadowRoot?.querySelector(".error")?.textContent)
-      .toBe("Aplicativo MCP indisponível: MCP App gateway unavailable");
+      .toBe("Aplicativo MCP indisponível: Gateway do aplicativo MCP indisponível");
   });
 
   it.each([

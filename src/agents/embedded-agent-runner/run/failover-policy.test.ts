@@ -2,6 +2,7 @@
 // profile rotation, fallback model escalation, and user-visible errors.
 import { describe, expect, it } from "vitest";
 import { classifyAssistantFailoverReason } from "../../embedded-agent-helpers.js";
+import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
 import { mergeRetryFailoverReason, resolveRunFailoverDecision } from "./failover-policy.js";
 
 describe("resolveRunFailoverDecision", () => {
@@ -65,7 +66,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -82,7 +82,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -99,7 +98,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -112,29 +110,30 @@ describe("resolveRunFailoverDecision", () => {
     });
   });
 
-  it("surfaces max-turn prompt failures without profile rotation or model fallback", () => {
-    expect(
-      resolveRunFailoverDecision({
-        stage: "prompt",
-        aborted: false,
-        externalAbort: false,
-        fallbackConfigured: true,
-        failoverCode: "cli_max_turns",
-        failoverFailure: true,
-        failoverReason: "unknown",
-        profileRotated: false,
-      }),
-    ).toEqual({
-      action: "surface_error",
-      reason: "unknown",
-    });
-  });
+  it.each(["cli_max_turns", "cli_turn_stopped"])(
+    "surfaces recorded terminal-stop prompt failures without profile rotation or model fallback (%s)",
+    (failoverCode) => {
+      expect(
+        resolveRunFailoverDecision({
+          stage: "prompt",
+          externalAbort: false,
+          fallbackConfigured: true,
+          failoverCode,
+          failoverFailure: true,
+          failoverReason: "unknown",
+          profileRotated: false,
+        }),
+      ).toEqual({
+        action: "surface_error",
+        reason: "unknown",
+      });
+    },
+  );
 
   it("surfaces prompt run-budget timeouts instead of model fallback (#60388)", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: true,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -153,7 +152,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: true,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -171,7 +169,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -189,7 +186,6 @@ describe("resolveRunFailoverDecision", () => {
       resolveRunFailoverDecision({
         stage: "prompt",
         allowFormatRetry: true,
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -208,16 +204,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: "rate_limit",
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -229,16 +219,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: true,
         failoverReason: "format",
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -252,16 +236,10 @@ describe("resolveRunFailoverDecision", () => {
       resolveRunFailoverDecision({
         stage: "assistant",
         allowFormatRetry: true,
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: true,
         failoverReason: "format",
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -274,16 +252,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: true,
         failoverReason: "rate_limit",
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: true,
       }),
     ).toEqual({
@@ -296,16 +268,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: true,
         failoverReason: "tls_certificate",
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -318,16 +284,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: "billing",
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: true,
       }),
     ).toEqual({
@@ -339,16 +299,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -360,7 +314,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: true,
         externalAbort: true,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -377,16 +330,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "tool_execution", source: "runtime", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: true,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -394,20 +341,29 @@ describe("resolveRunFailoverDecision", () => {
     });
   });
 
+  it.each(["compaction", "tool_execution"] as const)(
+    "does not spend profile or fallback retries on a %s timeout observation",
+    (phase) => {
+      expect(
+        resolveRunFailoverDecision({
+          stage: "assistant",
+          terminal: { kind: "timeout", phase, source: "observation" },
+          fallbackConfigured: true,
+          failoverFailure: false,
+          failoverReason: null,
+          profileRotated: false,
+        }),
+      ).toEqual({ action: "continue_normal" });
+    },
+  );
+
   it("falls back for opencode-go provider-owned stalled stream errors after rotation is exhausted", () => {
     const assistantError = {
       role: "assistant" as const,
       api: "openai-completions" as const,
       provider: "opencode-go",
       model: "deepseek-v4-flash",
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
+      usage: createZeroUsageFixture(),
       stopReason: "error" as const,
       errorMessage: "opencode-go stream timed out after provider-owned SSE boundary stalled",
       content: [],
@@ -419,15 +375,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: failoverReason !== null,
         failoverReason,
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
         profileRotated: true,
       }),
     ).toEqual({
@@ -440,16 +391,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "tool_execution", source: "runtime", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: true,
-        timedOutByRunBudget: false,
         profileRotated: true,
       }),
     ).toEqual({
@@ -461,16 +406,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "runtime", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -485,15 +424,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "runtime", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
         harnessOwnsTransport: true,
         profileRotated: false,
       }),
@@ -506,15 +440,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "ok" },
         fallbackConfigured: true,
         failoverFailure: true,
         failoverReason: "timeout",
-        timedOut: false,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
         harnessOwnsTransport: true,
         profileRotated: false,
       }),
@@ -527,15 +456,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "runtime" },
         fallbackConfigured: true,
         failoverFailure: true,
         failoverReason: "rate_limit",
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
         harnessOwnsTransport: true,
         profileRotated: false,
       }),
@@ -549,15 +473,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "runtime" },
         fallbackConfigured: true,
         failoverFailure: true,
         failoverReason: "billing",
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
         harnessOwnsTransport: true,
         profileRotated: true,
       }),
@@ -571,16 +490,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "tool_execution", source: "idle", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: true,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: true,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -593,16 +506,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "tool_execution", source: "idle", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: true,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: true,
-        timedOutByRunBudget: false,
         profileRotated: true,
       }),
     ).toEqual({
@@ -615,16 +522,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: true,
+        terminal: { kind: "timeout", phase: "prompt", source: "external", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -633,20 +534,28 @@ describe("resolveRunFailoverDecision", () => {
     });
   });
 
+  it("keeps an externally owned interruption ahead of an idle watchdog retry", () => {
+    expect(
+      resolveRunFailoverDecision({
+        stage: "assistant",
+        terminal: { kind: "timeout", phase: "tool_execution", source: "idle", aborted: true },
+        signalOwnedInterruption: true,
+        fallbackConfigured: true,
+        failoverFailure: false,
+        failoverReason: null,
+        profileRotated: false,
+      }),
+    ).toEqual({ action: "surface_error", reason: null });
+  });
+
   it("rotates profile on LLM idle timeout before falling back", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "idle" },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: false,
-        idleTimedOut: true,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -659,16 +568,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "idle" },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: false,
-        idleTimedOut: true,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: true,
       }),
     ).toEqual({
@@ -681,15 +584,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "idle" },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: false,
-        idleTimedOut: true,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
         harnessOwnsTransport: true,
         profileRotated: true,
       }),
@@ -702,7 +600,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -720,7 +617,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: true,
         failoverFailure: true,
@@ -739,7 +635,6 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "prompt",
-        aborted: false,
         externalAbort: false,
         fallbackConfigured: false,
         failoverFailure: true,
@@ -758,16 +653,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "idle" },
         fallbackConfigured: false,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: false,
-        idleTimedOut: true,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: true,
       }),
     ).toEqual({
@@ -780,16 +669,11 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: false,
-        externalAbort: true,
+        terminal: { kind: "timeout", phase: "prompt", source: "idle" },
+        signalOwnedInterruption: true,
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: false,
-        idleTimedOut: true,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: false,
         profileRotated: false,
       }),
     ).toEqual({
@@ -802,16 +686,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "run_budget", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: true,
         profileRotated: false,
       }),
     ).toEqual({
@@ -823,16 +701,10 @@ describe("resolveRunFailoverDecision", () => {
     expect(
       resolveRunFailoverDecision({
         stage: "assistant",
-        aborted: true,
-        externalAbort: false,
+        terminal: { kind: "timeout", phase: "prompt", source: "run_budget", aborted: true },
         fallbackConfigured: true,
         failoverFailure: false,
         failoverReason: null,
-        timedOut: true,
-        idleTimedOut: false,
-        timedOutDuringCompaction: false,
-        timedOutDuringToolExecution: false,
-        timedOutByRunBudget: true,
         profileRotated: true,
       }),
     ).toEqual({
@@ -859,5 +731,15 @@ describe("mergeRetryFailoverReason", () => {
         timedOut: true,
       }),
     ).toBe("timeout");
+  });
+
+  it("preserves a previous concrete reason over a later coarse timeout", () => {
+    expect(
+      mergeRetryFailoverReason({
+        previous: "server_error",
+        failoverReason: null,
+        timedOut: true,
+      }),
+    ).toBe("server_error");
   });
 });

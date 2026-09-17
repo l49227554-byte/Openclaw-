@@ -1,7 +1,8 @@
 // Slack plugin module implements probe behavior.
 import type { BaseProbeResult } from "openclaw/plugin-sdk/channel-contract";
 import { runChannelProbe } from "openclaw/plugin-sdk/text-utility-runtime";
-import { createSlackWebClient } from "./client.js";
+import { createSlackProbeDispatcher } from "./client-options.js";
+import { createSlackReadClient } from "./client.js";
 import { formatSlackError } from "./errors.js";
 import { formatSlackBotTokenIdentityWarning } from "./token.js";
 
@@ -19,8 +20,19 @@ export async function probeSlack(
   timeoutMs = 2500,
   opts?: { accountId?: string | null; identity?: "bot" | "user" },
 ): Promise<SlackProbe> {
-  const client = createSlackWebClient(token);
-  return await runChannelProbe(
+  // The probe owns a single absolute deadline: abort its fetch and never let
+  // retries or Slack's 429 queue outlive the shared health-check result.
+  const dispatcher = createSlackProbeDispatcher(timeoutMs);
+  const client = createSlackReadClient(
+    token,
+    {
+      rejectRateLimitedCalls: true,
+      retryConfig: { retries: 0 },
+      timeout: timeoutMs,
+    },
+    dispatcher,
+  );
+  const probeResult = runChannelProbe(
     timeoutMs,
     async () => {
       const result = await client.auth.test();
@@ -77,4 +89,10 @@ export async function probeSlack(
       error: formatSlackError(error),
     }),
   );
+  try {
+    return await probeResult;
+  } finally {
+    // A probe owns no reusable pool; destroy it even when the SDK timeout wins the race.
+    await dispatcher.destroy().catch(() => undefined);
+  }
 }

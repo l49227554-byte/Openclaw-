@@ -94,6 +94,14 @@ and the last update run, or run `openclaw update` again. `openclaw status --deep
 also fetches for that check; it does not change the ledger. See
 [Release channels](/install/development-channels#checking-current-status).
 
+For a local managed Gateway, text status also shows the CLI installation and the
+service package version and entrypoint, even when the connection fails. The
+service package version describes files on disk; it does not verify the running
+Gateway version. If the package roots or versions differ, status suggests
+`openclaw doctor` to inspect the service. If the difference is unintended, run
+`openclaw gateway install --force` from the intended installation, then
+`openclaw gateway restart`. Status itself never rewrites the service.
+
 ## Status timing
 
 Use the existing diagnostic timeline to locate time spent outside Gateway RPCs:

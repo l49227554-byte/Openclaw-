@@ -310,6 +310,7 @@ async function gatherDaemonStatusImpl(
   });
   const { command, env: serviceEnv, loadState, runtime } = serviceState;
   const loaded = loadState.status === "loaded";
+  const serviceLayout = await summarizeGatewayServiceLayout(command).catch(() => undefined);
   // An explicit local port or separate process context does not select the
   // native service. Keep that service visible without borrowing its target or auth.
   const useNativeServiceTargetContext =
@@ -551,7 +552,7 @@ async function gatherDaemonStatusImpl(
                 ...(runningGatewayVersion ? { runningGatewayVersion } : {}),
               };
             } else {
-              const layout = await summarizeGatewayServiceLayout(targetServiceCommand);
+              const layout = serviceLayout;
               if (!layout?.packageVersion) {
                 pluginVersionRestartReadiness = {
                   status: "unresolved",
@@ -615,6 +616,14 @@ async function gatherDaemonStatusImpl(
       notLoadedText: service.notLoadedText,
       targetRole: serviceTargetsProbe ? "target" : "diagnostic-only",
       command,
+      ...(serviceLayout
+        ? {
+            layout: {
+              entrypoint: serviceLayout.entrypoint,
+              packageVersion: serviceLayout.packageVersion,
+            },
+          }
+        : {}),
       runtime: runtime?.inspectionFailure
         ? {
             ...runtime,

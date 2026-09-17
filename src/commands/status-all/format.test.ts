@@ -1,5 +1,6 @@
 // Status-all format tests cover dashboard URLs, gateway summaries, overview rows, and JSON payload shapes.
 import { describe, expect, it } from "vitest";
+import { VERSION } from "../../version.js";
 import {
   baseStatusExpectedUpdateChannelInfo,
   baseStatusExpectedUpdateChannelLabel,
@@ -222,6 +223,101 @@ describe("status-all format", () => {
         },
       }),
     ).toBe(expected);
+  });
+
+  it.each([
+    {
+      name: "older package",
+      packageVersion: "2026.4.15",
+      packageRoot: "/old/openclaw",
+      warning: true,
+    },
+    {
+      name: "same version in another prefix",
+      packageVersion: VERSION,
+      packageRoot: "/old/openclaw",
+      warning: true,
+    },
+    {
+      name: "matching install",
+      packageVersion: VERSION,
+      packageRoot: "/active/openclaw",
+      warning: false,
+    },
+    {
+      name: "unreadable metadata",
+      packageVersion: undefined,
+      packageRoot: undefined,
+      warning: false,
+    },
+  ])(
+    "shows local installation facts after a failed handshake: $name",
+    ({ packageVersion, packageRoot, warning }) => {
+      const rows = buildStatusOverviewSurfaceRows({
+        ...baseStatusOverviewSurface,
+        agentsValue: "0",
+        gatewayConnection: { url: "ws://127.0.0.1:18789", urlSource: "local loopback" },
+        gatewayMode: "local",
+        gatewayReachable: false,
+        gatewayProbe: { error: "gateway closed (1002): protocol mismatch" },
+        gatewaySelf: null,
+        gatewayService: {
+          label: "systemd",
+          installed: true,
+          managedByOpenClaw: true,
+          loadedText: "enabled",
+          runtime: { status: "running", pid: 1234 },
+          cliPackageRoot: "/active/openclaw",
+          layout: {
+            execStart: "unused",
+            entrypoint: "/old/openclaw/dist/index.js",
+            packageVersion,
+            packageRoot,
+          },
+        },
+      });
+      const value = (item: string) => rows.find((row) => row.Item === item)?.Value;
+      expect(value("CLI installation")).toContain(VERSION);
+      expect(value("CLI installation")).toContain("/active/openclaw");
+      expect(value("Service installation")).toContain(packageVersion ?? "version unknown");
+      expect(value("Service installation")).toContain("/old/openclaw/dist/index.js");
+      expect(value("Gateway service")).toContain("running (pid 1234)");
+      expect(value("Gateway")).toContain("protocol mismatch");
+      expect(value("Gateway self")).toBeUndefined();
+      if (warning) {
+        expect(value("Service installation warning")).toContain("may explain");
+        expect(value("Service installation warning")).toContain("openclaw doctor");
+        expect(value("Service installation warning")).toContain("openclaw gateway install --force");
+      } else {
+        expect(value("Service installation warning")).toBeUndefined();
+      }
+    },
+  );
+
+  it.each([
+    { gatewayMode: "remote" as const, urlSource: "config gateway.remote.url" },
+    { gatewayMode: "local" as const, urlSource: "env OPENCLAW_GATEWAY_URL" },
+  ])("does not recommend local service repair for $urlSource", ({ gatewayMode, urlSource }) => {
+    expect(
+      getStatusOverviewRowValue("Service installation warning", {
+        gatewayMode,
+        gatewayConnection: { url: "ws://127.0.0.1:18789", urlSource },
+        gatewayReachable: false,
+        gatewayProbe: { error: "protocol mismatch" },
+        gatewayService: {
+          label: "systemd",
+          installed: true,
+          managedByOpenClaw: true,
+          loadedText: "enabled",
+          cliPackageRoot: "/active/openclaw",
+          layout: {
+            execStart: "unused",
+            packageRoot: "/old/openclaw",
+            packageVersion: "2026.4.15",
+          },
+        },
+      }),
+    ).toBeUndefined();
   });
 
   it("builds gateway json payloads consistently", () => {

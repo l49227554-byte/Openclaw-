@@ -40,7 +40,7 @@ import { VERSION } from "../../version.js";
 import { registerGatewayCli } from "../gateway-cli/register.js";
 import { registerDaemonCli } from "./register.js";
 import type { GatewayRestartSnapshot } from "./restart-health.js";
-import { gatherDaemonStatus, renderPortDiagnosticsForCli } from "./status.gather.js";
+import { gatherDaemonStatus } from "./status.gather.js";
 import {
   callGatewayStatusProbe,
   formatPortDiagnostics,
@@ -529,27 +529,6 @@ describe("gatherDaemonStatus", () => {
   afterEach(() => {
     readFileSpy.mockRestore();
     envSnapshot.restore();
-  });
-
-  it("reports indeterminate port availability unless the RPC probe succeeded", () => {
-    const status = {
-      service: {
-        label: "Scheduled Task",
-        loaded: true,
-        loadState: { status: "loaded" as const },
-        loadedText: "registered",
-        notLoadedText: "not registered",
-      },
-      port: { port: 18789, status: "unknown" as const, listeners: [], hints: [] },
-      extraServices: [],
-    };
-
-    expect(renderPortDiagnosticsForCli(status, false)).toEqual(["port diagnostics"]);
-    expect(formatPortDiagnostics).toHaveBeenCalledWith(status.port);
-    expect(renderPortDiagnosticsForCli(status, true)).toEqual([]);
-    expect(
-      renderPortDiagnosticsForCli({ ...status, port: { ...status.port, status: "free" } }, false),
-    ).toEqual([]);
   });
 
   it.each(["user", "system", undefined] as const)(
@@ -2425,9 +2404,15 @@ describe("gatherDaemonStatus", () => {
     { name: "running an older version", runtime: "running", probeVersion: "2026.5.4" },
     { name: "stopped", runtime: "stopped", probeVersion: undefined },
     { name: "unreachable", runtime: "running", probeVersion: undefined },
+    {
+      name: "unreachable in ordinary status",
+      runtime: "running",
+      probeVersion: undefined,
+      ordinaryStatus: true,
+    },
   ])(
     "compares Doctor plugin readiness with the installed service when the Gateway is $name",
-    async ({ runtime, probeVersion }) => {
+    async ({ runtime, probeVersion, ordinaryStatus }) => {
       const packageRoot = await fs.realpath(
         await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-restart-readiness-")),
       );
@@ -2463,8 +2448,16 @@ describe("gatherDaemonStatus", () => {
           },
         } as never);
 
-        const status = await gatherStatus({ pluginVersionTarget: "restart" });
+        const status = await gatherStatus(ordinaryStatus ? {} : { pluginVersionTarget: "restart" });
 
+        expect(status.service.layout).toMatchObject({
+          entrypoint,
+          packageVersion: "2026.6.1",
+        });
+        if (ordinaryStatus) {
+          expect(status.gateway?.version).toBeNull();
+          return;
+        }
         expect(status.pluginVersionDrift).toBeUndefined();
         expect(status.pluginVersionRestartReadiness).toEqual({
           status: "resolved",

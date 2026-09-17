@@ -7,37 +7,6 @@ const issuedWarnings = ((globalThis as { litIssuedWarnings?: Set<string> }).litI
 
 issuedWarnings.add("dev-mode");
 
-// JSDOM has no media queries or layout observation. Real browser tests keep
-// their native implementations and own the motion and resize assertions.
-if (typeof matchMedia === "undefined") {
-  Object.defineProperty(globalThis, "matchMedia", {
-    configurable: true,
-    writable: true,
-    value: (media: string) => ({
-      media,
-      matches: false,
-      onchange: null,
-      addListener() {},
-      removeListener() {},
-      addEventListener() {},
-      removeEventListener() {},
-      dispatchEvent: () => true,
-    }),
-  });
-}
-
-if (typeof ResizeObserver === "undefined") {
-  Object.defineProperty(globalThis, "ResizeObserver", {
-    configurable: true,
-    writable: true,
-    value: class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-  });
-}
-
 // Web Awesome resolves `for` targets while Lit content is still in a detached
 // render root. The app renders into a connected root; JSDOM unit helpers do not.
 const findElementById = (root: ParentNode, id: string) =>

@@ -1,5 +1,6 @@
 import { html, nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { userEvent } from "vitest/browser";
 import "../test-helpers/load-styles.ts";
 import { renderHoverMarquee } from "./hover-marquee.ts";
 
@@ -47,7 +48,9 @@ describe("hover marquee lifecycle", () => {
     const label = show(longTitle);
     const host = container.querySelector<HTMLElement>("a")!;
     await expect.poll(() => getComputedStyle(label).maskImage).not.toBe("none");
+    await userEvent.keyboard("{ArrowRight}");
     host.focus();
+    expect(host.matches(":focus-visible")).toBe(true);
     await expect.poll(() => label.style.getPropertyValue("--hover-marquee-shift")).not.toBe("");
     const part = render(view(longTitle), container);
     // Cached Lit views disconnect without discarding their DOM.

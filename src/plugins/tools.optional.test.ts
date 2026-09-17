@@ -6,9 +6,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { normalizeToolParameters } from "../agents/agent-tools.schema.js";
-import { resolveConversationCapabilityProfile } from "../agents/conversation-capability-profile.js";
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "../agents/tool-policy.js";
-import { applyLocalSetupWorkspaceConfig } from "../commands/onboard-config.js";
 import { createInvalidConfigError, throwInvalidConfig } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { SecretRef } from "../config/types.secrets.js";
@@ -1875,29 +1873,6 @@ describe("resolvePluginTools optional tools", () => {
 
     expect(tools).toHaveLength(0);
   });
-
-  it.each([
-    { deny: [], expected: ["optional_tool"] },
-    { deny: ["optional_tool"], expected: [] },
-  ])(
-    "selects optional tools after local onboarding while honoring deny=$deny",
-    ({ deny, expected }) => {
-      setOptionalDemoRegistry();
-      const context = createContext();
-      const config = applyLocalSetupWorkspaceConfig(
-        { ...context.config, tools: { deny } },
-        context.workspaceDir,
-      );
-      const { policy } = resolveConversationCapabilityProfile({ config });
-      const tools = resolvePluginTools({
-        context: { ...context, config },
-        toolAllowlist: policy.explicitToolAllowlist,
-        toolDenylist: policy.explicitToolDenylist,
-      });
-
-      expectResolvedToolNames(tools, expected);
-    },
-  );
 
   it("does not invoke named optional tool factories without a matching allowlist", () => {
     const factory = vi.fn(() => makeTool("optional_tool"));

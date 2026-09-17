@@ -496,6 +496,7 @@ async function sendFeishuTtsSupplementPayload(params: {
 // forcing a required property here (ClawSweeper P1).
 export const feishuOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
+  preferFinalAssistantVisibleText: true,
   chunker: chunkFeishuMarkdown,
   chunkerMode: "markdown",
   textChunkLimit: FEISHU_TEXT_CHUNK_LIMIT,

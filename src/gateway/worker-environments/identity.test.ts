@@ -20,6 +20,8 @@ describe("resolveWorkerSshIdentity", () => {
   it("uses the provider-owned resolver with durable lease context", async () => {
     const identity: WorkerSshIdentity = { kind: "path", path: "/keys/lease" };
     const resolveSshIdentity = vi.fn(async () => identity);
+    const controller = new AbortController();
+    const assertAuthorized = () => controller.signal.throwIfAborted();
     const resolveGeneric = vi.fn(async () => ({ kind: "material", contents: "unused" }) as const);
 
     await expect(
@@ -28,6 +30,7 @@ describe("resolveWorkerSshIdentity", () => {
         leaseId: "lease-1",
         profile: PROFILE,
         keyRef: KEY_REF,
+        assertAuthorized,
         resolveGeneric,
       }),
     ).resolves.toEqual(identity);
@@ -36,6 +39,7 @@ describe("resolveWorkerSshIdentity", () => {
       leaseId: "lease-1",
       profile: PROFILE,
       keyRef: KEY_REF,
+      assertCurrent: assertAuthorized,
     });
     expect(resolveGeneric).not.toHaveBeenCalled();
   });
@@ -45,6 +49,8 @@ describe("resolveWorkerSshIdentity", () => {
       kind: "material",
       contents: ["part", "value"].join("-"),
     };
+    const controller = new AbortController();
+    const assertAuthorized = () => controller.signal.throwIfAborted();
     const resolveGeneric = vi.fn(async () => identity);
 
     await expect(
@@ -53,13 +59,16 @@ describe("resolveWorkerSshIdentity", () => {
         leaseId: "lease-1",
         profile: PROFILE,
         keyRef: KEY_REF,
+        assertAuthorized,
         resolveGeneric,
       }),
     ).resolves.toEqual(identity);
-    expect(resolveGeneric).toHaveBeenCalledWith(KEY_REF);
+    expect(resolveGeneric).toHaveBeenCalledWith(KEY_REF, assertAuthorized);
   });
 
   it("fails closed when the provider resolver rejects", async () => {
+    const controller = new AbortController();
+    const assertAuthorized = () => controller.signal.throwIfAborted();
     const resolveGeneric = vi.fn();
 
     await expect(
@@ -72,6 +81,7 @@ describe("resolveWorkerSshIdentity", () => {
         leaseId: "lease-1",
         profile: PROFILE,
         keyRef: KEY_REF,
+        assertAuthorized,
         resolveGeneric,
       }),
     ).rejects.toThrow("provider identity unavailable");

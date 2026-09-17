@@ -41,6 +41,16 @@ const cfg: OpenClawConfig = {
   },
 };
 
+function withSyntheticSlackClient(
+  opts: Parameters<typeof sendMessageSlack>[2],
+  client: Parameters<typeof sendMessageSlack>[2]["client"],
+) {
+  const sendOptions = { ...opts, client };
+  // These presentation tests use method mocks rather than the real request boundary.
+  delete sendOptions.assertDirectAdapterHandoff;
+  return sendOptions;
+}
+
 describe("slack outbound shared hook wiring", () => {
   beforeEach(() => {
     sendMessageSlackMock.mockReset();
@@ -116,7 +126,7 @@ describe("slack outbound shared hook wiring", () => {
         });
       sendMessageSlackMock.mockImplementation(
         async (to: string, text: string, opts: Parameters<typeof sendMessageSlack>[2]) =>
-          await sendMessageSlack(to, text, { ...opts, client }),
+          await sendMessageSlack(to, text, withSyntheticSlackClient(opts, client)),
       );
       const payload: ReplyPayload = { text: "Caption", ...media, ...content };
 
@@ -150,7 +160,7 @@ describe("slack outbound shared hook wiring", () => {
     const client = createSlackSendTestClient();
     sendMessageSlackMock.mockImplementation(
       async (to: string, text: string, opts: Parameters<typeof sendMessageSlack>[2]) =>
-        await sendMessageSlack(to, text, { ...opts, client }),
+        await sendMessageSlack(to, text, withSyntheticSlackClient(opts, client)),
     );
     const fields = ["Alpha", "Beta", "Gamma"].map((label) => ({
       type: "plain_text",
@@ -183,7 +193,7 @@ describe("slack outbound shared hook wiring", () => {
       const client = createSlackSendTestClient();
       sendMessageSlackMock.mockImplementation(
         async (to: string, text: string, opts: Parameters<typeof sendMessageSlack>[2]) =>
-          await sendMessageSlack(to, text, { ...opts, client }),
+          await sendMessageSlack(to, text, withSyntheticSlackClient(opts, client)),
       );
       const intro = "Install in `C:\\` and continue. ";
       const text = intro + "Ordinary prose. ".repeat(220) + "Done.";
@@ -221,7 +231,7 @@ describe("slack outbound shared hook wiring", () => {
       .mockResolvedValueOnce({ ts: "171234.2" });
     sendMessageSlackMock.mockImplementation(
       async (to: string, text: string, opts: Parameters<typeof sendMessageSlack>[2]) =>
-        await sendMessageSlack(to, text, { ...opts, client }),
+        await sendMessageSlack(to, text, withSyntheticSlackClient(opts, client)),
     );
     const fields = ["Alpha", "Beta", "Gamma"].map((label) => ({
       type: "plain_text",

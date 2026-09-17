@@ -19,6 +19,7 @@ import {
   resolveAmbientOwnerAgentId,
   resolveDefaultAgentDir,
   resolveDefaultAgentId,
+  resolveAgentRunCwd,
   resolveSoleAgentId,
   tryResolveAmbientOwnerAgentId,
   tryResolveAgentOperationAgentId,
@@ -480,5 +481,37 @@ describe("resolveAgentConfig model policy", () => {
     expect(resolveAgentConfig(cfg, "main")?.modelPolicy).toEqual({
       allow: ["openai/gpt-5.6-sol"],
     });
+  });
+});
+
+describe("resolveAgentRunCwd blank cwd rejection", () => {
+  it.each(["", "   ", "\t\n "])("rejects an explicitly blank per-agent cwd %j", (cwd) => {
+    const cfg = { agents: { defaults: { cwd: "/tmp/default" }, entries: { alpha: { cwd } } } };
+
+    expect(() => resolveAgentRunCwd(cfg, "alpha")).toThrow("agents.alpha.cwd must not be blank");
+  });
+
+  it("rejects an explicitly blank defaults cwd", () => {
+    const cfg = { agents: { defaults: { cwd: "   " }, entries: { alpha: {} } } };
+
+    expect(() => resolveAgentRunCwd(cfg, "alpha")).toThrow("agents.defaults.cwd must not be blank");
+  });
+
+  it("keeps resolving a valid per-agent cwd over the default", () => {
+    const cfg = {
+      agents: { defaults: { cwd: "/tmp/default" }, entries: { alpha: { cwd: "/tmp/alpha" } } },
+    };
+
+    expect(resolveAgentRunCwd(cfg, "alpha")).toBe(path.resolve("/tmp/alpha"));
+  });
+
+  it("keeps inheriting the default cwd when the per-agent cwd is absent", () => {
+    const cfg = { agents: { defaults: { cwd: "/tmp/default" }, entries: { alpha: {} } } };
+
+    expect(resolveAgentRunCwd(cfg, "alpha")).toBe(path.resolve("/tmp/default"));
+  });
+
+  it("keeps returning undefined when no cwd is configured", () => {
+    expect(resolveAgentRunCwd({ agents: { entries: { alpha: {} } } }, "alpha")).toBeUndefined();
   });
 });

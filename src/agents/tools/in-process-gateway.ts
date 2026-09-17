@@ -189,18 +189,19 @@ async function callAgentToolGatewayRequestBound<T>(
   request: AgentToolGatewayRequest,
   resolveGatewayContext: GatewayContextResolver | undefined,
   runtimeIdentity: AgentRuntimeIdentity | undefined,
-  assertCallerCurrent: (() => void) | undefined,
+  assertCallerCurrent: ReturnType<typeof captureGatewayToolCallerAssertion>,
   forceTransport = false,
   revalidateOnCompletion = true,
 ): Promise<T> {
+  const method = request.method;
   const assertDispatchCurrent = request.assertDispatchCurrent;
-  const completion = createCronMutationCompletion(request.method);
+  const completion = createCronMutationCompletion(method);
   const assertCurrent =
     assertCallerCurrent ||
     assertDispatchCurrent ||
     ((!revalidateOnCompletion || completion) && request.signal)
       ? () => {
-          assertCallerCurrent?.();
+          assertCallerCurrent?.(method);
           assertDispatchCurrent?.();
           if (!revalidateOnCompletion || completion) {
             request.signal?.throwIfAborted();
@@ -209,7 +210,7 @@ async function callAgentToolGatewayRequestBound<T>(
       : undefined;
   assertCurrent?.();
   const boundGateway = resolveGatewayContext
-    ? bindInProcessGatewayContext(request.method, resolveGatewayContext)
+    ? bindInProcessGatewayContext(method, resolveGatewayContext)
     : undefined;
   if (forceTransport || !hasInProcessGatewayContext(boundGateway?.resolve)) {
     if (readInProcessSubagentResume(request)) {
@@ -219,7 +220,7 @@ async function callAgentToolGatewayRequestBound<T>(
       throw new Error("trusted agent runtime identity requires in-process Gateway dispatch");
     }
     if (boundGateway && !forceTransport) {
-      throw new Error(`Gateway instance unavailable for ${request.method}`);
+      throw new Error(`Gateway instance unavailable for ${method}`);
     }
     const { callGateway } = await import("../../gateway/call.js");
     const {
@@ -229,13 +230,13 @@ async function callAgentToolGatewayRequestBound<T>(
     } = request;
     return await runBoundInProcessGatewayCall(
       boundGateway,
-      () => callGateway<T>(wireRequest),
+      () => callGateway<T>({ ...wireRequest, method }),
       assertCurrent,
       revalidateOnCompletion,
     );
   }
   const scopes =
-    request.scopes ?? resolveLeastPrivilegeOperatorScopesForMethod(request.method, request.params);
+    request.scopes ?? resolveLeastPrivilegeOperatorScopesForMethod(method, request.params);
   const timeoutMs =
     request.timeoutMs === null
       ? undefined
@@ -253,9 +254,9 @@ async function callAgentToolGatewayRequestBound<T>(
           onSignalAbort: () =>
             runWithGatewayToolCleanupContext(
               () =>
-                request.onSignalAbort?.((method, params, options) =>
+                request.onSignalAbort?.((cleanupMethod, params, options) =>
                   callAgentToolGatewayRequestBound(
-                    { method, params, ...options },
+                    { method: cleanupMethod, params, ...options },
                     boundGateway?.resolve ?? resolveGatewayContext,
                     undefined,
                     undefined,
@@ -275,7 +276,7 @@ async function callAgentToolGatewayRequestBound<T>(
     boundGateway,
     async () =>
       await dispatchGatewayMethodInProcess<T>(
-        request.method,
+        method,
         (request.params ?? {}) as Record<string, unknown>,
         bindInProcessSubagentResume(
           withInProcessAgentRuntimeIdentity(dispatchOptions, runtimeIdentity),

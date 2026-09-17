@@ -38,6 +38,8 @@ Actions includes that path in cache compatibility. Pnpm's side-effects cache
 carries native postinstall outputs such as Matrix crypto's binary and version
 marker, so a compatible warm install skips the download. Cold caches and changed
 native build inputs still require the upstream asset.
+Node discovery scans only the toolcache's executable levels, avoiding bundled
+npm dependency trees before selecting an already-installed runtime.
 
 In hybrid mode, one additional `ubuntu-24.04` warmer row installs and saves only
 the hosted dependency store. Blacksmith and GitHub-hosted cache backends are

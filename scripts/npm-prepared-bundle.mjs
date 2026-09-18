@@ -700,7 +700,7 @@ export function prepareNpmPackageBundle({
   releaseTag: requestedReleaseTag = "",
   npmDistTag,
   producer,
-  prepareRootShrinkwrap = ({ aiTarballPath }) =>
+  prepareRootShrinkwrap = ({ aiTarballPath }) => {
     execFileSync(
       process.execPath,
       [
@@ -710,7 +710,8 @@ export function prepareNpmPackageBundle({
         aiTarballPath,
       ],
       { cwd: sourceDir, stdio: "inherit" },
-    ),
+    );
+  },
   runPack = (directory, destination) =>
     execFileSync("pnpm", ["--dir", directory, "pack", "--pack-destination", destination], {
       env: {

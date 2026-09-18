@@ -728,6 +728,52 @@ describe("CronPage lifecycle", () => {
     expect(page.deliveryConversationsError).toBeNull();
   });
 
+  it("keeps recipient discovery when the deletion is rejected", async () => {
+    // `cron.remove` failing is reported through `cronError`, not thrown, so the
+    // editor stays open. Retiring discovery there would strand it: nothing
+    // reloads suggestions until another channel/agent change or a reopen.
+    const pending = createDeferred<{ conversations: ConversationListItem[] }>();
+    const fallbackRequest = createRequest();
+    const request = vi.fn(async (method: string) => {
+      if (method === "conversations.list") {
+        return pending.promise;
+      }
+      if (method === "cron.remove") {
+        throw new Error("cron.remove rejected");
+      }
+      return fallbackRequest(method);
+    });
+    vi.mocked(showConfirmDialog).mockResolvedValue(true);
+    const gateway = createGateway({ request } as unknown as GatewayBrowserClient, true);
+    const page = createPage(createContext(gateway, "writer"));
+
+    await waitForCronPage(() => expect(page.cron.connected).toBe(true));
+    const job = createCronViewJob("daily-digest", {
+      configRevision: "rev-1",
+      sessionTarget: "isolated",
+      payload: { kind: "agentTurn", message: "Send the digest" },
+    });
+    page.selectJob(job);
+    page.patchForm({ deliveryMode: "announce", deliveryChannel: "telegram" });
+    await waitForCronPage(() =>
+      expect(request).toHaveBeenCalledWith("conversations.list", expect.anything()),
+    );
+
+    await page.removeJob(job);
+    await waitForCronPage(() => expect(page.cron.cronError).toContain("cron.remove rejected"));
+
+    // The task survived, so its editor is still the discovery owner.
+    expect(page.cron.cronEditingJob?.id).toBe("daily-digest");
+
+    // A directory response that lands after the failed delete still publishes
+    // into the editor that asked for it.
+    pending.resolve({ conversations: [conversationTarget("@ops-room")] });
+    await waitForCronPage(() =>
+      expect(page.deliveryConversations.map((entry) => entry.target)).toEqual(["@ops-room"]),
+    );
+    expect(page.deliveryConversationsError).toBeNull();
+  });
+
   it("clears a published directory error when the selected task is deleted", async () => {
     const fallbackRequest = createRequest();
     const request = vi.fn(async (method: string) => {

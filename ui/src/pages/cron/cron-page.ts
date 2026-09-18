@@ -535,14 +535,21 @@ class CronPage extends OpenClawLightDomElement {
       return;
     }
     await this.runCronTask(async (current) => {
-      const removedSelectedJob = current.cronEditingJob?.id === selectedJobId;
+      const editorOwnedDiscovery = current.cronEditingJob?.id === selectedJobId;
       await removeCronJob(current, currentJob);
-      if (removedSelectedJob && this.deliveryDirectory.ownedBy(current, connectionScope)) {
+      // A rejected `cron.remove` resolves here: the request runs under
+      // `withCronBusy`, which reports the failure through `cronError` instead
+      // of throwing. So a resolved call is not a confirmed deletion, and the
+      // editor only exits when the removal actually cleared the edit state.
+      // That confirmed exit is the one moment discovery may be retired.
+      const editorExited = editorOwnedDiscovery && current.cronEditingJob?.id !== selectedJobId;
+      if (editorExited && this.deliveryDirectory.ownedBy(current, connectionScope)) {
         // Deletion exits the editor that owned recipient discovery, so retire
         // it too. Otherwise a pending directory failure still passes its own
         // currency check and publishes onto the overview, where the page error
         // suppresses the starter automations; an already-published error
-        // likewise survives the deletion.
+        // likewise survives the deletion. A failed delete takes neither branch,
+        // leaving the still-open editor its loaded and pending suggestions.
         this.deliveryDirectory.clear(current);
       }
       // Removing the selected task drops the panel back to overview;

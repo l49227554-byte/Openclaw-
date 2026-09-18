@@ -180,6 +180,7 @@ function createGatewayCloseTestDeps(
       startMediaCleanup: vi.fn(),
       stopMediaCleanup: vi.fn(async () => "drained" as const),
       stopSessionColdStorageMaintenance: vi.fn(async () => {}),
+      stopTelemetryChecks: vi.fn(async () => {}),
       worktreeCleanup: setInterval(() => undefined, 60_000),
       skillUsageCleanup: vi.fn(),
     },

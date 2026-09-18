@@ -8,7 +8,6 @@ import {
   fstatSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   openSync,
   readFileSync,
   readlinkSync,
@@ -20,6 +19,8 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { captureSourceWitness } from "./crabbox-staging-witness.mts";
+import { createStaging, type StagingHandle } from "./crabbox-staging.mts";
 
 const bundleFile = ".openclaw-crabbox-changed-gate.bundle";
 const capsuleRef = "refs/openclaw/source-capsule";
@@ -37,6 +38,7 @@ export type CrabboxSourceCapsule = {
   bundlePath: string;
   directory: string;
   cleanup: () => void;
+  staging: StagingHandle;
   configPath?: string;
 };
 
@@ -160,9 +162,10 @@ export function prepareCrabboxSourceCapsule(options: {
       .map(capsulePath),
   );
   mkdirSync(options.syncRoot, { recursive: true });
-  const temporary = mkdtempSync(resolve(options.syncRoot, "openclaw-crabbox-sync-"));
+  const staging = createStaging(options.syncRoot, repoRoot);
+  const temporary = staging.payload;
   const directory = join(temporary, "source");
-  const cleanup = () => rmSync(temporary, { recursive: true, force: true });
+  const cleanup = () => staging.dispose();
   try {
     mkdirSync(directory);
     const privateEnv: NodeJS.ProcessEnv = {
@@ -636,6 +639,22 @@ export function prepareCrabboxSourceCapsule(options: {
     ) {
       throw new Error("source revision or index changed while freezing; retry after edits finish");
     }
+    // Preparation-only copies are no longer needed after the transport bundle
+    // is sealed. Keep recovery metadata outside the recursively removed payload.
+    rmSync(linkBlobs, { recursive: true, force: true });
+    rmSync(join(temporary, "sparse-blobs"), { force: true });
+    rmSync(shallow, { force: true });
+    staging.prepared(
+      {
+        files: paths.map((path, index) => ({
+          path,
+          mode: frozen.get(path)!.mode as "100644" | "100755" | "120000",
+          blob: hashes[index]!,
+        })),
+        deleted,
+      },
+      captureSourceWitness(repoRoot, sourceSha),
+    );
     return {
       sourceSha,
       baseSha,
@@ -645,6 +664,7 @@ export function prepareCrabboxSourceCapsule(options: {
       bundlePath,
       directory,
       cleanup,
+      staging,
       configPath,
     };
   } catch (error) {

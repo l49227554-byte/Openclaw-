@@ -706,7 +706,7 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
         ? fs.existsSync(${JSON.stringify(preparationPath)}) && target === path.dirname(JSON.parse(fs.readFileSync(${JSON.stringify(preparationPath)}, "utf8")).cwd)
         : ${scriptRemoval}
           ? path.dirname(target) === ${JSON.stringify(scriptTmpRoot)} && path.basename(target).startsWith("openclaw-crabbox-source-script-")
-          : path.dirname(target) === ${JSON.stringify(syncRoot)} && path.basename(target).startsWith("openclaw-crabbox-sync-");
+          : (path.basename(target) === "payload" && path.dirname(path.dirname(target)) === ${JSON.stringify(syncRoot)} && path.basename(path.dirname(target)).startsWith("openclaw-crabbox-sync-")) || (path.dirname(target) === ${JSON.stringify(syncRoot)} && path.basename(target).startsWith("openclaw-crabbox-sync-"));
       if (selected) {
         fs.writeFileSync(${JSON.stringify(removalFailurePath)}, JSON.stringify({ path: target }));
         throw Object.assign(new Error("fixture removal denied"), { code: "EACCES", path: target });
@@ -907,9 +907,10 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
           expect(existsSync(identityPath)).toBe(false);
           expect(existsSync(claimPath)).toBe(false);
           if (preparationCleanupFailure) {
-            const allocation = path.dirname(preparationIdentity!.cwd);
+            const payload = path.dirname(preparationIdentity!.cwd);
+            const allocation = path.dirname(payload);
             expect(JSON.parse(readFileSync(removalFailurePath, "utf8"))).toEqual({
-              path: allocation,
+              path: payload,
             });
             expect(readdirSync(syncRoot)).toEqual([path.basename(allocation)]);
             expect(readFileSync(path.join(preparationIdentity!.cwd, "fixture.txt"), "utf8")).toBe(
@@ -968,7 +969,7 @@ if (path.resolve(process.argv[1] || ".") === ${JSON.stringify(implementationPath
             expect(output).toContain("fixture removal denied");
             if (proof.target === "source") {
               expect(output).toContain(`temporary checkout cleanup failed at ${identity!.cwd}`);
-              expect(readdirSync(syncRoot)).toEqual([path.basename(failedPath)]);
+              expect(readdirSync(syncRoot)).toEqual([path.basename(path.dirname(failedPath))]);
               expect(readFileSync(path.join(identity!.cwd, "fixture.txt"), "utf8")).toBe(
                 "original source\n",
               );
@@ -1280,7 +1281,7 @@ describe("scripts/crabbox-wrapper", () => {
         const directory = fs.mkdtempSync(path.join(syncRoot,"openclaw-crabbox-sync-"));
         const bundlePath = ".openclaw-crabbox-changed-gate.bundle";
         fs.writeFileSync(path.join(directory,bundlePath), "fixture capsule");
-        return {directory,bundlePath,sourceSha:"d".repeat(40),baseSha:base === "origin/main" ? process.env.OPENCLAW_FAKE_GIT_BASE_SHA || "abc123" : base,tree:"e".repeat(40),carrier:"f".repeat(40),digest:"a".repeat(64),cleanup(){fs.rmSync(directory,{recursive:true,force:true});}};
+        return {directory,bundlePath,staging:{admitted(){},settled(){},hold(){}},sourceSha:"d".repeat(40),baseSha:base === "origin/main" ? process.env.OPENCLAW_FAKE_GIT_BASE_SHA || "abc123" : base,tree:"e".repeat(40),carrier:"f".repeat(40),digest:"a".repeat(64),cleanup(){fs.rmSync(directory,{recursive:true,force:true});}};
       }
     `,
     );

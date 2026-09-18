@@ -71,6 +71,14 @@ type DoctorCheck = { status: string; check: string; details?: Record<string, str
 type DoctorResult = { ok: boolean; provider: string; checks: DoctorCheck[] };
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const args = process.argv.slice(2);
+if (args[0] === "--") {
+  args.shift();
+}
+if (args[0] === "staging") {
+  const { runStagingCommand } = await import("./crabbox-staging.mts");
+  process.exit(await runStagingCommand(args.slice(1), fullCheckoutSyncRoot(false)));
+}
 const CRABBOX_METADATA_PROBE_TIMEOUT_MS = 5_000;
 const MAX_TIMING_JSON_LINE_CHARS = 1024 * 1024;
 // Cold help rendering can exceed the normal metadata deadline.
@@ -91,11 +99,6 @@ try {
   process.exit(2);
 }
 const { binary, version } = cli;
-const args = process.argv.slice(2);
-
-if (args[0] === "--") {
-  args.shift();
-}
 const workloadCommand = isWorkloadRoutedCommand(args);
 const workloadOption = workloadCommand ? extractWrapperValueOption(args, "--workload") : undefined;
 const userArgStart = commandUserArgStart(args);
@@ -3369,10 +3372,12 @@ function defaultFullCheckoutSyncRoot() {
   return resolve(tmpdir(), "openclaw-crabbox-sync");
 }
 
-function fullCheckoutSyncRoot() {
+function fullCheckoutSyncRoot(create = true) {
   const configured = process.env.OPENCLAW_CRABBOX_SYNC_TMPDIR?.trim();
   const root = configured ? resolve(configured) : defaultFullCheckoutSyncRoot();
-  mkdirSync(root, { recursive: true });
+  if (create) {
+    mkdirSync(root, { recursive: true });
+  }
   return root;
 }
 
@@ -4141,6 +4146,8 @@ const childStartedAtMs = Date.now();
 const FAST_FAIL_HINT_WINDOW_MS = 15_000;
 const spawnManagedChild = await loadManagedChildSpawner();
 await preparationCheckpoint();
+// Persist admission before the child can observe or mutate the staged source.
+sourceCapsule?.staging.admitted();
 const child = spawnManagedChild(childInvocation.command, childInvocation.args, {
   cwd: childCwd,
   stdio: ["inherit", "inherit", captureBlacksmithTimingJSON ? "pipe" : "inherit"],
@@ -4272,6 +4279,19 @@ function settleChildTree(childProcess: ChildProcess, signal?: Signal): Promise<b
     runTaskkill: spawnSync,
     forceKillDelayMs: childKillGraceMs,
     drainTimeoutMs: childKillGraceMs,
+    onTerminated: () => {
+      // Only the existing finalizer can certify writer/group/output closure.
+      // A failed receipt write keeps future recovery conservative; the live
+      // owner still completes its already-authorized normal cleanup.
+      try {
+        sourceCapsule?.staging.settled();
+      } catch (error) {
+        console.error(
+          "[crabbox] staging settlement receipt failed: " +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    },
   }).then(
     () => {
       childTreeSettled = true;

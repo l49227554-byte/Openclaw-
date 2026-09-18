@@ -215,6 +215,25 @@ the checkout; restore that lease to the original repository or stop it before
 removing the checkout. Stop any remaining owned processes before recovering
 artifacts or removing their temporary inputs.
 
+The wrapper records future source capsules with private recovery metadata outside
+the disposable payload. Inspect those copies with:
+
+```bash
+node scripts/crabbox-wrapper.mjs staging inspect
+node scripts/crabbox-wrapper.mjs staging recover <id>
+```
+
+These local commands do not start a provider or stop a lease. Recovery verifies a
+recorded source snapshot against an independently retained Git ref before removing
+unchanged staging. A prepared capsule abandoned before consumer admission is
+eligible when its original owner is absent and its source remains independently
+available. Live or uncertain owners, unrecorded writer settlement, unpreserved
+diagnostics or claims, unique source, interrupted recovery ownership, and unknown
+metadata remain protected with an explanation. Historical unmarked directories
+are never adopted. Unsupported filesystem durability also prevents recovery.
+Normal cleanup still removes its own successful or dirty-source staging without
+requiring an independent recovery witness.
+
 These are local artifacts, not published or fully sanitized proof. Blacksmith's
 native failure bundle contains captured stdout/stderr and diagnostic metadata;
 it does not automatically include remote UI screenshots or reports. Retrieve

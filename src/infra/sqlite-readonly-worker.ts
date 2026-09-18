@@ -225,6 +225,10 @@ export function runSqliteReadOnlyWorker(
 ): Promise<string>;
 export function runSqliteReadOnlyWorker(
   pathname: string,
+  options: { mode: "consolidated"; stagingRoot: string; signal?: AbortSignal },
+): Promise<string>;
+export function runSqliteReadOnlyWorker(
+  pathname: string,
   options: { mode: "reclaim"; signal?: AbortSignal },
 ): Promise<string[]>;
 export function runSqliteReadOnlyWorker(

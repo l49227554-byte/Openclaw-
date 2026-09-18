@@ -3,6 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { emitAgentEvent, getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -229,6 +230,71 @@ describe("agent.wait gateway dedupe observations", () => {
       }
     });
   });
+
+  it.each(["compaction", "replacement"] as const)(
+    "keeps a pending wait bound to its original registration after %s",
+    async (transition) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const owner = roleClient("none", "timeout-owner");
+        const session = {
+          sessionKey: "agent:main:timeout-rotation",
+          sessionId: "original-session",
+          agentId: "main",
+          lifecycleGeneration: getAgentEventLifecycleGeneration(),
+        };
+        const target = { agentId: session.agentId, sessionKey: session.sessionKey };
+        await upsertSessionEntryCore(target, {
+          sessionId: session.sessionId,
+          updatedAt: Date.now(),
+          visibility: "draft",
+          createdActor: {
+            type: "human",
+            source: "profile",
+            id: expectDefined(owner.authenticatedUserProfile, "wait owner profile").profileId,
+          },
+        });
+        const runId = `wait-timeout-${transition}`;
+        registerAgentRunContext(runId, session);
+        const context = createGatewayRequestContext(makeContextParams());
+        context.getRuntimeConfig = rolePolicyConfig;
+        const respond = vi.fn();
+        const handler = expectDefined(agentHandlers["agent.wait"], "registered wait handler");
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const waiting = handler({
+          req: { type: "req", id: runId, method: "agent.wait" },
+          params: { runId, timeoutMs: 10 },
+          respond,
+          client: owner,
+          isWebchatConnect: () => true,
+          context,
+        });
+        try {
+          expect(respond).not.toHaveBeenCalled();
+          await upsertSessionEntryCore(target, { sessionId: "successor-session" });
+          if (transition === "replacement") {
+            clearAgentRunContext(runId);
+          }
+          registerAgentRunContext(runId, { ...session, sessionId: "successor-session" });
+          await vi.advanceTimersByTimeAsync(10);
+          await waiting;
+          if (transition === "compaction") {
+            expect(respond).toHaveBeenCalledWith(true, { runId, status: "timeout" });
+          } else {
+            expect(respond).toHaveBeenCalledWith(
+              false,
+              undefined,
+              expect.objectContaining({ message: "agent run was not found" }),
+            );
+          }
+        } finally {
+          await vi.advanceTimersByTimeAsync(10);
+          await waiting;
+          clearAgentRunContext(runId);
+          vi.useRealTimers();
+        }
+      });
+    },
+  );
 
   it("retains chat input identity when terminal writers replace admission metadata", async () => {
     const runId = "run-chat-request-identity";

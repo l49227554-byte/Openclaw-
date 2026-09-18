@@ -654,10 +654,12 @@ export function createAgentTurnService(
         : undefined;
     };
     const queuedBeforeWait = queuedResult();
+    // Compaction updates this registration; a reused run ID must not replace it.
+    const runContext = getAgentRunContext(runId);
     const initialSession =
       queuedBeforeWait?.session ??
       getAgentJobSession(runId, hasActiveChatRun ? "chat" : undefined) ??
-      captureAgentJobSession(getAgentRunContext(runId));
+      captureAgentJobSession(runContext);
     const wait = async () => {
       if (queuedBeforeWait) {
         return queuedBeforeWait;
@@ -674,7 +676,7 @@ export function createAgentTurnService(
       if (!snapshot) {
         return {
           result: { runId, status: "timeout" as const },
-          session: initialSession,
+          session: captureAgentJobSession(runContext) ?? initialSession,
         };
       }
       return {

@@ -271,10 +271,11 @@ describe("live meeting summaries", () => {
     );
     await vi.advanceTimersByTimeAsync(0);
     expect(complete).toHaveBeenCalledTimes(2);
+    await fixture.source.onUtterance({ text: "Speech while the manual summary is queued" });
     next.resolve(modelNotes());
     await manual;
     expect(complete).toHaveBeenCalledTimes(3);
-    expect(await saved(fixture)).toMatchObject({ utteranceCount: 2 });
+    expect(await saved(fixture)).toMatchObject({ utteranceCount: 3 });
     await vi.advanceTimersByTimeAsync(fiveMinutes);
     expect(complete).toHaveBeenCalledTimes(3);
   });
@@ -296,61 +297,91 @@ describe("live meeting summaries", () => {
     expect(complete).toHaveBeenCalledTimes(2);
   });
 
-  it("shares utility summaries and finalization with browser meeting capture", async () => {
-    const stateDir = tempDirs.make("browser-live-notes-");
-    const store = createTranscriptsStore({ stateDir, logger: console });
-    const session: MeetingSessionRecord<"chrome", "agent"> = {
-      id: "browser-meeting",
-      url: "https://meeting.example/room",
-      transport: "chrome",
-      mode: "agent",
-      agentId: "research",
-      state: "active",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      participantIdentity: "Synthetic guest",
-      realtime: { enabled: true, toolPolicy: "safe-read-only" },
-      notes: [],
-    };
-    const bridge = createMeetingDurableTranscriptBridge({
-      logger: { warn: vi.fn() },
-      options: { providerId: "meeting", providerName: "Meeting", stateDir, openclawConfig: cfg },
-    });
-    await bridge.start(session, async () => {});
-    try {
-      const descriptor = (await store.listSessionEntries())[0]!;
-      expect(
-        (await getTranscriptLibrary(store, { selector: descriptor.selector })).session,
-      ).toMatchObject({ active: true, activeSubscription: true, hasSummary: false });
-      expect((await listTranscriptLibrary(store, {})).sessions[0]).toMatchObject({
-        active: true,
-        hasSummary: false,
+  it.each([false, true])(
+    "shares utility summaries and finalization with browser meeting capture (restored: %s)",
+    async (restored) => {
+      const stateDir = tempDirs.make("browser-live-notes-");
+      const store = createTranscriptsStore({ stateDir, logger: console });
+      const session: MeetingSessionRecord<"chrome", "agent"> = {
+        id: "browser-meeting",
+        url: "https://meeting.example/room",
+        transport: "chrome",
+        mode: "agent",
+        agentId: "research",
+        state: "active",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        participantIdentity: "Synthetic guest",
+        realtime: { enabled: true, toolPolicy: "safe-read-only" },
+        notes: [],
+      };
+      if (restored) {
+        const previous = {
+          sessionId: session.id,
+          startedAt: session.createdAt,
+          source: { providerId: "meeting", kind: "live-caption" as const },
+        };
+        const opening = { text: "Earlier speech already summarized" };
+        await store.writeSession(previous);
+        await store.appendUtteranceForSession(previous, opening);
+        await store.writeSummary(
+          summarizeTranscripts({ session: previous, utterances: [opening] }),
+          previous,
+        );
+        await store.appendUtteranceForSession(previous, {
+          text: "Speech saved after the previous summary",
+        });
+      }
+      const bridge = createMeetingDurableTranscriptBridge({
+        logger: { warn: vi.fn() },
+        options: { providerId: "meeting", providerName: "Meeting", stateDir, openclawConfig: cfg },
       });
-      await bridge.ingest(session, [
-        { at: new Date().toISOString(), speaker: "Ada", text: "We agreed to simplify setup." },
-      ]);
-      await vi.advanceTimersByTimeAsync(fiveMinutes);
-      await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
-      expect(complete.mock.calls[0]![0]).toMatchObject({ model: "utility", agentId: "research" });
-      await vi.waitFor(async () =>
-        expect((await store.readSummary(descriptor.session)).summary?.source).toBe("model"),
-      );
-      expect(
-        (await getTranscriptLibrary(store, { selector: descriptor.selector })).session,
-      ).toMatchObject({ active: true, hasSummary: true });
-      expect((await listTranscriptLibrary(store, {})).sessions[0]).toMatchObject({
-        active: true,
-        hasSummary: true,
-      });
-      await bridge.stop(session, async () => {});
-      expect(complete).toHaveBeenCalledTimes(2);
-      expect((await store.readSession(session.id))?.stoppedAt).toBeTruthy();
-      expect(
-        (await getTranscriptLibrary(store, { selector: descriptor.selector })).session,
-      ).toMatchObject({ active: false, activeSubscription: false });
-      expect((await listTranscriptLibrary(store, {})).sessions[0]).toMatchObject({ active: false });
-    } finally {
-      await bridge.stop(session, async () => {});
-    }
-  });
+      await bridge.start(session, async () => {});
+      try {
+        const descriptor = (await store.listSessionEntries())[0]!;
+        expect(
+          (await getTranscriptLibrary(store, { selector: descriptor.selector })).session,
+        ).toMatchObject({ active: true, activeSubscription: true, hasSummary: restored });
+        expect((await listTranscriptLibrary(store, {})).sessions[0]).toMatchObject({
+          active: true,
+          hasSummary: restored,
+        });
+        if (!restored) {
+          await bridge.ingest(session, [
+            { at: new Date().toISOString(), speaker: "Ada", text: "We agreed to simplify setup." },
+          ]);
+        }
+        await vi.advanceTimersByTimeAsync(fiveMinutes);
+        await vi.waitFor(() => expect(complete).toHaveBeenCalledOnce());
+        expect(complete.mock.calls[0]![0]).toMatchObject({ model: "utility", agentId: "research" });
+        await vi.waitFor(async () =>
+          expect((await store.readSummary(descriptor.session)).summary?.source).toBe("model"),
+        );
+        if (restored) {
+          expect((await store.readSummary(descriptor.session)).summary?.transcript).toEqual([
+            "Earlier speech already summarized",
+            "Speech saved after the previous summary",
+          ]);
+        }
+        expect(
+          (await getTranscriptLibrary(store, { selector: descriptor.selector })).session,
+        ).toMatchObject({ active: true, hasSummary: true });
+        expect((await listTranscriptLibrary(store, {})).sessions[0]).toMatchObject({
+          active: true,
+          hasSummary: true,
+        });
+        await bridge.stop(session, async () => {});
+        expect(complete).toHaveBeenCalledTimes(2);
+        expect((await store.readSession(session.id))?.stoppedAt).toBeTruthy();
+        expect(
+          (await getTranscriptLibrary(store, { selector: descriptor.selector })).session,
+        ).toMatchObject({ active: false, activeSubscription: false });
+        expect((await listTranscriptLibrary(store, {})).sessions[0]).toMatchObject({
+          active: false,
+        });
+      } finally {
+        await bridge.stop(session, async () => {});
+      }
+    },
+  );
 });

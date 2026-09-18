@@ -236,6 +236,7 @@ export async function createTranscriptSummaryUpdates(
       }
     };
     const owner = {
+      // Stored notes have no coverage watermark; resumed captures need one fresh pass.
       lastSequence: 0,
       capture: params.isCaptureActive
         ? { session: params.session, isActive: params.isCaptureActive }
@@ -319,7 +320,6 @@ export async function createTranscriptSummaryUpdates(
       if (!initial || stopped || lane.live !== owner) {
         throw new TranscriptsSummaryChangedError();
       }
-      owner.lastSequence = initial.hasSummary ? initial.nextSequence : 0;
       return owner;
     } catch (error) {
       await owner.stop();

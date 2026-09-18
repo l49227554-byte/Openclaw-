@@ -44,7 +44,6 @@ export function readTranscriptSummarySnapshot(
     nextSequence: row.next_utterance_seq,
     stoppedAt: row.stopped_at ?? undefined,
     summaryRevision: summaryRevision ?? "",
-    hasSummary: summaryRevision !== undefined,
     utterances: readTranscriptUtterances(database, session, maxUtterances),
   };
 }

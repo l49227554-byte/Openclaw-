@@ -5,7 +5,6 @@ export type TranscriptSummarySnapshot = {
   nextSequence: number;
   stoppedAt?: string;
   summaryRevision: string;
-  hasSummary: boolean;
   utterances: TranscriptUtterance[];
 };
 

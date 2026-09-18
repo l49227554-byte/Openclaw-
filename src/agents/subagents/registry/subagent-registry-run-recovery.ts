@@ -357,17 +357,17 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
         source.execution.transcriptTarget &&
         source.execution.transcriptTarget !== replaceParams.transcriptTarget
       ) {
-        const transcriptTarget = source.execution.transcriptTarget;
-        // Replacement has committed; retain its cleanup after the caller returns,
-        // including when a live parent's restart admission has already closed.
+        const retiredTarget = source.execution.transcriptTarget;
+        // The committed replacement owns cleanup beyond its caller's lifetime,
+        // including when restart closes admission before this tail settles.
         void runWithGatewayDetachedWorkContinuation(
-          () => removeInternalSessionEffectsSession(transcriptTarget),
+          () => removeInternalSessionEffectsSession(retiredTarget),
           "subagents:replacement-cleanup",
         ).catch((error: unknown) => {
-          log.warn("failed to remove replaced subagent internal session", {
-            error,
+          log.warn("failed to remove replaced subagent internal session effects", {
             previousRunId,
             nextRunId,
+            error,
           });
         });
       }

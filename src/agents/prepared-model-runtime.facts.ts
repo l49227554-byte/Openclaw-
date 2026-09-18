@@ -19,11 +19,7 @@ import {
 import { resolvePreparedProviderStaticConfigs } from "../plugins/provider-discovery.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { getPluginRegistryInspectionResources } from "../plugins/registry-inspection-resources.js";
-import {
-  capturePluginLifecycleAuthority,
-  capturePluginRegistryLifecycleEpoch,
-} from "../plugins/registry-lifecycle.js";
-import { disposePluginRegistryInstances } from "../plugins/runtime.js";
+import { capturePluginLifecycleAuthority } from "../plugins/registry-lifecycle.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { resolveRuntimeSyntheticAuthProviderRefs } from "../plugins/synthetic-auth.runtime.js";
 import { prepareAmbientAgentCredentialsForDiscovery } from "./agent-auth-discovery.js";
@@ -70,7 +66,10 @@ import {
 import { hasSameOAuthProviderGeneration } from "./prepared-model-runtime.oauth-providers.js";
 import { prepareOwnedPluginLoadContext } from "./prepared-model-runtime.plugin-context.js";
 import { createPreparedPluginGeneration } from "./prepared-model-runtime.plugin-generation.js";
-import { discardPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
+import {
+  discardPreparedPluginGeneration,
+  retainPreparedPluginRegistry,
+} from "./prepared-model-runtime.plugin-lifetime.js";
 import type { PreparedModelRuntimeBuildResources } from "./prepared-model-runtime.resources.js";
 import {
   listPreparedSyntheticAuthProviderRefs,
@@ -173,6 +172,17 @@ export async function prepareWorkspaceBuildGroup(
   );
   const { inboundPluginRegistry, runtimePluginRegistry, primaryRegistry } =
     preparingRegistries instanceof Promise ? await preparingRegistries : preparingRegistries;
+  // A predecessor's catalog can release its last borrow during awaited facts work.
+  // Hold the selected registries until the successor generation owns them itself.
+  await using registryClaims = new AsyncDisposableStack();
+  for (const registry of new Set([runtimePluginRegistry, inboundPluginRegistry])) {
+    const release = registry && retainPreparedPluginRegistry(registry);
+    if (release) {
+      registryClaims.defer(async () => {
+        await release();
+      });
+    }
+  }
   const reuseRuntimeFacts =
     reusablePluginGeneration && runtimePluginRegistry === reusablePluginGeneration.pluginRegistry;
   const resources = primaryRegistry && getPluginRegistryInspectionResources(primaryRegistry);
@@ -515,15 +525,7 @@ export async function prepareWorkspaceBuildGroup(
     }
     return outcome.value;
   } catch (error) {
-    const cleanup = preparedGeneration
-      ? [discardPreparedPluginGeneration(preparedGeneration)]
-      : [...new Set([runtimePluginRegistry, inboundPluginRegistry])].flatMap((registry) =>
-          registry &&
-          !getPluginRegistryInspectionResources(registry) &&
-          !capturePluginRegistryLifecycleEpoch(registry)
-            ? [disposePluginRegistryInstances(registry)]
-            : [],
-        );
+    const cleanup = preparedGeneration ? [discardPreparedPluginGeneration(preparedGeneration)] : [];
     const results = await Promise.allSettled(cleanup);
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],

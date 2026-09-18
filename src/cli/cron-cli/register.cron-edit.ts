@@ -72,7 +72,25 @@ export function registerCronEditCommand(cron: Command) {
       .option("--clear-session-key", "Unset session key", false)
       .option("--clear-pacing", "Remove dynamic-cadence bounds", false)
       .option("--clear-trigger", "Remove the condition trigger", false)
+      .option("--precheck-command <shell>", "Set zero-token shell precheck gate (see #112371)")
+      .option("--precheck-timeout-ms <n>", "Set precheck timeout in milliseconds")
+      .option("--precheck-cwd <path>", "Set precheck working directory")
+      .option("--clear-precheck", "Remove the precheck gate", false)
+      .option("--system-event <text>", "Set systemEvent payload")
+      .option("--message <text>", "Set agentTurn payload message")
+      .option("--script <file|->", "Set headless script payload from file, or - for stdin")
+      .option("--script-timeout-seconds <n>", "Set script wall-clock timeout seconds")
+      .option("--script-tool-budget <n>", "Set maximum script tool calls")
+      .option("--command <shell>", "Set command payload run as sh -lc <shell> on the Gateway")
+      .option("--command-argv <json>", "Set command payload argv as JSON array of strings")
+      .option("--command-cwd <path>", "Set command payload working directory")
       .option(
+        "--command-env <KEY=VALUE>",
+        "Set command payload environment overrides (repeatable)",
+        (value: string, previous: string[] | undefined) => [...(previous ?? []), value],
+      )
+      .option("--command-input <text>", "Set command payload stdin")
+      .option("--thinking <level>", `Thinking level for agent jobs (${THINKING_LEVELS_HELP})`)      .option(
         "--clear-thinking",
         "Remove the per-job thinking override (restore normal cron thinking precedence)",
         false,
@@ -294,6 +312,40 @@ export function registerCronEditCommand(cron: Command) {
               ...existing.pacing,
               ...(pacingMin ? { min: pacingMin } : {}),
               ...(pacingMax ? { max: pacingMax } : {}),
+            };
+          }
+
+          const precheckCommand = normalizeOptionalString(opts.precheckCommand);
+          const precheckTimeoutRaw = normalizeOptionalString(opts.precheckTimeoutMs);
+          const precheckCwd = normalizeOptionalString(opts.precheckCwd);
+          const hasPrecheckAncillary =
+            precheckTimeoutRaw !== undefined || precheckCwd !== undefined;
+          if (opts.clearPrecheck && (precheckCommand || hasPrecheckAncillary)) {
+            throw new Error("Use --clear-precheck alone, not with other --precheck-* flags");
+          }
+          if (opts.clearPrecheck) {
+            patch.precheck = null;
+          } else if (precheckCommand || hasPrecheckAncillary) {
+            const existing = await readExistingCronJob();
+            const prev =
+              existing.precheck && typeof existing.precheck === "object"
+                ? existing.precheck
+                : undefined;
+            if (!precheckCommand && !prev) {
+              throw new Error(
+                "--precheck-timeout-ms/--precheck-cwd require an existing precheck or --precheck-command",
+              );
+            }
+            const timeoutMs = parseStrictPositiveInteger(opts.precheckTimeoutMs);
+            if (opts.precheckTimeoutMs !== undefined && timeoutMs === undefined) {
+              throw new Error("Invalid --precheck-timeout-ms (must be a positive integer).");
+            }
+            patch.precheck = {
+              kind: "exec",
+              ...prev,
+              command: precheckCommand ?? prev?.command ?? "",
+              ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+              ...(precheckCwd ? { cwd: precheckCwd } : {}),
             };
           }
           if (opts.clearTrigger) {

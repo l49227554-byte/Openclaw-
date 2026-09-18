@@ -24417,8 +24417,7 @@ public struct WizardStep: Codable, Sendable {
         self.sensitive = sensitive
         self.executor = executor
         self.externalurl = externalurl
-        self.devicecode = devicecode
-    }
+        self.devicecode = devicecode    }
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -24432,8 +24431,7 @@ public struct WizardStep: Codable, Sendable {
         case sensitive
         case executor
         case externalurl = "externalUrl"
-        case devicecode = "deviceCode"
-    }
+        case devicecode = "deviceCode"    }
 }
 
 public struct WorkerAdmissionHandshake: Codable, Sendable {
@@ -24476,8 +24474,7 @@ public struct WorkerDesktopLaunchParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case environmentid = "environmentId"
-        case app
-    }
+        case app    }
 }
 
 public struct WorkerDesktopLaunchResult: Codable, Sendable {

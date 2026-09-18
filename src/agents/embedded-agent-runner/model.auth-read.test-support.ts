@@ -4,7 +4,10 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { Model } from "../../llm/types.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.owner.js";
-import type { guardModelFixtureAuth } from "./model.fixture.test-support.js";
+import {
+  createEmptyPreparedModelRuntimeFixture,
+  type guardModelFixtureAuth,
+} from "./model.fixture.test-support.js";
 import { createEmptyAgentDiscoveryStores, resolveModelAsync } from "./model.js";
 import type { createProviderRuntimeTestMock } from "./model.provider-runtime.test-support.js";
 import { makeModel } from "./model.test-harness.js";
@@ -201,19 +204,13 @@ export function registerModelAuthReadTests({
     const cfg: OpenClawConfig = {};
     const assertCurrent = vi.fn();
     const preparedModelRuntime: PreparedModelRuntimeSnapshot = {
-      catalogOwner: undefined,
-      agentDir: getAgentDir(),
-      activeProjectKeys: [],
-      allowGatewaySubagentBinding: false,
-      config: cfg,
-      observationConfig: cfg,
+      ...createEmptyPreparedModelRuntimeFixture({
+        agentDir: getAgentDir(),
+        config: cfg,
+        metadataSnapshot: createPluginMetadataSnapshotFixture(),
+        createStores: createEmptyAgentDiscoveryStores,
+      }),
       isCurrent: () => false,
-      authModes: {},
-      metadataSnapshot: createPluginMetadataSnapshotFixture(),
-      modelCatalog: { entries: [], routeVariants: [] },
-      configuredRuntimeModels: [],
-      inlineProviderModels: [],
-      createStores: createEmptyAgentDiscoveryStores,
     };
     getAuthSpy().mockImplementation(() => {
       throw new Error("Prepared auth must not read credentials again");

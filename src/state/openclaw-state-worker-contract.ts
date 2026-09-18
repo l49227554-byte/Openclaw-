@@ -62,9 +62,9 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       input: { profileId: string; artifactPreserving: boolean };
       output: UserModelAuthProfile | undefined;
     };
-    "agentProvenance.read": {
-      input: { agentId: string };
-      output: AgentProvenance | undefined;
+    "agentProvenance.readBatch": {
+      input: { agentIds: readonly string[] };
+      output: AgentProvenance[];
     };
     "agentProvenance.list": { input: undefined; output: AgentProvenance[] };
     "promotions.markNotified": { input: { slugs: string[]; now: number }; output: true };

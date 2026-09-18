@@ -966,7 +966,11 @@ export const en: TranslationMap & {
     cloudProfileRuntimeUnsupported:
       "The {runtime} runtime cannot use this cloud worker. Choose a compatible cloud worker or run locally.",
     deviceRuntimeUnsupported: "This runtime does not support paired devices",
-    placementStartFailed: "The session was created, but runner startup failed: {error}",
+    placementStartFailed: "The session was created, but startup needs attention: {error}",
+    placementStillStarting:
+      "Worker setup is still in progress. Retry to check the existing worker; your message has not been sent.",
+    placementCompletionUnconfirmed:
+      "Could not confirm whether worker setup finished. Retry to check again; your message has not been sent.",
     placementReloadBlocked: "Recovery needs a reload. Unsaved starts will be lost.",
     discardUnsavedAndReload: "Discard unsaved starts and reload",
     yourDevices: "Your devices",

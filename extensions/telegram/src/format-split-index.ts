@@ -58,8 +58,16 @@ function findTelegramHtmlEntitySafeSplitIndex(text: string, normalizedMaxLength:
  * The result is positive whenever any positive entity-safe cut exists, so callers that loop
  * on it keep making progress; it is zero only when the text opens with an entity wider than
  * the whole budget.
+ *
+ * @throws TypeError when `maxLength` is not finite. Every comparison against `NaN` is false,
+ * so a non-finite budget would make the boundary search below spin instead of converging.
  */
 export function findTelegramHtmlSafeSplitIndex(text: string, maxLength: number): number {
+  if (!Number.isFinite(maxLength)) {
+    throw new TypeError(
+      `Telegram HTML split index requires a finite maxLength (received ${maxLength})`,
+    );
+  }
   if (text.length <= maxLength) {
     return text.length;
   }
@@ -82,7 +90,9 @@ export function findTelegramHtmlSafeSplitIndex(text: string, maxLength: number):
     }
     // The grapheme clamp can retreat over an Extend character that directly follows an
     // entity's `;` (they form one cluster), which would leave a bare `&amp` behind. Re-run
-    // the entity check from the moved index; indices only decrease, so this converges.
+    // the entity check from the moved index. Reaching here means `clamped < splitIndex`, and
+    // the non-finite guard above keeps that comparison meaningful, so the index strictly
+    // decreases each pass and the loop converges.
     splitIndex = findTelegramHtmlEntitySafeSplitIndex(text, clamped);
   }
 }

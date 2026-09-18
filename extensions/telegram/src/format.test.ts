@@ -8,6 +8,7 @@ import {
   splitTelegramHtmlChunks,
   telegramHtmlToPlainTextFallback,
 } from "./format.js";
+import { findTelegramHtmlSafeSplitIndex } from "./format-split-index.js";
 
 describe("markdownToTelegramHtml", () => {
   it("marks assistant-authored transcript role headers after parsing Markdown", () => {
@@ -578,6 +579,38 @@ describe("markdownToTelegramHtml", () => {
     expect(chunks[0]?.startsWith("&amp;")).toBe(true);
     expect(chunks[0]?.endsWith("&amp")).toBe(false);
     expect(chunks[1]?.startsWith(";")).toBe(false);
+  });
+});
+
+describe("non-finite chunk limits", () => {
+  // Regression: `Math.max(1, Math.floor(NaN))` is NaN, and every comparison against NaN is
+  // false. That made the split-index search re-run its entity check forever and made
+  // `appendText` re-slice `remaining` at NaN without ever consuming input, so these calls
+  // hung instead of failing. A throw also keeps the delivery planner's existing degrade
+  // path working. These cases terminating at all is the assertion; the suite would time out
+  // rather than fail if either guard regressed.
+  const nonFiniteLimits: [string, number][] = [
+    ["NaN", Number.NaN],
+    ["undefined", undefined as never],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ];
+
+  it.each(nonFiniteLimits)("splitTelegramHtmlChunks rejects a %s limit", (_label, limit) => {
+    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(TypeError);
+    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(/must be finite/);
+  });
+
+  it.each(nonFiniteLimits)(
+    "findTelegramHtmlSafeSplitIndex rejects a %s maxLength",
+    (_label, limit) => {
+      expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(TypeError);
+      expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(/finite maxLength/);
+    },
+  );
+
+  it("still chunks normally at the smallest finite limit", () => {
+    expect(splitTelegramHtmlChunks("abcdef", 3)).toEqual(["abc", "def"]);
+    expect(findTelegramHtmlSafeSplitIndex("abcdef", 3)).toBe(3);
   });
 });
 

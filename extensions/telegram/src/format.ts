@@ -650,6 +650,12 @@ function popTelegramHtmlTag(tags: TelegramHtmlTag[], name: string): void {
 }
 
 function splitTelegramHtmlChunksRaw(html: string, limit: number): string[] {
+  // A non-finite limit makes `available` NaN below, and `appendText` would then loop forever
+  // re-slicing `remaining` at NaN without ever consuming input. Reject it here instead of
+  // coercing to a default: a caller that arrives with NaN has a bug worth surfacing.
+  if (!Number.isFinite(limit)) {
+    throw new TypeError(`Telegram HTML chunk limit must be finite (received ${limit})`);
+  }
   if (!html) {
     return [];
   }

@@ -188,14 +188,19 @@ async function handleBroadcastAction(
           accountId: explicitAccountId,
         });
         const targetArgs: Record<string, unknown> = { to: target };
-        const resolved = await resolveMessageTarget({
-          cfg: input.cfg,
-          channel: targetChannel,
-          action: "send",
-          args: targetArgs,
-          accountId: targetAccountId,
-          plugin: targetChannelPlugin,
-        });
+        const resolved = await withChannelReadAuthority(
+          input.assertDirectAdapterHandoff,
+          () =>
+            resolveMessageTarget({
+              cfg: input.cfg,
+              channel: targetChannel,
+              action: "send",
+              args: targetArgs,
+              accountId: targetAccountId,
+              plugin: targetChannelPlugin,
+            }),
+          input.abortSignal,
+        );
         if (!resolved) {
           throw new Error("Broadcast target resolution unexpectedly deferred.");
         }
@@ -562,7 +567,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
     route.assertReadAuthorityCurrent,
     async () => {
       const context = await withChannelReadAuthority(
-        route.assertTargetAuthorityCurrent,
+        route.assertTargetAuthorityCurrent ?? input.assertDirectAdapterHandoff,
         async (): Promise<ResolvedActionContext> => {
           params = route.params;
           const { channel, channelPlugin, accountId, dryRun, defersExternalTargetResolution } =

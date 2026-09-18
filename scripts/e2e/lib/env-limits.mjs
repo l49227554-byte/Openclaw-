@@ -8,14 +8,19 @@
 // together.
 export const MAX_TIMER_TIMEOUT_MS = 2_147_000_000;
 
-export function readPositiveIntEnv(name, fallback, env = process.env, max) {
+export function readPositiveIntEnv(
+  name,
+  fallback,
+  env = process.env,
+  max = Number.POSITIVE_INFINITY,
+) {
   const raw = env[name] ?? fallback;
   const text = raw == null ? "unset" : String(raw).trim();
   if (!/^\d+$/u.test(text)) {
     throw new Error(`invalid ${name}: ${text}`);
   }
   const value = Number(text);
-  if (!Number.isSafeInteger(value) || value <= 0 || (max !== undefined && value > max)) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > max) {
     throw new Error(`invalid ${name}: ${text}`);
   }
   return value;

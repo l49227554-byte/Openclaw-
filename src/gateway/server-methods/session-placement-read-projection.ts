@@ -28,8 +28,11 @@ export function readSessionRowFacts(params: {
   target: Pick<GatewayStoredSessionTarget, "agentId" | "storeTarget"> & { key: string };
   entry: SessionEntry;
   context?: PlacementReadContext;
+  activitySummaryEnabled?: boolean;
 }) {
-  const { cfg, target, entry } = params;
+  const { cfg, entry } = params;
+  // The board callback shares a closure context with present; never capture a resident row.
+  const { key, agentId, storeTarget } = params.target;
   const context = params.context ?? {};
   const placements = context.workerSessionPlacementService;
   const placement = placements?.getMany([entry.sessionId]).get(entry.sessionId);
@@ -52,10 +55,17 @@ export function readSessionRowFacts(params: {
         ? "restart"
         : "stop-first"
       : undefined;
-  const activitySummary = projectSessionActivitySummary({ ...target, cfg, entry });
+  const activitySummary = projectSessionActivitySummary({
+    key,
+    agentId,
+    storeTarget,
+    cfg,
+    entry,
+    enabled: params.activitySummaryEnabled,
+  });
   const board = withOpenClawAgentDatabaseReadOnly(
-    (database) => readBoardSessionKeys(database, target.key).length > 0,
-    { agentId: target.storeTarget.agentId, path: target.storeTarget.storePath },
+    (database) => readBoardSessionKeys(database, key).length > 0,
+    { agentId: storeTarget.agentId, path: storeTarget.storePath },
   );
   return {
     hasBoard: board.found && board.value,

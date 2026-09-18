@@ -806,7 +806,8 @@ export function prepareNpmPackageBundle({
     return [pack(directory, packageName)];
   });
   const aiPackage = corePackageTarballs.find(({ packageName }) => packageName === "@openclaw/ai");
-  if (aiPackage) {
+  const hasRootShrinkwrap = existsSync(join(sourceDir, "npm-shrinkwrap.json"));
+  if (aiPackage && hasRootShrinkwrap) {
     prepareRootShrinkwrap({
       aiTarballPath: join(outputDir, aiPackage.tarballName),
     });

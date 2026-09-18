@@ -196,27 +196,24 @@ async function prepareDoctorLintExecution(
   const readConfigSnapshot = async (
     deferredPluginMigrations?: readonly DeferredPluginMigration[],
   ) => {
-    if (pluginStateMode === "direct") {
-      return prepareRuntimeValidation
-        ? (
-            await readConfigFileSnapshotWithPluginMetadata({
-              observe: false,
-              prepareValidation: "runtime",
-            })
-          ).snapshot
-        : readConfigFileSnapshot({ observe: false });
-    }
-    const io = createConfigIO({
-      env: sourceEnv,
-      configPath: resolveConfigPath(sourceEnv, resolveStateDir(sourceEnv)),
-      observe: false,
-      pluginValidation: pluginStateMode === "deferred" ? "core-only" : undefined,
-      deferredPluginMigrations,
-    });
-    return pluginStateMode === "deferred"
-      ? io.readConfigFileSnapshot()
-      : (await io.readConfigFileSnapshotWithPluginMetadata({ prepareValidation: "runtime" }))
-          .snapshot;
+    const io =
+      pluginStateMode === "direct"
+        ? { readConfigFileSnapshot, readConfigFileSnapshotWithPluginMetadata }
+        : createConfigIO({
+            env: sourceEnv,
+            configPath: resolveConfigPath(sourceEnv, resolveStateDir(sourceEnv)),
+            observe: false,
+            pluginValidation: pluginStateMode === "deferred" ? "core-only" : undefined,
+            deferredPluginMigrations,
+          });
+    return pluginStateMode === "deferred" || !prepareRuntimeValidation
+      ? io.readConfigFileSnapshot({ observe: false })
+      : (
+          await io.readConfigFileSnapshotWithPluginMetadata({
+            observe: false,
+            prepareValidation: "runtime",
+          })
+        ).snapshot;
   };
   const stateView: DoctorLintStateView = {
     cleanupWarnings,

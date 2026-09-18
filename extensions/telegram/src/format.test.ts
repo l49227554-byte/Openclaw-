@@ -584,23 +584,27 @@ describe("markdownToTelegramHtml", () => {
 
 describe("unusable chunk limits", () => {
   // Regression: `Math.max(1, Math.floor(NaN))` is NaN, and every comparison against NaN is
-  // false. That made the split-index search re-run its entity check forever and made
-  // `appendText` re-slice `remaining` at NaN without ever consuming input, so these calls
-  // hung instead of failing. A throw also keeps the delivery planner's existing degrade
-  // path working. These cases terminating at all is the assertion; the suite would time out
-  // rather than fail if either guard regressed.
+  // false. That made the split-index search re-run its entity check without converging and
+  // made `appendText` re-slice `remaining` at NaN without ever consuming input. At the merge
+  // base that loop did not hang; it pushed one chunk per pass until V8 threw
+  // `RangeError: Invalid array length` after about 10 s, or until the heap was exhausted and
+  // the process aborted when a tag was open at the cut. A throw is immediate and catchable,
+  // which keeps the delivery planner's existing degrade path working. These cases terminating
+  // at all is the assertion; the suite would time out rather than fail if either guard
+  // regressed, because Vitest's default timeout is well under the base's 10 s.
   //
-  // `Infinity` is deliberately absent: it is a legitimate "no limit" request and is covered
-  // by the suite below. `-Infinity` is here because a negative budget names no reachable cut.
+  // Only limits that coerce to NaN are here. Everything the base could read as a number,
+  // `Infinity` and `-Infinity` included, stays usable and is covered by the suites below.
   const unusableLimits: [string, number][] = [
     ["NaN", Number.NaN],
     ["undefined", undefined as never],
-    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["non-numeric string", "abc" as unknown as number],
+    ["plain object", {} as unknown as number],
   ];
 
   it.each(unusableLimits)("splitTelegramHtmlChunks rejects a %s limit", (_label, limit) => {
     expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(TypeError);
-    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(/must be finite or Infinity/);
+    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(/chunk limit coerces to NaN/);
   });
 
   it.each(unusableLimits)(
@@ -608,10 +612,19 @@ describe("unusable chunk limits", () => {
     (_label, limit) => {
       expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(TypeError);
       expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(
-        /finite or infinite maxLength/,
+        /maxLength coerces to NaN/,
       );
     },
   );
+
+  it("names the received type rather than a number the caller never passed", () => {
+    expect(() => splitTelegramHtmlChunks("abcdef", "abc" as unknown as number)).toThrow(
+      "Telegram HTML chunk limit coerces to NaN (received string: abc)",
+    );
+    expect(() => splitTelegramHtmlChunks("abcdef", undefined as never)).toThrow(
+      "Telegram HTML chunk limit coerces to NaN (received undefined: undefined)",
+    );
+  });
 
   it("still chunks normally at the smallest finite limit", () => {
     expect(splitTelegramHtmlChunks("abcdef", 3)).toEqual(["abc", "def"]);
@@ -619,9 +632,47 @@ describe("unusable chunk limits", () => {
   });
 });
 
+describe("limits the merge base coerced", () => {
+  // The guard reads the limit through `Math.floor`, the same way the chunkers always did, so
+  // no limit that produced chunks before this branch throws now. Measured at the merge base
+  // `782649ad453`: the right-hand column is that tree's output for the same call.
+  const coercedLimits: [string, number, string[]][] = [
+    ["a numeric string", "4000" as unknown as number, ["abcdefghij"]],
+    ["a whitespace-padded numeric string", " 3 " as unknown as number, ["abc", "def", "ghi", "j"]],
+    ["a fractional string", "3.7" as unknown as number, ["abc", "def", "ghi", "j"]],
+    ["a single-element array", [3] as unknown as number, ["abc", "def", "ghi", "j"]],
+    [
+      "an object with a numeric valueOf",
+      { valueOf: () => 3 } as unknown as number,
+      ["abc", "def", "ghi", "j"],
+    ],
+  ];
+
+  it.each(coercedLimits)("chunks with %s", (_label, limit, expected) => {
+    expect(splitTelegramHtmlChunks("abcdefghij", limit)).toEqual(expected);
+  });
+
+  // Base ran `Math.max(1, Math.floor(limit))`, so every budget below 1 landed on 1 and
+  // emitted one code unit per chunk. `-Infinity` is not special: it clamps like any other
+  // negative, which is why it is not in the throwing suite above.
+  const clampedLimits: [string, number][] = [
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["a negative finite limit", -5],
+    ["zero", 0],
+    ["null", null as unknown as number],
+    ["false", false as unknown as number],
+    ["an empty array", [] as unknown as number],
+  ];
+
+  it.each(clampedLimits)("clamps %s to a limit of 1", (_label, limit) => {
+    expect(splitTelegramHtmlChunks("abc", limit)).toEqual(["a", "b", "c"]);
+    expect(findTelegramHtmlSafeSplitIndex("abc", limit)).toBe(1);
+  });
+});
+
 describe("Infinity means no limit", () => {
   // `Infinity` is how an external caller asks for no splitting at all, and it behaved that
-  // way before this branch added a non-finite guard. These cases pin the pre-existing
+  // way before this branch added a limit guard. These cases pin the pre-existing
   // contract: one chunk holding the input verbatim, with entities and astral characters
   // untouched because no cut is attempted.
   const noLimitInputs: [string, string][] = [

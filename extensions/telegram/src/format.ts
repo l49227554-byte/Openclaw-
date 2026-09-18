@@ -653,12 +653,19 @@ function popTelegramHtmlTag(tags: TelegramHtmlTag[], name: string): void {
 }
 
 function splitTelegramHtmlChunksRaw(html: string, limit: number): string[] {
-  // `NaN` makes `available` NaN below, and `appendText` would then loop forever re-slicing
-  // `remaining` at NaN without ever consuming input. Reject it here instead of coercing to a
-  // default: a caller that arrives with NaN has a bug worth surfacing. `Infinity` is
-  // different: it asks for no limit, and the whole-input return below answers that directly.
+  // A limit that coerces to `NaN` makes `available` NaN below, and `appendText` then pushes a
+  // chunk per pass while `remaining.slice(NaN)` consumes nothing. That loop does not hang: at
+  // the merge base it ran until V8 refused to grow the chunk array and threw
+  // `RangeError: Invalid array length` (about 10 s and 1.9 GB of heap on Node 24), or, with a
+  // tag open at the cut, until the heap was exhausted and the process aborted outright.
+  // Reject it here instead of coercing to a default: a caller that arrives with NaN has a bug
+  // worth surfacing, and an immediate throw is catchable where the abort was not. Every limit
+  // the base could read as a number is still read the same way: `Infinity` asks for no limit
+  // and the whole-input return below answers that, negative budgets clamp to 1.
   if (!isUsableTelegramChunkLimit(limit)) {
-    throw new TypeError(`Telegram HTML chunk limit must be finite or Infinity (received ${limit})`);
+    throw new TypeError(
+      `Telegram HTML chunk limit coerces to NaN (received ${typeof limit}: ${String(limit)})`,
+    );
   }
   if (!html) {
     return [];

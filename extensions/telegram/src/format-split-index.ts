@@ -55,13 +55,19 @@ function findTelegramHtmlEntitySafeSplitIndex(text: string, normalizedMaxLength:
 /**
  * Whether `limit` can be used as a chunk budget.
  *
- * `Infinity` qualifies: it is the caller's way of asking for no limit, and every budget
- * comparison against it resolves before any search loop runs. `NaN`, `undefined` and
- * `-Infinity` do not: `NaN` compares false against everything, which makes a budget search
- * spin instead of converging, and a negative budget cannot express an intent at all.
+ * The limit is judged the way the chunkers read it, through `Math.floor`, so every value
+ * that worked as a budget before this guard existed still does: numeric strings, `null`,
+ * booleans and objects with a numeric `valueOf` all coerce and are usable. `Infinity` is
+ * usable and asks for no limit at all. Zero and negative budgets, `-Infinity` included, are
+ * usable and clamp to 1, which is what the callers below already did with them.
+ *
+ * Only a limit that coerces to `NaN` is unusable, because `NaN` compares false against
+ * everything: a budget search never converges and the chunk loop never consumes input. A
+ * value that cannot be coerced at all, a `BigInt` or a `Symbol`, throws out of `Math.floor`
+ * here, which is the same `TypeError` the callers raised before this guard existed.
  */
 export function isUsableTelegramChunkLimit(limit: number): boolean {
-  return Number.isFinite(limit) || limit === Number.POSITIVE_INFINITY;
+  return !Number.isNaN(Math.floor(limit));
 }
 
 /**
@@ -71,16 +77,17 @@ export function isUsableTelegramChunkLimit(limit: number): boolean {
  * on it keep making progress; it is zero only when the text opens with an entity wider than
  * the whole budget.
  *
- * `Infinity` means no limit and returns `text.length`, so no cut is made.
+ * `Infinity` means no limit and returns `text.length`, so no cut is made. Zero and negative
+ * budgets clamp to 1, so the result is never below the first reachable index.
  *
- * @throws TypeError when `maxLength` is `NaN`, `undefined` or `-Infinity`. Every comparison
- * against `NaN` is false, so such a budget would make the boundary search below spin instead
- * of converging, and a negative budget names no reachable index.
+ * @throws TypeError when `maxLength` coerces to `NaN`, which covers `NaN` itself,
+ * `undefined`, a non-numeric string and a plain object. Every comparison against `NaN` is
+ * false, so such a budget would make the boundary search below spin instead of converging.
  */
 export function findTelegramHtmlSafeSplitIndex(text: string, maxLength: number): number {
   if (!isUsableTelegramChunkLimit(maxLength)) {
     throw new TypeError(
-      `Telegram HTML split index requires a finite or infinite maxLength (received ${maxLength})`,
+      `Telegram HTML split index maxLength coerces to NaN (received ${typeof maxLength}: ${String(maxLength)})`,
     );
   }
   if (text.length <= maxLength) {
@@ -106,8 +113,8 @@ export function findTelegramHtmlSafeSplitIndex(text: string, maxLength: number):
     // The grapheme clamp can retreat over an Extend character that directly follows an
     // entity's `;` (they form one cluster), which would leave a bare `&amp` behind. Re-run
     // the entity check from the moved index. Reaching here means `clamped < splitIndex`, and
-    // the non-finite guard above keeps that comparison meaningful, so the index strictly
-    // decreases each pass and the loop converges.
+    // the NaN guard above keeps that comparison meaningful, so the index strictly decreases
+    // each pass and the loop converges.
     splitIndex = findTelegramHtmlEntitySafeSplitIndex(text, clamped);
   }
 }

@@ -43,7 +43,7 @@ const detail: TranscriptsGetResult = {
 };
 
 suite.define(() => {
-  it("follows live speech and delayed meeting notes without a manual refresh", async () => {
+  it("opens Summary by default and follows live speech and delayed notes across tabs", async () => {
     await suite.withPage(
       { viewport: { width: 1440, height: 1000 }, timezoneId: "UTC", colorScheme: "light" },
       async ({ page }) => {
@@ -87,13 +87,15 @@ suite.define(() => {
           path: path.join(suite.artifactDir, "meetings-live-initial.png"),
           animations: "disabled",
         });
+        expect(await view.getByRole("tab", { name: "Summary" }).getAttribute("aria-selected")).toBe(
+          "true",
+        );
+        expect(await reader.getByText("Live capture", { exact: true }).isVisible()).toBe(true);
+        await view.getByRole("tab", { name: "Transcript", exact: true }).click();
+        await reader.getByText("Waiting for speech…", { exact: true }).waitFor();
         expect(
           await view.getByRole("tab", { name: "Transcript" }).getAttribute("aria-selected"),
         ).toBe("true");
-        expect(await reader.getByText("Live capture", { exact: true }).isVisible()).toBe(true);
-        expect(await reader.getByText("Waiting for speech…", { exact: true }).isVisible()).toBe(
-          true,
-        );
 
         const speech: TranscriptsGetResult = {
           ...initial,
@@ -154,7 +156,13 @@ suite.define(() => {
         await page.emulateMedia({ reducedMotion: "no-preference" });
 
         await view.getByRole("tab", { name: "Summary", exact: true }).click();
+        await reader.locator(".transcripts-summary").waitFor();
         expect(new URL(page.url()).searchParams.get("tab")).toBe("summary");
+        expect(await reader.getByText("Live capture", { exact: true }).isVisible()).toBe(true);
+        await page.screenshot({
+          path: path.join(suite.artifactDir, "meetings-live-summary.png"),
+          animations: "disabled",
+        });
         const completed: TranscriptsGetResult = {
           ...speech,
           session: {

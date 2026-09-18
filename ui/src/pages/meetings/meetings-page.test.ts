@@ -62,7 +62,7 @@ afterEach(() => {
 });
 
 describe("meeting transcript library", () => {
-  it("opens active speech and refreshes it quietly through capture completion and delayed notes", async () => {
+  it("opens Summary by default and refreshes an explicitly selected Transcript through completion", async () => {
     vi.useFakeTimers();
     let detail = {
       ...meetingPage,
@@ -82,9 +82,20 @@ describe("meeting transcript library", () => {
         : detail;
     });
     const { page } = mount(request, "?selector=meeting");
-    await vi.waitFor(() => expect(page.textContent).toContain("Waiting for speech"));
+    await vi.waitFor(() => expect(page.querySelector(".transcripts-summary")).not.toBeNull());
+    expect(page.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain(
+      "Summary",
+    );
+    const transcriptTab = page.querySelector<HTMLElement>("#transcript-reader-tab-text")!;
+    transcriptTab.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await page.updateComplete;
     expect(page.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain(
       "Transcript",
+    );
+    await vi.waitFor(() =>
+      expect(page.querySelector(".transcripts-reader")?.textContent).toContain(
+        "Waiting for speech",
+      ),
     );
     const filter = page.querySelector<HTMLInputElement>('input[name="query"]')!;
     filter.value = "unsubmitted filter";

@@ -45,7 +45,6 @@ class MeetingsPage extends OpenClawLightDomElement {
   private accessGeneration = 0;
   @state() private readerCursor: string | null = null;
   private loadedReaderCursor: string | null = null;
-  private defaultReaderTab: "text" | "summary" | null = null;
   private lastReaderRefresh = 0;
   @state() private now = Date.now();
   @state() private summary: TranscriptsGetResult | null = null;
@@ -100,7 +99,7 @@ class MeetingsPage extends OpenClawLightDomElement {
     if (params.has("tab")) {
       return params.get("tab") === "transcript" ? "text" : "summary";
     }
-    return this.selection.query ? "text" : (this.defaultReaderTab ?? "summary");
+    return this.selection.query ? "text" : "summary";
   }
 
   private async readArchive<Method extends keyof ArchiveReadResults>(request: {
@@ -202,7 +201,6 @@ class MeetingsPage extends OpenClawLightDomElement {
         accept: (result) => {
           this.readerDenial = null;
           this.summary = result;
-          this.defaultReaderTab ??= result.session.active ? "text" : "summary";
         },
       });
     },
@@ -261,7 +259,6 @@ class MeetingsPage extends OpenClawLightDomElement {
       const next = new URLSearchParams(this.routeSearch);
       if (previous.get("selector") !== next.get("selector")) {
         this.summary = null;
-        this.defaultReaderTab = null;
         this.lastReaderRefresh = 0;
       }
       if (
@@ -309,7 +306,6 @@ class MeetingsPage extends OpenClawLightDomElement {
     this.listDenial = null;
     this.readerDenial = null;
     this.summary = null;
-    this.defaultReaderTab = null;
     this.lastReaderRefresh = 0;
     this.listTask.abort();
     this.summaryTask.abort();

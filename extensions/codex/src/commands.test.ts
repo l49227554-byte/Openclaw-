@@ -2111,6 +2111,28 @@ describe("codex command", () => {
     expect(result.text).toContain("Searched 342 of 2928 rollouts");
   });
 
+  it("says a Codex CLI search covering every rollout still left content unread", async () => {
+    const listCodexCliSessionsOnNode = vi.fn(async () => ({
+      node: { nodeId: "mb-m5", displayName: "mb-m5" },
+      result: {
+        codexHome: "/Users/mariano/.codex",
+        scannedFileCount: 12,
+        sessionFileCount: 12,
+        searchTruncated: true,
+        unreadSpanCount: 2,
+        sessions: [],
+      },
+    }));
+
+    const result = await runCommand("sessions --host mb-m5 /repo", { listCodexCliSessionsOnNode });
+
+    // Every file was opened, so there is no "N of M" clause to print — but two of them were only
+    // windowed, and saying nothing would present that as an exhaustive "no such session".
+    expect(result.text).toContain("No Codex CLI sessions returned");
+    expect(result.text).toContain("2 rollouts were too large to read whole");
+    expect(result.text).not.toContain("Searched 12 of 12");
+  });
+
   it("keeps the truncation notice unquantified when the node reported no rollout counts", async () => {
     const listCodexCliSessionsOnNode = vi.fn(async () => ({
       node: { nodeId: "mb-m5", displayName: "mb-m5" },

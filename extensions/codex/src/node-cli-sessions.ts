@@ -43,11 +43,17 @@ type CodexCliSessionsListResult = {
   /** Rollouts present under the codex-home, whether or not they were opened. */
   sessionFileCount?: number;
   /**
-   * Set when a filtered listing stopped before examining every rollout, so a session matching on
-   * `cwd` or its message preview may exist outside the answer. An unfiltered listing is a
-   * newest-first page by construction and never sets this.
+   * Set when a filtered listing did not search the whole corpus — either rollouts were never
+   * opened, or an opened rollout was too large to read whole and the part that went unread could
+   * have matched. An unfiltered listing is a newest-first page by construction and never sets this.
    */
   searchTruncated?: boolean;
+  /**
+   * Rollouts that were opened, failed the filter on a windowed summary, and had an unread span the
+   * filter term could be sitting in. Distinct from unopened files: the count is why an
+   * every-file-opened search still cannot call itself complete.
+   */
+  unreadSpanCount?: number;
 };
 
 type CodexCliSessionResumeResult = {
@@ -217,15 +223,32 @@ function formatSessionSearchTruncation(result: CodexCliSessionsListResult): stri
   }
   const scanned = result.scannedFileCount;
   const total = result.sessionFileCount;
+  const unread = result.unreadSpanCount ?? 0;
+  const sentences: string[] = [];
   // Not "the N most recent": a filtered scan reads filename matches before the rest, so the
   // rollouts it opened are not a recency prefix of the codex-home.
-  const scope =
-    scanned === undefined || total === undefined
-      ? "Only part of this codex-home was searched"
-      : `Searched ${String(scanned)} of ${String(total)} rollouts`;
-  return [
-    `${scope}; sessions matching on directory or message text may exist outside this list. A session id is part of the rollout filename, so an id filter is read before the rest and reaches further back than a directory or message-text filter does.`,
-  ];
+  if (scanned === undefined || total === undefined) {
+    sentences.push(
+      "Only part of this codex-home was searched; sessions matching on directory or message text may exist outside this list.",
+    );
+  } else if (scanned < total) {
+    sentences.push(
+      `Searched ${String(scanned)} of ${String(total)} rollouts; sessions matching on directory or message text may exist outside this list.`,
+    );
+  }
+  // An opened rollout is not a read rollout. Reporting only the file count would let a search that
+  // covered every file call itself complete while a match sat in a span it never looked at.
+  if (unread > 0) {
+    sentences.push(
+      unread === 1
+        ? "1 rollout was too large to read whole, so a directory or message-text match inside the part that went unread would not appear here."
+        : `${String(unread)} rollouts were too large to read whole, so a directory or message-text match inside the parts that went unread would not appear here.`,
+    );
+  }
+  sentences.push(
+    "A session id is part of the rollout filename, so an id filter is read before the rest and reaches further back than a directory or message-text filter does.",
+  );
+  return [sentences.join(" ")];
 }
 
 async function listLocalCodexCliSessions(paramsJSON?: string | null): Promise<string> {
@@ -247,6 +270,7 @@ async function listLocalCodexCliSessions(paramsJSON?: string | null): Promise<st
     scannedFileCount: scan.scannedFileCount,
     sessionFileCount: sessionFiles.length,
     ...(scan.searchTruncated ? { searchTruncated: true } : {}),
+    ...(scan.unreadSpanCount > 0 ? { unreadSpanCount: scan.unreadSpanCount } : {}),
   } satisfies CodexCliSessionsListResult);
 }
 
@@ -383,6 +407,7 @@ function parseCodexCliSessionsListResult(raw: unknown): CodexCliSessionsListResu
     scannedFileCount: readOptionalCount(payload.scannedFileCount),
     sessionFileCount: readOptionalCount(payload.sessionFileCount),
     searchTruncated: payload.searchTruncated === true ? true : undefined,
+    unreadSpanCount: readOptionalCount(payload.unreadSpanCount),
     sessions: payload.sessions.flatMap((entry) => {
       if (!isRecord(entry) || typeof entry.sessionId !== "string") {
         return [];

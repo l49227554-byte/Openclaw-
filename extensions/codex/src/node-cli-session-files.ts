@@ -200,6 +200,12 @@ function selectSessionFilesToScan(
 
 export type SessionFileScanOutcome = {
   scannedFileCount: number;
+  /**
+   * Rollouts whose summary was built from windows that skipped a middle span and which then failed
+   * the filter. The filter term could sit in a record inside that span, so each one is a session
+   * the search may be hiding — a file being *opened* is not the same as its content being *read*.
+   */
+  unreadSpanCount: number;
   searchTruncated: boolean;
 };
 
@@ -218,6 +224,11 @@ export type SessionFileScanOutcome = {
  * one it already matched. `SESSION_FILE_SCAN_HEADROOM` only absorbs small skew, and history-derived
  * matches counted before the loop are in no file order at all. `searchTruncated` is the signal that
  * holds in every one of those cases; the ordering itself is not guaranteed.
+ *
+ * Opening every candidate is still not a complete search. A rollout too large to read whole is
+ * summarized from a head and a tail window, so a filter term in the skipped middle is invisible and
+ * the row is dropped as a non-match. `unreadSpanCount` counts exactly those drops and also sets
+ * `searchTruncated`, so "every file was opened" can never by itself report a search as complete.
  */
 export async function hydrateSessionsFromSessionFiles(
   summaries: Map<string, CodexCliSessionSummary>,
@@ -240,17 +251,26 @@ export async function hydrateSessionsFromSessionFiles(
   }
   let scannedFileCount = 0;
   let spentBytes = 0;
+  let unreadSpanCount = 0;
+  // Every exit reports the same two independent reasons a filtered search can be incomplete: files
+  // never opened, and opened files whose middle went unread. Routing them through one place is what
+  // keeps a new early exit from quietly reintroducing an unqualified "complete" answer.
+  const finish = (filesLeftUnopened: boolean): SessionFileScanOutcome => ({
+    scannedFileCount,
+    unreadSpanCount,
+    searchTruncated: filter ? filesLeftUnopened || unreadSpanCount > 0 : false,
+  });
   for (const file of candidates) {
     if (filter) {
       if (matched.size >= enoughMatches) {
-        return { scannedFileCount, searchTruncated: scannedFileCount < files.length };
+        return finish(scannedFileCount < files.length);
       }
       // Charge what the previous reads reported, not what their file sizes suggested. A `min(size,
       // head+tail)` estimate silently undercounts the 4 MiB `session_meta` escalation by more than
       // six times, so a home full of oversized metadata records used to run gigabytes past a budget
       // stated in hundreds of megabytes. Checking between files keeps the overshoot to one file.
       if (scannedFileCount > 0 && spentBytes >= FILTERED_SESSION_SCAN_BUDGET_BYTES) {
-        return { scannedFileCount, searchTruncated: true };
+        return finish(true);
       }
     }
     scannedFileCount += 1;
@@ -274,11 +294,17 @@ export async function hydrateSessionsFromSessionFiles(
       partialScan: counted.partialScan,
     };
     summaries.set(summary.sessionId, merged);
-    if (filter && matchesSessionFilter(merged, filter)) {
-      matched.add(summary.sessionId);
+    if (filter) {
+      if (matchesSessionFilter(merged, filter)) {
+        matched.add(summary.sessionId);
+      } else if (merged.partialScan === true) {
+        // Dropped on the strength of a summary that skipped a span of this rollout. The record that
+        // matches may be in that span, so this is an unanswered question, not a "no".
+        unreadSpanCount += 1;
+      }
     }
   }
-  return { scannedFileCount, searchTruncated: filter ? scannedFileCount < files.length : false };
+  return finish(scannedFileCount < files.length);
 }
 
 /** A summary plus what reading it cost, so a caller can budget on measured I/O rather than a guess. */

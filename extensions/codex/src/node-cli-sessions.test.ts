@@ -592,6 +592,51 @@ describe("codex cli node sessions", () => {
     expect(parsed.sessions).toMatchObject([{ sessionId, cwd: "/tmp/codex-oversized" }]);
   });
 
+  it("reports a search as cut when a filtered-out summary had an unread span", async () => {
+    const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5270";
+    const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
+    await fs.mkdir(sessionDir, { recursive: true });
+    const sessionFile = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
+    // One rollout, no history.jsonl, and the only record carrying the filter term sits between the
+    // head and tail windows: 600 KB of filler pushes it past the 512 KiB head, and a final 400 KB
+    // agent record with no trailing newline fills the 256 KiB tail so the tail yields no record.
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          timestamp: "2026-05-14T00:10:20.000Z",
+          type: "session_meta",
+          payload: { id: sessionId, cwd: "/tmp/window-gap" },
+        }),
+        userMessage("2026-05-14T00:10:21.000Z", "early ask"),
+        filler(600_000),
+        userMessage("2026-05-14T00:10:25.000Z", "please check needle-term now"),
+        JSON.stringify({
+          timestamp: "2026-05-14T00:10:26.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "y".repeat(400_000) }],
+          },
+        }),
+      ].join("\n"),
+    );
+
+    const parsed = await runSessionsList({ limit: 50, filter: "needle-term" });
+
+    // Every file was opened, so a file-count comparison alone calls this a complete search. It is
+    // not: the one record that matches was never read, and answering "none" without qualification
+    // asserts the session does not exist.
+    expect(parsed.sessions).toEqual([]);
+    expect(parsed).toMatchObject({
+      scannedFileCount: 1,
+      sessionFileCount: 1,
+      searchTruncated: true,
+      unreadSpanCount: 1,
+    });
+  });
+
   it("keeps a session whose metadata and final record both outrun their windows", async () => {
     const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5260";
     const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
@@ -871,6 +916,7 @@ describe("codex cli node sessions", () => {
     scannedFileCount?: number;
     sessionFileCount?: number;
     searchTruncated?: boolean;
+    unreadSpanCount?: number;
   }> {
     const command = createCodexCliSessionNodeHostCommands().find(
       (entry) => entry.command === CODEX_CLI_SESSIONS_LIST_COMMAND,
@@ -880,6 +926,7 @@ describe("codex cli node sessions", () => {
       scannedFileCount?: number;
       sessionFileCount?: number;
       searchTruncated?: boolean;
+      unreadSpanCount?: number;
     };
   }
 

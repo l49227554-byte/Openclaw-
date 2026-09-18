@@ -3894,10 +3894,21 @@ async function readScriptStdin() {
   );
 }
 
-async function preparationCheckpoint() {
-  // Synchronous Git/copy work must yield to queued signals before remote I/O.
+async function preparationCheckpoint(preparationError?: unknown) {
+  // The first immediate can run in the current check phase. Complete another
+  // poll cycle so signals queued during synchronous preparation are delivered.
+  await yieldToSignals();
   await yieldToSignals();
   if (cancellationSignal) {
+    if (preparationError !== undefined) {
+      const message =
+        preparationError instanceof Error
+          ? preparationError.message
+          : typeof preparationError === "string"
+            ? preparationError
+            : "unknown preparation error";
+      console.error(`[crabbox] preparation interrupted: ${message}`);
+    }
     cleanupOnce();
     process.exit(signalExitCodes.get(cancellationSignal) ?? 1);
   }
@@ -3959,7 +3970,7 @@ try {
     }
   }
 } catch (error) {
-  await preparationCheckpoint();
+  await preparationCheckpoint(error);
   cleanupOnce();
   throw error;
 }
@@ -4106,7 +4117,7 @@ try {
   wsl2ScriptBootstrap = transformed.wsl2ScriptBootstrap;
   normalizedArgs = transformed.args;
 } catch (error) {
-  await preparationCheckpoint();
+  await preparationCheckpoint(error);
   cleanupOnce();
   throw error;
 }

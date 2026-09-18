@@ -19,7 +19,7 @@ import {
   resolveWindowsSpawnProgram,
 } from "openclaw/plugin-sdk/windows-spawn";
 import { formatCodexDisplayText } from "./command-formatters.js";
-import { JSONL_FIRST_LINE_CHUNK_BYTES, visitJsonlLines } from "./jsonl-lines.js";
+import { readJsonlHead, readJsonlTail, visitJsonlLines } from "./jsonl-lines.js";
 
 const CODEX_CLI_SESSIONS_LIST_COMMAND = "codex.cli.sessions.list";
 export const CODEX_CLI_SESSION_RESUME_COMMAND = "codex.cli.session.resume";
@@ -28,6 +28,22 @@ const DEFAULT_SESSION_LIMIT = 10;
 const MAX_SESSION_LIMIT = 50;
 const DEFAULT_RESUME_TIMEOUT_MS = 20 * 60_000;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+/**
+ * The head window carries `session_meta` (id + cwd) and the opening messages. Real rollouts embed
+ * the whole instruction set in `session_meta`; the largest observed here is ~149 KiB, so this keeps
+ * roughly 3x headroom over that record alone.
+ */
+const SESSION_FILE_HEAD_SCAN_BYTES = 512 * 1024;
+/** Escalation for a `session_meta` record too large to fit the head window, so cwd never drops. */
+const SESSION_FILE_HEAD_SCAN_MAX_BYTES = 4 * 1024 * 1024;
+/** The tail window supplies the final record `timestamp` and any late user message. */
+const SESSION_FILE_TAIL_SCAN_BYTES = 256 * 1024;
+/** Below this size head+tail would already cover the file, so read it once and keep counts exact. */
+const SESSION_FILE_FULL_READ_BYTES = SESSION_FILE_HEAD_SCAN_BYTES + SESSION_FILE_TAIL_SCAN_BYTES;
+/** Rollouts scanned past `limit` to absorb mtime vs. record-`timestamp` ordering skew. */
+const SESSION_FILE_SCAN_HEADROOM = 20;
+/** A filter can match hydrated fields, so filtered listings scan deeper — but still bounded. */
+const FILTERED_SESSION_FILE_SCAN_CAP = 200;
 const activeResumeSessions = new Set<string>();
 
 type CodexCliSessionSummary = {
@@ -37,6 +53,19 @@ type CodexCliSessionSummary = {
   cwd?: string;
   sessionFile?: string;
   messageCount: number;
+  /**
+   * Set when the rollout was too large to read whole: `messageCount` counts only the scanned
+   * head/tail windows, and `lastMessage` is the last user message inside them rather than
+   * necessarily the last one in the file.
+   */
+  partialScan?: boolean;
+};
+
+type CodexCliSessionFile = {
+  file: string;
+  basename: string;
+  mtimeMs: number;
+  size: number;
 };
 
 type CodexCliSessionsListResult = {
@@ -194,8 +223,12 @@ async function listLocalCodexCliSessions(paramsJSON?: string | null): Promise<st
   const filter = typeof params.filter === "string" ? params.filter.trim().toLowerCase() : "";
   const codexHome = resolveCodexHome();
   const summaries = await readHistorySessions(codexHome);
-  await hydrateSessionFiles(codexHome, summaries);
-  await hydrateSessionsFromSessionFiles(codexHome, summaries);
+  const sessionFiles = await findSessionFiles(path.join(codexHome, "sessions"), 4);
+  await hydrateSessionFiles(summaries, sessionFiles);
+  await hydrateSessionsFromSessionFiles(
+    summaries,
+    selectSessionFilesToScan(sessionFiles, filter, limit),
+  );
   const sessions = [...summaries.values()]
     .filter((session) => {
       if (!filter) {
@@ -342,18 +375,15 @@ async function readHistorySessions(
 }
 
 async function hydrateSessionFiles(
-  codexHome: string,
   summaries: Map<string, CodexCliSessionSummary>,
+  files: CodexCliSessionFile[],
 ): Promise<void> {
   if (summaries.size === 0) {
     return;
   }
-  const sessionsDir = path.join(codexHome, "sessions");
-  const files = await findSessionFiles(sessionsDir, 4);
   const pending = new Set(summaries.keys());
   for (const file of files) {
-    const basename = path.basename(file);
-    const sessionId = [...pending].find((id) => basename.includes(id));
+    const sessionId = [...pending].find((id) => file.basename.includes(id));
     if (!sessionId) {
       continue;
     }
@@ -361,8 +391,8 @@ async function hydrateSessionFiles(
     if (!entry) {
       continue;
     }
-    entry.sessionFile = file;
-    const firstLine = (await readFirstLine(file)) ?? "";
+    entry.sessionFile = file.file;
+    const firstLine = (await readFirstLine(file.file)) ?? "";
     const cwd = readSessionMetaCwd(firstLine);
     if (cwd) {
       entry.cwd = cwd;
@@ -374,18 +404,39 @@ async function hydrateSessionFiles(
   }
 }
 
+/**
+ * Pick the rollouts worth hydrating. The listing is sorted newest-first and sliced to `limit`, so
+ * scanning every rollout only to discard all but a handful makes list cost scale with total bytes
+ * on disk. Rollouts are append-only, so mtime orders them the same way their last record
+ * `timestamp` does; a filter that names a session matches its filename, which keeps resume/binding
+ * lookups reachable no matter how old the session is.
+ */
+function selectSessionFilesToScan(
+  files: CodexCliSessionFile[],
+  filter: string,
+  limit: number,
+): CodexCliSessionFile[] {
+  const byRecency = files.toSorted((a, b) => b.mtimeMs - a.mtimeMs);
+  if (!filter) {
+    return byRecency.slice(0, limit + SESSION_FILE_SCAN_HEADROOM);
+  }
+  const named = byRecency.filter((entry) => entry.basename.toLowerCase().includes(filter));
+  const rest = byRecency.filter((entry) => !entry.basename.toLowerCase().includes(filter));
+  return [...named, ...rest].slice(0, FILTERED_SESSION_FILE_SCAN_CAP);
+}
+
 async function hydrateSessionsFromSessionFiles(
-  codexHome: string,
   summaries: Map<string, CodexCliSessionSummary>,
+  files: CodexCliSessionFile[],
 ): Promise<void> {
-  const sessionsDir = path.join(codexHome, "sessions");
-  const files = await findSessionFiles(sessionsDir, 4);
   for (const file of files) {
     const summary = await readSessionFileSummary(file);
     if (!summary) {
       continue;
     }
     const existing = summaries.get(summary.sessionId);
+    // `messageCount` and its partial marker describe one scan, so take both from the same source.
+    const counted = existing ?? summary;
     summaries.set(summary.sessionId, {
       ...summary,
       ...existing,
@@ -393,72 +444,97 @@ async function hydrateSessionsFromSessionFiles(
       sessionFile: existing?.sessionFile ?? summary.sessionFile,
       updatedAt: existing?.updatedAt ?? summary.updatedAt,
       lastMessage: existing?.lastMessage ?? summary.lastMessage,
-      messageCount: existing?.messageCount ?? summary.messageCount,
+      messageCount: counted.messageCount,
+      partialScan: counted.partialScan,
     });
   }
 }
 
-async function readSessionFileSummary(file: string): Promise<CodexCliSessionSummary | null> {
-  let sessionId = "";
-  let cwd: string | undefined;
-  let updatedAt: string | undefined;
-  let lastMessage: string | undefined;
-  let messageCount = 0;
-  const result = await visitJsonlLines(file, (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
-      return;
-    }
-    if (!isRecord(parsed)) {
-      return;
-    }
-    if (typeof parsed.timestamp === "string" && parsed.timestamp.trim()) {
-      updatedAt = parsed.timestamp.trim();
-    }
-    if (parsed.type === "session_meta" && isRecord(parsed.payload)) {
-      if (typeof parsed.payload.id === "string" && parsed.payload.id.trim()) {
-        sessionId = parsed.payload.id.trim();
-      }
-      if (typeof parsed.payload.cwd === "string" && parsed.payload.cwd.trim()) {
-        cwd = parsed.payload.cwd.trim();
-      }
-      return;
-    }
-    const messageText = readResponseItemMessageText(parsed);
-    if (messageText) {
-      messageCount += 1;
-      lastMessage = truncateText(messageText, 140);
-    }
-  });
-  if (!result.ok) {
+async function readSessionFileSummary(
+  file: CodexCliSessionFile,
+): Promise<CodexCliSessionSummary | null> {
+  const wholeFile = file.size <= SESSION_FILE_FULL_READ_BYTES;
+  let head = await readJsonlHead(
+    file.file,
+    wholeFile ? SESSION_FILE_FULL_READ_BYTES : SESSION_FILE_HEAD_SCAN_BYTES,
+  );
+  if (head && head.lines.length === 0 && !head.complete) {
+    // The first record did not fit the window, so `session_meta` — and with it cwd — is missing.
+    head = await readJsonlHead(file.file, SESSION_FILE_HEAD_SCAN_MAX_BYTES);
+  }
+  if (!head) {
     return null;
   }
-  if (result.lineCount === 0) {
+  const tail = wholeFile ? null : await readJsonlTail(file.file, SESSION_FILE_TAIL_SCAN_BYTES);
+  if (!wholeFile && !tail) {
     return null;
   }
-  if (!sessionId) {
-    sessionId = readSessionIdFromFilename(file) ?? "";
+  const lines = tail ? [...head.lines, ...tail.lines] : head.lines;
+  if (lines.length === 0) {
+    return null;
   }
+  const scan = scanSessionFileLines(lines);
+  const sessionId = scan.sessionId || readSessionIdFromFilename(file.file) || "";
   if (!sessionId) {
     return null;
   }
   return {
     sessionId,
-    updatedAt: updatedAt ?? (await readFileMtimeIso(file)),
-    lastMessage,
-    cwd,
-    sessionFile: file,
-    messageCount,
+    updatedAt: scan.updatedAt ?? new Date(file.mtimeMs).toISOString(),
+    lastMessage: scan.lastMessage,
+    cwd: scan.cwd,
+    sessionFile: file.file,
+    messageCount: scan.messageCount,
+    partialScan: head.complete ? undefined : true,
   };
 }
 
-async function findSessionFiles(dir: string, maxDepth: number): Promise<string[]> {
+type CodexCliSessionFileScan = {
+  sessionId: string;
+  cwd?: string;
+  updatedAt?: string;
+  lastMessage?: string;
+  messageCount: number;
+};
+
+function scanSessionFileLines(lines: string[]): CodexCliSessionFileScan {
+  const scan: CodexCliSessionFileScan = { sessionId: "", messageCount: 0 };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed) as unknown;
+    } catch {
+      continue;
+    }
+    if (!isRecord(parsed)) {
+      continue;
+    }
+    if (typeof parsed.timestamp === "string" && parsed.timestamp.trim()) {
+      scan.updatedAt = parsed.timestamp.trim();
+    }
+    if (parsed.type === "session_meta" && isRecord(parsed.payload)) {
+      if (typeof parsed.payload.id === "string" && parsed.payload.id.trim()) {
+        scan.sessionId = parsed.payload.id.trim();
+      }
+      if (typeof parsed.payload.cwd === "string" && parsed.payload.cwd.trim()) {
+        scan.cwd = parsed.payload.cwd.trim();
+      }
+      continue;
+    }
+    const messageText = readResponseItemMessageText(parsed);
+    if (messageText) {
+      scan.messageCount += 1;
+      scan.lastMessage = truncateText(messageText, 140);
+    }
+  }
+  return scan;
+}
+
+async function findSessionFiles(dir: string, maxDepth: number): Promise<CodexCliSessionFile[]> {
   if (maxDepth < 0) {
     return [];
   }
@@ -468,14 +544,28 @@ async function findSessionFiles(dir: string, maxDepth: number): Promise<string[]
   } catch {
     return [];
   }
-  const files: string[] = [];
+  const files: CodexCliSessionFile[] = [];
   for (const entry of entries) {
     const entryPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...(await findSessionFiles(entryPath, maxDepth - 1)));
-    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      files.push(entryPath);
+      continue;
     }
+    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
+      continue;
+    }
+    // Ordering and read-window selection both need size/mtime, so stat once here instead of
+    // opening every rollout to find out how recent it is.
+    const stats = await fs.stat(entryPath).catch(() => undefined);
+    if (!stats) {
+      continue;
+    }
+    files.push({
+      file: entryPath,
+      basename: entry.name,
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+    });
   }
   return files;
 }
@@ -580,6 +670,7 @@ function parseCodexCliSessionsListResult(raw: unknown): CodexCliSessionsListResu
             typeof entry.messageCount === "number" && Number.isFinite(entry.messageCount)
               ? entry.messageCount
               : 0,
+          partialScan: entry.partialScan === true ? true : undefined,
         },
       ];
     }),
@@ -620,24 +711,8 @@ function resolveCodexHome(): string {
 }
 
 async function readFirstLine(file: string): Promise<string | undefined> {
-  let firstLine: string | undefined;
-  const result = await visitJsonlLines(
-    file,
-    (line) => {
-      firstLine = line;
-      return false;
-    },
-    JSONL_FIRST_LINE_CHUNK_BYTES,
-  );
-  return result.ok ? firstLine : undefined;
-}
-
-async function readFileMtimeIso(file: string): Promise<string | undefined> {
-  try {
-    return (await fs.stat(file)).mtime.toISOString();
-  } catch {
-    return undefined;
-  }
+  const head = await readJsonlHead(file, SESSION_FILE_HEAD_SCAN_BYTES);
+  return head?.lines[0];
 }
 
 function normalizeLimit(value: unknown): number {

@@ -264,16 +264,23 @@ describe("codex cli node sessions", () => {
     ]);
   });
 
-  it("streams rollout JSONL with a record spanning many chunks", async () => {
+  it("reads a large rollout through bounded head and tail windows", async () => {
     const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5250";
     const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
     const sessionFile = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
     await fs.mkdir(sessionDir, { recursive: true });
-    const filler = JSON.stringify({
-      timestamp: "2026-05-14T00:10:23.619Z",
-      type: "event_msg",
-      payload: { type: "token_count", padding: "x".repeat(5 * 1_024 * 1_024) },
-    });
+    const filler = (padding: number) =>
+      JSON.stringify({
+        timestamp: "2026-05-14T00:10:23.619Z",
+        type: "event_msg",
+        payload: { type: "token_count", padding: "x".repeat(padding) },
+      });
+    const userMessage = (timestamp: string, text: string) =>
+      JSON.stringify({
+        timestamp,
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+      });
     await fs.writeFile(
       sessionFile,
       [
@@ -282,19 +289,16 @@ describe("codex cli node sessions", () => {
           type: "session_meta",
           payload: { id: sessionId, cwd: "/tmp/codex-streaming" },
         }),
-        filler,
-        JSON.stringify({
-          timestamp: "2026-05-14T00:10:24.000Z",
-          type: "response_item",
-          payload: {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: "rollout fallback" }],
-          },
-        }),
+        userMessage("2026-05-14T00:10:23.700Z", "first ask"),
+        filler(2 * 1_024 * 1_024),
+        userMessage("2026-05-14T00:10:23.800Z", "buried ask"),
+        filler(2 * 1_024 * 1_024),
+        userMessage("2026-05-14T00:10:24.000Z", "rollout fallback"),
       ].join("\n"),
     );
+    const fileSize = (await fs.stat(sessionFile)).size;
     const readFile = vi.spyOn(fs, "readFile");
+    const reads = spyOnRolloutReads();
 
     const command = createCodexCliSessionNodeHostCommands().find(
       (entry) => entry.command === CODEX_CLI_SESSIONS_LIST_COMMAND,
@@ -310,16 +314,93 @@ describe("codex cli node sessions", () => {
     };
 
     expect(readFile).not.toHaveBeenCalledWith(sessionFile, "utf8");
+    // Head (512 KiB) plus tail (256 KiB) — never the whole 4 MiB rollout.
+    expect(reads.bytes()).toBeLessThanOrEqual(768 * 1_024);
+    expect(fileSize).toBeGreaterThan(4 * 1_024 * 1_024);
     expect(parsed.sessions).toEqual([
       {
         sessionId,
         updatedAt: "2026-05-14T00:10:24.000Z",
         cwd: "/tmp/codex-streaming",
+        // Exact: the last user message lives in the tail window.
         lastMessage: "rollout fallback",
         sessionFile,
-        messageCount: 1,
+        // Windowed: "buried ask" sits between the two windows, so the count is marked partial.
+        messageCount: 2,
+        partialScan: true,
       },
     ]);
+  });
+
+  it("keeps exact counts for rollouts small enough to read whole", async () => {
+    const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5253";
+    const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
+    const sessionFile = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({
+          timestamp: "2026-05-14T00:10:23.618Z",
+          type: "session_meta",
+          payload: { id: sessionId, cwd: "/tmp/codex-small" },
+        }),
+        ...["one", "two", "three"].map((text, index) =>
+          JSON.stringify({
+            timestamp: `2026-05-14T00:10:2${String(index + 4)}.000Z`,
+            type: "response_item",
+            payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+          }),
+        ),
+      ].join("\n"),
+    );
+
+    const command = createCodexCliSessionNodeHostCommands().find(
+      (entry) => entry.command === CODEX_CLI_SESSIONS_LIST_COMMAND,
+    );
+    const raw = await command?.handle(JSON.stringify({ limit: 5 }));
+
+    expect(JSON.parse(raw ?? "{}")).toMatchObject({
+      sessions: [
+        {
+          sessionId,
+          lastMessage: "three",
+          messageCount: 3,
+        },
+      ],
+    });
+    expect(JSON.parse(raw ?? "{}").sessions[0]).not.toHaveProperty("partialScan");
+  });
+
+  it("scans only the most recent rollouts past the requested limit", async () => {
+    const opened = await writeRolloutFixtures(40);
+
+    const command = createCodexCliSessionNodeHostCommands().find(
+      (entry) => entry.command === CODEX_CLI_SESSIONS_LIST_COMMAND,
+    );
+    const reads = spyOnRolloutReads();
+    const raw = await command?.handle(JSON.stringify({ limit: 2 }));
+    const parsed = JSON.parse(raw ?? "{}") as { sessions?: Array<{ sessionId?: string }> };
+
+    // limit (2) + SESSION_FILE_SCAN_HEADROOM (20), newest first — not all 40 rollouts.
+    expect(reads.files().size).toBe(22);
+    expect(parsed.sessions?.map((entry) => entry.sessionId)).toEqual([
+      opened[0]?.sessionId,
+      opened[1]?.sessionId,
+    ]);
+  });
+
+  it("finds a session by id even when it is older than the scan window", async () => {
+    const rollouts = await writeRolloutFixtures(210);
+    const oldest = rollouts.at(-1);
+
+    const command = createCodexCliSessionNodeHostCommands().find(
+      (entry) => entry.command === CODEX_CLI_SESSIONS_LIST_COMMAND,
+    );
+    const raw = await command?.handle(JSON.stringify({ limit: 50, filter: oldest?.sessionId }));
+    const parsed = JSON.parse(raw ?? "{}") as { sessions?: Array<{ sessionId?: string }> };
+
+    expect(parsed.sessions?.map((entry) => entry.sessionId)).toEqual([oldest?.sessionId]);
   });
 
   it("discards partial large-file summaries and closes after a later read fails", async () => {
@@ -357,13 +438,11 @@ describe("codex cli node sessions", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("keeps a completed large-file summary when close rejects", async () => {
+  it("keeps a completed summary when close rejects", async () => {
     const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5252";
     const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
     const sessionFile = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
     await fs.mkdir(sessionDir, { recursive: true });
-    await fs.writeFile(sessionFile, "");
-    await fs.truncate(sessionFile, 5 * 1_024 * 1_024);
     const content = Buffer.from(
       [
         JSON.stringify({
@@ -382,16 +461,14 @@ describe("codex cli node sessions", () => {
         }),
       ].join("\n"),
     );
+    await fs.writeFile(sessionFile, content);
     const close = vi.fn(async () => {
       throw Object.assign(new Error("close failed"), { code: "EIO" });
     });
-    const read = vi
-      .fn()
-      .mockImplementationOnce(async (buffer: Buffer) => {
-        content.copy(buffer);
-        return { bytesRead: content.length, buffer };
-      })
-      .mockResolvedValueOnce({ bytesRead: 0, buffer: Buffer.alloc(0) });
+    const read = vi.fn(async (buffer: Buffer) => {
+      content.copy(buffer);
+      return { bytesRead: content.length, buffer };
+    });
     vi.spyOn(fs, "open").mockResolvedValue({ read, close } as never);
 
     const command = createCodexCliSessionNodeHostCommands().find(
@@ -511,4 +588,60 @@ describe("codex cli node sessions", () => {
     expect(parsed.sessions?.[0]?.lastMessage).not.toContain("\ud83e");
     expect(parsed.sessions?.[0]?.lastMessage).not.toContain("\udd16");
   });
+
+  /** Writes `count` rollouts, newest first, with distinct mtimes so recency ordering is stable. */
+  async function writeRolloutFixtures(
+    count: number,
+  ): Promise<Array<{ sessionId: string; file: string }>> {
+    const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
+    await fs.mkdir(sessionDir, { recursive: true });
+    const created: Array<{ sessionId: string; file: string }> = [];
+    for (let index = 0; index < count; index += 1) {
+      const sessionId = `019e23d1-f33d-78e3-959e-${index.toString(16).padStart(12, "0")}`;
+      const file = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
+      const updatedAt = new Date(Date.UTC(2026, 4, 14) - index * 60_000);
+      await fs.writeFile(
+        file,
+        [
+          JSON.stringify({
+            timestamp: updatedAt.toISOString(),
+            type: "session_meta",
+            payload: { id: sessionId, cwd: "/tmp/codex-many" },
+          }),
+          JSON.stringify({
+            timestamp: updatedAt.toISOString(),
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: `ask ${String(index)}` }],
+            },
+          }),
+        ].join("\n"),
+      );
+      await fs.utimes(file, updatedAt, updatedAt);
+      created.push({ sessionId, file });
+    }
+    return created;
+  }
+
+  /** Records which rollouts were opened and how many bytes each listing actually read. */
+  function spyOnRolloutReads(): { files: () => Set<string>; bytes: () => number } {
+    const openFile = fs.open;
+    const files = new Set<string>();
+    let bytes = 0;
+    vi.spyOn(fs, "open").mockImplementation((async (file: string, flags: string) => {
+      files.add(file);
+      const handle = await openFile(file, flags);
+      return {
+        read: async (buffer: Buffer, offset: number, length: number, position: number | null) => {
+          const result = await handle.read(buffer, offset, length, position);
+          bytes += result.bytesRead;
+          return result;
+        },
+        close: () => handle.close(),
+      };
+    }) as never);
+    return { files: () => files, bytes: () => bytes };
+  }
 });

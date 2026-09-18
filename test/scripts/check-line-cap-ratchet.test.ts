@@ -65,39 +65,6 @@ describe("line-cap growth ratchet", () => {
     expect(compareLineCapViolations(violations(after), violations(before)).length > 0).toBe(fails);
   });
 
-  it.each([false, true])(
-    "accepts an under-cap repair without measuring malformed history (staged=%s)",
-    (staged) => {
-      const root = fixture(2);
-      const target = path.join(root, "src/file.ts");
-      const malformed = source(2) + "export const value0 = 0;\n";
-      fs.writeFileSync(target, malformed);
-      git(root, "add", ".");
-      git(root, "commit", "-m", "malformed historical source");
-      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-      vi.spyOn(console, "log").mockImplementation(() => {});
-      const check = (content: string) => {
-        fs.writeFileSync(target, content);
-        if (staged) {
-          git(root, "add", ".");
-        }
-        return main(root, ["--base", "HEAD", ...(staged ? ["--staged"] : [])]);
-      };
-
-      expect(check(source(3))).toBe(0);
-      expect(errors).not.toHaveBeenCalled();
-      // Current syntax must remain valid, and over-cap sources still need measurable history.
-      expect(check(malformed + "// changed candidate")).toBe(1);
-      expect(errors).toHaveBeenLastCalledWith(
-        expect.stringContaining("Cannot measure src/file.ts:"),
-      );
-      expect(check(source(4))).toBe(1);
-      expect(errors).toHaveBeenLastCalledWith(
-        expect.stringContaining("Cannot measure src/file.ts:"),
-      );
-    },
-  );
-
   it("carries the old path's count across a rename", () => {
     expect(
       compareLineCapViolations(
@@ -154,6 +121,58 @@ describe("line-cap growth ratchet", () => {
     git(root, "commit", "-m", "under-cap growth");
     git(root, "merge", "--no-ff", base, "-m", "PR merge tree");
     expect(main(root, ["--base", base])).toBe(0);
+  });
+
+  it.each([
+    {
+      label: "repaired under-cap head",
+      invalidBase: true,
+      invalidHead: false,
+      lines: 3,
+      result: 0,
+    },
+    {
+      label: "over-cap head with unmeasurable debt",
+      invalidBase: true,
+      invalidHead: false,
+      lines: 4,
+      result: 1,
+    },
+    { label: "malformed head", invalidBase: false, invalidHead: true, lines: 2, result: 1 },
+  ])(
+    "handles $label without relaxing the head check",
+    ({ invalidBase, invalidHead, lines, result }) => {
+      const root = fixture(2);
+      const target = path.join(root, "src/file.ts");
+      const broken = "const duplicate = 1;\nconst duplicate = 2;\n";
+      if (invalidBase) {
+        fs.writeFileSync(target, broken);
+        git(root, "add", ".");
+        git(root, "commit", "-m", "broken base");
+      }
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      fs.writeFileSync(target, invalidHead ? broken : source(lines));
+      expect(main(root, ["--base", "HEAD"])).toBe(result);
+      if (result === 0) {
+        expect(errors).not.toHaveBeenCalled();
+      } else {
+        expect(errors).toHaveBeenCalledWith(expect.stringContaining("Cannot measure src/file.ts:"));
+      }
+    },
+  );
+
+  it("measures inherited debt only for head files that exceed their cap", () => {
+    const root = fixture(5);
+    const repaired = path.join(root, "src/repaired.ts");
+    fs.writeFileSync(repaired, "const duplicate = 1;\nconst duplicate = 2;\n");
+    git(root, "add", ".");
+    git(root, "commit", "-m", "broken sibling");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fs.writeFileSync(path.join(root, "src/file.ts"), source(4));
+    fs.writeFileSync(repaired, source(2));
+    expect(main(root, ["--base", "HEAD"])).toBe(0);
   });
 
   it.each(["oxlint", "eslint"])("counts %s-suppressed debt without changing the source", (tool) => {

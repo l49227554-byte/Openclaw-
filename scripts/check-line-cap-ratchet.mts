@@ -141,6 +141,12 @@ export function main(root = process.cwd(), argv = process.argv.slice(2)) {
     const paths = [...new Set(changes)].filter((file) => /\.(?:ts|tsx|mts|mjs)$/u.test(file));
     const renames = listRatchetRenames(root, base, args.staged, []);
     const oldPaths = new Map(renames.map(({ from, to }) => [to, from]));
+    const basePaths = new Set(gitPaths(root, ["ls-tree", "-r", "--name-only", "-z", base]));
+    const baseSources = loadRatchetSources(
+      root,
+      paths.map((file) => oldPaths.get(file) ?? file).filter((file) => basePaths.has(file)),
+      base,
+    );
     const headSources = args.staged
       ? loadRatchetSources(root, paths)
       : new Map(paths.map((file) => [file, fs.readFileSync(path.join(root, file), "utf8")]));
@@ -168,17 +174,14 @@ export function main(root = process.cwd(), argv = process.argv.slice(2)) {
     }
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-line-cap-"));
     const after = collectViolations(path.join(scratch, "head"), headSources, config);
-    // Only over-cap head files consume historical allowance. Validate head syntax
-    // first; an under-cap repair must not depend on parsing the broken old source.
-    const basePaths = new Set(gitPaths(root, ["ls-tree", "-r", "--name-only", "-z", base]));
-    const baseSources = loadRatchetSources(
-      root,
-      [...after.keys()]
-        .map((file) => oldPaths.get(file) ?? file)
-        .filter((file) => basePaths.has(file)),
-      base,
+    // Only over-cap head files need an inherited allowance. A broken base must
+    // not block a valid repair that already satisfies the current cap.
+    const debtPaths = new Set([...after.keys()].map((file) => oldPaths.get(file) ?? file));
+    const before = collectViolations(
+      path.join(scratch, "base"),
+      new Map([...baseSources].filter(([file]) => debtPaths.has(file))),
+      config,
     );
-    const before = collectViolations(path.join(scratch, "base"), baseSources, config);
     const increased = compareLineCapViolations(after, before, renames);
     if (
       reportRatchetFailures(

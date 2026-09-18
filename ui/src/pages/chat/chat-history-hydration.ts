@@ -14,6 +14,8 @@ import { isSessionRunActive } from "../../lib/session-run-state.ts";
 import { requestSharedHistory } from "./chat-history-request.ts";
 import {
   type ObservedChatHistoryResult,
+  type ObservedChatHistoryResponse,
+  type ChatHistoryResult,
   isHistoryCursor,
   resolveChatHistoryPagination,
   historySessionId,
@@ -98,6 +100,7 @@ export async function hydrateChatHistory(
   deltaCursor: string | undefined,
   inputRunIds: string[],
   requestKeyPrefix: string,
+  historyLoader?: () => Promise<ChatHistoryResult>,
 ): Promise<ObservedChatHistoryResult | undefined> {
   const ownership = beginHistoryRequest(state, client, connectionEpoch, sessionKey, requestAgentId);
   const isCurrent = () => state.sessions === sessions && acceptsHistoryResult(state, ownership);
@@ -121,18 +124,26 @@ export async function hydrateChatHistory(
   try {
     const requestModeKey = deltaCursor === undefined ? "page" : `cursor:${deltaCursor}`;
     const requestKey = `${requestKeyPrefix}${requestModeKey}`;
-    let response = await requestSharedHistory(
-      sessions,
-      client,
-      requestKey,
-      method,
-      sessionKey,
-      requestAgentId,
-      state,
-      isCurrent,
-      deltaCursor,
-      inputRunIds,
-    );
+    let response: ObservedChatHistoryResponse;
+    if (historyLoader) {
+      // An adopted Control Model answers the authoritative read; the roster
+      // observation still opens before the transcript request is issued.
+      const observation = { owner: sessions, reconcile: sessions.captureReconcile() };
+      response = { ...(await historyLoader()), observation };
+    } else {
+      response = await requestSharedHistory(
+        sessions,
+        client,
+        requestKey,
+        method,
+        sessionKey,
+        requestAgentId,
+        state,
+        isCurrent,
+        deltaCursor,
+        inputRunIds,
+      );
+    }
     if (!isCurrent()) {
       recordChatHistoryTiming(state, "stale", startedAtMs, {
         requestSessionKey: sessionKey,

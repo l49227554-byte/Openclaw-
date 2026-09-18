@@ -1,0 +1,195 @@
+// @vitest-environment node
+import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "@openclaw/gateway-client/browser";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  controlModelChatInteractions,
+  controlModelQuestionPromptCommand,
+  questionPromptsForRoute,
+} from "./chat-control-model-interactions.ts";
+import { controlModelAgentIdForRoute } from "./chat-control-model.ts";
+
+afterEach(() => vi.restoreAllMocks());
+
+const globalScopeHost = {
+  assistantAgentId: "main",
+  agentsList: { defaultId: "main", mainKey: "main", scope: "global" },
+  hello: null,
+  sessionKey: "agent:work:main",
+};
+
+function conversation(status = "pending") {
+  const answerQuestion = vi.fn(async () => ({ status: "answered" }));
+  const cancelQuestion = vi.fn(async () => ({ status: "cancelled" }));
+  return {
+    answerQuestion,
+    cancelQuestion,
+    getSnapshot: () => ({
+      artifacts: [{ id: "artifact-one" }],
+      questions: [{ id: "question-1", status }],
+      commandAvailability: {
+        send: true,
+        abort: true,
+        resolveApproval: false,
+        answerQuestion: true,
+        cancelQuestion: true,
+        materializeView: false,
+      },
+    }),
+  };
+}
+
+describe("controlModelQuestionPromptCommand", () => {
+  it("routes an exact pending answer through the selected conversation with its deadline", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const selected = conversation();
+    const command = controlModelQuestionPromptCommand(selected, "question-1", "answer");
+
+    await expect(
+      command?.({
+        id: "question-1",
+        expiresAtMs: 3_000,
+        answers: { answers: { format: ["Compact"] } },
+      }),
+    ).resolves.toEqual({ status: "answered" });
+    expect(selected.answerQuestion).toHaveBeenCalledWith(
+      "question-1",
+      { format: ["Compact"] },
+      { timeoutMs: 2_000 },
+    );
+    expect(selected.cancelQuestion).not.toHaveBeenCalled();
+  });
+
+  it("caps a selected cancel at the incumbent Gateway request deadline", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const selected = conversation();
+    const command = controlModelQuestionPromptCommand(selected, "question-1", "cancel");
+
+    await command?.({
+      id: "question-1",
+      expiresAtMs: 1_000 + DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS * 2,
+      cancel: true,
+    });
+
+    expect(selected.cancelQuestion).toHaveBeenCalledWith("question-1", {
+      timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+    });
+    expect(selected.answerQuestion).not.toHaveBeenCalled();
+  });
+
+  it("leaves unmatched and terminal questions on the incumbent raw path", () => {
+    expect(
+      controlModelQuestionPromptCommand(conversation(), "question-other", "answer"),
+    ).toBeUndefined();
+    expect(
+      controlModelQuestionPromptCommand(conversation("answered"), "question-1", "cancel"),
+    ).toBeUndefined();
+  });
+
+  it("does not expose the previous global agent conversation after agent selection changes", () => {
+    const selected = conversation();
+    const state = {
+      controlModelConversation: selected,
+      controlModelConversationSessionKey: "global",
+      controlModelConversationAgentId: "main",
+    } as never;
+
+    expect(
+      controlModelChatInteractions(state, "global", "work").controlModelArtifacts,
+    ).toBeUndefined();
+    expect(controlModelChatInteractions(state, "global", "main").controlModelArtifacts).toEqual([
+      { id: "artifact-one" },
+    ]);
+  });
+
+  it("does not route commands or artifacts through a retired cached conversation", () => {
+    // Bounds eviction or model disposal can retire the instance a pane cached
+    // while its route is unchanged; commands must fall back to the Gateway.
+    const retired = { ...conversation(), isDisposed: true };
+    const state = {
+      controlModelConversation: retired,
+      controlModelConversationSessionKey: "agent:main:one",
+      controlModelConversationAgentId: null,
+    } as never;
+
+    const interactions = controlModelChatInteractions(state, "agent:main:one");
+    expect(interactions.controlModelArtifacts).toBeUndefined();
+    expect(interactions.questionCommand("question-1", "answer")).toBeUndefined();
+    expect(retired.answerQuestion).not.toHaveBeenCalled();
+  });
+
+  it("filters shared global question state by the selected agent", () => {
+    const prompts = [
+      { id: "main", sessionKey: "global", agentId: "main" },
+      { id: "work", sessionKey: "global", agentId: "work" },
+      { id: "legacy", sessionKey: "global" },
+      { id: "unscoped", agentId: "work" },
+      { id: "other", sessionKey: "agent:main:other", agentId: "main" },
+    ] as never;
+
+    expect(
+      questionPromptsForRoute({ sessionKey: "global" }, prompts, "work").map((prompt) => prompt.id),
+    ).toEqual(["work", "legacy", "unscoped"]);
+    expect(
+      questionPromptsForRoute({ sessionKey: "global" }, prompts).map((prompt) => prompt.id),
+    ).toEqual(["legacy"]);
+  });
+
+  it("matches a configured global alias route against its global prompts", () => {
+    const prompts = [
+      { id: "work", sessionKey: "global", agentId: "work" },
+      { id: "main", sessionKey: "global", agentId: "main" },
+      { id: "legacy", sessionKey: "global" },
+      { id: "direct", sessionKey: "agent:work:discord:123", agentId: "work" },
+    ] as never;
+
+    // `agent:work:main` routes to the configured global stream, so its prompts
+    // arrive under the `global` session key.
+    expect(
+      questionPromptsForRoute(globalScopeHost, prompts, "work").map((prompt) => prompt.id),
+    ).toEqual(["work", "legacy"]);
+  });
+
+  it("keeps a direct session's own agent-scoped prompts on its route", () => {
+    const host = {
+      assistantAgentId: "main",
+      agentsList: { defaultId: "main", mainKey: "main", scope: "agent" },
+      hello: null,
+      sessionKey: "agent:work:discord:123",
+    };
+    const prompts = [
+      // The shape `ask_user` publishes: the session key plus its owning agent.
+      { id: "direct", sessionKey: "agent:work:discord:123", agentId: "work" },
+      { id: "legacy", sessionKey: "agent:work:discord:123" },
+      { id: "unscoped", agentId: "work" },
+      { id: "other-agent-unscoped", agentId: "main" },
+      { id: "other-session", sessionKey: "agent:work:discord:456", agentId: "work" },
+      { id: "global", sessionKey: "global", agentId: "work" },
+    ] as never;
+
+    // A direct route records no agent (`controlModelAgentIdForRoute`), so the
+    // restriction has to read the agent named by the route's own session key.
+    expect(
+      questionPromptsForRoute(
+        host,
+        prompts,
+        controlModelAgentIdForRoute(host, host.sessionKey),
+      ).map((prompt) => prompt.id),
+    ).toEqual(["direct", "legacy", "unscoped"]);
+  });
+
+  it("uses agent identity only for global aliases, not channel-scoped session keys", () => {
+    const state = {
+      assistantAgentId: "main",
+      agentsList: {
+        defaultId: "main",
+        scope: "global",
+        agents: [{ id: "main" }, { id: "work" }],
+      },
+      hello: null,
+    };
+
+    expect(controlModelAgentIdForRoute(state, "global")).toBe("main");
+    expect(controlModelAgentIdForRoute(state, "agent:work:main")).toBe("work");
+    expect(controlModelAgentIdForRoute(state, "agent:work:discord:123")).toBeUndefined();
+  });
+});

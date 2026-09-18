@@ -1,4 +1,5 @@
 import type { GatewaySessionMessageSubscription } from "@openclaw/gateway-client/browser";
+import type { ControlModelCatalog } from "@openclaw/gateway-client/model/catalog";
 import type {
   PreservedSessionWorktree,
   SessionOwner,
@@ -159,6 +160,8 @@ export type SessionGateway = {
   };
   subscribe: (listener: (snapshot: SessionGateway["snapshot"]) => void) => () => void;
   subscribeEvents: (listener: (event: GatewayEventFrame) => void) => () => void;
+  readonly controlModel?: ControlModelCatalog;
+  readonly loadControlModelCatalog?: () => Promise<ControlModelCatalog>;
 };
 
 export type SessionRequestClient = Pick<GatewayBrowserClient, "request">;

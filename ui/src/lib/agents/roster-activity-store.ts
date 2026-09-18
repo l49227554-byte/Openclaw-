@@ -1,3 +1,4 @@
+import { createSessionEventRefreshCoordinator } from "@openclaw/gateway-client/model";
 import { createDeferredCore } from "../../../../src/shared/deferred.js";
 import type { GatewayBrowserClient, GatewayEventFrame } from "../../api/gateway.ts";
 import type { SessionsListResult } from "../../api/types.ts";
@@ -13,7 +14,6 @@ import {
   type GatewayConnectionScope,
 } from "../gateway-connection-lifecycle.ts";
 import { createGatewaySetSyncLifecycle } from "../gateway-set-sync-lifecycle.ts";
-import { createSessionEventRefreshCoordinator } from "../sessions/event-refresh-coordinator.ts";
 import {
   appendSessionResults,
   readSessionChangedEvent,

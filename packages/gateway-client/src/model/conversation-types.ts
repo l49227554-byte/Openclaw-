@@ -1,0 +1,252 @@
+import type { UiArtifact, UiArtifactViewOffer } from "@openclaw/gateway-protocol";
+import type {
+  GatewaySessionMessageSubscription,
+  GatewaySessionMessageSubscriptionCoordinator,
+} from "../browser.js";
+import type { ControlModelConversation } from "./conversation.js";
+import type {
+  ControlModelConnectionSnapshot,
+  ControlModelError,
+  ControlModelGatewayBinding,
+  DeepReadonly,
+} from "./model.js";
+
+export type ControlModelConversationStatus =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "partial"
+  | "stale"
+  | "error"
+  | "disposed";
+export type ControlModelCommandCategory =
+  | "disconnected"
+  | "disposed"
+  | "unsupported"
+  | "invalid-input"
+  | "stale"
+  | "forbidden"
+  | "conflict"
+  | "not-found"
+  | "timeout"
+  | "aborted"
+  | "retryable"
+  | "malformed";
+
+export class ControlModelCommandError extends Error {
+  readonly category: ControlModelCommandCategory;
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number;
+  /** Gateway-supplied failure detail; producers hand over already-frozen data. */
+  readonly details?: DeepReadonly<unknown>;
+  readonly command: string;
+
+  constructor(options: {
+    category: ControlModelCommandCategory;
+    code: string;
+    message: string;
+    command: string;
+    retryable?: boolean;
+    retryAfterMs?: number;
+    details?: DeepReadonly<unknown>;
+  }) {
+    super(options.message);
+    this.name = "ControlModelCommandError";
+    this.category = options.category;
+    this.code = options.code;
+    this.retryable = options.retryable === true;
+    this.retryAfterMs = options.retryAfterMs;
+    this.details = options.details;
+    this.command = options.command;
+  }
+}
+
+export type ControlModelConversationMessage = Readonly<{
+  key: string;
+  role: string;
+  sequence: number | null;
+  runId: string | null;
+  pending: boolean;
+  live: boolean;
+  provisional: boolean;
+  artifactIds: readonly string[];
+  raw: DeepReadonly<unknown>;
+}>;
+export type ControlModelConversationRun = Readonly<{
+  runId: string;
+  status: string;
+  message?: DeepReadonly<unknown>;
+  stopReason?: string;
+  errorKind?: string;
+  errorMessage?: string;
+}>;
+export type ControlModelToolStatus = "running" | "succeeded" | "failed" | "cancelled" | "unknown";
+export type ControlModelConversationTool = Readonly<{
+  key: string;
+  runId: string;
+  toolCallId: string;
+  name: string | null;
+  status: ControlModelToolStatus;
+  phase: string;
+  input: unknown;
+  output: unknown;
+  truncated: boolean;
+  artifactIds: readonly string[];
+  progress: Readonly<{ updates: number; bytes: number; truncated: boolean }>;
+}>;
+export type ControlModelConversationApproval = DeepReadonly<Record<string, unknown>> &
+  Readonly<{
+    id: string;
+    status: string;
+    presentation?: DeepReadonly<Record<string, unknown>>;
+  }>;
+export type ControlModelConversationQuestion = DeepReadonly<Record<string, unknown>> &
+  Readonly<{ id: string; status: string }>;
+export type ControlModelConversationBounds = Readonly<{
+  maxSubscribers: number;
+  maxMessages: number;
+  maxRuns: number;
+  maxTools: number;
+  maxApprovals: number;
+  maxQuestions: number;
+  maxProgressUpdates: number;
+  maxProgressBytes: number;
+  maxMetadataBytes: number;
+  maxArtifacts: number;
+  maxArtifactBytes: number;
+  maxArtifactDepth: number;
+  maxArtifactCollectionItems: number;
+  maxArtifactStringBytes: number;
+  maxArtifactViews: number;
+}>;
+export type ControlModelConversationHistoryMethod = "chat.history" | "chat.startup";
+/**
+ * Session message observer handles held for one connection generation. A
+ * replaced generation has no wire observer left, so its handles are dropped
+ * instead of released: unsubscribing would remove the shared observer another
+ * owner on the same client re-acquired.
+ */
+export type ControlModelConversationLeases = Readonly<{
+  plain: GatewaySessionMessageSubscription | null;
+  approvals: GatewaySessionMessageSubscription | null;
+  epoch: number | null;
+}>;
+/** Bounded startup/history envelope fields retained beside the message projection. */
+export type ControlModelConversationMetadata = Readonly<{
+  sessionId?: string;
+  thinkingLevel?: string;
+  verboseLevel?: string;
+  defaults?: DeepReadonly<unknown>;
+  sessionInfo?: DeepReadonly<Record<string, unknown>>;
+  agentsList?: DeepReadonly<unknown>;
+  metadata?: DeepReadonly<unknown>;
+  inFlightRun?: DeepReadonly<Record<string, unknown>>;
+}>;
+export type ControlModelConversationHistory = Readonly<{
+  status: "idle" | "loading" | "ready" | "error";
+  hasMore: boolean;
+  nextOffset: number | null;
+  totalMessages: number | null;
+  completeSnapshot: boolean;
+  window: "newest" | "older";
+  truncatedBefore: boolean;
+  truncatedAfter: boolean;
+  revision: number;
+  error: ControlModelError | null;
+}>;
+export type ControlModelConversationSnapshot = Readonly<{
+  sessionKey: string;
+  status: ControlModelConversationStatus;
+  revision: number;
+  historyRevision: number;
+  connection: ControlModelConnectionSnapshot;
+  history: ControlModelConversationHistory;
+  metadata: ControlModelConversationMetadata | null;
+  messages: readonly ControlModelConversationMessage[];
+  runs: readonly ControlModelConversationRun[];
+  activeRun: ControlModelConversationRun | null;
+  tools: readonly ControlModelConversationTool[];
+  artifacts: readonly DeepReadonly<UiArtifact>[];
+  approvals: readonly ControlModelConversationApproval[];
+  questions: readonly ControlModelConversationQuestion[];
+  partialReasons: readonly string[];
+  stale: boolean;
+  hasTransportGap: boolean;
+  commandAvailability: Readonly<{
+    send: boolean;
+    abort: boolean;
+    resolveApproval: boolean;
+    answerQuestion: boolean;
+    cancelQuestion: boolean;
+    materializeView: boolean;
+  }>;
+  bounds: Readonly<{
+    messagesTruncated: boolean;
+    runsTruncated: boolean;
+    toolsTruncated: boolean;
+    approvalsTruncated: boolean;
+    questionsTruncated: boolean;
+    artifactsTruncated: boolean;
+  }>;
+}>;
+
+export type ControlModelSendInput =
+  | string
+  | Readonly<{
+      message?: string;
+      content?: string;
+      attachments?: readonly unknown[];
+      idempotencyKey?: string;
+      sessionId?: string;
+      thinking?: string;
+      fastMode?: boolean | "auto";
+      fastAutoOnSeconds?: number;
+      queueMode?: string;
+      replyToId?: string;
+      toolBindings?: Readonly<Record<string, unknown>>;
+      timeoutMs?: number;
+      expectedLeafEntryId?: string | null;
+      expectedRunId?: string;
+      suppressCommandInterpretation?: boolean;
+    }>;
+/** Gateway-reported chat.send acknowledgment timings retained for delivery telemetry. */
+export type ControlModelSendServerTiming = Readonly<{
+  receivedToAckMs?: number;
+  loadSessionMs?: number;
+  prepareAttachmentsMs?: number;
+}>;
+export type ControlModelSendResult = Readonly<{
+  runId: string | null;
+  status: string;
+  idempotencyKey: string;
+  /** Terminal acknowledgment detail; "restart" keeps the input durably retryable. */
+  stopReason?: string;
+  /** Recorder-attested transcript position proving the input was durably admitted. */
+  messageSeq?: number;
+  serverTiming?: ControlModelSendServerTiming;
+}>;
+export type ControlModelMaterializeViewInput = Readonly<{
+  artifactId: string;
+  artifactRevision: number;
+  viewId: string;
+}>;
+export type ControlModelMaterializedView = DeepReadonly<UiArtifactViewOffer>;
+export type ControlModelConversationSubscriber = () => void | Promise<void>;
+export type ControlModelConversationHost = Readonly<{
+  gateway: ControlModelGatewayBinding;
+  agentId?: string;
+  /** Control Model adoption hint: owners may defer the activation history load. */
+  autoLoadHistory?: boolean;
+  /** Canonical-key matcher shared with the owning model's subscription coordinator. */
+  sessionMessageKeysEquivalent?(left: string, right: string): boolean;
+  getConnectionSnapshot(): ControlModelConnectionSnapshot;
+  isRunning(): boolean;
+  getMessageSubscriptionCoordinator(): GatewaySessionMessageSubscriptionCoordinator;
+  onConversationReleased(conversation: ControlModelConversation): Promise<void>;
+  now(): number;
+  generateId(prefix: string): string;
+  reportSubscriberError(error: unknown): void;
+  reportBackgroundError(error: unknown): void;
+  bounds: ControlModelConversationBounds;
+}>;

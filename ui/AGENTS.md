@@ -26,7 +26,7 @@ This directory owns Control UI-specific guidance that should not live in the rep
   primary-roster members through the shared reconciler. Lifecycle snapshots do
   not create membership; mutation reasons, archive changes, missing snapshots,
   and Gateway-owned membership filters still require an authoritative list read.
-- `lib/sessions/event-refresh-coordinator.ts` owns automatic refresh pacing:
+- `@openclaw/gateway-client/model` owns automatic refresh pacing:
   debounce the first event after idle by 200 ms, coalesce continuous events within
   one second, and after each automatic refresh wait three times its duration
   (at least one second, at most 15 seconds) before the next automatic read.

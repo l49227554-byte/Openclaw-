@@ -764,6 +764,7 @@ describe("CI job details", () => {
       setSessionKey() {},
       start() {},
       stop() {},
+      dispose() {},
       subscribe(listener) {
         listeners.add(listener);
         return () => {

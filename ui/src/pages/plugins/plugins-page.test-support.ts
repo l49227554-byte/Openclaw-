@@ -234,6 +234,7 @@ export function createGateway(client: GatewayBrowserClient, connected = true): G
     setSessionKey: () => undefined,
     start: () => undefined,
     stop: () => undefined,
+    dispose: () => undefined,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

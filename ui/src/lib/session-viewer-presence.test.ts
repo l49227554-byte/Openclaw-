@@ -52,6 +52,7 @@ function createGatewayHarness() {
     setSessionKey: vi.fn(),
     start: vi.fn(),
     stop: vi.fn(),
+    dispose: vi.fn(),
   } as ApplicationGateway;
   return {
     client,

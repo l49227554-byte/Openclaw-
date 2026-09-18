@@ -1,3 +1,4 @@
+import type { ControlModel, ControlModelConversation } from "@openclaw/gateway-client/model";
 import type { GatewayBrowserClient, GatewayHelloOk } from "../../api/gateway.ts";
 import type { AgentsListResult, GatewaySessionRow, SessionBranch } from "../../api/types.ts";
 import type { ApplicationChatSubmissions } from "../../app/chat-submissions.ts";
@@ -75,6 +76,15 @@ export type ChatState = StreamCausalBoundaryState & {
   canvasPluginSurfaceUrl?: string | null;
   settings?: { chatPersistCommentary?: boolean; gatewayUrl?: string | null };
   sessions?: Partial<SessionCapability>;
+  /** Gateway-owned Control Model; adopters without one keep the raw chat.history read. */
+  controlModel?: ControlModel;
+  /** Lazy adopter-facing boundary; the gateway owns the shared instance. */
+  loadControlModel?: () => Promise<ControlModel>;
+  controlModelConversation?: ControlModelConversation;
+  controlModelConversationSessionKey?: string | null;
+  controlModelConversationAgentId?: string | null;
+  /** Per-pane lease identity at the model owner; duplicate panes share one session. */
+  controlModelConversationOwner?: string;
   chatSessionMessageSubscriptionRequestedKey?: string | null;
   chatSessionMessageSubscription?: SessionMessageSubscription | null;
   chatSessionApprovalQueue?: ExecApprovalRequest[];

@@ -153,6 +153,7 @@ export function createPageState(
     hasPendingInitialTurn: (sessionKey: string) =>
       context.placementStartup.hasPendingTurn(sessionKey),
     chatSubmissions: context.chatSubmissions,
+    loadControlModel: context.gateway?.loadControlModel,
     settings,
     password: "",
     onboarding: false,

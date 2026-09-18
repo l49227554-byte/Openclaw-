@@ -1,8 +1,12 @@
+import { createSessionEventRefreshCoordinator } from "@openclaw/gateway-client/model";
+import type {
+  ControlModelCatalog,
+  ControlModelSessionCatalogSnapshot,
+} from "@openclaw/gateway-client/model/catalog";
 import { createDeferredCore } from "../../../../src/shared/deferred.js";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { formatUiError } from "../format-error.ts";
 import { isGatewayAvailable } from "../gateway-availability.ts";
-import { createSessionEventRefreshCoordinator } from "./event-refresh-coordinator.ts";
 import {
   appendSessionResults,
   preserveCurrentSessionRow,
@@ -39,7 +43,11 @@ import {
   type SessionListRefreshHost,
 } from "./session-managed-list-refresh.ts";
 import { createSessionPrimaryWindows } from "./session-primary-windows.ts";
-import { normalizeManagedSessionListQuery, requestSessionList } from "./session-requests.ts";
+import {
+  DEFAULT_SESSION_LIST_QUERY,
+  normalizeManagedSessionListQuery,
+  requestSessionList,
+} from "./session-requests.ts";
 import { createSessionRosterListReader } from "./session-roster-list-reader.ts";
 import { createSessionMutationRefresh } from "./session-roster-mutation-refresh.ts";
 import { createSessionRosterObservations } from "./session-roster-observations.ts";
@@ -54,7 +62,35 @@ type SessionRosterRefreshHost = SessionListRefreshHost & {
     agentId?: string,
     observed?: SessionsListResult | null,
   ) => void;
+  /** Gateway-owned catalog runtime; absent adopters keep the raw list fallback. */
+  controlModel?: ControlModelCatalog;
+  controlModelLoader?: () => Promise<ControlModelCatalog>;
 };
+
+/** Catalog read outcome: `unavailable` defers to the raw Gateway list, while
+ * `failed` keeps the catalog's own failure visible to the roster's error owner. */
+type ControlModelListRead =
+  | { status: "ready"; result: SessionsListResult }
+  | { status: "unavailable" }
+  | { status: "failed"; error: unknown };
+
+/** Upper bound the Control Model session catalog answers in one page read. */
+const CONTROL_MODEL_MAX_SESSION_PAGE_SIZE = 1_000;
+
+/**
+ * Single owner of "can the Gateway-owned catalog answer this roster query?".
+ * Archived views, Gateway-owned membership filters the catalog query cannot
+ * express, and reads larger than the model's page bound stay on the raw
+ * `sessions.list` path — for the read itself, for event-driven refreshes, and
+ * for catalog-pushed publication, which must all agree on the same boundary.
+ */
+const controlModelAnswersQuery = (options: SessionListOptions): boolean =>
+  (!options.archivedFilter || options.archivedFilter === "active") &&
+  options.ownerId === undefined &&
+  options.ownerFirst === undefined &&
+  options.involvingMe === undefined &&
+  options.hasBoard === undefined &&
+  (options.limit ?? DEFAULT_SESSION_LIST_QUERY.limit) <= CONTROL_MODEL_MAX_SESSION_PAGE_SIZE;
 
 export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
   let gatewayAvailable = isGatewayAvailable(host.snapshot());
@@ -102,6 +138,50 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     queuedRefresh?.completions.forEach(({ complete }) => complete(null));
     queuedRefresh = null;
   };
+  let controlModel = host.controlModel;
+  let controlModelUnavailable = false;
+  let controlModelSyncing = false;
+  let stopControlModel: (() => void) | undefined;
+  let controlModelAdapter: Awaited<ReturnType<typeof loadControlModelAdapter>> | null = null;
+  const loadControlModelAdapter = () => import("./session-roster-control-model.ts");
+  const observeControlModel = (model: ControlModelCatalog) =>
+    model.subscribe(() => {
+      // A request-owned publication settles through `load`; only catalog-pushed
+      // refreshes reach the roster here.
+      if (!controlModelAdapter || controlModelSyncing || inFlight) {
+        return;
+      }
+      // A roster the catalog does not own stays Gateway-owned: a pushed model
+      // snapshot must not truncate a wider roster back to the model's page
+      // bound, nor replace a filtered or archived roster with the unrelated
+      // catalog query another consumer is driving.
+      if (!controlModelAnswersQuery(lastListOptions)) {
+        return;
+      }
+      const catalog = model.getSnapshot().sessionCatalog;
+      if (catalog.status !== "loading") {
+        publishControlModelSnapshot(catalog);
+      }
+    });
+  const ensureControlModel = async (): Promise<ControlModelCatalog | null> => {
+    if (controlModel) {
+      return controlModel;
+    }
+    if (!host.controlModelLoader) {
+      return null;
+    }
+    const loaded = await host.controlModelLoader();
+    if (controlModel) {
+      return controlModel;
+    }
+    controlModel = loaded;
+    controlModelUnavailable = false;
+    stopControlModel = observeControlModel(loaded);
+    return loaded;
+  };
+  if (controlModel) {
+    stopControlModel = observeControlModel(controlModel);
+  }
 
   const managedList = (scope: SessionListScope): ManagedSessionList => {
     const query = normalizeManagedSessionListQuery(scope);
@@ -187,6 +267,116 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     () => primaryList,
   );
 
+  const controlModelOwnsQuery = (options: SessionRefreshOptions) =>
+    Boolean(controlModel || host.controlModelLoader) && controlModelAnswersQuery(options);
+
+  const readControlModelList = async (
+    options: SessionRefreshOptions,
+    requestOptions: SessionListOptions,
+  ): Promise<ControlModelListRead> => {
+    let model: ControlModelCatalog | null;
+    try {
+      model = await ensureControlModel();
+      if (model) {
+        controlModelAdapter ??= await loadControlModelAdapter();
+      }
+    } catch (error) {
+      // Adoption failures are never fatal: the canonical Gateway list still answers.
+      controlModelUnavailable = true;
+      console.error("[sessions] Control Model load failed; using Gateway fallback:", error);
+      return { status: "unavailable" };
+    }
+    if (!model || !controlModelAdapter) {
+      return { status: "unavailable" };
+    }
+    const query = controlModelAdapter.controlModelQuery({
+      includeDerivedTitles: true,
+      ...requestOptions,
+    });
+    const current = model.getSnapshot().sessionCatalog;
+    if (
+      options.force === true ||
+      current.status !== "ready" ||
+      JSON.stringify(current.query) !== JSON.stringify(query)
+    ) {
+      controlModelSyncing = true;
+      try {
+        await model.refreshSessions(undefined, query);
+      } catch (error) {
+        return { status: "failed", error };
+      } finally {
+        controlModelSyncing = false;
+      }
+    }
+    const catalog = model.getSnapshot().sessionCatalog;
+    if (catalog.status === "error") {
+      return {
+        status: "failed",
+        error: new Error(catalog.error?.message ?? "Catalog refresh failed"),
+      };
+    }
+    // A catalog that still cannot answer leaves the canonical list to the Gateway.
+    return catalog.status === "ready"
+      ? { status: "ready", result: controlModelAdapter.sessionsResultFromControlModel(catalog) }
+      : { status: "unavailable" };
+  };
+
+  /** Publishes a catalog-pushed refresh; request-owned loads publish themselves. */
+  const publishControlModelSnapshot = (catalog: ControlModelSessionCatalogSnapshot) => {
+    const scope = host.connection.capture();
+    if (!scope || !controlModelAdapter) {
+      return;
+    }
+    const state = host.readState();
+    if (catalog.status === "error") {
+      host.publish(
+        {
+          ...state,
+          loading: false,
+          error: catalog.error?.message ?? "Catalog refresh failed",
+          deletedSessions: [],
+        },
+        "operation",
+      );
+      return;
+    }
+    if (catalog.status !== "ready") {
+      return;
+    }
+    const reconciled = controlModelAdapter.reconcileControlModelSnapshot(
+      catalog,
+      {},
+      state,
+      host.snapshot(),
+    );
+    const issuedRevision = ++requestRevision;
+    const agentId = reconciled.agentId ?? undefined;
+    const projected = host.reconcileList(reconciled.result, issuedRevision, agentId);
+    const result = host.decorate(projected, primaryList);
+    const notifyObserved = observations.stageObservedRows(
+      reconciled.result.sessions,
+      scope,
+      agentId,
+      issuedRevision,
+      false,
+    );
+    host.onCanonicalList(result, issuedRevision, agentId, reconciled.result);
+    const error = host.observerError();
+    host.publish(
+      {
+        ...state,
+        result,
+        resultCached: false,
+        agentId: reconciled.agentId,
+        loading: false,
+        error,
+        deletedSessions: [],
+      },
+      error ? "session-observer" : undefined,
+    );
+    notifyObserved();
+  };
+
   const load = async (
     options: SessionRefreshOptions,
     bootstrap = false,
@@ -202,7 +392,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       host.connection.isCurrent(scope) && publicationGeneration === foregroundPublicationGeneration;
     const { append = false, force: _force, backgroundHydrate = false, ...requestOptions } = options;
     const durableListOptions: SessionListOptions = { ...requestOptions };
-    // Pagination is request-local; replacements retain filters but restart at page one.
     delete durableListOptions.offset;
     if (!backgroundHydrate) {
       lastListOptions = durableListOptions;
@@ -221,7 +410,16 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     }
     try {
       const issuedRevision = ++requestRevision;
-      let result = await requestSessionList(scope.client, requestOptions);
+      const read = controlModelOwnsQuery(options)
+        ? await readControlModelList(options, requestOptions)
+        : null;
+      if (read?.status === "failed") {
+        throw read.error;
+      }
+      let result =
+        read?.status === "ready"
+          ? read.result
+          : await requestSessionList(scope.client, requestOptions);
       if (!isCurrent()) {
         return null;
       }
@@ -672,7 +870,18 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       const matchesAgent = sessionListAgentMatcher(options.agentId);
       // Server events can invalidate a read; accepted row observations are reconciled into it.
       primaryWindows.invalidate((entry) => matchesAgent(entry.scope.agentId), lastListOptions);
-      if (!options.primarySnapshotApplied && matchesAgent(lastListOptions.agentId)) {
+      // An adopted catalog refreshes itself from the same gateway events and
+      // publishes through its subscription; a second roster read is redundant.
+      // Suppression therefore uses the same ownership predicate as the read: a
+      // query the catalog cannot answer still needs its authoritative refresh.
+      const primaryUsesControlModel =
+        Boolean(controlModel || (host.controlModelLoader && !controlModelUnavailable)) &&
+        controlModelAnswersQuery(lastListOptions);
+      if (
+        !primaryUsesControlModel &&
+        !options.primarySnapshotApplied &&
+        matchesAgent(lastListOptions.agentId)
+      ) {
         eventRefreshCoordinator.schedule();
       }
       const event = options.event;
@@ -687,6 +896,8 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     reset() {
       retireForegroundRefresh();
       primaryList = { scope: primaryList.scope };
+      // A reconnect retries adoption: a chunk-load failure is connection-local.
+      controlModelUnavailable = false;
       eventRefreshCoordinator.reset();
       for (const entry of managedLists.values()) {
         entry.coordinator.reset();
@@ -704,6 +915,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     dispose() {
       retireForegroundRefresh();
       eventRefreshCoordinator.dispose();
+      stopControlModel?.();
       if (observesPageLifecycle) {
         updatePageLifecycleListeners(false);
       }

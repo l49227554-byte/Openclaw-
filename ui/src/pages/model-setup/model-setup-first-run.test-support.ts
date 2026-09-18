@@ -74,6 +74,7 @@ export function createFirstRunContext(refreshError?: string, beforeRefresh?: () 
     setSessionKey: () => undefined,
     start: () => undefined,
     stop: () => undefined,
+    dispose: () => undefined,
     subscribe: (listener: (next: ApplicationGateway["snapshot"]) => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

@@ -1,6 +1,6 @@
+import type { createSessionEventRefreshCoordinator } from "@openclaw/gateway-client/model";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { SessionsListResult } from "../../api/types.ts";
-import type { createSessionEventRefreshCoordinator } from "./event-refresh-coordinator.ts";
 import type {
   SessionGateway,
   SessionListOptions,

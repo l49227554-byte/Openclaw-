@@ -47,6 +47,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/conversation-binding.test.ts",
   "src/plugins/conversation-binding.worker.test.ts",
   "src/plugins/conversation-binding.sqlite.test.ts",
+  "src/plugins/legacy-session-surfaces.state-migration.test.ts",
   "src/state/backup-run-records.test.ts",
   "src/tasks/task-registry.async-restore.test.ts",
   "src/tasks/task-registry-flow-sync.test.ts",

@@ -146,7 +146,12 @@ describe("config presence", () => {
     ).toEqual([{ channelId: "mattermost", source: "env" }]);
   });
 
-  it("detects persisted Matrix credentials without config or env", () => {
+  it.each([
+    { channelIds: undefined, expectedIds: ["matrix"] },
+    { channelIds: ["matrix"], expectedIds: ["matrix"] },
+    { channelIds: ["whatsapp"], expectedIds: [] },
+    { channelIds: [], expectedIds: [] },
+  ])("scopes persisted credentials to channel ids $channelIds", ({ channelIds, expectedIds }) => {
     const stateDir = makeTempStateDir().replace(
       "openclaw-channel-config-presence-",
       "persisted-matrix-",
@@ -158,8 +163,8 @@ describe("config presence", () => {
     expectPotentialConfiguredChannelCase({
       cfg: {},
       env,
-      expectedIds: ["matrix"],
-      options: {},
+      expectedIds,
+      options: { channelIds },
     });
   });
 });

@@ -159,6 +159,12 @@ export function listPotentialConfiguredChannelPresenceSignals(
     // when the state directory exists to keep startup/status checks cheap.
     for (const channelId of listBundledChannelIdsWithPersistedAuthState(options.discovery)) {
       if (
+        scopedChannelIds &&
+        !scopedChannelIds.has(normalizeOptionalLowercaseString(channelId) ?? "")
+      ) {
+        continue;
+      }
+      if (
         hasBundledChannelPersistedAuthState({
           channelId,
           cfg,

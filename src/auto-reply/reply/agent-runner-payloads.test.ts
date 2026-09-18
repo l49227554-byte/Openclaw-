@@ -1240,10 +1240,25 @@ describe("buildReplyPayloads media filter integration", () => {
   });
 
   it.each(["exec", "bash"])(
-    "delivers the real %s failure warning after a silent answer",
+    "honors a completed silent answer after a %s failure",
     async (toolName) => {
       const payloads = buildEmbeddedRunPayloads({
         assistantTexts: ["NO_REPLY"],
+        lastAssistant: undefined,
+        lastToolError: { toolName, error: "Command not found", mutatingAction: true },
+        sessionKey: "agent:main:warning",
+      });
+      const { replyPayloads } = await buildTestReplyPayloads({ payloads });
+
+      expect(replyPayloads).toEqual([]);
+    },
+  );
+
+  it.each(["exec", "bash"])(
+    "delivers the real %s failure warning when the agent produced no answer",
+    async (toolName) => {
+      const payloads = buildEmbeddedRunPayloads({
+        assistantTexts: [],
         lastAssistant: undefined,
         lastToolError: { toolName, error: "Command not found" },
         sessionKey: "agent:main:warning",

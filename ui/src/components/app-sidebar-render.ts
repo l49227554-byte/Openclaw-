@@ -18,6 +18,7 @@ import { t } from "../i18n/index.ts";
 import { normalizeAgentLabel, resolveAgentTextAvatar } from "../lib/agents/display.ts";
 import { resolveAgentAvatarUrl } from "../lib/avatar.ts";
 import { redactLoginFailureError } from "../lib/connection-hints.ts";
+import { renderHoverMarquee } from "../lib/hover-marquee.ts";
 import {
   formatKeyboardShortcutCombo,
   KEYBOARD_SHORTCUT_COMBOS,
@@ -169,7 +170,7 @@ function renderSidebarWorkspaceHeader(host: AppSidebarRenderHost) {
         />
         <span class="sidebar-agent-card__text">
           <span class="sidebar-agent-card__name">
-            <span class="sidebar-agent-card__name-text">${name}</span>
+            ${renderHoverMarquee(name, "sidebar-agent-card__name-text", { loop: true, delay: 300, speed: 35 })}
             <span class="sidebar-agent-card__chevron" aria-hidden="true"
               >${icons.chevronsUpDown}</span
             >
@@ -389,7 +390,7 @@ export function renderAppSidebarOnline(host: AppSidebarRenderHost) {
                 >${collapsed ? icons.chevronRight : icons.chevronDown}</span
               >
             </span>
-            <span class="sidebar-recent-sessions__label-text hover-marquee">${label}</span>
+            ${renderHoverMarquee(label, "sidebar-recent-sessions__label-text")}
             ${
               collapsed
                 ? html`<span class="sidebar-online__facepile">
@@ -496,7 +497,7 @@ export function renderAppSidebarFooterBar(host: AppSidebarRenderHost) {
       >
         <openclaw-viewer-avatar .user=${avatarUser} variant="footer"></openclaw-viewer-avatar>
         <span class="sidebar-identity-card__text">
-          <span class="sidebar-identity-card__name">${selfLabel}</span>
+          ${renderHoverMarquee(selfLabel, "sidebar-identity-card__name", { loop: true, delay: 300, speed: 35 })}
           ${
             gateway
               ? html`<span class="sidebar-identity-card__gateway" aria-hidden="true">

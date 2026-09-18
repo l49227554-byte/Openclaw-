@@ -474,6 +474,7 @@ merge_run() {
     merge_outcome_resume "$pr"
     return
   fi
+  review_artifact_preflight "$pr" true || return 1
   # Capture before gates or cwd changes; retained outcomes above reconcile even
   # when the original operator file no longer exists.
   if [ -n "$body_path" ]; then
@@ -491,7 +492,6 @@ merge_run() {
   fi
 
   local required required_artifacts=(
-    .local/review.md
     .local/review.json
     .local/pr-meta.env
     .local/pr-meta.json
@@ -611,6 +611,8 @@ merge_run() {
       .pr.autoMergeRequest == null and .pr.isInMergeQueue == false and
       ($recovery == null or .pr.id == $recovery.prId)
     ' >/dev/null; then
+      printf 'Merge admission rejected (observation %s, prepared head %s): %s\n' \
+        "$admission_attempt" "$PREP_HEAD_SHA" "$MERGE_OBSERVATION" >&2
       merge_outcome_stop "require OPEN, exact prepared head, main base, non-draft, no conflicts, and no existing auto/queue request; inspect current PR state"
       return 1
     fi

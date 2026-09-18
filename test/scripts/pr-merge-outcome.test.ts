@@ -260,7 +260,11 @@ function fixture(
   const save = (state: typeof initial) => {
     writeFileSync(statePath, JSON.stringify(state));
     if (!state.review) {
-      writeFileSync(join(worktree, ".local/review.md"), "stale review\n");
+      const file = join(worktree, ".local/review.json");
+      writeFileSync(
+        file,
+        JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), docs: "invalid" }),
+      );
     }
     if (!state.ready) {
       const file = join(worktree, ".local/review.json");
@@ -1720,7 +1724,6 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "wrong-approval",
     "malformed-approval",
     "review-json",
-    "review-markdown",
     "meta-head",
     "prep-context",
     "prep-head",
@@ -1732,7 +1735,7 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "head-during-checks",
     "prep.env",
     "gates.env",
-    "review.md",
+    "review.json",
   ])("replacement recovery refuses stale or unapproved evidence: %s", (fault) => {
     const f = fixture();
     f.save({ ...f.state(), mode: "unapplied" });
@@ -1756,13 +1759,12 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     if (fault === "head-during-checks") {
       next.duringChecks = { head: f.head };
     }
-    if (["prep.env", "gates.env", "review.md"].includes(fault)) {
+    if (["prep.env", "gates.env", "review.json"].includes(fault)) {
       next.duringChecks = { artifact: fault };
     }
     f.save(next);
     const staleArtifact: Record<string, string> = {
       "review-json": "review.json",
-      "review-markdown": "review.md",
       "meta-head": "pr-meta.env",
       "prep-context": "prep-context.env",
       "prep-head": "prep.env",
@@ -2057,6 +2059,17 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     }
     if (finalRead) {
       expect(run.output).toContain("PR or main changed during observation");
+      for (const [label, expected] of [
+        ["observation", { main: f.base, pr: next.pr }],
+        ["reread", { main: step.main ?? f.base, pr: { ...next.pr, ...step.pr } }],
+      ] as const) {
+        const prefix = `Merge stability ${label}: `;
+        const snapshots = run.stderr
+          .split("\n")
+          .filter((line) => line.startsWith(prefix))
+          .map((line) => JSON.parse(line.slice(prefix.length)));
+        expect(snapshots, run.output).toEqual([expected]);
+      }
     }
     if (projectionDrift) {
       expect(run.output).toContain("PR or main changed while waiting for mergeability");
@@ -2065,6 +2078,14 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       expect(run.output).toContain(
         "auto-merge admission requires MERGEABLE with CLEAN or BEHIND status",
       );
+    }
+    if (fault === "conflicting") {
+      const prefix = `Merge admission rejected (observation 2, prepared head ${f.head}): `;
+      const rejected = run.stderr
+        .split("\n")
+        .filter((line) => line.startsWith(prefix))
+        .map((line) => JSON.parse(line.slice(prefix.length)));
+      expect(rejected, run.output).toEqual([{ main: f.base, pr: { ...next.pr, ...step.pr } }]);
     }
   });
   it.each(["OPEN", "MERGED"])(

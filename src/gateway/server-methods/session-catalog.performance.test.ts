@@ -6,6 +6,7 @@ import { Session as InspectorSession } from "node:inspector/promises";
 import { expect, it } from "vitest";
 import type { SessionsCatalogListParams } from "../../../packages/gateway-protocol/src/index.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { retainSessionListForegroundWork } from "../session-projection-work.js";
 import { createComposedCatalogFixture } from "./session-catalog.performance.test-support.js";
 
 function measureHostCpuReference(): number {
@@ -61,6 +62,8 @@ it("measures 100 composed catalog lists against real session and plugin stores",
     { layout: "state-only", prefix: "composed-catalog-" },
     async (state) => {
       const counters = createCatalogIoCounters();
+      // Match request ownership so optional transcript backfill stays outside the measurement.
+      const releaseForegroundWork = retainSessionListForegroundWork();
       let fixture: Awaited<ReturnType<typeof createComposedCatalogFixture>> | undefined;
       try {
         counters.begin();
@@ -213,12 +216,13 @@ it("measures 100 composed catalog lists against real session and plugin stores",
         expect(io.pluginStateWorkerReadOperations).toBe(0);
         expect(io.sessionEntryReads).toBe(0);
         expect(io.sessionPayloadReads).toBe(0);
-        // The ceiling protects against added work per list; a PR that lowers the work lowers the ceiling in the same change.
+        // Revalidate all three adopted bindings without adding work to the resident list path.
         for (const work of workPerList) {
-          expect(work.sqliteReadCalls).toBeLessThanOrEqual(18);
-          expect(work.bindingAuthorityReads).toBeGreaterThan(0);
-          expect(work.bindingAuthorityReads).toBeLessThanOrEqual(3);
-          expect(work.pluginStateWorkerOperations).toBe(0);
+          expect(work).toEqual({
+            sqliteReadCalls: 18,
+            bindingAuthorityReads: 3,
+            pluginStateWorkerOperations: 0,
+          });
         }
         // Two-CPU reference 1.568–1.615 ms gives 31.36–32.30 ms: >3x the prior 9.43 ms
         // main median, below 10x the fastest 3.479 ms list. CPU-scaling the 23.95 ms
@@ -229,6 +233,7 @@ it("measures 100 composed catalog lists against real session and plugin stores",
         try {
           await fixture?.close();
         } finally {
+          releaseForegroundWork();
           counters.close();
         }
       }

@@ -67,7 +67,9 @@ An explicit `--agent` is sufficient for multi-agent fleets with no implicit owne
 
 ## Why recreate is needed
 
-Updating sandbox config does not affect running containers: existing runtimes keep their old settings, and idle runtimes are only pruned after `prune.idleHours` (default 24h). Regularly used agents can keep stale runtimes alive indefinitely. `openclaw sandbox recreate` removes the old runtime so the next use rebuilds it from current config.
+Automatic pruning selects runtimes that exceed `prune.idleHours` (default 24h) or `prune.maxAgeDays` (default 7 days). It preserves runtimes while admitted commands, filesystem operations, or browser requests are active and checks again on a later pruning pass.
+
+Automatic configuration recycling also preserves active runtimes. Restricted dispatch still requires the current container configuration and refuses a retained runtime whose configuration differs. `openclaw sandbox recreate` explicitly removes the old runtime so the next use rebuilds it from current config; finish active work before using it.
 
 <Tip>
 Prefer `openclaw sandbox recreate` over manual backend-specific cleanup. It uses the Gateway's runtime registry and avoids mismatches when scope or session keys change.

@@ -36,6 +36,10 @@ import {
 } from "./podman-runtime.js";
 import { readRegistryEntry, removeRegistryEntry, updateRegistry } from "./registry.js";
 import {
+  resolveSandboxRuntimeActivityKey,
+  tryWithSandboxRuntimeMutations,
+} from "./runtime-activity.js";
+import {
   resolveDockerEnvPolicyEpoch,
   sanitizeExplicitSandboxEnvVars,
 } from "./sanitize-env-vars.js";
@@ -645,10 +649,51 @@ async function ensureSandboxContainerLifecycle(
             : {}),
         });
       } else {
-        await execContainer(engine, ["rm", "-f", containerName], { allowFailure: true });
-        hasContainer = false;
-        running = false;
+        const removal = await tryWithSandboxRuntimeMutations(
+          [resolveSandboxRuntimeActivityKey(engine.id, containerName, params.podmanTarget?.key)],
+          async (lifecycle) => {
+            const result = await execContainer(engine, ["rm", "-f", containerName], {
+              allowFailure: true,
+            });
+            if (result.code !== 0) {
+              throw new Error(
+                `Failed to remove stale sandbox ${containerName}: ${result.stderr.trim()}`,
+              );
+            }
+            await removeRegistryEntry(containerName);
+            lifecycle.retire();
+          },
+        );
+        if (removal.acquired) {
+          hasContainer = false;
+          running = false;
+        } else {
+          const mountsMatch =
+            params.requireCurrentConfig ||
+            (await sandboxMountPlanMatchesContainer({ engine, containerName, plan: mountPlan }));
+          handleHotSandboxConfigMismatch({
+            containerName,
+            scope: params.cfg.scope,
+            sessionKey: params.scopeKey,
+            mountsChanged: !mountsMatch,
+            requireCurrentConfig: params.requireCurrentConfig,
+          });
+        }
       }
+    }
+  }
+  if (!hasContainer && existingRegistryEntry) {
+    const retirement = await tryWithSandboxRuntimeMutations(
+      [resolveSandboxRuntimeActivityKey(engine.id, containerName, params.podmanTarget?.key)],
+      async (lifecycle) => {
+        await removeRegistryEntry(containerName);
+        lifecycle.retire();
+      },
+    );
+    if (!retirement.acquired) {
+      throw new Error(
+        `Sandbox ${containerName} is missing while prior activity is still settling; retry after it finishes.`,
+      );
     }
   }
   if (!hasContainer) {

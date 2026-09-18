@@ -51,34 +51,61 @@ describe("ensureSandboxBrowser managed mounts", () => {
     },
   );
 
-  it("refuses a hot browser with stale sources without removing it or its bridge", async () => {
-    const containerName = "openclaw-sbx-browser-session-test-0661d10a";
-    const bridge = { containerName, bridge: { server: { listening: true } } };
-    harness.BROWSER_BRIDGES.set("session:test", bridge);
-    dockerMocks.dockerContainerState.mockResolvedValue({ exists: true, running: true });
-    dockerMocks.readDockerContainerEnvVar.mockResolvedValue("existing-cdp-token");
-    dockerMocks.readDockerContainerLabel.mockResolvedValue("pre-fix-hash");
-    vi.mocked(execContainer).mockResolvedValue({
-      stdout: JSON.stringify({
-        Mounts: [{ Type: "bind", Source: "/old/source", Destination: "/workspace", RW: true }],
-        Tmpfs: null,
-      }),
-      stderr: "",
-      code: 0,
-    });
-    await expect(
-      ensureTestSandboxBrowser({
-        scopeKey: "session:test",
-        workspaceDir: harness.testWorkspaceDir,
-        agentWorkspaceDir: harness.testWorkspaceDir,
-        cfg: buildConfig(false),
-      }),
-    ).rejects.toThrow("openclaw sandbox recreate --browser --session session:test");
-    expect(findDockerArgsCall(dockerMocks.execDocker.mock.calls, "rm")).toBeUndefined();
-    expect(findDockerArgsCall(dockerMocks.execDocker.mock.calls, "create")).toBeUndefined();
-    expect(bridgeMocks.stopBrowserBridgeServer).not.toHaveBeenCalled();
-    expect(harness.BROWSER_BRIDGES.get("session:test")).toBe(bridge);
-  });
+  it.each([false, true])(
+    "refuses changed browser sources without removal (aged active runtime: %s)",
+    async (active) => {
+      const containerName = "openclaw-sbx-browser-session-test-0661d10a";
+      const bridge = { containerName, bridge: { server: { listening: true } } };
+      harness.BROWSER_BRIDGES.set("session:test", bridge);
+      dockerMocks.dockerContainerState.mockResolvedValue({ exists: true, running: true });
+      dockerMocks.readDockerContainerEnvVar.mockResolvedValue("existing-cdp-token");
+      dockerMocks.readDockerContainerLabel.mockResolvedValue("pre-fix-hash");
+      vi.mocked(execContainer).mockResolvedValue({
+        stdout: JSON.stringify({
+          Mounts: [{ Type: "bind", Source: "/old/source", Destination: "/workspace", RW: true }],
+          Tmpfs: null,
+        }),
+        stderr: "",
+        code: 0,
+      });
+      harness.registryMocks.readBrowserRegistry.mockResolvedValue({
+        entries: [
+          {
+            containerName,
+            sessionKey: "session:test",
+            createdAtMs: 1,
+            lastUsedAtMs: active ? 0 : Date.now(),
+            image: buildConfig(false).browser.image,
+            cdpPort: 49100,
+          },
+        ],
+      });
+      const activity = await import("./runtime-activity.js");
+      const key = activity.resolveSandboxRuntimeActivityKey("docker", containerName);
+      const lease = active
+        ? await activity.tryAcquireSandboxRuntimeActivity(
+            key,
+            activity.activateSandboxRuntimeActivity(key),
+          )
+        : null;
+      try {
+        await expect(
+          ensureTestSandboxBrowser({
+            scopeKey: "session:test",
+            workspaceDir: harness.testWorkspaceDir,
+            agentWorkspaceDir: harness.testWorkspaceDir,
+            cfg: buildConfig(false),
+          }),
+        ).rejects.toThrow("openclaw sandbox recreate --browser --session session:test");
+        expect(findDockerArgsCall(dockerMocks.execDocker.mock.calls, "rm")).toBeUndefined();
+        expect(findDockerArgsCall(dockerMocks.execDocker.mock.calls, "create")).toBeUndefined();
+        expect(bridgeMocks.stopBrowserBridgeServer).not.toHaveBeenCalled();
+        expect(harness.BROWSER_BRIDGES.get("session:test")).toBe(bridge);
+      } finally {
+        await lease?.release();
+      }
+    },
+  );
 
   it("preserves a hot browser and bridge when a descendant tmpfs was removed", async () => {
     const containerName = "openclaw-sbx-browser-session-test-0661d10a";

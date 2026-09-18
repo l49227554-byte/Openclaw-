@@ -26,6 +26,7 @@ import {
 } from "./docker.js";
 import { resolveSandboxContainerOnlyMounts } from "./mount-plan.js";
 import type { SandboxRegistryEntry } from "./registry.js";
+import { resolveSandboxRuntimeActivityKey } from "./runtime-activity.js";
 
 type ContainerExecFinalizeToken = () => Promise<void>;
 
@@ -145,6 +146,11 @@ function createContainerSandboxBackendHandle(params: {
     id: params.engine.id,
     runtimeId: params.containerName,
     runtimeLabel: params.containerName,
+    runtimeActivityKey: resolveSandboxRuntimeActivityKey(
+      params.engine.id,
+      params.containerName,
+      params.podmanTarget?.key,
+    ),
     workdir: params.workdir,
     env: params.env,
     configLabel: params.image,

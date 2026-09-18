@@ -54,47 +54,62 @@ describe("ensureSandboxContainer managed mounts", () => {
     },
   );
 
-  it("preserves a hot container after a source change, then recreates it when stopped", async () => {
-    const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-dood-"));
-    const cfg = createSandboxConfig([], []);
-    const params = { scopeKey: "shared", workspaceDir, agentWorkspaceDir: workspaceDir, cfg };
-    vi.mocked(resolveDockerSourceNamespace).mockResolvedValue([
-      { type: "bind", source: "/host/first", destination: workspaceDir, writable: true },
-    ]);
-    spawnState.containerExists = false;
-    registryMocks.readRegistryEntry.mockResolvedValue(null);
-    await harness.ensureSandboxContainer(params);
-    const firstHash = spawnState.labelHash;
-    spawnState.mounts = JSON.stringify([
-      { Type: "bind", Source: "/host/first", Destination: "/workspace", RW: true },
-    ]);
-    registryMocks.readRegistryEntry.mockResolvedValue({
-      containerName: "oc-test-shared",
-      lastUsedAtMs: Date.now(),
-      configHash: firstHash,
-    });
-    vi.mocked(resolveDockerSourceNamespace).mockResolvedValue([
-      { type: "bind", source: "/host/second", destination: workspaceDir, writable: true },
-    ]);
-    spawnState.calls.length = 0;
-    await expect(harness.ensureSandboxContainer(params)).rejects.toThrow(
-      "Recreate first: openclaw sandbox recreate --all",
-    );
-    expect(spawnState.calls.some((call) => ["rm", "create", "start"].includes(call.args[0]!))).toBe(
-      false,
-    );
-    expect(spawnState.labelHash).toBe(firstHash);
-    spawnState.inspectRunning = false;
-    await harness.ensureSandboxContainer(params);
-    expect(spawnState.calls.some((call) => call.args[0] === "rm")).toBe(true);
-    expect(spawnState.labelHash).not.toBe(firstHash);
-    expect(
-      collectDockerFlagValues(
-        spawnState.calls.find((call) => call.args[0] === "create")?.args ?? [],
-        "-v",
-      ),
-    ).toContain("/host/second:/workspace:z");
-  });
+  it.each([false, true])(
+    "preserves changed sources until recreation (aged active runtime: %s)",
+    async (active) => {
+      const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-dood-"));
+      const cfg = createSandboxConfig([], []);
+      const params = { scopeKey: "shared", workspaceDir, agentWorkspaceDir: workspaceDir, cfg };
+      vi.mocked(resolveDockerSourceNamespace).mockResolvedValue([
+        { type: "bind", source: "/host/first", destination: workspaceDir, writable: true },
+      ]);
+      spawnState.containerExists = false;
+      registryMocks.readRegistryEntry.mockResolvedValue(null);
+      await harness.ensureSandboxContainer(params);
+      const firstHash = spawnState.labelHash;
+      spawnState.mounts = JSON.stringify([
+        { Type: "bind", Source: "/host/first", Destination: "/workspace", RW: true },
+      ]);
+      registryMocks.readRegistryEntry.mockResolvedValue({
+        containerName: "oc-test-shared",
+        lastUsedAtMs: active ? 0 : Date.now(),
+        configHash: firstHash,
+      });
+      vi.mocked(resolveDockerSourceNamespace).mockResolvedValue([
+        { type: "bind", source: "/host/second", destination: workspaceDir, writable: true },
+      ]);
+      spawnState.calls.length = 0;
+      const activity = await import("./runtime-activity.js");
+      const key = activity.resolveSandboxRuntimeActivityKey("docker", "oc-test-shared");
+      const lease = active
+        ? await activity.tryAcquireSandboxRuntimeActivity(
+            key,
+            activity.activateSandboxRuntimeActivity(key),
+          )
+        : null;
+      try {
+        await expect(harness.ensureSandboxContainer(params)).rejects.toThrow(
+          "Recreate first: openclaw sandbox recreate --all",
+        );
+        expect(
+          spawnState.calls.some((call) => ["rm", "create", "start"].includes(call.args[0]!)),
+        ).toBe(false);
+        expect(spawnState.labelHash).toBe(firstHash);
+      } finally {
+        await lease?.release();
+      }
+      spawnState.inspectRunning = false;
+      await harness.ensureSandboxContainer(params);
+      expect(spawnState.calls.some((call) => call.args[0] === "rm")).toBe(true);
+      expect(spawnState.labelHash).not.toBe(firstHash);
+      expect(
+        collectDockerFlagValues(
+          spawnState.calls.find((call) => call.args[0] === "create")?.args ?? [],
+          "-v",
+        ),
+      ).toContain("/host/second:/workspace:z");
+    },
+  );
 
   it("refuses a pre-fix hot container with a removed skill overlay", async () => {
     const workspaceDir = tempDirs.make("openclaw-dood-");

@@ -66,6 +66,8 @@ export type SandboxBackendHandle = {
   id: SandboxBackendId;
   runtimeId: string;
   runtimeLabel: string;
+  /** Exact provider target + runtime identity used by lifecycle coordination. */
+  runtimeActivityKey?: string;
   workdir: string;
   env?: Record<string, string>;
   configLabel?: string;
@@ -91,6 +93,7 @@ export type SandboxBackendHandle = {
     workdir?: string;
     env: Record<string, string>;
     usePty: boolean;
+    signal?: AbortSignal;
   }): Promise<SandboxBackendExecSpec>;
   finalizeExec?: (params: {
     status: "completed" | "failed";

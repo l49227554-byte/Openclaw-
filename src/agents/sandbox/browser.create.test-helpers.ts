@@ -29,6 +29,7 @@ const dockerMocks = vi.hoisted(() => ({
 
 const registryMocks = vi.hoisted(() => ({
   readBrowserRegistry: vi.fn(),
+  removeBrowserRegistryEntry: vi.fn(),
   updateBrowserRegistry: vi.fn(),
 }));
 
@@ -78,6 +79,12 @@ vi.mock("./container-engine.js", createEngineMock);
 function createRegistryMock() {
   return {
     readBrowserRegistry: registryMocks.readBrowserRegistry,
+    readBrowserRegistryEntry: async (containerName: string) =>
+      (
+        (await registryMocks.readBrowserRegistry()).entries as Array<{ containerName: string }>
+      ).find((entry) => entry.containerName === containerName) ?? null,
+    removeBrowserRegistryEntry: registryMocks.removeBrowserRegistryEntry,
+    resolveSandboxBrowserRegistryLifecycleId: (entry: unknown) => JSON.stringify(entry),
     updateBrowserRegistry: registryMocks.updateBrowserRegistry,
   };
 }
@@ -326,6 +333,7 @@ export function createSandboxBrowserTestHarness() {
     dockerMocks.readDockerContainerLabel.mockClear();
     dockerMocks.readDockerPort.mockClear();
     registryMocks.readBrowserRegistry.mockClear();
+    registryMocks.removeBrowserRegistryEntry.mockClear();
     registryMocks.updateBrowserRegistry.mockClear();
     bridgeMocks.startBrowserBridgeServer.mockClear();
     bridgeMocks.stopBrowserBridgeServer.mockClear();
@@ -354,7 +362,7 @@ export function createSandboxBrowserTestHarness() {
       return null;
     });
     registryMocks.readBrowserRegistry.mockResolvedValue({ entries: [] });
-    registryMocks.updateBrowserRegistry.mockResolvedValue(undefined);
+    registryMocks.updateBrowserRegistry.mockImplementation(async (entry) => entry);
     bridgeMocks.startBrowserBridgeServer.mockResolvedValue({
       server: { listening: true } as never,
       port: 19000,

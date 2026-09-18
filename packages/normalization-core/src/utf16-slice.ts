@@ -12,7 +12,19 @@ function isLowSurrogate(codeUnit: number): boolean {
   return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
 }
 
-/** Moves a chunk boundary away from the middle of a UTF-16 surrogate pair. */
+/**
+ * Moves a chunk boundary away from the middle of a UTF-16 surrogate pair.
+ *
+ * Supported limit and progress contract, for an interior cut (`start < end < text.length`):
+ * the result is always strictly greater than `start`, so a caller looping on it advances.
+ * The result honors `end` in every case but one. When the pair begins exactly at `start`,
+ * retreating would return `start` and stall the caller, so the boundary moves forward to
+ * `end + 1` instead and the chunk overshoots the caller's budget by a single code unit:
+ * `avoidTrailingHighSurrogateBreak("\u{1F600}X", 0, 1)` returns 2. That one-unit overshoot
+ * is cheaper than emitting a lone surrogate half, which is invalid UTF-16 and renders as a
+ * replacement character. Degenerate inputs (`end <= start`, or `end` at or past the end of
+ * the text) are returned unchanged.
+ */
 export function avoidTrailingHighSurrogateBreak(text: string, start: number, end: number): number {
   if (
     end <= start ||
@@ -32,10 +44,19 @@ const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "graphem
 /**
  * Moves a chunk boundary back to an extended-grapheme-cluster boundary.
  *
- * Hard transport limits win: the returned index never exceeds `end`, so a cluster wider
- * than the whole budget is split rather than allowed to overflow the cap. That split is
- * still surrogate-safe, because a lone surrogate half is invalid UTF-16 that renders as a
- * replacement character, which is strictly worse than a partial cluster.
+ * Hard transport limits win: a cluster wider than the whole budget is split rather than
+ * allowed to overflow the cap. That split is still surrogate-safe, because a lone surrogate
+ * half is invalid UTF-16 that renders as a replacement character, which is strictly worse
+ * than a partial cluster.
+ *
+ * Supported limit and progress contract, for an interior cut (`start < end < text.length`):
+ * the result is always strictly greater than `start`, so a caller looping on it advances.
+ * The result honors `end` except for the single one-code-unit overshoot inherited from
+ * `avoidTrailingHighSurrogateBreak`, which applies when the cluster starts at or before
+ * `start` and a surrogate pair begins exactly at `start`:
+ * `avoidTrailingGraphemeBreak("\u{1F600}X", 0, 1)` returns 2, not 1. Callers that must not
+ * exceed a byte-exact cap have to re-check the returned width. Degenerate inputs
+ * (`end <= start`, or `end` at or past the end of the text) are returned unchanged.
  */
 export function avoidTrailingGraphemeBreak(text: string, start: number, end: number): number {
   if (end <= start || end >= text.length) {

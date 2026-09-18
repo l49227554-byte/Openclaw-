@@ -251,12 +251,7 @@ export async function createChildAdapter(
                 return spawn(command, args, spawnOptions);
               }
               windowsJob = owned.job;
-              windowsCleanup = owned.job.certify().then((outcome) => {
-                if (outcome.status === "uncertain" && outcome.reason === "job-observation-failed") {
-                  throw outcome.cause;
-                }
-                return outcome;
-              });
+              windowsCleanup = owned.job.certify();
               void windowsCleanup.catch(() => {});
               params.onSpawnCleanup?.(windowsCleanup);
               return owned.child;

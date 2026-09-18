@@ -163,7 +163,12 @@ it("retains a failed Job observation as cleanup uncertainty", async () => {
   });
   stub.emitExit(0);
   stub.emitClose(0);
-  await expect(closeOwnedStdioProcess(child)).rejects.toBe(cause);
+  await expect(child.waitForExtinction!()).resolves.toEqual({
+    status: "uncertain",
+    reason: "job-observation-failed",
+    cause,
+  });
+  await expect(closeOwnedStdioProcess(child)).resolves.toBeUndefined();
   expect(native.close).toHaveBeenCalledOnce();
 });
 
@@ -332,7 +337,12 @@ describe.each([
 ] as const)(
   "$processTree cleanup (external=$external)",
   ({ processTree, external, requiresTree }) => {
-    it.each(["job-unavailable", "job-admission-failed", "confirmed"] as const)(
+    it.each([
+      "job-unavailable",
+      "job-admission-failed",
+      "job-observation-failed",
+      "confirmed",
+    ] as const)(
       "interprets %s certification without failing command execution",
       async (certification) => {
         if (certification === "job-unavailable") {
@@ -357,7 +367,13 @@ describe.each([
           stub.child.stdout?.emit("data", Buffer.from("command succeeded"));
           stub.child.stdout?.emit("end");
           stub.child.stderr?.emit("end");
-          native.inspect.mockReturnValue([]);
+          if (certification === "job-observation-failed") {
+            native.inspect.mockImplementation(() => {
+              throw new Error("Job accounting unavailable");
+            });
+          } else {
+            native.inspect.mockReturnValue([]);
+          }
           stub.emitExit(0);
           stub.emitClose(0);
           await expect(run.wait()).resolves.toMatchObject({

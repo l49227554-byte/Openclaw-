@@ -23,7 +23,6 @@ import {
   onSessionLifecycleEvent,
 } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges, type SessionRowChange } from "../sessions/session-row-changes.js";
-import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { listOpenIncognitoAgentDatabases } from "../state/openclaw-agent-db.js";
@@ -43,6 +42,7 @@ import {
   readSessionRowEntry,
 } from "./session-row-projection-materialize.js";
 import * as records from "./session-row-projection-record.js";
+import { createSessionRowProjectionTranscriptUpdates } from "./session-row-projection-transcript.js";
 import { matchesSessionRowScope, prepareSessionRowScopes } from "./session-row-scope.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import { resolveDeletedAgentIdFromSessionKey } from "./session-utils-store.js";
@@ -98,23 +98,11 @@ export async function createSessionRowProjection(params: {
       }
     },
   });
-  function dependents(row: records.Row) {
-    return new Set(records.references(row).flatMap((ref) => Array.from(byParent.get(ref) ?? [])));
-  }
-  function related(row: records.Row) {
-    for (const id of dependents(row)) {
-      dirty.add(id);
-    }
-    for (const parent of row.parents) {
-      for (const id of byKey.get(parent) ?? []) {
-        dirty.add(id);
-      }
-    }
-  }
   function remove(id: string) {
+    transcriptUpdates.remove(id);
     const row = rows.get(id);
     if (row) {
-      related(row);
+      records.markRelated(row, indexes, dirty);
       records.index(row, indexes, true);
       rows.delete(id);
     }
@@ -124,6 +112,9 @@ export async function createSessionRowProjection(params: {
   function put(row: records.Row) {
     const previous = rows.get(records.identity(row));
     if (previous) {
+      if (previous.generation !== row.generation) {
+        transcriptUpdates.remove(records.identity(row));
+      }
       records.index(previous, indexes, true);
     }
     rows.set(records.identity(row), row);
@@ -150,7 +141,7 @@ export async function createSessionRowProjection(params: {
     );
     const changed = !isDeepStrictEqual([storedEntry, parents], [row.storedEntry, row.parents]);
     if (changed) {
-      related(row);
+      records.markRelated(row, indexes, dirty);
     }
     const generation =
       !row.entry ||
@@ -173,7 +164,7 @@ export async function createSessionRowProjection(params: {
     };
     put(next);
     if (changed) {
-      related(next);
+      records.markRelated(next, indexes, dirty);
     }
     return next;
   }
@@ -333,7 +324,7 @@ export async function createSessionRowProjection(params: {
       const found = new Set([...exact, ...matching(query, "id")]);
       for (const previous of found) {
         dirty.add(records.identity(previous));
-        related(previous);
+        records.markRelated(previous, indexes, dirty);
         const row = inOwnerContext(() => {
           const entry = readSessionRowEntry(previous);
           return records.changesRowStructure(previous, entry)
@@ -384,7 +375,7 @@ export async function createSessionRowProjection(params: {
     if (!row.entry) {
       return false;
     }
-    const links = [...dependents(row)].flatMap((child) => {
+    const links = [...records.dependents(row, byParent)].flatMap((child) => {
       let value = rows.get(child);
       if (value && dirty.has(child)) {
         value = acquireEntry(value, readSessionRowEntry(value));
@@ -494,23 +485,29 @@ export async function createSessionRowProjection(params: {
         },
       ));
   }
+  const transcriptUpdates = createSessionRowProjectionTranscriptUpdates({
+    matching,
+    mark,
+    read: (id) => rows.get(id),
+    refresh(id) {
+      epoch++;
+      dirty.add(id);
+      backfill.enqueue(id);
+      void ensureMaterialized().catch(() => {});
+    },
+  });
   const stop = [
     retainUserProfileCatalog(),
     sessionChanges.subscribe(mark),
     onSessionLifecycleEvent(mark),
     registerPreparedModelRuntimePublicationListener(() => mark({ all: true, scope: "catalog" })),
-    onInternalSessionTranscriptUpdate((update) => {
-      if (update.target) {
-        mark(update.target);
-      }
-    }),
     onSessionIdentityMutation((mutation) => {
       for (const key of mutation.previous.sessionKeys) {
         for (const row of matching({ key, agentId: mutation.agentId })) {
           if (mutation.previous.sessionId && row.entry?.sessionId !== mutation.previous.sessionId) {
             continue;
           }
-          related(row);
+          records.markRelated(row, indexes, dirty);
           if ("current" in mutation && mutation.current.sessionKeys.includes(row.key)) {
             put({
               ...row,
@@ -567,6 +564,7 @@ export async function createSessionRowProjection(params: {
     });
   function dispose() {
     disposed = true;
+    transcriptUpdates.dispose();
     backfill.dispose();
     for (const unsubscribe of stop) {
       unsubscribe();

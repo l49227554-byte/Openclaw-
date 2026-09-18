@@ -920,6 +920,12 @@
       ],
       "openclaw/plugin-sdk/sqlite-worker-runtime": [
         "../../packages/plugin-sdk/dist/src/plugin-sdk/sqlite-worker-runtime.d.ts"
+      ],
+      "openclaw/plugin-sdk/agent-harness-session-runtime": [
+        "../../packages/plugin-sdk/dist/src/plugin-sdk/agent-harness-session-runtime.d.ts"
+      ],
+      "openclaw/plugin-sdk/agent-harness-attempt-runtime": [
+        "../../packages/plugin-sdk/dist/src/plugin-sdk/agent-harness-attempt-runtime.d.ts"
       ]
     }
   }

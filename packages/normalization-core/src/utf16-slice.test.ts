@@ -1,6 +1,7 @@
 // Tests for surrogate-safe UTF-16 string slicing helpers.
 import { describe, expect, it } from "vitest";
 import {
+  avoidTrailingGraphemeBreak,
   avoidTrailingHighSurrogateBreak,
   sliceUtf16Safe,
   truncateUtf16Safe,
@@ -99,5 +100,49 @@ describe("truncateWithMarker", () => {
     },
   ] as const)("$name", ({ value, max, options, expected }) => {
     expect(truncateWithMarker(value, max, options)).toBe(expected);
+  });
+});
+
+describe("avoidTrailingGraphemeBreak", () => {
+  // Escape-literal on purpose: a typed "café" is a legal spelling of both the precomposed
+  // (4 unit) and decomposed (5 unit) forms, and they render identically.
+  const witnesses: Record<string, string> = {
+    family: "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}",
+    aFamilyB: "a\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}b",
+    flag: "\u{1F1FA}\u{1F1F8}",
+    skin: "\u{1F44D}\u{1F3FB}",
+    combining: "cafe\u0301",
+    indic: "\u0915\u094D\u0937\u093F",
+    robot: "a\u{1F916}b",
+  };
+
+  // contract:begin
+  const CONTRACT = [
+    { witness: "aFamilyB", start: 0, end: 2, expected: 1 },
+    { witness: "robot", start: 0, end: 2, expected: 1 },
+    { witness: "aFamilyB", start: 1, end: 5, expected: 4 },
+    { witness: "aFamilyB", start: 0, end: 6, expected: 1 },
+    { witness: "family", start: 0, end: 5, expected: 5 },
+    { witness: "flag", start: 0, end: 2, expected: 2 },
+    { witness: "skin", start: 0, end: 2, expected: 2 },
+    { witness: "combining", start: 0, end: 4, expected: 3 },
+    { witness: "indic", start: 0, end: 2, expected: 2 },
+    { witness: "family", start: 0, end: 11, expected: 11 },
+    { witness: "aFamilyB", start: 0, end: 13, expected: 13 },
+    { witness: "robot", start: 2, end: 2, expected: 2 },
+  ] as const;
+  // contract:end
+
+  it.each(CONTRACT)("$witness[$start:$end] -> $expected", ({ witness, start, end, expected }) => {
+    const text = witnesses[witness];
+    if (text === undefined) {
+      throw new Error(`missing witness text for case ${witness}`);
+    }
+    const result = avoidTrailingGraphemeBreak(text, start, end);
+    expect(result).toBe(expected);
+    expect(result).toBeLessThanOrEqual(end);
+    if (end > start) {
+      expect(result).toBeGreaterThan(start);
+    }
   });
 });

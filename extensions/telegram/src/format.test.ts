@@ -532,6 +532,36 @@ describe("markdownToTelegramHtml", () => {
       expect(containsLoneSurrogate(chunk.text)).toBe(false);
     }
   });
+
+  it("keeps a family emoji whole when the Telegram cap lands inside its ZWJ sequence", () => {
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+    const cap = 4000;
+    // The issue's witness: the cap lands two units into the sequence, after the first person.
+    const input = `${"a".repeat(cap - 2)}${family}Z`;
+    const expected = ["a".repeat(cap - 2), `${family}Z`];
+
+    const htmlChunks = splitTelegramHtmlChunks(input, cap);
+    expect(htmlChunks).toEqual(expected);
+    expect(htmlChunks.every((chunk) => chunk.length <= cap)).toBe(true);
+
+    const renderedChunks = markdownToTelegramChunks(input, cap);
+    expect(renderedChunks.map((chunk) => chunk.text)).toEqual(expected);
+    expect(renderedChunks.every((chunk) => chunk.html.length <= cap)).toBe(true);
+  });
+
+  it("keeps an HTML entity whole when a combining mark follows it at the cap", () => {
+    // `;` + U+0301 is one grapheme cluster, so the grapheme clamp retreats from 4000 to
+    // 3999; the entity check must then move the cut before `&amp;` instead of leaving a
+    // bare `&amp` at the end of the first message and a `;` at the start of the next.
+    const cap = 4000;
+    const input = `${"a".repeat(cap - 5)}&amp;\u0301tail`;
+
+    const chunks = splitTelegramHtmlChunks(input, cap);
+    expect(chunks).toEqual(["a".repeat(cap - 5), "&amp;\u0301tail"]);
+    expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
+    expect(chunks[0]?.endsWith("&amp")).toBe(false);
+    expect(chunks[1]?.startsWith(";")).toBe(false);
+  });
 });
 
 function containsLoneSurrogate(text: string): boolean {

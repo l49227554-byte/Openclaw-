@@ -2,6 +2,7 @@ import type { MarkdownTableMode } from "openclaw/plugin-sdk/config-contracts";
 // Telegram helper module supports format behavior.
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
+  avoidTrailingGraphemeBreak,
   FILE_REF_EXTENSIONS_WITH_TLD,
   findCodeRegions,
   isAutoLinkedFileRef,
@@ -643,14 +644,9 @@ function buildTelegramHtmlCloseSuffixLength(tags: TelegramHtmlTag[]): number {
 // both chunks would carry a lone surrogate that re-encodes to U+FFFD. If the
 // pair starts the segment, keep it whole so chunking still advances.
 function clampToSurrogateBoundary(text: string, index: number): number {
-  const high = text.charCodeAt(index - 1);
-  const low = text.charCodeAt(index);
-  const splitsPair =
-    index > 0 && high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
-  if (!splitsPair) {
-    return index;
-  }
-  return index > 1 ? index - 1 : index + 1;
+  // Shared owner: an extended grapheme cluster (ZWJ emoji, flag, skin tone, combining
+  // mark) must survive a message boundary, not just a surrogate pair.
+  return avoidTrailingGraphemeBreak(text, 0, index);
 }
 
 // Prefer a word/paragraph boundary inside the entity-safe window so long text
@@ -678,8 +674,17 @@ function findTelegramHtmlSafeSplitIndex(text: string, maxLength: number): number
   const normalizedMaxLength = Math.max(1, Math.floor(maxLength));
   const entitySafeIndex = findTelegramHtmlEntitySafeSplitIndex(text, normalizedMaxLength);
   const wordSafeIndex = findTelegramHtmlWordSafeSplitIndex(text, entitySafeIndex);
-  const splitIndex = wordSafeIndex > 0 ? wordSafeIndex : entitySafeIndex;
-  return clampToSurrogateBoundary(text, splitIndex);
+  let splitIndex = wordSafeIndex > 0 ? wordSafeIndex : entitySafeIndex;
+  for (;;) {
+    const clamped = clampToSurrogateBoundary(text, splitIndex);
+    if (clamped >= splitIndex) {
+      return clamped;
+    }
+    // The grapheme clamp can retreat over an Extend character that directly follows an
+    // entity's `;` (they form one cluster), which would leave a bare `&amp` behind. Re-run
+    // the entity check from the moved index; indices only decrease, so this converges.
+    splitIndex = findTelegramHtmlEntitySafeSplitIndex(text, clamped);
+  }
 }
 
 function findTelegramHtmlEntitySafeSplitIndex(text: string, normalizedMaxLength: number): number {

@@ -377,7 +377,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
-      4486,
+      // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
+      4487,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -518,7 +519,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
-      2650,
+      // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
+      2651,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

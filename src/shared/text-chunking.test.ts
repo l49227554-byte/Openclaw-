@@ -1,5 +1,13 @@
 // Text chunking tests cover splitting text into bounded model-safe chunks.
 import { describe, expect, it } from "vitest";
+import {
+  buildGraphemeCutWitness,
+  findGraphemeChunkViolations,
+  findOversizedGraphemeViolations,
+  GRAPHEME_WITNESSES,
+  OVERSIZED_GRAPHEME_LIMIT,
+  OVERSIZED_GRAPHEME_TEXT,
+} from "../../packages/markdown-core/src/chunk-text.test-support.js";
 import { chunkTextByBreakResolver, splitLongTextLine } from "./text-chunking.js";
 
 describe("shared/text-chunking", () => {
@@ -62,5 +70,58 @@ describe("shared/text-chunking", () => {
     expect(chunkTextByBreakResolver(text, limit, (window) => window.lastIndexOf(" "))).toEqual(
       expected,
     );
+  });
+});
+
+describe("grapheme-safe hard cuts", () => {
+  const LIMIT = 12;
+  const lastSpace = (window: string) => window.lastIndexOf(" ");
+
+  it.each(GRAPHEME_WITNESSES)(
+    "splitLongTextLine keeps a $name whole with preserved whitespace",
+    (witness) => {
+      const text = buildGraphemeCutWitness(witness, LIMIT);
+      const chunks = splitLongTextLine(text, LIMIT, { preserveWhitespace: true });
+
+      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
+      expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
+    },
+  );
+
+  it.each(GRAPHEME_WITNESSES)(
+    "splitLongTextLine keeps a $name whole when no whitespace break exists",
+    (witness) => {
+      const text = buildGraphemeCutWitness(witness, LIMIT);
+      const chunks = splitLongTextLine(text, LIMIT, { preserveWhitespace: false });
+
+      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
+      expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
+    },
+  );
+
+  it.each(GRAPHEME_WITNESSES)(
+    "chunkTextByBreakResolver keeps a $name whole at the hard-limit fallback",
+    (witness) => {
+      const text = buildGraphemeCutWitness(witness, LIMIT);
+      const chunks = chunkTextByBreakResolver(text, LIMIT, lastSpace);
+
+      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
+      expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
+    },
+  );
+
+  it("still advances through a single grapheme wider than the whole limit", () => {
+    const limit = OVERSIZED_GRAPHEME_LIMIT;
+    const preserved = splitLongTextLine(OVERSIZED_GRAPHEME_TEXT, limit, {
+      preserveWhitespace: true,
+    });
+    const collapsed = splitLongTextLine(OVERSIZED_GRAPHEME_TEXT, limit, {
+      preserveWhitespace: false,
+    });
+    const resolved = chunkTextByBreakResolver(OVERSIZED_GRAPHEME_TEXT, limit, lastSpace);
+
+    expect(findOversizedGraphemeViolations(preserved, limit)).toEqual([]);
+    expect(findOversizedGraphemeViolations(collapsed, limit)).toEqual([]);
+    expect(findOversizedGraphemeViolations(resolved, limit)).toEqual([]);
   });
 });

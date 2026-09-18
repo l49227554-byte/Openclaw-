@@ -1,5 +1,8 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
+import {
+  avoidTrailingGraphemeBreak,
+  avoidTrailingHighSurrogateBreak,
+} from "@openclaw/normalization-core/utf16-slice";
 
 export { avoidTrailingHighSurrogateBreak };
 
@@ -12,7 +15,7 @@ export function normalizeChunkLimit(limit: number): number {
 
 function clampToCodePointBoundary(text: string, index: number): number {
   const boundary = Math.min(Math.max(0, index), text.length);
-  return avoidTrailingHighSurrogateBreak(text, 0, boundary);
+  return avoidTrailingGraphemeBreak(text, 0, boundary);
 }
 
 function findWhitespaceBreak(window: string): number {
@@ -96,7 +99,7 @@ export function chunkTextByBreakResolver(
       Number.isInteger(candidateBreak) && candidateBreak > 0 && candidateBreak <= normalizedLimit
         ? candidateBreak
         : normalizedLimit;
-    const safeBreakIdx = avoidTrailingHighSurrogateBreak(remaining, 0, breakIdx);
+    const safeBreakIdx = avoidTrailingGraphemeBreak(remaining, 0, breakIdx);
     const rawChunk = remaining.slice(0, safeBreakIdx);
     const chunk = rawChunk.trimEnd();
     if (chunk.length > 0) {

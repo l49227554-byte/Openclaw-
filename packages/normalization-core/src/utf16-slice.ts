@@ -26,6 +26,32 @@ export function avoidTrailingHighSurrogateBreak(text: string, start: number, end
   return adjusted > start ? adjusted : end + 1;
 }
 
+/** Shared grapheme segmenter: constructing one per call dominates chunking loops. */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Moves a chunk boundary back to an extended-grapheme-cluster boundary.
+ *
+ * Hard transport limits win: the returned index never exceeds `end`, so a cluster wider
+ * than the whole budget is split rather than allowed to overflow the cap. That split is
+ * still surrogate-safe, because a lone surrogate half is invalid UTF-16 that renders as a
+ * replacement character, which is strictly worse than a partial cluster.
+ */
+export function avoidTrailingGraphemeBreak(text: string, start: number, end: number): number {
+  if (end <= start || end >= text.length) {
+    return end;
+  }
+
+  // `containing` is undefined only past the end of the text, which the guard above excludes.
+  const cluster = GRAPHEME_SEGMENTER.segment(text).containing(end);
+  if (cluster === undefined || cluster.index === end) {
+    return end;
+  }
+  // Inside a cluster: retreat to its start when that still advances past `start`,
+  // otherwise the cluster alone exceeds the budget and the cut stays at the cap.
+  return cluster.index > start ? cluster.index : avoidTrailingHighSurrogateBreak(text, start, end);
+}
+
 /** Slices a UTF-16 string without returning dangling surrogate halves at either edge. */
 export function sliceUtf16Safe(input: string, start: number, end?: number): string {
   const len = input.length;

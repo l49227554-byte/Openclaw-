@@ -1,7 +1,10 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
+import {
+  avoidTrailingGraphemeBreak,
+  avoidTrailingHighSurrogateBreak,
+} from "@openclaw/normalization-core/utf16-slice";
 
-export { avoidTrailingHighSurrogateBreak };
+export { avoidTrailingGraphemeBreak, avoidTrailingHighSurrogateBreak };
 
 function normalizeChunkLimit(limit: number): number {
   // String slicing truncates fractional indexes, so positive limits need an integer progress step.
@@ -108,7 +111,7 @@ export function chunkTextRanges(text: string, options: ChunkTextRangesOptions): 
         ? findPreferredRangeEnd(text, start, maxEnd)
         : undefined;
     const candidateEnd = preferredEnd && preferredEnd > start ? preferredEnd : maxEnd;
-    const end = avoidTrailingHighSurrogateBreak(text, start, candidateEnd);
+    const end = avoidTrailingGraphemeBreak(text, start, candidateEnd);
     ranges.push({ start, end });
     start = end;
   }
@@ -140,7 +143,7 @@ export function chunkText(text: string, limit: number): string[] {
     // Prefer block boundaries, then spaces, then a hard size cut when no
     // readable breakpoint exists inside this window.
     const breakOffset = lastNewline > 0 ? lastNewline : lastWhitespace;
-    const end = avoidTrailingHighSurrogateBreak(
+    const end = avoidTrailingGraphemeBreak(
       text,
       cursor,
       breakOffset > 0 ? cursor + breakOffset : windowEnd,

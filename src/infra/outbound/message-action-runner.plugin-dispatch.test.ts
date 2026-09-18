@@ -608,8 +608,8 @@ describe("runMessageAction plugin dispatch", () => {
         "checks currentness after directory request preparation (%s)",
         async (retirement) => {
           const retired = retirement !== "active";
-          const entered = createDeferred<void>();
-          const release = createDeferred<void>();
+          const entered = createDeferred();
+          const release = createDeferred();
           const caller = new AbortController();
           const canceled = new Error("caller retired during directory preparation");
           const requests: string[] = [];
@@ -670,8 +670,8 @@ describe("runMessageAction plugin dispatch", () => {
     });
 
     it("isolates a retired caller from concurrent directory preparation", async () => {
-      const first = { entered: createDeferred<void>(), release: createDeferred<void>() };
-      const second = { entered: createDeferred<void>(), release: createDeferred<void>() };
+      const first = { entered: createDeferred(), release: createDeferred() };
+      const second = { entered: createDeferred(), release: createDeferred() };
       const caller = new AbortController();
       const canceled = new Error("first caller retired");
       const requests: string[] = [];
@@ -727,8 +727,8 @@ describe("runMessageAction plugin dispatch", () => {
       it.each([false, true])(
         "checks the caller before the next lookup (retired=%s)",
         async (retired) => {
-          const entered = createDeferred<void>();
-          const release = createDeferred<void>();
+          const entered = createDeferred();
+          const release = createDeferred();
           const caller = new AbortController();
           const canceled = new Error("caller retired during directory miss");
           const heldLookup = stage === "cached directory" ? listPeers : listPeersLive;

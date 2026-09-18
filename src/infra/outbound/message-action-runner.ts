@@ -89,7 +89,6 @@ async function handleBroadcastAction(
   input: MessageActionInput,
   params: Record<string, unknown>,
 ): Promise<MessageActionResult> {
-  throwIfAborted(input.abortSignal);
   const broadcastEnabled =
     resolveEffectiveMessageToolsConfig({ cfg: input.cfg, agentId: input.agentId })?.broadcast
       ?.enabled !== false;
@@ -541,6 +540,7 @@ function buildInternalSourceReplyToolResult(payload: {
 }
 
 export async function runMessageAction(input: MessageActionInput): Promise<MessageActionResult> {
+  throwIfAborted(input.abortSignal);
   const cfg = input.cfg;
   let params = { ...input.params };
   const resolvedAgentId =

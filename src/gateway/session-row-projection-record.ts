@@ -4,7 +4,7 @@ import type { InternalSessionEntry as SessionEntry } from "../config/sessions/ty
 import { resolveProjectedAgentRunModel } from "../infra/agent-run-registry.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import type { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
-import type { compareSessionEntryPairs } from "./session-list-order.js";
+import { compareSessionEntryPairs } from "./session-list-order.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import * as rowProjection from "./session-utils-row.js";
@@ -30,8 +30,9 @@ export type Query = {
   agentId?: string;
   storePath?: string;
   key?: string;
+  sessionIdOrKey?: string;
   parentSessionKey?: string;
-  sortBy?: Parameters<typeof compareSessionEntryPairs>[2];
+  sortBy?: Parameters<typeof compareSessionEntryPairs>[2] | null;
 };
 export type Inputs = Parameters<typeof rowProjection.readSessionRowInputs>[0];
 export type SnapshotOptions = Pick<
@@ -64,6 +65,12 @@ export function hasEntry(row: Row | undefined): row is EntryRow {
 }
 export function ready(row: Row | undefined): row is MaterializedRow {
   return Boolean(row?.entry && row.materialized);
+}
+
+export function sort<T extends EntryRow>(rows: T[], sortBy: Query["sortBy"]): T[] {
+  return sortBy === null
+    ? rows
+    : rows.toSorted((a, b) => compareSessionEntryPairs([a.key, a.entry], [b.key, b.entry], sortBy));
 }
 
 export function sameFallbackModelFacts(previous: Row["storedEntry"], current: SessionEntry) {

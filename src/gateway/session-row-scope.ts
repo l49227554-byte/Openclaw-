@@ -5,6 +5,24 @@ import { resolveGatewaySessionStoreTargets } from "../config/sessions/combined-s
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 
+/** Early publications retain literal paths until topology has prepared their aliases. */
+export function matchesSessionRowScope(
+  row: { agentId: string; storeTarget: { agentId: string; storePath: string } },
+  query: { agentId?: string; storePath?: string },
+  scope: Pick<ReturnType<typeof prepareSessionRowScopes>, "physicalPaths"> | undefined,
+  logicalOwnerOnly = false,
+) {
+  return (
+    (!query.agentId ||
+      row.agentId === query.agentId ||
+      (!logicalOwnerOnly && row.storeTarget.agentId === query.agentId)) &&
+    (!query.storePath ||
+      (scope?.physicalPaths(query.storePath, query.agentId) ?? [query.storePath]).includes(
+        row.storeTarget.storePath,
+      ))
+  );
+}
+
 /** Resolve query-specific federation once when the physical topology is published. */
 export function prepareSessionRowScopes(
   cfg: OpenClawConfig,

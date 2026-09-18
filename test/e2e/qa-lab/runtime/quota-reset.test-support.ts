@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
+import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, type TestContext } from "vitest";
 import { WebSocketServer } from "ws";
 import { readPersistedSharedAuthProfileStateRaw } from "../../../../src/agents/auth-profiles/sqlite.js";
@@ -231,13 +232,21 @@ export async function startQuotaProvider(source: BlockSource, responseText: stri
   const successEvents = (request: RequestRecord, marker = responseText) => {
     const observer = nextSuccessObserver;
     if (observer && new URL(request.path, "http://127.0.0.1").pathname === observer.path) {
-      let body: unknown;
+      let body: Record<string, unknown> | undefined;
       try {
-        body = JSON.parse(request.body ?? "null");
+        body = asRecord(JSON.parse(request.body ?? "null"));
       } catch {
         // An unidentified request cannot consume an inference-specific observer.
       }
-      if (body && typeof body === "object" && "model" in body && body.model === observer.model) {
+      // Codex prewarm completes successfully without generating the inference being observed.
+      if (
+        body?.model === observer.model &&
+        !(
+          request.transport === "websocket" &&
+          body.type === "response.create" &&
+          body.generate === false
+        )
+      ) {
         nextSuccessObserver = undefined;
         observer.observe();
       }

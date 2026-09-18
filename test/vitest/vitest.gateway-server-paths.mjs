@@ -4,6 +4,7 @@ export const gatewayPluginTestFiles = ["test/plugins/codex-model-catalog.gateway
 // This curated cohort retains serial forks and the extended database-worker watchdog,
 // even though ordinary Gateway methods also use forks.
 export const gatewayDatabaseWorkerTestFiles = [
+  "src/gateway/agent-turn/agent-run-dispatch.sqlite.test.ts",
   "src/gateway/chat-display-projection.cron.test.ts",
   "src/gateway/config-reload.activation.integration.test.ts",
   "src/gateway/config-reload.test.ts",

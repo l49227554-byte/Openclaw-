@@ -1,4 +1,5 @@
 /** Dispatches isolated cron output to direct delivery, mirrors, and follow-up queues. */
+import { markReplyPayloadAsHostNotification } from "../../auto-reply/reply-payload.js";
 import type { NormalizeReplySkipReason } from "../../auto-reply/reply/normalize-reply-skip-reason.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { resolveControlUiSessionUrl } from "../../config/control-ui-link-base.js";
@@ -350,7 +351,7 @@ export async function dispatchCronDelivery(
           to: delivery.to,
           accountId: delivery.accountId,
           threadId: delivery.threadId,
-          payloads: linkedPayloadsForDelivery,
+          payloads: linkedPayloadsForDelivery.map(markReplyPayloadAsHostNotification),
           session: deliverySession,
           identity,
           bestEffort: params.deliveryBestEffort,

@@ -1,6 +1,9 @@
 /** Sends cron announce payloads and best-effort failure notifications. */
 
-import type { ReplyPayload } from "../auto-reply/reply-payload.js";
+import {
+  markReplyPayloadAsHostNotification,
+  type ReplyPayload,
+} from "../auto-reply/reply-payload.js";
 import {
   durableMessageBatchMayHaveReachedRecipient,
   sendDurableMessageBatchCore,
@@ -117,7 +120,7 @@ export async function sendCronAnnouncePayloadStrict(params: {
     to: delivery.resolvedTarget.to,
     accountId: delivery.resolvedTarget.accountId,
     threadId: delivery.resolvedTarget.threadId,
-    payloads: [params.payload],
+    payloads: [markReplyPayloadAsHostNotification(params.payload)],
     session: delivery.session,
     identity: delivery.identity,
     bestEffort: false,

@@ -212,6 +212,7 @@ Inbound replies include:
 
 - `ReplyToId`, `ReplyToBody`, and `ReplyToSender` when available.
 - Quoted context is appended to `Body` as a `[Replying to ...]` block.
+- Channels that recognize a quote of the bot's own message omit `ReplyToBody` by default, because the session already holds that reply. Discord keeps the quoted text for host notifications (cron announces, operator sends, and message-tool sends without a source conversation), which the replying session never received as a reply.
 
 This is consistent across channels.
 

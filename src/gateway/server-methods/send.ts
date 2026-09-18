@@ -1302,6 +1302,9 @@ export const sendHandlers: GatewayRequestHandlers = {
               mediaUrl: hydratedMediaUrl,
               mediaUrls: hydratedMediaUrls,
               ...(request.asVoice === true ? { audioAsVoice: true } : {}),
+              // Operator, CLI, and API sends are host notifications. Runtime-bound sends may
+              // carry a model's own reply, so they keep the default self-quote handling.
+              ...(hasAgentRuntimeAuthority ? {} : { isHostNotification: true }),
             },
           ];
           const outboundPayloadPlan = createOutboundPayloadPlan(outboundPayloads);

@@ -22,6 +22,7 @@ import {
 } from "./inbound-event-delivery.js";
 import { isLikelyDiscordVideoMedia } from "./media-detection.js";
 import { normalizeDiscordOutboundTarget } from "./normalize.js";
+import { recordDiscordNotificationReplyContext } from "./notification-reply-context.js";
 import { normalizeDiscordApprovalPayload } from "./outbound-approval.js";
 import {
   buildDiscordPresentationPayload,
@@ -280,6 +281,9 @@ export const discordOutbound: ChannelOutboundAdapter = {
       to: resolveDiscordOutboundTarget({ to: target.to, threadId: target.threadId }),
       accountId: target.accountId,
     });
+    if (payload.isHostNotification === true) {
+      await recordDiscordNotificationReplyContext({ cfg, accountId: target.accountId, results });
+    }
     const questionId = questionGatewayRuntime.readAskUserQuestionId(payload);
     const result = results.find(
       (candidate) => candidate.channel === "discord" && candidate.messageId,

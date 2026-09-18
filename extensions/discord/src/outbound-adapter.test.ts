@@ -29,6 +29,11 @@ vi.mock("openclaw/plugin-sdk/runtime-env", async () => {
   };
 });
 
+const recordNotificationReplyContextMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("./notification-reply-context.js", () => ({
+  recordDiscordNotificationReplyContext: recordNotificationReplyContextMock,
+}));
+
 const hoisted = createDiscordOutboundHoisted();
 await installDiscordOutboundModuleSpies(hoisted);
 
@@ -109,6 +114,7 @@ describe("discordOutbound", () => {
   beforeEach(() => {
     resetDiscordOutboundMocks(hoisted);
     outboundWarnSpy.mockClear();
+    recordNotificationReplyContextMock.mockClear();
   });
 
   it("routes text sends to thread target when threadId is provided", async () => {
@@ -920,6 +926,37 @@ describe("discordOutbound", () => {
     });
 
     expect(touchThread).toHaveBeenCalledWith({ threadId: "thread-1" });
+  });
+
+  it("records reply context only for host notification payloads", async () => {
+    const target = { channel: "discord", to: "channel:parent-1", accountId: "work" };
+    const results = [
+      {
+        channel: "discord",
+        messageId: "msg-2",
+        receipt: createDiscordSendReceipt({ platformMessageIds: ["msg-1", "msg-2"], kind: "text" }),
+      },
+    ];
+
+    await discordOutbound.afterDeliverPayload?.({
+      cfg: {},
+      target,
+      payload: { text: "assistant reply" },
+      results,
+    });
+    expect(recordNotificationReplyContextMock).not.toHaveBeenCalled();
+
+    await discordOutbound.afterDeliverPayload?.({
+      cfg: {},
+      target,
+      payload: { text: "daily digest", isHostNotification: true },
+      results,
+    });
+    expect(recordNotificationReplyContextMock).toHaveBeenCalledWith({
+      cfg: {},
+      accountId: "work",
+      results,
+    });
   });
 
   it("notifies inbound event delivery after shared outbound delivery succeeds", async () => {

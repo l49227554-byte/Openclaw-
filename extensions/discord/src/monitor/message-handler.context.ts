@@ -24,6 +24,7 @@ import { readSessionUpdatedAt, resolveStorePath } from "openclaw/plugin-sdk/sess
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { resolveDiscordConversationIdentity } from "../conversation-identity.js";
 import { ChannelType } from "../internal/discord.js";
+import { isDiscordNotificationReplyTarget } from "../notification-reply-context.js";
 import { normalizeDiscordAllowList, normalizeDiscordSlug } from "./allow-list.js";
 import { resolveTimestampMs } from "./format.js";
 import {
@@ -248,6 +249,13 @@ export async function buildDiscordMessageProcessContext(params: {
   if (replyContext && !replyVisible && isGuildMessage) {
     logVerbose(`discord: drop reply context (mode=${contextVisibilityMode})`);
   }
+  const replyIsSelf = Boolean(botUserId && replyContext?.senderId === botUserId);
+  // Self quotes stay hidden because the session already holds the bot's reply. Host
+  // notifications never reach that transcript, so recorded ones keep their quoted text.
+  const keepSelfQuoteBody =
+    replyContext && replyVisible && replyIsSelf
+      ? await isDiscordNotificationReplyTarget({ accountId, messageId: replyContext.id })
+      : false;
   if (forumContextLine) {
     combinedBody = `${combinedBody}\n${forumContextLine}`;
   }
@@ -391,6 +399,7 @@ export async function buildDiscordMessageProcessContext(params: {
     channelIngress,
     channel: "discord",
     resolveSupplementalMedia: true,
+    ...(keepSelfQuoteBody ? { suppressSelfQuoteBody: false } : {}),
     contextVisibility: contextVisibilityMode,
     accountId: route.accountId,
     messageId: canonicalMessageId ?? message.id,
@@ -481,7 +490,7 @@ export async function buildDiscordMessageProcessContext(params: {
               body: replyContext.body,
               sender: replyContext.sender,
               senderAllowed: replySenderAllowed,
-              isSelf: Boolean(botUserId && replyContext.senderId === botUserId),
+              isSelf: replyIsSelf,
               media: async () => {
                 const referencedReplyMediaList = await resolveReferencedReplyMediaList(
                   message,

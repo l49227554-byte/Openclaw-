@@ -21,6 +21,11 @@ import {
   requireRecord,
 } from "./message-handler.process.test-helpers.js";
 
+const isNotificationReplyTargetMock = vi.hoisted(() => vi.fn(async () => false));
+vi.mock("../notification-reply-context.js", () => ({
+  isDiscordNotificationReplyTarget: isNotificationReplyTargetMock,
+}));
+
 registerDiscordProcessTestLifecycle();
 
 describe("processDiscordMessage session routing", () => {
@@ -319,6 +324,65 @@ describe("processDiscordMessage session routing", () => {
     expect(dispatchCtx.ReplyToSender).toBe("Spartacus");
     expect(dispatchCtx.ReplyToBody).toBeUndefined();
     expect(JSON.stringify(dispatchCtx)).not.toContain("The same stale bot response keeps looping.");
+  });
+
+  it("keeps the quoted text when users reply to a recorded host notification", async () => {
+    isNotificationReplyTargetMock.mockResolvedValueOnce(true);
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("notification media should not be fetched");
+    });
+    const ctx = await createBaseContext({
+      botUserId: "bot-1",
+      cfg: {
+        channels: { discord: { contextVisibility: "all" } },
+        messages: { ackReaction: "👀" },
+        session: { store: "/tmp/openclaw-discord-process-test-sessions.json" },
+      },
+      discordRestFetch: fetchImpl,
+      message: {
+        id: "m-notification-reply",
+        channelId: "c1",
+        content: "<@bot> expand on this one",
+        timestamp: new Date().toISOString(),
+        attachments: [],
+        messageReference: { type: 0, message_id: "m-digest-14", channel_id: "c1" },
+        referencedMessage: {
+          id: "m-digest-14",
+          channelId: "c1",
+          content: "14. Weekly digest item posted by a scheduled job",
+          timestamp: new Date().toISOString(),
+          attachments: [
+            {
+              id: "att-digest",
+              url: "https://cdn.discordapp.com/attachments/digest.png",
+              content_type: "image/png",
+              filename: "digest.png",
+            },
+          ],
+          author: {
+            id: "bot-1",
+            username: "Spartacus",
+            discriminator: "0",
+            globalName: "Spartacus",
+          },
+        },
+      },
+      baseText: "<@bot> expand on this one",
+      messageText: "<@bot> expand on this one",
+    });
+
+    await runProcessDiscordMessage(ctx);
+
+    const dispatchCtx = requireRecord(getLastDispatchCtx(), "dispatch context");
+    expect(isNotificationReplyTargetMock).toHaveBeenCalledWith({
+      accountId: "default",
+      messageId: "m-digest-14",
+    });
+    expect(dispatchCtx.ReplyToId).toBe("m-digest-14");
+    expect(dispatchCtx.ReplyToBody).toBe("14. Weekly digest item posted by a scheduled job");
+    // Media from the bot's own message stays suppressed.
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(dispatchCtx.MediaPath).toBeUndefined();
   });
 
   it("stores DM lastRoute with user target for direct-session continuity", async () => {

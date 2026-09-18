@@ -344,6 +344,11 @@ export function copyReplyPayloadMetadata<T extends object>(source: object, paylo
   return metadata ? setReplyPayloadMetadata(payload, metadata) : payload;
 }
 
+/** Marks a host-delivered payload so channels can tell it apart from conversation replies. */
+export function markReplyPayloadAsHostNotification(payload: ReplyPayload): ReplyPayload {
+  return copyReplyPayloadMetadata(payload, { ...payload, isHostNotification: true });
+}
+
 /** Marks a host-owned payload as deliverable even when normal source replies are suppressed. */
 export function markReplyPayloadForSourceSuppressionDelivery<T extends object>(payload: T): T {
   return setReplyPayloadMetadata(payload, {

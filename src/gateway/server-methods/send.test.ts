@@ -2032,7 +2032,12 @@ describe("gateway send mirroring", () => {
     });
 
     expect(deliveryCall()?.payloads).toEqual([
-      { text: "", mediaUrl: "https://example.com/a.png", mediaUrls: undefined },
+      {
+        text: "",
+        mediaUrl: "https://example.com/a.png",
+        mediaUrls: undefined,
+        isHostNotification: true,
+      },
     ]);
     const response = firstRespondCall(respond);
     expect(response?.[0]).toBe(true);
@@ -2084,6 +2089,7 @@ describe("gateway send mirroring", () => {
         text: "caption",
         mediaUrl: "file:///tmp/workspace/photo.png",
         mediaUrls: undefined,
+        isHostNotification: true,
       },
     ]);
     expect(deliveryCall()?.session?.agentId).toBe("work");
@@ -2116,6 +2122,33 @@ describe("gateway send mirroring", () => {
       );
       expect(deliveryCall()?.session?.agentId).toBe("work");
     });
+  });
+
+  it.each([
+    { caller: "an operator client", runtimeBound: false },
+    { caller: "a live agent runtime", runtimeBound: true },
+  ])("marks host notifications only for sends from $caller", async ({ runtimeBound }) => {
+    mockDeliverySuccess("m-host-notification");
+    const sessionKey = "agent:main:slack:channel:C1";
+
+    const { respond } = await runSendWithClient(
+      {
+        channel: "slack",
+        to: "channel:C1",
+        message: "daily digest",
+        sessionKey,
+        idempotencyKey: `idem-host-notification-${runtimeBound}`,
+      },
+      runtimeBound ? agentRuntimeClient(sessionKey) : null,
+      {
+        ...makeContext(),
+        validateAgentRuntimeApprovalAuthority: () => true,
+      } as GatewayRequestContext,
+    );
+
+    expect(firstRespondCall(respond)[0]).toBe(true);
+    // A runtime-bound send may be the model's own reply, so it keeps self-quote suppression.
+    expect(deliveryCall()?.payloads?.[0]?.isHostNotification).toBe(runtimeBound ? undefined : true);
   });
 
   it("maps gateway asVoice sends onto outbound audioAsVoice payloads", async () => {

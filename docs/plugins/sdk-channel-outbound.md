@@ -198,6 +198,10 @@ subpath:
 
 When a platform may redeliver the plugin's own outbound message as inbound, call `recordOutboundMessageIdentity(...)` with the channel, account, conversation, and a stable platform message or source identity. The shared inbound turn path drops matching identities for a bounded 30-second window before session recording or agent dispatch; a source identity may be reserved before send or refreshed when a channel route is removed to close delivery races. `isRecentOutboundMessageIdentity(...)` exposes the same query for channel diagnostics and tests. Do not maintain a parallel channel-local TTL cache for the same stable identity.
 
+## Host notification provenance
+
+Payloads the host delivers outside a conversation reply (cron announces, operator `send` calls, and message-tool sends without an authorized source conversation) carry `isHostNotification: true` through delivery into `afterDeliverPayload`. A channel that hides the body of quoted bot messages can record those platform message IDs in plugin state and keep the quoted text when a user replies to one. Discord records them in a bounded keyed store so the exception survives Gateway restarts; unknown messages keep the default suppression.
+
 ## Plain-text sanitization
 
 Use `sanitizeForPlainText(...)` when an outbound adapter needs to convert the

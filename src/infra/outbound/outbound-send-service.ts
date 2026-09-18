@@ -2,7 +2,10 @@
 // message/poll path while preserving media policy and transcript mirrors.
 import { projectPluginMessageDeliveryFact } from "../../agents/embedded-agent-message-delivery.js";
 import type { AgentToolResult } from "../../agents/runtime/index.js";
-import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
+import {
+  markReplyPayloadAsHostNotification,
+  type ReplyPayload,
+} from "../../auto-reply/reply-payload.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { OutboundReplyFacts } from "../../channels/message/types.js";
 import { normalizeConversationReadInvocationOrigin } from "../../channels/plugins/conversation-read-origin.js";
@@ -431,10 +434,16 @@ export async function executeSendAction(params: {
     channelPlugin?.outbound?.deliveryMode === "gateway"
       ? materializeMessagePresentationFallback({ payload: corePayload, text: params.message })
       : params.message;
+  // Without an authorized source conversation (scripts, CLI, scheduled runs) the send cannot be
+  // the assistant's reply in the receiving conversation; annotateSourceDelivery uses the same test.
+  const deliveryPayload =
+    corePayload && !params.ctx.input.messageActionAuthorization?.toolContext
+      ? markReplyPayloadAsHostNotification(corePayload)
+      : corePayload;
   const delivery = await sendCoreMessage({
     ...params,
     message,
-    ...(corePayload ? { payloads: [corePayload] } : {}),
+    ...(deliveryPayload ? { payloads: [deliveryPayload] } : {}),
     queuePolicy,
   });
 

@@ -579,7 +579,7 @@ describe("executeSendAction", () => {
         agentId: "main",
       },
     });
-    expect(sendArgs.payloads).toEqual([{ text: "", presentation }]);
+    expect(sendArgs.payloads).toEqual([{ text: "", presentation, isHostNotification: true }]);
   });
 
   it("routes text plus charts through the core presentation path", async () => {
@@ -624,7 +624,9 @@ describe("executeSendAction", () => {
     const sendArgs = expectSingleCallFields(mocks.sendMessage, {
       content: "Deployment trend",
     });
-    expect(sendArgs.payloads).toEqual([{ text: "Deployment trend", presentation }]);
+    expect(sendArgs.payloads).toEqual([
+      { text: "Deployment trend", presentation, isHostNotification: true },
+    ]);
   });
 
   it("keeps presentations on the plugin action path when payload preparation declines", async () => {
@@ -724,7 +726,7 @@ describe("executeSendAction", () => {
     expect(mocks.dispatchChannelMessageAction).not.toHaveBeenCalled();
     expectSingleCallFields(mocks.sendMessage, {
       content: "Deployment trend\n\nDeployments (bar chart)\n- Production: Mon: 2; Tue: 3",
-      payloads: [{ text: "Deployment trend", presentation }],
+      payloads: [{ text: "Deployment trend", presentation, isHostNotification: true }],
     });
   });
 
@@ -1130,6 +1132,49 @@ describe("executeSendAction", () => {
       channelData: { prepared: true },
       presentation,
     });
+  });
+
+  it.each([
+    { source: "without an authorized source conversation", authorization: undefined },
+    {
+      source: "from an authorized source conversation",
+      authorization: {
+        toolContext: { currentChannelId: "channel:123", currentChannelProvider: "discord" },
+      },
+    },
+  ])("marks host notifications only for sends $source", async ({ authorization }) => {
+    const plugin: ChannelPlugin = {
+      ...createChannelTestPluginBase({ id: "discord" }),
+      actions: {
+        describeMessageTool: () => ({ actions: ["send"] }),
+        prepareSendPayload: ({ payload }) => payload,
+        handleAction: async () => ({ content: [], details: { ok: true } }),
+      },
+      outbound: { deliveryMode: "direct" },
+    };
+    mocks.sendMessage.mockResolvedValue({
+      channel: "discord",
+      to: "channel:123",
+      via: "direct",
+      mediaUrl: null,
+    });
+
+    await executeSendAction({
+      ctx: createContext({
+        channelPlugin: plugin,
+        channel: "discord",
+        params: { to: "channel:123", message: "daily digest" },
+        input: authorization ? { messageActionAuthorization: authorization } : {},
+      }),
+      to: "channel:123",
+      message: "daily digest",
+    });
+
+    const sendArgs = expectSingleCallFirstArg(mocks.sendMessage);
+    const [payload] = requireArray(sendArgs.payloads, "send payloads");
+    expect(requireRecord(payload, "send payload").isHostNotification).toBe(
+      authorization ? undefined : true,
+    );
   });
 
   it("uses required core delivery only when the send action opts out of best-effort", async () => {

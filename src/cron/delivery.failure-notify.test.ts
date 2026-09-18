@@ -74,7 +74,7 @@ describe("sendCronAnnouncePayloadStrict", () => {
         to: "123",
         accountId: "bot-a",
         threadId: 42,
-        payloads: [{ text: "Automation failed" }],
+        payloads: [{ text: "Automation failed", isHostNotification: true }],
         bestEffort: false,
       }),
     );

@@ -345,7 +345,16 @@ function expectFields(actual: Record<string, unknown>, expected: Record<string, 
 }
 
 function expectDeliveryCall(callIndex: number, expected: Record<string, unknown>) {
-  expectFields(outboundDeliveryCall(callIndex), expected);
+  const call = outboundDeliveryCall(callIndex);
+  const payloads = Array.isArray(call.payloads)
+    ? call.payloads.map((payload: Record<string, unknown>) => {
+        // Direct cron output is a host notification, never a reply in the target conversation.
+        const { isHostNotification, ...rest } = payload;
+        expect(isHostNotification, "isHostNotification").toBe(true);
+        return rest;
+      })
+    : call.payloads;
+  expectFields({ ...call, payloads }, expected);
 }
 
 function expectResultFields(result: unknown, expected: Record<string, unknown>) {

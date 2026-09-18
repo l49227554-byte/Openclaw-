@@ -95,6 +95,12 @@ export type ReplyPayload = {
   isFallbackNotice?: boolean;
   /** Marks this payload as transient status, not assistant answer content. */
   isStatusNotice?: boolean;
+  /**
+   * Marks host-delivered text (cron announces, operator sends, message-tool sends without a
+   * source conversation) that is not the assistant's reply in the receiving conversation.
+   * Channels that hide bot-authored quote bodies may keep this text as reply context.
+   */
+  isHostNotification?: boolean;
   /** Channel-specific payload data (per-channel envelope). */
   channelData?: Record<string, unknown>;
 };

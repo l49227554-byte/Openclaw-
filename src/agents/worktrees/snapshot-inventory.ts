@@ -175,6 +175,17 @@ async function inspectOtherPaths(
   );
 }
 
+async function rawDirectoryExists(target: string | Buffer): Promise<boolean> {
+  try {
+    return (await fs.lstat(target)).isDirectory();
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 async function collectSnapshotInventory(input: SnapshotInput): Promise<SnapshotInventory> {
   const head = await requireGit(input.checkoutPath, ["rev-parse", "--verify", "HEAD^{commit}"]);
   const headPaths = parseGitTreePaths(
@@ -204,8 +215,18 @@ async function collectSnapshotInventory(input: SnapshotInput): Promise<SnapshotI
   const sparse = sparseConfig.code === 0 && sparseConfig.stdout.trim() === "true";
   const sourcePaths = new Set<string>();
   const sparseCandidates: Buffer[] = [];
+  const headKeys = new Set(headPaths.map((entry) => gitPathKey(entry.path)));
   for (const entry of index) {
     sourcePaths.add(gitPathKey(entry.path));
+    // A directory replacing an indexed path is no blob. HEAD paths still delete
+    // cleanly against the snapshot index, but a conflicted path carries no stage 0
+    // for Git to drop by name; its untracked children arrive through the listing.
+    if (
+      !headKeys.has(gitPathKey(entry.path)) &&
+      (await rawDirectoryExists(checkoutPathFromGitBytes(input.checkoutPath, entry.path)))
+    ) {
+      continue;
+    }
     if (
       !entry.skipWorktree ||
       (await rawPathExists(checkoutPathFromGitBytes(input.checkoutPath, entry.path))) ||

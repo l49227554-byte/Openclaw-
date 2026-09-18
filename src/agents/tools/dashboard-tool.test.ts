@@ -150,6 +150,7 @@ describe("dashboard tool", () => {
         },
       },
     });
+    expect(Value.Check(tool.parameters, { action: "read" })).toBe(false);
     expect(
       Value.Check(tool.parameters, dashboardArgs({ action: "widget_move", name: "status" })),
     ).toBe(true);

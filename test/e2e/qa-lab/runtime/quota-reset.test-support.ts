@@ -18,6 +18,7 @@ import {
   type OpenClawTestInstance,
 } from "../../../helpers/openclaw-test-instance.js";
 import { useAutoCleanupTempDirTracker } from "../../../helpers/temp-dir.js";
+import { quotaPublicDiagnostics } from "./quota-reset-diagnostics.mjs";
 
 export const BACKUP_MODEL = "quota-backup/echo";
 export const BACKUP_MARKER = "QUOTA_BACKUP_OK";
@@ -45,6 +46,7 @@ type Phase =
   | "restored"
   | "revoked";
 type RequestRecord = {
+  atMs: number;
   phase: Phase;
   transport: "http" | "websocket";
   path: string;
@@ -112,6 +114,7 @@ export async function startQuotaProvider(source: BlockSource, responseText: stri
   const heldCatalogResponses: HeldProviderResponse[] = [];
   const resetAt = Math.floor(Date.now() / 1000) + 5 * 86_400;
   const requests: RequestRecord[] = [];
+  const upgrades: Array<{ atMs: number; path: string }> = [];
   const responses: Array<{
     phase: Phase;
     path: string;
@@ -128,6 +131,7 @@ export async function startQuotaProvider(source: BlockSource, responseText: stri
     bodyBytes?: Buffer,
   ) => {
     const recorded: RequestRecord = {
+      atMs: Date.now(),
       phase,
       transport,
       path: request.url ?? "",
@@ -429,6 +433,7 @@ export async function startQuotaProvider(source: BlockSource, responseText: stri
   });
   const sockets = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, socket, head) => {
+    upgrades.push({ atMs: Date.now(), path: request.url ?? "" });
     sockets.handleUpgrade(request, socket, head, (websocket) => {
       websocket.on("error", (error) => errors.push(String(error)));
       websocket.on("message", (raw) => {
@@ -452,6 +457,7 @@ export async function startQuotaProvider(source: BlockSource, responseText: stri
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
     requests,
+    upgrades,
     responses,
     heldUsageResponses,
     heldCatalogResponses,
@@ -529,6 +535,9 @@ export async function createQuotaResetFixture(
   const root = tempDirs.make("openclaw-quota-reset-");
   const provider = await startQuotaProvider(source, responseText);
   context.onTestFinished(() => provider.stop());
+  const nativeLogFile = path.join(root, "native.private.log");
+  const refreshReceipt = path.join(root, "refresh-receipt.jsonl");
+  await fs.writeFile(refreshReceipt, "");
   const clockFile = path.join(root, "clock-offset");
   await fs.writeFile(clockFile, "0");
   const storageFaultFile = path.join(root, "storage-fault");
@@ -546,6 +555,7 @@ export async function createQuotaResetFixture(
   preload.searchParams.set("clock", clockFile);
   if (controlUi) {
     preload.searchParams.set("catalog", "1");
+    preload.searchParams.set("refreshReceipt", refreshReceipt);
   }
   if (limitGatewayFileSize) {
     preload.searchParams.set("storageFault", storageFaultFile);
@@ -577,6 +587,9 @@ export async function createQuotaResetFixture(
       OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
     },
     config: {
+      ...(controlUi
+        ? { logging: { level: "debug", consoleLevel: "info", file: nativeLogFile } }
+        : {}),
       gateway: { controlUi: { enabled: controlUi } },
       ...(enableIsolatedTool ? { tools: { alsoAllow: ["llm-task"] } } : {}),
       ...(scopedCooldown || includeBackup
@@ -790,6 +803,24 @@ export async function createQuotaResetFixture(
     turn,
     turns,
     storageFaultFile,
+    async publicDiagnostics(profile: unknown) {
+      const [refreshes, nativeLog] = await Promise.allSettled([
+        fs.readFile(refreshReceipt, "utf8").then((text) =>
+          text
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line)),
+        ),
+        fs.readFile(nativeLogFile, "utf8"),
+      ]);
+      return quotaPublicDiagnostics({
+        profile,
+        requests: provider.requests,
+        upgrades: provider.upgrades,
+        refreshes: refreshes.status === "fulfilled" ? refreshes.value : undefined,
+        nativeLog: nativeLog.status === "fulfilled" ? nativeLog.value : undefined,
+      });
+    },
   };
 }
 

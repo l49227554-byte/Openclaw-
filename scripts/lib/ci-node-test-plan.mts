@@ -3548,6 +3548,33 @@ function createCompactNodeTestShardBundles(
         );
       };
       rebalanceRuntimeTestJobs(placementJobs, { cost, admits, runnerRank, prepareRecipient });
+      // Admission settles these jobs before placement read recipient policy, so
+      // placement pinned only the children of the jobs it still read as
+      // two-worker. Apply that rule here for a job that carries the ceiling.
+      for (const job of compactJobs) {
+        if (
+          job.env?.OPENCLAW_VITEST_MAX_WORKERS !==
+          PINNED_COMPACT_GROUP_ENV.OPENCLAW_VITEST_MAX_WORKERS
+        ) {
+          continue;
+        }
+        if (
+          job.groups.some(
+            (group) =>
+              group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined &&
+              !isRuntimePlacementIncludePatterns(group.includePatterns),
+          )
+        ) {
+          continue;
+        }
+        job.groups = job.groups.map((group) =>
+          group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined
+            ? Object.assign({}, group, {
+                env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
+              })
+            : group,
+        );
+      }
     }
   }
 

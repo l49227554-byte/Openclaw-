@@ -145,8 +145,7 @@ export function registerHarnessCompletionRecoveryCases(
           {
             role: "user",
             content: "Background work finished",
-            idempotencyKey:
-              phase === "missing-source" ? "unrelated-input:user" : `${sourceRunId}:user`,
+            idempotencyKey: phase === "missing-source" ? undefined : `${sourceRunId}:user`,
             __openclaw: { runId: sourceRunId },
             provenance,
           },

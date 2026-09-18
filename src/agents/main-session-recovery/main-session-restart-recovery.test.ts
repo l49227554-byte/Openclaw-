@@ -4858,17 +4858,17 @@ describe("main-session-restart-recovery", () => {
     expect(failedEntry?.restartRecoverySourceReplyDeliveryMode).toBe("message_tool_only");
   });
 
-  it("does not restore channel authority from a generic session route", async () => {
+  it("does not restore delegated authority from a generic route across transcript pages", async () => {
     const { sessionsDir, storePath } = await makeMainSessionFixture({
       channel: "discord",
       lastTo: "discord:dm:fallback",
       restartRecoveryDeliveryRunId: "recovery-main",
-      restartRecoveryDeliverySourceRunId: "source-main",
-      restartRecoverySourceIngress: "channel",
-      restartRecoverySourceReplyDeliveryMode: "message_tool_only",
     });
     await writeTranscript(sessionsDir, "main-session", [
-      { role: "user", content: "do not inherit a fallback route" },
+      makeUserMessage("do not inherit a fallback route", {
+        provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+      }),
+      ...Array(80).fill({ role: "assistant", content: "delegated detail" }),
     ]);
 
     await expectRecovery({ started: 0, settled: 0, failed: 0, skipped: 1 });
@@ -4891,7 +4891,6 @@ describe("main-session-restart-recovery", () => {
       },
     });
     expect(loadSessionEntry({ sessionKey: "agent:main:main", storePath })).toMatchObject({
-      status: "failed",
       abortedLastRun: false,
       mainRestartRecovery: { tombstone: expect.any(Object) },
     });

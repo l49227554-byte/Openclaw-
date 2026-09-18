@@ -3,6 +3,7 @@ import type { MarkdownTableMode } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   avoidTrailingGraphemeBreak,
+  avoidTrailingHighSurrogateBreak,
   FILE_REF_EXTENSIONS_WITH_TLD,
   findCodeRegions,
   isAutoLinkedFileRef,
@@ -678,7 +679,15 @@ function findTelegramHtmlSafeSplitIndex(text: string, maxLength: number): number
   for (;;) {
     const clamped = clampToSurrogateBoundary(text, splitIndex);
     if (clamped >= splitIndex) {
-      return clamped;
+      if (clamped > 0) {
+        return clamped;
+      }
+      // Hard transport limits win, the same policy utf16-slice.ts documents. The grapheme
+      // clamp and the entity re-check converged on a zero-width cut, which stalls chunking
+      // and makes the caller fail an otherwise deliverable message. Keeping an oversized
+      // cluster whole is not worth losing all progress, so fall back to the widest
+      // entity-safe cut that is still surrogate-safe and strictly positive.
+      return avoidTrailingHighSurrogateBreak(text, 0, entitySafeIndex);
     }
     // The grapheme clamp can retreat over an Extend character that directly follows an
     // entity's `;` (they form one cluster), which would leave a bare `&amp` behind. Re-run

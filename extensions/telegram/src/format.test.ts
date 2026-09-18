@@ -562,6 +562,23 @@ describe("markdownToTelegramHtml", () => {
     expect(chunks[0]?.endsWith("&amp")).toBe(false);
     expect(chunks[1]?.startsWith(";")).toBe(false);
   });
+
+  it("still makes progress when an entity-leading grapheme cluster exceeds the cap", () => {
+    // Same entity/combining-mark shape as the test above, scaled past the cap: the marks
+    // glue onto the entity's `;`, so the whole run is one cluster that cannot fit. The
+    // grapheme clamp retreats to the entity and the entity re-check then drops the cut to
+    // zero, which used to stall chunking and reject a message that does fit in two.
+    const cap = 4000;
+    const input = `&amp;${"\u0301".repeat(cap)}Z`;
+
+    const chunks = splitTelegramHtmlChunks(input, cap);
+    expect(chunks.map((chunk) => chunk.length)).toEqual([4000, 6]);
+    expect(chunks.join("")).toBe(input);
+    expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
+    expect(chunks[0]?.startsWith("&amp;")).toBe(true);
+    expect(chunks[0]?.endsWith("&amp")).toBe(false);
+    expect(chunks[1]?.startsWith(";")).toBe(false);
+  });
 });
 
 function containsLoneSurrogate(text: string): boolean {

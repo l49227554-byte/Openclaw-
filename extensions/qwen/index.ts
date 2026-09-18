@@ -44,6 +44,12 @@ const QWEN_TOKEN_PLAN_GLM_NO_MAX_THINKING_LEVEL_IDS = QWEN_TOKEN_PLAN_THINKING_L
   (id) => id !== "max",
 );
 
+function classifyQwenTokenPlanFailoverReason({ status, code }: { status?: number; code?: string }) {
+  // A team-only model requested on a personal plan does not invalidate the shared key.
+  // https://help.aliyun.com/zh/model-studio/token-plan-personal-faq
+  return status === 403 && code === "AccessDenied.Unpurchased" ? "model_not_found" : undefined;
+}
+
 function resolveConfiguredQwenBaseUrl(
   config: { models?: { providers?: Record<string, { baseUrl?: string } | undefined> } } | undefined,
 ): string | undefined {
@@ -291,6 +297,7 @@ export default defineSingleProviderPluginEntry({
       label: "Qwen Token Plan",
       docsPath: "/providers/qwen",
       envVars: ["QWEN_TOKEN_PLAN_API_KEY"],
+      classifyFailoverReason: classifyQwenTokenPlanFailoverReason,
       auth: [createQwenTokenPlanAuthMethod("global"), createQwenTokenPlanAuthMethod("cn")],
       catalog: {
         order: "simple",
@@ -323,6 +330,7 @@ export default defineSingleProviderPluginEntry({
     api.registerProvider({
       id: QWEN_TOKEN_PLAN_LEGACY_PROVIDER_ID,
       label: "Alibaba Token Plan (legacy custom config)",
+      classifyFailoverReason: classifyQwenTokenPlanFailoverReason,
       docsPath: "/providers/qwen",
       auth: [],
       wrapStreamFn: wrapQwenProviderStream,

@@ -268,6 +268,12 @@ included here because they use different APIs.
 | `qwen-token-plan/glm-5`            | text        | 202,752   | visible       |
 | `qwen-token-plan/MiniMax-M2.5`     | text        | 196,608   | visible       |
 
+If Token Plan returns `403 AccessDenied.Unpurchased`, select a model included in
+your subscription. Alibaba documents this error for a team-only model requested
+on a personal plan. OpenClaw treats that exact code as model unavailability for
+`qwen-token-plan` and `bailian-token-plan`, allowing other models using the same
+key to remain available. Other authentication failures still affect the shared key.
+
 ## Thinking controls
 
 Agent runs and standalone completions use the same model-specific thinking

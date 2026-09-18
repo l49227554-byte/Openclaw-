@@ -195,6 +195,64 @@ describe("accepted results through registered message actions", () => {
     },
   );
 
+  it.each(["accepted", "uncertain failure"] as const)(
+    "retains a source-authorized broadcast %s after caller closure",
+    async (scenario) => {
+      const accepted = scenario === "accepted";
+      const payload = accepted
+        ? acceptedPayload
+        : {
+            ok: false,
+            deliveryStatus: "failed",
+            error: "provider result unknown",
+            sentBeforeError: true,
+          };
+      let active = true;
+      const handleAction = vi.fn(async () => {
+        active = false;
+        return jsonResult(payload);
+      });
+      registerPlugin({
+        actions: { describeMessageTool: () => ({ actions: ["send"] }), handleAction },
+      });
+
+      const result = await runMessageAction({
+        cfg: {},
+        action: "broadcast",
+        params: { channel, targets: ["room-1", "room-2"], message: "broadcast reply" },
+        messageActionAuthorization: authorization,
+        sessionKey,
+        defaultAccountId: "default",
+        skipQueue: true,
+        suppressTranscriptMirror: true,
+        assertDirectAdapterHandoff: () => {
+          if (!active) {
+            throw closed;
+          }
+        },
+      });
+
+      expect(handleAction).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({
+        kind: "broadcast",
+        payload: {
+          results: [
+            {
+              to: "room-1",
+              ok: accepted,
+              payload,
+              ...(accepted ? {} : { error: "provider result unknown", sentBeforeError: true }),
+            },
+            { to: "room-2", ok: false, attempted: false },
+          ],
+        },
+      });
+      expect(result).not.toHaveProperty("payload.results.0.attempted");
+      expect(result).not.toHaveProperty("payload.results.0.payload.sourceReplyRoute");
+      expect(resolveMessageActionOutcome(result).ok).toBe(false);
+    },
+  );
+
   it.each(["send", "poll", "set-presence"] as const)(
     "returns known partial %s facts to the caller with their failure outcome",
     async (action) => {

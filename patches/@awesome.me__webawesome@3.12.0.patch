@@ -1,3 +1,179 @@
+diff --git a/dist/chunks/chunk.BCXHEFKE.js b/dist/chunks/chunk.BCXHEFKE.js
+index 01d9b3366bda44776cc7db51481c9b81be72d228..d08e68f5896fc01d7a70317a5eba6a19a2ced4f5 100644
+--- a/dist/chunks/chunk.BCXHEFKE.js
++++ b/dist/chunks/chunk.BCXHEFKE.js
+@@ -25,9 +25,6 @@ import {
+ import {
+   uniqueId
+ } from "./chunk.KNJT7KBU.js";
+-import {
+-  waitForEvent
+-} from "./chunk.F25QOBDY.js";
+ import {
+   animateWithClass
+ } from "./chunk.L6CIKOFQ.js";
+@@ -63,6 +60,7 @@ var WaTooltip = class extends WebAwesomeElement {
+     this.for = null;
+     this.anchor = null;
+     this.eventController = new AbortController();
++    this.openTransition = { open: false };
+     this.handleBlur = () => {
+       this.dismissedByPress = false;
+       if (this.hasTrigger("focus")) {
+@@ -150,12 +148,11 @@ var WaTooltip = class extends WebAwesomeElement {
+       }
+       this.addEventListener("mouseout", this.handleMouseOut);
+       this.dismissedByPress = false;
+-      if (this.open) {
+-        this.open = false;
+-        this.updateComplete.then(() => {
+-          this.open = true;
+-        });
+-      }
++      const { signal } = this.eventController;
++      // The popup's first render must finish before its animation can be owned.
++      void this.updateComplete.then(() => {
++        if (!signal.aborted && this.isConnected) return this.handleOpenChange();
++      });
+       if (!this.id) {
+         this.id = uniqueId("wa-tooltip-");
+       }
+@@ -173,16 +170,18 @@ var WaTooltip = class extends WebAwesomeElement {
+     document.removeEventListener("click", this.handleDocumentClick);
+     unregisterDismissible(this);
+     this.eventController.abort();
++    clearTimeout(this.hoverTimeout);
++    this.openTransition.controller?.abort();
++    this.openTransition = { open: false };
++    this.popup?.popup?.classList.remove("show-with-scale", "hide-with-scale");
++    if (this.body) this.body.hidden = true;
++    if (this.popup) this.popup.active = false;
+     if (this.anchor) {
+       this.removeFromAriaLabelledBy(this.anchor, this.id);
+     }
+   }
+   firstUpdated(changedProperties) {
+-    this.body.hidden = !this.open;
+-    if (this.open) {
+-      this.popup.active = true;
+-      this.popup.reposition();
+-    }
++    this.body.hidden = true;
+     super.firstUpdated(changedProperties);
+   }
+   /** Hides the tooltip, or cancels a pending show, and keeps it hidden until re-armed. */
+@@ -216,41 +215,50 @@ var WaTooltip = class extends WebAwesomeElement {
+     }
+   }
+   async handleOpenChange() {
+-    if (this.open) {
+-      if (this.disabled) {
+-        return;
+-      }
+-      const waShowEvent = new WaShowEvent();
+-      this.dispatchEvent(waShowEvent);
+-      if (waShowEvent.defaultPrevented) {
+-        this.open = false;
+-        return;
+-      }
++    const open = this.open && !this.disabled;
++    if (!this.isConnected || this.openTransition.open === open) return this.openAnimation;
++    const previousTransition = this.openTransition;
++    const event = open ? new WaShowEvent() : new WaHideEvent();
++    this.dispatchEvent(event);
++    if (this.openTransition !== previousTransition) return this.openAnimation;
++    if (event.defaultPrevented && !this.disabled) {
++      this.open = previousTransition.open;
++      return this.openAnimation;
++    }
++    if (!this.isConnected || (this.open && !this.disabled) !== open) return this.openAnimation;
++    previousTransition.controller?.abort();
++    this.openTransition = { open, controller: new AbortController() };
++    const { signal } = this.openTransition.controller;
++    const isCurrent = () => !signal.aborted && this.isConnected && (this.open && !this.disabled) === open;
++    if (open) {
+       if (!this.hasTrigger("manual")) {
+-        document.addEventListener("keydown", this.handleDocumentKeyDown, { signal: this.eventController.signal });
+-        document.addEventListener("click", this.handleDocumentClick, { signal: this.eventController.signal });
++        document.addEventListener("keydown", this.handleDocumentKeyDown, { signal });
++        document.addEventListener("click", this.handleDocumentClick, { signal });
+         registerDismissible(this);
+       }
+       this.body.hidden = false;
+       this.popup.active = true;
+-      await animateWithClass(this.popup.popup, "show-with-scale");
+-      this.popup.reposition();
+-      this.dispatchEvent(new WaAfterShowEvent());
+     } else {
+-      const waHideEvent = new WaHideEvent();
+-      this.dispatchEvent(waHideEvent);
+-      if (waHideEvent.defaultPrevented) {
+-        this.open = true;
+-        return;
+-      }
+-      document.removeEventListener("keydown", this.handleDocumentKeyDown);
+-      document.removeEventListener("click", this.handleDocumentClick);
+       unregisterDismissible(this);
+-      await animateWithClass(this.popup.popup, "hide-with-scale");
+-      this.popup.active = false;
+-      this.body.hidden = true;
+-      this.dispatchEvent(new WaAfterHideEvent());
+     }
++    // Retire the previous animation before reusing its classes. Only the current
++    // transition may publish visibility or completion after asynchronous cleanup.
++    this.popup.popup.classList.remove("show-with-scale", "hide-with-scale");
++    const previousAnimation = this.openAnimation;
++    this.openAnimation = (async () => {
++      await previousAnimation;
++      if (!isCurrent()) return;
++      await animateWithClass(this.popup.popup, open ? "show-with-scale" : "hide-with-scale");
++      if (!isCurrent()) return;
++      if (open) {
++        this.popup.reposition();
++      } else {
++        this.popup.active = false;
++        this.body.hidden = true;
++      }
++      this.dispatchEvent(open ? new WaAfterShowEvent() : new WaAfterHideEvent());
++    })();
++    return this.openAnimation;
+   }
+   handleForChange() {
+     const rootNode = this.getRootNode?.();
+@@ -292,24 +300,24 @@ var WaTooltip = class extends WebAwesomeElement {
+   }
+   handleDisabledChange() {
+     if (this.disabled && this.open) {
+-      this.hide();
++      this.open = false;
++      // The open watcher may already have run for this update.
++      void this.handleOpenChange();
+     }
+   }
+   /** Shows the tooltip. */
+   async show() {
+-    if (this.open) {
+-      return void 0;
+-    }
++    if (!this.isConnected || this.disabled) return;
+     this.open = true;
+-    return waitForEvent(this, "wa-after-show");
++    await this.updateComplete;
++    return this.handleOpenChange();
+   }
+   /** Hides the tooltip */
+   async hide() {
+-    if (!this.open) {
+-      return void 0;
+-    }
++    if (!this.isConnected) return;
+     this.open = false;
+-    return waitForEvent(this, "wa-after-hide");
++    await this.updateComplete;
++    return this.handleOpenChange();
+   }
+   render() {
+     return html`
 diff --git a/dist/chunks/chunk.CWBSN34U.js b/dist/chunks/chunk.CWBSN34U.js
 index 5b1df53a771e31410852af7ea483db52edbc0140..dbb7dc5db6d83acaf9261846451ce86b9eb4cab6 100644
 --- a/dist/chunks/chunk.CWBSN34U.js
@@ -983,11 +1159,41 @@ index 9b4c748a83e5e990fd6eeb6367b37713b56773b2..f801fce20728a10630b6e47099a1054b
      private handleFocus;
      private handleDocumentFocusIn;
      private handleDocumentKeyDown;
+diff --git a/dist/components/tooltip/tooltip.d.ts b/dist/components/tooltip/tooltip.d.ts
+index dfbeaf70a47cf538c5c47e3efc338a74fde965d8..02f328aafbaae0a739891325c434560a45886b8b 100644
+--- a/dist/components/tooltip/tooltip.d.ts
++++ b/dist/components/tooltip/tooltip.d.ts
+@@ -62,6 +62,8 @@ export default class WaTooltip extends WebAwesomeElement {
+     for: string | null;
+     anchor: null | Element;
+     private eventController;
++    private openTransition;
++    private openAnimation;
+     connectedCallback(): void;
+     disconnectedCallback(): void;
+     firstUpdated(changedProperties: PropertyValues<typeof this>): void;
 diff --git a/dist/custom-elements.json b/dist/custom-elements.json
-index 4128d582ee76895db1e7a8b55349680d84bfa40f..51fa14f3ad1234ce8fc7991fd83b002b30238d92 100644
+index 4128d582ee76895db1e7a8b55349680d84bfa40f..88c557617c75567343280015bb18fe1085b69a24 100644
 --- a/dist/custom-elements.json
 +++ b/dist/custom-elements.json
-@@ -27842,13 +27842,13 @@
+@@ -17734,6 +17734,16 @@
+               "privacy": "private",
+               "default": "new AbortController()"
+             },
++            {
++              "kind": "field",
++              "name": "openTransition",
++              "privacy": "private"
++            },
++            {
++              "kind": "field",
++              "name": "openAnimation",
++              "privacy": "private"
++            },
+             {
+               "kind": "field",
+               "name": "handleBlur",
+@@ -27842,13 +27852,13 @@
                "privacy": "private"
              },
              {
@@ -1484,6 +1690,182 @@ index 886b0e05a9d51bbe6636d1e394d49ef4edfb84fc..93d65f3128c2a4acb30c51ac3899b8d8
        item.submenuElement.setAttribute("data-placement", placement2);
        Object.assign(item.submenuElement.style, {
          left: `${x2}px`,
+diff --git a/dist-cdn/chunks/chunk.A73F6EP3.js b/dist-cdn/chunks/chunk.A73F6EP3.js
+index 598039ac639bfa2343778fbe65212a4ce2a54845..baf89955969b12300ef406a05650f4d483b6376e 100644
+--- a/dist-cdn/chunks/chunk.A73F6EP3.js
++++ b/dist-cdn/chunks/chunk.A73F6EP3.js
+@@ -25,9 +25,6 @@ import {
+ import {
+   uniqueId
+ } from "./chunk.O6IZ4I7T.js";
+-import {
+-  waitForEvent
+-} from "./chunk.F25QOBDY.js";
+ import {
+   animateWithClass
+ } from "./chunk.L6CIKOFQ.js";
+@@ -70,6 +67,7 @@ var WaTooltip = class extends WebAwesomeElement {
+     this.for = null;
+     this.anchor = null;
+     this.eventController = new AbortController();
++    this.openTransition = { open: false };
+     this.handleBlur = () => {
+       this.dismissedByPress = false;
+       if (this.hasTrigger("focus")) {
+@@ -157,12 +155,11 @@ var WaTooltip = class extends WebAwesomeElement {
+       }
+       this.addEventListener("mouseout", this.handleMouseOut);
+       this.dismissedByPress = false;
+-      if (this.open) {
+-        this.open = false;
+-        this.updateComplete.then(() => {
+-          this.open = true;
+-        });
+-      }
++      const { signal } = this.eventController;
++      // The popup's first render must finish before its animation can be owned.
++      void this.updateComplete.then(() => {
++        if (!signal.aborted && this.isConnected) return this.handleOpenChange();
++      });
+       if (!this.id) {
+         this.id = uniqueId("wa-tooltip-");
+       }
+@@ -180,16 +177,18 @@ var WaTooltip = class extends WebAwesomeElement {
+     document.removeEventListener("click", this.handleDocumentClick);
+     unregisterDismissible(this);
+     this.eventController.abort();
++    clearTimeout(this.hoverTimeout);
++    this.openTransition.controller?.abort();
++    this.openTransition = { open: false };
++    this.popup?.popup?.classList.remove("show-with-scale", "hide-with-scale");
++    if (this.body) this.body.hidden = true;
++    if (this.popup) this.popup.active = false;
+     if (this.anchor) {
+       this.removeFromAriaLabelledBy(this.anchor, this.id);
+     }
+   }
+   firstUpdated(changedProperties) {
+-    this.body.hidden = !this.open;
+-    if (this.open) {
+-      this.popup.active = true;
+-      this.popup.reposition();
+-    }
++    this.body.hidden = true;
+     super.firstUpdated(changedProperties);
+   }
+   /** Hides the tooltip, or cancels a pending show, and keeps it hidden until re-armed. */
+@@ -223,41 +222,50 @@ var WaTooltip = class extends WebAwesomeElement {
+     }
+   }
+   async handleOpenChange() {
+-    if (this.open) {
+-      if (this.disabled) {
+-        return;
+-      }
+-      const waShowEvent = new WaShowEvent();
+-      this.dispatchEvent(waShowEvent);
+-      if (waShowEvent.defaultPrevented) {
+-        this.open = false;
+-        return;
+-      }
++    const open = this.open && !this.disabled;
++    if (!this.isConnected || this.openTransition.open === open) return this.openAnimation;
++    const previousTransition = this.openTransition;
++    const event = open ? new WaShowEvent() : new WaHideEvent();
++    this.dispatchEvent(event);
++    if (this.openTransition !== previousTransition) return this.openAnimation;
++    if (event.defaultPrevented && !this.disabled) {
++      this.open = previousTransition.open;
++      return this.openAnimation;
++    }
++    if (!this.isConnected || (this.open && !this.disabled) !== open) return this.openAnimation;
++    previousTransition.controller?.abort();
++    this.openTransition = { open, controller: new AbortController() };
++    const { signal } = this.openTransition.controller;
++    const isCurrent = () => !signal.aborted && this.isConnected && (this.open && !this.disabled) === open;
++    if (open) {
+       if (!this.hasTrigger("manual")) {
+-        document.addEventListener("keydown", this.handleDocumentKeyDown, { signal: this.eventController.signal });
+-        document.addEventListener("click", this.handleDocumentClick, { signal: this.eventController.signal });
++        document.addEventListener("keydown", this.handleDocumentKeyDown, { signal });
++        document.addEventListener("click", this.handleDocumentClick, { signal });
+         registerDismissible(this);
+       }
+       this.body.hidden = false;
+       this.popup.active = true;
+-      await animateWithClass(this.popup.popup, "show-with-scale");
+-      this.popup.reposition();
+-      this.dispatchEvent(new WaAfterShowEvent());
+     } else {
+-      const waHideEvent = new WaHideEvent();
+-      this.dispatchEvent(waHideEvent);
+-      if (waHideEvent.defaultPrevented) {
+-        this.open = true;
+-        return;
+-      }
+-      document.removeEventListener("keydown", this.handleDocumentKeyDown);
+-      document.removeEventListener("click", this.handleDocumentClick);
+       unregisterDismissible(this);
+-      await animateWithClass(this.popup.popup, "hide-with-scale");
+-      this.popup.active = false;
+-      this.body.hidden = true;
+-      this.dispatchEvent(new WaAfterHideEvent());
+     }
++    // Retire the previous animation before reusing its classes. Only the current
++    // transition may publish visibility or completion after asynchronous cleanup.
++    this.popup.popup.classList.remove("show-with-scale", "hide-with-scale");
++    const previousAnimation = this.openAnimation;
++    this.openAnimation = (async () => {
++      await previousAnimation;
++      if (!isCurrent()) return;
++      await animateWithClass(this.popup.popup, open ? "show-with-scale" : "hide-with-scale");
++      if (!isCurrent()) return;
++      if (open) {
++        this.popup.reposition();
++      } else {
++        this.popup.active = false;
++        this.body.hidden = true;
++      }
++      this.dispatchEvent(open ? new WaAfterShowEvent() : new WaAfterHideEvent());
++    })();
++    return this.openAnimation;
+   }
+   handleForChange() {
+     const rootNode = this.getRootNode?.();
+@@ -299,24 +307,24 @@ var WaTooltip = class extends WebAwesomeElement {
+   }
+   handleDisabledChange() {
+     if (this.disabled && this.open) {
+-      this.hide();
++      this.open = false;
++      // The open watcher may already have run for this update.
++      void this.handleOpenChange();
+     }
+   }
+   /** Shows the tooltip. */
+   async show() {
+-    if (this.open) {
+-      return void 0;
+-    }
++    if (!this.isConnected || this.disabled) return;
+     this.open = true;
+-    return waitForEvent(this, "wa-after-show");
++    await this.updateComplete;
++    return this.handleOpenChange();
+   }
+   /** Hides the tooltip */
+   async hide() {
+-    if (!this.open) {
+-      return void 0;
+-    }
++    if (!this.isConnected) return;
+     this.open = false;
+-    return waitForEvent(this, "wa-after-hide");
++    await this.updateComplete;
++    return this.handleOpenChange();
+   }
+   render() {
+     return x`
 diff --git a/dist-cdn/chunks/chunk.L6CIKOFQ.js b/dist-cdn/chunks/chunk.L6CIKOFQ.js
 index 20d309f89017ef7d1857f3b1c88216a88354fefd..ea0b8ee34255009d9d9e86605dbdc05969ea3840 100644
 --- a/dist-cdn/chunks/chunk.L6CIKOFQ.js
@@ -2005,11 +2387,41 @@ index 9b4c748a83e5e990fd6eeb6367b37713b56773b2..f801fce20728a10630b6e47099a1054b
      private handleFocus;
      private handleDocumentFocusIn;
      private handleDocumentKeyDown;
+diff --git a/dist-cdn/components/tooltip/tooltip.d.ts b/dist-cdn/components/tooltip/tooltip.d.ts
+index dfbeaf70a47cf538c5c47e3efc338a74fde965d8..02f328aafbaae0a739891325c434560a45886b8b 100644
+--- a/dist-cdn/components/tooltip/tooltip.d.ts
++++ b/dist-cdn/components/tooltip/tooltip.d.ts
+@@ -62,6 +62,8 @@ export default class WaTooltip extends WebAwesomeElement {
+     for: string | null;
+     anchor: null | Element;
+     private eventController;
++    private openTransition;
++    private openAnimation;
+     connectedCallback(): void;
+     disconnectedCallback(): void;
+     firstUpdated(changedProperties: PropertyValues<typeof this>): void;
 diff --git a/dist-cdn/custom-elements.json b/dist-cdn/custom-elements.json
-index 4128d582ee76895db1e7a8b55349680d84bfa40f..51fa14f3ad1234ce8fc7991fd83b002b30238d92 100644
+index 4128d582ee76895db1e7a8b55349680d84bfa40f..88c557617c75567343280015bb18fe1085b69a24 100644
 --- a/dist-cdn/custom-elements.json
 +++ b/dist-cdn/custom-elements.json
-@@ -27842,13 +27842,13 @@
+@@ -17734,6 +17734,16 @@
+               "privacy": "private",
+               "default": "new AbortController()"
+             },
++            {
++              "kind": "field",
++              "name": "openTransition",
++              "privacy": "private"
++            },
++            {
++              "kind": "field",
++              "name": "openAnimation",
++              "privacy": "private"
++            },
+             {
+               "kind": "field",
+               "name": "handleBlur",
+@@ -27842,13 +27852,13 @@
                "privacy": "private"
              },
              {

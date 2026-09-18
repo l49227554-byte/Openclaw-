@@ -450,7 +450,7 @@ process.exit(${JSON.stringify(command)} === "node" ? Number(process.env.IDENTITY
     },
   );
 
-  it("trusts only the canonical monthly branch at the exact checked-out SHA", () => {
+  it("keeps main recovery bound to the canonical monthly source tip", () => {
     const trusted = step(
       workflow().jobs?.preview_plugins_npm,
       "Validate ref is on a trusted publish branch",
@@ -459,7 +459,9 @@ process.exit(${JSON.stringify(command)} === "node" ? Number(process.env.IDENTITY
       'extended_branch = f"extended-stable/{version.group(1)}.{version.group(2)}.33"',
     );
     expect(trusted.run).toContain("exact 40-character source SHA");
-    expect(trusted.run).toContain('os.environ["WORKFLOW_REF"] == f"refs/heads/{extended_branch}"');
+    expect(trusted.run).toContain(
+      'os.environ["WORKFLOW_REF"] in (f"refs/heads/{extended_branch}", "refs/heads/main")',
+    );
     expect(trusted.run).toContain(
       'exact_ref_match(\n        "HEAD",\n        f"refs/remotes/origin/{extended_branch}"',
     );
@@ -475,7 +477,7 @@ process.exit(${JSON.stringify(command)} === "node" ? Number(process.env.IDENTITY
       "Checkout",
       "Checkout trusted planning tooling",
       "Resolve checked-out ref",
-      "Verify trusted preflight tooling identity",
+      "Verify trusted preflight or recovery tooling identity",
       "Validate ref is on a trusted publish branch",
     ]) {
       const index = previewSteps.indexOf(step(preview, prerequisite));
@@ -487,7 +489,7 @@ process.exit(${JSON.stringify(command)} === "node" ? Number(process.env.IDENTITY
       expect(candidate.uses?.startsWith("./"), candidate.name).not.toBe(true);
       expect(candidate.run ?? "", candidate.name).not.toMatch(/\b(?:bun|npm|pnpm)\b/u);
     }
-    const toolingIdentity = step(preview, "Verify trusted preflight tooling identity");
+    const toolingIdentity = step(preview, "Verify trusted preflight or recovery tooling identity");
     expect(toolingIdentity.env).toMatchObject({
       WORKFLOW_FULL_REF: "${{ github.ref }}",
       WORKFLOW_REF: "${{ github.ref_name }}",
@@ -499,6 +501,19 @@ process.exit(${JSON.stringify(command)} === "node" ? Number(process.env.IDENTITY
     expect(toolingIdentity.run).toContain('--workflow-ref "$WORKFLOW_REF"');
     expect(toolingIdentity.run).toContain('--workflow-full-ref "$WORKFLOW_FULL_REF"');
     expect(toolingIdentity.run).toContain('--workflow-sha "$WORKFLOW_SHA"');
+    for (const [preflight, distTag, ref, expected] of [
+      [true, "default", "refs/heads/main", true],
+      [false, "extended-stable", "refs/heads/main", true],
+      [false, "extended-stable", "refs/heads/extended-stable/2026.8.33", false],
+      [false, "default", "refs/heads/main", false],
+    ] as const) {
+      expect(
+        runInNewContext(toolingIdentity.if!, {
+          github: { event_name: "workflow_dispatch", ref },
+          inputs: { preflight_only: preflight, npm_dist_tag: distTag },
+        }),
+      ).toBe(expected);
+    }
     const sourceSetup = step(preview, "Setup Node environment");
     const preparedSetup = step(preview, "Setup trusted Node for prepared publication");
     const preparedPlan = step(preview, "Read qualified npm preparation");

@@ -160,28 +160,20 @@ export async function prepareWorkspaceBuildGroup(
     reusablePluginGeneration?.preferBuiltPluginArtifacts ??
     options.preferBuiltPluginArtifacts === true;
   options.registryResources?.retainGeneration(reusablePluginGeneration);
-  await using registryCustody = {
-    claims: new Map<PluginRegistry, ReturnType<typeof retainPreparedPluginRegistry>>(),
-    async [Symbol.asyncDispose]() {
-      const results = await Promise.allSettled(
-        [...this.claims.values()].map(async (release) => await release?.()),
-      );
-      const failures = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
-      );
-      if (failures.length) {
-        throw new AggregateError(failures, "Prepared registry construction cleanup failed");
-      }
-    },
-  };
+  const retainedRegistries = new Set<PluginRegistry>();
+  await using registryBorrows = new AsyncDisposableStack();
   const preparingRegistries = prepareWorkspacePluginRegistries(
     input,
     pluginMetadataSnapshot,
     (registry) => {
-      // A predecessor catalog can release its final lease during discovery. Take
-      // construction custody at selection, including before async inspection loads.
-      if (!registryCustody.claims.has(registry)) {
-        registryCustody.claims.set(registry, retainPreparedPluginRegistry(registry));
+      // Initial run admission can inspect a new selection before its caller holds
+      // a generation lease. Borrow the selected source before that async load.
+      if (!retainedRegistries.has(registry)) {
+        retainedRegistries.add(registry);
+        const release = retainPreparedPluginRegistry(registry);
+        if (release) {
+          registryBorrows.defer(release);
+        }
       }
     },
     loadInboundPluginRegistry,
@@ -194,13 +186,6 @@ export async function prepareWorkspaceBuildGroup(
   );
   const { inboundPluginRegistry, runtimePluginRegistry, primaryRegistry } =
     preparingRegistries instanceof Promise ? await preparingRegistries : preparingRegistries;
-  await using registryBorrows = new AsyncDisposableStack();
-  for (const registry of new Set([runtimePluginRegistry, inboundPluginRegistry])) {
-    const release = registry && retainPreparedPluginRegistry(registry);
-    if (release) {
-      registryBorrows.defer(release);
-    }
-  }
   const reuseRuntimeFacts =
     reusablePluginGeneration && runtimePluginRegistry === reusablePluginGeneration.pluginRegistry;
   const resources = primaryRegistry && getPluginRegistryInspectionResources(primaryRegistry);

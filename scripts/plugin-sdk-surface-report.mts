@@ -378,7 +378,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
-      4487,
+      // -1: keep complete-preamble admission off the deprecated compatibility facade.
+      4486,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -520,7 +521,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
-      2651,
+      // -1: keep complete-preamble admission off the deprecated compatibility facade.
+      2650,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -548,7 +550,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // -1: infra-runtime now names its error exports explicitly.
       // -1: infra-runtime excludes the internal system-event receipt API.
       // -1: infra-runtime re-exports number coercion directly from its canonical owner.
-      50,
+      // -1: channel-message pins its published compatibility exports explicitly.
+      49,
       env,
     ),
   };

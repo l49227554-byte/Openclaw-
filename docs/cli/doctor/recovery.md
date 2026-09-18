@@ -107,6 +107,11 @@ Explicit token generation reports when it skips a healthy SecretRef. Other
 placeholder secrets require a real replacement from their provider; Doctor
 reports them without deleting their stored values.
 
+In trusted-proxy mode, a redacted inline or environment-supplied optional password
+does not block proxy authentication. Startup, Doctor, and status warn that local
+password fallback is unavailable. Replace or remove the optional password and
+restart; Doctor preserves trusted-proxy mode instead of generating a token.
+
 ## macOS: `launchctl` env overrides
 
 If you previously ran `launchctl setenv OPENCLAW_GATEWAY_TOKEN ...` (or `...PASSWORD`), that value supplies fallback credentials when local configuration does not supply one. A configured inline credential or active SecretRef takes precedence over its matching environment fallback. A stale fallback can cause persistent "unauthorized" errors when it is selected.

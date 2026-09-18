@@ -3,7 +3,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveSecretInputRef, type SecretRef } from "../config/types.secrets.js";
 import { resolveGatewayAuthToken } from "../gateway/auth-token-resolution.js";
 import { resolveGatewayAuth } from "../gateway/auth.js";
-import { isInvalidGatewaySecret } from "../gateway/known-weak-gateway-secrets.js";
+import {
+  isInvalidGatewaySecret,
+  getTrustedProxyPasswordRedactionWarning,
+} from "../gateway/known-weak-gateway-secrets.js";
 import { getSkippedExecRefStaticError } from "../secrets/exec-resolution-policy.js";
 import type { HealthCheckContext, HealthFinding } from "./health-checks.js";
 
@@ -44,6 +47,19 @@ export async function detectGatewayAuthHealth(
     tailscaleMode: ctx.cfg.gateway?.tailscale?.mode ?? "off",
     env: ctx.env,
   });
+  const optionalPasswordWarning = getTrustedProxyPasswordRedactionWarning(auth);
+  if (optionalPasswordWarning) {
+    return [
+      {
+        checkId: "core/doctor/gateway-auth",
+        severity: "warning",
+        message: optionalPasswordWarning,
+        path: "gateway.auth.password",
+        fixHint:
+          "Replace or remove the optional password; keep trusted-proxy authentication configured.",
+      },
+    ];
+  }
   if (auth.mode !== "token") {
     return [];
   }

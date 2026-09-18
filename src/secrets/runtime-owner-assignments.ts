@@ -491,7 +491,11 @@ export async function resolveAndApplySecretAssignments(params: {
           )
         ) {
           existing.providerFailures.push(providerFailure);
-        } else if (!providerFailure && !existing.refFailureReason) {
+        } else if (
+          !providerFailure &&
+          (!existing.refFailureReason ||
+            reason === "resolved secret value is a redaction placeholder")
+        ) {
           existing.refFailureReason = reason;
         }
       }

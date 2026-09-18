@@ -73,6 +73,27 @@ describe("mergeGatewayTailscaleConfig", () => {
 });
 
 describe("ensureGatewayStartupAuth", () => {
+  it.each(["config", "environment"])(
+    "allows trusted-proxy startup with a redacted optional password from %s",
+    async (source) => {
+      const warn = vi.fn();
+      const result = await ensureGatewayStartupAuth({
+        cfg: gatewayAuthConfig({
+          mode: "trusted-proxy",
+          trustedProxy: { userHeader: "x-forwarded-user" },
+          ...(source === "config" ? { password: REDACTED_SENTINEL } : {}),
+        }),
+        env: source === "environment" ? { OPENCLAW_GATEWAY_PASSWORD: REDACTED_SENTINEL } : {},
+        warn,
+      });
+      expect(result.auth.mode).toBe("trusted-proxy");
+      expect(result.generatedToken).toBeUndefined();
+      expect(result.persistedGeneratedToken).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("local password fallback"));
+      expect(mocks.replaceConfigFile).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["inline", "ref"])(
     "refuses a redacted %s Gateway token and points to Doctor without generating a replacement",
     async (source) => {

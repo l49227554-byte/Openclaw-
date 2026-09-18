@@ -38,6 +38,29 @@ describe.each([
   );
 });
 
+it("rejects a redacted local password fallback without rejecting proxy mode", async () => {
+  await expect(
+    authorizeHttpGatewayConnect({
+      auth: {
+        mode: "trusted-proxy",
+        password: REDACTED_SENTINEL,
+        allowTailscale: false,
+        trustedProxy: { userHeader: "x-forwarded-user" },
+      },
+      connectAuth: { password: REDACTED_SENTINEL },
+      trustedProxies: ["127.0.0.1"],
+      ingressAttribution: {
+        kind: "direct-local",
+        clientIp: "127.0.0.1",
+        rateLimit: {
+          subject: { key: "127.0.0.1" },
+          resetOnSuccess: true,
+        },
+      },
+    }),
+  ).resolves.toEqual({ ok: false, reason: "password_redacted_config" });
+});
+
 it("keeps the corrupted store entry and Doctor remedy in the startup refusal", async () => {
   const ref = { source: "store", provider: "default", id: "OPENCLAW_GATEWAY_TOKEN" } as const;
   const activate = createRuntimeSecretsActivator({

@@ -77,6 +77,44 @@ afterEach(() => {
 });
 
 describe("Doctor Gateway token store repair", () => {
+  it.each(["config", "environment"])(
+    "records a warning for a redacted optional proxy password from %s",
+    async (source) => {
+      const fixture = createFixture("synthetic-healthy-token", {
+        repair: true,
+        generateGatewayToken: true,
+      });
+      fixture.ctx.cfg.gateway = {
+        auth: {
+          mode: "trusted-proxy",
+          trustedProxy: { userHeader: "x-forwarded-user" },
+          ...(source === "config" ? { password: REDACTED_SENTINEL } : {}),
+        },
+      };
+      if (source === "environment") {
+        fixture.ctx.env = { ...fixture.ctx.env, OPENCLAW_GATEWAY_PASSWORD: REDACTED_SENTINEL };
+      }
+      expect(await detectGatewayAuthHealth(fixture.ctx)).toEqual([
+        expect.objectContaining({
+          severity: "warning",
+          path: "gateway.auth.password",
+          message: expect.stringContaining("local password fallback"),
+          fixHint: expect.stringContaining("Replace"),
+        }),
+      ]);
+      await runGatewayAuth(fixture.ctx);
+      expect(note).toHaveBeenCalledWith(
+        expect.stringContaining("local password fallback"),
+        "Gateway auth",
+      );
+      expect(fixture.ctx.cfg.gateway?.auth?.mode).toBe("trusted-proxy");
+      expect(fixture.ctx.updateWarnings).toEqual(
+        expect.arrayContaining([expect.stringContaining("local password fallback")]),
+      );
+      expect(fixture.backups()).toEqual([]);
+    },
+  );
+
   it("names a redacted store entry and its remedy without mutating diagnostic state", async () => {
     const fixture = createFixture();
     expect(await detectGatewayAuthHealth(fixture.ctx)).toEqual([

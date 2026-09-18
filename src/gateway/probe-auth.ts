@@ -16,6 +16,7 @@ import {
   isGatewaySecretRefUnavailableError,
   resolveGatewayProbeCredentialsFromConfig,
 } from "./credentials.js";
+import { getTrustedProxyPasswordRedactionWarning } from "./known-weak-gateway-secrets.js";
 export { resolveGatewayProbeTarget } from "./probe-target.js";
 export type { GatewayProbeTargetResolution } from "./probe-target.js";
 
@@ -194,7 +195,17 @@ export async function resolveGatewayProbeAuthSafeWithSecretInputs(
   }
 
   try {
-    return await resolveGatewayProbeAuthResolutionWithSecretInputs(params);
+    const resolution = await resolveGatewayProbeAuthResolutionWithSecretInputs(params);
+    if (params.mode === "local" && params.cfg.gateway?.auth?.mode === "trusted-proxy") {
+      const warning = getTrustedProxyPasswordRedactionWarning({
+        mode: "trusted-proxy",
+        password: resolution.auth.password,
+      });
+      if (warning) {
+        return { auth: {}, warning, warningCode: "SECRET_REF_REDACTED_VALUE" };
+      }
+    }
+    return resolution;
   } catch (error) {
     if (isSecretResolutionError(error) && error.code === "SECRET_REF_REDACTED_VALUE") {
       return {

@@ -53,6 +53,7 @@ import {
   type PortUsageInspectionOptions,
   type PortUsageTestSummary,
 } from "./status.gather.probes.test-support.js";
+import { registerProxyAuthStatusTests } from "./status.gather.proxy-auth.test-support.js";
 import { printDaemonStatus } from "./status.print.js";
 
 const readFile = fs.readFile.bind(fs);
@@ -1954,41 +1955,13 @@ describe("gatherDaemonStatus", () => {
     );
   });
 
-  it.each(["configured", "environment"] as const)(
-    "uses the trusted-proxy local-direct password from %s",
-    async (source) => {
-      daemonLoadedConfig = {
-        gateway: {
-          bind: "loopback",
-          auth: {
-            mode: "trusted-proxy",
-            ...(source === "configured" ? { password: "local-config-password" } : {}),
-          },
-          remote: { url: "wss://peer.example", password: "peer-password" },
-        },
-      };
-      serviceReadCommand.mockResolvedValueOnce({
-        programArguments: ["/bin/node", "cli", "gateway", "--port", "19001"],
-        environment: {
-          OPENCLAW_STATE_DIR: "/tmp/openclaw-daemon",
-          OPENCLAW_CONFIG_PATH: "/tmp/openclaw-daemon/openclaw.json",
-          OPENCLAW_GATEWAY_PASSWORD: "local-service-password",
-        },
-      });
-      setTestEnvValue("OPENCLAW_GATEWAY_PASSWORD", "ambient-password");
-
-      await gatherStatus();
-
-      const input = callArg(callGatewayStatusProbe) as GatewayStatusProbeOptions;
-      expect(input.password).toBe(
-        source === "configured" ? "local-config-password" : "local-service-password",
-      );
-      expect(input.token).toBeUndefined();
-      expect(input.urlOverride).toBeUndefined();
-      expect(input.config?.gateway?.auth).toEqual({ mode: "trusted-proxy" });
-      expect(input.config?.gateway?.remote?.password).toBeUndefined();
+  registerProxyAuthStatusTests({
+    setDaemonConfig: (config) => {
+      daemonLoadedConfig = config;
     },
-  );
+    gatherStatus,
+    serviceReadCommand,
+  });
 
   it.each([undefined, "password", "trusted-proxy"] as const)(
     "resolves daemon %s auth password SecretRef values before probing",

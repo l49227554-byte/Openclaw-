@@ -50,7 +50,7 @@ Activation contract:
 - Reload and restart-check isolate eligible mapped owners. Unchanged ref identities with unchanged provider definitions and an unchanged complete non-secret owner contract retain their exact last-known-good values as stale; changed or newly configured unresolved refs publish cold for only that owner. A strict reload failure preserves the previously active snapshot.
 - `config.set`, `config.apply`, and `config.patch` accept syntactically valid unresolved refs for isolatable owners and return a redacted `degradedSecretOwners` report. Gateway ingress auth, structurally invalid config or resolved values, policy violations, and unknown owners still reject before disk mutation.
 - Healthy sibling owners resolve and publish normally even when another owner is cold or stale.
-- A known redaction placeholder makes its mapped, isolatable owner configured-unavailable without reusing its previous credential. Gateway ingress auth refuses startup with the affected reference and repair guidance. Doctor can repair store-backed Gateway tokens after a verified backup; other secrets require replacement at their source.
+- A known redaction placeholder makes its mapped, isolatable owner configured-unavailable without reusing its previous credential, even when another reference for that owner also fails. Gateway token/password auth refuses startup with the affected reference and repair guidance. Doctor can repair store-backed Gateway tokens after a verified backup; other secrets require replacement at their source.
 - Providing an explicit per-call channel token to an outbound helper/tool call does not trigger SecretRef activation; activation points remain startup, reload, and explicit `secrets.reload`.
 
 ## Degraded and recovered signals

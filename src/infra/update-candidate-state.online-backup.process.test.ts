@@ -21,6 +21,12 @@ async function waitForFile(file: string): Promise<void> {
     .not.toBe("");
 }
 
+async function readWriterGeneration(file: string): Promise<number> {
+  // Ignore an in-flight final record; only newline-terminated commits are observable.
+  const generations = (await fs.readFile(file, "utf8")).split("\n");
+  return Number(generations.at(-2) ?? -1);
+}
+
 it.each(["inventory", "snapshot"] as const)(
   "%s acquires coherent rehearsal copies while an independent WAL writer commits",
   async (mode) => {
@@ -66,6 +72,7 @@ it.each(["inventory", "snapshot"] as const)(
       const stores = files.map(file => new DatabaseSync(file));
       try {
         for (const db of stores) db.exec("PRAGMA busy_timeout = 1000; PRAGMA wal_autocheckpoint = 128;");
+        fs.writeFileSync(${JSON.stringify(progress)}, "");
         fs.writeFileSync(${JSON.stringify(ready)}, String(process.pid));
         let generation = 0;
         while (!fs.existsSync(${JSON.stringify(stop)})) {
@@ -74,8 +81,7 @@ it.each(["inventory", "snapshot"] as const)(
             db.prepare("UPDATE witness SET generation = ?, inverse = ?").run(generation, -generation);
             db.exec("COMMIT");
           }
-          fs.writeFileSync(${JSON.stringify(progress + ".tmp")}, String(generation++));
-          fs.renameSync(${JSON.stringify(progress + ".tmp")}, ${JSON.stringify(progress)});
+          fs.appendFileSync(${JSON.stringify(progress)}, String(generation++) + "\\n");
           for (const file of files) {
             if (fs.statSync(file + "-wal").size > 16 * 1024 * 1024) {
               throw new Error("bounded writer WAL exceeded 16 MiB");
@@ -156,16 +162,18 @@ it.each(["inventory", "snapshot"] as const)(
     });
     try {
       await waitForFile(ready);
-      await waitForFile(progress);
-      const before = Number(await fs.readFile(progress, "utf8"));
+      await expect
+        .poll(() => readWriterGeneration(progress), { timeout: 10_000 })
+        .toBeGreaterThanOrEqual(0);
+      const before = await readWriterGeneration(progress);
       const result = await runWorker({ mode, ...admission });
       expect(result.code, result.stderr.toString()).toBe(0);
-      const observedAfter = Number(await fs.readFile(progress, "utf8"));
+      const observedAfter = await readWriterGeneration(progress);
       expect(observedAfter).toBeGreaterThan(before);
       // A committed generation can precede its watermark; join the writer before bounding copies.
       await fs.writeFile(stop, "stop");
       await writing;
-      const after = Number(await fs.readFile(progress, "utf8"));
+      const after = await readWriterGeneration(progress);
       if (mode === "inventory") {
         const inventory = UpdateCandidateSnapshotInventorySchema.parse(
           JSON.parse(result.stdout.toString()),

@@ -12,7 +12,7 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { createTrackedTempDirs } from "../../test-utils/tracked-temp-dirs.js";
-import { registerSkillCuratorHandlerSuite } from "./skills.curator.suite.js";
+import { registerSkillCuratorHandlerSuite } from "./skills.curator.test-support.js";
 import { callGatewayHandler } from "./skills.test-helpers.js";
 
 const tempDirs = createTrackedTempDirs();

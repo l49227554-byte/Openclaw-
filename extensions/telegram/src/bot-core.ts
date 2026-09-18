@@ -31,7 +31,6 @@ import { resolveTelegramAccountOwnerAgentId } from "./account-owner.js";
 import { getOrCreateAccountThrottler } from "./account-throttler.js";
 import { resolveTelegramAccount } from "./accounts.js";
 import { normalizeTelegramApiRoot } from "./api-root.js";
-import { resolveTelegramMediaMaxBytes } from "./media-limits.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
 import { createTelegramHandlers } from "./bot-handlers.runtime.js";
 import {
@@ -71,6 +70,7 @@ import {
   buildTelegramSelfSenderName,
   recordTelegramGroupHistoryEntry,
 } from "./group-history-window.js";
+import { resolveTelegramMediaMaxBytes } from "./media-limits.js";
 import { registerTelegramOutboundGroupHistoryRecorder } from "./outbound-message-context.js";
 import {
   prepareTelegramPollAnswerContextAsync,

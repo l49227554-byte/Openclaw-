@@ -1,6 +1,5 @@
 import type { APIChannel, APIGuildForumChannel, APIGuildMediaChannel } from "discord-api-types/v10";
 import { ChannelType } from "discord-api-types/v10";
-import { resolveChannelMediaMaxBytes } from "openclaw/plugin-sdk/account-helpers";
 import { recordChannelActivity } from "openclaw/plugin-sdk/channel-activity-runtime";
 import type { MarkdownTableMode, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { OutboundMediaAccess, PollInput } from "openclaw/plugin-sdk/media-runtime";

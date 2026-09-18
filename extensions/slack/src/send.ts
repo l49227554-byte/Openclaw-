@@ -1354,14 +1354,11 @@ async function sendMessageSlackQueuedInner(params: {
     ...(opts.textIsSlackMrkdwn ? { textIsSlackMrkdwn: true } : {}),
     ...(opts.textIsSlackPlainText ? { preservePlainText: true } : {}),
   });
-  const configuredMediaMaxBytes =
-    typeof account.config.mediaMaxMb === "number"
-      ? Math.floor(account.config.mediaMaxMb * 1024 * 1024)
-      : undefined;
   const mediaMaxBytes =
-    typeof opts.mediaMaxBytes === "number"
-      ? Math.floor(opts.mediaMaxBytes)
-      : configuredMediaMaxBytes;
+    opts.mediaMaxBytes ??
+    (typeof account.config.mediaMaxMb === "number"
+      ? account.config.mediaMaxMb * 1024 * 1024
+      : undefined);
 
   let chunksToPost: string[];
   if (opts.mediaUrl) {
@@ -1378,7 +1375,7 @@ async function sendMessageSlackQueuedInner(params: {
       mediaReadFile: opts.mediaReadFile,
       caption: firstChunk,
       threadTs: opts.threadTs,
-      maxBytes: mediaMaxBytes,
+      maxBytes: typeof mediaMaxBytes === "number" ? Math.floor(mediaMaxBytes) : undefined,
       ...(opts.forceDocument ? { optimizeImages: false } : {}),
       onPlatformSendDispatch: dispatchOnce,
       assertDirectAdapterHandoff: opts.assertDirectAdapterHandoff,

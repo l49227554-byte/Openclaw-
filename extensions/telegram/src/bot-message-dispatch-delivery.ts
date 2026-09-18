@@ -39,13 +39,13 @@ import type { TelegramInlineButtons } from "./button-types.js";
 import { mergeTelegramPartialDeliveryError } from "./chunk-delivery.js";
 import { canonicalizeTelegramPresentationPayload } from "./interactive-fallback.js";
 import { createLaneDeliveryStateTracker } from "./lane-delivery-state.js";
-import { resolveTelegramMediaMaxBytes } from "./media-limits.js";
 import {
   createLaneTextDeliverer,
   type DraftLaneState,
   type LaneDeliveryResult,
   type LaneName,
 } from "./lane-delivery-text-deliverer.js";
+import { resolveTelegramMediaMaxBytes } from "./media-limits.js";
 import { recordOutboundMessageForPromptContext } from "./outbound-message-context.js";
 import {
   createTelegramPromptContextProjectionSequence,

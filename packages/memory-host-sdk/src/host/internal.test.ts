@@ -187,10 +187,12 @@ describe("memory host SDK package internals", () => {
         { path: " notes ", pattern: " runbooks/**/*.md " },
         { path: "notes", pattern: "runbooks/**/*.md" },
         { path: "notes", pattern: "archive/**/*.md" },
+        { path: "reference", evergreen: true },
       ]),
     ).toEqual([
       { path: path.resolve(workspaceDir, "notes"), pattern: "runbooks/**/*.md" },
       { path: path.resolve(workspaceDir, "notes"), pattern: "archive/**/*.md" },
+      { path: path.resolve(workspaceDir, "reference"), evergreen: true },
     ]);
   });
 

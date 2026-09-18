@@ -372,6 +372,29 @@ describe("memory reindex state", () => {
     ).toBe(true);
   });
 
+  it("does not rebuild the index when only extra-path recency policy changes", () => {
+    const workspaceDir = "/tmp/workspace";
+    const multimodal = {
+      enabled: false,
+      modalities: [],
+      maxFileBytes: 20 * 1024 * 1024,
+    };
+
+    expect(
+      resolveConfiguredScopeHash({
+        workspaceDir,
+        extraPaths: [{ path: "reference", pattern: "**/*.md", evergreen: true }],
+        multimodal,
+      }),
+    ).toBe(
+      resolveConfiguredScopeHash({
+        workspaceDir,
+        extraPaths: [{ path: "reference", pattern: "**/*.md" }],
+        multimodal,
+      }),
+    );
+  });
+
   it("marks identity dirty when configured sources add sessions", () => {
     expect(
       resolveMemoryIndexIdentityState(

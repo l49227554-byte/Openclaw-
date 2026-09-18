@@ -153,7 +153,10 @@ describe("config schema regressions", () => {
       validateConfigObject({
         memory: {
           search: {
-            extraPaths: ["../team-notes", { path: "../shared", pattern: "runbooks/**/*.md" }],
+            extraPaths: [
+              "../team-notes",
+              { path: "../shared", pattern: "runbooks/**/*.md", evergreen: true },
+            ],
           },
         },
         agents: { defaults: {} },
@@ -164,6 +167,7 @@ describe("config schema regressions", () => {
   it.each([
     { pattern: "**/*.md" },
     { path: "../shared", pattern: 42 },
+    { path: "../shared", evergreen: "yes" },
     { path: "../shared", name: "legacy-qmd-name" },
   ])("rejects invalid extra memory path object %j", (entry) => {
     expect(

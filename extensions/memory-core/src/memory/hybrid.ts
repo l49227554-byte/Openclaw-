@@ -1,4 +1,7 @@
-import type { MemoryEntryProvenance } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import type {
+  MemoryEntryProvenance,
+  MemoryExtraPath,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { applyImportanceMultiplier } from "./importance.js";
 import { applyMMRToHybridResults, type MMRConfig, DEFAULT_MMR_CONFIG } from "./mmr.js";
 import {
@@ -81,6 +84,7 @@ export async function mergeHybridResults<TSource extends HybridSource>(params: {
   mmr?: Partial<MMRConfig>;
   /** Temporal decay configuration for recency-aware scoring */
   temporalDecay?: Partial<TemporalDecayConfig>;
+  extraPaths?: MemoryExtraPath[];
   activeProjectKeys?: readonly string[];
   /** Test hook for deterministic time-dependent behavior */
   nowMs?: number;
@@ -239,6 +243,7 @@ export async function mergeHybridResults<TSource extends HybridSource>(params: {
     results: merged,
     temporalDecay: temporalDecayConfig,
     workspaceDir: params.workspaceDir,
+    extraPaths: params.extraPaths,
     sessionSourceMtimes: params.sessionSourceMtimes,
     nowMs: params.nowMs,
   });

@@ -438,15 +438,18 @@ auto-injected.
 
 ## Additional memory paths
 
-| Key          | Type                                                  | Description                              |
-| ------------ | ----------------------------------------------------- | ---------------------------------------- |
-| `extraPaths` | `Array<string \| { path: string; pattern?: string }>` | Additional directories or files to index |
+| Key          | Type                                                                       | Description                              |
+| ------------ | -------------------------------------------------------------------------- | ---------------------------------------- |
+| `extraPaths` | `Array<string \| { path: string; pattern?: string; evergreen?: boolean }>` | Additional directories or files to index |
 
 ```json5
 {
   memory: {
     search: {
-      extraPaths: ["../team-docs", { path: "/srv/shared-notes", pattern: "runbooks/**/*.md" }],
+      extraPaths: [
+        "../team-docs",
+        { path: "/srv/shared-notes", pattern: "runbooks/**/*.md", evergreen: true },
+      ],
     },
   },
 }
@@ -457,6 +460,13 @@ files. Object entries narrow a directory with a root-relative glob using `/` sep
 file entries are indexed exactly. The builtin engine skips symlinks. When a configured root is a
 symlink, `openclaw memory status` names the skipped root in text and JSON output and recommends
 configuring its canonical absolute directory instead.
+
+Set `evergreen: true` only for stable reference sources whose relevance should not fall as their
+filesystem modification time ages. The option disables temporal decay for matching `extraPaths`
+files while leaving semantic/keyword relevance, trust, provenance, and automatic-injection
+eligibility unchanged. It does not override date-based decay for canonical `memory/YYYY-MM-DD*.md`
+daily notes. If duplicate entries use the same path and pattern, the last entry's `evergreen` value
+wins.
 
 For shared notes, keep each workspace's `memory/` directory local and add the shared directory's
 canonical path to `extraPaths`. This setting indexes notes; it does not authorize legacy host-event

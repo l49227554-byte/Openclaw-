@@ -1,5 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isPathInside } from "openclaw/plugin-sdk/file-access-runtime";
+import {
+  matchesExtraMemoryPathEntry,
+  normalizeExtraMemoryPathEntries,
+  type MemoryExtraPath,
+} from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+
+type NormalizedExtraMemoryPath = ReturnType<typeof normalizeExtraMemoryPathEntries>[number];
 
 export type TemporalDecayConfig = {
   enabled: boolean;
@@ -69,6 +77,7 @@ async function extractTimestamp(params: {
   filePath: string;
   source?: string;
   workspaceDir?: string;
+  evergreenExtraPaths?: NormalizedExtraMemoryPath[];
   sessionSourceMtimes?: ReadonlyMap<string, number | undefined>;
 }): Promise<Date | null> {
   if (params.source === "sessions") {
@@ -77,6 +86,34 @@ async function extractTimestamp(params: {
     const mtime = params.sessionSourceMtimes?.get(params.filePath);
     return mtime !== undefined && Number.isFinite(mtime) ? new Date(mtime) : null;
   }
+  const normalizedPath = params.filePath.replaceAll("\\", "/").replace(/^\.\//, "");
+  const isCanonicalMemoryPath =
+    normalizedPath === "MEMORY.md" ||
+    normalizedPath === "USER.md" ||
+    normalizedPath.startsWith("memory/");
+
+  const absolutePath = params.workspaceDir
+    ? path.isAbsolute(params.filePath)
+      ? params.filePath
+      : path.resolve(params.workspaceDir, params.filePath)
+    : undefined;
+
+  // Stable reference sources can opt out of filesystem-mtime decay without
+  // changing their provenance or relevance score. Dated canonical memory
+  // files remain governed by their embedded date below.
+  if (
+    params.source === "memory" &&
+    !isCanonicalMemoryPath &&
+    absolutePath !== undefined &&
+    params.evergreenExtraPaths?.some(
+      (entry) =>
+        (absolutePath === entry.path || isPathInside(entry.path, absolutePath)) &&
+        matchesExtraMemoryPathEntry(entry, absolutePath),
+    )
+  ) {
+    return null;
+  }
+
   const fromPath = parseMemoryDateFromPath(params.filePath);
   if (fromPath) {
     return fromPath;
@@ -87,13 +124,9 @@ async function extractTimestamp(params: {
     return null;
   }
 
-  if (!params.workspaceDir) {
+  if (!absolutePath) {
     return null;
   }
-
-  const absolutePath = path.isAbsolute(params.filePath)
-    ? params.filePath
-    : path.resolve(params.workspaceDir, params.filePath);
 
   try {
     const stat = await fs.stat(absolutePath);
@@ -112,6 +145,7 @@ export async function applyTemporalDecayToHybridResults<
   results: T[];
   temporalDecay?: Partial<TemporalDecayConfig>;
   workspaceDir?: string;
+  extraPaths?: MemoryExtraPath[];
   sessionSourceMtimes?: ReadonlyMap<string, number | undefined>;
   nowMs?: number;
 }): Promise<T[]> {
@@ -121,6 +155,11 @@ export async function applyTemporalDecayToHybridResults<
   }
 
   const nowMs = params.nowMs ?? Date.now();
+  const evergreenExtraPaths = params.workspaceDir
+    ? normalizeExtraMemoryPathEntries(params.workspaceDir, params.extraPaths).filter(
+        (entry) => entry.evergreen === true,
+      )
+    : [];
   const timestampPromiseCache = new Map<string, Promise<Date | null>>();
 
   return Promise.all(
@@ -132,6 +171,7 @@ export async function applyTemporalDecayToHybridResults<
           filePath: entry.path,
           source: entry.source,
           workspaceDir: params.workspaceDir,
+          evergreenExtraPaths,
           sessionSourceMtimes: params.sessionSourceMtimes,
         });
         timestampPromiseCache.set(cacheKey, timestampPromise);

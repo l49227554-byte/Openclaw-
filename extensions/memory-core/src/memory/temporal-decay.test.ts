@@ -221,6 +221,75 @@ describe("temporal decay", () => {
     expect(decayed[0]?.score).toBeCloseTo(0.5, 2);
   });
 
+  it("keeps explicitly evergreen extra-path references out of mtime decay", async () => {
+    const dir = await createTempWorkspace("openclaw-temporal-decay-");
+    const referencePath = path.join(dir, "reference", "topic.md");
+    await fs.mkdir(path.dirname(referencePath), { recursive: true });
+    await fs.writeFile(referencePath, "stable reference\n");
+    const oldMtime = new Date(NOW_MS - 300 * DAY_MS);
+    await fs.utimes(referencePath, oldMtime, oldMtime);
+
+    const decayed = await applyTemporalDecayToHybridResults({
+      results: [{ path: "reference/topic.md", score: 0.8, source: "memory" }],
+      workspaceDir: dir,
+      extraPaths: [{ path: "reference", evergreen: true }],
+      temporalDecay: { enabled: true, halfLifeDays: 30 },
+      nowMs: NOW_MS,
+    });
+
+    expect(decayed[0]?.score).toBeCloseTo(0.8);
+  });
+
+  it("applies evergreen only to files matched by the configured pattern", async () => {
+    const dir = await createTempWorkspace("openclaw-temporal-decay-");
+    const stablePath = path.join(dir, "notes", "stable", "topic.md");
+    const datedPath = path.join(dir, "notes", "dated", "topic.md");
+    await fs.mkdir(path.dirname(stablePath), { recursive: true });
+    await fs.mkdir(path.dirname(datedPath), { recursive: true });
+    await fs.writeFile(stablePath, "stable reference\n");
+    await fs.writeFile(datedPath, "dated note\n");
+    const oldMtime = new Date(NOW_MS - 30 * DAY_MS);
+    await Promise.all([
+      fs.utimes(stablePath, oldMtime, oldMtime),
+      fs.utimes(datedPath, oldMtime, oldMtime),
+    ]);
+
+    const byPath = new Map(
+      (
+        await applyTemporalDecayToHybridResults({
+          results: [
+            { path: "notes/stable/topic.md", score: 1, source: "memory" },
+            { path: "notes/dated/topic.md", score: 1, source: "memory" },
+          ],
+          workspaceDir: dir,
+          extraPaths: [{ path: "notes", pattern: "stable/**/*.md", evergreen: true }],
+          temporalDecay: { enabled: true, halfLifeDays: 30 },
+          nowMs: NOW_MS,
+        })
+      ).map((entry) => [entry.path, entry.score]),
+    );
+
+    expect(byPath.get("notes/stable/topic.md")).toBeCloseTo(1);
+    expect(byPath.get("notes/dated/topic.md")).toBeCloseTo(0.5, 2);
+  });
+
+  it("does not let extra-path policy override dated canonical memory", async () => {
+    const dir = await createTempWorkspace("openclaw-temporal-decay-");
+    const dailyPath = path.join(dir, "memory", "2026-01-11.md");
+    await fs.mkdir(path.dirname(dailyPath), { recursive: true });
+    await fs.writeFile(dailyPath, "daily note\n");
+
+    const decayed = await applyTemporalDecayToHybridResults({
+      results: [{ path: "memory/2026-01-11.md", score: 1, source: "memory" }],
+      workspaceDir: dir,
+      extraPaths: [{ path: "memory", evergreen: true }],
+      temporalDecay: { enabled: true, halfLifeDays: 30 },
+      nowMs: NOW_MS,
+    });
+
+    expect(decayed[0]?.score).toBeCloseTo(0.5, 2);
+  });
+
   it("leaves session timestamps unknown when their indexed source is missing", async () => {
     const entry = { path: "sessions/main/missing.jsonl", score: 1, source: "sessions" };
     expect(

@@ -11,7 +11,13 @@ export const MemorySearchSchema = z
       .array(
         z.union([
           z.string(),
-          z.object({ path: z.string(), pattern: z.string().optional() }).strict(),
+          z
+            .object({
+              path: z.string(),
+              pattern: z.string().optional(),
+              evergreen: z.boolean().optional(),
+            })
+            .strict(),
         ]),
       )
       .optional(),

@@ -479,6 +479,7 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
           results: vectorResults,
           temporalDecay: hybrid.temporalDecay,
           workspaceDir: this.workspaceDir,
+          extraPaths: this.settings.extraPaths,
           sessionSourceMtimes: this.loadSessionSourceMtimes(vectorResults),
         });
         // Decay and importance can reverse the order returned by vector retrieval.
@@ -631,6 +632,7 @@ export abstract class MemorySearchOrchestration extends MemoryKeywordRetrieval {
         classifyMemoryMultimodalPath(path, this.settings.multimodal) !== null,
       mmr: params.mmr,
       temporalDecay: params.temporalDecay,
+      extraPaths: this.settings.extraPaths,
       activeProjectKeys: params.activeProjectKeys,
       workspaceDir: this.workspaceDir,
       sessionSourceMtimes: this.loadSessionSourceMtimes([...params.vector, ...params.keyword]),

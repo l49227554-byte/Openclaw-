@@ -6,6 +6,7 @@ import type {
   EmbeddingProviderCallOptions,
 } from "openclaw/plugin-sdk/embedding-providers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
+import type { MemoryExtraPath } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { resolveSessionTranscriptsDirForAgent } from "openclaw/plugin-sdk/memory-core-host-runtime-core";
 import { clearEmbeddingProviders as clearRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
@@ -25,7 +26,7 @@ type ManagerConfig = Parameters<GetMemorySearchManager>[0]["cfg"];
 type ManagerResult = Awaited<ReturnType<GetMemorySearchManager>>;
 
 type ManagerIndexFixtureConfig = {
-  extraPaths?: string[];
+  extraPaths?: MemoryExtraPath[];
   sources?: Array<"memory" | "sessions">;
   sessionMemory?: boolean;
   rememberAcrossConversations?: boolean;

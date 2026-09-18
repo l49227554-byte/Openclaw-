@@ -56,6 +56,50 @@ describe("memory index", () => {
     expect(noResults.length).toBe(0);
   });
 
+  it("keeps an evergreen extra-path reference ahead of an equally old decaying source", async () => {
+    providerFixture.forceNoProvider = true;
+    const evergreenDir = path.join(fixture.paths.root, "evergreen-reference");
+    const decayingDir = path.join(fixture.paths.root, "decaying-reference");
+    await Promise.all([
+      fs.mkdir(evergreenDir, { recursive: true }),
+      fs.mkdir(decayingDir, { recursive: true }),
+    ]);
+    const evergreenFile = path.join(evergreenDir, "policy.md");
+    const decayingFile = path.join(decayingDir, "policy.md");
+    await Promise.all([
+      fs.writeFile(evergreenFile, "Orchid authority reference payload."),
+      fs.writeFile(decayingFile, "Orchid authority reference payload."),
+    ]);
+    const oldMtime = new Date(Date.now() - 60 * 24 * 60 * 60_000);
+    await Promise.all([
+      fs.utimes(evergreenFile, oldMtime, oldMtime),
+      fs.utimes(decayingFile, oldMtime, oldMtime),
+    ]);
+
+    const result = await getMemorySearchManager({
+      cfg: createCfg({
+        provider: "none",
+        extraPaths: [{ path: evergreenDir, evergreen: true }, decayingDir],
+        minScore: 0,
+      }),
+      agentId: "main",
+    });
+    const manager = requireManager(result);
+    trackManager(manager);
+    resetManagerForTest(manager);
+    if (!manager.status().fts?.available) {
+      return;
+    }
+    await manager.sync({ reason: "test" });
+
+    const results = await manager.search("orchid authority", { maxResults: 2, minScore: 0 });
+    expect(results.map((entry) => entry.path)).toEqual([
+      "../evergreen-reference/policy.md",
+      "../decaying-reference/policy.md",
+    ]);
+    expect(results[0]?.score ?? 0).toBeGreaterThan(results[1]?.score ?? 0);
+  });
+
   it.each(["keyword-only", "lexical-only", "hybrid"] as const)(
     "preserves relaxed global lexical recall with active projects in %s search",
     async (mode) => {

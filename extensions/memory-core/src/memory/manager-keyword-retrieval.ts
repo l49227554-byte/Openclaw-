@@ -193,6 +193,7 @@ export abstract class MemoryKeywordRetrieval extends MemoryProviderLifecycle {
       results: decayInputs,
       temporalDecay: params.temporalDecay,
       workspaceDir: this.workspaceDir,
+      extraPaths: this.settings.extraPaths,
       sessionSourceMtimes: this.loadSessionSourceMtimes(params.results),
     });
     // Preserve specificity and adjusted body relevance before normalizing exact public scores.

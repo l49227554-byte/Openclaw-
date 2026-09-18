@@ -3327,6 +3327,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createTasksVitestConfig({}),
         createToolingVitestConfig({}),
         createWizardVitestConfig({}),
+        createCommandsVitestConfig({}),
       ].flatMap(listMatchedTestFiles),
     );
     for (const file of databaseWorkerCoreTestFiles) {
@@ -3472,7 +3473,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "agentic-commands-doctor",
       "agentic-commands-doctor-auth",
       "agentic-commands-doctor-config-state",
-      "agentic-commands-doctor-device",
       "agentic-commands-doctor-gateway",
       "agentic-commands-doctor-platform",
       "agentic-commands-doctor-plugins-tools",

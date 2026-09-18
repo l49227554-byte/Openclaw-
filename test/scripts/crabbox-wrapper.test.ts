@@ -398,6 +398,9 @@ function makeFakeGit(
   const gitPath = path.join(binDir, "git");
   const script = String.raw`
 const fs = require("node:fs"); const path = require("node:path"); const args = process.argv.slice(2);
+if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+  process.stdout.write(fs.realpathSync(process.cwd()) + "\n"); process.exit(0);
+}
 if (args[0] === "worktree" && args[1] === "add") {
   fs.mkdirSync(args[3], { recursive: true });
   process.exit(0);
@@ -553,7 +556,7 @@ type ParsedWrapperRun = {
 };
 
 function expectSuccessfulWrapperRun(result: ReturnType<typeof runWrapper>): ParsedWrapperRun {
-  expect(result.status).toBe(0);
+  expect(result.status, result.stderr).toBe(0);
   const output = parseFakeCrabboxOutput(result);
   const remoteCommand = normalizeShellLineEndings(output.args.at(-1) ?? "");
   return { output, remoteCommand, result };
@@ -1281,7 +1284,7 @@ describe("scripts/crabbox-wrapper", () => {
         const directory = fs.mkdtempSync(path.join(syncRoot,"openclaw-crabbox-sync-"));
         const bundlePath = ".openclaw-crabbox-changed-gate.bundle";
         fs.writeFileSync(path.join(directory,bundlePath), "fixture capsule");
-        return {directory,bundlePath,staging:{admitted(){},settled(){},hold(){}},sourceSha:"d".repeat(40),baseSha:base === "origin/main" ? process.env.OPENCLAW_FAKE_GIT_BASE_SHA || "abc123" : base,tree:"e".repeat(40),carrier:"f".repeat(40),digest:"a".repeat(64),cleanup(){fs.rmSync(directory,{recursive:true,force:true});}};
+        return {directory,bundlePath,staging:{admitted(){},settled(){},preserved(){},hold(){}},sourceSha:"d".repeat(40),baseSha:base === "origin/main" ? process.env.OPENCLAW_FAKE_GIT_BASE_SHA || "abc123" : base,tree:"e".repeat(40),carrier:"f".repeat(40),digest:"a".repeat(64),cleanup(){fs.rmSync(directory,{recursive:true,force:true});}};
       }
     `,
     );

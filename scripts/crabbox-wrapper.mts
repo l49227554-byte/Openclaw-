@@ -37,6 +37,13 @@ import {
 } from "./crabbox-source-capsule.mts";
 import { remoteSourceBootstrap } from "./crabbox-source-receiver.mts";
 import { preserveCrabboxArtifacts } from "./crabbox-staging-artifacts.mts";
+import { captureClaimNamespace } from "./crabbox-staging-claims.mts";
+import {
+  createStaging,
+  discoverStaging,
+  recoverDiscoveredStaging,
+  type StagingHandle,
+} from "./crabbox-staging.mts";
 import {
   canonicalProviderName,
   isProviderAdvertised,
@@ -76,7 +83,17 @@ if (args[0] === "--") {
 }
 if (args[0] === "staging") {
   const { runStagingCommand } = await import("./crabbox-staging.mts");
-  process.exit(await runStagingCommand(args.slice(1), fullCheckoutSyncRoot(false)));
+  process.exit(
+    await runStagingCommand(args.slice(1), fullCheckoutSyncRoot(false), {
+      cwd: repoRoot,
+      binary:
+        findCrabboxBinary({
+          openclawRoot:
+            process.env.OPENCLAW_CRABBOX_WRAPPER_IGNORE_REPO_BINARY === "1" ? undefined : repoRoot,
+          pathEnv: process.env[resolvePathEnvKey(process.env)],
+        }) ?? "crabbox",
+    }),
+  );
 }
 const CRABBOX_METADATA_PROBE_TIMEOUT_MS = 5_000;
 const MAX_TIMING_JSON_LINE_CHARS = 1024 * 1024;
@@ -3376,7 +3393,8 @@ function assertFullCheckoutSyncDisk(root: string) {
 function prepareFullCheckoutForSync() {
   const syncRoot = fullCheckoutSyncRoot();
   assertFullCheckoutSyncDisk(syncRoot);
-  const dir = mkdtempSync(resolve(syncRoot, "openclaw-crabbox-sync-"));
+  const staging = createStaging(syncRoot, repoRoot, "worktree");
+  const dir = resolve(staging.payload, "source");
   let active = false;
 
   function create() {
@@ -3392,8 +3410,18 @@ function prepareFullCheckoutForSync() {
         throw new Error(`git sparse-checkout disable failed: ${disableSparse.text}`);
       }
     } catch (error) {
-      cleanupFullCheckout(dir, active);
-      active = false;
+      try {
+        cleanupFullCheckout(dir, active);
+        active = false;
+        staging.dispose();
+      } catch (cleanupError) {
+        staging.hold("registration");
+        throw new AggregateError(
+          [error, cleanupError],
+          "Full checkout preparation failed; staging retained at " + staging.root,
+          { cause: cleanupError },
+        );
+      }
       throw error;
     }
   }
@@ -3402,6 +3430,7 @@ function prepareFullCheckoutForSync() {
 
   return {
     dir,
+    staging,
     restoreIfMissing() {
       try {
         if (statSync(dir).isDirectory()) {
@@ -3415,7 +3444,10 @@ function prepareFullCheckoutForSync() {
       if (active) {
         const remove = gitOutput(["worktree", "remove", "--force", dir]);
         if (remove.status !== 0) {
-          console.error(`[crabbox] warning: git worktree remove failed for ${dir}: ${remove.text}`);
+          staging.hold("registration");
+          throw new Error(
+            `git worktree remove failed for ${dir}; registration cleanup incomplete; remaining staging retained: ${remove.text}`,
+          );
         }
         active = false;
       }
@@ -3431,8 +3463,14 @@ function prepareFullCheckoutForSync() {
       }
     },
     cleanup() {
-      cleanupFullCheckout(dir, active);
+      try {
+        cleanupFullCheckout(dir, active);
+      } catch (error) {
+        staging.hold("registration");
+        throw error;
+      }
       active = false;
+      staging.dispose();
     },
   };
 }
@@ -3488,7 +3526,9 @@ function cleanupFullCheckout(dir: string, active: boolean) {
     if (remove.status === 0) {
       return;
     }
-    console.error(`[crabbox] warning: git worktree remove failed for ${dir}: ${remove.text}`);
+    throw new Error(
+      `git worktree remove failed for ${dir}; registration cleanup incomplete; remaining staging retained: ${remove.text}`,
+    );
   }
   rmSync(dir, { recursive: true, force: true });
 }
@@ -3797,6 +3837,7 @@ let fullCheckout: FullCheckout | null = null;
 let stopFullCheckoutKeepalive = () => {};
 let cleanupSucceeded: boolean | undefined;
 let sourceCapsule: CrabboxSourceCapsule | null = null;
+let sourceStaging: StagingHandle | undefined;
 let remoteChangedGateAlias = "";
 let capturedBlacksmithLeaseId = "";
 let scriptBootstrap = { args: normalizedArgs, cleanup: () => {}, prepared: false };
@@ -3828,6 +3869,55 @@ for (const signal of signalExitCodes.keys()) {
   });
 }
 process.once("exit", cleanupOnce);
+
+function transfersSource(commandArgs: string[]) {
+  if (
+    hasOption(commandArgs, "--help") ||
+    hasOption(commandArgs, "-h") ||
+    hasOption(commandArgs, "--dry-run") ||
+    hasOption(commandArgs, "--no-sync")
+  ) {
+    return false;
+  }
+  const [command, operation] = commandArgs;
+  if (["run", "watch", "shard"].includes(command ?? "")) {
+    return true;
+  }
+  if ((command === "job" || command === "bench") && operation === "run") {
+    return true;
+  }
+  if (command === "capsule" && operation === "replay") {
+    return true;
+  }
+  if (command === "checkpoint" && operation === "fork") {
+    const separator = commandArgs.indexOf("--");
+    return separator >= 0 && separator + 1 < commandArgs.length;
+  }
+  if (command === "actions" && operation === "hydrate") {
+    return true;
+  }
+  return command === "prewarm" && !hasOption(commandArgs, "--no-hydrate");
+}
+
+const sourceTransfer = transfersSource(normalizedArgs);
+let discoveredStaging: ReturnType<typeof discoverStaging> | undefined;
+if (sourceTransfer) {
+  try {
+    discoveredStaging = discoverStaging(fullCheckoutSyncRoot(false));
+    if (discoveredStaging.entries.length || discoveredStaging.incomplete) {
+      const count = (status: string) =>
+        discoveredStaging!.entries.filter((entry) => entry.status === status).length;
+      console.error(
+        `[crabbox] staging discovery: ${count("active")} active, ${count("protected")} protected, ${count("candidate")} candidates${discoveredStaging.incomplete ? "; scan will continue on later runs" : ""}. Use staging inspect for reasons.`,
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[crabbox] staging discovery unavailable: " +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+}
 
 async function readScriptStdin() {
   return (await consumeStream(addAbortSignal(preparationAbort.signal, process.stdin))).toString(
@@ -3878,11 +3968,13 @@ try {
         ),
         base: changedGateBase || changedGateBaseForCommand([]).resolvedBase,
       });
+      sourceStaging = sourceCapsule.staging;
     }
     const capsule = sourceCapsule;
     const checkout = capsule
       ? {
           dir: capsule.directory,
+          staging: capsule.staging,
           cleanup: capsule.cleanup,
           exists: () => pathExists(capsule.directory),
           restoreIfMissing() {
@@ -3894,6 +3986,7 @@ try {
         }
       : prepareFullCheckoutForSync();
     fullCheckout = checkout;
+    sourceStaging = checkout.staging;
     cleanupChildCwd = () => checkout.cleanup();
     childCwd = checkout.dir;
     normalizedArgs = injectFullCheckoutLeaseReclaim(normalizedArgs);
@@ -3922,6 +4015,11 @@ function cleanupOnce() {
   }
   cleanupSucceeded = false;
   if (!childTreeSettled) {
+    try {
+      sourceStaging?.hold("writers");
+    } catch {
+      // The earlier admission receipt remains fail-closed if this update fails.
+    }
     console.error(
       childCwd === repoRoot
         ? "[crabbox] child cleanup is unverified; local inputs remain in place"
@@ -3955,8 +4053,16 @@ function cleanupOnce() {
     succeeded = claimsRestored && succeeded;
   }
   try {
-    preserveCrabboxArtifacts(childCwd, repoRoot);
+    const artifacts = preserveCrabboxArtifacts(childCwd, repoRoot);
+    if (artifacts) {
+      sourceStaging?.preserved(artifacts);
+    }
   } catch (error) {
+    try {
+      sourceStaging?.hold("artifacts");
+    } catch {
+      // No successful preservation receipt was recorded.
+    }
     console.error(
       `[crabbox] artifact preservation failed: ${error instanceof Error ? error.message : String(error)}; temporary checkout retained at ${childCwd}. Recover .crabbox/runs and .crabbox/captures from this checkout before removing it.`,
     );
@@ -3964,6 +4070,11 @@ function cleanupOnce() {
     return false;
   }
   if (!claimsRestored) {
+    try {
+      sourceStaging?.hold("claims");
+    } catch {
+      // Settled staging still requires a fresh native claim inventory.
+    }
     console.error(
       `[crabbox] lease ownership restoration failed; temporary checkout retained at ${childCwd}. Restore the retained lease to ${repoRoot} or stop it before removing this checkout.`,
     );
@@ -4083,7 +4194,19 @@ const FAST_FAIL_HINT_WINDOW_MS = 15_000;
 const spawnManagedChild = await loadManagedChildSpawner();
 await preparationCheckpoint();
 // Persist admission before the child can observe or mutate the staged source.
-sourceCapsule?.staging.admitted();
+if (sourceStaging?.recorded) {
+  let namespace;
+  try {
+    namespace = captureClaimNamespace(childCwd, childEnv);
+  } catch (error) {
+    console.error(
+      "[crabbox] staging claim namespace unavailable; orphan recovery will remain protected: " +
+        (error instanceof Error ? error.message : String(error)),
+    );
+  }
+  const leaseId = optionValue(normalizedArgs, "--id");
+  sourceStaging.admitted(namespace, leaseId ? [leaseId] : undefined);
+}
 const child = spawnManagedChild(childInvocation.command, childInvocation.args, {
   cwd: childCwd,
   stdio: ["inherit", "inherit", captureBlacksmithTimingJSON ? "pipe" : "inherit"],
@@ -4165,6 +4288,26 @@ async function finishChildExit(code: number | null, signal: Signal | null) {
     process.exit(signalExitCodes.get(cancellationSignal ?? signal!) ?? 1);
   }
   const finalExitCode = (exitCode ?? 1) || (settled && fullCheckoutAvailable && cleaned ? 0 : 1);
+  if (finalExitCode === 0 && discoveredStaging && !cancellationSignal && !signal) {
+    try {
+      const recovered = await recoverDiscoveredStaging(
+        fullCheckoutSyncRoot(false),
+        discoveredStaging,
+        { binary, cwd: repoRoot, signal: preparationAbort.signal },
+      );
+      if (recovered) {
+        console.error(`[crabbox] staging ${recovered.id}: ${recovered.reason}`);
+      }
+    } catch (error) {
+      console.error(
+        "[crabbox] deferred staging recovery retained its inputs: " +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    }
+  }
+  if (cancellationSignal) {
+    process.exit(signalExitCodes.get(cancellationSignal) ?? 1);
+  }
   if (
     finalExitCode !== 0 &&
     reusedRunLeaseId &&
@@ -4220,7 +4363,7 @@ function settleChildTree(childProcess: ChildProcess, signal?: Signal): Promise<b
       // A failed receipt write keeps future recovery conservative; the live
       // owner still completes its already-authorized normal cleanup.
       try {
-        sourceCapsule?.staging.settled();
+        sourceStaging?.settled(capturedBlacksmithLeaseId ? [capturedBlacksmithLeaseId] : undefined);
       } catch (error) {
         console.error(
           "[crabbox] staging settlement receipt failed: " +

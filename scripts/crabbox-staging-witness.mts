@@ -5,7 +5,7 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
 
-export type FrozenSourceEntry = {
+type FrozenSourceEntry = {
   path: string;
   mode: "100644" | "100755" | "120000";
   blob: string;
@@ -176,6 +176,21 @@ export function captureSourceWitness(
   return undefined;
 }
 
+/** Select an operator-owned retained ref without creating refs or copying source. */
+export function selectSourceWitness(repository: string, ref: string): SourceWitness {
+  if (!retainedRef(ref)) {
+    throw new Error(
+      "Choose a full retained refs/heads, refs/remotes, or refs/tags name outside staging.",
+    );
+  }
+  const deadline = Date.now() + 5_000;
+  const location = ["-C", repository];
+  const gitDir = realpathSync(
+    gitText(location, ["rev-parse", "--path-format=absolute", "--git-common-dir"], deadline),
+  );
+  return { gitDir, ref, commit: resolveRef(location, ref, deadline).commit };
+}
+
 function overlaps(left: string, right: string) {
   const within = (parent: string, child: string) => {
     const path = relative(parent, child);
@@ -315,7 +330,12 @@ function storageIdentity(gitDir: string, payloadRoot: string, ref: string, deadl
   return digest.digest("hex");
 }
 
-async function verifyBlobs(location: string[], blobs: string[], deadline: number) {
+async function verifyBlobs(
+  location: string[],
+  blobs: string[],
+  deadline: number,
+  signal?: AbortSignal,
+) {
   if (blobs.length === 0) {
     return;
   }
@@ -378,7 +398,7 @@ async function verifyBlobs(location: string[], blobs: string[], deadline: number
       env: gitEnvironment(),
       stdio: ["pipe", "pipe", "pipe"],
       timeoutMs: remainingTime(deadline),
-      signal: abort.signal,
+      signal: signal ? AbortSignal.any([signal, abort.signal]) : abort.signal,
       requireProcessTreeExit: true,
       onReady(child) {
         child.stdout!.on("data", consume);
@@ -404,8 +424,10 @@ export async function verifySourceWitness(params: {
   source: FrozenSource;
   witness: SourceWitness;
   payloadRoot: string;
+  signal?: AbortSignal;
 }): Promise<SourceWitnessResult> {
   try {
+    params.signal?.throwIfAborted();
     validateSource(params.source);
     const { ref: refName, commit } = params.witness;
     if (!objectId.test(commit) || !retainedRef(refName)) {
@@ -478,8 +500,10 @@ export async function verifySourceWitness(params: {
       location,
       [...new Set(params.source.files.map((entry) => entry.blob))],
       deadline,
+      params.signal,
     );
     const revalidate = () => {
+      params.signal?.throwIfAborted();
       const currentStorage = storageIdentity(gitDir, payloadRoot, refName, deadline);
       const after = resolveRef(location, refName, deadline);
       if (currentStorage !== before || after.oid !== ref.oid || after.commit !== ref.commit) {

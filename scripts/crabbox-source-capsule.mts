@@ -155,12 +155,16 @@ export function prepareCrabboxSourceCapsule(options: {
   }
   // Freeze invoking Git's eligibility before moving to a different Git/config
   // context. This includes staged ignored additions and excludes untracked secrets.
-  const eligible = new Set(
-    git(repoRoot, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
-      .split("\0")
-      .filter(Boolean)
-      .map(capsulePath),
-  );
+  const eligiblePaths = git(repoRoot, [
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "-z",
+  ])
+    .split("\0")
+    .filter(Boolean);
+  const eligible = new Set(eligiblePaths.map(capsulePath));
   mkdirSync(options.syncRoot, { recursive: true });
   const staging = createStaging(options.syncRoot, repoRoot);
   const temporary = staging.payload;
@@ -644,17 +648,19 @@ export function prepareCrabboxSourceCapsule(options: {
     rmSync(linkBlobs, { recursive: true, force: true });
     rmSync(join(temporary, "sparse-blobs"), { force: true });
     rmSync(shallow, { force: true });
-    staging.prepared(
-      {
-        files: paths.map((path, index) => ({
-          path,
-          mode: frozen.get(path)!.mode as "100644" | "100755" | "120000",
-          blob: hashes[index]!,
-        })),
-        deleted,
-      },
-      captureSourceWitness(repoRoot, sourceSha),
-    );
+    if (staging.recorded) {
+      staging.prepared(
+        {
+          files: paths.map((path, index) => ({
+            path,
+            mode: frozen.get(path)!.mode as "100644" | "100755" | "120000",
+            blob: hashes[index]!,
+          })),
+          deleted,
+        },
+        captureSourceWitness(repoRoot, sourceSha),
+      );
+    }
     return {
       sourceSha,
       baseSha,

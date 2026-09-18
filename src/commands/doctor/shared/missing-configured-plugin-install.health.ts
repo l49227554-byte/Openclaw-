@@ -91,6 +91,7 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
     configuredChannelOwnerPluginIds,
     bundledPluginsById,
     configuredPluginIdsWithStaleDescriptors: staleDescriptorPluginIds,
+    operatorManagedPluginIds,
     records,
     installedPluginIdsWithRepairablePackageDiagnostics: repairablePackageDiagnosticPluginIds,
     installedPluginIdsWithStaleVersionBoundRuntimePackages: staleVersionBoundRuntimePluginIds,
@@ -117,6 +118,9 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
       configuredChannelOwnerPluginIds,
       blockedPluginIds,
     })) {
+      if (operatorManagedPluginIds.has(pluginId)) {
+        continue;
+      }
       deferredPluginIds.add(pluginId);
       const record = records[pluginId];
       if (!record || !isPayloadMissing(env, record.installPath)) {
@@ -135,6 +139,7 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
 
   const missingRecordedPluginIds = Object.keys(records).filter(
     (pluginId) =>
+      !operatorManagedPluginIds.has(pluginId) &&
       !deferredPluginIds.has(pluginId) &&
       !officialReplacementPluginIds.has(pluginId) &&
       !bundledPluginsById.has(pluginId) &&
@@ -173,7 +178,7 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
 
   const missingPluginIds = new Set(
     [...pluginIds].filter((pluginId) => {
-      if (deferredPluginIds.has(pluginId)) {
+      if (operatorManagedPluginIds.has(pluginId) || deferredPluginIds.has(pluginId)) {
         return false;
       }
       const hasRecord = Object.hasOwn(records, pluginId);
@@ -198,7 +203,10 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
         ? new Set([...blockedPluginIds, ...deferredPluginIds])
         : blockedPluginIds,
   })) {
-    if (bundledPluginsById.has(candidate.pluginId)) {
+    if (
+      operatorManagedPluginIds.has(candidate.pluginId) ||
+      bundledPluginsById.has(candidate.pluginId)
+    ) {
       continue;
     }
     if (reportedPluginIds.has(candidate.pluginId)) {

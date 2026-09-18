@@ -99,6 +99,7 @@ export function resolveConfiguredPluginCandidateRepair(params: {
   context: Pick<
     InstallContext,
     | "bundledPluginsById"
+    | "operatorManagedPluginIds"
     | "officialReplacementPluginIds"
     | "knownIds"
     | "installedPluginIdsWithStaleVersionBoundRuntimePackages"
@@ -109,7 +110,10 @@ export function resolveConfiguredPluginCandidateRepair(params: {
   | { shouldReplaceBrokenOfficialInstall: boolean; repairReason?: InstallCandidateRepairReason }
   | undefined {
   const { candidate, context } = params;
-  if (context.bundledPluginsById.has(candidate.pluginId)) {
+  if (
+    context.operatorManagedPluginIds.has(candidate.pluginId) ||
+    context.bundledPluginsById.has(candidate.pluginId)
+  ) {
     return undefined;
   }
   const shouldReplaceBrokenOfficialInstall = context.officialReplacementPluginIds.has(
@@ -190,6 +194,7 @@ export async function collectConfiguredNpmPluginTargets(params: {
   for (const pluginId of pluginIds) {
     const record = context.records[pluginId];
     if (
+      context.operatorManagedPluginIds.has(pluginId) ||
       context.bundledPluginsById.has(pluginId) ||
       (record && (record.source !== "npm" || record.artifactKind || record.sourcePath)) ||
       !resolveEffectiveEnableState({

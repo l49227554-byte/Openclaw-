@@ -1491,8 +1491,8 @@ export default class {
           "node-host-launcher.mjs",
           "src/tui/tui-pty-runtime-test-support.ts",
           "src/plugins/runtime-retention-entrypoint.test-support.ts",
-          "src/process/windows-job-entrypoint.ts",
-          "src/process/windows-job.ts",
+          "scripts/lib/managed-windows-job-entrypoint.mts",
+          "scripts/lib/managed-windows-job.mts",
         ]) {
           const filename = path.join(fixture, input);
           const original = fs.readFileSync(filename, "utf8");

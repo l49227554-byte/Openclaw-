@@ -18,7 +18,7 @@ import * as transcriptBackfill from "./session-row-transcript-backfill.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-it("keeps legacy titles unchanged during preview reads and repairs them only through Doctor", async () => {
+it("eventually fills legacy titles and previews without waiting during startup or changing activity", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const cfg = { agents: { list: [{ id: "main", default: true }] } };
     setRuntimeConfigSnapshot(cfg);

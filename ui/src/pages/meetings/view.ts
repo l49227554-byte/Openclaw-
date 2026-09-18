@@ -311,6 +311,7 @@ function renderReader(props: TranscriptsViewProps) {
   const params = new URLSearchParams(props.search);
   const transcriptPage = props.reader.pages.at(-1);
   const page = props.reader.summary ?? transcriptPage;
+  const tabPage = props.readerTab === "summary" ? props.reader.summary : transcriptPage;
   return html`<article
     class="transcripts-reader"
     aria-label=${t("transcripts.reader")}
@@ -332,7 +333,7 @@ function renderReader(props: TranscriptsViewProps) {
       >${icons.arrowLeft}${t("transcripts.back")}</a
     >
     ${props.reader.error ? renderReadError(props.reader.error, props.onReaderRetry) : nothing}
-    ${props.reader.loading && !page ? renderLoading(t(props.readerTab === "summary" ? "meetings.loadingSummary" : "meetings.loadingTranscript")) : nothing}
+    ${props.reader.loading && !tabPage ? renderLoading(t(props.readerTab === "summary" ? "meetings.loadingSummary" : "meetings.loadingTranscript")) : nothing}
     ${
       page
         ? html`

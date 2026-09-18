@@ -1,18 +1,12 @@
 // Gateway RPC handlers for skill discovery, install/update, and proposal workflows.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  GATEWAY_CLIENT_CAPS,
-  hasGatewayClientCap,
-} from "../../../packages/gateway-protocol/src/client-info.js";
-import {
   buildClawHubTrustErrorDetails,
   ErrorCodes,
   errorShape,
   type SkillsInstallParams,
   type SkillsUpdateParams,
   validateSkillsBinsParams,
-  validateSkillsCuratorActionParams,
-  validateSkillsCuratorStatusParams,
   validateSkillsDetailParams,
   validateSkillsInstallParams,
   validateSkillsProposalActionParams,
@@ -65,10 +59,6 @@ import {
   collectClawHubVerdictTargets,
   fetchOpenClawSkillSecurityVerdicts,
 } from "../../skills/security/clawhub-verdicts.js";
-import {
-  getSkillCuratorStatus,
-  SKILL_LIFECYCLE_CURATION_RETIRED_MESSAGE,
-} from "../../skills/workshop/curator.js";
 import { resolveSkillProposalName } from "../../skills/workshop/frontmatter.js";
 import { assertExpectedRevisionHash } from "../../skills/workshop/service-evaluation.js";
 import {
@@ -90,6 +80,7 @@ import {
   readWritableWorkshopSkill,
 } from "../../skills/workshop/workspace-skill-read.js";
 import { authorizeSessionSharingTarget, resolveSessionSharingTarget } from "../session-sharing.js";
+import { skillsCuratorHandlers } from "./skills-curator.js";
 import { skillsLibraryHandlers } from "./skills-library.js";
 import { skillProposalHistoryHandlers } from "./skills-proposal-history.js";
 import { skillsUploadHandlers } from "./skills-upload.js";
@@ -99,7 +90,7 @@ import {
   SKILL_PROPOSAL_RESPONSE_HANDLED,
   type ResolvedSkillsWorkspace,
 } from "./skills-workspace-handler.js";
-import type { GatewayRequestHandlerOptions, GatewayRequestHandlers, RespondFn } from "./types.js";
+import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 type ClawHubInstallResult = Awaited<ReturnType<typeof installSkillFromClawHub>>;
@@ -174,20 +165,6 @@ function buildRemoteAwareWorkspaceSkillStatus(
   });
 }
 
-function respondSkillWorkshopError(respond: RespondFn, err: unknown) {
-  respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(err)));
-}
-
-function respondRetiredSkillCuratorAction(
-  { params, respond }: GatewayRequestHandlerOptions,
-  method: `skills.curator.${"pin" | "restore" | "unpin"}`,
-): void {
-  if (!assertValidParams(params, validateSkillsCuratorActionParams, method, respond)) {
-    return;
-  }
-  respondSkillWorkshopError(respond, new Error(SKILL_LIFECYCLE_CURATION_RETIRED_MESSAGE));
-}
-
 function collectClawHubTrustWarnings(results: Array<{ warning?: string }>): string[] {
   return results
     .map((result) => normalizeOptionalString(result.warning))
@@ -250,6 +227,7 @@ async function forwardSkillWorkshopRevisionToChatSend(
 
 /** Gateway request handlers for skill status, catalogs, installs, updates, and workshop proposals. */
 export const skillsHandlers: GatewayRequestHandlers = {
+  ...skillsCuratorHandlers,
   ...skillsLibraryHandlers,
   ...skillsUploadHandlers,
   ...skillProposalHistoryHandlers,
@@ -433,40 +411,6 @@ export const skillsHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(err)));
     }
   },
-  "skills.curator.status": async ({ params, respond, context, client }) => {
-    if (
-      !assertValidParams(
-        params,
-        validateSkillsCuratorStatusParams,
-        "skills.curator.status",
-        respond,
-      )
-    ) {
-      return;
-    }
-    const status = getSkillCuratorStatus({ config: context.getRuntimeConfig() });
-    if (
-      hasGatewayClientCap(client?.connect.caps, GATEWAY_CLIENT_CAPS.SKILL_CURATOR_LIVE_INVENTORY)
-    ) {
-      respond(true, status, undefined);
-      return;
-    }
-    const { inventory: _inventory, ...legacyStatus } = status;
-    const skills = status.skills.filter(
-      (skill) => skill.createdAtMs !== null && skill.stateChangedAtMs !== null,
-    );
-    respond(
-      true,
-      { ...legacyStatus, skills, counts: { active: skills.length, stale: 0, archived: 0 } },
-      undefined,
-    );
-  },
-  "skills.curator.pin": (options) =>
-    respondRetiredSkillCuratorAction(options, "skills.curator.pin"),
-  "skills.curator.unpin": (options) =>
-    respondRetiredSkillCuratorAction(options, "skills.curator.unpin"),
-  "skills.curator.restore": (options) =>
-    respondRetiredSkillCuratorAction(options, "skills.curator.restore"),
   "skills.proposals.list": async ({ params, respond, context }) => {
     await runSkillsProposalWorkspaceHandler({
       method: "skills.proposals.list",

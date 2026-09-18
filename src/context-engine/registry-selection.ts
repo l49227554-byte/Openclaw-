@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../config/types.js";
 import {
   normalizePluginId,
   normalizePluginsConfig,
+  resolveEnableState,
   resolveSelectedContextEnginePluginIdFromConfig,
 } from "../plugins/config-state.js";
 import type { ContextEngineRegistration } from "../plugins/registry-contribution-types.js";
@@ -20,9 +21,23 @@ export function resolveEffectiveContextEngineId(
     return defaultEngineId;
   }
   const entry = entries.get(engineId);
-  // An absent registration retains the existing equal-ID selection contract and failure path.
-  const pluginId = (entry && pluginIdFromContextEngineOwner(entry.owner)) ?? engineId;
-  return resolveSelectedContextEnginePluginIdFromConfig(plugins, normalizePluginId(pluginId))
+  const pluginId = entry && pluginIdFromContextEngineOwner(entry.owner);
+  if (pluginId) {
+    // Runtime registration supplies ownership without rediscovering plugin manifests.
+    // Preserve the selector so a distinct owner still requires independent approval.
+    return resolveSelectedContextEnginePluginIdFromConfig(plugins, engineId, [
+      { id: pluginId, contextEngineIds: [engineId] },
+    ])
+      ? engineId
+      : defaultEngineId;
+  }
+  // Without a plugin owner, apply equal-ID policy to the configured candidate only.
+  // Do not invent discovery metadata or suppress an enabled missing-engine diagnostic.
+  const candidateId = normalizePluginId(engineId);
+  return resolveEnableState(candidateId, "config", {
+    ...plugins,
+    contextEngineOwnerId: candidateId,
+  }).enabled
     ? engineId
     : defaultEngineId;
 }

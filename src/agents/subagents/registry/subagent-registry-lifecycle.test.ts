@@ -12,7 +12,7 @@ import {
   registerContextEngineInRegistry,
   resolveContextEngine,
 } from "../../../context-engine/registry.js";
-import { resetContextEngineRuntimeQuarantineForTests } from "../../../context-engine/registry.test-support.js";
+import * as engineTest from "../../../context-engine/registry.test-support.js";
 import type { CallGatewayOptions } from "../../../gateway/call.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import {
@@ -5322,7 +5322,7 @@ describe("requester settle wake trigger", () => {
     "owns context cleanup after its caller scope drains (%s)",
     async (mode) => {
       resetGatewayWorkAdmission();
-      resetContextEngineRuntimeQuarantineForTests();
+      engineTest.resetContextEngineRuntimeQuarantineForTests();
       runtimeMocks.log.mockClear();
       const registry = createEmptyPluginRegistry();
       const resources = new PluginRegistryInspectionResources(retireInspectionInstances);
@@ -5350,7 +5350,7 @@ describe("requester settle wake trigger", () => {
       registerContextEngineInRegistry(registry, "cleanup-owned", factory, "plugin:fixture");
       registerContextEngineInRegistry(registry, "legacy", () => new LegacyContextEngine(), "core");
       setSubagentRegistryDepsForTest({
-        getRuntimeConfig: () => ({ plugins: { slots: { contextEngine: "cleanup-owned" } } }),
+        getRuntimeConfig: () => engineTest.contextEngineConfig("cleanup-owned", "fixture"),
         loadAgentRuntimePluginRegistryHandle: () => registry,
         ensureContextEnginesInitialized: vi.fn(),
         resolveContextEngine,
@@ -5440,7 +5440,7 @@ describe("requester settle wake trigger", () => {
         await waitForLifecycleState(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
         setSubagentRegistryDepsForTest();
         resetSubagentRegistryRuntimeLoadersForTests();
-        resetContextEngineRuntimeQuarantineForTests();
+        engineTest.resetContextEngineRuntimeQuarantineForTests();
         resetGatewayWorkAdmission();
       }
     },

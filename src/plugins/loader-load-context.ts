@@ -92,6 +92,7 @@ function buildActivationMetadataHash(params: {
         allow: params.activationSource.plugins.allow,
         deny: params.activationSource.plugins.deny,
         memorySlot: params.activationSource.plugins.slots.memory,
+        contextEngineSlot: params.activationSource.plugins.slots.contextEngine,
         entries: pluginEntryInputs,
         channelEnablement: sourceChannelEnablement,
         autoEnabledReasons: autoEnableReasonEntries,
@@ -198,6 +199,7 @@ function buildCacheKeys(params: {
         JSON.stringify(
           manifestRegistry?.plugins.map((plugin) => [
             plugin.id,
+            plugin.contextEngineIds,
             plugin.origin,
             plugin.rootDir,
             plugin.source,

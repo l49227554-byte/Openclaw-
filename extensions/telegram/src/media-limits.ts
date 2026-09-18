@@ -15,7 +15,7 @@ export function resolveTelegramMediaMaxBytes(params: {
   }
   const mediaMaxMb = [params.mediaMaxMb, params.fallbackMediaMaxMb].find(
     (candidate): candidate is number =>
-      typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0,
+      typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0,
   );
   return mediaMaxMb === undefined ? DEFAULT_TELEGRAM_MEDIA_MAX_BYTES : Math.floor(mediaMaxMb * MIB);
 }

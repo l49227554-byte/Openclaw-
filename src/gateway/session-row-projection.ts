@@ -32,7 +32,6 @@ import {
 } from "../state/openclaw-agent-db.paths.js";
 import { retainUserProfileCatalog } from "../state/user-profile-list.js";
 import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
-import { compareSessionEntryPairs } from "./session-list-order.js";
 import { yieldSessionListWork } from "./session-projection-work.js";
 import { withPreparedSessionRows, type SessionRowReadView } from "./session-row-prepared-read.js";
 import { createSessionRowProjectionBackfill } from "./session-row-projection-backfill.js";
@@ -175,11 +174,11 @@ export async function createSessionRowProjection(params: {
     }
     return next;
   }
-  function inScope(row: records.Row, query: records.Query) {
+  function inScope(row: records.Row, query: records.Query, logicalOwnerOnly = false) {
     return (
       (!query.agentId ||
         row.agentId === query.agentId ||
-        row.storeTarget.agentId === query.agentId) &&
+        (!logicalOwnerOnly && row.storeTarget.agentId === query.agentId)) &&
       (!query.storePath ||
         (scope?.physicalPaths(query.storePath, query.agentId) ?? [query.storePath]).includes(
           row.storeTarget.storePath,
@@ -585,26 +584,38 @@ export async function createSessionRowProjection(params: {
           }
         }
       }
-      const candidates = parent ? [...children].map((id) => rows.get(id)) : matching(query);
-      return withAgentRosterFactsBatch(cfg, () =>
-        candidates
+      return withAgentRosterFactsBatch(cfg, () => {
+        const sessionIdOrKey = query.sessionIdOrKey;
+        let keys: Set<string> | undefined;
+        if (sessionIdOrKey) {
+          // Broad publications can change IDs before the resident index has caught up.
+          for (const id of dirty) {
+            const row = rows.get(id);
+            if (row && inScope(row, query, true)) {
+              acquireEntry(row, readSessionRowEntry(row));
+            }
+          }
+          const indexed = { ...query, key: sessionIdOrKey };
+          keys = new Set([...matching(indexed, "id"), ...matching(indexed)].map((row) => row.key));
+        }
+        // Keep every physical competitor; federation precedes ID and visibility filtering.
+        const candidates = keys
+          ? [...keys].flatMap((key) => matching({ ...query, key }))
+          : parent
+            ? [...children].map((id) => rows.get(id))
+            : matching(query);
+        const selected = candidates
           .map((row) =>
-            row && dirty.has(records.identity(row))
+            row && !sessionIdOrKey && dirty.has(records.identity(row))
               ? acquireEntry(row, readSessionRowEntry(row))
               : row,
           )
           .filter(records.hasEntry)
-          .filter((row) => inScope(row, query) && (!query.agentId || row.agentId === query.agentId))
-          .toSorted((a, b) =>
-            compareSessionEntryPairs([a.key, a.entry], [b.key, b.entry], query.sortBy),
-          ),
-      );
+          .filter((row) => inScope(row, query, true));
+        return records.sort(selected, query.sortBy);
+      });
     });
   }
-  const present = (
-    record: NonNullable<ReturnType<typeof describe>>,
-    options: records.SnapshotOptions = {},
-  ) => records.present(record, metadata.current, options);
   await inOwnerContext(refreshBatch).catch((error: unknown) => {
     dispose();
     throw error;
@@ -634,7 +645,8 @@ export async function createSessionRowProjection(params: {
       return row?.entry?.sessionId === query.sessionId ? [row] : [];
     },
     describe,
-    present,
+    present: (record: records.MaterializedRow, options?: records.SnapshotOptions) =>
+      records.present(record, metadata.current, options),
     withPreparedExactRows<T>(
       queries: (config: OpenClawConfig) => readonly records.Lookup[],
       consume: (read: SessionRowReadView) => T,
@@ -666,7 +678,10 @@ export async function createSessionRowProjection(params: {
     snapshot(query: records.Lookup, options: records.SnapshotOptions = {}) {
       const record = describe(query);
       return record
-        ? { row: present(record, options), lifecycleRunId: record.entry.lifecycleRunId }
+        ? {
+            row: records.present(record, metadata.current, options),
+            lifecycleRunId: record.entry.lifecycleRunId,
+          }
         : { row: null };
     },
     dispose,

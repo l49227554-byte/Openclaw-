@@ -347,15 +347,28 @@ describe("e2e helper numeric env limits", () => {
     // tsconfig alias, so the local constant must stay pinned to its owner.
     expect(limits.MAX_TIMER_TIMEOUT_MS).toBe(MAX_TIMER_TIMEOUT_MS);
     expect(
-      limits.readTimerMsEnv("OPENCLAW_E2E_TIMER_PROBE_MS", 1_000, {
-        OPENCLAW_E2E_TIMER_PROBE_MS: String(MAX_TIMER_TIMEOUT_MS),
-      }),
+      limits.readPositiveIntEnv(
+        "OPENCLAW_E2E_TIMER_PROBE_MS",
+        1_000,
+        { OPENCLAW_E2E_TIMER_PROBE_MS: String(MAX_TIMER_TIMEOUT_MS) },
+        limits.MAX_TIMER_TIMEOUT_MS,
+      ),
     ).toBe(MAX_TIMER_TIMEOUT_MS);
     expect(() =>
-      limits.readTimerMsEnv("OPENCLAW_E2E_TIMER_PROBE_MS", 1_000, {
+      limits.readPositiveIntEnv(
+        "OPENCLAW_E2E_TIMER_PROBE_MS",
+        1_000,
+        { OPENCLAW_E2E_TIMER_PROBE_MS: String(OVERSIZED_TIMER_MS) },
+        limits.MAX_TIMER_TIMEOUT_MS,
+      ),
+    ).toThrow(`invalid OPENCLAW_E2E_TIMER_PROBE_MS: ${OVERSIZED_TIMER_MS}`);
+    // Without a ceiling the same value stays accepted, so non-timer limits keep
+    // their existing contract.
+    expect(
+      limits.readPositiveIntEnv("OPENCLAW_E2E_TIMER_PROBE_MS", 1_000, {
         OPENCLAW_E2E_TIMER_PROBE_MS: String(OVERSIZED_TIMER_MS),
       }),
-    ).toThrow(`invalid OPENCLAW_E2E_TIMER_PROBE_MS: ${OVERSIZED_TIMER_MS}`);
+    ).toBe(OVERSIZED_TIMER_MS);
   });
 
   it("rejects the recorded oversized ClawHub preflight timeout before scheduling a timer", () => {

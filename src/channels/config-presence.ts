@@ -110,8 +110,6 @@ export function listPotentialConfiguredChannelPresenceSignals(
     seenSignals.add(key);
     signals.push({ channelId, source });
   };
-  const channelIds = options.channelIds ?? listBundledChannelIds(env, options.discovery);
-  const channelEnvPrefixes = listChannelEnvPrefixes(channelIds);
   const scopedChannelIds = options.channelIds
     ? new Set(
         options.channelIds
@@ -119,6 +117,11 @@ export function listPotentialConfiguredChannelPresenceSignals(
           .filter((channelId): channelId is string => Boolean(channelId)),
       )
     : undefined;
+  const channelEnvPrefixes = listChannelEnvPrefixes(
+    listBundledChannelIds(env, options.discovery).filter(
+      (channelId) => !scopedChannelIds || scopedChannelIds.has(channelId),
+    ),
+  );
   const officialExternalChannelEnvVars = listOfficialExternalChannelEnvVars().filter(
     ({ channelId }) => !scopedChannelIds || scopedChannelIds.has(channelId),
   );

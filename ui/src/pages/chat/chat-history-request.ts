@@ -40,7 +40,7 @@ const CHAT_HISTORY_PREFETCH_BUDGET = { limit: 20, maxBytes: 64 * 1024 };
 // The gateway independently bounds each response (entry cap + byte budget).
 const CHAT_HISTORY_OLDER_PAGE_LIMIT = 1000;
 
-const CHAT_HISTORY_STARTUP_RETRY_TIMEOUT_MS = 60_000;
+export const CHAT_HISTORY_STARTUP_RETRY_TIMEOUT_MS = 60_000;
 
 export function attachHistoryActivity<Result extends ChatHistoryResponse>(result: Result): Result {
   if (isHistoryCursor(result) && result.kind === "reset") {

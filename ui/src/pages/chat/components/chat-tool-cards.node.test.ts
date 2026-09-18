@@ -863,6 +863,9 @@ describe("tool-card canvas URLs", () => {
     expect(resolveCanvasIframeUrl("/not-canvas/snake.html")).toBeUndefined();
     expect(resolveCanvasIframeUrl("https://example.com/evil.html")).toBeUndefined();
     expect(resolveCanvasIframeUrl("file:///tmp/snake.html")).toBeUndefined();
+    expect(resolveCanvasIframeUrl("javascript:alert(1)", undefined, true)).toBeUndefined();
+    expect(resolveCanvasIframeUrl("data:text/html,unsafe", undefined, true)).toBeUndefined();
+    expect(resolveCanvasIframeUrl("custom://unsafe/widget", undefined, true)).toBeUndefined();
     expect(resolveCanvasIframeUrl("https://example.com/embed.html?x=1#y", undefined, true)).toBe(
       "https://example.com/embed.html?x=1#y",
     );

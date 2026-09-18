@@ -703,6 +703,7 @@ export function bootstrapApplication(): ApplicationRuntime {
       nativeChatDrafts.dispose();
       nativeLinkRouting.dispose();
       webPush.dispose();
+      gateway.dispose();
       chatSubmissions.clear();
       chatAttachmentHandoff.dispose();
     },

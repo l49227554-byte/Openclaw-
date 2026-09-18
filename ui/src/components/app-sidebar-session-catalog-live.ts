@@ -1,3 +1,4 @@
+import { createSessionEventRefreshCoordinator } from "@openclaw/gateway-client/model";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   SessionCatalog,
@@ -8,7 +9,6 @@ import { GatewayRequestError, type GatewayBrowserClient } from "../api/gateway.t
 import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
 import { formatUiError } from "../lib/format-error.ts";
 import { isGatewayMethodAdvertised } from "../lib/gateway-methods.ts";
-import { createSessionEventRefreshCoordinator } from "../lib/sessions/event-refresh-coordinator.ts";
 import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import { generateUUID } from "../lib/uuid.ts";
 import {

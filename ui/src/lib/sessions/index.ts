@@ -262,6 +262,8 @@ export function createSessionCapability(
       }
       canonicalListRevision += 1;
     },
+    controlModel: gateway.controlModel,
+    controlModelLoader: gateway.loadControlModelCatalog,
   });
 
   const groups = createSessionGroupCatalog({

@@ -1,3 +1,5 @@
+import type { ControlModel } from "@openclaw/gateway-client/model";
+import type { ControlModelCatalog } from "@openclaw/gateway-client/model/catalog";
 import type { GatewaySuspension } from "../../../packages/gateway-protocol/src/schema/gateway-suspend.js";
 import type { PluginsUiDescriptorsResult } from "../../../packages/gateway-protocol/src/schema/plugins.js";
 import type { ControlUiBootstrapProfileHint } from "../../../src/gateway/control-ui-bootstrap-contract.js";
@@ -52,10 +54,16 @@ export type ApplicationGateway = {
   readonly eventLog: readonly EventLogEntry[];
   /** Advances when the connection or authentication context retires diagnostic history. */
   readonly eventLogRevision: number;
+  /** Loads the shared catalog runtime on first session-roster use. */
+  readonly loadControlModelCatalog?: () => Promise<ControlModelCatalog>;
+  /** Loads the conversation projection without duplicating catalog ownership. */
+  readonly loadControlModel?: () => Promise<ControlModel>;
   connect: (connection?: ApplicationGatewayConnectOptions) => void;
   setSessionKey: (sessionKey: string) => void;
   start: () => void;
   stop: () => void;
+  /** Permanently releases Gateway-owned shared capabilities. */
+  dispose: () => void;
   subscribe: (listener: (snapshot: ApplicationGatewaySnapshot) => void) => () => void;
   subscribeEventLog: (listener: (events: readonly EventLogEntry[]) => void) => () => void;
   subscribeEvents: (listener: GatewayEventListener) => () => void;

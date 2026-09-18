@@ -11,6 +11,7 @@ import {
   resolveUiGlobalAliasAgentId,
   resolveUiSelectedGlobalAgentId,
 } from "../../lib/sessions/session-key.ts";
+import { releaseChatControlModelConversation } from "./chat-history-control-model.ts";
 import { chatHistoryRequests, setChatError } from "./chat-history-state.ts";
 import type { ChatState } from "./chat-state-contract.ts";
 import { projectSessionApprovalReplay } from "./session-approval-projection.ts";
@@ -83,6 +84,7 @@ async function retryPendingSessionMessageSubscriptionReleases(
 }
 
 export function disposeSelectedSessionMessageSubscription(state: ChatState): void {
+  releaseChatControlModelConversation(state);
   const requests = chatHistoryRequests(state);
   requests.subscriptionGeneration += 1;
   const subscriptions = new Set(requests.pendingSubscriptionReleases);

@@ -8,6 +8,10 @@ import {
   resolveUiSelectedSessionAgentId,
 } from "../../lib/sessions/session-key.ts";
 import { loadChatBranches } from "./chat-history-branches.ts";
+import {
+  ensureChatControlModel,
+  loadControlModelChatHistory,
+} from "./chat-history-control-model.ts";
 import { hydrateChatHistory } from "./chat-history-hydration.ts";
 import { CHAT_HISTORY_REQUEST_LIMIT } from "./chat-history-request.ts";
 import type { ObservedChatHistoryResult } from "./chat-history-snapshot.ts";
@@ -50,6 +54,9 @@ export async function loadChatHistory(
   const client = state.client;
   const sessions = state.sessions;
   const connectionEpoch = state.connectionEpoch;
+  if (!state.controlModel && state.loadControlModel) {
+    await ensureChatControlModel(state);
+  }
   const hydration = startup ? waitForInitialChatSnapshot(state) : undefined;
   if (hydration) {
     const version = requests.historyVersion;
@@ -88,12 +95,15 @@ export async function loadChatHistory(
       }
     }
   }
-  const deltaCursor = state.chatMessagesBySession
-    ? readChatSessionSnapshot(state.chatMessagesBySession, state, {
-        sessionKey,
-        agentId: requestAgentId,
-      })?.deltaCursor
-    : undefined;
+  // Control Model conversations own their own history window; delta cursors
+  // belong to the raw Gateway read.
+  const deltaCursor =
+    state.chatMessagesBySession && !state.controlModel
+      ? readChatSessionSnapshot(state.chatMessagesBySession, state, {
+          sessionKey,
+          agentId: requestAgentId,
+        })?.deltaCursor
+      : undefined;
   const requestModeKey = deltaCursor === undefined ? "page" : `cursor:${deltaCursor}`;
   const inputRunIds = readChatInputRunIds(state);
   const requestKeyPrefix = JSON.stringify([
@@ -159,6 +169,7 @@ export async function loadChatHistory(
     deltaCursor,
     inputRunIds,
     requestKeyPrefix,
+    state.controlModel ? () => loadControlModelChatHistory(state, { startup }) : undefined,
   ).then((result) => {
     const current = requests.historyLoad;
     if (current.phase === "in-flight" && current.promise === promise) {

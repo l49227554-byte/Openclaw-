@@ -51,6 +51,7 @@ export function createGateway(
     setSessionKey: () => undefined,
     start: () => undefined,
     stop: () => undefined,
+    dispose: () => undefined,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

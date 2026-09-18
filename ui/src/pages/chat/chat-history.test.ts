@@ -1,5 +1,10 @@
 // @vitest-environment node
 import { reduceSessionProjection } from "@openclaw/gateway-client/browser";
+import {
+  ControlModelCommandError,
+  type ControlModel,
+  type ControlModelConversationSnapshot,
+} from "@openclaw/gateway-client/model";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
@@ -599,6 +604,199 @@ describe("switchChatHistoryBranch", () => {
 });
 
 describe("canonical history snapshot projection", () => {
+  it("falls back to Gateway history when the Control Model chunk fails to load", async () => {
+    const state = createState({ messages: [message("user", "gateway fallback")] });
+    const request = vi.spyOn(state.client!, "request");
+    state.loadControlModel = async () => {
+      throw new Error("chunk failed");
+    };
+
+    await loadChatHistory(state);
+
+    expect(request).toHaveBeenCalledWith(
+      "chat.history",
+      expect.objectContaining({ sessionKey: "main" }),
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(state.chatMessages).toEqual([
+      expect.objectContaining({
+        content: [expect.objectContaining({ text: "gateway fallback" })],
+      }),
+    ]);
+  });
+
+  it("falls back when an older Gateway does not implement chat.startup", async () => {
+    const state = createState({ messages: [] });
+    state.hello = {
+      ...state.hello!,
+      features: {
+        ...state.hello!.features,
+        methods: [...(state.hello!.features?.methods ?? []), "chat.startup"],
+      },
+    };
+    const snapshot = {
+      sessionKey: "main",
+      history: { status: "ready" },
+      metadata: null,
+      messages: [],
+      activeRun: null,
+    } as unknown as ControlModelConversationSnapshot;
+    const refreshHistory = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ControlModelCommandError({
+          category: "invalid-input",
+          code: "INVALID_REQUEST",
+          message: "unknown method: chat.startup",
+          command: "chat.startup",
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const conversation = {
+      getSnapshot: () => snapshot,
+      refreshHistory,
+      loadMoreHistory: vi.fn(),
+    };
+    state.controlModel = {
+      conversation: vi.fn(() => conversation),
+      releaseConversation: vi.fn(async () => undefined),
+    } as unknown as ControlModel;
+
+    await loadChatHistory(state, { startup: true });
+
+    expect(refreshHistory).toHaveBeenNthCalledWith(1, undefined, "chat.startup");
+    expect(refreshHistory).toHaveBeenNthCalledWith(2, undefined, "chat.history");
+  });
+
+  it("refreshes every explicit Control Model history load and coalesces concurrent callers", async () => {
+    const state = createState({ messages: [] });
+    const request = vi.spyOn(state.client!, "request");
+    state.hello = {
+      ...state.hello!,
+      features: {
+        ...state.hello!.features,
+        methods: [...(state.hello!.features?.methods ?? []), "chat.startup"],
+      },
+    };
+    const snapshot = {
+      sessionKey: "main",
+      status: "ready",
+      revision: 1,
+      historyRevision: 1,
+      connection: { status: "connected", epoch: 1 },
+      history: {
+        status: "idle",
+        hasMore: false,
+        nextOffset: null,
+        totalMessages: 1,
+        completeSnapshot: false,
+        window: "newest",
+        truncatedBefore: false,
+        truncatedAfter: false,
+        revision: 0,
+        error: null,
+      },
+      metadata: null,
+      messages: [],
+      runs: [],
+      activeRun: null,
+      tools: [],
+      artifacts: [],
+      approvals: [],
+      questions: [],
+      partialReasons: [],
+      stale: false,
+      hasTransportGap: false,
+      commandAvailability: {
+        send: true,
+        abort: false,
+        resolveApproval: false,
+        answerQuestion: false,
+        cancelQuestion: false,
+        materializeView: false,
+      },
+      bounds: {
+        messagesTruncated: false,
+        runsTruncated: false,
+        toolsTruncated: false,
+        approvalsTruncated: false,
+        questionsTruncated: false,
+        artifactsTruncated: false,
+      },
+    } as unknown as ControlModelConversationSnapshot;
+    let releaseSecondRefresh: () => void = () => undefined;
+    const secondRefresh = new Promise<void>((resolve) => {
+      releaseSecondRefresh = resolve;
+    });
+    const refreshHistory = vi.fn(async (_options?: unknown, method?: unknown) => {
+      const call = refreshHistory.mock.calls.length;
+      if (call === 2) {
+        await secondRefresh;
+      }
+      Object.assign(snapshot, {
+        revision: call + 1,
+        historyRevision: call,
+        history: {
+          ...snapshot.history,
+          status: "ready",
+          completeSnapshot: true,
+          revision: call,
+        },
+        metadata: {
+          sessionId: "session-one",
+          sessionInfo: { key: "main", kind: "direct" },
+        },
+        messages: [
+          {
+            key: `message-${call}`,
+            role: "user",
+            sequence: call,
+            runId: null,
+            pending: false,
+            live: false,
+            provisional: false,
+            artifactIds: [],
+            raw: {
+              role: "user",
+              content: call === 1 ? "first authoritative" : "second authoritative",
+              __openclaw: { id: `message-${call}`, seq: call },
+            },
+          },
+        ],
+      });
+      expect(method).toBe(call === 1 ? "chat.startup" : "chat.history");
+    });
+    const conversation = {
+      getSnapshot: () => snapshot,
+      refreshHistory,
+      loadMoreHistory: vi.fn(),
+    };
+    const model = {
+      conversation: vi.fn(() => conversation),
+      releaseConversation: vi.fn(async () => undefined),
+    } as unknown as ControlModel;
+    state.controlModel = model;
+
+    await loadChatHistory(state, { startup: true });
+    expect(state.chatMessages).toEqual([
+      expect.objectContaining({ content: "first authoritative" }),
+    ]);
+
+    const explicit = loadChatHistory(state);
+    const concurrent = loadChatHistory(state);
+    expect(refreshHistory).toHaveBeenCalledTimes(2);
+    releaseSecondRefresh();
+    await Promise.all([explicit, concurrent]);
+
+    expect(model.conversation).toHaveBeenCalledOnce();
+    expect(refreshHistory).toHaveBeenCalledTimes(2);
+    expect(request).not.toHaveBeenCalledWith("chat.history", expect.anything(), expect.anything());
+    expect(state.chatMessages).toEqual([
+      expect.objectContaining({ content: "second authoritative" }),
+    ]);
+    expect(state.currentSessionId).toBe("session-one");
+  });
+
   function message(role: "assistant" | "user", text: string, metadata?: Record<string, unknown>) {
     return {
       role,

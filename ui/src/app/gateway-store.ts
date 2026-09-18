@@ -4,6 +4,8 @@ import {
   readControlUiBuildMismatchId,
   resolveSafeTimeoutDelayMs,
 } from "@openclaw/gateway-client/browser";
+import type { ControlModel } from "@openclaw/gateway-client/model";
+import type { ControlModelCatalog } from "@openclaw/gateway-client/model/catalog";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ModelCatalogTarget } from "../../../packages/gateway-protocol/src/index.js";
 import {
@@ -29,7 +31,7 @@ import { readConnectionAuthReason } from "../lib/connection-hints.ts";
 import { formatUiError, formatUiExternalText } from "../lib/format-error.ts";
 import { setAvatarGatewayOrigin } from "../lib/identity-avatar-context.ts";
 import { resolveSessionKey } from "../lib/sessions/index.ts";
-import { readSessionDefaults } from "../lib/sessions/session-key.ts";
+import { readSessionDefaults, uiConversationMatches } from "../lib/sessions/session-key.ts";
 import { generateUUID } from "../lib/uuid.ts";
 import { clearWarmBootState } from "./bootstrap-warm-boot.ts";
 import type {
@@ -38,6 +40,7 @@ import type {
   ApplicationGatewayConnection,
   ApplicationGatewaySnapshot,
 } from "./context.ts";
+import type { ControlModelRuntime } from "./control-model-loader.ts";
 import { resolveControlUiAuthCandidates } from "./control-ui-auth.ts";
 import {
   createGatewayControlUiReloadOptions,
@@ -118,6 +121,11 @@ export function createApplicationGateway(
   // kicking the operator back to the login gate.
   let everConnected = false;
   let stopped = true;
+  let disposed = false;
+  // The Control Model bridge is loaded only when a catalog or conversation adopter needs it.
+  let connectionEpoch = 0;
+  let controlModelRuntime: ControlModelRuntime | null = null;
+  let controlModelRuntimeLoad: Promise<ControlModelRuntime> | null = null;
   // Snapshot observers can synchronously stop or replace their publishing client.
   const isCurrentClient = (expected: GatewayBrowserClient | null) =>
     !stopped && client === expected;
@@ -174,6 +182,7 @@ export function createApplicationGateway(
       }
     }, OFFLINE_INDICATOR_DELAY_MS);
   };
+  const resetControlModelLineage = () => controlModelRuntime?.resetLineage();
   const setSnapshot = (patch: Partial<ApplicationGatewaySnapshot>) => {
     const previous = snapshot;
     snapshot = { ...previous, ...patch };
@@ -188,6 +197,9 @@ export function createApplicationGateway(
       snapshot.pluginCapabilities = null;
       scheduleOfflineIndicator();
     }
+    // Control Model adopters observe connection lineage even when the metadata
+    // observer supersedes this snapshot for application subscribers.
+    controlModelRuntime?.notifyConnection();
     if (metadataObserver.synchronize(previous, snapshot)) {
       notifyGatewayObservers(listeners, snapshot, "snapshot", (current) => current === snapshot);
     }
@@ -337,6 +349,9 @@ export function createApplicationGateway(
   };
 
   const connect = (overrides: ApplicationGatewayConnectOptions = {}) => {
+    if (disposed) {
+      return;
+    }
     const requestedGatewayUrl = overrides.gatewayUrl ?? connection.gatewayUrl;
     if (configuredUiDevGateway() && !isConfiguredUiDevGateway(requestedGatewayUrl)) {
       gateway.stop();
@@ -437,6 +452,8 @@ export function createApplicationGateway(
     );
     stopCanvasSurfaceLease();
     client?.stop();
+    connectionEpoch += 1;
+    resetControlModelLineage();
 
     const nextClient = createClient({
       url: nextConnection.gatewayUrl,
@@ -572,6 +589,10 @@ export function createApplicationGateway(
           return;
         }
         stopCanvasSurfaceLease();
+        // The transport is gone: retire queued Control Model frames before any
+        // presentation branch decides how this close is displayed.
+        connectionEpoch += 1;
+        resetControlModelLineage();
         const mismatchedBuildId = readControlUiBuildMismatchId(error?.details);
         if (mismatchedBuildId) {
           void scheduleStaleChunkReload({
@@ -646,7 +667,12 @@ export function createApplicationGateway(
       onEvent: createGatewayEventObserver({
         isAttached: () => client === nextClient,
         isCurrent: () => isCurrentClient(nextClient),
-        project: (event) => metadataObserver.receive(event, snapshot),
+        project: (event) => {
+          // Control Model lineage consumes raw frames; projection only filters
+          // what application observers and the event log receive.
+          controlModelRuntime?.queueEvent(event, nextClient);
+          return metadataObserver.receive(event, snapshot);
+        },
         record: recordGatewayEvent,
         listeners: eventListeners,
       }),
@@ -674,6 +700,40 @@ export function createApplicationGateway(
     }
   };
 
+  const loadControlModelRuntime = (): Promise<ControlModelRuntime> => {
+    if (disposed) {
+      return Promise.reject(new Error("Gateway is disposed"));
+    }
+    if (controlModelRuntime) {
+      return Promise.resolve(controlModelRuntime);
+    }
+    return (controlModelRuntimeLoad ??= import("./control-model-loader.ts")
+      .then(({ createControlModelRuntime }) => {
+        const runtime = createControlModelRuntime({
+          getGatewaySnapshot: () => snapshot,
+          getConnectionEpoch: () => connectionEpoch,
+          getClient: () => client,
+          isCurrentClient,
+          sessionMessageKeysEquivalent: (left, right) =>
+            uiConversationMatches(snapshot, left, right),
+        });
+        if (disposed) {
+          runtime.dispose();
+          throw new Error("Gateway is disposed");
+        }
+        controlModelRuntime = runtime;
+        return runtime;
+      })
+      .catch((error: unknown) => {
+        controlModelRuntimeLoad = null;
+        throw error;
+      }));
+  };
+  const loadControlModelCatalog = (): Promise<ControlModelCatalog> =>
+    loadControlModelRuntime().then((runtime) => runtime.loadCatalog());
+  const loadControlModel = (): Promise<ControlModel> =>
+    loadControlModelRuntime().then((runtime) => runtime.loadModel());
+
   const gateway: ApplicationGateway = {
     get snapshot() {
       return snapshot;
@@ -690,10 +750,12 @@ export function createApplicationGateway(
     get eventLogRevision() {
       return eventLog.revision;
     },
+    loadControlModelCatalog,
+    loadControlModel,
     connect,
     setSessionKey: (sessionKey) => {
       const nextSessionKey = sessionKey.trim();
-      if (!nextSessionKey || nextSessionKey === snapshot.sessionKey) {
+      if (disposed || !nextSessionKey || nextSessionKey === snapshot.sessionKey) {
         return;
       }
       updateSettings({
@@ -711,6 +773,7 @@ export function createApplicationGateway(
       stopCanvasSurfaceLease();
       client?.stop();
       client = null;
+      connectionEpoch += 1;
       everConnected = false;
       setSnapshot({
         client: null,
@@ -725,6 +788,17 @@ export function createApplicationGateway(
         lastErrorCode: null,
         lastErrorAuthReason: null,
       });
+    },
+    dispose: () => {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      gateway.stop();
+      controlModelRuntime?.dispose();
+      eventListeners.clear();
+      eventLogListeners.clear();
+      listeners.clear();
     },
     subscribe: (listener) => {
       listeners.add(listener);

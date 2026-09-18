@@ -273,8 +273,22 @@ describe("runCodexAppServerSideQuestion", () => {
       const controller = new AbortController();
       const client = createFakeClient({ completeTurn: false });
       const request = client.request.getMockImplementation()!;
+      const turnWaiting = createDeferred<void>();
+      const terminalCleanupStarted = createDeferred<void>();
       const waits = vi.spyOn(CodexEphemeralTurn.prototype, "wait");
-      const terminalCleanup = vi.spyOn(clientCleanup, "terminateCodexBackgroundTerminals");
+      CodexEphemeralTurn.prototype.wait = function (this: CodexEphemeralTurn, ...args) {
+        const pending = waits.apply(this, args);
+        turnWaiting.resolve();
+        return pending;
+      };
+      const terminateBackgroundTerminals = clientCleanup.terminateCodexBackgroundTerminals;
+      const terminalCleanup = vi
+        .spyOn(clientCleanup, "terminateCodexBackgroundTerminals")
+        .mockImplementation((...args) => {
+          const pending = terminateBackgroundTerminals(...args);
+          terminalCleanupStarted.resolve();
+          return pending;
+        });
       const finalize = vi.spyOn(CodexNativeToolLifecycleProjector.prototype, "finalizeActive");
       const projectorError = new Error("side projector finalization failed");
       if (projectorFails) {
@@ -312,9 +326,19 @@ describe("runCodexAppServerSideQuestion", () => {
           settled = true;
         });
       try {
-        await vi.waitFor(() =>
-          expect(client.request.mock.calls.some(([method]) => method === "turn/start")).toBe(true),
-        );
+        const waiting = await Promise.race([
+          turnWaiting.promise.then(() => true),
+          terminalCleanupStarted.promise.then(() => false),
+          run.then(() => false),
+        ]);
+        if (!waiting) {
+          // Cleanup can be waiting on our terminal gate before the run settles.
+          releaseTermination.resolve();
+          throw new Error("Side question settled before waiting for its native turn", {
+            cause: await run,
+          });
+        }
+        expect(client.request.mock.calls.some(([method]) => method === "turn/start")).toBe(true);
         controller.abort();
         await vi.waitFor(() =>
           expect(client.request).toHaveBeenCalledWith(

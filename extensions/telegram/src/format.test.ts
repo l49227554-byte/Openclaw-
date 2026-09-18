@@ -614,6 +614,28 @@ describe("non-finite chunk limits", () => {
   });
 });
 
+describe("chunk width against the hard cap", () => {
+  // The boundary helpers may return one code unit past the requested end so a grapheme
+  // cluster survives; utf16-slice.ts documents that and tells byte-exact callers to re-check.
+  // Telegram is such a caller, so when the astral char lands on a one-unit remaining budget
+  // the chunk must be flushed rather than widened past the cap.
+  it.each([
+    [4000, 3992],
+    [4096, 4088],
+  ])("keeps every chunk within a cap of %i when an astral char lands on a full chunk", (
+    cap,
+    filler,
+  ) => {
+    const input = `<i>${"a".repeat(filler)}</i>\u{1F600}Z`;
+
+    const chunks = splitTelegramHtmlChunks(input, cap);
+    expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
+    expect(chunks.join("")).toBe(input);
+    expect(chunks.some((chunk) => chunk.includes("\u{1F600}"))).toBe(true);
+    expect(chunks.some((chunk) => containsLoneSurrogate(chunk))).toBe(false);
+  });
+});
+
 function containsLoneSurrogate(text: string): boolean {
   for (let index = 0; index < text.length; index += 1) {
     const code = text.charCodeAt(index);

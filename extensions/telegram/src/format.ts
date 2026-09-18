@@ -716,6 +716,15 @@ function splitTelegramHtmlChunksRaw(html: string, limit: number): string[] {
         flushCurrent();
         continue;
       }
+      if (splitAt > available && chunkHasPayload) {
+        // The boundary helpers may overshoot the budget by one code unit to keep a grapheme
+        // cluster whole, which utf16-slice.ts documents. Earlier payload in this chunk means
+        // there is a cheaper option than busting the limit: flush now and give the cluster a
+        // full budget. `chunkHasPayload` is false after the flush, so this runs at most once
+        // per chunk and the overshoot is only accepted when the cluster alone cannot fit.
+        flushCurrent();
+        continue;
+      }
       current += remaining.slice(0, splitAt);
       chunkHasPayload = true;
       remaining = remaining.slice(splitAt);

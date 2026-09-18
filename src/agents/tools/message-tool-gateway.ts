@@ -54,16 +54,17 @@ export function createMessageToolGateway(
   if (options?.conversationReadOrigin === "direct-operator") {
     return undefined;
   }
-  const boundRequest = !hasPerCallGatewayConnection && shouldUseInProcessGatewayTool(resolutionOpts)
-    ? withMessageActionInvocationConfig(
-        options?.messageActionTurnCapability,
-        invocation?.resolveConfig,
-        () =>
-          bindAgentToolGatewayRequest({
-            revalidateOnCompletion: !invocation?.preserveWriteOutcome,
-          }),
-      )
-    : undefined;
+  const boundRequest =
+    !hasPerCallGatewayConnection && shouldUseInProcessGatewayTool(resolutionOpts)
+      ? withMessageActionInvocationConfig(
+          options?.messageActionTurnCapability,
+          invocation?.resolveConfig,
+          () =>
+            bindAgentToolGatewayRequest({
+              revalidateOnCompletion: !invocation?.preserveWriteOutcome,
+            }),
+        )
+      : undefined;
   const { target, ...connection } = resolveGatewayOptions(resolutionOpts);
   const scheduledConnection = hasScheduledAuthority
     ? { ...connection, url: undefined, token: undefined }

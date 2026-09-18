@@ -46,7 +46,7 @@ import {
 } from "./gateway-caller-context.js";
 import { createMessageTool } from "./message-tool-execution.js";
 
-it.each<{
+type ScheduledLifetimeCase = {
   cause: string;
   revokeAt:
     | "provider"
@@ -66,38 +66,43 @@ it.each<{
   retire: (jobId: string) => void;
   accepted: boolean;
   partial?: boolean;
-  laterError?: string;
+  laterError?: string | undefined;
   deliveryMode: "direct" | "gateway";
-}>([
-  {
+};
+
+function scheduledLifetimeCase(
+  input: Pick<ScheduledLifetimeCase, "cause" | "revokeAt" | "accepted"> &
+    Partial<Omit<ScheduledLifetimeCase, "cause" | "revokeAt" | "accepted">>,
+): ScheduledLifetimeCase {
+  return {
+    action: "send",
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "direct",
+    ...input,
+  };
+}
+
+it.each<ScheduledLifetimeCase>([
+  scheduledLifetimeCase({
     cause: "message authority is durably revoked",
     revokeAt: "provider" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: true,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode: "direct" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "the active job is cancelled",
     revokeAt: "provider" as const,
-    action: "send" as const,
     retire: (jobId: string) =>
       requestActiveCronJobCancellation(jobId, "Cron job removed by operator."),
     accepted: true,
     laterError: "Message send aborted",
-    deliveryMode: "direct" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "message authority closes during provider target lookup",
     revokeAt: "target" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode: "direct" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "the active job is cancelled after a generic mutation is accepted",
     revokeAt: "action" as const,
     action: "set-presence" as const,
@@ -105,128 +110,101 @@ it.each<{
       requestActiveCronJobCancellation(jobId, "Cron job removed by operator."),
     accepted: true,
     laterError: "Message send aborted",
-    deliveryMode: "direct" as const,
-  },
-  ...(["direct", "gateway"] as const).map((deliveryMode) => ({
-    cause: `message authority closes during a ${deliveryMode} unconfirmed mutation result`,
-    revokeAt: "unconfirmed-action" as const,
-    action: "set-presence" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
-    accepted: false,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode,
-  })),
-  {
+  }),
+  ...(["direct", "gateway"] as const).map((deliveryMode) =>
+    scheduledLifetimeCase({
+      cause: `message authority closes during a ${deliveryMode} unconfirmed mutation result`,
+      revokeAt: "unconfirmed-action" as const,
+      action: "set-presence" as const,
+      accepted: false,
+      deliveryMode,
+    }),
+  ),
+  scheduledLifetimeCase({
     cause: "message authority closes before a refused write retry",
     revokeAt: "retry" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode: "direct" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "message authority closes before a poll provider retry",
     revokeAt: "poll-retry" as const,
     action: "poll" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode: "direct" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "message authority closes before a bound Gateway write retry",
     revokeAt: "retry" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
-    laterError: "cron message action authority is no longer active",
     deliveryMode: "gateway" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "same-host Gateway fields are removed from an existing job",
     revokeAt: "provider" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: true,
-    laterError: "cron message action authority is no longer active",
     deliveryMode: "gateway" as const,
-  },
-  ...(["direct", "gateway"] as const).map((deliveryMode) => ({
-    cause: `message authority closes before a ${deliveryMode} generic durable retry`,
-    revokeAt: "generic-retry" as const,
-    action: "reply" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
-    accepted: false,
-    partial: undefined,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode,
-  })),
-  {
+  }),
+  ...(["direct", "gateway"] as const).map((deliveryMode) =>
+    scheduledLifetimeCase({
+      cause: `message authority closes before a ${deliveryMode} generic durable retry`,
+      revokeAt: "generic-retry" as const,
+      action: "reply" as const,
+      accepted: false,
+      deliveryMode,
+    }),
+  ),
+  scheduledLifetimeCase({
     cause: "message authority closes before a bound Gateway poll retry",
     revokeAt: "poll-retry" as const,
     action: "poll" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
-    laterError: "cron message action authority is no longer active",
     deliveryMode: "gateway" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "message authority closes after a bound Gateway poll is accepted",
     revokeAt: "poll-provider" as const,
     action: "poll" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: true,
+    laterError: undefined,
     deliveryMode: "gateway" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "message authority closes after the first multipart send",
     revokeAt: "multipart" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: true,
     partial: true,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode: "direct" as const,
-  },
-  {
+  }),
+  scheduledLifetimeCase({
     cause: "a configured remote Gateway has no active bound host",
     revokeAt: "unbound" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: false,
-    laterError: "cron message action authority is no longer active",
     deliveryMode: "gateway" as const,
-  },
-  ...(["direct", "gateway"] as const).map((deliveryMode) => ({
-    cause: `message authority closes after a ${deliveryMode} plugin partial mutation`,
-    revokeAt: "partial-action" as const,
-    action: "set-presence" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
-    accepted: true,
-    partial: true,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode,
-  })),
-  {
+  }),
+  ...(["direct", "gateway"] as const).map((deliveryMode) =>
+    scheduledLifetimeCase({
+      cause: `message authority closes after a ${deliveryMode} plugin partial mutation`,
+      revokeAt: "partial-action" as const,
+      action: "set-presence" as const,
+      accepted: true,
+      partial: true,
+      deliveryMode,
+    }),
+  ),
+  scheduledLifetimeCase({
     cause: "a bound Gateway publishes replacement account config during preparation",
     revokeAt: "config" as const,
-    action: "send" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
     accepted: true,
-    laterError: "cron message action authority is no longer active",
     deliveryMode: "gateway" as const,
-  },
-  ...(["direct", "gateway"] as const).map((deliveryMode) => ({
-    cause: `message authority closes after a ${deliveryMode} partial poll`,
-    revokeAt: "poll-partial" as const,
-    action: "poll" as const,
-    retire: noteActiveCronJobMessageActionAuthorityMutation,
-    accepted: true,
-    partial: true,
-    laterError: "cron message action authority is no longer active",
-    deliveryMode,
-  })),
+  }),
+  ...(["direct", "gateway"] as const).map((deliveryMode) =>
+    scheduledLifetimeCase({
+      cause: `message authority closes after a ${deliveryMode} partial poll`,
+      revokeAt: "poll-partial" as const,
+      action: "poll" as const,
+      accepted: true,
+      partial: true,
+      deliveryMode,
+    }),
+  ),
 ])(
   "owns scheduled message lifetime when $cause",
   async ({ cause, revokeAt, action, retire, accepted, partial, laterError, deliveryMode }) => {

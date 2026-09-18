@@ -4569,41 +4569,24 @@ describe("gateway send mirroring", () => {
       );
       const context = makeContext();
       const idempotencyKey = "shared-action-idempotency";
+      const request = (action: string, params: Record<string, unknown>) =>
+        runMessageActionRequest(
+          { channel: "twitch", action, params, idempotencyKey },
+          directCliClient(),
+          context,
+        );
 
-      const send = await runMessageActionRequest(
-        {
-          channel: "twitch",
-          action: "send",
-          params: { to: "same-room", message: "hello" },
-          idempotencyKey,
-        },
-        directCliClient(),
-        context,
-      );
-      const poll = await runMessageActionRequest(
-        {
-          channel: "twitch",
-          action: "poll",
-          params: {
-            to: "same-room",
-            pollQuestion: "Ship it?",
-            pollOption: ["Yes", "No"],
-          },
-          idempotencyKey,
-        },
-        directCliClient(),
-        context,
-      );
-      const react = await runMessageActionRequest(
-        {
-          channel: "twitch",
-          action: "react",
-          params: { to: "same-room", messageId: "m-1", emoji: "ok" },
-          idempotencyKey,
-        },
-        directCliClient(),
-        context,
-      );
+      const send = await request("send", { to: "same-room", message: "hello" });
+      const poll = await request("poll", {
+        to: "same-room",
+        pollQuestion: "Ship it?",
+        pollOption: ["Yes", "No"],
+      });
+      const react = await request("react", {
+        to: "same-room",
+        messageId: "m-1",
+        emoji: "ok",
+      });
 
       expect(firstRespondCall(send.respond)[1]).toMatchObject({ deliveryStatus: "sent" });
       expect(firstRespondCall(poll.respond)[1]).toMatchObject({ question: "Ship it?" });

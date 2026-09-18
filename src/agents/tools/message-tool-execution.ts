@@ -301,10 +301,10 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         decisions.recordTurnCapabilityInactive();
         throw new Error("message action turn capability is no longer active");
       }
-      const assertActionCurrent = (includeScheduled = true) => {
+      const assertActionCurrent = () => {
         assertCaller();
         turnAuthority.assertCurrent();
-        const scheduled = includeScheduled ? messageActionAuthorization.scheduled : undefined;
+        const scheduled = messageActionAuthorization.scheduled;
         ((scheduledRead ?? scheduledWrite)
           ? (scheduled?.assertSourceCurrent ?? scheduled?.assertCurrent)
           : scheduled?.assertCurrent)?.();

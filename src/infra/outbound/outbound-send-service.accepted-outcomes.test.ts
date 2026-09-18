@@ -37,18 +37,6 @@ function createContext(overrides: Partial<ExecuteSendContext>): ExecuteSendConte
   };
 }
 
-function pluginActionResult(messageId: string) {
-  return {
-    ok: true,
-    value: { messageId },
-    continuePrompt: "",
-    output: "",
-    sessionId: "s1",
-    model: "gpt-5.4",
-    usage: {},
-  };
-}
-
 describe("accepted plugin delivery outcomes", () => {
   let executeSendAction: OutboundSendServiceModule["executeSendAction"];
 
@@ -60,29 +48,8 @@ describe("accepted plugin delivery outcomes", () => {
     vi.clearAllMocks();
   });
 
-  it("preserves an accepted plugin send when route persistence fails", async () => {
-    const onSendAccepted = vi.fn(async () => {
-      throw new Error("route persistence failed");
-    });
-    mocks.dispatchChannelMessageAction.mockResolvedValueOnce(pluginActionResult("msg-plugin"));
-
-    const result = await executeSendAction({
-      ctx: createContext({ onSendAccepted }),
-      to: "channel:123",
-      message: "delivered",
-    });
-
-    expect(result).toMatchObject({
-      handledBy: "plugin",
-      payload: { value: { messageId: "msg-plugin" } },
-    });
-    expect(onSendAccepted).toHaveBeenCalledOnce();
-  });
-
-  it("preserves an accepted partial plugin send when route persistence fails", async () => {
-    const onSendAccepted = vi.fn(async () => {
-      throw new Error("route persistence failed");
-    });
+  it("commits an accepted partial plugin send without mirroring unproven content", async () => {
+    const onSendAccepted = vi.fn(async () => {});
     mocks.dispatchChannelMessageAction.mockRejectedValueOnce(
       createChannelPartialDeliveryError(new Error("second part failed"), {
         messageIds: ["msg-plugin"],

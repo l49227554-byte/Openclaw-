@@ -367,13 +367,7 @@ export async function executeSendAction(params: {
         onHandled: async ({ partialDelivery }) => {
           // The accepted-send commit must precede the transcript mirror below:
           // first-contact outbound routes create their session row in it.
-          try {
-            await params.ctx.onSendAccepted?.();
-          } catch (error) {
-            log.warn(
-              `failed to commit plugin delivery route; provider result preserved: ${formatErrorMessage(error)}`,
-            );
-          }
+          await params.ctx.onSendAccepted?.();
           if (partialDelivery || !params.ctx.mirror) {
             return;
           }
@@ -419,13 +413,7 @@ export async function executeSendAction(params: {
       if (isChannelPartialDeliveryError(error)) {
         // A partial receipt proves the first-contact route even though it does
         // not prove which requested content is safe to mirror as delivered.
-        try {
-          await params.ctx.onSendAccepted?.();
-        } catch (routeError) {
-          log.warn(
-            `failed to commit partial plugin delivery route; accepted receipt preserved: ${formatErrorMessage(routeError)}`,
-          );
-        }
+        await params.ctx.onSendAccepted?.();
       }
       throw error;
     }

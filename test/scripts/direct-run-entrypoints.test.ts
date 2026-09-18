@@ -400,8 +400,7 @@ process.exitCode = child.status ?? 1;
     "runs the checked-out Crabbox wrapper through its Windows Job child",
     async () => {
       await withShimFixture("scripts/crabbox-wrapper.mjs", async ({ fixtureRoot, runNode }) => {
-        const { CRABBOX_MIN_VERSION } =
-          await import("../../extensions/crabbox/src/crabbox-managed-binary.js");
+        const fixtureVersion = "0.56.0";
         const binDir = path.join(fixtureRoot, "fake bin");
         const home = path.join(fixtureRoot, "home");
         const state = path.join(fixtureRoot, "state");
@@ -414,7 +413,7 @@ process.exitCode = child.status ?? 1;
           "managed installation disabled for this fixture\n",
         );
         const responses = {
-          "--version": `crabbox ${CRABBOX_MIN_VERSION}`,
+          "--version": `crabbox ${fixtureVersion}`,
           "run --help": "provider: ssh\n  -provider string\n",
           "config show --json": JSON.stringify({ provider: "ssh" }),
         };
@@ -465,7 +464,7 @@ process.stdout.write(response + "\n");
         );
         expect(result.error, formatShimResult(result)).toBeUndefined();
         expect(result.status, formatShimResult(result)).toBe(0);
-        expect(result.stdout).toBe(`crabbox ${CRABBOX_MIN_VERSION}\n`);
+        expect(result.stdout).toBe(`crabbox ${fixtureVersion}\n`);
         const invocations = readFileSync(invocationLog, "utf8")
           .trim()
           .split("\n")

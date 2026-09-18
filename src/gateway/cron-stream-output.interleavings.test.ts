@@ -62,16 +62,8 @@ describe("cron stream output", () => {
 
     it("drops and counts an open batch when disable wins, then freezes after stop", async () => {
       vi.useFakeTimers();
-      const fake = fakeSupervisor();
-      const updateState = vi.fn(async (_jobId: string, _patch: Partial<CronJob["state"]>) => {});
-      const fireBatch = vi.fn(async () => "fired" as const);
-      const watchers = createWatchers({
-        getProcessSupervisor: () => fake.supervisor,
+      const { fake, updateState, fireBatch, watchers } = createCronStreamWatcherFixture({
         minIntervalMs: 1,
-        updateState,
-        recordFailure: vi.fn(async () => {}),
-        fireBatch,
-        logger: { info: vi.fn(), warn: vi.fn() },
       });
       await watchers.start(job());
 
@@ -100,14 +92,7 @@ describe("cron stream output", () => {
     });
 
     it("does not count unmatched partial or discarded oversized input as a batch", async () => {
-      const fake = fakeSupervisor();
-      const watchers = createWatchers({
-        getProcessSupervisor: () => fake.supervisor,
-        updateState: vi.fn(async () => {}),
-        recordFailure: vi.fn(async () => {}),
-        fireBatch: vi.fn(async () => "fired" as const),
-        logger: { info: vi.fn(), warn: vi.fn() },
-      });
+      const { fake, watchers } = createCronStreamWatcherFixture();
       const unmatched = job({
         id: "unmatched-partial",
         schedule: {
@@ -144,15 +129,7 @@ describe("cron stream output", () => {
     });
 
     it("carries final counters into a replacement created from a stale snapshot", async () => {
-      const fake = fakeSupervisor();
-      const updateState = vi.fn(async () => {});
-      const watchers = createWatchers({
-        getProcessSupervisor: () => fake.supervisor,
-        updateState,
-        recordFailure: vi.fn(async () => {}),
-        fireBatch: vi.fn(async () => "fired" as const),
-        logger: { info: vi.fn(), warn: vi.fn() },
-      });
+      const { fake, updateState, watchers } = createCronStreamWatcherFixture();
       const staleJob = job();
       await watchers.start(staleJob);
       fake.inputs[0]?.onStdout?.("first\n");
@@ -175,16 +152,9 @@ describe("cron stream output", () => {
 
     it("ignores obsolete process output during backoff and after replacement", async () => {
       vi.useFakeTimers();
-      const fake = fakeSupervisor();
-      const updateState = vi.fn(async (_jobId: string, _patch: Partial<CronJob["state"]>) => {});
-      const watchers = createWatchers({
-        getProcessSupervisor: () => fake.supervisor,
+      const { fake, updateState, watchers } = createCronStreamWatcherFixture({
         minIntervalMs: 1,
         retryBackoffMs: [10],
-        updateState,
-        recordFailure: vi.fn(async () => {}),
-        fireBatch: vi.fn(async () => "fired" as const),
-        logger: { info: vi.fn(), warn: vi.fn() },
       });
       await watchers.start(job());
       const obsoleteOutput = fake.inputs[0]?.onStdout;
@@ -213,16 +183,9 @@ describe("cron stream output", () => {
     it("retains a cadence-delayed batch across source restart backoff", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(1_000);
-      const fake = fakeSupervisor();
-      const fireBatch = vi.fn(async () => "fired" as const);
-      const watchers = createWatchers({
-        getProcessSupervisor: () => fake.supervisor,
+      const { fake, fireBatch, watchers } = createCronStreamWatcherFixture({
         minIntervalMs: 100,
         retryBackoffMs: [200],
-        updateState: vi.fn(async () => {}),
-        recordFailure: vi.fn(async () => {}),
-        fireBatch,
-        logger: { info: vi.fn(), warn: vi.fn() },
       });
       await watchers.start(job());
       const initialOwner = watchers.inspect("stream-job");

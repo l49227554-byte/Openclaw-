@@ -60,6 +60,56 @@ describe("restart startup progress", () => {
       expected: "healthy",
       elapsedMs: 90_250,
     },
+    {
+      name: "migration released at 120s before readiness at 145s",
+      renew: true,
+      releaseAtMs: 120_000,
+      readyAtMs: 145_000,
+      expected: "healthy",
+      elapsedMs: 145_000,
+    },
+    {
+      name: "migration stalled after its 61s renewal without completing",
+      renew: true,
+      renewUntilMs: 61_000,
+      readyAtMs: 145_000,
+      expected: "timeout",
+      elapsedMs: 130_000,
+    },
+    {
+      name: "foreign migration completion after the observed lease is replaced",
+      renew: true,
+      foreignAfterMs: 90_000,
+      releaseAtMs: 120_000,
+      readyAtMs: 145_000,
+      expected: "timeout",
+      elapsedMs: 130_000,
+    },
+    {
+      name: "migration completion credited only once",
+      renew: true,
+      releaseAtMs: 120_000,
+      expected: "timeout",
+      elapsedMs: 180_000,
+    },
+    {
+      name: "migration poll failure without observed completion",
+      renew: true,
+      renewUntilMs: 61_000,
+      pollErrorAtMs: 120_000,
+      readyAtMs: 145_000,
+      expected: "timeout",
+      elapsedMs: 130_000,
+    },
+    {
+      name: "migration completion at the five-minute cap",
+      renew: true,
+      releaseAtMs: 290_000,
+      readyAtMs: 310_000,
+      expected: "still-starting",
+      elapsedMs: 300_000,
+      phase: "waiting for Gateway listener",
+    },
     { name: "renewing migration", renew: true, expected: "still-starting", elapsedMs: 300_000 },
     { name: "stalled migration", renew: false, expected: "timeout", elapsedMs: 70_000 },
     {
@@ -90,6 +140,11 @@ describe("restart startup progress", () => {
       replace,
       replaceBoot,
       foreign,
+      foreignAfterMs,
+      releaseAtMs,
+      renewUntilMs,
+      pollErrorAtMs,
+      phase,
       readyAtMs,
       pollJitterMs,
       expected,
@@ -145,14 +200,22 @@ describe("restart startup progress", () => {
           heartbeatAt: number | null;
         }) => void;
       } = {}) => {
-        if (monotonicClock.nowMs < 1_000) {
+        if (monotonicClock.nowMs >= (pollErrorAtMs ?? Infinity)) {
+          throw new Error("Migration activity unavailable");
+        }
+        if (monotonicClock.nowMs < 1_000 || monotonicClock.nowMs >= (releaseAtMs ?? Infinity)) {
           return false;
         }
+        const foreignLease = foreign || monotonicClock.nowMs >= (foreignAfterMs ?? Infinity);
         onActivity?.({
-          owner: "migration-owner",
-          pid: foreign ? 9000 : 8000,
+          owner: foreignLease ? "foreign-migration-owner" : "migration-owner",
+          pid: foreignLease ? 9000 : 8000,
           heartbeatAt: renew
-            ? 1_000 + Math.floor((monotonicClock.nowMs - 1_000) / 60_000) * 60_000
+            ? 1_000 +
+              Math.floor(
+                (Math.min(monotonicClock.nowMs, renewUntilMs ?? Infinity) - 1_000) / 60_000,
+              ) *
+                60_000
             : 1_000,
         });
         return true;
@@ -175,7 +238,7 @@ describe("restart startup progress", () => {
       });
       if (expected === "still-starting") {
         expect(message.failMessage).toContain("still starting after 300s");
-        expect(message.failMessage).toContain("startup migration");
+        expect(message.failMessage).toContain(phase ?? "startup migration");
         expect(message.failMessage).toContain("openclaw gateway status --deep");
       } else if (expected === "timeout") {
         expect(message.failMessage).toBe(

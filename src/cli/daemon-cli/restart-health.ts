@@ -371,8 +371,9 @@ export async function waitForGatewayHealthyRestart(params: {
   );
   let migrationActive = false;
   let nextMigrationActivityPollMs = 0;
-  let migrationActivity: { owner: string; heartbeatAt: number } | undefined;
-  let furthestStartupPhase: number | undefined;
+  let migrationActivity: { owner: string; pid: number; heartbeatAt: number } | undefined;
+  let observedRunning = false;
+  let observedListener = false;
   let startupProgressDeadlineMs = standardDeadlineMs;
   let healthyStreak: { snapshot: GatewayRestartSnapshot; probes: number } | undefined;
   let updateStartupDeadlineMs: number | undefined;
@@ -383,7 +384,7 @@ export async function waitForGatewayHealthyRestart(params: {
 
   for (let attempt = 0; ; attempt += 1) {
     params.signal?.throwIfAborted();
-    // Preserve observed restarts across unavailable probes; first identity is startup progress.
+    // Preserve observed restarts across unavailable probes.
     generationChanged ||=
       (observedPid !== undefined &&
         snapshot.runtime.pid !== undefined &&
@@ -391,6 +392,7 @@ export async function waitForGatewayHealthyRestart(params: {
       (observedBootId !== undefined &&
         snapshot.gatewayBootId !== undefined &&
         observedBootId !== snapshot.gatewayBootId);
+    const identifiedBoot = observedBootId === undefined && snapshot.gatewayBootId !== undefined;
     observedPid = snapshot.runtime.pid ?? observedPid;
     observedBootId = snapshot.gatewayBootId ?? observedBootId;
     const expiredOutcome = generationChanged ? "generation-changed" : "timeout";
@@ -477,34 +479,47 @@ export async function waitForGatewayHealthyRestart(params: {
     }
 
     let migrationProgress = false;
+    let migrationCompleted = false;
     if (snapshot.runtime.status !== "running") {
       migrationActive = false;
     } else if (elapsedMs >= nextMigrationActivityPollMs) {
-      migrationActive = (() => {
-        try {
-          return (params.isStartupMigrationActive ?? hasActiveStartupMigrationLease)({
-            env: params.env,
-            onActivity: (activity) => {
-              if (
-                activity.pid === undefined ||
-                activity.pid !== snapshot.runtime.pid ||
-                activity.heartbeatAt === null
-              ) {
-                return;
-              }
-              // Acquisition earns one heartbeat window; later credit requires renewed
-              // activity from the same lease, not merely a live process.
-              migrationProgress =
-                migrationActivity === undefined ||
-                (activity.owner === migrationActivity.owner &&
-                  activity.heartbeatAt > migrationActivity.heartbeatAt);
-              migrationActivity = { owner: activity.owner, heartbeatAt: activity.heartbeatAt };
-            },
-          });
-        } catch {
-          return false;
-        }
-      })();
+      const previousActivity = migrationActivity;
+      migrationActivity = undefined;
+      try {
+        migrationActive = (params.isStartupMigrationActive ?? hasActiveStartupMigrationLease)({
+          env: params.env,
+          onActivity: (activity) => {
+            if (
+              activity.pid === undefined ||
+              activity.pid !== snapshot.runtime.pid ||
+              activity.heartbeatAt === null
+            ) {
+              return;
+            }
+            // Acquisition earns one heartbeat window; later credit requires renewed
+            // activity from the same lease, not merely a live process.
+            migrationProgress =
+              previousActivity === undefined ||
+              (activity.owner === previousActivity.owner &&
+                activity.heartbeatAt > previousActivity.heartbeatAt);
+            migrationActivity = {
+              owner: activity.owner,
+              pid: activity.pid,
+              heartbeatAt: activity.heartbeatAt,
+            };
+          },
+        });
+        // Consume an observed same-process release once. Foreign activity clears the
+        // observation; a failed read cannot establish completion or a new acquisition.
+        migrationCompleted =
+          !migrationActive &&
+          previousActivity !== undefined &&
+          previousActivity.pid === snapshot.runtime.pid;
+      } catch {
+        migrationActive = false;
+        migrationProgress = false;
+        migrationActivity = previousActivity;
+      }
       nextMigrationActivityPollMs = elapsedMs + STARTUP_MIGRATION_ACTIVITY_POLL_MS;
     }
     if (boundedDeadlineMs === undefined) {
@@ -521,26 +536,19 @@ export async function waitForGatewayHealthyRestart(params: {
       snapshot.portUsage.listeners.some((listener) =>
         listenerOwnedByRuntimePid({ listener, runtimePid }),
       );
-    const startupPhase =
-      snapshot.runtime.status !== "running"
-        ? 0
-        : migrationActive
-          ? 1
-          : snapshot.gatewayBootId
-            ? 4
-            : ownsListener
-              ? 3
-              : 2;
+    const running = snapshot.runtime.status === "running";
+    const startupProgress =
+      attempt > 0 &&
+      ((!observedRunning && running) || (!observedListener && ownsListener) || identifiedBoot);
     const stableRunning =
-      snapshot.runtime.status === "running" &&
+      running &&
       (snapshot.runtime.pid !== undefined || snapshot.gatewayBootId !== undefined) &&
       !generationChanged;
     if (
       !healthy &&
       stableRunning &&
       elapsedMs <= startupProgressDeadlineMs + settleDurationMs &&
-      (migrationProgress ||
-        (furthestStartupPhase !== undefined && startupPhase > furthestStartupPhase))
+      (migrationProgress || migrationCompleted || startupProgress)
     ) {
       // Include one poll of observation lag after the producer's renewal interval.
       startupProgressDeadlineMs = Math.max(
@@ -554,8 +562,9 @@ export async function waitForGatewayHealthyRestart(params: {
           ),
       );
     }
-    // A returning listener or replayed hello is not a new phase of startup.
-    furthestStartupPhase = Math.max(furthestStartupPhase ?? startupPhase, startupPhase);
+    // Re-observing a service or listener after a failed probe is not new progress.
+    observedRunning ||= running;
+    observedListener ||= ownsListener;
     if (elapsedMs >= standardDeadlineMs) {
       const startupCapMs = Math.max(standardDeadlineMs, STARTUP_MIGRATION_LEASE_TTL_MS);
       // Explicit budgets and the shipped updater marker keep their existing behavior.

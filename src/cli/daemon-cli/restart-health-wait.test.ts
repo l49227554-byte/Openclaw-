@@ -15,6 +15,9 @@ import {
   waitForStoppedFreeGatewayRestart,
 } from "./restart-health.test-helpers.js";
 
+const { waitForGatewayHealthyRestart, renderRestartDiagnostics } =
+  await import("./restart-health.js");
+
 describe("restart health", () => {
   beforeEach(resetRestartHealthMocks);
   afterEach(restoreRestartHealthMocks);
@@ -42,7 +45,6 @@ describe("restart health", () => {
       }));
       callGateway.mockImplementation(gatewayHealthResponse());
 
-      const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
       const snapshot = await waitForGatewayHealthyRestart({
         service: makeGatewayService({ status: "stopped" }),
         port: 18789,
@@ -77,7 +79,6 @@ describe("restart health", () => {
       hints: [],
     }));
     callGateway.mockImplementation(gatewayHealthResponse());
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: makeGatewayService({ status: "stopped" }),
       port: 18789,
@@ -196,8 +197,6 @@ describe("restart health", () => {
       if (running === false) {
         vi.mocked(service.readRuntime).mockResolvedValue({ status: "unknown" });
       }
-      const { waitForGatewayHealthyRestart, renderRestartDiagnostics } =
-        await import("./restart-health.js");
       const snapshot = await waitForGatewayHealthyRestart({
         service,
         port: 18789,
@@ -312,7 +311,6 @@ describe("restart health", () => {
       hints: [],
     });
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -347,7 +345,6 @@ describe("restart health", () => {
       .mockResolvedValueOnce({ status: "stopped" })
       .mockResolvedValue({ status: "running", pid: 8000 });
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: { readRuntime, readCommand: vi.fn(async () => null) } as unknown as GatewayService,
       port: 18789,
@@ -377,7 +374,6 @@ describe("restart health", () => {
       hints: [],
     });
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: makeGatewayService({ status: "stopped" }),
       port: 18789,
@@ -414,7 +410,6 @@ describe("restart health", () => {
     });
     const isStartupMigrationActive = createStartupMigrationActivityProbe(() => true);
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: makeGatewayService({ status: "running", pid: 8000 }),
       port: 18789,
@@ -449,7 +444,6 @@ describe("restart health", () => {
       return migrationPolls < 7;
     });
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: makeGatewayService({ status: "running", pid: 8000 }),
       port: 18789,
@@ -476,7 +470,6 @@ describe("restart health", () => {
       return migrationPolls < 4;
     });
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: makeGatewayService({ status: "running", pid: 8000 }),
       port: 18789,
@@ -499,7 +492,6 @@ describe("restart health", () => {
     });
     const isStartupMigrationActive = createStartupMigrationActivityProbe(() => false);
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: makeGatewayService({ status: "running", pid: 8000 }),
       port: 18789,
@@ -518,8 +510,6 @@ describe("restart health", () => {
   it.each([false, true])(
     "bounds an explicit readiness budget (migration=%s)",
     async (migration) => {
-      const { waitForGatewayHealthyRestart, renderRestartDiagnostics } =
-        await import("./restart-health.js");
       const snapshot = await waitForGatewayHealthyRestart({
         service: makeGatewayService({ status: "running", pid: 8000 }),
         port: 18789,
@@ -546,7 +536,6 @@ describe("restart health", () => {
     });
     const isStartupMigrationActive = createStartupMigrationActivityProbe(() => true);
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service: makeGatewayService({ status: "running", pid: 8000 }),
       port: 18789,
@@ -582,7 +571,6 @@ describe("restart health", () => {
         return true;
       });
 
-      const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
       const snapshot = await waitForGatewayHealthyRestart({
         service: makeGatewayService({ status: "running", pid: 8000 }),
         port: 18789,
@@ -644,7 +632,6 @@ describe("restart health", () => {
     );
     callGateway.mockImplementation(gatewayHealthResponse({}));
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -692,7 +679,6 @@ describe("restart health", () => {
       }),
     );
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -731,7 +717,6 @@ describe("restart health", () => {
       }),
     );
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -762,7 +747,6 @@ describe("restart health", () => {
       }),
     );
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -787,7 +771,6 @@ describe("restart health", () => {
       hints: [],
     });
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -817,7 +800,6 @@ describe("restart health", () => {
       }),
     );
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -842,7 +824,6 @@ describe("restart health", () => {
       hints: [],
     });
 
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     const snapshot = await waitForGatewayHealthyRestart({
       service,
       port: 18789,
@@ -866,7 +847,6 @@ describe("restart health", () => {
     sleep.mockImplementationOnce(async () => {
       controller.abort(aborted);
     });
-    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
     await expect(
       waitForGatewayHealthyRestart({
         service: makeGatewayService({ status: "running", pid: 8000 }),

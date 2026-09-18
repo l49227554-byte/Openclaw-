@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createStubChild } from "./supervisor/adapters/child.test-support.js";
 
@@ -320,5 +320,77 @@ it.each(["create", "admission"] as const)(
     ).rejects.toThrow("child construction aborted");
     expect(native.spawn).toHaveBeenCalledTimes(phase === "create" ? 0 : 1);
     expect(stub.sendMock).not.toHaveBeenCalled();
+  },
+);
+
+describe.each([
+  { processTree: "required-all", external: false, requiresTree: true },
+  { processTree: "owned-only", external: false, requiresTree: true },
+  { processTree: "transport-only", external: false, requiresTree: false },
+  { processTree: "owned-only", external: true, requiresTree: false },
+  { processTree: "required-all", external: true, requiresTree: true },
+] as const)(
+  "$processTree cleanup (external=$external)",
+  ({ processTree, external, requiresTree }) => {
+    it.each(["job-unavailable", "job-admission-failed", "confirmed"] as const)(
+      "interprets %s certification without failing command execution",
+      async (certification) => {
+        if (certification === "job-unavailable") {
+          native.koffiAvailable = false;
+        } else if (certification === "job-admission-failed") {
+          rejectJobAdmission(new Error("Job admission failed"));
+        }
+        const supervisor = createProcessSupervisor();
+        const scopeKey = "scope:windows-certification";
+        const cleanup = supervisor.acquireScopeCleanup(scopeKey, { processTree });
+        const transportCleanup = supervisor.acquireScopeCleanup(scopeKey, {
+          processTree: "transport-only",
+        });
+        const run = await supervisor.spawn({
+          mode: "child",
+          argv: [process.execPath, "fixture"],
+          exactEnv: true,
+          scopeKey,
+          ...(external ? { cleanupOwnership: "external" } : {}),
+        });
+        try {
+          stub.child.stdout?.emit("data", Buffer.from("command succeeded"));
+          stub.child.stdout?.emit("end");
+          stub.child.stderr?.emit("end");
+          native.inspect.mockReturnValue([]);
+          stub.emitExit(0);
+          stub.emitClose(0);
+          await expect(run.wait()).resolves.toMatchObject({
+            exitCode: 0,
+            stdout: "command succeeded",
+          });
+          const outcome = await run.waitForExtinction!();
+          expect(outcome).toMatchObject(
+            certification === "confirmed"
+              ? { status: "confirmed" }
+              : { status: "uncertain", reason: certification },
+          );
+          // Join after the run has retired, alongside a policy that permits uncertainty.
+          await expect(transportCleanup()).resolves.toBeUndefined();
+          if (requiresTree && certification !== "confirmed") {
+            await expect(cleanup()).rejects.toMatchObject({
+              reason: certification,
+              cause: outcome,
+              message: expect.stringContaining(certification),
+            });
+          } else if (requiresTree && external) {
+            await expect(cleanup()).rejects.toThrow(
+              "cannot confirm owned execution-tree settlement",
+            );
+          } else {
+            await expect(cleanup()).resolves.toBeUndefined();
+          }
+          await expect(supervisor.shutdown()).resolves.toBeUndefined();
+        } finally {
+          stub.emitClose(0);
+          await Promise.allSettled([cleanup(), transportCleanup(), supervisor.shutdown()]);
+        }
+      },
+    );
   },
 );

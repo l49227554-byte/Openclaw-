@@ -13,10 +13,6 @@ import {
   recordAssistantManagedMediaUrls,
   type PrepareAssistantTranscriptMessage,
 } from "../../config/sessions/transcript-assistant-delivery.js";
-import {
-  appendLocalMediaParentRoots,
-  getAgentScopedMediaLocalRoots,
-} from "../../media/local-roots.js";
 import { splitMediaFromOutput } from "../../media/parse.js";
 import { createChannelMessageReplyPipeline } from "../../plugin-sdk/channel-outbound.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -39,7 +35,11 @@ import {
   sanitizeAssistantDisplayText,
 } from "./chat-assistant-content.js";
 import { isBtwReplyPayload, isSourceReplyTranscriptMirrorPayload } from "./chat-broadcast.js";
-import { normalizeWebchatReplyMediaPathsForDisplay } from "./chat-reply-media.js";
+import {
+  getWebchatReplyMediaLocalRoots,
+  normalizeWebchatReplyMediaPathsForDisplay,
+} from "./chat-reply-media.js";
+import { observeChatSendCommentaryMedia } from "./chat-send-commentary-media.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import {
   appendAssistantTranscriptMessage,
@@ -110,6 +110,7 @@ export function createChatSendReplyDispatch(params: {
   isAgentRunStarted: () => boolean;
   onCommandBlock?: (text: string) => void;
   isRunCurrent?: () => boolean;
+  abortSignal?: AbortSignal;
   getReplyDispatchRun?: () => ReplyDispatchRun | undefined;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   logGateway: GatewayRequestContext["logGateway"];
@@ -128,7 +129,9 @@ export function createChatSendReplyDispatch(params: {
     generation: null as string | null,
     afterSeq: 0,
   };
-  const captureAgentTranscriptStart = () => {
+  let agentRunId = clientRunId;
+  const captureAgentTranscriptStart = (runId = clientRunId) => {
+    agentRunId = runId;
     const current = loadSessionEntry(session.sessionKey, sessionLoadOptions);
     const sessionId = current.entry?.sessionId ?? backingSessionId;
     const watermark = sessionId
@@ -213,6 +216,7 @@ export function createChatSendReplyDispatch(params: {
       cfg,
       sessionKey,
       agentId,
+      sessionEntry: loadSessionEntry(sessionKey, { ...sessionLoadOptions, agentId }).entry,
       accountId,
       payloads: [stripVisibleTextFromTtsSupplement(payload)],
     });
@@ -224,10 +228,12 @@ export function createChatSendReplyDispatch(params: {
       ...(agentId ? { agentId } : {}),
     });
     const sessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
-    const mediaLocalRoots = appendLocalMediaParentRoots(
-      getAgentScopedMediaLocalRoots(cfg, agentId),
-      latestStorePath ? [latestStorePath] : undefined,
-    );
+    const mediaLocalRoots = getWebchatReplyMediaLocalRoots({
+      cfg,
+      agentId,
+      sessionEntry: latestEntry,
+      storePath: latestStorePath,
+    });
     const mediaMessage = await buildWebchatAssistantMessageFromReplyPayloads([transcriptPayload], {
       localRoots: mediaLocalRoots,
       onLocalAudioAccessDenied: (err) => {
@@ -490,10 +496,25 @@ export function createChatSendReplyDispatch(params: {
   ): Promise<T> => {
     return await admission.run(async () => {
       preparingTranscript = true;
+      const commentaryMedia = observeChatSendCommentaryMedia({
+        session,
+        accountId,
+        getRunId: () => agentRunId,
+        isCurrent: () => isAgentRunStarted() && params.isRunCurrent?.() === true,
+        abortSignal: params.abortSignal,
+        logGateway,
+      });
       try {
         return await operation();
       } finally {
         preparingTranscript = false;
+        const commentaryRewrite = await commentaryMedia.close();
+        if (
+          commentaryRewrite &&
+          commentaryRewrite.sessionId === assistantTranscriptRewriteState.sessionId
+        ) {
+          assistantTranscriptRewriteState.generation = commentaryRewrite.generation;
+        }
         // Stay inside the session admission after the runtime owner unwinds; callers chain
         // post-dispatch persistence from this Promise, and finalizer errors stay best-effort.
         await finalizeAgentMediaTranscript();

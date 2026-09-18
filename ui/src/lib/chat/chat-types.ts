@@ -4,6 +4,7 @@ import type { MediaKind } from "@openclaw/media-core/constants";
  * Chat message types for the UI layer.
  */
 import type {
+  AgentActivityItem,
   ChatSendIntent,
   QueueMode,
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
@@ -23,6 +24,20 @@ export type BrowserAnnotationAttachment = {
   inspectedElement: boolean;
 };
 
+export type ChatSelectionSource = {
+  text: string;
+  messageId?: string;
+  entryId?: string;
+  /** UTF-16 offsets in the source bubble’s concatenated DOM text nodes. */
+  start: number;
+  end: number;
+};
+
+export type ChatSelectionAnnotation = ChatSelectionSource & {
+  comment: string;
+  sessionKey: string;
+};
+
 export type ChatAttachment = {
   id: string;
   dataUrl?: string;
@@ -32,6 +47,7 @@ export type ChatAttachment = {
   sizeBytes?: number;
   /** UI-local context that must remain coupled to its annotated screenshot. */
   browserAnnotation?: BrowserAnnotationAttachment;
+  selectionAnnotation?: ChatSelectionAnnotation;
 };
 
 // Shared payload contract: draft and outbox storage must not import each other's runtime.
@@ -41,6 +57,7 @@ export type DurableComposerDraftAttachment = {
   fileName?: string;
   sizeBytes?: number;
   browserAnnotation?: BrowserAnnotationAttachment;
+  selectionAnnotation?: ChatSelectionAnnotation;
 };
 
 export type ChatComposerDraftRetry = {
@@ -120,6 +137,8 @@ export type ChatQueueItem = {
   sessionId?: string;
   expectedLeafEntryId?: string | null;
   sendState?:
+    // Process-local submission handoff; durable custody remains waiting-idle.
+    | "submitting"
     | "waiting-model"
     | "waiting-idle"
     | "executing-command"
@@ -252,7 +271,7 @@ export type MessageGroup = {
   key: string;
   role: string;
   senderLabel?: string | null;
-  senderSession?: { sessionKey?: string; agentId?: string } | null;
+  senderSession?: { sessionKey?: string; agentId?: string; label?: string } | null;
   sender?: SenderIdentity;
   sourceClients?: MessageClientSource[];
   replyToSender?: SenderIdentity;
@@ -348,7 +367,7 @@ export type NormalizedMessage = {
   timestamp: number;
   id?: string;
   senderLabel?: string | null;
-  senderSession?: { sessionKey?: string; agentId?: string } | null;
+  senderSession?: { sessionKey?: string; agentId?: string; label?: string } | null;
   sender?: SenderIdentity;
   sourceClients?: MessageClientSource[];
   audioAsVoice?: boolean;
@@ -381,6 +400,8 @@ export type ToolCard = {
   /** Producer-reported process exit code, when the result supplies one. */
   exitCode?: number;
   isError?: boolean;
+  /** Prepared presentation facts; never replace the raw execution fields above. */
+  activity?: AgentActivityItem;
   /** True when the card comes from the live tool stream of the current run. */
   live?: boolean;
   /** True once a result landed, including historical results with empty output. */
@@ -415,4 +436,10 @@ export type ToolCard = {
     | (BrowserTabTarget & { kind: "browser-tab"; url?: string; title?: string });
 };
 
-export type ToolCardOutcome = "running" | "succeeded" | "failed" | "unknown";
+export type ToolCardOutcome =
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "unknown";

@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readHeartbeatMonitorScratch } from "../cron/scratch-store.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { formatErrorMessage } from "./errors.js";
+import type { HeartbeatConfig } from "./heartbeat-config.js";
 import {
   buildCronEventPrompt,
   buildExecEventPrompt,
@@ -16,11 +17,10 @@ import {
   isHeartbeatDeliveryAwarenessEvent,
   isRelayableExecCompletionEvent,
 } from "./heartbeat-events-filter.js";
+import { heartbeatLog as log } from "./heartbeat-log.js";
 import {
-  heartbeatLog as log,
   resolveConfiguredHeartbeatPrompt,
   resolveHeartbeatResponseToolPrompt,
-  type HeartbeatConfig,
 } from "./heartbeat-runner-config.js";
 import { resolveHeartbeatSessionSelection } from "./heartbeat-runner-session.js";
 import {
@@ -32,7 +32,7 @@ import {
   type HeartbeatScheduledTask,
   type HeartbeatWakeSource,
 } from "./heartbeat-wake.js";
-import { selectAgentSystemEvents } from "./system-event-ownership.js";
+import { resolveSystemEventQueueKey } from "./system-event-ownership.js";
 import {
   peekSystemEventEntries,
   resolveSystemEventDeliveryContext,
@@ -99,9 +99,8 @@ export async function resolveHeartbeatPreflight(params: {
     params.heartbeat,
     params.sessionKey,
   );
-  const pendingEventEntries = selectAgentSystemEvents(
-    peekSystemEventEntries(session.sessionKey),
-    params.agentId,
+  const pendingEventEntries = peekSystemEventEntries(
+    resolveSystemEventQueueKey(session.sessionKey, params.agentId),
   ).filter((event) => !isHeartbeatDeliveryAwarenessEvent(event));
   const turnSourceDeliveryContext = resolveSystemEventDeliveryContext(pendingEventEntries);
   const hasTaggedCronEvents = pendingEventEntries.some((event) =>

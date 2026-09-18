@@ -5,9 +5,12 @@ import type { FileIdentityStat } from "./fs-safe-advanced.js";
 import { resolveRuntimeProcessEntrypointUrl } from "./runtime-process-url.js";
 import { resolveRuntimeWorkerArgv } from "./runtime-worker-url.js";
 import { readSqliteIntegrityFileIdentity } from "./sqlite-file-generation.js";
+import { SqliteIntegrityWorkerInterruptedError } from "./sqlite-integrity-worker-error.js";
 import type { SqliteIntegrityCheckTiming } from "./sqlite-integrity.js";
 import {
+  isSqliteInspectionDeadlineOwnedByCaller,
   readSqliteInspectionBudget,
+  resolveSqliteInspectionSignal,
   sqliteInspectionTimeoutError,
 } from "./sqlite-readonly-worker.js";
 
@@ -42,10 +45,11 @@ export type SqliteIntegrityWorkerMessage =
 export function assertSqliteIntegrityInWorker(
   pathname: string,
   busyTimeoutMs: number,
-  signal: AbortSignal,
+  callerSignal: AbortSignal,
   databaseLabel = pathname,
   timing?: SqliteIntegrityCheckTiming,
 ): Promise<void> {
+  const signal = resolveSqliteInspectionSignal(callerSignal) ?? callerSignal;
   if (timing) {
     delete timing.workerCheckElapsedMs;
     delete timing.workerLifetimeElapsedMs;
@@ -65,7 +69,7 @@ export function assertSqliteIntegrityInWorker(
     execArgv: resolveRuntimeWorkerArgv(entry).slice(0, -1),
     serialization: "advanced",
     stdio: ["ignore", "ignore", "ignore", "ipc"],
-    timeout: timeoutMs,
+    timeout: isSqliteInspectionDeadlineOwnedByCaller() ? undefined : timeoutMs,
     killSignal: "SIGKILL",
     signal,
   });
@@ -120,6 +124,9 @@ export function assertSqliteIntegrityInWorker(
           throw error;
         }
         if (code !== 0 || !result) {
+          if (!result && closeSignal) {
+            throw new SqliteIntegrityWorkerInterruptedError(closeSignal, lastObservedPhase);
+          }
           throw new Error(
             `SQLite integrity worker exited ${code} without a completed check (lastObservedPhase=${lastObservedPhase})`,
           );

@@ -36,11 +36,9 @@ async function inspectProvisioning(
       "-z",
     ]),
   ).map((entry) => entry.toString("utf8"));
-  // Check only manifest matches against the ignore rules: listing every ignored file
-  // would buffer whole dependency trees and can exceed the Git output cap.
-  const ignored = new Set<string>();
+  const paths: string[] = [];
   for (const batch of gitPathspecBatches(included)) {
-    const output = await requireGitBuffer(sourceRoot, [
+    const candidates = await requireGitBuffer(sourceRoot, [
       "--literal-pathspecs",
       "ls-files",
       "--others",
@@ -50,11 +48,8 @@ async function inspectProvisioning(
       "--",
       ...batch,
     ]);
-    for (const entry of splitNullBuffer(output)) {
-      ignored.add(entry.toString("utf8"));
-    }
+    paths.push(...splitNullBuffer(candidates).map((entry) => entry.toString("utf8")));
   }
-  const paths = included.filter((entry) => ignored.has(entry));
   let estimatedBytes = 0;
   for (const relativePath of paths) {
     const normalized = normalizeProvisionedRelativePath(relativePath);

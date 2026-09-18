@@ -1,6 +1,14 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngineHostSupport } from "../../context-engine/host-compat.js";
+import {
+  captureAgentRunLifecycleGeneration,
+  emitAgentEvent,
+  emitAgentEventForRunContext,
+} from "../../infra/agent-events.js";
+import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
+import { mergeAcceptedSessionSpawnsForRun } from "../accepted-session-spawn.js";
+import type { PreparedAgentRunAdmission } from "../admitted-run-context.js";
 import {
   createAssistantErrorTranscript,
   type AssistantErrorTranscript,
@@ -15,6 +23,7 @@ import {
   finalizeAcceptedContextEngineTurn,
   type ContextEngineTurnAttemptFacts,
 } from "../harness/context-engine-turn-attempt.js";
+import { resolveAgentHarnessPolicy } from "../harness/policy.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { selectAgentHarness } from "../harness/selection.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
@@ -26,7 +35,9 @@ import type {
   ModelFallbackRouteResolution,
 } from "../model-fallback.types.js";
 import type { ModelManifestNormalizationContext } from "../model-ref-shared.js";
+import { settleFailedRequesterRun, settleRequesterRun } from "../requester-run-settlement.js";
 import { resolveAgentRunAbortLifecycleFields } from "../run-termination.js";
+import { resolveSessionPlacementRuntimeOverride } from "../session-placement-admission.js";
 import {
   didEmbeddedCyberFailoverTargetCommitWork,
   EMBEDDED_CYBER_FAILOVER_TRIGGER_CODE,
@@ -46,6 +57,7 @@ import {
   buildRunEntryTerminal,
   canAdvanceContextEngineTurn,
   mergeRunEntryExecutionTrace,
+  preserveFollowupResultForDelivery,
   resolveRunEntryTerminalOutcome,
   type EmbeddedAgentRunEntryTerminal,
   type RunEntryTerminalBehavior,
@@ -56,6 +68,7 @@ import type { EmbeddedAgentRunResult } from "./types.js";
 export type { EmbeddedAgentRunEntryTerminal } from "./run-entry-terminal.js";
 
 type RunEntryCandidateOptions = {
+  agentHarnessRuntimeOverride: string | undefined;
   assistantErrorTranscript: AssistantErrorTranscript;
   authProfileFailurePolicy?: AuthProfileFailurePolicy;
   classifyResult: (result: EmbeddedAgentRunResult) => ModelFallbackResultClassification;
@@ -100,6 +113,7 @@ type EmbeddedAgentRunEntryResult<T extends EmbeddedAgentRunResult> = {
 };
 
 type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
+  preparedRunAdmission?: PreparedAgentRunAdmission;
   selection: {
     cfg: OpenClawConfig;
     provider: string;
@@ -124,6 +138,7 @@ type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
     resolveContextEngineHost?: (
       provider: string,
       model: string,
+      agentHarnessRuntimeOverride: string | undefined,
     ) => ContextEngineHostSupport | undefined;
   };
   behavior: RunEntryBehavior;
@@ -135,36 +150,61 @@ type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
   runCandidate: (provider: string, model: string, options: RunEntryCandidateOptions) => Promise<T>;
 };
 
-const PRESERVED_FOLLOWUP_RESULT_CODES = new Set([
-  "empty_result",
-  "reasoning_only_result",
-  "planning_only_result",
-]);
-
-function preserveFollowupResultForDelivery(
-  classification: ModelFallbackResultClassification,
-): ModelFallbackResultClassification {
-  if (
-    !classification ||
-    !("code" in classification) ||
-    !classification.code ||
-    !PRESERVED_FOLLOWUP_RESULT_CODES.has(classification.code)
-  ) {
-    return classification;
-  }
-  // Follow-up delivery owns its terminal fallback, so retain the classified
-  // result for that layer instead of replacing it with a summary error.
-  return {
-    ...classification,
-    preserveResultOnExhaustion: true,
-    preserveResultPriority: -1,
-  };
-}
-
 /** Runs one logical turn across model candidates and advances only the accepted winner. */
 export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
   params: EmbeddedAgentRunEntryParams<T>,
 ): Promise<EmbeddedAgentRunEntryResult<T>> {
+  const admission = params.preparedRunAdmission;
+  const requester = {
+    ...params.identity,
+    preparedRunAdmission: admission,
+    abortSignal: params.abortSignal,
+  };
+  try {
+    const result = await runEmbeddedAgentEntryInternal(params);
+    // Placement and asynchronous terminal cleanup have finished. Only this
+    // accepted logical result may release children retained across candidates.
+    settleRequesterRun(requester, result.result, () => admission?.assertSourceCurrent());
+    return result;
+  } catch (error) {
+    throw settleFailedRequesterRun(requester, error);
+  }
+}
+
+async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
+  params: EmbeddedAgentRunEntryParams<T>,
+): Promise<EmbeddedAgentRunEntryResult<T>> {
+  const lifecycleGeneration = captureAgentRunLifecycleGeneration(params.identity.runId);
+  const runContext = getAgentRunContext(params.identity.runId);
+  const placementRuntime = resolveSessionPlacementRuntimeOverride(params.identity);
+  const resolveRuntimeOverride = (provider: string, model: string) => {
+    const requestedRuntime = params.harness.resolveRuntimeOverride(provider, model);
+    if (requestedRuntime || !placementRuntime) {
+      return requestedRuntime;
+    }
+    const policy = resolveAgentHarnessPolicy({
+      config: params.selection.cfg,
+      provider,
+      modelId: model,
+      agentId: params.identity.agentId,
+      sessionKey: params.harness.sessionKey,
+    });
+    // Explicit runtime choices still reach placement's compatibility check.
+    return policy.runtimeSource === "implicit" ? placementRuntime : undefined;
+  };
+  const clearObservedModel = () => {
+    const event = {
+      ...params.identity,
+      lifecycleGeneration,
+      stream: "lifecycle",
+      data: { phase: "model", provider: null, model: null },
+    } as const;
+    if (runContext) {
+      emitAgentEventForRunContext(event, runContext);
+    } else {
+      emitAgentEvent(event);
+    }
+  };
   const contextEngineLogicalTurnLease = await createContextEngineLogicalTurnLease({
     identity: params.identity,
     config: params.selection.cfg,
@@ -245,11 +285,11 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
         ...selection,
         ...params.identity,
         abortSignal: params.abortSignal,
-        resolveAgentHarnessRuntimeOverride: params.harness.resolveRuntimeOverride,
+        resolveAgentHarnessRuntimeOverride: resolveRuntimeOverride,
         prepareCandidateChain: async (candidates) => {
           for (const candidate of candidates) {
             try {
-              const agentHarnessRuntimeOverride = params.harness.resolveRuntimeOverride(
+              const agentHarnessRuntimeOverride = resolveRuntimeOverride(
                 candidate.provider,
                 candidate.model,
               );
@@ -261,6 +301,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
               const resolvedHost = params.harness.resolveContextEngineHost?.(
                 candidate.provider,
                 candidate.model,
+                agentHarnessRuntimeOverride,
               );
               const host =
                 resolvedHost ??
@@ -342,6 +383,15 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
               return undefined;
             }
             if (!classified || classified.result !== result) {
+              if (params.preparedRunAdmission) {
+                const accepted = mergeAcceptedSessionSpawnsForRun(
+                  params.preparedRunAdmission.operationalRunInstance,
+                  result.acceptedSessionSpawns,
+                );
+                if (accepted.length) {
+                  result.acceptedSessionSpawns = accepted;
+                }
+              }
               const classification =
                 params.behavior.kind === "maintenance"
                   ? undefined
@@ -379,36 +429,41 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
             }
             return classified.value;
           };
-          const result = await params.runCandidate(provider, model, {
-            assistantErrorTranscript,
-            // The original OpenAI refusal proves this turn's credential already
-            // reached the provider. Keep a target-only entitlement rejection from
-            // poisoning shared auth health for ordinary OpenAI model selection.
-            ...(runOptions.forceFallbackRetry
-              ? { authProfileFailurePolicy: "local" as const }
-              : {}),
-            classifyResult,
-            allowTransientCooldownProbe: options?.allowTransientCooldownProbe,
-            isFinalFallbackAttempt: options?.isFinalFallbackAttempt,
-            isFallbackRetry,
-            modelRoutingProvenance: runOptions.forceFallbackRetry
-              ? {
-                  ...options.modelRoutingProvenance,
-                  stage: "fallback",
-                  fallbackReason: "unknown",
-                }
-              : options.modelRoutingProvenance,
-            contextEngineLogicalTurnLease,
-            onContextEngineTurnCandidate: (facts) => {
-              contextEngineTurnCandidate = facts;
-              unsettledContextEngineTurnAttempt = facts;
-            },
-          });
-          return {
-            result,
-            classification: classifyResult(result),
-            turnAttempt: contextEngineTurnCandidate,
-          };
+          try {
+            const result = await params.runCandidate(provider, model, {
+              agentHarnessRuntimeOverride: resolveRuntimeOverride(provider, model),
+              assistantErrorTranscript,
+              // The original OpenAI refusal proves this turn's credential already
+              // reached the provider. Keep a target-only entitlement rejection from
+              // poisoning shared auth health for ordinary OpenAI model selection.
+              ...(runOptions.forceFallbackRetry
+                ? { authProfileFailurePolicy: "local" as const }
+                : {}),
+              classifyResult,
+              allowTransientCooldownProbe: options?.allowTransientCooldownProbe,
+              isFinalFallbackAttempt: options?.isFinalFallbackAttempt,
+              isFallbackRetry,
+              modelRoutingProvenance: runOptions.forceFallbackRetry
+                ? {
+                    ...options.modelRoutingProvenance,
+                    stage: "fallback",
+                    fallbackReason: "unknown",
+                  }
+                : options.modelRoutingProvenance,
+              contextEngineLogicalTurnLease,
+              onContextEngineTurnCandidate: (facts) => {
+                contextEngineTurnCandidate = facts;
+                unsettledContextEngineTurnAttempt = facts;
+              },
+            });
+            return {
+              result,
+              classification: classifyResult(result),
+              turnAttempt: contextEngineTurnCandidate,
+            };
+          } finally {
+            clearObservedModel();
+          }
         },
       });
 
@@ -638,6 +693,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
       if (fallbackResult.result.turnAttempt) {
         if (acceptedTerminal) {
           await finalizeAcceptedContextEngineTurn({
+            config: params.selection.cfg,
             facts: fallbackResult.result.turnAttempt,
             lease: contextEngineLogicalTurnLease,
           });

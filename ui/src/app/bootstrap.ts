@@ -196,6 +196,7 @@ export function bootstrapApplication(): ApplicationRuntime {
   );
   const liveActivity = createLiveActivity(gateway);
   const connectionBootstrap = createConnectionBootstrapCoordinator();
+  const chatSubmissions = createChatSubmissions();
   const router = createApplicationRouter();
   const bootRecord = readBootRecord(gatewayCredentialScope(settings.gatewayUrl), (method) => {
     if (startup.pendingBootstrapToken || startup.password) {
@@ -281,9 +282,17 @@ export function bootstrapApplication(): ApplicationRuntime {
       patch: patchSettings,
     },
   );
+  const settingsAgentSelection = createAgentSelectionCapability(
+    gateway,
+    agents,
+    undefined,
+    undefined,
+    { requireConfiguredAgent: true },
+  );
   const channels = createChannelCapability(gateway);
   const stopForegroundBootstrap = subscribeForegroundChatBootstrap({
     router,
+    chatSubmissions,
     gateway,
     agents,
     agentSelection,
@@ -352,7 +361,6 @@ export function bootstrapApplication(): ApplicationRuntime {
   let nativeDeviceSettings: ApplicationContext["nativeDeviceSettings"] = null;
   let nativeNotifications: ApplicationContext["nativeNotifications"] = null;
   const webPush = createWebPushCapability(gateway, { connectionBootstrap });
-  const chatSubmissions = createChatSubmissions();
   const placementStartup = createApplicationPlacementStartup({
     gateway,
     sessions,
@@ -499,6 +507,7 @@ export function bootstrapApplication(): ApplicationRuntime {
     agents,
     agentIdentity,
     agentSelection,
+    settingsAgentSelection,
     channels,
     config,
     scopeUpgrade,
@@ -680,6 +689,7 @@ export function bootstrapApplication(): ApplicationRuntime {
       connectionBootstrap.reset();
       agents.dispose();
       agentSelection.dispose();
+      settingsAgentSelection.dispose();
       channels.dispose();
       scopeUpgrade.dispose();
       sidebarAttention.dispose();

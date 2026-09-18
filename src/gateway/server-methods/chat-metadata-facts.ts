@@ -6,11 +6,11 @@ import type {
   ChatMetadataProjectionFacts,
   prepareChatMetadataModelProjection,
 } from "./chat-metadata-session-projection.js";
-import type { GatewayRequestContext } from "./types.js";
+import type { GatewayModelCatalogContext } from "./models-list-context.js";
 
 export type PreparedAgentFacts = ChatMetadataProjectionFacts & {
   authStoreRevision: string;
-  catalogStatusKey: string;
+  catalogRefreshFailed: boolean;
   skillsVersion: number;
 };
 
@@ -21,8 +21,9 @@ export type PreparedGenerationFacts = {
   agents: PreparedAgentFacts[];
 };
 
-type ChatMetadataFactsDeps = {
+export type ChatMetadataRuntimeDeps = {
   getConfig: () => OpenClawConfig;
+  getContext: () => GatewayModelCatalogContext;
   getPreparedOwner: (
     params: GetPublishedPreparedModelCatalogOwnerParams,
   ) => PreparedModelRuntimeSnapshot | undefined;
@@ -33,10 +34,6 @@ type ChatMetadataFactsDeps = {
   getAuthStoreRevision: (agentDir?: string) => number;
   getSkillsVersion: (workspaceDir?: string) => number;
   getPluginRegistryVersion: () => number;
-};
-
-export type ChatMetadataRuntimeDeps = ChatMetadataFactsDeps & {
-  getContext: () => GatewayRequestContext;
   buildCommands: (params: {
     cfg: OpenClawConfig;
     agentId: string;
@@ -62,7 +59,7 @@ export function generationFactsMatch(
       candidate.owner === agent.owner &&
       candidate.authStoreRevision === agent.authStoreRevision &&
       candidate.modelCatalog === agent.modelCatalog &&
-      candidate.catalogStatusKey === agent.catalogStatusKey &&
+      candidate.catalogRefreshFailed === agent.catalogRefreshFailed &&
       candidate.skillsVersion === agent.skillsVersion
     );
   });

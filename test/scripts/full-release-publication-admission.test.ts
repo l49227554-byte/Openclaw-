@@ -10,7 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -59,6 +59,7 @@ const toolingPaths = [
   "scripts/lib/docker-e2e-scenarios.mts",
   "scripts/lib/official-external-channel-catalog.json",
   "scripts/lib/upgrade-survivor-policy.mjs",
+  "scripts/lib/upgrade-survivor-scenarios.json",
   "scripts/lib/frozen-target-compat.sh",
   "scripts/resolve-frozen-codex-live-suite.mjs",
   "scripts/resolve-fs-safe-native-contract.mjs",
@@ -265,7 +266,7 @@ console.log('{"status":"identical"}');
       for (const step of resolveTarget.steps.slice(decoderIndex, identityIndex + 1)) {
         const output = join(root, `${step.id}.out`);
         const env: Record<string, string> = {
-          PATH: `${bin}:${process.env.PATH}`,
+          PATH: [bin, dirname(nodeExecutable), process.env.PATH ?? ""].join(delimiter),
           HOME: root,
           GITHUB_REPOSITORY: "openclaw/openclaw",
           GITHUB_OUTPUT: output,
@@ -498,15 +499,25 @@ function fixture(
     rmSync(join(target, "extensions/demo-plugin/README.md"));
     symlinkSync("package.json", join(target, "extensions/demo-plugin/README.md"));
   }
-  if (options.fault === "non-utf8") {
-    const directory = Buffer.concat([
-      Buffer.from(join(target, "extensions") + "/"),
-      Buffer.from([0xff]),
-    ]);
-    mkdirSync(directory);
-    writeFileSync(Buffer.concat([directory, Buffer.from("/package.json")]), "{}");
-  }
   let targetSha = commit(target);
+  if (options.fault === "non-utf8") {
+    const blobSha = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: target,
+      encoding: "utf8",
+      input: "{}",
+    }).trim();
+    execFileSync("git", ["update-index", "--add", "-z", "--index-info"], {
+      cwd: target,
+      input: Buffer.concat([
+        Buffer.from(`100644 ${blobSha}\t`),
+        Buffer.from("extensions/"),
+        Buffer.from([0xff]),
+        Buffer.from("/package.json\0"),
+      ]),
+    });
+    git(target, "commit", "-qm", "non-utf8 fixture");
+    targetSha = git(target, "rev-parse", "HEAD");
+  }
   git(tooling, "init", "-q", "-b", "main");
   for (const path of toolingPaths) {
     write(tooling, path, readFileSync(join(repo, path)));
@@ -990,7 +1001,7 @@ process.stdout.write(${JSON.stringify(
     }
     const output = join(temporary, `output-${effects.length}`);
     const env: Record<string, string> = {
-      PATH: `${bin}:${process.env.PATH}`,
+      PATH: [bin, dirname(nodeExecutable), process.env.PATH ?? ""].join(delimiter),
       HOME: root,
       LANG: "C.UTF-8",
       GIT_CONFIG_GLOBAL: "/dev/null",

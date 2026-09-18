@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  readDeferredPluginMigrations,
+  type DeferredPluginMigration,
+} from "../infra/deferred-plugin-migrations.js";
 import { loadDotEnvAsync } from "../infra/dotenv.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { tryProcessCwd } from "../infra/safe-cwd.js";
@@ -51,6 +55,7 @@ import {
   notifyRuntimeConfigWriteListeners,
   preflightManagedRuntimeConfigWrite,
   preflightRuntimeSnapshotWrite,
+  projectRuntimeConfigWritePreparedCandidates,
   registerManagedRuntimeConfigWriteOwner,
   registerRuntimeConfigWriteListener,
   type RuntimeConfigSnapshotRefreshOptions,
@@ -75,6 +80,7 @@ export function registerConfigWriteListener(
   listener: (event: ConfigWriteNotification) => void,
   options: {
     ownsRuntimeActivationFor?: string;
+    prepareSnapshot?: Parameters<typeof registerManagedRuntimeConfigWriteOwner>[2];
     preCommitRuntimePreflight?: (
       sourceConfig: OpenClawConfig,
       refreshOptions?: RuntimeConfigSnapshotRefreshOptions,
@@ -85,6 +91,7 @@ export function registerConfigWriteListener(
     ? registerManagedRuntimeConfigWriteOwner(
         options.ownsRuntimeActivationFor,
         options.preCommitRuntimePreflight,
+        options.prepareSnapshot,
       )
     : undefined;
   const unregisterListener = registerRuntimeConfigWriteListener((event) => {
@@ -197,12 +204,17 @@ export function captureRuntimeConfigAsyncReader(
   };
 }
 
-function createCurrentConfigReader(params: { configPath?: string; env?: NodeJS.ProcessEnv }) {
+function createCurrentConfigReader(params: {
+  configPath?: string;
+  env?: NodeJS.ProcessEnv;
+  deferredPluginMigrations?: readonly DeferredPluginMigration[];
+}) {
   return createConfigIO({
     configPath: params.configPath,
     env: cloneEnvWithPlatformSemantics(params.env ?? process.env),
     observe: false,
     pluginValidation: "core-only",
+    deferredPluginMigrations: params.deferredPluginMigrations,
     shellEnvFallback: "defer",
     suppressFutureVersionWarning: true,
     logger: { warn: () => {}, error: () => {} },
@@ -255,7 +267,10 @@ export function readCurrentConfigForPolicyCheck(params: {
   configPath: string;
   env: NodeJS.ProcessEnv;
 }): OpenClawConfig {
-  return createCurrentConfigReader(params).loadConfig({ skipSuspiciousRecovery: true });
+  return createCurrentConfigReader({
+    ...params,
+    deferredPluginMigrations: readDeferredPluginMigrations({ env: params.env }),
+  }).loadConfig({ skipSuspiciousRecovery: true });
 }
 
 export async function readBestEffortConfig(options?: {
@@ -292,6 +307,9 @@ export async function readConfigFileSnapshot(
   const pluginValidation =
     options.pluginValidation ?? (options.skipPluginValidation ? "skip" : undefined);
   return await createConfigIO({
+    ...(options.deferredPluginMigrations
+      ? { deferredPluginMigrations: options.deferredPluginMigrations }
+      : {}),
     ...(options.measure ? { measure: options.measure } : {}),
     ...(options.observe === false ? { observe: false } : {}),
     ...(options.isolateEnv ? { env: cloneEnvWithPlatformSemantics(process.env) } : {}),
@@ -311,6 +329,7 @@ export async function readConfigFileSnapshotWithPluginMetadata(
   options?: Pick<
     ConfigSnapshotReadOptions,
     | "allowCurrentPluginMetadata"
+    | "deferredPluginMigrations"
     | "allowSuspiciousRecovery"
     | "isolateEnv"
     | "lowerPrecedenceEnv"
@@ -321,6 +340,9 @@ export async function readConfigFileSnapshotWithPluginMetadata(
   >,
 ): Promise<ReadConfigFileSnapshotWithPluginMetadataResult> {
   return await createConfigIO({
+    ...(options?.deferredPluginMigrations
+      ? { deferredPluginMigrations: options.deferredPluginMigrations }
+      : {}),
     ...(options?.measure ? { measure: options.measure } : {}),
     ...(options?.observe === false ? { observe: false } : {}),
     ...(options?.isolateEnv ? { env: cloneEnvWithPlatformSemantics(process.env) } : {}),
@@ -604,17 +626,10 @@ async function finalizeCommittedConfigWrite(params: {
     if (!notificationRuntimeConfig) {
       return;
     }
-    const notificationPreparedCandidates = new Map(
-      [...managedPreparedCandidates].map(([ownerId, candidate]) => [
-        ownerId,
-        {
-          ...candidate,
-          runtimeConfig:
-            candidate.reapplyRuntimeOverlays?.(canonicalRuntimeConfig) ?? candidate.runtimeConfig,
-          compareConfig:
-            candidate.reapplyCompareOverlays?.(canonicalSourceConfig) ?? candidate.compareConfig,
-        },
-      ]),
+    const notificationPreparedCandidates = projectRuntimeConfigWritePreparedCandidates(
+      managedPreparedCandidates,
+      canonicalRuntimeConfig,
+      canonicalSourceConfig,
     );
     notifyRuntimeConfigWriteListeners(
       attachRuntimeConfigWriteApplication(

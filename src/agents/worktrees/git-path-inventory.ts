@@ -21,7 +21,7 @@ export function splitNullBuffer(input: Uint8Array): Buffer[] {
   return fields;
 }
 
-/** Bounds argv size for Git commands that receive paths as literal pathspecs. */
+/** Emits only nonempty batches using the existing soft count/byte thresholds. */
 export function* gitPathspecBatches(paths: readonly string[]): Generator<string[]> {
   let offset = 0;
   while (offset < paths.length) {
@@ -63,7 +63,7 @@ export async function rawPathExists(target: string | Buffer): Promise<boolean> {
 }
 
 export type GitTreePath = { path: Buffer; mode: string };
-type GitIndexPath = GitTreePath & { skipWorktree: boolean };
+export type GitIndexPath = GitTreePath & { skipWorktree: boolean; assumeUnchanged: boolean };
 
 export function parseGitTreePaths(output: Uint8Array): GitTreePath[] {
   return splitNullBuffer(output).map((entry) => {
@@ -81,10 +81,13 @@ export function parseGitIndexPaths(output: Uint8Array): GitIndexPath[] {
     if (separator < 0 || entry[1] !== 32) {
       throw new Error("Git index inventory contains an invalid entry");
     }
+    const tag = String.fromCharCode(entry[0] ?? 0);
     return {
       path: entry.subarray(separator + 1),
       mode: entry.subarray(2, 8).toString("ascii"),
-      skipWorktree: String.fromCharCode(entry[0] ?? 0).toUpperCase() === "S",
+      skipWorktree: tag.toUpperCase() === "S",
+      // ls-files -v lowercases the tag for assume-unchanged entries.
+      assumeUnchanged: tag !== tag.toUpperCase(),
     };
   });
 }

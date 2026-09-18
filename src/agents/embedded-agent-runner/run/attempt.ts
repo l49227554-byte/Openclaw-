@@ -152,7 +152,13 @@ export async function runEmbeddedAttempt(
       }),
     );
     restoreSkillEnv = preparedSkills.restoreSkillEnv;
-    const { codeModeSkills, skillUsagePaths, skillsPrompt, skillsSnapshotForRun } = preparedSkills;
+    const {
+      codeModeSkills,
+      skillReadResources,
+      skillUsagePaths,
+      skillsPrompt,
+      skillsSnapshotForRun,
+    } = preparedSkills;
     if (params.skillsSnapshot?.librarySelections?.length && sandbox?.enabled) {
       const remapped = remapSkillReferencePaths(params.prompt, skillUsagePaths);
       if (remapped !== params.prompt) {
@@ -203,6 +209,7 @@ export async function runEmbeddedAttempt(
         runAbortController,
         runTrace,
         skillUsagePaths,
+        skillReadResources,
         skillsSnapshot: skillsSnapshotForRun,
         codeModeSkills,
         reviewTranscript: () => {
@@ -282,7 +289,6 @@ export async function runEmbeddedAttempt(
           setup,
           preparedToolBase,
           bundleTools: { clientTools, uncompactedEffectiveTools },
-          runTrace,
           abortSignal: runAbortController.signal,
           executeCodeModeTool: (toolParams) => {
             if (!toolSearchCatalogExecutor) {
@@ -461,7 +467,14 @@ export async function runEmbeddedAttempt(
         }),
       );
     }
-  } catch (error) {
+  } catch (cause) {
+    let error = cause;
+    // An abort-aware preparation can reject before the next cancellation checkpoint.
+    try {
+      externalAbortController.throwIfFired();
+    } catch (abortError) {
+      error = abortError;
+    }
     const terminalOutcome = buildAgentRunTerminalOutcomeFromAttempt({
       terminal: executionState.terminal,
       abortSignal: params.abortSignal,

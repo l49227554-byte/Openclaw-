@@ -189,8 +189,17 @@ and deletion serialize by storage root within the process. Chunk writes still pu
 metadata before deleting the previous generation; deletion, flush, and quiescence
 join the same persistence owner. Cache-load failures remain visible on persistence,
 and the existing version, namespaces, digest validation, debounce, and host floor
-are unchanged. Account credentials, storage-root selection and initial metadata
-writes retain their separate owners.
+are unchanged. Matrix storage-root selection, initial metadata, crypto-state scoring,
+and startup imports also use worker-backed keyed stores. Selection preserves the
+claimed canonical-root shortcut and same-device token-rotation rules; archived
+roots remain excluded. Metadata comparisons preserve concurrent token claims and
+device updates. Imports finish before archival, and failed archival preserves
+completed imports and unrelated files. Device backfill remains nonblocking at startup;
+monitor retirement cancels and joins it before releasing storage. Hosts without
+data-only comparison support retain the existing native metadata and import decisions
+under the declared plugin API floor. Worker failures never select that fallback.
+Synchronous credential readiness and package auth-presence probes retain their
+separate SDK contracts.
 
 Reef registration binding reads, reservations, finalization, release, and setup-session
 persistence use the shared-state worker. Reservation mutations compare the current
@@ -240,6 +249,19 @@ Hosts without both comparison methods retain the atomic native callback path unt
 an approved minimum host version guarantees both methods. Available worker failures
 never fall back. Modern domain validation errors surface
 directly, while older hosts retain their native callback error wrapping.
+
+ClickClack discussion generation reservations and pending-open recovery records
+use the shared-state worker. Generation mutations compare the current row and
+serialize through settlement; an old finalizer cannot clear a replacement
+generation. Channel creation awaits durable quarantine and rechecks the live
+account and active session after storage waits. Service stop closes admission
+and joins accepted operations, including work that has not yet reached the
+channel mutation queue; restart awaits that drain. Existing generation JSON,
+namespace limits, retention, and binding/tombstone finalization order are unchanged.
+The declared 2026.9.4 host floor retains uninterrupted native mutations only when
+comparison methods are absent, until the minimum host guarantees them. Worker
+failures never select that compatibility path. Binding storage, revocations,
+and synchronous visibility retain their separate owners.
 
 Use Kysely for ordinary queries and mutations. The current
 `getNodeSqliteKysely` facade compiles queries; `executeSqliteQuerySync` runs them

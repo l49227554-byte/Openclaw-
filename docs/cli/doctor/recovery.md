@@ -99,8 +99,9 @@ credentials. Doctor and `gateway status --deep` name the affected reference even
 if an older Gateway process still works with its previous in-memory token.
 For a store-backed Gateway token, run `openclaw doctor --fix` (or
 `openclaw doctor --generate-gateway-token`). Doctor verifies a database backup,
-regenerates the referenced entry, preserves the SecretRef, and prints the backup
-path. A credential changed during backup is preserved. Restart the Gateway,
+regenerates the referenced value, preserves the SecretRef and the entry's current
+`secret`/`env` kind and allowed hosts, and prints the backup path. A credential
+changed during backup is preserved. Restart the Gateway,
 then reconnect or re-pair devices with the new token.
 
 Explicit token generation reports when it skips a healthy SecretRef. Other

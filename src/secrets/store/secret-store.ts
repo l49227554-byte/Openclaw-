@@ -53,7 +53,7 @@ export type SecretStoreWriteParams = {
   scope: SecretStoreScope;
   name: string;
   value: string;
-  /** Repair must not replace a credential changed while its backup was being prepared. */
+  /** Replace only the matching value during repair, preserving the current kind and host policy. */
   expectedValue?: string;
   kind: SecretStoreKind;
   allowedHosts?: readonly string[];
@@ -484,15 +484,14 @@ function writeSecretStoreEntryInternal(
           .onConflict((conflict) =>
             conflict.columns(["scope_kind", "scope_id", "name"]).doUpdateSet({
               value: params.value,
-              kind: params.kind,
+              ...(params.expectedValue === undefined ? { kind: params.kind } : {}),
               updated_at_ms: now,
               updated_by: params.updatedBy,
               deleted_at_ms: null,
-              ...(params.kind === "env"
-                ? { allowed_hosts: null }
-                : allowedHosts !== undefined
-                  ? { allowed_hosts: allowedHostsJson }
-                  : {}),
+              ...(params.expectedValue === undefined &&
+              (params.kind === "env" || allowedHosts !== undefined)
+                ? { allowed_hosts: allowedHostsJson }
+                : {}),
             }),
           ),
       );

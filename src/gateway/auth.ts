@@ -19,7 +19,10 @@ import {
   type GatewayIngressAttribution,
   type VerifiedTailscaleIngressIdentity,
 } from "./ingress-attribution.js";
-import { isInvalidGatewaySecret } from "./known-weak-gateway-secrets.js";
+import {
+  assertGatewayAuthNotKnownWeak,
+  isInvalidGatewaySecret,
+} from "./known-weak-gateway-secrets.js";
 import {
   isLocalDirectRequest,
   isLoopbackAddress,
@@ -164,9 +167,7 @@ export function assertGatewayAuthConfigured(
     (auth.mode === "token" || auth.mode === "password") &&
     isRedactedSecretValue(auth[auth.mode])
   ) {
-    throw new Error(
-      `Gateway auth ${auth.mode} is a known redaction sentinel, not a credential. Run \`openclaw doctor --fix\` before restarting.`,
-    );
+    assertGatewayAuthNotKnownWeak(auth);
   }
   if (auth.mode === "token" && isInvalidGatewaySecret(auth.token)) {
     throw new Error(

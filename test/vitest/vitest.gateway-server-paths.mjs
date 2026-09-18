@@ -94,6 +94,8 @@ export const gatewayServerBackedHttpTestFiles = [
 // Gateway methods needing native process state or a private module graph keep
 // the shared methods runner in isolated forks.
 export const gatewayMethodsIsolatedTestFiles = [
+  // Heap scans should not traverse objects from unrelated test files.
+  "src/gateway/server-methods/chat-metadata-runtime.cache.test.ts",
   "src/gateway/server-methods/tasks.access.test.ts",
   "src/gateway/server-methods/tasks.test.ts",
   "src/gateway/server-methods/agent.task-runtime.test.ts",

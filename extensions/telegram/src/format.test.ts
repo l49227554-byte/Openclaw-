@@ -1,6 +1,7 @@
 // Telegram tests cover format plugin behavior.
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
+import { findTelegramHtmlSafeSplitIndex } from "./format-split-index.js";
 import {
   markdownToTelegramChunks,
   markdownToTelegramHtml,
@@ -8,7 +9,6 @@ import {
   splitTelegramHtmlChunks,
   telegramHtmlToPlainTextFallback,
 } from "./format.js";
-import { findTelegramHtmlSafeSplitIndex } from "./format-split-index.js";
 
 describe("markdownToTelegramHtml", () => {
   it("marks assistant-authored transcript role headers after parsing Markdown", () => {
@@ -622,18 +622,18 @@ describe("chunk width against the hard cap", () => {
   it.each([
     [4000, 3992],
     [4096, 4088],
-  ])("keeps every chunk within a cap of %i when an astral char lands on a full chunk", (
-    cap,
-    filler,
-  ) => {
-    const input = `<i>${"a".repeat(filler)}</i>\u{1F600}Z`;
+  ])(
+    "keeps every chunk within a cap of %i when an astral char lands on a full chunk",
+    (cap, filler) => {
+      const input = `<i>${"a".repeat(filler)}</i>\u{1F600}Z`;
 
-    const chunks = splitTelegramHtmlChunks(input, cap);
-    expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
-    expect(chunks.join("")).toBe(input);
-    expect(chunks.some((chunk) => chunk.includes("\u{1F600}"))).toBe(true);
-    expect(chunks.some((chunk) => containsLoneSurrogate(chunk))).toBe(false);
-  });
+      const chunks = splitTelegramHtmlChunks(input, cap);
+      expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
+      expect(chunks.join("")).toBe(input);
+      expect(chunks.some((chunk) => chunk.includes("\u{1F600}"))).toBe(true);
+      expect(chunks.some((chunk) => containsLoneSurrogate(chunk))).toBe(false);
+    },
+  );
 });
 
 function containsLoneSurrogate(text: string): boolean {

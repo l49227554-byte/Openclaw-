@@ -1,6 +1,5 @@
 // OpenClaw state database tests cover state DB migrations and persistence.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,6 +49,7 @@ import {
   OPENCLAW_STATE_SCHEMA_VERSION,
 } from "./openclaw-state-db-contract.js";
 import { hasDanglingSkillWorkshopCollectionReviewIndex } from "./openclaw-state-db-doctor-schema.js";
+import { hashSqliteSchema, sha256 } from "./openclaw-state-db-hash.test-support.js";
 import { prepareStateDatabaseSchemaRepair } from "./openclaw-state-db-maintenance.js";
 import { ensureGitHubPublicationSchema } from "./openclaw-state-db-schema-additive.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
@@ -121,22 +121,6 @@ const V2026_7_1_2_STATE_FIXTURE_SCHEMA_SHA256 =
 
 function createTempStateDir(): string {
   return makeTempDir(stateDbTempDirs, "openclaw-state-db-");
-}
-
-function sha256(value: string | Uint8Array): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function hashSqliteSchema(database: DatabaseSync): string {
-  const schema = database
-    .prepare(
-      `SELECT type, name, tbl_name, sql
-         FROM sqlite_schema
-        WHERE name NOT LIKE 'sqlite_%'
-        ORDER BY type, name`,
-    )
-    .all();
-  return sha256(JSON.stringify(schema));
 }
 
 function materializeV2026_7_1_2StateDatabase(stateDir: string): {
@@ -1589,7 +1573,7 @@ afterEach(async () => {
 });
 
 describe("openclaw state database", () => {
-  it("migrates v15 Skill Workshop ownership through v16 and prepared workers to v17 without losing rows", () => {
+  it("migrates v15 Skill Workshop ownership through the current schema without losing rows", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const legacy = openMaterializedCurrentStateDatabase(stateDir);
@@ -1702,7 +1686,7 @@ describe("openclaw state database", () => {
     legacy.close();
 
     const migrated = openOpenClawStateDatabase(options);
-    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(17);
+    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(18);
     expect(migrated.db.prepare("PRAGMA table_info(skill_workshop_proposals)").all()).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "workspace_dir" }),
@@ -2009,7 +1993,7 @@ describe("openclaw state database", () => {
     expect(readDanglingSkillWorkshopReviewIndex(databasePath)).toBeUndefined();
   });
 
-  it("upgrades a v15 store without Workshop tables through v16 and prepared workers to v17", () => {
+  it("upgrades a v15 store without Workshop tables through the current schema", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const legacy = openMaterializedCurrentStateDatabase(stateDir);
@@ -2027,7 +2011,7 @@ describe("openclaw state database", () => {
     legacy.close();
 
     const migrated = openOpenClawStateDatabase(options);
-    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(17);
+    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(18);
     for (const tableName of ["skill_workshop_proposals", "skill_workshop_collection_reviews"]) {
       expect(
         migrated.db
@@ -3907,6 +3891,7 @@ describe("openclaw state database", () => {
       { kind: "state-consolidation-v13", path: fixture.databasePath },
       { kind: "creator-namespace-v14", path: fixture.databasePath },
       { kind: "conversation-binding-targets-v15", path: fixture.databasePath },
+      { kind: "worktree-session-bindings-v18", path: fixture.databasePath },
       { kind: "audit-events-v2", path: fixture.databasePath },
       { kind: "strict-tables-v3", path: fixture.databasePath },
     ]);
@@ -4581,6 +4566,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
       { kind: "creator-namespace-v14", path: databasePath },
+      { kind: "worktree-session-bindings-v18", path: databasePath },
       { kind: "strict-tables-v3", path: databasePath },
       { kind: "session-watch-cursor-provenance-v4", path: databasePath },
     ]);
@@ -4617,6 +4603,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
       { kind: "creator-namespace-v14", path: seeded.databasePath },
+      { kind: "worktree-session-bindings-v18", path: seeded.databasePath },
       { kind: "session-watch-cursor-provenance-v4", path: seeded.databasePath },
     ]);
     expect(repairOpenClawStateDatabaseSchema(options)).toEqual({

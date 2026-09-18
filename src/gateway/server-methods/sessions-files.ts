@@ -386,7 +386,7 @@ function requireSessionFilesAgentId(params: {
 
 /** Gateway handlers for session files and workspace browsing. */
 export const sessionsFilesHandlers: GatewayRequestHandlers = {
-  "sessions.files.list": async ({ params, respond, context }) => {
+  "sessions.files.list": async ({ params, respond, context, sessionMutationAuthorization }) => {
     if (
       !assertValidParams(params, validateSessionsFilesListParams, "sessions.files.list", respond)
     ) {
@@ -401,7 +401,9 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     if (!agentId) {
       return;
     }
+    sessionMutationAuthorization?.assertCurrent();
     const loaded = await loadSessionFiles({ ...params, agentId, context });
+    sessionMutationAuthorization?.assertCurrent();
     const request = { files: loaded.files, path: params.path, search: params.search };
     const result =
       loaded.repository?.kind === "stored"
@@ -409,13 +411,14 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
         : loaded.repository
           ? await loaded.repository.inspect("list", request)
           : await listSessionWorkspaceFiles({ ...loaded, ...request });
+    sessionMutationAuthorization?.assertCurrent();
     respond(true, {
       sessionKey: params.sessionKey,
       ...result,
       ...(loaded.repository ? { root: undefined } : {}),
     });
   },
-  "sessions.files.get": async ({ params, respond, context }) => {
+  "sessions.files.get": async ({ params, respond, context, sessionMutationAuthorization }) => {
     if (!assertValidParams(params, validateSessionsFilesGetParams, "sessions.files.get", respond)) {
       return;
     }
@@ -428,7 +431,9 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     if (!agentId) {
       return;
     }
+    sessionMutationAuthorization?.assertCurrent();
     const loaded = await loadSessionFiles({ ...params, agentId, context });
+    sessionMutationAuthorization?.assertCurrent();
     const request = { files: loaded.files, path: params.path };
     const result =
       loaded.repository?.kind === "stored"
@@ -436,6 +441,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
         : loaded.repository
           ? await loaded.repository.inspect("get", request)
           : await getSessionWorkspaceFile({ ...loaded, ...request });
+    sessionMutationAuthorization?.assertCurrent();
     if (!result.file || result.file.missing) {
       respondSessionFileNotFound(respond, params.path);
       return;
@@ -463,6 +469,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     if (!agentId) {
       return;
     }
+    sessionMutationAuthorization?.assertCurrent();
     const loaded = loadSessionFileRoot({ ...params, agentId });
     if (!loaded.agentId || !loaded.entry?.sessionId) {
       respondSessionFileNotFound(respond, params.path);
@@ -522,7 +529,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
       file: update.file,
     });
   },
-  "sessions.files.reveal": async ({ params, respond, context }) => {
+  "sessions.files.reveal": async ({ params, respond, context, sessionMutationAuthorization }) => {
     if (
       !assertValidParams(
         params,
@@ -542,6 +549,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     if (!agentId) {
       return;
     }
+    sessionMutationAuthorization?.assertCurrent();
     const loaded = loadSessionFileRoot({ sessionKey: params.key, agentId });
     if (loaded.entry?.repositoryWorkspaceId) {
       respond(true, {
@@ -582,6 +590,7 @@ export const sessionsFilesHandlers: GatewayRequestHandlers = {
     }
     const command = resolveOpenPathCommand(workspaceRoot);
     try {
+      sessionMutationAuthorization?.assertCurrent();
       await execOpenPath(command);
       respond(true, { ok: true, path: workspaceRoot });
     } catch (error) {

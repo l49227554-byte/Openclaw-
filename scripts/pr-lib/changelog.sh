@@ -1,3 +1,6 @@
+# shellcheck source=scripts/pr-lib/host-tools.sh
+source "${BASH_SOURCE[0]%/*}/host-tools.sh" || return 1
+
 changelog_helper_root() {
   cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd
 }

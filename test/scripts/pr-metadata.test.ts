@@ -247,6 +247,18 @@ describe("PR metadata through REST", () => {
     expect(result.stdout).toBe("");
     expect(result.stderr).toContain("Unsupported REST repository metadata field: unsupported");
   });
+  it.each([
+    { command: "pr_gh pr view 42 --json headRefOid --jq .headRefOid", expected: head },
+    {
+      command: "pr_gh_plain repo view --json nameWithOwner --jq=.nameWithOwner",
+      expected: "base-owner/base-repo",
+    },
+  ])("filters view JSON through the shell: $command", ({ command, expected }) => {
+    const result = readPrMetadata({}, command);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(`${expected}\n`);
+    expect(result.stderr).toBe("");
+  });
   it("uses gh's configured default for reads and explicitly bound writers with the selected Git", () => {
     const result = readPrMetadata(
       { ghRepo: "", defaultRepoURL: "https://github.com/base-owner/base-repo", probeGit: true },
@@ -512,19 +524,33 @@ describe("PR metadata through REST", () => {
   });
 
   it.each([
-    { command: "pr_meta_json 42", failureTarget: "pull", resource: "core" },
-    { command: "ensure_gh_api_auth", failureTarget: "graphql", resource: "graphql" },
+    { command: "pr_meta_json 42", failureTarget: "pull", resource: "core", exitCode: 1 },
+    { command: "ensure_gh_api_auth", failureTarget: "graphql", resource: "graphql", exitCode: 1 },
+    {
+      command: "pr_gh pr view 42 --json headRefOid --jq .headRefOid",
+      failureTarget: "pull",
+      resource: "core",
+      exitCode: 75,
+    },
+    {
+      command: "pr_gh_plain pr view 42 --json headRefOid --jq=.headRefOid",
+      failureTarget: "pull",
+      resource: "core",
+      exitCode: 75,
+    },
   ] as const)(
-    "reports both quotas for a $resource failure without retrying",
-    ({ command, failureTarget, resource }) => {
+    "reports both quotas for a $resource failure without retrying: $command",
+    ({ command, failureTarget, resource, exitCode }) => {
       const result = readPrMetadata({ failure: "quota", failureTarget }, command);
-      expect(result.status).toBe(1);
+      expect(result.status).toBe(exitCode);
+      expect(result.stdout).toBe("");
       expect(result.stderr).toContain(`resource=${resource}`);
       expect(result.stderr).toContain(
         "graphql 0/5000 reset=2027-01-15T08:00:00Z core 4900/5000 reset=2027-01-15T08:05:00Z",
       );
       expect(result.stderr).not.toContain("secret-response-must-not-escape");
       expect(result.calls.filter((args) => args.includes("rate_limit"))).toHaveLength(1);
+      expect(result.attempts).toBe(failureTarget === "pull" ? 1 : 0);
       expect(result.delays).toEqual([]);
     },
   );

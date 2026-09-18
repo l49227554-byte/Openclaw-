@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -218,7 +217,9 @@ function readPr(repo, pr, fields, route) {
     throw new Error("GitHub did not return one PR JSON object.");
   }
   if (fields.includes("statusCheckRollup") && !/^[0-9a-f]{40}$/.test(record.head?.sha)) {
-    throw invalidMetadata("PR metadata has no full head SHA for checks.");
+    throw invalidMetadata(
+      `Invalid PR identity for #${pr}: expected complete base/head OIDs and refs before reading checks.`,
+    );
   }
   const result = {
     number: record.number,
@@ -329,12 +330,7 @@ function main([route, ...args]) {
         "repository",
       );
     }
-    const jq = option(args, "--jq");
-    process.stdout.write(
-      jq
-        ? execFileSync("jq", ["-r", jq], { encoding: "utf8", input: JSON.stringify(result) })
-        : `${JSON.stringify(result)}\n`,
-    );
+    process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     if (args[0] === "pr" && !option(args, "--repo") && !option(args, "-R")) {
       const repo = repositoryLocator(undefined, route);

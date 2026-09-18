@@ -25,10 +25,33 @@ if [ -n "${OPENCLAW_PR_GITHUB_SNAPSHOT_ROOT:-}" ]; then
 fi
 unset pr_gh_snapshot_root pr_gh_source_scripts pr_gh_snapshot_path
 
-pr_gh() {
-  node "${BASH_SOURCE[0]%/*}/github.mjs" read "$@"
-}
+pr_gh_run() (
+  local route="$1" filter="" filtered=0
+  shift
+  local args=()
+  case "${1:-}:${2:-}" in
+    pr:view|repo:view)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --jq)
+            [ "$#" -ge 2 ] || { echo "scripts/pr --jq requires a filter." >&2; return 2; }
+            filter="$2"; filtered=1; shift 2 ;;
+          --jq=*) filter="${1#--jq=}"; filtered=1; shift ;;
+          *) args+=("$1"); shift ;;
+        esac
+      done
+      ;;
+    *) args=("$@") ;;
+  esac
+  if [ "$filtered" -eq 1 ]; then
+    # jq is a wrapper prerequisite; preserve the API owner's failure through the filter.
+    set -o pipefail
+    node "${BASH_SOURCE[0]%/*}/github.mjs" "$route" "${args[@]}" | jq -r "$filter"
+  else
+    node "${BASH_SOURCE[0]%/*}/github.mjs" "$route" "${args[@]}"
+  fi
+)
 
-pr_gh_plain() {
-  node "${BASH_SOURCE[0]%/*}/github.mjs" plain "$@"
-}
+pr_gh() { pr_gh_run read "$@"; }
+
+pr_gh_plain() { pr_gh_run plain "$@"; }

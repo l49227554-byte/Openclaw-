@@ -32,7 +32,7 @@ const bash = process.platform === "darwin" ? "/bin/bash" : "bash";
 // Keep real worktree/index behavior at the provisioning boundary; the complete
 // locked adapter path is covered by pr-worktree-provision.test.ts.
 const provisionWorktreeFixture =
-  'provision_pr_worktree() { git -C "$1" worktree add -- "$1/.worktrees/pr-$2" "temp/pr-$2"; }';
+  'provision_pr_worktree() { pr_git -C "$1" worktree add -- "$1/.worktrees/pr-$2" "temp/pr-$2"; }';
 
 type Fixture = {
   root: string;

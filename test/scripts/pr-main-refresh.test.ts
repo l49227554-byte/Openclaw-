@@ -1178,15 +1178,17 @@ fi`,
     expect(result.stderr).toContain("core 4999/5000 reset=2030-01-01T01:00:00Z");
     expect(f.events().some((e) => e.kind === "main-fetch")).toBe(false);
     const ghCalls = f.events().filter((e) => e.kind === "gh");
-    expect(ghCalls.at(-2)?.args).toEqual([
-      "api",
-      "graphql",
-      "-f",
-      "query=query { viewer { login } }",
-      "--include",
+    const apiCalls = ghCalls.filter((e) => e.args?.[0] === "api").map((e) => e.args);
+    expect(apiCalls.slice(-2)).toEqual([
+      ["api", "graphql", "-f", "query=query { viewer { login } }", "--include"],
+      ["api", "rate_limit"],
     ]);
-    expect(ghCalls.at(-1)?.args).toEqual(["api", "rate_limit"]);
+    expect(apiCalls.filter((args) => args?.includes("rate_limit"))).toHaveLength(1);
+    expect(
+      apiCalls.filter((args) => args?.includes("query=query { viewer { login } }")),
+    ).toHaveLength(1);
     expect(ghCalls.some((e) => e.args?.includes("merge"))).toBe(false);
+    expect(ghCalls.some((e) => e.args?.[0] === "workflow")).toBe(false);
     expect(f.git(f.origin, "rev-parse", "refs/heads/main")).toBe(f.main);
     expect(f.git(f.canonical, "for-each-ref", "--format=%(refname)", "refs/openclaw")).toBe("");
   });

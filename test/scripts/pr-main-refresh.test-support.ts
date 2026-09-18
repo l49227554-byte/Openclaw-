@@ -392,6 +392,12 @@ exec ${shellQuote(realGit)} "$@"
     prelude +
       `
 event({ kind: 'gh', args });
+const repositoryLocatorRequest = JSON.stringify(args) === JSON.stringify(['api', '--hostname', 'github.com', 'repos/fixture/repo']);
+if (repositoryLocatorRequest) {
+  // Locator metadata cannot satisfy the separate fresh repository-ID binding.
+  console.log(JSON.stringify({ full_name: 'fixture/repo', html_url: 'https://github.com/fixture/repo' }));
+  process.exit(0);
+}
 if (args[0] === 'api' && args.includes('repos/fixture/repo') &&
     JSON.stringify(args) !== JSON.stringify(['api', '--hostname', 'github.com', 'repos/fixture/repo', '-H', 'Cache-Control: max-age=0'])) {
   throw new Error('Unexpected authoritative repository request');

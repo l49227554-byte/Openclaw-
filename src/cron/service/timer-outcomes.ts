@@ -194,9 +194,7 @@ export function applyJobResult(
   const scheduleOwnershipAtMs = opts?.scheduleOwnershipAtMs ?? result.startedAt;
   const oneShotOccurrenceAtMs = resolveManualOneShotOccurrenceAtMs(job, scheduleOwnershipAtMs);
   const preserveOneShotSchedule =
-    opts?.scheduleMode === "preserve" &&
-    oneShotOccurrenceAtMs !== undefined &&
-    oneShotOccurrenceAtMs > scheduleOwnershipAtMs;
+    opts?.scheduleMode === "preserve" && oneShotOccurrenceAtMs !== undefined;
   const ownsSchedule = opts?.scheduleOwnership !== "stale";
   const isOneShotSchedule = job.schedule.kind === "at" || job.schedule.kind === "on-exit";
   // Authored completion includes intentional silence and the admitted best-effort policy.

@@ -14,11 +14,21 @@ export function resolveForcePreservedOneShotAtMs(job: CronJob): number | undefin
     : undefined;
 }
 
-/** Existing retry or pacing slots take precedence over the authored date. */
+/** Only future occurrences are borrowed; retry or pacing slots take precedence. */
 export function resolveManualOneShotOccurrenceAtMs(job: CronJob, ownershipAtMs: number) {
-  return job.schedule.kind === "at"
-    ? (job.state.nextRunAtMs ?? computeNextRunAtMs(job.schedule, ownershipAtMs))
+  const occurrenceAtMs =
+    job.schedule.kind === "at"
+      ? (job.state.nextRunAtMs ?? computeNextRunAtMs(job.schedule, ownershipAtMs))
+      : undefined;
+  return occurrenceAtMs !== undefined && occurrenceAtMs > ownershipAtMs
+    ? occurrenceAtMs
     : undefined;
+}
+
+/** Reservation owns this provenance before an enablement edit can make completion stale. */
+export function retainManualOneShotOccurrence(job: CronJob, ownershipAtMs: number): void {
+  job.state.forcePreservedNextRunAtMs =
+    resolveManualOneShotOccurrenceAtMs(job, ownershipAtMs) ?? job.state.forcePreservedNextRunAtMs;
 }
 
 /** Retained authored occurrences can recompute a missing runnable slot after enablement. */

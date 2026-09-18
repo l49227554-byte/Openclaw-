@@ -10,7 +10,10 @@ import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
 import type { CronEvent, CronServiceDeps } from "./service/state.js";
-import { MIN_REFIRE_GAP_MS } from "./service/timer-execution-timeout.js";
+import {
+  DEFAULT_STARTUP_DEFERRED_MISSED_AGENT_JOB_DELAY_MS,
+  MIN_REFIRE_GAP_MS,
+} from "./service/timer-execution-timeout.js";
 import { loadCronStore, saveCronStore } from "./store.js";
 import { cronStoreKey } from "./store/key.js";
 import { readCronTaskRunHistoryPage } from "./task-run-history.js";
@@ -421,6 +424,111 @@ describe("cron one-shot schedule ownership", () => {
       } finally {
         releaseBlocker.resolve();
         await blocker;
+        cron.stop();
+        clearCommandLane(CommandLane.Cron);
+      }
+    },
+  );
+
+  it.each([
+    { startOffsetMs: -1, editSchedule: false },
+    { startOffsetMs: 1, editSchedule: false },
+    { startOffsetMs: 1, editSchedule: true },
+  ])(
+    "retains only an unchanged occurrence when enabled during a queued manual run (start offset=$startOffsetMs, editSchedule=$editSchedule)",
+    async ({ startOffsetMs, editSchedule }) => {
+      const store = await makeStorePath();
+      const blockerStarted = createDeferred();
+      const releaseBlocker = createDeferred();
+      const payloadStarted = createDeferred();
+      const releasePayload = createDeferred();
+      const scheduledOccurrenceConsumed = createDeferred();
+      const runIsolatedAgentJob = vi
+        .fn(async () => ({ status: "ok" as const, summary: "scheduled" }))
+        .mockImplementationOnce(async () => {
+          payloadStarted.resolve();
+          await releasePayload.promise;
+          return { status: "ok" as const, summary: "manual" };
+        });
+      const options = {
+        storePath: store.storePath,
+        runIsolatedAgentJob,
+        onEvent: (event: CronEvent) => {
+          if (event.action === "removed") {
+            scheduledOccurrenceConsumed.resolve();
+          }
+        },
+      };
+      let cron = createCron(options);
+      clearCommandLane(CommandLane.Cron);
+      setCommandLaneConcurrency(CommandLane.Cron, 1);
+      const blocker = enqueueCommandInLane(CommandLane.Cron, async () => {
+        blockerStarted.resolve();
+        await releaseBlocker.promise;
+      });
+
+      try {
+        await blockerStarted.promise;
+        await cron.start();
+        cron.pauseScheduling();
+        const atMs = Date.now() + 1_000;
+        const job = await addOneShot({
+          cron,
+          name: "enable while manual run crosses deadline",
+          atMs,
+          enabled: false,
+        });
+        await expect(cron.enqueueRun(job.id, "force")).resolves.toMatchObject({
+          ok: true,
+          enqueued: true,
+        });
+        vi.setSystemTime(new Date(atMs + startOffsetMs));
+        releaseBlocker.resolve();
+        await blocker;
+        await payloadStarted.promise;
+        vi.setSystemTime(new Date(atMs + 10));
+        if (editSchedule) {
+          await cron.update(job.id, { schedule: { kind: "every", everyMs: 60_000 } });
+          await cron.update(job.id, {
+            schedule: { kind: "at", at: new Date(atMs).toISOString() },
+          });
+        }
+        await cron.update(job.id, { enabled: true });
+        releasePayload.resolve();
+        // Joining the lane successor also joins the manual run's final ownership cleanup.
+        await enqueueCommandInLane(CommandLane.Cron, async () => {});
+        expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
+        await expectFutureOneShot({
+          cron,
+          storePath: store.storePath,
+          jobId: job.id,
+          atMs,
+          status: "ok",
+        });
+
+        cron.stop();
+        cron = createCron(options);
+        await cron.start();
+        if (editSchedule) {
+          expect(cron.getJob(job.id)?.state.nextRunAtMs).toBeUndefined();
+        } else {
+          expect(cron.getJob(job.id)?.state.nextRunAtMs).toEqual(expect.any(Number));
+        }
+        await vi.advanceTimersByTimeAsync(
+          DEFAULT_STARTUP_DEFERRED_MISSED_AGENT_JOB_DELAY_MS + MIN_REFIRE_GAP_MS,
+        );
+        if (!editSchedule) {
+          await scheduledOccurrenceConsumed.promise;
+        }
+        await enqueueCommandInLane(CommandLane.Cron, async () => {});
+        await cron.status();
+        expect(runIsolatedAgentJob).toHaveBeenCalledTimes(editSchedule ? 1 : 2);
+        expect((await loadCronStore(store.storePath)).jobs).toHaveLength(editSchedule ? 1 : 0);
+      } finally {
+        releaseBlocker.resolve();
+        releasePayload.resolve();
+        await blocker;
+        await enqueueCommandInLane(CommandLane.Cron, async () => {});
         cron.stop();
         clearCommandLane(CommandLane.Cron);
       }

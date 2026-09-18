@@ -34,15 +34,28 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
  * roughly 3x headroom over that record alone.
  */
 const SESSION_FILE_HEAD_SCAN_BYTES = 512 * 1024;
-/** Escalation for a `session_meta` record too large to fit the head window, so cwd never drops. */
+/**
+ * One escalation for a `session_meta` record too large for the head window. This is a bound, not a
+ * guarantee: a `session_meta` larger than this still yields no complete first record, so `cwd` is
+ * reported as unknown rather than read at unbounded cost.
+ */
 const SESSION_FILE_HEAD_SCAN_MAX_BYTES = 4 * 1024 * 1024;
-/** The tail window supplies the final record `timestamp` and any late user message. */
+/**
+ * The tail window usually supplies the final record `timestamp` and any late user message. A final
+ * record larger than this leaves no complete line in the window, in which case `updatedAt` falls
+ * back to file mtime.
+ */
 const SESSION_FILE_TAIL_SCAN_BYTES = 256 * 1024;
 /** Below this size head+tail would already cover the file, so read it once and keep counts exact. */
 const SESSION_FILE_FULL_READ_BYTES = SESSION_FILE_HEAD_SCAN_BYTES + SESSION_FILE_TAIL_SCAN_BYTES;
 /** Rollouts scanned past `limit` to absorb mtime vs. record-`timestamp` ordering skew. */
 const SESSION_FILE_SCAN_HEADROOM = 20;
-/** A filter can match hydrated fields, so filtered listings scan deeper — but still bounded. */
+/**
+ * A filter can match `cwd` or a message preview, which are only known after hydration, so filtered
+ * listings scan deeper than unfiltered ones — but still stop here. Beyond this many rollouts a
+ * content filter silently misses older sessions; filtering by session id does not, because ids
+ * appear in the filename and sort first.
+ */
 const FILTERED_SESSION_FILE_SCAN_CAP = 200;
 const activeResumeSessions = new Set<string>();
 
@@ -54,9 +67,9 @@ type CodexCliSessionSummary = {
   sessionFile?: string;
   messageCount: number;
   /**
-   * Set when the rollout was too large to read whole: `messageCount` counts only the scanned
-   * head/tail windows, and `lastMessage` is the last user message inside them rather than
-   * necessarily the last one in the file.
+   * Set when the rollout was too large to read whole, so a middle span went unread: `messageCount`
+   * counts only the scanned head/tail windows, `lastMessage` is the last user message inside them
+   * rather than necessarily the last one in the file, and `updatedAt` may come from file mtime.
    */
   partialScan?: boolean;
 };
@@ -205,9 +218,13 @@ export function formatCodexCliSessions(params: {
   return [
     `Codex CLI sessions on ${formatCodexDisplayText(formatNodeLabel(params.node))}:`,
     ...params.result.sessions.map((session) => {
-      const details = [session.cwd, session.updatedAt].filter((value): value is string =>
-        Boolean(value),
-      );
+      // Say so when the preview and count come from a windowed read, so nobody reads a stale
+      // `lastMessage` off an oversized rollout as that session's latest activity.
+      const details = [
+        session.cwd,
+        session.updatedAt,
+        session.partialScan ? "partial scan" : undefined,
+      ].filter((value): value is string => Boolean(value));
       return `- ${formatCodexDisplayText(session.sessionId)}${
         session.lastMessage ? ` - ${formatCodexDisplayText(session.lastMessage)}` : ""
       }${details.length > 0 ? ` (${details.map(formatCodexDisplayText).join(", ")})` : ""}\n  Bind: /codex resume ${formatCodexDisplayText(
@@ -407,9 +424,13 @@ async function hydrateSessionFiles(
 /**
  * Pick the rollouts worth hydrating. The listing is sorted newest-first and sliced to `limit`, so
  * scanning every rollout only to discard all but a handful makes list cost scale with total bytes
- * on disk. Rollouts are append-only, so mtime orders them the same way their last record
- * `timestamp` does; a filter that names a session matches its filename, which keeps resume/binding
- * lookups reachable no matter how old the session is.
+ * on disk.
+ *
+ * mtime is a heuristic proxy for recency, not a proof of it: rollouts are append-only, but a copy,
+ * restore, or `touch` rewrites mtime without changing the records, so the candidate order can
+ * differ from the order by last record `timestamp`. `SESSION_FILE_SCAN_HEADROOM` absorbs small
+ * skew; a wholesale mtime rewrite can still hide a session from an unfiltered listing. Filtering by
+ * session id stays reliable regardless, because ids appear in the filename and sort first.
  */
 function selectSessionFilesToScan(
   files: CodexCliSessionFile[],
@@ -453,10 +474,11 @@ async function hydrateSessionsFromSessionFiles(
 async function readSessionFileSummary(
   file: CodexCliSessionFile,
 ): Promise<CodexCliSessionSummary | null> {
-  const wholeFile = file.size <= SESSION_FILE_FULL_READ_BYTES;
   let head = await readJsonlHead(
     file.file,
-    wholeFile ? SESSION_FILE_FULL_READ_BYTES : SESSION_FILE_HEAD_SCAN_BYTES,
+    file.size <= SESSION_FILE_FULL_READ_BYTES
+      ? SESSION_FILE_FULL_READ_BYTES
+      : SESSION_FILE_HEAD_SCAN_BYTES,
   );
   if (head && head.lines.length === 0 && !head.complete) {
     // The first record did not fit the window, so `session_meta` — and with it cwd — is missing.
@@ -465,27 +487,39 @@ async function readSessionFileSummary(
   if (!head) {
     return null;
   }
-  const tail = wholeFile ? null : await readJsonlTail(file.file, SESSION_FILE_TAIL_SCAN_BYTES);
-  if (!wholeFile && !tail) {
+  // Anchor the tail to where the head stopped. Without that floor an escalated head and the tail
+  // can cover the same bytes, and every record in the overlap is counted twice. When the two
+  // windows meet, the scan covered the file and stays exact even though it was read in pieces.
+  const tail = await readJsonlTail(file.file, SESSION_FILE_TAIL_SCAN_BYTES, {
+    notBefore: head.endOffset,
+  });
+  if (!tail) {
     return null;
   }
-  const lines = tail ? [...head.lines, ...tail.lines] : head.lines;
-  if (lines.length === 0) {
+  if (head.lines.length === 0 && tail.lines.length === 0) {
     return null;
   }
-  const scan = scanSessionFileLines(lines);
-  const sessionId = scan.sessionId || readSessionIdFromFilename(file.file) || "";
+  // The windows abut only when together they covered the file, so counts from them stay exact.
+  const scannedWholeFile = tail.start <= head.endOffset;
+  const headScan = scanSessionFileLines(head.lines);
+  const tailScan = scanSessionFileLines(tail.lines);
+  const sessionId =
+    headScan.sessionId || tailScan.sessionId || readSessionIdFromFilename(file.file);
   if (!sessionId) {
     return null;
   }
+  // A skipped middle means the head's newest timestamp predates records we never read, so mtime is
+  // the better estimate. The tail can also yield no complete record when the final one is huge.
+  const scannedUpdatedAt =
+    tailScan.updatedAt ?? (scannedWholeFile ? headScan.updatedAt : undefined);
   return {
     sessionId,
-    updatedAt: scan.updatedAt ?? new Date(file.mtimeMs).toISOString(),
-    lastMessage: scan.lastMessage,
-    cwd: scan.cwd,
+    updatedAt: scannedUpdatedAt ?? new Date(file.mtimeMs).toISOString(),
+    lastMessage: tailScan.lastMessage ?? headScan.lastMessage,
+    cwd: headScan.cwd ?? tailScan.cwd,
     sessionFile: file.file,
-    messageCount: scan.messageCount,
-    partialScan: head.complete ? undefined : true,
+    messageCount: headScan.messageCount + tailScan.messageCount,
+    partialScan: scannedWholeFile ? undefined : true,
   };
 }
 

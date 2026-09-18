@@ -2,12 +2,29 @@ import fs from "node:fs/promises";
 
 const JSONL_STREAM_THRESHOLD_BYTES = 4 * 1024 * 1024;
 const JSONL_READ_CHUNK_BYTES = 1024 * 1024;
+const NEWLINE_BYTE = 0x0a;
 
-/** Complete JSONL lines from a bounded byte window, plus whether that window covered the file. */
-export type JsonlWindow = {
+/** Complete JSONL lines from a bounded window at the start of a file. */
+export type JsonlHeadWindow = {
   lines: string[];
   /** True when the window spanned the whole file, so counts derived from it are exact. */
   complete: boolean;
+  /**
+   * Byte offset just past the last complete line returned. A tail window starting here resumes on
+   * a record boundary, so head and tail can be concatenated without dropping or repeating a record.
+   */
+  endOffset: number;
+};
+
+/** Complete JSONL lines from a bounded window running to the end of a file. */
+export type JsonlTailWindow = {
+  lines: string[];
+  /**
+   * Byte offset the returned lines start at, equal to a head's `endOffset` when the two windows
+   * abut. `size` when the window returned no complete line, which keeps a `start <= endOffset`
+   * check from mistaking an empty window for full coverage.
+   */
+  start: number;
 };
 
 export async function visitJsonlLines(
@@ -103,7 +120,10 @@ export async function visitJsonlLines(
  * Read at most `maxBytes` from the start of a JSONL file. A trailing partial line is dropped
  * unless the window reached EOF, so every returned line is a complete record.
  */
-export async function readJsonlHead(file: string, maxBytes: number): Promise<JsonlWindow | null> {
+export async function readJsonlHead(
+  file: string,
+  maxBytes: number,
+): Promise<JsonlHeadWindow | null> {
   const size = await readFileSize(file);
   if (size === undefined) {
     return null;
@@ -112,32 +132,54 @@ export async function readJsonlHead(file: string, maxBytes: number): Promise<Jso
   if (!window) {
     return null;
   }
-  const complete = window.bytesRead >= size;
+  const complete = window.length >= size;
+  // Cut the window back to the last record boundary. That both guarantees complete records and
+  // gives a tail window an exact offset to resume from, so neither side sees the same bytes twice.
+  const endOffset = complete ? size : window.lastIndexOf(NEWLINE_BYTE) + 1;
   return {
-    lines: splitWindowLines(window.text, { dropLeading: false, dropTrailing: !complete }),
+    lines: splitCompleteLines(decodeBytes(window.subarray(0, endOffset))),
     complete,
+    endOffset,
   };
 }
 
 /**
- * Read at most `maxBytes` from the end of a JSONL file. A leading partial line is dropped unless
- * the window started at byte 0, so every returned line is a complete record. Any UTF-8 sequence
- * split by the window boundary falls inside that dropped fragment.
+ * Read the last `maxBytes` of a JSONL file, never reaching back before `notBefore`. A leading
+ * partial line is dropped unless the window began exactly on a record boundary (byte 0, or a head
+ * window's `endOffset`), so no record is returned twice and any UTF-8 sequence split by the window
+ * boundary falls inside that dropped fragment. The window always runs to EOF, so a rollout being
+ * appended to right now can still yield a truncated final line; callers drop what will not parse.
  */
-export async function readJsonlTail(file: string, maxBytes: number): Promise<JsonlWindow | null> {
+export async function readJsonlTail(
+  file: string,
+  maxBytes: number,
+  options?: { notBefore?: number },
+): Promise<JsonlTailWindow | null> {
   const size = await readFileSize(file);
   if (size === undefined) {
     return null;
   }
-  const start = Math.max(0, size - maxBytes);
+  const boundary = Math.min(Math.max(options?.notBefore ?? 0, 0), size);
+  const start = Math.max(boundary, size - maxBytes);
+  if (start >= size) {
+    // The caller already read through EOF, so there is nothing left to open the file for.
+    return { lines: [], start: size };
+  }
   const window = await readFileWindow(file, start, size - start);
   if (!window) {
     return null;
   }
-  const complete = start === 0 && window.bytesRead >= size;
+  if (start === boundary) {
+    return { lines: splitCompleteLines(decodeBytes(window)), start };
+  }
+  const firstNewline = window.indexOf(NEWLINE_BYTE);
+  if (firstNewline === -1) {
+    // The whole window sits inside one oversized record, so no complete line survives it.
+    return { lines: [], start: size };
+  }
   return {
-    lines: splitWindowLines(window.text, { dropLeading: start > 0, dropTrailing: false }),
-    complete,
+    lines: splitCompleteLines(decodeBytes(window.subarray(firstNewline + 1))),
+    start: start + firstNewline + 1,
   };
 }
 
@@ -153,9 +195,9 @@ async function readFileWindow(
   file: string,
   position: number,
   maxBytes: number,
-): Promise<{ text: string; bytesRead: number } | null> {
+): Promise<Buffer | null> {
   if (maxBytes <= 0) {
-    return { text: "", bytesRead: 0 };
+    return Buffer.alloc(0);
   }
   let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
@@ -179,22 +221,21 @@ async function readFileWindow(
   } finally {
     await handle.close().catch(() => undefined);
   }
-  return { text: new TextDecoder().decode(buffer.subarray(0, total)), bytesRead: total };
+  return buffer.subarray(0, total);
 }
 
-function splitWindowLines(
-  text: string,
-  options: { dropLeading: boolean; dropTrailing: boolean },
-): string[] {
+function decodeBytes(bytes: Buffer): string {
+  return new TextDecoder().decode(bytes);
+}
+
+/** Split a byte window already trimmed to record boundaries; the final newline yields no record. */
+function splitCompleteLines(text: string): string[] {
   if (text.length === 0) {
     return [];
   }
   const lines = text.split(/\r?\n/u);
-  if (options.dropTrailing) {
+  if (lines.at(-1) === "") {
     lines.pop();
-  }
-  if (options.dropLeading) {
-    lines.shift();
   }
   return lines;
 }

@@ -2034,6 +2034,37 @@ describe("codex command", () => {
     });
   });
 
+  it("marks Codex CLI sessions whose preview came from a windowed read", async () => {
+    const listCodexCliSessionsOnNode = vi.fn(async () => ({
+      node: { nodeId: "mb-m5", displayName: "mb-m5" },
+      result: {
+        codexHome: "/Users/mariano/.codex",
+        sessions: [
+          {
+            sessionId: "019e2007-1f7e-7eb1-a42b-8c01f4b9b5cd",
+            cwd: "/repo",
+            updatedAt: "2026-05-13T06:30:00.000Z",
+            lastMessage: "fix the bridge",
+            messageCount: 2,
+            partialScan: true,
+          },
+          {
+            sessionId: "019e2007-1f7e-7eb1-a42b-8c01f4b9b5ce",
+            cwd: "/repo",
+            updatedAt: "2026-05-13T06:20:00.000Z",
+            lastMessage: "read the whole thing",
+            messageCount: 4,
+          },
+        ],
+      },
+    }));
+
+    const result = await runCommand("sessions --host mb-m5", { listCodexCliSessionsOnNode });
+
+    expect(result.text).toContain("fix the bridge (/repo, 2026-05-13T06:30:00.000Z, partial scan)");
+    expect(result.text).toContain("read the whole thing (/repo, 2026-05-13T06:20:00.000Z)");
+  });
+
   it("normalizes signed decimal Codex CLI session limits before node dispatch", async () => {
     const listCodexCliSessionsOnNode = vi.fn(async () => ({
       node: { nodeId: "mb-m5", displayName: "mb-m5" },

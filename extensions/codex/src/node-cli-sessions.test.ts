@@ -6,6 +6,7 @@ import process from "node:process";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import manifest from "../openclaw.plugin.json" with { type: "json" };
+import { readJsonlHead, readJsonlTail } from "./jsonl-lines.js";
 import {
   createCodexCliSessionNodeHostCommands,
   createCodexCliSessionNodeInvokePolicies,
@@ -266,36 +267,14 @@ describe("codex cli node sessions", () => {
 
   it("reads a large rollout through bounded head and tail windows", async () => {
     const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5250";
-    const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
-    const sessionFile = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
-    await fs.mkdir(sessionDir, { recursive: true });
-    const filler = (padding: number) =>
-      JSON.stringify({
-        timestamp: "2026-05-14T00:10:23.619Z",
-        type: "event_msg",
-        payload: { type: "token_count", padding: "x".repeat(padding) },
-      });
-    const userMessage = (timestamp: string, text: string) =>
-      JSON.stringify({
-        timestamp,
-        type: "response_item",
-        payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
-      });
-    await fs.writeFile(
-      sessionFile,
-      [
-        JSON.stringify({
-          timestamp: "2026-05-14T00:10:23.618Z",
-          type: "session_meta",
-          payload: { id: sessionId, cwd: "/tmp/codex-streaming" },
-        }),
-        userMessage("2026-05-14T00:10:23.700Z", "first ask"),
-        filler(2 * 1_024 * 1_024),
-        userMessage("2026-05-14T00:10:23.800Z", "buried ask"),
-        filler(2 * 1_024 * 1_024),
-        userMessage("2026-05-14T00:10:24.000Z", "rollout fallback"),
-      ].join("\n"),
-    );
+    const sessionFile = await writeRollout(sessionId, [
+      sessionMeta(sessionId, "/tmp/codex-streaming"),
+      userMessage("2026-05-14T00:10:23.700Z", "first ask"),
+      filler(2 * 1_024 * 1_024),
+      userMessage("2026-05-14T00:10:23.800Z", "buried ask"),
+      filler(2 * 1_024 * 1_024),
+      userMessage("2026-05-14T00:10:24.000Z", "rollout fallback"),
+    ]);
     const fileSize = (await fs.stat(sessionFile)).size;
     const readFile = vi.spyOn(fs, "readFile");
     const reads = spyOnRolloutReads();
@@ -327,6 +306,103 @@ describe("codex cli node sessions", () => {
         sessionFile,
         // Windowed: "buried ask" sits between the two windows, so the count is marked partial.
         messageCount: 2,
+        partialScan: true,
+      },
+    ]);
+  });
+
+  it("counts each record once when an oversized session_meta escalates past the file size", async () => {
+    const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5260";
+    const sessionFile = await writeRollout(sessionId, [
+      sessionMeta(sessionId, "/tmp/codex-escalated", 900 * 1_024),
+      userMessage("2026-05-14T00:10:24.100Z", "one"),
+      userMessage("2026-05-14T00:10:24.200Z", "two"),
+      userMessage("2026-05-14T00:10:24.300Z", "three"),
+    ]);
+    const size = (await fs.stat(sessionFile)).size;
+    // Larger than the head window, so the first read finds no complete record and escalates; small
+    // enough that the escalated read reaches EOF, which is where a fixed tail would re-read.
+    expect(size).toBeGreaterThan(768 * 1_024);
+    expect(size).toBeLessThan(4 * 1_024 * 1_024);
+
+    const parsed = await runSessionsList({ limit: 5 });
+
+    expect(parsed.sessions).toEqual([
+      {
+        sessionId,
+        updatedAt: "2026-05-14T00:10:24.300Z",
+        lastMessage: "three",
+        cwd: "/tmp/codex-escalated",
+        sessionFile,
+        messageCount: 3,
+      },
+    ]);
+  });
+
+  it("counts each record once when the escalated head window meets the tail window", async () => {
+    const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5261";
+    const records = [sessionMeta(sessionId, "/tmp/codex-overlap", 900 * 1_024)];
+    let bytes = records[0].length + 1;
+    const padTo = (target: number) => {
+      while (bytes < target) {
+        const record = filler(Math.min(256 * 1_024, target - bytes));
+        records.push(record);
+        bytes += record.length + 1;
+      }
+    };
+    padTo(3_950 * 1_024);
+    records.push(userMessage("2026-05-14T00:10:25.100Z", "overlap ask"));
+    bytes += records.at(-1)?.length ?? 0;
+    padTo(4_150 * 1_024);
+    records.push(userMessage("2026-05-14T00:10:25.200Z", "final ask"));
+    const sessionFile = await writeRollout(sessionId, records);
+    // Pin the property the fixture exists to exercise rather than the sizes that produce it: an
+    // unanchored tail reaches back before the head stopped, and "overlap ask" is inside that span.
+    const head = await readJsonlHead(sessionFile, 4 * 1_024 * 1_024);
+    const unanchored = await readJsonlTail(sessionFile, 256 * 1_024);
+    expect(head?.complete).toBe(false);
+    expect(unanchored?.start).toBeLessThan(head?.endOffset ?? 0);
+    expect(unanchored?.lines.join("\n")).toContain("overlap ask");
+    expect(head?.lines.join("\n")).toContain("overlap ask");
+
+    const parsed = await runSessionsList({ limit: 5 });
+
+    expect(parsed.sessions).toEqual([
+      {
+        sessionId,
+        updatedAt: "2026-05-14T00:10:25.200Z",
+        lastMessage: "final ask",
+        cwd: "/tmp/codex-overlap",
+        sessionFile,
+        // Two user records, each scanned once: the windows meet, so the count stays exact.
+        messageCount: 2,
+      },
+    ]);
+  });
+
+  it("falls back to mtime when the tail window holds no complete record", async () => {
+    const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5262";
+    const mtime = new Date("2026-05-20T11:22:33.000Z");
+    const sessionFile = await writeRollout(sessionId, [
+      sessionMeta(sessionId, "/tmp/codex-huge-tail"),
+      userMessage("2026-05-14T00:10:23.700Z", "early ask"),
+      filler(700 * 1_024),
+      // One record wider than the tail window, so the window opens mid-record and ends at EOF.
+      filler(400 * 1_024),
+    ]);
+    await fs.utimes(sessionFile, mtime, mtime);
+
+    const parsed = await runSessionsList({ limit: 5 });
+
+    expect(parsed.sessions).toEqual([
+      {
+        sessionId,
+        // Not the head's "2026-05-14T00:10:23.700Z": records after it went unread.
+        updatedAt: mtime.toISOString(),
+        lastMessage: "early ask",
+        cwd: "/tmp/codex-huge-tail",
+        sessionFile,
+        messageCount: 1,
         partialScan: true,
       },
     ]);
@@ -588,6 +664,50 @@ describe("codex cli node sessions", () => {
     expect(parsed.sessions?.[0]?.lastMessage).not.toContain("\ud83e");
     expect(parsed.sessions?.[0]?.lastMessage).not.toContain("\udd16");
   });
+
+  function sessionMeta(sessionId: string, cwd: string, padding = 0): string {
+    return JSON.stringify({
+      timestamp: "2026-05-14T00:10:23.618Z",
+      type: "session_meta",
+      // Real rollouts embed the whole instruction set here, which is what makes this record big.
+      payload: { id: sessionId, cwd, instructions: "i".repeat(padding) },
+    });
+  }
+
+  function userMessage(timestamp: string, text: string): string {
+    return JSON.stringify({
+      timestamp,
+      type: "response_item",
+      payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+    });
+  }
+
+  function filler(padding: number): string {
+    return JSON.stringify({
+      timestamp: "2026-05-14T00:10:23.619Z",
+      type: "event_msg",
+      payload: { type: "token_count", padding: "x".repeat(padding) },
+    });
+  }
+
+  async function writeRollout(sessionId: string, records: string[]): Promise<string> {
+    const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
+    await fs.mkdir(sessionDir, { recursive: true });
+    const sessionFile = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
+    await fs.writeFile(sessionFile, records.join("\n"));
+    return sessionFile;
+  }
+
+  async function runSessionsList(params: Record<string, unknown>): Promise<{
+    sessions?: Array<Record<string, unknown>>;
+  }> {
+    const command = createCodexCliSessionNodeHostCommands().find(
+      (entry) => entry.command === CODEX_CLI_SESSIONS_LIST_COMMAND,
+    );
+    return JSON.parse((await command?.handle(JSON.stringify(params))) ?? "{}") as {
+      sessions?: Array<Record<string, unknown>>;
+    };
+  }
 
   /** Writes `count` rollouts, newest first, with distinct mtimes so recency ordering is stable. */
   async function writeRolloutFixtures(

@@ -1,4 +1,9 @@
-import { spawn, spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnSyncOptionsWithStringEncoding,
+} from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -475,19 +480,6 @@ type WrapperOptions = {
   timeoutMs?: number;
 };
 
-function spawnWrapper(helpText: string, args: string[], options: WrapperOptions = {}) {
-  const nodeArgs = [
-    ...(options.nodePreload ? ["--require", options.nodePreload] : []),
-    bundledWrapperPath,
-    ...args,
-  ];
-  return spawn(process.execPath, nodeArgs, {
-    cwd: repoRoot,
-    env: wrapperEnv(helpText, options),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
 function wrapperEnv(helpText: string, options: WrapperOptions): NodeJS.ProcessEnv {
   const binDir = makeFakeCrabbox(helpText);
   const gitResponses = { ...defaultGitResponses, ...options.gitResponses };
@@ -627,7 +619,7 @@ async function waitForCondition(predicate: () => boolean, timeoutMs = 8_000): Pr
 }
 
 async function waitForProcessClose(
-  child: ReturnType<typeof spawnWrapper>,
+  child: ChildProcess,
   timeoutMs = 12_000,
 ): Promise<{ status: number | null; signal: NodeJS.Signals | null }> {
   return await Promise.race([

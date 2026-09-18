@@ -2,7 +2,7 @@ import type { ImageLightboxItem } from "./image-lightbox.ts";
 
 export type ImageLightboxGallery = {
   index: number;
-  items: readonly (() => Promise<ImageLightboxItem | null>)[];
+  items: readonly ((retryFailed?: boolean) => Promise<ImageLightboxItem | null>)[];
 };
 
 /** The modal owns decoded neighbors and their resource leases until eviction or close. */
@@ -57,7 +57,7 @@ export class ImageLightboxGalleryController {
     this.busy = true;
     this.failed = false;
     this.notify();
-    const item = await this.load(next);
+    const item = await this.load(next, true);
     if (generation !== this.generation) {
       return false;
     }
@@ -72,7 +72,7 @@ export class ImageLightboxGalleryController {
     return item !== null;
   }
 
-  private load(index: number): Promise<ImageLightboxItem | null> {
+  private load(index: number, retryFailed = false): Promise<ImageLightboxItem | null> {
     const cached = this.images.get(index);
     if (cached) {
       return cached;
@@ -83,7 +83,7 @@ export class ImageLightboxGalleryController {
     }
     const generation = this.generation;
     const pending = Promise.resolve()
-      .then(() => (generation === this.generation ? load() : null))
+      .then(() => (generation === this.generation ? load(retryFailed) : null))
       .then(async (item) => {
         if (!item) {
           return null;

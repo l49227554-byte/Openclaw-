@@ -398,7 +398,14 @@ function openMessageImage(
       images && images.length > 1 && index >= 0
         ? {
             ...item,
-            gallery: { index, items: images.map((image) => () => loadGalleryImage(image, opts)) },
+            gallery: {
+              index,
+              items: images.map(
+                (image) =>
+                  (retryFailed = false) =>
+                    loadGalleryImage(image, opts, retryFailed),
+              ),
+            },
           }
         : item;
     if (requestVersion === undefined) {
@@ -412,7 +419,7 @@ function openMessageImage(
     return;
   }
 
-  const resource = resolveManagedOutgoingImageResource(img.url, opts, img.artifactId, "full");
+  const resource = resolveManagedOutgoingImageResource(img.url, opts, img.artifactId, "full", true);
   const openFull = (url: string) => {
     const release = opts?.onOpenImage ? retainManagedImageBlobUrl(resource.cacheKey) : undefined;
     openResolvedImage(onOpenImage ? open : undefined, url, title, release);
@@ -447,11 +454,18 @@ function openMessageImage(
 async function loadGalleryImage(
   image: ImageBlock,
   opts: ImageRenderOptions | undefined,
+  retryFailed: boolean,
 ): Promise<ImageLightboxItem | null> {
   let src: string | null;
   let release: (() => void) | undefined;
   if (isManagedOutgoingMediaSource(image.url)) {
-    const resource = resolveManagedOutgoingImageResource(image.url, opts, image.artifactId, "full");
+    const resource = resolveManagedOutgoingImageResource(
+      image.url,
+      opts,
+      image.artifactId,
+      "full",
+      retryFailed,
+    );
     src = resource.value ?? (await resource.pending) ?? null;
     if (!src || !isChatMediaResourceCurrent(resource)) {
       return null;

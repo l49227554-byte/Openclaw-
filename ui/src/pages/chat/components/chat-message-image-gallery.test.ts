@@ -3,6 +3,7 @@
 import { nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
+import { ImageLightboxGalleryController } from "../../../components/image-lightbox-gallery.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
 import { renderMessageImages } from "./chat-message-images.ts";
 import { releaseChatMediaResourceSubscriber } from "./chat-message-media.ts";
@@ -20,10 +21,101 @@ afterEach(() => {
   render(nothing, container);
   releaseChatMediaResourceSubscriber(onRequestUpdate);
   container.remove();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 describe("message image gallery loading", () => {
+  it.each(["navigation", "tile"] as const)(
+    "retries exhausted managed neighbors on %s without polling when reopened",
+    async (action) => {
+      vi.useFakeTimers();
+      const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
+      const blobPrefix = `blob:gallery-${crypto.randomUUID()}`;
+      let blobIndex = 0;
+      const NativeUrl = URL;
+      vi.stubGlobal(
+        "URL",
+        class extends NativeUrl {
+          static override createObjectURL = () => `${blobPrefix}-${blobIndex++}`;
+          static override revokeObjectURL = vi.fn();
+        },
+      );
+      vi.stubGlobal(
+        "Image",
+        class {
+          src = "";
+          async decode() {}
+        },
+      );
+      const imageResponse = () => new Response("png", { headers: { "Content-Type": "image/png" } });
+      const fetchFull = vi.fn(async () => new Response(null, { status: 503 }));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string) => (url === source ? fetchFull() : imageResponse())),
+      );
+      const controller = new ImageLightboxGalleryController(vi.fn());
+      const onOpenImage = vi.fn((item: ImageLightboxItem) => controller.reset(item.gallery, item));
+      try {
+        const draw = () =>
+          render(
+            renderMessageImages(
+              [
+                { url: "data:image/png;base64,cG5n", alt: "First image" },
+                { url: source, alt: "Managed neighbor" },
+              ],
+              { onOpenImage, onRequestUpdate },
+            ),
+            container,
+          );
+        draw();
+        const firstTile = container.querySelector<HTMLButtonElement>(".chat-message-image-button")!;
+        firstTile.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchFull).toHaveBeenCalledOnce();
+        expect(controller.current?.title).toBe("First image");
+        expect(controller.failed).toBe(false);
+
+        // The lifecycle permits one more speculative attempt after its retry window.
+        await vi.advanceTimersByTimeAsync(5_000);
+        firstTile.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchFull).toHaveBeenCalledTimes(2);
+
+        fetchFull.mockImplementation(async () => imageResponse());
+        await vi.advanceTimersByTimeAsync(10_000);
+        firstTile.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(fetchFull).toHaveBeenCalledTimes(2);
+        expect(controller.current?.title).toBe("First image");
+        expect(controller.failed).toBe(false);
+
+        if (action === "navigation") {
+          expect(await controller.move(1)).toBe(true);
+        } else {
+          controller.dispose();
+          draw();
+          const tiles = container.querySelectorAll<HTMLButtonElement>(".chat-message-image-button");
+          expect(tiles).toHaveLength(2);
+          onOpenImage.mockClear();
+          tiles[1]!.click();
+          await vi.advanceTimersByTimeAsync(0);
+          expect(onOpenImage).toHaveBeenCalledOnce();
+        }
+        expect(fetchFull).toHaveBeenCalledTimes(3);
+        expect(controller.index).toBe(1);
+        expect(controller.current).toMatchObject({
+          title: "Managed neighbor",
+          src: `${blobPrefix}-1`,
+        });
+        expect(controller.failed).toBe(false);
+      } finally {
+        onOpenImage.mock.calls.at(-1)?.[0].release?.();
+        controller.dispose();
+      }
+    },
+  );
+
   it.each([false, true])(
     "waits for local-image metadata and discards it after owner removal=%s",
     async (removeOwner) => {

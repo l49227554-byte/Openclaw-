@@ -293,6 +293,7 @@ describe("prepared catalog source composition", () => {
         templateAuthStorage: AuthStorage.inMemory(credentials),
       };
       const siblingEndpoint = "https://sibling.example.invalid/v1";
+      const siblingStaticConfig = { ...staticConfig, baseUrl: siblingEndpoint };
       const siblingGeneration = {
         ...generation,
         ...(difference === "static route"
@@ -301,9 +302,8 @@ describe("prepared catalog source composition", () => {
                 ...generation.preparedStaticProviderCatalog,
                 entries: generation.preparedStaticProviderCatalog.entries.map((entry) =>
                   Object.assign({}, entry, {
-                    result: {
-                      provider: Object.assign({}, staticConfig, { baseUrl: siblingEndpoint }),
-                    },
+                    result: { provider: siblingStaticConfig },
+                    providerConfigs: { [providerId]: siblingStaticConfig },
                   }),
                 ),
               },

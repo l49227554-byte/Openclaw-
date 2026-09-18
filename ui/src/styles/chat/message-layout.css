@@ -299,6 +299,12 @@
   background: transparent;
 }
 
+.chat-image-frame--managed:not(.chat-image-frame--image) {
+  min-width: min(100%, var(--chat-image-min-width));
+  /* Intrinsic previews still need room for 28px actions and both 8px insets. */
+  min-height: 44px;
+}
+
 .chat-image-skeleton.skeleton {
   --skeleton-base: transparent;
   --skeleton-highlight: color-mix(in srgb, var(--bg-hover) 45%, transparent);

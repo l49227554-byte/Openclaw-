@@ -300,14 +300,17 @@ class MessageImageResourceDirective extends AsyncDirective {
     const pending = state === "checking" || state === "loading";
     const compact = state === "unavailable" || state === "checking" || (!sized && pending);
     const previewWidth = ratio
-      ? Math.min(Math.max(img.width!, MIN_CHAT_IMAGE_PREVIEW_WIDTH), 400, 360 * ratio)
+      ? img.width! < MIN_CHAT_IMAGE_PREVIEW_WIDTH
+        ? MIN_CHAT_IMAGE_PREVIEW_WIDTH
+        : Math.min(img.width!, 400, 360 * ratio)
       : 400;
     const width = compact ? Math.max(MIN_CHAT_IMAGE_PREVIEW_WIDTH, previewWidth) : previewWidth;
+    const height = ratio ? Math.min(360, width / ratio) : undefined;
     // Only loadable images with known dimensions reserve preview geometry.
     // Unknown images use their intrinsic size; gallery tiles keep their own layout.
     return html`<span
       class="chat-image-frame ${sized || compact ? "chat-image-frame--image" : ""} ${this.managed && !compact ? "chat-image-frame--managed" : ""} ${compact ? "chat-image-frame--compact" : ""}"
-      style=${`--chat-image-width: ${width}px; --chat-image-ratio: ${compact ? "auto" : (ratio ?? "auto")}`}
+      style=${`--chat-image-width: ${width}px; --chat-image-min-width: ${MIN_CHAT_IMAGE_PREVIEW_WIDTH}px; --chat-image-ratio: ${!compact && height ? `${width} / ${height}` : "auto"}`}
       aria-busy=${pending ? "true" : "false"}
       role=${pending ? "status" : nothing}
       aria-label=${pending ? t("common.loading") : nothing}

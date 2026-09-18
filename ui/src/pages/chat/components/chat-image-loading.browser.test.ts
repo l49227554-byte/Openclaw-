@@ -113,7 +113,7 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         width: 80,
         height: 1600,
         pane: 500,
-        expectedWidth: 18,
+        expectedWidth: 160,
         expectedHeight: 360,
       },
     ].flatMap((scenario) =>
@@ -326,65 +326,93 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     },
   );
 
-  it("anchors real image actions around tiny and tall previews", async () => {
-    const { page } = await import("vitest/browser");
-    await page.viewport(1280, 900);
-    const container = mount(500);
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(svgResponse(16, 16))
-        .mockResolvedValueOnce(svgResponse(420, 1800)),
-    );
-    const images = [
-      {
-        url: "/api/chat/media/outgoing/agent%3Amain%3Amain/tiny-actions/full",
-        width: 16,
-        height: 16,
-        alt: "Tiny generated image",
-      },
-      {
-        url: "/api/chat/media/outgoing/agent%3Amain%3Amain/tall-actions/full",
-        width: 420,
-        height: 1800,
-        alt: "Tall generated image",
-      },
-    ];
-    render(
-      html`<div class="chat-group assistant">
-        <div class="chat-group-messages">${renderMessageImages(images)}</div>
-      </div>`,
-      container,
-    );
-    await vi.waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(2));
-    await Promise.all([...container.querySelectorAll("img")].map((image) => image.decode()));
-    const frames = [...container.querySelectorAll<HTMLElement>(".chat-image-frame--managed")];
-    expect(frames[1]!.getBoundingClientRect().top).toBeGreaterThan(
-      frames[0]!.getBoundingClientRect().bottom,
-    );
-    for (const [index, expectedWidth] of [160, 84].entries()) {
-      const element = frames[index]!;
-      await page.getByAltText(images[index]!.alt, { exact: true }).hover();
-      for (const animation of element.getAnimations({ subtree: true })) {
-        animation.finish();
-      }
-      const frameRect = element.getBoundingClientRect();
-      const actionsRect = element.querySelector(".chat-image-actions")!.getBoundingClientRect();
-      expect(getComputedStyle(element, "::after").opacity).toBe("1");
-      expect(actionsRect.left).toBeGreaterThanOrEqual(frameRect.left);
-      expect(actionsRect.right).toBeLessThanOrEqual(frameRect.right);
-      expect(actionsRect.top).toBeGreaterThanOrEqual(frameRect.top);
-      expect(actionsRect.bottom).toBeLessThanOrEqual(frameRect.bottom);
-      expect(frameRect.bottom - actionsRect.bottom).toBeLessThanOrEqual(9);
-      expect(Number.parseFloat(getComputedStyle(element, "::after").width)).toBeCloseTo(
-        frameRect.width,
-        0,
+  it.each([1440, 390])(
+    "anchors image actions around tiny and tall previews at %s px",
+    async (viewport) => {
+      const { page } = await import("vitest/browser");
+      await page.viewport(viewport, 900);
+      const container = mount(Math.min(500, viewport - 32));
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValueOnce(svgResponse(16, 16))
+          .mockResolvedValueOnce(svgResponse(420, 1800))
+          .mockResolvedValueOnce(svgResponse(80, 1600))
+          .mockResolvedValueOnce(svgResponse(80, 1600))
+          .mockResolvedValueOnce(svgResponse(1, 1)),
       );
-      expect(frameRect.width).toBeCloseTo(expectedWidth, 0);
-      expect(getComputedStyle(element).overflow).toBe("hidden");
-    }
-  });
+      const images = [
+        {
+          url: `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`,
+          width: 16,
+          height: 16,
+          alt: "Tiny generated image",
+        },
+        {
+          url: `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`,
+          width: 420,
+          height: 1800,
+          alt: "Tall generated image",
+        },
+        {
+          url: `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`,
+          width: 80,
+          height: 1600,
+          alt: "Narrow generated image",
+        },
+        {
+          url: `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`,
+          alt: "Narrow image without dimensions",
+        },
+        {
+          url: `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`,
+          alt: "Tiny image without dimensions",
+        },
+      ];
+      render(
+        html`<div class="chat-group assistant">
+          <div class="chat-group-messages">${renderMessageImages(images)}</div>
+        </div>`,
+        container,
+      );
+      await vi.waitFor(() => expect(container.querySelectorAll("img")).toHaveLength(images.length));
+      await Promise.all([...container.querySelectorAll("img")].map((image) => image.decode()));
+      const frames = [...container.querySelectorAll<HTMLElement>(".chat-image-frame--managed")];
+      expect(frames[1]!.getBoundingClientRect().top).toBeGreaterThan(
+        frames[0]!.getBoundingClientRect().bottom,
+      );
+      for (const [index, expectedWidth] of [160, 84, 160, 160, 160].entries()) {
+        const element = frames[index]!;
+        await page.getByAltText(images[index]!.alt, { exact: true }).hover();
+        for (const animation of element.getAnimations({ subtree: true })) {
+          animation.finish();
+        }
+        const frameRect = element.getBoundingClientRect();
+        const actionsRect = element.querySelector(".chat-image-actions")!.getBoundingClientRect();
+        expect(getComputedStyle(element, "::after").opacity).toBe("1");
+        expect(actionsRect.left).toBeGreaterThanOrEqual(frameRect.left);
+        expect(actionsRect.right).toBeLessThanOrEqual(frameRect.right);
+        expect(actionsRect.top).toBeGreaterThanOrEqual(frameRect.top);
+        expect(actionsRect.bottom).toBeLessThanOrEqual(frameRect.bottom);
+        for (const action of element.querySelectorAll<HTMLButtonElement>(".chat-image-action")) {
+          const rect = action.getBoundingClientRect();
+          expect(
+            action.contains(
+              document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+            ),
+          ).toBe(true);
+        }
+        expect(frameRect.bottom - actionsRect.bottom).toBeLessThanOrEqual(9);
+        expect(Number.parseFloat(getComputedStyle(element, "::after").width)).toBeCloseTo(
+          frameRect.width,
+          0,
+        );
+        expect(frameRect.width).toBeCloseTo(expectedWidth, 0);
+        expect(getComputedStyle(element).overflow).toBe("hidden");
+      }
+    },
+  );
 
   it.each(
     [1440, 390].flatMap((viewport) =>

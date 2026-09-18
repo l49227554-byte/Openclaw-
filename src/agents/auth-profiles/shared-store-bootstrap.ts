@@ -27,8 +27,9 @@ import { resolveSharedMainAuthAgentDir } from "./shared-main-dir.js";
 const PRIMARY_ROW_KEY = "primary";
 const SHARED_AUTH_STORE_MIGRATION_KIND = "shared-auth-store-state-db";
 
-// Ownership objects are process-stable per state root. Doctor replaces the cached object
-// after relocation, so legacy inspection is memoized only for that ownership generation.
+// Ownership objects are process-stable per state root while the non-terminal
+// legacy owner is unchanged. Doctor or an out-of-process relocation replaces the
+// cached object, so legacy inspection is memoized only for that ownership generation.
 const inspectedLegacySharedAuthOwnerships = new WeakSet<SharedAuthStoreOwnership>();
 
 type FreshSharedAuthStoreHandoff = {

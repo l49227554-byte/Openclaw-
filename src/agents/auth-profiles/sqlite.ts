@@ -34,7 +34,7 @@ import {
 import { resolveUserPath } from "../../utils.js";
 import { resolveRegisteredAgentIdForDir } from "../agent-dir-registry.js";
 import {
-  resolveSharedAuthStoreOwnership,
+  resolveSharedAuthStoreOwner,
   resolveSharedAuthStorePath,
   type SharedAuthStoreOwnership,
 } from "./path-resolve.js";
@@ -93,12 +93,11 @@ function prepareAuthProfileSharedOwner(env: NodeJS.ProcessEnv) {
   preparedEnv.OPENCLAW_STATE_DIR = resolveStateDir(preparedEnv);
   return {
     env: preparedEnv,
-    sharedDatabasePath: resolveSharedAuthStorePath(preparedEnv),
-    location: resolveSharedAuthStoreOwnership(preparedEnv).location,
+    ...resolveSharedAuthStoreOwner(preparedEnv),
   };
 }
 
-type AuthProfileDatabaseTarget =
+export type AuthProfileDatabaseTarget =
   | { kind: "agent"; agentId: string; path: string; env: NodeJS.ProcessEnv }
   | { kind: "shared-state"; path: string; env: NodeJS.ProcessEnv };
 
@@ -142,14 +141,14 @@ function inferAgentIdFromDir(agentDir: string): string {
 
 // The auth database lives in the agent dir and shares the openclaw-agent schema
 // so auth store/state can move with the rest of agent-local durable state.
-function resolveAuthProfileDatabaseOptions(
+export function resolveAuthProfileDatabaseTarget(
   agentDir?: string,
   env: NodeJS.ProcessEnv = process.env,
+  sharedOwner?: Pick<AuthProfileStoreOwner, "location" | "sharedDatabasePath">,
 ): AuthProfileDatabaseTarget {
-  const pathname = agentDir
-    ? resolveAuthProfileDatabasePath(agentDir)
-    : resolveSharedAuthStorePath(env);
-  if (!agentDir && resolveSharedAuthStoreOwnership(env).location === "state-db") {
+  const shared = agentDir ? undefined : (sharedOwner ?? resolveSharedAuthStoreOwner(env));
+  const pathname = agentDir ? resolveAuthProfileDatabasePath(agentDir) : shared!.sharedDatabasePath;
+  if (shared?.location === "state-db") {
     return { kind: "shared-state", path: pathname, env };
   }
   const dir = path.dirname(pathname);
@@ -170,7 +169,7 @@ export function resolveAuthProfileDatabasePath(agentDir: string): string {
 
 /** Resolves the durable agent owner expected for an auth-profile database. */
 export function resolveAuthProfileDatabaseOwnerId(agentDir: string): string {
-  const target = resolveAuthProfileDatabaseOptions(agentDir);
+  const target = resolveAuthProfileDatabaseTarget(agentDir);
   if (target.kind !== "agent") {
     throw new Error("agent auth database unexpectedly resolved to shared state");
   }
@@ -201,7 +200,7 @@ function resolveAuthProfileDatabaseKind(
   if (database && "path" in database) {
     return "shared-state";
   }
-  return resolveAuthProfileDatabaseOptions(agentDir).kind;
+  return resolveAuthProfileDatabaseTarget(agentDir).kind;
 }
 
 /** Validate selected-agent ownership without requiring a current session schema. */
@@ -254,7 +253,7 @@ export function inspectPersistedAuthProfileStoreRaw(
       resolveAuthProfileDatabaseKind(agentDir, database),
     );
   }
-  return inspectAuthProfileJsonCellReadOnly(resolveAuthProfileDatabaseOptions(agentDir), "store");
+  return inspectAuthProfileJsonCellReadOnly(resolveAuthProfileDatabaseTarget(agentDir), "store");
 }
 
 /** Distinguishes an absent auth-state row from state that could not be read. */
@@ -269,7 +268,7 @@ export function inspectPersistedAuthProfileStateRaw(
       resolveAuthProfileDatabaseKind(agentDir, database),
     );
   }
-  return inspectAuthProfileJsonCellReadOnly(resolveAuthProfileDatabaseOptions(agentDir), "state");
+  return inspectAuthProfileJsonCellReadOnly(resolveAuthProfileDatabaseTarget(agentDir), "state");
 }
 
 /** Inspect the shared store for an explicit state root without projecting it to an agent dir. */
@@ -277,7 +276,7 @@ export function inspectPersistedSharedAuthProfileStoreRaw(
   env: NodeJS.ProcessEnv,
 ): PersistedAuthProfileStoreInspection {
   return inspectAuthProfileJsonCellReadOnly(
-    resolveAuthProfileDatabaseOptions(undefined, env),
+    resolveAuthProfileDatabaseTarget(undefined, env),
     "store",
   );
 }
@@ -287,7 +286,7 @@ export function inspectPersistedSharedAuthProfileStateRaw(
   env: NodeJS.ProcessEnv,
 ): PersistedAuthProfileStoreInspection {
   return inspectAuthProfileJsonCellReadOnly(
-    resolveAuthProfileDatabaseOptions(undefined, env),
+    resolveAuthProfileDatabaseTarget(undefined, env),
     "state",
   );
 }
@@ -296,6 +295,7 @@ export function inspectPersistedSharedAuthProfileStateRaw(
 export function readPersistedAuthProfileStoreRaw(
   agentDir?: string,
   database?: AuthProfileDatabase,
+  target?: AuthProfileDatabaseTarget,
 ): unknown {
   if (database) {
     if (resolveAuthProfileDatabaseKind(agentDir, database) === "shared-state") {
@@ -311,7 +311,7 @@ export function readPersistedAuthProfileStoreRaw(
     return parseJsonCell(row?.store_json);
   }
   const result = inspectAuthProfileJsonCellReadOnly(
-    resolveAuthProfileDatabaseOptions(agentDir),
+    target ?? resolveAuthProfileDatabaseTarget(agentDir),
     "store",
   );
   return result.status === "readable" ? result.raw : null;
@@ -321,6 +321,7 @@ export function readPersistedAuthProfileStoreRaw(
 export function readPersistedAuthProfileStateRaw(
   agentDir?: string,
   database?: AuthProfileDatabase,
+  target?: AuthProfileDatabaseTarget,
 ): unknown {
   if (database) {
     if (resolveAuthProfileDatabaseKind(agentDir, database) === "shared-state") {
@@ -336,7 +337,7 @@ export function readPersistedAuthProfileStateRaw(
     return parseJsonCell(row?.state_json);
   }
   const result = inspectAuthProfileJsonCellReadOnly(
-    resolveAuthProfileDatabaseOptions(agentDir),
+    target ?? resolveAuthProfileDatabaseTarget(agentDir),
     "state",
   );
   return result.status === "readable" ? result.raw : null;
@@ -360,9 +361,8 @@ export function writePersistedAuthProfileStoreRaw(
   agentDir?: string,
   database?: AuthProfileDatabase,
 ): void {
-  const databaseKind = resolveAuthProfileDatabaseKind(agentDir, database);
   const write = (target: AuthProfileDatabase) => {
-    if (databaseKind === "shared-state") {
+    if (resolveAuthProfileDatabaseKind(agentDir, target) === "shared-state") {
       writeSharedAuthKvCell(target.db, SHARED_STORE_STATE_KEY, JSON.stringify(payload));
       return;
     }
@@ -395,9 +395,8 @@ export function deletePersistedAuthProfileStoreRaw(
   agentDir?: string,
   database?: AuthProfileDatabase,
 ): void {
-  const databaseKind = resolveAuthProfileDatabaseKind(agentDir, database);
   const remove = (target: AuthProfileDatabase) => {
-    if (databaseKind === "shared-state") {
+    if (resolveAuthProfileDatabaseKind(agentDir, target) === "shared-state") {
       deleteSharedAuthKvCell(target.db, SHARED_STORE_STATE_KEY);
       return;
     }
@@ -421,9 +420,8 @@ export function writePersistedAuthProfileStateRaw(
   agentDir?: string,
   database?: AuthProfileDatabase,
 ): void {
-  const databaseKind = resolveAuthProfileDatabaseKind(agentDir, database);
   const write = (target: AuthProfileDatabase) => {
-    if (databaseKind === "shared-state") {
+    if (resolveAuthProfileDatabaseKind(agentDir, target) === "shared-state") {
       if (!payload) {
         deleteSharedAuthKvCell(target.db, SHARED_STATE_STATE_KEY);
         return;
@@ -484,12 +482,14 @@ function prepareAuthProfileWriteTransaction(
     allowExplicitMain: options.sharedStoreWrite === true,
     env,
   });
-  const databaseTarget = resolveAuthProfileDatabaseOptions(
+  // Shared-owner discovery may inspect another database; capture it once before BEGIN.
+  const sharedOwner = prepareAuthProfileSharedOwner(env);
+  const databaseTarget = resolveAuthProfileDatabaseTarget(
     sharedStoreWrite ? undefined : agentDir,
-    env,
+    sharedOwner.env,
+    sharedOwner,
   );
-  // Shared-owner discovery may inspect another database; complete it before BEGIN.
-  return { databaseTarget, sharedOwner: prepareAuthProfileSharedOwner(env) };
+  return { databaseTarget, sharedOwner };
 }
 
 /** Runs an auth-profile database write transaction for store/state updates. */
@@ -517,11 +517,10 @@ export async function runAuthProfileWriteTransactionAsync<T>(
   }
   const assertCurrent = () => {
     // Doctor can relocate the shared base while this writer waits or validates.
+    const current = resolveSharedAuthStoreOwner(prepared.sharedOwner.env);
     if (
-      resolveSharedAuthStorePath(prepared.sharedOwner.env) !==
-        prepared.sharedOwner.sharedDatabasePath ||
-      resolveSharedAuthStoreOwnership(prepared.sharedOwner.env).location !==
-        prepared.sharedOwner.location
+      current.sharedDatabasePath !== prepared.sharedOwner.sharedDatabasePath ||
+      current.location !== prepared.sharedOwner.location
     ) {
       throw new Error("Auth profile shared owner changed before write admission");
     }

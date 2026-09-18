@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { withEnvOnlyAuthProfileStore } from "../agents/auth-profiles/store.js";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveModelAsync } from "../agents/embedded-agent-runner/model.js";
 import {
@@ -148,7 +149,9 @@ module.exports = {
         },
       };
       try {
-        await run({ config, state, imported, resolved });
+        // These provider fixtures require no persisted accounts. Keep dynamic
+        // discovery in that explicit scope, independent of ownership caching.
+        await withEnvOnlyAuthProfileStore(() => run({ config, state, imported, resolved }));
       } finally {
         await clearRuntimeState();
       }

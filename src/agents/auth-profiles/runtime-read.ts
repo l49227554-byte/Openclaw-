@@ -135,7 +135,7 @@ type RuntimeReadHost = {
     agentDir?: string,
     options?: LoadAuthProfileStoreOptions,
     env?: NodeJS.ProcessEnv,
-    preparedRows?: AuthProfileRowRead,
+    prepared?: { databasePath: string; rows: AuthProfileRowRead },
   ) => AuthProfileStore;
   overlayExternalAuthProfiles: ReturnType<
     typeof createExternalAuthRuntime
@@ -172,7 +172,11 @@ export function createAuthProfileStoreRuntimeReader({
     agentDir?: string,
     options?: LoadAuthProfileStoreOptions,
     env?: NodeJS.ProcessEnv,
-    readPreparedStore?: (databasePath: string) => AuthProfileStore,
+    prepared?: {
+      requestedPath: string;
+      inheritedPath: string;
+      readStore: (databasePath: string) => AuthProfileStore;
+    },
   ): AuthProfileStore {
     if (isEnvOnlyAuthProfileRuntime()) {
       return createEmptyAuthProfileStore();
@@ -189,15 +193,17 @@ export function createAuthProfileStoreRuntimeReader({
     }
     const effectiveAgentDir = resolveRuntimeAuthProfileAgentDir(agentDir);
     const effectiveOptions = resolveRuntimeAuthProfileLoadOptions(options);
-    const authPath = effectiveAgentDir
-      ? resolveAgentAuthPath(effectiveAgentDir)
-      : resolveSharedAuthPath(env);
-    const store = readPreparedStore
-      ? readPreparedStore(authPath)
+    const authPath =
+      prepared?.requestedPath ??
+      (effectiveAgentDir ? resolveAgentAuthPath(effectiveAgentDir) : resolveSharedAuthPath(env));
+    const store = prepared
+      ? prepared.readStore(authPath)
       : loadAuthProfileStoreForAgent(effectiveAgentDir, effectiveOptions, env);
-    const mainAuthPath = effectiveOptions?.inheritedAuthDir
-      ? resolveAgentAuthPath(effectiveOptions.inheritedAuthDir)
-      : resolveSharedAuthPath(env);
+    const mainAuthPath =
+      prepared?.inheritedPath ??
+      (effectiveOptions?.inheritedAuthDir
+        ? resolveAgentAuthPath(effectiveOptions.inheritedAuthDir)
+        : resolveSharedAuthPath(env));
     const externalCli = resolveExternalCliOverlayOptions(effectiveOptions);
     if (!effectiveAgentDir || authPath === mainAuthPath) {
       return setRuntimeLocalProfileMetadata(
@@ -212,8 +218,8 @@ export function createAuthProfileStoreRuntimeReader({
 
     const mainStore = loadInheritedAuthProfileStore(
       () =>
-        readPreparedStore
-          ? readPreparedStore(mainAuthPath)
+        prepared
+          ? prepared.readStore(mainAuthPath)
           : loadAuthProfileStoreForAgent(effectiveOptions?.inheritedAuthDir, effectiveOptions, env),
       effectiveOptions?.inheritedAuthDir,
       env ?? getScopedAuthProfileEnv(),
@@ -325,7 +331,7 @@ export function createAuthProfileStoreRuntimeReader({
       stores.set(databasePath, {
         ok: true,
         value: inCapturedScope(() =>
-          loadAuthProfileStoreForAgent(ownerAgentDir, capturedOptions, env, rows),
+          loadAuthProfileStoreForAgent(ownerAgentDir, capturedOptions, env, { databasePath, rows }),
         ),
       });
       readOwners.set(databasePath, {
@@ -347,7 +353,13 @@ export function createAuthProfileStoreRuntimeReader({
       const sharedOwnership = needsSharedStore
         ? await resolveSharedAuthStoreOwnershipAsync(sharedContext!)
         : undefined;
-      const sharedPath = sharedOwnership ? resolveSharedAuthPath(env) : undefined;
+      // One load consumes one prepared owner. A sibling save may relocate the
+      // shared store at any await; only the next load should resolve it again.
+      const sharedPath = sharedOwnership
+        ? sharedOwnership.location === "state-db"
+          ? sharedContext!.admission.databasePath
+          : legacySharedPath
+        : undefined;
       const requestedPath = selectedAgentPath ?? sharedPath!;
       const inheritedPath = inheritedAuthDir ? resolveAgentAuthPath(inheritedAuthDir) : sharedPath!;
       const paths = [...new Set([requestedPath, ...(effectiveAgentDir ? [inheritedPath] : [])])];
@@ -396,15 +408,19 @@ export function createAuthProfileStoreRuntimeReader({
           effectiveAgentDir,
           { ...capturedOptions, profileId: undefined },
           env,
-          (databasePath) => {
-            const prepared = stores.get(databasePath);
-            if (!prepared) {
-              throw new Error("Auth profile read changed its prepared database owner");
-            }
-            if (!prepared.ok) {
-              throw prepared.error;
-            }
-            return prepared.value;
+          {
+            requestedPath,
+            inheritedPath,
+            readStore: (databasePath) => {
+              const prepared = stores.get(databasePath);
+              if (!prepared) {
+                throw new Error("Auth profile read changed its prepared database owner");
+              }
+              if (!prepared.ok) {
+                throw prepared.error;
+              }
+              return prepared.value;
+            },
           },
         );
       const store = inCapturedScope(load);

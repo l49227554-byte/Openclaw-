@@ -5,11 +5,8 @@ import { AUTH_STORE_VERSION } from "./constants.js";
 import { normalizeAuthProfileCredential } from "./credential-normalize.js";
 import { withOAuthProfileLock, withOAuthProfileLocks } from "./oauth-profile-lock.js";
 import { isOAuthRefreshFence, isSameOAuthRefreshGeneration } from "./oauth-refresh-marker.js";
-import {
-  loadPersistedAuthProfileStore,
-  loadPersistedAuthProfileStoreAtDatabasePath,
-  loadPersistedSharedAuthProfileStore,
-} from "./persisted.js";
+import { loadPersistedAuthProfileStore, loadPersistedSharedAuthProfileStore } from "./persisted.js";
+import { loadPersistedAuthProfileStoreAtDatabasePath } from "./sqlite-read.js";
 import {
   deletePersistedAuthProfileStoreRaw,
   inspectPersistedAuthProfileStateRaw,

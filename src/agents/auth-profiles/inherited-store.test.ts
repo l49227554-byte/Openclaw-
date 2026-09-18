@@ -169,3 +169,52 @@ it.each([
   fs.writeFileSync(mainPath, original);
   expect(read().profiles).toMatchObject({ ...inherited.profiles, ...local.profiles });
 });
+
+it.each(["legacy", "shared-state"] as const)(
+  "keeps snapshot-backed local credentials only for the refused legacy database (%s error)",
+  (failedOwner) => {
+    const root = tempDirs.make("openclaw-relocated-inherited-snapshot-");
+    const env = { OPENCLAW_STATE_DIR: root };
+    vi.stubEnv("OPENCLAW_STATE_DIR", root);
+    vi.stubEnv("OPENCLAW_AGENT_DIR", undefined);
+    const agentDir = path.join(root, "agents/worker/agent");
+    const legacyPath = path.join(root, "agents/main/agent/openclaw-agent.sqlite");
+    const sharedPath = path.join(root, "state/openclaw.sqlite");
+    const local: AuthProfileStore = {
+      version: 1,
+      profiles: {
+        "custom:local": { type: "api_key", provider: "custom", key: "local-fixture" },
+      },
+    };
+    noteCommittedSharedAuthStoreOwnership({ location: "legacy-main" }, env);
+    setRuntimeAuthProfileStoreSnapshot(local, agentDir);
+    recordAgentDatabaseAdmissions(
+      [
+        createAgentDatabaseInspectionRefusal({
+          agentId: "main",
+          paths: [legacyPath],
+          reason: "Synthetic inherited owner refusal",
+        }),
+      ],
+      { env, source: "startup" },
+    );
+    const error = new AuthProfileStoreUnreadableError(
+      failedOwner === "legacy" ? legacyPath : sharedPath,
+    );
+    const read = () =>
+      resolveRuntimeAuthProfileStoreFromSnapshots({
+        agentDir,
+        env,
+        loadStore: () => {
+          // The selected read fails after another process publishes relocation.
+          noteCommittedSharedAuthStoreOwnership({ location: "state-db" }, env);
+          throw error;
+        },
+      });
+    if (failedOwner === "shared-state") {
+      expect(read).toThrow(error);
+    } else {
+      expect(read()?.profiles).toEqual(local.profiles);
+    }
+  },
+);

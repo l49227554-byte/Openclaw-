@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
+import { withEnvOnlyAuthProfileStore } from "./auth-profiles/store.js";
 import { buildInlineProviderModels } from "./embedded-agent-runner/model.inline-provider.js";
 import { createPreparedConfiguredRuntimeModelLookup } from "./embedded-agent-runner/model.static-id.js";
 import { prepareModelChoice, preparePublishedModelRuntimeChoice } from "./model-runtime-choice.js";
@@ -26,10 +27,12 @@ vi.mock("./prepared-model-catalog.js", () => ({
     _params: unknown,
     read: (owner: PreparedModelRuntimeSnapshot) => T | Promise<T>,
   ) => {
-    if (!published.owner) {
+    const owner = published.owner;
+    if (!owner) {
       throw new Error("No published test model owner");
     }
-    return await read(published.owner);
+    // Account facts belong to the fixture snapshot, not an ambient auth database.
+    return await withEnvOnlyAuthProfileStore(() => read(owner));
   },
 }));
 

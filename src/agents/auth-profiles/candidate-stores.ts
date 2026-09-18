@@ -10,10 +10,8 @@ import { listOpenClawRegisteredAgentDatabases } from "../../state/openclaw-agent
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
 import { listAgentEntries, resolveAgentDir } from "../agent-scope.js";
 import { AUTH_STORE_VERSION } from "./constants.js";
-import {
-  loadPersistedAuthProfileStore,
-  loadPersistedAuthProfileStoreAtDatabasePath,
-} from "./persisted.js";
+import { loadPersistedAuthProfileStore } from "./persisted.js";
+import { loadPersistedAuthProfileStoreAtDatabasePath } from "./sqlite-read.js";
 import { resolveAuthProfileDatabasePath } from "./sqlite.js";
 import { saveAuthProfileStore } from "./store-runtime.js";
 import type { AuthProfileStore } from "./types.js";

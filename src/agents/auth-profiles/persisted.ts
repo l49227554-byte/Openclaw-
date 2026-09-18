@@ -26,15 +26,13 @@ import {
   setRuntimeExternalCliProfileIds,
 } from "./runtime-external-profile-references.js";
 import {
-  inspectAuthProfileJsonCellReadOnly,
   readPersistedAuthProfileStateRaw,
   readPersistedAuthProfileStoreRaw,
-  readPersistedSharedAuthProfileStateRaw,
-  readPersistedSharedAuthProfileStoreRaw,
+  resolveAuthProfileDatabaseTarget,
+  type AuthProfileDatabaseTarget,
   type AuthProfileDatabase,
 } from "./sqlite.js";
 import { coerceAuthProfileState, mergeAuthProfileState } from "./state.js";
-import { AuthProfileStoreUnreadableError } from "./store-unreadable-error.js";
 import type {
   AuthProfileCredential,
   AuthProfileSecretsStore,
@@ -50,6 +48,7 @@ type LegacyAuthStore = Record<string, AuthProfileCredential>;
 type LoadPersistedAuthProfileStoreOptions = {
   allowKeychainPrompt?: boolean;
   database?: AuthProfileDatabase;
+  target?: AuthProfileDatabaseTarget;
 };
 
 type CredentialRejectReason = "non_object" | "invalid_type" | "missing_provider";
@@ -849,42 +848,22 @@ export function loadPersistedAuthProfileStore(
   agentDir?: string,
   options?: LoadPersistedAuthProfileStoreOptions,
 ): AuthProfileStore | null {
+  const target = options?.database
+    ? undefined
+    : (options?.target ?? resolveAuthProfileDatabaseTarget(agentDir));
   return mergePersistedAuthProfileState(
-    readPersistedAuthProfileStoreRaw(agentDir, options?.database),
-    () => readPersistedAuthProfileStateRaw(agentDir, options?.database),
+    readPersistedAuthProfileStoreRaw(agentDir, options?.database, target),
+    () => readPersistedAuthProfileStateRaw(agentDir, options?.database, target),
   );
-}
-
-/** Read an already selected owner without rediscovering an environment or opening a writer. */
-export function loadPersistedAuthProfileStoreAtDatabasePath(
-  databasePath: string,
-  kind: "agent" | "shared-state",
-): AuthProfileStore | null {
-  const target = { path: databasePath, kind };
-  const credentials = inspectAuthProfileJsonCellReadOnly(target, "store");
-  if (credentials.status === "missing") {
-    return null;
-  }
-  if (credentials.status === "unreadable") {
-    throw new AuthProfileStoreUnreadableError(databasePath);
-  }
-  const state = inspectAuthProfileJsonCellReadOnly(target, "state");
-  const store = mergePersistedAuthProfileState(credentials.raw, () =>
-    state.status === "readable" ? state.raw : null,
-  );
-  if (!store) {
-    throw new AuthProfileStoreUnreadableError(databasePath);
-  }
-  return store;
 }
 
 /** Load the shared auth store from an explicit state root. */
 export function loadPersistedSharedAuthProfileStore(
   env: NodeJS.ProcessEnv,
 ): AuthProfileStore | null {
-  return mergePersistedAuthProfileState(readPersistedSharedAuthProfileStoreRaw(env), () =>
-    readPersistedSharedAuthProfileStateRaw(env),
-  );
+  return loadPersistedAuthProfileStore(undefined, {
+    target: resolveAuthProfileDatabaseTarget(undefined, env),
+  });
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

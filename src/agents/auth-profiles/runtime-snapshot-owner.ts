@@ -14,21 +14,30 @@ import {
   type LegacyAuthProfileSource,
 } from "./legacy-source-files.js";
 import { shouldUseMainOwnerForLocalOAuthCredential } from "./ownership.js";
-import {
-  resolveSharedAuthStoreOwnership,
-  resolveSharedAuthStorePath,
-  type AuthProfileOwnerScope,
-} from "./path-resolve.js";
-import {
-  loadPersistedAuthProfileStoreAtDatabasePath,
-  mergeAuthProfileStores,
-} from "./persisted.js";
+import { resolveSharedAuthStoreOwner, type AuthProfileOwnerScope } from "./path-resolve.js";
+import { mergeAuthProfileStores } from "./persisted.js";
 import {
   getRuntimeExternalCliProfileIds,
   setRuntimeExternalCliProfileIds,
 } from "./runtime-external-profile-references.js";
+import { loadPersistedAuthProfileStoreAtDatabasePath } from "./sqlite-read.js";
 import { resolveAuthProfileDatabasePath, type AuthProfileStoreOwner } from "./sqlite.js";
 import type { AuthProfileStore, RuntimeAuthProfileStore } from "./types.js";
+
+export function withCredentialSources(
+  store: AuthProfileStore,
+  databasePath: string,
+): RuntimeAuthProfileStore {
+  return {
+    ...store,
+    runtimeCredentialSources: Object.fromEntries(
+      Object.entries(store.profiles).map(([profileId, credential]) => [
+        profileId,
+        { databasePath, provider: credential.provider },
+      ]),
+    ),
+  };
+}
 
 export function createEmptyAuthProfileStore(): AuthProfileStore {
   return { version: AUTH_STORE_VERSION, profiles: {} };
@@ -240,8 +249,7 @@ export function captureRuntimeAuthSharedOwner(
 ): Extract<RuntimeAuthSharedOwner, { kind: "resolved" }> {
   return {
     kind: "resolved",
-    sharedDatabasePath: resolveSharedAuthStorePath(env),
-    location: resolveSharedAuthStoreOwnership(env).location,
+    ...resolveSharedAuthStoreOwner(env),
   };
 }
 

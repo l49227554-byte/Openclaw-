@@ -53,7 +53,6 @@ import {
 import {
   buildPersistedAuthProfileSecretsStore,
   loadPersistedAuthProfileStore,
-  loadPersistedAuthProfileStoreAtDatabasePath,
   loadPersistedSharedAuthProfileStore,
   mergeAuthProfileStores,
 } from "./persisted.js";
@@ -88,6 +87,7 @@ import {
   runtimeStoreInheritsMainState,
   setRuntimeLocalProfileMetadata,
   stripRuntimeExternalProfileMetadata,
+  withCredentialSources,
 } from "./runtime-snapshot-owner.js";
 import {
   clearRuntimeAuthProfileStoreSnapshotCore,
@@ -107,13 +107,18 @@ import {
   setRuntimeAuthProfileStoreSnapshotAtDatabasePath,
   type OwnedRuntimeAuthProfileStoreSnapshotEntry,
 } from "./runtime-snapshots.js";
-import { loadPersistedAuthProfileStoreFromRows } from "./sqlite-read.js";
+import {
+  loadPersistedAuthProfileStoreAtDatabasePath,
+  loadPersistedAuthProfileStoreFromRows,
+} from "./sqlite-read.js";
 import {
   deletePersistedAuthProfileStoreRaw,
+  inspectAuthProfileJsonCellReadOnly,
   inspectPersistedAuthProfileStoreRaw,
   inspectPersistedSharedAuthProfileStoreRaw,
   readPersistedAuthProfileStoreRaw,
   readPersistedAuthProfileStateRaw,
+  resolveAuthProfileDatabaseTarget,
   resolveAuthProfileDatabasePath as resolveAgentAuthPath,
   resolveAuthProfileStoreOwner,
   runAuthProfileWriteTransaction,
@@ -125,26 +130,7 @@ import {
   type PreparedAuthProfileStoreOwner,
 } from "./sqlite.js";
 import { buildPersistedAuthProfileState, loadPersistedAuthProfileState } from "./state.js";
-import type {
-  AuthProfileCredentialSource,
-  AuthProfileStore,
-  RuntimeAuthProfileStore,
-} from "./types.js";
-
-function withCredentialSources(
-  store: AuthProfileStore,
-  databasePath: string,
-): RuntimeAuthProfileStore {
-  return {
-    ...store,
-    runtimeCredentialSources: Object.fromEntries(
-      Object.entries(store.profiles).map(([profileId, credential]) => [
-        profileId,
-        { databasePath, provider: credential.provider },
-      ]),
-    ),
-  };
-}
+import type { AuthProfileCredentialSource, AuthProfileStore } from "./types.js";
 
 type SaveAuthProfileStoreOptions = {
   filterExternalAuthProfiles?: boolean;
@@ -1467,31 +1453,34 @@ export function createAuthProfileStoreRuntime(
     agentDir?: string,
     options?: LoadAuthProfileStoreOptions,
     env?: NodeJS.ProcessEnv,
-    preparedRows?: Parameters<typeof loadPersistedAuthProfileStoreFromRows>[0],
+    prepared?: {
+      databasePath: string;
+      rows: Parameters<typeof loadPersistedAuthProfileStoreFromRows>[0];
+    },
   ): AuthProfileStore {
     if (isEnvOnlyAuthProfileRuntime()) {
       return createEmptyAuthProfileStore();
     }
     const effectiveAgentDir = resolveRuntimeAuthProfileAgentDir(agentDir);
     const effectiveOptions = resolveRuntimeAuthProfileLoadOptions(options);
-    const databasePath = effectiveAgentDir
-      ? resolveAgentAuthPath(effectiveAgentDir)
-      : resolveSharedAuthPath(env);
+    const preparedRows = prepared?.rows;
+    const target =
+      prepared || effectiveOptions?.database
+        ? undefined
+        : resolveAuthProfileDatabaseTarget(effectiveAgentDir, env);
+    const databasePath = prepared?.databasePath ?? effectiveOptions?.database?.path ?? target!.path;
     const readStore = () => {
       if (preparedRows) {
         return loadPersistedAuthProfileStoreFromRows(preparedRows, databasePath);
       }
-      const store =
-        !effectiveAgentDir && env && !effectiveOptions?.database
-          ? loadPersistedSharedAuthProfileStore(env)
-          : loadPersistedAuthProfileStore(
-              effectiveAgentDir,
-              resolvePersistedLoadOptions(effectiveOptions),
-            );
+      const store = loadPersistedAuthProfileStore(effectiveAgentDir, {
+        ...resolvePersistedLoadOptions(effectiveOptions),
+        target,
+      });
       if (
         !store &&
-        (!effectiveAgentDir && env && !effectiveOptions?.database
-          ? inspectPersistedSharedAuthProfileStoreRaw(env)
+        (target
+          ? inspectAuthProfileJsonCellReadOnly(target, "store")
           : inspectPersistedAuthProfileStoreRaw(effectiveAgentDir, effectiveOptions?.database)
         ).status !== "missing"
       ) {
@@ -1504,12 +1493,13 @@ export function createAuthProfileStoreRuntime(
       candidates: resolveLegacyAuthProfileSourceCandidates({ agentDir: effectiveAgentDir, env }),
       readStore,
     });
-    if (preparedRows) {
+    if (preparedRows || target) {
       assertAuthProfileMigrationCandidates({
         databasePath,
         candidates: resolveLegacyAuthProfileSourceCandidates({ agentDir: effectiveAgentDir, env }),
         hasCredentials: () => {
-          const raw = preparedRows.store.status === "readable" ? preparedRows.store.raw : undefined;
+          const row = preparedRows?.store ?? inspectAuthProfileJsonCellReadOnly(target!, "store");
+          const raw = row.status === "readable" ? row.raw : undefined;
           return isRecord(raw) && isRecord(raw.profiles) && Object.keys(raw.profiles).length > 0;
         },
         provider: effectiveOptions?.migrationProvider,

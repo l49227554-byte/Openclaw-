@@ -21,12 +21,36 @@ import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-wo
 import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.types.js";
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { mergePersistedAuthProfileState } from "./persisted.js";
+import { inspectAuthProfileJsonCellReadOnly } from "./sqlite.js";
 import { AuthProfileStoreUnreadableError } from "./store-unreadable-error.js";
 import type {
   AuthProfileStore,
   AuthProfileRowRead,
   PersistedAuthProfileStoreInspection,
 } from "./types.js";
+
+/** Read an already selected owner without rediscovering an environment or opening a writer. */
+export function loadPersistedAuthProfileStoreAtDatabasePath(
+  databasePath: string,
+  kind: "agent" | "shared-state",
+): AuthProfileStore | null {
+  const target = { path: databasePath, kind };
+  const credentials = inspectAuthProfileJsonCellReadOnly(target, "store");
+  if (credentials.status === "missing") {
+    return null;
+  }
+  if (credentials.status === "unreadable") {
+    throw new AuthProfileStoreUnreadableError(databasePath);
+  }
+  const state = inspectAuthProfileJsonCellReadOnly(target, "state");
+  const store = mergePersistedAuthProfileState(credentials.raw, () =>
+    state.status === "readable" ? state.raw : null,
+  );
+  if (!store) {
+    throw new AuthProfileStoreUnreadableError(databasePath);
+  }
+  return store;
+}
 
 /** Decode worker-read facts with the same store/state coercion as synchronous reads. */
 export function loadPersistedAuthProfileStoreFromRows(

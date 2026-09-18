@@ -1,9 +1,10 @@
 import path from "node:path";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
 import { isSameOpenClawAgentDatabasePath } from "../../state/openclaw-agent-db-registry.js";
-import { resolveSharedAuthStoreOwnership, resolveSharedAuthStorePath } from "./path-resolve.js";
+import { resolveSharedAuthStorePath } from "./path-resolve.js";
 import { mergeAuthProfileStores } from "./persisted.js";
 import { getRuntimeAuthProfileStoreSnapshotAtDatabasePath } from "./runtime-snapshots.js";
+import { resolveSharedMainAuthAgentDir } from "./shared-main-dir.js";
 import { resolveAuthProfileDatabaseOwnerId, resolveAuthProfileDatabasePath } from "./sqlite.js";
 import { AuthProfileStoreUnreadableError } from "./store-unreadable-error.js";
 import type { AuthProfileStore } from "./types.js";
@@ -17,15 +18,14 @@ export function loadInheritedAuthProfileStore(
   try {
     return read();
   } catch (error) {
-    if (
-      !(error instanceof AuthProfileStoreUnreadableError) ||
-      (!agentDir && resolveSharedAuthStoreOwnership(env).location !== "legacy-main")
-    ) {
+    if (!(error instanceof AuthProfileStoreUnreadableError)) {
       throw error;
     }
-    const databasePath = agentDir
-      ? resolveAuthProfileDatabasePath(agentDir)
-      : resolveSharedAuthStorePath(env);
+    // Ownership may relocate after this read failed. Only a refused legacy
+    // agent path can be ignored; shared-state and unrelated errors still fail.
+    const databasePath = resolveAuthProfileDatabasePath(
+      agentDir ?? resolveSharedMainAuthAgentDir(env),
+    );
     const refusal = readAgentDatabaseAdmissionRefusal(
       resolveAuthProfileDatabaseOwnerId(agentDir ?? path.dirname(databasePath)),
       { env },

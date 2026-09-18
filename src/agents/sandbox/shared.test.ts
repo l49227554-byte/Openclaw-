@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildSandboxContainerName,
@@ -172,4 +173,34 @@ describe("resolveSandboxWorkspaceLayoutPaths", () => {
     expect(secondSession.workspaceDir).toBe(workspaceA);
     expect(firstSession.workspaceSource).toBe("agent");
   });
+
+  // An accepted follow-up is handed the isolated workspace copy the source
+  // session's container worked in. Deriving another copy would seed instruction
+  // files only, so the child must keep running in the copy the sandbox owns.
+  it.each(["agent", "session"] as const)(
+    "continues a follow-up inside the isolated %s workspace the sandbox already owns",
+    (scope) => {
+      const workspaceRoot = path.resolve("/tmp/openclaw-sandboxes");
+      const ownedWorkspace = path.join(workspaceRoot, `workspace-${"a".repeat(32)}`);
+      const layoutFor = (workspaceDir: string) =>
+        resolveSandboxWorkspaceLayoutPaths({
+          cfg: { scope, workspaceAccess: "none", workspaceRoot },
+          rawSessionKey: "agent:main:follow-up",
+          agentId: "main",
+          workspaceDir,
+        });
+
+      const configured = layoutFor(
+        path.resolve("/tmp/openclaw-customers/atica/agents/main/workspace"),
+      );
+      const handed = layoutFor(ownedWorkspace);
+      const nested = layoutFor(path.join(ownedWorkspace, "project"));
+
+      expect(configured.sandboxWorkspaceDir).toMatch(/[\\/]workspace-[a-f0-9]{32}$/);
+      expect(configured.sandboxWorkspaceDir).not.toBe(ownedWorkspace);
+      expect(handed.sandboxWorkspaceDir).toBe(ownedWorkspace);
+      expect(handed.workspaceDir).toBe(ownedWorkspace);
+      expect(nested.sandboxWorkspaceDir).toBe(ownedWorkspace);
+    },
+  );
 });

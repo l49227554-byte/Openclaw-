@@ -8,6 +8,10 @@ import {
   type SessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import {
+  isVerifiedSandboxMountRootHandoff,
+  type SandboxMountRootHandoff,
+} from "../../agents/sandbox/mount-root-handoff.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -27,6 +31,8 @@ export function prepareSessionCreateFilesystemRoot(params: {
   enforceSandboxContainment: boolean;
   /** Effective requirement from the locked creation owner before the child is persisted. */
   sandboxRequired?: boolean;
+  /** In-process marker from the sandbox cwd mapping layer; see mount-root-handoff. */
+  sandboxMountRootHandoff?: SandboxMountRootHandoff;
   sessionCwd?: string;
   sessionKey?: string;
   targetAgentId: string;
@@ -51,10 +57,22 @@ export function prepareSessionCreateFilesystemRoot(params: {
         sessionKey: params.sessionKey ?? `agent:${params.targetAgentId}:dashboard:pending`,
       });
       // Canonical paths admit workspace aliases while rejecting links that
-      // resolve outside the selected agent's workspace.
+      // resolve outside the selected agent's workspace; the workspace is only
+      // canonicalized once containment applies, so a creation that does not run
+      // in it never fails on it. Only the sandbox cwd mapping layer may hand
+      // over a root the sandbox itself mounts writable (an isolated workspace
+      // copy or a writable bind target): its marker names that root, and the
+      // sandbox layer re-derives it for this agent here, so unmarked callers
+      // keep the original containment check.
       if (
         (params.sandboxRequired || targetRuntime.sandboxed) &&
-        !isPathInside(fs.realpathSync(workspaceDir), sessionRoot)
+        !isPathInside(fs.realpathSync(workspaceDir), sessionRoot) &&
+        !isVerifiedSandboxMountRootHandoff({
+          cfg: params.cfg,
+          agentId: params.targetAgentId,
+          hostPath: sessionRoot,
+          handoff: params.sandboxMountRootHandoff,
+        })
       ) {
         return err(
           errorShape(

@@ -106,6 +106,31 @@ export function resolveSandboxAgentId(scopeKey: string): string | undefined {
   return resolveAgentIdFromSessionKey(trimmed);
 }
 
+/**
+ * The sandbox layer keeps one isolated workspace copy per scope key under its
+ * configured workspace root, named with that scope's workspace slug. A caller
+ * that hands back a directory inside one of those copies — an accepted
+ * follow-up continuing in the root the source session's container worked in, or
+ * a path under it — must keep working in the copy itself: deriving another one
+ * seeds instruction files only, so the follow-up would never see the files it
+ * was created to work on. The slug directly under the configured root is the
+ * owner's marker; every other directory is a workspace to copy.
+ */
+function resolveReusedSandboxWorkspaceDir(
+  workspaceRoot: string,
+  workspaceDir: string,
+): string | undefined {
+  const relative = path.relative(workspaceRoot, workspaceDir);
+  if (!relative || path.isAbsolute(relative)) {
+    return undefined;
+  }
+  const owner = relative.split(path.sep)[0];
+  if (!owner || owner === "..") {
+    return undefined;
+  }
+  return WORKSPACE_RUNTIME_SLUG_RE.test(owner) ? path.join(workspaceRoot, owner) : undefined;
+}
+
 /** Resolves the host-side workspace paths shared by diagnostics and runtime setup. */
 export function resolveSandboxWorkspaceLayoutPaths(params: {
   cfg: Pick<SandboxConfig, "scope" | "workspaceAccess" | "workspaceRoot">;
@@ -128,7 +153,8 @@ export function resolveSandboxWorkspaceLayoutPaths(params: {
   const sandboxWorkspaceDir =
     params.cfg.scope === "shared" && !params.isolationSubject
       ? workspaceRoot
-      : resolveSandboxWorkspaceDir(workspaceRoot, scopeKey);
+      : (resolveReusedSandboxWorkspaceDir(workspaceRoot, agentWorkspaceDir) ??
+        resolveSandboxWorkspaceDir(workspaceRoot, scopeKey));
   const workspaceDir =
     params.cfg.workspaceAccess === "rw" ? agentWorkspaceDir : sandboxWorkspaceDir;
   const materializedSkillsRoot = resolveSandboxWorkspaceDir(

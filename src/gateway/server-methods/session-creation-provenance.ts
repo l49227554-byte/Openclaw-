@@ -1,4 +1,5 @@
 import type { ProviderModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
+import type { SandboxMountRootHandoff } from "../../agents/sandbox/mount-root-handoff.js";
 import type {
   SessionCreatedActor,
   SessionCreatedVia,
@@ -12,6 +13,8 @@ export type TrustedSessionCreation = {
   actor?: SessionCreatedActor;
   /** Creator-owned isolation requirement resolved only by the trusted Gateway boundary. */
   sandbox?: "required";
+  /** Sandbox mount root the sandbox cwd mapping layer mapped this creation's cwd from. */
+  sandboxMountRootHandoff?: SandboxMountRootHandoff;
   /** Exact spawning session retained separately from the stable actor identity. */
   requesterSessionKey?: string;
   /** Immutable completion recipient for a spawn-owned visible session. */

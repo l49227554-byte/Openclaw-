@@ -288,10 +288,7 @@ export async function resolveSandboxedMediaSource(params: {
   if (isPassThroughRemoteMediaSource(raw)) {
     return raw;
   }
-  const normalizedContainerWorkdir = path.posix.normalize(
-    (params.containerWorkdir ?? SANDBOX_CONTAINER_WORKDIR).replace(/\\/g, "/"),
-  );
-  const containerWorkdir = normalizedContainerWorkdir.replace(/\/+$/, "") || "/";
+  const containerWorkdir = normalizeContainerWorkdir(params.containerWorkdir);
   let candidate = raw;
   if (/^file:/i.test(candidate)) {
     const workspaceMappedFromUrl = mapContainerWorkspaceFileUrl({
@@ -384,6 +381,13 @@ function mapContainerWorkspaceFileUrl(params: {
     sandboxRoot: params.sandboxRoot,
     containerWorkdir: params.containerWorkdir,
   });
+}
+
+function normalizeContainerWorkdir(containerWorkdir?: string): string {
+  const normalized = path.posix.normalize(
+    (containerWorkdir ?? SANDBOX_CONTAINER_WORKDIR).replace(/\\/g, "/"),
+  );
+  return normalized.replace(/\/+$/, "") || "/";
 }
 
 function mapContainerWorkspacePath(params: {

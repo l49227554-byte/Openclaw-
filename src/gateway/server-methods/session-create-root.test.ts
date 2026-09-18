@@ -140,6 +140,113 @@ describe("session create filesystem root", () => {
     }
   });
 
+  // Sandboxed sessions normally run inside the agent workspace. An isolated
+  // sandbox workspace copy and a bind target are the two host roots the sandbox
+  // mapping layer can name outside it, and only its in-process marker admits
+  // them; every other caller keeps the containment error.
+  it.each([
+    ["isolated sandbox workspace", undefined],
+    ["external bind target", "bind-checkout"],
+  ] as const)("admits a marked %s root and still refuses it unmarked", async (_name, bindRoot) => {
+    const sandboxRoot = state.path("sandboxes");
+    const target = bindRoot ? state.path(bindRoot) : path.join(sandboxRoot, "session-sandbox");
+    await fs.mkdir(target, { recursive: true });
+    const hostRoot = await fs.realpath(target);
+    cfg.agents!.defaults!.sandbox = {
+      mode: "all",
+      workspaceRoot: sandboxRoot,
+      ...(bindRoot ? { docker: { binds: [`${hostRoot}:/workspace/project`] } } : {}),
+    };
+    const request = {
+      cfg,
+      targetAgentId: "main",
+      enforceSandboxContainment: true,
+      sessionCwd: hostRoot,
+    };
+
+    expect(
+      prepareSessionCreateFilesystemRoot({
+        ...request,
+        sandboxMountRootHandoff: { kind: "sandbox-mount-root", agentId: "main", hostRoot },
+      }),
+    ).toEqual({ ok: true, value: { sessionRoot: hostRoot, sessionCwd: hostRoot } });
+
+    for (const handoff of [
+      undefined,
+      { kind: "sandbox-mount-root", agentId: "other", hostRoot },
+      { kind: "sandbox-mount-root", agentId: "main", hostRoot: state.root },
+      { kind: "sandbox-mount-root", agentId: "main", hostRoot: state.path("missing-root") },
+    ] as const) {
+      expect(
+        prepareSessionCreateFilesystemRoot({
+          ...request,
+          ...(handoff ? { sandboxMountRootHandoff: handoff } : {}),
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: "INVALID_REQUEST",
+          message: "sessions.create cwd is outside the sandboxed agent workspace",
+        },
+      });
+    }
+  });
+
+  // Only sandbox containment compares against the configured workspace, so an
+  // unsandboxed explicit cwd must not fail on a workspace it never runs in.
+  it.each([
+    ["sandbox off", "off", undefined],
+    ["non-main main session", "non-main", "agent:main:main"],
+  ] as const)(
+    "keeps an explicit cwd creatable without the configured workspace (%s)",
+    (_name, mode, sessionKey) => {
+      cfg.agents!.defaults!.sandbox = { mode };
+      cfg.agents!.entries!.main!.workspace = state.path("unavailable-workspace");
+      expect(
+        prepareSessionCreateFilesystemRoot({
+          cfg,
+          targetAgentId: "main",
+          enforceSandboxContainment: true,
+          sessionKey,
+          sessionCwd: state.path("outside"),
+        }),
+      ).toEqual({
+        ok: true,
+        value: { sessionRoot: state.path("outside"), sessionCwd: state.path("outside") },
+      });
+    },
+  );
+
+  // The admitted root becomes the child's workspace, mounted writable under
+  // `workspaceAccess: "rw"`, so a `:ro` bind stays refused even when the sandbox
+  // mapping layer names it.
+  it("refuses a read-only bind root the marker names", async () => {
+    const readonlyRoot = state.path("readonly-reference");
+    await fs.mkdir(readonlyRoot, { recursive: true });
+    const hostRoot = await fs.realpath(readonlyRoot);
+    cfg.agents!.defaults!.sandbox = {
+      mode: "all",
+      workspaceRoot: state.path("sandboxes"),
+      docker: { binds: [`${hostRoot}:/reference:ro`] },
+    };
+
+    expect(
+      prepareSessionCreateFilesystemRoot({
+        cfg,
+        targetAgentId: "main",
+        enforceSandboxContainment: true,
+        sessionCwd: hostRoot,
+        sandboxMountRootHandoff: { kind: "sandbox-mount-root", agentId: "main", hostRoot },
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "sessions.create cwd is outside the sandboxed agent workspace",
+      },
+    });
+  });
+
   it("creates an omitted workspace through its alias and leaves cwd unset", async () => {
     const missing = state.path("workspace-alias", "new-workspace");
     cfg.agents!.entries!.main!.workspace = missing;

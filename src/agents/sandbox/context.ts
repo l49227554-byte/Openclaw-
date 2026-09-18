@@ -482,7 +482,9 @@ export async function ensureSandboxWorkspaceForSession(params: {
   return {
     workspaceDir,
     ...(containerWorkdir ? { containerWorkdir } : {}),
+    agentWorkspaceDir,
     skillsWorkspaceDir,
+    ...(cfg.docker.binds ? { dockerBinds: [...cfg.docker.binds] } : {}),
     ...(skillsEligibility ? { skillsEligibility } : {}),
     ...(skillUsagePaths ? { skillUsagePaths } : {}),
     workspaceAccess: cfg.workspaceAccess,

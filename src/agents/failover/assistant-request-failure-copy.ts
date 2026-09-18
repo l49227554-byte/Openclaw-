@@ -7,7 +7,10 @@ import {
 } from "../../shared/assistant-error-format.js";
 import { classifyFailoverSignalCore } from "./classify-core.js";
 import { isContextOverflowErrorFromTables } from "./context-overflow-tables.js";
-import { isSessionTranscriptValidationErrorMessage } from "./message-patterns.js";
+import {
+  isServerErrorMessage,
+  isSessionTranscriptValidationErrorMessage,
+} from "./message-patterns.js";
 import { extractFailoverSignalDetails } from "./signal-details.js";
 import type { FailoverReason } from "./signal.js";
 
@@ -208,7 +211,11 @@ export function renderRecordedAssistantFailureCopy(message: {
   const classifiedCopy = renderAssistantRequestFailureCopy({
     code,
     status,
-    reason: classification?.reason,
+    // The legacy timeout retry bucket also includes explicit server failures.
+    reason:
+      classification?.reason === "timeout" && isServerErrorMessage(raw)
+        ? "server_error"
+        : classification?.reason,
   });
   if (status !== undefined || (classification && classification.reason !== "timeout")) {
     return classifiedCopy;

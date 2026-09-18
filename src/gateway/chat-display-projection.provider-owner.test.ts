@@ -90,6 +90,16 @@ it.each([
       "⚠️ LLM request failed (provider internal error, HTTP 503). This is usually temporary — try again shortly.",
   },
   {
+    errorMessage: "Internal server error",
+    expected:
+      "⚠️ LLM request failed (provider internal error). This is usually temporary — try again shortly.",
+  },
+  {
+    errorMessage: "Request timed out",
+    expected:
+      "⚠️ LLM request failed (request timed out). This is usually temporary — try again shortly.",
+  },
+  {
     errorMessage: '{"error":{"code":"invalid_api_key","message":"PRIVATE_CANARY"}}',
     expected:
       "⚠️ LLM request failed (authentication failed). Re-authenticate the provider and try again.",

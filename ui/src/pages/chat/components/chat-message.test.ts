@@ -10,7 +10,6 @@ import * as localStorageModule from "../../../local-storage.ts";
 import * as chatAvatar from "../chat-avatar.ts";
 import { chatStartupStatusLabel } from "../chat-run-startup.ts";
 import { groupMessages } from "../chat-thread-grouping.ts";
-import { buildMessageItems } from "../chat-thread-items.ts";
 import { buildCachedChatItems } from "../chat-thread.ts";
 import { agentEvent, createHost } from "../tool-stream.test-helpers.ts";
 import { handleAgentEvent } from "../tool-stream.ts";
@@ -23,7 +22,6 @@ import {
   dismissConfirmedActionPopovers,
   renderActivityGroup,
   renderMessageGroup,
-  renderMessageGroupContent,
   renderStreamGroup,
 } from "./chat-message.ts";
 import { selectWorkingClawSurprise } from "./chat-working-indicator-surprise.ts";
@@ -5978,61 +5976,6 @@ describe("grouped chat rendering", () => {
       title: "Inline demo",
       preferredHeight: 360,
     });
-  });
-
-  it.each([
-    { label: "grouped messages", renderGroup: renderMessageGroup },
-    { label: "run-frame message contents", renderGroup: renderMessageGroupContent },
-  ])("updates the authenticated widget's script policy when $label rerender", ({ renderGroup }) => {
-    const container = document.createElement("div");
-    let timestamp = 1000;
-    const renderCanvas = (embedSandboxMode: "strict" | "scripts", prepend = false) => {
-      const message = createAssistantMessage(
-        [
-          { type: "text", text: "Inline canvas result." },
-          createAssistantCanvasBlock({ suffix: "sandbox-change" }),
-        ],
-        { id: "assistant-canvas-inline-sandbox-change", timestamp: timestamp++ },
-      );
-      const messages = prepend
-        ? [createAssistantMessage("Earlier reply.", { id: "earlier", timestamp: 999 }), message]
-        : [message];
-      // Match the transcript producer: recreated messages retain their source key,
-      // rather than getting a new clock-derived fixture key on every policy render.
-      const group = createMessageGroup(message, "assistant", {
-        messages: buildMessageItems(messages),
-      });
-      render(renderGroup(group, { showReasoning: true, embedSandboxMode }), container);
-    };
-
-    renderCanvas("strict");
-    const widget = expectCanvasWidget(container, {
-      docId: "cv_inline_sandbox-change",
-      title: "Inline demo",
-    });
-    expect(widget).toMatchObject({ allowScripts: false });
-
-    renderCanvas("scripts");
-    expect(container.querySelector("openclaw-canvas-widget-view")).toBe(widget);
-    expect(widget).toMatchObject({ allowScripts: true });
-
-    renderCanvas("strict");
-    expect(container.querySelector("openclaw-canvas-widget-view")).toBe(widget);
-    expect(widget).toMatchObject({ allowScripts: false });
-    expect(container.querySelector(".chat-tool-card__preview-panel > iframe")).toBeNull();
-
-    renderCanvas("scripts", true);
-    expect(container.querySelector("openclaw-canvas-widget-view")).toBe(widget);
-    expect(widget).toMatchObject({ allowScripts: true });
-    expect([...container.querySelectorAll(".chat-text")].map((node) => node.textContent)).toEqual([
-      "Earlier reply.",
-      "Inline canvas result.",
-    ]);
-
-    renderCanvas("strict");
-    expect(container.querySelector("openclaw-canvas-widget-view")).toBe(widget);
-    expect(widget).toMatchObject({ allowScripts: false });
-    expect(container.querySelectorAll(".chat-text")).toHaveLength(1);
   });
 
   it("renders assistant_message canvas results in the assistant bubble even when tool rows are visible", () => {

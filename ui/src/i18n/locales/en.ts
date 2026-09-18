@@ -3224,6 +3224,9 @@ export const en: TranslationMap & {
     actionsUnavailable: "Actions are unavailable while the Gateway reconnects.",
     settingsChangesUnavailable:
       "Changes to settings are disabled while the Gateway is reconnecting.",
+    sessionMoveRefreshFailed: "The session move was saved, but refreshing the list failed: {error}",
+    sessionMoveUncertain:
+      "The session move could not be confirmed. Refresh and check its group before retrying. {error}",
     sessionOperationCompletedPreviousConnection:
       "The session operation completed on the previous connection. Check the current session list before continuing.",
     sessionOperationCompletedPreviousConnectionWithRefreshError:
@@ -4277,6 +4280,9 @@ export const en: TranslationMap & {
       disconnected: "Not connected. Try again after reconnecting.",
     },
     imageLightbox: {
+      previous: "Previous image",
+      next: "Next image",
+      position: "{current} / {total}",
       label: "Image preview: {title}",
       open: "Open image {title}",
       openOriginal: "Open in new tab",

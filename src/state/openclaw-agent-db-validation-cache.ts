@@ -182,7 +182,7 @@ export function adoptOpenClawAgentDatabaseValidation(
   return true;
 }
 
-export function isOpenClawAgentCanonicalStoreEmpty(database: { db: DatabaseSync }): boolean {
+function isOpenClawAgentCanonicalStoreEmpty(database: { db: DatabaseSync }): boolean {
   if (
     database.db.isTransaction ||
     readSqliteUserVersion(database.db) < CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION

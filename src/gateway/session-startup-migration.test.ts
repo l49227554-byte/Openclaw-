@@ -6,6 +6,7 @@ import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runDoctorSessionSqlite } from "../commands/doctor-session-sqlite.js";
 import {
   loadExactSessionEntry,
+  loadExactSessionEntryReadOnly,
   persistSessionTranscriptTurn,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
@@ -15,6 +16,7 @@ import {
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { setCanonicalSqliteSessionMainKey } from "../config/sessions/session-canonical-key.js";
+import { withCanonicalSessionValidationDeferral } from "../config/sessions/session-canonical-validation-deferral.js";
 import { sessionTranscriptIndexNeedsReconcile } from "../config/sessions/session-transcript-index.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -53,8 +55,50 @@ function makeLog() {
 }
 
 describe("runStartupSessionMigration", () => {
+  it.each([1, 2])(
+    "admits the first session after certifying %i cold empty agent databases once",
+    async (agentCount) => {
+      const stateDir = fs.realpathSync.native(tempDirs.make("openclaw-small-startup-"));
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const agentIds = ["main", "secondary"].slice(0, agentCount);
+      const cfg: OpenClawConfig = {
+        agents: {
+          ownership: "explicit",
+          entries: Object.fromEntries(agentIds.map((id) => [id, {}])),
+        },
+      };
+      for (const agentId of agentIds) {
+        openOpenClawAgentDatabase({ agentId, env });
+      }
+      const started = vi.spyOn(archiveWorker, "createSqliteTranscriptArchiveWorker");
+      try {
+        for (let boot = 0; boot < 2; boot++) {
+          await closeOpenClawAgentDatabasesAsync();
+          closeOpenClawAgentDatabasesForTest(stateDir);
+          started.mockClear();
+          const log = makeLog();
+          await runStartupSessionMigration({ cfg, env, log });
+          for (const agentId of agentIds) {
+            const read = withCanonicalSessionValidationDeferral(() =>
+              loadExactSessionEntryReadOnly({
+                agentId,
+                env,
+                sessionKey: `agent:${agentId}:first-turn`,
+              }),
+            );
+            expect(read).toEqual({ kind: "complete", value: undefined });
+          }
+          expect(started).toHaveBeenCalledTimes(boot === 0 ? agentCount : 0);
+          expect(log.warn).not.toHaveBeenCalled();
+        }
+      } finally {
+        started.mockRestore();
+      }
+    },
+  );
+
   it.each([false, true])(
-    "keeps clean fleet maintenance read-only on both boots (Gateway owner=%s)",
+    "keeps certified empty fleet maintenance read-only on both boots (Gateway owner=%s)",
     async (gatewayActive) => {
       const stateDir = tempDirs.make("openclaw-empty-fleet-startup-");
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
@@ -68,6 +112,9 @@ describe("runStartupSessionMigration", () => {
       for (const agentId of agentIds) {
         openOpenClawAgentDatabase({ agentId, env });
       }
+      await closeOpenClawAgentDatabasesAsync();
+      closeOpenClawAgentDatabasesForTest();
+      await runStartupSessionMigration({ cfg, env, log: makeLog() });
       const started = vi.spyOn(archiveWorker, "createSqliteTranscriptArchiveWorker");
       const open = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
       const lifecycle = vi

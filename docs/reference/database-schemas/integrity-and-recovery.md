@@ -24,13 +24,13 @@ after they finish. Reuse is bound to the agent and physical file identity; it do
 not hash database contents or create a persistent marker. A fresh Gateway process
 checks again, including after an unclean shutdown.
 
-Startup skips canonical-validation workers when both the session source and its
-pending-validation queue are empty and their invalidation schema is intact.
+Startup certifies each database without a canonical-validation receipt once,
+including an empty session source with an empty pending-validation queue.
 Successful canonical validation records `session_key_contract.canonical_ready`
 in the final authorized batch transaction. This nullable `TEXT` column is added
 on first certification without changing the schema version. Its receipt binds
 the agent and physical file generation, including device, inode, and birth time.
-On later boots, unchanged populated stores reuse that first proof and inspect
+On later boots, unchanged empty and populated stores reuse that first proof and inspect
 the pending queue; ordinary canonical writes still mark changed rows for
 validation. Exact invalidation triggers remain required. Copies and replaced
 files need their own first proof, even when their imported pending queue is empty.

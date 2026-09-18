@@ -370,14 +370,16 @@ export async function runReclamationWorkerPort(
                             if (request.initializeCanonicalValidation) {
                               // The parent may have revoked proof this fresh worker still sees on disk.
                               canonical.seedCanonicalSessionValidation(transactionDatabase);
+                              const hasMore =
+                                canonical.hasPendingCanonicalSessionValidation(transactionDatabase);
                               authorizeCommit();
+                              if (!hasMore) {
+                                recordOpenClawAgentCanonicalValidation(transactionDatabase);
+                              }
                               return {
                                 validatedRows: 0,
                                 certifiedRows: 0,
-                                hasMore:
-                                  canonical.hasPendingCanonicalSessionValidation(
-                                    transactionDatabase,
-                                  ),
+                                hasMore,
                                 oversizedRows: 0,
                               } satisfies CanonicalSessionValidationResult;
                             }

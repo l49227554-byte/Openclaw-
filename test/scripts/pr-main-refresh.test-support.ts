@@ -392,6 +392,10 @@ exec ${shellQuote(realGit)} "$@"
     prelude +
       `
 event({ kind: 'gh', args });
+if (args[0] === 'browse' && args[1] === '--no-browser') {
+  console.log('https://github.com/fixture/repo');
+  process.exit(0);
+}
 const repositoryLocatorRequest = JSON.stringify(args) === JSON.stringify(['api', '--hostname', 'github.com', 'repos/fixture/repo']);
 if (repositoryLocatorRequest) {
   // Locator metadata cannot satisfy the separate fresh repository-ID binding.

@@ -75,7 +75,7 @@ function makeMismatchedWrapperRepo({
   const ghStub = join(bin, "gh");
   writeFileSync(
     ghStub,
-    '#!/bin/sh\nif [ "$1" = "api" ]; then\n  printf \'{"base":{"ref":"not-main"}}\\n\'\n  exit 0\nfi\necho "Unexpected gh call: $*" >&2\nexit 99\n',
+    '#!/bin/sh\nif [ "$1 $2" = "browse --no-browser" ]; then\n  printf \'https://github.com/fixture/repo\\n\'\n  exit 0\nfi\nif [ "$1" = "api" ]; then\n  printf \'{"base":{"ref":"not-main"}}\\n\'\n  exit 0\nfi\necho "Unexpected gh call: $*" >&2\nexit 99\n',
   );
   chmodSync(ghStub, 0o755);
 
@@ -512,7 +512,10 @@ describe("scripts/pr wrappers", () => {
 
   itPosix("dispatches explicit replacement arguments through the same merge owner", () => {
     const fixture = makeMismatchedWrapperRepo();
-    writeFileSync(join(fixture.bin, "gh"), `#!/bin/sh\nprintf '{"base":{"ref":"main"}}\\n'\n`);
+    writeFileSync(
+      join(fixture.bin, "gh"),
+      `#!/bin/sh\nif [ "$1 $2" = "browse --no-browser" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
+    );
     writeFileSync(
       join(fixture.canonical, "scripts/pr-lib/merge.sh"),
       `merge_run() { printf '<%s>\\n' "$@"; }\n`,
@@ -543,7 +546,10 @@ describe("scripts/pr wrappers", () => {
     const fixture = makeMismatchedWrapperRepo();
     const caller = join(fixture.canonical, "nested");
     mkdirSync(caller);
-    writeFileSync(join(fixture.bin, "gh"), `#!/bin/sh\nprintf '{"base":{"ref":"main"}}\\n'\n`);
+    writeFileSync(
+      join(fixture.bin, "gh"),
+      `#!/bin/sh\nif [ "$1 $2" = "browse --no-browser" ]; then printf 'https://github.com/fixture/repo\\n'; else printf '{"base":{"ref":"main"}}\\n'; fi\n`,
+    );
     writeFileSync(
       join(fixture.canonical, "scripts/pr-lib/merge.sh"),
       `merge_run() { printf '<%s>\\n' "$@"; }\n`,
@@ -2197,6 +2203,7 @@ process.exit(${scenario.code});
       const protectedGh = `#!/bin/sh
 printf '%s\\n' "$*" >> "$OPENCLAW_TEST_CALLS"
 case "$1 $2" in
+  "browse --no-browser") printf 'https://github.com/fixture/repo\\n' ;;
   "api user") printf 'relay-reader\\n' ;;
   "api graphql") printf 'writer-maintainer\\n' ;;
   "pr edit") [ "$5" = writer-maintainer ] ;;
@@ -2239,6 +2246,7 @@ esac
       expect(result.stdout).toContain("@writer-maintainer assigned to PR #42");
       expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
         expect.stringContaining("api graphql -f query=query { viewer { login } }"),
+        "browse --no-browser",
         "pr edit 42 --add-assignee writer-maintainer --repo https://github.com/fixture/repo",
       ]);
       expect(readFileSync(join(dir, ".local/review-claim-user-attempt-1.log"), "utf8")).toBe(

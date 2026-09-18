@@ -129,6 +129,7 @@ function fixture() {
     `#!/bin/sh
 printf '%s\\t%s\\n' "$(git rev-parse --show-toplevel)" "$*" >> '${calls}'
 case "$1 $2" in
+  "browse --no-browser") printf '%s\\n' '${repo.url}' ;;
   "api --hostname")
     case "$4" in
       repos/fixture/repo) printf '%s\\n' '${JSON.stringify(repoAuthority)}' ;;
@@ -201,8 +202,9 @@ describePosix("native PR wrapper repository ownership", () => {
       expect(readFileSync(f.capture, "utf8")).toBe("retained capture\n");
       expect(f.git(f.caller, ["show-ref"])).toBe(callerRefs);
       expect(f.git(f.owner, ["for-each-ref", "--format=%(refname)", lockRef])).toBe("");
-      expect(f.readCalls()).toHaveLength(4);
-      expect(f.readCalls().slice(0, 2)).toEqual([
+      expect(f.readCalls()).toHaveLength(5);
+      expect(f.readCalls().slice(0, 3)).toEqual([
+        `${f.owner}\tbrowse --no-browser`,
         `${f.owner}\tapi --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0`,
         `${f.owner}\tapi --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0`,
       ]);
@@ -234,6 +236,7 @@ describePosix("native PR wrapper repository ownership", () => {
     expect(f.git(f.caller, ["rev-parse", outcomeRef])).toBe(f.intent);
     expect(readFileSync(f.capture, "utf8")).toBe("retained capture\n");
     expect(f.readCalls()).toEqual([
+      `${f.owner}\tbrowse --no-browser`,
       `${f.owner}\tapi --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0`,
       `${f.owner}\tapi --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0`,
     ]);
@@ -263,16 +266,16 @@ describePosix("native PR wrapper repository ownership", () => {
             ? "Invalid PR identity for #123: expected complete base/head OIDs and refs before reading checks."
             : "targets owner-release",
       );
-      const metadataCall = command === "review-init" ? 1 : 0;
-      expect(f.readCalls()).toHaveLength(metadataCall + 1);
-      if (command === "review-init") {
-        expect(f.readCalls()[0]).toBe(
-          `${f.owner}\tapi --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0`,
-        );
-      }
-      expect(f.readCalls()[metadataCall]).toBe(
+      expect(f.readCalls()).toEqual([
+        ...(command === "review-init"
+          ? [
+              `${f.owner}\tbrowse --no-browser`,
+              `${f.owner}\tapi --hostname github.com repos/fixture/repo -H Cache-Control: max-age=0`,
+            ]
+          : []),
+        `${f.owner}\tbrowse --no-browser`,
         `${f.owner}\tapi --hostname github.com repos/fixture/repo/pulls/123`,
-      );
+      ]);
       expect(f.git(f.owner, ["rev-parse", outcomeRef])).toBe(f.intent);
       expect(f.git(f.owner, ["for-each-ref", "--format=%(refname)", lockRef])).toBe("");
       expect(f.git(f.caller, ["for-each-ref", "--format=%(refname)", "refs/openclaw"])).toBe("");

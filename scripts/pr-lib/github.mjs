@@ -55,6 +55,23 @@ function resourceFor(args) {
   return args.includes("graphql") || args[0] === "pr" ? "graphql" : "core";
 }
 
+function quotaHostname(args, env) {
+  const hostname = option(args, "--hostname");
+  if (hostname || !["browse", "pr", "run", "workflow"].includes(args[0])) {
+    return hostname;
+  }
+  const repository = option(args, "--repo") || option(args, "-R") || env.GH_REPO || "";
+  const qualified = /^(?:https?:\/\/)?([^/]+)\/[^/]+\/[^/]+\/?$/.exec(repository);
+  if (!qualified) {
+    return undefined;
+  }
+  try {
+    return new URL(`https://${qualified[1]}`).host;
+  } catch {
+    return undefined;
+  }
+}
+
 function quotaSummary(resource, quota) {
   const number = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : "unknown");
   const reset =
@@ -95,8 +112,8 @@ export function execPrGh(args, options = {}, route = "read") {
     if (!reason) {
       throw error;
     }
-    const hostIndex = args.indexOf("--hostname");
-    const host = hostIndex >= 0 ? ["--hostname", args[hostIndex + 1]] : [];
+    const hostname = quotaHostname(args, inherited);
+    const host = hostname ? ["--hostname", hostname] : [];
     let resources;
     try {
       resources = JSON.parse(
@@ -133,22 +150,19 @@ export function execPrGhJson(args, options = {}, route = "read") {
 function repositoryLocator(explicit, route) {
   // gh browse shares PR commands' SmartBaseRepoFunc and preserves the configured
   // default and host. --no-browser only verifies it with REST HEAD and prints its URL.
-  const value =
-    explicit ||
-    process.env.GH_REPO ||
-    execPrGh(
-      ["browse", "--no-browser"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-      route,
-    ).trim();
+  const value = execPrGh(
+    ["browse", "--no-browser", ...(explicit ? ["--repo", explicit] : [])],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    route,
+  ).trim();
   const match =
     /^(?:(?:https?:\/\/|ssh:\/\/git@|git@)?([^/:]+)[:/])?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(
       value,
     );
-  if (!match) {
+  if (!match?.[1]) {
     throw new Error("Cannot resolve the GitHub repository; set GH_REPO to owner/repo.");
   }
-  return { host: match[1] || process.env.GH_HOST || "github.com", name: match[2] };
+  return { host: match[1], name: match[2] };
 }
 
 function option(args, name) {

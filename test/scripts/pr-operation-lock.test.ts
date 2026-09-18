@@ -944,6 +944,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
         "set -euo pipefail",
         'case "$*" in',
         '  "auth token") printf "token:1\\n" >> "$OPENCLAW_TEST_GH_EVENTS"; exit 1 ;;',
+        '  "browse --no-browser") printf "https://github.com/fixture/fixture\\n" ;;',
         '  "api --hostname github.com repos/fixture/fixture -H Cache-Control: max-age=0") printf \'{"full_name":"fixture/fixture","html_url":"https://github.com/fixture/fixture"}\\n\' ;;',
         '  "api graphql -f query=query { viewer { login } } --include")',
         '    if [ "$OPENCLAW_TEST_AUTH_FAILURE" = 1 ]; then',
@@ -1055,7 +1056,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
             .soft(ghEvents, output)
             .toEqual(
               command === "review-init"
-                ? ["token:1", "pull:0", "token:1", "pull:0", "token:1", "viewer:1"]
+                ? ["token:1", "token:1", "pull:0", "token:1", "pull:0", "token:1", "viewer:1"]
                 : ["token:1", "viewer:1"],
             );
           expect.soft(controller.exitCode, output).toBe(1);
@@ -1917,6 +1918,7 @@ describePosix("scripts/pr per-PR operation lock", () => {
         "set -euo pipefail",
         'case "$*" in',
         '  "auth token") exit 1 ;;',
+        '  "browse --no-browser") printf "https://github.com/fixture/repo\\n" ;;',
         '  "api graphql --hostname "*)',
         '    state=OPEN; if grep -q "^merged$" "$OPENCLAW_TEST_LIFECYCLE"; then state=MERGED; fi',
         `    jq -cn --arg state "$state" --arg head '${preparedHead}' '{data:{repository:{id:"fixture-repo",databaseId:123,url:"https://github.com/fixture/repo",nameWithOwner:"fixture/repo",ref:{target:{oid:$head}},pullRequest:{id:"fixture-pr",number:42,url:"https://github.com/fixture/repo/pull/42",state:$state,headRefOid:$head,baseRefName:"main",isDraft:false,mergeCommit:(if $state=="MERGED" then {oid:$head} else null end),autoMergeRequest:null,isInMergeQueue:false,isMergeQueueEnabled:false,mergeable:"MERGEABLE",mergeStateStatus:"CLEAN"}}}}' ;;`,

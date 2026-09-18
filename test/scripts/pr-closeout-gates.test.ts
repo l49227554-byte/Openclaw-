@@ -107,6 +107,10 @@ function runCloseout(options: {
     `#!${process.execPath}
 import { appendFileSync, readFileSync } from 'node:fs';
 const args = process.argv.slice(2);
+if (args[0] === 'browse' && args[1] === '--no-browser') {
+  console.log('https://github.com/openclaw/openclaw');
+  process.exit(0);
+}
 const endpoint = args.find(arg => arg.startsWith('repos/'));
 if (args[0] !== 'api') throw new Error('Unexpected GitHub command: ' + args.join(' '));
 const metadata = JSON.parse(readFileSync('metadata.json', 'utf8'));

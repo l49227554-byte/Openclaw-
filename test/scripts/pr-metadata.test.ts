@@ -23,9 +23,11 @@ type Fixture = {
   finalPatch?: Record<string, unknown>;
   failure?: "empty" | "exit" | "non-json" | "null" | "quota" | "forbidden";
   failureCount?: number;
-  failureTarget?: "pull" | "reread" | "files" | "graphql" | "permission";
+  failureTarget?: "pull" | "reread" | "files" | "graphql" | "permission" | "browse" | "checks";
   notify?: boolean;
   ghRepo?: string;
+  ghHost?: string;
+  configuredHost?: string;
   defaultRepoURL?: string;
   probeGit?: boolean;
   protectedGh?: boolean;
@@ -79,26 +81,43 @@ const root = __dirname;
 const fixture = JSON.parse(process.env.FAKE_GH_FIXTURE);
 fs.appendFileSync(path.join(root, "trace"), JSON.stringify(args) + "\\n");
 const out = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+const defaultHost = process.env.GH_HOST || fixture.configuredHost || "github.com";
+const qualifyRepository = (repository) => repository.startsWith("https://") ? repository
+  : "https://" + (repository.split("/").length === 3 ? repository : defaultHost + "/" + repository);
 if (args[0] === "browse" && args[1] === "--no-browser") {
+  if (fixture.failure === "quota" && fixture.failureTarget === "browse") {
+    console.error("HTTP 403: API rate limit exceeded");
+    process.exit(1);
+  }
   if (fixture.probeGit) {
     const git = require("node:child_process").execFileSync("git", ["--version"], {encoding:"utf8"});
     if (git.trim() !== "selected fixture Git") throw new Error("Wrong Git reached default repository resolver");
   }
-  console.log(fixture.defaultRepoURL || "https://github.com/base-owner/base-repo");
+  const repoFlag = args.indexOf("--repo");
+  const repository = repoFlag >= 0 ? args[repoFlag + 1]
+    : process.env.GH_REPO || fixture.defaultRepoURL || "base-owner/base-repo";
+  console.log(qualifyRepository(repository));
   process.exit(0);
 }
 if (args[0] === "pr" && args[1] === "edit") {
   const repoFlag = args.indexOf("--repo");
   const repo = repoFlag >= 0 ? args[repoFlag + 1] : args.find((arg) => arg.startsWith("--repo="))?.slice(7);
-  if (repo !== "https://github.com/base-owner/base-repo") throw new Error("Writer targeted a different repository");
+  if (!repo || qualifyRepository(repo) !== qualifyRepository("base-owner/base-repo")) throw new Error("Writer targeted a different repository");
   process.exit(0);
 }
 if (args[0] === "pr" && args[1] === "checks") {
+  if (fixture.failure === "quota" && fixture.failureTarget === "checks") {
+    console.error("HTTP 403: API rate limit exceeded");
+    process.exit(1);
+  }
   out([{name:"RATE_LIMIT",bucket:"pending",state:"PENDING"}]);
   process.exit(8);
 }
 const endpoint = args.find((arg) => arg.startsWith("repos/") || ["graphql", "rate_limit"].includes(arg));
 if (args[0] !== "api" || !endpoint) throw new Error("Only explicit REST/GraphQL endpoints are supported");
+const hostFlag = args.indexOf("--hostname");
+const apiHost = hostFlag >= 0 ? args[hostFlag + 1] : defaultHost;
+const repoURL = "https://" + apiHost + "/base-owner/base-repo";
 if (fixture.notify) fs.writeSync(3, endpoint + "\\n");
 if (endpoint === "rate_limit") {
   out({resources:{graphql:{remaining:0,limit:5000,reset:1800000000},core:{remaining:4900,limit:5000,reset:1800000300}}});
@@ -128,11 +147,11 @@ if (fixture.failure && fail && (fixture.failureCount === undefined || count <= f
   process.exit(0);
 }
 if (endpoint === "repos/base-owner/base-repo") {
-  out({full_name:"base-owner/base-repo",html_url:"https://github.com/base-owner/base-repo",node_id:"R_base"});
+  out({full_name:"base-owner/base-repo",html_url:repoURL,node_id:"R_base"});
 } else if (isPull) {
-  const record = {number:42,html_url:"https://github.com/base-owner/base-repo/pull/42",state:"open",draft:false,
+  const record = {number:42,html_url:repoURL+"/pull/42",state:"open",draft:false,
     base:{sha:"${base}",ref:"main",repo:{id:1}},
-    head:{sha:"${head}",ref:"topic",repo:{id:2,name:"fork-repo",full_name:"fork-owner/fork-repo",html_url:"https://github.com/fork-owner/fork-repo",owner:{login:"fork-owner"}}},
+    head:{sha:"${head}",ref:"topic",repo:{id:2,name:"fork-repo",full_name:"fork-owner/fork-repo",html_url:"https://"+apiHost+"/fork-owner/fork-repo",owner:{login:"fork-owner"}}},
     user:{login:"contributor"},changed_files:fixture.changedFiles === undefined ? 101 : fixture.changedFiles};
   out({...record,...(count === 1 ? fixture.initialPatch : fixture.finalPatch)});
 } else if (endpoint.includes("/files?")) {
@@ -175,6 +194,7 @@ if (endpoint === "repos/base-owner/base-repo") {
         FAKE_GH_FIXTURE: JSON.stringify(fixture),
         FAKE_GH_NOTIFY: join(dir, "notify"),
         GH_REPO: fixture.ghRepo ?? "base-owner/base-repo",
+        GH_HOST: fixture.ghHost,
         ...(fixture.probeGit ? { OPENCLAW_PR_GIT: selectedGit } : {}),
         OPENCLAW_GH_BIN: fixture.protectedGh ? selectedGh : "",
         ...(fixture.protectedGh ? { GH_TOKEN: "synthetic-writer-token" } : {}),
@@ -208,6 +228,58 @@ if (endpoint === "repos/base-owner/base-repo") {
 }
 
 describe("PR metadata through REST", () => {
+  it.each([
+    {
+      name: "qualified repo URL",
+      ghRepo: "base-owner/base-repo",
+      command:
+        "pr_gh_plain repo view --json url --repo https://github.enterprise.invalid/base-owner/base-repo",
+      failureTarget: "browse",
+      host: "github.enterprise.invalid",
+    },
+    {
+      name: "qualified GH_REPO",
+      ghRepo: "github.enterprise.invalid/base-owner/base-repo",
+      command: "pr_gh_plain repo view --json url",
+      failureTarget: "browse",
+      host: "github.enterprise.invalid",
+    },
+    {
+      name: "qualified short repo flag",
+      ghRepo: "base-owner/base-repo",
+      command:
+        "pr_gh_plain pr checks 42 --required --json name,bucket,state -R github.enterprise.invalid/base-owner/base-repo",
+      failureTarget: "checks",
+      host: "github.enterprise.invalid",
+    },
+    {
+      name: "raw API default",
+      ghRepo: "github.enterprise.invalid/base-owner/base-repo",
+      command: "pr_gh_plain api repos/base-owner/base-repo/pulls/42",
+      failureTarget: "pull",
+      host: "",
+    },
+  ] as const)(
+    "probes the failing host for $name without changing API defaults",
+    ({ ghRepo, command, failureTarget, host }) => {
+      const result = readPrMetadata(
+        {
+          ghRepo,
+          configuredHost: "github.com",
+          protectedGh: true,
+          failure: "quota",
+          failureTarget,
+        },
+        command,
+      );
+      expect(result.status, result.stderr).toBe(75);
+      expect(result.stdout).toBe("");
+      expect(result.calls.filter((args) => args.includes("rate_limit"))).toEqual([
+        ["api", ...(host ? ["--hostname", host] : []), "rate_limit"],
+      ]);
+      expect(result.delays).toEqual([]);
+    },
+  );
   it("keeps successful GitHub JSON intact when Git adapter cleanup fails", () => {
     const result = readPrMetadata(
       { probeGit: true, cleanupFailure: true },
@@ -269,6 +341,8 @@ describe("PR metadata through REST", () => {
     expect(result.calls.filter((args) => args[0] === "browse")).toEqual([
       ["browse", "--no-browser"],
       ["browse", "--no-browser"],
+      ["browse", "--no-browser"],
+      ["browse", "--no-browser"],
     ]);
     expect(result.calls).toContainEqual([
       "pr",
@@ -293,7 +367,52 @@ describe("PR metadata through REST", () => {
       );
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({ number: 42, headRefOid: head });
-      expect(result.calls.some((args) => args[0] === "browse")).toBe(false);
+      expect(result.calls).toContainEqual(
+        mode === "explicit"
+          ? ["browse", "--no-browser", "--repo", "https://github.com/base-owner/base-repo"]
+          : ["browse", "--no-browser"],
+      );
+    },
+  );
+  it.each(["GH_REPO", "--repo"])(
+    "uses the configured enterprise host for an unqualified %s with GH_HOST unset",
+    (selection) => {
+      const enterpriseHost = "github.enterprise.invalid";
+      const repoURL = `https://${enterpriseHost}/base-owner/base-repo`;
+      const explicit = selection === "--repo" ? " --repo base-owner/base-repo" : "";
+      const result = readPrMetadata(
+        {
+          ghRepo: selection === "GH_REPO" ? "base-owner/base-repo" : "",
+          configuredHost: enterpriseHost,
+          defaultRepoURL: repoURL,
+          protectedGh: true,
+        },
+        `pr_gh_plain repo view --json url${explicit}; pr_gh_plain pr edit 42 --add-assignee contributor`,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ url: repoURL });
+      expect(result.calls).toContainEqual([
+        "api",
+        "--hostname",
+        enterpriseHost,
+        "repos/base-owner/base-repo",
+        "-H",
+        "Cache-Control: max-age=0",
+      ]);
+      expect(result.calls).toContainEqual([
+        "pr",
+        "edit",
+        "42",
+        "--add-assignee",
+        "contributor",
+        "--repo",
+        repoURL,
+      ]);
+      expect(result.calls).toContainEqual(
+        selection === "--repo"
+          ? ["browse", "--no-browser", "--repo", "base-owner/base-repo"]
+          : ["browse", "--no-browser"],
+      );
     },
   );
   it.each(["forbidden", "quota"] as const)(
@@ -356,7 +475,13 @@ describe("PR metadata through REST", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.attempts).toBe(2);
-    expect(result.calls.every((args) => args[0] === "api" && !args.includes("graphql"))).toBe(true);
+    expect(
+      result.calls.every(
+        (args) =>
+          (args[0] === "api" && !args.includes("graphql")) ||
+          (args[0] === "browse" && args[1] === "--no-browser"),
+      ),
+    ).toBe(true);
     const metadata = JSON.parse(result.stdout);
     expect(metadata).toMatchObject({
       number: 42,

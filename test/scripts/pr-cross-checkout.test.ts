@@ -260,7 +260,7 @@ describePosix("native PR wrapper repository ownership", () => {
         command === "ci-dispatch"
           ? "missing remote headRefName/headRefOid metadata"
           : command === "review-init"
-            ? "no full head SHA for checks"
+            ? "Invalid PR identity for #123: expected complete base/head OIDs and refs before reading checks."
             : "targets owner-release",
       );
       const metadataCall = command === "review-init" ? 1 : 0;

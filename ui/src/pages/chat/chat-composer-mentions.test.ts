@@ -1,14 +1,12 @@
-/* @vitest-environment jsdom */
 import type { UsersMentionableResult } from "@openclaw/gateway-protocol";
 import { nothing, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import { updateHumanMentions } from "../../lib/chat/human-mentions.ts";
-import {
-  NewSessionComposerTextareaController,
-  renderNewSessionComposer,
-} from "../new-session/composer.ts";
+/* @vitest-environment jsdom */
+import { NewSessionComposerTextareaController } from "../new-session/composer-controller.ts";
+import { renderNewSessionComposer } from "../new-session/composer.ts";
 import {
   createComposerProps,
   findPrimaryButton,
@@ -408,9 +406,36 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
       draft: "@Alex ",
       mentions: [{ profileId: "profile-alex-offline", start: 0, end: 5 }],
     });
-    expect(view.container.textContent).toContain("Will notify: @Alex");
+    expect(view.container.querySelector('[role="status"]')?.textContent).toContain("Will notify");
+    expect(view.container.querySelector('[role="status"]')?.textContent).not.toContain("@Alex");
     view.key("Enter");
     expect(view.send).toHaveBeenCalledWith(view.value());
+  });
+
+  it("shows the selected full name and removes notification without changing its draft", async () => {
+    const view = composerFixture(kind);
+    view.request.mockResolvedValue({
+      users: [{ profileId: "jordan", displayName: "Jordan Rivera", online: true }],
+      truncated: false,
+    });
+    view.edit("@Jo");
+    await vi.advanceTimersByTimeAsync(150);
+    view.key("Enter");
+    const status = view.container.querySelector('[role="status"]')!;
+    expect(status.textContent).toContain("Will notify");
+    expect(status.textContent).toContain("Jordan Rivera");
+    expect(status.textContent).not.toContain("Will notify:");
+    expect(status.textContent).not.toContain("@Jordan Rivera");
+    expect(status.querySelector('[role="img"][aria-label="Jordan Rivera"]')).not.toBeNull();
+    expect(status.querySelector('[title="@Jordan Rivera"]')).not.toBeNull();
+    expect(view.value()).toEqual({
+      draft: "@Jordan Rivera ",
+      mentions: [{ profileId: "jordan", start: 0, end: 14 }],
+    });
+    status.querySelector<HTMLButtonElement>('button[aria-label="Remove mention"]')!.click();
+    view.key("Enter");
+    expect(view.send).toHaveBeenCalledWith({ draft: "@Jordan Rivera ", mentions: [] });
+    expect(view.container.textContent).not.toContain("Will notify");
   });
 
   it("keeps the remaining same-name recipient after deleting the first token", () => {
@@ -430,7 +455,7 @@ describe.each(["chat", "new-session"] as const)("%s human mentions", (kind) => {
     const view = composerFixture(kind, "@Alex", [{ profileId: "alex", start: 0, end: 5 }]);
     view.edit("@Alx", { start: 3, end: 4, inputType: "deleteContentForward", data: null });
     expect(view.value().mentions).toEqual([]);
-    expect(view.container.textContent).not.toContain("Will notify:");
+    expect(view.container.textContent).not.toContain("Will notify");
     view.edit("@Alex", { start: 0, end: 4, inputType: "insertFromPaste" });
     view.key("Enter");
     expect(view.send).toHaveBeenCalledWith({ draft: "@Alex", mentions: [] });

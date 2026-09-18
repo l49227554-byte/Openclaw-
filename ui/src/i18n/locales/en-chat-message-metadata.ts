@@ -4,6 +4,13 @@ import { en } from "./en.ts";
 const enChatMessageMetadata = {
   chat: {
     messages: {
+      sourcePreviews: {
+        label: "Sources",
+        searchSnippet: "Search snippet",
+        pageExcerpt: "Page excerpt",
+        unavailable: "No excerpt available.",
+        open: "Open source",
+      },
       copySelection: en.chat.messages.copySelection,
       viaSource: "via {source}",
       sourceKinds: { web: "Web", cli: "CLI", terminal: "TUI", app: "App", rpc: "RPC" },
@@ -21,7 +28,7 @@ const enChatMessageMetadata = {
       askInSideChat: "Ask in side chat",
       addToChat: "Add to chat",
       annotationEditor: "Comment",
-      annotationComment: "Add a comment",
+      annotationComment: "Add an optional comment…",
       saveAnnotation: "Save comment",
       deleteAnnotation: "Delete comment",
       annotationCount: "{count} comment",

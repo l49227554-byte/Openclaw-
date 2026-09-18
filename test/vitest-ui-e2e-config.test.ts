@@ -117,6 +117,7 @@ const realGatewayFiles = [
   "chat-project-media.real-gateway",
   "chat-stop-finished-run.real-gateway",
   "chat-thinking-metadata.real-gateway",
+  "chat-tts-supplement.real-gateway",
   "chat-widget-sandbox.real-gateway",
   "command-palette-catalog.real-gateway",
   "control-ui-auth-transports",
@@ -540,6 +541,13 @@ describe("Control UI E2E resource ownership", () => {
       }
       expect(result.files.filter((entry) => entry.phase === 1)).toEqual([
         {
+          file: "ui/src/e2e/chat-tts-supplement.real-gateway.e2e.test.ts",
+          project: "ui-e2e-serial-standalone",
+          phase: 1,
+          workers: 1,
+          fileParallelism: false,
+        },
+        {
           file: "ui/src/e2e/desktop-resize.real-gateway.e2e.test.ts",
           project: "ui-e2e-serial-standalone",
           phase: 1,
@@ -740,7 +748,8 @@ describe("Control UI E2E Vitest sharding", () => {
     ];
     expect(files.length).toBeGreaterThan(0);
     useTimings(committed);
-    const original = await partition(files);
+    const original = await partition(files, 12);
+    expect(original).toHaveLength(12);
     // Validate via the production loader before adding a stale but valid weight.
     const { readUiE2eFileTimings } = await import("../scripts/lib/ci-test-timings.mts");
     const timings = readUiE2eFileTimings();
@@ -754,7 +763,7 @@ describe("Control UI E2E Vitest sharding", () => {
         timings.perFileOverheadSeconds,
       ),
     );
-    expect(await partition(files.toReversed())).toEqual(original);
+    expect(await partition(files.toReversed(), 12)).toEqual(original);
     expect(original.flat().toSorted()).toEqual(files.map((file) => file.moduleId).toSorted());
     expect(new Set(original.flat()).size).toBe(files.length);
   });

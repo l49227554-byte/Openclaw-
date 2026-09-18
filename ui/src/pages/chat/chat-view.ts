@@ -30,6 +30,7 @@ import { renderPluginSurface } from "../../plugins/control-ui-view.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
 import { getChatPendingInputs, loadChatPendingInputs } from "./chat-pending-inputs.ts";
 import { chatStartupStatusLabel, type ChatRunStartupStatus } from "./chat-run-startup.ts";
+import { forwardChatWheelToTranscript } from "./chat-scroll-input.ts";
 import type { ChatState } from "./chat-state-contract.ts";
 import {
   type ChatPlacementStartupNoticeProps,
@@ -139,7 +140,7 @@ export type ChatProps = Omit<
     pullRequestsStatus?: ControlUiSessionPullRequestSnapshot["status"];
     pullRequestsExpanded?: boolean;
     onOpenSessionDiff?: () => void;
-    onExpandPullRequests?: () => void;
+    onTogglePullRequests?: () => void;
     onDismissPullRequest?: (pullRequest: ControlUiSessionPullRequest) => void;
     githubPublication?: import("../../lib/sessions/github-publication-controller.ts").GitHubPublicationView;
   };
@@ -216,7 +217,7 @@ export function renderChat(props: ChatProps) {
             ? (selection, anchorRect) => {
                 const focusComposer = () =>
                   props.transcript.scrollElement
-                    ?.closest(".card.chat")
+                    ?.closest(".chat")
                     ?.querySelector<HTMLElement>(".agent-chat__composer-combobox > textarea")
                     ?.focus({ preventScroll: true });
                 showChatAnnotationEditor({
@@ -257,7 +258,7 @@ export function renderChat(props: ChatProps) {
         // Portaled menus can outlive a render; resolve focus from the current session owner.
         onFocusComposer: () =>
           props.transcript.scrollElement
-            ?.closest(".card.chat")
+            ?.closest(".chat")
             ?.querySelector<HTMLElement>(
               "openclaw-plugin-view[data-plugin-composer], .agent-chat__composer-combobox > textarea",
             )
@@ -364,7 +365,7 @@ export function renderChat(props: ChatProps) {
 
   return html`
     <section
-      class="card chat"
+      class="chat"
       style=${styleMap(
         props.chatMessageMaxWidth
           ? {
@@ -428,17 +429,22 @@ export function renderChat(props: ChatProps) {
                   .presented=${props.presented ?? true}
                 ></openclaw-plugin-contributions>
                 ${renderTranscriptSearch(props.paneId, requestUpdate)}
-                <div class="chat-main__conversation">
+                <div
+                  class="chat-main__conversation"
+                  @wheel=${{
+                    handleEvent: (event: WheelEvent) =>
+                      forwardChatWheelToTranscript(event, props.transcript.scrollElement),
+                    passive: false,
+                  }}
+                >
                   ${historyRefreshNotice} ${historyError === nothing ? thread : historyError}
+                  ${scrollToBottomButton}
                   ${
                     pendingInputs &&
                     (pendingInputs.error ||
                       pendingInputs.page.nextBefore !== undefined ||
                       pendingInputs.before !== undefined)
-                      ? html`<div
-                          class="chat-history-error chat-history-error--inline"
-                          role="status"
-                        >
+                      ? html`<div class="chat-pending-inputs" role="status">
                           ${pendingInputs.error ? html`<span>${pendingInputs.error}</span>` : nothing}
                           ${
                             pendingInputs.page.nextBefore !== undefined
@@ -473,7 +479,6 @@ export function renderChat(props: ChatProps) {
                         </div>`
                       : nothing
                   }
-                  ${scrollToBottomButton}
                   ${
                     props.inlineApproval && props.onApprovalDecision
                       ? html`<div class="chat-inline-approval">
@@ -501,7 +506,7 @@ export function renderChat(props: ChatProps) {
                     branch: props.pullRequestsBranch,
                     status: props.pullRequestsStatus ?? "ready",
                     expanded: props.pullRequestsExpanded === true,
-                    onExpand: () => props.onExpandPullRequests?.(),
+                    onToggle: () => props.onTogglePullRequests?.(),
                     onDismiss: (pullRequest) => props.onDismissPullRequest?.(pullRequest),
                     onOpenSessionDiff: props.onOpenSessionDiff,
                     publication: props.githubPublication,

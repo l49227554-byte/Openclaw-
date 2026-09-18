@@ -27,14 +27,10 @@ export class TranscriptPrependAnchor {
     indexes: ReadonlyMap<string, number>,
     focusedRowKey: string | null,
   ): number[] {
-    const visible = extractTranscriptRange(range, indexes, focusedRowKey);
     const messageKey = this.messageKey;
     const rowKey =
       (messageKey === null ? null : this.committedMessageRows.get(messageKey)) ?? this.rowKey;
-    const anchorIndex = rowKey === null ? undefined : indexes.get(rowKey);
-    return anchorIndex === undefined || visible.includes(anchorIndex)
-      ? visible
-      : [...visible, anchorIndex].toSorted((left, right) => left - right);
+    return extractTranscriptRange(range, indexes, [focusedRowKey, rowKey]);
   }
 
   /** Whether the next projection inserts history before the committed first message. */

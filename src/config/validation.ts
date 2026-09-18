@@ -1,6 +1,7 @@
 // Owns core preparation and sync/async orchestration for config validation.
 import { listChannelIdsForOwnershipMigration } from "../plugins/channel-presence-policy.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
+import { omitDeferredPluginMigrationConfig } from "./deferred-plugin-migration-config.js";
 import { migrateLegacyContextBudgetConfig } from "./legacy.context-budget.js";
 import {
   inheritLegacyDefaultAgentId,
@@ -15,16 +16,14 @@ import { validateConfigObjectRaw } from "./validation-core.js";
 import {
   validatePreparedConfigWithPlugins,
   type ValidateConfigWithPluginsParams,
-  type ValidateConfigWithPluginsResult,
 } from "./validation-plugin-rules.js";
+import type {
+  PreparedConfigValidationPluginMetadata,
+  ValidateConfigWithPluginsResult,
+} from "./validation.types.js";
 
 export { validateConfigObject, validateConfigObjectRaw } from "./validation-core.js";
 export { collectUnsupportedSecretRefPolicyIssues } from "./validation-issues.js";
-
-export type PreparedConfigValidationPluginMetadata = {
-  manifestRegistry: PluginManifestRegistry;
-  installedPluginRecordIds: ReadonlySet<string>;
-};
 
 export type ValidateConfigWithPluginsAsyncParams = Omit<
   ValidateConfigWithPluginsParams,
@@ -103,7 +102,9 @@ function prepareConfigObjectWithPlugins(
   raw: unknown,
   params: ValidateConfigWithPluginsParams | undefined,
 ): PreparedConfigWithPlugins | { ok: false; result: ValidateConfigWithPluginsResult } {
-  const copilotConfig = removeLegacyCopilotDiscovery(raw);
+  const copilotConfig = removeLegacyCopilotDiscovery(
+    omitDeferredPluginMigrationConfig(raw, params?.deferredPluginMigrations),
+  );
   const contextBudgetConfig = migrateLegacyContextBudgetConfig(copilotConfig).config;
   const migrated = migratePersistedImplicitMainRoster(contextBudgetConfig, {
     env: params?.env,

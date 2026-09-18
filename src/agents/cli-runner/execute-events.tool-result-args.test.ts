@@ -1,16 +1,34 @@
 // Correlated CLI tool results already carry their started args; display-only
 // results must not duplicate that potentially large payload.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createCliToolSummaryTracker,
+  runCliAgentWithLifecycle,
+} from "../../auto-reply/reply/agent-runner-cli-dispatch.js";
+import type { GetReplyOptions } from "../../auto-reply/types.js";
+import { createChannelProgressDraftCompositor } from "../../channels/progress-draft-compositor.js";
 import {
   markMcpLoopbackToolCallStarted,
   updateMcpLoopbackToolCallCapture,
 } from "../../gateway/mcp-http.loopback-runtime.js";
-import { type AgentEventRuntimePayload, onAgentEvent } from "../../infra/agent-events.js";
+import {
+  type AgentEventRuntimePayload,
+  emitAgentEvent,
+  onAgentEvent,
+} from "../../infra/agent-events.js";
 import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
 import { createCliJsonlStreamingParser } from "../cli-output-stream.js";
 import { createCliEventHandlers } from "./execute-events.js";
 import { createCliToolTracking, type CliToolTracking } from "./execute-tool-tracking.js";
 import type { PreparedCliRunContext } from "./types.js";
+
+const cliDispatchState = vi.hoisted(() => ({ runCliAgentMock: vi.fn() }));
+vi.mock("../cli-runner.js", () => ({
+  runCliAgent: (...args: unknown[]) => cliDispatchState.runCliAgentMock(...args),
+}));
+afterEach(() => {
+  cliDispatchState.runCliAgentMock.mockReset();
+});
 
 function buildContext(runId: string): PreparedCliRunContext {
   const backend = {
@@ -330,5 +348,377 @@ describe("cli tool result events", () => {
     } finally {
       dispose();
     }
+  });
+});
+
+describe("CLI progress-card plan projection", () => {
+  it.each([
+    "progress_card",
+    "mcp__openclaw__progress_card",
+    "update_plan",
+    "mcp__openclaw__update_plan",
+  ])("projects normalized %s input once while preserving activity order", (name) => {
+    const runId = `plan-${name}`;
+    const context = buildContext(runId);
+    context.resultContentSourceByToolName = new Map([["progress_card", "network"]]);
+    const tracking = buildToolTracking();
+    const handlers = createCliEventHandlers({
+      context,
+      toolTracking: tracking,
+      getRunState: () => ({ failed: false, error: undefined }),
+    });
+    const events: AgentEventRuntimePayload[] = [];
+    const dispose = onAgentEvent((event) => {
+      if (event.runId === runId) {
+        events.push(event);
+      }
+    });
+    const args = {
+      plan: [
+        { step: "Inspect\u200b", status: "completed" },
+        { step: "Repair", status: "in_progress" },
+      ],
+    };
+    try {
+      handlers.emitCliToolUseStart({ toolCallId: "card", name, kind: "mcp_tool_use", args });
+      handlers.emitCliToolResult({ toolCallId: "card", name, isError: false, result: "updated" });
+      const plan = events.filter((event) => event.stream === "plan");
+      expect(plan).toHaveLength(1);
+      expect(plan[0]).toMatchObject({
+        runId,
+        data: {
+          phase: "update",
+          title: "Plan updated",
+          source: "openclaw",
+          explanation: "1/2 complete",
+          steps: [
+            { step: "Inspect", status: "completed" },
+            { step: "Repair", status: "in_progress" },
+          ],
+        },
+      });
+      expect(
+        events
+          .filter((event) => event.stream !== "plan")
+          .map((event) => [event.stream, event.data.phase]),
+      ).toEqual([
+        ["item", "start"],
+        ["tool", "start"],
+        ["tool", "result"],
+        ["item", "end"],
+      ]);
+      const result = events.find(
+        (event) => event.stream === "tool" && event.data.phase === "result",
+      );
+      expect(result?.data).toMatchObject({ name, args, result: "updated", isError: false });
+      if (name.endsWith("progress_card")) {
+        expect(result?.data.resultContentSource).toBe("network");
+      }
+      handlers.emitCliToolResult({ toolCallId: "card", name, isError: false, result: "duplicate" });
+      expect(events.filter((event) => event.stream === "plan")).toHaveLength(1);
+      expect(tracking.handleCliToolResult).toHaveBeenCalledTimes(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it.each([
+    {
+      label: "failed",
+      name: "progress_card",
+      args: { plan: [{ step: "Inspect", status: "pending" }] },
+      failed: true,
+    },
+    { label: "malformed", name: "progress_card", args: { plan: "not a plan" } },
+    {
+      label: "invalid status",
+      name: "progress_card",
+      args: { plan: [{ step: "Inspect", status: "invented" }] },
+    },
+    { label: "unrelated", name: "exec", args: { plan: [{ step: "Inspect", status: "pending" }] } },
+    {
+      label: "other MCP server",
+      name: "mcp__other__progress_card",
+      args: { plan: [{ step: "Inspect", status: "pending" }] },
+    },
+    {
+      label: "uncorrelated",
+      name: "progress_card",
+      args: { plan: [{ step: "Inspect", status: "pending" }] },
+      skipStart: true,
+    },
+    {
+      label: "side question",
+      name: "progress_card",
+      args: { plan: [{ step: "Inspect", status: "pending" }] },
+      sideQuestion: true,
+    },
+    {
+      label: "display only",
+      name: "progress_card",
+      args: { plan: [{ step: "Inspect", status: "pending" }] },
+      displayOnly: true,
+    },
+  ])(
+    "does not fabricate plan state for $label results",
+    ({ name, args, failed, skipStart, sideQuestion, displayOnly }) => {
+      const runId = "no-plan";
+      const context = buildContext(runId);
+      if (sideQuestion) {
+        context.params.executionMode = "side-question";
+      }
+      const handlers = createCliEventHandlers({
+        context,
+        toolTracking: buildToolTracking(),
+        getRunState: () => ({ failed: false, error: undefined }),
+      });
+      const events: AgentEventRuntimePayload[] = [];
+      const dispose = onAgentEvent((event) => {
+        if (event.runId === runId) {
+          events.push(event);
+        }
+      });
+      try {
+        const start = { toolCallId: "card", name, kind: "mcp_tool_use" as const, args };
+        if (!skipStart) {
+          if (displayOnly) {
+            handlers.emitCliDisplayToolUseStart(start);
+          } else {
+            handlers.emitCliToolUseStart(start);
+          }
+        }
+        const result = { toolCallId: "card", name, isError: failed === true, result: "receipt" };
+        if (displayOnly) {
+          handlers.emitCliDisplayToolResult(result);
+        } else {
+          handlers.emitCliToolResult(result);
+        }
+        expect(events.filter((event) => event.stream === "plan")).toEqual([]);
+        if (sideQuestion) {
+          expect(events).toEqual([]);
+        }
+      } finally {
+        dispose();
+      }
+    },
+  );
+});
+
+describe("CLI plan channel bridge", () => {
+  it.each([
+    { name: "progress_card", suppressed: false, clearCard: false },
+    { name: "mcp__openclaw__progress_card", suppressed: false, clearCard: false },
+    { name: "mcp__openclaw__progress_card", suppressed: true, clearCard: false },
+    { name: "progress_card", suppressed: false, clearCard: true },
+    { name: "mcp__openclaw__progress_card", suppressed: false, clearCard: true },
+    { name: "update_plan", suppressed: false, clearCard: true },
+    { name: "mcp__openclaw__update_plan", suppressed: false, clearCard: true },
+    { name: "mcp__openclaw__progress_card", suppressed: true, clearCard: true },
+  ])(
+    "bridges $name with suppression=$suppressed and clear=$clearCard without completing the run",
+    async ({ name, suppressed, clearCard }) => {
+      const runId = `progress-bridge-${name}`;
+      const render = vi.fn((_text: string, _options?: unknown) => true);
+      const deleteCurrent = vi.fn(async () => {});
+      const progress = createChannelProgressDraftCompositor({
+        entry: { streaming: { mode: "progress", progress: { label: false, toolProgress: true } } },
+        mode: "progress",
+        active: true,
+        seed: runId,
+        update: render,
+        deleteCurrent,
+      });
+      const onPlanUpdate = vi.fn(
+        async (update: Parameters<NonNullable<GetReplyOptions["onPlanUpdate"]>>[0]) => {
+          await progress.pushPlanProgress(update.steps ?? [], update);
+        },
+      );
+      const lifecycle: string[] = [];
+      const dispose = onAgentEvent((event) => {
+        if (event.runId === runId && event.stream === "lifecycle") {
+          lifecycle.push(String(event.data.phase));
+        }
+      });
+      cliDispatchState.runCliAgentMock.mockImplementationOnce(
+        async (params: PreparedCliRunContext["params"]) => {
+          const handlers = createCliEventHandlers({
+            context: { ...buildContext(runId), params },
+            toolTracking: buildToolTracking(),
+            getRunState: () => ({ failed: false, error: undefined }),
+          });
+          const parser = createCliJsonlStreamingParser({
+            providerId: "claude-cli",
+            backend: { command: "claude", output: "jsonl", jsonlDialect: "claude-stream-json" },
+            onAssistantDelta: handlers.emitCliAssistantDelta,
+            onToolUseStart: handlers.emitParsedToolUseStart,
+            onToolResult: handlers.emitParsedToolResult,
+          });
+          parser.push(
+            JSON.stringify({
+              type: "assistant",
+              message: {
+                content: [
+                  {
+                    type: "tool_use",
+                    id: "plan",
+                    name,
+                    input: {
+                      plan: [
+                        { step: "Inspect\u200b", status: "completed" },
+                        { step: "Repair", status: "completed" },
+                      ],
+                    },
+                  },
+                ],
+              },
+            }) + "\n",
+          );
+          const resultLine =
+            JSON.stringify({
+              type: "user",
+              message: {
+                content: [
+                  { type: "tool_result", tool_use_id: "plan", content: "updated", is_error: false },
+                ],
+              },
+            }) + "\n";
+          parser.push(resultLine);
+          parser.push(resultLine);
+          if (clearCard) {
+            const call = (id: string, input: Record<string, unknown>) => {
+              parser.push(
+                JSON.stringify({
+                  type: "assistant",
+                  message: { content: [{ type: "tool_use", id, name, input }] },
+                }) + "\n",
+              );
+              return (
+                JSON.stringify({
+                  type: "user",
+                  message: {
+                    content: [
+                      { type: "tool_result", tool_use_id: id, content: "updated", is_error: false },
+                    ],
+                  },
+                }) + "\n"
+              );
+            };
+            const clearResult = call("clear", {});
+            parser.push(clearResult);
+            parser.push(clearResult);
+            parser.push(
+              call("replacement", {
+                plan: [{ step: "Replacement", status: "in_progress" }],
+              }),
+            );
+            // A late duplicate clear must not retract the newer checklist.
+            parser.push(clearResult);
+          }
+          emitAgentEvent({
+            runId: "unrelated-run",
+            stream: "plan",
+            data: { steps: ["Do not deliver"] },
+          });
+          expect(lifecycle).not.toContain("end");
+          return { payloads: [{ text: "Final task answer" }], meta: { durationMs: 1 } };
+        },
+      );
+      try {
+        const result = await runCliAgentWithLifecycle({
+          runId,
+          provider: "claude-cli",
+          onPlanUpdate,
+          suppressAssistantBridge: suppressed,
+          runParams: buildContext(runId).params,
+        });
+        expect(onPlanUpdate).toHaveBeenCalledTimes(suppressed ? 0 : clearCard ? 3 : 1);
+        if (!suppressed) {
+          expect(onPlanUpdate).toHaveBeenCalledWith({
+            phase: "update",
+            title: "Plan updated",
+            explanation: "2/2 complete",
+            source: "openclaw",
+            steps: [
+              { step: "Inspect", status: "completed" },
+              { step: "Repair", status: "completed" },
+            ],
+          });
+        }
+        if (suppressed) {
+          expect(render).not.toHaveBeenCalled();
+          expect(deleteCurrent).not.toHaveBeenCalled();
+        } else {
+          expect(render).toHaveBeenCalledWith(
+            expect.stringContaining("2/2 complete"),
+            expect.objectContaining({
+              snapshot: expect.objectContaining({
+                plan: [
+                  { step: "Inspect", status: "completed" },
+                  { step: "Repair", status: "completed" },
+                ],
+              }),
+            }),
+          );
+          const rendered = render.mock.calls.at(-1)?.[0];
+          if (clearCard) {
+            expect(onPlanUpdate).toHaveBeenNthCalledWith(2, {
+              phase: "update",
+              title: "Plan updated",
+              source: "openclaw",
+              steps: [],
+            });
+            expect(onPlanUpdate).toHaveBeenNthCalledWith(
+              3,
+              expect.objectContaining({
+                steps: [{ step: "Replacement", status: "in_progress" }],
+              }),
+            );
+            expect(deleteCurrent).toHaveBeenCalledTimes(1);
+            expect(rendered).toContain("Replacement");
+            expect(rendered).not.toContain("Inspect");
+          } else {
+            expect(deleteCurrent).not.toHaveBeenCalled();
+            expect(rendered).toContain("Inspect");
+            expect(rendered).toContain("Repair");
+          }
+        }
+        expect(result.payloads).toEqual([{ text: "Final task answer" }]);
+        expect(lifecycle).toEqual(["start", "end"]);
+      } finally {
+        progress.cancel();
+        dispose();
+      }
+    },
+  );
+
+  it.each([
+    "progress_card",
+    "mcp__openclaw__progress_card",
+    "update_plan",
+    "mcp__openclaw__update_plan",
+    "mcp__other__progress_card",
+  ])("retains %s failure receipts and stored-name lookup", async (name) => {
+    const deliver = vi.fn();
+    const tracker = createCliToolSummaryTracker({
+      commandDetailsVisible: false,
+      shouldEmitToolResult: () => true,
+      shouldEmitToolOutput: () => true,
+      deliver,
+    });
+    await tracker.noteToolEvent({ name, phase: "start", args: {}, toolCallId: "failed-plan" });
+    const commandBearing = await tracker.noteToolEvent({
+      name: undefined,
+      phase: "result",
+      args: undefined,
+      toolCallId: "failed-plan",
+      isError: true,
+      result: "write failed",
+    });
+    expect(commandBearing).toBe(false);
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledWith({
+      text: expect.stringContaining("write failed"),
+      isError: true,
+    });
   });
 });

@@ -35,6 +35,7 @@ import {
   placements,
   root,
   seedActivePlacement,
+  setWorkerTurnSessionTarget,
   sessionTarget,
   setupWorkerTurnLauncherTest,
   turn,
@@ -47,6 +48,147 @@ import { resolveWorkerTurnTranscriptTarget } from "./worker-turn-transcript-targ
 describe("worker turn launcher local placement", () => {
   beforeEach(setupWorkerTurnLauncherTest);
   afterEach(cleanupWorkerTurnLauncherTest);
+
+  async function seedAutomationSessions(runSuffix: string = SESSION_ID) {
+    setRuntimeConfigSnapshot({ session: { store: sessionTarget.storePath } });
+    const sessionKey = "agent:main:cron:automation";
+    const runKey = `${sessionKey}:run:${runSuffix}`;
+    for (const key of [sessionKey, runKey]) {
+      await upsertSessionEntryCore(
+        { ...sessionTarget, sessionKey: key },
+        {
+          sessionId: SESSION_ID,
+          updatedAt: Date.now(),
+        },
+      );
+    }
+    return { sessionKey, runKey };
+  }
+
+  it.each(["run", "base", "compacted run"])(
+    "admits current automation aliases after the %s key pins placement",
+    async (firstKey) => {
+      const { sessionKey, runKey } = await seedAutomationSessions(
+        firstKey === "compacted run" ? "original-session-before-compaction" : SESSION_ID,
+      );
+      const provider = createWorkerSessionTurnPlacementProvider({
+        environments: unusedEnvironments(),
+        placements,
+      });
+      const execute = (key: string, runId: string) =>
+        provider.executeTurn(
+          { sessionId: SESSION_ID, sessionKey: key, agentId: "main", runId },
+          { ...turn(runId), sessionKey: key },
+          async () => ({ payloads: [{ text: "reply" }], meta: { durationMs: 1 } }),
+        );
+      const initialKey = firstKey === "base" ? sessionKey : runKey;
+      await execute(initialKey, "first-turn");
+      expect(placements.get(SESSION_ID)?.sessionKey).toBe(initialKey);
+      await expect(
+        execute(firstKey === "base" ? runKey : sessionKey, "next-turn"),
+      ).resolves.toMatchObject({
+        payloads: [{ text: "reply" }],
+      });
+      expect(placements.get(SESSION_ID)?.sessionKey).toBe(initialKey);
+      expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+    },
+  );
+
+  it.each([
+    "stale base",
+    "stale run",
+    "archived base",
+    "archived run",
+    "missing base",
+    "different job",
+    "different agent",
+    "ordinary key",
+  ])("rejects an automation alias with %s before execution", async (scenario) => {
+    const { sessionKey, runKey } = await seedAutomationSessions();
+    let suppliedKey = sessionKey;
+    let placedKey = runKey;
+    if (scenario === "stale base" || scenario === "stale run") {
+      await upsertSessionEntryCore(
+        { ...sessionTarget, sessionKey: scenario === "stale base" ? sessionKey : runKey },
+        {
+          sessionId: "replacement-session",
+          updatedAt: Date.now(),
+        },
+      );
+    } else if (scenario === "archived base" || scenario === "archived run") {
+      await patchSessionEntryCore(
+        { ...sessionTarget, sessionKey: scenario === "archived base" ? sessionKey : runKey },
+        (entry) => ({ ...entry, archivedAt: Date.now() }),
+      );
+    } else if (scenario === "missing base") {
+      suppliedKey = "agent:main:cron:missing";
+      placedKey = `${suppliedKey}:run:${SESSION_ID}`;
+      await upsertSessionEntryCore(
+        { ...sessionTarget, sessionKey: placedKey },
+        { sessionId: SESSION_ID, updatedAt: Date.now() },
+      );
+    } else if (scenario === "different job") {
+      suppliedKey = "agent:main:cron:other";
+    } else if (scenario === "different agent") {
+      suppliedKey = "agent:other:cron:automation";
+    } else if (scenario === "ordinary key") {
+      suppliedKey = SESSION_KEY;
+    }
+    const priorClaim = placements.claimTurn({
+      sessionId: SESSION_ID,
+      sessionKey: placedKey,
+      agentId: "main",
+      runId: "scheduled",
+      claimId: "scheduled-claim",
+      owner: { kind: "local" },
+    });
+    placements.releaseTurn(priorClaim);
+    const before = placements.get(SESSION_ID);
+    const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+    const provider = createWorkerSessionTurnPlacementProvider({
+      environments: unusedEnvironments(),
+      placements,
+    });
+    await expect(
+      provider.executeTurn(
+        { sessionId: SESSION_ID, sessionKey: suppliedKey, agentId: "main", runId: "manual" },
+        turn("manual"),
+        runLocal,
+      ),
+    ).rejects.toThrow("Worker turn session key does not match its placement");
+    expect(runLocal).not.toHaveBeenCalled();
+    expect(placements.get(SESSION_ID)).toEqual(before);
+  });
+
+  it.each(["worker-turn", "remote-exec"] as const)(
+    "keeps %s automation aliases rejected before workspace access",
+    async (mode) => {
+      const { sessionKey, runKey } = await seedAutomationSessions();
+      setWorkerTurnSessionTarget({ ...sessionTarget, sessionKey: runKey });
+      seedActivePlacement(mode);
+      const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
+      const resolveWorkspace = vi.fn(async () => ({ kind: "local" as const, path: root }));
+      const provider = createWorkerSessionTurnPlacementProvider({
+        environments: unusedEnvironments(),
+        placements,
+        resolveWorkspace,
+      });
+      await expect(
+        provider.executeTurn(
+          { sessionId: SESSION_ID, sessionKey, agentId: "main", runId: "manual" },
+          { ...turn("manual"), sessionKey },
+          runLocal,
+        ),
+      ).rejects.toThrow("Worker turn session key does not match its placement");
+      expect(resolveWorkspace).not.toHaveBeenCalled();
+      expect(runLocal).not.toHaveBeenCalled();
+      expect(placements.get(SESSION_ID)).toMatchObject({
+        state: "active",
+        sessionKey: runKey,
+        turnClaim: null,
+      });
+    },
+  );
 
   it("rejects a transcript target without a session incarnation", () => {
     expect(() =>

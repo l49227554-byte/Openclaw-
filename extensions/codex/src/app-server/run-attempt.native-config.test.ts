@@ -54,7 +54,12 @@ vi.mock("openclaw/plugin-sdk/agent-harness-runtime", async (importOriginal) => {
 setupRunAttemptTestHooks();
 
 describe("Codex native configuration", () => {
-  it.each([
+  it.each<{
+    transport: "stdio" | "proxy" | "websocket" | "unix";
+    hasAnswer: boolean;
+    nativeProvider: string;
+    configuredProvider?: string;
+  }>([
     { transport: "stdio", hasAnswer: true, nativeProvider: "openai" },
     { transport: "stdio", hasAnswer: false, nativeProvider: "openai" },
     { transport: "proxy", hasAnswer: true, nativeProvider: "openai" },
@@ -63,11 +68,19 @@ describe("Codex native configuration", () => {
     { transport: "unix", hasAnswer: true, nativeProvider: "openai" },
     { transport: "unix", hasAnswer: false, nativeProvider: "openai" },
     { transport: "unix", hasAnswer: true, nativeProvider: "copilot" },
+    { transport: "unix", hasAnswer: true, nativeProvider: "openai", configuredProvider: "copilot" },
+    { transport: "unix", hasAnswer: true, nativeProvider: "copilot", configuredProvider: "openai" },
     // Earlier releases recorded disabled search for custom native providers.
     { transport: "stdio", hasAnswer: true, nativeProvider: "copilot" },
-  ] as const)(
-    "preserves supervised native model and transport/home guards over $transport (answer: $hasAnswer, provider: $nativeProvider)",
-    async ({ transport, hasAnswer, nativeProvider }) => {
+  ])(
+    "preserves supervised native model and transport/home guards over $transport (answer: $hasAnswer, provider: $nativeProvider, configured: $configuredProvider)",
+    async ({ transport, hasAnswer, nativeProvider, configuredProvider = nativeProvider }) => {
+      const nativeSearchEnabled =
+        nativeProvider === "copilot" || configuredProvider !== nativeProvider;
+      const approvalsReviewer =
+        nativeProvider === "openai" && configuredProvider === nativeProvider
+          ? "auto_review"
+          : "user";
       const sessionFile = path.join(tempDir, "session.jsonl");
       const workspaceDir = path.join(tempDir, "workspace");
       const agentDir = path.join(tempDir, "agent");
@@ -112,7 +125,7 @@ describe("Codex native configuration", () => {
         preserveNativeModel: true,
         conversationSourceTransferComplete: true,
         dynamicToolsFingerprint: codexDynamicToolsFingerprint([]),
-        ...(nativeProvider === "copilot" && transport === "unix"
+        ...(nativeSearchEnabled && transport === "unix"
           ? {
               webSearchThreadConfigFingerprint: JSON.stringify({
                 "features.standalone_web_search": false,
@@ -130,7 +143,7 @@ describe("Codex native configuration", () => {
         ...threadStartResult("thread-existing", { cwd: workspaceDir }),
         model: "gpt-5.6-luna",
         modelProvider: nativeProvider,
-        approvalsReviewer: "auto_review",
+        approvalsReviewer,
         serviceTier: "priority",
       };
       const turnStarted = createDeferred<void>();
@@ -155,7 +168,7 @@ describe("Codex native configuration", () => {
           } else if (message.method === "configRequirements/read") {
             result = { requirements: null };
           } else if (message.method === "config/read") {
-            result = { config: { model_provider: nativeProvider }, origins: {} };
+            result = { config: { model_provider: configuredProvider }, origins: {} };
           } else if (message.method === "modelProvider/capabilities/read") {
             result = { webSearch: true };
           } else if (message.method === "thread/read") {
@@ -180,9 +193,9 @@ describe("Codex native configuration", () => {
       const start = vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
       const clientFactory = vi.fn(sharedClientModule.getLeasedSharedCodexAppServerClient);
       dynamicToolBuildState.openClawCodingToolsFactory = () =>
-        nativeProvider === "copilot" ? [createRuntimeDynamicTool("web_search")] : [];
+        nativeSearchEnabled ? [createRuntimeDynamicTool("web_search")] : [];
       // This test owns review-policy projection, not requester-scoped MCP discovery.
-      agentHarnessRuntimeMocks.forceModelToolsUnsupported = nativeProvider !== "copilot";
+      agentHarnessRuntimeMocks.forceModelToolsUnsupported = !nativeSearchEnabled;
       const params = createParams(sessionFile, workspaceDir);
       params.registerPluginRuntimeRefreshConsumer = vi.fn();
       params.agentDir = agentDir;
@@ -199,12 +212,15 @@ describe("Codex native configuration", () => {
       const priorTranscript = await readTranscriptMessagesByIdentity(params);
       const capture = vi.spyOn(settledTurnContext, "captureCodexSettledTurnFinalizationContext");
       const warn = vi.spyOn(embeddedAgentLog, "warn");
-      setCodexTestModelSupportsTools(params, nativeProvider === "copilot");
+      setCodexTestModelSupportsTools(params, nativeSearchEnabled);
       params.config = {
         ...params.config,
-        tools: { ...params.config?.tools, exec: { mode: "auto" } },
+        tools: {
+          ...params.config?.tools,
+          exec: { mode: configuredProvider === nativeProvider ? "auto" : "ask" },
+        },
       } as EmbeddedRunAttemptParams["config"];
-      if (nativeProvider === "copilot") {
+      if (nativeSearchEnabled) {
         params.config = {
           ...params.config,
           tools: { ...params.config?.tools, web: { search: { enabled: true } } },
@@ -330,23 +346,19 @@ describe("Codex native configuration", () => {
       const resumeParams = resumeRequest?.params as Record<string, unknown> | undefined;
       expect(resumeParams).not.toHaveProperty("model");
       expect(resumeParams).not.toHaveProperty("modelProvider");
-      if (nativeProvider === "copilot") {
+      if (nativeSearchEnabled) {
         expect(resumeParams?.config).toMatchObject({
           web_search: transport === "unix" ? "cached" : "disabled",
         });
         expect(requests.some(({ method }) => method === "thread/start")).toBe(false);
       }
-      expect(resumeParams?.approvalsReviewer).toBe(
-        nativeProvider === "openai" ? "auto_review" : "user",
-      );
+      expect(resumeParams?.approvalsReviewer).toBe(approvalsReviewer);
       expect(resumeParams?.serviceTier).toBe("priority");
       const turnRequest = requests.find((request) => request.method === "turn/start");
       const turnParams = turnRequest?.params as Record<string, unknown> | undefined;
       expect(turnParams).not.toHaveProperty("model");
       expect(turnParams).not.toHaveProperty("modelProvider");
-      expect(turnParams?.approvalsReviewer).toBe(
-        nativeProvider === "openai" ? "auto_review" : "user",
-      );
+      expect(turnParams?.approvalsReviewer).toBe(approvalsReviewer);
       expect(turnParams?.serviceTier).toBe("priority");
     },
   );

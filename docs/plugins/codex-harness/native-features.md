@@ -77,6 +77,8 @@ user-home stdio while the ordinary harness stays agent-scoped. Explicit
 `appServer` settings are honored by both paths. Set `homeScope: "user"`
 explicitly, as above, when the ordinary harness should also share native state.
 
+<a id="use-an-existing-local-configtoml" />
+
 ## Use an existing local config.toml
 
 Connect to the same local Codex App Server to reuse your existing
@@ -147,6 +149,45 @@ created, newly advertised provider support does not enable it in that thread.
 Open another stored or idle native session from the **Codex** sidebar and send
 a message to create a new branch with the current native search capability and
 OpenClaw tool policy.
+
+### Credentials and account ownership
+
+Connecting to the shared daemon reuses its native login; it does not import that
+login into an OpenClaw auth profile. For a ChatGPT login, both paths below use
+OAuth and Codex App Server. The difference is who owns the credentials.
+
+| Aspect                | Shared native daemon: Unix transport and user home                                                                                   | OpenClaw-managed OAuth: managed stdio and agent home                                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Login source          | The native Codex account in the selected `CODEX_HOME`. No second OpenClaw sign-in is required.                                       | The selected OpenClaw OAuth profile.                                                                                                                                               |
+| Handoff to Codex      | OpenClaw attaches without sending an OpenClaw profile to `account/login/start` or replacing the daemon's login.                      | OpenClaw sends an access token, ChatGPT account ID, and plan type through `account/login/start`. It does not send the refresh token.                                               |
+| Credential storage    | Codex keeps its configured native credential store, such as a file or keyring.                                                       | OpenClaw keeps durable credentials in its credential store. Codex holds the handed-off tokens in memory, not in `auth.json`. The agent's Codex config and threads still persist.   |
+| Token refresh         | Codex refreshes its native ChatGPT login. Attaching does not create another refresh owner in OpenClaw.                               | Codex requests fresh access tokens from OpenClaw. OpenClaw refreshes the original profile; the refresh token stays with that owner.                                                |
+| Later turns           | Turns keep using native authentication. Retaining a thread subscription does not copy or pin an OpenClaw credential.                 | A reused client keeps its original profile and refresh owner. Changing the account under a profile selects a new client rather than redirecting the old client's refresh requests. |
+| Gateway environment   | Attaching does not change the already-running daemon's environment. Its own launch environment and native configuration still apply. | Prepared managed launches clear `CODEX_API_KEY`, `OPENAI_API_KEY`, and `CODEX_ACCESS_TOKEN` so inherited values do not replace the selected handoff.                               |
+| CLI and Desktop login | The connection uses native authentication without logging that home into an OpenClaw-selected account.                               | The default `<agentDir>/codex-home` is separate from the native home; the handoff does not overwrite the CLI or Desktop login.                                                     |
+
+A stored OpenClaw profile can coexist with a native login, but it is not a
+fallback credential for a supervised native Chat. Native authentication failures
+must be resolved in the native connection; OpenClaw does not borrow its ordinary
+profile or API-key fallback to change that Chat's account.
+
+**A model-locked Chat is not an account-locked Chat.** Consumers of the same
+native daemon share its authentication boundary. Changing its login can affect
+other threads and native clients using that daemon; OpenClaw does not create a
+separate OpenAI account for each supervised Chat. Verify the intended native
+account before sending more work after an account change. Do not assume that
+signing out of an OpenClaw profile signs out native Codex, or vice versa.
+
+Use ordinary agent-scoped sessions with explicit OpenClaw account selection when
+you need separate account ownership. Agent scope alone does not mean one login
+per person: shared profiles remain shared, and OAuth refresh credentials are not
+copied between agents by default. See [Auth credential semantics](/auth-credential-semantics#agent-copy-portability)
+and [Per-person model accounts](/concepts/multi-user#per-person-model-accounts).
+
+These rules describe the Codex connection's authentication, not credentials used
+by shell subprocesses or separately configured OpenClaw tools. For those
+boundaries, refresh failure handling, and explicit credential imports, see
+[Codex auth and environment isolation](/plugins/codex-harness-reference/auth).
 
 ## Supervise Codex sessions
 

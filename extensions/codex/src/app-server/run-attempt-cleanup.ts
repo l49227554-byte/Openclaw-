@@ -1,12 +1,6 @@
 import { clearActiveEmbeddedRun } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { isIncognitoSessionKey } from "../incognito-session.js";
-import {
-  CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
-  closeCodexStartupClientBestEffort,
-  unsubscribeCodexThreadBestEffort,
-  terminateCodexBackgroundTerminals,
-} from "./attempt-client-cleanup.js";
-import { resolveCodexAppServerClientInstanceId } from "./client.js";
+import { terminateCodexBackgroundTerminals } from "./attempt-client-cleanup.js";
 import { scheduleCodexNativeHookRelayUnregister } from "./native-hook-relay.js";
 import type { CodexAttemptActiveTurn } from "./run-attempt-active-turn.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
@@ -15,7 +9,6 @@ import type { prepareCodexAttemptTurnRequest } from "./run-attempt-turn-request.
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
 import {
   isSameCodexAppServerThreadOwner,
-  retainCodexAppServerBindingSubscription,
   withExclusiveCodexAppServerThread,
 } from "./thread-ownership.js";
 
@@ -33,6 +26,8 @@ export async function cleanupCodexAttempt(
     releaseCurrentRoute,
     releaseSharedClientLeaseAndRetireOneShotClient,
     releaseSandboxExecEnvironment,
+    retainThreadSubscription,
+    releaseThreadSubscription,
     runCleanupStep,
   } = resources;
   const { connection } = prompt.context.runtime;
@@ -126,26 +121,7 @@ export async function cleanupCodexAttempt(
           params.cleanupBundleMcpOnRunEnd !== true &&
           resourceState.thread.liveThreadConfigFingerprint !== undefined &&
           !resourceState.thread.ringZeroConfigFingerprint)) &&
-      resourceState.thread.clientId === resolveCodexAppServerClientInstanceId(resourceState.client)
-        ? bindingStore.read(bindingIdentity)?.threadId === resourceState.thread.threadId &&
-          (await bindingStore.withLease(bindingIdentity, async () => {
-            // Reset/end uses this same generation lease. Never publish an old
-            // active turn after its session binding has already been retired.
-            if (bindingStore.read(bindingIdentity)?.threadId !== resourceState.thread.threadId) {
-              return false;
-            }
-            return await retainCodexAppServerBindingSubscription(
-              resourceState.client,
-              resourceState.thread.threadId,
-              {
-                release: resourceState.thread.liveThreadOwnership?.release,
-                configFingerprint: resourceState.thread.liveThreadConfigFingerprint,
-                serviceTier: connection.mutable.pluginAppServer.serviceTier,
-                ephemeralPolicy: resourceState.thread.liveThreadEphemeralPolicy,
-              },
-            );
-          }))
-        : false;
+      (await retainThreadSubscription());
     // Nonordinary incognito lifetimes retain their previous live-only ownership.
     const retainLiveThread =
       retainedOrdinaryThread ||
@@ -167,13 +143,7 @@ export async function cleanupCodexAttempt(
             ) {
               throw new Error("Codex plugin refresh lost its managed thread binding.");
             }
-            const released = await unsubscribeCodexThreadBestEffort(resourceState.client, {
-              threadId: resourceState.thread.threadId,
-              timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
-              assertCurrent: connection.assertCurrent,
-            });
-            if (!released) {
-              await closeCodexStartupClientBestEffort(resourceState.client);
+            if (!(await releaseThreadSubscription(connection.assertCurrent))) {
               throw new Error("Plugin reload could not release the previous Codex thread.");
             }
             if (
@@ -204,13 +174,7 @@ export async function cleanupCodexAttempt(
       if (!retainLiveThread) {
         // Clear first: if a newer owner won the binding, its live subscription must remain intact.
         if (bindingReleased) {
-          const released = await unsubscribeCodexThreadBestEffort(resourceState.client, {
-            threadId: resourceState.thread.threadId,
-            timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
-          });
-          if (!released) {
-            // Never reuse a client whose previous thread may still publish notifications.
-            await closeCodexStartupClientBestEffort(resourceState.client);
+          if (!(await releaseThreadSubscription())) {
             if (params.oneShotCliRun) {
               await runCleanupStep("codex-one-shot-unsubscribe", async () => {
                 throw new Error("Codex one-shot thread unsubscribe was not confirmed");
@@ -221,6 +185,13 @@ export async function cleanupCodexAttempt(
       }
     }
   } finally {
+    if (resourceState.thread.liveThreadOwnership) {
+      // A failed retention/finalization still owes settlement of its warm claim.
+      // Already-retained or released subscriptions are no-ops at the resource owner.
+      await runCleanupStep("codex-unsettled-subscription", async () => {
+        await releaseThreadSubscription();
+      });
+    }
     await runCleanupStep("codex-user-input-cancel", () =>
       userInputBridgeRef.current?.cancelPending(),
     );

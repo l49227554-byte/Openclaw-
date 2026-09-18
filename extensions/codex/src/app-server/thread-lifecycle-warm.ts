@@ -21,7 +21,6 @@ import {
   mergeCodexThreadConfigs,
   type CodexPluginThreadConfig,
 } from "./plugin-thread-config.js";
-import { CodexThreadDirectInputError } from "./protocol-validators.js";
 import type { CodexThread } from "./protocol.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import {
@@ -29,10 +28,7 @@ import {
   retainSharedCodexAppServerClientByInstanceId,
 } from "./shared-client.js";
 import { fingerprintCodexThreadConfig } from "./thread-fingerprints.js";
-import {
-  CodexAdoptedThreadActiveError,
-  CodexThreadBindingConflictError,
-} from "./thread-lifecycle-errors.js";
+import { CodexThreadBindingConflictError } from "./thread-lifecycle-errors.js";
 import type { CodexThreadLifecycleTimingTracker } from "./thread-lifecycle-timing.js";
 import type {
   CodexAppServerThreadLifecycleBinding,
@@ -40,7 +36,10 @@ import type {
   CodexThreadRequestContext,
   CodexThreadFinalConfigPatchResult,
 } from "./thread-lifecycle-types.js";
-import { retainCodexAppServerBindingSubscription } from "./thread-ownership.js";
+import {
+  isSameCodexAppServerThreadOwner,
+  retainCodexAppServerBindingSubscription,
+} from "./thread-ownership.js";
 import {
   assertAdoptedCodexThreadResumeAllowed,
   CodexIncognitoPolicyChangeError,
@@ -252,14 +251,13 @@ export async function tryReuseCodexLiveThread(
           assertWarmOwner,
         );
       } catch (error) {
-        if (
-          error instanceof CodexAdoptedThreadActiveError ||
-          error instanceof CodexThreadDirectInputError
-        ) {
-          assertWarmOwner();
-          // Passive refusal must leave the verified configuration owner available for retry.
-          preserveSubscription = true;
-        }
+        // This read-only preflight cannot change native configuration. Direct-input
+        // refusals and failed reads preserve it too, but revocation or cancellation cannot.
+        assertWarmOwner();
+        preserveSubscription = isSameCodexAppServerThreadOwner(
+          params.bindingStore.read(bindingIdentity),
+          binding,
+        );
         throw error;
       }
       assertWarmOwner();
@@ -434,6 +432,19 @@ export async function tryReuseCodexLiveThread(
     if (!ownershipTransferred) {
       let failure: { cause: unknown } | undefined;
       try {
+        if (preserveSubscription) {
+          // Recheck immediately before republishing: even a passive failure can
+          // race cancellation or replacement of the retained generation.
+          try {
+            assertWarmOwner();
+            preserveSubscription = isSameCodexAppServerThreadOwner(
+              params.bindingStore.read(bindingIdentity),
+              binding,
+            );
+          } catch {
+            preserveSubscription = false;
+          }
+        }
         if (preserveSubscription) {
           if (
             !(await retainCodexAppServerBindingSubscription(

@@ -6,6 +6,7 @@ import { Session as InspectorSession } from "node:inspector/promises";
 import { expect, it } from "vitest";
 import type { SessionsCatalogListParams } from "../../../packages/gateway-protocol/src/index.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { retainSessionListForegroundWork } from "../session-projection-work.js";
 import { createComposedCatalogFixture } from "./session-catalog.performance.test-support.js";
 
 function measureHostCpuReference(): number {
@@ -62,6 +63,7 @@ it("measures 100 composed catalog lists against real session and plugin stores",
     async (state) => {
       const counters = createCatalogIoCounters();
       let fixture: Awaited<ReturnType<typeof createComposedCatalogFixture>> | undefined;
+      let releaseForeground: (() => void) | undefined;
       try {
         counters.begin();
         fixture = await createComposedCatalogFixture(state, counters);
@@ -131,6 +133,8 @@ it("measures 100 composed catalog lists against real session and plugin stores",
           await fixture.projection.ensureMaterialized();
         } while (fixture.projection.needsMaterialization);
         const cpuReferenceP50Ms = measureHostCpuReference();
+        // Keep optional transcript backfill out of the measured foreground work.
+        releaseForeground = retainSessionListForegroundWork();
         counters.begin();
         const durations: number[] = [];
         const workPerList = [];
@@ -216,7 +220,7 @@ it("measures 100 composed catalog lists against real session and plugin stores",
         // Revalidate all three adopted bindings without adding work to the resident list path.
         for (const work of workPerList) {
           expect(work).toEqual({
-            sqliteReadCalls: 20,
+            sqliteReadCalls: 18,
             bindingAuthorityReads: 3,
             pluginStateWorkerOperations: 0,
           });
@@ -227,6 +231,7 @@ it("measures 100 composed catalog lists against real session and plugin stores",
         // composition CPU growth leaves exact SQL budgets green.
         expect(durations[49]).toBeLessThan(cpuReferenceP50Ms * 20);
       } finally {
+        releaseForeground?.();
         try {
           await fixture?.close();
         } finally {

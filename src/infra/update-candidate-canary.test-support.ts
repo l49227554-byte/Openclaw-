@@ -1,10 +1,43 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { onTestFinished, vi } from "vitest";
+import { expect, it, onTestFinished, vi } from "vitest";
 import { createUpdateProgress } from "../cli/update-cli/progress.js";
 import { defaultRuntime } from "../runtime.js";
+import * as diskSpace from "./disk-space.js";
+import { validateUpdateCandidateCanary } from "./update-candidate-canary.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
+
+export function stubCanaryDiskSpace(availableBytes: number, totalBytes: number) {
+  return vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
+    targetPath,
+    checkedPath: targetPath,
+    availableBytes,
+    totalBytes,
+  }));
+}
+
+export async function writeCanaryRuntime(root: string) {
+  await fs.mkdir(path.join(root, "dist", "infra"), { recursive: true });
+  await fs.writeFile(path.join(root, "dist", "index.js"), "");
+  await fs.writeFile(path.join(root, "dist", "infra", "update-migrated-finalize.worker.js"), "");
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "2026.9.1" }));
+}
+
+export function renderCanarySteps(steps: UpdateStepResult[]) {
+  const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+  const presentation = createUpdateProgress(true);
+  onTestFinished(() => {
+    presentation.dispose();
+    log.mockRestore();
+  });
+  for (const [index, step] of steps.entries()) {
+    presentation.progress.onStepComplete?.({ ...step, index, total: steps.length });
+  }
+  return log.mock.calls.flat().join("\n");
+}
 
 export class FakeChild extends EventEmitter {
   pid: number;
@@ -84,15 +117,42 @@ export function stubHealthyGateway() {
   );
 }
 
-export function renderSteps(steps: UpdateStepResult[]) {
-  const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
-  const presentation = createUpdateProgress(true);
-  onTestFinished(() => {
-    presentation.dispose();
-    log.mockRestore();
-  });
-  for (const [index, step] of steps.entries()) {
-    presentation.progress.onStepComplete?.({ ...step, index, total: steps.length });
-  }
-  return log.mock.calls.flat().join("\n");
+export function registerCanaryRuntimeCapabilityTests(params: {
+  options: () => Parameters<typeof validateUpdateCandidateCanary>[0];
+  setRuntimeContract: (contract: unknown) => void;
+}) {
+  it.each([undefined, "unknown-owned-v2"])(
+    "keeps unsupported checkpoint capability out of admission (%s)",
+    async (candidateMutation) => {
+      params.setRuntimeContract({
+        state: 2,
+        agent: 3,
+        executorDelegation: "pid-start-v1",
+        candidateMutation,
+      });
+      stubHealthyGateway();
+      const result = await validateUpdateCandidateCanary(params.options());
+      expect(result.status).toBe("ok");
+      expect(result.candidateSchemaVersions).toEqual({ state: 2, agent: 3 });
+      expect(result).not.toHaveProperty("checkpointContinuation");
+    },
+  );
+  it.each([undefined, false, "true", true])(
+    "reports observed shared-install finalization support (%s)",
+    async (profileContexts) => {
+      params.setRuntimeContract({
+        state: 2,
+        agent: 3,
+        profileContexts,
+        gatewayRestartCompletion: profileContexts,
+      });
+      stubHealthyGateway();
+      const result = await validateUpdateCandidateCanary(params.options());
+      expect(result).toMatchObject({
+        status: "ok",
+        profileContexts: profileContexts === true,
+        gatewayRestartCompletion: profileContexts === true,
+      });
+    },
+  );
 }

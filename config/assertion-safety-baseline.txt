@@ -2570,7 +2570,6 @@ src/daemon/launchd-install.ts	6
 src/daemon/launchd-lifecycle.ts	4
 src/daemon/launchd-service-files.ts	1
 src/daemon/launchd-stop.ts	2
-src/daemon/launchd-system.ts	2
 src/daemon/schtasks-control.ts	5
 src/daemon/schtasks-install.ts	2
 src/daemon/schtasks-process.ts	2
@@ -3005,7 +3004,6 @@ src/infra/unhandled-rejections.ts	6
 src/infra/update-check-package-target.ts	2
 src/infra/update-global.ts	3
 src/infra/update-package-manager.ts	1
-src/infra/update-runner-install-surface.ts	1
 src/infra/voicewake-routing.ts	4
 src/infra/warning-filter.ts	4
 src/infra/windows-gateway-firewall-diagnostics.ts	3

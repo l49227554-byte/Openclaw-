@@ -16,10 +16,8 @@ import { readUpdateConfigSnapshot } from "./update-command-config-snapshot.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import { UpdateCommandFailure } from "./update-command-result.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
-import {
-  maybeRestartService,
-  maybeStopManagedServiceBeforeMutableUpdate,
-} from "./update-command-service.js";
+import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
+import { maybeRestartService } from "./update-command-service.js";
 
 export function registerGenerationRecoveryTests(
   fixture: () => {
@@ -189,22 +187,26 @@ export function registerGenerationRecoveryTests(
         mutationStarted: true,
         result,
         root,
-        configSnapshot,
-        activationConfig,
+        profiles: [
+          {
+            configSnapshot,
+            activationConfig,
+            requestedChannel: null,
+            storedChannel: "stable",
+            preManagedServiceStop: before,
+            preUpdatePluginInstallRecords: {},
+            schemaVersions: schemas,
+            previousVerified: true,
+          },
+        ],
         installKindChanged: false,
-        requestedChannel: null,
-        storedChannel: "stable",
         channel: "stable",
         downgradeRisk: false,
         shouldRestart: true,
         opts: { json: true, run },
-        preManagedServiceStop: before,
         controlPlaneUpdateSentinelMeta: null,
-        preUpdatePluginInstallRecords: {},
         startedAt: Date.now(),
         updateStepTimeoutMs: 1000,
-        schemaVersions: schemas,
-        previousVerified: true,
         packageTransaction: {
           backupRoot: path.join(root, "backup"),
           rollback: async () => {

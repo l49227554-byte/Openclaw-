@@ -12,7 +12,10 @@ import * as gatewayLock from "../infra/gateway-lock.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "../infra/sqlite-coordinator.js";
 import * as sqliteSnapshotSource from "../infra/sqlite-snapshot-source.js";
-import { acquireGatewayLifecycleCoordinator } from "../infra/state-database-coordinator.js";
+import {
+  acquireGatewayLifecycleCoordinator,
+  acquireStateDatabaseCoordinator,
+} from "../infra/state-database-coordinator.js";
 import * as updateRunDriver from "../infra/update-run-driver.js";
 import { readUpdateRunDriver } from "../infra/update-run-driver.js";
 import {
@@ -108,7 +111,8 @@ type StoppedUnitState =
   | "competing-during-inspection"
   | "lifecycle-contended"
   | "gateway-lifecycle-contended"
-  | "legacy-gateway-lifecycle-contended";
+  | "legacy-gateway-lifecycle-contended"
+  | "legacy-gateway-state-lifecycle-contended";
 type Continuation =
   | "own"
   | "own-child"
@@ -383,7 +387,10 @@ async function runDoctorFinishForStoppedUnit(
       let otherOwner: ReturnType<typeof tryAcquireExclusiveSqliteCoordinator> | undefined;
       let releaseDuringInspection: (() => Promise<void>) | undefined;
       const legacyGatewayPid = process.pid + 100_000;
-      if (scenario === "legacy-gateway-lifecycle-contended") {
+      const legacyGateway =
+        scenario === "legacy-gateway-lifecycle-contended" ||
+        scenario === "legacy-gateway-state-lifecycle-contended";
+      if (legacyGateway) {
         vi.spyOn(gatewayLock, "readActiveGatewayLockIdentity").mockResolvedValue({
           pid: legacyGatewayPid,
           createdAt: new Date().toISOString(),
@@ -443,9 +450,7 @@ async function runDoctorFinishForStoppedUnit(
             if (running) {
               return {
                 status: "running",
-                ...(scenario === "legacy-gateway-lifecycle-contended"
-                  ? { pid: legacyGatewayPid }
-                  : {}),
+                ...(legacyGateway ? { pid: legacyGatewayPid } : {}),
                 systemd: { managerUid: 2001 },
               };
             }
@@ -507,14 +512,19 @@ async function runDoctorFinishForStoppedUnit(
       const logs: string[] = [];
       const databasePath = path.join(home, ".openclaw", "state", "openclaw.sqlite");
       const coordinator =
-        scenario === "lifecycle-contended" ||
-        scenario === "gateway-lifecycle-contended" ||
-        scenario === "legacy-gateway-lifecycle-contended"
-          ? acquireGatewayLifecycleCoordinator({
+        scenario === "legacy-gateway-state-lifecycle-contended"
+          ? acquireStateDatabaseCoordinator({
               databasePath,
               runtimeDirectory: mocks.coordinatorRuntimeDir,
             })
-          : undefined;
+          : scenario === "lifecycle-contended" ||
+              scenario === "gateway-lifecycle-contended" ||
+              scenario === "legacy-gateway-lifecycle-contended"
+            ? acquireGatewayLifecycleCoordinator({
+                databasePath,
+                runtimeDirectory: mocks.coordinatorRuntimeDir,
+              })
+            : undefined;
       coordinator?.release();
       otherOwner = coordinator
         ? tryAcquireExclusiveSqliteCoordinator(coordinator.path, { busyTimeoutMs: 0 })
@@ -685,6 +695,13 @@ it("refuses a foreign lifecycle holder before stopping the service", async () =>
   await expect(runDoctorFinishForStoppedUnit("lifecycle-contended")).rejects.toThrow(
     "another OpenClaw process owns gateway-lifecycle",
   );
+  expect(mocks.stops).toBe(0);
+});
+
+it("refuses state lifecycle contention even when a legacy Gateway process is verified", async () => {
+  await expect(
+    runDoctorFinishForStoppedUnit("legacy-gateway-state-lifecycle-contended", undefined, "exact"),
+  ).rejects.toThrow("another OpenClaw process owns state-lifecycle");
   expect(mocks.stops).toBe(0);
 });
 

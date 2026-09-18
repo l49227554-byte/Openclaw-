@@ -31,7 +31,10 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { createUpdateProgress } from "./progress.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
-import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
+import type {
+  LegacyMigratedUpdateFinalizationInput,
+  MigratedUpdateFinalizationInput,
+} from "./update-command-migrated-types.js";
 import {
   continueMigratedUpdateInFreshProcess,
   inspectActivatedUpdateState,
@@ -55,6 +58,7 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
 });
@@ -141,17 +145,28 @@ it.each([
 );
 
 it.each([
-  { pending: true, status: "skipped" },
-  { pending: false, status: "error" },
-  { pending: true, status: "error" },
+  { pending: true, status: "skipped", missingFirstRecovery: false },
+  { pending: false, status: "error", missingFirstRecovery: false },
+  { pending: true, status: "error", missingFirstRecovery: false },
+  { pending: true, status: "error", missingFirstRecovery: true },
+  { pending: false, status: "error", missingFirstRecovery: false, envBindings: true },
 ] as const)(
-  "retains the backup across migrated finalization (readiness pending=$pending, status=$status)",
-  async ({ pending, status }) => {
+  "retains the backup across migrated finalization (readiness pending=$pending, status=$status, missing first recovery=$missingFirstRecovery, env bindings=$envBindings)",
+  async ({ pending, status, missingFirstRecovery, envBindings }) => {
     const exitCode = status === "skipped" ? 0 : 1;
     const reason = status === "skipped" ? "gateway-readiness-unverified" : "doctor-failed";
     const base = dirs.make("migrated-readiness-pending-");
     const { transaction, packageRoot } = await createRetainedPackageSwap(base);
-    const env = { OPENCLAW_STATE_DIR: path.join(base, "state") };
+    const env = {
+      OPENCLAW_STATE_DIR: path.join(base, "state"),
+      ...(envBindings ? { UPDATE_TEST_COMMON_AUTH: "stale-common-ref" } : {}),
+    };
+    const effectiveEnv = { UPDATE_TEST_ORIGIN_AUTH: "native-file-ref" };
+    const originEnv = envBindings ? { ...env, ...effectiveEnv } : env;
+    if (envBindings) {
+      vi.stubEnv("UPDATE_TEST_COMMON_AUTH", "fresh-common-ref");
+      vi.stubEnv("UPDATE_TEST_ORIGIN_AUTH", undefined);
+    }
     const run = {
       runId: createUpdateRun({ trigger: "cli" }, { env }).runId,
       env,
@@ -164,11 +179,41 @@ it.each([
     vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
     // Keep the real parent and package owner; model only the completed candidate's JSON reply.
     vi.spyOn(childCommands, "runUtf8CommandWithTimeout").mockImplementation(
-      async (_argv, options) => {
+      async (argv, options) => {
+        if (argv.at(-1) === "--check") {
+          return {
+            stdout: JSON.stringify({ profileContexts: true }),
+            stderr: "",
+            code: 0,
+            signal: null,
+            killed: false,
+            termination: "exit",
+            cleanup: "normal",
+          };
+        }
         if (typeof options === "number" || typeof options.input !== "string") {
           throw new Error("Expected serialized finalization input");
         }
-        const input: MigratedUpdateFinalizationInput = JSON.parse(options.input);
+        const input: MigratedUpdateFinalizationInput | LegacyMigratedUpdateFinalizationInput =
+          JSON.parse(options.input);
+        if (envBindings) {
+          expect(options.env).toMatchObject({
+            ...effectiveEnv,
+            OPENCLAW_STATE_DIR: env.OPENCLAW_STATE_DIR,
+            UPDATE_TEST_COMMON_AUTH: "fresh-common-ref",
+          });
+          expect(input.commonRuntimeEnv).toMatchObject({
+            OPENCLAW_STATE_DIR: env.OPENCLAW_STATE_DIR,
+            UPDATE_TEST_COMMON_AUTH: "fresh-common-ref",
+          });
+          expect(input.commonRuntimeEnv).not.toHaveProperty("UPDATE_TEST_ORIGIN_AUTH");
+          expect(input.params.opts.run?.env).toEqual(env);
+          const stopped =
+            "profiles" in input.params
+              ? input.params.profiles[0]?.preManagedServiceStop
+              : input.params.preManagedServiceStop;
+          expect(stopped).not.toHaveProperty("serviceEffectiveEnv");
+        }
         const result = {
           ...input.params.result,
           status,
@@ -177,7 +222,9 @@ it.each([
           steps: pending
             ? [
                 {
-                  name: "gateway verification",
+                  name: missingFirstRecovery
+                    ? "profile 2: gateway verification"
+                    : "gateway verification",
                   command: "gateway verification",
                   cwd: packageRoot,
                   durationMs: 90_000,
@@ -219,24 +266,42 @@ it.each([
         result: { status: "ok", mode: "npm", root: packageRoot, steps: [], durationMs: 1 },
         root: packageRoot,
         installKindChanged: false,
-        configSnapshot,
-        requestedChannel: null,
-        storedChannel: "stable",
         channel: "stable",
         downgradeRisk: false,
         shouldRestart: true,
         opts: { json: true, run },
-        preManagedServiceStop: {
-          stopped: true,
-          inspected: true,
-          runtimeInspected: true,
-          running: true,
-          serviceEnv: env,
-          windowsTaskAutoStartRecovery: windowsRecovery,
-        },
+        profiles: [
+          ...(missingFirstRecovery
+            ? [
+                {
+                  configSnapshot,
+                  requestedChannel: null,
+                  storedChannel: "stable" as const,
+                  preUpdatePluginInstallRecords: {},
+                },
+              ]
+            : []),
+          {
+            configSnapshot,
+            requestedChannel: null,
+            storedChannel: "stable",
+            preUpdatePluginInstallRecords: {},
+            ...(envBindings ? { ownedManagedUpdateEnv: originEnv } : {}),
+            preManagedServiceStop: {
+              stopped: true,
+              inspected: true,
+              runtimeInspected: true,
+              running: true,
+              serviceEnv: originEnv,
+              ...(envBindings
+                ? { serviceDefinitionEnv: {}, serviceEffectiveEnv: effectiveEnv }
+                : {}),
+              windowsTaskAutoStartRecovery: windowsRecovery,
+            },
+          },
+        ],
         packageTransaction: transaction,
         controlPlaneUpdateSentinelMeta: null,
-        preUpdatePluginInstallRecords: {},
         startedAt: Date.now(),
         packageUpdateNodeRunner: process.execPath,
         updateStepTimeoutMs: 90_000,
@@ -249,6 +314,11 @@ it.each([
       result: { status },
     });
     expect(outcome.result.reason).toBe(reason);
+    if (envBindings) {
+      expect(run.env).toBe(env);
+      expect(run.env.UPDATE_TEST_COMMON_AUTH).toBe("stale-common-ref");
+      expect(run.env).not.toHaveProperty("UPDATE_TEST_ORIGIN_AUTH");
+    }
     if (pending) {
       expect(complete).not.toHaveBeenCalled();
     } else {
@@ -339,17 +409,20 @@ it.each([
   { json: false, legacy: false, parentOwns: false },
   { json: true, legacy: false, parentOwns: true },
   { json: false, legacy: true, parentOwns: true },
+  { json: true, legacy: true, parentOwns: true, grouped: true },
+  { json: true, legacy: true, parentOwns: true, foreground: true },
+  { json: true, legacy: false, parentOwns: true, foreground: true },
   { json: true, legacy: false, parentOwns: true, checkWorkMs: 31_000, stepBudgetMs: 120_000 },
   { json: true, legacy: false, parentOwns: true, checkWorkMs: 31_000, stepBudgetMs: 20_000 },
 ])(
-  "fences migrated candidate finalization (json=$json, legacy=$legacy, parentOwns=$parentOwns, check=$checkWorkMs, budget=$stepBudgetMs)",
-  async ({ json, legacy, parentOwns, checkWorkMs, stepBudgetMs }) => {
+  "fences migrated candidate finalization (json=$json, legacy=$legacy, grouped=$grouped, parentOwns=$parentOwns, check=$checkWorkMs, budget=$stepBudgetMs)",
+  async ({ json, legacy, parentOwns, checkWorkMs, stepBudgetMs, grouped, foreground }) => {
     const stateDir = await fs.realpath(dirs.make("migrated-update-"));
+    vi.stubEnv("OPENCLAW_TEST_RUNTIME_LOG", "1");
     const env = {
       ...process.env,
       OPENCLAW_STATE_DIR: stateDir,
       OPENCLAW_CONFIG_PATH: path.join(stateDir, "openclaw.json"),
-      OPENCLAW_TEST_RUNTIME_LOG: "1",
     };
     const root = legacy ? path.join(stateDir, "legacy-runtime") : process.cwd();
     const legacyEffect = path.join(stateDir, "legacy-worker-effect");
@@ -362,7 +435,7 @@ it.each([
         const fs = require("node:fs");
         const { DatabaseSync } = require("node:sqlite");
         if (process.argv[2] === "--check") {
-          process.stdout.write(JSON.stringify({state:${OPENCLAW_STATE_SCHEMA_VERSION + 1}, agent:${OPENCLAW_AGENT_SCHEMA_VERSION}}));
+          process.stdout.write(JSON.stringify({state:${OPENCLAW_STATE_SCHEMA_VERSION + 1}, agent:${OPENCLAW_AGENT_SCHEMA_VERSION}${grouped || foreground ? ', executorDelegation: "pid-start-v1"' : ""}}));
         } else {
           const input = JSON.parse(fs.readFileSync(0,"utf8"));
           fs.writeFileSync(${JSON.stringify(legacyEffect)}, "unfenced effect");
@@ -374,11 +447,15 @@ it.each([
       `,
       );
     }
-    const created = createUpdateRun({ trigger: "cli" }, { env });
+    const created = createUpdateRun({ trigger: foreground ? "api" : "cli" }, { env });
     const parentDriver = parentOwns
       ? adoptUpdateRun(created.runId, { env }).origin.driver
       : undefined;
-    const run = { runId: created.runId, env };
+    const run = {
+      runId: created.runId,
+      env,
+      ...(foreground ? { completionOwner: "gateway-restart" as const } : {}),
+    };
     const log = vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
     vi.useFakeTimers();
     presentation = createUpdateProgress(!json, run);
@@ -463,22 +540,25 @@ it.each([
           },
           root,
           installKindChanged: false,
-          configSnapshot: {
-            path: path.join(stateDir, "openclaw.json"),
-            exists: false,
-            raw: null,
-            parsed: {},
-            sourceConfig: asResolvedSourceConfig({}),
-            resolved: asResolvedSourceConfig({}),
-            valid: true,
-            runtimeConfig: asRuntimeConfig({}),
-            config: asRuntimeConfig({}),
-            issues: [],
-            warnings: [],
-            legacyIssues: [],
-          },
-          requestedChannel: null,
-          storedChannel: "stable",
+          profiles: Array.from({ length: grouped ? 2 : 1 }, (_, index) => ({
+            configSnapshot: {
+              path: path.join(stateDir, index ? "ops.json" : "openclaw.json"),
+              exists: false,
+              raw: null,
+              parsed: {},
+              sourceConfig: asResolvedSourceConfig({}),
+              resolved: asResolvedSourceConfig({}),
+              valid: true,
+              runtimeConfig: asRuntimeConfig({}),
+              config: asRuntimeConfig({}),
+              issues: [],
+              warnings: [],
+              legacyIssues: [],
+            },
+            requestedChannel: null,
+            storedChannel: "stable",
+            preUpdatePluginInstallRecords: {},
+          })),
           channel: "stable",
           downgradeRisk: false,
           shouldRestart: false,
@@ -498,7 +578,6 @@ it.each([
             },
           },
           controlPlaneUpdateSentinelMeta: null,
-          preUpdatePluginInstallRecords: {},
           startedAt: Date.now(),
           packageUpdateNodeRunner: process.execPath,
           updateStepTimeoutMs: stepBudgetMs ?? 30_000,
@@ -514,7 +593,13 @@ it.each([
       return;
     }
     if (legacy) {
-      await expect(work).rejects.toThrow(/live executor delegation/);
+      await expect(work).rejects.toThrow(
+        foreground
+          ? /cannot defer foreground update completion/
+          : grouped
+            ? /cannot finalize all shared-install profiles/
+            : /live executor delegation/,
+      );
       await expect(fs.access(legacyEffect)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await family()).toEqual(before);
       expect(terminalAtCleanup).toBeUndefined();

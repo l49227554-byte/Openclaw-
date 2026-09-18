@@ -71,7 +71,7 @@ owner around the manual replacement. This recovery does not add CLI-managed
 FreeBSD rc.d service updates.
 </Note>
 
-An already-installed registry package version or Git target SHA still runs plugin maintenance, repairs eligible old OpenClaw release pins, and restarts a running managed Gateway only when plugins change and `--no-restart` is not set; unchanged runs finish as `skipped` / `already-current`.
+An already-installed registry package version or Git target SHA still runs plugin maintenance and repairs eligible old OpenClaw release pins. With restarts enabled, the updater also restarts affected managed Gateways when plugins or shared runtime artifacts change, and catches up running sibling profiles that report an older version or build. Unchanged runs finish as `skipped` / `already-current`.
 
 Plugin maintenance does not fail an otherwise successful core update. If a plugin
 cannot be updated, OpenClaw continues with the remaining plugins, keeps the previous
@@ -84,6 +84,35 @@ An explicit package artifact (for example, a tarball path or URL) is validated
 and installed even when its version matches; matching versions do not prove
 that two artifacts contain the same code.
 An explicit `--channel` choice still becomes the saved update channel.
+
+When multiple managed Gateway profiles in the same OS account share an
+installation, the updater validates every profile. With restarts enabled, it
+stops the running consumers before replacing the shared code and verifies their
+restarts together. Profiles that were already stopped stay stopped. An explicit
+channel choice changes only the selected profile's saved policy; sibling profiles
+keep their own policy.
+When the selected service uses a different configuration from the invoking shell,
+the service's configuration and plugins remain the update target; the shell's
+configuration and backups are preserved.
+Before stopping a running profile, the updater records restart intent so
+interrupted subagents can recover after the service starts again.
+Automatic rollback checks every affected profile before restoring the shared
+installation once.
+
+System services remain under their deployment owner. On macOS, update checks
+include global LaunchAgents and system LaunchDaemons. If the updater cannot
+verify that an external job is unloaded, it identifies the definition and requires
+owner coordination before updating. An unloaded external service can coexist with
+profile-only maintenance when its configuration and state are separate.
+Systemd templates also require deployment-owner coordination: inspecting one
+account's instance cannot verify the other instances or their drop-ins.
+
+This coordination belongs to the updater that starts the operation. An older
+installed updater, including 2026.9.4, still manages only its selected profile on
+the first upgrade. Stop the other Gateways sharing that installation before
+running that older updater, then restart and verify them after it completes.
+Let active work finish first: those older updaters can cancel work that remains
+active when their shutdown drain expires.
 For versions that support checks before installation, health checks, config and plugin planning, and a
 test Gateway boot on copied state finish before the service stops. The stopped interval
 contains the swap, required migrations, plugin downloads and convergence, and
@@ -93,6 +122,10 @@ unchanged plugins do not run another full Doctor pass. The final report records
 downtime through convergence and final verification, plus verification
 results. See
 [Validation and activation](/cli/update#validation-and-activation) for the checks.
+
+During a foreground restart, the replacement can still be starting when the
+initial readiness observation ends. OpenClaw leaves that process running and
+reports readiness as unverified. Use `openclaw gateway status --deep` to check its progress.
 
 The canary uses a temporary loopback Gateway port and suppresses background
 listeners, including the MCP Apps sandbox, browser control, and channel services.

@@ -20,10 +20,11 @@ import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
-import { makeTempWorkspace } from "../../test-helpers/workspace.js";
+import { getFileLockProcessStartTime } from "../../shared/pid-alive.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
+import { withServiceHome } from "./update-command-service-home.test-support.js";
 import {
   maybeStopManagedServiceBeforeMutableUpdate,
   revalidateManagedGatewayServiceAfterUpdate,
@@ -54,31 +55,6 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 beforeEach(() => mockSystemAccountHome());
 afterEach(() => vi.restoreAllMocks());
-
-async function withServiceHome(run: (home: string) => Promise<void>): Promise<void> {
-  const home = await makeTempWorkspace("openclaw-update-service-");
-  vi.spyOn(openClawTmp, "resolvePreferredOpenClawTmpDir").mockReturnValue(home);
-  try {
-    await withEnvAsync(
-      {
-        HOME: home,
-        USERPROFILE: home,
-        APPDATA: path.join(home, "AppData"),
-        OPENCLAW_GATEWAY_PORT: undefined,
-        OPENCLAW_HOME: undefined,
-        OPENCLAW_STATE_DIR: undefined,
-        OPENCLAW_CONFIG_PATH: undefined,
-        OPENCLAW_PROFILE: undefined,
-        OPENCLAW_SUPERVISOR_MODE: undefined,
-        OPENCLAW_SERVICE_MARKER: undefined,
-        OPENCLAW_SERVICE_KIND: undefined,
-      },
-      () => run(home),
-    );
-  } finally {
-    await fs.rm(home, { recursive: true, force: true });
-  }
-}
 
 it.each(["systemd-user-bus-unavailable", "service-manager-access-denied"] as const)(
   "retains the native inspection reason without service authority: %s",
@@ -161,6 +137,87 @@ type NativeOfflineCase = {
   phase?: "inspect" | "prepare";
   state?: number | string;
 };
+
+it("does not turn an offline sibling into the handed-off service", () =>
+  withServiceHome(async (home) => {
+    mockProcessPlatform("linux");
+    const siblingEnv = {
+      HOME: home,
+      OPENCLAW_PROFILE: "sibling",
+      OPENCLAW_STATE_DIR: path.join(home, ".openclaw-sibling"),
+      OPENCLAW_CONFIG_PATH: path.join(home, ".openclaw-sibling", "openclaw.json"),
+    };
+    const service = createMockGatewayService({
+      readCommand: async () => ({
+        programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
+        environment: siblingEnv,
+      }),
+      readRuntime: async () => ({ status: "stopped", systemd: { managerUid: 2001 } }),
+      isLoaded: async () => true,
+    });
+    mocks.service.mockReturnValue(service);
+    await withEnvAsync({ OPENCLAW_UPDATE_RUN_HANDOFF: "1" }, async () => {
+      const inspected = await maybeStopManagedServiceBeforeMutableUpdate({
+        root: process.cwd(),
+        updateInstallKind: "package",
+        shouldRestart: true,
+        phase: "prepare",
+        jsonMode: true,
+        expectedService: { serviceEnv: siblingEnv },
+      });
+      expect(inspected).toMatchObject({ stopped: false, running: false });
+      expect(service.stop).not.toHaveBeenCalled();
+    });
+  }));
+
+it("captures effective native environment bindings before activation without ambient provenance", () =>
+  withServiceHome(async (home) => {
+    mockProcessPlatform("linux");
+    const programArguments = [
+      process.execPath,
+      path.join(process.cwd(), "openclaw.mjs"),
+      "gateway",
+    ];
+    const env = {
+      ...process.env,
+      HOME: home,
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/captured-bus",
+      UPDATE_TEST_CALLER_AUTH: "caller-ref",
+    };
+    const service = createMockGatewayService({
+      readCommand: async () => ({
+        programArguments,
+        environment: {
+          HOME: home,
+          DBUS_SESSION_BUS_ADDRESS: "unix:path=/ignored-payload-bus",
+          UPDATE_TEST_NATIVE_AUTH: "native-file-ref",
+        },
+        environmentValueSources: { UPDATE_TEST_NATIVE_AUTH: "file" },
+        managedDefinition: { programArguments, environment: { HOME: home } },
+        managedOverrides: { environment: { keys: ["UPDATE_TEST_NATIVE_AUTH"] } },
+      }),
+      readRuntime: async () => ({ status: "stopped", systemd: { managerUid: 2001 } }),
+      isLoaded: async () => true,
+    });
+    mocks.service.mockReturnValue(service);
+    const inspected = await maybeStopManagedServiceBeforeMutableUpdate({
+      root: process.cwd(),
+      env,
+      updateInstallKind: "package",
+      shouldRestart: true,
+      phase: "inspect",
+      jsonMode: true,
+    });
+    expect(inspected.serviceUpdateVerdict?.kind).toBe("owned");
+    expect(inspected.serviceDefinitionEnv).toEqual({ HOME: home });
+    expect(inspected.serviceEffectiveEnv).toEqual({
+      HOME: home,
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/captured-bus",
+      UPDATE_TEST_NATIVE_AUTH: "native-file-ref",
+    });
+    expect(service.stop).not.toHaveBeenCalled();
+    expect(service.install).not.toHaveBeenCalled();
+  }));
 
 const nativeOfflineCases: NativeOfflineCase[] = [
   {
@@ -444,6 +501,8 @@ it.runIf(process.platform === "linux" || process.platform === "darwin").each(
   "keeps $platform serving-ancestor maintenance bound to the current updater: $identity $phase",
   ({ platform, identity, phase, authorized }) =>
     withServiceHome(async (home) => {
+      // Capture this process's native identity before changing only service policy's platform.
+      expect(getFileLockProcessStartTime(process.pid)).not.toBeNull();
       mockProcessPlatform(platform);
       const root = await fs.realpath(process.cwd());
       const metaPath = path.join(home, "handoff-meta.json");
@@ -802,36 +861,6 @@ it.each([
     }
   }),
 );
-
-it("refuses owned Linux admission without a native manager UID", () =>
-  withServiceHome(async (home) => {
-    mockProcessPlatform("linux");
-    const stop = vi.fn(async () => undefined);
-    mocks.service.mockReturnValue(
-      createMockGatewayService({
-        readCommand: async () => ({
-          programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
-          environment: { HOME: home },
-        }),
-        readRuntime: async () => ({ status: "running" }),
-        isLoaded: async () => true,
-        stop,
-      }),
-    );
-    await expect(
-      maybeStopManagedServiceBeforeMutableUpdate({
-        updateInstallKind: "package",
-        root: process.cwd(),
-        shouldRestart: true,
-        jsonMode: true,
-        phase: "inspect",
-      }),
-    ).resolves.toMatchObject({
-      serviceUpdateVerdict: { kind: "unavailable" },
-      serviceMutationAllowed: false,
-    });
-    expect(stop).not.toHaveBeenCalled();
-  }));
 
 it.each(["before stop", "after stop"] as const)(
   "refuses a rebound live executor %s without a new native effect",

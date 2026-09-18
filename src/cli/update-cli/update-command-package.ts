@@ -29,12 +29,11 @@ import {
 import type { UpdateRequester } from "../../infra/update-requester-authority.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { normalizeFallbackFailureReason } from "../../infra/update-runner-command.js";
-import { buildUpdateDoctorEnv } from "../../infra/update-runner-doctor.js";
 import {
+  buildUpdateDoctorEnv,
   resolveUpdateDoctorExecutionPolicy,
-  type UpdateRunResult,
-  type UpdateStepResult,
-} from "../../infra/update-runner.js";
+} from "../../infra/update-runner-doctor.js";
+import type { UpdateRunResult, UpdateStepResult } from "../../infra/update-runner-types.js";
 import { runCommandWithTimeout, runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { CLI_NAME } from "../cli-name.js";
@@ -67,24 +66,16 @@ export async function readPackageUpdateIdentity(root: string) {
   return { version, ...(buildId ? { buildId } : {}) };
 }
 
-type PackageDoctorOptions = {
+export type PackageDoctorOptions = {
   root: string;
   timeoutMs: number;
   progress: ReturnType<typeof createUpdateProgress>["progress"];
+  results?: UpdateStepResult[];
   managedServiceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
   nodeRunner?: string;
   onConfigSnapshot?: (snapshot: UpdateConfigSnapshot) => void;
-  getDoctorContext?: () =>
-    | {
-        runId: string;
-        executorFence: UpdateRecoveryFence;
-        requester?: Readonly<UpdateRequester>;
-        inputHash: string;
-        changes: UpdateDoctorConfigChange[];
-        assertRequesterCurrent: () => void;
-      }
-    | undefined;
+  getDoctorContext?: () => ReturnType<typeof preparePackageDoctorContext>;
 };
 
 export function preparePackageDoctorContext(params: {
@@ -160,6 +151,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
   const configSnapshot = params.onConfigSnapshot
     ? await readUpdateConfigSnapshot(resolveConfigPath(doctorEnv))
     : undefined;
+  const resultIndex = params.results?.length;
   const runDoctor = (
     executor?: UpdateCommandChildGrant,
     beforeInput?: (pid: number, argv?: readonly string[]) => void,
@@ -178,6 +170,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         : undefined;
     return runUpdateStep({
       name: `${CLI_NAME} doctor`,
+      results: params.results,
       argv: doctorArgv,
       cwd: params.root,
       env: {
@@ -262,6 +255,9 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
     },
     doctorResult,
   );
+  if (params.results && resultIndex !== undefined) {
+    params.results[resultIndex] = completedDoctorStep;
+  }
   params.progress?.onStepComplete?.({
     ...doctorProgressInfo,
     durationMs: completedDoctorStep.durationMs,
@@ -352,15 +348,14 @@ export type PackageInstallUpdateParams = {
   beforeActivate: () => Promise<void>;
   assertCurrent?: () => void;
   onTransaction: (transaction: PackageUpdateTransaction) => void;
-  onConfigSnapshot?: PackageDoctorOptions["onConfigSnapshot"];
-  getDoctorContext?: PackageDoctorOptions["getDoctorContext"];
+  runDoctor?: (root: string) => Promise<UpdateStepResult | null>;
 };
 
 /** Retain one staged target while its runtime initializes a fresh profile. */
 export async function stagePackageInstallUpdate(
   params: Omit<
     PackageInstallUpdateParams,
-    "validateCandidate" | "beforeActivate" | "onTransaction" | "onConfigSnapshot"
+    "validateCandidate" | "beforeActivate" | "onTransaction" | "runDoctor"
   >,
 ) {
   const staged = createDeferredCore<string>();
@@ -373,29 +368,29 @@ export async function stagePackageInstallUpdate(
     }
     return active;
   };
-  const completed = runPackageInstallUpdate(
-    {
-      ...params,
-      requirePackageReplacement: true,
-      progress: {
-        onStepStart: (step) => (active?.progress ?? params.progress)?.onStepStart?.(step),
-        onStepComplete: (step) => (active?.progress ?? params.progress)?.onStepComplete?.(step),
-        onHeartbeat: () => (active?.progress ?? params.progress)?.onHeartbeat?.(),
-      },
-      validateCandidate: async (root) => {
-        staged.resolve(root);
-        active = await continuation.promise;
-        if (!active) {
-          throw new Error("Fresh-state initialization stopped before package activation.");
-        }
-        return await active.validateCandidate(root);
-      },
-      beforeActivate: () => requireActive().beforeActivate(),
-      onTransaction: (transaction) => requireActive().onTransaction(transaction),
-      onConfigSnapshot: (snapshot) => requireActive().onConfigSnapshot?.(snapshot),
+  const completed = runPackageInstallUpdate({
+    ...params,
+    requirePackageReplacement: true,
+    progress: {
+      onStepStart: (step) => (active?.progress ?? params.progress)?.onStepStart?.(step),
+      onStepComplete: (step) => (active?.progress ?? params.progress)?.onStepComplete?.(step),
+      onHeartbeat: () => (active?.progress ?? params.progress)?.onHeartbeat?.(),
     },
-    () => requireActive(),
-  );
+    validateCandidate: async (root) => {
+      staged.resolve(root);
+      active = await continuation.promise;
+      if (!active) {
+        throw new Error("Fresh-state initialization stopped before package activation.");
+      }
+      return await active.validateCandidate(root);
+    },
+    beforeActivate: () => requireActive().beforeActivate(),
+    onTransaction: (transaction) => requireActive().onTransaction(transaction),
+    runDoctor: (root) => {
+      const current = requireActive();
+      return current.runDoctor?.(root) ?? runPackageUpdateDoctor({ ...current, root });
+    },
+  });
   const ready = await Promise.race([
     staged.promise.then((root) => ({ root })),
     completed.then((result) => ({ result })),
@@ -431,7 +426,6 @@ export type StagedPackageInstallUpdate = Awaited<ReturnType<typeof stagePackageI
 
 export async function runPackageInstallUpdate(
   params: PackageInstallUpdateParams,
-  resolveDoctorOptions: () => PackageDoctorOptions = () => params,
 ): Promise<UpdateRunResult> {
   const installEnv = params.installEnv ?? (await createGlobalInstallEnv());
   let installTarget = params.installTarget;
@@ -490,7 +484,8 @@ export async function runPackageInstallUpdate(
         ...stepParams,
         progress: params.progress,
       }),
-    postVerifyStep: (root: string) => runPackageUpdateDoctor({ ...resolveDoctorOptions(), root }),
+    postVerifyStep: (root: string) =>
+      params.runDoctor?.(root) ?? runPackageUpdateDoctor({ ...params, root }),
   });
 
   const afterBuildId = packageUpdate.activePackageRoot

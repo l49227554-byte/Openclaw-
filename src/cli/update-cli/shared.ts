@@ -30,7 +30,12 @@ import type { UpdateRequesterAuthority } from "../../infra/update-requester-auth
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { runStep } from "../../infra/update-runner-command.js";
 import { resolveUnmanagedUpdateInstallReason } from "../../infra/update-runner-install-surface.js";
-import type { UpdateStepProgress, UpdateStepResult } from "../../infra/update-runner.js";
+import type {
+  RunStepOptions,
+  UpdateRunResult,
+  UpdateStepProgress,
+  UpdateStepResult,
+} from "../../infra/update-runner-types.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { UpdateRecoveryStep } from "../../shared/update-outcome.js";
@@ -43,7 +48,10 @@ import { resolveNodeRunner } from "./node-runner.js";
 export { resolveNodeRunner } from "./node-runner.js";
 
 export type UpdateCommandOptions = {
-  /** In-process executor only; workers must reacquire authority, never deserialize this. */
+  /** Doctor's accepted source update targets dev without changing the saved channel. */
+  sourceUpdate?: { root: string };
+  /** In-process reporting only, after the update owner settles. Never serialized. */
+  onResult?: (result: UpdateRunResult) => void;
   /** Legacy live context is unsupported; its presence is refusal-only. */
   recovery?: unknown;
   reapplyLocalOverrides?: boolean;
@@ -53,6 +61,10 @@ export type UpdateCommandOptions = {
     defaultStepTimeoutMs?: number;
     activationTimeoutMs?: number;
     env: NodeJS.ProcessEnv;
+    /** Completion routing only; the executor and requester still own mutation authority. */
+    completionOwner?: "gateway-restart";
+    /** The same live helper acknowledged this foreground Gateway's actual closure. */
+    gatewayRestartRequired?: true;
     /** Prepared before replacement; never load the old authority graph after activation. */
     requesterAuthority?: UpdateRequesterAuthority;
     /** Live local executor only. A child must independently acquire its owner. */
@@ -253,15 +265,10 @@ export async function resolveUpdateRoot(): Promise<string> {
 }
 
 /** Run one update subprocess and report bounded stdout/stderr tails to progress listeners. */
-export async function runUpdateStep(params: {
-  name: string;
-  argv: string[];
-  cwd?: string;
-  timeoutMs: number;
-  progress?: UpdateStepProgress;
-  env?: NodeJS.ProcessEnv;
-  runCommand?: Parameters<typeof runStep>[0]["runCommand"];
-}): Promise<UpdateStepResult> {
+export async function runUpdateStep(
+  params: Omit<RunStepOptions, "cwd" | "runCommand" | "stepIndex" | "totalSteps"> &
+    Partial<Pick<RunStepOptions, "cwd" | "runCommand">>,
+): Promise<UpdateStepResult> {
   return await runStep({
     ...params,
     cwd: params.cwd ?? process.cwd(),

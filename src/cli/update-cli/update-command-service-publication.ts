@@ -10,6 +10,7 @@ import {
   isScheduledTaskDefinitelyNotRunning,
   readWindowsStartupFallbackRuntimeForUpdate,
 } from "../../daemon/schtasks-runtime.js";
+import { readGatewayServiceCandidates } from "../../daemon/service-candidates.js";
 import { summarizeGatewayServiceLayout } from "../../daemon/service-layout.js";
 import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
 import type { GatewayServiceState } from "../../daemon/service-types.js";
@@ -48,15 +49,224 @@ export async function isManagedGatewayServiceOffline(
   );
 }
 
-/** Changed runtime artifacts require an offline physical target, not logical
- * ownership of a deployment's current/releases namespace. No service is stopped here. */
+type RuntimePublicationParams = {
+  root: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  assertCurrent: () => void;
+};
+type PublicationConsumer = Pick<
+  GatewayServiceState,
+  "env" | "systemdInstallation" | "externalLaunchdPlist"
+>;
+
+function externalConsumerIdentity(consumer: PublicationConsumer): string | undefined {
+  return (
+    consumer.externalLaunchdPlist ??
+    (consumer.systemdInstallation?.kind === "system"
+      ? stableStringify(consumer.systemdInstallation)
+      : undefined)
+  );
+}
+
+type PathIdentity = { real: string; stat?: Stats };
+
+/** Shared physical alias proof for admission and guarded runtime publication. */
+export async function inspectGatewayRuntimePublicationSurface(params: {
+  root: string;
+  readState: () => Promise<GatewayServiceState>;
+  assertCurrent: () => void;
+}) {
+  const { assertCurrent } = params;
+  const identity = async (file: string) => {
+    const real = await fs.realpath(file);
+    assertCurrent();
+    const stat = await fs.stat(file);
+    assertCurrent();
+    return { real, stat };
+  };
+  const outputIdentity = async (file: string): Promise<PathIdentity> => {
+    try {
+      return await identity(file);
+    } catch (error) {
+      assertCurrent();
+      if (!hasNodeErrorCode(error, "ENOENT")) {
+        throw error;
+      }
+      // Missing descendants retain their existing ancestor's physical namespace;
+      // a dangling symlink cannot attest a disjoint publication destination.
+      const present = await fs.lstat(file).catch((statError: unknown) => {
+        if (!hasNodeErrorCode(statError, "ENOENT")) {
+          throw statError;
+        }
+        return undefined;
+      });
+      assertCurrent();
+      if (present) {
+        throw error;
+      }
+      const parent = await outputIdentity(path.dirname(file));
+      assertCurrent();
+      return { real: path.join(parent.real, path.basename(file)) };
+    }
+  };
+  const same = (a: PathIdentity, b: PathIdentity) =>
+    a.real === b.real ||
+    Boolean(a.stat && b.stat && a.stat.dev === b.stat.dev && a.stat.ino === b.stat.ino);
+  const outputPaths = ["dist-runtime", path.join("dist", "extensions", "node_modules", "openclaw")];
+  // Parents survive output-root replacement; absent descendants retain their physical namespace.
+  const parents = await Promise.all(
+    [
+      "",
+      "dist",
+      path.join("dist", "extensions"),
+      path.join("dist", "extensions", "node_modules"),
+    ].map((relative) =>
+      relative ? outputIdentity(path.join(params.root, relative)) : identity(params.root),
+    ),
+  );
+  assertCurrent();
+  if (parents.some((parent) => parent.stat && !parent.stat.isDirectory())) {
+    refuseRuntimePublication();
+  }
+  const target = parents[0]!;
+  const destinations = await Promise.all(
+    outputPaths.map((output) => outputIdentity(path.join(params.root, output))),
+  );
+  assertCurrent();
+  const state = await params.readState();
+  assertCurrent();
+  if (
+    state.systemdInstallation?.kind === "system" &&
+    state.systemdInstallation.system.unitPath.endsWith("@.service")
+  ) {
+    // A derived account instance cannot attest other instances or their drop-ins.
+    refuseRuntimePublication(
+      new Error(
+        `Systemd template consumers remain unverified: ${state.systemdInstallation.system.unitPath}`,
+      ),
+    );
+  }
+  if (
+    state.externalLaunchdPlist &&
+    (state.loadState.status !== "not-loaded" || state.runtime?.status !== "stopped")
+  ) {
+    refuseRuntimePublication();
+  }
+  const layout = await summarizeGatewayServiceLayout(state.command);
+  assertCurrent();
+  const database = await outputIdentity(resolveOpenClawStateSqlitePath(state.env));
+  assertCurrent();
+  let serving: { root: PathIdentity; entrypoint: PathIdentity } | undefined;
+  let disjoint = false;
+  if (layout?.packageRootReal && layout.entrypointReal) {
+    const [installed, entrypoint] = await Promise.all([
+      identity(layout.packageRootReal),
+      outputIdentity(layout.entrypointReal),
+    ]);
+    assertCurrent();
+    serving = { root: installed, entrypoint };
+    const servingOutputs = await Promise.all(
+      outputPaths.map((output) => outputIdentity(path.join(installed.real, output))),
+    );
+    assertCurrent();
+    disjoint =
+      !same(target, installed) &&
+      !destinations.some(
+        (destination) =>
+          same(destination, installed) ||
+          isPathInside(destination.real, entrypoint.real) ||
+          servingOutputs.some(
+            (output) =>
+              same(destination, output) ||
+              isPathInside(destination.real, output.real) ||
+              isPathInside(output.real, destination.real),
+          ),
+      );
+  } else if (
+    state.command ||
+    state.installed ||
+    state.loadState.status !== "not-loaded" ||
+    !state.runtime?.missingUnit
+  ) {
+    refuseRuntimePublication();
+  }
+  const absent =
+    !state.command &&
+    !state.installed &&
+    state.loadState.status === "not-loaded" &&
+    state.runtime?.missingUnit === true;
+  return { state, disjoint, parents, destinations, database, serving, absent };
+}
+
+/** One physical publication holds every discovered consumer's native and state guards. */
 export async function withGatewayRuntimeArtifactPublication<T>(
-  params: {
-    root: string;
-    env: NodeJS.ProcessEnv;
-    timeoutMs: number;
-    assertCurrent: () => void;
-  },
+  params: RuntimePublicationParams,
+  publish: (assertPublicationCurrent: () => Promise<void>) => Promise<T>,
+): Promise<T> {
+  const service = resolveGatewayService();
+  const consumers: PublicationConsumer[] = [{ env: params.env }];
+  const readCandidates = async () => {
+    params.assertCurrent();
+    // Environment exclusions identify user units; system units retain their explicit native route.
+    const knownSystemTargets = new Set(
+      consumers.flatMap((consumer) => externalConsumerIdentity(consumer) ?? []),
+    );
+    const candidates = await readGatewayServiceCandidates(service, {
+      env: params.env,
+      knownServiceEnvs: consumers
+        .filter((consumer) => externalConsumerIdentity(consumer) === undefined)
+        .map(({ env }) => env),
+      timeoutMs: params.timeoutMs,
+    }).catch(refuseRuntimePublication);
+    params.assertCurrent();
+    return candidates.filter((consumer) => {
+      const identity = externalConsumerIdentity(consumer);
+      return identity === undefined || !knownSystemTargets.has(identity);
+    });
+  };
+  consumers.push(...(await readCandidates()));
+  const guards: (() => Promise<void>)[] = [];
+  const coordinatorPaths = new Set<string>();
+  const assertPublicationCurrent = async () => {
+    if ((await readCandidates()).length > 0) {
+      refuseRuntimePublication(new Error("Gateway consumers changed before runtime publication."));
+    }
+    for (const guard of guards) {
+      await guard();
+    }
+    params.assertCurrent();
+  };
+  const enter = async (index: number): Promise<T> => {
+    const consumer = consumers[index];
+    if (!consumer) {
+      await assertPublicationCurrent();
+      return await publish(assertPublicationCurrent);
+    }
+    return await withRuntimePublicationForService(
+      { ...params, ...consumer },
+      coordinatorPaths,
+      async (guard) => {
+        guards.push(guard);
+        return await enter(index + 1);
+      },
+    );
+  };
+  return await enter(0);
+}
+
+function refuseRuntimePublication(cause?: unknown): never {
+  throw new UpdatePreMutationError(
+    "runtime-artifact-publication",
+    "Runtime artifacts changed, but an affected Gateway is running or its offline state could not be verified. Run `openclaw gateway status --deep`, stop the affected Gateway through its service owner, and retry the update.",
+    { cause },
+  );
+}
+
+/** Physical aliases require the same offline proof as the selected installation. */
+async function withRuntimePublicationForService<T>(
+  params: RuntimePublicationParams & PublicationConsumer,
+  coordinatorPaths: Set<string>,
   publish: (assertPublicationCurrent: () => Promise<void>) => Promise<T>,
 ): Promise<T> {
   const assertCaller = params.assertCurrent;
@@ -66,88 +276,24 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCaller();
       assertNative();
     };
-    const refuse = (cause?: unknown): never => {
-      throw new UpdatePreMutationError(
-        "runtime-artifact-publication",
-        "Runtime artifacts changed, but the affected Gateway is running or its offline state could not be verified. Run `openclaw gateway status --deep`, stop the affected Gateway through its service owner, and retry the update.",
-        { cause },
-      );
-    };
     const service = resolveGatewayService();
-    type PathIdentity = { real: string; stat?: Stats };
-    const identity = async (file: string) => {
-      const real = await fs.realpath(file);
-      assertCurrent();
-      const stat = await fs.stat(file);
-      assertCurrent();
-      return { real, stat };
-    };
-    const outputIdentity = async (file: string): Promise<PathIdentity> => {
-      try {
-        return await identity(file);
-      } catch (error) {
-        assertCurrent();
-        if (!hasNodeErrorCode(error, "ENOENT")) {
-          throw error;
-        }
-        // Missing descendants retain their existing ancestor's physical namespace;
-        // a dangling symlink cannot attest a disjoint publication destination.
-        const present = await fs.lstat(file).catch((statError: unknown) => {
-          if (!hasNodeErrorCode(statError, "ENOENT")) {
-            throw statError;
-          }
-          return undefined;
-        });
-        assertCurrent();
-        if (present) {
-          throw error;
-        }
-        const parent = await outputIdentity(path.dirname(file));
-        assertCurrent();
-        return { real: path.join(parent.real, path.basename(file)) };
-      }
-    };
-    const same = (a: PathIdentity, b: PathIdentity) =>
-      a.real === b.real ||
-      Boolean(a.stat && b.stat && a.stat.dev === b.stat.dev && a.stat.ino === b.stat.ino);
-    const outputPaths = [
-      "dist-runtime",
-      path.join("dist", "extensions", "node_modules", "openclaw"),
-    ];
+    let systemdInstallation = params.systemdInstallation;
     const readInspection = async () => {
       assertCurrent();
-      // Parents are stable across publication; output roots themselves are renamed.
-      // Record missing descendants too, so creating them cannot redirect a later effect.
-      const parents = await Promise.all(
-        [
-          "",
-          "dist",
-          path.join("dist", "extensions"),
-          path.join("dist", "extensions", "node_modules"),
-        ].map((relative) =>
-          relative ? outputIdentity(path.join(params.root, relative)) : identity(params.root),
-        ),
-      );
-      assertCurrent();
-      if (parents.some((parent) => parent.stat && !parent.stat.isDirectory())) {
-        refuse();
-      }
-      const target = parents[0]!;
-      const destinations = await Promise.all(
-        outputPaths.map((output) => outputIdentity(path.join(params.root, output))),
-      );
-      assertCurrent();
-      const state = await readGatewayServiceState(service, {
-        env: params.env,
-        requireEffective: true,
-        requireLoadedCommand: true,
-        timeoutMs: params.timeoutMs,
-      });
-      assertCurrent();
-      const layout = await summarizeGatewayServiceLayout(state.command);
-      assertCurrent();
-      const database = await outputIdentity(resolveOpenClawStateSqlitePath(state.env));
-      assertCurrent();
+      const { state, disjoint, parents, destinations, database, serving, absent } =
+        await inspectGatewayRuntimePublicationSurface({
+          root: params.root,
+          assertCurrent,
+          readState: () =>
+            readGatewayServiceState(service, {
+              env: params.env,
+              externalLaunchdPlist: params.externalLaunchdPlist,
+              systemdInstallation,
+              requireEffective: true,
+              requireLoadedCommand: true,
+              timeoutMs: params.timeoutMs,
+            }),
+        });
       const serviceName =
         process.platform === "darwin"
           ? resolveLaunchAgentLabel(state.env)
@@ -159,46 +305,9 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         serviceName,
         profile: resolveGatewayProfileSuffix(state.env.OPENCLAW_PROFILE),
         managerUid: observedSystemdManagerUid(state),
+        systemdInstallation: state.systemdInstallation,
+        externalLaunchdPlist: state.externalLaunchdPlist,
       });
-      let serving: { root: PathIdentity; entrypoint: PathIdentity } | undefined;
-      let disjoint = false;
-      if (layout?.packageRootReal && layout.entrypointReal) {
-        const [installed, entrypoint] = await Promise.all([
-          identity(layout.packageRootReal),
-          outputIdentity(layout.entrypointReal),
-        ]);
-        assertCurrent();
-        serving = { root: installed, entrypoint };
-        const servingOutputs = await Promise.all(
-          outputPaths.map((output) => outputIdentity(path.join(installed.real, output))),
-        );
-        assertCurrent();
-        disjoint =
-          !same(target, installed) &&
-          !destinations.some(
-            (destination) =>
-              same(destination, installed) ||
-              isPathInside(destination.real, entrypoint.real) ||
-              servingOutputs.some(
-                (output) =>
-                  same(destination, output) ||
-                  isPathInside(destination.real, output.real) ||
-                  isPathInside(output.real, destination.real),
-              ),
-          );
-      } else if (
-        state.command ||
-        state.installed ||
-        state.loadState.status !== "not-loaded" ||
-        !state.runtime?.missingUnit
-      ) {
-        refuse();
-      }
-      const absent =
-        !state.command &&
-        !state.installed &&
-        state.loadState.status === "not-loaded" &&
-        state.runtime?.missingUnit === true;
       if (
         !disjoint &&
         (state.running ||
@@ -207,7 +316,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
               (process.platform === "linux" && observedSystemdManagerUid(state) === undefined) ||
               !(await isManagedGatewayServiceOffline(service, state, params.timeoutMs)))))
       ) {
-        refuse();
+        refuseRuntimePublication();
       }
       assertCurrent();
       if (!disjoint) {
@@ -217,7 +326,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         });
         assertCurrent();
         if (activeLock) {
-          refuse();
+          refuseRuntimePublication();
         }
         const port = await resolveUpdatedGatewayRestartPort({
           serviceEnv: state.env,
@@ -227,7 +336,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         const usage = await probePortUsage(port);
         assertCurrent();
         if (usage !== "free") {
-          refuse();
+          refuseRuntimePublication();
         }
       }
       return { state, disjoint, parents, destinations, database, nativeIdentity, serving };
@@ -240,13 +349,14 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         if (error instanceof UpdatePreMutationError) {
           throw error;
         }
-        return refuse(error);
+        return refuseRuntimePublication(error);
       }
     };
     const before = await inspect();
+    systemdInstallation ??= before.state.systemdInstallation;
     assertCurrent();
     if (before.serving && !before.serving.entrypoint.stat) {
-      refuse();
+      refuseRuntimePublication();
     }
     const assertPublicationCurrent = async () => {
       const current = await inspect();
@@ -276,7 +386,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
             ) &&
               changedIdentity(before.serving.entrypoint, current.serving.entrypoint))))
       ) {
-        refuse();
+        refuseRuntimePublication();
       }
       assertCurrent();
     };
@@ -284,11 +394,12 @@ export async function withGatewayRuntimeArtifactPublication<T>(
     try {
       try {
         assertCurrent();
-        if (!before.disjoint) {
+        if (!before.disjoint && !coordinatorPaths.has(before.database.real)) {
           coordinator = acquireGatewayLifecycleCoordinator({
             databasePath: before.database.real,
             busyTimeoutMs: 0,
           });
+          coordinatorPaths.add(before.database.real);
         }
         await assertPublicationCurrent();
         assertCurrent();
@@ -297,7 +408,7 @@ export async function withGatewayRuntimeArtifactPublication<T>(
         if (error instanceof UpdatePreMutationError) {
           throw error;
         }
-        refuse(error);
+        refuseRuntimePublication(error);
       }
       assertCurrent();
       // The publisher joins its rollback before settling, keeping both exclusions held.
@@ -305,7 +416,10 @@ export async function withGatewayRuntimeArtifactPublication<T>(
       assertCurrent();
       return result;
     } finally {
-      coordinator?.release();
+      if (coordinator) {
+        coordinator.release();
+        coordinatorPaths.delete(before.database.real);
+      }
     }
   });
 }

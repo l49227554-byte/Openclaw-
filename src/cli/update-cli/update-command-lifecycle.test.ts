@@ -387,7 +387,12 @@ describe("update plugin lifecycle lease boundaries", () => {
       });
 
       if (needsTargetRuntime) {
-        expect(mocks.events).toEqual(["target-convergence:false"]);
+        expect(mocks.events).toEqual([
+          "lease-enter:false",
+          "runtime-completion:true",
+          "lease-exit:false",
+          "target-convergence:false",
+        ]);
         expect(updatePluginsAfterCoreUpdate).not.toHaveBeenCalled();
       } else {
         expect(continuePostCoreUpdateInFreshProcess).not.toHaveBeenCalled();
@@ -582,6 +587,43 @@ describe("update plugin lifecycle lease boundaries", () => {
   );
 
   it("keeps nonfatal Doctor warnings in terminal JSON without failing finalization", async () => {
+    const advisories = [
+      {
+        pluginId: "demo",
+        reason: "plugin-target-unavailable",
+        message: "Retained demo; the requested package version is unavailable.",
+        guidance: ["openclaw plugins update demo"],
+      },
+      {
+        reason: "doctor-advisory",
+        message: "Review the group allowlist after updating.",
+        guidance: ["openclaw doctor"],
+      },
+      {
+        reason: "configured-plugin-path-unavailable",
+        source: "/fixture/offline-plugin",
+        message: "Configured plugin path is unavailable; configuration is preserved.",
+        guidance: ["Restore the path, then run openclaw doctor --fix."],
+      },
+      {
+        reason: "configured-plugin-path-inspection-failed",
+        source: "/fixture/unreadable-plugin",
+        errorCode: "EACCES",
+        message: "Configured plugin path is unreadable; configuration is preserved.",
+        guidance: ["Fix permissions, then run openclaw doctor --fix."],
+      },
+    ];
+    const jsonOnlyWarning = {
+      pluginId: "demo",
+      reason: "registry-timeout",
+      message: "Registry request timed out; the installed plugin is unchanged.",
+      guidance: ["openclaw plugins update demo"],
+    };
+    const warnings = [jsonOnlyWarning, ...advisories];
+    vi.mocked(completePostCorePluginUpdate).mockResolvedValueOnce({
+      pluginUpdate: { ...successfulPluginUpdate, status: "warning", warnings },
+      configSnapshot: validConfigSnapshot,
+    });
     mocks.doctorWarnings = ["Optional version probe timed out; recheck after restart."];
     await updateFinalizeCommand({ json: true, yes: true, deferCompletionCache: true });
 
@@ -591,9 +633,18 @@ describe("update plugin lifecycle lease boundaries", () => {
         restart: false,
         postUpdate: expect.objectContaining({
           doctor: { status: "warning", warnings: mocks.doctorWarnings },
+          plugins: expect.objectContaining({ status: "warning", warnings }),
         }),
       }),
     );
     expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
+    closeOpenClawStateDatabaseForTest();
+    const run = listUpdateRuns({ limit: 1 })[0];
+    expect(run).toMatchObject({ status: "succeeded" });
+    expect(
+      run?.steps
+        .filter((step) => step.step.startsWith("warning:finalize:plugins:"))
+        .map(({ status, detail }) => ({ status, detail })),
+    ).toEqual(advisories.map((warning) => ({ status: "completed", detail: warning.message })));
   });
 });

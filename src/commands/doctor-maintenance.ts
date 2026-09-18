@@ -10,6 +10,7 @@ import { readGatewayOwnerLease } from "../infra/gateway-owner-lease.js";
 import {
   acquireGatewayMaintenanceCoordinator,
   acquireStateDatabaseCoordinator,
+  StateDatabaseCoordinatorContentionError,
 } from "../infra/state-database-coordinator.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
 import { UPDATE_RUN_ID_ENV } from "../infra/update-control-plane-sentinel.js";
@@ -282,6 +283,12 @@ export async function beginDoctorMaintenance(params: {
       try {
         acquireMaintenanceResources();
       } catch (error) {
+        if (
+          !(error instanceof StateDatabaseCoordinatorContentionError) ||
+          error.family !== "gateway-lifecycle"
+        ) {
+          throw error;
+        }
         // A running managed Gateway legitimately owns this coordinator until its
         // service is stopped. Any other holder is knowable before that mutation.
         const gatewayOwner = readGatewayOwnerLease({

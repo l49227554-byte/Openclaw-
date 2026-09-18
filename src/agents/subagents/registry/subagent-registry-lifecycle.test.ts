@@ -77,6 +77,7 @@ import {
   setSubagentRegistryDepsForTest,
   subagentRegistryDeps,
 } from "./subagent-registry-deps.js";
+import { registerCompletionCallbackReplayTests } from "./subagent-registry-lifecycle-completion.test-support.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-registry-lifecycle-delivery.js";
 import {
   SubagentLifecycleController,
@@ -5209,100 +5210,14 @@ describe("subagent registry lifecycle hardening", () => {
     expect(successor.terminalOwner).toBeUndefined();
   });
 
-  it("drains the retire + announce tail for a duplicate completion held behind a slow first browser cleanup", async () => {
-    // The dispatch flag dedupes only the browser tab-close IPC. A duplicate
-    // completion caller must still reach retireRunModeBundleMcpRuntime and
-    // startSubagentAnnounceCleanupFlow while the first caller's cleanup
-    // promise is still pending, so a slow browser driver cannot strand
-    // completion delivery behind it.
-    const entry = createRunEntry({
-      expectsCompletionMessage: true,
-    });
-    const runSubagentAnnounceFlow = vi.fn(async () => "delivered" as const);
-    const controller = createLifecycleController({ entry, runSubagentAnnounceFlow });
-
-    let releaseFirstCleanup: (() => void) | undefined;
-    let firstCleanupEntered: (() => void) | undefined;
-    const firstCleanupEnteredPromise = new Promise<void>((resolve) => {
-      firstCleanupEntered = resolve;
-    });
-    browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd.mockImplementationOnce(
-      () => {
-        firstCleanupEntered?.();
-        return new Promise<void>((resolve) => {
-          releaseFirstCleanup = resolve;
-        });
-      },
-    );
-
-    const completeParams = {
-      runId: entry.runId,
-      endedAt: 4_000,
-      outcome: { status: "ok" as const },
-      reason: SUBAGENT_ENDED_REASON_COMPLETE,
-      triggerCleanup: true,
-      terminalReply: { disposition: "visible" as const, text: "final completion reply" },
-    };
-
-    // First caller takes the dispatch flag and parks inside the cleanup wrapper.
-    const firstCompletion = controller.completeSubagentRun(completeParams);
-    await firstCleanupEnteredPromise;
-
-    // Second caller observes the flag set, skips the cleanup wrapper, and must
-    // still drain the retire + announce tail without waiting on the first
-    // caller's still-pending cleanup.
-    await controller.completeSubagentRun({ ...completeParams, endedAt: 3_999 });
-
-    expect(
-      browserLifecycleCleanupMocks.cleanupBrowserSessionsForLifecycleEnd,
-    ).toHaveBeenCalledTimes(1);
-    expect(entry.execution.endedAt).toBe(4_000);
-    expect(bundleMcpRuntimeMocks.retireSessionMcpRuntimeForSessionKey).toHaveBeenCalled();
-    expect(runSubagentAnnounceFlow).toHaveBeenCalled();
-
-    // Release the held first cleanup so the first caller can settle too.
-    releaseFirstCleanup?.();
-    await expect(firstCompletion).resolves.toBeUndefined();
-  });
-
-  it("does not invalidate an active timeout tail when a published timeout is observed again", async () => {
-    const entry = createRunEntry({
-      expectsCompletionMessage: true,
-      runTimeoutSeconds: 2,
-    });
-    let releaseTiming: (() => void) | undefined;
-    helperMocks.persistSubagentSessionTiming.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseTiming = resolve;
-        }),
-    );
-    const runSubagentAnnounceFlow = vi.fn<
-      (_params: unknown) => ReturnType<LifecycleControllerParams["runSubagentAnnounceFlow"]>
-    >(async () => "delivered");
-    const controller = createLifecycleController({ entry, runSubagentAnnounceFlow });
-    const completeParams = {
-      runId: entry.runId,
-      endedAt: 4_000,
-      outcome: { status: "timeout" as const },
-      reason: SUBAGENT_ENDED_REASON_COMPLETE,
-      triggerCleanup: true,
-    };
-
-    const firstCompletion = controller.completeSubagentRun(completeParams);
-    await waitForLifecycleState(() =>
-      expect(helperMocks.persistSubagentSessionTiming).toHaveBeenCalledOnce(),
-    );
-    entry.endedHookEmittedAt = 4_000;
-
-    await controller.completeSubagentRun(completeParams);
-    releaseTiming?.();
-    await firstCompletion;
-
-    expect(runSubagentAnnounceFlow).toHaveBeenCalledOnce();
-    expect(runSubagentAnnounceFlow.mock.calls[0]?.[0]).toMatchObject({
-      outcome: { status: "timeout" },
-    });
+  registerCompletionCallbackReplayTests({
+    createRunEntry,
+    createLifecycleController,
+    makeSubagentCompletion,
+    waitForLifecycleState,
+    browserLifecycleCleanupMocks,
+    bundleMcpRuntimeMocks,
+    helperMocks,
   });
 });
 

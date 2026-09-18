@@ -5,27 +5,56 @@ import { summarizeUpdateStepFailure, type UpdateRunStep } from "./update-run-rec
 import type { UpdateRunResult, UpdateStepResult } from "./update-runner-types.js";
 import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 
-type ResultStep = Pick<
-  UpdateStepResult,
-  | "name"
-  | "exitCode"
-  | "advisory"
-  | "warnings"
-  | "termination"
-  | "stdoutTail"
-  | "stderrTail"
-  | "failureFacts"
-  | "configChanges"
-  | "configWriteRefusal"
-  | "snapshotCapacity"
->;
+type ResultStep = Omit<UpdateStepResult, "command" | "cwd" | "durationMs" | "signal" | "killed">;
+
+export function normalizeControlPlaneUpdateResult(result: UpdateRunResult): UpdateRunResult {
+  return (result.status === "ok" ||
+    (result.status === "skipped" && result.reason === "already-current")) &&
+    isUpdateGatewayReadinessPending(result)
+    ? { ...result, status: "skipped", reason: "gateway-readiness-unverified" }
+    : result;
+}
 
 export function isUpdateGatewayReadinessPending(result: UpdateRunResult): boolean {
-  const step = result.steps.findLast(
+  const step = getUpdateGatewayVerification(result);
+  const profiles = new Map<string, UpdateStepResult>();
+  for (const entry of result.steps) {
+    const profile = /^profile ([1-9]\d*): (rollback )?gateway verification$/u.exec(entry.name)?.[1];
+    if (profile) {
+      profiles.set(profile, entry);
+    }
+  }
+  return [step, ...profiles.values()].some(
     (entry) =>
-      entry.name === "gateway verification" || entry.name === "rollback gateway verification",
+      entry?.termination === "timeout" && entry.advisory?.kind === "recoverable-maintenance",
   );
-  return step?.termination === "timeout" && step.advisory?.kind === "recoverable-maintenance";
+}
+
+/** Keep each profile's latest receipt when the next native verification replaces the generic row. */
+export function retainUpdateProfileVerification(
+  result: UpdateRunResult,
+  profileNumber: number,
+  beforeSteps?: readonly UpdateStepResult[],
+): void {
+  const step = getUpdateGatewayVerification(result);
+  if (!step || beforeSteps?.includes(step)) {
+    return;
+  }
+  const receipt = { ...step, name: `profile ${profileNumber}: ${step.name}` };
+  const index = result.steps.findIndex((entry) => entry.name === receipt.name);
+  result.steps[index < 0 ? result.steps.length : index] = receipt;
+}
+
+export function getUpdateGatewayVerification(
+  result: UpdateRunResult,
+  profileNumber?: number,
+): UpdateStepResult | undefined {
+  const prefix = profileNumber === undefined ? "" : `profile ${profileNumber}: `;
+  return result.steps.findLast(
+    (step) =>
+      step.name === `${prefix}gateway verification` ||
+      step.name === `${prefix}rollback gateway verification`,
+  );
 }
 
 /** Warning rows preserve producer-classified advisories in the existing diagnostic ledger. */

@@ -11,12 +11,12 @@ import * as startRepair from "../daemon-cli/start-repair.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { runUpdateFinalizationDoctorInFreshProcess } from "./update-command-fresh-doctor.js";
 import { runUpdatedInstallGatewayCommand } from "./update-command-service-command.js";
-import { createShippedUnresolvedServiceStop } from "./update-command-service-state.test-support.js";
 import {
-  maybeRestartService,
   maybeStopManagedServiceBeforeMutableUpdate,
   revalidateManagedGatewayServiceAfterUpdate,
-} from "./update-command-service.js";
+} from "./update-command-service-maintenance.js";
+import { createShippedUnresolvedServiceStop } from "./update-command-service-state.test-support.js";
+import { maybeRestartService } from "./update-command-service.js";
 
 export type InstallRootTransitionFixture = {
   root: string;

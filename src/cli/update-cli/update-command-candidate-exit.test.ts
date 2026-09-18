@@ -25,7 +25,7 @@ const mocks = vi.hoisted(() => ({
     vi.fn<typeof import("./schema-preflight.js").captureTargetDatabaseSchemaContext>(),
   inspectService:
     vi.fn<
-      typeof import("./update-command-service.js").maybeStopManagedServiceBeforeMutableUpdate
+      typeof import("./update-command-service-maintenance.js").maybeStopManagedServiceBeforeMutableUpdate
     >(),
   validateCanary:
     vi.fn<typeof import("../../infra/update-candidate-canary.js").validateUpdateCandidateCanary>(),
@@ -41,14 +41,19 @@ vi.mock("./schema-preflight.js", async (original) => ({
 }));
 vi.mock("./update-command-managed-context.js", async (original) => ({
   ...(await original<typeof import("./update-command-managed-context.js")>()),
-  captureOwnedManagedUpdateContext: async () => undefined,
   captureOwnedManagedUpdatePreflightContext: mocks.captureManagedPreflight,
   revalidateUpdateDatabaseContext: async (context: unknown) => context,
 }));
-vi.mock("./update-command-service.js", async (original) => ({
-  ...(await original<typeof import("./update-command-service.js")>()),
+vi.mock("./update-command-service-maintenance.js", async (original) => ({
+  ...(await original<typeof import("./update-command-service-maintenance.js")>()),
   maybeStopManagedServiceBeforeMutableUpdate: mocks.inspectService,
+}));
+vi.mock("./update-command-service-recovery.js", async (original) => ({
+  ...(await original<typeof import("./update-command-service-recovery.js")>()),
   maybeRestartServiceAfterFailedMutableUpdate: async () => undefined,
+}));
+vi.mock("../../daemon/inspect.js", () => ({
+  findGatewayServices: async () => ({ services: [], errors: [] }),
 }));
 vi.mock("../../infra/update-triage.js", () => ({
   prepareUpdateFailureTriage: async () => async () => ({ status: "completed", hint: "" }),
@@ -101,6 +106,8 @@ it("keeps successful candidate repair separate from a failed update and its proc
   });
   const failure = (candidateRoot: string) => ({
     status: "error" as const,
+    profileContexts: true,
+    gatewayRestartCompletion: true,
     reason: "runtime-verification-failed" as const,
     phase: "snapshot" as const,
     steps: [
@@ -120,7 +127,15 @@ it("keeps successful candidate repair separate from a failed update and its proc
     async ({ root: candidateRoot, rehearsal }: { root: string; rehearsal?: unknown }) => {
       events.push(rehearsal ? "rehearsal passes" : "fresh snapshot fails");
       return rehearsal
-        ? { status: "ok", phase: "readiness", steps: [], durationMs: 1, logTail: [] }
+        ? {
+            status: "ok",
+            profileContexts: true,
+            gatewayRestartCompletion: true,
+            phase: "readiness",
+            steps: [],
+            durationMs: 1,
+            logTail: [],
+          }
         : failure(candidateRoot);
     },
   );
@@ -159,7 +174,14 @@ it("keeps successful candidate repair separate from a failed update and its proc
     shouldRestart: false,
     managedServiceRootRedirect: null,
     recoveryState: { triageTarget: { env } },
-    prepareMutableUpdate: async () => {},
+    prepareMutableUpdate: async () => ({}),
+    initialProfile: {
+      configSnapshot,
+      requestedChannel: null,
+      storedChannel: "stable",
+      preUpdatePluginInstallRecords: {},
+      ownedManagedUpdateEnv: env,
+    },
     packageTargetSchemaVersions: { state: 15, agent: 19 },
     packageInstallSpec: "openclaw@2026.9.4",
     packageTargetVersion: "2026.9.4",
@@ -192,18 +214,13 @@ it("keeps successful candidate repair separate from a failed update and its proc
         ...execution,
         root,
         installKindChanged: false,
-        configSnapshot,
-        requestedChannel: null,
-        storedChannel: "stable",
         channel: "stable",
         downgradeRisk: false,
         shouldRestart: false,
-        preUpdatePluginInstallRecords: {},
         updateStepTimeoutMs: 1000,
         opts: { json: true, yes: true, run },
         startedAt: Date.now(),
         controlPlaneUpdateSentinelMeta: null,
-        ownedManagedUpdateEnv: env,
       });
     }),
   ).rejects.toMatchObject({ name: "ExitError", code: 1 });

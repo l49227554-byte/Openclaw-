@@ -1,5 +1,5 @@
 import type { ServiceInspectionReason } from "../../daemon/service-inspection-error.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { WindowsTaskAutoStartRecovery } from "./update-command-windows-task.js";
 
 export type ManagedGatewayUpdateVerdict =
@@ -29,6 +29,8 @@ export type PreManagedServiceStop = {
   blockMessage?: string;
   serviceEnv?: NodeJS.ProcessEnv;
   serviceDefinitionEnv?: NodeJS.ProcessEnv;
+  /** Native bindings captured before activation; omitted from worker inputs. */
+  serviceEffectiveEnv?: NodeJS.ProcessEnv;
   serviceNodeRunner?: string;
   /** Original account observed from the pinned native user-manager connection. */
   serviceManagerUid?: number;

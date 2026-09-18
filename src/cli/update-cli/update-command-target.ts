@@ -57,12 +57,12 @@ import {
   readDevUpdateTarget,
   type prepareUpdateCommand,
 } from "./update-command-run.js";
+import type { UpdateCommandRecoveryState } from "./update-command-service-maintenance.js";
 import {
   resolveManagedServicePackageUpdatePlan,
   formatManagedServicePackageUpdatePlan,
   type ManagedServiceRootRedirect,
 } from "./update-command-service-plan.js";
-import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
 
 export async function resolveUpdateCommandTarget(
@@ -122,7 +122,7 @@ export async function resolveUpdateCommandTarget(
   }
 
   const channel =
-    requestedChannel ??
+    (opts.sourceUpdate ? DEFAULT_GIT_CHANNEL : requestedChannel) ??
     storedChannel ??
     (installKind === "git"
       ? DEFAULT_GIT_CHANNEL
@@ -145,7 +145,7 @@ export async function resolveUpdateCommandTarget(
   const switchToPackage =
     requestedChannel !== null && requestedChannel !== "dev" && installKind === "git";
   updateInstallKind = switchToGit ? "git" : switchToPackage ? "package" : installKind;
-  if (channel === "dev" && requestedChannel !== "dev") {
+  if (channel === "dev" && requestedChannel !== "dev" && !opts.sourceUpdate) {
     try {
       devTarget = readDevUpdateTarget();
     } catch (error) {

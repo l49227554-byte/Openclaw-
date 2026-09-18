@@ -68,7 +68,7 @@ import {
 } from "./update-run-ledger.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
 import { AUTO_UPDATE_STEP_TIMEOUT_MS } from "./update-run-timeouts.js";
-import type { UpdateRunResult } from "./update-runner.js";
+import type { UpdateRunResult } from "./update-runner-types.js";
 import type { AutoUpdateRunParams, AutoUpdateRunResult } from "./update-startup-auto-run.js";
 import {
   getUpdateSchedule,
@@ -445,8 +445,7 @@ async function resolveDevGitCommits(params: {
     .slice(0, DEV_COMMIT_LIMIT);
 }
 
-// The owner joins preflight and handoff readiness, never the detached helper's
-// subsequent wait for Gateway exit.
+// The owner joins handoff readiness, never the helper's subsequent wait for Gateway exit.
 async function runCampaignUpdate(params: {
   channel: "stable" | "beta" | "dev";
   mode: UpdateRunResult["mode"];

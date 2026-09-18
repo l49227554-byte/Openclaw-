@@ -1,8 +1,10 @@
 import path from "node:path";
+import { GATEWAY_CONFIG_SELECTION_ENV_KEYS } from "../../config/gateway-env-selection.js";
 import {
   GATEWAY_SERVICE_RUNTIME_PID_ENV,
   GATEWAY_SERVICE_SELECTOR_ENV_KEYS,
 } from "../../daemon/constants.js";
+import { resolveServiceManagerEnv } from "../../daemon/service-process-env.js";
 import { mergePathPrepend } from "../../infra/path-prepend.js";
 import { mergeProcessEnv, resolveEnvironmentValue } from "../../infra/process-env.js";
 import { quoteCliArg, quotePowerShellArg } from "../quote-cli-arg.js";
@@ -177,6 +179,7 @@ export function disableUpdatedPackageCompileCacheEnv(env: NodeJS.ProcessEnv): No
 
 export function resolveUpdatedInstallCommandEnv(params?: {
   processEnv?: NodeJS.ProcessEnv;
+  capturedEnv?: NodeJS.ProcessEnv;
   serviceEnv?: NodeJS.ProcessEnv;
   invocationCwd?: string;
 }): NodeJS.ProcessEnv {
@@ -184,6 +187,22 @@ export function resolveUpdatedInstallCommandEnv(params?: {
     params?.processEnv ?? process.env,
     params?.invocationCwd,
   );
+  if (params?.capturedEnv) {
+    const capturedEnv = resolveServiceRefreshEnv(params.capturedEnv, params.invocationCwd);
+    // Runtime refs may rotate; native routing and selected state retain their captured authority.
+    for (const key of [
+      ...GATEWAY_CONFIG_SELECTION_ENV_KEYS,
+      ...GATEWAY_SERVICE_SELECTOR_ENV_KEYS,
+      ...Object.keys(resolveServiceManagerEnv(processEnv)),
+      ...Object.keys(resolveServiceManagerEnv(capturedEnv)),
+    ]) {
+      if (capturedEnv[key] === undefined) {
+        delete processEnv[key];
+      } else {
+        processEnv[key] = capturedEnv[key];
+      }
+    }
+  }
   const serviceEnv = params?.serviceEnv
     ? resolveServiceRefreshEnv(params.serviceEnv, params.invocationCwd)
     : undefined;

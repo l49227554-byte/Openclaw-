@@ -1,11 +1,11 @@
 /** Platform service registry and shared gateway service start/repair logic. */
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { assertGatewayServiceMutationAllowed } from "../infra/gateway-supervision.js";
-import { parseTcpPort, parseTcpPortFromArgs } from "../infra/tcp-port.js";
 import { assertFutureConfigActionAllowed } from "./future-config-guard.js";
+import { resolveLaunchAgentLabel } from "./launchd-label.js";
+import { readLaunchAgentProgramArgumentsFromFile } from "./launchd-plist.js";
+import { inspectSystemLaunchDaemonOwnership } from "./launchd-system.js";
 import {
   installLaunchAgent,
   isLaunchAgentEnabled,
@@ -38,8 +38,10 @@ import {
   uninstallScheduledTask,
 } from "./schtasks.js";
 import { mergeGatewayServiceEnv } from "./service-env-merge.js";
-import { ServiceInspectionError } from "./service-inspection-error.js";
-import { resolveServiceEntrypoint } from "./service-layout.js";
+import {
+  ServiceDefinitionInspectionError,
+  ServiceInspectionError,
+} from "./service-inspection-error.js";
 import {
   withGatewayServiceOperationLock,
   withSystemdServiceReadBinding,
@@ -48,6 +50,7 @@ import {
   createServiceRuntimeInspectionFailure,
   type GatewayServiceRuntime,
 } from "./service-runtime.js";
+import { collectGatewayServiceStartRepairIssues } from "./service-start-repair.js";
 import type {
   GatewayServiceCommandConfig,
   GatewayServiceCommandInspection,
@@ -128,6 +131,7 @@ export type GatewayService = {
 };
 
 type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
+  externalLaunchdPlist?: string;
   systemdReadTarget?: GatewayServiceReadOptions["systemdReadTarget"];
   systemdInstallation?: GatewayServiceState["systemdInstallation"];
   requireEffective?: boolean;
@@ -136,67 +140,6 @@ type ReadGatewayServiceStateArgs = GatewayServiceEnvArgs & {
   systemdReadBinding?: GatewayServiceReadOptions["systemdReadBinding"];
   validateEnvBeforeStatusRead?: (env: GatewayServiceEnv) => void;
 };
-
-const TEMP_PROGRAM_ROOTS = [os.tmpdir(), "/tmp", "/private/tmp", "/var/tmp"].map((entry) =>
-  path.resolve(entry),
-);
-function pathIsSameOrChild(candidate: string, parent: string): boolean {
-  return candidate === parent || candidate.startsWith(`${parent}${path.sep}`);
-}
-
-function isTemporaryProgramPath(value: string | undefined): boolean {
-  if (!value || !path.isAbsolute(value)) {
-    return false;
-  }
-  const resolved = path.resolve(value);
-  return TEMP_PROGRAM_ROOTS.some((root) => pathIsSameOrChild(resolved, root));
-}
-
-function isMissingProgramPath(value: string | undefined): boolean {
-  if (!value || !path.isAbsolute(value)) {
-    return false;
-  }
-  return !fs.existsSync(value);
-}
-
-function collectGatewayServiceStartRepairIssues(
-  state: GatewayServiceState,
-  expectedPort?: number,
-): GatewayServiceStartRepairIssue[] {
-  const command = state.command;
-  if (state.loadState.status !== "loaded" || !command) {
-    return [];
-  }
-  const issues: GatewayServiceStartRepairIssue[] = [];
-  const servicePort =
-    parseTcpPortFromArgs(command.programArguments) ??
-    parseTcpPort(command.environment?.OPENCLAW_GATEWAY_PORT ?? "");
-  if (expectedPort !== undefined && servicePort !== null && servicePort !== expectedPort) {
-    issues.push({
-      code: "port-mismatch",
-      message: `service port ${servicePort} does not match current gateway config port ${expectedPort}`,
-    });
-  }
-  for (const candidate of new Set([
-    command.programArguments[0],
-    resolveServiceEntrypoint(command),
-  ])) {
-    if (isTemporaryProgramPath(candidate)) {
-      issues.push({
-        code: "temporary-program",
-        message: `service command points at a temporary path: ${candidate}`,
-      });
-      continue;
-    }
-    if (isMissingProgramPath(candidate)) {
-      issues.push({
-        code: "missing-program",
-        message: `service command points at a missing path: ${candidate}`,
-      });
-    }
-  }
-  return issues;
-}
 
 /** Reads the installed service and reports definition drift that must be repaired before launch. */
 export async function inspectGatewayServiceStartRepair(
@@ -235,8 +178,51 @@ export async function readGatewayServiceState(
 ): Promise<GatewayServiceState> {
   let args = input;
   const baseEnv = args.env ?? (process.env as GatewayServiceEnv);
-  if (service.readCommand === readSystemdServiceExecStart && !args.systemdReadTarget) {
-    const installation = await findSystemdGatewayInstallation(baseEnv);
+  const { externalLaunchdPlist } = args;
+  if (externalLaunchdPlist) {
+    const label = resolveLaunchAgentLabel(baseEnv);
+    const command = await readLaunchAgentProgramArgumentsFromFile(externalLaunchdPlist, {
+      requireEffective: true,
+      timeoutMs: args.timeoutMs,
+      expectedLabel: label,
+      generatedEnvironmentLabel: label,
+    });
+    if (!command) {
+      throw new ServiceDefinitionInspectionError(externalLaunchdPlist);
+    }
+    const absent =
+      path.dirname(externalLaunchdPlist) === "/Library/LaunchDaemons" &&
+      (
+        await inspectSystemLaunchDaemonOwnership(label, {
+          scanInstalledPlists: false,
+          timeoutMs: args.timeoutMs,
+        })
+      ).status === "absent";
+    return {
+      externalLaunchdPlist,
+      command,
+      env: baseEnv,
+      installed: true,
+      running: false,
+      loadState: absent
+        ? { status: "not-loaded" }
+        : { status: "unknown", detail: "External launchd service requires its deployment owner." },
+      runtime: { status: absent ? "stopped" : "unknown" },
+      definitionMutationCapability: {
+        kind: "sealed",
+        reason: "system-owned",
+        artifact: "service-file",
+        path: externalLaunchdPlist,
+      },
+    };
+  }
+  const supplied = args.systemdInstallation;
+  const selected = supplied?.kind === "system" || supplied?.kind === "user" ? supplied : undefined;
+  if (
+    !args.systemdReadTarget &&
+    (selected || service.readCommand === readSystemdServiceExecStart)
+  ) {
+    const installation = selected ?? (await findSystemdGatewayInstallation(baseEnv));
     if (installation.kind === "dueling" && args.requireEffective && args.requireLoadedCommand) {
       throw new Error(
         "Both user and system systemd units own this Gateway name. Run openclaw doctor interactively to inspect the competing supervisors before maintenance.",
@@ -319,7 +305,11 @@ async function readGatewayServiceStateWithBinding(
             },
           })
           .catch(() => null);
-  const env = mergeGatewayServiceEnv(baseEnv, command);
+  const mergedEnv = mergeGatewayServiceEnv(baseEnv, command);
+  const env =
+    process.platform === "win32" && args.requireLoadedCommand && command?.sourcePath
+      ? { ...mergedEnv, OPENCLAW_TASK_SCRIPT: command.sourcePath }
+      : mergedEnv;
   // Reject persisted selector drift before invoking the native service manager.
   args.validateEnvBeforeStatusRead?.(env);
   // Strict user-unit absence still needs the platform owner's system-scope proof.

@@ -50,7 +50,10 @@ import {
   runUpdateFinalizationDoctorInFreshProcess,
   withPrePluginUpdateDoctorEnv,
 } from "./update-command-fresh-doctor.js";
-import { collectPostCorePluginFailureFacts } from "./update-command-plugins-internals.js";
+import {
+  collectPostCorePluginFailureFacts,
+  isPostCorePluginAdvisory,
+} from "./update-command-plugins-internals.js";
 import {
   updatePluginsAfterCoreUpdate,
   type PostCorePluginUpdateResult,
@@ -362,10 +365,7 @@ async function updateFinalizeCommandInternal(
     const pluginUpdate = completedPluginUpdate.pluginUpdate;
     lifecycle.recordWarnings(
       (pluginUpdate.warnings ?? [])
-        .filter(
-          (warning) =>
-            warning.reason === "plugin-target-unavailable" || warning.reason === "doctor-advisory",
-        )
+        .filter(isPostCorePluginAdvisory)
         .map((warning) => warning.message),
       "plugins",
     );

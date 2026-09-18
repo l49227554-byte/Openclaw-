@@ -2,6 +2,7 @@ import {
   resumeScheduledTaskAutoStartAfterUpdate,
   suspendScheduledTaskAutoStartForUpdate,
 } from "../../daemon/schtasks.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { finishUpdateRun } from "../../infra/update-run-ledger.js";
 import { defaultRuntime } from "../../runtime.js";
 import {
@@ -18,18 +19,34 @@ export class UpdateCommandAbort extends Error {
   }
 }
 
-export type WindowsTaskAutoStartRecovery = {
-  suspended: Promise<boolean>;
-  beginMutation: () => void;
-  restore: (
-    restartSafe?: boolean,
-    guard?: () => Promise<void>,
-    assertCurrent?: () => void,
-  ) => Promise<void>;
-  handoff: (guard: () => Promise<void>) => void;
-  complete: (restartSafe?: boolean) => Promise<void>;
-  interrupted: () => boolean;
-};
+export type WindowsTaskAutoStartRecovery = ReturnType<typeof createWindowsTaskAutoStartRecovery>;
+
+export async function completeWindowsTaskAutoStartRecoveries(
+  recoveries: readonly (WindowsTaskAutoStartRecovery | undefined)[],
+  restartSafe: boolean | ((index: number) => boolean),
+  assertCurrent?: () => void,
+): Promise<void> {
+  const failures: unknown[] = [];
+  for (const [index, recovery] of recoveries.entries()) {
+    assertCurrent?.();
+    try {
+      if (recovery) {
+        await recovery.complete(
+          typeof restartSafe === "function" ? restartSafe(index) : restartSafe,
+        );
+      }
+    } catch (cause) {
+      failures.push(cause);
+    }
+    assertCurrent?.();
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, failures.map(formatErrorMessage).join("; "));
+  }
+}
 
 export function createWindowsTaskAutoStartRecovery(params: {
   serviceEnv: NodeJS.ProcessEnv;
@@ -37,7 +54,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
   assertCurrent?: () => void;
   alreadySuspended?: true;
   updateRun?: UpdateCommandOptions["run"];
-}): WindowsTaskAutoStartRecovery {
+}) {
   let guard = params.assertCurrentService;
   let restorePromise: Promise<void> | undefined;
   let settlement: Promise<void> | undefined;
@@ -208,7 +225,7 @@ export function createWindowsTaskAutoStartRecovery(params: {
       restoreAllowed = false;
     },
     restore,
-    handoff: (guardianGuard) => {
+    handoff: (guardianGuard: () => Promise<void>) => {
       params.assertCurrent?.();
       if (closed || delegated) {
         throw new Error("Windows task recovery cannot transfer after settlement.");

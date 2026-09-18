@@ -8,7 +8,7 @@ import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint
 import type { GatewayService } from "../../daemon/service.js";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
-import type { UpdateRunResult } from "../../infra/update-runner.js";
+import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   updatePluginsAfterCoreUpdate,
@@ -23,9 +23,9 @@ import {
   resolveOwnedManagedUpdateEnv,
   resolveUpdatedInstallCommandEnv,
 } from "./update-command-service-env.js";
+import { resolveUpdatedGatewayRestartPort } from "./update-command-service-plan.js";
 import {
   resolvePostUpdateServiceStateReadEnv,
-  resolveUpdatedGatewayRestartPort,
   shouldPrepareUpdatedInstallRestart,
 } from "./update-command-service.js";
 import { testing as updateCommandServiceTesting } from "./update-command-service.test-support.js";

@@ -102,9 +102,9 @@ export async function preflightUpdateCommandSchemas(params: {
   devTarget?: DevUpdateTarget;
   packageTargetSchemaVersions?: OpenClawSchemaVersions;
   packageTargetVersion?: string;
+  packageAlreadyCurrent?: boolean;
   packageInstallSpec?: string | null;
   packageRuntimeTarget?: { version: string; nodeEngine: string | null };
-  packageAlreadyCurrent?: boolean;
   managedServiceNodeRunner?: string;
   opts: Pick<UpdateCommandOptions, "dryRun" | "json" | "run">;
   refuseUpdate: RefuseUpdate;
@@ -149,6 +149,10 @@ export async function preflightUpdateCommandSchemas(params: {
       const { inspectGitDryRunTargetSchemaVersions } = await import("./update-command-git.js");
       const admission = await inspectUpdateDatabaseContexts({
         roots: switchToGit ? [root, resolveGitInstallDir()] : [root],
+        scope:
+          updateInstallKind === "package" && params.packageAlreadyCurrent
+            ? "profile-maintenance"
+            : "installation",
         updateInstallKind,
         shouldRestart,
         jsonMode: Boolean(opts.json),
@@ -157,10 +161,10 @@ export async function preflightUpdateCommandSchemas(params: {
         managedServiceRootRedirect,
         legacyConfigPlan: params.legacyConfigPlan,
       });
-      service = admission.service ?? admission.services.get(root);
-      for (const inspectedService of admission.services.values()) {
-        if (inspectedService.serviceUpdateVerdict?.kind === "unavailable") {
-          preflightNotes.push(inspectedService.serviceUpdateVerdict.message);
+      service = admission.profiles[0]?.stopState;
+      for (const { stopState } of admission.profiles) {
+        if (stopState?.serviceUpdateVerdict?.kind === "unavailable") {
+          preflightNotes.push(stopState.serviceUpdateVerdict.message);
         }
       }
       const target =

@@ -24,6 +24,7 @@ import {
   prepareUpdateCommand,
   resolveUpdateCommandAdmissionEnv,
 } from "./update-command-run.js";
+import { withServiceHome } from "./update-command-service-home.test-support.js";
 import { maybeStopManagedServiceBeforeMutableUpdate } from "./update-command-service-maintenance.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 
@@ -149,4 +150,36 @@ it.each(
       expect(native.install).not.toHaveBeenCalled();
     },
   );
+});
+
+it("refuses owned Linux admission without a native manager UID", () => {
+  mockSystemAccountHome();
+  return withServiceHome(async (home) => {
+    mockProcessPlatform("linux");
+    const stop = vi.fn(async () => undefined);
+    vi.spyOn(service, "resolveGatewayService").mockReturnValue(
+      createMockGatewayService({
+        readCommand: async () => ({
+          programArguments: [process.execPath, path.join(process.cwd(), "openclaw.mjs"), "gateway"],
+          environment: { HOME: home },
+        }),
+        readRuntime: async () => ({ status: "running" }),
+        isLoaded: async () => true,
+        stop,
+      }),
+    );
+    await expect(
+      maybeStopManagedServiceBeforeMutableUpdate({
+        updateInstallKind: "package",
+        root: process.cwd(),
+        shouldRestart: true,
+        jsonMode: true,
+        phase: "inspect",
+      }),
+    ).resolves.toMatchObject({
+      serviceUpdateVerdict: { kind: "unavailable" },
+      serviceMutationAllowed: false,
+    });
+    expect(stop).not.toHaveBeenCalled();
+  });
 });

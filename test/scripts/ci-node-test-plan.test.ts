@@ -1585,10 +1585,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             "retained ordinary group",
           );
           if (usesTwoWorkerPacking(originalHybridJob)) {
-            expect(retained).toEqual({
-              ...original,
-              env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env },
-            });
+            expect(
+              retained.env?.OPENCLAW_VITEST_MAX_WORKERS ?? shard.env?.OPENCLAW_VITEST_MAX_WORKERS,
+            ).toBe("2");
+            expect(retained).toStrictEqual(
+              retained.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined
+                ? original
+                : { ...original, env: { OPENCLAW_VITEST_MAX_WORKERS: "2", ...original.env } },
+            );
           } else {
             expect(retained).toStrictEqual(original);
           }
@@ -4018,26 +4022,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expectTimingFamilies(after, afterInherited);
       expect(policies(after, afterInherited)).toEqual(policies(before, beforeInherited));
       if (runnerBackend === "hybrid") {
-        const serialized = structuredClone(before);
-        const gatewayJob = expectDefined(
-          serialized.find(
-            (job) =>
-              job.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" &&
-              job.groups.some(
-                (group) =>
-                  beforeInherited.has(group.shard_name) &&
-                  group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined,
-              ),
-          ),
-          "serial Gateway job with an inherited worker cap",
-        );
-        expect(gatewayJob.planConcurrency).toBe(1);
-        for (const cap of [undefined, "3"]) {
-          gatewayJob.env = cap === undefined ? undefined : { OPENCLAW_VITEST_MAX_WORKERS: cap };
-          expect(() => policies(serialized, beforeInherited)).toThrow(
-            "materialized serial worker cap",
-          );
-        }
         const promoted = structuredClone(before);
         const recipient = expectDefined(
           promoted.find(
@@ -4072,7 +4056,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         }
         expectTimingFamilies(promoted, beforeInherited);
         expect(policies(promoted, beforeInherited)).toEqual(policies(before, beforeInherited));
-        delete recipient.env.OPENCLAW_VITEST_MAX_WORKERS;
+        for (const cap of [undefined, "3"]) {
+          recipient.env = cap === undefined ? undefined : { OPENCLAW_VITEST_MAX_WORKERS: cap };
+          expect(() => policies(promoted, beforeInherited)).toThrow(
+            "materialized serial worker cap",
+          );
+        }
+        recipient.env = undefined;
         for (const group of recipient.groups) {
           group.env = { OPENCLAW_VITEST_MAX_WORKERS: "2", ...group.env };
         }

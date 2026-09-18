@@ -73,6 +73,8 @@ const CORE_SHARD = {
 };
 const CORE_TS_CONFIG = "config/tsconfig/oxlint.core.json";
 const CORE_SPLIT_TARGETS = ["ui", "packages"];
+// Combining these targets with neighbors exceeds hosted RAM despite Go's soft heap limit.
+const ISOLATED_CORE_TARGETS = new Set(["src/agents", "src/gateway", "src/infra", "ui"]);
 const EXTENSIONS_SHARD = {
   name: "extensions",
   args: ["--tsconfig", EXTENSION_TS_CONFIG, EXTENSIONS_DIR],
@@ -472,7 +474,7 @@ export function filterOxlintShards<T extends { name: string }>(shards: T[], only
   );
 }
 
-/** Aggregate one deterministic, disjoint stripe into a single core Program. */
+/** Keep stripe coverage stable while bounding the largest targets' semantic caches. */
 export function selectCoreOxlintStripe(shards: OxlintShard[], stripe: ShardStripe | undefined) {
   if (!stripe) {
     return shards;
@@ -483,14 +485,22 @@ export function selectCoreOxlintStripe(shards: OxlintShard[], stripe: ShardStrip
   const targets = shards
     .filter((_, index) => index % stripe.total === stripe.index - 1)
     .flatMap((shard) => shard.args.slice(2));
-  if (targets.length === 0) {
-    return [];
-  }
+  const sharedTargets = targets.filter((target) => !ISOLATED_CORE_TARGETS.has(target));
   return [
-    {
-      name: `core:stripe:${stripe.index}`,
-      args: ["--tsconfig", CORE_TS_CONFIG, ...targets],
-    },
+    ...(sharedTargets.length > 0
+      ? [
+          {
+            name: `core:stripe:${stripe.index}`,
+            args: ["--tsconfig", CORE_TS_CONFIG, ...sharedTargets],
+          },
+        ]
+      : []),
+    ...targets
+      .filter((target) => ISOLATED_CORE_TARGETS.has(target))
+      .map((target) => ({
+        name: `core:stripe:${stripe.index}:${target.replaceAll("/", ":")}`,
+        args: ["--tsconfig", CORE_TS_CONFIG, target],
+      })),
   ];
 }
 

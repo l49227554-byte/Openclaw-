@@ -1054,7 +1054,7 @@ describe("sendMessageTelegram", () => {
         name: "global telegram timeout",
         cfg: { channels: { telegram: { timeoutSeconds: 60 } } },
         opts: { cfg: TELEGRAM_TEST_CFG, token: "tok" },
-        expectedTimeout: undefined,
+        expectedTimeout: 1860,
       },
       {
         name: "per-account timeout override",
@@ -1067,7 +1067,7 @@ describe("sendMessageTelegram", () => {
           },
         },
         opts: { cfg: TELEGRAM_TEST_CFG, token: "tok", accountId: "foo" },
-        expectedTimeout: undefined,
+        expectedTimeout: 1860,
       },
     ] as const;
     for (const testCase of cases) {

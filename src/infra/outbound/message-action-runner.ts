@@ -26,7 +26,7 @@ import {
   listConfiguredMessageChannels,
   resolveMessageChannelSelection,
 } from "./channel-selection.js";
-import { OutboundHandoffRejectedError } from "./deliver-handoff.js";
+import { assertOutboundHandoffCurrent, OutboundHandoffRejectedError } from "./deliver-handoff.js";
 import { shouldUseInternalSourceReplySink } from "./internal-source-reply.js";
 import { validateExplicitMessageAccountSelection } from "./message-account-selection.js";
 import {
@@ -65,6 +65,24 @@ const loadClawHubRecommendations = createLazyRuntimeModule(
 
 export function getToolResult(result: MessageActionResult): AgentToolResult<unknown> | undefined {
   return "toolResult" in result ? result.toolResult : undefined;
+}
+
+function withMessageTargetPreparation<T>(
+  assertCallerCurrent: (() => void) | undefined,
+  prepare: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const assertCurrent = signal
+    ? () => {
+        throwIfAborted(signal);
+        assertCallerCurrent?.();
+      }
+    : assertCallerCurrent;
+  return withChannelReadAuthority(assertCurrent, prepare, signal).catch((error: unknown) => {
+    // Preparation has not handed a message to a provider; preserve that fact on cancellation.
+    assertOutboundHandoffCurrent(assertCurrent);
+    throw error;
+  });
 }
 
 async function handleBroadcastAction(
@@ -188,7 +206,7 @@ async function handleBroadcastAction(
           accountId: explicitAccountId,
         });
         const targetArgs: Record<string, unknown> = { to: target };
-        const resolved = await withChannelReadAuthority(
+        const resolved = await withMessageTargetPreparation(
           input.assertDirectAdapterHandoff,
           () =>
             resolveMessageTarget({
@@ -566,7 +584,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
   return await withChannelReadAuthority(
     route.assertReadAuthorityCurrent,
     async () => {
-      const context = await withChannelReadAuthority(
+      const context = await withMessageTargetPreparation(
         route.assertTargetAuthorityCurrent ?? input.assertDirectAdapterHandoff,
         async (): Promise<ResolvedActionContext> => {
           params = route.params;

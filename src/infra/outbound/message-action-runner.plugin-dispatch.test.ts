@@ -563,6 +563,7 @@ describe("runMessageAction plugin dispatch", () => {
       name: string,
       assertCurrent?: () => void,
       action: "pin" | "broadcast" = "pin",
+      abortSignal?: AbortSignal,
     ) =>
       runMessageAction({
         cfg,
@@ -571,7 +572,7 @@ describe("runMessageAction plugin dispatch", () => {
           channel,
           accountId: "default",
           ...(action === "broadcast"
-            ? { targets: [`user:${name}`], message: "hello" }
+            ? { targets: ["user:resolved-First", `user:${name}`], message: "hello" }
             : { target: `user:${name}`, messageId: "message-1" }),
         },
         requesterAccountId: "default",
@@ -581,6 +582,7 @@ describe("runMessageAction plugin dispatch", () => {
           currentChatType: "direct",
         },
         assertDirectAdapterHandoff: assertCurrent,
+        abortSignal,
       });
 
     beforeEach(() => {
@@ -602,9 +604,10 @@ describe("runMessageAction plugin dispatch", () => {
     });
 
     describe.each(["pin", "broadcast"] as const)("%s", (action) => {
-      it.each([false, true])(
-        "checks the caller after directory request preparation (retired=%s)",
-        async (retired) => {
+      it.each(["active", "caller", "signal"] as const)(
+        "checks currentness after directory request preparation (%s)",
+        async (retirement) => {
+          const retired = retirement !== "active";
           const entered = createDeferred<void>();
           const release = createDeferred<void>();
           const caller = new AbortController();
@@ -619,9 +622,12 @@ describe("runMessageAction plugin dispatch", () => {
             return [entry("Alpha")];
           });
 
-          const pending = runLookup("Alpha", () => caller.signal.throwIfAborted(), action).catch(
-            (error: unknown) => error,
-          );
+          const pending = runLookup(
+            "Alpha",
+            retirement === "signal" ? undefined : () => caller.signal.throwIfAborted(),
+            action,
+            retirement === "signal" ? caller.signal : undefined,
+          ).catch((error: unknown) => error);
           await entered.promise;
           if (retired) {
             caller.abort(canceled);
@@ -630,18 +636,34 @@ describe("runMessageAction plugin dispatch", () => {
           const result = await pending;
 
           expect(requests).toEqual(retired ? [] : ["default:Alpha"]);
-          expect(handleAction).toHaveBeenCalledTimes(retired ? 0 : 1);
-          if (retired) {
-            expect(result).toBe(canceled);
+          expect(handleAction).toHaveBeenCalledTimes(
+            (action === "broadcast" ? 1 : 0) + (retired ? 0 : 1),
+          );
+          if (action === "broadcast") {
+            expect(result).toMatchObject({
+              kind: "broadcast",
+              payload: {
+                results: [
+                  { ok: true, to: "user:resolved-First" },
+                  retired
+                    ? { ok: false, to: "user:Alpha", attempted: false }
+                    : { ok: true, to: "user:resolved-Alpha" },
+                ],
+              },
+            });
+          } else if (retired) {
+            expect(result).toMatchObject({
+              code: "OPENCLAW_PLATFORM_MESSAGE_NOT_DISPATCHED",
+              cause:
+                retirement === "signal"
+                  ? expect.objectContaining({ name: "AbortError" })
+                  : canceled,
+            });
           } else {
-            expect(result).toMatchObject(
-              action === "broadcast"
-                ? {
-                    kind: "broadcast",
-                    payload: { results: [{ ok: true, to: "user:resolved-Alpha" }] },
-                  }
-                : { kind: "action", payload: { ok: true, to: "user:resolved-Alpha" } },
-            );
+            expect(result).toMatchObject({
+              kind: "action",
+              payload: { ok: true, to: "user:resolved-Alpha" },
+            });
           }
         },
       );
@@ -672,12 +694,16 @@ describe("runMessageAction plugin dispatch", () => {
       first.release.resolve();
       second.release.resolve();
 
-      expect(await retired).toBe(canceled);
+      const retiredResult = await retired;
+      expect(requests).toEqual(["Beta"]);
+      expect(retiredResult).toMatchObject({
+        code: "OPENCLAW_PLATFORM_MESSAGE_NOT_DISPATCHED",
+        cause: canceled,
+      });
       expect(await active).toMatchObject({
         kind: "action",
         payload: { ok: true, to: "user:resolved-Beta" },
       });
-      expect(requests).toEqual(["Beta"]);
       expect(handleAction).toHaveBeenCalledOnce();
     });
 
@@ -725,7 +751,10 @@ describe("runMessageAction plugin dispatch", () => {
           expect(nextLookup).toHaveBeenCalledTimes(retired ? 0 : 1);
           expect(handleAction).toHaveBeenCalledTimes(retired ? 0 : 1);
           if (retired) {
-            expect(result).toBe(canceled);
+            expect(result).toMatchObject({
+              code: "OPENCLAW_PLATFORM_MESSAGE_NOT_DISPATCHED",
+              cause: canceled,
+            });
           } else {
             expect(result).toMatchObject({
               kind: "action",

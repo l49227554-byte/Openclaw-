@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { WebClient } from "@slack/web-api";
@@ -94,11 +95,9 @@ vi.mock("@slack/bolt", () => {
     async stop() {}
   }
   class SocketModeReceiver {
-    client = {
-      on: vi.fn(),
-      off: vi.fn(),
+    client = Object.assign(new EventEmitter(), {
       send: vi.fn<(envelopeId: string) => Promise<void>>().mockResolvedValue(undefined),
-    };
+    });
   }
   function HTTPReceiver() {}
   return {

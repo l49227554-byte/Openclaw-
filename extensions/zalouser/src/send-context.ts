@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { resolveFetch } from "openclaw/plugin-sdk/fetch-runtime";
+import {
+  fetchWithRuntimeDispatcher,
+  type DispatcherAwareRequestInit,
+} from "openclaw/plugin-sdk/runtime-fetch";
 import type { ZaloSendHandoff } from "./types.js";
 
 type SendContext = ZaloSendHandoff & { active: boolean };
@@ -57,3 +61,15 @@ export const fetchWithZaloSendContext: typeof fetch = async (input, init) => {
   }
   return fetchImpl(input, init);
 };
+
+export function fetchMediaWithZaloSendContext(
+  input: RequestInfo | URL,
+  init?: DispatcherAwareRequestInit,
+): Promise<Response> {
+  const context = sendContext.getStore();
+  if (context) {
+    assertCurrent(context);
+  }
+  // The shared media guard supplies a pinned dispatcher that ambient fetch may ignore.
+  return fetchWithRuntimeDispatcher(input, init);
+}

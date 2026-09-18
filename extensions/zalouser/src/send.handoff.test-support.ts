@@ -288,7 +288,7 @@ export class SendHarness {
   }
 }
 
-export function createSendHarness(): SendHarness {
+export function createSendHarness(options: { mediaFixture?: boolean } = {}): SendHarness {
   const harness = new SendHarness();
   const runtime = createPluginRuntimeMock();
   vi.mocked(runtime.channel.text.resolveChunkMode).mockReturnValue("length");
@@ -312,12 +312,14 @@ export function createSendHarness(): SendHarness {
     ...credentials,
   }));
   vi.mocked(clearStoredZaloCredentials).mockReturnValue(true);
-  vi.mocked(loadOutboundMediaFromUrl).mockResolvedValue({
-    buffer: Buffer.from("fixture"),
-    kind: "image",
-    contentType: "image/png",
-    fileName: "photo.png",
-  });
+  if (options.mediaFixture !== false) {
+    vi.mocked(loadOutboundMediaFromUrl).mockResolvedValue({
+      buffer: Buffer.from("fixture"),
+      kind: "image",
+      contentType: "image/png",
+      fileName: "photo.png",
+    });
+  }
   return harness;
 }
 

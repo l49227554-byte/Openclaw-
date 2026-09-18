@@ -7,7 +7,7 @@ import {
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
-import { fetchWithZaloSendContext } from "./send-context.js";
+import { fetchMediaWithZaloSendContext } from "./send-context.js";
 import { createZalouserSendReceipt } from "./send-receipt.js";
 import type { ZaloSendOptions, ZaloSendResult } from "./types.js";
 import type { API } from "./zca-client.js";
@@ -152,7 +152,7 @@ export async function sendZaloTextWithApi(
         maxBytes: options.mediaMaxBytes,
         mediaLocalRoots: options.mediaLocalRoots,
         mediaReadFile: options.mediaReadFile,
-        fetchImpl: fetchWithZaloSendContext,
+        fetchImpl: fetchMediaWithZaloSendContext,
       });
       const fileName = resolveMediaFileName({
         mediaUrl: options.mediaUrl,

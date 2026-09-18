@@ -138,6 +138,47 @@ describe("subagent registry query regressions", () => {
     expect(countActiveRunsForSessionFromRuns(runs, "agent:main:main")).toBe(0);
   });
 
+  it("counts plugin-owned runs against the owner key regardless of the requester agent", () => {
+    const owner = "plugin:factory:acp";
+    const now = Date.now();
+    const runs = toRunMap([
+      makeRun({
+        runId: "detached",
+        childSessionKey: "agent:codex:acp:plugin:factory:detached",
+        controllerSessionKey: owner,
+        taskOwnerKey: owner,
+        requesterSessionKey: owner,
+        requesterAgentId: "codex",
+        createdAt: now,
+        execution: { status: "running", startedAt: now },
+      }),
+      makeRun({
+        runId: "cross-agent-bound",
+        childSessionKey: "agent:codex:acp:plugin:factory:bound",
+        controllerSessionKey: owner,
+        taskOwnerKey: owner,
+        requesterSessionKey: "agent:main:telegram:group:42",
+        requesterAgentId: "main",
+        createdAt: now,
+        execution: { status: "running", startedAt: now },
+      }),
+      // A per-agent session controller still needs the requester-agent disambiguation.
+      makeRun({
+        runId: "other-agent-session-child",
+        childSessionKey: "agent:ops:subagent:child",
+        requesterSessionKey: "main",
+        requesterAgentId: "ops",
+        createdAt: now,
+        execution: { status: "running", startedAt: now },
+      }),
+    ]);
+
+    expect(countActiveRunsForSessionFromRuns(runs, owner, { requesterAgentId: "codex" })).toBe(2);
+    expect(countActiveRunsForSessionFromRuns(runs, owner)).toBe(2);
+    expect(countActiveRunsForSessionFromRuns(runs, "main", { requesterAgentId: "main" })).toBe(0);
+    expect(countActiveRunsForSessionFromRuns(runs, "main", { requesterAgentId: "ops" })).toBe(1);
+  });
+
   it("filters collector children out of announce admission counts", () => {
     const owner = "agent:main:main";
     const runs = toRunMap(

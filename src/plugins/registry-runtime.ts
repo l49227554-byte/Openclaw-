@@ -301,6 +301,21 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
               withPluginRuntimePluginIdScope(pluginId, () => llm.complete(params)),
           } satisfies PluginRuntime["llm"];
         }
+        if (prop === "acp") {
+          const acp: PluginRuntime["acp"] = getRuntimeProperty();
+          // Every method carries the host plugin id plus origin/trust facts: the Gateway
+          // runtime derives its principal and detached-spawn authority from this scope only.
+          return {
+            isAvailable: () => runWithPluginScope(() => acp.isAvailable()),
+            spawn: (params) => runWithPluginScope(() => acp.spawn(params)),
+            getRun: (params) => runWithPluginScope(() => acp.getRun(params)),
+            listRuns: (params) => runWithPluginScope(() => acp.listRuns(params)),
+            getSession: (params) => runWithPluginScope(() => acp.getSession(params)),
+            waitForRun: (params) => runWithPluginScope(() => acp.waitForRun(params)),
+            cancel: (params) => runWithPluginScope(() => acp.cancel(params)),
+            observe: (params, listener) => runWithPluginScope(() => acp.observe(params, listener)),
+          } satisfies PluginRuntime["acp"];
+        }
         if (prop === "gateway") {
           const gateway = getRuntimeProperty();
           return {

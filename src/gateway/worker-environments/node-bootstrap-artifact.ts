@@ -43,6 +43,7 @@ const BOOTSTRAP_LAUNCHER_FILES = [
   "openclaw.mjs",
   "node-version.mjs",
   "node-sqlite.mjs",
+  "plugin-request-authority.cjs",
   "node-runtime-update.mjs",
   "node-runtime-recovery.mjs",
 ];

@@ -28,18 +28,20 @@ type SpawnAcpResultFields = {
 
 type SpawnAcpErrorCode = (typeof ACP_SPAWN_ERROR_CODES)[number];
 
-export type SpawnAcpResult =
-  | (SpawnAcpResultFields & {
-      status: "accepted";
-      childSessionKey: string;
-      runId: string;
-      mode: SpawnAcpMode;
-    })
-  | (SpawnAcpResultFields & {
-      status: "forbidden" | "error";
-      error: string;
-      errorCode: SpawnAcpErrorCode;
-    });
+export type SpawnAcpAccepted = SpawnAcpResultFields & {
+  status: "accepted";
+  childSessionKey: string;
+  runId: string;
+  mode: SpawnAcpMode;
+};
+
+export type SpawnAcpFailure = SpawnAcpResultFields & {
+  status: "forbidden" | "error";
+  error: string;
+  errorCode: SpawnAcpErrorCode;
+};
+
+export type SpawnAcpResult = SpawnAcpAccepted | SpawnAcpFailure;
 
 export function createAcpSpawnFailure(params: {
   status: "forbidden" | "error";
@@ -47,7 +49,7 @@ export function createAcpSpawnFailure(params: {
   error: string;
   childSessionKey?: string;
   runId?: string;
-}): SpawnAcpResult {
+}): SpawnAcpFailure {
   return {
     status: params.status,
     errorCode: params.errorCode,

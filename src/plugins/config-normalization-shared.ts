@@ -31,6 +31,9 @@ export type NormalizedPluginsConfig = {
         allowedModels?: string[];
         hasAllowedModelsConfig?: boolean;
       };
+      acp?: {
+        allowDetachedSpawn?: boolean;
+      };
       llm?: {
         allowModelOverride?: boolean;
         allowedModels?: string[];
@@ -147,6 +150,11 @@ function normalizePluginEntries(
               : {}),
           }
         : undefined;
+    const acpRaw = entry.acp;
+    const normalizedAcp =
+      isRecord(acpRaw) && typeof acpRaw.allowDetachedSpawn === "boolean"
+        ? { allowDetachedSpawn: acpRaw.allowDetachedSpawn }
+        : undefined;
     const llmRaw = entry.llm;
     const llm = isRecord(llmRaw)
       ? {
@@ -200,6 +208,7 @@ function normalizePluginEntries(
         typeof entry.enabled === "boolean" ? entry.enabled : normalized[normalizedKey]?.enabled,
       hooks: normalizedHooks ?? normalized[normalizedKey]?.hooks,
       subagent: normalizedSubagent ?? normalized[normalizedKey]?.subagent,
+      acp: normalizedAcp ?? normalized[normalizedKey]?.acp,
       llm: normalizedLlm ?? normalized[normalizedKey]?.llm,
       config: "config" in entry ? entry.config : normalized[normalizedKey]?.config,
     };

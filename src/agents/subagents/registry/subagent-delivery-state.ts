@@ -11,6 +11,11 @@ export function normalizeSubagentRunState(entry: SubagentRunRecord): SubagentRun
   const requesterTurnRunId =
     typeof entry.requesterTurnRunId === "string" ? entry.requesterTurnRunId.trim() : "";
   entry.requesterTurnRunId = requesterTurnRunId || undefined;
+  const taskOwnerKey = typeof entry.taskOwnerKey === "string" ? entry.taskOwnerKey.trim() : "";
+  entry.taskOwnerKey = taskOwnerKey || undefined;
+  const childSessionId =
+    typeof entry.childSessionId === "string" ? entry.childSessionId.trim() : "";
+  entry.childSessionId = childSessionId || undefined;
   entry.requesterTurnYielded =
     requesterTurnRunId && entry.requesterTurnYielded === true ? true : undefined;
   entry.retireAfterRequesterTurn =

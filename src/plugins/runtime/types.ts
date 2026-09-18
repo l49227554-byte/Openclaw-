@@ -5,6 +5,7 @@ import type { NodePluginToolDescriptor } from "../../../packages/gateway-protoco
 import type { AgentWaitResult } from "../../agents/run-wait.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { OperatorScope } from "../../gateway/operator-scopes.js";
+import type { PluginRuntimeAcp } from "./types-acp.js";
 import type { PluginRuntimeCore, RuntimeLogger } from "./types-core.js";
 
 export type { RuntimeLogger };
@@ -152,6 +153,8 @@ export type PluginRuntime = PluginRuntimeCore & {
     ) => Promise<SubagentGetSessionMessagesResult>;
     deleteSession: (params: SubagentDeleteSessionParams) => Promise<void>;
   };
+  /** One-shot ACP harness runs owned by the calling plugin; Gateway-only, principal-scoped. */
+  acp: PluginRuntimeAcp;
   nodes: {
     list: (params?: RuntimeNodeListParams) => Promise<RuntimeNodeListResult>;
     invoke: (params: RuntimeNodeInvokeParams) => Promise<unknown>;
@@ -217,6 +220,7 @@ export type CreatePluginRuntimeOptions = {
   gateway?: PluginRuntime["gateway"];
   hooks?: PluginRuntime["hooks"];
   subagent?: PluginRuntime["subagent"];
+  acp?: PluginRuntime["acp"];
   nodes?: PluginRuntime["nodes"];
   /** Native policy facades avoid re-evaluating SDK dependencies during registration. */
   modelAuth?: PluginRuntime["modelAuth"];

@@ -5773,6 +5773,42 @@ describe("subagent registry seam flow", () => {
     expect(findTaskByRunIdForStatus(runId)).toMatchObject({ status: "running" });
   });
 
+  it("keeps a non-session task owner while the registry row announces to the requester", () => {
+    mockPendingAgentWait();
+    const runId = "run-plugin-task-owner";
+    const pluginOwnerKey = "plugin:factory:acp";
+    const requesterOrigin = { channel: "telegram", to: "telegram:42" };
+    mod.registerSubagentRun({
+      runId,
+      childSessionKey: "agent:codex:acp:plugin:factory:child",
+      controllerSessionKey: pluginOwnerKey,
+      taskOwnerKey: pluginOwnerKey,
+      requesterSessionKey: "agent:main:main",
+      requesterOrigin,
+      requesterDisplayKey: "plugin:factory",
+      task: "report back",
+      expectsCompletionMessage: true,
+    });
+
+    expect(findRequesterRun(runId)).toMatchObject({
+      controllerSessionKey: pluginOwnerKey,
+      taskOwnerKey: pluginOwnerKey,
+      requesterSessionKey: "agent:main:main",
+      requesterOrigin,
+      requesterAgentId: "main",
+      expectsCompletionMessage: true,
+      completion: { required: true },
+      delivery: { status: "pending" },
+    });
+    // The task row stays owner-scoped and never receives task-registry terminal notices.
+    expect(findTaskByRunIdForStatus(runId)).toMatchObject({
+      ownerKey: pluginOwnerKey,
+      requesterSessionKey: pluginOwnerKey,
+      deliveryStatus: "not_applicable",
+      notifyPolicy: "silent",
+    });
+  });
+
   it("continues completion announce cleanup when lifecycle cleanup fails", async () => {
     mocks.cleanupBrowserSessionsForLifecycleEnd.mockRejectedValueOnce(
       new Error("browser cleanup unavailable"),

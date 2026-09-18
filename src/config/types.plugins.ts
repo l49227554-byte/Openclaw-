@@ -26,6 +26,13 @@ export type PluginEntryConfig = {
      */
     allowedModels?: string[];
   };
+  acp?: {
+    /**
+     * Explicitly allow this trusted plugin to spawn ACP harness runs from detached work
+     * (timers, background jobs) with no live Gateway request. Request-scoped spawns never need it.
+     */
+    allowDetachedSpawn?: boolean;
+  };
   llm?: {
     /** Explicitly allow this plugin to request a model override for api.runtime.llm.complete. */
     allowModelOverride?: boolean;

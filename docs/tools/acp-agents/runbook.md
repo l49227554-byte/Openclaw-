@@ -39,6 +39,7 @@ Quick `/acp` flow from chat:
 <AccordionGroup>
   <Accordion title="Lifecycle details">
     - Spawn creates or resumes an ACP runtime session, records ACP metadata in the OpenClaw session store, and may create a background task when the run is parent-owned.
+    - Plugin-owned one-shot runs started through [`api.runtime.acp`](/plugins/sdk-runtime/background-work#api-runtime-acp) use session keys shaped `agent:<agent>:acp:plugin:<pluginId>:<uuid>` and a task owner key of `plugin:<pluginId>:acp`. They have no parent session, so nothing is announced into chat unless the plugin spawned from a requester-bound hook with `completionDelivery: "current-requester"`; the owning plugin inspects, observes, waits on, or cancels them, and their task rows are labeled `plugin:<pluginId>`.
     - Parent-owned ACP sessions are treated as background work even when the runtime session is persistent; completion and cross-surface delivery go through the parent task notifier rather than acting like a normal user-facing chat session.
     - Task maintenance closes terminal or orphaned parent-owned one-shot ACP sessions. Persistent ACP sessions are preserved while an active conversation binding remains; stale persistent sessions without an active binding are closed so they cannot be silently resumed after the owning task is done or its task record is gone.
     - Bound follow-up messages go directly to the ACP session until the binding is closed, detached, reset, or expired.

@@ -561,6 +561,22 @@ describe("plugin runtime command execution", () => {
     expectGatewaySubagentRunFailure(runtime, { sessionKey: "s-1", message: "hello" });
   });
 
+  it("keeps acp unavailable outside the Gateway with a structured failure", async () => {
+    const acp = createPluginRuntime().acp;
+    await expect(acp.isAvailable()).resolves.toEqual({
+      ok: false,
+      code: "ACP_PLUGIN_GATEWAY_REQUIRED",
+      reason: "Plugin ACP runtime is only available inside the Gateway.",
+    });
+    expect(() => acp.spawn({ task: "x" })).toThrow(
+      expect.objectContaining({
+        name: "PluginAcpRuntimeError",
+        code: "ACP_PLUGIN_GATEWAY_REQUIRED",
+      }),
+    );
+    expect(() => acp.cancel({ runId: "run-1" })).toThrow("only available inside the Gateway");
+  });
+
   it("exposes a node duplex capability even when Gateway access is unavailable", () => {
     const nodes = createPluginRuntime().nodes;
     expect(nodes).toHaveProperty("openDuplex", expect.any(Function));

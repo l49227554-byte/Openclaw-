@@ -452,7 +452,15 @@ export function countActiveRunsForSessionFromRuns(
     if (resolveConcurrencyOwnerSessionKey(entry) !== key) {
       continue;
     }
-    if (options?.requesterAgentId && entry.requesterAgentId !== options.requesterAgentId) {
+    // The requester-agent filter disambiguates bare per-agent session keys. A row whose
+    // explicit task owner is this controller (plugin-owned work) has a globally unique
+    // owner key, and its requesterAgentId names the captured completion target rather than
+    // the controller, so cross-agent requester-bound runs still count against the owner.
+    if (
+      options?.requesterAgentId &&
+      entry.requesterAgentId !== options.requesterAgentId &&
+      entry.taskOwnerKey?.trim() !== key
+    ) {
       continue;
     }
     recordLatestSubagentRun(latestByChildSessionKey, entry.childSessionKey, entry);

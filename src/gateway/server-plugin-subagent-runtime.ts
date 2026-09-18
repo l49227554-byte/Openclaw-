@@ -148,6 +148,38 @@ export function canTrustedOfficialPluginRequestScopes(params: {
 
 const PLUGIN_SUBAGENT_SESSION_MESSAGES_MAX_LIMIT = 1_000;
 
+/** Shared `agent.wait` adapter for plugin runtimes; normalizes legacy terminal statuses. */
+export async function waitForGatewayAgentRun(
+  params: { runId: string; timeoutMs?: number },
+  resolveGatewayContext?: GatewayContextResolver,
+): Promise<AgentWaitResult> {
+  const payload = await dispatchGatewayMethodInProcess<
+    Omit<AgentWaitResult, "status"> & { status?: string }
+  >(
+    "agent.wait",
+    {
+      runId: params.runId,
+      ...(params.timeoutMs != null && { timeoutMs: params.timeoutMs }),
+    },
+    { resolveGatewayContext },
+  );
+  const { status: rawStatus, error, ...metadata } = payload;
+  let status = rawStatus;
+  if (status === "completed" || status === "succeeded") {
+    status = "ok";
+  } else if (status === "error" && error?.trim().toLowerCase() === "completed") {
+    status = "ok";
+  }
+  if (status !== "ok" && status !== "error" && status !== "timeout" && status !== "pending") {
+    throw new Error(`Gateway agent.wait returned unexpected status: ${rawStatus}`);
+  }
+  return {
+    ...metadata,
+    status,
+    ...(status !== "ok" && error ? { error } : {}),
+  };
+}
+
 export function createGatewaySubagentRuntime(
   resolveGatewayContext?: GatewayContextResolver,
   overridePolicies: PluginSubagentOverridePolicies = {},
@@ -413,33 +445,7 @@ export function createGatewaySubagentRuntime(
       const runtime = normalizePluginSubagentRunRuntime(payload?.runtime);
       return { runId, sessionKey, ...(runtime ? { runtime } : {}) };
     },
-    async waitForRun(params) {
-      const payload = await dispatchGatewayMethodInProcess<
-        Omit<AgentWaitResult, "status"> & { status?: string }
-      >(
-        "agent.wait",
-        {
-          runId: params.runId,
-          ...(params.timeoutMs != null && { timeoutMs: params.timeoutMs }),
-        },
-        { resolveGatewayContext },
-      );
-      const { status: rawStatus, error, ...metadata } = payload;
-      let status = rawStatus;
-      if (status === "completed" || status === "succeeded") {
-        status = "ok";
-      } else if (status === "error" && error?.trim().toLowerCase() === "completed") {
-        status = "ok";
-      }
-      if (status !== "ok" && status !== "error" && status !== "timeout" && status !== "pending") {
-        throw new Error(`Gateway agent.wait returned unexpected status: ${rawStatus}`);
-      }
-      return {
-        ...metadata,
-        status,
-        ...(status !== "ok" && error ? { error } : {}),
-      };
-    },
+    waitForRun: (params) => waitForGatewayAgentRun(params, resolveGatewayContext),
     getSessionMessages,
     async deleteSession(params) {
       const scope = getPluginRuntimeGatewayRequestScope();

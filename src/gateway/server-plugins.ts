@@ -38,6 +38,7 @@ import { authorizeOperatorScopesForRequiredScope } from "./method-scopes.js";
 import { normalizeOperatorScopeList, type OperatorScope } from "./operator-scopes.js";
 import type { GatewayNodeInvokeStream } from "./server-methods/shared-types.js";
 import type { GatewayContextResolver, GatewayRequestHandler } from "./server-methods/types.js";
+import { createGatewayAcpRuntime } from "./server-plugin-acp-runtime.js";
 import {
   dispatchGatewayMethodInProcess,
   dispatchGatewayMethodInProcessRaw,
@@ -191,7 +192,7 @@ function createGatewayPluginRuntimeBindings(
   resolveGatewayContext: GatewayContextResolver | undefined,
   overridePolicies: PluginSubagentOverridePolicies,
 ): {
-  runtime: Pick<PluginRuntime, "gateway" | "hooks" | "nodes" | "subagent"> &
+  runtime: Pick<PluginRuntime, "gateway" | "hooks" | "nodes" | "subagent" | "acp"> &
     Pick<CreatePluginRuntimeOptions, "dispatchReplyFromConfig">;
   retire: () => void;
 } {
@@ -236,6 +237,7 @@ function createGatewayPluginRuntimeBindings(
         overridePolicies,
         lifetime.signal,
       ),
+      acp: createGatewayAcpRuntime(resolveBoundGatewayContext, lifetime.signal),
     },
   };
 }

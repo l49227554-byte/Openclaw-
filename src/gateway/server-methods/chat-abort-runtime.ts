@@ -5,7 +5,10 @@ import {
   type ErrorShape,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { killSubagentRunAdmin } from "../../agents/subagents/registry/subagent-control-kill.js";
-import { ensureSubagentControllerOwnsRun } from "../../agents/subagents/registry/subagent-control-scope.js";
+import {
+  ensureSubagentControllerOwnsRun,
+  resolveSubagentTaskOwnerKey,
+} from "../../agents/subagents/registry/subagent-control-scope.js";
 import {
   killAllControlledSubagentRuns,
   resolveSubagentController,
@@ -187,7 +190,7 @@ export function abortQueuedCollectorSession(
           agentId: params.agentId,
           expectedRunId: entry.runId,
           expectedGeneration: entry.generation,
-          expectedOwnerKey: entry.requesterSessionKey,
+          expectedOwnerKey: resolveSubagentTaskOwnerKey(entry),
           onResult: (result) => {
             if (sessionAbort && !sessionAbort.ok) {
               outcome = sessionAbort;

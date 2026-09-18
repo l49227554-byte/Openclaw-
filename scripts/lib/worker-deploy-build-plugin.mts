@@ -26,6 +26,15 @@ const UNDICI_REQUIRE_BOOTSTRAP = [
   'return requireUndici("undici/index.js") as typeof import("undici");',
 ] as const;
 const WORKER_UNDICI_IMPORT = 'import * as bundledUndici from "undici/index.js";';
+const PLUGIN_REQUEST_AUTHORITY_BOOTSTRAP = [
+  'import { createRequire } from "node:module";',
+  `type RequestAuthority = typeof import("../../../plugin-request-authority.cjs");
+const require = createRequire(import.meta.url);
+// SAFETY: the private package import resolves the shipped native module with this declaration.
+const requestAuthority = require("#plugin-request-authority") as RequestAuthority;`,
+] as const;
+const WORKER_PLUGIN_REQUEST_AUTHORITY_IMPORT =
+  'import requestAuthority from "../../../plugin-request-authority.cjs";';
 const WS_REQUIRE_BOOTSTRAP = `require(
   path.join(path.dirname(require.resolve("ws/package.json")), "index.js"),
 )`;
@@ -60,6 +69,9 @@ export function createWorkerDeployBuildPlugin(rootDir = process.cwd()) {
   );
   const undiciDispatcherOptionsPath = fs.realpathSync(
     path.resolve("src/infra/net/undici-dispatcher-options.ts"),
+  );
+  const pluginRequestScopePath = fs.realpathSync(
+    path.resolve("src/plugins/runtime/gateway-request-scope.ts"),
   );
   const websocketRuntimePaths = new Set(
     ["packages/gateway-client/src/websocket.ts", "src/gateway/server-runtime-state.ts"].map(
@@ -128,6 +140,20 @@ export function createWorkerDeployBuildPlugin(rootDir = process.cwd()) {
           this.error("ws dynamic bootstrap changed; update the worker deploy transform");
         }
         return code.replace(WS_DYNAMIC_IMPORT, '"ws"');
+      }
+      if (resolvedId === pluginRequestScopePath) {
+        // The standalone archive has no package manifest. Bundle its private owner once
+        // instead of carrying the host's native package-import lookup into the worker.
+        if (
+          PLUGIN_REQUEST_AUTHORITY_BOOTSTRAP.some((fragment) => code.split(fragment).length !== 2)
+        ) {
+          this.error(
+            "plugin request authority bootstrap changed; update the worker deploy transform",
+          );
+        }
+        return code
+          .replace(PLUGIN_REQUEST_AUTHORITY_BOOTSTRAP[0], WORKER_PLUGIN_REQUEST_AUTHORITY_IMPORT)
+          .replace(PLUGIN_REQUEST_AUTHORITY_BOOTSTRAP[1], "");
       }
       if (resolvedId === undiciDispatcherOptionsPath) {
         if (UNDICI_REQUIRE_BOOTSTRAP.some((fragment) => !code.includes(fragment))) {

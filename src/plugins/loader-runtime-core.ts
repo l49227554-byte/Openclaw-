@@ -54,6 +54,19 @@ function createDeferredGatewaySubagentRuntime(runtime: PluginRuntime): PluginRun
   };
 }
 
+function createDeferredGatewayAcpRuntime(runtime: PluginRuntime): PluginRuntime["acp"] {
+  return {
+    isAvailable: (...args) => runtime.acp.isAvailable(...args),
+    spawn: (...args) => runtime.acp.spawn(...args),
+    getRun: (...args) => runtime.acp.getRun(...args),
+    listRuns: (...args) => runtime.acp.listRuns(...args),
+    getSession: (...args) => runtime.acp.getSession(...args),
+    waitForRun: (...args) => runtime.acp.waitForRun(...args),
+    cancel: (...args) => runtime.acp.cancel(...args),
+    observe: (...args) => runtime.acp.observe(...args),
+  };
+}
+
 function createDeferredGatewayNodesRuntime(runtime: PluginRuntime): PluginRuntime["nodes"] {
   return {
     list: (...args) => runtime.nodes.list(...args),
@@ -132,6 +145,9 @@ export function loadOpenClawPluginsCore(
     const borrowedNodes = activeGatewayRuntime
       ? createDeferredGatewayNodesRuntime(activeGatewayRuntime)
       : undefined;
+    const borrowedAcp = activeGatewayRuntime
+      ? createDeferredGatewayAcpRuntime(activeGatewayRuntime)
+      : undefined;
     const runtimeParams = {
       devSourceRoot: context.devSourceRoot,
       pluginSdkResolution: options.pluginSdkResolution,
@@ -142,6 +158,7 @@ export function loadOpenClawPluginsCore(
         modelConfig: options.runtimeOptions?.modelConfig ?? { ...nativeBindings.modelConfig },
         subagent: options.runtimeOptions?.subagent ?? borrowedSubagent,
         nodes: options.runtimeOptions?.nodes ?? borrowedNodes,
+        acp: options.runtimeOptions?.acp ?? borrowedAcp,
       },
       loadPluginModule,
     };

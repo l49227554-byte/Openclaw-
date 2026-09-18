@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -45,6 +46,7 @@ async function fixture(mode: "source" | "package" | "external-plugin" = "source"
       "scripts/preinstall.mjs",
       "scripts/postinstall.mjs",
     ],
+    imports: { "#plugin-request-authority": "./plugin-request-authority.cjs" },
     dependencies: { "@fixture/ai": mode === "source" ? "workspace:*" : version },
     ...(mode !== "source" ? { bundleDependencies: ["@fixture/ai"] } : {}),
     devDependencies: { "typescript-only": "workspace:*" },
@@ -61,6 +63,11 @@ async function fixture(mode: "source" | "package" | "external-plugin" = "source"
   });
   await write(packageRoot, "node-version.mjs", "export const supported = true;");
   await write(packageRoot, "node-sqlite.mjs", "export const probe = true;");
+  await write(
+    packageRoot,
+    "plugin-request-authority.cjs",
+    await fs.readFile(new URL("../../../plugin-request-authority.cjs", import.meta.url), "utf8"),
+  );
   await write(packageRoot, "node-runtime-update.mjs", "export const update = true;");
   await write(packageRoot, "node-runtime-recovery.mjs", "export const recovery = true;");
   await write(packageRoot, "scripts/preinstall.mjs", "export {};\n");
@@ -218,6 +225,21 @@ describe("node bootstrap distribution", () => {
         payload: longEntryPayload,
       });
       const manifest = JSON.parse(await fs.readFile(path.join(target, "package.json"), "utf8"));
+      expect(manifest.imports).toEqual(sourcePackage.imports);
+      expect(entries).toContain("package/plugin-request-authority.cjs");
+      const requireFromInstalledRuntime = createRequire(path.join(target, "dist/entry.js"));
+      const authority = requireFromInstalledRuntime(
+        "#plugin-request-authority",
+      ) as typeof import("../../../plugin-request-authority.cjs");
+      expect(requireFromInstalledRuntime.resolve("#plugin-request-authority")).toBe(
+        path.join(target, "plugin-request-authority.cjs"),
+      );
+      expect(Object.isFrozen(authority)).toBe(true);
+      const scope = {};
+      const release = authority.mint(scope, true);
+      expect(authority.has(scope)).toBe(true);
+      release();
+      expect(authority.has(scope)).toBe(false);
       expect(manifest.dependencies).toEqual({ "@fixture/ai": version, "native-runtime": "1.2.3" });
       expect(manifest.bundleDependencies).toEqual(["@fixture/ai"]);
       expect(manifest.scripts).toEqual({

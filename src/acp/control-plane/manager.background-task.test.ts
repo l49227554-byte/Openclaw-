@@ -91,6 +91,31 @@ describe("resolveBackgroundTaskContext", () => {
     });
     expect(context?.task).toBe(`summarize ${LOBSTER} feedback`);
   });
+
+  it("does not mirror plugin-owned children that carry no requester session lineage", () => {
+    // api.runtime.acp children are attributed to the plugin only; their single task row is the
+    // subagent registry row keyed by `plugin:<id>:acp`, so the mirror must stay out.
+    const deps = {
+      loadSessionEntry: () => ({
+        entry: {
+          createdVia: "plugin",
+          createdActor: { type: "system", id: "factory-adapter" },
+          pluginOwnerId: "factory-adapter",
+          label: "plugin:factory-adapter",
+        },
+      }),
+    } as unknown as AcpSessionManagerDeps;
+    expect(
+      resolveBackgroundTaskContext({
+        deps,
+        cfg: {} as unknown as OpenClawConfig,
+        sessionKey: "agent:codex:acp:plugin:factory-adapter:child",
+        agentId: "codex",
+        requestId: "run-plugin",
+        text: "Run the suite",
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("resolveBackgroundTaskFailureStatus", () => {

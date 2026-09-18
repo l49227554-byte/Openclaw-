@@ -160,6 +160,11 @@ export const PluginEntrySchema = z.strictObject({
       allowedModels: z.array(z.string()).optional(),
     })
     .optional(),
+  acp: z
+    .strictObject({
+      allowDetachedSpawn: z.boolean().optional(),
+    })
+    .optional(),
   llm: z
     .strictObject({
       allowModelOverride: z.boolean().optional(),

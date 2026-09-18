@@ -26,6 +26,7 @@ import {
   getLatestOwnedSubagentRun,
   isCurrentSubagentRun,
   isSameSubagentRunGeneration,
+  resolveSubagentTaskOwnerKey,
   type ResolvedSubagentController,
 } from "./subagent-control-scope.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -123,6 +124,16 @@ async function withSubagentKillScope<T>(
       let ownsSessionIncarnation: () => boolean;
       try {
         session = resolveSubagentKillSession(params.cfg, entry.childSessionKey);
+        // A run that recorded its launch incarnation never kills a replacement session
+        // under the same key: that entry belongs to whoever created it, and the old row is
+        // left untouched rather than marked cancelled.
+        if (
+          entry.childSessionId !== undefined &&
+          session.entry !== undefined &&
+          session.entry.sessionId !== entry.childSessionId
+        ) {
+          continue;
+        }
         const { storePath } = session;
         const sessionId = session.entry?.sessionId;
         const lifecycleRevision = session.entry?.lifecycleRevision;
@@ -274,7 +285,7 @@ async function killLatestSubagentRun(params: {
   const { tree, scope } = params;
   const matchesExpected = (entry: SubagentRunRecord) =>
     (params.expectedGeneration === undefined || entry.generation === params.expectedGeneration) &&
-    (!params.expectedOwnerKey || entry.requesterSessionKey === params.expectedOwnerKey);
+    (!params.expectedOwnerKey || resolveSubagentTaskOwnerKey(entry) === params.expectedOwnerKey);
   for (let attempt = 0; ; attempt += 1) {
     const entry = tree.entry;
     const session = tree.session;
@@ -542,10 +553,12 @@ export async function killSubagentRunAdmin(
   ) {
     return publish({ found: false as const, killed: false as const });
   }
+  // The expected owner is the task row's owner: the completion requester alone never
+  // passes this fence for a run whose canonical owner is someone else (plugin-owned work).
+  const expectedOwnerKey = params.expectedOwnerKey?.trim() || undefined;
   if (
     (params.expectedGeneration !== undefined && entry.generation !== params.expectedGeneration) ||
-    (params.expectedOwnerKey?.trim() &&
-      entry.requesterSessionKey !== params.expectedOwnerKey.trim())
+    (expectedOwnerKey && resolveSubagentTaskOwnerKey(entry) !== expectedOwnerKey)
   ) {
     return publish({ found: false as const, killed: false as const });
   }
@@ -565,7 +578,7 @@ export async function killSubagentRunAdmin(
         // Resolve stable task identity once; a later replacement must not inherit this Stop.
         expectedRunId: expectedRunId || (expectedTaskRunId ? entry.runId : undefined),
         expectedGeneration: params.expectedGeneration,
-        expectedOwnerKey: params.expectedOwnerKey?.trim() || undefined,
+        expectedOwnerKey,
       });
       const { result: stopResult, cascade } = stopped;
       rootStopSuperseded = stopResult.superseded === true;

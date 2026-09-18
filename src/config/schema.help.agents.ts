@@ -46,6 +46,10 @@ export const AGENT_FIELD_HELP: Record<string, string> = {
     "Explicitly allows this plugin to request provider/model overrides in background subagent runs. Keep false unless the plugin is trusted to steer model selection.",
   "plugins.entries.*.subagent.allowedModels":
     'Allowed override targets for trusted plugin subagent runs as canonical "provider/model" refs. Use "*" only when you intentionally allow any model.',
+  "plugins.entries.*.acp":
+    "Per-plugin api.runtime.acp controls. Keep this unset unless a trusted plugin must start ACP harness runs from detached work such as timers or background jobs.",
+  "plugins.entries.*.acp.allowDetachedSpawn":
+    "Explicitly allows this bundled or trusted official plugin to spawn ACP harness runs with no live Gateway request. Request-scoped spawns never need it; normal ACP policy and admission still apply.",
   "plugins.entries.*.llm":
     "Per-plugin api.runtime.llm.complete controls for model and agent override trust. Keep this unset unless a plugin must explicitly steer host-owned completion calls.",
   "plugins.entries.*.llm.allowModelOverride":

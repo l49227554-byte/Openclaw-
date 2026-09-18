@@ -1040,6 +1040,20 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
       getSessionMessages: vi.fn(),
       deleteSession: vi.fn(),
     },
+    acp: {
+      isAvailable: vi.fn(async () => ({
+        ok: false as const,
+        code: "ACP_PLUGIN_GATEWAY_REQUIRED" as const,
+        reason: "Plugin ACP runtime is only available inside the Gateway.",
+      })),
+      spawn: vi.fn(),
+      getRun: vi.fn(),
+      listRuns: vi.fn(async () => []),
+      getSession: vi.fn(),
+      waitForRun: vi.fn(),
+      cancel: vi.fn(),
+      observe: vi.fn(),
+    },
     hooks: {
       dispatchHookAgentTurn: vi.fn(),
     },

@@ -3,12 +3,13 @@ summary: "Hook agent turns, subagent runs, and Task Flow record binding"
 read_when:
   - You are dispatching an agent turn for untrusted external content
   - You are launching or waiting on a background subagent run
+  - You are spawning a plugin-owned one-shot ACP harness run
   - You are binding Task Flow or Task Run state to an owner session
 title: "Plugin runtime background work"
 sidebarTitle: "Background work"
 ---
 
-Start agent work in the background: hook-dispatched turns for external content, subagent runs, and the Task Flow records that track them. Part of the [Plugin runtime helpers](/plugins/sdk-runtime) reference.
+Start agent work in the background: hook-dispatched turns for external content, subagent runs, plugin-owned ACP harness runs, and the Task Flow records that track them. Part of the [Plugin runtime helpers](/plugins/sdk-runtime) reference.
 
 ## Background work namespaces
 
@@ -140,6 +141,124 @@ Start agent work in the background: hook-dispatched turns for external content, 
     `completionDelivery: "current-requester"` is default-off and is only available while a `before_dispatch` hook is handling an authenticated inbound request. OpenClaw captures the canonical requester session and delivery route before invoking the plugin, then delivers the subagent completion through the normal announce path. Plugins cannot provide or override requester lineage or destination fields. Calls outside that requester-bound hook context are rejected.
 
     `deleteSession(...)` can delete sessions created by the same plugin through `api.runtime.subagent.run(...)`. Deleting arbitrary user or operator sessions still requires an admin-scoped Gateway request.
+
+  </Accordion>
+  <Accordion title="api.runtime.acp">
+    Spawn, inspect, wait for, observe, and cancel one-shot [ACP agent](/tools/acp-agents)
+    harness runs that the calling plugin owns. This is the plugin equivalent of
+    `sessions_spawn(runtime: "acp", mode: "run")`: the same ACP policy
+    (`acp.enabled`, `acp.allowedAgents`), subagent target allowlist, child
+    admission limits, runtime options, spawn pipeline, task registry, and
+    cancellation owners apply. Nothing here reaches the ACP manager or backend
+    directly.
+
+    ```typescript
+    const availability = await api.runtime.acp.isAvailable();
+    if (!availability.ok) {
+      api.logger.warn(`ACP runs unavailable: ${availability.code} ${availability.reason}`);
+      return;
+    }
+
+    const run = await api.runtime.acp.spawn({
+      task: "Run the test suite and summarize failures.",
+      label: "nightly", // optional; shown as "plugin:<id> nightly"
+      agentId: "codex", // optional; defaults to the configured ACP target
+      cwd: "/srv/checkouts/app", // optional absolute path
+      runTimeoutSeconds: 900, // optional
+      cleanup: "keep", // optional "keep" | "delete"
+      idempotencyKey: "nightly:2026-09-17", // optional replay window
+      completionDelivery: "current-requester", // optional, requester-bound hooks only
+    });
+
+    const unsubscribe = await api.runtime.acp.observe(
+      { runId: run.runId, maxEvents: 200 },
+      (event) => api.logger.info(`${event.stream} ${JSON.stringify(event.data)}`),
+    );
+    const result = await api.runtime.acp.waitForRun({ runId: run.runId, timeoutMs: 60_000 });
+    unsubscribe();
+
+    const detail = await api.runtime.acp.getRun({ runId: run.runId });
+    const session = await api.runtime.acp.getSession({ sessionKey: run.sessionKey });
+    const active = await api.runtime.acp.listRuns();
+    await api.runtime.acp.cancel({ runId: run.runId, reason: "superseded" });
+    ```
+
+    **Principal and authority.** Every method resolves the calling plugin from
+    the host plugin scope; no method accepts a plugin id, requester session,
+    operator scopes, or owner key as input. Calls need a live in-process Gateway
+    binding, otherwise they fail with `ACP_PLUGIN_GATEWAY_REQUIRED`
+    (`ACP_PLUGIN_PRINCIPAL_REQUIRED` when the handle is not the plugin's own).
+    Requests made while the Gateway is serving the plugin (an operator request,
+    a tool call, a requester-bound hook) are request-scoped and need no extra
+    configuration. That authority lasts exactly as long as the host awaits the
+    request callback: work the callback returns or awaits stays request-scoped,
+    while a continuation that outlives it (an unawaited promise, a timer armed
+    inside the request) is detached once the callback settles, even before the
+    spawn reaches the owner. Detached work such as timers or background jobs is
+    denied with `ACP_PLUGIN_DETACHED_FORBIDDEN`; a bundled or trusted official
+    plugin can be granted detached spawns with
+    `plugins.entries.<id>.acp.allowDetachedSpawn: true`. Neither mode inherits
+    the caller's operator scopes or a user session's visibility.
+
+    **Ownership.** The child session key is
+    `agent:<targetAgentId>:acp:plugin:<pluginId>:<uuid>`, created with
+    `createdVia: "plugin"`, a system actor of the plugin id, and
+    `pluginOwnerId`; it carries no `spawnedBy` or parent lineage. The task
+    registry owner key is `plugin:<pluginId>:acp`, never an agent main session,
+    and every `getRun`, `listRuns`, `getSession`, `waitForRun`, `observe`, and
+    `cancel` call is scoped to that owner. Another plugin's runs, operator
+    sessions, and `sessions_spawn` children look identical to missing ones.
+    `cancel` rereads the child session entry (`pluginOwnerId` and the session
+    id the run was launched into) and the live task binding immediately before
+    the canonical task cancellation runs; a session that was replaced or
+    re-owned in between, including a same-plugin replacement under the same
+    key, is reported as not found and never cancelled. Every run counts
+    against the plugin owner's `maxChildrenPerAgent` cap, including
+    requester-bound runs announced to a different agent's requester.
+
+    **Completion delivery.** By default nothing is announced anywhere; plugins
+    poll `getRun`, `waitForRun`, or `observe`. Inside a requester-bound
+    `before_dispatch` hook for an authenticated inbound request, pass
+    `completionDelivery: "current-requester"` and OpenClaw announces the
+    completion to that requester with the same host capture and announce path as
+    `api.runtime.subagent.run`. The host captures the requester session and
+    delivery route itself; the plugin cannot name a session, route, or scope,
+    and the run, its child session, and its task row stay plugin-owned (only the
+    announcement is routed to the requester). Outside a live requester-bound hook
+    (detached timers, operator requests, tool calls) the option fails with
+    `ACP_PLUGIN_INVALID_INPUT` and `detailCode: "completionDelivery"`. A plugin
+    `cancel` ends the run silently toward the requester.
+
+    **One-shot only.** `spawn` rejects `mode`, `thread`, `streamTo`,
+    `resumeSessionId`, `sandbox`, and any requester or lineage field with
+    `ACP_PLUGIN_UNSUPPORTED_OPTION`. There is no plugin-facing steer, set-mode,
+    resume, or raw session control; an active run interrupted by a Gateway
+    restart follows the normal restart-abort and finalization path.
+    `idempotencyKey` replays the accepted (or still in-flight) result for the
+    same canonical input, including the host-captured requester session and
+    delivery route (channel, account, destination, thread), within a bounded
+    window and marks it `replayed: true`, so a retry after an accepted launch
+    never starts a duplicate run. Changed input under the same key is a new
+    spawn with its own receipt; earlier receipts for that key stay replayable
+    until the window ends or the plugin's bounded receipt cache evicts the
+    oldest settled receipt. In-flight receipts are never evicted; if all slots
+    are pending, a new unique request fails with `ACP_PLUGIN_ADMISSION_REJECTED`
+    and can be retried after a pending spawn settles. Failed spawns never replay. The registry writes the run's
+    plugin-owned task row synchronously during registration, so an accepted
+    result normally carries `taskId`; it is absent only when that best-effort
+    task write failed (the Gateway logs a warning), and such a run is not
+    reachable through the task-scoped `getRun`, `waitForRun`, `cancel`, or
+    `observe`. `getRun` accepts either `runId` or `taskId`.
+
+    `observe` delivers `lifecycle`, `acp`, `tool`, and `error` events for the
+    run in order and unsubscribes on the terminal lifecycle event, on the
+    optional `signal`, after `maxEvents` (the final event is marked
+    `truncated`), and when the plugin runtime is retired. Observers are
+    process-local and are not replayed after restart. Every method throws
+    `PluginAcpRuntimeError` (exported from `openclaw/plugin-sdk/error-runtime`)
+    with a stable `code`; `detailCode` carries the owner-side reason such as the
+    ACP spawn error code or the rejected option. Parameter and result types are
+    reachable through `PluginRuntime["acp"]` from `openclaw/plugin-sdk/core`.
 
   </Accordion>
   <Accordion title="api.runtime.tasks">

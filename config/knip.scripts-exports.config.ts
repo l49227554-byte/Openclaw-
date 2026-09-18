@@ -76,6 +76,8 @@ const config = {
         "test/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts}!",
         // Core bootstrap packaging consumes the scripts' dist-import scanner.
         "src/gateway/worker-environments/node-bootstrap-artifact.ts!",
+        // The worker build transforms this native private-module consumer into a bundled import.
+        "src/plugins/runtime/gateway-request-scope.ts!",
         "src/plugin-sdk/api-baseline.ts!",
       ],
       project: [
@@ -87,6 +89,8 @@ const config = {
         "scripts/**/*.{js,mjs,cjs,ts,mts,cts}!",
         "test/**/*.{js,mjs,cjs,ts,mts,cts}!",
         "src/gateway/worker-environments/node-bootstrap-artifact.ts!",
+        // The worker build transforms this native private-module consumer into a bundled import.
+        "src/plugins/runtime/gateway-request-scope.ts!",
         "src/plugin-sdk/api-baseline.ts!",
       ],
     },

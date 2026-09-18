@@ -52,6 +52,7 @@ const LAZY_RUNTIME_PROPERTIES = {
   webSearch: true,
   tasks: true,
   modelConfig: true,
+  acp: true,
 } satisfies Record<keyof PluginRuntime, true>;
 
 function createGuardedPluginRegistrationApi(api: OpenClawPluginApi): {
@@ -236,6 +237,7 @@ export function createLazyPluginRuntime(params: {
         prop === "hooks" ||
         prop === "nodes" ||
         prop === "subagent" ||
+        prop === "acp" ||
         prop === "modelAuth" ||
         prop === "modelConfig"
       ) {

@@ -164,6 +164,26 @@ describe("normalizePluginsConfig", () => {
     expect(normalizeVoiceCallEntry({ subagent })?.subagent).toEqual(expected);
   });
 
+  it.each([
+    {
+      name: "keeps an explicit detached ACP spawn grant",
+      acp: { allowDetachedSpawn: true },
+      expected: { allowDetachedSpawn: true },
+    },
+    {
+      name: "keeps an explicit detached ACP spawn denial",
+      acp: { allowDetachedSpawn: false },
+      expected: { allowDetachedSpawn: false },
+    },
+    {
+      name: "drops non-boolean detached ACP spawn values so the default stays denied",
+      acp: { allowDetachedSpawn: "yes" } as unknown as { allowDetachedSpawn: boolean },
+      expected: undefined,
+    },
+  ] as const)("$name", ({ acp, expected }) => {
+    expect(normalizeVoiceCallEntry({ acp })?.acp).toEqual(expected);
+  });
+
   it("normalizes plugin llm override policy settings", () => {
     expect(
       normalizeVoiceCallEntry({

@@ -232,7 +232,15 @@ export type SubagentRunRecord = {
   /** Completion-producing row retirement deferred until requesterTurnRunId settles. */
   retireAfterRequesterTurn?: boolean;
   childSessionKey: string;
+  /** Session incarnation this run was launched into. When recorded, cancellation refuses a
+      replacement entry under the same key instead of aborting it; absent on session-spawned
+      and legacy rows. */
+  childSessionId?: string;
   controllerSessionKey?: string;
+  /** Canonical task/cancellation owner (for example `plugin:<id>:acp`) when it differs from
+      the completion requester. Absent on session-spawned and legacy rows, where the
+      requester owns the task; resolve through `resolveSubagentTaskOwnerKey`. */
+  taskOwnerKey?: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
   /** Durable source locator for transport-neutral progress presentation. */

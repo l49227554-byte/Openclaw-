@@ -10,6 +10,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../../state/openclaw-state-db.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
+import { resolveSubagentTaskOwnerKey } from "./subagent-control-scope.js";
 import {
   loadSubagentRunsForChildSessionFromSqlite,
   loadSubagentRunsForControllerFromSqlite,
@@ -565,6 +566,56 @@ describe("subagent registry sqlite store", () => {
           ?.controllerSessionKey,
       ).toBe("agent:main:controller");
       expect(loadSubagentRunsForControllerFromSqlite("   ")).toEqual([]);
+    });
+  });
+
+  it("restores the canonical task owner and defaults pre-field rows to the requester", async () => {
+    await withTempStateEnv(async () => {
+      const pluginOwnerKey = "plugin:factory:acp";
+      const pluginOwned = createRun({
+        runId: "plugin-owned",
+        childSessionKey: "agent:codex:acp:plugin:factory:child",
+        childSessionId: "session-incarnation-1",
+        controllerSessionKey: pluginOwnerKey,
+        taskOwnerKey: pluginOwnerKey,
+        requesterSessionKey: "agent:main:telegram:group:42",
+        execution: { status: "running", startedAt: 110 },
+      });
+      const blankOwner = createRun({
+        runId: "blank-owner",
+        taskOwnerKey: "   ",
+        childSessionId: "   ",
+      });
+      const legacy = createRun({ runId: "legacy", childSessionKey: "agent:main:subagent:legacy" });
+      saveSubagentRegistryToSqlite(
+        new Map([
+          [pluginOwned.runId, pluginOwned],
+          [blankOwner.runId, blankOwner],
+          [legacy.runId, legacy],
+        ]),
+      );
+      // Requester-owned rows are stored exactly like rows written before the field existed.
+      const stored = openOpenClawStateDatabase()
+        .db.prepare("SELECT payload_json FROM subagent_runs WHERE run_id = ?")
+        .get(legacy.runId) as { payload_json: string };
+      expect(JSON.parse(stored.payload_json)).not.toHaveProperty("taskOwnerKey");
+      expect(JSON.parse(stored.payload_json)).not.toHaveProperty("childSessionId");
+      closeOpenClawStateDatabaseForTest();
+
+      const restored = loadSubagentRegistryFromSqlite();
+      expect(restored.get(pluginOwned.runId)).toMatchObject({
+        childSessionId: "session-incarnation-1",
+        controllerSessionKey: pluginOwnerKey,
+        taskOwnerKey: pluginOwnerKey,
+        requesterSessionKey: "agent:main:telegram:group:42",
+      });
+      expect(resolveSubagentTaskOwnerKey(restored.get(pluginOwned.runId)!)).toBe(pluginOwnerKey);
+      for (const runId of [blankOwner.runId, legacy.runId]) {
+        const run = restored.get(runId)!;
+        expect(run.taskOwnerKey).toBeUndefined();
+        expect(run.childSessionId).toBeUndefined();
+        expect(resolveSubagentTaskOwnerKey(run)).toBe(run.requesterSessionKey);
+      }
     });
   });
 

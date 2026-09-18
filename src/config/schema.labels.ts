@@ -992,6 +992,8 @@ export const FIELD_LABELS: Record<string, string> = {
   "plugins.entries.*.subagent": "Plugin Subagent Policy",
   "plugins.entries.*.subagent.allowModelOverride": "Allow Plugin Subagent Model Override",
   "plugins.entries.*.subagent.allowedModels": "Plugin Subagent Allowed Models",
+  "plugins.entries.*.acp": "Plugin ACP Policy",
+  "plugins.entries.*.acp.allowDetachedSpawn": "Allow Plugin Detached ACP Spawn",
   "plugins.entries.*.llm": "Plugin LLM Policy",
   "plugins.entries.*.llm.allowModelOverride": "Allow Plugin LLM Model Override",
   "plugins.entries.*.llm.allowedModels": "Plugin LLM Allowed Models",

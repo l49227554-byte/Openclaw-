@@ -35,6 +35,7 @@ import { createRuntimeLogging } from "./runtime-logging.js";
 import { createRuntimeMedia } from "./runtime-media.js";
 import { createRuntimeTaskFlow } from "./runtime-taskflow.js";
 import { createRuntimeTasks } from "./runtime-tasks.js";
+import { PluginAcpRuntimeError } from "./types-acp.js";
 import type { PluginRuntimeFactory, PluginRuntime } from "./types.js";
 
 const loadTtsRuntime = createLazyRuntimeModule(() => import("../../plugin-sdk/tts-runtime.js"));
@@ -150,6 +151,29 @@ function createUnavailableSubagentRuntime(): PluginRuntime["subagent"] {
   };
 }
 
+function createUnavailableAcpRuntime(): PluginRuntime["acp"] {
+  const unavailable = () => {
+    throw new PluginAcpRuntimeError(
+      "ACP_PLUGIN_GATEWAY_REQUIRED",
+      "Plugin ACP runtime is only available inside the Gateway.",
+    );
+  };
+  return {
+    isAvailable: async () => ({
+      ok: false,
+      code: "ACP_PLUGIN_GATEWAY_REQUIRED",
+      reason: "Plugin ACP runtime is only available inside the Gateway.",
+    }),
+    spawn: unavailable,
+    getRun: unavailable,
+    listRuns: unavailable,
+    getSession: unavailable,
+    waitForRun: unavailable,
+    cancel: unavailable,
+    observe: unavailable,
+  };
+}
+
 function createUnavailableNodesRuntime(): PluginRuntime["nodes"] {
   const unavailable = () => {
     throw new Error("Plugin node runtime is only available inside the Gateway.");
@@ -247,6 +271,7 @@ export const createPluginRuntime: PluginRuntimeFactory = (
       },
     },
     subagent: _options.subagent ?? createUnavailableSubagentRuntime(),
+    acp: _options.acp ?? createUnavailableAcpRuntime(),
     nodes: _options.nodes ?? createUnavailableNodesRuntime(),
     sandbox: createRuntimeSandbox(agent),
     worktrees: createRuntimeWorktrees(),

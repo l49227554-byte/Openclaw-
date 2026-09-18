@@ -101,6 +101,7 @@ function resolveRuntimeBindingCacheIdentity(options: PluginLoadOptions): string 
     modelConfig: resolveRuntimeBindingCacheId(runtimeOptions?.modelConfig),
     nodes: resolveRuntimeBindingCacheId(runtimeOptions?.nodes),
     subagent: resolveRuntimeBindingCacheId(runtimeOptions?.subagent),
+    acp: resolveRuntimeBindingCacheId(runtimeOptions?.acp),
   });
 }
 

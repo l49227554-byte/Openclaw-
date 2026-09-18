@@ -61,6 +61,14 @@ describe("worker deploy build plugin", () => {
       expect(bundles.flatMap((bundle) => bundle.chunks.map((chunk) => chunk.fileName))).toEqual([
         "worker/worker.mjs",
       ]);
+      const workerEntry = path.join(root, "dist/worker/worker.mjs");
+      expect(fs.readFileSync(workerEntry, "utf8")).not.toContain("#plugin-request-authority");
+      // This output lives outside the source package: no manifest or private imports map.
+      await promisify(execFile)(process.execPath, [workerEntry, "--internal-worker-prewarm"], {
+        cwd: root,
+        env: { HOME: root, OPENCLAW_STATE_DIR: path.join(root, "state") },
+        timeout: 30_000,
+      });
       const { collectWorkerDeployArtifactErrors } =
         await import("../../scripts/check-cli-bootstrap-imports.mts");
       expect(
@@ -294,6 +302,59 @@ export async function createAttachedBrowserToolRuntime(params) {
     expect(transformed).not.toContain('import { createRequire } from "node:module";');
     expect(transformed).not.toContain("const requireUndici = createRequire(import.meta.url);");
     expect(transformed).not.toContain('requireUndici("undici/index.js")');
+  });
+
+  it("bundles private request authority instead of resolving a worker package import", () => {
+    const scopePath = path.resolve("src/plugins/runtime/gateway-request-scope.ts");
+    const source = fs.readFileSync(scopePath, "utf8");
+    const plugin = createWorkerDeployBuildPlugin();
+    const transformed = plugin.transform.call({ error: fail }, source, scopePath);
+
+    expect(transformed).toContain(
+      'import requestAuthority from "../../../plugin-request-authority.cjs";',
+    );
+    expect(transformed).not.toContain("createRequire");
+    expect(transformed).not.toContain("const require =");
+    expect(transformed).not.toContain("#plugin-request-authority");
+    expect(transformed).not.toContain("type RequestAuthority");
+    for (const operation of ["mint", "inherit", "has"]) {
+      expect(transformed).toContain(`requestAuthority.${operation}(`);
+    }
+    // This worker-only transform must never alter an unrelated module with similar text.
+    expect(
+      plugin.transform.call({ error: fail }, source, path.resolve("src/plugins/types.ts")),
+    ).toBeNull();
+  });
+
+  it.each([
+    ["missing import", 'import { createRequire } from "node:module";', ""],
+    [
+      "duplicate import",
+      'import { createRequire } from "node:module";',
+      'import { createRequire } from "node:module";\nimport { createRequire } from "node:module";',
+    ],
+    ["changed require", 'require("#plugin-request-authority")', 'require("#other")'],
+    ["changed type", "type RequestAuthority =", "type ChangedAuthority ="],
+  ])("rejects request authority bootstrap drift: %s", (_label, before, after) => {
+    const scopePath = path.resolve("src/plugins/runtime/gateway-request-scope.ts");
+    const source = fs.readFileSync(scopePath, "utf8");
+    const plugin = createWorkerDeployBuildPlugin();
+
+    expect(() =>
+      plugin.transform.call({ error: fail }, source.replace(before, after), scopePath),
+    ).toThrow("plugin request authority bootstrap changed");
+  });
+
+  it("rejects duplicated request authority owner bootstrap", () => {
+    const scopePath = path.resolve("src/plugins/runtime/gateway-request-scope.ts");
+    const source = fs.readFileSync(scopePath, "utf8");
+    const bootstrap = source.match(/type RequestAuthority =[\s\S]*?as RequestAuthority;/u)?.[0];
+    expect(bootstrap).toBeDefined();
+    const plugin = createWorkerDeployBuildPlugin();
+
+    expect(() =>
+      plugin.transform.call({ error: fail }, `${source}\n${bootstrap}`, scopePath),
+    ).toThrow("plugin request authority bootstrap changed");
   });
 
   it("leaves fs-safe native package resolution to the dependency", () => {

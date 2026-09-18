@@ -59,6 +59,11 @@ function getPluginSubagentRequesterContext(): PluginSubagentRequesterContext | u
   return scope?.active === true ? scope.requester : undefined;
 }
 
+/** True while the caller runs inside a live requester-bound plugin hook invocation. */
+export function hasActivePluginSubagentRequesterContext(): boolean {
+  return getPluginSubagentRequesterContext() !== undefined;
+}
+
 export function resolvePluginSubagentCompletionRequester(
   completionDelivery: unknown,
 ): PluginSubagentRequesterContext | undefined {

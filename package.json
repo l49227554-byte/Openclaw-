@@ -22,6 +22,9 @@
   "bin": {
     "openclaw": "openclaw.mjs"
   },
+  "imports": {
+    "#plugin-request-authority": "./plugin-request-authority.cjs"
+  },
   "directories": {
     "doc": "docs",
     "test": "test"
@@ -30,6 +33,8 @@
     "CHANGELOG.md",
     "LICENSE",
     "node-sqlite.mjs",
+    "plugin-request-authority.cjs",
+    "plugin-request-authority.d.cts",
     "node-version.mjs",
     "node-runtime-update.mjs",
     "node-runtime-recovery.mjs",

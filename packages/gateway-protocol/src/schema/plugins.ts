@@ -257,6 +257,11 @@ export const PluginOperatorGrantsSchema = closedObject({
       allowedModels: Type.Optional(Type.Array(NonEmptyString)),
     }),
   ),
+  acp: Type.Optional(
+    closedObject({
+      allowDetachedSpawn: Type.Optional(Type.Boolean()),
+    }),
+  ),
 });
 
 /** Persisted ClawHub per-release trust verdict from the install record. */

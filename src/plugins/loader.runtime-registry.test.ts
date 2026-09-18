@@ -398,12 +398,13 @@ it("keeps version and injected instance surfaces independent of the broad runtim
   };
   const nodes = {} as PluginRuntime["nodes"];
   const subagent = {} as PluginRuntime["subagent"];
+  const acp = {} as PluginRuntime["acp"];
   const loadPluginModule = vi.fn((_modulePath: string): unknown => {
     throw new Error("broad runtime should stay lazy");
   });
   const runtime = createLazyPluginRuntime({
     loadPluginModule,
-    runtimeOptions: { gateway, hooks, nodes, subagent },
+    runtimeOptions: { gateway, hooks, nodes, subagent, acp },
   });
 
   expect(runtime.version).toBe(VERSION);
@@ -435,6 +436,7 @@ it("keeps version and injected instance surfaces independent of the broad runtim
     "webSearch",
     "tasks",
     "modelConfig",
+    "acp",
   ]);
   expect(Reflect.ownKeys(runtime)).toEqual(Object.keys(descriptors));
   for (const key of Object.keys(descriptors)) {
@@ -446,6 +448,7 @@ it("keeps version and injected instance surfaces independent of the broad runtim
     ["hooks", hooks],
     ["nodes", nodes],
     ["subagent", subagent],
+    ["acp", acp],
   ] as const) {
     expect(runtime[key]).toBe(instance);
     expect(descriptors[key]?.get?.()).toBe(instance);

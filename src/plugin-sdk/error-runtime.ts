@@ -31,3 +31,4 @@ export {
 } from "../../packages/normalization-core/src/error-coercion.js";
 export { PlatformMessageNotDispatchedError } from "../infra/outbound/deliver-types.js";
 export { isApprovalNotFoundError } from "../infra/approval-errors.ts";
+export { PluginAcpRuntimeError } from "../plugins/runtime/types-acp.js";

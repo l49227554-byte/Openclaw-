@@ -146,6 +146,17 @@ export function listControlledSubagentRuns(
   return buildControlledSubagentRunsReadContext(controllerSessionKey, controllerAgentId, cfg).runs;
 }
 
+/**
+ * Canonical task/cancellation owner of a run. Plugin-owned runs record it explicitly
+ * because their completion requester is a captured host session; every other row
+ * (including rows persisted before the field existed) keeps the requester as owner.
+ */
+export function resolveSubagentTaskOwnerKey(
+  entry: Pick<SubagentRunRecord, "taskOwnerKey" | "requesterSessionKey">,
+): string {
+  return entry.taskOwnerKey?.trim() || entry.requesterSessionKey;
+}
+
 export function ensureSubagentControllerOwnsRun(params: {
   cfg: OpenClawConfig;
   controller: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;

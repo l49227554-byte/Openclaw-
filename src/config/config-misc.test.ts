@@ -815,6 +815,29 @@ describe("plugins.entries.*.subagent", () => {
   });
 });
 
+describe("plugins.entries.*.acp", () => {
+  it("accepts only the detached spawn grant", () => {
+    const result = OpenClawSchema.safeParse({
+      plugins: { entries: { "factory-adapter": { acp: { allowDetachedSpawn: true } } } },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects unknown ACP entry fields and non-boolean grants", () => {
+    for (const acp of [
+      { allowDetachedSpawn: "yes" },
+      { allowedAgents: ["codex"] },
+      { maxConcurrentRuns: 2 },
+      { allowDetachedSpawn: true, allowSessionSpawn: true },
+    ]) {
+      const result = OpenClawSchema.safeParse({
+        plugins: { entries: { "factory-adapter": { acp } } },
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+});
+
 describe("plugins.entries.*.llm", () => {
   it("accepts trusted llm override settings", () => {
     const result = OpenClawSchema.safeParse({

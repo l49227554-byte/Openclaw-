@@ -40,7 +40,7 @@ function assertSessionKey(sessionKey: string | undefined, errorMessage: string):
   return normalized;
 }
 
-function mapCancelledTaskResult(
+export function mapCancelledTaskResult(
   result: Awaited<ReturnType<typeof cancelDetachedTaskRunById>>,
 ): TaskRunCancelResult {
   return {

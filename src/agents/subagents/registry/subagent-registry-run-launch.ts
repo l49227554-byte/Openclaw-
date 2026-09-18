@@ -19,6 +19,7 @@ import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { updateSwarmCollectorCompletion } from "../swarm/swarm-collector.js";
 import { bindSwarmRunReservation } from "../swarm/swarm-scheduler.js";
+import { resolveSubagentTaskOwnerKey } from "./subagent-control-scope.js";
 import { normalizeSubagentRunState } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -61,6 +62,8 @@ export type RegisterSubagentRunParams = {
   runId: string;
   requesterTurnRunId?: string;
   childSessionKey: string;
+  /** Launch-time session incarnation; see `SubagentRunRecord.childSessionId`. */
+  childSessionId?: string;
   controllerSessionKey?: string;
   requesterSessionKey: string;
   requesterOrigin?: DeliveryContext;
@@ -93,6 +96,11 @@ export type RegisterSubagentRunParams = {
   /** Required when direct dispatch suppresses Gateway tracking. Out-of-process launches keep
       Gateway's existing best-effort CLI policy; other callers create a best-effort row here. */
   taskRowOwnership?: "required" | "gateway_best_effort";
+  /** Non-session task owner (for example `plugin:<id>:acp`) that keeps the task row while
+      completion still announces to `requesterSessionKey`. The row has no owner session to
+      receive task-registry terminal notices, so its delivery stays `not_applicable`; the
+      registry row owns requester delivery. Defaults to `requesterSessionKey`. */
+  taskOwnerKey?: string;
   gatewayContextResolver?: GatewayContextResolver;
 };
 
@@ -110,6 +118,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     const requesterSessionKey = registerParams.requesterSessionKey.trim();
     const requesterTurnRunId = registerParams.requesterTurnRunId?.trim();
     const controllerSessionKey = registerParams.controllerSessionKey?.trim() || requesterSessionKey;
+    const taskOwnerKey = registerParams.taskOwnerKey?.trim() || undefined;
     if (!runId || !childSessionKey || !requesterSessionKey) {
       return;
     }
@@ -129,7 +138,9 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
       taskRunId: runId,
       ...(requesterTurnRunId ? { requesterTurnRunId } : {}),
       childSessionKey,
+      childSessionId: registerParams.childSessionId,
       controllerSessionKey,
+      taskOwnerKey,
       requesterSessionKey,
       requesterOrigin,
       progressOrigin: registerParams.progressOrigin,
@@ -231,7 +242,8 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
         const taskParams = {
           runtime: "subagent",
           sourceId: runId,
-          ownerKey: requesterSessionKey,
+          // Task cancellation later compares this row owner against the registry record.
+          ownerKey: resolveSubagentTaskOwnerKey(entry),
           scopeKind: "session",
           // Detached task runtimes are plugin-replaceable. Isolate their input so
           // mutation cannot change the already-persisted registry record.
@@ -243,7 +255,9 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
           agentId: registerParams.agentId,
           requesterAgentId: resolveSubagentRequesterAgentId(cfg, registerParams),
           deliveryStatus:
-            registerParams.expectsCompletionMessage === false ? "not_applicable" : "pending",
+            registerParams.expectsCompletionMessage === false || taskOwnerKey
+              ? "not_applicable"
+              : "pending",
           detail: createSubagentTaskBackingDetail(generation),
         } as const;
         const task = queued

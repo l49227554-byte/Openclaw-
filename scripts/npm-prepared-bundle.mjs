@@ -700,6 +700,17 @@ export function prepareNpmPackageBundle({
   releaseTag: requestedReleaseTag = "",
   npmDistTag,
   producer,
+  prepareRootShrinkwrap = ({ aiTarballPath }) =>
+    execFileSync(
+      process.execPath,
+      [
+        "--import",
+        join(sourceDir, "scripts/tsx.mjs"),
+        join(sourceDir, "scripts/prepare-openclaw-npm-shrinkwrap.ts"),
+        aiTarballPath,
+      ],
+      { cwd: sourceDir, stdio: "inherit" },
+    ),
   runPack = (directory, destination) =>
     execFileSync("pnpm", ["--dir", directory, "pack", "--pack-destination", destination], {
       env: {
@@ -793,6 +804,12 @@ export function prepareNpmPackageBundle({
     }
     return [pack(directory, packageName)];
   });
+  const aiPackage = corePackageTarballs.find(({ packageName }) => packageName === "@openclaw/ai");
+  if (aiPackage) {
+    prepareRootShrinkwrap({
+      aiTarballPath: join(outputDir, aiPackage.tarballName),
+    });
+  }
   const packed = pack(sourceDir, "openclaw");
   const manifest = {
     schema: PACKAGE_MANIFEST_SCHEMA,

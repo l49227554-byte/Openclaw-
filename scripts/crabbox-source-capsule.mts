@@ -103,6 +103,86 @@ function sourceStat(root: string, path: string) {
   return stat ? { kind: "present" as const, stat } : { kind: "missing" as const };
 }
 
+function hasUnverifiedGitPreparation(
+  directory: string,
+  env: NodeJS.ProcessEnv,
+  sourcePaths: Iterable<string>,
+) {
+  if (env.GIT_CONFIG || env.GIT_EXTERNAL_DIFF) {
+    return true;
+  }
+  const probe = (args: string[]) =>
+    spawnSync("git", ["-C", directory, "config", ...args], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024,
+    });
+  // Configuration reads do not invoke these callbacks. Their successful parent
+  // command would not prove that any callback descendants had stopped.
+  const callbacks = probe([
+    "--null",
+    "--name-only",
+    "--get-regexp",
+    "^(core\\.(fsmonitor|hookspath)|filter\\..*\\.(clean|smudge|process)|diff\\.(external|.*\\.(command|textconv)))$",
+  ]);
+  if (!callbacks.error && callbacks.status === 1) {
+    return false;
+  }
+  if (callbacks.error || callbacks.status !== 0 || !isUtf8(callbacks.stdout)) {
+    return true;
+  }
+  const names = callbacks.stdout.toString("utf8").toLowerCase().split("\0").filter(Boolean);
+  if (
+    !names.length ||
+    names.some((name) => name !== "core.fsmonitor" && !name.startsWith("filter."))
+  ) {
+    return true;
+  }
+  // Git renders these driver names identically to inactive attribute states.
+  if (names.some((name) => /^filter\.(unset|unspecified)\./u.test(name))) {
+    return true;
+  }
+  if (names.includes("core.fsmonitor")) {
+    const monitor = probe(["--type=bool", "--get", "core.fsmonitor"]);
+    if (
+      monitor.error ||
+      monitor.status !== 0 ||
+      monitor.stdout.toString("utf8").trim() !== "false"
+    ) {
+      return true;
+    }
+  }
+  if (!names.some((name) => name.startsWith("filter."))) {
+    return false;
+  }
+  // Installed drivers such as Git LFS cannot run without an active path
+  // attribute. Ask Git in this context, including its global attributes.
+  const paths = [...sourcePaths];
+  const attributes = spawnSync("git", ["-C", directory, "check-attr", "-z", "--stdin", "filter"], {
+    env,
+    input: paths.length ? paths.join("\0") + "\0" : "",
+    stdio: ["pipe", "pipe", "pipe"],
+    timeout: 5_000,
+    killSignal: "SIGKILL",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (attributes.error || attributes.status !== 0 || !isUtf8(attributes.stdout)) {
+    return true;
+  }
+  const values = attributes.stdout.toString("utf8").split("\0");
+  if (values.pop() !== "" || values.length !== paths.length * 3) {
+    return true;
+  }
+  return paths.some(
+    (path, index) =>
+      values[index * 3] !== path ||
+      values[index * 3 + 1] !== "filter" ||
+      !["unspecified", "unset"].includes(values[index * 3 + 2]!),
+  );
+}
+
 export function prepareCrabboxSourceCapsule(options: {
   repoRoot: string;
   syncRoot: string;
@@ -402,6 +482,32 @@ export function prepareCrabboxSourceCapsule(options: {
       }
     }
     const selectionEnv = { ...sourceEnv };
+    const nativeGitEnv = Object.fromEntries(
+      Object.entries(sourceEnv).filter(([key]) => {
+        const name = key.toUpperCase();
+        return (
+          !name.startsWith("GIT_") ||
+          name === "GIT_CEILING_DIRECTORIES" ||
+          name === "GIT_DISCOVERY_ACROSS_FILESYSTEM"
+        );
+      }),
+    );
+    let preparationUnverified = false;
+    const holdPreparation = () => {
+      if (staging.recorded && !preparationUnverified) {
+        staging.hold("writers");
+        preparationUnverified = true;
+      }
+    };
+    const checkPreparation = (env: NodeJS.ProcessEnv) => {
+      if (
+        staging.recorded &&
+        !preparationUnverified &&
+        hasUnverifiedGitPreparation(directory, env, new Set([...owned, ...frozen.keys()]))
+      ) {
+        holdPreparation();
+      }
+    };
     const runtimePolicies: string[] = [];
     let configPath: string | undefined;
     const explicitConfig = sourceEnv.CRABBOX_CONFIG;
@@ -444,6 +550,7 @@ export function prepareCrabboxSourceCapsule(options: {
         );
       }
     }
+    checkPreparation(sourceEnv);
     const snapshotEligible = new Set(
       git(directory, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
         .split("\0")
@@ -455,6 +562,10 @@ export function prepareCrabboxSourceCapsule(options: {
       }
     }
     function selectSource() {
+      checkPreparation(selectionEnv);
+      // Current native Git discovery strips command-scoped Git configuration;
+      // older supported CLIs retain it. Both preparation contexts must be safe.
+      checkPreparation(nativeGitEnv);
       let planValue: unknown;
       try {
         const result = spawnSync(options.syncPlan.command, options.syncPlan.args, {
@@ -477,6 +588,15 @@ export function prepareCrabboxSourceCapsule(options: {
       const parsed = syncPlanSchema.safeParse(planValue);
       if (!parsed.success) {
         throw new Error("source capsule received an invalid Crabbox sync-plan");
+      }
+      if (
+        typeof planValue === "object" &&
+        planValue !== null &&
+        "localGitSeed" in planValue &&
+        planValue.localGitSeed != null
+      ) {
+        // Its additional Git workspaces are outside this constructor's closure proof.
+        holdPreparation();
       }
       const selected = new Set(parsed.data.topFiles.map((entry) => capsulePath(entry.path)));
       if (
@@ -649,6 +769,8 @@ export function prepareCrabboxSourceCapsule(options: {
     rmSync(join(temporary, "sparse-blobs"), { force: true });
     rmSync(shallow, { force: true });
     if (staging.recorded) {
+      checkPreparation(sourceEnv);
+      checkPreparation(nativeGitEnv);
       staging.prepared(
         {
           files: paths.map((path, index) => ({

@@ -244,6 +244,10 @@ Changing `HOME` or `XDG_STATE_HOME` cannot establish absence in the old namespac
 
 A prepared capsule with no admitted consumer can be recovered after its owner
 disappears. An admitted consumer requires a persisted writer-settlement receipt.
+Git configurations that may launch preparation helpers, or additional local Git
+seed preparation, remain held because parent-command completion does not certify
+those helpers. Their ordinary execution is unchanged. Earlier experimental
+receipt versions also remain protected.
 Explicit recovery can retry pending diagnostic preservation after a destination
 problem is repaired. Automatic recovery leaves artifact or claim failures held.
 Missing or changed saved outputs prevent removal; recovery never recreates a

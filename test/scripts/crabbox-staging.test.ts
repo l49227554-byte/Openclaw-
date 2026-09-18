@@ -25,6 +25,7 @@ const repository = fileURLToPath(new URL("../../", import.meta.url));
 const scriptUrl = (name: string) => new URL("../../scripts/" + name, import.meta.url).href;
 const artifactBytes = Buffer.from([0, 255, 128, 10, 65]);
 type Receipt = {
+  version: number;
   id: string;
   ownerPid: number;
   state: string;
@@ -230,10 +231,10 @@ ${body}`,
     );
   const prepare = async (
     after = "",
-    options: { paths?: string[]; before?: string; prelude?: string } = {},
+    options: { paths?: string[]; before?: string; prelude?: string; localGitSeed?: boolean } = {},
   ) => {
     const names = options.paths ?? ["source.txt"];
-    const selection = `const fs=require('node:fs');const paths=${JSON.stringify(names)}.filter(path=>fs.lstatSync(path,{throwIfNoEntry:false}));process.stdout.write(JSON.stringify({candidate:{files:paths.length},topFiles:paths.map(path=>({path}))}));`;
+    const selection = `const fs=require('node:fs');const paths=${JSON.stringify(names)}.filter(path=>fs.lstatSync(path,{throwIfNoEntry:false}));process.stdout.write(JSON.stringify({candidate:{files:paths.length},topFiles:paths.map(path=>({path})),localGitSeed:${options.localGitSeed ? "{source:'local'}" : "undefined"}}));`;
     const result = await program(
       `
 ${options.before ?? ""}
@@ -338,7 +339,12 @@ describe.skipIf(process.platform === "win32")(
         withFixture(async (f) => {
           const before = f.git("rev-parse", "HEAD");
           const stage = await f.prepare();
-          expect(stage.receipt).toMatchObject({ state: "prepared", users: "none", durable: true });
+          expect(stage.receipt).toMatchObject({
+            version: 2,
+            state: "prepared",
+            users: "none",
+            durable: true,
+          });
           const recovered = await f.recover(stage);
           expect(recovered.status, recovered.stderr + recovered.stdout).toBe(0);
           expect(recovered.report).toMatchObject({ id: stage.receipt.id, recovered: true });
@@ -348,6 +354,91 @@ describe.skipIf(process.platform === "win32")(
           expect(f.git("status", "--porcelain")).toBe("");
         }),
       60_000,
+    );
+
+    it(
+      "keeps preparation callbacks and additional Git workspaces held without disabling them",
+      async () =>
+        withFixture(async (f) => {
+          const config = join(f.root, "home", ".gitconfig");
+          const callback = join(f.root, "callback.sh");
+          writeFileSync(callback, "#!/bin/sh\nprintf 'fixture-token\\000'\n", { mode: 0o700 });
+          let first: Stage | undefined;
+          for (const [section, key] of [
+            ["core", "fsmonitor"],
+            ["core", "hooksPath"],
+            ['filter "fixture"', "process"],
+            ["diff", "external"],
+          ] as const) {
+            const bytes = `[${section}]\n${key} = ${JSON.stringify(callback)}\n`;
+            writeFileSync(config, bytes);
+            if (section.startsWith("filter ")) {
+              const unused = await f.prepare();
+              expect(unused.receipt.hold).toBeUndefined();
+              expect((await f.recover(unused)).report.recovered).toBe(true);
+              writeFileSync(join(f.source, ".gitattributes"), "source.txt filter=fixture\n");
+            }
+            const stage = await f.prepare(
+              admit +
+                "cap.staging.settled();cap.staging.hold('artifacts');cap.staging.hold('claims');",
+            );
+            first ??= stage;
+            expect(stage.receipt).toMatchObject({
+              version: 2,
+              state: "settled",
+              users: "settled",
+              hold: "writers",
+            });
+            expect((await f.recover(stage)).report).toMatchObject({
+              recovered: false,
+              reason: expect.stringContaining("settlement is unverified"),
+            });
+            expect(readFileSync(config, "utf8")).toBe(bytes);
+            if (section.startsWith("filter ")) {
+              const sourceFile = join(f.source, "source.txt");
+              const retained = readFileSync(sourceFile);
+              rmSync(sourceFile);
+              const deleted = await f.prepare();
+              expect(deleted.receipt.hold).toBe("writers");
+              expect(
+                JSON.parse(readFileSync(join(deleted.root, "manifest.json"), "utf8")).source
+                  .deleted,
+              ).toContain("source.txt");
+              expect((await f.recover(deleted)).report.recovered).toBe(false);
+              writeFileSync(sourceFile, retained);
+            }
+            rmSync(join(f.source, ".gitattributes"), { force: true });
+          }
+          for (const driver of ["unset", "unspecified"]) {
+            writeFileSync(config, `[filter "${driver}"]\nprocess = ${JSON.stringify(callback)}\n`);
+            writeFileSync(join(f.source, ".gitattributes"), `source.txt filter=${driver}\n`);
+            expect(f.git("check-attr", "filter", "--", "source.txt")).toBe(
+              `source.txt: filter: ${driver}`,
+            );
+            const ambiguous = await f.prepare();
+            expect(ambiguous.receipt.hold).toBe("writers");
+            expect((await f.recover(ambiguous)).report.recovered).toBe(false);
+          }
+          rmSync(join(f.source, ".gitattributes"));
+          writeFileSync(config, "[core]\nfsmonitor = false\n");
+          expect((await f.recover(first!)).report.recovered).toBe(false);
+          const disabled = await f.prepare();
+          expect(disabled.receipt.hold).toBeUndefined();
+          expect((await f.recover(disabled)).report.recovered).toBe(true);
+          const additional = await f.prepare("", { localGitSeed: true });
+          expect(additional.receipt.hold).toBe("writers");
+          expect((await f.recover(additional)).report.recovered).toBe(false);
+          const earlier = await f.prepare();
+          writeFileSync(
+            join(earlier.root, "staging.json"),
+            JSON.stringify({ ...f.receipt(earlier), version: 1 }),
+          );
+          expect((await f.recover(earlier)).report).toMatchObject({
+            recovered: false,
+            reason: expect.stringContaining("invalid metadata"),
+          });
+        }),
+      120_000,
     );
 
     it(

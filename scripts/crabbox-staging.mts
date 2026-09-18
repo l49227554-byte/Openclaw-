@@ -56,7 +56,7 @@ const witnessSchema = z.strictObject({
   commit: z.string().regex(/^[a-f0-9]{40}$/u),
 });
 const receiptSchema = z.strictObject({
-  version: z.literal(1),
+  version: z.literal(2),
   id: z.uuid(),
   ownerPid: z.number().int().min(2),
   ownerDomain: z
@@ -421,7 +421,7 @@ export function createStaging(
   try {
     mkdirSync(payload, { mode: 0o700 });
     receipt = {
-      version: 1,
+      version: 2,
       id,
       ownerPid: process.pid,
       ownerDomain: recorded ? processDomain() : undefined,
@@ -519,7 +519,8 @@ export function createStaging(
         artifactManifest: saved.digest,
       });
     },
-    hold: (hold) => update({ hold }),
+    // A retryable cleanup failure cannot certify earlier preparation writers.
+    hold: (hold) => update({ hold: receipt.hold === "writers" ? "writers" : hold }),
     dispose() {
       if (disposed) {
         return;

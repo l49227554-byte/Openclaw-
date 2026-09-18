@@ -23,7 +23,6 @@ import {
   type CodexThreadItem,
   type CodexThreadResumeResponse,
   type CodexThreadStartResponse,
-  type CodexTurn,
   type CodexTurnCompletedNotification,
   type CodexTurnStartResponse,
 } from "./protocol.js";
@@ -355,15 +354,6 @@ export function assertCodexModelListResponse(value: unknown): CodexModelListResp
     normalizeWithDefaults(modelListResponseSchema, value),
     "model/list response",
   );
-}
-
-/** Reads and normalizes a Codex turn object. */
-export function readCodexTurn(value: unknown): CodexTurn | undefined {
-  const response = readCodexShape(
-    validateTurnStartResponse,
-    normalizeWithDefaults(turnStartResponseSchema, { turn: value }),
-  );
-  return response?.turn;
 }
 
 /** Reads a Codex turn/completed notification payload if it matches the protocol schema. */

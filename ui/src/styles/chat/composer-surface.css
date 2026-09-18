@@ -63,7 +63,7 @@
   --chat-composer-hairline: color-mix(in srgb, var(--text-strong) 16%, transparent);
 }
 
-.agent-chat__input.agent-chat__input,
+.agent-chat__input,
 .agent-chat__disabled-banner.callout,
 .agent-chat__composer-overlay
   > :is(

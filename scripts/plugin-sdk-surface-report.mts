@@ -378,7 +378,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      4485,
+      // +1: exact-host trusted JSON post for operator-configured web-search endpoints.
+      4486,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -520,7 +521,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      2649,
+      // +1: exact-host trusted JSON post for operator-configured web-search endpoints.
+      2650,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
@@ -540,7 +542,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       //     Slack progress-draft render) so installed plugins survive upgrade (#124041 class).
       // -18: retire the expired August compatibility exports and messaging-targets subpath.
       // +4: rendering helpers forwarded by the shipped channel-message wildcard.
-      1138,
+      // +1: exact-host trusted JSON post on the private-local provider-web-search subpath.
+      1139,
       env,
     ),
     publicWildcardReexports: readPluginSdkSurfaceBudgetEnv(

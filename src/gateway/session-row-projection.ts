@@ -43,7 +43,11 @@ import {
 } from "./session-row-projection-materialize.js";
 import * as records from "./session-row-projection-record.js";
 import { createSessionRowProjectionTranscriptUpdates } from "./session-row-projection-transcript.js";
-import { matchesSessionRowScope, prepareSessionRowScopes } from "./session-row-scope.js";
+import {
+  matchesSessionRowScope,
+  prepareSessionRowScopes,
+  selectMatchingSessionRows,
+} from "./session-row-scope.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import { resolveDeletedAgentIdFromSessionKey } from "./session-utils-store.js";
 
@@ -169,22 +173,7 @@ export async function createSessionRowProjection(params: {
     return next;
   }
   function matching(query: records.Query, kind = "key") {
-    const candidates = query.key
-      ? byKey.get(`${kind}:${query.key}`)
-      : query.storePath
-        ? new Set(
-            (scope?.physicalPaths(query.storePath, query.agentId) ?? [query.storePath]).flatMap(
-              (path) => Array.from(byStore.get(path) ?? []),
-            ),
-          )
-        : query.agentId
-          ? byAgent.get(query.agentId)
-          : rows.keys();
-    return [...(candidates ?? [])]
-      .map((id) => rows.get(id))
-      .filter(
-        (row): row is records.Row => row !== undefined && matchesSessionRowScope(row, query, scope),
-      );
+    return selectMatchingSessionRows({ rows, indexes, scope }, query, kind);
   }
   function lookup(query: records.Lookup) {
     if (disposed) {
@@ -500,7 +489,18 @@ export async function createSessionRowProjection(params: {
     retainUserProfileCatalog(),
     sessionChanges.subscribe(mark),
     onSessionLifecycleEvent(mark),
-    registerPreparedModelRuntimePublicationListener(() => mark({ all: true, scope: "catalog" })),
+    registerPreparedModelRuntimePublicationListener((event) => {
+      // An incomplete catalog read still needs the next publication to recover its rows.
+      if (
+        (event.phase === "catalog-published" || event.phase === "catalog-failed") &&
+        event.modelFactsChanged === false &&
+        modelCatalog !== undefined &&
+        (!(modelCatalog instanceof Map) || ![...modelCatalog.values()].includes(undefined))
+      ) {
+        return;
+      }
+      mark({ all: true, scope: "catalog" });
+    }),
     onSessionIdentityMutation((mutation) => {
       for (const key of mutation.previous.sessionKeys) {
         for (const row of matching({ key, agentId: mutation.agentId })) {

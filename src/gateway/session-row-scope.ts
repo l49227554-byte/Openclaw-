@@ -5,11 +5,20 @@ import { resolveGatewaySessionStoreTargets } from "../config/sessions/combined-s
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 
+type SessionRowScopeTarget = {
+  agentId: string;
+  storeTarget: { agentId: string; storePath: string };
+};
+type SessionRowScopeQuery = { agentId?: string; storePath?: string };
+type SessionRowScope =
+  | Pick<ReturnType<typeof prepareSessionRowScopes>, "physicalPaths">
+  | undefined;
+
 /** Early publications retain literal paths until topology has prepared their aliases. */
 export function matchesSessionRowScope(
-  row: { agentId: string; storeTarget: { agentId: string; storePath: string } },
-  query: { agentId?: string; storePath?: string },
-  scope: Pick<ReturnType<typeof prepareSessionRowScopes>, "physicalPaths"> | undefined,
+  row: SessionRowScopeTarget,
+  query: SessionRowScopeQuery,
+  scope: SessionRowScope,
   logicalOwnerOnly = false,
 ) {
   return (
@@ -21,6 +30,40 @@ export function matchesSessionRowScope(
         row.storeTarget.storePath,
       ))
   );
+}
+
+export function selectMatchingSessionRows<T extends SessionRowScopeTarget>(
+  params: {
+    rows: ReadonlyMap<string, T>;
+    indexes: {
+      byKey: ReadonlyMap<string, ReadonlySet<string>>;
+      byStore: ReadonlyMap<string, ReadonlySet<string>>;
+      byAgent: ReadonlyMap<string, ReadonlySet<string>>;
+    };
+    scope: SessionRowScope;
+  },
+  query: SessionRowScopeQuery & { key?: string },
+  kind = "key",
+) {
+  const {
+    rows,
+    indexes: { byKey, byStore, byAgent },
+    scope,
+  } = params;
+  const candidates = query.key
+    ? byKey.get(`${kind}:${query.key}`)
+    : query.storePath
+      ? new Set(
+          (scope?.physicalPaths(query.storePath, query.agentId) ?? [query.storePath]).flatMap(
+            (storePath) => Array.from(byStore.get(storePath) ?? []),
+          ),
+        )
+      : query.agentId
+        ? byAgent.get(query.agentId)
+        : rows.keys();
+  return [...(candidates ?? [])]
+    .map((id) => rows.get(id))
+    .filter((row): row is T => row !== undefined && matchesSessionRowScope(row, query, scope));
 }
 
 /** Resolve query-specific federation once when the physical topology is published. */

@@ -227,14 +227,22 @@ it("defers vacuum when a writer acquires its lock after checkpoint", async () =>
     });
   try {
     const startedAt = performance.now();
-    await runExclusiveSqliteSessionWrite(options, () => reclaimSqliteFreePages(options));
+    await runExclusiveSqliteSessionWrite(
+      options,
+      () => reclaimSqliteFreePages(options),
+      "session.history.free-pages",
+    );
     expect(performance.now() - startedAt).toBeLessThan(1_000);
     expect(writer.isTransaction).toBe(true);
     expect(database.db.isTransaction).toBe(false);
     expect(database.db.prepare("PRAGMA busy_timeout").get()).toEqual(busyTimeout);
     expect(freePages()).toBe(before);
     writer.exec("ROLLBACK");
-    await runExclusiveSqliteSessionWrite(options, () => reclaimSqliteFreePages(options));
+    await runExclusiveSqliteSessionWrite(
+      options,
+      () => reclaimSqliteFreePages(options),
+      "session.history.free-pages",
+    );
     expect(freePages()).toBe(0);
     expect(database.db.prepare("PRAGMA busy_timeout").get()).toEqual(busyTimeout);
   } finally {

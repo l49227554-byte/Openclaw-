@@ -408,10 +408,11 @@ async function repairMissingPluginInstallsWithLease(
     configuredPluginIds: params.pluginIds,
     configuredChannelIds: params.channelIds,
     configuredChannelOwnerPluginIds,
-    blockedPluginIds:
-      deferredPluginIds.size > 0
-        ? new Set([...(params.blockedPluginIds ?? []), ...deferredPluginIds])
-        : params.blockedPluginIds,
+    blockedPluginIds: new Set([
+      ...(params.blockedPluginIds ?? []),
+      ...deferredPluginIds,
+      ...operatorManagedPluginIds,
+    ]),
   })) {
     const repair = resolveConfiguredPluginCandidateRepair({
       candidate,
@@ -419,7 +420,6 @@ async function repairMissingPluginInstallsWithLease(
       env,
       context: {
         bundledPluginsById,
-        operatorManagedPluginIds,
         officialReplacementPluginIds,
         knownIds,
         installedPluginIdsWithStaleVersionBoundRuntimePackages,

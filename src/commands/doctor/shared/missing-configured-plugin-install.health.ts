@@ -198,15 +198,13 @@ export async function detectConfiguredPluginInstallHealthIssues(params: {
     configuredPluginIds: pluginIds,
     configuredChannelIds: channelIds,
     configuredChannelOwnerPluginIds,
-    blockedPluginIds:
-      deferredPluginIds.size > 0
-        ? new Set([...blockedPluginIds, ...deferredPluginIds])
-        : blockedPluginIds,
+    blockedPluginIds: new Set([
+      ...blockedPluginIds,
+      ...deferredPluginIds,
+      ...operatorManagedPluginIds,
+    ]),
   })) {
-    if (
-      operatorManagedPluginIds.has(candidate.pluginId) ||
-      bundledPluginsById.has(candidate.pluginId)
-    ) {
+    if (bundledPluginsById.has(candidate.pluginId)) {
       continue;
     }
     if (reportedPluginIds.has(candidate.pluginId)) {

@@ -99,7 +99,6 @@ export function resolveConfiguredPluginCandidateRepair(params: {
   context: Pick<
     InstallContext,
     | "bundledPluginsById"
-    | "operatorManagedPluginIds"
     | "officialReplacementPluginIds"
     | "knownIds"
     | "installedPluginIdsWithStaleVersionBoundRuntimePackages"
@@ -110,10 +109,7 @@ export function resolveConfiguredPluginCandidateRepair(params: {
   | { shouldReplaceBrokenOfficialInstall: boolean; repairReason?: InstallCandidateRepairReason }
   | undefined {
   const { candidate, context } = params;
-  if (
-    context.operatorManagedPluginIds.has(candidate.pluginId) ||
-    context.bundledPluginsById.has(candidate.pluginId)
-  ) {
+  if (context.bundledPluginsById.has(candidate.pluginId)) {
     return undefined;
   }
   const shouldReplaceBrokenOfficialInstall = context.officialReplacementPluginIds.has(

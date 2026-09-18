@@ -14,7 +14,6 @@ import {
   makeResult,
   recordTurnAttempt,
   initialAttemptOptions,
-  fallbackAttemptOptions,
   type FallbackRunnerParams,
 } from "./run-entry.test-support.js";
 
@@ -225,8 +224,16 @@ describe("runEmbeddedAgentEntry", () => {
         }),
     });
 
-    expect(resolveContextEngineHost).toHaveBeenCalledWith("primary-provider", "primary-model");
-    expect(resolveContextEngineHost).toHaveBeenCalledWith("fallback-provider", "fallback-model");
+    expect(resolveContextEngineHost).toHaveBeenCalledWith(
+      "primary-provider",
+      "primary-model",
+      undefined,
+    );
+    expect(resolveContextEngineHost).toHaveBeenCalledWith(
+      "fallback-provider",
+      "fallback-model",
+      undefined,
+    );
     expect(state.selectAgentHarness).not.toHaveBeenCalled();
   });
 

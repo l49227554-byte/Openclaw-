@@ -6,7 +6,6 @@ import { Session as InspectorSession } from "node:inspector/promises";
 import { expect, it } from "vitest";
 import type { SessionsCatalogListParams } from "../../../packages/gateway-protocol/src/index.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { retainSessionListForegroundWork } from "../session-projection-work.js";
 import { createComposedCatalogFixture } from "./session-catalog.performance.test-support.js";
 
 function measureHostCpuReference(): number {
@@ -128,112 +127,105 @@ it("measures 100 composed catalog lists against real session and plugin stores",
             await fixture.list(query);
           }
         }
-        // Match the Gateway request lifetime while counting foreground catalog work.
-        const releaseForegroundWork = retainSessionListForegroundWork();
-        try {
-          do {
-            await fixture.projection.ensureMaterialized();
-          } while (fixture.projection.needsMaterialization);
-          const cpuReferenceP50Ms = measureHostCpuReference();
-          counters.begin();
-          const durations: number[] = [];
-          const workPerList = [];
-          let previousIo = counters.snapshot();
-          let minimumRows = Infinity;
-          const cpuStart = process.threadCpuUsage();
-          for (let index = 0; index < 100; index++) {
-            const started = performance.now();
-            const result = await fixture.list(variants[index % variants.length]);
-            durations.push(performance.now() - started);
-            const currentIo = counters.snapshot();
-            workPerList.push({
-              sqliteReadCalls: currentIo.sqliteReadCalls - previousIo.sqliteReadCalls,
-              bindingAuthorityReads:
-                currentIo.bindingAuthorityReads - previousIo.bindingAuthorityReads,
-              pluginStateWorkerOperations:
-                currentIo.pluginStateWorkerOperations - previousIo.pluginStateWorkerOperations,
-            });
-            previousIo = currentIo;
-            minimumRows = Math.min(minimumRows, result.sessions.length);
-          }
-          const cpu = process.threadCpuUsage(cpuStart);
-          const io = counters.end();
-          expect(minimumRows).toBeGreaterThan(0);
-          durations.sort((a, b) => a - b);
-
-          const inspector = new InspectorSession();
-          inspector.connect();
-          let sampledAllocationBytes: number;
-          let cpuSamples: ReturnType<typeof observedCpuSamples>;
-          try {
-            await inspector.post("HeapProfiler.collectGarbage");
-            await inspector.post("Profiler.enable");
-            await inspector.post("Profiler.start");
-            await inspector.post("HeapProfiler.startSampling", {
-              samplingInterval: 32 * 1024,
-              includeObjectsCollectedByMajorGC: true,
-              includeObjectsCollectedByMinorGC: true,
-            });
-            for (let index = 0; index < 100; index++) {
-              await fixture.list(variants[index % variants.length]);
-            }
-            const { profile: heapProfile } = await inspector.post("HeapProfiler.stopSampling");
-            const { profile: cpuProfile } = await inspector.post("Profiler.stop");
-            sampledAllocationBytes = allocatedBytes(heapProfile.head);
-            cpuSamples = observedCpuSamples(cpuProfile);
-          } finally {
-            inspector.disconnect();
-          }
-          console.info(
-            "composed resident catalog measurements",
-            JSON.stringify({
-              nativeRows: 3_000,
-              localRows: 3_000,
-              adoptedRows: 3,
-              lists: 100,
-              p50Ms: durations[49],
-              cpuReferenceP50Ms,
-              p95Ms: durations[94],
-              threadCpuMsPerList: (cpu.user + cpu.system) / 100_000,
-              sampledInstrumentedAllocationBytesPerList: sampledAllocationBytes / 100,
-              observedCpuSamples: cpuSamples,
-              profilingScope:
-                "Separate 100-list pass with CPU and heap sampling. Counts are observed self samples; zero samples cannot exclude calls shorter than the sampling interval.",
-              setupIo,
-              ioTotals: io,
-              ioPerList: Object.fromEntries(
-                Object.entries(io).map(([key, value]) => [key, value / 100]),
-              ),
-              scope:
-                "Explicit local Codex host through the real Gateway handler, registered provider, session accessor and plugin stores. Foreground request lifetime excludes optional transcript backfill. Main-thread SQL counts include freshness and binding authority reads; worker read operations are reported separately. File counts cover sync, callback and promise fs read/open APIs.",
-            }),
-          );
-          expect(cpuSamples.totalCpuSamples).toBeGreaterThan(0);
-          expect(cpuSamples.catalogPreviewSamples).toBe(0);
-          expect(cpuSamples.sanitizeTerminalTextSamples).toBe(0);
-          expect(io.nativeRpcCalls).toBe(0);
-          expect(io.fileReadCalls).toBe(0);
-          expect(io.fileOpenCalls).toBe(0);
-          expect(io.pluginStateWorkerReadOperations).toBe(0);
-          expect(io.sessionEntryReads).toBe(0);
-          expect(io.sessionPayloadReads).toBe(0);
-          // Each of the three adopted bindings needs one freshness read, four schema reads,
-          // and one authority read; resident catalog composition adds no other reads.
-          for (const work of workPerList) {
-            expect(work).toEqual({
-              sqliteReadCalls: 18,
-              bindingAuthorityReads: 3,
-              pluginStateWorkerOperations: 0,
-            });
-          }
-          // Two-CPU reference 1.568–1.615 ms gives 31.36–32.30 ms: >3x the prior 9.43 ms
-          // main median, below 10x the fastest 3.479 ms list. CPU-scaling the 23.95 ms
-          // hosted sighting predicts ~79.7 ms. Without an independent bound, uniform
-          // composition CPU growth leaves exact SQL budgets green.
-          expect(durations[49]).toBeLessThan(cpuReferenceP50Ms * 20);
-        } finally {
-          releaseForegroundWork();
+        do {
+          await fixture.projection.ensureMaterialized();
+        } while (fixture.projection.needsMaterialization);
+        const cpuReferenceP50Ms = measureHostCpuReference();
+        counters.begin();
+        const durations: number[] = [];
+        const workPerList = [];
+        let previousIo = counters.snapshot();
+        let minimumRows = Infinity;
+        const cpuStart = process.threadCpuUsage();
+        for (let index = 0; index < 100; index++) {
+          const started = performance.now();
+          const result = await fixture.list(variants[index % variants.length]);
+          durations.push(performance.now() - started);
+          const currentIo = counters.snapshot();
+          workPerList.push({
+            sqliteReadCalls: currentIo.sqliteReadCalls - previousIo.sqliteReadCalls,
+            bindingAuthorityReads:
+              currentIo.bindingAuthorityReads - previousIo.bindingAuthorityReads,
+            pluginStateWorkerOperations:
+              currentIo.pluginStateWorkerOperations - previousIo.pluginStateWorkerOperations,
+          });
+          previousIo = currentIo;
+          minimumRows = Math.min(minimumRows, result.sessions.length);
         }
+        const cpu = process.threadCpuUsage(cpuStart);
+        const io = counters.end();
+        expect(minimumRows).toBeGreaterThan(0);
+        durations.sort((a, b) => a - b);
+
+        const inspector = new InspectorSession();
+        inspector.connect();
+        let sampledAllocationBytes: number;
+        let cpuSamples: ReturnType<typeof observedCpuSamples>;
+        try {
+          await inspector.post("HeapProfiler.collectGarbage");
+          await inspector.post("Profiler.enable");
+          await inspector.post("Profiler.start");
+          await inspector.post("HeapProfiler.startSampling", {
+            samplingInterval: 32 * 1024,
+            includeObjectsCollectedByMajorGC: true,
+            includeObjectsCollectedByMinorGC: true,
+          });
+          for (let index = 0; index < 100; index++) {
+            await fixture.list(variants[index % variants.length]);
+          }
+          const { profile: heapProfile } = await inspector.post("HeapProfiler.stopSampling");
+          const { profile: cpuProfile } = await inspector.post("Profiler.stop");
+          sampledAllocationBytes = allocatedBytes(heapProfile.head);
+          cpuSamples = observedCpuSamples(cpuProfile);
+        } finally {
+          inspector.disconnect();
+        }
+        console.info(
+          "composed resident catalog measurements",
+          JSON.stringify({
+            nativeRows: 3_000,
+            localRows: 3_000,
+            adoptedRows: 3,
+            lists: 100,
+            p50Ms: durations[49],
+            cpuReferenceP50Ms,
+            p95Ms: durations[94],
+            threadCpuMsPerList: (cpu.user + cpu.system) / 100_000,
+            sampledInstrumentedAllocationBytesPerList: sampledAllocationBytes / 100,
+            observedCpuSamples: cpuSamples,
+            profilingScope:
+              "Separate 100-list pass with CPU and heap sampling. Counts are observed self samples; zero samples cannot exclude calls shorter than the sampling interval.",
+            setupIo,
+            ioTotals: io,
+            ioPerList: Object.fromEntries(
+              Object.entries(io).map(([key, value]) => [key, value / 100]),
+            ),
+            scope:
+              "Explicit local Codex host through the real Gateway handler, registered provider, session accessor and plugin stores. Main-thread SQL counts include freshness and binding authority reads; worker read operations are reported separately. File counts cover sync, callback and promise fs read/open APIs.",
+          }),
+        );
+        expect(cpuSamples.totalCpuSamples).toBeGreaterThan(0);
+        expect(cpuSamples.catalogPreviewSamples).toBe(0);
+        expect(cpuSamples.sanitizeTerminalTextSamples).toBe(0);
+        expect(io.nativeRpcCalls).toBe(0);
+        expect(io.fileReadCalls).toBe(0);
+        expect(io.fileOpenCalls).toBe(0);
+        expect(io.pluginStateWorkerReadOperations).toBe(0);
+        expect(io.sessionEntryReads).toBe(0);
+        expect(io.sessionPayloadReads).toBe(0);
+        // Revalidate all three adopted bindings without adding work to the resident list path.
+        for (const work of workPerList) {
+          expect(work).toEqual({
+            sqliteReadCalls: 20,
+            bindingAuthorityReads: 3,
+            pluginStateWorkerOperations: 0,
+          });
+        }
+        // Two-CPU reference 1.568–1.615 ms gives 31.36–32.30 ms: >3x the prior 9.43 ms
+        // main median, below 10x the fastest 3.479 ms list. CPU-scaling the 23.95 ms
+        // hosted sighting predicts ~79.7 ms. Without an independent bound, uniform
+        // composition CPU growth leaves exact SQL budgets green.
+        expect(durations[49]).toBeLessThan(cpuReferenceP50Ms * 20);
       } finally {
         try {
           await fixture?.close();

@@ -38,8 +38,22 @@ export function avoidTrailingHighSurrogateBreak(text: string, start: number, end
   return adjusted > start ? adjusted : end + 1;
 }
 
-/** Shared grapheme segmenter: constructing one per call dominates chunking loops. */
-const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+let graphemeSegmenter: Intl.Segmenter | undefined;
+
+/**
+ * Shared grapheme segmenter: constructing one per call dominates chunking loops, so the
+ * instance is built once and reused.
+ *
+ * It is built on first use rather than at module load because this module is deliberately
+ * dependency-free and reaches browser bundles through `plugin-sdk/string-coerce-runtime`. A
+ * module-level `new` is a side effect that a bundler must keep even after tree-shaking the
+ * functions around it, so every such bundle would construct a segmenter at load for code it
+ * may never call, and fail outright on a runtime without `Intl.Segmenter`.
+ */
+function getGraphemeSegmenter(): Intl.Segmenter {
+  graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  return graphemeSegmenter;
+}
 
 /**
  * Moves a chunk boundary back to an extended-grapheme-cluster boundary.
@@ -64,7 +78,7 @@ export function avoidTrailingGraphemeBreak(text: string, start: number, end: num
   }
 
   // `containing` is undefined only past the end of the text, which the guard above excludes.
-  const cluster = GRAPHEME_SEGMENTER.segment(text).containing(end);
+  const cluster = getGraphemeSegmenter().segment(text).containing(end);
   if (cluster === undefined || cluster.index === end) {
     return end;
   }
@@ -85,7 +99,7 @@ export function firstGraphemeClusterLength(text: string): number {
     return 0;
   }
   // `containing(0)` is defined for any non-empty string.
-  const cluster = GRAPHEME_SEGMENTER.segment(text).containing(0);
+  const cluster = getGraphemeSegmenter().segment(text).containing(0);
   return cluster ? cluster.segment.length : 0;
 }
 

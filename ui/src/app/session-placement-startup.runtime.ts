@@ -297,7 +297,11 @@ export default function createApplicationPlacementStartupRuntime(
         input.displayAttachments ?? restoreChatApiAttachments(input.recovery.attachments),
       persistRecovery: input.persistRecovery,
       createdAt:
-        existing?.owner.messageId === owner.messageId ? existing.createdAt : input.createdAt,
+        input.mode === "retry"
+          ? input.createdAt
+          : existing?.owner.messageId === owner.messageId
+            ? existing.createdAt
+            : input.createdAt,
       scope,
       retainsConnection: capturePlacementStartupConnection(params.gateway, owner),
     };
@@ -468,7 +472,9 @@ export default function createApplicationPlacementStartupRuntime(
         recovery,
         persistRecovery: entry.persistRecovery,
         mode: "retry",
-        createdAt: entry.createdAt,
+        // A retried attempt starts its own elapsed timer instead of keeping
+        // the failed attempt's start time.
+        createdAt: Date.now(),
       });
     },
     subscribe(listener) {

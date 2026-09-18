@@ -287,17 +287,14 @@
 .chat-image-frame--image {
   display: block;
   flex: none;
-  container-type: inline-size;
   /* A definite intrinsic width keeps fit-content user grids from collapsing. */
   width: var(--chat-image-width);
-  /* Panoramas must also fit the compact status header without moving the next row. */
-  min-height: 74px;
   aspect-ratio: var(--chat-image-ratio);
   background: color-mix(in srgb, var(--bg-muted) 45%, var(--bg));
 }
 
-/* Reserve the preview slot without painting or clipping an empty preview card. */
-.chat-image-frame--unavailable {
+.chat-image-frame--compact {
+  container-type: inline-size;
   overflow: visible;
   background: transparent;
 }
@@ -325,20 +322,6 @@
   height: 100%;
   max-width: none;
   max-height: none;
-}
-
-.chat-image-status {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px;
-  color: var(--muted);
-  font-size: var(--control-ui-text-sm);
-  text-align: center;
 }
 
 .chat-image-frame--managed::after {
@@ -599,6 +582,11 @@
   }
 }
 
+.chat-group.user .chat-message-images--gallery > .chat-image-frame--compact {
+  height: auto;
+  align-self: start;
+}
+
 .chat-assistant-attachments {
   display: flex;
   flex-direction: column;
@@ -791,7 +779,7 @@
   }
 }
 
-.chat-image-frame--unavailable > .chat-assistant-attachment-card {
+.chat-image-frame--compact > .chat-assistant-attachment-card {
   align-self: start;
 
   .chat-assistant-attachment-card__status-meta {
@@ -813,7 +801,7 @@
 }
 
 @container (max-width: 240px) {
-  .chat-image-frame--unavailable > .chat-assistant-attachment-card {
+  .chat-image-frame--compact > .chat-assistant-attachment-card {
     .chat-assistant-attachment-card__header {
       height: 72px;
       box-sizing: border-box;

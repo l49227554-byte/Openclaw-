@@ -51,12 +51,19 @@ function svgResponse(width: number, height: number) {
 
 describe.runIf(browserMode)("chat image loading geometry", () => {
   let originalViewport: { width: number; height: number };
+  let originalTheme: string | undefined;
   beforeEach(() => {
     originalViewport = { width: window.innerWidth, height: window.innerHeight };
+    originalTheme = document.documentElement.dataset.themeMode;
   });
   afterEach(async () => {
     const { page } = await import("vitest/browser");
     await page.viewport(originalViewport.width, originalViewport.height);
+    if (originalTheme === undefined) {
+      delete document.documentElement.dataset.themeMode;
+    } else {
+      document.documentElement.dataset.themeMode = originalTheme;
+    }
   });
 
   it.each(
@@ -94,12 +101,20 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         expectedHeight: 120,
       },
       {
-        name: "unknown dimensions",
-        width: undefined,
-        height: undefined,
+        name: "panorama",
+        width: 1200,
+        height: 80,
         pane: 500,
         expectedWidth: 400,
-        expectedHeight: 400 / 1.5,
+        expectedHeight: 400 / 15,
+      },
+      {
+        name: "tiny tall image",
+        width: 80,
+        height: 1600,
+        pane: 500,
+        expectedWidth: 18,
+        expectedHeight: 360,
       },
     ].flatMap((scenario) =>
       ["assistant", "user"].map((role) => ({ scenario, role, name: scenario.name })),
@@ -166,8 +181,36 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     },
   );
 
+  it.each(["assistant", "user"])(
+    "uses natural decoded geometry for a $role image without dimensions",
+    async (role) => {
+      const container = mount(500);
+      const response = createDeferred<Response>();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => response.promise),
+      );
+      const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
+      render(
+        html`<div class="chat-group ${role}">
+          <div class="chat-group-messages">
+            ${renderMessageImages([{ url: source, fileName: "portrait.svg" }])}
+            <p data-next-message>Next message</p>
+          </div>
+        </div>`,
+        container,
+      );
+      expect(geometry(container).height).toBe(74);
+      response.resolve(svgResponse(800, 1600));
+      await vi.waitFor(() => expect(container.querySelector("img")).not.toBeNull());
+      await container.querySelector("img")!.decode();
+      expect(geometry(container).width).toBe(180);
+      expect(geometry(container).height).toBe(360);
+    },
+  );
+
   it.each(["attachment", "image block"])(
-    "keeps a local %s slot through metadata authorization without a file card",
+    "keeps a local %s compact until metadata establishes that it is loadable",
     async (kind) => {
       const container = mount(500);
       const response = createDeferred<Response>();
@@ -207,8 +250,8 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       subscribers.push(draw);
       draw();
       const before = geometry(container);
-      expect(before.height).toBeCloseTo(400 / 1.5, 1);
-      expect(container.querySelector(".chat-assistant-attachment-card")).toBeNull();
+      expect(before.height).toBe(74);
+      expect(container.querySelector(".chat-assistant-attachment-card")).not.toBeNull();
       response.resolve(
         Response.json({
           available: true,
@@ -217,13 +260,14 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         }),
       );
       await vi.waitFor(() => expect(container.querySelector("img")).not.toBeNull());
-      expect(geometry(container)).toEqual(before);
+      const loadable = geometry(container);
+      expect(loadable.height).toBeCloseTo(400 / 1.5, 1);
       const sourceUrl = container.querySelector("img")!.getAttribute("src");
       expect(container.querySelector("img")!.getAttribute("width")).toBe("1200");
       render(nothing, container);
       draw();
       expect(container.querySelector("img")?.getAttribute("src")).toBe(sourceUrl);
-      expect(geometry(container)).toEqual(before);
+      expect(geometry(container)).toEqual(loadable);
       expect(fetch).toHaveBeenCalledOnce();
     },
   );
@@ -344,27 +388,85 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
 
   it.each(
     [1440, 390].flatMap((viewport) =>
-      [
-        { role: "assistant", name: "known dimensions", width: 1200, height: 800, count: 2 },
-        { role: "assistant", name: "unknown dimensions", count: 2 },
-        { role: "assistant", name: "panorama", width: 1200, height: 80, count: 2 },
-        { role: "assistant", name: "tall image", width: 420, height: 1800, count: 2 },
-        { role: "user", name: "pair", width: 1200, height: 800, count: 2 },
-        { role: "user", name: "mixed gallery", width: 1200, height: 800, count: 5 },
-      ].map((scenario) => ({
-        viewport,
-        role: scenario.role,
-        name: scenario.name,
-        width: scenario.width,
-        height: scenario.height,
-        count: scenario.count,
-      })),
+      ["light", "dark"].flatMap((theme) =>
+        [
+          ...[1, 2, 3].flatMap((count) =>
+            [false, true].flatMap((withDocument) =>
+              [0, 1].map((available) => ({
+                role: "assistant",
+                name: "unknown dimensions",
+                width: undefined,
+                height: undefined,
+                count,
+                document: withDocument,
+                available,
+              })),
+            ),
+          ),
+          {
+            role: "assistant",
+            name: "known dimensions",
+            width: 1200,
+            height: 800,
+            count: 2,
+            document: true,
+            available: 0,
+          },
+          {
+            role: "assistant",
+            name: "panorama",
+            width: 1200,
+            height: 80,
+            count: 2,
+            document: true,
+            available: 0,
+          },
+          {
+            role: "assistant",
+            name: "tall image",
+            width: 420,
+            height: 1800,
+            count: 2,
+            document: true,
+            available: 0,
+          },
+          {
+            role: "assistant",
+            name: "tiny tall image",
+            width: 80,
+            height: 1600,
+            count: 2,
+            document: true,
+            available: 0,
+          },
+          {
+            role: "user",
+            name: "pair",
+            width: 1200,
+            height: 800,
+            count: 2,
+            document: true,
+            available: 0,
+          },
+          {
+            role: "user",
+            name: "mixed gallery",
+            width: 1200,
+            height: 800,
+            count: 2,
+            document: true,
+            available: 3,
+          },
+        ].map((scenario) => ({ viewport, theme, scenario })),
+      ),
     ),
   )(
-    "keeps unavailable $role $name cards compact and their slots stationary at $viewport px",
-    async ({ viewport, role, width: imageWidth, height: imageHeight, count }) => {
+    "keeps unavailable attachment blocks compact at $viewport px in $theme: $scenario",
+    async ({ viewport, theme, scenario }) => {
+      const { role, width: imageWidth, height: imageHeight, count, available } = scenario;
       const { page } = await import("vitest/browser");
-      await page.viewport(viewport, 1000);
+      await page.viewport(viewport, 1600);
+      document.documentElement.dataset.themeMode = theme;
       const container = mount(Math.min(700, viewport - 32));
       const allowed = createDeferred<Response>();
       const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -381,9 +483,9 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         );
       });
       vi.stubGlobal("fetch", fetchMock);
-      const images = Array.from({ length: count }, (_, index) => ({
+      const images = Array.from({ length: count + available }, (_, index) => ({
         url:
-          index < 2
+          index < count
             ? `/outside/${crypto.randomUUID()}.png`
             : "data:image/svg+xml," +
               encodeURIComponent(
@@ -397,12 +499,9 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         render(
           html`<div class="chat-group ${role}">
             <div class="chat-group-messages">
-              ${renderMessageImages(images, {
-                sessionKey: "unavailable-geometry",
-                agentId: "main",
-                onRequestUpdate: draw,
-              })}
-              ${renderCompactAttachmentCard({ kind: "document", label: "notes.pdf" })}
+              ${renderMessageImages(images, { sessionKey: "unavailable-geometry", agentId: "main", onRequestUpdate: draw })}
+              ${scenario.document ? renderCompactAttachmentCard({ kind: "document", label: "notes.pdf" }) : nothing}
+              <p data-next-message>Next message</p>
             </div>
           </div>`,
           container,
@@ -410,25 +509,51 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       subscribers.push(draw);
       draw();
       await vi.waitFor(() =>
-        expect(container.querySelectorAll(".chat-assistant-attachment-card--blocked")).toHaveLength(
-          2,
-        ),
+        expect(
+          container.querySelectorAll(".chat-assistant-attachment-card--blocked button"),
+        ).toHaveLength(count),
       );
-      const file = container.querySelector<HTMLElement>(
+      await Promise.all([...container.querySelectorAll("img")].map((image) => image.decode()));
+      const reference = scenario.document ? container : mount(400);
+      if (!scenario.document) {
+        render(renderCompactAttachmentCard({ kind: "document", label: "notes.pdf" }), reference);
+      }
+      const file = reference.querySelector<HTMLElement>(
         ".chat-assistant-attachment-card--compact",
       )!;
       const cards = [
         ...container.querySelectorAll<HTMLElement>(".chat-assistant-attachment-card--blocked"),
       ];
       const fileHeight = file.getBoundingClientRect().height;
+      expect(fileHeight).toBe(74);
+      const gallery = container.querySelector<HTMLElement>(".chat-message-images")!;
       const slots = () =>
-        [...container.querySelectorAll(".chat-message-images > *")].map((element) => {
+        [...gallery.children].map((element) => {
           const { x, y, width, height } = element.getBoundingClientRect();
           return { x, y, width, height };
         });
       const before = slots();
-      expect(before).toHaveLength(count);
-      const nextTop = file.getBoundingClientRect().top;
+      expect(before).toHaveLength(count + available);
+      const galleryStyle = getComputedStyle(gallery);
+      const gap = Number.parseFloat(galleryStyle.rowGap);
+      const columns = role === "user" ? galleryStyle.gridTemplateColumns.split(" ").length : 1;
+      const rowHeights = Array.from({ length: Math.ceil(before.length / columns) }, (_, row) =>
+        Math.max(
+          ...before
+            .slice(row * columns, (row + 1) * columns)
+            .map((slot, offset) => (row * columns + offset < count ? fileHeight : slot.height)),
+        ),
+      );
+      const compactHeight =
+        rowHeights.reduce((sum, height) => sum + height, 0) + gap * (rowHeights.length - 1);
+      expect(gallery.getBoundingClientRect().height).toBeCloseTo(compactHeight, 1);
+      if (scenario.document) {
+        const parentGap = Number.parseFloat(getComputedStyle(gallery.parentElement!).rowGap);
+        expect(
+          file.getBoundingClientRect().top - gallery.getBoundingClientRect().bottom,
+        ).toBeCloseTo(parentGap, 1);
+      }
+      const nextTop = container.querySelector("[data-next-message]")!.getBoundingClientRect().top;
       const cornerInsets = (element: HTMLElement) => {
         const rect = element.getBoundingClientRect();
         const radius = Number.parseFloat(getComputedStyle(element).borderTopLeftRadius);
@@ -450,9 +575,8 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       };
       for (const [index, card] of cards.entries()) {
         expect(card.getBoundingClientRect().width).toBe(before[index]!.width);
-        expect
-          .soft(Math.abs(card.getBoundingClientRect().height - fileHeight))
-          .toBeLessThanOrEqual(1);
+        expect(Math.abs(card.getBoundingClientRect().height - fileHeight)).toBeLessThanOrEqual(1);
+        expect(Math.abs(before[index]!.height - fileHeight)).toBeLessThanOrEqual(1);
         const cardCorners = cornerInsets(card);
         const rect = card.getBoundingClientRect();
         // Compare both outlines at the same subpixel coordinates so browser hit
@@ -466,7 +590,9 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
         fileParent.insertBefore(file, fileNext);
         expect.soft(cardCorners).toEqual(fileCorners);
         expect(getComputedStyle(card).borderTopWidth).toBe(getComputedStyle(file).borderTopWidth);
-        const button = card.querySelector("button")!.getBoundingClientRect();
+        const action = card.querySelector("button")!;
+        expect(action.scrollWidth).toBeLessThanOrEqual(action.clientWidth);
+        const button = action.getBoundingClientRect();
         expect(button.left).toBeGreaterThanOrEqual(rect.left);
         expect(button.right).toBeLessThanOrEqual(rect.right);
         expect(button.bottom).toBeLessThanOrEqual(rect.bottom);
@@ -478,44 +604,49 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       );
       expect(frame(container).getAttribute("aria-busy")).toBe("true");
       expect(slots()).toEqual(before);
-      expect(file.getBoundingClientRect().top).toBe(nextTop);
+      expect(container.querySelector("[data-next-message]")!.getBoundingClientRect().top).toBe(
+        nextTop,
+      );
       allowed.resolve(Response.json({ available: true }));
       await vi.waitFor(() => expect(frame(container).querySelector("img")).not.toBeNull());
-      expect(slots()).toEqual(before);
-      expect(file.getBoundingClientRect().top).toBe(nextTop);
-      const remaining = container.querySelector<HTMLElement>(
-        ".chat-assistant-attachment-card--blocked",
-      )!;
-      expect(Math.abs(remaining.getBoundingClientRect().height - fileHeight)).toBeLessThanOrEqual(
-        1,
-      );
+      for (const remaining of [...gallery.children].slice(1, count)) {
+        expect(remaining.getBoundingClientRect().height).toBe(fileHeight);
+      }
     },
   );
 
-  it("retains an explained image slot after a failed thumbnail fetch", async () => {
-    const container = mount(500);
-    const response = createDeferred<Response>();
-    const fetchMock = vi
-      .fn()
-      .mockImplementationOnce(() => response.promise)
-      .mockResolvedValueOnce(svgResponse(1200, 800));
-    vi.stubGlobal("fetch", fetchMock);
-    const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
-    render(
-      html`${renderMessageImages([{ url: source, width: 1200, height: 800 }])}
-        <p data-next-message>Next message</p>`,
-      container,
-    );
-    const before = geometry(container);
-    response.resolve(new Response(null, { status: 404 }));
-    await vi.waitFor(() => expect(frame(container).getAttribute("aria-busy")).toBe("false"));
-    expect(container.querySelector("[role=status]")?.textContent).toContain("load");
-    expect(geometry(container)).toEqual(before);
-    const { page } = await import("vitest/browser");
-    await page.getByRole("button", { name: "Retry", exact: true }).click();
-    await vi.waitFor(() => expect(container.querySelector("img")).not.toBeNull());
-    await container.querySelector("img")!.decode();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(geometry(container)).toEqual(before);
-  });
+  it.each([true, false])(
+    "shows a compact retry card after a failed thumbnail fetch (dimensions: %s)",
+    async (sized) => {
+      const container = mount(500);
+      const response = createDeferred<Response>();
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(() => response.promise)
+        .mockResolvedValueOnce(svgResponse(1200, 800));
+      vi.stubGlobal("fetch", fetchMock);
+      const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${crypto.randomUUID()}/full`;
+      render(
+        html`${renderMessageImages([{ url: source, width: sized ? 1200 : undefined, height: sized ? 800 : undefined }])}
+          <p data-next-message>Next message</p>`,
+        container,
+      );
+      const before = geometry(container);
+      response.resolve(new Response(null, { status: 404 }));
+      await vi.waitFor(() => expect(frame(container).getAttribute("aria-busy")).toBe("false"));
+      expect(container.querySelector(".chat-assistant-attachment-card")?.textContent).toContain(
+        "load",
+      );
+      expect(geometry(container).height).toBe(74);
+      const { page } = await import("vitest/browser");
+      await page.getByRole("button", { name: "Retry", exact: true }).click();
+      await vi.waitFor(() => expect(container.querySelector("img")).not.toBeNull());
+      await container.querySelector("img")!.decode();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(geometry(container).height).toBeCloseTo(400 / 1.5, 1);
+      if (sized) {
+        expect(geometry(container)).toEqual(before);
+      }
+    },
+  );
 });

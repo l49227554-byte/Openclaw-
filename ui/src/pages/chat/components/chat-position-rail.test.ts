@@ -31,7 +31,7 @@ describe("conversation position rail", () => {
   beforeEach(installTranscriptDomMocks);
   afterEach(resetTranscriptTestDom);
 
-  it.each(["resize", "focus"] as const)(
+  it.each(["resize", "focus", "focus-resize", "pointer", "reader"] as const)(
     "keeps the reader's rail position through %s updates",
     async (scenario) => {
       vi.stubGlobal(
@@ -132,8 +132,15 @@ describe("conversation position rail", () => {
           activeMessage.mockReturnValue("message-40");
           await flush();
           expect(marks.scrollTop).toBeLessThan(677);
-        } else {
+        } else if (scenario === "focus") {
+          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
           markers[40]!.focus();
+          expect(markers[40]!.matches(":focus-visible")).toBe(true);
+          await flush();
+          expect(markers[40]!.offsetTop).toBeGreaterThanOrEqual(marks.scrollTop);
+          expect(markers[40]!.offsetTop + markers[40]!.offsetHeight).toBeLessThanOrEqual(
+            marks.scrollTop + marks.clientHeight,
+          );
           const focusedOffset = marks.scrollTop;
           activeMessage.mockReturnValue("message-77");
           await flush();
@@ -143,6 +150,38 @@ describe("conversation position rail", () => {
           activeMessage.mockReturnValue("message-79");
           await flush();
           expect(marks.scrollTop).toBe(677);
+        } else if (scenario === "focus-resize") {
+          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+          markers[79]!.focus();
+          expect(markers[79]!.matches(":focus-visible")).toBe(true);
+          height = 554;
+          marksHeight = 240;
+          await flush();
+          expect(document.activeElement).toBe(markers[79]);
+          expect(marks.scrollTop).toBe(720);
+        } else if (scenario === "pointer") {
+          markers[40]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+          markers[40]!.focus();
+          expect(markers[40]!.matches(":focus-visible")).toBe(false);
+          expect(marks.scrollTop).toBe(677);
+          activeMessage.mockReturnValue("message-0");
+          await flush();
+          expect(document.activeElement).toBe(markers[40]);
+          expect(marks.scrollTop).toBe(0);
+        } else {
+          height = 554;
+          marksHeight = 240;
+          await flush();
+          expect(marks.scrollTop).toBe(677);
+          publishTranscriptScroll(root, {
+            type: "input",
+            event: new WheelEvent("wheel", { deltaY: 120 }),
+            touching: false,
+          });
+          root.scrollTop = 8319;
+          await flush();
+          expect(markers[79]!.getAttribute("aria-current")).toBe("true");
+          expect(marks.scrollTop).toBe(720);
         }
       } finally {
         render(nothing, container);

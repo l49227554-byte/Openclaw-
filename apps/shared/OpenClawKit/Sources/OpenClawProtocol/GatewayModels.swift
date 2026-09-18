@@ -15552,6 +15552,7 @@ public struct SessionsCatalogContinueResult: Codable, Sendable {
 
 public struct SessionsCatalogListParams: Codable, Sendable {
     public let catalogid: String?
+    public let metadataonly: Bool?
     public let cursors: [String: AnyCodable]?
     public let agentid: String?
     public let progressid: String?
@@ -15561,6 +15562,7 @@ public struct SessionsCatalogListParams: Codable, Sendable {
 
     public init(
         catalogid: String? = nil,
+        metadataonly: Bool? = nil,
         cursors: [String: AnyCodable]? = nil,
         agentid: String? = nil,
         progressid: String? = nil,
@@ -15569,6 +15571,7 @@ public struct SessionsCatalogListParams: Codable, Sendable {
         hostids: [String]? = nil)
     {
         self.catalogid = catalogid
+        self.metadataonly = metadataonly
         self.cursors = cursors
         self.agentid = agentid
         self.progressid = progressid
@@ -15579,6 +15582,7 @@ public struct SessionsCatalogListParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case catalogid = "catalogId"
+        case metadataonly = "metadataOnly"
         case cursors
         case agentid = "agentId"
         case progressid = "progressId"

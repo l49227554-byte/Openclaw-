@@ -124,6 +124,10 @@ class ChatPositionRailDirective extends AsyncDirective {
       this.transcriptElement = root;
       this.stopTranscriptScroll = subscribeTranscriptScroll(root, (observation) => {
         if (observation.type === "input") {
+          if (this.followingResize) {
+            this.followActive = true;
+            this.scheduleLayout();
+          }
           this.followingResize = false;
           this.resizeScrollTarget = undefined;
         }
@@ -230,10 +234,15 @@ class ChatPositionRailDirective extends AsyncDirective {
       };
       const previous = this.readerViewport;
       if (previous && viewport.height !== previous.height) {
-        // The transcript can publish intersections before its resize scroll compensation.
-        // Neither update is a request to navigate the rail.
+        // Intersections can precede resize compensation. Preserve the reader's
+        // rail offset while keeping any keyboard-focused marker in view.
         this.followingResize = true;
-        this.followActive = false;
+        this.followActive =
+          this.markerElements.get(this.interaction.focusedId ?? "")?.matches(":focus-visible") ??
+          false;
+        if (this.followActive) {
+          this.scheduleLayout();
+        }
         const atEnd = this.resizeScrollTarget?.atEnd ?? previous.anchorToEnd;
         const maxOffset = Math.max(0, root.scrollHeight - viewport.height);
         this.resizeScrollTarget = {
@@ -334,7 +343,10 @@ class ChatPositionRailDirective extends AsyncDirective {
     this.syncTabStop();
     if (initialize || this.followActive) {
       this.followActive = false;
-      const current = this.markerElements.get(this.interaction.focusedId ?? this.activeId ?? "");
+      const focused = this.markerElements.get(this.interaction.focusedId ?? "");
+      const current =
+        (initialize || focused?.matches(":focus-visible") ? focused : undefined) ??
+        this.markerElements.get(this.activeId ?? "");
       if (current) {
         this.revealMarker(current);
       }

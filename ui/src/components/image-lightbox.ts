@@ -4,21 +4,10 @@ import { property, query, queryAll, state } from "lit/decorators.js";
 import { t } from "../i18n/index.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
 import { icons } from "./icons.ts";
-import {
-  ImageLightboxGalleryController,
-  type ImageLightboxGallery,
-} from "./image-lightbox-gallery.ts";
+import { ImageLightboxGalleryController } from "./image-lightbox-gallery.ts";
 import { imageLightboxStyles } from "./image-lightbox.styles.ts";
+import type { ImageLightboxGallery } from "./image-lightbox.types.ts";
 import "./modal-dialog.ts";
-
-export type ImageLightboxItem = {
-  kind?: "image" | "video";
-  src: string;
-  originalSrc?: string;
-  title: string;
-  release?: () => void;
-  gallery?: ImageLightboxGallery;
-};
 
 const SAFE_TOP_LEVEL_IMAGE_BLOB_TYPES = new Set([
   "image/avif",

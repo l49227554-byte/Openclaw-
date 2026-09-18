@@ -1,9 +1,4 @@
-import type { ImageLightboxItem } from "./image-lightbox.ts";
-
-export type ImageLightboxGallery = {
-  index: number;
-  items: readonly ((retryFailed?: boolean) => Promise<ImageLightboxItem | null>)[];
-};
+import type { ImageLightboxGallery, ImageLightboxItem } from "./image-lightbox.types.ts";
 
 /** The modal owns decoded neighbors and their resource leases until eviction or close. */
 export class ImageLightboxGalleryController {

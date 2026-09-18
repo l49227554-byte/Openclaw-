@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { ImageLightboxGalleryController } from "./image-lightbox-gallery.ts";
-import type { ImageLightboxItem } from "./image-lightbox.ts";
+import type { ImageLightboxItem } from "./image-lightbox.types.ts";
 
 function imageItem(title: string) {
   return { src: `https://example.com/${title}.png`, title, release: vi.fn() };

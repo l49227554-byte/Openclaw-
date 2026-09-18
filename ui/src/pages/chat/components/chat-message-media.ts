@@ -1,6 +1,6 @@
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewaySessionRow } from "../../../api/types.ts";
-import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { t } from "../../../i18n/index.ts";
 import { formatBytes } from "../../../lib/agents/display.ts";
 import type { MessageContentItem, MessageImageSource } from "../../../lib/chat/chat-types.ts";

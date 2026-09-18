@@ -1,6 +1,6 @@
 import { html, nothing } from "lit";
 import "../../../components/image-lightbox.ts";
-import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
+import type { ImageLightboxItem } from "../../../components/image-lightbox.types.ts";
 import { t } from "../../../i18n/index.ts";
 import { openResolvedImage } from "./chat-message-image-open.ts";
 

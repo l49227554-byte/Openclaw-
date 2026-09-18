@@ -1,5 +1,4 @@
 import { setImmediate } from "node:timers";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, vi } from "vitest";
 import { z } from "zod";
 import * as commands from "../process/exec.js";
@@ -9,25 +8,25 @@ export function observeUpdateCandidateIoProgress() {
   let observed = { id: 0, bytes: -1 };
   const run = commands.runUtf8CommandWithTimeout;
   vi.spyOn(commands, "runUtf8CommandWithTimeout").mockImplementation(async (...args) => {
-    const id = ++started;
-    const result = await run(...args);
     const [argv, options] = args;
     if (
-      result.code === 0 &&
-      argv.includes("--eval") &&
-      typeof options !== "number" &&
-      typeof options.input === "string"
+      !argv.includes("--eval") ||
+      typeof options === "number" ||
+      typeof options.input !== "string" ||
+      !z.object({ directory: z.string() }).safeParse(JSON.parse(options.input)).success
     ) {
-      const request: unknown = JSON.parse(options.input);
-      if (isRecord(request) && typeof request.directory === "string") {
-        const measurement = z.object({ bytes: z.number() }).parse(JSON.parse(result.stdout));
-        // Publish after the watchdog consumes the real probe result and renews its deadline.
-        setImmediate(() => {
-          if (id > observed.id) {
-            observed = { id, bytes: measurement.bytes };
-          }
-        });
-      }
+      return run(...args);
+    }
+    const id = ++started;
+    const result = await run(...args);
+    if (result.code === 0) {
+      const measurement = z.object({ bytes: z.number() }).parse(JSON.parse(result.stdout));
+      // Publish after the watchdog consumes the real probe result and renews its deadline.
+      setImmediate(() => {
+        if (id > observed.id) {
+          observed = { id, bytes: measurement.bytes };
+        }
+      });
     }
     return result;
   });

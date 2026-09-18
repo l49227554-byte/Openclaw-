@@ -32,6 +32,11 @@ import {
   resolveDefaultTelegramAccountId,
   resolveTelegramPollActionGateState,
 } from "./accounts.js";
+import { readTelegramReplyToMessageId, readTelegramThreadId } from "./action-params.js";
+import {
+  handleTelegramNativeMediaAction,
+  isTelegramNativeMediaAction,
+} from "./action-runtime.native-media.js";
 import { TELEGRAM_CALLBACK_DATA_MAX_BYTES } from "./approval-callback-data.js";
 import {
   appendTelegramDroppedControlFallback,
@@ -62,6 +67,7 @@ import {
   getTelegramAllowedReactions,
   pinMessageTelegram,
   reactMessageTelegram,
+  sendDiceTelegram,
   sendMessageTelegram,
   sendPollTelegram,
   sendStickerTelegram,
@@ -83,6 +89,7 @@ export const telegramActionRuntime = {
   pinMessageTelegram,
   reactMessageTelegram,
   searchStickers,
+  sendDiceTelegram,
   sendDurableMessageBatch,
   sendMessageTelegram,
   sendPollTelegram,
@@ -106,6 +113,8 @@ const TELEGRAM_ACTION_ALIASES = {
   react: "react",
   searchSticker: "searchSticker",
   send: "sendMessage",
+  dice: "sendDice",
+  sendDice: "sendDice",
   sendMessage: "sendMessage",
   sendSticker: "sendSticker",
   sticker: "sendSticker",
@@ -151,17 +160,6 @@ function readTelegramChatId(params: Record<string, unknown>) {
   );
 }
 
-function readTelegramThreadId(params: Record<string, unknown>) {
-  return (
-    readPositiveIntegerParam(params, "messageThreadId", {
-      message: "messageThreadId must be a positive integer.",
-    }) ??
-    readPositiveIntegerParam(params, "threadId", {
-      message: "threadId must be a positive integer.",
-    })
-  );
-}
-
 function resolveActionTopicNameCacheScope(cfg: OpenClawConfig, accountId?: string | null): string {
   const resolvedAccountId = accountId ?? resolveDefaultTelegramAccountId(cfg);
   const storePath = resolveStorePath(cfg.session?.store, {
@@ -181,17 +179,6 @@ function formatTelegramDeliveryTarget(to: string, messageThreadId?: number | nul
     return to;
   }
   return `${parsed.chatId}:topic:${topicId}`;
-}
-
-function readTelegramReplyToMessageId(params: Record<string, unknown>) {
-  return (
-    readPositiveIntegerParam(params, "replyToMessageId", {
-      message: "replyToMessageId must be a positive integer.",
-    }) ??
-    readPositiveIntegerParam(params, "replyTo", {
-      message: "replyTo must be a positive integer.",
-    })
-  );
 }
 
 function pushTelegramMediaUrl(mediaUrls: string[], seen: Set<string>, value: unknown): void {
@@ -1000,70 +987,17 @@ export async function handleTelegramAction(
     });
   }
 
-  if (action === "sendSticker") {
-    if (!isActionEnabled("sticker", false)) {
-      throw new Error(
-        "Telegram sticker actions are disabled. Set channels.telegram.actions.sticker to true.",
-      );
-    }
-    const to =
-      readStringParam(params, "to") ?? readStringParam(params, "target", { required: true });
-    const fileId =
-      readStringParam(params, "fileId") ?? readStringArrayParam(params, "stickerId")?.[0];
-    if (!fileId) {
-      throw new Error("fileId is required.");
-    }
-    const replyToMessageId = readTelegramReplyToMessageId(params);
-    const messageThreadId = readTelegramThreadId(params);
-    const token = resolveTelegramToken(cfg, { accountId }).token;
-    if (!token) {
-      throw new Error(
-        "Telegram bot token missing. Set TELEGRAM_BOT_TOKEN or channels.telegram.botToken.",
-      );
-    }
-    const result = await telegramActionRuntime.sendStickerTelegram(to, fileId, {
+  if (isTelegramNativeMediaAction(action)) {
+    return handleTelegramNativeMediaAction({
+      action,
+      params,
       cfg,
-      token,
-      accountId: accountId ?? undefined,
-      replyToMessageId: replyToMessageId ?? undefined,
-      messageThreadId: messageThreadId ?? undefined,
+      accountId,
       gatewayClientScopes: options?.gatewayClientScopes,
+      isActionEnabled,
+      notifyVisibleOutboundSuccess,
+      runtime: telegramActionRuntime,
     });
-    notifyVisibleOutboundSuccess(to, messageThreadId);
-    return jsonResult({
-      ok: true,
-      messageId: result.messageId,
-      chatId: result.chatId,
-    });
-  }
-
-  if (action === "searchSticker") {
-    if (!isActionEnabled("sticker", false)) {
-      throw new Error(
-        "Telegram sticker actions are disabled. Set channels.telegram.actions.sticker to true.",
-      );
-    }
-    const query = readStringParam(params, "query", { required: true });
-    const limit =
-      readPositiveIntegerParam(params, "limit", {
-        message: "limit must be a positive integer.",
-      }) ?? 5;
-    const results = await telegramActionRuntime.searchStickers(query, limit);
-    return jsonResult({
-      ok: true,
-      count: results.length,
-      stickers: results.map((s) => ({
-        fileId: s.fileId,
-        emoji: s.emoji,
-        description: s.description,
-        setName: s.setName,
-      })),
-    });
-  }
-
-  if (action === "stickerCacheStats") {
-    const stats = await telegramActionRuntime.getCacheStats();
-    return jsonResult({ ok: true, ...stats });
   }
 
   if (action === "createForumTopic") {

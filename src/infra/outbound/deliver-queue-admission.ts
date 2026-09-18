@@ -136,6 +136,14 @@ export async function stageAndEnqueueOutboundDelivery(
     return null;
   }
   try {
+    const stablePreparation =
+      params.deliveryIntentId && options?.getStablePreparation
+        ? await options.getStablePreparation()
+        : undefined;
+    // Policy, media, and checkpoint preparation can outlive the run. Fence the
+    // custody transfer synchronously, before the queue becomes replayable.
+    params.abortSignal?.throwIfAborted();
+    params.assertDirectAdapterHandoff?.();
     const initialProducerClaim = options?.claimForLiveDelivery
       ? createInitialDeliveryProducerClaim()
       : undefined;
@@ -167,11 +175,11 @@ export async function stageAndEnqueueOutboundDelivery(
       deliveryCompletion: params.deliveryCompletion,
     };
     if (params.deliveryIntentId) {
-      const queued = options?.getStablePreparation
+      const queued = stablePreparation
         ? await enqueuePreparedDeliveryOnce(
             delivery,
             params.deliveryIntentId,
-            await options.getStablePreparation(),
+            stablePreparation,
             stateDir,
             staged.mediaStageId,
             params.deliveryQueueStateContext,

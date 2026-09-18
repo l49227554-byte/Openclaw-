@@ -42,38 +42,71 @@ function preparation(id: string, preparationLeaseExpiresAt: number): StableDeliv
 
 describe("stageAndEnqueueOutboundDelivery", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     mocks.loadPendingDelivery.mockResolvedValue(null);
   });
 
-  it("waits for the prepared checkpoint snapshot before enqueue", async () => {
-    const snapshot = preparation("stable-checkpoint", 200);
-    const checkpoint = createDeferredCore<StableDeliveryPreparation>();
-    const entered = createDeferredCore();
-    const payloads = [{ text: "prepared" }];
-    mocks.stageQueuePayloadMedia.mockResolvedValueOnce({
-      status: "staged",
-      payloads,
-      artifacts: [],
-    });
-    mocks.enqueuePreparedDeliveryOnce.mockResolvedValueOnce({ id: snapshot.id, created: true });
-    const pending = stageAndEnqueueOutboundDelivery(
-      { cfg: {}, channel: "matrix", to: "!room:example", payloads, deliveryIntentId: snapshot.id },
-      createUnmodifiedPreparedOutboundBatch(payloads),
-      {
-        getStablePreparation: () => {
-          entered.resolve();
-          return checkpoint.promise;
+  it.each(["active", "revoked", "aborted"])(
+    "checks %s authority after the prepared checkpoint",
+    async (mode) => {
+      const snapshot = preparation("stable-checkpoint", 200);
+      const checkpoint = createDeferredCore<StableDeliveryPreparation>();
+      const entered = createDeferredCore();
+      const controller = new AbortController();
+      let active = true;
+      const payloads = [{ text: "prepared" }];
+      mocks.stageQueuePayloadMedia.mockResolvedValueOnce({
+        status: "staged",
+        payloads,
+        artifacts: [],
+        mediaStageId: "checkpoint-stage",
+      });
+      mocks.enqueuePreparedDeliveryOnce.mockResolvedValueOnce({ id: snapshot.id, created: true });
+      const pending = stageAndEnqueueOutboundDelivery(
+        {
+          cfg: {},
+          channel: "matrix",
+          to: "!room:example",
+          payloads,
+          deliveryIntentId: snapshot.id,
+          abortSignal: controller.signal,
+          assertDirectAdapterHandoff: () => {
+            if (!active) {
+              throw new Error("revoked");
+            }
+          },
         },
-      },
-    );
-    await entered.promise;
-    const callsBeforeCheckpoint = mocks.enqueuePreparedDeliveryOnce.mock.calls.length;
-    checkpoint.resolve(snapshot);
-    await expect(pending).resolves.toEqual({ id: snapshot.id, created: true });
-    expect(callsBeforeCheckpoint).toBe(0);
-    expect(mocks.enqueuePreparedDeliveryOnce.mock.calls[0]?.[2]).toBe(snapshot);
-  });
+        createUnmodifiedPreparedOutboundBatch(payloads),
+        {
+          getStablePreparation: () => {
+            entered.resolve();
+            return checkpoint.promise;
+          },
+        },
+      );
+      await entered.promise;
+      const callsBeforeCheckpoint = mocks.enqueuePreparedDeliveryOnce.mock.calls.length;
+      active = mode !== "revoked";
+      if (mode === "aborted") {
+        controller.abort(new Error("cancelled"));
+      }
+      checkpoint.resolve(snapshot);
+      if (mode === "active") {
+        await expect(pending).resolves.toEqual({ id: snapshot.id, created: true });
+        expect(mocks.enqueuePreparedDeliveryOnce.mock.calls[0]?.[2]).toBe(snapshot);
+      } else {
+        await expect(pending).rejects.toThrow(mode === "aborted" ? "cancelled" : "revoked");
+        expect(mocks.enqueuePreparedDeliveryOnce).not.toHaveBeenCalled();
+        expect(mocks.cancelDeliveryQueueMediaRetention).toHaveBeenCalledWith(
+          "checkpoint-stage",
+          undefined,
+          undefined,
+        );
+        expect(mocks.releaseSpoolArtifacts).toHaveBeenCalledWith([], undefined);
+      }
+      expect(callsBeforeCheckpoint).toBe(0);
+    },
+  );
 
   it("reads the stable preparation after asynchronous media staging", async () => {
     let finishStaging: (() => void) | undefined;
@@ -121,4 +154,46 @@ describe("stageAndEnqueueOutboundDelivery", () => {
     expect(queued?.[1]).toBe("stable-1");
     expect(queued?.[2]).toBe(current);
   });
+  it.each(["revoked", "aborted"])(
+    "does not admit a %s producer after media staging",
+    async (mode) => {
+      const controller = new AbortController();
+      let active = true;
+      const payloads = [{ text: "must not become replayable" }];
+      mocks.stageQueuePayloadMedia.mockImplementationOnce(async () => {
+        await Promise.resolve();
+        active = false;
+        if (mode === "aborted") {
+          controller.abort(new Error("cancelled"));
+        }
+        return { status: "staged", payloads, artifacts: [], mediaStageId: "owned-stage" };
+      });
+      await expect(
+        stageAndEnqueueOutboundDelivery(
+          {
+            cfg: {},
+            channel: "matrix",
+            to: "!room:example",
+            payloads,
+            queuePolicy: "required",
+            deliveryIntentId: "cancelled-source-reply",
+            abortSignal: controller.signal,
+            assertDirectAdapterHandoff: () => {
+              if (!active) {
+                throw new Error("revoked");
+              }
+            },
+          },
+          createUnmodifiedPreparedOutboundBatch(payloads),
+        ),
+      ).rejects.toThrow(mode === "aborted" ? "cancelled" : "revoked");
+      expect(mocks.enqueueDeliveryOnce).not.toHaveBeenCalled();
+      expect(mocks.cancelDeliveryQueueMediaRetention).toHaveBeenCalledWith(
+        "owned-stage",
+        undefined,
+        undefined,
+      );
+      expect(mocks.releaseSpoolArtifacts).toHaveBeenCalledWith([], undefined);
+    },
+  );
 });

@@ -579,9 +579,12 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
       ...ctx,
       mediaAccess,
       conversationType: outboundRoute?.chatType,
-      // Model-authored sends get the failure back and resend it themselves; every
-      // other caller only reports the error, so recovery keeps its replay right.
-      deliveryRetryOwner: input.actionOrigin === "message-tool" ? "caller" : undefined,
+      // Ordinary tool sends leave retries to the model. Required durable sends
+      // have already delegated custody and must keep recovery as their only owner.
+      deliveryRetryOwner:
+        input.actionOrigin === "message-tool" && !input.requireQueuePersistence
+          ? "caller"
+          : undefined,
       // Both delivery paths must commit a first-contact route before mirroring.
       onSendAccepted: commitOutboundSessionRoute,
       mirror:

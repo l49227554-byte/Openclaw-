@@ -373,10 +373,24 @@ creation, message hooks, or platform work. A recovery rejection marks the
 queued record failed and skips reconciliation and replay. Omitting the hook
 means allowed.
 
+For a temporary provider pause, return `{ status: "deferred", reason }` only
+when `supportsRecoveryDeferral === true`. Supporting hosts advertise this
+capability in the `recovery` phase. Recovery leaves the existing queue record
+unchanged, without spending an attempt, reconciling, or calling the provider.
+The existing recovery loop asks again; the provider owns the pause deadline
+and must restore its cooldown state before admitting recovery after restart.
+Later delivery still runs current authorization and unknown-send checks.
+
+Do not return `deferred` to an older host: older recovery treats an unknown
+verdict as permanent rejection. Without the capability, retain the existing
+admission behavior. Live admission does not support deferral and must still
+allow the original intent to reach durable custody; normal send-path cooldown
+checks remain responsible for avoiding provider requests.
+
 The hook is a synchronous admission decision, not a send path. Read only
 already-loaded config or runtime state; do not perform network, filesystem, or
-other asynchronous I/O. Contract tests should exercise both phases and both
-result variants through `ChannelMessageDurableFinalAdapter` from
+other asynchronous I/O. Contract tests should exercise both phases, capability
+absence, deferral, and rejection through `ChannelMessageDurableFinalAdapter` from
 `openclaw/plugin-sdk/channel-outbound`.
 
 ## Compatibility dispatch

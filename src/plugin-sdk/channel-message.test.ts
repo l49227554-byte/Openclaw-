@@ -113,9 +113,11 @@ describe("defineChannelMessageAdapter", () => {
     const admitDeferredDelivery = vi.fn<
       NonNullable<ChannelMessageDurableFinalAdapter["admitDeferredDelivery"]>
     >((ctx) =>
-      ctx.phase === "recovery"
-        ? { status: "permanent_rejection", reason: "account no longer supports replay" }
-        : { status: "allowed" },
+      ctx.supportsRecoveryDeferral
+        ? { status: "deferred", reason: "provider cooldown" }
+        : ctx.phase === "recovery"
+          ? { status: "permanent_rejection", reason: "account no longer supports replay" }
+          : { status: "allowed" },
     );
     const adapter = defineChannelMessageAdapter({
       id: "demo",
@@ -137,5 +139,12 @@ describe("defineChannelMessageAdapter", () => {
       status: "permanent_rejection",
       reason: "account no longer supports replay",
     });
+    expect(
+      adapter.durableFinal?.admitDeferredDelivery?.({
+        ...context,
+        phase: "recovery",
+        supportsRecoveryDeferral: true,
+      }),
+    ).toEqual({ status: "deferred", reason: "provider cooldown" });
   });
 });

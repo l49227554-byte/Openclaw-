@@ -96,7 +96,7 @@ export type SessionTranscriptDeliveryMirror =
       sourceMessageId?: string;
     };
 
-type InternalSessionTranscriptDeliveryMirror =
+export type InternalSessionTranscriptDeliveryMirror =
   | SessionTranscriptDeliveryMirror
   | {
       kind: "message-tool-source-reply";

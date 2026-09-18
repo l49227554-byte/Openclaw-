@@ -422,7 +422,8 @@ function isCurrentSourceConversation(
   return matchesCurrentSourceTarget(params, threadPlacement);
 }
 
-function isExactCurrentSourceConversation(
+/** Matches the complete admitted source route before custody transfer or receipt completion. */
+export function isExactCurrentSourceConversation(
   params: SourceReplyTranscriptMirrorParams,
 ): params is MirrorableSourceReplyTranscriptParams {
   const threadPlacement = resolveSourceReplyThreadPlacement(

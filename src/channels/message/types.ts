@@ -330,6 +330,7 @@ export type ChannelMessageUnknownSendReconciliationResult =
 /** Provider decision made before core persists or replays a deferred delivery. */
 export type ChannelMessageDeferredDeliveryAdmissionResult =
   | { status: "allowed" }
+  | { status: "deferred"; reason: string }
   | { status: "permanent_rejection"; reason: string };
 
 /** Minimal context available at deferred-delivery admission boundaries. */
@@ -339,6 +340,8 @@ export type ChannelMessageDeferredDeliveryAdmissionContext<TConfig = OpenClawCon
   to: string;
   accountId?: string | null;
   phase: "live" | "recovery";
+  /** Only a supporting recovery host advertises budget-free deferral. */
+  supportsRecoveryDeferral?: true;
 };
 
 /** Optional hooks around adapter send attempts, platform success/failure, and commit. */
@@ -376,6 +379,8 @@ export type ChannelMessageDurableFinalAdapter = {
   /**
    * Synchronous provider admission before a durable intent is created or replayed.
    * Providers must not perform I/O from this hook.
+   * Return deferred only when supportsRecoveryDeferral is true; live custody
+   * must still be accepted, and older hosts do not recognize that verdict.
    */
   admitDeferredDelivery?: (
     ctx: ChannelMessageDeferredDeliveryAdmissionContext,

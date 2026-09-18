@@ -48,7 +48,6 @@ import {
 } from "../../infra/outbound/payloads.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import {
-  beginTerminalSourceReplyDelivery,
   cancelTerminalSourceReplyDelivery,
   reconcileTerminalSourceReplyDelivery,
 } from "../../infra/outbound/source-reply-mirror.js";
@@ -92,6 +91,7 @@ import {
   resolveAgentRuntimeMessageActionConfig,
   resolveTrustedMessageActionToolContext,
 } from "./message-action-context.js";
+import { prepareMessageActionSourceReply } from "./message-action-source-delivery.js";
 import {
   buildGatewayDeliveryPayload,
   createGatewayInflightAuthorityFailure,
@@ -953,28 +953,21 @@ export const sendHandlers: GatewayRequestHandlers = {
                   }),
                 });
               }
-              const sourceReplyMirror = {
-                action: request.action,
-                channel,
-                actionParams: request.params,
+              const {
+                mirror: sourceReplyMirror,
+                terminalStart: terminalDeliveryStart,
+                handoff: sourceDeliveryHandoff,
+              } = await prepareMessageActionSourceReply({
+                request,
+                trustedContext,
                 cfg,
+                channel,
                 accountId,
-                currentAccountId: trustedContext.requesterAccountId,
-                sessionKey: sourceReplySessionKey ?? sessionKey,
-                sessionId: trustedContext.sessionId,
                 agentId,
-                toolContext: trustedContext.toolContext,
-                replyToIsExplicit: request.reply?.source === "explicit",
-                idempotencyKey: request.idempotencyKey,
-                toolCallId: trustedContext.sourceReplyToolCallId,
-                ...(trustedContext.sourceReplyFinal !== undefined
-                  ? { sourceReplyFinal: trustedContext.sourceReplyFinal }
-                  : {}),
-              };
-              const terminalDeliveryStart =
-                trustedContext.sourceReplyFinal === true
-                  ? await beginTerminalSourceReplyDelivery(sourceReplyMirror)
-                  : undefined;
+                sessionKey,
+                canonicalAction,
+                assertDirectAdapterHandoff,
+              });
               if (terminalDeliveryStart && "outcome" in terminalDeliveryStart) {
                 return createGatewayInflightSuccess({
                   context,
@@ -1028,6 +1021,7 @@ export const sendHandlers: GatewayRequestHandlers = {
                   client?.internal?.agentRuntimeIdentity !== undefined &&
                   (request.action === "send" ||
                     Boolean(trustedContext.messageActionAuthorization?.scheduled)),
+                ...sourceDeliveryHandoff?.actionContext,
               };
               const settleTerminalDelivery = async (
                 deliveredPayload: unknown,
@@ -1069,9 +1063,10 @@ export const sendHandlers: GatewayRequestHandlers = {
                   const result = await runMessageAction({
                     ...actionContext,
                     gatewayOwnedDelivery: true,
+                    ...sourceDeliveryHandoff?.deliveryContext,
                     ...(request.action === "send"
                       ? {
-                          // This RPC owns source-reply receipts and their transcript mirror.
+                          // This RPC owns receipts; a durable source send carries its mirror into recovery.
                           suppressTranscriptMirror: true,
                           actionOrigin: trustedContext.runtimeAgentId
                             ? ("message-tool" as const)
@@ -1083,6 +1078,9 @@ export const sendHandlers: GatewayRequestHandlers = {
                       channel,
                       ...(accountId ? { accountId } : {}),
                       idempotencyKey: request.idempotencyKey,
+                      // The ordinary source route defaults to best effort. Terminal
+                      // custody must retain required persistence and a queued outcome.
+                      ...(sourceDeliveryHandoff ? { bestEffort: false } : {}),
                     },
                   });
                   payload = result.payload;

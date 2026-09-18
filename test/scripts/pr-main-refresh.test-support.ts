@@ -528,7 +528,9 @@ if (args[0] === 'pr' && args[1] === 'view') {
     }))];
   } else if (endpoint === 'repos/fixture/repo/pulls/' + control.metadata.number) {
     let baseSha = control.metadata.baseRefOid;
-    if (control.remoteOnlyBase) {
+    // The hosted verifier's explicit GET follows the two preparation snapshots.
+    const hostedGateRead = JSON.stringify(args) === JSON.stringify(['api', endpoint, '--method', 'GET']);
+    if (control.remoteOnlyBase && hostedGateRead) {
       baseSha = control.remoteOnlyBase;
       runGit(['-C', origin, 'update-ref', 'refs/heads/main', baseSha]);
       const localObject = spawnSync(git, ['-C', canonical, 'cat-file', '-e', baseSha]);

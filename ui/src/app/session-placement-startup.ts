@@ -12,7 +12,7 @@ import type {
   SessionPlacementTarget,
 } from "../lib/sessions/session-placement-recovery.ts";
 import { showToast } from "../lib/toast.ts";
-import { restoreChatApiAttachments } from "../pages/chat/attachment-api.ts";
+import { restoreChatApiAttachments } from "../pages/chat/attachment-restoration.ts";
 import type { ApplicationChatSubmissions } from "./chat-submissions.ts";
 import { registerControlUiReloadGuard } from "./document-reload-guard.ts";
 import type { ApplicationGateway } from "./gateway.ts";

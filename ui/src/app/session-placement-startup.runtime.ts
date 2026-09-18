@@ -22,7 +22,7 @@ import {
   type SessionPlacementDraftAdvanceResult,
 } from "../lib/sessions/session-placement-submit.ts";
 import { generateUUID } from "../lib/uuid.ts";
-import { restoreChatApiAttachments } from "../pages/chat/attachment-api.ts";
+import { restoreChatApiAttachments } from "../pages/chat/attachment-restoration.ts";
 import { buildInitialChatSubmission } from "../pages/chat/user-message-content.ts";
 import { buildPlacementStartupInitialTurn } from "./session-placement-initial-turn.ts";
 import {

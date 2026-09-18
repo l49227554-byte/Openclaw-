@@ -17,6 +17,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/transcripts/library.query-budget.test.ts",
   "src/transcripts/library.search.test.ts",
   "src/transcripts/library.test.ts",
+  "src/transcripts/live-summary.test.ts",
   "src/transcripts/status.metadata.test.ts",
   "src/transcripts/status.occupancy.test.ts",
   "src/transcripts/status.producer.test.ts",

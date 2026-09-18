@@ -7,7 +7,7 @@ const enMeetings = {
     docs: "Set up meeting transcripts",
     inProgress: "In progress",
     activeNotes:
-      "The first summary appears after about 5 minutes of capture. Follow the Transcript tab for speech as it is saved.",
+      "Summaries are generated about every 5 minutes when new speech is captured. Follow the Transcript tab for speech as it is saved.",
     liveCapture: "Live capture",
     liveHint: "Updates automatically every 3 seconds.",
     liveSummaryHint:

@@ -34,6 +34,7 @@ import {
   invalidateSessionCatalogs as invalidateSessionCatalogData,
   loadMoreSessionCatalog as loadMoreSessionCatalogData,
   refreshSessionCatalogs as refreshSessionCatalogData,
+  resetSessionCatalogConnection,
   resolveSessionCatalogAgentId,
   scheduleSessionCatalogRefresh,
   type SessionCatalogDataOwner,
@@ -178,6 +179,10 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     return this.host.isConnected;
   }
 
+  get sessionCatalogVisible(): boolean {
+    return this.host.navigationVisible && document.visibilityState !== "hidden";
+  }
+
   get sessionDataHostConnected(): boolean {
     return this.host.connected;
   }
@@ -200,6 +205,10 @@ export class SessionDataController implements ReactiveController, SessionCatalog
   }
 
   hostUpdate(): void {
+    this.sessionCatalogLive.synchronizeNavigationVisibility(
+      this.host.navigationVisible,
+      this.handleSessionCatalogPageActivation,
+    );
     this.subscriptions.hostUpdate();
     this.lineage.synchronize();
   }
@@ -253,15 +262,7 @@ export class SessionDataController implements ReactiveController, SessionCatalog
     this.sessionCatalogLive.clear();
   }
 
-  resetSessionCatalogConnection(): void {
-    this.retireSessionCatalogData();
-    this.sessionCatalogRevision += 1;
-    this.sessionCatalogs = [];
-    this.sessionCatalogRefreshStatus = createPanelRefreshStatus();
-    this.sessionCatalogPageDepths.clear();
-    this.sessionCatalogRevisions.clear();
-    this.requestSessionDataUpdate();
-  }
+  resetSessionCatalogConnection = () => resetSessionCatalogConnection(this);
 
   synchronizeSessionScope(): void {
     const context = this.context;

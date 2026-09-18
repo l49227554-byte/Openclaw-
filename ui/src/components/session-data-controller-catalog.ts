@@ -34,6 +34,7 @@ import type {
 } from "./app-sidebar-session-types.ts";
 import {
   completePanelRefresh,
+  createPanelRefreshStatus,
   failPanelRefresh,
   type PanelRefreshStatus,
 } from "./panel-refresh-status.ts";
@@ -41,6 +42,7 @@ import {
 export interface SessionDataControllerHost extends ReactiveControllerHost {
   readonly isConnected: boolean;
   readonly connected: boolean;
+  readonly navigationVisible: boolean;
   readonly activeRouteId?: string;
   getRouteSessionKey(): string;
   readonly sessionDataContext: ApplicationContext<RouteId> | undefined;
@@ -58,6 +60,7 @@ export interface SessionCatalogDataOwner {
   readonly context: ApplicationContext<RouteId> | undefined;
   readonly isSessionDataHostConnected: boolean;
   readonly sessionDataHostConnected: boolean;
+  readonly sessionCatalogVisible: boolean;
   sessionCatalogs: SessionCatalog[];
   sessionCatalogRefreshStatus: PanelRefreshStatus;
   loadingMoreSessionCatalogIds: ReadonlySet<string>;
@@ -75,8 +78,20 @@ export interface SessionCatalogDataOwner {
   sessionCatalogIdsWithoutVisibleRows(): readonly string[];
 }
 
+export function resetSessionCatalogConnection(
+  owner: SessionCatalogDataOwner & { retireSessionCatalogData(): void },
+): void {
+  owner.retireSessionCatalogData();
+  owner.sessionCatalogRevision += 1;
+  owner.sessionCatalogs = [];
+  owner.sessionCatalogRefreshStatus = createPanelRefreshStatus();
+  owner.sessionCatalogPageDepths.clear();
+  owner.sessionCatalogRevisions.clear();
+  owner.requestSessionDataUpdate();
+}
+
 function visibleSessionCatalogClient(owner: SessionCatalogDataOwner): GatewayBrowserClient | null {
-  if (document.visibilityState === "hidden") {
+  if (!owner.sessionCatalogVisible) {
     return null;
   }
   return sessionCatalogListClient(owner.context?.gateway.snapshot, owner.sessionDataHostConnected);
@@ -151,7 +166,7 @@ export function resolveSessionCatalogAgentId(
 }
 
 export function scheduleSessionCatalogRefresh(owner: SessionCatalogDataOwner): void {
-  if (document.visibilityState === "hidden") {
+  if (!owner.sessionCatalogVisible) {
     owner.sessionCatalogLive.cancelScheduledRefreshes();
     return;
   }
@@ -161,7 +176,7 @@ export function scheduleSessionCatalogRefresh(owner: SessionCatalogDataOwner): v
 function requestSessionCatalogRefresh(owner: SessionCatalogDataOwner): Promise<void> {
   const snapshot = owner.context?.gateway.snapshot;
   return owner.sessionCatalogLive.requestRefresh({
-    visible: document.visibilityState !== "hidden",
+    visible: owner.sessionCatalogVisible,
     connected:
       owner.isSessionDataHostConnected &&
       owner.sessionCatalogAgentId !== null &&
@@ -248,7 +263,7 @@ export function applySessionCatalogContinuation(
 }
 
 export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Promise<void> {
-  // Hidden pages resume through the coalesced visibility handler.
+  // Hidden pages and navigation surfaces resume through the coalesced activation handler.
   owner.synchronizeSessionScope();
   const agentId = owner.sessionCatalogAgentId;
   const client = visibleSessionCatalogClient(owner);
@@ -269,6 +284,7 @@ export async function refreshSessionCatalogs(owner: SessionCatalogDataOwner): Pr
     catalogs: () => owner.sessionCatalogs,
     pageDepths: owner.sessionCatalogPageDepths,
     connected: () => owner.isSessionDataHostConnected,
+    visible: () => owner.sessionCatalogVisible,
     catalogChangedEvents: sessionCatalogChangesAdvertised(owner),
     applyFinal: (catalogs, revisedCatalogIds) => {
       owner.sessionCatalogs = owner.sessionCatalogLive.resumeDiscovery(catalogs);

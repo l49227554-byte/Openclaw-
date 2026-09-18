@@ -73,9 +73,13 @@ describe("AppSidebar expanded catalog refresh visibility", () => {
     vi.useRealTimers();
   });
 
-  it.each(["base", "expanded"] as const)(
-    "stops new automatic pages after hiding during the %s response and catches up once",
-    async (heldStage) => {
+  it.each(
+    (["base", "expanded"] as const).flatMap((heldStage) =>
+      (["tab", "navigation"] as const).map((surface) => ({ heldStage, surface })),
+    ),
+  )(
+    "stops new automatic pages after hiding $surface during the $heldStage response and catches up once",
+    async ({ heldStage, surface }) => {
       const pending = deferred<SessionsCatalogListResult>();
       const request = vi
         .fn()
@@ -100,7 +104,12 @@ describe("AppSidebar expanded catalog refresh visibility", () => {
       const issuedBeforeHide = heldStage === "base" ? 4 : 5;
       expect(request).toHaveBeenCalledTimes(issuedBeforeHide);
 
-      setVisibility("hidden");
+      if (surface === "tab") {
+        setVisibility("hidden");
+      } else {
+        sidebar.navigationVisible = false;
+        await sidebar.updateComplete;
+      }
       pending.resolve(page(heldStage === "base" ? 1 : 2, "Refreshed"));
       await settle(sidebar);
       await vi.advanceTimersByTimeAsync(60_000);
@@ -115,7 +124,12 @@ describe("AppSidebar expanded catalog refresh visibility", () => {
 
       const baseCallsBeforeShow = request.mock.calls.filter(([, params]) => !params.cursors).length;
       const callsBeforeShow = request.mock.calls.length;
-      setVisibility("visible");
+      if (surface === "tab") {
+        setVisibility("visible");
+      } else {
+        sidebar.navigationVisible = true;
+        await sidebar.updateComplete;
+      }
       globalThis.dispatchEvent(new Event("focus"));
       await vi.advanceTimersByTimeAsync(200);
       await settle(sidebar);

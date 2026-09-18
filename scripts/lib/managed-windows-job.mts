@@ -7,9 +7,28 @@ import { createWindowsJobBindings } from "../../src/process/supervisor/service-c
 import { createDeferredCore, type Deferred } from "../../src/shared/deferred.ts";
 import { resolveManagedWindowsJobEntrypointUrl } from "./managed-windows-job-entrypoint.mts";
 
+export type WindowsJobSetupFailureReason =
+  | "job-create-failed"
+  | "job-configuration-failed"
+  | "job-admission-failed";
+
+export class WindowsJobSetupError extends Error {
+  readonly reason: WindowsJobSetupFailureReason;
+
+  constructor(reason: WindowsJobSetupFailureReason, cause: unknown) {
+    super(reason, { cause });
+    this.reason = reason;
+  }
+}
+
 export type WindowsJobExtinction =
   | { status: "confirmed" }
   | { status: "uncertain"; reason: "job-unavailable" }
+  | {
+      status: "uncertain";
+      reason: WindowsJobSetupFailureReason;
+      cause: unknown;
+    }
   | { status: "uncertain"; reason: "job-observation-failed"; cause: Error };
 
 export type ManagedWindowsJob = {
@@ -17,6 +36,7 @@ export type ManagedWindowsJob = {
   beginStop: () => void;
   stop: () => void;
   close: () => void;
+  readonly admission: Promise<void>;
   readonly ready: Promise<void>;
   readonly commandPid: number | undefined;
   isControlMessage: (message: unknown) => boolean;
@@ -47,7 +67,7 @@ export function spawnWindowsJobChild(
   command: string,
   args: string[],
   options: SpawnOptions,
-  beforeLaunch?: () => void,
+  admitCommand?: (launch: () => void) => void | Promise<void>,
 ): { child: ChildProcess; job: ManagedWindowsJob } | undefined {
   if (process.platform !== "win32") {
     return undefined;
@@ -71,7 +91,14 @@ export function spawnWindowsJobChild(
     stdio.push("pipe");
   }
   const name = `Local\\OpenClawTooling-${randomUUID()}`;
-  const handle = api.requireHandle(api.CreateJobObjectW(null, name), "CreateJobObjectW(tooling)");
+  let handle: ReturnType<typeof api.requireHandle>;
+  try {
+    handle = api.requireHandle(api.CreateJobObjectW(null, name), "CreateJobObjectW(tooling)");
+  } catch (error) {
+    throw new WindowsJobSetupError("job-create-failed", error);
+  }
+  const admission = createDeferredCore();
+  void admission.promise.catch(() => {});
   const ready = createDeferredCore();
   void ready.promise.catch(() => {});
   let child: ChildProcess | undefined;
@@ -85,6 +112,7 @@ export function spawnWindowsJobChild(
   let extinctionSettled = false;
   let observationTimer: NodeJS.Timeout | undefined;
   const job: ManagedWindowsJob = {
+    admission: admission.promise,
     ready: ready.promise,
     get commandPid() {
       return commandPid;
@@ -171,8 +199,12 @@ export function spawnWindowsJobChild(
     certification.resolve(outcome);
   }
   try {
-    if (!api.SetExtendedLimits(handle, 9, api.extendedLimits, api.extendedLimitsSize)) {
-      throw api.lastError("SetInformationJobObject(tooling)");
+    try {
+      if (!api.SetExtendedLimits(handle, 9, api.extendedLimits, api.extendedLimitsSize)) {
+        throw api.lastError("SetInformationJobObject(tooling)");
+      }
+    } catch (error) {
+      throw new WindowsJobSetupError("job-configuration-failed", error);
     }
     const { stdio: _stdio, signal: _signal, ...commandOptions } = options;
     // Match spawn's synchronous input snapshot across the asynchronous Job admission.
@@ -202,6 +234,7 @@ export function spawnWindowsJobChild(
     });
     child = launched;
     const fail = (error: Error) => {
+      admission.reject(error);
       ready.reject(error);
       try {
         job.stop();
@@ -213,12 +246,16 @@ export function spawnWindowsJobChild(
     launched.once("exit", () => {
       exited = true;
       observeExtinction();
-      ready.reject(new Error("Windows Job launcher exited before command startup"));
+      const error = new Error("Windows Job launcher exited before command startup");
+      admission.reject(new WindowsJobSetupError("job-admission-failed", error));
+      ready.reject(error);
     });
     launched.once("close", () => {
       exited = true;
       observeExtinction();
-      ready.reject(new Error("Windows Job launcher closed before command startup"));
+      const error = new Error("Windows Job launcher closed before command startup");
+      admission.reject(new WindowsJobSetupError("job-admission-failed", error));
+      ready.reject(error);
     });
     launched.on("message", (message: unknown) => {
       if (!job.isControlMessage(message)) {
@@ -228,22 +265,40 @@ export function spawnWindowsJobChild(
       const control = message as { type: string; pid: number; error: string; code?: string };
       if (control.type === "ready" && !admitted && !stopped) {
         try {
-          beforeLaunch?.();
-          admitted = true;
-          launched.send(launch, (error) => error && launched.emit("error", error));
+          admission.resolve();
+          const launchCommand = () => {
+            if (!stopped) {
+              admitted = true;
+              launched.send(launch, (error) => error && launched.emit("error", error));
+            }
+          };
+          if (admitCommand) {
+            void admitCommand(launchCommand)?.catch((error) => launched.emit("error", error));
+          } else {
+            launchCommand();
+          }
         } catch (error) {
           launched.emit("error", error instanceof Error ? error : new Error(String(error)));
         }
       } else if (control.type === "spawned") {
         commandPid = control.pid;
         ready.resolve();
+      } else if (control.type === "job-error" && !admitted) {
+        launched.emit(
+          "error",
+          new WindowsJobSetupError("job-admission-failed", new Error(control.error)),
+        );
       } else if (control.type === "error") {
         launched.emit("error", Object.assign(new Error(control.error), { code: control.code }));
       }
     });
     return { child: launched, job };
   } catch (error) {
-    job.close();
+    try {
+      job.close();
+    } catch {
+      // Preserve the setup failure so optional containment cannot block the command.
+    }
     throw error;
   }
 }

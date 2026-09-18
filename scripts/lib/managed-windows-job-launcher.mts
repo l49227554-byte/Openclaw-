@@ -6,13 +6,13 @@ import type { WindowsJobLaunch } from "./managed-windows-job.mts";
 
 const name = process.argv[2];
 const send = (message: object) => process.send?.({ job: name, ...message });
-const fail = (error: unknown) => {
+const fail = (error: unknown, type = "error") => {
   process.exitCode = 1;
   if (process.connected) {
     process.send?.(
       {
         job: name,
-        type: "error",
+        type,
         error: error instanceof Error ? error.message : String(error),
         ...(error && typeof error === "object" && "code" in error ? { code: error.code } : {}),
       },
@@ -82,6 +82,6 @@ if (isDirectRunUrl(process.argv[1], import.meta.url)) {
     });
     send({ type: "ready" });
   } catch (error) {
-    fail(error);
+    fail(error, "job-error");
   }
 }

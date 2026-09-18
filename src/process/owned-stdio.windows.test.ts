@@ -6,6 +6,8 @@ const native = vi.hoisted(() => ({
   spawn: vi.fn(),
   koffiAvailable: true,
   launcherAvailable: true,
+  create: vi.fn(() => 1n),
+  configure: vi.fn(() => true),
   inspect: vi.fn<() => number[]>(),
   terminate: vi.fn(),
   close: vi.fn(() => true),
@@ -36,9 +38,9 @@ vi.mock("node:module", async (original) => {
 vi.mock("./supervisor/service-child-windows-job-native.ts", () => ({
   createWindowsJobBindings: () => ({
     assertLayouts() {},
-    CreateJobObjectW: () => 1n,
+    CreateJobObjectW: native.create,
     requireHandle: (handle: bigint) => handle,
-    SetExtendedLimits: () => true,
+    SetExtendedLimits: native.configure,
     TerminateJobObject: native.terminate,
     CloseHandle: native.close,
     readJobProcessIds: native.inspect,
@@ -55,6 +57,23 @@ vi.mock("node:fs", async (original) => {
         : actual.existsSync(target),
   };
 });
+
+function rejectJobAdmission(cause: Error, abort?: AbortController) {
+  const launcher = createStubChild(4321);
+  native.spawn.mockImplementationOnce((_command, args) => {
+    queueMicrotask(() => {
+      launcher.child.emit("spawn");
+      abort?.abort();
+      launcher.child.emit("message", { job: args[1], type: "job-error", error: cause.message });
+      launcher.emitExit(1);
+      launcher.emitClose(1);
+    });
+    return launcher.child;
+  });
+  native.terminate.mockImplementationOnce(() => true);
+  native.inspect.mockReturnValue([]);
+}
+
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 let createOwnedStdioProcess: typeof import("./owned-stdio.js").createOwnedStdioProcess;
 let closeOwnedStdioProcess: typeof import("./owned-stdio.js").closeOwnedStdioProcess;
@@ -68,6 +87,8 @@ beforeEach(async () => {
   native.launcherAvailable = true;
   Object.defineProperty(process, "platform", { value: "win32" });
   stub = createStubChild();
+  native.create.mockReset().mockReturnValue(1n);
+  native.configure.mockReset().mockReturnValue(true);
   native.inspect.mockReset().mockReturnValue([1234]);
   native.close.mockReset().mockReturnValue(true);
   native.terminate.mockReset().mockImplementation(() => {
@@ -190,22 +211,114 @@ it.each(["koffi", "launcher"] as const)(
   },
 );
 
-it("preserves unavailable certification through a supervised exec session", async () => {
-  native.koffiAvailable = false;
-  const supervisor = createProcessSupervisor();
-  const run = await supervisor.spawn({
-    mode: "child",
-    argv: [process.execPath, "fixture"],
-    exactEnv: true,
+it.each(["job-unavailable", "job-admission-failed"] as const)(
+  "preserves %s certification through a supervised exec session",
+  async (reason) => {
+    if (reason === "job-unavailable") {
+      native.koffiAvailable = false;
+    } else {
+      rejectJobAdmission(new Error("Job admission failed"));
+    }
+    const supervisor = createProcessSupervisor();
+    const run = await supervisor.spawn({
+      mode: "child",
+      argv: [process.execPath, "fixture"],
+      exactEnv: true,
+    });
+    stub.child.stdout?.emit("end");
+    stub.child.stderr?.emit("end");
+    stub.emitExit(0);
+    stub.emitClose(0);
+    await expect(run.wait()).resolves.toMatchObject({ exitCode: 0, reason: "exit" });
+    await expect(run.waitForExtinction!()).resolves.toMatchObject({
+      status: "uncertain",
+      reason,
+    });
+    await supervisor.shutdown();
+  },
+);
+
+it.each(["create", "configuration", "admission"] as const)(
+  "launches once without containment when Job %s fails",
+  async (phase) => {
+    const cause = new Error(`Job ${phase} failed`);
+    if (phase === "create") {
+      native.create.mockImplementationOnce(() => {
+        throw cause;
+      });
+    } else if (phase === "configuration") {
+      native.configure.mockImplementationOnce(() => {
+        throw cause;
+      });
+    } else {
+      rejectJobAdmission(cause);
+    }
+    const child = await createOwnedStdioProcess({
+      argv: [process.execPath, "fixture"],
+      exactEnv: true,
+    });
+    expect(native.spawn.mock.calls.filter(([, args]) => args[0] === "fixture")).toHaveLength(1);
+    if (phase !== "create") {
+      expect(native.close.mock.invocationCallOrder[0]).toBeLessThan(
+        native.spawn.mock.invocationCallOrder.at(-1)!,
+      );
+    }
+    stub.emitExit(0);
+    stub.emitClose(0);
+    await expect(child.wait()).resolves.toEqual({ code: 0, signal: null });
+    await expect(child.waitForExtinction!()).resolves.toMatchObject({
+      status: "uncertain",
+      reason: `job-${phase}-failed`,
+      cause: expect.objectContaining({ message: cause.message }),
+    });
+    await expect(closeOwnedStdioProcess(child)).resolves.toBeUndefined();
+  },
+);
+
+it("does not retry a genuine command-launch error after Job admission", async () => {
+  const cause = Object.assign(new Error("command not found"), { code: "ENOENT" });
+  native.spawn.mockImplementationOnce((_command, args) => {
+    stub.child.send = vi.fn(() => {
+      stub.child.emit("message", {
+        job: args[1],
+        type: "error",
+        error: cause.message,
+        code: cause.code,
+      });
+      return true;
+    });
+    queueMicrotask(() => {
+      stub.child.emit("spawn");
+      stub.child.emit("message", { job: args[1], type: "ready" });
+    });
+    return stub.child;
   });
-  stub.child.stdout?.emit("end");
-  stub.child.stderr?.emit("end");
-  stub.emitExit(0);
-  stub.emitClose(0);
-  await expect(run.wait()).resolves.toMatchObject({ exitCode: 0, reason: "exit" });
-  await expect(run.waitForExtinction!()).resolves.toEqual({
-    status: "uncertain",
-    reason: "job-unavailable",
-  });
-  await supervisor.shutdown();
+  await expect(
+    createOwnedStdioProcess({ argv: ["missing-command"], exactEnv: true }),
+  ).rejects.toMatchObject(cause);
+  expect(native.spawn).toHaveBeenCalledOnce();
 });
+
+it.each(["create", "admission"] as const)(
+  "does not fall back when cancelled during Job %s failure",
+  async (phase) => {
+    const abort = new AbortController();
+    if (phase === "create") {
+      native.create.mockImplementationOnce(() => {
+        abort.abort();
+        throw new Error("Job creation failed");
+      });
+    } else {
+      rejectJobAdmission(new Error("Job admission failed"), abort);
+    }
+    await expect(
+      createOwnedStdioProcess({
+        argv: [process.execPath, "fixture"],
+        exactEnv: true,
+        abortSignal: abort.signal,
+      }),
+    ).rejects.toThrow("child construction aborted");
+    expect(native.spawn).toHaveBeenCalledTimes(phase === "create" ? 0 : 1);
+    expect(stub.sendMock).not.toHaveBeenCalled();
+  },
+);

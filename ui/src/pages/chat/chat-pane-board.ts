@@ -80,18 +80,25 @@ export abstract class ChatPaneBoard extends ChatPaneHistory {
     layout: SidebarLayout | undefined,
   ) {
     const presentation = layout ? sidebarDashboardPresentation(layout) : undefined;
-    if (
-      !row ||
-      !presentation ||
-      !this.canSaveDashboardDefault(row) ||
-      presentation === (row.boardPresentation ?? "split")
-    ) {
+    if (!row?.sessionId || !this.state?.connected || !presentation) {
+      return undefined;
+    }
+    const description = t("chat.sidePanel.defaultViewDescription");
+    if (presentation === (row.boardPresentation ?? "split")) {
+      return {
+        kind: "status" as const,
+        label: t("chat.sidePanel.currentViewIsDefault"),
+        description,
+      };
+    }
+    if (!this.canSaveDashboardDefault(row)) {
       return undefined;
     }
     const saving = this.dashboardDefaultWrite?.owner === this.dashboardDefaultWriteOwner;
     const agentId = this.resolveBoardConversation().agentId;
     return {
       label: t(saving ? "chat.sidePanel.savingDefault" : "chat.sidePanel.useViewAsDefault"),
+      description,
       disabled: saving,
       onActivate: () => void this.saveDashboardDefault(row, agentId),
     };

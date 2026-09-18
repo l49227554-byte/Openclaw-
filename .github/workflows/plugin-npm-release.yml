@@ -1711,6 +1711,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TARBALL_PATH: ${{ steps.publication_evidence.outputs.tarball_path }}
+          PACKAGE_VERSION: ${{ steps.publication_evidence.outputs.package_version }}
+          RELEASE_TARGET_SHA: ${{ needs.preview_plugins_npm.outputs.ref_revision }}
           PUBLISH_TAG: ${{ steps.publication_evidence.outputs.publish_tag }}
           OPENCLAW_RELEASE_PUBLISH_RUN_ID: ${{ inputs.release_publish_run_id }}
           OPENCLAW_RELEASE_PUBLISH_RUN_ATTEMPT: ${{ inputs.release_publish_run_attempt }}
@@ -1739,6 +1741,16 @@ jobs:
             --release-publish-full-ref "$OPENCLAW_RELEASE_PUBLISH_FULL_REF" \
             --release-publish-parent-state-policy "$OPENCLAW_RELEASE_PUBLISH_PARENT_STATE_POLICY" \
             --allow-prevalidated-ref
+          if [[ "$PUBLISH_TAG" == "extended-stable" ]]; then
+            # Approval may outlive preview: recheck the source, not just main tooling.
+            candidate_branch="extended-stable/${PACKAGE_VERSION%.*}.33"
+            node scripts/release-tooling-identity.mjs verify \
+              --repository "$OPENCLAW_RELEASE_TOOLING_REPOSITORY" \
+              --workflow-ref "$candidate_branch" \
+              --workflow-full-ref "refs/heads/$candidate_branch" \
+              --workflow-sha "$RELEASE_TARGET_SHA" \
+              --allow-prevalidated-ref
+          fi
           NPM_CONFIG_USERCONFIG="$npmrc" \
             NPM_CONFIG_GLOBALCONFIG=/dev/null \
             NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \

@@ -584,7 +584,10 @@
     .chat-message-images--gallery:not(.chat-message-images--two-column)
     .chat-image-frame {
     height: auto;
-    aspect-ratio: 1;
+
+    &:not(.chat-image-frame--compact) {
+      aspect-ratio: 1;
+    }
   }
 }
 

@@ -497,6 +497,10 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
       await page.viewport(viewport, 1600);
       document.documentElement.dataset.themeMode = theme;
       const container = mount(Math.min(700, viewport - 32));
+      if (role === "user") {
+        container.classList.add("chat-thread");
+        container.style.height = "800px";
+      }
       const allowed = createDeferred<Response>();
       const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
         if (init?.method === "POST") {

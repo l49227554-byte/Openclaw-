@@ -1,5 +1,5 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { GATEWAY_CLIENT_IDS } from "../../../packages/gateway-protocol/src/client-info.js";
 import type {
   BoardCommand,
@@ -45,45 +45,50 @@ const BOARD_WIDGET_NAME_PATTERN = "^[a-z0-9][a-z0-9._-]{0,63}$";
 const BOARD_PLUGIN_KIND_PATTERN = "^[a-z0-9][a-z0-9-]{0,63}:[a-z0-9][a-z0-9._-]{0,63}$";
 const BOARD_PLUGIN_KIND_REGEX = /^[a-z0-9][a-z0-9-]{0,63}:[a-z0-9][a-z0-9._-]{0,63}$/;
 
+function nullable(schema: TSchema) {
+  return Type.Union([schema, Type.Null()]);
+}
+
+// OpenAI strict function schemas require every property to be listed in `required`.
+// Null preserves action-specific optionality without omitting those property names.
 const DashboardToolSchema = Type.Object(
   {
     action: Type.String({
       enum: [...DASHBOARD_ACTIONS],
-      description: "Dashboard action; widget_put creates or updates trusted plugin widgets only",
+      description:
+        "Dashboard action; widget_put creates or updates trusted plugin widgets only. Send null for fields unused by the selected action.",
     }),
-    tabId: Type.Optional(
-      Type.String({ pattern: BOARD_TAB_ID_PATTERN, description: "Stable tab slug" }),
-    ),
-    title: Type.Optional(Type.String({ minLength: 1, maxLength: 80, description: "Tab title" })),
-    presentation: Type.Optional(
+    tabId: nullable(Type.String({ pattern: BOARD_TAB_ID_PATTERN, description: "Stable tab slug" })),
+    title: nullable(Type.String({ minLength: 1, maxLength: 80, description: "Tab title" })),
+    presentation: nullable(
       Type.String({ enum: ["split", "expanded"], description: "Dashboard panel presentation" }),
     ),
-    position: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based position" })),
-    tabIds: Type.Optional(
+    position: nullable(Type.Integer({ minimum: 0, description: "Zero-based position" })),
+    tabIds: nullable(
       Type.Array(Type.String({ pattern: BOARD_TAB_ID_PATTERN }), {
         description: "Complete tab order",
       }),
     ),
-    name: Type.Optional(
+    name: nullable(
       Type.String({ pattern: BOARD_WIDGET_NAME_PATTERN, description: "Stable widget name" }),
     ),
-    after: Type.Optional(
+    after: nullable(
       Type.String({
         pattern: BOARD_WIDGET_NAME_PATTERN,
         description: "Place after stable widget name",
       }),
     ),
-    sizeW: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })),
-    sizeH: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-    size: Type.Optional(Type.String({ enum: ["sm", "md", "lg", "xl", "full"] })),
-    pluginKind: Type.Optional(
+    sizeW: nullable(Type.Integer({ minimum: 1, maximum: 12 })),
+    sizeH: nullable(Type.Integer({ minimum: 1, maximum: 20 })),
+    size: nullable(Type.String({ enum: ["sm", "md", "lg", "xl", "full"] })),
+    pluginKind: nullable(
       Type.String({
         pattern: BOARD_PLUGIN_KIND_PATTERN,
         description:
           "Registered widget kind; session:report renders data reports, session:progress renders live session progress, session:website embeds a live HTTPS website",
       }),
     ),
-    props: Type.Optional(
+    props: nullable(
       Type.Record(Type.String(), Type.Unknown(), {
         description: `Widget JSON props (maximum 8KB encoded). For session:report: ${BOARD_REPORT_GUIDANCE} For session:website: ${BOARD_WEBSITE_GUIDANCE}`,
       }),
@@ -286,7 +291,9 @@ export function createDashboardTool(opts: DashboardToolOptions = {}): AnyAgentTo
       "Read and arrange this session dashboard; widget_put updates plugin widgets only. Follow the widget authoring tool's current placement guidance. Actions: read snapshot; tab_create/tab_update/tab_delete/tabs_reorder; widget_put/widget_move/widget_resize/widget_remove; focus_tab opens the dashboard side panel; set_presentation shows the dashboard alongside chat (split) or across the task area (expanded). focus_tab and set_presentation require a connected Control UI and do not save a default. set_default_presentation saves split or expanded for subsequent opens without requiring a connected UI; read returns the effective defaultPresentation (split when unset). Personal viewer overrides still take precedence. Widgets use stable names. widget_put creates or updates trusted plugin widgets only; update other content through its owning authoring capability discovered in the tool catalog. Prefer session:report for data reports with text, metrics, tables, charts, and links; it renders directly without a document frame. Use session:progress props {sessionKey?} for live session progress (omit sessionKey for the current session). Use session:website props {url} for a live HTTPS website; size full and expanded presentation fill the task area. Other widget kinds are supplied by enabled plugins. Sizes: sm=3x3, md=6x4, lg=8x6, xl=12x8, full=12x8 single-widget emphasis.",
     parameters: DashboardToolSchema,
     execute: async (_toolCallId, rawArgs) => {
-      const params = rawArgs as Record<string, unknown>;
+      const params = Object.fromEntries(
+        Object.entries(rawArgs as Record<string, unknown>).filter(([, value]) => value !== null),
+      );
       const action = readToolStringParam(params, "action", { required: true });
       const sessionKey = requireSessionKey(opts.agentSessionKey);
       const admittedResolver = getGatewayToolCallerIdentity()?.gatewayContextResolver;

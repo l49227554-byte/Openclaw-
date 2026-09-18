@@ -23,6 +23,25 @@ const snapshot: BoardSnapshot = {
   widgets: [],
 };
 
+const nullableDashboardFields = {
+  tabId: null,
+  title: null,
+  presentation: null,
+  position: null,
+  tabIds: null,
+  name: null,
+  after: null,
+  sizeW: null,
+  sizeH: null,
+  size: null,
+  pluginKind: null,
+  props: null,
+};
+
+function dashboardArgs(args: Record<string, unknown>) {
+  return { ...nullableDashboardFields, ...args };
+}
+
 function recorder(boardSnapshot: BoardSnapshot = snapshot) {
   const calls: Array<[string, Record<string, unknown>]> = [];
   const commands: Array<{ sessionKey: string; command: BoardCommand }> = [];
@@ -97,6 +116,21 @@ describe("dashboard tool", () => {
     expect(tool.description).not.toMatch(/show_widget|widget_code|\bpin\b/);
     expect(tool.parameters).toMatchObject({
       additionalProperties: false,
+      required: [
+        "action",
+        "tabId",
+        "title",
+        "presentation",
+        "position",
+        "tabIds",
+        "name",
+        "after",
+        "sizeW",
+        "sizeH",
+        "size",
+        "pluginKind",
+        "props",
+      ],
       properties: {
         action: {
           enum: [
@@ -116,35 +150,96 @@ describe("dashboard tool", () => {
         },
       },
     });
-    expect(Value.Check(tool.parameters, { action: "widget_move", name: "status" })).toBe(true);
+    expect(
+      Value.Check(tool.parameters, dashboardArgs({ action: "widget_move", name: "status" })),
+    ).toBe(true);
+    expect(
+      Value.Check(
+        tool.parameters,
+        dashboardArgs({
+          action: "widget_put",
+          name: "work-item",
+          pluginKind: "workboard:card",
+          props: { cardId: "card-123" },
+        }),
+      ),
+    ).toBe(true);
+    expect(Value.Check(tool.parameters, dashboardArgs({ action: "unknown" }))).toBe(false);
+    expect(
+      Value.Check(
+        tool.parameters,
+        dashboardArgs({ action: "set_presentation", presentation: "expanded" }),
+      ),
+    ).toBe(true);
     expect(
       Value.Check(tool.parameters, {
+        ...dashboardArgs({ action: "tab_update", tabId: "main" }),
+        chatDock: "left",
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(tool.parameters, {
+        ...dashboardArgs({ action: "set_presentation" }),
+        dock: "left",
+      }),
+    ).toBe(false);
+    expect(
+      Value.Check(
+        tool.parameters,
+        dashboardArgs({ action: "set_default_presentation", presentation: "expanded" }),
+      ),
+    ).toBe(true);
+    expect(
+      Value.Check(
+        tool.parameters,
+        dashboardArgs({ action: "set_default_presentation", presentation: "fullscreen" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("treats strict-schema null placeholders as omitted action fields", async () => {
+    const harness = recorder();
+    const tool = createDashboardTool({
+      agentSessionKey: "agent:main:main",
+      callGateway: harness.callGateway,
+    });
+
+    await tool.execute(
+      "put",
+      dashboardArgs({
         action: "widget_put",
         name: "work-item",
         pluginKind: "workboard:card",
         props: { cardId: "card-123" },
+        tabId: "main",
+        size: "sm",
       }),
-    ).toBe(true);
-    expect(Value.Check(tool.parameters, { action: "unknown" })).toBe(false);
-    expect(
-      Value.Check(tool.parameters, { action: "set_presentation", presentation: "expanded" }),
-    ).toBe(true);
-    expect(
-      Value.Check(tool.parameters, { action: "tab_update", tabId: "main", chatDock: "left" }),
-    ).toBe(false);
-    expect(Value.Check(tool.parameters, { action: "set_presentation", dock: "left" })).toBe(false);
-    expect(
-      Value.Check(tool.parameters, {
-        action: "set_default_presentation",
-        presentation: "expanded",
-      }),
-    ).toBe(true);
-    expect(
-      Value.Check(tool.parameters, {
-        action: "set_default_presentation",
-        presentation: "fullscreen",
-      }),
-    ).toBe(false);
+    );
+
+    expect(harness.calls[0]?.[1]).toMatchObject({
+      name: "work-item",
+      placement: { tabId: "main", size: "sm" },
+    });
+    expect(harness.calls[0]?.[1]).not.toHaveProperty("title");
+  });
+
+  it("accepts a strict read payload and rejects a null action field before dispatch", async () => {
+    const harness = recorder();
+    const tool = createDashboardTool({
+      agentSessionKey: "agent:main:main",
+      callGateway: harness.callGateway,
+    });
+
+    await tool.execute("read", dashboardArgs({ action: "read" }));
+    expect(harness.calls).toEqual([
+      ["board.get", { sessionKey: "agent:main:main" }],
+      ["sessions.describe", { key: "agent:main:main" }],
+    ]);
+
+    await expect(
+      tool.execute("remove", dashboardArgs({ action: "widget_remove", name: null })),
+    ).rejects.toThrow("name required");
+    expect(harness.calls).toHaveLength(2);
   });
 
   it("reads a compact text plus JSON snapshot", async () => {

@@ -9,7 +9,10 @@ import { readAcpSessionEntry } from "../../acp/runtime/session-meta.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createAbortError } from "../../infra/abort-signal.js";
-import { listTaskRecordsForOwnerTree } from "../../tasks/runtime-internal.js";
+import {
+  listTaskRecordsForOwnerTree,
+  resolveTaskForLookupToken,
+} from "../../tasks/runtime-internal.js";
 import { readTaskBackingInstance } from "../../tasks/task-backing-records.js";
 import {
   withTaskCancellationContext,
@@ -445,10 +448,29 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
       }
 
       if (action === "cancel") {
-        const taskId = readToolStringParam(params, "taskId", { required: true });
+        const taskIdParam = readToolStringParam(params, "taskId", { required: true });
+        // Accept the identifiers sessions_spawn/list hand back: runId and child
+        // sessionKey resolve to the ledger taskId against the caller's owner-tree
+        // records before the tree visibility gate, so owned children stop reading
+        // as scope violations. Raw global resolution only re-homes the taskId for
+        // callers whose injected list mirrors the real ledger by reference.
+        const identifier = taskIdParam.trim();
+        const ownerTreeTasks = opts.listTasks?.() ?? listTaskRecordsForOwnerTree(allowedOwnerKeys);
+        const ownedMatch = ownerTreeTasks.find(
+          (task) =>
+            task.taskId === identifier ||
+            task.runId === identifier ||
+            (task.childSessionKey !== undefined && task.childSessionKey === identifier),
+        );
+        const resolved = ownedMatch ?? resolveTaskForLookupToken(identifier);
+        const taskId = resolved?.taskId ?? identifier;
         const target = treeTasks.find((task) => task.taskId === taskId);
         if (!target) {
-          return jsonResult({ status: "forbidden", error: "Task outside session tree." });
+          return jsonResult(
+            resolved
+              ? { status: "forbidden", error: "Task outside session tree." }
+              : { status: "error", error: `Unknown task: ${identifier}` },
+          );
         }
         // Leaf subagents may cancel only their own tasks, matching the
         // control-scope gate every other cross-session subagent mutation enforces.

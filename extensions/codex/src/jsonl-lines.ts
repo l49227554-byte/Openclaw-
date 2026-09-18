@@ -14,6 +14,12 @@ export type JsonlHeadWindow = {
    * a record boundary, so head and tail can be concatenated without dropping or repeating a record.
    */
   endOffset: number;
+  /**
+   * Bytes this call actually read from the file, which is neither `maxBytes` (a short file or a
+   * short read returns fewer) nor `endOffset` (bytes past the last record boundary were still
+   * read). A caller budgeting I/O has to charge this rather than estimate from either.
+   */
+  bytesRead: number;
 };
 
 /** Complete JSONL lines from a bounded window running to the end of a file. */
@@ -25,6 +31,11 @@ export type JsonlTailWindow = {
    * check from mistaking an empty window for full coverage.
    */
   start: number;
+  /**
+   * Bytes this call actually read from the file. Zero when the floor already covered the file, and
+   * non-zero even on the paths that return no complete record — the window was still read.
+   */
+  bytesRead: number;
 };
 
 export async function visitJsonlLines(
@@ -140,6 +151,7 @@ export async function readJsonlHead(
     lines: splitCompleteLines(decodeBytes(window.subarray(0, endOffset))),
     complete,
     endOffset,
+    bytesRead: window.length,
   };
 }
 
@@ -163,23 +175,24 @@ export async function readJsonlTail(
   const start = Math.max(boundary, size - maxBytes);
   if (start >= size) {
     // The caller already read through EOF, so there is nothing left to open the file for.
-    return { lines: [], start: size };
+    return { lines: [], start: size, bytesRead: 0 };
   }
   const window = await readFileWindow(file, start, size - start);
   if (!window) {
     return null;
   }
   if (start === boundary) {
-    return { lines: splitCompleteLines(decodeBytes(window)), start };
+    return { lines: splitCompleteLines(decodeBytes(window)), start, bytesRead: window.length };
   }
   const firstNewline = window.indexOf(NEWLINE_BYTE);
   if (firstNewline === -1) {
     // The whole window sits inside one oversized record, so no complete line survives it.
-    return { lines: [], start: size };
+    return { lines: [], start: size, bytesRead: window.length };
   }
   return {
     lines: splitCompleteLines(decodeBytes(window.subarray(firstNewline + 1))),
     start: start + firstNewline + 1,
+    bytesRead: window.length,
   };
 }
 

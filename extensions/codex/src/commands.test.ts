@@ -2087,8 +2087,62 @@ describe("codex command", () => {
 
     const result = await runCommand("sessions --host mb-m5 bridge", { listCodexCliSessionsOnNode });
 
-    expect(result.text).toContain("Searched the 220 most recent of 2928 rollouts");
+    expect(result.text).toContain("Searched 220 of 2928 rollouts");
     expect(result.text).toContain("019e2007-1f7e-7eb1-a42b-8c01f4b9b5cd");
+  });
+
+  it("still says a Codex CLI session search was cut when it matched nothing", async () => {
+    const listCodexCliSessionsOnNode = vi.fn(async () => ({
+      node: { nodeId: "mb-m5", displayName: "mb-m5" },
+      result: {
+        codexHome: "/Users/mariano/.codex",
+        scannedFileCount: 342,
+        sessionFileCount: 2928,
+        searchTruncated: true,
+        sessions: [],
+      },
+    }));
+
+    const result = await runCommand("sessions --host mb-m5 /repo", { listCodexCliSessionsOnNode });
+
+    // An empty answer to a cut search is the one a caller is most likely to read as "no such
+    // session exists", so the notice has to reach this path and not just the non-empty one.
+    expect(result.text).toContain("No Codex CLI sessions returned");
+    expect(result.text).toContain("Searched 342 of 2928 rollouts");
+  });
+
+  it("keeps the truncation notice unquantified when the node reported no rollout counts", async () => {
+    const listCodexCliSessionsOnNode = vi.fn(async () => ({
+      node: { nodeId: "mb-m5", displayName: "mb-m5" },
+      result: {
+        codexHome: "/Users/mariano/.codex",
+        searchTruncated: true,
+        sessions: [],
+      },
+    }));
+
+    const result = await runCommand("sessions --host mb-m5 /repo", { listCodexCliSessionsOnNode });
+
+    // A node build without the counters must not be rendered as "Searched 0 of 0 rollouts".
+    expect(result.text).toContain("Only part of this codex-home was searched");
+    expect(result.text).not.toContain("0 of 0");
+  });
+
+  it("leaves an empty Codex CLI session result unqualified when the search was complete", async () => {
+    const listCodexCliSessionsOnNode = vi.fn(async () => ({
+      node: { nodeId: "mb-m5", displayName: "mb-m5" },
+      result: {
+        codexHome: "/Users/mariano/.codex",
+        scannedFileCount: 12,
+        sessionFileCount: 12,
+        sessions: [],
+      },
+    }));
+
+    const result = await runCommand("sessions --host mb-m5 /repo", { listCodexCliSessionsOnNode });
+
+    expect(result.text).toContain("No Codex CLI sessions returned");
+    expect(result.text).not.toContain("Searched");
   });
 
   it("leaves a complete Codex CLI session search unqualified", async () => {
@@ -2112,7 +2166,7 @@ describe("codex command", () => {
 
     const result = await runCommand("sessions --host mb-m5 bridge", { listCodexCliSessionsOnNode });
 
-    expect(result.text).not.toContain("Searched the");
+    expect(result.text).not.toContain("Searched");
   });
 
   it("normalizes signed decimal Codex CLI session limits before node dispatch", async () => {

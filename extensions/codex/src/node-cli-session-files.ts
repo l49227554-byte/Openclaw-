@@ -34,15 +34,29 @@ const SESSION_FILE_FULL_READ_BYTES = SESSION_FILE_HEAD_SCAN_BYTES + SESSION_FILE
 /** Rollouts scanned past `limit` to absorb mtime vs. record-`timestamp` ordering skew. */
 const SESSION_FILE_SCAN_HEADROOM = 20;
 /**
+ * Most bytes one `readSessionFileSummary` can read: the initial head window, one escalation for an
+ * oversized `session_meta`, and the tail window. The scan budget below is checked between files, so
+ * this is exactly how far past that budget a scan can run.
+ */
+export const SESSION_FILE_MAX_SUMMARY_READ_BYTES =
+  SESSION_FILE_HEAD_SCAN_BYTES + SESSION_FILE_HEAD_SCAN_MAX_BYTES + SESSION_FILE_TAIL_SCAN_BYTES;
+/**
  * A filter can match `cwd` or a message preview, which are only known after hydration, so a filtered
- * listing has to open rollouts to answer it. It walks them newest-first and stops as soon as it
- * holds enough matches to fill the requested page, so the common "my recent session in /repo" case
- * costs a handful of files. When matches are sparse it keeps going until one of the two ceilings
- * below is reached, and then says so — see `searchTruncated`. Reading every rollout unconditionally
- * is not an option even with windowed reads: on a 2928-rollout codex-home the per-file windows
- * alone total ~877 MB and 4.2 s warm, measured. 256 MiB keeps the worst case near a second of reads
- * at the ~209 MB/s that measurement implies, leaving wide margin under the 15 s invoke timeout. It
- * searches a codex-home of a few hundred rollouts end to end; only a backlog past that gets cut.
+ * listing has to open rollouts to answer it. It walks them in candidate order and stops as soon as
+ * it holds enough matches to fill the requested page, so the common "my recent session in /repo"
+ * case costs a handful of files. When matches are sparse it keeps going until one of the two
+ * ceilings below is reached, and then says so — see `searchTruncated`. Reading every rollout
+ * unconditionally is not an option even with windowed reads: on a 2928-rollout codex-home the
+ * per-file windows alone total ~877 MB and 4.2 s warm, measured. 256 MiB keeps the worst case near a
+ * second of reads at the ~209 MB/s that measurement implies, leaving wide margin under the 15 s
+ * invoke timeout. It searches a codex-home of a few hundred rollouts end to end; only a backlog past
+ * that gets cut.
+ *
+ * The budget is charged the bytes each summary read actually reported, escalations included, and is
+ * checked before opening the next rollout — so this scan reads at most
+ * `FILTERED_SESSION_SCAN_BUDGET_BYTES + SESSION_FILE_MAX_SUMMARY_READ_BYTES`. It bounds *this* scan
+ * only. `readHistorySessions` and `hydrateSessionFiles` run before it and read outside it, so this
+ * is not a cap on what the whole list command reads.
  */
 const FILTERED_SESSION_SCAN_BUDGET_BYTES = 256 * 1024 * 1024;
 /** Companion ceiling to the byte budget, so a home full of tiny rollouts cannot spend it on syscalls. */
@@ -121,6 +135,11 @@ export async function readHistorySessions(
   return summaries;
 }
 
+/**
+ * Attach a rollout file and its `cwd` to each session `history.jsonl` already named. This reads one
+ * head window per history-backed session and is **not** charged against the filtered scan budget:
+ * its cost scales with the number of distinct sessions in `history.jsonl`, not with the filter.
+ */
 export async function hydrateSessionFiles(
   summaries: Map<string, CodexCliSessionSummary>,
   files: CodexCliSessionFile[],
@@ -185,13 +204,20 @@ export type SessionFileScanOutcome = {
 };
 
 /**
- * Hydrate rollouts newest-first, stopping as early as the request allows.
+ * Hydrate rollouts in candidate order, stopping as early as the request allows.
  *
  * Unfiltered, the stop is the recency page `selectSessionFilesToScan` already hands back. Filtered,
- * the stop is the first of: enough matches to fill the page (older rollouts cannot displace newer
- * matches in a newest-first slice), the scan budget, or the candidate list running out. Only the
- * last of those searched the whole corpus, so anything else reports `searchTruncated` — the caller
- * is told its search was cut rather than left to read a short list as an exhaustive one.
+ * the stop is the first of: enough matches to fill the page, the scan budget, or the candidate list
+ * running out. Only the last of those searched the whole corpus, so anything else reports
+ * `searchTruncated` — the caller is told its search was cut rather than left to read a short list as
+ * an exhaustive one.
+ *
+ * The match early-out is a heuristic, not a proof that nothing better was left unread. Candidates
+ * are ordered by filename match and then mtime, while the listing is finally sorted by the
+ * `updatedAt` recovered from records, so a rollout the scan stopped short of can still sort above
+ * one it already matched. `SESSION_FILE_SCAN_HEADROOM` only absorbs small skew, and history-derived
+ * matches counted before the loop are in no file order at all. `searchTruncated` is the signal that
+ * holds in every one of those cases; the ordering itself is not guaranteed.
  */
 export async function hydrateSessionsFromSessionFiles(
   summaries: Map<string, CodexCliSessionSummary>,
@@ -200,8 +226,9 @@ export async function hydrateSessionsFromSessionFiles(
   limit: number,
 ): Promise<SessionFileScanOutcome> {
   const candidates = selectSessionFilesToScan(files, filter, limit);
-  // The page is `limit` long; the headroom covers matches that mtime ordered later than their last
-  // record `timestamp` does, which is the same skew `SESSION_FILE_SCAN_HEADROOM` exists for.
+  // The page is `limit` long; the headroom is the same allowance for mtime vs. record-`timestamp`
+  // skew that `SESSION_FILE_SCAN_HEADROOM` exists for, and bounds the skew it covers, not the skew
+  // that can occur.
   const enoughMatches = limit + SESSION_FILE_SCAN_HEADROOM;
   const matched = new Set<string>();
   if (filter) {
@@ -212,22 +239,24 @@ export async function hydrateSessionsFromSessionFiles(
     }
   }
   let scannedFileCount = 0;
-  let remainingBudgetBytes = FILTERED_SESSION_SCAN_BUDGET_BYTES;
+  let spentBytes = 0;
   for (const file of candidates) {
     if (filter) {
       if (matched.size >= enoughMatches) {
         return { scannedFileCount, searchTruncated: scannedFileCount < files.length };
       }
-      // Charge the window this file is about to cost rather than its size on disk, so one 269 MB
-      // rollout does not look like it exhausts a budget it will only read 768 KiB of.
-      const windowBytes = Math.min(file.size, SESSION_FILE_FULL_READ_BYTES);
-      if (scannedFileCount > 0 && windowBytes > remainingBudgetBytes) {
+      // Charge what the previous reads reported, not what their file sizes suggested. A `min(size,
+      // head+tail)` estimate silently undercounts the 4 MiB `session_meta` escalation by more than
+      // six times, so a home full of oversized metadata records used to run gigabytes past a budget
+      // stated in hundreds of megabytes. Checking between files keeps the overshoot to one file.
+      if (scannedFileCount > 0 && spentBytes >= FILTERED_SESSION_SCAN_BUDGET_BYTES) {
         return { scannedFileCount, searchTruncated: true };
       }
-      remainingBudgetBytes -= windowBytes;
     }
     scannedFileCount += 1;
-    const summary = await readSessionFileSummary(file);
+    const read = await readSessionFileSummary(file);
+    spentBytes += read.bytesRead;
+    const summary = read.summary;
     if (!summary) {
       continue;
     }
@@ -252,51 +281,65 @@ export async function hydrateSessionsFromSessionFiles(
   return { scannedFileCount, searchTruncated: filter ? scannedFileCount < files.length : false };
 }
 
-async function readSessionFileSummary(
-  file: CodexCliSessionFile,
-): Promise<CodexCliSessionSummary | null> {
+/** A summary plus what reading it cost, so a caller can budget on measured I/O rather than a guess. */
+type SessionFileSummaryRead = {
+  summary: CodexCliSessionSummary | null;
+  bytesRead: number;
+};
+
+async function readSessionFileSummary(file: CodexCliSessionFile): Promise<SessionFileSummaryRead> {
   const head = await readSessionMetaHead(
     file.file,
     file.size <= SESSION_FILE_FULL_READ_BYTES
       ? SESSION_FILE_FULL_READ_BYTES
       : SESSION_FILE_HEAD_SCAN_BYTES,
   );
-  if (!head) {
-    return null;
+  if (!head.window) {
+    return { summary: null, bytesRead: head.bytesRead };
   }
   // Anchor the tail to where the head stopped. Without that floor an escalated head and the tail
   // can cover the same bytes, and every record in the overlap is counted twice. When the two
   // windows meet, the scan covered the file and stays exact even though it was read in pieces.
   const tail = await readJsonlTail(file.file, SESSION_FILE_TAIL_SCAN_BYTES, {
-    notBefore: head.endOffset,
+    notBefore: head.window.endOffset,
   });
+  // A window that yielded no usable record still cost its bytes, so report them either way.
+  const bytesRead = head.bytesRead + (tail?.bytesRead ?? 0);
   if (!tail) {
-    return null;
+    return { summary: null, bytesRead };
   }
-  if (head.lines.length === 0 && tail.lines.length === 0) {
-    return null;
+  // Two empty windows are not evidence that there is no session here. A `session_meta` past the
+  // escalation and a final record past the tail window can both outrun their windows on a perfectly
+  // readable rollout, and dropping it would hide the session from an exact-id search and leave
+  // `/codex resume` unable to bind it. Fall through to the filename fallback instead and report the
+  // result as a partial scan. A genuinely empty file still yields nothing.
+  if (file.size === 0) {
+    return { summary: null, bytesRead };
   }
   // The windows abut only when together they covered the file, so counts from them stay exact.
-  const scannedWholeFile = tail.start <= head.endOffset;
-  const headScan = scanSessionFileLines(head.lines);
+  const scannedWholeFile = tail.start <= head.window.endOffset;
+  const headScan = scanSessionFileLines(head.window.lines);
   const tailScan = scanSessionFileLines(tail.lines);
   const sessionId =
     headScan.sessionId || tailScan.sessionId || readSessionIdFromFilename(file.file);
   if (!sessionId) {
-    return null;
+    return { summary: null, bytesRead };
   }
   // A skipped middle means the head's newest timestamp predates records we never read, so mtime is
   // the better estimate. The tail can also yield no complete record when the final one is huge.
   const scannedUpdatedAt =
     tailScan.updatedAt ?? (scannedWholeFile ? headScan.updatedAt : undefined);
   return {
-    sessionId,
-    updatedAt: scannedUpdatedAt ?? new Date(file.mtimeMs).toISOString(),
-    lastMessage: tailScan.lastMessage ?? headScan.lastMessage,
-    cwd: headScan.cwd ?? tailScan.cwd,
-    sessionFile: file.file,
-    messageCount: headScan.messageCount + tailScan.messageCount,
-    partialScan: scannedWholeFile ? undefined : true,
+    bytesRead,
+    summary: {
+      sessionId,
+      updatedAt: scannedUpdatedAt ?? new Date(file.mtimeMs).toISOString(),
+      lastMessage: tailScan.lastMessage ?? headScan.lastMessage,
+      cwd: headScan.cwd ?? tailScan.cwd,
+      sessionFile: file.file,
+      messageCount: headScan.messageCount + tailScan.messageCount,
+      partialScan: scannedWholeFile ? undefined : true,
+    },
   };
 }
 
@@ -440,17 +483,20 @@ function readSessionIdFromFilename(file: string): string | undefined {
 async function readSessionMetaHead(
   file: string,
   initialBytes: number,
-): Promise<JsonlHeadWindow | null> {
+): Promise<{ window: JsonlHeadWindow | null; bytesRead: number }> {
   const head = await readJsonlHead(file, initialBytes);
   if (head && head.lines.length === 0 && !head.complete) {
-    return await readJsonlHead(file, SESSION_FILE_HEAD_SCAN_MAX_BYTES);
+    // The escalation re-reads from byte 0, so its bytes are on top of the first window's, not
+    // instead of them. Reporting only the wider read would undercount every escalated file.
+    const escalated = await readJsonlHead(file, SESSION_FILE_HEAD_SCAN_MAX_BYTES);
+    return { window: escalated, bytesRead: head.bytesRead + (escalated?.bytesRead ?? 0) };
   }
-  return head;
+  return { window: head, bytesRead: head?.bytesRead ?? 0 };
 }
 
 async function readFirstLine(file: string): Promise<string | undefined> {
   const head = await readSessionMetaHead(file, SESSION_FILE_HEAD_SCAN_BYTES);
-  return head?.lines[0];
+  return head.window?.lines[0];
 }
 
 function truncateText(value: string, max: number): string {

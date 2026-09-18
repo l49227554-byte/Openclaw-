@@ -176,12 +176,19 @@ export function formatCodexCliSessions(params: {
   node: CodexCliSessionNodeInfo;
   result: CodexCliSessionsListResult;
 }): string {
+  const truncation = formatSessionSearchTruncation(params.result);
   if (params.result.sessions.length === 0) {
-    return `No Codex CLI sessions returned from ${formatCodexDisplayText(formatNodeLabel(params.node))}.`;
+    // The empty answer is the one most likely to be read as "no such session exists", so a cut
+    // search has to say so here too — returning early before the notice hid it exactly where it
+    // mattered most.
+    return [
+      `No Codex CLI sessions returned from ${formatCodexDisplayText(formatNodeLabel(params.node))}.`,
+      ...truncation,
+    ].join("\n");
   }
   return [
     `Codex CLI sessions on ${formatCodexDisplayText(formatNodeLabel(params.node))}:`,
-    ...formatSessionSearchTruncation(params.result),
+    ...truncation,
     ...params.result.sessions.map((session) => {
       // Say so when the preview and count come from a windowed read, so nobody reads a stale
       // `lastMessage` off an oversized rollout as that session's latest activity.
@@ -210,12 +217,14 @@ function formatSessionSearchTruncation(result: CodexCliSessionsListResult): stri
   }
   const scanned = result.scannedFileCount;
   const total = result.sessionFileCount;
+  // Not "the N most recent": a filtered scan reads filename matches before the rest, so the
+  // rollouts it opened are not a recency prefix of the codex-home.
   const scope =
     scanned === undefined || total === undefined
-      ? "Searched only the most recent rollouts"
-      : `Searched the ${String(scanned)} most recent of ${String(total)} rollouts`;
+      ? "Only part of this codex-home was searched"
+      : `Searched ${String(scanned)} of ${String(total)} rollouts`;
   return [
-    `${scope}; older sessions matching on directory or message text are not in this list. Filter by session id, or by a date, to look further back — both are read from the filename and stay reachable.`,
+    `${scope}; sessions matching on directory or message text may exist outside this list. A session id is part of the rollout filename, so an id filter is read before the rest and reaches further back than a directory or message-text filter does.`,
   ];
 }
 
@@ -369,8 +378,10 @@ function parseCodexCliSessionsListResult(raw: unknown): CodexCliSessionsListResu
   }
   return {
     codexHome: typeof payload.codexHome === "string" ? payload.codexHome : "",
-    scannedFileCount: readFiniteCount(payload.scannedFileCount),
-    sessionFileCount: readFiniteCount(payload.sessionFileCount),
+    // Keep these absent rather than zero when the node build predates them, so the truncation
+    // notice falls back to its unquantified wording instead of claiming "0 of 0 rollouts".
+    scannedFileCount: readOptionalCount(payload.scannedFileCount),
+    sessionFileCount: readOptionalCount(payload.sessionFileCount),
     searchTruncated: payload.searchTruncated === true ? true : undefined,
     sessions: payload.sessions.flatMap((entry) => {
       if (!isRecord(entry) || typeof entry.sessionId !== "string") {
@@ -393,6 +404,10 @@ function parseCodexCliSessionsListResult(raw: unknown): CodexCliSessionsListResu
 
 function readFiniteCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function readOptionalCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function unwrapNodeInvokePayload(raw: unknown): unknown {

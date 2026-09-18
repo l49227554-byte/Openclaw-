@@ -7,6 +7,7 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import manifest from "../openclaw.plugin.json" with { type: "json" };
 import { readJsonlHead, readJsonlTail } from "./jsonl-lines.js";
+import { SESSION_FILE_MAX_SUMMARY_READ_BYTES } from "./node-cli-session-files.js";
 import {
   createCodexCliSessionNodeHostCommands,
   createCodexCliSessionNodeInvokePolicies,
@@ -510,8 +511,9 @@ describe("codex cli node sessions", () => {
   });
 
   it("stops a filtered scan at the byte budget and reports the search as truncated", async () => {
-    // 768 KiB is the whole per-file window, so each rollout charges the budget its maximum and
-    // 256 MiB runs out after 341 of them.
+    // A 768 KiB rollout is read head-and-tail in one window, so each one spends 768 KiB of the
+    // 256 MiB budget. The budget is checked between files against bytes already spent, so the scan
+    // reads one file past the point where it runs out: 342 rather than 341.
     await writeRolloutFixtures(345, {
       cwdFor: () => "/tmp/codex-budget",
       padToBytes: 768 * 1024,
@@ -521,10 +523,36 @@ describe("codex cli node sessions", () => {
 
     expect(parsed.sessions).toEqual([]);
     expect(parsed).toMatchObject({
-      scannedFileCount: 341,
+      scannedFileCount: 342,
       sessionFileCount: 345,
       searchTruncated: true,
     });
+  });
+
+  it("charges the oversized-session_meta escalation against the filtered scan budget", async () => {
+    // Every rollout here forces the escalation: `session_meta` is wider than the 512 KiB initial
+    // head window, so each file costs 512 KiB + a 1 MiB re-read, not the 768 KiB an estimate based
+    // on `min(size, head + tail)` would have charged. Under that estimate 175 rollouts fit inside
+    // the 256 MiB budget and the scan reported itself complete while reading ~262 MB; the budget
+    // has to be charged what was actually read.
+    await writeRolloutFixtures(175, {
+      cwdFor: () => "/tmp/codex-escalated",
+      metaPadBytes: 600_000,
+      padToBytes: 1024 * 1024,
+    });
+
+    const reads = spyOnRolloutReads();
+    const parsed = await runSessionsList({ limit: 50, filter: "/tmp/codex-unmatched" });
+
+    expect(parsed.sessions).toEqual([]);
+    expect(parsed).toMatchObject({ sessionFileCount: 175, searchTruncated: true });
+    // 512 KiB + a 1 MiB re-read each, so 256 MiB runs out after 171 of the 175 rollouts.
+    // Charging `min(size, head + tail)` instead would have called all 175 a complete search.
+    expect(parsed.scannedFileCount).toBe(171);
+    // The stated bound: the budget plus at most one file's maximum summary read.
+    expect(reads.bytes()).toBeLessThanOrEqual(
+      256 * 1024 * 1024 + SESSION_FILE_MAX_SUMMARY_READ_BYTES,
+    );
   });
 
   it("keeps an unfiltered listing free of the truncation marker", async () => {
@@ -562,6 +590,33 @@ describe("codex cli node sessions", () => {
     const parsed = await runSessionsList({ limit: 1 });
 
     expect(parsed.sessions).toMatchObject([{ sessionId, cwd: "/tmp/codex-oversized" }]);
+  });
+
+  it("keeps a session whose metadata and final record both outrun their windows", async () => {
+    const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5260";
+    const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
+    await fs.mkdir(sessionDir, { recursive: true });
+    const sessionFile = path.join(sessionDir, `rollout-2026-05-14T00-10-22-${sessionId}.jsonl`);
+    // One record wider than the 4 MiB head escalation, and no newline anywhere after it — so the
+    // head window yields nothing and the 256 KiB tail window opens inside the same record.
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({
+        timestamp: "2026-05-14T00:10:23.618Z",
+        type: "session_meta",
+        payload: { id: sessionId, cwd: "/tmp/huge-meta", instructions: "x".repeat(5_000_000) },
+      })}\n`,
+    );
+    const updatedAt = new Date(Date.UTC(2026, 4, 14));
+    await fs.utimes(sessionFile, updatedAt, updatedAt);
+
+    const parsed = await runSessionsList({ limit: 5, filter: sessionId });
+
+    // Unreadable windows are not an absent session: the id is in the filename, and dropping the
+    // row here would also make `/codex resume <id> --bind` unable to resolve it.
+    expect(parsed.sessions).toMatchObject([
+      { sessionId, sessionFile, partialScan: true, messageCount: 0 },
+    ]);
   });
 
   it("discards partial large-file summaries and closes after a later read fails", async () => {
@@ -689,6 +744,34 @@ describe("codex cli node sessions", () => {
     expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ scopes: ["operator.write"] }));
   });
 
+  it("leaves rollout counts absent when a node build does not report them", async () => {
+    const invoke = vi.fn(async () => ({
+      ok: true,
+      payloadJSON: JSON.stringify({
+        codexHome: "/Users/mariano/.codex",
+        searchTruncated: true,
+        sessions: [],
+      }),
+    }));
+    const runtime = {
+      nodes: {
+        list: vi.fn(async () => ({
+          nodes: [
+            { nodeId: "node-1", connected: true, commands: [CODEX_CLI_SESSIONS_LIST_COMMAND] },
+          ],
+        })),
+        invoke,
+      },
+    } as unknown as PluginRuntime;
+
+    const listing = await listCodexCliSessionsOnNode({ runtime, requestedNode: "node-1" });
+
+    // Coercing an absent counter to 0 would make the truncation notice claim "0 of 0 rollouts".
+    expect(listing.result.scannedFileCount).toBeUndefined();
+    expect(listing.result.sessionFileCount).toBeUndefined();
+    expect(listing.result.searchTruncated).toBe(true);
+  });
+
   it("keeps Codex history session previews on UTF-16 code point boundaries", async () => {
     const sessionId = "019e2007-1f7e-7eb1-a42b-8c01f4b9b5ce";
     const text = `${"a".repeat(136)}🤖tail`;
@@ -803,7 +886,12 @@ describe("codex cli node sessions", () => {
   /** Writes `count` rollouts, newest first, with distinct mtimes so recency ordering is stable. */
   async function writeRolloutFixtures(
     count: number,
-    options?: { cwdFor?: (index: number) => string; padToBytes?: number },
+    options?: {
+      cwdFor?: (index: number) => string;
+      padToBytes?: number;
+      /** Pads `session_meta` itself, so the record is wider than the initial head window. */
+      metaPadBytes?: number;
+    },
   ): Promise<Array<{ sessionId: string; file: string }>> {
     const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
     await fs.mkdir(sessionDir, { recursive: true });
@@ -818,7 +906,11 @@ describe("codex cli node sessions", () => {
           JSON.stringify({
             timestamp: updatedAt.toISOString(),
             type: "session_meta",
-            payload: { id: sessionId, cwd: options?.cwdFor?.(index) ?? "/tmp/codex-many" },
+            payload: {
+              id: sessionId,
+              cwd: options?.cwdFor?.(index) ?? "/tmp/codex-many",
+              ...(options?.metaPadBytes ? { instructions: "x".repeat(options.metaPadBytes) } : {}),
+            },
           }),
           JSON.stringify({
             timestamp: updatedAt.toISOString(),

@@ -30,6 +30,7 @@ describe("bounded JSONL windows", () => {
       lines: ["a", "b"],
       complete: true,
       endOffset: 4,
+      bytesRead: 4,
     });
   });
 
@@ -40,6 +41,7 @@ describe("bounded JSONL windows", () => {
       lines: ["a", "b"],
       complete: true,
       endOffset: 3,
+      bytesRead: 3,
     });
   });
 
@@ -50,6 +52,7 @@ describe("bounded JSONL windows", () => {
       lines: ["a", "b"],
       complete: true,
       endOffset: 6,
+      bytesRead: 6,
     });
   });
 
@@ -60,8 +63,13 @@ describe("bounded JSONL windows", () => {
       lines: [],
       complete: true,
       endOffset: 0,
+      bytesRead: 0,
     });
-    await expect(readJsonlTail(file, 1_024)).resolves.toEqual({ lines: [], start: 0 });
+    await expect(readJsonlTail(file, 1_024)).resolves.toEqual({
+      lines: [],
+      start: 0,
+      bytesRead: 0,
+    });
   });
 
   it("ends a truncated head window on the last record boundary", async () => {
@@ -71,6 +79,7 @@ describe("bounded JSONL windows", () => {
       lines: ["aaaa"],
       complete: false,
       endOffset: 5,
+      bytesRead: 8,
     });
   });
 
@@ -81,25 +90,38 @@ describe("bounded JSONL windows", () => {
       lines: [],
       complete: false,
       endOffset: 0,
+      bytesRead: 10,
     });
   });
 
   it("drops the partial record a tail window opens inside", async () => {
     const file = await write("aaaa\nbbbb\ncccc\n");
 
-    await expect(readJsonlTail(file, 8)).resolves.toEqual({ lines: ["cccc"], start: 10 });
+    await expect(readJsonlTail(file, 8)).resolves.toEqual({
+      lines: ["cccc"],
+      start: 10,
+      bytesRead: 8,
+    });
   });
 
   it("returns no record when the tail window opens inside one oversized record", async () => {
     const file = await write(`short\n${"y".repeat(99)}`);
 
-    await expect(readJsonlTail(file, 10)).resolves.toEqual({ lines: [], start: 105 });
+    await expect(readJsonlTail(file, 10)).resolves.toEqual({
+      lines: [],
+      start: 105,
+      bytesRead: 10,
+    });
   });
 
   it("returns no record when the tail window holds only a closing newline", async () => {
     const file = await write(`short\n${"y".repeat(99)}\n`);
 
-    await expect(readJsonlTail(file, 10)).resolves.toEqual({ lines: [], start: 106 });
+    await expect(readJsonlTail(file, 10)).resolves.toEqual({
+      lines: [],
+      start: 106,
+      bytesRead: 10,
+    });
   });
 
   it("resumes a tail exactly where the head stopped, with no record on both sides", async () => {
@@ -107,13 +129,19 @@ describe("bounded JSONL windows", () => {
     const head = await readJsonlHead(file, 12);
     const tail = await readJsonlTail(file, 10, { notBefore: head?.endOffset });
 
-    expect(head).toEqual({ lines: ["aaaa", "bbbb"], complete: false, endOffset: 10 });
+    expect(head).toEqual({
+      lines: ["aaaa", "bbbb"],
+      complete: false,
+      endOffset: 10,
+      bytesRead: 12,
+    });
     // Without the floor this window would start at byte 10 anyway; the floor is what keeps a wider
     // window from reaching back into the head and returning "bbbb" a second time.
-    expect(tail).toEqual({ lines: ["cccc", "dddd"], start: 10 });
+    expect(tail).toEqual({ lines: ["cccc", "dddd"], start: 10, bytesRead: 10 });
     await expect(readJsonlTail(file, 1_024, { notBefore: head?.endOffset })).resolves.toEqual({
       lines: ["cccc", "dddd"],
       start: 10,
+      bytesRead: 10,
     });
     expect(tail?.start).toBeLessThanOrEqual(head?.endOffset ?? -1);
   });
@@ -135,10 +163,12 @@ describe("bounded JSONL windows", () => {
     await expect(readJsonlTail(file, 8, { notBefore: 10 })).resolves.toEqual({
       lines: [],
       start: 10,
+      bytesRead: 0,
     });
     await expect(readJsonlTail(file, 8, { notBefore: 9_999 })).resolves.toEqual({
       lines: [],
       start: 10,
+      bytesRead: 0,
     });
   });
 
@@ -148,6 +178,7 @@ describe("bounded JSONL windows", () => {
     await expect(readJsonlTail(file, 1_024, { notBefore: -5 })).resolves.toEqual({
       lines: ["aaaa", "bbbb"],
       start: 0,
+      bytesRead: 10,
     });
   });
 

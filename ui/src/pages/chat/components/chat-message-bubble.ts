@@ -319,6 +319,7 @@ export function renderGroupedMessage(
       (item) => item.attachment.kind === "document" && !isSentCommentAttachment(item),
     );
   const imageRenderOptions = {
+    galleryImages: images,
     sessionKey: opts.sessionKey,
     agentId: opts.agentId,
     policyKey: opts.mediaPolicyKey,

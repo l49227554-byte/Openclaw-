@@ -32,6 +32,7 @@ export type ArtifactDownloadResolver = (params: {
 }) => Promise<{ url: string; expiresAt?: string } | null>;
 
 export type ImageRenderOptions = {
+  galleryImages?: readonly ImageBlock[];
   sessionKey?: string;
   agentId?: string;
   policyKey?: string;

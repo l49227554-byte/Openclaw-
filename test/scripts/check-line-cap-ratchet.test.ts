@@ -65,6 +65,39 @@ describe("line-cap growth ratchet", () => {
     expect(compareLineCapViolations(violations(after), violations(before)).length > 0).toBe(fails);
   });
 
+  it.each([false, true])(
+    "accepts an under-cap repair without measuring malformed history (staged=%s)",
+    (staged) => {
+      const root = fixture(2);
+      const target = path.join(root, "src/file.ts");
+      const malformed = source(2) + "export const value0 = 0;\n";
+      fs.writeFileSync(target, malformed);
+      git(root, "add", ".");
+      git(root, "commit", "-m", "malformed historical source");
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.spyOn(console, "log").mockImplementation(() => {});
+      const check = (content: string) => {
+        fs.writeFileSync(target, content);
+        if (staged) {
+          git(root, "add", ".");
+        }
+        return main(root, ["--base", "HEAD", ...(staged ? ["--staged"] : [])]);
+      };
+
+      expect(check(source(3))).toBe(0);
+      expect(errors).not.toHaveBeenCalled();
+      // Current syntax must remain valid, and over-cap sources still need measurable history.
+      expect(check(malformed + "// changed candidate")).toBe(1);
+      expect(errors).toHaveBeenLastCalledWith(
+        expect.stringContaining("Cannot measure src/file.ts:"),
+      );
+      expect(check(source(4))).toBe(1);
+      expect(errors).toHaveBeenLastCalledWith(
+        expect.stringContaining("Cannot measure src/file.ts:"),
+      );
+    },
+  );
+
   it("carries the old path's count across a rename", () => {
     expect(
       compareLineCapViolations(

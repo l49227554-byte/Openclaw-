@@ -68,13 +68,11 @@ export type PendingIncludeWrite = {
 };
 
 // Keyed-path predicates for the two write-through-eligible include shapes.
-// Moved beside captureIncludeWriteThrough; io.write-prepare.ts owns the tree
-// walk (collectIncludeOwnedPaths) and filters with these.
-export function isKeyedAgentEntryIncludePath(keyPath: readonly string[]): boolean {
+function isKeyedAgentEntryIncludePath(keyPath: readonly string[]): boolean {
   return keyPath.length === 3 && keyPath[0] === "agents" && keyPath[1] === "entries";
 }
 
-export function isKeyedProviderModelsIncludePath(keyPath: readonly string[]): boolean {
+function isKeyedProviderModelsIncludePath(keyPath: readonly string[]): boolean {
   return (
     keyPath.length === 4 &&
     keyPath[0] === "models" &&

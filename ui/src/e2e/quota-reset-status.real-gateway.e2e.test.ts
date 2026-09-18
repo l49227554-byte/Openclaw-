@@ -109,6 +109,12 @@ async function captureFinalStatus(
     .toContainEqual(
       expect.objectContaining({ profileId: fixture.profileId, type: "oauth", status: "ok" }),
     );
+  expect
+    .soft(
+      status.auth.oauth.profiles.find((profile) => profile.profileId === fixture.profileId)
+        ?.remainingMs,
+    )
+    .toBeGreaterThan(0);
 
   const dashboard = await fixture.gateway.cli(["dashboard", "--json"]);
   expect(dashboard.code, dashboard.stderr).toBe(0);

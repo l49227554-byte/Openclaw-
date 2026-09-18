@@ -103,6 +103,21 @@ function shellTestToolNames(tools: readonly { name: string }[]): string[] {
 }
 
 describe("Codex app-server dynamic tool build", () => {
+  it("forwards the inherited tool allowlist reference to host tool construction", async () => {
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    const inheritedToolAllowlistRef: string[] = [];
+    const factory = vi.fn((_options?: OpenClawCodingToolsOptionsForTest) => []);
+    setOpenClawCodingToolsFactoryForTests(factory);
+
+    await buildDynamicToolsForTest(params, workspaceDir, { inheritedToolAllowlistRef });
+
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ inheritedToolAllowlistRef }));
+    expect(factory.mock.calls[0]?.[0]?.inheritedToolAllowlistRef).toBe(inheritedToolAllowlistRef);
+  });
+
   it("forwards private yield context and acknowledgment to the lifecycle owner", async () => {
     const workspaceDir = path.join(tempDir, "workspace");
     const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);

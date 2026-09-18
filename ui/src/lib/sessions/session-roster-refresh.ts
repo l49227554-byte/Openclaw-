@@ -1,8 +1,8 @@
+import { createSessionEventRefreshCoordinator } from "@openclaw/gateway-client/model";
 import { createDeferredCore } from "../../../../src/shared/deferred.js";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { formatUiError } from "../format-error.ts";
 import { isGatewayAvailable } from "../gateway-availability.ts";
-import { createSessionEventRefreshCoordinator } from "./event-refresh-coordinator.ts";
 import {
   appendSessionResults,
   preserveCurrentSessionRow,

@@ -23,7 +23,10 @@ import {
   findTelegramHtmlEntityEnd,
 } from "./format-html.js";
 import { renderTelegramMarkdownIR } from "./format-render.js";
-import { findTelegramHtmlSafeSplitIndex } from "./format-split-index.js";
+import {
+  findTelegramHtmlSafeSplitIndex,
+  isUsableTelegramChunkLimit,
+} from "./format-split-index.js";
 import { renderTelegramMonospaceGrid } from "./text-width.js";
 
 export { escapeTelegramHtml } from "./format-html.js";
@@ -650,11 +653,12 @@ function popTelegramHtmlTag(tags: TelegramHtmlTag[], name: string): void {
 }
 
 function splitTelegramHtmlChunksRaw(html: string, limit: number): string[] {
-  // A non-finite limit makes `available` NaN below, and `appendText` would then loop forever
-  // re-slicing `remaining` at NaN without ever consuming input. Reject it here instead of
-  // coercing to a default: a caller that arrives with NaN has a bug worth surfacing.
-  if (!Number.isFinite(limit)) {
-    throw new TypeError(`Telegram HTML chunk limit must be finite (received ${limit})`);
+  // `NaN` makes `available` NaN below, and `appendText` would then loop forever re-slicing
+  // `remaining` at NaN without ever consuming input. Reject it here instead of coercing to a
+  // default: a caller that arrives with NaN has a bug worth surfacing. `Infinity` is
+  // different: it asks for no limit, and the whole-input return below answers that directly.
+  if (!isUsableTelegramChunkLimit(limit)) {
+    throw new TypeError(`Telegram HTML chunk limit must be finite or Infinity (received ${limit})`);
   }
   if (!html) {
     return [];

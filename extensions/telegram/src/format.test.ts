@@ -582,35 +582,68 @@ describe("markdownToTelegramHtml", () => {
   });
 });
 
-describe("non-finite chunk limits", () => {
+describe("unusable chunk limits", () => {
   // Regression: `Math.max(1, Math.floor(NaN))` is NaN, and every comparison against NaN is
   // false. That made the split-index search re-run its entity check forever and made
   // `appendText` re-slice `remaining` at NaN without ever consuming input, so these calls
   // hung instead of failing. A throw also keeps the delivery planner's existing degrade
   // path working. These cases terminating at all is the assertion; the suite would time out
   // rather than fail if either guard regressed.
-  const nonFiniteLimits: [string, number][] = [
+  //
+  // `Infinity` is deliberately absent: it is a legitimate "no limit" request and is covered
+  // by the suite below. `-Infinity` is here because a negative budget names no reachable cut.
+  const unusableLimits: [string, number][] = [
     ["NaN", Number.NaN],
     ["undefined", undefined as never],
-    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
   ];
 
-  it.each(nonFiniteLimits)("splitTelegramHtmlChunks rejects a %s limit", (_label, limit) => {
+  it.each(unusableLimits)("splitTelegramHtmlChunks rejects a %s limit", (_label, limit) => {
     expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(TypeError);
-    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(/must be finite/);
+    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(/must be finite or Infinity/);
   });
 
-  it.each(nonFiniteLimits)(
+  it.each(unusableLimits)(
     "findTelegramHtmlSafeSplitIndex rejects a %s maxLength",
     (_label, limit) => {
       expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(TypeError);
-      expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(/finite maxLength/);
+      expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(
+        /finite or infinite maxLength/,
+      );
     },
   );
 
   it("still chunks normally at the smallest finite limit", () => {
     expect(splitTelegramHtmlChunks("abcdef", 3)).toEqual(["abc", "def"]);
     expect(findTelegramHtmlSafeSplitIndex("abcdef", 3)).toBe(3);
+  });
+});
+
+describe("Infinity means no limit", () => {
+  // `Infinity` is how an external caller asks for no splitting at all, and it behaved that
+  // way before this branch added a non-finite guard. These cases pin the pre-existing
+  // contract: one chunk holding the input verbatim, with entities and astral characters
+  // untouched because no cut is attempted.
+  const noLimitInputs: [string, string][] = [
+    ["plain text", "hello world"],
+    ["text longer than the Telegram cap", "a".repeat(12000)],
+    ["HTML entities", "a &amp; b &lt;tag&gt; c &#8212; d ".repeat(400)],
+    ["astral characters", "hi \u{1F600}\u{1F4A9}\u{1F680} there ".repeat(500)],
+    ["entities and astral characters together", "x &amp; \u{1F600} y &lt;b&gt; ".repeat(900)],
+    ["HTML tags", "<b>bold</b> <i>it</i> <code>c</code> ".repeat(600)],
+  ];
+
+  it.each(noLimitInputs)("returns %s as a single verbatim chunk", (_label, html) => {
+    expect(splitTelegramHtmlChunks(html, Number.POSITIVE_INFINITY)).toEqual([html]);
+  });
+
+  it("keeps the empty-input contract", () => {
+    expect(splitTelegramHtmlChunks("", Number.POSITIVE_INFINITY)).toEqual([]);
+  });
+
+  it("findTelegramHtmlSafeSplitIndex reports no cut for an Infinity maxLength", () => {
+    const text = "abc &amp; \u{1F600} def";
+    expect(findTelegramHtmlSafeSplitIndex(text, Number.POSITIVE_INFINITY)).toBe(text.length);
   });
 });
 

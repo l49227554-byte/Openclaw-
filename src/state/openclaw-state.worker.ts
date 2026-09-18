@@ -18,6 +18,7 @@ import {
 } from "../gateway/managed-image-record-store.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import { countFailedDeliveryQueueEntriesInDatabase } from "../infra/delivery-queue-sqlite.kernel.js";
+import { readDeviceAuthTokensFromDatabase } from "../infra/device-auth-store.kernel.js";
 import { executePromotionCommand } from "../infra/promotions-feed.worker.js";
 import {
   readApnsRegistrationFromDatabase,
@@ -31,6 +32,7 @@ import {
   readStableSqliteFileGeneration,
   sameSqliteFileGeneration,
 } from "../infra/sqlite-file-generation.js";
+import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import {
@@ -297,6 +299,9 @@ function createSharedStateWorkerBackend(
         );
       }
       const database = open();
+      if (command.type === "deviceAuth.list") {
+        return readDeviceAuthTokensFromDatabase(database.db, command.input);
+      }
       switch (command.type) {
         case "transcripts.sessionEntries":
         case "transcripts.matches":
@@ -497,6 +502,14 @@ function createSharedStateWorkerBackend(
         }, writeOptions);
       }
       throw new Error("Unknown shared-state SQLite command");
+    },
+    assertSettled() {
+      if (nativeDatabase) {
+        assertTransactionUsable(nativeDatabase.db);
+        if (nativeDatabase.db.isOpen && nativeDatabase.db.isTransaction) {
+          throw new Error("Shared-state worker retained an unsettled transaction");
+        }
+      }
     },
     close() {
       closed = true;

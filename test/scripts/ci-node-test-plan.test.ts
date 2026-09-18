@@ -605,6 +605,37 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     ]);
   });
 
+  it("selects the core root budget guard alongside changed messaging test owners", () => {
+    const guard = "test/scripts/tsgo-core-test-shards.test.ts";
+    const changed = "src/infra/outbound/outbound-send-service.accepted-outcomes.test.ts";
+    const shards = expectDefined(createChangedNodeTestShards([changed]), "core test plan");
+    const targets = shards.flatMap((shard) =>
+      (shard.targets ?? []).concat(
+        (shard.groups ?? []).flatMap((group) => group.includePatterns ?? []),
+      ),
+    );
+    expect(targets).toContain(changed);
+    expect(targets.filter((target) => target === guard)).toEqual([guard]);
+    for (const changedPath of [
+      "src/auto-reply/reply/new.test.tsx",
+      "src/infra/outbound/new.test.ts",
+      "test/tsconfig/tsconfig.core.test.messaging.json",
+    ]) {
+      expect(resolvePolicyTestTargets([changedPath]), changedPath).toContain(guard);
+      expect(isPolicyTestOwnedPath(changedPath), changedPath).toBe(false);
+    }
+    for (const changedPath of [
+      "src/infra/outbound/message.ts",
+      "src/infra/outbound/message.test-support.ts",
+      "src/agents/new.test.tsx",
+      "ui/src/pages/new.test.ts",
+      "packages/example/new.test.tsx",
+      "extensions/example/new.test.ts",
+    ]) {
+      expect(resolvePolicyTestTargets([changedPath]), changedPath).not.toContain(guard);
+    }
+  });
+
   it("selects provisioning for extracted sources without replacing their test owners", () => {
     const provision = "test/scripts/pr-worktree-provision.test.ts";
     const manifest = "scripts/pr-lib/wrapper-components.txt";
@@ -3296,6 +3327,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createTasksVitestConfig({}),
         createToolingVitestConfig({}),
         createWizardVitestConfig({}),
+        createCommandsVitestConfig({}),
       ].flatMap(listMatchedTestFiles),
     );
     for (const file of databaseWorkerCoreTestFiles) {
@@ -3441,7 +3473,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "agentic-commands-doctor",
       "agentic-commands-doctor-auth",
       "agentic-commands-doctor-config-state",
-      "agentic-commands-doctor-device",
       "agentic-commands-doctor-gateway",
       "agentic-commands-doctor-platform",
       "agentic-commands-doctor-plugins-tools",

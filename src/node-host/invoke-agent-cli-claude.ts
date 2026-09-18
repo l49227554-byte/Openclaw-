@@ -198,7 +198,10 @@ export async function runClaudeCliNodeCommand(params: {
         // Descendants may still own this file after their root result is already visible.
         artifactCleanup = run
           .waitForExtinction()
-          .then(async () => {
+          .then(async (outcome) => {
+            if (outcome && outcome.status === "uncertain") {
+              throw new Error(`Retaining Claude artifacts: ${outcome.reason}`, { cause: outcome });
+            }
             artifactCleanupStarted = true;
             if (ownedPromptDir) {
               await fs.rm(ownedPromptDir, { recursive: true, force: true });

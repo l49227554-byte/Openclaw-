@@ -9,7 +9,9 @@ import {
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
 import { loadExecApprovals, saveExecApprovals } from "../infra/exec-approvals.js";
+import * as logger from "../logger.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
+import type { ProcessExtinctionResult } from "../process/supervisor/types.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import type { NodeHostClient } from "./client.js";
 import { decodeClaudeCliNodeRunParams } from "./invoke-agent-cli-claude-params.js";
@@ -576,6 +578,70 @@ process.stdin.on("end", () => {
     expect(promptPath).toBeTruthy();
     await expect(fs.stat(promptPath ?? "")).rejects.toThrow();
   });
+
+  it.each(["job-unavailable", "job-create-failed", "job-observation-failed"] as const)(
+    "retains prompt artifacts and command success after %s certification",
+    async (reason) => {
+      const executable = await executableScript(
+        'process.stderr.write(process.argv[process.argv.indexOf("--append-system-prompt-file") + 1]);',
+      );
+      const supervisor = getProcessSupervisor();
+      const spawn = supervisor.spawn.bind(supervisor);
+      const certification: ProcessExtinctionResult =
+        reason === "job-unavailable"
+          ? { status: "uncertain", reason }
+          : { status: "uncertain", reason, cause: new Error("Job certification unavailable") };
+      const spawnSpy = vi.spyOn(supervisor, "spawn").mockImplementation(async (input) => {
+        const run = await spawn(input);
+        return {
+          ...run,
+          waitForExtinction: async () => {
+            await Promise.all([run.wait(), run.waitForExtinction?.()]);
+            return certification;
+          },
+        };
+      });
+      const decision = createDeferred();
+      const warning = vi.spyOn(logger, "logWarn").mockImplementation((message) => {
+        if (message.includes(reason)) {
+          decision.resolve();
+        }
+      });
+      const remove = fs.rm.bind(fs);
+      const removal = vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+        try {
+          await remove(target, options);
+        } finally {
+          if (String(target).includes("openclaw-node-claude-prompt-")) {
+            decision.resolve();
+          }
+        }
+      });
+      try {
+        const result = await withEnvAsync({ OPENCLAW_SERVICE_MARKER: "openclaw" }, () =>
+          runCommand(executable, {
+            argv: ["-p"],
+            systemPrompt: "descendant-owned prompt",
+            idleTimeoutMs: 5_000,
+            timeoutMs: 5_000,
+          }),
+        );
+        expect(result).toMatchObject({ exitCode: 0, success: true });
+        const promptDir = path.dirname(result.stderr);
+        expect(path.dirname(promptDir)).toBe(path.resolve(os.tmpdir()));
+        expect(path.basename(promptDir)).toMatch(/^openclaw-node-claude-prompt-/u);
+        expect(path.basename(result.stderr)).toBe("system-prompt.md");
+        tempDirs.push(promptDir);
+        await decision.promise;
+        await expect(fs.readFile(result.stderr, "utf8")).resolves.toBe("descendant-owned prompt");
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining(reason));
+      } finally {
+        spawnSpy.mockRestore();
+        warning.mockRestore();
+        removal.mockRestore();
+      }
+    },
+  );
 
   it("joins prompt removal admitted by the process certifier before returning", async () => {
     const executable = await executableScript('process.stdout.write(\'{"type":"result"}\\n\');');

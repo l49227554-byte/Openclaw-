@@ -75,9 +75,12 @@ describe("callGatewayFromCliRuntime", () => {
   );
 
   it("preserves operator messaging and subagent read-only CLI calls", async () => {
-    await withEnvAsync({ OPENCLAW_SUBAGENT_EXEC: undefined }, async () => {
-      await callGatewayFromCliRuntime("sessions.send", {}, { key: "agent:main:main" });
-    });
+    await withEnvAsync(
+      { OPENCLAW_SUBAGENT_EXEC: undefined, OPENCLAW_SHELL: undefined },
+      async () => {
+        await callGatewayFromCliRuntime("sessions.send", {}, { key: "agent:main:main" });
+      },
+    );
     await withEnvAsync({ OPENCLAW_SUBAGENT_EXEC: "1" }, async () => {
       await callGatewayFromCliRuntime("sessions.history", {}, { key: "agent:main:main" });
     });

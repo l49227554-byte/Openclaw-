@@ -115,7 +115,7 @@ describe("operator CLI versus agent exec message admission", () => {
         args,
         root,
         ...fixture,
-        env: { OPENCLAW_SHELL: shell },
+        env: { OPENCLAW_SHELL: shell, OPENCLAW_SUBAGENT_EXEC: undefined },
       });
       if (shell === "exec") {
         expect(result, result.stderr).toMatchObject({ code: 1, signal: null });

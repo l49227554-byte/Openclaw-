@@ -330,7 +330,8 @@ describe.runIf(browserMode)("chat image loading geometry", () => {
     "anchors image actions around tiny and tall previews at %s px",
     async (viewport) => {
       const { page } = await import("vitest/browser");
-      await page.viewport(viewport, 900);
+      // The browser fixture does not scroll; keep all five previews reachable.
+      await page.viewport(viewport, 1800);
       const container = mount(Math.min(500, viewport - 32));
       vi.stubGlobal(
         "fetch",

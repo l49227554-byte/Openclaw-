@@ -52,6 +52,22 @@ export function avoidTrailingGraphemeBreak(text: string, start: number, end: num
   return cluster.index > start ? cluster.index : avoidTrailingHighSurrogateBreak(text, start, end);
 }
 
+/**
+ * Width of the leading extended grapheme cluster, for budgets that must reserve room ahead
+ * of the cut rather than retreat to a boundary after it.
+ *
+ * `avoidTrailingGraphemeBreak` deliberately never moves a cut forward, so a caller sizing a
+ * prefix against "one whole grapheme" cannot ask it for this and has to measure instead.
+ */
+export function firstGraphemeClusterLength(text: string): number {
+  if (!text) {
+    return 0;
+  }
+  // `containing(0)` is defined for any non-empty string.
+  const cluster = GRAPHEME_SEGMENTER.segment(text).containing(0);
+  return cluster ? cluster.segment.length : 0;
+}
+
 /** Slices a UTF-16 string without returning dangling surrogate halves at either edge. */
 export function sliceUtf16Safe(input: string, start: number, end?: number): string {
   const len = input.length;

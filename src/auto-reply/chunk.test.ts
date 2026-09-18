@@ -1,6 +1,12 @@
 /** Tests text chunking helpers used by auto-reply delivery. */
 
 import { describe, expect, it, vi } from "vitest";
+import {
+  buildGraphemeCutWitness,
+  FAMILY_EMOJI,
+  findGraphemeChunkViolations,
+  GRAPHEME_WITNESSES,
+} from "../../packages/markdown-core/src/chunk-text.test-support.js";
 import * as fences from "../../packages/markdown-core/src/fences.js";
 import { hasBalancedFences } from "../test-utils/chunk-test-helpers.js";
 import {
@@ -910,4 +916,34 @@ describe("resolveChunkMode", () => {
       expect(resolveChunkMode(cfg as never, provider, accountId)).toBe(expected);
     },
   );
+});
+
+describe("auto-reply chunkers keep extended grapheme clusters whole", () => {
+  const LIMIT = 24;
+
+  it.each(GRAPHEME_WITNESSES)(
+    "chunkByNewline keeps a $name whole at the long-line head cut",
+    (witness) => {
+      const text = buildGraphemeCutWitness(witness, LIMIT);
+      const chunks = chunkByNewline(text, LIMIT);
+      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
+    },
+  );
+
+  it.each(GRAPHEME_WITNESSES)(
+    "chunkMarkdownText keeps a $name whole at the hard cut",
+    (witness) => {
+      const text = buildGraphemeCutWitness(witness, LIMIT);
+      const chunks = chunkMarkdownText(text, LIMIT);
+      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
+    },
+  );
+
+  it("reserves the whole leading grapheme before folding blank lines into a chunk", () => {
+    const limit = FAMILY_EMOJI.length + 1;
+    const text = `head\n\n\n\n\n\n\n${FAMILY_EMOJI}Z`;
+    const chunks = chunkByNewline(text, limit);
+    expect(findGraphemeChunkViolations(text, chunks, limit)).toEqual([]);
+    expect(chunks.some((chunk) => chunk.includes(FAMILY_EMOJI))).toBe(true);
+  });
 });

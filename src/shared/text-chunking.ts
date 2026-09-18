@@ -1,10 +1,10 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import {
   avoidTrailingGraphemeBreak,
-  avoidTrailingHighSurrogateBreak,
+  firstGraphemeClusterLength,
 } from "@openclaw/normalization-core/utf16-slice";
 
-export { avoidTrailingHighSurrogateBreak };
+export { avoidTrailingGraphemeBreak, firstGraphemeClusterLength };
 
 const CJK_PUNCTUATION_BREAK_AFTER_RE = /[、。，．！？；：）］｝〉》」』】〕〗〙]/u;
 

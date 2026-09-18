@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   avoidTrailingGraphemeBreak,
   avoidTrailingHighSurrogateBreak,
+  firstGraphemeClusterLength,
   sliceUtf16Safe,
   truncateUtf16Safe,
   truncateWithMarker,
@@ -144,5 +145,25 @@ describe("avoidTrailingGraphemeBreak", () => {
     if (end > start) {
       expect(result).toBeGreaterThan(start);
     }
+  });
+});
+
+describe("firstGraphemeClusterLength", () => {
+  // Escape-literal for the same reason as above: these clusters are invisible in source.
+  it.each([
+    { name: "empty text", text: "", expected: 0 },
+    { name: "ascii", text: "abc", expected: 1 },
+    { name: "surrogate pair", text: "\u{1F916}b", expected: 2 },
+    {
+      name: "family ZWJ sequence",
+      text: "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}b",
+      expected: 11,
+    },
+    { name: "regional indicator flag", text: "\u{1F1FA}\u{1F1F8}\u{1F1FA}", expected: 4 },
+    { name: "skin tone modifier", text: "\u{1F44D}\u{1F3FB}!", expected: 4 },
+    { name: "base plus combining mark", text: "e\u0301x", expected: 2 },
+    { name: "Indic conjunct with vowel sign", text: "\u0915\u094D\u0937\u093Fx", expected: 4 },
+  ] as const)("$name", ({ text, expected }) => {
+    expect(firstGraphemeClusterLength(text)).toBe(expected);
   });
 });

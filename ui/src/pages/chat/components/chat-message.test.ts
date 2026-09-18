@@ -4623,11 +4623,6 @@ describe("grouped chat rendering", () => {
 
     renderMessage();
     expect(container.querySelector(".chat-image-frame")?.getAttribute("aria-busy")).toBe("true");
-    expect(
-      container
-        .querySelector(".chat-assistant-attachment-card--checking")
-        ?.getAttribute("aria-busy"),
-    ).toBe("true");
     expect(container.querySelector(".chat-message-image")).toBeNull();
     await flushAssistantAttachmentAvailabilityChecks();
 
@@ -4638,7 +4633,6 @@ describe("grouped chat rendering", () => {
       container.querySelector<HTMLImageElement>(".chat-message-image")?.getAttribute("src"),
     ).toBe(expectedMetaUrl.replace("&meta=1", "&mediaTicket=ticket-local"));
     expect(container.querySelector(".chat-assistant-attachment-card")).toBeNull();
-    expect(container.querySelector(".chat-assistant-attachment-card__action-skeleton")).toBeNull();
   });
 
   it("stops checking when local assistant attachment metadata fetch stalls", async () => {

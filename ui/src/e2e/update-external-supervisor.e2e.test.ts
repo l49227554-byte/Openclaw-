@@ -103,6 +103,50 @@ suite.define(() => {
         expect(
           await page.getByRole("button", { name: "Report update failure", exact: true }).count(),
         ).toBe(0);
+
+        const readsBeforeFailure = (await gateway.getRequests("update.runs.get")).length;
+        await gateway.deferNext("update.runs.get");
+        await gateway.emitGatewayEvent("update.run.changed", {
+          runId: run.runId,
+          updatedAtMs: run.updatedAtMs + 1,
+        });
+        await gateway.waitForRequest("update.runs.get", { after: readsBeforeFailure });
+        await gateway.rejectDeferred("update.runs.get", {
+          code: "UNAVAILABLE",
+          message: "Update status is temporarily unavailable",
+        });
+        const settings = page.locator("#config-section-update");
+        await settings
+          .getByText("Update status is temporarily unavailable", { exact: false })
+          .waitFor();
+        const checkStatus = settings.getByRole("button", { name: "Check status", exact: true });
+        await checkStatus.waitFor();
+        expect(await checkStatus.isDisabled()).toBe(false);
+        expect(
+          await settings.getByRole("button", { name: "Retry update", exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await settings
+            .getByRole("button", { name: "Report update failure", exact: true })
+            .count(),
+        ).toBe(0);
+        expect(await settings.textContent()).not.toContain("openclaw triage");
+        await checkStatus.scrollIntoViewIfNeeded();
+        await page.screenshot({
+          path: path.join(proofDir, "read-recovery.png"),
+          animations: "disabled",
+        });
+        const statusChecksBeforeRecovery = (await gateway.getRequests("update.status")).length;
+        await gateway.setMethodResponse("update.status", {
+          activeRun: null,
+          lastRun: { ...run, updatedAtMs: run.updatedAtMs + 1 },
+        });
+        await checkStatus.click();
+        await gateway.waitForRequest("update.status", { after: statusChecksBeforeRecovery });
+        await settings
+          .getByText("Update status is temporarily unavailable", { exact: false })
+          .waitFor({ state: "detached" });
+        expect(await gateway.getRequests("update.run")).toHaveLength(1);
       },
     );
   });

@@ -163,6 +163,10 @@ suite.define(() => {
         };
         app.runtime?.context.agentSelection.set("main");
       });
+      // A cold roster must not send the canonical global route back through its alias.
+      const mainRoster = { agentId: "main", includeGlobal: true };
+      timeoutStage = "defer main session roster";
+      await gateway.deferNext("sessions.list", mainRoster);
       timeoutStage = "reconnect Gateway";
       await gateway.setOnline(true);
       timeoutStage = "wait for online composer";
@@ -171,13 +175,18 @@ suite.define(() => {
           '.agent-chat__composer-underlaps[data-tone="warn"] .agent-chat__composer-status-band',
         )
         .waitFor({ state: "detached", timeout: 10_000 });
-      timeoutStage = "refresh main session roster";
-      await page.evaluate(async () => {
-        const app = document.querySelector("openclaw-app") as HTMLElement & {
-          runtime?: { context: { sessions: { refresh: (options: unknown) => Promise<void> } } };
-        };
-        await app.runtime?.context.sessions.refresh({ agentId: "main", force: true });
-      });
+      timeoutStage = "wait for transcript readiness";
+      await expect
+        .poll(() =>
+          activePane.evaluate(
+            (pane) => (pane as HTMLElement & { transcriptReady: boolean }).transcriptReady,
+          ),
+        )
+        .toBe(true);
+      timeoutStage = "wait for main session roster request";
+      await gateway.waitForRequest("sessions.list", { match: mainRoster });
+      timeoutStage = "resolve main session roster";
+      await gateway.resolveDeferred("sessions.list", sessionsResponse(true));
 
       timeoutStage = "observe main session list";
       await expect

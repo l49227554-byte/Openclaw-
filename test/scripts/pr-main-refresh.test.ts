@@ -1044,7 +1044,7 @@ printf 'caller-locale=%s\\n' "$LC_ALL"
   it.each([
     [
       "commit read",
-      'git() { if [ "${DRIFT_FAULT_ACTIVE:-}" = 1 ] && [ "$1" = cat-file ]; then return 1; fi; command git "$@"; }',
+      'pr_git() { if [ "${DRIFT_FAULT_ACTIVE:-}" = 1 ] && [ "$1" = cat-file ]; then return 1; fi; command git "$@"; }',
     ],
     [
       "scratch allocation",
@@ -1052,11 +1052,11 @@ printf 'caller-locale=%s\\n' "$LC_ALL"
     ],
     [
       "mainline diff",
-      'git() { if [ "${DRIFT_FAULT_ACTIVE:-}" = 1 ] && [ "$1" = diff ] && [[ "$3" = *"$PR_MAIN_SHA" ]]; then return 1; fi; command git "$@"; }',
+      'pr_git() { if [ "${DRIFT_FAULT_ACTIVE:-}" = 1 ] && [ "$1" = diff ] && [[ "$3" = *"$PR_MAIN_SHA" ]]; then return 1; fi; command git "$@"; }',
     ],
     [
       "prepared diff",
-      'git() { if [ "${DRIFT_FAULT_ACTIVE:-}" = 1 ] && [ "$1" = diff ] && [[ "$3" = *"$PREP_HEAD_SHA" ]]; then return 1; fi; command git "$@"; }',
+      'pr_git() { if [ "${DRIFT_FAULT_ACTIVE:-}" = 1 ] && [ "$1" = diff ] && [[ "$3" = *"$PREP_HEAD_SHA" ]]; then return 1; fi; command git "$@"; }',
     ],
     [
       "overlap read",
@@ -1173,16 +1173,19 @@ fi`,
     f.configure({ viewerRateLimited: true });
     const result = f.run("merge-run");
     expect(result.status, result.stdout + result.stderr).toBe(1);
-    expect(result.stderr).toContain("GitHub API preflight rate limited");
+    expect(result.stderr).toContain("GitHub API request failed (resource=graphql)");
+    expect(result.stderr).toContain("graphql 0/5000 reset=2030-01-01T00:00:00Z");
+    expect(result.stderr).toContain("core 4999/5000 reset=2030-01-01T01:00:00Z");
     expect(f.events().some((e) => e.kind === "main-fetch")).toBe(false);
     const ghCalls = f.events().filter((e) => e.kind === "gh");
-    expect(ghCalls.at(-1)?.args).toEqual([
+    expect(ghCalls.at(-2)?.args).toEqual([
       "api",
       "graphql",
       "-f",
       "query=query { viewer { login } }",
       "--include",
     ]);
+    expect(ghCalls.at(-1)?.args).toEqual(["api", "rate_limit"]);
     expect(ghCalls.some((e) => e.args?.includes("merge"))).toBe(false);
     expect(f.git(f.origin, "rev-parse", "refs/heads/main")).toBe(f.main);
     expect(f.git(f.canonical, "for-each-ref", "--format=%(refname)", "refs/openclaw")).toBe("");

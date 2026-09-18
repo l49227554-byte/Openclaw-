@@ -7,9 +7,11 @@ const enMeetings = {
     docs: "Set up meeting transcripts",
     inProgress: "In progress",
     activeNotes:
-      "Capture is in progress. Follow the Transcript tab for speech as it is saved. Notes appear here when available.",
+      "The first summary appears after about 5 minutes of capture. Follow the Transcript tab for speech as it is saved.",
     liveCapture: "Live capture",
     liveHint: "Updates automatically every 3 seconds.",
+    liveSummaryHint:
+      "Summary so far · Updates about every 5 minutes when there is new speech. Final notes are saved when capture ends.",
     liveRetrying: "Updates are delayed. Retrying automatically.",
     waitingForSpeech: "Waiting for speech…",
     noSpeech: "No speech captured",
@@ -18,7 +20,7 @@ const enMeetings = {
     loadingMeetings: "Loading meetings…",
     loadingSummary: "Loading summary…",
     loadingTranscript: "Loading transcript…",
-    summaryAfterMeeting: "A summary is saved automatically when the meeting ends.",
+    summaryPending: "Summary updates about every 5 minutes as new speech is captured.",
     summaryUnavailable: "No saved summary preview is available.",
     noResults: "No meetings match your search",
   },

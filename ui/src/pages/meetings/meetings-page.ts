@@ -369,8 +369,13 @@ class MeetingsPage extends OpenClawLightDomElement {
       return;
     }
     const session = this.summary?.session ?? this.readerPages.at(-1)?.session;
-    // Keep looking for notes after capture stops: summary generation finishes later.
-    const interval = session?.active || !session?.hasSummary ? 3_000 : 15_000;
+    const summary = this.summary?.summary;
+    const interimSummary =
+      session?.stoppedAt &&
+      summary?.generatedAt &&
+      Date.parse(summary.generatedAt) < Date.parse(session.stoppedAt);
+    // Interim notes remain visible while the final summary is being generated.
+    const interval = session?.active || !summary || interimSummary ? 3_000 : 15_000;
     if (!foreground && this.now - this.lastReaderRefresh < interval) {
       return;
     }

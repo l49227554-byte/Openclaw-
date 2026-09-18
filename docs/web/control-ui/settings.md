@@ -529,11 +529,18 @@ automatic reads and catch up when visible again. Completed meetings refresh less
 frequently once notes are available; a meeting without notes keeps checking for
 the stored summary after capture stops.
 
+Active captures generate a summary about every five minutes when new speech has
+been saved, using the owning agent's utility model. Summary jobs do not overlap;
+quiet periods keep the existing notes. The configured primary model and then
+text heuristics provide fallback notes when needed. **Summary so far** marks
+interim notes and shows when they were generated. Capture continues during
+summary generation, and stopping the meeting saves a fresh final summary.
+
 **Search within this transcript** searches the full stored transcript in bounded
 server pages. **Load more** continues through utterances or matches; only the
 latest five loaded pages stay in the browser's reading window. **Read from
 beginning** returns to the first page. **Summary** renders the stored Markdown
-notes, including their speaker-labeled transcript, and labels model-generated or
+notes with the transcript section kept in the separate **Transcript** tab, and labels model-generated or
 heuristic provenance when available. Opening this tab does not run a summary job.
 Missing summaries and empty transcripts have distinct empty states.
 Saved summaries load independently of speech pages. If a transcript page exceeds

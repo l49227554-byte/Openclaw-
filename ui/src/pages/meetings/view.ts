@@ -9,6 +9,7 @@ import { html, nothing } from "lit";
 import { live } from "lit/directives/live.js";
 import { repeat } from "lit/directives/repeat.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import MarkdownIt from "markdown-it";
 import { pathForRoute } from "../../app-route-paths.ts";
 import { renderHubTabs } from "../../components/hub-tabs.ts";
 import { icons } from "../../components/icons.ts";
@@ -30,6 +31,40 @@ import {
 
 registerTranscriptsEnglish();
 registerMeetingsEnglish();
+
+const summaryParser = new MarkdownIt("commonmark");
+
+function summaryNotesMarkdown(markdown: string): string {
+  const lines = markdown.split(/\r\n?|\n/);
+  const tokens = summaryParser.parse(markdown, {});
+  const notes: string[] = [];
+  let keptFrom = 0;
+  let transcript = false;
+  for (const [index, token] of tokens.entries()) {
+    if (
+      token.type !== "heading_open" ||
+      token.level !== 0 ||
+      (token.tag !== "h1" && token.tag !== "h2") ||
+      !token.map
+    ) {
+      continue;
+    }
+    const line = token.map[0];
+    if (transcript) {
+      keptFrom = line;
+      transcript = false;
+    }
+    // Preserve historical Markdown-only notes and fenced heading examples.
+    if (token.tag === "h2" && tokens[index + 1]?.content.trim() === "Transcript") {
+      notes.push(lines.slice(keptFrom, line).join("\n"));
+      transcript = true;
+    }
+  }
+  if (!transcript) {
+    notes.push(lines.slice(keptFrom).join("\n"));
+  }
+  return notes.join("\n");
+}
 
 export type TranscriptReadState = {
   summary: TranscriptsGetResult | null;
@@ -202,7 +237,7 @@ function renderMeetingRow(entry: TranscriptSessionSummary, props: TranscriptsVie
           entry.utteranceCount === 0
             ? t(entry.active ? "meetings.waitingForSpeech" : "meetings.noSpeech")
             : entry.overview ||
-              t(entry.active ? "meetings.summaryAfterMeeting" : "meetings.summaryUnavailable")
+              t(entry.active ? "meetings.summaryPending" : "meetings.summaryUnavailable")
         }</span
       >
     </a>
@@ -284,15 +319,18 @@ function renderSummary(page: TranscriptsGetResult) {
   const summary = page.summary;
   const titleLine = `# ${page.session.title || page.session.sessionId}\n`;
   // The reader header already renders the stored summary's leading title.
-  const markdown = summary
-    ? summary.markdown.startsWith(titleLine)
-      ? summary.markdown.slice(titleLine.length)
-      : summary.markdown
-    : "";
+  const markdown = summaryNotesMarkdown(
+    summary
+      ? summary.markdown.startsWith(titleLine)
+        ? summary.markdown.slice(titleLine.length)
+        : summary.markdown
+      : "",
+  );
   return html`<section class="transcripts-summary">
     ${
       summary
-        ? html`<p class="transcripts-caption">
+        ? html`${page.session.active ? html`<p class="transcripts-caption" role="status">${t("meetings.liveSummaryHint")}</p>` : nothing}
+            <p class="transcripts-caption">
               ${summary.source ? html`${t(summary.source === "model" ? "transcripts.modelNotes" : "transcripts.heuristicNotes")}${summary.model ? ` · ${summary.model}` : nothing} · ` : nothing}
               ${t("transcripts.generatedAt", { time: transcriptTime(summary.generatedAt) })}
             </p>

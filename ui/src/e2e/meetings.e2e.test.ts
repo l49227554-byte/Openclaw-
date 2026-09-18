@@ -43,7 +43,7 @@ const detail: TranscriptsGetResult = {
 };
 
 suite.define(() => {
-  it("opens Summary by default and follows live speech and delayed notes across tabs", async () => {
+  it("opens Summary by default and follows speech, interim notes, and final notes across tabs", async () => {
     await suite.withPage(
       { viewport: { width: 1440, height: 1000 }, timezoneId: "UTC", colorScheme: "light" },
       async ({ page }) => {
@@ -159,18 +159,56 @@ suite.define(() => {
         await reader.locator(".transcripts-summary").waitFor();
         expect(new URL(page.url()).searchParams.get("tab")).toBe("summary");
         expect(await reader.getByText("Live capture", { exact: true }).isVisible()).toBe(true);
+        const interim: TranscriptsGetResult = {
+          ...speech,
+          session: {
+            ...speech.session,
+            hasSummary: true,
+            summarySource: "model",
+            overview: "The team is discussing a simpler setup and keyboard navigation.",
+          },
+          summary: {
+            generatedAt: "2026-09-18T16:05:00Z",
+            overview: "The team is discussing a simpler setup and keyboard navigation.",
+            decisions: [],
+            actionItems: ["Sam will test keyboard navigation."],
+            risks: [],
+            participants: ["Ada", "Sam"],
+            utteranceCount: 2,
+            source: "model",
+            markdown:
+              "# Product huddle\n\n## Overview\nThe team is discussing a simpler setup and keyboard navigation.\n\n## Action items\n- Sam will test keyboard navigation.\n\n## Transcript\n- Ada: Let's make the setup easier to follow.",
+          },
+        };
+        await gateway.setMethodResponse("transcripts.get", interim);
+        await gateway.setMethodResponse("transcripts.list", {
+          sessions: [interim.session, meeting],
+          nextCursor: null,
+        });
+        await reader.getByText(interim.summary!.overview, { exact: true }).waitFor();
+        await expect.poll(() => row.textContent()).toContain(interim.summary!.overview);
+        expect(await reader.getByText(/Summary so far/).isVisible()).toBe(true);
+        expect(await reader.getByRole("heading", { name: "Transcript", exact: true }).count()).toBe(
+          0,
+        );
+        expect(await reader.getByText(speech.utterances![0]!.text, { exact: true }).count()).toBe(
+          0,
+        );
+        expect(await view.getByRole("tab", { name: "Summary" }).getAttribute("aria-selected")).toBe(
+          "true",
+        );
         await page.screenshot({
           path: path.join(suite.artifactDir, "meetings-live-summary.png"),
           animations: "disabled",
         });
         const completed: TranscriptsGetResult = {
-          ...speech,
+          ...interim,
           session: {
-            ...speech.session,
+            ...interim.session,
             active: false,
             activeSubscription: false,
-            stoppedAt: "2026-09-18T16:05:00Z",
-            updatedAt: "2026-09-18T16:05:00Z",
+            stoppedAt: "2026-09-18T16:06:00Z",
+            updatedAt: "2026-09-18T16:06:00Z",
           },
         };
         await gateway.setMethodResponse("transcripts.get", completed);
@@ -179,6 +217,9 @@ suite.define(() => {
           nextCursor: null,
         });
         await expect.poll(() => reader.getByText("Live capture", { exact: true }).count()).toBe(0);
+        expect(await reader.getByText(interim.summary!.overview, { exact: true }).isVisible()).toBe(
+          true,
+        );
         expect(await view.getByRole("tab", { name: "Summary" }).getAttribute("aria-selected")).toBe(
           "true",
         );
@@ -191,18 +232,18 @@ suite.define(() => {
           session: {
             ...completed.session,
             hasSummary: true,
-            summarySource: "heuristic",
+            summarySource: "model",
             overview: "The team agreed to simplify setup and verify keyboard navigation.",
           },
           summary: {
-            generatedAt: "2026-09-18T16:05:04Z",
+            generatedAt: "2026-09-18T16:06:04Z",
             overview: "The team agreed to simplify setup and verify keyboard navigation.",
             decisions: ["Simplify setup."],
             actionItems: ["Sam will test keyboard navigation."],
             risks: [],
             participants: ["Ada", "Sam"],
             utteranceCount: 2,
-            source: "heuristic",
+            source: "model",
             markdown:
               "# Product huddle\n\n## Overview\nThe team agreed to simplify setup and verify keyboard navigation.\n\n## Action items\n- Sam will test keyboard navigation.",
           },
@@ -287,11 +328,11 @@ suite.define(() => {
           "true",
         );
         expect(await view.getByRole("heading", { name: "Transcript", exact: true }).count()).toBe(
-          1,
+          0,
         );
         expect(
-          await view.getByText("Ada: Let's keep the setup simple.", { exact: true }).isVisible(),
-        ).toBe(true);
+          await view.getByText("Ada: Let's keep the setup simple.", { exact: true }).count(),
+        ).toBe(0);
         expect(
           (await gateway.getRequests("transcripts.get")).map((request) => request.params),
         ).toEqual(

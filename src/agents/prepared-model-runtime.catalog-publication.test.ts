@@ -182,7 +182,7 @@ describe("catalog publication session rows", () => {
       expect(owner.readFullModelCatalog?.()).toBe(completed);
       expect(loadModelCatalog).not.toHaveBeenCalled();
       expect(mocks.runPreparedModelCatalogWorker).not.toHaveBeenCalled();
-      expect(changes).toEqual([false, false]);
+      expect(changes).toEqual([false]);
     } finally {
       unsubscribe();
     }

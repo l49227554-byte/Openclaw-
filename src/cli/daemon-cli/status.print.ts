@@ -156,7 +156,12 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     const recommendation = managerUnavailable
       ? `Run "${formatCliCommand("openclaw doctor")}" for guidance about this recorded service unit.`
       : (installBlock ??
-        `Recommendation: run "${formatCliCommand("openclaw doctor")}" interactively for guided checks, or reinstall with "${reinstallCommand}".`);
+        (service.configAudit.issues.some((issue) => issue.definitionKey) &&
+        !service.configAudit.issues.some(
+          (issue) => issue.rewriteBlocked || issue.level === "aggressive",
+        )
+          ? `Recommendation: run "${formatCliCommand("openclaw doctor --fix")}" to reconcile the managed service definition.`
+          : `Recommendation: run "${formatCliCommand("openclaw doctor")}" interactively for guided checks, or reinstall with "${reinstallCommand}".`));
     defaultRuntime.error(warnText(recommendation));
   }
 
@@ -248,12 +253,7 @@ export function printDaemonStatus(status: DaemonStatus, opts: { json: boolean; d
     spacer();
   }
 
-  printDaemonStatusVersions(
-    status,
-    { label, infoText, warnText },
-    installBlock ??
-      `Compare the service entrypoint with \`which openclaw\`, then reinstall the service from the install you want with \`${reinstallCommand}\`.`,
-  );
+  printDaemonStatusVersions(status, { label, infoText, warnText });
 
   const runtimeLine = formatRuntimeStatus(
     service.inspectionReason ? { ...service.runtime, detail: undefined } : service.runtime,

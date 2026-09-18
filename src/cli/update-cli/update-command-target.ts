@@ -35,12 +35,14 @@ import { runCommandWithTimeout } from "../../process/exec.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { VERSION } from "../../version.js";
+import { CLI_NAME } from "../cli-name.js";
 import {
   DEFAULT_PACKAGE_NAME,
   normalizeTag,
   readPackageName,
   readPackageVersion,
   resolveGlobalManager,
+  resolveNodeRunner,
   resolveTargetVersion,
   UpdatePreMutationError,
   type UpdateCommandOptions,
@@ -60,11 +62,54 @@ import {
 } from "./update-command-run.js";
 import {
   resolveManagedServicePackageUpdatePlan,
-  formatManagedServicePackageUpdatePlan,
   type ManagedServiceRootRedirect,
 } from "./update-command-service-plan.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
 import { reportPreMutationUpdateResult } from "./update-command-terminal.js";
+
+/** Describe the selected plan without changing roots, runtime, or service authority. */
+function formatManagedServicePackageUpdatePlan(params: {
+  rootRedirect: ManagedServiceRootRedirect | null;
+  nodeRunner?: string;
+  installationDrift?: string;
+}): Array<{ level: "muted" | "warn"; message: string }> {
+  if (params.installationDrift) {
+    return [{ level: "warn", message: params.installationDrift }];
+  }
+  const { rootRedirect, nodeRunner } = params;
+  if (rootRedirect) {
+    return [
+      {
+        level: "muted",
+        message: `Targeting managed gateway service package root: ${rootRedirect.root}`,
+      },
+      {
+        level: "warn",
+        message: `Shell OpenClaw root differs from the managed gateway service root: ${rootRedirect.previousRoot}`,
+      },
+      {
+        level: "muted",
+        message: `After the update, make sure \`${CLI_NAME}\` on PATH resolves to the managed service root or reinstall the gateway service from the shell install you want to use.`,
+      },
+      ...(nodeRunner
+        ? [{ level: "muted" as const, message: `Managed gateway service Node: ${nodeRunner}` }]
+        : []),
+    ];
+  }
+  return nodeRunner
+    ? [
+        {
+          level: "warn",
+          message: `Current Node (${resolveNodeRunner()}) differs from the managed gateway service Node (${nodeRunner}).`,
+        },
+        {
+          level: "muted",
+          message:
+            "Using the managed service Node for this update so the gateway can start after the upgrade.",
+        },
+      ]
+    : [];
+}
 
 export async function resolveUpdateCommandTarget(
   opts: UpdateCommandOptions,
@@ -182,6 +227,7 @@ export async function resolveUpdateCommandTarget(
       let packageTargetSchemaVersions: OpenClawSchemaVersions | undefined;
       let packageRuntimeTarget: { version: string; nodeEngine: string | null } | undefined;
       let managedServiceRootRedirect: ManagedServiceRootRedirect | null = null;
+      let managedServiceRoot = prepared.servicePlan?.serviceRoot;
       // The service's Node can differ even when its package root matches the shell.
       let managedServiceNodeRunner: string | undefined;
       let packageUpdateNodeRunner: string | undefined;
@@ -192,6 +238,7 @@ export async function resolveUpdateCommandTarget(
           (await resolveManagedServicePackageUpdatePlan({ root, pkgOwnership }));
         await pkgOwnership.assertUnowned(servicePlan.rootRedirect?.root ?? root);
         managedServiceRootRedirect = servicePlan.rootRedirect;
+        managedServiceRoot = servicePlan.serviceRoot;
         managedServiceNodeRunner = servicePlan.nodeRunner;
         if (managedServiceRootRedirect) {
           root = managedServiceRootRedirect.root;
@@ -207,7 +254,7 @@ export async function resolveUpdateCommandTarget(
       // Read-only native/root admission is complete. Own interruption settlement
       // before metadata can block, but defer mutable housekeeping until target admission.
       if (updateInstallKind === "package" && !opts.dryRun) {
-        assertUpdatePackageActivationAdmission(root);
+        assertUpdatePackageActivationAdmission(root, { serviceRoot: managedServiceRoot });
         const fence = await executor.enter(root, { preflight: true });
         if (opts.run) {
           opts.run.executorFence = fence;
@@ -215,6 +262,7 @@ export async function resolveUpdateCommandTarget(
         fence.assertCurrent();
         assertUpdatePackageActivationAdmission(
           captureUpdateCommandExecutorAuthority(fence).installKey,
+          { serviceRoot: managedServiceRoot },
         );
       }
 
@@ -444,6 +492,7 @@ export async function resolveUpdateCommandTarget(
         packageTargetSchemaVersions,
         packageRuntimeTarget,
         managedServiceRootRedirect,
+        ...(managedServiceRoot ? { managedServiceRoot } : {}),
         managedServiceNodeRunner,
         packageUpdateNodeRunner,
         devTarget,

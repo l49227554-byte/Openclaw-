@@ -1,4 +1,5 @@
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
+import { auditGatewayServiceConfig } from "../../daemon/service-audit.js";
 import { resolveManagedGatewayServiceProcessEnv } from "../../daemon/service-types.js";
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -27,6 +28,7 @@ export async function prepareUpdateRestart(
 ) {
   let restartScriptPath: string | null = null;
   let refreshGatewayServiceEnv = false;
+  let serviceDefinitionDrift = false;
   let gatewayServiceEnv: NodeJS.ProcessEnv | undefined;
   let gatewayServiceInstallEnv: NodeJS.ProcessEnv | null | undefined;
   let serviceManagerUid = params.preManagedServiceStop?.serviceManagerUid;
@@ -102,6 +104,13 @@ export async function prepareUpdateRestart(
         }
         refreshGatewayServiceEnv =
           serviceUpdateVerdict.kind === "owned" && serviceUpdateVerdict.refreshDefinition;
+        if (refreshGatewayServiceEnv && params.coreAlreadyCurrent) {
+          const audit = await auditGatewayServiceConfig({
+            env: serviceState.env,
+            command: serviceState.command,
+          });
+          serviceDefinitionDrift = audit.issues.some((issue) => issue.definitionKey !== undefined);
+        }
         if (serviceUpdateVerdict.kind === "owned" && gatewayServiceInstallEnv === null) {
           refreshGatewayServiceEnv = false;
           serviceUpdateVerdict = { ...serviceUpdateVerdict, refreshDefinition: false };
@@ -112,7 +121,10 @@ export async function prepareUpdateRestart(
         serviceEnv: gatewayServiceEnv,
         serviceCommand:
           serviceUpdateVerdict.kind === "unresolved" ||
-          (serviceUpdateVerdict.kind === "owned" && !serviceUpdateVerdict.refreshDefinition)
+          (serviceUpdateVerdict.kind === "owned" &&
+            (!serviceUpdateVerdict.refreshDefinition ||
+              (serviceUpdateVerdict.requiresInstallRootRefresh &&
+                restartConfigSnapshot.config.gateway?.port === undefined)))
             ? serviceState.command
             : undefined,
       });
@@ -149,6 +161,7 @@ export async function prepareUpdateRestart(
   return {
     restartScriptPath,
     refreshGatewayServiceEnv,
+    serviceDefinitionDrift,
     gatewayServiceEnv,
     gatewayServiceInstallEnv,
     serviceUpdateVerdict,

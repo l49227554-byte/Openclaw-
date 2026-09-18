@@ -18,6 +18,22 @@ loaded, or `openclaw gateway install --force` from the intended installation to
 replace its service definition. Externally managed services still belong to
 their supervisor.
 
+Doctor also compares the service's package path and version with the active CLI,
+without requiring a Gateway connection. `openclaw doctor --fix` reconciles a
+verified, writable managed service that still points at another packaged install.
+It preserves the service's profile and an explicit service port when no port is
+configured. Source checkouts, deployment-owned overrides, and unavailable native
+inspection do not grant automatic installation repair authority; Doctor reports
+the mismatch and the next repair action.
+
+`openclaw doctor --fix` also repairs recognized service-definition drift, such as
+an older systemd unit missing `KillMode=mixed` or a Scheduled Task missing restart
+retries. It backs up the definition before using the normal installer and reports
+the changed keys and backup paths. Installer-supported environment, heap, and
+command settings survive the rewrite. Unknown edits and operator-owned drop-ins
+that conflict with the required settings stay unchanged; Doctor names the key
+and explains why the installer cannot repair it automatically.
+
 For legacy services or conflicting systemd scopes, run `openclaw doctor`
 interactively to review the findings and confirm supported cleanup. Cleanup
 reports what it removed or skipped; it does not guarantee a replacement service

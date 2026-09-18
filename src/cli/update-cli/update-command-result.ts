@@ -17,7 +17,10 @@ import {
   writeControlPlaneUpdateRestartSentinel,
   type ControlPlaneUpdateSentinelMetaFile,
 } from "../../infra/update-control-plane-sentinel.js";
-import type { UpdateFailureFact } from "../../infra/update-failure-facts.js";
+import {
+  createUpdateFailureFact,
+  type UpdateFailureFact,
+} from "../../infra/update-failure-facts.js";
 import { FreeBsdPkgOwnershipError } from "../../infra/update-freebsd-pkg-ownership.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { UpdateRunAdmissionBusyError } from "../../infra/update-run-admission.js";
@@ -27,15 +30,85 @@ import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import type { UpdateRecoveryStep } from "../../shared/update-outcome.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
+import { formatCliCommand } from "../command-format.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { printResult } from "./progress.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import type { UpdateConfigSnapshot } from "./update-command-config-snapshot.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import type { OwnedManagedUpdateContext } from "./update-command-managed-context.js";
-import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
+import type {
+  ManagedGatewayUpdateVerdict,
+  PreManagedServiceStop,
+  UpdateRestartParams,
+} from "./update-command-service-context-types.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import { resolveUpdateResultNextAction } from "./update-recovery-guidance.js";
+
+export function collectServiceInspectionFailureFacts(
+  verdict: ManagedGatewayUpdateVerdict | undefined,
+): UpdateFailureFact[] | undefined {
+  return verdict?.kind === "unavailable"
+    ? [
+        createUpdateFailureFact({
+          check: "managed-service",
+          code: verdict.inspectionReason ?? "service-inspection-unavailable",
+          message: verdict.message,
+        }),
+      ]
+    : undefined;
+}
+
+export function recordServiceReconciliationWarning(
+  result: UpdateRunResult,
+  env: NodeJS.ProcessEnv,
+  message: string,
+): void {
+  defaultRuntime.error(message);
+  result.steps.push({
+    name: "managed-service-reconciliation",
+    command: formatCliCommand("openclaw gateway install --force", env),
+    cwd: result.root ?? "",
+    durationMs: 0,
+    exitCode: 0,
+    advisory: { kind: "recoverable-maintenance", message },
+  });
+}
+
+export function prepareUpdateServiceResult(
+  params: Pick<
+    UpdateRestartParams,
+    "result" | "root" | "preManagedServiceStop" | "shouldRestart"
+  > & {
+    coreAlreadyCurrent?: boolean;
+  },
+): boolean {
+  const verdict = params.preManagedServiceStop?.serviceUpdateVerdict;
+  const serviceEnv = params.preManagedServiceStop?.serviceEnv ?? process.env;
+  if (verdict?.kind === "unavailable") {
+    params.result.steps.push({
+      name: "managed-service",
+      command: formatCliCommand("openclaw gateway status --deep", serviceEnv),
+      cwd: params.root,
+      durationMs: 0,
+      exitCode: 0,
+      advisory: { kind: "recoverable-maintenance", message: verdict.message },
+      failureFacts: collectServiceInspectionFailureFacts(verdict),
+    });
+  }
+  const shouldRestart =
+    params.shouldRestart &&
+    (!params.coreAlreadyCurrent || params.preManagedServiceStop?.running === true);
+  if (verdict?.kind === "owned" && verdict.requiresInstallRootRefresh && !shouldRestart) {
+    recordServiceReconciliationWarning(
+      params.result,
+      serviceEnv,
+      `Gateway service still targets ${verdict.root}; the active installation is ${params.result.root ?? params.root}. ` +
+        `Service reconciliation was skipped because restart is disabled or the service is stopped. Run \`${formatCliCommand("openclaw doctor --fix", serviceEnv)}\` to apply the installation change.`,
+    );
+  }
+  return shouldRestart;
+}
 
 /** Terminal worker diagnostics do not participate in recovery decisions. */
 export function formatUpdateFinalizationError(error: unknown): string {

@@ -1,7 +1,11 @@
+import fs from "node:fs/promises";
 import os from "node:os";
-import { vi } from "vitest";
+import path from "node:path";
+import { expect, it, vi, type Mock } from "vitest";
 import { GATEWAY_SERVICE_SELECTOR_ENV_KEYS } from "../../daemon/constants.js";
 import type { GatewayServiceCommandConfig } from "../../daemon/service.js";
+import * as systemdExec from "../../daemon/systemd-exec.js";
+import { buildSystemdUnit } from "../../daemon/systemd-unit.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { captureEnv } from "../../test-utils/env.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
@@ -156,3 +160,152 @@ export const successfulPluginUpdate: PostCorePluginUpdateResult = {
   integrityDrifts: [],
   warnings: [],
 };
+
+export function expectUpdateFailure(
+  promise: Promise<unknown>,
+  reason: string,
+  details: object = {},
+) {
+  return expect(promise).rejects.toMatchObject({
+    name: "UpdateCommandFailure",
+    exitCode: 1,
+    result: { status: "error", reason },
+    ...details,
+  });
+}
+
+export function registerServiceInstallationConvergenceTests(
+  makeHome: () => string,
+  mocks: {
+    revalidateService: Mock<
+      typeof import("./update-command-service.js").revalidateManagedGatewayServiceAfterUpdate
+    >;
+    readServiceState: Mock;
+    stopService: Mock<
+      typeof import("./update-command-service.js").maybeStopManagedServiceBeforeMutableUpdate
+    >;
+    restartService: Mock<typeof import("./update-command-service.js").maybeRestartService>;
+    printResult: Mock;
+  },
+) {
+  it.each([
+    { drift: false, restart: true, pending: false },
+    { drift: true, restart: true, pending: false },
+    { drift: true, restart: false, pending: false },
+    { drift: true, restart: true, pending: true },
+    { drift: "definition", restart: true, pending: false },
+  ])(
+    "reconciles an already-current service installation (drift=$drift, restart=$restart, pending=$pending)",
+    async ({ drift, restart, pending }) => {
+      const identity = createManagedServiceIdentityFixture(makeHome());
+      try {
+        const definitionDrift = drift === "definition";
+        const serviceUpdateVerdict = {
+          kind: "owned" as const,
+          root: path.join(identity.home, drift === true ? "prefix-a" : "prefix-b"),
+          fingerprint: "installed-command",
+          refreshDefinition: true,
+          requiresInstallRootRefresh: drift === true,
+        };
+        mocks.revalidateService.mockResolvedValue(serviceUpdateVerdict);
+        mocks.readServiceState.mockResolvedValue(managedServiceState(process.env));
+        if (definitionDrift) {
+          vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+          vi.spyOn(systemdExec, "execSystemctlUser").mockResolvedValue({
+            code: 1,
+            stdout: "",
+            stderr: "fixture uses the on-disk unit",
+            termination: "exit",
+          });
+          const sourcePath = path.join(
+            identity.home,
+            ".config/systemd/user/openclaw-gateway.service",
+          );
+          const command = {
+            programArguments: [path.join(identity.home, "prefix-b/openclaw"), "gateway"],
+            environment: { PATH: "/usr/bin:/bin" },
+            sourcePath,
+            definitionPaths: [sourcePath],
+          };
+          await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+          await fs.writeFile(sourcePath, buildSystemdUnit(command).replace("KillMode=mixed\n", ""));
+          mocks.readServiceState.mockResolvedValue(managedServiceState(process.env, command));
+        }
+        let originalRunning = true;
+        mocks.stopService.mockImplementationOnce(async () => {
+          originalRunning = false;
+          return {
+            stopped: true,
+            inspected: true,
+            runtimeInspected: true,
+            running: true,
+            serviceEnv: process.env,
+            serviceUpdateVerdict,
+          };
+        });
+        mocks.restartService.mockImplementationOnce(async () => {
+          expect(originalRunning).toBe(true);
+          return pending ? "reconciliation-pending" : "ok";
+        });
+        await finishSuccessfulPackageSwitch(
+          { packageRoot: path.join(identity.home, "prefix-b"), restartEnvironment: process.env },
+          {
+            coreAlreadyCurrent: true,
+            shouldRestart: restart,
+            mutationStarted: false,
+            ...(definitionDrift
+              ? {
+                  result: {
+                    status: "skipped",
+                    reason: "already-current",
+                    mode: "npm",
+                    root: serviceUpdateVerdict.root,
+                    steps: [],
+                    durationMs: 0,
+                  },
+                }
+              : {}),
+            preManagedServiceStop: {
+              stopped: false,
+              inspected: true,
+              runtimeInspected: true,
+              running: true,
+              serviceEnv: process.env,
+              serviceUpdateVerdict,
+            },
+          },
+        );
+        expect(mocks.restartService).toHaveBeenCalledTimes(drift && restart ? 1 : 0);
+        expect(mocks.stopService).not.toHaveBeenCalled();
+        if (pending || definitionDrift) {
+          expect(mocks.printResult).toHaveBeenCalledWith(
+            expect.objectContaining({ status: "ok" }),
+            expect.anything(),
+            expect.anything(),
+          );
+        }
+        if (drift && restart) {
+          expect(mocks.restartService).toHaveBeenCalledWith(
+            expect.objectContaining({ refreshServiceEnv: true, shouldRestart: true }),
+          );
+        } else if (drift) {
+          expect(mocks.printResult).toHaveBeenCalledWith(
+            expect.objectContaining({
+              steps: expect.arrayContaining([
+                expect.objectContaining({
+                  advisory: expect.objectContaining({
+                    message: expect.stringContaining("Service reconciliation was skipped"),
+                  }),
+                }),
+              ]),
+            }),
+            expect.anything(),
+            expect.anything(),
+          );
+        }
+      } finally {
+        identity.restore();
+      }
+    },
+  );
+}

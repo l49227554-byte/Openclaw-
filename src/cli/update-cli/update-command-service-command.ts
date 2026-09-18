@@ -1,6 +1,18 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { resolveGatewayInstallEntrypoint } from "../../daemon/gateway-entrypoint.js";
+import {
+  captureGatewayServiceDefinitionBackup,
+  type GatewayServiceDefinitionBackup,
+} from "../../daemon/service-definition-backup.js";
+import { withGatewayServiceOperationLock } from "../../daemon/service-operation-lock.js";
+import {
+  GatewayServiceDefinitionPublicationSchema,
+  type GatewayServiceDefinitionGuard,
+  type GatewayServiceDefinitionPublication,
+} from "../../daemon/service-stage.js";
 import { GATEWAY_UPDATE_EXECUTOR_CONTRACT } from "../../daemon/service-update-authority.js";
+import { resolveGatewayService } from "../../daemon/service.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
@@ -48,6 +60,7 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
   timeoutMs: number;
   nodeRunner?: string;
   signal?: AbortSignal;
+  requireDefinitionGuard?: boolean;
 }): Promise<boolean> {
   params.signal?.throwIfAborted();
   params.executor.assertCurrent();
@@ -97,26 +110,133 @@ export async function isUpdatedInstallGatewayExecutorSupported(params: {
     !check.outputLimitExceeded &&
     !check.outputErrorStream &&
     capability?.updateExecutor === GATEWAY_UPDATE_EXECUTOR_CONTRACT &&
-    capability.targetRootBinding === true
+    capability.targetRootBinding === true &&
+    (!params.requireDefinitionGuard || capability.definitionGuard === true)
   );
+}
+
+type UpdatedInstallGatewayCommandParams = {
+  result: { root?: string; mode?: UpdateRunResult["mode"] };
+  opts: Pick<UpdateCommandOptions, "json" | "run">;
+  invocationEnv: NodeJS.ProcessEnv;
+  serviceEnv?: NodeJS.ProcessEnv;
+  serviceInstallEnv?: NodeJS.ProcessEnv | null;
+  nodeRunner?: string;
+  gatewayPort?: number;
+  timeoutMs?: number;
+  invocationCwd?: string;
+  signal?: AbortSignal;
+  assertCurrent?: () => void;
+  serviceLoadBoundary?: UpdateServiceLoadBoundary;
+  definitionGuard?: GatewayServiceDefinitionGuard;
+  onResponse?: (response: Record<string, unknown>) => void;
+};
+
+export async function refreshUpdatedGatewayService(
+  params: UpdatedInstallGatewayCommandParams & {
+    serviceEnv: NodeJS.ProcessEnv;
+    assertCurrent: () => void;
+    onDefinitionBackup?: (backup: GatewayServiceDefinitionBackup) => void;
+    onWarnings?: (warnings: readonly string[]) => void;
+  },
+): Promise<void> {
+  const { assertCurrent } = params;
+  const backup = await withGatewayServiceOperationLock(params.serviceEnv, async () => {
+    const command = await resolveGatewayService().readCommand(params.serviceEnv, {
+      requireEffective: true,
+    });
+    assertCurrent();
+    return command
+      ? await captureGatewayServiceDefinitionBackup({
+          env: params.serviceEnv,
+          command,
+          assertCurrent,
+        })
+      : undefined;
+  }).catch((error: unknown) => {
+    assertCurrent();
+    throw new Error(
+      `SERVICE_DEFINITION_UNKNOWN: Service backup failed: ${formatErrorMessage(error)}`,
+      { cause: error },
+    );
+  });
+  if (backup) {
+    // Failed children must retain the unsealed receipt's guard against unverified rewrites.
+    params.onDefinitionBackup?.(backup);
+    params.onWarnings?.([`Gateway service definition backup: ${backup.backupPaths.join(", ")}`]);
+  }
+  const warnings: string[] = [];
+  let publication: GatewayServiceDefinitionPublication | undefined;
+  let installedWithoutPublication = false;
+  await runUpdatedInstallGatewayCommand(
+    {
+      ...params,
+      onResponse: (response) => {
+        if (Array.isArray(response.warnings)) {
+          warnings.push(
+            ...response.warnings.filter((value): value is string => typeof value === "string"),
+          );
+        }
+        const installed = response.action === "install" && response.ok === true;
+        installedWithoutPublication = installed && response.definitionPublication === undefined;
+        const parsed = GatewayServiceDefinitionPublicationSchema.safeParse(
+          installed ? response.definitionPublication : undefined,
+        );
+        if (parsed.success) {
+          publication = parsed.data;
+        }
+      },
+    },
+    "install",
+  ).catch(async (error: unknown) => {
+    assertCurrent();
+    if (backup && !DEFINITION_DENIAL.test(formatErrorMessage(error))) {
+      try {
+        await withGatewayServiceOperationLock(params.serviceEnv, () => backup.seal("original"));
+      } catch (verificationError) {
+        assertCurrent();
+        params.onWarnings?.([
+          `Could not verify the original service definition after installer failure; retained the backup: ${formatErrorMessage(verificationError)}`,
+        ]);
+      }
+    }
+    throw error;
+  });
+  if (backup) {
+    const published = publication;
+    if (published || installedWithoutPublication) {
+      try {
+        await withGatewayServiceOperationLock(params.serviceEnv, () =>
+          backup.seal(published ?? "regenerate"),
+        );
+      } catch (error) {
+        assertCurrent();
+        params.onWarnings?.(warnings);
+        throw new Error(
+          `SERVICE_DEFINITION_UNKNOWN: Could not verify the installer publication: ${formatErrorMessage(error)}`,
+          { cause: error },
+        );
+      }
+      if (!published) {
+        warnings.push(
+          "The installer did not return service publication facts; rollback will use the previous release's installer. The service backup is retained.",
+        );
+      }
+    } else {
+      warnings.push(
+        "The installer did not return service publication facts; the backup is retained for manual recovery.",
+      );
+    }
+  }
+  if (warnings.length) {
+    params.onWarnings?.(warnings);
+  }
 }
 
 // Loaded before package replacement: activation dependencies must stay eager.
 // Candidate version/preservation guards reject older targets before repair, without retry.
 export async function runUpdatedInstallGatewayCommand(
-  params: {
-    result: { root?: string; mode?: UpdateRunResult["mode"] };
-    opts: Pick<UpdateCommandOptions, "json" | "run">;
-    invocationEnv: NodeJS.ProcessEnv;
-    serviceEnv?: NodeJS.ProcessEnv;
-    serviceInstallEnv?: NodeJS.ProcessEnv | null;
-    nodeRunner?: string;
-    timeoutMs?: number;
-    invocationCwd?: string;
-    signal?: AbortSignal;
-    assertCurrent?: () => void;
-    serviceLoadBoundary?: UpdateServiceLoadBoundary;
-  },
+  params: UpdatedInstallGatewayCommandParams,
   action: "install" | "restart",
   preserveDefinition = false,
 ): Promise<"accepted" | "unverified"> {
@@ -132,6 +252,11 @@ export async function runUpdatedInstallGatewayCommand(
   };
   assertCurrent();
   const installing = action === "install";
+  if (params.definitionGuard && (!installing || !executor || params.serviceLoadBoundary)) {
+    throw new UpdateCommandRecoveryPendingError(
+      "Guarded service rewrite requires its original native update executor.",
+    );
+  }
   const entrypoint = await resolveGatewayInstallEntrypoint(params.result.root);
   assertCurrent();
   if (!entrypoint) {
@@ -142,6 +267,9 @@ export async function runUpdatedInstallGatewayCommand(
   const args = ["gateway", action];
   if (installing) {
     args.push("--force");
+    if (params.gatewayPort !== undefined) {
+      args.push("--port", String(params.gatewayPort));
+    }
   } else if (preserveDefinition) {
     args.push("--preserve-definition");
   }
@@ -162,6 +290,12 @@ export async function runUpdatedInstallGatewayCommand(
   assertCurrent();
   const boundary = params.serviceLoadBoundary;
   const installTimeoutMs = params.timeoutMs ?? UPDATE_RUNNER_TIMEOUT_MS;
+  const reportResponse = (stdout: string) => {
+    const response = safeParseJsonRecord(stdout);
+    if (response) {
+      params.onResponse?.(response);
+    }
+  };
   if (installing && boundary) {
     return await runGatewayInstallWithLoadBoundary({
       argv: [nodeRunner, entrypoint, ...args, "--defer-activation"],
@@ -169,6 +303,7 @@ export async function runUpdatedInstallGatewayCommand(
       env: commandEnv,
       signal: params.signal,
       timeoutMs: installTimeoutMs,
+      onOutput: reportResponse,
       boundary: {
         ...boundary,
         // The handoff adds an executor fence; it must not replace the repair owner.
@@ -194,6 +329,7 @@ export async function runUpdatedInstallGatewayCommand(
         timeoutMs: installTimeoutMs,
         nodeRunner,
         signal: params.signal,
+        ...(params.definitionGuard ? { requireDefinitionGuard: true } : {}),
       }))
     ) {
       throw new UpdateCommandRecoveryPendingError(
@@ -217,6 +353,7 @@ export async function runUpdatedInstallGatewayCommand(
               executor: grant,
               action,
               targetRoot: resolveUpdateInstallRoot(params.result.root!),
+              ...(params.definitionGuard ? { definitionGuard: params.definitionGuard } : {}),
             }),
             beforeInput: bindChild,
           }
@@ -243,6 +380,9 @@ export async function runUpdatedInstallGatewayCommand(
   const complete = !res.stdoutTruncatedBytes && !res.outputLimitExceeded && !res.outputErrorStream;
   const response = complete ? safeParseJsonRecord(res.stdout) : undefined;
   if (exited && res.code === 0) {
+    if (response) {
+      params.onResponse?.(response);
+    }
     return response?.action === action &&
       response.ok === true &&
       action === "restart" &&

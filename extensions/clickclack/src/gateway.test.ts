@@ -861,6 +861,7 @@ describe("ClickClack gateway", () => {
     mocks.client.websocket.mockReturnValue(socket);
     mocks.client.message
       .mockResolvedValueOnce(createHydratedMessage(["upl-first"]))
+      .mockResolvedValueOnce(createHydratedMessage(["upl-first", "upl-late"]))
       .mockResolvedValueOnce(createHydratedMessage(["upl-first", "upl-late"]));
     const abort = new AbortController();
     const ctx = createGatewayContext(abort.signal);
@@ -899,7 +900,7 @@ describe("ClickClack gateway", () => {
       expect(mocks.client.websocket).toHaveBeenCalledOnce();
       emitMessageEvent(socket, 1, {}, { emitAttachmentUpdate: false });
       await vi.advanceTimersByTimeAsync(0);
-      expect(vi.getTimerCount()).toBe(1);
+      expect(vi.getTimerCount()).toBe(2);
 
       abort.abort();
       await run;

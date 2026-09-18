@@ -120,11 +120,10 @@ function createMessageEventCoalescer(params: {
       ready,
       sawUpdate: false,
       noteUpdate: () => {
-        if (released) {
-          return;
-        }
         pending.sawUpdate = true;
-        startTimer();
+        if (!released) {
+          startTimer();
+        }
       },
       release: () => {
         if (released) {

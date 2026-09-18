@@ -7,6 +7,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
+import { withExistingOpenClawStateSchema } from "../state/openclaw-state-db-schema-policy.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -47,6 +48,25 @@ function seed(env: NodeJS.ProcessEnv) {
   });
 }
 
+async function withoutParentSql(operation: () => Promise<void>): Promise<number> {
+  const { DatabaseSync, StatementSync } = requireNodeSqlite();
+  const calls = [
+    vi.spyOn(DatabaseSync.prototype, "prepare"),
+    vi.spyOn(DatabaseSync.prototype, "exec"),
+    ...(["get", "all", "run", "iterate"] as const).map((method) =>
+      vi.spyOn(StatementSync.prototype, method),
+    ),
+  ];
+  try {
+    await operation();
+    const count = calls.reduce((total, call) => total + call.mock.calls.length, 0);
+    expect(count).toBe(0);
+    return count;
+  } finally {
+    vi.restoreAllMocks();
+  }
+}
+
 it.each(["cached", "fresh"] as const)(
   "loads %s node-host configuration without parent-thread SQL",
   async (mode) => {
@@ -57,26 +77,66 @@ it.each(["cached", "fresh"] as const)(
     if (mode === "fresh") {
       await closeOpenClawStateDatabaseAsync();
     }
-    const { DatabaseSync, StatementSync } = requireNodeSqlite();
-    const calls = [
-      vi.spyOn(DatabaseSync.prototype, "prepare"),
-      vi.spyOn(DatabaseSync.prototype, "exec"),
-      ...(["get", "all", "run", "iterate"] as const).map((method) =>
-        vi.spyOn(StatementSync.prototype, method),
-      ),
-    ];
     const startedAt = performance.now();
-    for (const read of readers) {
-      expect(await read(env)).toEqual(expected);
-    }
-    const parentSqlCalls = calls.reduce((count, call) => count + call.mock.calls.length, 0);
+    const parentSqlCalls = await withoutParentSql(async () => {
+      for (const read of readers) {
+        expect(await read(env)).toEqual(expected);
+      }
+    });
     console.info("node-host configuration read", {
       mode,
       parentSqlCalls,
       elapsedMs: Math.round(performance.now() - startedAt),
     });
-    expect(parentSqlCalls).toBe(0);
     expect(source.db.isOpen).toBe(mode === "cached");
+  },
+);
+
+it.each(["fresh", "cached"] as const)(
+  "loads %s managed node-host configuration without host SQL or schema repair",
+  async (mode) => {
+    const { env, databasePath } = fixture();
+    const expected = await seed(env);
+    openOpenClawStateDatabase({ env })
+      .db.prepare("UPDATE schema_meta SET app_version = ? WHERE meta_key = 'primary'")
+      .run("synthetic-installed-runtime");
+    await closeOpenClawStateDatabaseAsync();
+    const { DatabaseSync } = requireNodeSqlite();
+    await withExistingOpenClawStateSchema({ path: databasePath }, async () => {
+      if (mode === "cached") {
+        openOpenClawStateDatabase({ env });
+      }
+      await withoutParentSql(async () => {
+        for (const read of readers) {
+          expect(await read(env)).toEqual(expected);
+        }
+      });
+      const external = new DatabaseSync(databasePath);
+      try {
+        external.exec("DROP INDEX idx_plugin_state_listing");
+      } finally {
+        external.close();
+      }
+      await withoutParentSql(async () => {
+        for (const read of readers) {
+          await expect(read(env)).rejects.toThrow(/idx_plugin_state_listing|schema/i);
+        }
+      });
+    });
+    await closeOpenClawStateDatabaseAsync();
+    const persisted = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      expect(
+        persisted.prepare("SELECT app_version FROM schema_meta WHERE meta_key = 'primary'").get(),
+      ).toEqual({ app_version: "synthetic-installed-runtime" });
+      expect(
+        persisted
+          .prepare("SELECT name FROM sqlite_schema WHERE name = 'idx_plugin_state_listing'")
+          .get(),
+      ).toBeUndefined();
+    } finally {
+      persisted.close();
+    }
   },
 );
 

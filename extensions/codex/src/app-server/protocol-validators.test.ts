@@ -155,17 +155,17 @@ describe("assertCodexModelListResponse", () => {
 });
 
 describe("readCodexTurn", () => {
-  it("normalizes omitted agent-message delivery to the synchronous default", () => {
+  it("accepts an omitted optional agent-message delivery without inventing fields", () => {
     const turn = readCodexTurn({
       id: "turn-1",
       status: "completed",
       items: [{ id: "message-1", type: "agentMessage", text: "done" }],
     });
 
-    expect(turn?.items[0]).toMatchObject({
+    expect(turn?.items[0]).toEqual({
       id: "message-1",
       type: "agentMessage",
-      delivery: null,
+      text: "done",
     });
   });
 

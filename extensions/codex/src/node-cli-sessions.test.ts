@@ -479,6 +479,91 @@ describe("codex cli node sessions", () => {
     expect(parsed.sessions?.map((entry) => entry.sessionId)).toEqual([oldest?.sessionId]);
   });
 
+  it("finds a session by cwd past the rollout count a filtered scan used to stop at", async () => {
+    const rollouts = await writeRolloutFixtures(210, {
+      cwdFor: (index) => (index === 209 ? "/tmp/codex-archive" : "/tmp/codex-many"),
+    });
+    const oldest = rollouts.at(-1);
+
+    const parsed = await runSessionsList({ limit: 50, filter: "/tmp/codex-archive" });
+
+    // Nothing in its filename matches, so this session is only reachable by reading past the 200th
+    // rollout. A scan that stops earlier has to report itself truncated instead of answering "none".
+    expect(parsed.sessions?.map((entry) => entry.sessionId)).toEqual([oldest?.sessionId]);
+    expect(parsed).toMatchObject({ scannedFileCount: 210, sessionFileCount: 210 });
+    expect(parsed).not.toHaveProperty("searchTruncated");
+  });
+
+  it("stops a filtered scan once the page is full and reports the search as truncated", async () => {
+    await writeRolloutFixtures(60);
+
+    const parsed = await runSessionsList({ limit: 5, filter: "/tmp/codex-many" });
+
+    // limit (5) + SESSION_FILE_SCAN_HEADROOM (20) matches is enough to fill a newest-first page,
+    // so the remaining 35 rollouts stay unread — and the result says the search was cut.
+    expect(parsed.sessions).toHaveLength(5);
+    expect(parsed).toMatchObject({
+      scannedFileCount: 25,
+      sessionFileCount: 60,
+      searchTruncated: true,
+    });
+  });
+
+  it("stops a filtered scan at the byte budget and reports the search as truncated", async () => {
+    // 768 KiB is the whole per-file window, so each rollout charges the budget its maximum and
+    // 256 MiB runs out after 341 of them.
+    await writeRolloutFixtures(345, {
+      cwdFor: () => "/tmp/codex-budget",
+      padToBytes: 768 * 1024,
+    });
+
+    const parsed = await runSessionsList({ limit: 50, filter: "/tmp/codex-unmatched" });
+
+    expect(parsed.sessions).toEqual([]);
+    expect(parsed).toMatchObject({
+      scannedFileCount: 341,
+      sessionFileCount: 345,
+      searchTruncated: true,
+    });
+  });
+
+  it("keeps an unfiltered listing free of the truncation marker", async () => {
+    await writeRolloutFixtures(40);
+
+    const parsed = await runSessionsList({ limit: 2 });
+
+    expect(parsed).toMatchObject({ scannedFileCount: 22, sessionFileCount: 40 });
+    expect(parsed).not.toHaveProperty("searchTruncated");
+  });
+
+  it("reads cwd from an oversized session_meta on a history-backed session outside the scan window", async () => {
+    const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a52aa";
+    await writeRolloutFixtures(25);
+    const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
+    const sessionFile = path.join(sessionDir, `rollout-2026-05-13T00-00-00-${sessionId}.jsonl`);
+    // A `session_meta` past the 512 KiB head window. Only the escalation to 4 MiB reaches it.
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({
+        timestamp: "2026-05-13T00:00:01.000Z",
+        type: "session_meta",
+        payload: { id: sessionId, cwd: "/tmp/codex-oversized", instructions: "x".repeat(600_000) },
+      })}\n`,
+    );
+    const stale = new Date(Date.UTC(2026, 4, 13));
+    await fs.utimes(sessionFile, stale, stale);
+    // History makes this the newest session even though its rollout is the oldest file on disk, so
+    // it lands in the listing while sitting outside the rollouts the summary scan reads.
+    await fs.writeFile(
+      path.join(tempDir, "history.jsonl"),
+      `${JSON.stringify({ session_id: sessionId, ts: 1800000000, text: "oversized meta ask" })}\n`,
+    );
+
+    const parsed = await runSessionsList({ limit: 1 });
+
+    expect(parsed.sessions).toMatchObject([{ sessionId, cwd: "/tmp/codex-oversized" }]);
+  });
+
   it("discards partial large-file summaries and closes after a later read fails", async () => {
     const sessionId = "019e23d1-f33d-78e3-959e-0f56f30a5251";
     const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
@@ -700,18 +785,25 @@ describe("codex cli node sessions", () => {
 
   async function runSessionsList(params: Record<string, unknown>): Promise<{
     sessions?: Array<Record<string, unknown>>;
+    scannedFileCount?: number;
+    sessionFileCount?: number;
+    searchTruncated?: boolean;
   }> {
     const command = createCodexCliSessionNodeHostCommands().find(
       (entry) => entry.command === CODEX_CLI_SESSIONS_LIST_COMMAND,
     );
     return JSON.parse((await command?.handle(JSON.stringify(params))) ?? "{}") as {
       sessions?: Array<Record<string, unknown>>;
+      scannedFileCount?: number;
+      sessionFileCount?: number;
+      searchTruncated?: boolean;
     };
   }
 
   /** Writes `count` rollouts, newest first, with distinct mtimes so recency ordering is stable. */
   async function writeRolloutFixtures(
     count: number,
+    options?: { cwdFor?: (index: number) => string; padToBytes?: number },
   ): Promise<Array<{ sessionId: string; file: string }>> {
     const sessionDir = path.join(tempDir, "sessions", "2026", "05", "14");
     await fs.mkdir(sessionDir, { recursive: true });
@@ -726,7 +818,7 @@ describe("codex cli node sessions", () => {
           JSON.stringify({
             timestamp: updatedAt.toISOString(),
             type: "session_meta",
-            payload: { id: sessionId, cwd: "/tmp/codex-many" },
+            payload: { id: sessionId, cwd: options?.cwdFor?.(index) ?? "/tmp/codex-many" },
           }),
           JSON.stringify({
             timestamp: updatedAt.toISOString(),
@@ -739,6 +831,11 @@ describe("codex cli node sessions", () => {
           }),
         ].join("\n"),
       );
+      if (options?.padToBytes) {
+        // Sparse padding: the scan charges its window against the budget without the fixture
+        // costing that many bytes on disk.
+        await fs.truncate(file, options.padToBytes);
+      }
       await fs.utimes(file, updatedAt, updatedAt);
       created.push({ sessionId, file });
     }

@@ -2065,6 +2065,56 @@ describe("codex command", () => {
     expect(result.text).toContain("read the whole thing (/repo, 2026-05-13T06:20:00.000Z)");
   });
 
+  it("says so when a filtered Codex CLI session search stopped short of the whole codex-home", async () => {
+    const listCodexCliSessionsOnNode = vi.fn(async () => ({
+      node: { nodeId: "mb-m5", displayName: "mb-m5" },
+      result: {
+        codexHome: "/Users/mariano/.codex",
+        scannedFileCount: 220,
+        sessionFileCount: 2928,
+        searchTruncated: true,
+        sessions: [
+          {
+            sessionId: "019e2007-1f7e-7eb1-a42b-8c01f4b9b5cd",
+            cwd: "/repo",
+            updatedAt: "2026-05-13T06:30:00.000Z",
+            lastMessage: "fix the bridge",
+            messageCount: 2,
+          },
+        ],
+      },
+    }));
+
+    const result = await runCommand("sessions --host mb-m5 bridge", { listCodexCliSessionsOnNode });
+
+    expect(result.text).toContain("Searched the 220 most recent of 2928 rollouts");
+    expect(result.text).toContain("019e2007-1f7e-7eb1-a42b-8c01f4b9b5cd");
+  });
+
+  it("leaves a complete Codex CLI session search unqualified", async () => {
+    const listCodexCliSessionsOnNode = vi.fn(async () => ({
+      node: { nodeId: "mb-m5", displayName: "mb-m5" },
+      result: {
+        codexHome: "/Users/mariano/.codex",
+        scannedFileCount: 12,
+        sessionFileCount: 12,
+        sessions: [
+          {
+            sessionId: "019e2007-1f7e-7eb1-a42b-8c01f4b9b5cd",
+            cwd: "/repo",
+            updatedAt: "2026-05-13T06:30:00.000Z",
+            lastMessage: "fix the bridge",
+            messageCount: 2,
+          },
+        ],
+      },
+    }));
+
+    const result = await runCommand("sessions --host mb-m5 bridge", { listCodexCliSessionsOnNode });
+
+    expect(result.text).not.toContain("Searched the");
+  });
+
   it("normalizes signed decimal Codex CLI session limits before node dispatch", async () => {
     const listCodexCliSessionsOnNode = vi.fn(async () => ({
       node: { nodeId: "mb-m5", displayName: "mb-m5" },

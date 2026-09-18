@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import { timestampMsToIsoString } from "openclaw/plugin-sdk/number-runtime";
 import type {
   OpenClawPluginNodeHostCommand,
   OpenClawPluginNodeInvokePolicy,
@@ -13,13 +12,19 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { runCommandBuffered } from "openclaw/plugin-sdk/process-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import {
   materializeWindowsSpawnProgram,
   resolveWindowsSpawnProgram,
 } from "openclaw/plugin-sdk/windows-spawn";
 import { formatCodexDisplayText } from "./command-formatters.js";
-import { readJsonlHead, readJsonlTail, visitJsonlLines } from "./jsonl-lines.js";
+import {
+  type CodexCliSessionSummary,
+  findSessionFiles,
+  hydrateSessionFiles,
+  hydrateSessionsFromSessionFiles,
+  matchesSessionFilter,
+  readHistorySessions,
+} from "./node-cli-session-files.js";
 
 const CODEX_CLI_SESSIONS_LIST_COMMAND = "codex.cli.sessions.list";
 export const CODEX_CLI_SESSION_RESUME_COMMAND = "codex.cli.session.resume";
@@ -28,62 +33,21 @@ const DEFAULT_SESSION_LIMIT = 10;
 const MAX_SESSION_LIMIT = 50;
 const DEFAULT_RESUME_TIMEOUT_MS = 20 * 60_000;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-/**
- * The head window carries `session_meta` (id + cwd) and the opening messages. Real rollouts embed
- * the whole instruction set in `session_meta`; the largest observed here is ~149 KiB, so this keeps
- * roughly 3x headroom over that record alone.
- */
-const SESSION_FILE_HEAD_SCAN_BYTES = 512 * 1024;
-/**
- * One escalation for a `session_meta` record too large for the head window. This is a bound, not a
- * guarantee: a `session_meta` larger than this still yields no complete first record, so `cwd` is
- * reported as unknown rather than read at unbounded cost.
- */
-const SESSION_FILE_HEAD_SCAN_MAX_BYTES = 4 * 1024 * 1024;
-/**
- * The tail window usually supplies the final record `timestamp` and any late user message. A final
- * record larger than this leaves no complete line in the window, in which case `updatedAt` falls
- * back to file mtime.
- */
-const SESSION_FILE_TAIL_SCAN_BYTES = 256 * 1024;
-/** Below this size head+tail would already cover the file, so read it once and keep counts exact. */
-const SESSION_FILE_FULL_READ_BYTES = SESSION_FILE_HEAD_SCAN_BYTES + SESSION_FILE_TAIL_SCAN_BYTES;
-/** Rollouts scanned past `limit` to absorb mtime vs. record-`timestamp` ordering skew. */
-const SESSION_FILE_SCAN_HEADROOM = 20;
-/**
- * A filter can match `cwd` or a message preview, which are only known after hydration, so filtered
- * listings scan deeper than unfiltered ones — but still stop here. Beyond this many rollouts a
- * content filter silently misses older sessions; filtering by session id does not, because ids
- * appear in the filename and sort first.
- */
-const FILTERED_SESSION_FILE_SCAN_CAP = 200;
 const activeResumeSessions = new Set<string>();
-
-type CodexCliSessionSummary = {
-  sessionId: string;
-  updatedAt?: string;
-  lastMessage?: string;
-  cwd?: string;
-  sessionFile?: string;
-  messageCount: number;
-  /**
-   * Set when the rollout was too large to read whole, so a middle span went unread: `messageCount`
-   * counts only the scanned head/tail windows, `lastMessage` is the last user message inside them
-   * rather than necessarily the last one in the file, and `updatedAt` may come from file mtime.
-   */
-  partialScan?: boolean;
-};
-
-type CodexCliSessionFile = {
-  file: string;
-  basename: string;
-  mtimeMs: number;
-  size: number;
-};
 
 type CodexCliSessionsListResult = {
   sessions: CodexCliSessionSummary[];
   codexHome: string;
+  /** Rollouts opened to build this listing. Absent from a node build that predates the counter. */
+  scannedFileCount?: number;
+  /** Rollouts present under the codex-home, whether or not they were opened. */
+  sessionFileCount?: number;
+  /**
+   * Set when a filtered listing stopped before examining every rollout, so a session matching on
+   * `cwd` or its message preview may exist outside the answer. An unfiltered listing is a
+   * newest-first page by construction and never sets this.
+   */
+  searchTruncated?: boolean;
 };
 
 type CodexCliSessionResumeResult = {
@@ -217,6 +181,7 @@ export function formatCodexCliSessions(params: {
   }
   return [
     `Codex CLI sessions on ${formatCodexDisplayText(formatNodeLabel(params.node))}:`,
+    ...formatSessionSearchTruncation(params.result),
     ...params.result.sessions.map((session) => {
       // Say so when the preview and count come from a windowed read, so nobody reads a stale
       // `lastMessage` off an oversized rollout as that session's latest activity.
@@ -234,6 +199,26 @@ export function formatCodexCliSessions(params: {
   ].join("\n");
 }
 
+/**
+ * A filter that stopped short is a search with sessions missing from it, not just a short page, so
+ * say which part of the corpus was actually searched instead of presenting the cut set as the
+ * whole answer.
+ */
+function formatSessionSearchTruncation(result: CodexCliSessionsListResult): string[] {
+  if (!result.searchTruncated) {
+    return [];
+  }
+  const scanned = result.scannedFileCount;
+  const total = result.sessionFileCount;
+  const scope =
+    scanned === undefined || total === undefined
+      ? "Searched only the most recent rollouts"
+      : `Searched the ${String(scanned)} most recent of ${String(total)} rollouts`;
+  return [
+    `${scope}; older sessions matching on directory or message text are not in this list. Filter by session id, or by a date, to look further back — both are read from the filename and stay reachable.`,
+  ];
+}
+
 async function listLocalCodexCliSessions(paramsJSON?: string | null): Promise<string> {
   const params = readRecordParam(paramsJSON);
   const limit = normalizeLimit(params.limit);
@@ -242,22 +227,18 @@ async function listLocalCodexCliSessions(paramsJSON?: string | null): Promise<st
   const summaries = await readHistorySessions(codexHome);
   const sessionFiles = await findSessionFiles(path.join(codexHome, "sessions"), 4);
   await hydrateSessionFiles(summaries, sessionFiles);
-  await hydrateSessionsFromSessionFiles(
-    summaries,
-    selectSessionFilesToScan(sessionFiles, filter, limit),
-  );
+  const scan = await hydrateSessionsFromSessionFiles(summaries, sessionFiles, filter, limit);
   const sessions = [...summaries.values()]
-    .filter((session) => {
-      if (!filter) {
-        return true;
-      }
-      return [session.sessionId, session.cwd, session.lastMessage].some((value) =>
-        value?.toLowerCase().includes(filter),
-      );
-    })
+    .filter((session) => matchesSessionFilter(session, filter))
     .toSorted((a, b) => compareOptionalStringsDesc(a.updatedAt, b.updatedAt))
     .slice(0, limit);
-  return JSON.stringify({ sessions, codexHome } satisfies CodexCliSessionsListResult);
+  return JSON.stringify({
+    sessions,
+    codexHome,
+    scannedFileCount: scan.scannedFileCount,
+    sessionFileCount: sessionFiles.length,
+    ...(scan.searchTruncated ? { searchTruncated: true } : {}),
+  } satisfies CodexCliSessionsListResult);
 }
 
 async function resumeLocalCodexCliSession(paramsJSON?: string | null): Promise<string> {
@@ -349,307 +330,6 @@ async function runCodexExecResume(params: {
   }
 }
 
-async function readHistorySessions(
-  codexHome: string,
-): Promise<Map<string, CodexCliSessionSummary>> {
-  const summaries = new Map<string, CodexCliSessionSummary>();
-  const historyPath = path.join(codexHome, "history.jsonl");
-  const result = await visitJsonlLines(historyPath, (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      return;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
-      return;
-    }
-    if (!isRecord(parsed) || typeof parsed.session_id !== "string") {
-      return;
-    }
-    const sessionId = parsed.session_id.trim();
-    if (!sessionId) {
-      return;
-    }
-    const entry = summaries.get(sessionId) ?? {
-      sessionId,
-      messageCount: 0,
-    };
-    entry.messageCount += 1;
-    if (typeof parsed.text === "string" && parsed.text.trim()) {
-      entry.lastMessage = truncateText(parsed.text.trim(), 140);
-    }
-    if (typeof parsed.ts === "number") {
-      entry.updatedAt = timestampMsToIsoString(parsed.ts * 1000) ?? entry.updatedAt;
-    }
-    summaries.set(sessionId, entry);
-  });
-  if (!result.ok) {
-    return new Map();
-  }
-  return summaries;
-}
-
-async function hydrateSessionFiles(
-  summaries: Map<string, CodexCliSessionSummary>,
-  files: CodexCliSessionFile[],
-): Promise<void> {
-  if (summaries.size === 0) {
-    return;
-  }
-  const pending = new Set(summaries.keys());
-  for (const file of files) {
-    const sessionId = [...pending].find((id) => file.basename.includes(id));
-    if (!sessionId) {
-      continue;
-    }
-    const entry = summaries.get(sessionId);
-    if (!entry) {
-      continue;
-    }
-    entry.sessionFile = file.file;
-    const firstLine = (await readFirstLine(file.file)) ?? "";
-    const cwd = readSessionMetaCwd(firstLine);
-    if (cwd) {
-      entry.cwd = cwd;
-    }
-    pending.delete(sessionId);
-    if (pending.size === 0) {
-      return;
-    }
-  }
-}
-
-/**
- * Pick the rollouts worth hydrating. The listing is sorted newest-first and sliced to `limit`, so
- * scanning every rollout only to discard all but a handful makes list cost scale with total bytes
- * on disk.
- *
- * mtime is a heuristic proxy for recency, not a proof of it: rollouts are append-only, but a copy,
- * restore, or `touch` rewrites mtime without changing the records, so the candidate order can
- * differ from the order by last record `timestamp`. `SESSION_FILE_SCAN_HEADROOM` absorbs small
- * skew; a wholesale mtime rewrite can still hide a session from an unfiltered listing. Filtering by
- * session id stays reliable regardless, because ids appear in the filename and sort first.
- */
-function selectSessionFilesToScan(
-  files: CodexCliSessionFile[],
-  filter: string,
-  limit: number,
-): CodexCliSessionFile[] {
-  const byRecency = files.toSorted((a, b) => b.mtimeMs - a.mtimeMs);
-  if (!filter) {
-    return byRecency.slice(0, limit + SESSION_FILE_SCAN_HEADROOM);
-  }
-  const named = byRecency.filter((entry) => entry.basename.toLowerCase().includes(filter));
-  const rest = byRecency.filter((entry) => !entry.basename.toLowerCase().includes(filter));
-  return [...named, ...rest].slice(0, FILTERED_SESSION_FILE_SCAN_CAP);
-}
-
-async function hydrateSessionsFromSessionFiles(
-  summaries: Map<string, CodexCliSessionSummary>,
-  files: CodexCliSessionFile[],
-): Promise<void> {
-  for (const file of files) {
-    const summary = await readSessionFileSummary(file);
-    if (!summary) {
-      continue;
-    }
-    const existing = summaries.get(summary.sessionId);
-    // `messageCount` and its partial marker describe one scan, so take both from the same source.
-    const counted = existing ?? summary;
-    summaries.set(summary.sessionId, {
-      ...summary,
-      ...existing,
-      cwd: existing?.cwd ?? summary.cwd,
-      sessionFile: existing?.sessionFile ?? summary.sessionFile,
-      updatedAt: existing?.updatedAt ?? summary.updatedAt,
-      lastMessage: existing?.lastMessage ?? summary.lastMessage,
-      messageCount: counted.messageCount,
-      partialScan: counted.partialScan,
-    });
-  }
-}
-
-async function readSessionFileSummary(
-  file: CodexCliSessionFile,
-): Promise<CodexCliSessionSummary | null> {
-  let head = await readJsonlHead(
-    file.file,
-    file.size <= SESSION_FILE_FULL_READ_BYTES
-      ? SESSION_FILE_FULL_READ_BYTES
-      : SESSION_FILE_HEAD_SCAN_BYTES,
-  );
-  if (head && head.lines.length === 0 && !head.complete) {
-    // The first record did not fit the window, so `session_meta` — and with it cwd — is missing.
-    head = await readJsonlHead(file.file, SESSION_FILE_HEAD_SCAN_MAX_BYTES);
-  }
-  if (!head) {
-    return null;
-  }
-  // Anchor the tail to where the head stopped. Without that floor an escalated head and the tail
-  // can cover the same bytes, and every record in the overlap is counted twice. When the two
-  // windows meet, the scan covered the file and stays exact even though it was read in pieces.
-  const tail = await readJsonlTail(file.file, SESSION_FILE_TAIL_SCAN_BYTES, {
-    notBefore: head.endOffset,
-  });
-  if (!tail) {
-    return null;
-  }
-  if (head.lines.length === 0 && tail.lines.length === 0) {
-    return null;
-  }
-  // The windows abut only when together they covered the file, so counts from them stay exact.
-  const scannedWholeFile = tail.start <= head.endOffset;
-  const headScan = scanSessionFileLines(head.lines);
-  const tailScan = scanSessionFileLines(tail.lines);
-  const sessionId =
-    headScan.sessionId || tailScan.sessionId || readSessionIdFromFilename(file.file);
-  if (!sessionId) {
-    return null;
-  }
-  // A skipped middle means the head's newest timestamp predates records we never read, so mtime is
-  // the better estimate. The tail can also yield no complete record when the final one is huge.
-  const scannedUpdatedAt =
-    tailScan.updatedAt ?? (scannedWholeFile ? headScan.updatedAt : undefined);
-  return {
-    sessionId,
-    updatedAt: scannedUpdatedAt ?? new Date(file.mtimeMs).toISOString(),
-    lastMessage: tailScan.lastMessage ?? headScan.lastMessage,
-    cwd: headScan.cwd ?? tailScan.cwd,
-    sessionFile: file.file,
-    messageCount: headScan.messageCount + tailScan.messageCount,
-    partialScan: scannedWholeFile ? undefined : true,
-  };
-}
-
-type CodexCliSessionFileScan = {
-  sessionId: string;
-  cwd?: string;
-  updatedAt?: string;
-  lastMessage?: string;
-  messageCount: number;
-};
-
-function scanSessionFileLines(lines: string[]): CodexCliSessionFileScan {
-  const scan: CodexCliSessionFileScan = { sessionId: "", messageCount: 0 };
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed) as unknown;
-    } catch {
-      continue;
-    }
-    if (!isRecord(parsed)) {
-      continue;
-    }
-    if (typeof parsed.timestamp === "string" && parsed.timestamp.trim()) {
-      scan.updatedAt = parsed.timestamp.trim();
-    }
-    if (parsed.type === "session_meta" && isRecord(parsed.payload)) {
-      if (typeof parsed.payload.id === "string" && parsed.payload.id.trim()) {
-        scan.sessionId = parsed.payload.id.trim();
-      }
-      if (typeof parsed.payload.cwd === "string" && parsed.payload.cwd.trim()) {
-        scan.cwd = parsed.payload.cwd.trim();
-      }
-      continue;
-    }
-    const messageText = readResponseItemMessageText(parsed);
-    if (messageText) {
-      scan.messageCount += 1;
-      scan.lastMessage = truncateText(messageText, 140);
-    }
-  }
-  return scan;
-}
-
-async function findSessionFiles(dir: string, maxDepth: number): Promise<CodexCliSessionFile[]> {
-  if (maxDepth < 0) {
-    return [];
-  }
-  let entries: Array<import("node:fs").Dirent>;
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const files: CodexCliSessionFile[] = [];
-  for (const entry of entries) {
-    const entryPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await findSessionFiles(entryPath, maxDepth - 1)));
-      continue;
-    }
-    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) {
-      continue;
-    }
-    // Ordering and read-window selection both need size/mtime, so stat once here instead of
-    // opening every rollout to find out how recent it is.
-    const stats = await fs.stat(entryPath).catch(() => undefined);
-    if (!stats) {
-      continue;
-    }
-    files.push({
-      file: entryPath,
-      basename: entry.name,
-      mtimeMs: stats.mtimeMs,
-      size: stats.size,
-    });
-  }
-  return files;
-}
-
-function readSessionMetaCwd(line: string): string | undefined {
-  try {
-    const parsed = JSON.parse(line) as unknown;
-    if (!isRecord(parsed) || parsed.type !== "session_meta" || !isRecord(parsed.payload)) {
-      return undefined;
-    }
-    return typeof parsed.payload.cwd === "string" && parsed.payload.cwd.trim()
-      ? parsed.payload.cwd.trim()
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function readResponseItemMessageText(parsed: Record<string, unknown>): string | undefined {
-  if (parsed.type !== "response_item" || !isRecord(parsed.payload)) {
-    return undefined;
-  }
-  if (parsed.payload.type !== "message") {
-    return undefined;
-  }
-  const role = typeof parsed.payload.role === "string" ? parsed.payload.role : "";
-  if (role !== "user") {
-    return undefined;
-  }
-  const content = Array.isArray(parsed.payload.content) ? parsed.payload.content : [];
-  const parts = content.flatMap((entry) => {
-    if (!isRecord(entry)) {
-      return [];
-    }
-    const text =
-      typeof entry.text === "string"
-        ? entry.text
-        : typeof entry.input_text === "string"
-          ? entry.input_text
-          : undefined;
-    return text?.trim() ? [text.trim()] : [];
-  });
-  return parts.length > 0 ? parts.join(" ") : undefined;
-}
-
-function readSessionIdFromFilename(file: string): string | undefined {
-  const match = path.basename(file).match(/[0-9a-f]{8}-[0-9a-f-]{27,}/iu);
-  return match?.[0];
-}
-
 async function resolveCodexCliNode(params: {
   runtime: PluginRuntime;
   requestedNode?: string;
@@ -689,6 +369,9 @@ function parseCodexCliSessionsListResult(raw: unknown): CodexCliSessionsListResu
   }
   return {
     codexHome: typeof payload.codexHome === "string" ? payload.codexHome : "",
+    scannedFileCount: readFiniteCount(payload.scannedFileCount),
+    sessionFileCount: readFiniteCount(payload.sessionFileCount),
+    searchTruncated: payload.searchTruncated === true ? true : undefined,
     sessions: payload.sessions.flatMap((entry) => {
       if (!isRecord(entry) || typeof entry.sessionId !== "string") {
         return [];
@@ -700,15 +383,16 @@ function parseCodexCliSessionsListResult(raw: unknown): CodexCliSessionsListResu
           lastMessage: typeof entry.lastMessage === "string" ? entry.lastMessage : undefined,
           cwd: typeof entry.cwd === "string" ? entry.cwd : undefined,
           sessionFile: typeof entry.sessionFile === "string" ? entry.sessionFile : undefined,
-          messageCount:
-            typeof entry.messageCount === "number" && Number.isFinite(entry.messageCount)
-              ? entry.messageCount
-              : 0,
+          messageCount: readFiniteCount(entry.messageCount),
           partialScan: entry.partialScan === true ? true : undefined,
         },
       ];
     }),
   };
+}
+
+function readFiniteCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function unwrapNodeInvokePayload(raw: unknown): unknown {
@@ -744,11 +428,6 @@ function resolveCodexHome(): string {
   return process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
 }
 
-async function readFirstLine(file: string): Promise<string | undefined> {
-  const head = await readJsonlHead(file, SESSION_FILE_HEAD_SCAN_BYTES);
-  return head?.lines[0];
-}
-
 function normalizeLimit(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.min(MAX_SESSION_LIMIT, Math.max(1, Math.floor(value)))
@@ -759,13 +438,6 @@ function normalizeTimeoutMs(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.min(60 * 60_000, Math.floor(value))
     : DEFAULT_RESUME_TIMEOUT_MS;
-}
-
-function truncateText(value: string, max: number): string {
-  if (value.length <= max) {
-    return value;
-  }
-  return `${truncateUtf16Safe(value, Math.max(0, max - 3))}...`;
 }
 
 function compareOptionalStringsDesc(a?: string, b?: string): number {

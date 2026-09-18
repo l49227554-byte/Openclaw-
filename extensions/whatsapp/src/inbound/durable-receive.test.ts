@@ -10,10 +10,10 @@ import {
   deserializeWhatsAppDurableInboundMessage,
   serializeWhatsAppDurableInboundMessage,
 } from "./durable-payload.js";
-import {
-  createWhatsAppIngressMonitor,
-  type WhatsAppIngressLifecycle,
-} from "./durable-receive.js";
+import { createWhatsAppIngressMonitor } from "./durable-receive.js";
+import { resolveWhatsAppIngressLifecycle } from "./ingress-lifecycle.js";
+import { createWhatsAppInboundMessageDebouncer } from "./message-debounce.js";
+import { createTestWebInboundMessage } from "./test-message.test-helper.js";
 
 type WhatsAppDurableInboundPayload = {
   message: ReturnType<typeof serializeWhatsAppDurableInboundMessage>;
@@ -166,7 +166,7 @@ describe("createWhatsAppIngressMonitor", () => {
     });
   });
 
-  it("releases a deferred lane so debounce siblings reach delivery before adoption", async () => {
+  it("delivers same-lane debounce candidates while retaining each claim until adoption", async () => {
     await withTempState(async (stateDir) => {
       const queue = createChannelIngressQueueForTests<WhatsAppDurableInboundPayload>({
         channelId: "whatsapp",
@@ -185,7 +185,7 @@ describe("createWhatsAppIngressMonitor", () => {
       });
 
       const dispatched: string[] = [];
-      const lifecycles: WhatsAppIngressLifecycle[] = [];
+      const adoptions: Array<() => void | Promise<void>> = [];
       const monitor = createWhatsAppIngressMonitor({
         queue,
         pollIntervalMs: 10,
@@ -195,24 +195,121 @@ describe("createWhatsAppIngressMonitor", () => {
             throw new Error("expected transport id");
           }
           dispatched.push(id);
-          lifecycles.push(lifecycle);
+          adoptions.push(lifecycle.onAdopted);
           return { kind: "deferred" as const };
         },
       });
 
       monitor.start();
-      await vi.waitFor(() => expect(dispatched).toEqual(["msg-4a", "msg-4b"]));
-
-      expect((await queue.listClaims()).map((row) => row.id).toSorted()).toEqual(
-        [firstId, secondId].toSorted(),
-      );
-      expect(await queue.listPending({ limit: "all" })).toEqual([]);
-
-      await Promise.all(lifecycles.map((lifecycle) => lifecycle.onAdopted()));
       await monitor.waitForIdle();
 
-      expect(await queue.listClaims()).toEqual([]);
-      await monitor.stop();
+      try {
+        expect(dispatched).toEqual(["msg-4a", "msg-4b"]);
+        expect((await queue.listClaims()).map((row) => row.id).toSorted()).toEqual(
+          [firstId, secondId].toSorted(),
+        );
+        expect(await queue.listPending({ limit: "all" })).toEqual([]);
+
+        const [adoptFirst, adoptSecond] = adoptions;
+        if (!adoptFirst || !adoptSecond) {
+          throw new Error("expected both adoption callbacks");
+        }
+        await adoptFirst();
+        await adoptFirst();
+        expect((await queue.listClaims()).map((row) => row.id)).toEqual([secondId]);
+        await expect(queue.enqueue(firstId, payload("msg-4a"))).resolves.toMatchObject({
+          kind: "completed",
+        });
+        await adoptSecond();
+        await adoptSecond();
+        expect(await queue.listClaims()).toEqual([]);
+        await expect(queue.enqueue(secondId, payload("msg-4b"))).resolves.toMatchObject({
+          kind: "completed",
+        });
+        expect(dispatched).toEqual(["msg-4a", "msg-4b"]);
+      } finally {
+        await monitor.stop();
+      }
+    });
+  });
+
+  it("combines durable same-chat messages in timestamp and receive order before settling claims", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createChannelIngressQueueForTests<WhatsAppDurableInboundPayload>({
+        channelId: "whatsapp",
+        accountId: "acct",
+        stateDir,
+      });
+      const bodies: string[] = [];
+      const markRead = vi.fn(async () => {});
+      const onError = vi.fn();
+      const debouncer = createWhatsAppInboundMessageDebouncer({
+        resolveDebounceMs: () => 60_000,
+        onMessage: async (msg) => {
+          bodies.push(msg.payload.body);
+          await resolveWhatsAppIngressLifecycle(msg)?.onAdopted();
+        },
+        markRead,
+        onPendingWorkChanged: () => {},
+        onError,
+      });
+      const monitor = createWhatsAppIngressMonitor({
+        queue,
+        pollIntervalMs: 10,
+        dispatch: async (inbound, lifecycle) => {
+          const id = inbound.message.key.id;
+          if (!id) {
+            throw new Error("expected transport id");
+          }
+          await debouncer.enqueue({
+            ...createTestWebInboundMessage({
+              event: { id, timestamp: Number(inbound.message.messageTimestamp) },
+              payload: { body: id },
+              admission: { conversation: { id: REMOTE_JID } },
+            }),
+            receiveOrder: inbound.receiveOrder,
+            turnAdoptionLifecycle: lifecycle,
+            readReceipt: { remoteJid: REMOTE_JID, id },
+          });
+          return { kind: "deferred" };
+        },
+      });
+      monitor.start();
+      try {
+        for (const [id, timestamp, receiveOrder] of [
+          ["third", 2, 3],
+          ["second", 1, 2],
+          ["first", 1, 1],
+        ] as const) {
+          await monitor.admit({
+            message: { ...message(id), messageTimestamp: timestamp },
+            receiveOrder,
+            receivedAt: Date.now(),
+          });
+        }
+        await monitor.waitForIdle();
+        expect(bodies).toEqual([]);
+        expect(await queue.listClaims()).toHaveLength(3);
+        expect(await queue.listPending({ limit: "all" })).toEqual([]);
+        expect(markRead).not.toHaveBeenCalled();
+        await debouncer.drain();
+        await monitor.waitForIdle();
+        expect(bodies).toEqual(["first\nsecond\nthird"]);
+        expect(markRead.mock.calls).toEqual(
+          ["first", "second", "third"].map((id) => [{ remoteJid: REMOTE_JID, id }]),
+        );
+        expect(onError).not.toHaveBeenCalled();
+        expect(await queue.listClaims()).toEqual([]);
+        for (const id of ["first", "second", "third"]) {
+          await expect(queue.enqueue(eventId(id), payload(id))).resolves.toMatchObject({
+            kind: "completed",
+          });
+        }
+      } finally {
+        await monitor.pause();
+        await debouncer.drain();
+        await monitor.stop();
+      }
     });
   });
 

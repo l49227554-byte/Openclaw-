@@ -22,6 +22,7 @@ import {
   type LatestSubagentRunReadIndex,
   type SubagentRunReadIndex,
 } from "./subagent-registry-queries.js";
+import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import {
   getSubagentSessionListRunsSnapshotForRead,
   getSubagentSessionListRunsSnapshotForSessions,
@@ -31,7 +32,7 @@ import {
   getSubagentRunsSnapshotForSessions,
 } from "./subagent-registry-state.js";
 import { loadSubagentRunsForChildSessionFromSqlite } from "./subagent-registry.store.sqlite.js";
-import type { SubagentRunReadRecord, SubagentRunRecord } from "./subagent-registry.types.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSubagentRunLive } from "./subagent-run-liveness.js";
 export { isSubagentRunLive, isSubagentRunQueued } from "./subagent-run-liveness.js";
 

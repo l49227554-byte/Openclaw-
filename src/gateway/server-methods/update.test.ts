@@ -580,6 +580,19 @@ describe("update.run restart scheduling", () => {
     expect(payload?.ok).toBe(true);
     const run = getUpdateRun(payload!.runId);
     expect(run).toMatchObject({ status: "failed", reason: "unexpected-error" });
+    expect(run?.steps).toContainEqual(
+      expect.objectContaining({
+        step: "restarting",
+        status: "failed",
+        failureFacts: [
+          {
+            check: "restarting",
+            code: "Error",
+            message: "state database unavailable",
+          },
+        ],
+      }),
+    );
     expect(payload?.message).toBe(run?.origin.nextAction);
     expect(summarizeUpdateRunResponse(payload).next).toContain(
       "Run openclaw update status after the gateway restarts.",
@@ -1001,5 +1014,42 @@ describe("update.run post-core plugin finalize", () => {
     expect(payload?.result?.status).toBe("error");
     expect(payload?.result?.reason).toBe("post-core-plugin-finalize-failed");
     expect(readCapturedPayload().status).toBe("error");
+  });
+
+  it("records deferred finalization without restarting and retries on the next update", async () => {
+    const finalizer = await vi.importActual<
+      typeof import("../../infra/update-post-core-finalize.js")
+    >("../../infra/update-post-core-finalize.js");
+    runPostCoreFinalizeAfterGatewayUpdateMock.mockImplementationOnce((params) =>
+      finalizer.runPostCoreFinalizeAfterGatewayUpdate({
+        ...params,
+        resolveEntrypoint: async () => "/tmp/openclaw-git/openclaw.mjs",
+        spawnFinalize: async () => ({
+          code: 1,
+          stdout: JSON.stringify({
+            status: "skipped",
+            mode: "finalize",
+            reason: "update-ledger-busy",
+          }),
+        }),
+      }),
+    );
+    mockGitOkUpdate("/tmp/openclaw-git");
+    const deferred = expectDefined(await captureUpdateRunPayload(), "deferred update response");
+    expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
+    expect(deferred.result).toMatchObject({ status: "skipped", reason: "update-ledger-busy" });
+    expect(getUpdateRun(deferred.runId)).toMatchObject({
+      status: "skipped",
+      reason: "update-ledger-busy",
+    });
+    expect(readCapturedPayload()).toMatchObject({
+      status: "skipped",
+      stats: { reason: "update-ledger-busy" },
+    });
+
+    mockGitOkUpdate("/tmp/openclaw-git");
+    await captureUpdateRunPayload();
+    expect(runPostCoreFinalizeAfterGatewayUpdateMock).toHaveBeenCalledTimes(2);
+    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledOnce();
   });
 });

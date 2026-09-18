@@ -1,8 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { Selectable } from "kysely";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
-import type { ConfigMachineStateRow } from "./config-machine-state.js";
+import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
 
@@ -38,7 +39,7 @@ export type OpenClawStateReadReply =
       ok: true;
       type: "nodeHost.config";
       sourceAdmitted: true;
-      row: ConfigMachineStateRow | undefined;
+      row: Pick<Selectable<ConfigMachineState>, "value_json" | "updated_at_ms"> | undefined;
     }
   | {
       ok: false;

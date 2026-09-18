@@ -19,12 +19,7 @@ export function normalizeConfigMachineStateKey(key: string): string {
   return normalized;
 }
 
-export type ConfigMachineStateRow = { value_json: string; updated_at_ms: number };
-
-export function readConfigMachineStateRowInDatabase(
-  database: DatabaseSync,
-  key: string,
-): ConfigMachineStateRow | undefined {
+export function readConfigMachineStateRowInDatabase(database: DatabaseSync, key: string) {
   if (!tableExists(database, "config_machine_state")) {
     return undefined;
   }

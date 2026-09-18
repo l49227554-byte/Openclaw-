@@ -143,6 +143,15 @@ it.each<{
     laterError: "cron message action authority is no longer active",
     deliveryMode: "gateway" as const,
   },
+  {
+    cause: "same-host Gateway fields are removed from an existing job",
+    revokeAt: "provider" as const,
+    action: "send" as const,
+    retire: noteActiveCronJobMessageActionAuthorityMutation,
+    accepted: true,
+    laterError: "cron message action authority is no longer active",
+    deliveryMode: "gateway" as const,
+  },
   ...(["direct", "gateway"] as const).map((deliveryMode) => ({
     cause: `message authority closes before a ${deliveryMode} generic durable retry`,
     revokeAt: "generic-retry" as const,
@@ -220,7 +229,7 @@ it.each<{
   })),
 ])(
   "owns scheduled message lifetime when $cause",
-  async ({ revokeAt, action, retire, accepted, partial, laterError, deliveryMode }) => {
+  async ({ cause, revokeAt, action, retire, accepted, partial, laterError, deliveryMode }) => {
     const registry = captureActivePluginRegistrySnapshot();
     const state = await createOpenClawTestState();
     const source = new AbortController();
@@ -258,6 +267,7 @@ it.each<{
       const sends: string[] = [];
       const queueIds: Array<string | undefined> = [];
       const mutations: string[] = [];
+      const localActionGatewayFields: Array<Record<string, unknown>> = [];
       const pollRequests: string[] = [];
       const providerConfigs: OpenClawConfig[] = [];
       const providerAccounts: Array<string | undefined> = [];
@@ -343,6 +353,8 @@ it.each<{
           resolveExecutionMode: () => (deliveryMode === "gateway" ? "gateway" : "local"),
           handleAction: async ({
             action: requestedAction,
+            params: actionParams,
+            gateway: actionGateway,
             cfg: actionConfig,
             deliveryRetryOwner,
             onPlatformSendDispatch,
@@ -371,6 +383,14 @@ it.each<{
             }
             if (requestedAction !== "set-presence") {
               throw new Error(`Unexpected plugin action: ${requestedAction}`);
+            }
+            if (cause === "the active job is cancelled after a generic mutation is accepted") {
+              localActionGatewayFields.push({
+                gatewayUrl: actionParams.gatewayUrl,
+                gatewayToken: actionParams.gatewayToken,
+                resolvedUrl: actionGateway?.url,
+                resolvedToken: actionGateway?.token,
+              });
             }
             mutations.push(requestedAction);
             if (
@@ -439,6 +459,7 @@ it.each<{
           cfg: config,
           agentId: "main",
           runId,
+          sessionId: runId,
           sessionKey,
           jobId,
           toolsAllow: ["message"],
@@ -499,7 +520,11 @@ it.each<{
       catalog.push(tool);
       const invoke = <T>(run: () => Promise<T>) =>
         gatewayCaller ? withGatewayToolCallerIdentity(gatewayCaller, run) : run();
-      const send = (callId: string, message: string, gatewayUrl?: string) =>
+      const send = (
+        callId: string,
+        message: string,
+        gatewayConnection?: { gatewayUrl?: string; gatewayToken?: string },
+      ) =>
         invoke(() =>
           tool.execute(
             callId,
@@ -509,14 +534,23 @@ it.each<{
               ...(revokeAt === "config" ? { accountId: "admitted" } : {}),
               target: revokeAt === "target" ? "alerts" : "channel:100000000000000001",
               message: revokeAt === "multipart" ? "first second" : message,
-              ...(gatewayUrl ? { gatewayUrl } : {}),
+              ...gatewayConnection,
             },
             source.signal,
           ),
         );
       const execute = (callId: string) =>
         action === "send"
-          ? send(callId, "first")
+          ? send(
+              callId,
+              "first",
+              cause === "message authority is durably revoked" && deliveryMode === "direct"
+                ? {
+                    gatewayUrl: "ws://127.0.0.1:18789",
+                    gatewayToken: "redundant-same-host-token",
+                  }
+                : undefined,
+            )
           : invoke(() =>
               tool.execute(
                 callId,
@@ -535,15 +569,28 @@ it.each<{
                           message: "generic",
                         }
                       : {}),
+                  ...(cause === "the active job is cancelled after a generic mutation is accepted"
+                    ? {
+                        gatewayUrl: "wss://legacy.example.invalid/discarded-path",
+                        gatewayToken: "legacy-provider-local-token",
+                      }
+                    : {}),
                 },
                 source.signal,
               ),
             );
 
-      await expect(send("explicit-gateway", "blocked", "ws://127.0.0.1:18789")).rejects.toThrow(
-        "Scheduled message actions cannot override Gateway routing",
-      );
-      expect(sendText).not.toHaveBeenCalled();
+      if (cause === "same-host Gateway fields are removed from an existing job") {
+        await expect(
+          send("existing-job-message", "first", {
+            gatewayUrl: "ws://127.0.0.1:18789",
+            gatewayToken: "redundant-same-host-token",
+          }),
+        ).rejects.toThrow(
+          "Scheduled message actions require the active bound Gateway. Remove per-call gatewayUrl and gatewayToken fields and retry.",
+        );
+        expect(gatewayDispatch).not.toHaveBeenCalled();
+      }
       if (revokeAt === "unbound") {
         await expect(execute("configured-remote")).rejects.toThrow(
           "Scheduled message actions require an active bound Gateway",
@@ -552,7 +599,11 @@ it.each<{
         return;
       }
 
-      pending = execute("accepted-before-revocation");
+      pending = execute(
+        cause === "same-host Gateway fields are removed from an existing job"
+          ? "existing-job-message"
+          : "accepted-before-revocation",
+      );
       void pending.catch(() => undefined);
       await withTestTimeout(
         Promise.race([
@@ -645,6 +696,18 @@ it.each<{
       expect(mutations).toEqual(
         action === "set-presence" && (accepted || revokeAt === "unconfirmed-action")
           ? [action]
+          : [],
+      );
+      expect(localActionGatewayFields).toEqual(
+        cause === "the active job is cancelled after a generic mutation is accepted"
+          ? [
+              {
+                gatewayUrl: undefined,
+                gatewayToken: undefined,
+                resolvedUrl: undefined,
+                resolvedToken: undefined,
+              },
+            ]
           : [],
       );
       expect(pollRequests).toEqual(action === "poll" ? ["initial"] : []);

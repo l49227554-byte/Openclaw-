@@ -18,20 +18,7 @@ import {
 /** One synchronous refresh slice shares agent policy; each later slice starts fresh. */
 export function createSessionRowMaterializationBatch(): typeof readResidentSessionRow {
   const activitySummaryEnabledByAgent = new Map<string, boolean>();
-  return (params) => {
-    const { agentId, entry } = params.row;
-    if (!entry.sessionId || entry.initializationPending) {
-      return readResidentSessionRow(params);
-    }
-    let activitySummaryEnabled = activitySummaryEnabledByAgent.get(agentId);
-    if (activitySummaryEnabled === undefined) {
-      activitySummaryEnabled = Boolean(
-        resolveUtilityModelRefForAgent({ cfg: params.cfg, agentId }),
-      );
-      activitySummaryEnabledByAgent.set(agentId, activitySummaryEnabled);
-    }
-    return readResidentSessionRow(params, activitySummaryEnabled);
-  };
+  return (params) => readResidentSessionRow(params, activitySummaryEnabledByAgent);
 }
 
 /** Resident rows consume committed metadata; optional transcript work has a separate budget. */
@@ -47,7 +34,7 @@ export function readResidentSessionRow(
     links: SessionChildLink[];
     readSourceEntry: (key: string) => records.Row["storedEntry"];
   },
-  activitySummaryEnabled?: boolean,
+  activitySummaryEnabledByAgent?: Map<string, boolean>,
 ) {
   const { row, cfg, context } = params;
   const source = isIncognitoSessionKey(row.key)
@@ -90,8 +77,20 @@ export function readResidentSessionRow(
     inputs.lastMessagePreview = row.lastMessagePreview;
   }
   inputs.subagentRunInputs = params.subagentInputs;
+  const materialized = materializeSessionRow(inputs);
+  // Row preparation may populate the metadata used by automatic utility policy.
+  let activitySummaryEnabled: boolean | undefined;
+  if (activitySummaryEnabledByAgent && row.entry.sessionId && !row.entry.initializationPending) {
+    activitySummaryEnabled = activitySummaryEnabledByAgent.get(row.agentId);
+    if (activitySummaryEnabled === undefined) {
+      activitySummaryEnabled = Boolean(
+        resolveUtilityModelRefForAgent({ cfg, agentId: row.agentId }),
+      );
+      activitySummaryEnabledByAgent.set(row.agentId, activitySummaryEnabled);
+    }
+  }
   return {
-    materialized: materializeSessionRow(inputs),
+    materialized,
     fallbackModel: presentation.activeModel,
     facts: readSessionRowFacts({
       cfg,

@@ -1,3 +1,4 @@
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { GatewayStorageFailure } from "../../infra/sqlite-error-diagnostics.js";
 import {
   extractErrorHttpStatus,
@@ -5,6 +6,7 @@ import {
   parseApiErrorInfo,
 } from "../../shared/assistant-error-format.js";
 import { classifyFailoverSignalCore } from "./classify-core.js";
+import { isContextOverflowErrorFromTables } from "./context-overflow-tables.js";
 import { isSessionTranscriptValidationErrorMessage } from "./message-patterns.js";
 import { extractFailoverSignalDetails } from "./signal-details.js";
 import type { FailoverReason } from "./signal.js";
@@ -192,7 +194,15 @@ export function renderRecordedAssistantFailureCopy(message: {
     status,
     details: extractFailoverSignalDetails(message.errorBody),
   });
-  if (classification?.kind === "context_overflow") {
+  if (
+    classification?.kind === "context_overflow" ||
+    [message.errorCode, message.errorType, raw].some(
+      (value) =>
+        typeof value === "string" &&
+        (normalizeLowercaseStringOrEmpty(value) === "context_overflow" ||
+          isContextOverflowErrorFromTables(value)),
+    )
+  ) {
     return "Context overflow: this conversation is too large for the model. Try /compact, use /new to start a fresh session, or retry the command with a tighter output limit.";
   }
   const classifiedCopy = renderAssistantRequestFailureCopy({

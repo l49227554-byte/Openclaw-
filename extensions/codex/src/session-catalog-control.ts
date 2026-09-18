@@ -300,24 +300,47 @@ function createCodexSessionCatalogControlFromRequests(params: {
           if (diagnostics) {
             diagnostics.fields.controlRequestCalls++;
           }
+          const scanParams: CodexThreadListParams = {
+            archived: false,
+            limit: limit - sessions.length,
+            modelProviders: [],
+            // Match Codex's resume picker/latest-session ordering so a session
+            // created outside OpenClaw enters the first catalog page immediately.
+            sortKey: "updated_at",
+            sortDirection: "desc",
+            ...(cwd ? { cwd } : {}),
+            ...(cursor ? { cursor } : {}),
+          };
           let response: CodexThreadListResponse;
           const observation = startCodexCatalogControlRequestDiagnostics(diagnostics);
           try {
+            // A local home's own state index already describes every rollout it owns,
+            // and the exact-eligibility path above trusts it. Without that selector the
+            // list view pays Codex's rollout scan, which reads rollout content per
+            // listed thread: one 40-row page over a 2.3 GB home cost ~2.2 s and ~145 MB
+            // of reads against ~50 ms and ~9 MB from the index.
             response = await requests.listThreads(
-              {
-                archived: false,
-                limit: limit - sessions.length,
-                modelProviders: [],
-                // Match Codex's resume picker/latest-session ordering so a session
-                // created outside OpenClaw enters the first catalog page immediately.
-                sortKey: "updated_at",
-                sortDirection: "desc",
-                ...(cwd ? { cwd } : {}),
-                ...(cursor ? { cursor } : {}),
-              },
+              params.localSessionsRoot ? { ...scanParams, useStateDbOnly: true } : scanParams,
               remainingTimeoutMs,
               observation,
             );
+            // An index that has not adopted this home's rollouts yet would hide every
+            // session. Only a completely empty unfiltered page repeats the request as
+            // a scan, which reads nothing when the home really is empty.
+            const scanFallbackTimeoutMs = Math.ceil(deadline - params.now());
+            if (
+              params.localSessionsRoot &&
+              !cursor &&
+              !cwd &&
+              response.data.length === 0 &&
+              !response.nextCursor &&
+              scanFallbackTimeoutMs > 0
+            ) {
+              if (diagnostics) {
+                diagnostics.fields.controlRequestCalls++;
+              }
+              response = await requests.listThreads(scanParams, scanFallbackTimeoutMs, observation);
+            }
           } catch (error) {
             observation?.rejected();
             throw error;

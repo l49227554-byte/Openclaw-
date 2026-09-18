@@ -515,9 +515,12 @@ describe("registered Codex catalog diagnostics", () => {
 
   it("limits emitted summaries without throttling catalog requests and reports suppression", async () => {
     const f = await fixture();
+    // A listed thread keeps this a single-request page: an empty local index adds the
+    // scan fallback, which this observation-count assertion is not about.
+    const listed = await f.thread("codex");
     commandRpcMocks.codexControlRequest.mockImplementation(async () => {
       clock += 1_100;
-      return { data: [] };
+      return { data: [listed] };
     });
     for (let index = 0; index < 32; index++) {
       expect((await f.list(`query-${index}`))[0]?.connected).toBe(true);
@@ -533,6 +536,9 @@ describe("registered Codex catalog diagnostics", () => {
 
   it("keeps requests running when diagnostic capacity is full and releases settled observations", async () => {
     const f = await fixture();
+    // A listed thread keeps each page a single request: an empty local index adds the
+    // scan fallback, which this shared-producer assertion is not about.
+    const listed = await f.thread("codex");
     const response = createDeferred<unknown>();
     const started = createDeferred<void>();
     commandRpcMocks.codexControlRequest.mockImplementation(() => {
@@ -544,7 +550,7 @@ describe("registered Codex catalog diagnostics", () => {
       await started.promise;
       await nextTurn();
       clock += 1_500;
-      response.resolve({ data: [] });
+      response.resolve({ data: [listed] });
       const results = await Promise.all(calls);
       expect(results.every((hosts) => hosts[0]?.connected)).toBe(true);
       expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
@@ -555,13 +561,13 @@ describe("registered Codex catalog diagnostics", () => {
       clock += 61_000;
       commandRpcMocks.codexControlRequest.mockImplementation(async () => {
         clock += 1_100;
-        return { data: [] };
+        return { data: [listed] };
       });
       await f.list("after-capacity");
       expect(await emitted(PAGE)).toHaveLength(1);
       expect(await emitted(LIST)).toHaveLength(1);
     } finally {
-      response.resolve({ data: [] });
+      response.resolve({ data: [listed] });
       await Promise.allSettled(calls);
     }
   });

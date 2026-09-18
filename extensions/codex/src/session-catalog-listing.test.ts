@@ -43,6 +43,14 @@ import {
   type OpenClawConfig,
 } from "./session-catalog.test-helpers.js";
 
+/** Builds a throwaway Codex home whose sessions root makes its catalog source local. */
+async function localCodexHome(prefix: string): Promise<string> {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
+  tempDirs.push(root);
+  await fs.mkdir(path.join(root, "sessions"));
+  return root;
+}
+
 describe("Codex session catalog errors", () => {
   it("preserves fallback names returned by paired nodes", () => {
     expect(
@@ -781,6 +789,74 @@ describe("Codex supervision catalog", () => {
       threadId: "thread-managed",
       rolloutPath,
     });
+  });
+
+  it("lists a local home from its state index instead of scanning every rollout", async () => {
+    const root = await localCodexHome("openclaw-codex-state-index-");
+    commandRpcMocks.codexControlRequest.mockResolvedValue({
+      data: [idleThread({ id: "thread-indexed", source: "cli" })],
+      nextCursor: "next-page",
+    });
+    const factory = createCodexSessionCatalogControlFactory({
+      env: { ...process.env, CODEX_HOME: root },
+      getPluginConfig: () => ({ supervision: { enabled: true } }),
+      getRuntimeConfig: () => config,
+    });
+    const source = factory.homesForAgent("main")[0]!;
+
+    await expect(factory.forRequest("main", source).listPage({ limit: 25 })).resolves.toMatchObject(
+      {
+        sessions: [expect.objectContaining({ threadId: "thread-indexed" })],
+      },
+    );
+    expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
+    expect(commandRpcMocks.codexControlRequest.mock.calls[0]?.[2]).toMatchObject({
+      archived: false,
+      limit: 25,
+      sortKey: "updated_at",
+      useStateDbOnly: true,
+    });
+  });
+
+  it("scans rollouts once when a local home's state index reports nothing", async () => {
+    const root = await localCodexHome("openclaw-codex-state-index-empty-");
+    commandRpcMocks.codexControlRequest.mockImplementation(
+      async (_pluginConfig: unknown, _method: string, params: { useStateDbOnly?: boolean }) =>
+        params.useStateDbOnly === true
+          ? { data: [] }
+          : { data: [idleThread({ id: "thread-unindexed", source: "cli" })] },
+    );
+    const factory = createCodexSessionCatalogControlFactory({
+      env: { ...process.env, CODEX_HOME: root },
+      getPluginConfig: () => ({ supervision: { enabled: true } }),
+      getRuntimeConfig: () => config,
+    });
+    const source = factory.homesForAgent("main")[0]!;
+
+    await expect(factory.forRequest("main", source).listPage({})).resolves.toMatchObject({
+      sessions: [expect.objectContaining({ threadId: "thread-unindexed" })],
+    });
+    expect(
+      commandRpcMocks.codexControlRequest.mock.calls.map(
+        (call) => (call[2] as { useStateDbOnly?: boolean }).useStateDbOnly,
+      ),
+    ).toEqual([true, undefined]);
+  });
+
+  it("keeps the state index selector when a filtered local page is legitimately empty", async () => {
+    const root = await localCodexHome("openclaw-codex-state-index-filtered-");
+    commandRpcMocks.codexControlRequest.mockResolvedValue({ data: [] });
+    const factory = createCodexSessionCatalogControlFactory({
+      env: { ...process.env, CODEX_HOME: root },
+      getPluginConfig: () => ({ supervision: { enabled: true } }),
+      getRuntimeConfig: () => config,
+    });
+    const source = factory.homesForAgent("main")[0]!;
+
+    await expect(
+      factory.forRequest("main", source).listPage({ cwd: "/workspace/absent" }),
+    ).resolves.toEqual({ sessions: [] });
+    expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
   });
 
   it("uses a sanitized preview only when Codex has no thread name", async () => {

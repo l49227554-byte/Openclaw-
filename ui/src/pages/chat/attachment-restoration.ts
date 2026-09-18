@@ -1,3 +1,4 @@
+import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 
@@ -7,10 +8,10 @@ export function restoreChatApiAttachments(attachments?: readonly unknown[]): Cha
     return [];
   }
   return attachments.flatMap((value) => {
-    if (!value || typeof value !== "object") {
+    const attachment = asOptionalObjectRecord(value);
+    if (!attachment) {
       return [];
     }
-    const attachment = value as Record<string, unknown>;
     const mimeType = typeof attachment.mimeType === "string" ? attachment.mimeType.trim() : "";
     const content = typeof attachment.content === "string" ? attachment.content : "";
     if (

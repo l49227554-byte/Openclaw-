@@ -181,7 +181,7 @@ extensions/codex/src/app-server/native-mcp-app.ts	9
 extensions/codex/src/app-server/native-skill-isolation.ts	1
 extensions/codex/src/app-server/native-subagent-task-mirror.ts	2
 extensions/codex/src/app-server/plan-compaction-state.ts	1
-extensions/codex/src/app-server/plugin-activation.ts	6
+extensions/codex/src/app-server/plugin-activation.ts	4
 extensions/codex/src/app-server/plugin-approval-roundtrip.ts	1
 extensions/codex/src/app-server/plugin-inventory.ts	6
 extensions/codex/src/app-server/plugin-metadata-cache.ts	5

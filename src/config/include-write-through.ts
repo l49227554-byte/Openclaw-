@@ -312,8 +312,8 @@ export type StagedIncludeWrite = {
  * the pending delta onto the AUTHORED include value so ${VAR} placeholders
  * survive (finding 3) instead of ever serializing the resolved config. */
 // Both windows are fenced: snapshot-to-stage via the caller's load-time
-// include hashes (snapshotIncludeHashes/Targets, when the load captured them)
-// and stage-to-publish via previousHash re-hashed under the publish lock.
+// include hashes (snapshotIncludeHashes, when the load captured them) and
+// stage-to-publish via previousHash re-hashed under the publish lock.
 export type StagedIncludeWriteResult = {
   staged: StagedIncludeWrite[];
   // Keyed by normalized target path; feeds context.resolveRuntimePreflightSourceConfig
@@ -326,10 +326,10 @@ export async function stageIncludeWriteThrough(params: {
   pendingIncludeWrites: readonly PendingIncludeWrite[];
   envForRestore: NodeJS.ProcessEnv;
   homedir: string;
-  // Load-time include hashes/targets (caller-captured or snapshot-read),
-  // keyed by normalized lexical include path -> hash / canonical target.
+  // Load-time include hashes (caller-captured or bound to the snapshot by its
+  // read), keyed by the normalized lexical include path: the same value the
+  // provenance targetPath below carries.
   snapshotIncludeHashes?: Record<string, string>;
-  snapshotIncludeTargets?: Record<string, string>;
 }): Promise<StagedIncludeWriteResult> {
   const staged: StagedIncludeWrite[] = [];
   for (const pending of params.pendingIncludeWrites) {
@@ -364,17 +364,15 @@ export async function stageIncludeWriteThrough(params: {
     const previousHash = hashConfigIncludeRaw(previousRaw);
     // Snapshot-to-stage fence: the pending value was computed against the
     // load-time snapshot, so an include edited since load must conflict here
-    // instead of being overwritten with a stale projection.
-    if (params.snapshotIncludeHashes && params.snapshotIncludeTargets) {
-      const loadKey = Object.keys(params.snapshotIncludeTargets).find(
-        (key) =>
-          path.normalize(params.snapshotIncludeTargets![key] ?? "") ===
-          path.normalize(target.absolutePath),
+    // instead of being overwritten with a stale projection. A snapshot with no
+    // recorded load hashes fails closed; it never publishes an unfenced write.
+    if (!params.snapshotIncludeHashes) {
+      throw new ConfigMutationConflictError(
+        "cannot verify included config is unchanged since last load; reload and retry",
       );
-      const loadHash = loadKey === undefined ? undefined : params.snapshotIncludeHashes[loadKey];
-      if (loadHash !== undefined && loadHash !== previousHash) {
-        throw new ConfigMutationConflictError("included config changed since last load");
-      }
+    }
+    if (params.snapshotIncludeHashes[path.normalize(targetPath)] !== previousHash) {
+      throw new ConfigMutationConflictError("included config changed since last load");
     }
     let authoredIncludeValue: unknown;
     if (previousRaw !== null) {

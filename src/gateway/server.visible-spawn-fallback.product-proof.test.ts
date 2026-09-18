@@ -64,6 +64,8 @@ type History = { messages: Array<{ role?: string; content?: unknown; stopReason?
 type ProviderRequest = {
   model: string;
   input: Array<{ type?: string; role?: string; call_id?: string; output?: string }>;
+  tools?: unknown[];
+  instructions?: string;
 };
 type Scenario = {
   name: string;
@@ -79,7 +81,13 @@ type Scenario = {
 };
 
 async function startProvider(scenario: Scenario) {
-  const requests: Array<{ model: string; child: boolean; authorization?: string }> = [];
+  const requests: Array<{
+    model: string;
+    child: boolean;
+    authorization?: string;
+    toolCount: number;
+    hasInstructions: boolean;
+  }> = [];
   const errors: unknown[] = [];
   let spawn: Receipt | undefined;
   let spawnRequested = false;
@@ -100,6 +108,8 @@ async function startProvider(scenario: Scenario) {
       requests.push({
         model: body.model,
         child: child && !title,
+        toolCount: body.tools?.length ?? 0,
+        hasInstructions: typeof body.instructions === "string",
         authorization: request.headers.authorization,
       });
       if (child && !title && body.model === "primary" && primaryRateLimited) {
@@ -641,7 +651,7 @@ async function withCliSpawnGrant(
         authorizeToolCall: currentGrant.isCurrent,
       }),
     );
-    expect(response).toMatchObject({
+    expect(response, JSON.stringify(response)).toMatchObject({
       result: { isError: false, content: [{ type: "text", text: expect.any(String) }] },
     });
     const payload = response as { result: { content: Array<{ type: string; text: string }> } };
@@ -731,7 +741,16 @@ describe("CLI model inheritance through MCP", () => {
               expect(terminal.status).toBe("ok");
               const childRequests = providerRequests.filter((request) => request.child);
               expect(childRequests.length).toBeGreaterThan(0);
-              expect(childRequests.every((request) => request.model === "primary")).toBe(true);
+              expect(
+                childRequests.every((request) => request.model === "primary"),
+                JSON.stringify(
+                  childRequests.map(({ model, toolCount, hasInstructions }) => ({
+                    model,
+                    toolCount,
+                    hasInstructions,
+                  })),
+                ),
+              ).toBe(true);
               const child = loadSessionEntryReadOnly({
                 agentId: "main",
                 sessionKey: spawn.childSessionKey,

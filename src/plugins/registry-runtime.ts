@@ -13,7 +13,7 @@ import {
   type OpenKeyedStoreOptions,
 } from "../plugin-state/plugin-state-store.js";
 import { createLazyRuntimeSurface } from "../shared/lazy-runtime.js";
-import { formatPluginTrustRefusal } from "./plugin-trust.js";
+import { PluginTrustRefusalError } from "./plugin-trust.js";
 import {
   capturePluginLifecycleAuthority,
   getPluginRecordRegistry,
@@ -24,6 +24,8 @@ import {
 import type { PluginRegistryState } from "./registry-state.js";
 import type { PluginRecord } from "./registry-types.js";
 import {
+  bindGatewayContextResolver,
+  getCanonicalGatewayContextResolver,
   getGatewayContextResolver,
   withPluginRuntimePluginScope,
   withPluginRuntimeRegistryScope,
@@ -93,7 +95,10 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         });
       }
     })();
-    if (record.origin !== "bundled" || requireCurrentRuntimeRecord) {
+    if (
+      (record.origin !== "bundled" && record.trustedOfficialInstall !== true) ||
+      requireCurrentRuntimeRecord
+    ) {
       cache.set(record, channel);
       return channel;
     }
@@ -111,11 +116,21 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       cache.set(record, channel);
       return channel;
     }
+    const resolveGatewayContext = getGatewayContextResolver(registryParams.runtime.subagent);
+    const scopedGatewayContext = resolveGatewayContext
+      ? () => (ownsLiveRegistrySlot() ? resolveGatewayContext() : undefined)
+      : undefined;
+    if (scopedGatewayContext && resolveGatewayContext) {
+      bindGatewayContextResolver(
+        scopedGatewayContext,
+        getCanonicalGatewayContextResolver(resolveGatewayContext),
+      );
+    }
     const owner = Object.freeze({
       channelId: record.id,
       record,
       epoch: record,
-      resolveGatewayContext: getGatewayContextResolver(registryParams.runtime.subagent),
+      resolveGatewayContext: scopedGatewayContext,
       isLive: ownsLiveRegistrySlot,
     });
     const disposeOwner = registerChannelIngressHostOwner(owner);
@@ -131,12 +146,14 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
       params: Parameters<PluginRuntime["channel"]["inbound"]["buildContext"]>[0],
     ) => {
       // Audit provenance is passive: stale closures still build the message context,
-      // but only the exact live bundled owner may attach participant evidence.
+      // but only the exact live trusted owner may attach participant evidence.
       return buildHostContext(params as never);
     }) as unknown as PluginRuntime["channel"]["inbound"]["buildContext"];
+    const inbound = { ...channel.inbound, buildContext };
     const scoped = {
       ...channel,
-      inbound: { ...channel.inbound, buildContext },
+      inbound,
+      turn: inbound,
     } satisfies PluginRuntime["channel"];
     cache.set(record, scoped);
     return scoped;
@@ -183,14 +200,13 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         | "openChannelIngressDrain",
     ) => {
       if (record.origin !== "bundled" && record.trustedOfficialInstall !== true) {
-        throw new Error(
-          formatPluginTrustRefusal({
-            methodName,
-            pluginId,
-            origin: record.origin,
-            trust: record.trust,
-          }),
-        );
+        throw new PluginTrustRefusalError({
+          methodName,
+          pluginId,
+          source: record.source,
+          origin: record.origin,
+          trust: record.trust,
+        });
       }
     };
     const runtime = new Proxy(registryParams.runtime, {

@@ -9,16 +9,17 @@ import { releaseSqliteWorkerLifecycle } from "./sqlite-worker-broker-admission.j
 import type { Job } from "./sqlite-worker-broker.types.js";
 import {
   SQLITE_WORKER_MAX_MESSAGE_BYTES,
+  retainSqliteWorkerErrorCode,
   SqliteWorkerError,
   type SqliteWorkerReply,
   type SqliteWorkerRequest,
-  type SqliteWorkerTransferHandle,
 } from "./sqlite-worker-contract.js";
 import type { SqliteWorkerOperationSettlement } from "./sqlite-worker-operation-settlement.js";
 import {
   createSqliteWorkerTransferOwner,
   createSqliteWorkerTransferReceiver,
   type SqliteWorkerTransferFrame,
+  type SqliteWorkerTransferHandle,
 } from "./sqlite-worker-transfer.js";
 
 export function dispatchSqliteWorkerJob(worker: Worker, job: Job): void {
@@ -177,9 +178,7 @@ export function withSqliteWorkerCleanupFailure(failure: Error, cleanupError: unk
     "SQLite worker failure and cleanup failed",
     { cause: failure },
   );
-  return failure instanceof SqliteWorkerError
-    ? Object.assign(combined, { code: failure.code })
-    : combined;
+  return retainSqliteWorkerErrorCode(combined, failure);
 }
 
 export function settleFailedSqliteWorkerJobs({

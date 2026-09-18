@@ -410,6 +410,17 @@ read_when:
       an include, alongside other root-owned keys in the same operation,
       writes through: each keyed entry/catalog lands in its owning include
       file and the root keeps its `$include` pointer.
+    - **Interruption recovery**: a mixed write publishes its include files
+      first and `openclaw.json` last. A write that fails restores each include
+      it already published, unless another writer changed that file in the
+      meantime; the newer edit is kept. A process killed between the include
+      publish and the root publish leaves the includes updated and
+      `openclaw.json` unchanged; the config still loads, and rerunning the
+      same write brings `openclaw.json` up to date.
+    - **Control UI form saves**: the form edits the include-resolved authored
+      config. Unchanged redacted credentials, including SecretRef ids, channel
+      tokens, and provider headers, survive a save even when they are authored
+      only in an included file. The same write-through limits below apply.
     - **Unsupported write-through**: root includes (every section of a config
       whose root object authors `$include`), actual array-entry includes,
       include arrays, sibling overrides, files shared by multiple logical paths,

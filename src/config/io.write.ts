@@ -60,6 +60,7 @@ import {
   resolveGatewayMode,
   restoreAuthoredTildePathsForWrite,
 } from "./io.read-helpers.js";
+import { getConfigSnapshotIncludeLoadHashes } from "./io.snapshot-shared.js";
 import { hashConfigRevision } from "./io.snapshot.js";
 import { loggedConfigWarningFingerprints, setBoundedConfigIoWarningEntry } from "./io.state.js";
 import type {
@@ -133,6 +134,9 @@ export async function writeConfigFileFromContext(
     ? {
         snapshot: options.baseSnapshot,
         pluginMetadataSnapshot: options.basePluginMetadataSnapshot,
+        // Bound by the read that produced this snapshot; a bare baseSnapshot
+        // carries no maps of its own, and staging refuses an unfenced write.
+        includeFileHashesForWrite: getConfigSnapshotIncludeLoadHashes(options.baseSnapshot),
       }
     : await readSnapshot();
   const snapshot = snapshotRead.snapshot;
@@ -158,6 +162,7 @@ export async function writeConfigFileFromContext(
 
   const {
     nextConfig,
+    clearedSessionStoreOwner,
     explicitSetPaths,
     explicitSetValueSource,
     persistCanonicalAgentRoster,
@@ -181,6 +186,7 @@ export async function writeConfigFileFromContext(
 
   let persistCandidate: unknown = nextConfig;
   let envRefMap: Map<string, string> | null = null;
+  let authoredPreviousSource: unknown;
   const changedPaths = new Set<string>();
   collectChangedPaths(inputBasis.config, nextConfig, "", changedPaths);
   for (const changedPath of [...explicitSetPaths, ...(options.unsetPaths ?? [])]) {
@@ -234,8 +240,6 @@ export async function writeConfigFileFromContext(
       homedir: deps.homedir(),
       snapshotIncludeHashes:
         options.includeFileHashesForWrite ?? snapshotRead.includeFileHashesForWrite,
-      snapshotIncludeTargets:
-        options.includeFileTargetsForWrite ?? snapshotRead.includeFileTargetsForWrite,
     }));
   }
   if (snapshot.exists && (snapshot.valid || hasIncludes)) {
@@ -258,6 +262,7 @@ export async function writeConfigFileFromContext(
       );
       const collected = new Map<string, string>();
       collectEnvRefPaths(resolvedIncludes, "", collected);
+      authoredPreviousSource = resolvedIncludes;
       if (collected.size > 0) {
         envRefMap = collected;
       }
@@ -297,12 +302,14 @@ export async function writeConfigFileFromContext(
   validateCandidate(validationCandidate);
   // SAFETY: the original resolved input was just validated; retain raw values, not parser defaults.
   const validatedCandidate = validationCandidate as OpenClawConfig;
+  const previousSource =
+    authoredPreviousSource ?? snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig;
   const materialized = stampConfigVersion(
     snapshot.exists
       ? validatedCandidate
       : initializeNativeSessionCatalogPreferences(validatedCandidate),
     options.lastTouchedVersionOverride,
-    snapshot.exists ? (snapshot.sourceConfigBeforeMigrations ?? snapshot.sourceConfig) : null,
+    snapshot.exists ? previousSource : null,
   );
   // Resolve policy from included facts, but persist only its delta beside authored directives.
   persistCandidate = applyMergePatch(
@@ -588,6 +595,11 @@ export async function writeConfigFileFromContext(
     });
     if (!options.skipPluginValidation) {
       logConfigWarningsOnce({ configPath, warnings: validated.warnings, logger: deps.logger });
+    }
+    if (clearedSessionStoreOwner && !options.skipOutputLogs) {
+      deps.logger.warn(
+        "Cleared agents.defaults.sessionStore.agentId because session.store changed. Set that owner path explicitly to assign the destination store's owner.",
+      );
     }
     setDeferredPluginMigrationConfigFacts(sourceConfigForPreflight, deferredPluginMigrations);
     return {

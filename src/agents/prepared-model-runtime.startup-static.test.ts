@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ModelProviderConfig } from "../config/types.models.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
@@ -26,6 +27,7 @@ const mocks = vi.hoisted(() => {
       setupProviders: new Map(),
       commandAliases: new Map(),
       contracts: new Map(),
+      providerAuthContributions: [],
       modelIdNormalizationPolicies: new Map(),
     },
   };
@@ -76,39 +78,41 @@ const mocks = vi.hoisted(() => {
     >(() => null),
     loadAgentRuntimePluginRegistryHandle: vi.fn(),
     loadStaticCatalog: vi.fn(async () => []),
-    prepareStaticCatalog: vi.fn(async (..._args: unknown[]) => ({
-      providers: [
-        {
-          id: "openai",
-          label: "OpenAI",
-          auth: [],
-          resolveSyntheticAuth,
-        },
-      ],
-      entries: [
-        {
-          provider: { id: "openai", label: "OpenAI", auth: [] },
-          result: {
-            provider: {
-              baseUrl: "https://api.openai.com/v1",
-              api: "openai-responses",
-              models: [
-                {
-                  id: "gpt-5.5",
-                  name: "GPT-5.5",
-                  reasoning: true,
-                  thinkingLevelMap: { off: null, max: "max" },
-                  input: ["text"],
-                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-                  contextWindow: 128_000,
-                  maxTokens: 8_192,
-                },
-              ],
-            },
+    prepareStaticCatalog: vi.fn(async (..._args: unknown[]) => {
+      const providerConfig: ModelProviderConfig = {
+        baseUrl: "https://api.openai.com/v1",
+        api: "openai-responses",
+        models: [
+          {
+            id: "gpt-5.5",
+            name: "GPT-5.5",
+            reasoning: true,
+            thinkingLevelMap: { off: null, max: "max" },
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128_000,
+            maxTokens: 8_192,
           },
-        },
-      ],
-    })),
+        ],
+      };
+      return {
+        providers: [
+          {
+            id: "openai",
+            label: "OpenAI",
+            auth: [],
+            resolveSyntheticAuth,
+          },
+        ],
+        entries: [
+          {
+            provider: { id: "openai", label: "OpenAI", auth: [] },
+            result: { provider: providerConfig },
+            providerConfigs: { openai: providerConfig },
+          },
+        ],
+      };
+    }),
     resolveStaticCatalogModel: vi.fn<StaticCatalogResolver>(() => undefined),
     resolveSyntheticAuth,
     mutationListener: undefined as
@@ -231,7 +235,8 @@ vi.mock("./runtime-plugins.js", () => ({
   loadAgentRuntimePluginRegistryHandle: mocks.loadAgentRuntimePluginRegistryHandle,
 }));
 
-vi.mock("./embedded-agent-runner/model.static-catalog.js", () => ({
+vi.mock("./embedded-agent-runner/model.static-catalog.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./embedded-agent-runner/model.static-catalog.js")>()),
   loadBundledProviderStaticCatalogContextModels: mocks.loadStaticCatalog,
   createBundledStaticCatalogModelResolver: () => mocks.resolveStaticCatalogModel,
 }));
@@ -284,7 +289,14 @@ describe("prepared model runtime Gateway catalog mode", () => {
   ] as const)(
     "publishes $name policy with model caps for lightweight configured and full catalog reads",
     async ({ profile, expectedLevels }) => {
-      const config = { agents: { defaults: { model: { primary: "openai/gpt-5.5" } } } };
+      const config = {
+        agents: {
+          defaults: {
+            model: { primary: "openai/gpt-5.5" },
+            models: { "openai/gpt-5.5": { alias: "Current" } },
+          },
+        },
+      };
       const policy = { resolveThinkingProfile: () => profile };
       mocks.resolveProviderPolicySurface.mockReturnValue(policy);
       await refreshPreparedModelRuntimeSnapshots(config, {
@@ -299,6 +311,8 @@ describe("prepared model runtime Gateway catalog mode", () => {
         workspaceDir: "/tmp/prepared-static-workspace",
       });
       expect(snapshot).toBeDefined();
+      const turnAliases = snapshot!.configuredModelAliases;
+      expect(turnAliases).toEqual([{ alias: "Current", provider: "openai", model: "gpt-5.5" }]);
       expect(snapshot!.pluginRegistry?.providers).toEqual([]);
       const configuredCatalog = snapshot!.modelCatalog;
       expect(configuredCatalog.entries).toHaveLength(1);
@@ -337,8 +351,10 @@ describe("prepared model runtime Gateway catalog mode", () => {
       for (const entry of workerCatalog.entries) {
         expect(Object.getOwnPropertySymbols(entry)).toEqual([]);
       }
+      workerCatalog.entries.push({ provider: "openai", id: "discovered-later", name: "Later" });
       mocks.runPreparedModelCatalogWorker.mockResolvedValueOnce(workerCatalog);
       const fullCatalog = await snapshot!.loadFullModelCatalog!();
+      expect(snapshot!.configuredModelAliases).toBe(turnAliases);
       mocks.resolveProviderPolicySurface.mockImplementation(() => {
         throw new Error("lightweight projection must not load provider artifacts");
       });

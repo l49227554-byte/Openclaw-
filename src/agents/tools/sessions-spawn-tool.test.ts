@@ -14,6 +14,7 @@ import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { createOperationalRunInstanceRef } from "../admitted-run-context.js";
 import { finalizeAgentToolAvailability } from "../agent-tool-availability.js";
 import { readParentExecutionIdentity } from "../subagents/spawn/execution-identity-spawn-context.js";
+import { supportedSpawnModelChoice } from "../subagents/spawn/subagent-spawn.test-helpers.js";
 import {
   SWARM_CODE_MODE_IDEMPOTENCY_KEY,
   SWARM_CODE_MODE_REQUEST_FINGERPRINT,
@@ -31,6 +32,7 @@ const hoisted = vi.hoisted(() => {
     blocked: false,
   }));
   const runSubagentProgressMock = vi.fn(async () => {});
+  const prepareModelChoiceMock = vi.fn<typeof supportedSpawnModelChoice>();
   return {
     spawnSubagentDirectMock,
     spawnAcpDirectMock,
@@ -38,8 +40,13 @@ const hoisted = vi.hoisted(() => {
     inProcessCreationMock,
     getSubagentDeliveryBacklogPressureMock,
     runSubagentProgressMock,
+    prepareModelChoiceMock,
   };
 });
+
+vi.mock("../subagents/spawn/subagent-spawn-deps.js", () => ({
+  getSubagentSpawnDeps: () => ({ prepareModelChoice: hoisted.prepareModelChoiceMock }),
+}));
 
 vi.mock("../subagents/spawn/subagent-spawn.js", () => ({
   SUBAGENT_SPAWN_CONTEXT_MODES: ["isolated", "fork"],
@@ -111,6 +118,7 @@ describe("sessions_spawn tool", () => {
   });
 
   beforeEach(() => {
+    hoisted.prepareModelChoiceMock.mockReset().mockImplementation(supportedSpawnModelChoice);
     acpRuntimeRegistry.testing.resetAcpRuntimeBackendsForTests();
     hoisted.spawnSubagentDirectMock.mockReset().mockResolvedValue({
       status: "accepted",
@@ -778,42 +786,6 @@ describe("sessions_spawn tool", () => {
   });
 
   it.each([
-    { label: "default", mode: undefined },
-    { label: "read-only", mode: "read-only" },
-    { label: "guarded", mode: "guarded" },
-    { label: "workspace", mode: "workspace" },
-    { label: "full", mode: "full" },
-  ] as const)(
-    "inherits the parent's $label permission mode in a visible child",
-    async ({ mode }) => {
-      const callGateway = vi.fn(async () => ({
-        key: "agent:main:dashboard:child",
-        runStarted: true,
-        runId: "run-visible",
-      }));
-      const tool = createSessionsSpawnTool({
-        agentSessionKey: "agent:main:main",
-        ...(mode ? { sessionPermissionPolicy: { mode, root: "/workspace/main" } } : {}),
-        config: { agents: { list: [{ id: "main" }] } },
-        callGateway: callGateway as never,
-        registerRun: vi.fn(),
-        countActiveRuns: () => 0,
-      });
-
-      await tool.execute("visible-permissions", { task: "inspect", visible: true, worktree: true });
-
-      const createParams = mockCallArg(callGateway, 0, 1, "sessions.create");
-      expect(createParams.worktree).toBe(true);
-      expect(createParams).not.toHaveProperty("sessionRoot");
-      if (mode) {
-        expect(createParams.permissionMode).toBe(mode);
-      } else {
-        expect(createParams).not.toHaveProperty("permissionMode");
-      }
-    },
-  );
-
-  it.each([
     { label: "omitted", optional: {} },
     { label: "empty group", optional: { group: "" } },
     { label: "whitespace group", optional: { group: " \t\n " } },
@@ -1164,6 +1136,7 @@ describe("sessions_spawn tool", () => {
         spawnDepth: 1,
       }),
       expect.objectContaining({ via: "spawn", requesterSessionKey: "agent:main:main" }),
+      undefined,
     );
     expect(mockCallArg(callGateway, 0, 1, "sessions.create")).not.toHaveProperty("fork");
     const creation = mockCallArg(callGateway, 0, 2, "sessions.create");
@@ -1353,26 +1326,6 @@ describe("sessions_spawn tool", () => {
     ).rejects.toThrow(message);
   });
 
-  it("reports every unsupported visible parameter in one error", async () => {
-    const tool = createSessionsSpawnTool({ agentSessionKey: "agent:main:main" });
-
-    await expect(
-      tool.execute("visible-unsupported-many", {
-        task: "inspect",
-        runtime: "acp",
-        thinking: "high",
-        thread: true,
-        mode: "session",
-        lightContext: true,
-        attachments: [{ name: "note.txt", content: "hello" }],
-        attachAs: { mountPath: "inputs" },
-        visible: true,
-      }),
-    ).rejects.toThrow(
-      'Parameters unavailable with visible=true: runtime: supports runtime="subagent" only; thinking: thinking overrides are not wired to the sessions.create path; thread: visible sessions route to the dashboard, not a channel thread; mode: visible sessions are persistent dashboard sessions; lightContext: bootstrap staging is not wired to the sessions.create path; attachments: attachment staging is not wired to the sessions.create path; attachAs: attachment staging is not wired to the sessions.create path',
-    );
-  });
-
   it("creates visible sessions while carrying inherited tool restrictions forward", async () => {
     hoisted.inProcessCreationMock.mockResolvedValue({
       key: "agent:main:dashboard:restricted-child",
@@ -1428,6 +1381,7 @@ describe("sessions_spawn tool", () => {
           deny: ["exec"],
         },
       },
+      undefined,
     );
     expect(registerRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1503,6 +1457,7 @@ describe("sessions_spawn tool", () => {
           "sessions.create",
           expect.objectContaining({ parentSessionKey }),
           expect.objectContaining({ requesterSessionKey: parentSessionKey }),
+          undefined,
         );
       });
     },

@@ -273,7 +273,9 @@ export function spawnWindowsJobChild(
             }
           };
           if (admitCommand) {
-            void admitCommand(launchCommand)?.catch((error) => launched.emit("error", error));
+            void admitCommand(launchCommand)?.catch((error: unknown) =>
+              launched.emit("error", error),
+            );
           } else {
             launchCommand();
           }

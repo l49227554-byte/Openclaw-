@@ -201,6 +201,51 @@ it.each([false, true])(
   20_000,
 );
 
+it("defers vacuum when a writer acquires its lock after checkpoint", async () => {
+  const options = { agentId: "main", env: state.env };
+  const database = openOpenClawAgentDatabase(options);
+  database.db.exec("PRAGMA wal_autocheckpoint = 0");
+  database.db
+    .prepare("INSERT INTO cache_entries(scope, key, blob, updated_at) VALUES (?, ?, ?, ?)")
+    .run("vacuum-admission", "padding", Buffer.alloc(4 * 1024 * 1024), 1);
+  database.db.prepare("DELETE FROM cache_entries WHERE scope = ?").run("vacuum-admission");
+  expect(database.walMaintenance.checkpoint()).toBe(true);
+  const freePages = () =>
+    Number(database.db.prepare("PRAGMA freelist_count").get()?.freelist_count);
+  const before = freePages();
+  expect(before).toBeGreaterThan(512);
+  const busyTimeout = database.db.prepare("PRAGMA busy_timeout").get();
+  const writer = realOpen(database.path);
+  const checkpoint = database.walMaintenance.checkpoint.bind(database.walMaintenance);
+  const checkpointSpy = vi
+    .spyOn(database.walMaintenance, "checkpoint")
+    .mockImplementationOnce(() => {
+      const completed = checkpoint();
+      expect(completed).toBe(true);
+      writer.exec("BEGIN IMMEDIATE");
+      return completed;
+    });
+  try {
+    const startedAt = performance.now();
+    await runExclusiveSqliteSessionWrite(options, () => reclaimSqliteFreePages(options));
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(writer.isTransaction).toBe(true);
+    expect(database.db.isTransaction).toBe(false);
+    expect(database.db.prepare("PRAGMA busy_timeout").get()).toEqual(busyTimeout);
+    expect(freePages()).toBe(before);
+    writer.exec("ROLLBACK");
+    await runExclusiveSqliteSessionWrite(options, () => reclaimSqliteFreePages(options));
+    expect(freePages()).toBe(0);
+    expect(database.db.prepare("PRAGMA busy_timeout").get()).toEqual(busyTimeout);
+  } finally {
+    checkpointSpy.mockRestore();
+    if (writer.isTransaction) {
+      writer.exec("ROLLBACK");
+    }
+    writer.close();
+  }
+});
+
 it("bounds background page reclamation and checks authority before resuming it", async () => {
   const options = { agentId: "main", env: state.env };
   const database = openOpenClawAgentDatabase(options);

@@ -1,13 +1,8 @@
-import type { SubagentLifecycleWakeContext } from "./subagent-registry-lifecycle-context.js";
+import type {
+  PendingRequesterSettleWakeCommit,
+  SubagentLifecycleWakeContext,
+} from "./subagent-registry-lifecycle-context.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
-
-export type PendingRequesterSettleWakeCommit = {
-  entries: readonly SubagentRunRecord[];
-  isCurrent(entry: SubagentRunRecord): boolean;
-  commit(entries: readonly SubagentRunRecord[]): boolean;
-  failures: number;
-  nextAttemptAt: number;
-};
 
 function clearPendingWakeCommit(
   context: SubagentLifecycleWakeContext,

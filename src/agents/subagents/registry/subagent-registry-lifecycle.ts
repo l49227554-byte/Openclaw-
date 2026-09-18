@@ -18,6 +18,7 @@ import {
 import { completeSubagentRunAttempt } from "./subagent-registry-lifecycle-completion.js";
 import type {
   CleanupBookkeepingParams,
+  PendingRequesterSettleWakeCommit,
   ScheduledRequesterSettleWake,
   SubagentLifecycleOptions,
 } from "./subagent-registry-lifecycle-context.js";
@@ -26,7 +27,6 @@ import {
   completeCleanupBookkeeping,
   scheduleRequesterSettleWake,
 } from "./subagent-registry-lifecycle-wake.js";
-import type { PendingRequesterSettleWakeCommit } from "./subagent-registry-requester-wake-commit.js";
 import { settleRequesterTurnAfterSessionSpawns } from "./subagent-registry-requester-yield.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 import { compareSubagentRunGeneration } from "./subagent-run-generation.js";

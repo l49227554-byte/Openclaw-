@@ -5,7 +5,6 @@ import type { callGateway as defaultCallGateway } from "../../../gateway/call.js
 // Keeping the controller out of their dependency graph satisfies the architecture cycle gate.
 import type { DetachedTaskFindResult } from "../../../tasks/detached-task-runtime-contract.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
-import type { PendingRequesterSettleWakeCommit } from "./subagent-registry-requester-wake-commit.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 type CaptureSubagentCompletionReply =
@@ -96,6 +95,14 @@ export interface SubagentLifecycleAnnounceCleanupContext
   extends SubagentLifecycleCleanupContext, SubagentLifecycleWakeContext {
   completeCleanupBookkeeping(args: CleanupBookkeepingParams): void;
 }
+
+export type PendingRequesterSettleWakeCommit = {
+  entries: readonly SubagentRunRecord[];
+  isCurrent(entry: SubagentRunRecord): boolean;
+  commit(entries: readonly SubagentRunRecord[]): boolean;
+  failures: number;
+  nextAttemptAt: number;
+};
 
 export interface SubagentLifecycleWakeContext extends SubagentLifecycleCommonContext {
   readonly pendingRequesterSettleWakeCommits: WeakMap<

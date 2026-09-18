@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { setImmediate } from "node:timers/promises";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { runWithSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
+import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import { runSqliteImmediateTransactionSync } from "../../infra/sqlite-transaction.js";
 import {
   openOpenClawAgentDatabase,
@@ -94,10 +95,11 @@ export async function reclaimSqliteFreePages(
         if (!checkpointArchivePruning(database, diagnostics)) {
           return undefined;
         }
-        // sqlite-allow-raw -- Physical budget decisions need current SQLite page accounting.
         const freePages = () =>
-          timeArchivePruningSync(diagnostics, "queryMs", () =>
-            Number(database.db.prepare("PRAGMA freelist_count").get()?.freelist_count ?? 0),
+          timeArchivePruningSync(
+            diagnostics,
+            "queryMs",
+            () => Number(database.db.prepare("PRAGMA freelist_count").get()?.freelist_count ?? 0), // sqlite-allow-raw -- Physical page accounting.
           );
         const before = freePages();
         if (!Number.isSafeInteger(before) || before <= 0) {
@@ -110,15 +112,28 @@ export async function reclaimSqliteFreePages(
           diagnostics.vacuumPasses = (diagnostics.vacuumPasses ?? 0) + 1;
           diagnostics.vacuumPagesRequested = (diagnostics.vacuumPagesRequested ?? 0) + pages;
         }
-        timeArchivePruningSync(diagnostics, "vacuumMs", () =>
-          runWithSqliteBusyTimeout(database.db, 0, () =>
-            runSqliteImmediateTransactionSync(
-              database.db,
-              () => database.db.exec(`PRAGMA incremental_vacuum(${pages});`), // sqlite-allow-raw -- Bounded physical maintenance in one synchronous commit section.
-              { busyTimeoutMs: 0, operationLabel: "incremental-vacuum" },
+        let entered = false;
+        try {
+          timeArchivePruningSync(diagnostics, "vacuumMs", () =>
+            runWithSqliteBusyTimeout(database.db, 0, () =>
+              runSqliteImmediateTransactionSync(
+                database.db,
+                () => {
+                  entered = true;
+                  database.db.exec(`PRAGMA incremental_vacuum(${pages});`); // sqlite-allow-raw -- Bounded physical maintenance in one synchronous commit section.
+                },
+                { busyTimeoutMs: 0, operationLabel: "incremental-vacuum" },
+              ),
             ),
-          ),
-        );
+          );
+        } catch (error) {
+          // A writer can win after checkpointing. Defer only refused admission;
+          // failures after vacuum starts still belong to the transaction owner.
+          if (entered || !isSqliteLockError(error)) {
+            throw error;
+          }
+          return undefined;
+        }
         if (!checkpointArchivePruning(database, diagnostics)) {
           return undefined;
         }

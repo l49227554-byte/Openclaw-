@@ -64,7 +64,8 @@ describe("catalog model identity", () => {
   });
 
   it("skips sparse catalog holes for literal and fallback matches", () => {
-    const catalog = new Array<ModelCatalogEntry>(5);
+    const catalog: ModelCatalogEntry[] = [];
+    catalog.length = 5;
     catalog[2] = upper;
 
     expect(findModelInCatalog(catalog, "custom", "Reader")).toBe(upper);

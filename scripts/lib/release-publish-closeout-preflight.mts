@@ -161,7 +161,15 @@ export function inspectStableCloseoutPreflight(input: {
         "Inspect the release with credentials that can view drafts before stable closeout.",
       );
     }
-    const release = lookup.state === "found" ? lookup.release : {};
+    const release =
+      lookup.state === "found"
+        ? {
+            ...lookup.release,
+            tagName: lookup.release.tag_name,
+            isDraft: lookup.release.draft,
+            isPrerelease: lookup.release.prerelease,
+          }
+        : undefined;
     const result = verifyStableMainCloseout({
       tag: input.tag,
       mainPackageJson,
@@ -169,12 +177,7 @@ export function inspectStableCloseoutPreflight(input: {
       mainRelease,
       tagRelease,
       mainAppcast: git(mainSha, "appcast.xml"),
-      release: {
-        ...release,
-        tagName: release.tag_name,
-        isDraft: release.draft,
-        isPrerelease: release.prerelease,
-      },
+      release,
       releaseTagSha: input.sourceSha,
       mainSha,
       fullReleaseValidationRunId: input.runId,

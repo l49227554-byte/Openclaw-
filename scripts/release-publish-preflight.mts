@@ -8,7 +8,6 @@ import {
   fetchNpmRegistryPackumentWithRetry,
   resolveNpmPublishPlan,
 } from "./lib/npm-publish-plan.mjs";
-import { isRecord } from "./lib/record-shared.mjs";
 import {
   inspectPublishReleasePage,
   inspectStableCloseoutPreflight,
@@ -44,7 +43,7 @@ import {
 } from "./lib/release-publish-state.mts";
 import { verifyReleasePreflightToolingIdentity } from "./npm-preflight-tooling-identity.mjs";
 import { validateNpmPublishBoundary } from "./openclaw-npm-extended-stable-release.mjs";
-import { resolveOpenClawNpmResumeRun } from "./openclaw-npm-resume-run.mts";
+import { verifyOpenClawNpmResumeRun } from "./openclaw-npm-resume-run.mts";
 import {
   authenticateFullReleaseValidationEvidence,
   validateFullReleaseValidationEvidence,
@@ -553,99 +552,48 @@ export async function runReleasePublishPreflight(
     }
   }
   let resume = options.openclawNpmResumeRunId ?? "";
-  if (registry?.corePublished && options.publishOpenclawNpm !== false) {
-    if (npmEvidence) {
+  if (registry?.corePublished && options.publishOpenclawNpm !== false && npmEvidence) {
+    const tarballSha512 = await check(
+      "core-npm.immutable-bytes",
+      "Published core tarball matches the prepared release bytes.",
+      "Cut a correction version if the published immutable bytes differ; never republish the same version.",
+      () =>
+        verifyPublishedPreflightTarball({
+          packageName: "openclaw",
+          version: options.tag.slice(1),
+          tarballSha256: String(npmEvidence.manifest.tarballSha256),
+        }),
+    );
+    if (tarballSha512) {
       await check(
-        "core-npm.immutable-bytes",
-        "Published core tarball matches the prepared release bytes.",
-        "Cut a correction version if the published immutable bytes differ; never republish the same version.",
-        () =>
-          verifyPublishedPreflightTarball({
+        "core-npm.resume",
+        "Exact original npm publication run selected for resume.",
+        "Reconcile the published package's provenance and original successful npm run; never republish an immutable version.",
+        async () => {
+          const version = options.tag.slice(1);
+          const provenance = await fetchNpmRegistryPackumentWithRetry({
             packageName: "openclaw",
-            version: options.tag.slice(1),
-            tarballSha256: String(npmEvidence.manifest.tarballSha256),
-          }),
+            packageUrl: `https://registry.npmjs.org/-/npm/v1/attestations/openclaw@${version}`,
+            maxBytes: 4 * 1024 * 1024,
+          });
+          if (!provenance.ok) {
+            throw new Error(`Published npm provenance returned HTTP ${provenance.status}.`);
+          }
+          const original = await verifyOpenClawNpmResumeRun({
+            repo: options.repo,
+            runId: resume,
+            publication: { version, tarballSha512, document: provenance.packument },
+            runGh,
+          });
+          resume = original.runId;
+          warn(
+            "core-npm.resume-input",
+            `Core package exists. Resume run ${resume}.`,
+            `-f openclaw_npm_resume_run_id=${resume}`,
+          );
+        },
       );
     }
-    await check(
-      "core-npm.resume",
-      "Exact original npm publication run selected for resume.",
-      "Supply openclaw_npm_resume_run_id from the successful original core publish on this same protected tooling ref; never republish an immutable version.",
-      () => {
-        if (!resume) {
-          const result = requirePreflightRecord(
-            api(
-              `actions/workflows/openclaw-npm-release.yml/runs?branch=${encodeURIComponent(workflowRef)}&status=success&event=workflow_dispatch&per_page=100`,
-            ),
-            "npm run inventory",
-          );
-          if (!Array.isArray(result.workflow_runs)) {
-            throw new Error("Unable to list npm resume candidates.");
-          }
-          for (const candidate of result.workflow_runs.filter(isRecord).slice(0, 10)) {
-            const id = String(candidate.id);
-            const jobResult = requirePreflightRecord(
-              api(`actions/runs/${id}/jobs?per_page=100`),
-              "npm publication jobs",
-            );
-            if (!Array.isArray(jobResult.jobs) || jobResult.jobs.length !== jobResult.total_count) {
-              throw new Error("Incomplete npm publication job inventory.");
-            }
-            const jobs = jobResult.jobs.filter(isRecord);
-            const approval = jobs.find(
-              (job) => job.name === "validate_publish_request" && job.conclusion === "success",
-            );
-            if (
-              !approval ||
-              typeof approval.id !== "number" ||
-              !jobs.some(
-                (job) => job.name === "publish_openclaw_npm" && job.conclusion === "success",
-              )
-            ) {
-              continue;
-            }
-            const log = runGh([
-              "api",
-              `repos/${options.repo}/actions/jobs/${approval.id}/logs`,
-              "--method",
-              "GET",
-              "--allow-escape-sequences",
-            ]);
-            if (
-              !log.split(/\r?\n/u).some((line) => line.endsWith(` RELEASE_TAG: ${options.tag}`))
-            ) {
-              continue;
-            }
-            resolveOpenClawNpmResumeRun({
-              repo: options.repo,
-              runId: id,
-              trustedWorkflowFullRef: `refs/tags/${workflowRef}`,
-              trustedWorkflowRef: workflowRef,
-              runGh,
-            });
-            resume = id;
-            break;
-          }
-        }
-        if (!resume) {
-          throw new Error(
-            "Core is already published, but no exact original publication run was found. Supply --openclaw-npm-resume-run-id.",
-          );
-        }
-        resolveOpenClawNpmResumeRun({
-          repo: options.repo,
-          runId: resume,
-          trustedWorkflowFullRef: `refs/tags/${workflowRef}`,
-          trustedWorkflowRef: workflowRef,
-          runGh,
-        });
-        warn(
-          "core-npm.resume-input",
-          `Core package exists. Resume run ${resume}.`,
-          `-f openclaw_npm_resume_run_id=${resume}`,
-        );
-      },
-    );
   }
   if (
     !options.tag.includes("-alpha.") &&

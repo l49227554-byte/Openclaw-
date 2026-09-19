@@ -131,7 +131,7 @@ export async function verifyPublishedPreflightTarball(input: {
   packageName: string;
   version: string;
   tarballSha256: string;
-}): Promise<void> {
+}): Promise<string> {
   if (!/^[a-f0-9]{64}$/u.test(input.tarballSha256)) {
     throw new Error("Invalid preflight tarball SHA-256.");
   }
@@ -171,6 +171,7 @@ export async function verifyPublishedPreflightTarball(input: {
       `${input.packageName}@${input.version} is already published with bytes different from this preflight; cut a correction tag instead of resuming.`,
     );
   }
+  return createHash("sha512").update(bytes).digest("hex");
 }
 
 export function requirePreflightRecord(value: unknown, label: string): PublishPreflightRecord {

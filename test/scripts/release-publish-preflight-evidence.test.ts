@@ -336,7 +336,7 @@ describe("publish preflight immutable npm evidence", () => {
     if (message) {
       await expect(result).rejects.toThrow(message);
     } else {
-      await expect(result).resolves.toBeUndefined();
+      await expect(result).resolves.toBe(createHash("sha512").update(bytes).digest("hex"));
     }
     if (mode === "foreign origin") {
       expect(fetch).toHaveBeenCalledTimes(1);

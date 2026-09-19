@@ -7,7 +7,7 @@ import {
   MAX_PLUGIN_ACTIVITY_TOOL_ICONS,
   PLUGIN_ACTIVITY_ICON_PATH,
   PLUGIN_TOOL_ACTIVITY_ICON_DIR,
-  PORTABLE_PLUGIN_ICON_PATH,
+  PORTABLE_PLUGIN_ICON_PATHS,
 } from "../src/plugins/portable-icon-paths.ts";
 import {
   collectSourceCheckoutPluginBuildEntries,
@@ -222,7 +222,9 @@ function copyPresentationAsset(
 }
 
 function copyPluginIcons(pluginDir: string, distPluginDir: string): void {
-  copyPresentationAsset(pluginDir, distPluginDir, PORTABLE_PLUGIN_ICON_PATH);
+  for (const iconPath of PORTABLE_PLUGIN_ICON_PATHS) {
+    copyPresentationAsset(pluginDir, distPluginDir, iconPath);
+  }
   copyPresentationAsset(pluginDir, distPluginDir, PLUGIN_ACTIVITY_ICON_PATH);
   const sourceDir = path.join(pluginDir, PLUGIN_TOOL_ACTIVITY_ICON_DIR);
   removePathIfExists(path.join(distPluginDir, PLUGIN_TOOL_ACTIVITY_ICON_DIR));
@@ -334,7 +336,9 @@ export function copyBundledPluginMetadata(params: CopyMetadataParams = {}): void
       copyPluginIcons(pluginDir, distPluginDir);
     } else {
       removeFileIfExists(distManifestPath);
-      removeFileIfExists(path.join(distPluginDir, PORTABLE_PLUGIN_ICON_PATH));
+      for (const iconPath of PORTABLE_PLUGIN_ICON_PATHS) {
+        removeFileIfExists(path.join(distPluginDir, iconPath));
+      }
       removePathIfExists(path.join(distPluginDir, PLUGIN_ACTIVITY_ICON_PATH));
       removePathIfExists(path.join(distPluginDir, PLUGIN_TOOL_ACTIVITY_ICON_DIR));
     }

@@ -154,7 +154,7 @@ class ChannelsPage extends OpenClawLightDomElement {
       () => this.context?.theme,
       (theme, notify) => theme.subscribe(notify),
       () => {
-        this.requestUpdate();
+        this.pluginPresentation.ensure(this.context.gateway.snapshot.client);
       },
     );
 

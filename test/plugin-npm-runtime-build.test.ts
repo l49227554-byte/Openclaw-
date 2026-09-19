@@ -42,6 +42,31 @@ function expectPluginNpmRuntimeBuildPlan(
 }
 
 describe("plugin npm runtime build planning", () => {
+  it("includes optional theme artwork in the published runtime package", () => {
+    const packageDir = tempDirs.make("openclaw-plugin-theme-artwork-");
+    writeFileSync(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({
+        name: "theme-artwork-fixture",
+        type: "module",
+        openclaw: { extensions: ["./index.ts"] },
+      }),
+    );
+    writeFileSync(path.join(packageDir, "index.ts"), "export default {};\n");
+    mkdirSync(path.join(packageDir, "assets"));
+    for (const name of ["icon.png", "icon-light.png", "icon-dark.png"]) {
+      writeFileSync(path.join(packageDir, "assets", name), name);
+    }
+
+    const plan = expectPluginNpmRuntimeBuildPlan(
+      resolvePluginNpmRuntimeBuildPlan({ repoRoot, packageDir }),
+    );
+
+    expect(plan.packageFiles).toEqual(
+      expect.arrayContaining(["assets/icon.png", "assets/icon-light.png", "assets/icon-dark.png"]),
+    );
+  });
+
   it.each([
     "missing-directory",
     "missing-manifest",

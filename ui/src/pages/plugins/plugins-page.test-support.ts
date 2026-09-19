@@ -16,6 +16,7 @@ import type {
 } from "../../lib/plugins/index.ts";
 import {
   createApplicationContextProvider,
+  createTestApplicationTheme,
   type ApplicationContextProvider,
 } from "../../test-helpers/application-context.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
@@ -379,6 +380,7 @@ export function createContext(
     basePath: "",
     resourceBasePath: "",
     runtimeConfig: harness.runtimeConfig,
+    theme: createTestApplicationTheme().theme,
     navigate: vi.fn(),
     replace: vi.fn(),
   } as unknown as ApplicationContext;

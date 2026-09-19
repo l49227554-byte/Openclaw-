@@ -37,20 +37,36 @@ import {
   withPluginCache,
 } from "./plugin-cache.js";
 import type { PluginMetadataSnapshot } from "./plugin-metadata-snapshot.js";
+import type { PluginIconTheme } from "./portable-icon-paths.js";
 
 export type ManagedPluginCatalogEntry = PluginCatalogEntry;
 export type ManagedPluginCatalog = PluginsListResult;
 
-export type ManagedPluginIconSource = { kind: "file"; path: string; rootPath: string };
+export type ManagedPluginIconSource = {
+  kind: "file";
+  path: string;
+  rootPath: string;
+  fallbackPath?: string;
+};
 
 export function resolvePluginIconSource(params: {
   metadata: PluginMetadataSnapshot;
   pluginId: string;
+  theme?: PluginIconTheme;
 }): ManagedPluginIconSource | undefined {
   const normalizedPluginId = params.metadata.normalizePluginId(params.pluginId);
   const manifest = params.metadata.byPluginId.get(normalizedPluginId);
   const localIconPath = normalizeOptionalString(manifest?.iconPath);
   if (localIconPath && manifest) {
+    const themeIconPath = params.theme ? manifest.themeIconPaths?.[params.theme] : undefined;
+    if (themeIconPath) {
+      return {
+        kind: "file",
+        path: themeIconPath,
+        rootPath: manifest.rootDir,
+        fallbackPath: localIconPath,
+      };
+    }
     return { kind: "file", path: localIconPath, rootPath: manifest.rootDir };
   }
   return undefined;

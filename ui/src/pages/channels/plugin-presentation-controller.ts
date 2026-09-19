@@ -10,6 +10,7 @@ type PluginPresentationRequest = {
   client: GatewayBrowserClient;
   controller: AbortController;
   iconTimeout?: ReturnType<typeof setTimeout>;
+  theme: "light" | "dark";
 };
 
 type PluginPresentationHooks = {
@@ -23,6 +24,7 @@ export class ChannelPluginPresentationController {
   private catalog: PluginListResult | null = null;
   private readonly iconUrls = new Map<string, string>();
   private request: PluginPresentationRequest | null = null;
+  private theme?: "light" | "dark";
   private pendingEnsureClient: GatewayBrowserClient | null = null;
 
   constructor(private readonly hooks: PluginPresentationHooks) {}
@@ -49,6 +51,11 @@ export class ChannelPluginPresentationController {
     if (!client) {
       return;
     }
+    const theme = this.hooks.getContext().theme.resolvedMode;
+    if (theme !== this.theme) {
+      this.theme = theme;
+      this.resetIcons();
+    }
     if (this.request?.client === client) {
       if (this.catalog) {
         this.pendingEnsureClient = client;
@@ -61,7 +68,7 @@ export class ChannelPluginPresentationController {
     }
     this.request?.controller.abort();
     const controller = new AbortController();
-    const request: PluginPresentationRequest = { client, controller };
+    const request: PluginPresentationRequest = { client, controller, theme };
     this.request = request;
     void client
       .request<PluginListResult>("plugins.list", {}, { signal: controller.signal })
@@ -84,7 +91,11 @@ export class ChannelPluginPresentationController {
 
   private startIconLoad(client: GatewayBrowserClient, catalog: PluginListResult) {
     this.request?.controller.abort();
-    const request: PluginPresentationRequest = { client, controller: new AbortController() };
+    const request: PluginPresentationRequest = {
+      client,
+      controller: new AbortController(),
+      theme: this.hooks.getContext().theme.resolvedMode,
+    };
     this.request = request;
     void this.loadIcons(catalog, request).finally(() => this.finishRequest(request));
   }
@@ -108,6 +119,7 @@ export class ChannelPluginPresentationController {
         const context = this.hooks.getContext();
         const url = await fetchPluginIconBlobUrl({
           pluginId,
+          theme: request.theme,
           resourceBasePath: context.resourceBasePath,
           gatewayUrl: context.gateway.connection.gatewayUrl,
           auth: {
@@ -123,7 +135,11 @@ export class ChannelPluginPresentationController {
     const loadedUrls = iconEntries.filter(
       (entry): entry is readonly [string, string] => entry[1] !== null,
     );
-    if (this.request !== request || !this.hooks.isConnected()) {
+    if (
+      this.request !== request ||
+      request.theme !== this.hooks.getContext().theme.resolvedMode ||
+      !this.hooks.isConnected()
+    ) {
       for (const [, url] of loadedUrls) {
         URL.revokeObjectURL(url);
       }
@@ -150,7 +166,7 @@ export class ChannelPluginPresentationController {
     }
   }
 
-  reset() {
+  private resetIcons() {
     this.request?.controller.abort();
     if (this.request?.iconTimeout) {
       clearTimeout(this.request.iconTimeout);
@@ -160,8 +176,12 @@ export class ChannelPluginPresentationController {
     for (const url of this.iconUrls.values()) {
       URL.revokeObjectURL(url);
     }
-    this.catalog = null;
     this.iconUrls.clear();
     this.hooks.requestUpdate();
+  }
+
+  reset() {
+    this.catalog = null;
+    this.resetIcons();
   }
 }

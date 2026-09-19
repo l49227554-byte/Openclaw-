@@ -319,6 +319,8 @@ export async function handlePluginIconHttpRequest(
       : null;
   const toolNames = activityRequest.matched ? (requestUrl?.searchParams.getAll("tool") ?? []) : [];
   const toolName = toolNames[0];
+  const themes = pluginRequest.matched ? (requestUrl?.searchParams.getAll("theme") ?? []) : [];
+  const theme = themes[0];
   const catalogIconUrl = catalogRequest.matched ? catalogRequest.value : null;
   const faviconHostname = faviconRequest.matched
     ? faviconRequest.value
@@ -350,6 +352,11 @@ export async function handlePluginIconHttpRequest(
     return true;
   }
 
+  if (themes.length > 1 || (theme !== undefined && theme !== "light" && theme !== "dark")) {
+    sendNotFound(res);
+    return true;
+  }
+
   if (
     faviconRequest.matched &&
     opts.config.gateway?.controlUi?.automaticallyFetchFavicons === false
@@ -364,6 +371,7 @@ export async function handlePluginIconHttpRequest(
       : await resolveManagedPluginIconSource({
           config: opts.config,
           pluginId,
+          ...(theme ? { theme } : {}),
         })
     : undefined;
   const remoteIconUrl = catalogIconUrl
@@ -385,7 +393,7 @@ export async function handlePluginIconHttpRequest(
     : faviconHostname
       ? "favicon"
       : "catalog";
-  const icon = pluginIcon
+  let icon = pluginIcon
     ? await loadPackageIcon({
         cacheScope,
         iconPath: pluginIcon.path,
@@ -404,6 +412,13 @@ export async function handlePluginIconHttpRequest(
             }
           : {}),
       });
+  if (!icon && pluginIcon?.fallbackPath) {
+    icon = await loadPackageIcon({
+      cacheScope,
+      iconPath: pluginIcon.fallbackPath,
+      rootPath: pluginIcon.rootPath,
+    });
+  }
   if (!icon) {
     sendNotFound(res);
     return true;

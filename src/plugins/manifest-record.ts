@@ -41,6 +41,7 @@ import {
   PLUGIN_ACTIVITY_ICON_PATH,
   PLUGIN_TOOL_ACTIVITY_ICON_DIR,
   PORTABLE_PLUGIN_ICON_PATH,
+  PORTABLE_PLUGIN_THEME_ICON_PATHS,
 } from "./portable-icon-paths.js";
 
 function resolvePluginSourcePath(sourcePath: string): string {
@@ -160,6 +161,30 @@ function resolvePortablePluginIconPath(params: {
   })
     ? iconPath
     : undefined;
+}
+
+function resolvePortableIdentityIcons(params: {
+  rootDir: string;
+  rejectHardlinks: boolean;
+}): Pick<PluginManifestRecord, "iconPath" | "themeIconPaths"> {
+  const iconPath = resolvePortablePluginIconPath(params);
+  if (!iconPath) {
+    return {};
+  }
+  const themeIconPaths: NonNullable<PluginManifestRecord["themeIconPaths"]> = {};
+  for (const theme of ["light", "dark"] as const) {
+    const themePath = resolvePortablePluginIconPath({
+      ...params,
+      relativePath: PORTABLE_PLUGIN_THEME_ICON_PATHS[theme],
+    });
+    if (themePath) {
+      themeIconPaths[theme] = themePath;
+    }
+  }
+  return {
+    iconPath,
+    ...(Object.keys(themeIconPaths).length > 0 ? { themeIconPaths } : {}),
+  };
 }
 
 function resolvePortableActivityIcons(params: {
@@ -411,7 +436,7 @@ export function buildPluginManifestRecord(params: {
     description:
       normalizeOptionalString(params.manifest.description) ?? params.candidate.packageDescription,
     catalog: mergeManifestCatalog(params.manifest.catalog, officialCatalogManifest?.catalog),
-    iconPath: resolvePortablePluginIconPath({
+    ...resolvePortableIdentityIcons({
       rootDir: params.candidate.rootDir,
       rejectHardlinks: params.rejectHardlinks,
     }),
@@ -549,7 +574,7 @@ export function buildBundleManifestRecord(params: {
     id: params.manifest.id,
     name: normalizeOptionalString(params.manifest.name) ?? params.candidate.idHint,
     description: normalizeOptionalString(params.manifest.description),
-    iconPath: resolvePortablePluginIconPath({
+    ...resolvePortableIdentityIcons({
       rootDir: params.candidate.rootDir,
       rejectHardlinks: params.rejectHardlinks,
     }),

@@ -639,6 +639,29 @@ describe("managed plugin catalog", () => {
     ).toBeUndefined();
   });
 
+  it("selects prepared theme artwork and retains the portable fallback", async () => {
+    const iconPath = "/tmp/workboard/assets/icon.png";
+    const darkIconPath = "/tmp/workboard/assets/icon-dark.png";
+    mocks.metadata.mockReturnValue(
+      metadataSnapshot({ enabled: false, iconPath, themeIconPaths: { dark: darkIconPath } }),
+    );
+
+    for (const theme of [undefined, "light", "dark"] as const) {
+      const resolved = await resolveManagedPluginIconSource({
+        config: {},
+        env: {},
+        pluginId: "workboard",
+        theme,
+      });
+      expect(resolved).toEqual({
+        kind: "file",
+        path: theme === "dark" ? darkIconPath : iconPath,
+        rootPath: "/tmp/workboard",
+        ...(theme === "dark" ? { fallbackPath: iconPath } : {}),
+      });
+    }
+  });
+
   it("projects activity capabilities without paths and resolves exact tool overrides", async () => {
     const activityIconPath = "/tmp/workboard/assets/activity.svg";
     const searchPath = "/tmp/workboard/assets/activity/Task.Search.svg";

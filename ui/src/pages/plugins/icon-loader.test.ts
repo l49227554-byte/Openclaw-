@@ -113,6 +113,28 @@ describe("catalog icon loader", () => {
     expect(fetchMock.mock.calls.some(([url]) => url === iconUrl)).toBe(false);
   });
 
+  it.each(["light", "dark"] as const)(
+    "requests %s package artwork without changing catalog URLs",
+    async (theme) => {
+      vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:themed");
+      const fetchMock = vi.fn().mockImplementation(async () => imageResponse());
+      vi.stubGlobal("fetch", fetchMock);
+      const common = {
+        auth,
+        resourceBasePath: "/openclaw",
+        gatewayUrl: window.location.origin.replace(/^http/u, "ws"),
+        signal: new AbortController().signal,
+        theme,
+      };
+      await fetchPluginIconBlobUrl({ ...common, pluginId: "@example/plugin" });
+      await fetchCatalogIconBlobUrl({ ...common, iconUrl: "https://example.test/icon.png" });
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        `/openclaw/__openclaw__/plugin-icon/%40example%2Fplugin?theme=${theme}`,
+        "/openclaw/__openclaw__/catalog-icon/https%3A%2F%2Fexample.test%2Ficon.png",
+      ]);
+    },
+  );
+
   it("refuses proxy loading when the configured gateway is cross-origin", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);

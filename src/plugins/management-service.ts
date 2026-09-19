@@ -74,6 +74,7 @@ import {
   resolvePluginMetadataSnapshot,
   type PluginMetadataSnapshot,
 } from "./plugin-metadata-snapshot.js";
+import type { PluginIconTheme } from "./portable-icon-paths.js";
 import { resolveManifestProviderAuthChoices } from "./provider-auth-choices.js";
 import { listRecommendedToolInstalls } from "./recommended-tool-installs.js";
 import {
@@ -185,11 +186,12 @@ export const resolveManagedPluginIconSource = withManagedPluginCache(
   async (params: {
     config: OpenClawConfig;
     pluginId: string;
+    theme?: PluginIconTheme;
     env?: NodeJS.ProcessEnv;
   }): Promise<ManagedPluginIconSource | undefined> => {
     const env = params.env ?? process.env;
     const metadata = resolveManagedPluginMetadata(params.config, env);
-    return resolvePluginIconSource({ metadata, pluginId: params.pluginId });
+    return resolvePluginIconSource({ metadata, pluginId: params.pluginId, theme: params.theme });
   },
 );
 

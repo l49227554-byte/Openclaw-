@@ -3,8 +3,14 @@ import { describe, expect, it } from "vitest";
 import { collectRuntimeChannelCapabilities } from "./runtime-capabilities.js";
 
 describe("collectRuntimeChannelCapabilities", () => {
-  it("advertises markdown details for internal webchat", () => {
-    expect(collectRuntimeChannelCapabilities({ channel: "webchat" })).toEqual(["markdownDetails"]);
+  it("advertises markdown details only when the client handshake says so", () => {
+    expect(collectRuntimeChannelCapabilities({ channel: "webchat" })).toBeUndefined();
+    expect(
+      collectRuntimeChannelCapabilities({
+        channel: "webchat",
+        clientCaps: ["markdown-details"],
+      }),
+    ).toEqual(["markdownDetails"]);
   });
 
   it("does not advertise markdown details for a plugin-less non-webchat channel", () => {

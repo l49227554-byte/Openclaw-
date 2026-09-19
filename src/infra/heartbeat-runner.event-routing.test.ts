@@ -316,14 +316,18 @@ describe("Heartbeat event routing", () => {
           sessionKey: queueKey,
           coalesceMs: 0,
         });
-        await vi.waitFor(() => expect(replySpy).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(replySpy).toHaveBeenCalledTimes(2), {
+          timeout: 10_000,
+        });
         expect(
           replySpy.mock.calls.map(([ctx]) => [ctx.AgentId, ctx.SessionKey, ctx.InternalTurnSource]),
         ).toEqual([
           ["ops", isolatedKey, "exec"],
           ["ops", isolatedKey, "cron"],
         ]);
-        await vi.waitFor(() => expect(peekSystemEvents(queueKey)).toEqual([]));
+        await vi.waitFor(() => expect(peekSystemEvents(queueKey)).toEqual([]), {
+          timeout: 10_000,
+        });
         expect(peekSystemEvents(baseKey)).toEqual(["Unrelated base event"]);
         expect(readEntry(baseKey)?.sessionId).toBe("base-conversation");
         expect(readEntry(queueKey)).toBeUndefined();

@@ -488,6 +488,7 @@ export class GatewayBrowserClient {
             "terminal-upload-path-style",
             "tool-events",
             "inline-widgets",
+            "markdown-details",
             "model-selection-policy",
             "ui-commands",
             "usage-refreshing",

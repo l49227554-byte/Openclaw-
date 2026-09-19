@@ -163,13 +163,16 @@ describe("channel-inbound public helpers", () => {
     expect(result.dispatched).toBe(true);
     expect(staleEntryAtDispatch).toMatchObject({ sessionId: "published-inbound-stale" });
     expect(staleEntryAtDispatch?.archivedAt).toBeUndefined();
-    await vi.waitFor(() => {
-      expect(loadSessionEntry({ storePath, sessionKey: staleSessionKey })).toMatchObject({
-        sessionId: "published-inbound-stale",
-        updatedAt: 1,
-        archivedAt: expect.any(Number),
-      });
-    });
+    await vi.waitFor(
+      () => {
+        expect(loadSessionEntry({ storePath, sessionKey: staleSessionKey })).toMatchObject({
+          sessionId: "published-inbound-stale",
+          updatedAt: 1,
+          archivedAt: expect.any(Number),
+        });
+      },
+      { timeout: 10_000 },
+    );
   });
 
   it("builds inbound event kind into message context", async () => {

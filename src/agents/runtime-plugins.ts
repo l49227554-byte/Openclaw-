@@ -1,3 +1,5 @@
+import { projectConfigOntoRuntimeSourceSnapshot } from "../config/runtime-source-projection.js";
+import { projectRuntimeChangesOntoSource } from "../config/source-value-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { adoptRuntimeContextEngineRegistrations } from "../context-engine/registry.js";
 import {
@@ -38,6 +40,7 @@ import {
   type AgentHarnessPluginSelection,
   type RuntimePluginLoadPurpose,
 } from "./harness/runtime-plugin-load-plan.js";
+import { releaseRuntimePluginWork, retainRuntimePluginWork } from "./runtime-plugin-work.js";
 
 type AgentRuntimePluginRegistryParams = {
   config?: OpenClawConfig;
@@ -62,7 +65,7 @@ function resolveAgentRuntimePluginRegistryLoad(
 ): PluginLoadOptions {
   const loadOptions: PluginLoadOptions = {
     config: params.config,
-    activationSourceConfig: params.config,
+    activationSourceConfig: params.config && projectConfigOntoRuntimeSourceSnapshot(params.config),
     env: params.env,
     workspaceDir:
       typeof params.workspaceDir === "string" && params.workspaceDir.trim()
@@ -107,10 +110,21 @@ function resolveAgentRuntimePluginRegistryLoad(
     metadataSnapshot,
     ...(params.purpose ? { purpose: params.purpose } : {}),
   });
+  // No-op plans keep the captured authored fleet by identity. Changed plans must
+  // project policy edits onto that capture, not the current global generation.
+  let activationSourceConfig = loadOptions.activationSourceConfig;
+  if (plan.config !== params.config) {
+    const projectedSource =
+      params.config && activationSourceConfig
+        ? projectRuntimeChangesOntoSource(activationSourceConfig, params.config, plan.config)
+        : plan.config;
+    // SAFETY: Typed config inputs project only the planner's plugin-policy edits onto authored config.
+    activationSourceConfig = projectedSource as OpenClawConfig;
+  }
   return {
     ...loadOptions,
     config: plan.config,
-    activationSourceConfig: plan.config,
+    activationSourceConfig,
     workspaceDir,
     discovery: metadataSnapshot.discovery,
     installRecords: extractPluginInstallRecordsFromInstalledPluginIndex(metadataSnapshot.index),
@@ -173,6 +187,7 @@ export type AcquiredAgentRuntimePluginRegistry =
       primaryRegistry: PluginRegistry;
       resources: NonNullable<ReturnType<typeof getPluginRegistryInspectionResources>>;
       releaseRegistry: () => Promise<void>;
+      releaseWork: () => void;
     };
 
 /** Prepared read-only owners reuse the load plan while owning fresh, uncached registrations. */
@@ -188,12 +203,15 @@ export async function acquireAgentRuntimePluginRegistry(
   const acquired = await (params.metadataSnapshot
     ? withPluginMetadataSnapshotScope(params.metadataSnapshot, acquire)
     : acquire());
+  let releaseWork = () => {};
   try {
     const { registry, donor } = adoptAgentRuntimeRegistrations(
       acquired.registry,
       params,
       loadOptions.config,
     );
+    // Fence replacement before adopting donors, including the await back to the build owner.
+    releaseWork = retainRuntimePluginWork([registry]);
     const primaryResources = getPluginRegistryInspectionResources(acquired.registry);
     if (!primaryResources) {
       throw new Error("Acquired prepared registry has no registration resource owner");
@@ -209,10 +227,11 @@ export async function acquireAgentRuntimePluginRegistry(
       primaryRegistry: acquired.registry,
       resources: primaryResources,
       releaseRegistry: acquired.release,
+      releaseWork,
     };
   } catch (error) {
     try {
-      await acquired.release();
+      await releaseRuntimePluginWork(acquired.release, releaseWork);
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
@@ -267,7 +286,7 @@ export async function withAgentPluginRegistry<T>(params: {
   // Direct hosts resolve one policy generation; disabled plugins never reopen discovery.
   const context = resolvePluginRuntimeLoadContext({
     config: params.config,
-    activationSourceConfig: params.config,
+    activationSourceConfig: projectConfigOntoRuntimeSourceSnapshot(params.config),
     env: params.env,
     workspaceDir: params.workspaceDir,
     ...(params.config.plugins?.enabled === false

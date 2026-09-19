@@ -15,6 +15,8 @@ import { readGatewayServiceState, resolveGatewayService } from "../../daemon/ser
 import { resolveSystemdServiceName } from "../../daemon/systemd-service-files.js";
 import { isCurrentManagedServiceUpdateHandoffProcess } from "../../infra/update-managed-service-handoff.js";
 import { getUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
+import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { defaultRuntime } from "../../runtime.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import { gatewayMaintenanceBlockMessage } from "./update-command-handoff.js";
@@ -49,19 +51,6 @@ const JSON_MODE_SERVICE_STDOUT = new Writable({
     callback();
   },
 });
-
-export function resolvePreparedGatewayUpdatePolicy(
-  stopState: PreManagedServiceStop | undefined,
-  shouldRestart: boolean,
-) {
-  const verdict = stopState?.serviceUpdateVerdict;
-  // Root ownership permits activation; rewriting also requires definition authority.
-  return {
-    allowGatewayServiceRepair: verdict?.kind === "owned" && verdict.refreshDefinition,
-    allowGatewayActivation:
-      shouldRestart && stopState?.stopped === true && verdict?.kind === "owned",
-  };
-}
 
 function matchesStoppedService(
   before: Pick<PreManagedServiceStop, "serviceEnv" | "serviceUpdateVerdict" | "serviceManagerUid">,
@@ -359,35 +348,49 @@ async function stopManagedServiceBeforeMutableUpdate(
   let service: ReturnType<typeof resolveGatewayService> | undefined;
   let serviceState: GatewayServiceState;
   try {
-    service = resolveGatewayService();
-    serviceState = await readGatewayServiceState(service, {
-      env: serviceEnv,
-      requireEffective: true,
-      requireLoadedCommand: true,
-      validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-      timeoutMs: params.timeoutMs,
-    });
+    const inspectedService = resolveGatewayService();
+    service = inspectedService;
+    serviceState = await withCommandProcessScope(() =>
+      readGatewayServiceState(inspectedService, {
+        env: serviceEnv,
+        requireEffective: true,
+        requireLoadedCommand: true,
+        validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+        timeoutMs: params.timeoutMs,
+      }),
+    );
     if (
       process.platform === "win32" &&
       serviceState.runtime?.inspectionFailure?.timeoutMs !== undefined
     ) {
       // Re-read the definition too: a timed-out snapshot cannot grant service ownership.
-      serviceState = await readGatewayServiceState(service, {
-        env: serviceEnv,
-        requireEffective: true,
-        validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
-        timeoutMs: params.timeoutMs,
-      });
+      serviceState = await withCommandProcessScope(() =>
+        readGatewayServiceState(inspectedService, {
+          env: serviceEnv,
+          requireEffective: true,
+          validateEnvBeforeStatusRead: assertGatewayServiceManagementAllowedForUpdate,
+          timeoutMs: params.timeoutMs,
+        }),
+      );
     }
   } catch (err) {
+    if (hasCommandProcessCleanupError(err)) {
+      throw err;
+    }
     assertCurrent();
     if (err instanceof GatewayServiceUpdateOwnershipError && service) {
-      const available = await service
-        .isLoaded({ env: serviceEnv, timeoutMs: params.timeoutMs })
-        .then(
-          () => true,
-          () => false,
-        );
+      const inspectedService = service;
+      const available = await withCommandProcessScope(() =>
+        inspectedService.isLoaded({ env: serviceEnv, timeoutMs: params.timeoutMs }),
+      ).then(
+        () => true,
+        (error: unknown) => {
+          if (hasCommandProcessCleanupError(error)) {
+            throw error;
+          }
+          return false;
+        },
+      );
       assertCurrent();
       if (available) {
         return { ...uninspected, serviceMutationAllowed: false, blockMessage: err.message };
@@ -403,12 +406,14 @@ async function stopManagedServiceBeforeMutableUpdate(
     });
   }
   assertCurrent();
-  const serviceUpdateVerdict = await revalidateManagedGatewayServiceAfterUpdate({
-    root: params.root,
-    state: serviceState,
-    preManagedServiceStop: params.expectedService,
-    allowInstallRootChange: params.allowInstallRootChange,
-  });
+  const serviceUpdateVerdict = await withCommandProcessScope(() =>
+    revalidateManagedGatewayServiceAfterUpdate({
+      root: params.root,
+      state: serviceState,
+      preManagedServiceStop: params.expectedService,
+      allowInstallRootChange: params.allowInstallRootChange,
+    }),
+  );
   assertCurrent();
   if (params.phase) {
     // Admission pins the definition; post-update ownership permits authorized refresh.
@@ -422,7 +427,12 @@ async function stopManagedServiceBeforeMutableUpdate(
     inspected: true,
     runtimeInspected: ["running", "stopped"].includes(serviceState.runtime?.status ?? ""),
     running: serviceState.running,
-    offline: await isManagedGatewayServiceOffline(service, serviceState, params.timeoutMs),
+    ...(typeof serviceState.runtime?.pid === "number"
+      ? { servicePid: serviceState.runtime.pid }
+      : {}),
+    offline: await withCommandProcessScope(() =>
+      isManagedGatewayServiceOffline(service, serviceState, params.timeoutMs),
+    ),
     serviceEnv: serviceState.env,
     serviceDefinitionEnv:
       resolveManagedGatewayServiceCommand(serviceState.command)?.environment ?? {},

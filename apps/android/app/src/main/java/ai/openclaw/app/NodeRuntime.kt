@@ -1476,9 +1476,14 @@ class NodeRuntime private constructor(
   private val _gatewayAgents = MutableStateFlow<List<GatewayAgentSummary>>(emptyList())
   val gatewayAgents: StateFlow<List<GatewayAgentSummary>> = _gatewayAgents.asStateFlow()
 
-  // Preserve an explicit user choice across metadata refreshes. Gateway reconnects
-  // clear it so the newly connected gateway's canonical main agent wins again.
+  // Preserve an explicit user choice across metadata refreshes. Gateway scope changes
+  // clear it; agents.list restores the gateway's remembered choice below once validated.
   @Volatile private var selectedChatAgentId: String? = null
+
+  // The picker's last choice per gateway stable id, for this runtime's lifetime. Only
+  // selectChatAgent writes it, so repeated disconnect callbacks cannot erase it, and a
+  // reconnect rebinds Chat and Talk to it instead of the gateway default (#139277).
+  private val rememberedChatAgentIdByGateway = ConcurrentHashMap<String, String>()
   private val chatSelectionSeq = AtomicLong(0)
   private val _cronStatus = MutableStateFlow(GatewayCronStatus(enabled = false, jobs = 0, nextWakeAtMs = null))
   val cronStatus: StateFlow<GatewayCronStatus> = _cronStatus.asStateFlow()
@@ -1702,6 +1707,9 @@ class NodeRuntime private constructor(
           operatorConnected = true
           operatorStatusText = "Connected"
         }
+        // Restore the remembered agent even when no screen is composed to refresh agents,
+        // so a background reconnect does not leave Talk on the gateway default.
+        if (rememberedChatAgentId() != null) refreshAgents()
         // Bootstrap can connect the node before operator access is ready.
         refreshNodesDevices()
         // Method and scope snapshots are synchronous above; refresh only after both so
@@ -5529,6 +5537,7 @@ class NodeRuntime private constructor(
           prefs.clearGatewayCustomHeaders(normalized)
           prefs.clearGatewayTlsFingerprint(normalized)
           prefs.clearNotificationForwardingSessionKey(normalized)
+          rememberedChatAgentIdByGateway.remove(normalized)
         }.onFailure { err ->
           runCatching { clientDatabases.cancelGatewayRemoval(normalized) }
           Log.e("OpenClawRuntime", "Failed to retire forgotten gateway authentication", err)
@@ -5906,6 +5915,7 @@ class NodeRuntime private constructor(
       // Agent selection owns every main-session consumer; switching chat alone would
       // leave Talk mode bound to the previous agent.
       selectedChatAgentId = normalizedAgentId
+      chatGatewayStableId()?.let { rememberedChatAgentIdByGateway[it] = normalizedAgentId }
       selectMainSessionKey(normalizedAgentId)
       selectedMainSessionKey = mainSessionKey.value
     }
@@ -5928,9 +5938,13 @@ class NodeRuntime private constructor(
 
   private fun chatAgentSessionSelectionOwner(agentId: String): ChatAgentSessionSelectionOwner =
     ChatAgentSessionSelectionOwner(
-      gatewayStableId = connectedEndpoint?.stableId ?: prefs.gatewayRegistry.activeStableId.value,
+      gatewayStableId = chatGatewayStableId(),
       agentId = agentId,
     )
+
+  private fun chatGatewayStableId(): String? = connectedEndpoint?.stableId ?: prefs.gatewayRegistry.activeStableId.value
+
+  private fun rememberedChatAgentId(): String? = chatGatewayStableId()?.let { rememberedChatAgentIdByGateway[it] }
 
   suspend fun fetchChatSessionList(
     search: String?,
@@ -7159,7 +7173,13 @@ class NodeRuntime private constructor(
       publishGatewayData(gatewayScope) {
         updateGatewayDefaultAgentId(defaultAgentId)
         _gatewayAgents.value = agents
-        val selectedAgentId = selectedChatAgentId?.takeIf { id -> agents.any { it.id == id } }
+        val requestedAgentId = selectedChatAgentId ?: rememberedChatAgentId()
+        val selectedAgentId = requestedAgentId?.takeIf { id -> agents.any { it.id == id } }
+        if (requestedAgentId != null && selectedAgentId == null && agents.isNotEmpty()) {
+          // The chosen agent was removed from this gateway: forget it and use the default.
+          chatGatewayStableId()?.let { rememberedChatAgentIdByGateway.remove(it, requestedAgentId) }
+          Log.i("OpenClawRuntime", "Selected agent is no longer on this gateway; using the default agent")
+        }
         selectedChatAgentId = selectedAgentId
         syncMainSessionKey(selectedAgentId ?: resolveAgentIdFromMainSessionKey(mainKey) ?: gatewayDefaultAgentId.value)
       }

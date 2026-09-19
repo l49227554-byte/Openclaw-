@@ -8,8 +8,10 @@ import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.SESSION_LIST_FETCH_LIMIT
 import ai.openclaw.app.chat.selectChatAgentSessionKey
 import ai.openclaw.app.gateway.GatewayEndpoint
+import ai.openclaw.app.gateway.GatewayHelloSummary
 import ai.openclaw.app.gateway.GatewayRequestRejected
 import ai.openclaw.app.gateway.GatewaySession
+import ai.openclaw.app.voice.TalkModeManager
 import android.content.Context
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
@@ -18,6 +20,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
@@ -475,6 +478,73 @@ class NodeRuntimeAgentSelectionTest {
       closeNodeRuntimeTestFixture(runtime)
     }
   }
+
+  @Test
+  fun talkKeepsSelectedAgentAcrossGatewayReconnect() =
+    runBlocking {
+      val runtime = createConnectedRuntime()
+      try {
+        answerAgentList(runtime, "main", "scout")
+        runtime.selectChatAgent("scout")
+        assertEquals("scout", talkAgentId(runtime))
+
+        // A gateway restart: the transport reports the drop more than once, then hello
+        // arrives naming the gateway default. No screen refreshes agents.
+        reconnectOperator(runtime, disconnectCallbacks = 2)
+
+        awaitTalkAgent(runtime, "scout")
+        assertEquals("scout", resolveAgentIdFromMainSessionKey(runtime.mainSessionKey.value))
+        assertEquals(runtime.mainSessionKey.value, runtime.chatSessionKey.value)
+      } finally {
+        closeNodeRuntimeTestFixture(runtime)
+      }
+    }
+
+  @Test
+  fun pickerTapRebindsTalkImmediatelyAndItsNewestChoiceSurvivesReconnect() =
+    runBlocking {
+      val runtime = createConnectedRuntime()
+      try {
+        answerAgentList(runtime, "main", "scout", "ops")
+        runtime.selectChatAgent("scout")
+        reconnectOperator(runtime)
+        awaitTalkAgent(runtime, "scout")
+
+        // No agents.list round trip is needed for a tap to reach Talk.
+        runtime.selectChatAgent("ops")
+        assertEquals("ops", talkAgentId(runtime))
+
+        reconnectOperator(runtime)
+        awaitTalkAgent(runtime, "ops")
+      } finally {
+        closeNodeRuntimeTestFixture(runtime)
+      }
+    }
+
+  @Test
+  fun removedAgentFallsBackToGatewayDefaultAfterReconnect() =
+    runBlocking {
+      val runtime = createConnectedRuntime()
+      try {
+        answerAgentList(runtime, "main", "scout")
+        runtime.selectChatAgent("scout")
+
+        answerAgentList(runtime, "main")
+        reconnectOperator(runtime)
+        withTimeout(2_000) { runtime.gatewayAgents.first { it.isNotEmpty() } }
+        assertEquals("main", talkAgentId(runtime))
+        assertEquals("main", resolveAgentIdFromMainSessionKey(runtime.mainSessionKey.value))
+
+        // The fallback forgets the removed choice instead of resurrecting it later.
+        answerAgentList(runtime, "main", "scout")
+        reconnectOperator(runtime)
+        runtime.refreshAgents()
+        withTimeout(2_000) { runtime.gatewayAgents.first { it.size == 2 } }
+        assertEquals("main", talkAgentId(runtime))
+      } finally {
+        closeNodeRuntimeTestFixture(runtime)
+      }
+    }
 
   @Test
   fun currentChatHydrationPreservesSelectionPublishedWhileItWaits() =
@@ -1438,6 +1508,56 @@ class NodeRuntimeAgentSelectionTest {
       }
     }
     ReflectionHelpers.setField(chat, "requestGatewayForGateway", request)
+  }
+
+  private fun answerAgentList(
+    runtime: NodeRuntime,
+    vararg agentIds: String,
+  ) {
+    val agents = agentIds.joinToString(",") { """{"id":"$it"}""" }
+    runtime.gatewayDataRequestOverrideForTests = { _, method, _ ->
+      when (method) {
+        "agents.list" -> """{"defaultId":"main","mainKey":"main","agents":[$agents]}"""
+        "models.list" -> """{"models":[]}"""
+        "models.authStatus" -> """{"providers":[]}"""
+        else -> "{}"
+      }
+    }
+  }
+
+  // Drives the operator session's own callbacks, as a gateway restart does.
+  private fun reconnectOperator(
+    runtime: NodeRuntime,
+    disconnectCallbacks: Int = 1,
+  ) {
+    val session = ReflectionHelpers.getField<GatewaySession>(runtime, "operatorSession")
+    val onDisconnected = ReflectionHelpers.getField<(String) -> Unit>(session, "onDisconnected")
+    repeat(disconnectCallbacks) { onDisconnected("Gateway closed") }
+    ReflectionHelpers.getField<(GatewayHelloSummary) -> Unit>(session, "onConnected")(
+      GatewayHelloSummary(
+        serverName = "Test gateway",
+        remoteAddress = "127.0.0.1:18789",
+        serverVersion = null,
+        mainSessionKey = "agent:main:main",
+        updateAvailable = null,
+        authScopes = listOf("operator.read"),
+      ),
+    )
+  }
+
+  // TalkModeManager's key is what talk.session.create and native chat.send carry.
+  private fun talkAgentId(runtime: NodeRuntime): String? {
+    val talkMode = ReflectionHelpers.getField<Lazy<TalkModeManager>>(runtime, "talkMode\$delegate").value
+    return resolveAgentIdFromMainSessionKey(ReflectionHelpers.getField<String>(talkMode, "mainSessionKey"))
+  }
+
+  private suspend fun awaitTalkAgent(
+    runtime: NodeRuntime,
+    agentId: String,
+  ) {
+    withTimeout(2_000) {
+      while (talkAgentId(runtime) != agentId) delay(10)
+    }
   }
 
   private fun createConnectedRuntime(): NodeRuntime {

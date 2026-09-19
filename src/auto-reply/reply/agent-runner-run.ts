@@ -1,10 +1,18 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveDefaultAgentId } from "../../agents/agent-scope-config.js";
+import { resolveReplyCompletion } from "../../agents/reply-completion.js";
+import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import { settleProgressVisibilityCallbackResult } from "../../channels/progress-visibility.js";
+import { isRestartRecoveryTerminalDeliveryFailClosed } from "../../config/sessions/restart-recovery-receipt.js";
 import { hasRestartRecoverySourceClaim } from "../../config/sessions/restart-recovery-state.js";
 import { loadSessionEntry, updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { logVerbose } from "../../globals.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { hasOutboundReplyContent } from "../../plugin-sdk/reply-payload.js";
+import {
+  getGatewayContextResolver,
+  getPluginRuntimeGatewayRequestScope,
+} from "../../plugins/runtime/gateway-request-scope.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
@@ -26,6 +34,7 @@ import {
   createShouldEmitToolResult,
   isAudioPayload,
 } from "./agent-runner-helpers.js";
+import { runReplyQuestionInput } from "./agent-runner-question-input.js";
 import { resetReplyRunSession } from "./agent-runner-session-reset.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { resolveQueuedReplyExecutionConfig } from "./agent-runner-utils.js";
@@ -43,25 +52,28 @@ import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
-import { recordReplyOperationAgentTurn } from "./reply-operation-agent-turn-state.js";
 import * as replyRunState from "./reply-operation-run-state.js";
 import { type ReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 import { bindReplyOperationTyping } from "./reply-run-typing.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
+import {
+  prepareReplyToolAuthority,
+  resolveFollowupRunToolAuthorityFingerprint,
+} from "./reply-tool-authority.js";
 import { admitReplyTurn, resolveReplyTurnKind } from "./reply-turn-admission.js";
 import {
   isDuplicateRestartRecoverySource,
   retireTerminalRestartRecoverySourceClaim,
 } from "./restart-recovery-claim.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
+import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
 import { readChannelSourceTurnId } from "./source-turn-id.js";
 import { createTypingSignaler } from "./typing-mode.js";
 export async function runReplyAgent(
-  params: RunReplyAgentParams,
+  input: RunReplyAgentParams,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  const params = { ...input };
   const {
-    commandBody,
-    transcriptCommandBody,
     followupRun,
     queueKey,
     resolvedQueue,
@@ -78,20 +90,20 @@ export async function runReplyAgent(
     runtimePolicySessionKey,
     storePath,
     defaultModel,
-    agentCfgContextTokens,
     resolvedVerboseLevel,
     toolProgressDetail,
     isNewSession,
     blockStreamingEnabled,
     blockReplyChunking,
-    resolvedBlockStreamingBreak,
     sessionCtx,
-    shouldInjectGroupIntro,
     typingMode,
     resetTriggered,
-    replyThreadingOverride,
     replyOperation: providedReplyOperation,
   } = params;
+  const resolveGatewayContext = providedReplyOperation
+    ? getGatewayContextResolver(providedReplyOperation)
+    : (readChannelContextGatewayContextResolver(sessionCtx) ??
+      getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext);
   // One lifecycle for all adoption sites in this run.
   const turnAdoptionLifecycle = opts?.turnAdoptionLifecycle;
   const releaseAdmissionTicket = () => opts?.[REPLY_ADMISSION_TICKET]?.release();
@@ -102,6 +114,16 @@ export async function runReplyAgent(
   const activeRunQueueMode = effectiveResetTriggered ? "interrupt" : resolvedQueue.mode;
 
   const isHeartbeat = opts?.isHeartbeat === true;
+  const replyExpectation = (followupRun.run.terminalReplyExpectation ??=
+    resolveSourceReplyExpectation({
+      ctx: {
+        ...sessionCtx,
+        InboundEventKind: followupRun.currentInboundEventKind ?? sessionCtx.InboundEventKind,
+        InputProvenance: followupRun.run.inputProvenance ?? sessionCtx.InputProvenance,
+      },
+      cfg: followupRun.run.config,
+      isHeartbeat,
+    }));
   let didDeliverVisiblePartialReply = false;
   const onPartialReply = opts?.onPartialReply;
   const runOpts = onPartialReply
@@ -117,6 +139,15 @@ export async function runReplyAgent(
       }
     : opts;
   const replyOperationRunState = replyRunState.resolveReplyOperationRunState(opts);
+  if (replyOperationRunState) {
+    replyOperationRunState.replyCompletion = resolveReplyCompletion(
+      followupRun.run.terminalReplyExpectation,
+      "empty",
+    );
+  }
+  followupRun.replyOperationRunStates = replyOperationRunState
+    ? [replyOperationRunState]
+    : undefined;
   const traceAttributes = {
     provider: followupRun.run.provider,
     hasSessionKey: Boolean(sessionKey ?? followupRun.run.sessionKey),
@@ -133,6 +164,32 @@ export async function runReplyAgent(
     });
   const effectiveShouldSteer = !isHeartbeat && !effectiveResetTriggered && shouldSteer;
   const effectiveShouldFollowup = !effectiveResetTriggered && shouldFollowup;
+  const messageInjectionDisposition = opts?.messageInjectionDisposition ?? "none";
+  const incomingToolAuthorityFingerprint = resolveFollowupRunToolAuthorityFingerprint(followupRun);
+  const activeReplyOperation = sessionKey
+    ? (replyRunRegistry.get(sessionKey) ?? providedReplyOperation)
+    : providedReplyOperation;
+  const activeToolAuthorityFingerprint = activeReplyOperation?.toolAuthorityFingerprint;
+  const incomingAuthorityAtActiveRoute = activeReplyOperation?.toolAuthorityRoute
+    ? resolveFollowupRunToolAuthorityFingerprint(
+        followupRun,
+        activeReplyOperation.toolAuthorityRoute,
+      )
+    : undefined;
+  const hasAuthorityMismatch =
+    activeReplyOperation !== undefined &&
+    activeToolAuthorityFingerprint !== incomingToolAuthorityFingerprint;
+  const hasRouteOnlyAuthorityMismatch =
+    hasAuthorityMismatch &&
+    activeToolAuthorityFingerprint !== undefined &&
+    incomingAuthorityAtActiveRoute === activeToolAuthorityFingerprint;
+  const shouldQueueAuthorityMismatch =
+    effectiveShouldSteer && isActive && hasAuthorityMismatch && !hasRouteOnlyAuthorityMismatch;
+  if (shouldQueueAuthorityMismatch) {
+    logVerbose(
+      `queue: active session ${activeReplyOperation?.sessionId ?? followupRun.run.sessionId} has different or unknown tool authority; queuing instead of steering`,
+    );
+  }
   const typingSignals = createTypingSignaler({
     typing,
     mode: typingMode,
@@ -148,6 +205,29 @@ export async function runReplyAgent(
           hydrateSkillPromptRefs: false,
         }) ?? activeSessionEntry)
       : activeSessionEntry;
+  // New steering must not reuse a terminal source claim. Compare the active
+  // source identity so unrelated retained tombstones still permit steering.
+  // The parked admission owner rechecks after any predecessor wait.
+  const activeSourceTurnId =
+    replyRunRegistry.getSourceTurnId(sessionKey ?? "") ??
+    normalizeOptionalString(restartRecoveryEntry?.restartRecoveryDeliverySourceRunId) ??
+    "";
+  const terminalDeliveryFailClosed = isRestartRecoveryTerminalDeliveryFailClosed(
+    restartRecoveryEntry,
+    activeReplyOperation?.sessionId ?? followupRun.run.sessionId,
+    activeSourceTurnId,
+  );
+  const shouldQueueTerminalReceiptSteer =
+    effectiveShouldSteer &&
+    isActive &&
+    !shouldQueueAuthorityMismatch &&
+    messageInjectionDisposition === "none" &&
+    terminalDeliveryFailClosed;
+  if (shouldQueueTerminalReceiptSteer) {
+    logVerbose(
+      `queue: active session ${activeReplyOperation?.sessionId ?? followupRun.run.sessionId} is fail-closed for terminal source-reply delivery; queuing instead of steering`,
+    );
+  }
   if (
     restartRecoverySourceTurnId &&
     isDuplicateRestartRecoverySource(restartRecoveryEntry, restartRecoverySourceTurnId)
@@ -178,10 +258,18 @@ export async function runReplyAgent(
     return undefined;
   }
 
+  const questionInput = await runReplyQuestionInput(input);
+  if (questionInput.handled) {
+    releaseAdmissionTicket();
+    typing.cleanup();
+    return questionInput.payload;
+  }
+
   const baseShouldEmitToolResult = createShouldEmitToolResult({
     sessionKey,
     storePath,
     resolvedVerboseLevel,
+    verboseLevelOverride: followupRun.run.verboseLevelOverride,
   });
   const channelProgressCanConsumeToolResults =
     Boolean(opts?.forceToolResultProgress) && Boolean(opts?.onToolResult);
@@ -191,6 +279,7 @@ export async function runReplyAgent(
     sessionKey,
     storePath,
     resolvedVerboseLevel,
+    verboseLevelOverride: followupRun.run.verboseLevelOverride,
   });
 
   const pendingToolTasks = new Set<Promise<void>>();
@@ -199,7 +288,8 @@ export async function runReplyAgent(
     if (!activeSessionEntry || !activeSessionStore || !sessionKey) {
       return;
     }
-    const updatedAt = Date.now();
+    // Keep the in-memory snapshot aligned with the pending-reset write boundary.
+    const updatedAt = activeSessionEntry.updatedAt === 0 ? 0 : Date.now();
     activeSessionEntry.updatedAt = updatedAt;
     activeSessionStore[sessionKey] = activeSessionEntry;
     if (storePath) {
@@ -211,6 +301,7 @@ export async function runReplyAgent(
   };
 
   const queuedRunFollowupTurn = createFollowupRunner({
+    resolveGatewayContext,
     opts,
     typing,
     typingMode,
@@ -219,13 +310,37 @@ export async function runReplyAgent(
     sessionKey,
     storePath,
     defaultModel,
-    agentCfgContextTokens,
     toolProgressDetail,
   });
 
-  if (effectiveShouldSteer && isActive && opts?.messageInjectionAttempted !== true) {
-    replyRunState.bindQueueDispositionToRunState(followupRun, replyOperationRunState);
-    await runActiveReplySteer({
+  if (messageInjectionDisposition === "accepted") {
+    if (replyOperationRunState) {
+      replyOperationRunState.admission = { status: "accepted", mode: "steer" };
+    }
+    releaseAdmissionTicket();
+    typing.cleanup();
+    return undefined;
+  }
+
+  const bindQueueDisposition = () => {
+    const observe = followupRun.onQueueDisposition;
+    followupRun.onQueueDisposition = (disposition) => {
+      observe?.(disposition);
+      if (replyOperationRunState && disposition !== "queue-cap-old") {
+        replyOperationRunState.admission = { status: "skipped", reason: "queue-cap" };
+      }
+    };
+  };
+
+  if (
+    effectiveShouldSteer &&
+    isActive &&
+    !shouldQueueAuthorityMismatch &&
+    !shouldQueueTerminalReceiptSteer &&
+    messageInjectionDisposition === "none"
+  ) {
+    bindQueueDisposition();
+    const result = await runActiveReplySteer({
       followupRun,
       opts,
       providedReplyOperation,
@@ -237,18 +352,24 @@ export async function runReplyAgent(
       runFollowup: queuedRunFollowupTurn,
       sessionCtx,
       sessionKey,
+      sessionEntry: activeSessionEntry,
+      storePath,
       touchActiveSessionEntry,
       typing,
       typingSignals,
+      toolAuthorityFingerprint: incomingToolAuthorityFingerprint,
+      pendingInputAuthorityFingerprint: hasRouteOnlyAuthorityMismatch
+        ? activeToolAuthorityFingerprint
+        : undefined,
     });
-    return undefined;
+    return result === "handled" ? undefined : result;
   }
 
   const activeRunQueueAction = resolveActiveRunQueueAction({
     queueAdmissionState,
     isActive,
     isHeartbeat,
-    shouldFollowup: effectiveShouldFollowup,
+    shouldFollowup: effectiveShouldFollowup || shouldQueueAuthorityMismatch,
     queueMode: activeRunQueueMode,
     resetTriggered: effectiveResetTriggered,
   });
@@ -262,7 +383,7 @@ export async function runReplyAgent(
   }
 
   if (activeRunQueueAction === "enqueue-followup") {
-    replyRunState.bindQueueDispositionToRunState(followupRun, replyOperationRunState);
+    bindQueueDisposition();
     const enqueued = enqueueFollowupRun(
       queueKey,
       followupRun,
@@ -281,10 +402,10 @@ export async function runReplyAgent(
     }
     // The queue must stay dormant while the active owner can still collect
     // messages. Registering after enqueue closes the owner-clear race.
-    const activeReplyOperation = replyRunRegistry.get(queueKey);
-    if (activeReplyOperation) {
+    const queuedOperationOwner = replyRunRegistry.get(queueKey) ?? activeReplyOperation;
+    if (queuedOperationOwner) {
       scheduleFollowupDrainAfterReplyOperationClear({
-        operation: activeReplyOperation,
+        operation: queuedOperationOwner,
         queueKey,
         runFollowup: queuedRunFollowupTurn,
       });
@@ -314,18 +435,22 @@ export async function runReplyAgent(
     originatingChannel: sessionCtx.OriginatingChannel,
     provider: sessionCtx.Surface ?? sessionCtx.Provider,
   }) as OriginatingChannelType | undefined;
-  const replyToMode = resolveReplyToMode(
-    followupRun.run.config,
-    replyToChannel,
-    sessionCtx.AccountId,
-    sessionCtx.ChatType,
-  );
+  const replyToMode =
+    followupRun.originatingReplyToMode ??
+    resolveReplyToMode(
+      followupRun.run.config,
+      replyToChannel,
+      sessionCtx.AccountId,
+      sessionCtx.ChatType,
+    );
   const applyReplyToMode = createReplyToModeFilterForChannel(replyToMode, replyToChannel);
   const cfg = followupRun.run.config;
   const replyMediaContext = createReplyMediaContext({
     cfg,
+    agentId: followupRun.run.agentId,
     sessionKey,
     workspaceDir: followupRun.run.workspaceDir,
+    mediaNormalizationOwner: followupRun.run.mediaNormalizationOwner,
     messageProvider: followupRun.run.messageProvider,
     accountId: followupRun.originatingAccountId ?? followupRun.run.agentAccountId,
     groupId: followupRun.run.groupId,
@@ -338,12 +463,13 @@ export async function runReplyAgent(
   });
   const compactionNoticeMessageId = sessionCtx.MessageSidFull ?? sessionCtx.MessageSid;
   const sendDirectCompactionNotice = shouldNotifyUserAboutCompaction(cfg)
-    ? async (phase: CompactionNoticePhase) => {
+    ? async (phase: CompactionNoticePhase, text?: string) => {
         if (!opts?.onBlockReply) {
           return;
         }
         const noticePayload = createCompactionNoticePayload({
           phase,
+          text,
           currentMessageId: compactionNoticeMessageId,
           applyReplyToMode,
         });
@@ -372,6 +498,17 @@ export async function runReplyAgent(
           buffer: createAudioAsVoiceBuffer({ isAudioPayload }),
         })
       : null;
+  const resolveVisibleReplyDelivery = async () => {
+    // Settle accepted or in-flight blocks before deciding whether a terminal failure may stay silent.
+    try {
+      await blockReplyPipeline?.flush({ force: true });
+    } catch (flushError) {
+      logVerbose(
+        `failed to flush streamed reply blocks before surfacing run failure: ${String(flushError)}`,
+      );
+    }
+    return didDeliverVisiblePartialReply || blockReplyPipeline?.didStream() === true;
+  };
   const replySessionKey = sessionKey ?? followupRun.run.sessionKey;
   const replyRouteThreadId = resolveRoutedDeliveryThreadId({
     ctx: sessionCtx,
@@ -387,6 +524,8 @@ export async function runReplyAgent(
   } else {
     const replyTurnKind = resolveReplyTurnKind(opts);
     const admission = await admitReplyTurn({
+      agentId: followupRun.run.agentId,
+      resolveGatewayContext,
       sessionId: followupRun.run.sessionId,
       sessionKey: replySessionKey ?? "",
       expectedSessionId: activeSessionEntry?.sessionId,
@@ -396,7 +535,6 @@ export async function runReplyAgent(
       routeThreadId: replyRouteThreadId,
       originatingLeafEntryId: turnAdoptionLifecycle?.originatingLeafEntryId,
       upstreamAbortSignal: opts?.abortSignal,
-      onReplyAdmissionWaitChange: opts?.onReplyAdmissionWaitChange,
     });
     if (replyOperationRunState) {
       replyOperationRunState.admission =
@@ -442,6 +580,7 @@ export async function runReplyAgent(
       }
     }
   }
+  replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
   bindReplyOperationTyping(replyOperation, typing);
   let runFollowupTurn = queuedRunFollowupTurn;
   let shouldDrainQueuedFollowupsAfterClear = false;
@@ -471,29 +610,19 @@ export async function runReplyAgent(
     },
     storePath,
   });
-  type SessionResetOptions = {
-    failureLabel: string;
-    buildLogMessage: (nextSessionId: string) => string;
-    cleanupTranscripts?: boolean;
-  };
-  const resetSession = async ({
-    failureLabel,
-    buildLogMessage,
-    cleanupTranscripts,
-  }: SessionResetOptions): Promise<boolean> =>
+  const resetSessionAfterRoleOrderingConflict = async (reason: string): Promise<boolean> =>
     await resetReplyRunSession({
       options: {
-        failureLabel,
-        buildLogMessage,
-        cleanupTranscripts,
+        failureLabel: "role ordering conflict",
+        buildLogMessage: (nextSessionId) =>
+          `Role ordering conflict (${reason}). Restarting session ${sessionKey} -> ${nextSessionId}.`,
+        cleanupTranscripts: true,
       },
       sessionKey,
       queueKey,
       activeSessionEntry,
       activeSessionStore,
       storePath,
-      messageThreadId:
-        typeof sessionCtx.MessageThreadId === "string" ? sessionCtx.MessageThreadId : undefined,
       followupRun,
       onActiveSessionEntry: (nextEntry) => {
         activeSessionEntry = nextEntry;
@@ -502,52 +631,32 @@ export async function runReplyAgent(
         activeIsNewSession = true;
       },
     });
-  const resetSessionAfterRoleOrderingConflict = async (reason: string): Promise<boolean> =>
-    resetSession({
-      failureLabel: "role ordering conflict",
-      buildLogMessage: (nextSessionId) =>
-        `Role ordering conflict (${reason}). Restarting session ${sessionKey} -> ${nextSessionId}.`,
-      cleanupTranscripts: true,
-    });
   try {
     return await executePreparedReplyAgentRun({
+      ...params,
       activeSessionStore,
       admitUserTurn,
-      agentCfgContextTokens,
       applyReplyToMode,
       beginBeforeAgentReply,
-      blockReplyChunking,
       blockReplyPipeline,
-      blockStreamingEnabled,
       cfg,
       checkpointBeforeAgentReply,
-      commandBody,
-      defaultModel,
-      followupRun,
+      resolveVisibleReplyDelivery,
       getActiveIsNewSession: () => activeIsNewSession,
       getActiveSessionEntry: () => activeSessionEntry,
       isHeartbeat,
       isRestartRecoveryArmed,
       opts: runOpts,
       pendingToolTasks,
-      performSessionReset: resetSession,
-      queueKey,
       replyMediaContext,
       replyOperation,
       replyRouteThreadId,
-      replyThreadingOverride,
       replyToChannel,
       replyToMode,
       resetSessionAfterRoleOrderingConflict,
-      resolvedBlockStreamingBreak,
-      resolvedQueue,
-      resolvedVerboseLevel,
       returnWithQueuedFollowupDrain,
       runFollowupTurn,
-      runtimePolicySessionKey,
       sendDirectCompactionNotice,
-      sessionCtx,
-      sessionKey,
       setActiveSessionEntry: (entry) => {
         activeSessionEntry = entry;
       },
@@ -556,23 +665,19 @@ export async function runReplyAgent(
       },
       shouldEmitToolOutput,
       shouldEmitToolResult,
-      shouldInjectGroupIntro,
-      storePath,
-      toolProgressDetail,
       traceAgentPhase,
-      transcriptCommandBody,
       turnAdoptionLifecycle,
-      typing,
-      typingMode,
       typingSignals,
     });
   } catch (error) {
-    recordReplyOperationAgentTurn(replyOperationRunState, "failed");
+    replyRunState.recordReplyOperationAgentTurn(
+      followupRun.replyOperationRunStates,
+      replyOperation,
+    );
     return await handleReplyAgentRunError(error, {
-      blockReplyPipeline,
-      cfg,
-      didDeliverVisiblePartialReply: () => didDeliverVisiblePartialReply,
+      resolveVisibleReplyDelivery,
       isHeartbeat,
+      replyExpectation,
       isRestartRecoveryArmed,
       replyOperation,
       resolvedVerboseLevel,

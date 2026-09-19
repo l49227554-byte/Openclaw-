@@ -1,4 +1,3 @@
-// Telegram plugin module implements exec approvals behavior.
 import { resolveApprovalApprovers } from "openclaw/plugin-sdk/approval-auth-runtime";
 import {
   createChannelExecApprovalProfile,
@@ -10,9 +9,12 @@ import { doesApprovalRequestSelectChannelAccount } from "openclaw/plugin-sdk/app
 import type {
   ExecApprovalRequest,
   PluginApprovalRequest,
+  SystemAgentApprovalRequest,
 } from "openclaw/plugin-sdk/approval-runtime";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { TelegramExecApprovalConfig } from "openclaw/plugin-sdk/config-contracts";
+import type {
+  OpenClawConfig,
+  TelegramExecApprovalConfig,
+} from "openclaw/plugin-sdk/config-contracts";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveDefaultTelegramAccountId, resolveTelegramAccount } from "./accounts.js";
@@ -82,7 +84,7 @@ export function isTelegramExecApprovalTargetRecipient(params: {
 function isTelegramExecApprovalAccountEligible(params: {
   cfg: OpenClawConfig;
   accountId: string;
-  request: ExecApprovalRequest | PluginApprovalRequest;
+  request: ExecApprovalRequest | PluginApprovalRequest | SystemAgentApprovalRequest;
 }): boolean {
   const account = resolveTelegramAccount(params);
   if (!account.enabled || account.tokenSource === "none") {
@@ -106,7 +108,7 @@ function isTelegramExecApprovalAccountEligible(params: {
 function matchesTelegramRequestAccount(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
-  request: ExecApprovalRequest | PluginApprovalRequest;
+  request: ExecApprovalRequest | PluginApprovalRequest | SystemAgentApprovalRequest;
 }): boolean {
   const accountId = params.accountId ?? resolveDefaultTelegramAccountId(params.cfg);
   return doesApprovalRequestSelectChannelAccount({

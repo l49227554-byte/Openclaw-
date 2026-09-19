@@ -9,11 +9,34 @@ import type { SubagentLifecycleController } from "./subagent-registry-lifecycle.
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const SUBAGENT_SUSPENDED_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60_000;
-export const SUBAGENT_SUSPENDED_DELIVERY_WARNING_COUNT = 25;
-export const SUBAGENT_SUSPENDED_DELIVERY_HARD_CAP = 50;
+const SUBAGENT_SUSPENDED_DELIVERY_WARNING_COUNT = 25;
 
 export function isSuspendedPendingFinalDelivery(entry: SubagentRunRecord): boolean {
   return typeof entry.execution.endedAt === "number" && isDeliverySuspended(entry);
+}
+
+/** Report delivery backlog changes independently of admission for new work. */
+export function warnSuspendedDeliveryPressure(
+  entries: Iterable<SubagentRunRecord>,
+  previousCount: number | undefined,
+  warn: (message: string, meta?: Record<string, unknown>) => void,
+): number | undefined {
+  let suspendedCount = 0;
+  for (const entry of entries) {
+    if (isSuspendedPendingFinalDelivery(entry)) {
+      suspendedCount += 1;
+    }
+  }
+  if (suspendedCount < SUBAGENT_SUSPENDED_DELIVERY_WARNING_COUNT) {
+    return undefined;
+  }
+  if (suspendedCount !== previousCount) {
+    warn("subagent suspended delivery backlog reached warning threshold", {
+      suspendedCount,
+      warningThreshold: SUBAGENT_SUSPENDED_DELIVERY_WARNING_COUNT,
+    });
+  }
+  return suspendedCount;
 }
 
 export function resolveSuspendedDeliveryExpiryMs(): number {
@@ -62,9 +85,8 @@ export async function discardSuspendedPendingFinalDelivery(params: {
       skipRequesterSettleWake: true,
     });
   } catch (error) {
-    const mutableEntry = entry as unknown as Record<string, unknown>;
-    for (const key of Object.keys(mutableEntry)) {
-      delete mutableEntry[key];
+    for (const key of Object.keys(entry)) {
+      Reflect.deleteProperty(entry, key);
     }
     Object.assign(entry, snapshot);
     if (wasResumed) {

@@ -9,23 +9,20 @@ import type {
   WorkerProfile,
   WorkerSshEndpoint,
 } from "../../plugins/types.js";
+import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
 import { ensureAdditiveStateColumns } from "../../state/openclaw-state-db-schema-additive.js";
 import {
   assertOpenClawStateDatabaseForMaintenance,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
-  OPENCLAW_STATE_SCHEMA_VERSION,
   type OpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { hashWorkerCredential } from "./credential.js";
-import {
-  createWorkerEnvironmentStore,
-  normalizeWorkerDesktopEndpoint,
-  normalizeWorkerSshEndpoint,
-  type WorkerEnvironmentStore,
-} from "./store.js";
+import { createWorkerEnvironmentStore, type WorkerEnvironmentStore } from "./store.js";
 
-type WorkerEnvironmentBootstrapReceipt = WorkerAdmissionHandshake;
+type WorkerEnvironmentBootstrapReceipt = WorkerAdmissionHandshake & {
+  installKind?: "bundle" | "local";
+};
 type WorkerEnvironmentProfileSnapshot = WorkerProfile;
 type WorkerEnvironmentSshEndpoint = WorkerSshEndpoint;
 
@@ -61,6 +58,8 @@ const BOOTSTRAP_RECEIPT: WorkerEnvironmentBootstrapReceipt = {
   protocolFeatures: ["workspace-sync-v1", "model-proxy-v1"],
 };
 const CREDENTIAL = ["worker", "credential", "fixture"].join("-");
+const DAY_MS = 24 * 60 * 60 * 1_000;
+const PRUNE_NOW_MS = 10 * DAY_MS;
 
 describe("worker environment store", () => {
   let root: string;
@@ -116,6 +115,19 @@ describe("worker environment store", () => {
       to: "bootstrapping",
       patch: { leaseId, sshEndpoint: SSH_ENDPOINT },
     });
+  }
+
+  function seedOrphaned(environmentId: string, stateChangedAtMs: number) {
+    nowMs = 1_000;
+    const bootstrapping = seedBootstrapping(environmentId, `lease:${environmentId}`);
+    store.transition({
+      environmentId,
+      from: bootstrapping.state,
+      to: "ready",
+      patch: readyPatch(),
+    });
+    nowMs = stateChangedAtMs;
+    return store.transition({ environmentId, from: "ready", to: "orphaned" });
   }
 
   function readyPatch(receipt = BOOTSTRAP_RECEIPT) {
@@ -278,9 +290,19 @@ describe("worker environment store", () => {
     expect(store.listForReconcile()).toEqual([]);
   });
 
-  it("replaces ordered SSH fallback rows when the endpoint changes", () => {
+  it.each([
+    { name: "none", fallbackPorts: [] },
+    { name: "one", fallbackPorts: [2201] },
+    { name: "non-numeric order", fallbackPorts: [2201, 22] },
+    { name: "ten", fallbackPorts: Array.from({ length: 10 }, (_, index) => 2310 - index) },
+  ])("replaces and reopens ordered SSH fallback rows ($name)", ({ fallbackPorts }) => {
+    seedBootstrapping("worker-unrelated", "lease-unrelated");
     seedBootstrapping("worker-endpoint-change", "lease-endpoint-change");
-    const replacement = { ...SSH_ENDPOINT, fallbackPorts: [2201, 22] };
+    const replacement = { ...SSH_ENDPOINT, fallbackPorts };
+    const expected: WorkerEnvironmentSshEndpoint = { ...replacement };
+    if (fallbackPorts.length === 0) {
+      delete expected.fallbackPorts;
+    }
 
     expect(
       store.transition({
@@ -289,12 +311,40 @@ describe("worker environment store", () => {
         to: "ready",
         patch: { ...readyPatch(), sshEndpoint: replacement },
       }).sshEndpoint,
-    ).toEqual(replacement);
-    expect(fallbackPortRows("worker-endpoint-change")).toEqual([
-      { position: 0, port: 2201 },
-      { position: 1, port: 22 },
-    ]);
+    ).toStrictEqual(expected);
+    expect(fallbackPortRows("worker-endpoint-change")).toEqual(
+      fallbackPorts.map((port, position) => ({ position, port })),
+    );
+
+    closeOpenClawStateDatabaseForTest();
+    database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
+    store = createWorkerEnvironmentStore({ database, now: () => nowMs });
+    expect(store.get("worker-endpoint-change")?.sshEndpoint).toStrictEqual(expected);
+    for (const records of [store.list(), store.listForReconcile()]) {
+      expect(records.map((record) => [record.environmentId, record.sshEndpoint])).toEqual([
+        ["worker-endpoint-change", expected],
+        ["worker-unrelated", SSH_ENDPOINT],
+      ]);
+    }
   });
+
+  it.each([0, 65_536, 9_007_199_254_740_993n])(
+    "rejects invalid persisted fallback port %s for an SSH environment",
+    (port) => {
+      seedBootstrapping("worker-invalid-port", "lease-invalid-port");
+      // Simulate damaged stored values while leaving the real decoder and endpoint validation active.
+      database.db.exec("PRAGMA ignore_check_constraints = ON");
+      try {
+        const sql = "UPDATE worker_environment_ssh_fallback_ports SET port = ? WHERE position = 0";
+        database.db.prepare(sql).run(port);
+      } finally {
+        database.db.exec("PRAGMA ignore_check_constraints = OFF");
+      }
+      expect(() => store.get("worker-invalid-port")).toThrow();
+      expect(() => store.list()).toThrow();
+      expect(() => store.listForReconcile()).toThrow();
+    },
+  );
 
   it("lazily ensures the companion table once for a current database", () => {
     const databasePath = database.path;
@@ -356,103 +406,93 @@ describe("worker environment store", () => {
     expect(fallbackPortRows("worker-constraints")).toEqual([]);
   });
 
-  it("normalizes provider-advertised SSH fallback ports at the durable boundary", () => {
+  it("uses the terminal environment index for ordered cleanup", () => {
+    const plan = database.db
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT worker_environments.environment_id
+         FROM worker_environments
+         LEFT JOIN worker_session_placements
+           ON worker_session_placements.environment_id = worker_environments.environment_id
+         WHERE worker_environments.state IN ('destroyed', 'failed', 'orphaned')
+           AND worker_environments.state_changed_at_ms <= ?
+           AND worker_session_placements.session_id IS NULL
+         ORDER BY worker_environments.state_changed_at_ms ASC,
+                  worker_environments.environment_id ASC
+         LIMIT ?`,
+      )
+      .all(PRUNE_NOW_MS - 7 * DAY_MS, 2) as Array<{ detail: string }>;
+
+    expect(plan.map((row) => row.detail).join("\n")).toContain(
+      "idx_worker_environments_terminal_changed",
+    );
+  });
+
+  it("prunes only old unreferenced terminal environments and cascades owned rows", () => {
+    seedOrphaned("worker-old-first", DAY_MS);
+    seedOrphaned("worker-old-second", 2 * DAY_MS);
+    seedOrphaned("worker-referenced", 3 * DAY_MS);
+    seedOrphaned("worker-recent", PRUNE_NOW_MS - 1_000);
+    nowMs = 1_000;
+    const ready = seedBootstrapping("worker-ready", "lease:worker-ready");
+    store.transition({
+      environmentId: ready.environmentId,
+      from: ready.state,
+      to: "ready",
+      patch: readyPatch(),
+    });
+    database.db
+      .prepare(
+        `INSERT INTO worker_session_placements (
+          session_id, agent_id, session_key, state, environment_id, recovery_error,
+          created_at_ms, updated_at_ms, state_changed_at_ms
+        ) VALUES ('session-referenced', 'agent-1', 'session-key-1', 'failed', ?,
+          'worker environment disappeared', 1, 1, 1)`,
+      )
+      .run("worker-referenced");
+    database.db
+      .prepare(
+        `INSERT INTO worker_inference_turns (
+          session_id, run_epoch, run_id, turn_id, environment_id, request_hash,
+          state, terminal_json, created_at_ms, updated_at_ms
+        ) VALUES ('session-old', 1, 'run-old', 'turn-old', ?, 'hash-old',
+          'terminal', '{}', 1, 1)`,
+      )
+      .run("worker-old-first");
+    expect(fallbackPortRows("worker-old-first")).toHaveLength(2);
+
+    expect(store.pruneTerminalEnvironments({ nowMs: PRUNE_NOW_MS, limit: 1 })).toBe(1);
+    expect(store.get("worker-old-first")).toBeUndefined();
+    expect(fallbackPortRows("worker-old-first")).toEqual([]);
     expect(
-      normalizeWorkerSshEndpoint({
-        ...SSH_ENDPOINT,
-        fallbackPorts: [22, 2200, 22, 2222],
-      }),
-    ).toEqual(SSH_ENDPOINT);
+      database.db
+        .prepare("SELECT environment_id FROM worker_inference_turns WHERE environment_id = ?")
+        .get("worker-old-first"),
+    ).toBeUndefined();
+
+    expect(store.pruneTerminalEnvironments({ nowMs: PRUNE_NOW_MS, limit: 10 })).toBe(1);
+    expect(store.get("worker-old-second")).toBeUndefined();
+    expect(store.get("worker-referenced")?.state).toBe("orphaned");
+    expect(store.get("worker-recent")?.state).toBe("orphaned");
+    expect(store.get("worker-ready")?.state).toBe("ready");
   });
 
-  it.each([
-    ["non-array", "22"],
-    ["non-integer", [22.5]],
-    ["below range", [0]],
-    ["above range", [65_536]],
-    ["more than ten", Array.from({ length: 11 }, (_, index) => 2300 + index)],
-  ])("rejects %s SSH fallback ports", (_name, fallbackPorts) => {
-    expect(() =>
-      normalizeWorkerSshEndpoint({
-        ...SSH_ENDPOINT,
-        fallbackPorts,
-      } as unknown as WorkerEnvironmentSshEndpoint),
-    ).toThrow("SSH fallback ports");
-  });
-
-  it.each([
-    ["a non-array app list", "browser", "desktop apps must be an array"],
-    [
-      "more than eight apps",
-      Array.from({ length: 9 }, () => ({
-        id: "terminal",
-        executablePath: "/usr/bin/xfce4-terminal",
-      })),
-      "desktop apps cannot exceed 8",
-    ],
-    [
-      "an unknown app id",
-      [{ id: "editor", executablePath: "/usr/bin/editor" }],
-      'desktop app id must be "browser" or "terminal"',
-    ],
-    [
-      "duplicate app ids",
-      [
-        { id: "terminal", executablePath: "/usr/bin/xfce4-terminal" },
-        { id: "terminal", executablePath: "/usr/local/bin/openclaw-worker-terminal" },
-      ],
-      "desktop app id terminal must be unique",
-    ],
-    [
-      "a relative executable path",
-      [{ id: "terminal", executablePath: "bin/xfce4-terminal" }],
-      "desktop app executable path must be absolute",
-    ],
-    [
-      "an invalid browser CDP port",
-      [
-        {
-          id: "browser",
-          executablePath: "/usr/local/bin/openclaw-worker-browser",
-          cdpPort: 65_536,
-        },
-      ],
-      "browser CDP port must be an integer",
-    ],
-    [
-      "an unknown browser field",
-      [
-        {
-          id: "browser",
-          executablePath: "/usr/local/bin/openclaw-worker-browser",
-          cdpPort: 9222,
-          args: ["--headless"],
-        },
-      ],
-      "browser desktop app contains unknown fields",
-    ],
-    [
-      "an unknown terminal field",
-      [
-        {
-          id: "terminal",
-          executablePath: "/usr/local/bin/openclaw-worker-terminal",
-          env: { DISPLAY: ":99" },
-        },
-      ],
-      "terminal desktop app contains unknown fields",
-    ],
-  ])("rejects %s", (_name, apps, error) => {
-    expect(() =>
-      normalizeWorkerDesktopEndpoint({
-        protocol: "rfb",
-        port: 5900,
-        apps,
-      } as unknown as WorkerDesktopEndpoint),
-    ).toThrow(error);
-  });
-
-  it("round-trips desktop metadata and clears it with the provider lease", () => {
+  it.each<WorkerDesktopEndpoint>([
+    DESKTOP,
+    {
+      protocol: "rfb",
+      port: 5900,
+      passwordFilePath: "/var/db/crabbox/openclaw-vnc.password",
+      username: "ec2-user",
+      allowsResize: false,
+    },
+    {
+      protocol: "rfb",
+      port: 5900,
+      passwordFilePath: "C:\\ProgramData\\crabbox\\vnc.password",
+      allowsResize: false,
+    },
+  ])("round-trips $passwordFilePath and clears it with the provider lease", (desktop) => {
     createIntent("worker-desktop");
     store.transition({
       environmentId: "worker-desktop",
@@ -463,12 +503,12 @@ describe("worker environment store", () => {
       environmentId: "worker-desktop",
       from: "provisioning",
       to: "bootstrapping",
-      patch: { leaseId: "lease-desktop", sshEndpoint: SSH_ENDPOINT, desktop: DESKTOP },
+      patch: { leaseId: "lease-desktop", sshEndpoint: SSH_ENDPOINT, desktop },
     });
     closeOpenClawStateDatabaseForTest();
     database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     store = createWorkerEnvironmentStore({ database, now: () => nowMs });
-    expect(store.get("worker-desktop")?.desktop).toEqual(DESKTOP);
+    expect(store.get("worker-desktop")?.desktop).toEqual(desktop);
 
     const requested = store.requestDestroy({
       environmentId: "worker-desktop",
@@ -496,8 +536,8 @@ describe("worker environment store", () => {
   });
 
   it("idempotently ensures desktop_json on an existing state database", () => {
-    ensureAdditiveStateColumns(database.db);
-    ensureAdditiveStateColumns(database.db);
+    ensureAdditiveStateColumns(database.db, "runtime");
+    ensureAdditiveStateColumns(database.db, "runtime");
     const columns = database.db.prepare("PRAGMA table_info(worker_environments)").all() as Array<{
       name: string;
     }>;
@@ -554,6 +594,22 @@ describe("worker environment store", () => {
         expiresAtMs: nowMs + 20_000,
       }),
     ).toThrow("owner epoch changed");
+  });
+
+  it("revokes one environment credential without changing lifecycle state", () => {
+    const bootstrapping = seedBootstrapping("worker-revocation", "lease-revocation");
+    store.transition({
+      environmentId: bootstrapping.environmentId,
+      from: bootstrapping.state,
+      to: "ready",
+      patch: readyPatch(),
+    });
+    expect(store.getCredential(bootstrapping.environmentId)).toBeDefined();
+
+    store.revokeEnvironmentCredential(bootstrapping.environmentId);
+
+    expect(store.getCredential(bootstrapping.environmentId)).toBeUndefined();
+    expect(store.get(bootstrapping.environmentId)?.state).toBe("ready");
   });
 
   it("allocates globally distinct owner epochs when a session moves environments", () => {
@@ -638,6 +694,14 @@ describe("worker environment store", () => {
         patch: { leaseId: "lease-1" },
       }),
     ).toThrow("requires an SSH endpoint reference");
+    expect(() =>
+      store.transition({
+        environmentId: "worker-1",
+        from: "provisioning",
+        to: "ready",
+        patch: { leaseId: "lease-1", sshEndpoint: SSH_ENDPOINT },
+      }),
+    ).toThrow("requires bootstrap proof or a node lease");
 
     store.transition({
       environmentId: "worker-1",
@@ -850,10 +914,16 @@ describe("worker environment store", () => {
   });
 
   it("persists retryable errors without a self-transition", () => {
+    const initialVersion = store.inventoryVersion();
     createIntent();
+    const createdVersion = store.inventoryVersion();
+    expect(createdVersion).toBeGreaterThan(initialVersion);
     nowMs = 1_010;
     store.transition({ environmentId: "worker-1", from: "requested", to: "provisioning" });
+    const provisioningVersion = store.inventoryVersion();
+    expect(provisioningVersion).toBeGreaterThan(createdVersion);
     const stateChangedAtMs = store.get("worker-1")?.stateChangedAtMs;
+    expect(store.inventoryVersion()).toBe(provisioningVersion);
 
     nowMs = 1_020;
     expect(
@@ -868,6 +938,7 @@ describe("worker environment store", () => {
       updatedAtMs: 1_020,
       lastError: "provider temporarily unavailable",
     });
+    expect(store.inventoryVersion()).toBeGreaterThan(provisioningVersion);
   });
 
   it("accepts only SecretRef metadata for persisted SSH keys", () => {

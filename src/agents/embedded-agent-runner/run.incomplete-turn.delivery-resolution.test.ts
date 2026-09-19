@@ -1,118 +1,105 @@
 // Focused incomplete-turn behavior coverage.
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import {
+  buildEmbeddedRunnerAssistant,
+  makeEmbeddedRunnerAttempt,
+} from "../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import {
   hasCommittedMessagingToolDeliveryEvidence,
   hasOutboundDeliveryEvidence,
 } from "./delivery-evidence.js";
-import {
-  runEmbeddedAgent,
-  makeLastAssistant,
-  resolveIncompleteTurnPayloadText,
-  makeRunParams,
-  makeIncompleteTurnParams,
-  makeReasoningRetryParams,
-} from "./run.incomplete-turn.test-helpers.js";
-import {
-  mockedClassifyFailoverReason,
-  mockedRunEmbeddedAttempt,
-  resetRunIncompleteTurnOwnerMocks,
-} from "./run.incomplete-turn.test-support.js";
-import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import { buildAttemptReplayMetadata } from "./run/attempt-terminal-evidence.js";
 import {
   DEFAULT_REASONING_ONLY_RETRY_LIMIT,
   resolveReasoningOnlyRetryInstruction,
 } from "./run/incomplete-turn-recovery.js";
+import { resolveIncompleteTurnPayloadText } from "./run/incomplete-turn-resolution.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
-describe("runEmbeddedAgent incomplete-turn safety", () => {
-  beforeEach(() => {
-    resetRunIncompleteTurnOwnerMocks();
-  });
+type LastAssistant = NonNullable<EmbeddedRunAttemptResult["lastAssistant"]>;
 
-  it("suppresses the incomplete-turn warning after committed messaging text delivery", () => {
-    const incompleteTurnText = resolveIncompleteTurnPayloadText(
-      makeIncompleteTurnParams({
-        assistantTexts: [],
-        didSendViaMessagingTool: true,
-        messagingToolSentTexts: ["Delivered through the message tool."],
-        lastAssistant: makeLastAssistant({
-          provider: "ollama",
-          model: "kimi-k2.6:cloud",
+function makeLastAssistant(
+  overrides: Omit<Partial<LastAssistant>, "stopReason"> & {
+    stopReason?: LastAssistant["stopReason"] | "end_turn";
+  } = {},
+): LastAssistant {
+  return { ...buildEmbeddedRunnerAssistant({}), ...overrides } as LastAssistant;
+}
+
+function makeIncompleteTurnParams(
+  attemptOverrides: Partial<EmbeddedRunAttemptResult> = {},
+  overrides: Partial<Omit<Parameters<typeof resolveIncompleteTurnPayloadText>[0], "attempt">> = {},
+): Parameters<typeof resolveIncompleteTurnPayloadText>[0] {
+  return {
+    payloadCount: 0,
+    aborted: false,
+    externalAbort: false,
+    timedOut: false,
+    attempt: makeEmbeddedRunnerAttempt(attemptOverrides),
+    ...overrides,
+  };
+}
+
+function makeReasoningRetryParams(
+  attemptOverrides: Partial<EmbeddedRunAttemptResult> = {},
+): Parameters<typeof resolveReasoningOnlyRetryInstruction>[0] {
+  return {
+    provider: "openai",
+    modelId: "gpt-5.4",
+    aborted: false,
+    timedOut: false,
+    attempt: makeEmbeddedRunnerAttempt(attemptOverrides),
+  };
+}
+
+describe("incomplete-turn delivery resolution", () => {
+  it.each([
+    { state: "delivered", sourceDelivered: false, stopReason: "stop", warning: false },
+    { state: "delivered", sourceDelivered: false, stopReason: "error", warning: false },
+    { state: "pending", sourceDelivered: false, stopReason: "stop", warning: false },
+    { state: "missing", sourceDelivered: true, stopReason: "stop", warning: true },
+    { state: undefined, sourceDelivered: false, stopReason: "stop", warning: true },
+    { state: undefined, sourceDelivered: true, stopReason: "stop", warning: false },
+  ] as const)(
+    "uses current-source ownership rather than aggregate sends: $state/$sourceDelivered/$stopReason",
+    ({ state, sourceDelivered, stopReason, warning }) => {
+      const incompleteTurnText = resolveIncompleteTurnPayloadText(
+        makeIncompleteTurnParams({
+          assistantTexts: [],
+          sourceReplyDeliveryState: state,
+          sourceReplyDelivered: sourceDelivered ? true : undefined,
+          didSendViaMessagingTool: true,
+          messagingToolSentTexts: ["A message was sent."],
+          messagingToolSentMediaUrls: ["file:///tmp/render.png"],
+          replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+          lastAssistant: makeLastAssistant({
+            stopReason,
+            ...(stopReason === "error" ? { errorMessage: "provider failed after delivery" } : {}),
+          }),
         }),
-      }),
-    );
-
-    expect(incompleteTurnText).toBeNull();
-  });
-
-  it("suppresses the incomplete-turn warning after committed messaging delivery before end_turn", () => {
-    const incompleteTurnText = resolveIncompleteTurnPayloadText(
-      makeIncompleteTurnParams({
-        assistantTexts: [],
-        didSendViaMessagingTool: true,
-        messagingToolSentTexts: ["Delivered through the message tool."],
-        lastAssistant: makeLastAssistant({
-          stopReason: "end_turn",
-          provider: "google",
-          model: "gemini-2.5-pro",
-          content: [
-            {
-              type: "thinking",
-              thinking: "internal reasoning",
-              thinkingSignature: JSON.stringify({ id: "rs_messaging_end_turn", type: "reasoning" }),
-            },
-          ],
-        }),
-      }),
-    );
-
-    expect(incompleteTurnText).toBeNull();
-  });
-
-  it("suppresses the incomplete-turn warning after committed media-only messaging delivery", () => {
-    const incompleteTurnText = resolveIncompleteTurnPayloadText(
-      makeIncompleteTurnParams({
-        assistantTexts: [],
-        didSendViaMessagingTool: false,
-        messagingToolSentMediaUrls: ["file:///tmp/render.png"],
-        lastAssistant: makeLastAssistant({
-          stopReason: "end_turn",
-          model: "gpt-5.4",
-        }),
-      }),
-    );
-
-    expect(incompleteTurnText).toBeNull();
-  });
-
-  it("suppresses the incomplete-turn warning after committed messaging delivery even when the provider errored", () => {
-    const incompleteTurnText = resolveIncompleteTurnPayloadText(
-      makeIncompleteTurnParams({
-        assistantTexts: [],
-        didSendViaMessagingTool: true,
-        messagingToolSentTexts: ["Delivered before the provider error."],
-        lastAssistant: makeLastAssistant({
-          stopReason: "error",
-          provider: "ollama",
-          model: "kimi-k2.6:cloud",
-          errorMessage: "provider failed after delivery",
-        }),
-      }),
-    );
-
-    expect(incompleteTurnText).toBeNull();
-  });
+      );
+      if (warning) {
+        expect(incompleteTurnText).toEqual(expect.any(String));
+      } else {
+        expect(incompleteTurnText).toBeNull();
+      }
+    },
+  );
 
   it("suppresses the incomplete-turn warning after an accepted sessions_spawn terminal success", () => {
     const attemptWithAcceptedSpawn: Partial<EmbeddedRunAttemptResult> & {
-      acceptedSessionSpawns: Array<{ runId: string; childSessionKey: string }>;
+      acceptedSessionSpawns: Array<{
+        runId: string;
+        childSessionKey: string;
+        expectsCompletionMessage: boolean;
+      }>;
     } = {
       assistantTexts: [],
       acceptedSessionSpawns: [
         {
           runId: "run-child",
           childSessionKey: "agent:claude:subagent:child",
+          expectsCompletionMessage: true,
         },
       ],
       lastAssistant: makeLastAssistant({
@@ -128,37 +115,27 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(incompleteTurnText).toBeNull();
   });
 
-  it("still returns a timeout payload when the parent prompt times out after an accepted sessions_spawn", async () => {
-    const acceptedSessionSpawns = [
-      {
-        runId: "run-child",
-        childSessionKey: "agent:claude:subagent:child",
-      },
-    ];
-    mockedClassifyFailoverReason.mockReturnValue(null);
-    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
-      makeAttemptResult({
-        assistantTexts: [],
-        acceptedSessionSpawns,
-        timedOut: true,
-        lastAssistant: makeLastAssistant({
-          stopReason: "toolUse",
-          model: "gpt-5.4",
-        }),
-      }),
+  it("surfaces one warning when only a collector was accepted", () => {
+    const incompleteTurnText = resolveIncompleteTurnPayloadText(
+      makeIncompleteTurnParams(
+        {
+          assistantTexts: [],
+          acceptedSessionSpawns: [
+            {
+              runId: "collector-run",
+              childSessionKey: "agent:claude:subagent:collector",
+              expectsCompletionMessage: false,
+            },
+          ],
+          lastAssistant: makeLastAssistant({ provider: "anthropic", model: "sonnet-4.6" }),
+        },
+        { hadPotentialSideEffects: true },
+      ),
     );
 
-    const result = await runEmbeddedAgent(
-      makeRunParams("run-timeout-after-accepted-spawn", { model: "gpt-5.4" }),
+    expect(incompleteTurnText).toBe(
+      "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.",
     );
-
-    expect(result.payloads).toEqual([
-      {
-        text: "Request timed out before a response was generated. Please try again, or increase `agents.defaults.timeoutSeconds` in your config.",
-        isError: true,
-      },
-    ]);
-    expect(result.acceptedSessionSpawns).toEqual(acceptedSessionSpawns);
   });
 
   it("still surfaces the incomplete-turn warning without an accepted sessions_spawn success", () => {
@@ -407,7 +384,7 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
     expect(incompleteTurnText).toContain("couldn't generate a response");
   });
 
-  it("surfaces incomplete-turn text for token-limited partial answers", () => {
+  it("keeps token-limited partial answers deliverable", () => {
     const incompleteTurnText = resolveIncompleteTurnPayloadText(
       makeIncompleteTurnParams(
         {
@@ -420,6 +397,25 @@ describe("runEmbeddedAgent incomplete-turn safety", () => {
           }),
         },
         { payloadCount: 1 },
+      ),
+    );
+
+    expect(incompleteTurnText).toBeNull();
+  });
+
+  it("surfaces incomplete-turn text for token-limited turns with no visible text", () => {
+    const incompleteTurnText = resolveIncompleteTurnPayloadText(
+      makeIncompleteTurnParams(
+        {
+          assistantTexts: [],
+          lastAssistant: makeLastAssistant({
+            stopReason: "length",
+            provider: "ollama",
+            model: "qwen3.5",
+            content: [],
+          }),
+        },
+        { payloadCount: 0 },
       ),
     );
 

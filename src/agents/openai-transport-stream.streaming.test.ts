@@ -7,12 +7,17 @@ import {
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createInterleavedResponsesToolEvents,
+  createResponsesDoneArgumentEvents,
+} from "../../test/helpers/openai-responses-events.js";
+import {
   classifyAssistantFailoverReason,
   formatUserFacingAssistantErrorText,
 } from "./embedded-agent-helpers.js";
 import {
   type CapturedStreamEvent,
   makeCompletionsModel,
+  makeResponsesModel,
   createResponsesAssistantOutput,
   createAzureResponsesModel,
   streamChunks,
@@ -109,7 +114,7 @@ describe("openai transport stream", () => {
             messages: [{ role: "user", content: "Reply OK", timestamp: Date.now() }],
             tools: [],
           },
-          { apiKey: "test-key", timeoutMs: 1_234, maxRetries: 0 },
+          { apiKey: "test-key", timeoutMs: 1_234 },
         );
 
         const eventTypes: string[] = [];
@@ -155,18 +160,15 @@ describe("openai transport stream", () => {
         throw new Error("Missing loopback server address");
       }
       const onResponse = vi.fn();
-      const model = {
+      const model = makeResponsesModel({
         id: "gpt-status",
         name: "GPT Status",
-        api: "openai-responses",
         provider: "custom-openai",
         baseUrl: `http://127.0.0.1:${address.port}/v1`,
         reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128_000,
         maxTokens: 4_096,
-      } satisfies Model<"openai-responses">;
+      }) satisfies Model<"openai-responses">;
 
       const stream = await createOpenAIResponsesTransportStreamFn()(
         model,
@@ -378,47 +380,6 @@ describe("openai transport stream", () => {
     ]);
   });
 
-  it("keeps idless Responses tool-call ids stable and response-unique", async () => {
-    const runOnce = async () => {
-      const model = createAzureResponsesModel();
-      const output = createResponsesAssistantOutput(model);
-      const events: CapturedStreamEvent[] = [];
-      await testing.processResponsesStream(
-        streamChunks([
-          {
-            type: "response.output_item.added",
-            item: { type: "function_call", name: "computer", arguments: "" },
-          },
-          {
-            type: "response.output_item.done",
-            item: { type: "function_call", name: "computer", arguments: "{}" },
-          },
-          { type: "response.completed", response: { id: "resp_idless", status: "completed" } },
-        ]),
-        output,
-        { push: (event) => events.push(event as CapturedStreamEvent) },
-        model,
-      );
-      const block = output.content.find((entry) => entry.type === "toolCall") as
-        | { id?: string }
-        | undefined;
-      const end = events.find((event) => event.type === "toolcall_end") as
-        | { toolCall?: { id?: string } }
-        | undefined;
-      if (!block?.id || !end?.toolCall?.id) {
-        throw new Error("missing tool-call lifecycle");
-      }
-      return { blockId: block.id, endId: end.toolCall.id };
-    };
-
-    const first = await runOnce();
-    const second = await runOnce();
-    expect(first.blockId).toMatch(/^call_[0-9a-f]{24}$/);
-    expect(first.endId).toBe(first.blockId);
-    expect(second.endId).toBe(second.blockId);
-    expect(second.blockId).not.toBe(first.blockId);
-  });
-
   it("materializes one stable tool call for a done-only idless Responses item", async () => {
     const model = createAzureResponsesModel();
     const output = createResponsesAssistantOutput(model);
@@ -583,72 +544,7 @@ describe("openai transport stream", () => {
 
     await testing.processResponsesStream(
       streamChunks([
-        {
-          type: "response.output_item.added",
-          output_index: 0,
-          sequence_number: 1,
-          item: {
-            type: "function_call",
-            id: "fc_click",
-            call_id: "call_click",
-            name: "computer",
-            arguments: "",
-            status: "in_progress",
-          },
-        },
-        {
-          type: "response.output_item.added",
-          output_index: 1,
-          sequence_number: 2,
-          item: {
-            type: "function_call",
-            id: "fc_type",
-            call_id: "call_type",
-            name: "computer",
-            arguments: "",
-            status: "in_progress",
-          },
-        },
-        {
-          type: "response.function_call_arguments.delta",
-          output_index: 1,
-          item_id: "fc_type",
-          sequence_number: 3,
-          delta: '{"action":"type","text":"hello"}',
-        },
-        {
-          type: "response.function_call_arguments.delta",
-          output_index: 0,
-          item_id: "fc_click",
-          sequence_number: 4,
-          delta: '{"action":"left_click","coordinate":[10,20]}',
-        },
-        {
-          type: "response.output_item.done",
-          output_index: 0,
-          sequence_number: 5,
-          item: {
-            type: "function_call",
-            id: "fc_click",
-            call_id: "call_click",
-            name: "computer",
-            arguments: '{"action":"left_click","coordinate":[10,20]}',
-            status: "completed",
-          },
-        },
-        {
-          type: "response.output_item.done",
-          output_index: 1,
-          sequence_number: 6,
-          item: {
-            type: "function_call",
-            id: "fc_type",
-            call_id: "call_type",
-            name: "computer",
-            arguments: '{"action":"type","text":"hello"}',
-            status: "completed",
-          },
-        },
+        ...createInterleavedResponsesToolEvents(),
         {
           type: "response.completed",
           response: { id: "resp_interleaved_calls", status: "completed" },
@@ -694,67 +590,8 @@ describe("openai transport stream", () => {
     const model = createAzureResponsesModel();
     const output = createResponsesAssistantOutput(model);
     const events: CapturedStreamEvent[] = [];
-    const firstItem = {
-      type: "function_call",
-      id: "fc_recovered_first",
-      call_id: "call_recovered_first",
-      name: "read",
-    };
-    const secondItem = {
-      type: "function_call",
-      id: "fc_recovered_second",
-      call_id: "call_recovered_second",
-      name: "write",
-    };
-
     await testing.processResponsesStream(
-      streamChunks([
-        {
-          type: "response.output_item.added",
-          output_index: 0,
-          item: { ...firstItem, arguments: "" },
-        },
-        {
-          type: "response.output_item.added",
-          output_index: 1,
-          item: { ...secondItem, arguments: "" },
-        },
-        { type: "response.function_call_arguments.delta", delta: '{"ambiguous":true}' },
-        {
-          type: "response.function_call_arguments.done",
-          output_index: 0,
-          item_id: firstItem.id,
-          arguments: '{"path":"README.md"}',
-        },
-        {
-          type: "response.function_call_arguments.done",
-          output_index: 1,
-          item_id: secondItem.id,
-          arguments: '{"path":"README.md","text":"ok"}',
-        },
-        {
-          type: "response.output_item.done",
-          output_index: 0,
-          item: {
-            type: "function_call",
-            id: firstItem.id,
-            call_id: firstItem.call_id,
-          },
-        },
-        {
-          type: "response.output_item.done",
-          output_index: 1,
-          item: {
-            type: "function_call",
-            id: secondItem.id,
-            call_id: secondItem.call_id,
-          },
-        },
-        {
-          type: "response.completed",
-          response: { id: "resp_recovered_parallel", status: "completed" },
-        },
-      ]),
+      streamChunks(createResponsesDoneArgumentEvents()),
       output,
       { push: (event) => events.push(event as CapturedStreamEvent) },
       model,
@@ -775,333 +612,6 @@ describe("openai transport stream", () => {
       },
     ]);
     expect(events.filter((event) => event.type === "toolcall_end")).toHaveLength(2);
-  });
-
-  it("rejects a completed Responses tool call whose function name changed", async () => {
-    const model = createAzureResponsesModel();
-    const output = createResponsesAssistantOutput(model);
-
-    await expect(
-      testing.processResponsesStream(
-        streamChunks([
-          {
-            type: "response.output_item.added",
-            output_index: 0,
-            item: {
-              type: "function_call",
-              id: "fc_name_conflict",
-              call_id: "call_name_conflict",
-              name: "read",
-              arguments: "",
-            },
-          },
-          {
-            type: "response.output_item.done",
-            output_index: 0,
-            item: {
-              type: "function_call",
-              id: "fc_name_conflict",
-              call_id: "call_name_conflict",
-              name: "write",
-              arguments: "{}",
-            },
-          },
-        ]),
-        output,
-        { push: vi.fn() },
-        model,
-      ),
-    ).rejects.toThrow("Responses stream changed tool-call function name from read to write");
-  });
-
-  it("routes an omitted-index suffix by item id across parallel Responses calls", async () => {
-    const model = createAzureResponsesModel();
-    const output = createResponsesAssistantOutput(model);
-    const events: Array<{ type?: string; contentIndex?: number }> = [];
-
-    await testing.processResponsesStream(
-      streamChunks([
-        {
-          type: "response.output_item.added",
-          output_index: 0,
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: "",
-          },
-        },
-        {
-          type: "response.output_item.added",
-          output_index: 1,
-          item: {
-            type: "function_call",
-            id: "fc_second",
-            call_id: "call_second",
-            name: "computer",
-            arguments: "",
-          },
-        },
-        {
-          type: "response.function_call_arguments.delta",
-          output_index: 0,
-          item_id: "fc_first",
-          delta: '{"slot":',
-        },
-        {
-          type: "response.function_call_arguments.delta",
-          item_id: "fc_first",
-          delta: "0}",
-        },
-        {
-          type: "response.function_call_arguments.delta",
-          output_index: 1,
-          delta: '{"slot":1}',
-        },
-        {
-          type: "response.output_item.done",
-          output_index: 0,
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: '{"slot":0}',
-          },
-        },
-        {
-          type: "response.output_item.done",
-          output_index: 1,
-          item: {
-            type: "function_call",
-            id: "fc_second",
-            call_id: "call_second",
-            name: "computer",
-            arguments: '{"slot":1}',
-          },
-        },
-        {
-          type: "response.completed",
-          response: { id: "resp_omitted_suffix", status: "completed" },
-        },
-      ]),
-      output,
-      { push: (event) => events.push(event as (typeof events)[number]) },
-      model,
-    );
-
-    expect(output.content).toMatchObject([
-      { type: "toolCall", id: "call_first|fc_first", arguments: { slot: 0 } },
-      { type: "toolCall", id: "call_second|fc_second", arguments: { slot: 1 } },
-    ]);
-    expect(
-      events.filter((event) => event.type === "toolcall_delta").map((event) => event.contentIndex),
-    ).toEqual([0, 0, 1]);
-  });
-
-  it("matches omitted-index parallel completions without duplicating indexed calls", async () => {
-    const model = createAzureResponsesModel();
-    const output = createResponsesAssistantOutput(model);
-    const events: Array<{ type?: string; contentIndex?: number }> = [];
-
-    await testing.processResponsesStream(
-      streamChunks([
-        {
-          type: "response.output_item.added",
-          output_index: 0,
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: "",
-          },
-        },
-        {
-          type: "response.output_item.added",
-          output_index: 1,
-          item: {
-            type: "function_call",
-            id: "fc_second",
-            call_id: "call_second",
-            name: "computer",
-            arguments: "",
-          },
-        },
-        {
-          type: "response.function_call_arguments.delta",
-          output_index: 0,
-          item_id: "fc_first",
-          delta: '{"incomplete":',
-        },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            id: "fc_second",
-            call_id: "call_second",
-            name: "computer",
-            arguments: '{"slot":1}',
-          },
-        },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: '{"slot":0}',
-          },
-        },
-        {
-          type: "response.completed",
-          response: { id: "resp_omitted_completions", status: "completed" },
-        },
-      ]),
-      output,
-      { push: (event) => events.push(event as (typeof events)[number]) },
-      model,
-    );
-
-    expect(output.content).toMatchObject([
-      { type: "toolCall", id: "call_first|fc_first", arguments: { slot: 0 } },
-      { type: "toolCall", id: "call_second|fc_second", arguments: { slot: 1 } },
-    ]);
-    expect(events.filter((event) => event.type === "toolcall_start")).toHaveLength(2);
-    expect(events.filter((event) => event.type === "toolcall_end")).toHaveLength(2);
-  });
-
-  it("rejects omitted-index events whose identity mismatches the sole indexed call", async () => {
-    const model = createAzureResponsesModel();
-    const output = createResponsesAssistantOutput(model);
-    const events: Array<{ type?: string; contentIndex?: number }> = [];
-
-    await testing.processResponsesStream(
-      streamChunks([
-        {
-          type: "response.output_item.added",
-          output_index: 0,
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: "",
-          },
-        },
-        {
-          type: "response.function_call_arguments.delta",
-          item_id: "fc_other",
-          delta: '{"wrong":true}',
-        },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            id: "fc_other",
-            call_id: "call_other",
-            name: "computer",
-            arguments: '{"wrong":true}',
-          },
-        },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: '{"slot":0}',
-          },
-        },
-        {
-          type: "response.completed",
-          response: { id: "resp_identity_mismatch", status: "completed" },
-        },
-      ]),
-      output,
-      { push: (event) => events.push(event as (typeof events)[number]) },
-      model,
-    );
-
-    expect(output.content).toMatchObject([
-      { type: "toolCall", id: "call_first|fc_first", arguments: { slot: 0 } },
-    ]);
-    expect(events.filter((event) => event.type === "toolcall_start")).toHaveLength(1);
-    expect(events.filter((event) => event.type === "toolcall_delta")).toHaveLength(0);
-    expect(events.filter((event) => event.type === "toolcall_end")).toHaveLength(1);
-  });
-
-  it("keeps sequential omitted-index Responses calls unambiguous", async () => {
-    const model = createAzureResponsesModel();
-    const output = createResponsesAssistantOutput(model);
-    const events: Array<{ type?: string; contentIndex?: number }> = [];
-
-    await testing.processResponsesStream(
-      streamChunks([
-        {
-          type: "response.output_item.added",
-          output_index: 7,
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: "",
-          },
-        },
-        { type: "response.function_call_arguments.delta", delta: '{"slot":0}' },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            id: "fc_first",
-            call_id: "call_first",
-            name: "computer",
-            arguments: '{"slot":0}',
-          },
-        },
-        {
-          type: "response.output_item.added",
-          output_index: 8,
-          item: {
-            type: "function_call",
-            id: "fc_second",
-            call_id: "call_second",
-            name: "computer",
-            arguments: "",
-          },
-        },
-        { type: "response.function_call_arguments.delta", delta: '{"slot":1}' },
-        {
-          type: "response.output_item.done",
-          item: {
-            type: "function_call",
-            id: "fc_second",
-            call_id: "call_second",
-            name: "computer",
-            arguments: '{"slot":1}',
-          },
-        },
-        {
-          type: "response.completed",
-          response: { id: "resp_sequential_unindexed", status: "completed" },
-        },
-      ]),
-      output,
-      { push: (event) => events.push(event as (typeof events)[number]) },
-      model,
-    );
-
-    expect(output.content).toMatchObject([
-      { type: "toolCall", id: "call_first|fc_first", arguments: { slot: 0 } },
-      { type: "toolCall", id: "call_second|fc_second", arguments: { slot: 1 } },
-    ]);
-    expect(
-      events.filter((event) => event.type === "toolcall_delta").map((event) => event.contentIndex),
-    ).toEqual([0, 1]);
   });
 
   it("handles Azure Responses text content and text delta events", async () => {
@@ -1166,4 +676,3 @@ describe("openai transport stream", () => {
     expect(output.responseId).toBe("resp_azure_text");
   });
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

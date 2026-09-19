@@ -87,7 +87,7 @@ it("preserves ordered scoped tasks and their exact delivery rows", async () => {
         expected
           .filter((task) => task !== child)
           .map((task) => ({ taskId: task.taskId, lastNotifiedEventAt: task.createdAt + 1 }))
-          .sort((left, right) =>
+          .toSorted((left, right) =>
             left.taskId < right.taskId ? -1 : left.taskId > right.taskId ? 1 : 0,
           ),
       );

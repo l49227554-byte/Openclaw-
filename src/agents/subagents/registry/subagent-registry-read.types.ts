@@ -82,6 +82,31 @@ export type SubagentCompletionDeliveryState = {
     | "message_tool_delivery_missing"
     | "dedupe"
     | "waiting_for_requester_turn";
+  /**
+   * Durable claim for the message-tool fallback path. Persisted via
+   * payload_json, not a dedicated column. Set immediately before invoking the
+   * outbound send; cleared on terminal success, released on terminal failure,
+   * and retained as a tombstone when the process crashes between claim and
+   * send so restart recovery can close the entry without reissuing the send.
+   */
+  fallbackClaim?: SubagentDeliveryFallbackClaim;
+};
+
+export type SubagentDeliveryFallbackClaim = {
+  /** Owning process identity: pid + a per-process random suffix. */
+  owner: string;
+  claimedAt: number;
+  /** Delivery generation this claim is bound to. A redrive increments generation and replaces the claim. */
+  generation: number;
+  /** Established announce-id-derived idempotency key for the channel send. */
+  idempotencyKey: string;
+  /**
+   * Per-acquire random token. A genuine same-process in-flight retry must
+   * carry the same token so commit/release recognize it. A concurrent same-
+   * process caller computes a fresh token and is rejected. Survives restart
+   * inside `owner` so restart recovery recognizes a tombstone as its own.
+   */
+  token: string;
 };
 
 export type SwarmCollectorStatus = "done" | "failed" | "killed" | "timeout";

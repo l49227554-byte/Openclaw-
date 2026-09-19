@@ -45,6 +45,20 @@ function hasOutstandingCompletion(entry: SubagentRunRecord): boolean {
   ) {
     return false;
   }
+  // A terminal delivery that has already reached one of the four closed states
+  // (delivered, discarded, not_required, intentional_non_delivery) closes the
+  // wake obligation regardless of any requesterSettleWake object that may
+  // remain attached. Only an actionable wake whose delivery is still open
+  // resurrects the entry in the prompt.
+  if (
+    entry.delivery &&
+    (entry.delivery.status === "delivered" ||
+      entry.delivery.status === "discarded" ||
+      entry.delivery.status === "not_required" ||
+      entry.delivery.disposition === "intentional_non_delivery")
+  ) {
+    return false;
+  }
   if (entry.requesterSettleWake) {
     return true;
   }

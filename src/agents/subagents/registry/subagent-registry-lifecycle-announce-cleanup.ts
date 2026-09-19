@@ -1,12 +1,23 @@
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
+import {
+  buildAnnounceIdFromChildRun,
+  buildAnnounceIdempotencyKey,
+} from "../../announce-idempotency.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import {
+  acquireFallbackClaim,
+  closeAmbiguousFallback,
+  commitDeliveredFallback,
   ensureCompletionState,
   ensureDeliveryState,
+  generateFallbackClaimOwner,
+  generateFallbackClaimToken,
   getDeliveryLastError,
   isDeliverySuspended,
+  isFallbackClaimedByOtherProcess,
+  releaseFallbackClaim,
 } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
 import { shouldSuppressSubagentRecoverySessionEffects } from "./subagent-recovery-state.js";
@@ -80,6 +91,175 @@ export const finalizeResumedAnnounceGiveUp = async (
       error: getDeliveryLastError(entry),
     });
     return;
+  }
+  // Conservative, no-data-loss message-tool fallback: before persisting a
+  // terminal failed transition, attempt the existing user-visible directOrigin
+  // /message-tool delivery path exactly once, using the established
+  // childRunId/announceId-derived idempotency key. The announce flow already
+  // routes through bound-delivery-router.sendMessage for the originating
+  // channel and persists the openclawMessageToolMirror transcript row on
+  // success. We treat success strictly as announced === "delivered" through
+  // that normal user-visible path; a raw provider="openclaw", model=
+  // "delivery-mirror" transcript row is not sufficient (it is filtered from
+  // chat.history).
+  //
+  // At-most-once outbound delivery (claim contract):
+  // 1. If a foreign process already holds the fallbackClaim for this delivery
+  //    generation, this caller MUST NOT send. Return without mutating state.
+  // 2. Otherwise, increment delivery.generation (redrive marker) and acquire
+  //    the durable claim, persisting before invoking the outbound send.
+  // 3. On outbound "delivered": commit status = "delivered", clear claim,
+  //    persist, then route through the existing delivered transition.
+  // 4. On any other outcome: release the claim, persist, fall through to the
+  //    existing failed transition (unchanged).
+  // 5. On crash between claim and send: the persisted claim survives across
+  //    restart. Restart recovery sees the foreign claim and short-circuits
+  //    via closeAmbiguousFallback, marking the entry closed (suspended +
+  //    intentional_non_delivery) so the prompt predicate stops rendering it.
+  //
+  // Documented tradeoff: a crash between acquire and send loses the
+  // notification. The alternative (resending on restart) duplicates the
+  // outbound channel message, which the claim contract exists to prevent.
+  //
+  // The persisted delivery already proves user-visible receipt for delivered
+  // entries; re-running the announce against status === "delivered" would
+  // produce a duplicate outbound attempt.
+  if (entry.delivery?.status === "delivered") {
+    return;
+  }
+  const pendingPayload = entry.delivery?.payload;
+  const fallbackRequesterOrigin = pendingPayload?.requesterOrigin ?? entry.requesterOrigin;
+  if (fallbackRequesterOrigin && typeof params.runSubagentAnnounceFlow === "function") {
+    // Process identity + per-call token used for the claim. A claim held by a
+    // different owner at the same generation is a concurrent rival; a claim
+    // held by the same owner at the same generation with a *different* token
+    // is a same-process concurrent rival (the per-call token distinguishes
+    // overlapping in-flight calls).
+    const claimOwner = generateFallbackClaimOwner();
+    const claimToken = generateFallbackClaimToken();
+    const deliveryForGeneration = ensureDeliveryState(entry);
+    // Bump generation BEFORE acquire so a redrive after an interrupted
+    // attempt does not inherit the prior generation's tombstone.
+    const nextGeneration = (deliveryForGeneration.generation ?? 0) + 1;
+    if (
+      isFallbackClaimedByOtherProcess(entry, { owner: claimOwner }) &&
+      (deliveryForGeneration.fallbackClaim?.generation ?? 0) === nextGeneration - 1
+    ) {
+      // A foreign process holds the current generation's claim. Do not
+      // increment, do not acquire, do not send.
+      return;
+    }
+    deliveryForGeneration.generation = nextGeneration;
+    const directIdempotencyKey = buildAnnounceIdempotencyKey(
+      buildAnnounceIdFromChildRun({
+        childSessionKey: pendingPayload?.childSessionKey ?? entry.childSessionKey,
+        childRunId: pendingPayload?.childRunId ?? entry.runId,
+      }),
+    );
+    const acquired = acquireFallbackClaim(entry, {
+      owner: claimOwner,
+      token: claimToken,
+      generation: nextGeneration,
+      idempotencyKey: directIdempotencyKey,
+      persist: (id) => params.persist(id),
+    });
+    if (!acquired.acquired) {
+      // Foreign claim or same-process concurrent rival at the same generation.
+      // Drop without sending.
+      return;
+    }
+    try {
+      const fallbackOutcome = await params.runSubagentAnnounceFlow({
+        childSessionKey: pendingPayload?.childSessionKey ?? entry.childSessionKey,
+        childRunId: pendingPayload?.childRunId ?? entry.runId,
+        runTimeoutSeconds: entry.runTimeoutSeconds,
+        requesterSessionKey: pendingPayload?.requesterSessionKey ?? entry.requesterSessionKey,
+        requesterAgentId: resolveSubagentRequesterAgentId(params.getRuntimeConfig(), entry),
+        requesterOrigin: normalizeDeliveryContext(fallbackRequesterOrigin),
+        requesterDisplayKey: pendingPayload?.requesterDisplayKey ?? entry.requesterDisplayKey,
+        task: pendingPayload?.task ?? entry.task,
+        timeoutMs: params.subagentAnnounceTimeoutMs,
+        cleanup: cleanup ?? entry.cleanup,
+        terminalReply: pendingPayload?.terminalReply,
+        fallbackReply: entry.completion?.fallbackResultText ?? undefined,
+        waitForCompletion: false,
+        startedAt: pendingPayload?.startedAt,
+        endedAt: pendingPayload?.endedAt,
+        label: pendingPayload?.label ?? entry.label,
+        outcome: pendingPayload?.outcome ?? entry.execution.outcome,
+        spawnMode: pendingPayload?.spawnMode ?? entry.spawnMode,
+        expectsCompletionMessage:
+          pendingPayload?.expectsCompletionMessage ?? entry.expectsCompletionMessage,
+        completionTarget: pendingPayload?.completionTarget,
+        completionRequesterSessionId: pendingPayload?.completionRequesterSessionId,
+        wakeOnDescendantSettle: false,
+        bestEffortDeliver: true,
+        directOrigin: normalizeDeliveryContext(fallbackRequesterOrigin),
+        directIdempotencyKey,
+        // Fallback owns no child-session effects and never yields a follow-up
+        // turn; the existing cleanup bookkeeping continues unchanged below.
+        isChildSessionEffectsAllowed: () => false,
+        isCompletionDeliveryAllowed: () => false,
+        isCompletionOwnedByRequesterYield: () => false,
+        resolveGatewayContext: getGatewayContextResolver(entry),
+      });
+      if (fallbackOutcome === "delivered") {
+        try {
+          commitDeliveredFallback(entry, {
+            token: claimToken,
+            deliveredAt: Date.now(),
+            persist: (id) => params.persist(id),
+          });
+        } catch (error) {
+          // Persistence failed after the in-memory delivered mutation; the
+          // commit helper rolled back to the pre-commit state. Drop without
+          // touching the failed transition; restart recovery sees the
+          // original claim tombstone and does not reissue.
+          defaultRuntime.log(
+            `[warn] Subagent give-up message-tool fallback delivered commit persist failed for run ${runId}: ${String(error)}`,
+          );
+          return;
+        }
+        const resolvedCleanupGeneration = cleanupGeneration ?? beginSubagentCleanup(context, runId);
+        try {
+          await finalizeSubagentCleanup(
+            context,
+            runId,
+            cleanup ?? entry.cleanup,
+            "delivered",
+            resolvedCleanupGeneration ?? Number.NaN,
+          );
+          return;
+        } catch (error) {
+          defaultRuntime.log(
+            `[warn] Subagent give-up message-tool fallback delivered transition failed for run ${runId}: ${String(error)}`,
+          );
+          // Preserve the entry's current state rather than overwriting with
+          // a synthetic failed transition. The persisted delivery.status
+          // remains authoritative.
+          return;
+        }
+      }
+      // Non-delivered outcome: release claim so a redrive can re-attempt.
+      releaseFallbackClaim(entry, {
+        token: claimToken,
+        persist: (id) => params.persist(id),
+      });
+    } catch (error) {
+      // Send threw before any outcome. Mark the entry closed-ambiguous so a
+      // future restart replay does not re-acquire the same generation, then
+      // return so the existing failed transition does not overwrite the
+      // tombstone with status = "failed" (which would re-render the entry).
+      closeAmbiguousFallback(entry, {
+        token: claimToken,
+        reason: `send threw: ${String(error)}`,
+        persist: (id) => params.persist(id),
+      });
+      defaultRuntime.log(
+        `[warn] Subagent give-up message-tool fallback failed for run ${runId}: ${String(error)}`,
+      );
+      return;
+    }
   }
   const deliveryError = getDeliveryLastError(entry) ?? reason;
   clearSubagentPendingDelivery(entry);

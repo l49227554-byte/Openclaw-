@@ -255,3 +255,218 @@ export function getDeliveryLastError(entry: SubagentRunRecord): string | undefin
   const error = entry.delivery?.lastError;
   return typeof error === "string" && error.trim() ? error : undefined;
 }
+
+// ----------------------------------------------------------------------------
+// Durable at-most-once fallback claim
+// ----------------------------------------------------------------------------
+//
+// These helpers implement a per-run, per-generation claim that the message-tool
+// fallback acquires immediately before invoking runSubagentAnnounceFlow. The
+// claim is persisted through delivery.fallbackClaim (a JSON field carried by
+// the existing payload_json column, no schema change required). The contract:
+//
+// - acquireFallbackClaim: returns the claim only if the entry's existing claim
+//   (a) is absent, (b) belongs to the same process, or (c) is bound to an
+//   older delivery.generation that a redrive has now incremented. In every
+//   other case the caller is a duplicate, a concurrent rival, or a stale
+//   observer and must NOT send. Persistence happens before the outbound call.
+// - releaseFallbackClaim: terminal failure path. Clears the claim and persists.
+// - commitDeliveredFallback: terminal success path. Clears the claim, sets
+//   status = "delivered", and persists before the existing delivered
+//   transition runs (it does not run the existing transition itself).
+// - closeAmbiguousFallback: tombstone for a claimed delivery whose send
+//   outcome cannot be proven after interruption. Reuses the existing closed
+//   shape status = "suspended" + disposition = "intentional_non_delivery" and
+//   retains the claim so restart recovery never re-acquires it.
+//
+// Tradeoff: a crash between acquireFallbackClaim and the outbound send loses
+// the notification. The alternative (resending on restart) is duplicate
+// outbound delivery, which is the failure mode this contract exists to
+// prevent. The retained claim is the durable receipt that closes the entry.
+
+export type FallbackClaimOwnerIdentity = string;
+
+export function generateFallbackClaimOwner(): FallbackClaimOwnerIdentity {
+  return `pid:${process.pid}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Fresh per-acquire token. Distinguishes overlapping same-process callers. */
+export function generateFallbackClaimToken(): string {
+  return `tok:${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+}
+
+export type FallbackClaimAcquireResult =
+  | {
+      acquired: true;
+      claim: NonNullable<NonNullable<SubagentRunRecord["delivery"]>["fallbackClaim"]>;
+    }
+  | { acquired: false; reason: "claimed_by_other" };
+
+/**
+ * Attempts to acquire the durable fallback claim for one delivery generation.
+ *
+ * - If no claim exists, claims and persists a fresh token, returns
+ *   { acquired: true }.
+ * - If a claim exists for the same process, generation, AND token, this is a
+ *   same-process retry of the same in-flight call; returns { acquired: true }
+ *   with the existing claim without re-persisting.
+ * - If a claim exists with a different owner OR a different token at the same
+ *   generation, this is a concurrent caller; returns
+ *   { acquired: false, reason: "claimed_by_other" } without mutating state.
+ */
+export function acquireFallbackClaim(
+  entry: SubagentRunRecord,
+  params: {
+    owner: FallbackClaimOwnerIdentity;
+    token: string;
+    generation: number;
+    idempotencyKey: string;
+    persist: (runId: string) => void;
+    now?: () => number;
+  },
+): FallbackClaimAcquireResult {
+  const now = params.now ?? Date.now;
+  const existing = entry.delivery?.fallbackClaim;
+  if (existing && existing.generation === params.generation) {
+    const sameInFlightRetry = existing.owner === params.owner && existing.token === params.token;
+    if (!sameInFlightRetry) {
+      return { acquired: false, reason: "claimed_by_other" };
+    }
+    return { acquired: true, claim: existing };
+  }
+  const claim = {
+    owner: params.owner,
+    claimedAt: now(),
+    generation: params.generation,
+    idempotencyKey: params.idempotencyKey,
+    token: params.token,
+  };
+  const delivery = ensureDeliveryState(entry);
+  delivery.fallbackClaim = claim;
+  params.persist(entry.runId);
+  return { acquired: true, claim };
+}
+
+/** Returns the in-flight token of the currently-held claim, or undefined. */
+export function getFallbackClaimToken(entry: SubagentRunRecord): string | undefined {
+  return entry.delivery?.fallbackClaim?.token;
+}
+
+/**
+ * Clears the durable fallback claim and persists. Used on terminal failure.
+ * Token-aware: refuses to release a claim owned by a different in-flight call.
+ */
+export function releaseFallbackClaim(
+  entry: SubagentRunRecord,
+  params: { token: string; persist: (runId: string) => void },
+): void {
+  const existing = entry.delivery?.fallbackClaim;
+  if (!existing) {
+    return;
+  }
+  if (existing.token !== params.token) {
+    return;
+  }
+  entry.delivery.fallbackClaim = undefined;
+  params.persist(entry.runId);
+}
+
+/**
+ * Closes an entry whose send outcome cannot be proven after interruption.
+ * Token-aware: refuses to overwrite a claim owned by a different in-flight
+ * call. Retains the tombstone when the token matches, so restart recovery
+ * never re-acquires it.
+ */
+export function closeAmbiguousFallback(
+  entry: SubagentRunRecord,
+  params: {
+    token: string;
+    reason: string;
+    persist: (runId: string) => void;
+    now?: () => number;
+  },
+): void {
+  const existing = entry.delivery?.fallbackClaim;
+  if (!existing || existing.token !== params.token) {
+    return;
+  }
+  const now = params.now ?? Date.now;
+  const delivery = ensureDeliveryState(entry);
+  delivery.status = "suspended";
+  delivery.disposition = "intentional_non_delivery";
+  delivery.suspendedAt = now();
+  delivery.suspendedReason = "permanent_failure";
+  delivery.lastError = `ambiguous_after_claim: ${params.reason}`;
+  // fallbackClaim is intentionally retained: the tombstone prevents a future
+  // restart replay from acquiring the same delivery.generation.
+  params.persist(entry.runId);
+}
+
+/**
+ * Terminal success path: clears the claim, sets status = "delivered", and
+ * persists before the existing delivered transition runs. Token-aware: only
+ * commits when the in-memory claim still belongs to this caller. On persist
+ * failure the in-memory mutation is rolled back so the next caller sees the
+ * pre-commit authoritative state.
+ *
+ * Does not run the delivered transition itself; the caller routes through
+ * finalizeSubagentCleanup.
+ */
+export function commitDeliveredFallback(
+  entry: SubagentRunRecord,
+  params: {
+    token: string;
+    deliveredAt: number;
+    announcedAt?: number;
+    persist: (runId: string) => void;
+  },
+): boolean {
+  const existing = entry.delivery?.fallbackClaim;
+  if (!existing || existing.token !== params.token) {
+    return false;
+  }
+  const delivery = ensureDeliveryState(entry);
+  const previousStatus = delivery.status;
+  const previousDisposition = delivery.disposition;
+  const previousDeliveredAt = delivery.deliveredAt;
+  const previousAnnouncedAt = delivery.announcedAt;
+  const previousLastDropReason = delivery.lastDropReason;
+  delivery.status = "delivered";
+  delivery.disposition = "delivered";
+  delivery.deliveredAt = params.deliveredAt;
+  delivery.announcedAt = params.announcedAt ?? params.deliveredAt;
+  delivery.lastDropReason = undefined;
+  delivery.fallbackClaim = undefined;
+  try {
+    params.persist(entry.runId);
+  } catch (error) {
+    // Roll back the in-memory mutation so a restart sees the pre-commit
+    // authoritative state rather than a phantom delivered entry that has no
+    // durable persisted row.
+    delivery.status = previousStatus;
+    delivery.disposition = previousDisposition;
+    delivery.deliveredAt = previousDeliveredAt;
+    delivery.announcedAt = previousAnnouncedAt;
+    delivery.lastDropReason = previousLastDropReason;
+    delivery.fallbackClaim = existing;
+    throw error;
+  }
+  return true;
+}
+
+/**
+ * Returns true when an entry's persisted claim belongs to a different process
+ * for the same delivery generation. Restart recovery uses this to skip
+ * redriving a tombstoned entry.
+ */
+export function isFallbackClaimedByOtherProcess(
+  entry: SubagentRunRecord,
+  params: { owner: FallbackClaimOwnerIdentity },
+): boolean {
+  const claim = entry.delivery?.fallbackClaim;
+  return (
+    !!claim &&
+    claim.generation === (entry.delivery?.generation ?? 0) &&
+    claim.owner !== params.owner
+  );
+}

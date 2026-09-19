@@ -13,6 +13,7 @@ import {
   type PluginLoadOptions,
 } from "../plugins/loader.js";
 import { adoptRuntimeMemoryRegistrations } from "../plugins/memory-state.js";
+import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import {
   collectRegistryInvocationInstances,
   PluginInvocationScope,
@@ -110,6 +111,7 @@ function resolveAgentRuntimePluginRegistryLoad(
   });
   return {
     ...loadOptions,
+    mode: params.purpose === "model-catalog" ? undefined : "agent-runtime",
     config: plan.config,
     activationSourceConfig: plan.config,
     workspaceDir,
@@ -127,11 +129,22 @@ function reusableAgentRuntimeRegistry(
   loadOptions: PluginLoadOptions,
 ): PluginRegistry | undefined {
   const pluginIds = loadOptions.onlyPluginIds;
+  const channelPluginIds = new Set(
+    loadOptions.manifestRegistry?.plugins
+      .filter((plugin) => plugin.channels.length > 0)
+      .map((plugin) => plugin.id),
+  );
   return params.reusableRegistry &&
     pluginIds !== undefined &&
     (params.purpose !== "model-catalog" ||
       listRuntimePluginIdsFromRegistry(params.reusableRegistry).every((pluginId) =>
         pluginIds.includes(pluginId),
+      )) &&
+    (params.purpose === "model-catalog" ||
+      params.reusableRegistry.plugins.every(
+        (plugin) =>
+          !channelPluginIds.has(plugin.id) ||
+          getPluginInstance(plugin)?.agentRuntimeRegistrationComplete === true,
       )) &&
     registryContainsRuntimePluginIds(params.reusableRegistry, pluginIds)
     ? params.reusableRegistry
@@ -241,7 +254,8 @@ export function loadAgentRuntimePluginRegistryHandle(
     onPrimaryRegistry?.(reusable);
     return reusable;
   }
-  // Discovery-only load: full mode can replace process-global sandbox backends.
+  // Prepare channel tools and their policies together without full activation.
+  // Full mode can replace process-global sandbox backends.
   // Adopt full-only runtime capabilities from the matching composition-root owners.
   // Prepared metadata outlives a transient caller's install or reload lease.
   const load = () => loadPluginRegistryHandle(loadOptions);

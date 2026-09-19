@@ -295,7 +295,8 @@ export function executeSharedStateCommand(
     command.type === "userProfiles.list" ||
     command.type === "userProfiles.directory" ||
     command.type === "userProfiles.avatar.inspect" ||
-    command.type === "userProfiles.avatar.adopt"
+    command.type === "userProfiles.avatar.adopt" ||
+    command.type === "userProfiles.setRole"
   ) {
     return executeUserProfileCommand(command, {
       database: open(),

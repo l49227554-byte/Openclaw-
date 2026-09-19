@@ -130,6 +130,7 @@ export const gatewayMethodsIsolatedTestFiles = [
 export const gatewayServerIsolatedTestFiles = [
   // A failed native close permanently fences this process's metadata owner.
   "src/gateway/server-close.agent-databases.test.ts",
+  "src/gateway/server.chat.canonical-publication.test.ts",
   "src/gateway/server-chat.retired-projection.test.ts",
   "src/gateway/server-plugin-subagent-runtime.overrides.test.ts",
   // Loads the real plugin runtime that neighboring server tests replace with mocks.

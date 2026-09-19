@@ -1,5 +1,6 @@
 // Defines user-facing config field labels used by schema metadata.
 import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
+import { AUTH_FIELD_LABELS } from "./schema.labels.auth.js";
 import { SESSION_FIELD_LABELS } from "./schema.labels.session.js";
 import { META_FIELD_LABELS } from "./schema.meta.js";
 import { NODE_CAPABILITY_FIELD_LABELS } from "./schema.node-capabilities.js";
@@ -509,9 +510,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "memory.search.cache.enabled": "Memory Search Embedding Cache",
   memory: "Memory",
   "memory.citations": "Memory Citations Mode",
-  auth: "Auth",
-  "auth.profiles": "Auth Profiles",
-  "auth.order": "Auth Profile Order",
+  ...AUTH_FIELD_LABELS,
   acp: "ACP",
   "acp.enabled": "ACP Enabled",
   "acp.dispatch.enabled": "ACP Dispatch Enabled",

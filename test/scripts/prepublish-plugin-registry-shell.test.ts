@@ -82,16 +82,22 @@ function registryFixture(root: string, names: string[], version = VERSION) {
   };
 }
 
-async function withPublishedRegistry(root: string, run: (url: string) => void | Promise<void>) {
+async function withPublishedRegistry(
+  root: string,
+  run: (url: string) => void | Promise<void>,
+  version = BASELINE_VERSION,
+) {
   const portFile = join(root, "upstream-port");
-  const args = ["openclaw", "@openclaw/ai", "@openclaw/discord"].flatMap((name, index) => [
-    name,
-    BASELINE_VERSION,
-    createTarball(root, root, name, `baseline-${index}.tgz`, BASELINE_VERSION, {
-      provenance: "published",
-      ...(name === "openclaw" ? { dependencies: { "@openclaw/ai": BASELINE_VERSION } } : {}),
-    }),
-  ]);
+  const args = ["openclaw", "@openclaw/ai", "@openclaw/discord", "fixture-dev-only"].flatMap(
+    (name, index) => [
+      name,
+      version,
+      createTarball(root, root, name, `baseline-${index}.tgz`, version, {
+        provenance: "published",
+        ...(name === "openclaw" ? { dependencies: { "@openclaw/ai": version } } : {}),
+      }),
+    ],
+  );
   const server = spawn(
     process.execPath,
     [resolve("scripts/e2e/lib/plugins/npm-registry-server.mjs"), portFile, ...args],
@@ -123,68 +129,76 @@ async function withPublishedRegistry(root: string, run: (url: string) => void | 
 }
 
 describe("prepublish plugin registry shell helper", () => {
-  it("repairs the published 2026.7.33 baseline's omitted AI runtime", () => {
+  it("repairs the published 2026.7.33 baseline without installing its dev dependencies", async () => {
     const root = tempDirs.make("openclaw-survivor-2026-7-33-ai-");
     const source = readFileSync("scripts/e2e/lib/upgrade-survivor/run.sh", "utf8");
-    const functions = ["read_installed_version", "repair_2026_7_33_ai_runtime", "install_baseline"]
-      .map((name) => {
-        const start = source.indexOf(`${name}() {`);
-        const end = source.indexOf("\n}\n", start);
-        if (start < 0 || end < start) {
-          throw new Error(`Missing survivor owner ${name}`);
-        }
-        return source.slice(start, end + 3);
-      })
-      .join("\n");
-    const bin = join(root, "bin");
-    mkdirSync(bin);
-    writeFileSync(join(bin, "openclaw"), '#!/bin/sh\nprintf "2026.7.33\\n"\n', { mode: 0o755 });
+    const start = source.indexOf("repair_2026_7_33_ai_runtime() {");
+    const end = source.indexOf("\n}\n", start);
+    if (start < 0 || end < start) {
+      throw new Error("Missing survivor owner repair_2026_7_33_ai_runtime");
+    }
+    const repair = source.slice(start, end + 3);
+    const packageRoot = join(root, "prefix/lib/node_modules/openclaw");
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(
+      join(packageRoot, "package.json"),
+      `${JSON.stringify({
+        name: "openclaw",
+        version: "2026.7.33",
+        dependencies: { "@openclaw/ai": "2026.7.33" },
+        devDependencies: { "fixture-dev-only": "2026.7.33" },
+      })}\n`,
+    );
 
-    const result = spawnSync(
-      "bash",
-      [
-        "-c",
-        `
+    await withPublishedRegistry(
+      root,
+      (registry) => {
+        const result = spawnSync(
+          "bash",
+          [
+            "-c",
+            `
 set -euo pipefail
-${functions}
-normalize_baseline() { baseline_spec="openclaw@2026.7.33"; baseline_version="2026.7.33"; baseline_version_expected=1; }
+${repair}
+baseline_version="2026.7.33"
 package_root() { printf '%s/lib/node_modules/openclaw' "$npm_config_prefix"; }
 openclaw_prepublish_plugin_registry_run_published() { "$@"; }
 openclaw_e2e_maybe_timeout() { shift; "$@"; }
 openclaw_e2e_print_log() { cat "$1"; }
-npm() {
-  local root
-  root="$(package_root)"
-  if [[ " $* " == *" -g "* ]]; then
-    mkdir -p "$root"
-    printf '%s\n' '{"name":"openclaw","version":"2026.7.33","dependencies":{"@openclaw/ai":"2026.7.33"}}' >"$root/package.json"
-    return 0
-  fi
-  mkdir -p "$root/node_modules/@openclaw/ai"
-  printf '%s\n' '{"name":"@openclaw/ai","version":"2026.7.33"}' >"$root/node_modules/@openclaw/ai/package.json"
-}
-install_baseline
-node -e 'const assert=require("node:assert/strict"); assert.equal(require(process.argv[1]).version,"2026.7.33")' \
-  "$(package_root)/node_modules/@openclaw/ai/package.json"
+repair_2026_7_33_ai_runtime
+node - <<'NODE'
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const root = process.env.npm_config_prefix + "/lib/node_modules/openclaw/node_modules";
+assert.equal(require(root + "/@openclaw/ai/package.json").version, "2026.7.33");
+assert.equal(fs.existsSync(root + "/fixture-dev-only"), false);
+NODE
 `,
-      ],
-      {
-        cwd: root,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: `${bin}:${process.env.PATH}`,
-          BASELINE_INSTALL_LOG: join(root, "baseline.log"),
-          npm_config_prefix: join(root, "prefix"),
-          OPENCLAW_E2E_NPM_INSTALL_TIMEOUT: "30s",
-          COMMAND_TIMEOUT: "30s",
-        },
-      },
-    );
+          ],
+          {
+            cwd: root,
+            encoding: "utf8",
+            env: {
+              ...process.env,
+              NODE_ENV: "",
+              NPM_CONFIG_REGISTRY: registry,
+              npm_config_registry: registry,
+              NPM_CONFIG_USERCONFIG: "/dev/null",
+              npm_config_userconfig: "/dev/null",
+              BASELINE_INSTALL_LOG: join(root, "baseline.log"),
+              npm_config_prefix: join(root, "prefix"),
+              npm_config_cache: join(root, "cache"),
+              OPENCLAW_E2E_NPM_INSTALL_TIMEOUT: "30s",
+            },
+          },
+        );
 
-    expect(result.status, result.stdout + result.stderr).toBe(0);
-    expect(result.stdout).toContain(
-      "Repairing published 2026.7.33 baseline's omitted @openclaw/ai runtime.",
+        expect(result.status, result.stdout + result.stderr).toBe(0);
+        expect(result.stdout).toContain(
+          "Repairing published 2026.7.33 baseline's omitted @openclaw/ai runtime.",
+        );
+      },
+      "2026.7.33",
     );
   });
 

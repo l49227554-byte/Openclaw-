@@ -936,7 +936,7 @@ repair_2026_7_33_ai_runtime() {
   echo "Repairing published 2026.7.33 baseline's omitted @openclaw/ai runtime."
   if ! openclaw_prepublish_plugin_registry_run_published \
     openclaw_e2e_maybe_timeout "${OPENCLAW_E2E_NPM_INSTALL_TIMEOUT:-600s}" \
-    npm install --prefix "$root" --no-save --ignore-scripts --no-fund --no-audit \
+    npm install --prefix "$root" --no-save --omit=dev --ignore-scripts --no-fund --no-audit \
       "@openclaw/ai@$ai_version" >>"$BASELINE_INSTALL_LOG" 2>&1; then
     echo "2026.7.33 @openclaw/ai repair failed" >&2
     openclaw_e2e_print_log "$BASELINE_INSTALL_LOG" >&2

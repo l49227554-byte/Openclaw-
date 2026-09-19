@@ -55,10 +55,9 @@ export type ModelProvidersPageTestElement = HTMLElement & {
   defaultsDraft: (DefaultModelSelection & Partial<ModelBehaviorConfig>) | null;
   keyDraft: string;
   keyEditorProvider: string | null;
-  profileActions: Pick<ModelProviderProfileActionsController, "logout" | "setOrder">;
+  profileActions: Pick<ModelProviderProfileActionsController, "logout" | "setOrder" | "probe">;
   messages: Record<string, { kind: "success" | "error"; text: string; warning?: string }>;
   profileOrders: Record<string, string[]>;
-  probe: (cardId: string, providers: string[]) => Promise<void>;
   probeResults: Record<string, ModelsProbeResult>;
   refresh: (reason: "forced") => Promise<void>;
   routeData: ModelProvidersRouteData | undefined;
@@ -260,7 +259,7 @@ export function createHarness(initialScopeId: string) {
   const subscribe = () => () => undefined;
   const owner = createRuntimeConfigCapability(gatewaySource.gateway);
   configOwners.add(owner);
-  const subscribeConfig = owner.subscribe;
+  const subscribeConfig = owner.subscribe.bind(owner);
   const runExternalMutation = owner.runExternalMutation;
   const runtimeConfig = Object.assign(owner, {
     ensureLoaded: vi.fn(owner.ensureLoaded),

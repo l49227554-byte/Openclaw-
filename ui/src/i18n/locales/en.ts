@@ -48,7 +48,7 @@ export const en: TranslationMap & {
   devices: TranslationMap;
   desktop: TranslationMap &
     Record<"title" | "openWindow" | "unavailable" | "toggle" | "reconnect" | "connecting", string>;
-  filePreview: TranslationMap & { bundle: TranslationMap };
+  filePreview: TranslationMap;
   updates: TranslationMap;
   login: TranslationMap;
   modelSetup: TranslationMap;
@@ -256,21 +256,6 @@ export const en: TranslationMap & {
   filePreview: {
     bundle: {},
     label: "Support files",
-    listLabel: "Files",
-    searchPlaceholder: "Search files…",
-    readOnly: "read-only",
-    emptyTitle: "No files match",
-    emptySubtitle: "Try another file name or content search.",
-    copyFile: "Copy file",
-    fileCount: "{count} files",
-    filteredFileCount: "{count}/{total} files",
-    noMatches: "No files match.",
-    navigate: "navigate",
-    kind: {
-      text: "Text",
-      shell: "Shell",
-      file: "File",
-    },
   },
   mcpApp: {
     title: "MCP App",
@@ -320,7 +305,6 @@ export const en: TranslationMap & {
   sessionProgressCard: {
     title: "Progress",
     composerTitle: "Task progress",
-    gestureHint: "Drag or scroll up on the header to open; move down to close. Click to toggle.",
     shortCount: "{completed} of {total}",
     noteLabel: "Progress note",
     dismiss: "Dismiss progress card",
@@ -690,6 +674,8 @@ export const en: TranslationMap & {
         "The update was not applied because gateway restarts are disabled. Enable restarts in config, then retry.",
       restartUnavailable:
         "This global install cannot be safely replaced while restarts are disabled and no supervisor is present.",
+      externalSupervisorUpdateRequired:
+        "This Gateway is managed by an external supervisor. Use your server or deployment's update workflow to update OpenClaw and restart the Gateway. The Control UI and `openclaw update` cannot update this installation. No package changes or Gateway restart were attempted.",
       restartUnhealthy:
         "The replacement process never became healthy. The previous process stayed up so you can recover.",
       restartRevisionMismatch:
@@ -980,8 +966,14 @@ export const en: TranslationMap & {
     cloudProfileRuntimeUnsupported:
       "The {runtime} runtime cannot use this cloud worker. Choose a compatible cloud worker or run locally.",
     deviceRuntimeUnsupported: "This runtime does not support paired devices",
-    placementStartFailed: "The session was created, but runner startup failed: {error}",
+    placementStartFailed: "The session was created, but startup needs attention: {error}",
+    placementStillStarting:
+      "Worker setup is still in progress. Retry to check the existing worker; your message has not been sent.",
+    placementCompletionUnconfirmed:
+      "Could not confirm whether worker setup finished. Retry to check again; your message has not been sent.",
     placementReloadBlocked: "Recovery needs a reload. Unsaved starts will be lost.",
+    placementCancelled:
+      "Session setup was interrupted and the temporary session was cleaned up. Your prompt is kept here.",
     discardUnsavedAndReload: "Discard unsaved starts and reload",
     yourDevices: "Your devices",
     autoDeviceSub: "Least-busy device",
@@ -1790,7 +1782,9 @@ export const en: TranslationMap & {
       gatewayAuth: "Gateway auth",
       execPolicy: "Exec policy",
       browserEnabled: "Browser enabled",
-      toolProfile: "Tool profile",
+      toolProfile: "Available tools",
+      toolProfileDefault:
+        "Using core and default plugin tools. Choose Full to include available optional plugin tools.",
     },
     system: {
       gatewayHost: "Gateway Host",
@@ -2060,8 +2054,9 @@ export const en: TranslationMap & {
     profileOff: "Profile Off",
     notLive: "Not Live",
     otherAgent: "Other Agent",
-    title: "Tool Access",
-    subtitle: "Profile + per-tool overrides for this agent.",
+    title: "Available Tools",
+    subtitle:
+      "Choose tools for this agent. Full selects tools; it does not grant Full Access execution permissions.",
     enabledSummary: "{enabled}/{total} enabled.",
     enableAll: "Enable All",
     disableAll: "Disable All",
@@ -2081,10 +2076,10 @@ export const en: TranslationMap & {
     noAvailable: "No tools are available for this session right now.",
     moreLiveTitle: "{count} more live tools are available in the groups below.",
     moreLive: "+{count} more live tools",
-    quickPresets: "Quick Presets",
+    quickPresets: "Tool Presets",
     catalogTitle: "Tool Catalog",
     inherit: "Inherit",
-    profile: "Profile",
+    profile: "Tool profile",
     source: "Source",
     live: "Live",
     status: "Status",
@@ -2119,59 +2114,7 @@ export const en: TranslationMap & {
     extra: "Extra Skills",
     other: "Other Skills",
   },
-  skillsPage: {
-    title: "Skills",
-    tabs: {
-      all: "All",
-      ready: "Ready",
-      needsSetup: "Needs Setup",
-      disabled: "Disabled",
-    },
-    defaultAgent: "{name} (default)",
-    filterPlaceholder: "Filter installed skills",
-    shown: "{count} shown",
-    clawHub: "ClawHub",
-    clawHubSubtitle: "Search and install skills from the registry",
-    searchClawHub: "Search ClawHub skills…",
-    searching: "Searching…",
-    disconnected: "Not connected to gateway.",
-    empty: "No skills found.",
-    noClawHubResults: "No skills found on ClawHub.",
-    notScannedByClawHub: "Not scanned by ClawHub",
-    install: "Install",
-    installed: "Installed",
-    installing: "Installing…",
-    close: "Close",
-    by: "By",
-    latest: "Latest: v{version}",
-    platforms: "Platforms: {platforms}",
-    installNamed: "Install {name}",
-    notFound: "Skill not found.",
-    openDetails: "Open {name} details",
-    enabledNamed: "{name} enabled",
-    invalidLink: "ClawHub link invalid",
-    overview: "Overview",
-    skillCard: "Skill Card",
-    missingRequirements: "Missing requirements",
-    reason: "Reason: {reasons}",
-    disabled: "Disabled",
-    enabled: "Enabled",
-    apiKey: "API key",
-    getKey: "Get your key:",
-    saveKey: "Save key",
-    source: "Source:",
-    refreshing: "Refreshing…",
-    fullSecurityReport: "Full security report",
-    loadingSkillCard: "Loading Skill Card…",
-    skillCardNotLoaded: "Skill Card not loaded.",
-    verdict: {
-      unavailable: "Unavailable",
-      clean: "Clean",
-      pending: "Pending",
-      blocked: "Blocked",
-      review: "Review",
-    },
-  },
+  skillsPage: {},
   skillStatus: {
     bundled: "bundled",
     eligible: "eligible",
@@ -2452,6 +2395,7 @@ export const en: TranslationMap & {
   cloudWorkersPage: {},
   portalsPage: {},
   modelSetup: {
+    discovery: {},
     missingAuth: "No provider credential is configured for this model. Set it up in Model Setup.",
     commandHint: "Try /models or /help.",
     heading: "Connect a verified AI model",
@@ -2689,6 +2633,12 @@ export const en: TranslationMap & {
     },
   },
   mcpServers: {
+    signIn: "Sign in",
+    authenticationSaved: "Authentication saved",
+    signInFailed: "Sign-in did not finish. Check the connector settings and try again.",
+    signInExpired: "This sign-in session ended. Close the dialog and sign in again.",
+    profileSignIn: "Sign in through the linked account in Models.",
+    requesterSignIn: "Each person signs in through this connector in chat.",
     add: "Add server",
     adding: "Adding…",
     nameLabel: "Name",
@@ -2804,6 +2754,7 @@ export const en: TranslationMap & {
       active: "{running} running · {queued} queued · {failed} failed or stopped",
       finished: "{done} completed · {failed} failed or stopped",
       completed: "{done} completed",
+      failedOrStopped: "Failed or stopped",
       childOutcome: "Child runs finished. Check the conversation for the final response.",
       childOutcomeProcessing: "Child runs finished. The parent is processing their results.",
       details: "Child details",
@@ -3279,6 +3230,9 @@ export const en: TranslationMap & {
     actionsUnavailable: "Actions are unavailable while the Gateway reconnects.",
     settingsChangesUnavailable:
       "Changes to settings are disabled while the Gateway is reconnecting.",
+    sessionMoveRefreshFailed: "The session move was saved, but refreshing the list failed: {error}",
+    sessionMoveUncertain:
+      "The session move could not be confirmed. Refresh and check its group before retrying. {error}",
     sessionOperationCompletedPreviousConnection:
       "The session operation completed on the previous connection. Check the current session list before continuing.",
     sessionOperationCompletedPreviousConnectionWithRefreshError:
@@ -3452,6 +3406,11 @@ export const en: TranslationMap & {
     noResults: "No results",
     searchingSessions: "Searching sessions…",
     searchingCommands: "Searching commands…",
+    clearSearch: "Clear search",
+    escapeKey: "esc",
+    searchNotices: "Search notices ({count})",
+    filterLabel: "Filter search results",
+    filters: { all: "All", sessions: "Sessions", messages: "Messages" },
     searchFailed: "Chat search failed — check the gateway logs and retry",
     modelSearchFailed: "Model search unavailable. Change your search to retry.",
     searchPartial: "Transcript search unavailable — showing chat titles and metadata",
@@ -3460,6 +3419,7 @@ export const en: TranslationMap & {
       search: "Search",
       navigation: "Navigation",
       skills: "Skills",
+      messages: "In messages",
     },
     items: {
       apps: "Apps",
@@ -3628,12 +3588,13 @@ export const en: TranslationMap & {
     },
     mentions: {
       menu: "Mention a person",
-      empty: "No eligible people found.",
+      empty: "No people found",
       truncated: "Keep typing to find more people.",
       online: "Online",
       offline: "Offline",
       unavailable: "Could not load people. Try again.",
       limit: "You can mention up to 10 people per message.",
+      selectedLabel: "Will notify",
       selected: "Will notify: {names}",
       remove: "Remove mention",
       restoreFailed:
@@ -3939,6 +3900,8 @@ export const en: TranslationMap & {
       next: "Next suggested task",
       starting: "Starting…",
       dismiss: "Dismiss {title}",
+      started: "Task started",
+      startUnconfirmed: "Couldn't confirm the task started. Retry checks the same task.",
       adminRequired: "Administrator access is required to start suggested tasks.",
     },
     pullRequests: {
@@ -3968,6 +3931,7 @@ export const en: TranslationMap & {
       checksRunning: "Running",
       checksSkipped: "Skipped",
       showMore: "Show {count} more",
+      showLess: "Show less",
       rateLimited:
         "GitHub API rate limit reached. Pull request status may be out of date until the limit resets.",
       unavailable:
@@ -4324,6 +4288,9 @@ export const en: TranslationMap & {
       disconnected: "Not connected. Try again after reconnecting.",
     },
     imageLightbox: {
+      previous: "Previous image",
+      next: "Next image",
+      position: "{current} / {total}",
       label: "Image preview: {title}",
       open: "Open image {title}",
       openOriginal: "Open in new tab",
@@ -4367,10 +4334,10 @@ export const en: TranslationMap & {
     },
     modelControls: {},
     permissionControls: {
-      label: "Permissions",
-      help: "Choose permissions for this session.",
+      label: "Execution permissions",
+      help: "Choose what available tools may do in this session. This does not change the tool profile.",
       default: "Default",
-      defaultDescription: "Follow the agent's configured policy.",
+      defaultDescription: "Follow the agent's configured execution permissions.",
       defaultWithMode: "Default ({mode})",
       fullRequiresAdmin: "Full access requires operator.admin access.",
       updateFailed: "Failed to update permissions: {error}",
@@ -4479,6 +4446,9 @@ export const en: TranslationMap & {
       expandPanel: "Expand {panel}",
       restore: "Restore split",
       useViewAsDefault: "Use current view as default",
+      currentViewIsDefault: "This is the default view",
+      defaultViewDescription:
+        "Used when anyone opens this dashboard. Personal layout choices still apply.",
       savingDefault: "Saving default…",
       defaultSaved: "Dashboard default saved for future opens.",
       defaultSaveFailed:
@@ -4579,6 +4549,8 @@ export const en: TranslationMap & {
       browserAnnotationUndoUnavailable:
         "Undo is unavailable because the browser annotation limit has been reached.",
       preparingAttachments: "Preparing attachments…",
+      preparingAttachmentCount: "Preparing {count} attachment",
+      preparingAttachmentsCount: "Preparing {count} attachments",
       removeAttachment: "Remove attachment",
       removeNamedAttachment: "Remove {name}",
       removeBrowserAnnotation: "Remove browser annotation: {name}",
@@ -4731,6 +4703,7 @@ export const en: TranslationMap & {
       readFailed: "Could not attach: {names}{more}",
       tooLarge: "Too large to send: {names}{more}",
       showInTextField: "Show in text field",
+      pastedText: "Pasted text",
       outsideAllowedFolders: "Outside allowed folders",
       unavailable: "Unavailable",
       failureDeliveryFailed: "Delivery failed. Try sending this file again.",
@@ -4797,6 +4770,8 @@ export const en: TranslationMap & {
       skippedCount: "{count} skipped",
       running: "Running",
       completed: "Completed",
+      blocked: "Blocked",
+      outcomeUnknown: "Outcome unknown",
       exitCode: "Exit code {code}",
       failureCount: "{count} failed",
       noOutputFailed: "No output — tool failed.",

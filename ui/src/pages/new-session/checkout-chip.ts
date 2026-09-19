@@ -97,13 +97,20 @@ function acceptActiveBranchSuggestion(
 }
 
 export function resolveCheckoutChip(params: {
-  destination: "local" | "remote";
+  destination: "local" | "remote" | "cloud";
   worktree: boolean;
   worktreeAvailable: boolean;
   headBranch?: string;
   baseRef: string;
   repository?: boolean;
 }): CheckoutChipState | null {
+  if (params.destination === "cloud") {
+    return {
+      label: params.baseRef
+        ? t("newSession.checkoutCloudFrom", { branch: params.baseRef })
+        : t("newSession.checkoutCloud"),
+    };
+  }
   if (params.repository) {
     return {
       label: params.baseRef

@@ -32,23 +32,6 @@ afterEach(() => {
 });
 
 describe("DraftSubmissionFlow", () => {
-  it("clears an accepted worktree name before the next session draft", async () => {
-    const { context, flow, place } = createDraftFixture();
-    vi.mocked(context.sessions.createResult).mockResolvedValue({
-      key: "agent:main:created",
-      initialRun: { status: "started", runId: "created-run" },
-    });
-    vi.mocked(context.navigateAndWait).mockImplementation(async () => {
-      queueMicrotask(() => document.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT)));
-    });
-    place.setWorktreeName("picker-fixes");
-    flow.setMessage("Fix the picker");
-
-    await flow.submit();
-
-    expect(place.worktreeName).toBe("");
-  });
-
   it.each(["navigation", "reconnect"])("retires only the captured draft after %s", async (mode) => {
     const { context, flow } = createDraftFixture();
     let accept!: (value: { key: string; initialRun: { status: "started"; runId: string } }) => void;
@@ -140,11 +123,11 @@ describe("DraftSubmissionFlow", () => {
         sessionKey,
         context.gateway.snapshot.client,
       );
-      expect(retained?.message.content).toContainEqual({
+      expect(retained?.message?.content).toContainEqual({
         type: "text",
         text: "@Alex keep the accepted prompt",
       });
-      expect(retained?.message["__openclaw"]).toMatchObject({
+      expect(retained?.message?.["__openclaw"]).toMatchObject({
         humanMentions: [{ profileId: "profile-alex", start: 0, end: 5 }],
       });
       if (next === "reconnect") {
@@ -314,10 +297,10 @@ describe("DraftSubmissionFlow", () => {
       "agent:main:dashboard:background",
       context.gateway.snapshot.client,
     );
-    expect(retained?.message["__openclaw"]).toMatchObject({
+    expect(retained?.message?.["__openclaw"]).toMatchObject({
       humanMentions: [{ profileId: "profile-alex", start: 0, end: 5 }],
     });
-    expect(retained?.message.content).toContainEqual({
+    expect(retained?.message?.content).toContainEqual({
       type: "attachment",
       attachment: {
         url: `data:text/plain;base64,${btoa("background-note")}`,

@@ -82,6 +82,11 @@ class RealtimePlayoutTest {
       assertEquals(null, playout.audio(session, frame, statusOwner))
       assertEquals(null, playout.mark(session, "mark-$index"))
     }
+    val tail = ByteArray((RealtimePlayout.MAX_QUEUED_BYTES % frame.size).toInt())
+    assertEquals(null, playout.audio(session, tail, statusOwner))
+    assertEquals(null, playout.mark(session, "tail"))
+    // Final transcript and audioDone refresh status without adding PCM.
+    repeat(2) { assertEquals(null, playout.refreshState(session, statusOwner)) }
     assertTrue(failures.isEmpty())
     assertTrue(session.active)
 
@@ -89,6 +94,50 @@ class RealtimePlayoutTest {
     overflow()
     assertEquals(listOf("session/audio playback queue overflow"), failures)
     assertFalse(session.active)
+  }
+
+  @Test
+  fun pcmByteBudgetRemainsIndependentOfEntryCapacity() {
+    assertEquals(null, playout.audio(session, ByteArray(RealtimePlayout.MAX_QUEUED_BYTES.toInt()), statusOwner))
+    val overflow = checkNotNull(playout.audio(session, ByteArray(2), statusOwner))
+    overflow()
+    assertEquals(listOf("session/audio playback queue overflow"), failures)
+    assertFalse(session.active)
+  }
+
+  @Test
+  fun dequeuedRefreshesDoNotIncreaseMediaAllowance() {
+    repeat(2) { assertEquals(null, playout.refreshState(session, statusOwner)) }
+    scheduler.runCurrent()
+    repeat(RealtimePlayout.MAX_QUEUED_MEDIA) { assertEquals(null, playout.mark(session, "mark-$it")) }
+    val overflow = checkNotNull(playout.mark(session, "over-budget"))
+    overflow()
+    assertEquals(listOf("session/audio playback queue overflow"), failures)
+    assertFalse(session.active)
+  }
+
+  @Test
+  fun refreshOverflowPreservesClearHeadroomForAFullMediaBacklog() {
+    playout.audio(session, ByteArray(100), statusOwner)
+    scheduler.runCurrent()
+    val track = checkNotNull(PlayoutAudioTrack.track)
+    repeat(2) {
+      repeat(24) { assertEquals(null, playout.refreshState(session, statusOwner)) }
+      scheduler.runCurrent()
+    }
+    repeat(RealtimePlayout.MAX_QUEUED_MEDIA) { assertEquals(null, playout.mark(session, "mark-$it")) }
+    var overflow: (() -> Unit)? = null
+    repeat(64) {
+      if (overflow == null) overflow = playout.refreshState(session, statusOwner)
+    }
+    checkNotNull(overflow).invoke()
+    val cleared = playout.clear(session, acknowledge = false)
+    scheduler.runCurrent()
+    assertEquals(listOf("session/audio playback queue overflow"), failures)
+    assertTrue(cleared.isCompleted)
+    assertFalse(cleared.isCancelled)
+    assertEquals(AudioTrack.STATE_UNINITIALIZED, track.state)
+    assertFalse(playout.isPlaying)
   }
 
   @Test

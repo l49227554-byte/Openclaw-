@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import { testApi as loggerTestApi } from "../logging/logger.test-support.js";
 import type { ProviderCatalogOutcome } from "../plugins/provider-catalog.types.js";
@@ -15,12 +14,12 @@ import { createAuthProfileStoreFixture } from "./auth-profiles/credential-fixtur
 import { OAuthRefreshFailureError } from "./auth-profiles/oauth-refresh-failure.js";
 import { resolveApiKeyForProfile } from "./auth-profiles/oauth.js";
 import { prepareProviderCatalogRun } from "./models-config.providers.catalog-context.js";
-import {
-  createProviderApiKeyResolver,
-  createProviderAuthResolver,
-} from "./models-config.providers.secrets.js";
+import type { ProviderAuthResolver } from "./models-config.providers.secret-helpers.js";
 
 vi.mock("./auth-profiles/oauth.js", () => ({ resolveApiKeyForProfile: vi.fn() }));
+vi.mock("./provider-auth-aliases.js", () => ({
+  resolveProviderIdForAuth: (provider: string) => provider,
+}));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
@@ -47,21 +46,6 @@ it.each([true, false])(
         expires: 1,
       },
     });
-    const config: OpenClawConfig = {
-      auth: {
-        profiles: { [profileId]: { provider: "fixture", mode: "oauth" } },
-        order: { fixture: [profileId] },
-      },
-      models: {
-        providers: {
-          fixture: {
-            baseUrl: "https://catalog.example.test/v1",
-            models: [],
-            ...(withApiKey ? { apiKey: "fallback-api-key" } : {}),
-          },
-        },
-      },
-    };
     const selectedCredentials: Array<string | undefined> = [];
     const provider: ProviderPlugin = {
       id: "fixture",
@@ -93,15 +77,24 @@ it.each([true, false])(
     const outcomes: ProviderCatalogOutcome[] = [];
     await fs.writeFile(logFile, "");
     setLoggerOverride({ file: logFile, level: "warn", consoleLevel: "silent" });
+    const resolveAuth: ProviderAuthResolver = (_provider, options) =>
+      options?.excludeProfileIds?.includes(profileId)
+        ? {
+            apiKey: withApiKey ? "fallback-api-key" : undefined,
+            discoveryApiKey: withApiKey ? "fallback-api-key" : undefined,
+            mode: withApiKey ? "api_key" : "none",
+            source: "none",
+          }
+        : { apiKey: undefined, mode: "oauth", source: "profile", profileId };
     const prepared = await prepareProviderCatalogRun({
       provider,
-      config,
+      config: {},
       agentDir,
       authStore: store,
       env: {},
       isActive: () => true,
-      resolveProviderAuth: createProviderAuthResolver({}, store, config),
-      resolveProviderApiKey: createProviderApiKeyResolver({}, store, config),
+      resolveProviderAuth: (providerId, options) => resolveAuth(providerId ?? provider.id, options),
+      resolveProviderApiKey: () => ({ apiKey: withApiKey ? "fallback-api-key" : undefined }),
       reportCatalogOutcome: (outcome) => outcomes.push(outcome),
     });
     const result = await runProviderCatalog(prepared);

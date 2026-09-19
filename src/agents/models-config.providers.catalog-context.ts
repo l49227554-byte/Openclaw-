@@ -134,26 +134,28 @@ export async function prepareProviderCatalogRun(
           `${params.provider.id}: OAuth profile ${JSON.stringify(failure.profileId)} could not be resolved (${failure.message}); ${destination}. Re-authenticate with ${login}.`,
         );
       }
-      const providersWithOutcomes = new Set(
-        reportedOutcomes.map((outcome) => normalizeProviderId(outcome.provider)),
-      );
-      const aliasContext = { config: params.config, env: params.env };
-      const authProvider = resolveProviderIdForAuth(params.provider.id, aliasContext);
-      for (const provider of params.providerIds ?? [params.provider.id]) {
-        const normalized = normalizeProviderId(provider);
-        if (
-          resolveProviderIdForAuth(provider, aliasContext) !== authProvider ||
-          providers[normalized] ||
-          providersWithOutcomes.has(normalized)
-        ) {
-          continue;
-        }
-        // A plugin's selected result wins; only otherwise-unreported exhaustion
-        // carries every attempted profile into compatible inventory retention.
-        for (const profileId of failedProfileIds) {
-          const outcome: ProviderCatalogOutcome = { provider, profileId, status: "unavailable" };
-          reportedOutcomes.push(outcome);
-          params.reportCatalogOutcome?.(outcome);
+      if (failedProfileIds.size > 0) {
+        const providersWithOutcomes = new Set(
+          reportedOutcomes.map((outcome) => normalizeProviderId(outcome.provider)),
+        );
+        const aliasContext = { config: params.config, env: params.env };
+        const authProvider = resolveProviderIdForAuth(params.provider.id, aliasContext);
+        for (const provider of params.providerIds ?? [params.provider.id]) {
+          const normalized = normalizeProviderId(provider);
+          if (
+            resolveProviderIdForAuth(provider, aliasContext) !== authProvider ||
+            providers[normalized] ||
+            providersWithOutcomes.has(normalized)
+          ) {
+            continue;
+          }
+          // A plugin's selected result wins; only otherwise-unreported exhaustion
+          // carries every attempted profile into compatible inventory retention.
+          for (const profileId of failedProfileIds) {
+            const outcome: ProviderCatalogOutcome = { provider, profileId, status: "unavailable" };
+            reportedOutcomes.push(outcome);
+            params.reportCatalogOutcome?.(outcome);
+          }
         }
       }
       // Carry the accepted snapshot forward without evaluating plugin getters again.

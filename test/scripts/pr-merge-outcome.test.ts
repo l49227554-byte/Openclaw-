@@ -10,6 +10,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -259,7 +260,11 @@ function fixture(
   const save = (state: typeof initial) => {
     writeFileSync(statePath, JSON.stringify(state));
     if (!state.review) {
-      writeFileSync(join(worktree, ".local/review.md"), "stale review\n");
+      const file = join(worktree, ".local/review.json");
+      writeFileSync(
+        file,
+        JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), docs: "invalid" }),
+      );
     }
     if (!state.ready) {
       const file = join(worktree, ".local/review.json");
@@ -305,6 +310,9 @@ else if(args[0]==="api"&&args.some(arg=>new RegExp("^repos/[^/]+/[^/]+$").test(a
   out(s.repoAuthority);
 }
 else if(args[0]==="api"&&args.includes("user")) out("relay-reader");
+else if(args[0]==="api"&&args.includes("repos/fixture/repo/pulls/123")) {
+  out({mergeable:s.pr.mergeable==="UNKNOWN"?null:s.pr.mergeable==="MERGEABLE",mergeable_state:s.pr.mergeStateStatus.toLowerCase()});
+}
 else if(args.includes("graphql")&&args.includes("query=query { viewer { login } }")) out(args.includes("--include") ? "HTTP/2.0 200 OK\\n\\n" + JSON.stringify({data:{viewer:{login:s.operator}}}) : s.operator);
 else if(args[0]==="pr"&&args[1]==="checks") {
   if(s.duringChecks?.bodyPath) fs.writeFileSync(s.duringChecks.bodyPath,"Changed later");
@@ -426,8 +434,8 @@ repo_root() { printf '%s\\n' "$FIXTURE_REPO"; }
 ensure_gh_api_auth() { :; }
 verify_prep_branch_matches_prepared_head() { [ "$(command git rev-parse HEAD)" = "$2" ]; }
 node() { if [[ "$1" == */watch-pr-ci.mjs ]]; then shift; command node "$FIXTURE_GH" watch "$@"; else command node "$@"; fi; }
-gh() { command node "$FIXTURE_GH" path "$@"; }
-gh_plain() { command node "$FIXTURE_GH" direct "$@"; }
+pr_gh() { command node "$FIXTURE_GH" path "$@"; }
+pr_gh_plain() { command node "$FIXTURE_GH" direct "$@"; }
 # Skip only admission settlement delays; preserve the operation lock's short sleeps.
 sleep() { if [ "$#" = 1 ] && { [ "$1" = 1 ] || [ "$1" = 2 ]; }; then command node "$FIXTURE_GH" sleep "$1"; else command sleep "$@"; fi; }
 verify_crabbox_admin_merge_bypass() {
@@ -436,7 +444,7 @@ verify_crabbox_admin_merge_bypass() {
 }
 # Fault the Git boundary, not the outcome owner: crash after intent CAS, or
 # reject later receipt writes. All successful object/ref operations are real.
-git() {
+pr_git() {
   if [ "$1" = update-ref ] && [ "\${3-}" = refs/openclaw/pr-merge-outcomes/123 ]; then
     local crash
     crash=$(command jq -r .crash "$FIXTURE_STATE")
@@ -461,7 +469,7 @@ begin_pr_operation_validation_phase
 if [ -n "\${5:-}" ]; then
   merge_complete 123 "$5"
 else
-  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}"
+  merge_run 123 "\${1:-false}" "\${2:-}" "\${3:-}" "\${4:-}" "\${6:-}"
 fi
 `,
   );
@@ -487,6 +495,7 @@ fi
     replacementHead = "",
     bodyPath = "",
     completionOid = "",
+    legacyDirectory = "",
   ) => {
     const result = spawnSync(
       nodeExecutable,
@@ -499,6 +508,7 @@ fi
         replacementHead,
         bodyPath,
         completionOid,
+        legacyDirectory,
       ],
       { cwd, env: { ...env, OPENCLAW_PR_MERGE_METHOD: method }, encoding: "utf8", timeout: 20_000 },
     );
@@ -632,6 +642,29 @@ function expectNoProbeFetch(trace: ReturnType<ReturnType<typeof fixture>["trace"
   ).toEqual([]);
 }
 
+function createLegacyRefusal(f: ReturnType<typeof fixture>) {
+  const directory = join(f.root, "legacy-evidence");
+  mkdirSync(directory);
+  const capture = `X Pull request fixture/repo#123 is not mergeable: the merge commit cannot be cleanly created.
+To have the pull request merged after all the requirements have been met, add the \`--auto\` flag.
+Run the following to resolve the merge conflicts locally:
+  gh pr checkout 123 && git fetch origin main && git merge origin/main
+`;
+  writeFileSync(join(f.worktree, ".local/merge-output.log"), capture);
+  const files = Object.fromEntries(
+    ["merge-output.log", "prep.env", "prep.md", "gates.env"].map((name) => {
+      const contents = readFileSync(join(f.worktree, ".local", name), "utf8");
+      writeFileSync(join(directory, name), contents);
+      return [name, contents];
+    }),
+  );
+  return {
+    directory,
+    files,
+    oid: f.git(["hash-object", "--no-filters", join(directory, "merge-output.log")]),
+  };
+}
+
 function reconciledMergeAfterCleanup(admin = false) {
   const f = fixture();
   f.save({ ...f.state(), mode: "applied-open", admin, gates: admin ? "fail" : "pass" });
@@ -653,6 +686,50 @@ function reconciledMergeAfterCleanup(admin = false) {
 }
 
 describePosix("native merge outcome with real Git and supervised lock recovery", () => {
+  it("explains every rejected admission fact and local conflicts before dispatch", () => {
+    const f = fixture();
+    f.advance("conflicting main\n", "stable\n");
+    f.save({
+      ...f.state(),
+      observations: [
+        {
+          pr: {
+            state: "CLOSED",
+            headRefOid: f.base,
+            baseRefName: "release",
+            isDraft: true,
+            mergeable: "CONFLICTING",
+            mergeStateStatus: "DIRTY",
+            autoMergeRequest: { mergeMethod: "SQUASH" },
+            isInMergeQueue: true,
+          },
+        },
+      ],
+    });
+    const run = f.run();
+    expect(run.status, run.output).toBe(1);
+    for (const line of [
+      'state: observed="CLOSED"; expected="OPEN"',
+      `headRefOid: observed="${f.base}"; expected="${f.head}"`,
+      'baseRefName: observed="release"; expected="main"',
+      "isDraft: observed=true; expected=false",
+      'mergeable: observed="CONFLICTING"; expected="MERGEABLE|UNKNOWN"',
+      'autoMergeRequest: observed={"mergeMethod":"SQUASH"}; expected=null',
+      "isInMergeQueue: observed=true; expected=false",
+      'REST pulls/123: mergeable=false; mergeable_state="dirty"',
+      "Conflicting path: owner.txt",
+      `Local outcome ref ${outcomeRef}: absent`,
+      "Legacy .local/merge-output.log: absent",
+      "lock-recover, then rerun merge-run",
+    ]) {
+      expect(run.output).toContain(line);
+    }
+    expect(f.state().mutations).toBe(0);
+    expect(f.state().posts).toBe(0);
+    expect(() => f.record()).toThrow();
+    expect(f.captures()).toEqual([]);
+  });
+
   it("explicitly completes a reconciled merge after cleanup without another merge dispatch", () => {
     const f = reconciledMergeAfterCleanup();
     const landed = f.git(["--git-dir=" + f.remote, "rev-parse", "main"]);
@@ -1059,6 +1136,9 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       const run = f.run();
       expect(run.status, run.output).toBe(1);
       expect(run.output).toContain("PR or main changed during observation");
+      expect(run.output).toContain(`Local outcome ref ${outcomeRef}: present`);
+      expect(run.output).toContain("investigate; see scripts/AGENTS.md merge-outcome doctrine");
+      expect(run.output).not.toContain("lock-recover, then rerun merge-run");
       expect(f.git(["rev-parse", outcomeRef])).toBe(before);
       expect(f.state().mutations).toBe(1);
       expect(f.state().posts).toBe(0);
@@ -1277,6 +1357,186 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     expect(retry.status, retry.output).toBe(1);
     expect(retry.output).not.toContain("scripts/pr prepare-run");
     expect(f.state().mutations).toBe(1);
+  });
+
+  it("recovers a qualified legacy refusal with preserved evidence and one new current intent", () => {
+    const f = fixture();
+    const legacy = createLegacyRefusal(f);
+    const approvedHead = f.replacePreparedHead();
+    const run = f.run(false, f.repo, "squash", legacy.oid, approvedHead, "", "", legacy.directory);
+    expect(run.status, run.output).toBe(0);
+    expect(f.state().mutations).toBe(1);
+    expect(f.record()).toMatchObject({
+      phase: "complete",
+      head: approvedHead,
+      legacyRefusal: {
+        actor: "fixture-operator",
+        kind: "gh-2.98-pre-dispatch-refusal",
+        head: f.head,
+        preparedBase: f.base,
+      },
+    });
+    expect(f.record()).not.toHaveProperty("recovery");
+    for (const [name, contents] of Object.entries(legacy.files)) {
+      expect(f.git(["rev-parse", `${outcomeRef}:legacy-refusal/${name}`])).toBe(
+        f.git(["hash-object", "--stdin"], contents),
+      );
+    }
+    expect(f.run().status).toBe(0);
+    expect(f.state().mutations).toBe(1);
+    const replay = f.run(
+      false,
+      f.repo,
+      "squash",
+      legacy.oid,
+      approvedHead,
+      "",
+      "",
+      legacy.directory,
+    );
+    expect(replay.status, replay.output).toBe(1);
+    expect(f.state().mutations).toBe(1);
+  });
+
+  it("retains qualified legacy evidence through successor recovery and garbage collection", () => {
+    const f = fixture();
+    const legacy = createLegacyRefusal(f);
+    const approvedHead = f.replacePreparedHead();
+    f.save({ ...f.state(), mode: "unapplied" });
+    const first = f.run(
+      false,
+      f.repo,
+      "squash",
+      legacy.oid,
+      approvedHead,
+      "",
+      "",
+      legacy.directory,
+    );
+    expect(first.status, first.output).toBe(1);
+    expect(f.state().mutations).toBe(1);
+    const previous = f.git(["rev-parse", outcomeRef]);
+    const previousRecord = f.record();
+    expect(previousRecord.legacyRefusal).toMatchObject({ head: f.head, preparedBase: f.base });
+    expect(previousRecord).not.toHaveProperty("recovery");
+    f.recover();
+    f.save({ ...f.state(), mode: "success" });
+    const recovered = f.run(false, f.repo, "squash", previous);
+    expect(recovered.status, recovered.output).toBe(0);
+    expect(f.state().mutations).toBe(2);
+    expect(f.record()).toMatchObject({
+      phase: "complete",
+      head: approvedHead,
+      recovery: { outcome: previous, attempt: previousRecord.attempt },
+    });
+    f.git(["merge-base", "--is-ancestor", previous, outcomeRef]);
+    for (const ref of [
+      "refs/heads/topic",
+      "refs/heads/pr-123",
+      "refs/heads/pr-123-prep",
+      "refs/remotes/origin/topic",
+    ]) {
+      f.git(["update-ref", "-d", ref]);
+    }
+    rmSync(legacy.directory, { recursive: true });
+    f.git(["reflog", "expire", "--expire=now", "--all"]);
+    f.git(["gc", "--prune=now"]);
+    for (const oid of [previous, f.head, f.base, approvedHead]) {
+      f.git(["cat-file", "-e", `${oid}^{commit}`]);
+    }
+    expect(JSON.parse(f.git(["show", `${previous}:outcome.json`]))).toEqual(previousRecord);
+    for (const [name, contents] of Object.entries(legacy.files)) {
+      const oid = f.git(["rev-parse", `${previous}:legacy-refusal/${name}`]);
+      expect(oid).toBe(f.git(["hash-object", "--stdin"], contents));
+      f.git(["cat-file", "-e", `${oid}^{blob}`]);
+    }
+  });
+
+  it.each([
+    "empty",
+    "timeout",
+    "extra-capture",
+    "wrong-hash",
+    "wrong-pr",
+    "wrong-base",
+    "missing-proof",
+    "symlink",
+    "auto",
+    "queue",
+    "closed",
+    "pending",
+    "ci-proof",
+    "changed-capture",
+    "no-head",
+  ])("legacy refusal recovery refuses %s without losing evidence or dispatching", (fault) => {
+    const f = fixture();
+    const legacy = createLegacyRefusal(f);
+    const approvedHead = f.replacePreparedHead();
+    const next = f.state();
+    const capture = join(f.worktree, ".local/merge-output.log");
+    if (fault === "empty" || fault === "timeout") {
+      const text = fault === "empty" ? "" : "502 after dispatch\n";
+      writeFileSync(capture, text);
+      writeFileSync(join(legacy.directory, "merge-output.log"), text);
+      legacy.oid = f.git(["hash-object", "--no-filters", capture]);
+    }
+    if (fault === "extra-capture") {
+      writeFileSync(join(f.worktree, ".local/merge-output.other.log"), "");
+    }
+    if (fault === "wrong-hash") {
+      legacy.oid = f.base;
+    }
+    if (fault === "wrong-pr" || fault === "wrong-base") {
+      const path = join(legacy.directory, "prep.env");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8").replace(
+          fault === "wrong-pr" ? "PR_NUMBER=123" : f.base,
+          fault === "wrong-pr" ? "PR_NUMBER=456" : "not-a-sha",
+        ),
+      );
+    }
+    if (fault === "missing-proof") {
+      rmSync(join(legacy.directory, "prep.md"));
+    }
+    if (fault === "symlink") {
+      rmSync(capture);
+      symlinkSync(join(legacy.directory, "merge-output.log"), capture);
+    }
+    if (fault === "auto") {
+      next.pr.autoMergeRequest = { mergeMethod: "SQUASH" };
+    }
+    if (fault === "queue") {
+      next.pr.isMergeQueueEnabled = true;
+    }
+    if (fault === "closed") {
+      next.pr.state = "CLOSED";
+    }
+    if (fault === "pending") {
+      next.gates = "pending";
+    }
+    if (fault === "ci-proof") {
+      next.ciExit = 15;
+    }
+    if (fault === "changed-capture") {
+      next.duringChecks = { artifact: "merge-output.log" };
+    }
+    f.save(next);
+    const run = f.run(
+      false,
+      f.repo,
+      "squash",
+      legacy.oid,
+      fault === "no-head" ? "" : approvedHead,
+      "",
+      "",
+      legacy.directory,
+    );
+    expect(run.status, run.output).not.toBe(0);
+    expect(f.state().mutations, run.output).toBe(0);
+    expect(f.state().posts).toBe(0);
+    expect(existsSync(capture)).toBe(true);
+    expect(() => f.git(["rev-parse", "--verify", outcomeRef])).toThrow();
   });
 
   it.each([
@@ -1514,7 +1774,6 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "wrong-approval",
     "malformed-approval",
     "review-json",
-    "review-markdown",
     "meta-head",
     "prep-context",
     "prep-head",
@@ -1526,7 +1785,7 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     "head-during-checks",
     "prep.env",
     "gates.env",
-    "review.md",
+    "review.json",
   ])("replacement recovery refuses stale or unapproved evidence: %s", (fault) => {
     const f = fixture();
     f.save({ ...f.state(), mode: "unapplied" });
@@ -1550,13 +1809,12 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     if (fault === "head-during-checks") {
       next.duringChecks = { head: f.head };
     }
-    if (["prep.env", "gates.env", "review.md"].includes(fault)) {
+    if (["prep.env", "gates.env", "review.json"].includes(fault)) {
       next.duringChecks = { artifact: fault };
     }
     f.save(next);
     const staleArtifact: Record<string, string> = {
       "review-json": "review.json",
-      "review-markdown": "review.md",
       "meta-head": "pr-meta.env",
       "prep-context": "prep-context.env",
       "prep-head": "prep.env",
@@ -1663,6 +1921,11 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       expect(f.captures()).toEqual([]);
       expect(existsSync(f.worktree)).toBe(true);
       expect(f.git(["--git-dir=" + f.remote, "rev-parse", "topic"])).toBe(f.head);
+      expect(run.output).toContain(`mergeStateStatus: observed="${mergeStateStatus}"; expected=`);
+      expect(run.output).toContain("lock-recover, then rerun merge-run");
+      if (mergeStateStatus === "DIRTY") {
+        expect(run.output).toContain("Conflicts exist");
+      }
     },
   );
   it.each([
@@ -1851,6 +2114,25 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
     }
     if (finalRead) {
       expect(run.output).toContain("PR or main changed during observation");
+      expect(run.output).toContain("lock-recover, then rerun merge-run");
+      expect(run.output).toContain(
+        fault === "final main"
+          ? `main: observed="${step.main}"; expected="${f.base}"`
+          : fault === "final UNKNOWN mergeable"
+            ? 'mergeable: observed="UNKNOWN"; expected="MERGEABLE"'
+            : `mergeStateStatus: observed="${fault === "final UNKNOWN status" ? "UNKNOWN" : "BEHIND"}"; expected="CLEAN"`,
+      );
+      for (const [label, expected] of [
+        ["observation", { main: f.base, pr: next.pr }],
+        ["reread", { main: step.main ?? f.base, pr: { ...next.pr, ...step.pr } }],
+      ] as const) {
+        const prefix = `Merge stability ${label}: `;
+        const snapshots = run.stderr
+          .split("\n")
+          .filter((line) => line.startsWith(prefix))
+          .map((line) => JSON.parse(line.slice(prefix.length)));
+        expect(snapshots, run.output).toEqual([expected]);
+      }
     }
     if (projectionDrift) {
       expect(run.output).toContain("PR or main changed while waiting for mergeability");
@@ -1859,6 +2141,14 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       expect(run.output).toContain(
         "auto-merge admission requires MERGEABLE with CLEAN or BEHIND status",
       );
+    }
+    if (fault === "conflicting") {
+      const prefix = `Merge admission rejected (observation 2, prepared head ${f.head}): `;
+      const rejected = run.stderr
+        .split("\n")
+        .filter((line) => line.startsWith(prefix))
+        .map((line) => JSON.parse(line.slice(prefix.length)));
+      expect(rejected, run.output).toEqual([{ main: f.base, pr: { ...next.pr, ...step.pr } }]);
     }
   });
   it.each(["OPEN", "MERGED"])(
@@ -2026,6 +2316,9 @@ describePosix("native merge outcome with real Git and supervised lock recovery",
       expect(run.status, run.output).toBe(1);
       expect(f.state().mutations).toBe(0);
       expect(readFileSync(capture, "utf8")).toBe(output);
+      expect(run.output).toContain("Legacy .local/merge-output.log: present");
+      expect(run.output).toContain("investigate; see scripts/AGENTS.md merge-outcome doctrine");
+      expect(run.output).not.toContain("lock-recover, then rerun merge-run");
       expect(() => f.record()).toThrow();
     },
   );

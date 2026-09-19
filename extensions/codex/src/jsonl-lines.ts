@@ -40,8 +40,7 @@ export type JsonlTailWindow = {
 
 export async function visitJsonlLines(
   file: string,
-  visitor: (line: string) => boolean | void,
-  chunkBytes = JSONL_READ_CHUNK_BYTES,
+  visitor: (line: string) => void,
 ): Promise<{ ok: boolean; lineCount: number }> {
   let size: number;
   try {
@@ -62,9 +61,7 @@ export async function visitJsonlLines(
     let lineCount = 0;
     for (const line of content.split(/\r?\n/u)) {
       lineCount += 1;
-      if (visitor(line) === false) {
-        break;
-      }
+      visitor(line);
     }
     return { ok: true, lineCount };
   }
@@ -75,7 +72,7 @@ export async function visitJsonlLines(
   } catch {
     return { ok: false, lineCount: 0 };
   }
-  const buffer = Buffer.allocUnsafe(chunkBytes);
+  const buffer = Buffer.allocUnsafe(JSONL_READ_CHUNK_BYTES);
   const decoder = new TextDecoder();
   let pendingFragments: string[] = [];
   let lineCount = 0;
@@ -100,9 +97,7 @@ export async function visitJsonlLines(
         }
         const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
         lineCount += 1;
-        if (visitor(line) === false) {
-          return { ok: true, lineCount };
-        }
+        visitor(line);
         lineStart = newline + 1;
       }
       if (lineStart < content.length) {

@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { overwriteFileHandle } from "@openclaw/fs-safe/advanced";
 import {
   canonicalPathFromExistingAncestor,
   FsSafeError,
@@ -27,6 +28,7 @@ type FileWriteParams = {
   createParents: boolean;
   expectedSha256?: string;
   followSymlinks?: boolean;
+  rejectHardlinks?: boolean;
   preflightOnly?: boolean;
   expectedCanonicalPath?: unknown;
   expectedBinding?: unknown;
@@ -39,6 +41,7 @@ type FileWriteSuccess = {
   sha256: string;
   overwritten: boolean;
   binding: PathBinding;
+  rejectHardlinks?: true;
 };
 
 type FileWriteError = {
@@ -141,84 +144,11 @@ async function captureWriteBinding(
   }
 }
 
-async function writeBoundRange(
-  handle: Awaited<ReturnType<typeof fs.open>>,
-  payload: Buffer,
-  offset: number,
-  length: number,
-  position: number,
-): Promise<void> {
-  let written = 0;
-  while (written < length) {
-    const { bytesWritten } = await handle.write(
-      payload,
-      offset + written,
-      length - written,
-      position + written,
-    );
-    if (bytesWritten <= 0) {
-      throw new Error(`bound target write made no progress at byte ${position + written}`);
-    }
-    written += bytesWritten;
-  }
-}
-
-async function readBoundPrefix(
-  handle: Awaited<ReturnType<typeof fs.open>>,
-  length: number,
-): Promise<Buffer> {
-  const prefix = Buffer.alloc(length);
-  let read = 0;
-  while (read < length) {
-    const { bytesRead } = await handle.read(prefix, read, length - read, read);
-    if (bytesRead <= 0) {
-      throw new Error(`bound target read made no progress at byte ${read}`);
-    }
-    read += bytesRead;
-  }
-  return prefix;
-}
-
-// The binding pins the target device+inode, so a tmp+rename swap is impossible.
-// Overwrite in place without a destructive truncate(0): snapshot the original
-// prefix, extend the tail first, touch original bytes last, and roll back the
-// prefix + size when a mid-write failure (ENOSPC/EFBIG) interrupts the copy.
-async function overwriteBoundTargetInPlace(
-  handle: Awaited<ReturnType<typeof fs.open>>,
-  payload: Buffer,
-  currentSize: number,
-): Promise<void> {
-  const prefixLength = Math.min(payload.length, currentSize);
-  const originalPrefix = await readBoundPrefix(handle, prefixLength);
-  let prefixStarted = false;
-  try {
-    if (payload.length > currentSize) {
-      await writeBoundRange(
-        handle,
-        payload,
-        currentSize,
-        payload.length - currentSize,
-        currentSize,
-      );
-    }
-    prefixStarted = true;
-    await writeBoundRange(handle, payload, 0, prefixLength, 0);
-    if (payload.length < currentSize) {
-      await handle.truncate(payload.length);
-    }
-  } catch (error) {
-    if (prefixStarted) {
-      await writeBoundRange(handle, originalPrefix, 0, prefixLength, 0).catch(() => undefined);
-    }
-    await handle.truncate(currentSize).catch(() => undefined);
-    throw error;
-  }
-}
-
 async function writeBoundTarget(input: {
   binding: Extract<PathBinding, { kind: "write" }>;
   buffer: Buffer;
   canonicalTargetPath: string;
+  rejectHardlinks: boolean;
 }): Promise<
   { ok: true; path: string; overwritten: boolean; identity: FileIdentity } | FileWriteError
 > {
@@ -246,7 +176,13 @@ async function writeBoundTarget(input: {
           input.canonicalTargetPath,
         );
       }
-      await overwriteBoundTargetInPlace(handle, input.buffer, Number(stats.size));
+      // Workspace document writes must not modify aliases outside their allowed path.
+      // Ordinary file.write retains its existing inode-preserving behavior.
+      if (input.rejectHardlinks && stats.nlink > 1n) {
+        return err("HARDLINK_TARGET_DENIED", "refusing to overwrite a file with hard links");
+      }
+      // Preserve the inode authorized by the binding while fs-safe owns write rollback.
+      await overwriteFileHandle(handle, input.buffer);
       await handle.sync();
       return {
         ok: true,
@@ -328,6 +264,7 @@ export async function handleFileWrite(
     typeof params?.expectedSha256 === "string" ? params.expectedSha256 : undefined;
   const followSymlinks = params?.followSymlinks === true;
   const preflightOnly = params?.preflightOnly === true;
+  const rejectHardlinks = params?.rejectHardlinks === true;
 
   // 1. Validate path: must be absolute, non-empty, no NUL byte
   if (!rawPath) {
@@ -429,6 +366,7 @@ export async function handleFileWrite(
         sha256: computedSha256,
         overwritten: false,
         binding: await captureWriteBinding(canonicalTargetPath),
+        ...(rejectHardlinks ? { rejectHardlinks: true as const } : {}),
       };
     }
     if (!expectedBinding) {
@@ -475,6 +413,9 @@ export async function handleFileWrite(
         `file already exists and overwrite is false: ${targetPath}`,
       );
     }
+    if (rejectHardlinks && existingLStat.nlink > 1n) {
+      return err("HARDLINK_TARGET_DENIED", "refusing to overwrite a file with hard links");
+    }
     overwritten = true;
     existingIdentity = fileIdentity(existingLStat);
   } catch (statErr: unknown) {
@@ -511,6 +452,7 @@ export async function handleFileWrite(
       sha256: computedSha256,
       overwritten,
       binding: await captureWriteBinding(canonicalTargetPath, existingIdentity),
+      ...(rejectHardlinks ? { rejectHardlinks: true as const } : {}),
     };
   }
 
@@ -519,6 +461,7 @@ export async function handleFileWrite(
       binding: expectedBinding,
       buffer: buf,
       canonicalTargetPath,
+      rejectHardlinks,
     });
     if (!writeResult.ok) {
       return writeResult;

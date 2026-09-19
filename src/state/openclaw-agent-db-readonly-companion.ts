@@ -15,7 +15,7 @@ import {
 import {
   hasOpenClawAgentReadOnlySchema,
   openOpenClawAgentDatabaseReadOnly,
-  readOpenClawAgentDatabaseReadOnly,
+  readOpenClawAgentDatabase,
   withFreshOpenClawAgentDatabaseReadOnly,
   type OpenClawAgentDatabaseReadOnlyResult,
   type OpenClawAgentReadOnlyDatabase,
@@ -47,12 +47,11 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
   writer: OpenClawAgentDatabase,
   operation: (database: OpenClawAgentReadOnlyDatabase) => T,
   options: OpenClawAgentDatabaseOptions,
-  behavior: { throwOnMissingTable?: boolean },
 ): OpenClawAgentDatabaseReadOnlyResult<T> {
   let companion = companions.get(writer.db);
   // Nested operations keep their own statement/transaction window and cleanup.
   if (companion?.active) {
-    return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
+    return withFreshOpenClawAgentDatabaseReadOnly(operation, options);
   }
   if (
     companion &&
@@ -62,7 +61,7 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
     companion = undefined;
   }
   if (!companion && !isOpenClawAgentDatabasePathCurrent(writer)) {
-    return withFreshOpenClawAgentDatabaseReadOnly(operation, options, behavior);
+    return withFreshOpenClawAgentDatabaseReadOnly(operation, options);
   }
   if (!companion) {
     const opened = openOpenClawAgentDatabaseReadOnly(options);
@@ -70,14 +69,6 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
       return opened;
     }
     const reader = opened.database;
-    // A pathname replacement during open keeps the old one-shot read contract.
-    if (!matchesWriter(reader, writer)) {
-      try {
-        return readOpenClawAgentDatabaseReadOnly(reader, operation, behavior);
-      } finally {
-        reader.close();
-      }
-    }
     let unregisterDispose = () => {};
     const close = () => {
       if (reader.db.isOpen) {
@@ -89,13 +80,19 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
       unregisterDispose();
     };
     try {
+      // A pathname replacement during open keeps the old one-shot read contract.
+      if (!matchesWriter(reader, writer)) {
+        return readOpenClawAgentDatabase(reader, operation);
+      }
       enableNodeSqliteKyselyStatementCache(reader.db);
       unregisterDispose = registerNodeSqliteDisposeCallback(writer.db, close);
-      companion = { reader, active: false, close };
-      companions.set(writer.db, companion);
-    } catch (error) {
-      close();
-      throw error;
+      const next = { reader, active: false, close };
+      companions.set(writer.db, next);
+      companion = next;
+    } finally {
+      if (!companion) {
+        close();
+      }
     }
   }
   const owned = companion;
@@ -105,7 +102,7 @@ export function withCommittedOpenClawAgentDatabaseReadOnly<T>(
       return { found: false, reason: "schema-missing" };
     }
     owned.active = true;
-    return readOpenClawAgentDatabaseReadOnly(owned.reader, operation, behavior);
+    return readOpenClawAgentDatabase(owned.reader, operation);
   } catch (error) {
     owned.close();
     throw error;

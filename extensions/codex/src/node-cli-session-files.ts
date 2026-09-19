@@ -139,6 +139,12 @@ export async function readHistorySessions(
  * Attach a rollout file and its `cwd` to each session `history.jsonl` already named. This reads one
  * head window per history-backed session and is **not** charged against the filtered scan budget:
  * its cost scales with the number of distinct sessions in `history.jsonl`, not with the filter.
+ *
+ * A rollout's filename containing a session id is only a candidate match, not proof: another
+ * session's id can appear as a substring, and a rollout can be truncated or empty. Attaching
+ * `sessionFile`/`cwd` on the filename alone used to leak an unrelated session's `cwd` onto this
+ * entry, so the rollout's own `session_meta.payload.id` has to confirm the match before either
+ * field is trusted.
  */
 export async function hydrateSessionFiles(
   summaries: Map<string, CodexCliSessionSummary>,
@@ -157,11 +163,14 @@ export async function hydrateSessionFiles(
     if (!entry) {
       continue;
     }
-    entry.sessionFile = file.file;
     const firstLine = (await readFirstLine(file.file)) ?? "";
-    const cwd = readSessionMetaCwd(firstLine);
-    if (cwd) {
-      entry.cwd = cwd;
+    const confirmed = readConfirmedSessionMeta(firstLine, sessionId);
+    if (!confirmed) {
+      continue;
+    }
+    entry.sessionFile = file.file;
+    if (confirmed.cwd) {
+      entry.cwd = confirmed.cwd;
     }
     pending.delete(sessionId);
     if (pending.size === 0) {
@@ -453,15 +462,28 @@ export async function findSessionFiles(
   return files;
 }
 
-function readSessionMetaCwd(line: string): string | undefined {
+/**
+ * Parse a rollout's first line as `session_meta` and require its `payload.id` to equal the session
+ * id the filename suggested. Returns `undefined` on any mismatch or unparseable content, so a
+ * filename-only candidate that the content cannot confirm never yields a `cwd`.
+ */
+function readConfirmedSessionMeta(line: string, sessionId: string): { cwd?: string } | undefined {
   try {
     const parsed = JSON.parse(line) as unknown;
-    if (!isRecord(parsed) || parsed.type !== "session_meta" || !isRecord(parsed.payload)) {
+    if (
+      !isRecord(parsed) ||
+      parsed.type !== "session_meta" ||
+      !isRecord(parsed.payload) ||
+      parsed.payload.id !== sessionId
+    ) {
       return undefined;
     }
-    return typeof parsed.payload.cwd === "string" && parsed.payload.cwd.trim()
-      ? parsed.payload.cwd.trim()
-      : undefined;
+    return {
+      cwd:
+        typeof parsed.payload.cwd === "string" && parsed.payload.cwd.trim()
+          ? parsed.payload.cwd.trim()
+          : undefined,
+    };
   } catch {
     return undefined;
   }

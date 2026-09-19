@@ -67,6 +67,7 @@ type ChatModelPickerParams = {
   triggerModelValue?: string;
   triggerStatusLabel?: string;
   triggerLoading?: boolean;
+  triggerStarting?: boolean;
   onModelSetup?: () => void;
   onOpen?: () => unknown;
   onOpenChange?: (open: boolean) => void;
@@ -103,6 +104,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
     params.contextWindow?.selected !== params.contextWindow?.defaultId;
   const triggerTitle = [
     params.triggerStatusLabel ?? params.triggerModelLabel,
+    params.triggerStarting ? t("chat.modelControls.modelStarting") : "",
     modelToolsUnavailable ? t("chat.modelControls.chatOnly") : "",
   ]
     .filter(Boolean)
@@ -160,7 +162,12 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
       return;
     }
     void params
-      .onModelSelect(entry.commitValue, params.sessionKey, entry.runtimeOverride ?? null)
+      .onModelSelect(
+        entry.commitValue,
+        params.sessionKey,
+        entry.runtimeOverride ??
+          (entry.isDefault || entry.agentRuntime !== undefined ? null : undefined),
+      )
       .finally(() => params.onRequestUpdate?.());
     params.onRequestUpdate?.();
   };
@@ -234,7 +241,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
         aria-label=${`${t("chat.selectors.model")}: ${triggerTitle}${
           params.selectionScopeDescription ? `. ${params.selectionScopeDescription}` : ""
         }`}
-        aria-busy=${params.triggerLoading ? "true" : "false"}
+        aria-busy=${params.triggerLoading || params.triggerStarting ? "true" : "false"}
         aria-disabled=${params.disabled ? "true" : "false"}
         title=${params.disabledReason?.trim() || params.selectionScopeDescription || triggerTitle}
         @click=${(event: MouseEvent) => {
@@ -281,7 +288,9 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
             : nothing
         }
         <span class="chat-controls__inline-select-chevron" aria-hidden="true"
-          >${icons.chevronUp}</span
+          >${
+            params.triggerStarting ? html`<span class="btn__spinner"></span>` : icons.chevronUp
+          }</span
         >
       </summary>
       <wa-popup data-anchored-overlay>

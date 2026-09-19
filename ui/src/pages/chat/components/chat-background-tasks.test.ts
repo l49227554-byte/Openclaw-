@@ -535,6 +535,79 @@ describe("background tasks rail state", () => {
     expect(props.taskDetails.get("task-1")?.terminalSummary).toBe("Finished in lookup");
   });
 
+  it.each(["running", "waiting"] as const)(
+    "promotes fresh %s detail and ignores older execution events at the same lifecycle time",
+    async (state) => {
+      const running = makeTask({
+        id: "task-1",
+        toolUseCount: 2,
+        execution: { state: state === "running" ? "waiting" : "running", lastActivityAt: 3_000 },
+      });
+      const detail = makeTask({
+        ...running,
+        prompt: "Inspect the current execution",
+        execution: {
+          state,
+          lastActivityAt: 4_000,
+          ...(state === "waiting" ? { wait: { kind: "agent_messages" } } : {}),
+        },
+      });
+      const { host } = createHost({
+        request: (method) =>
+          method === "tasks.get"
+            ? Promise.resolve({ task: detail })
+            : Promise.resolve({ tasks: [running] }),
+      });
+      createBackgroundTasksProps(host);
+      await flushAsync();
+      createBackgroundTasksProps(host).onLoadDetail?.(running);
+      await flushAsync();
+
+      expect(createBackgroundTasksProps(host).tasks).toEqual([detail]);
+      handleBackgroundTasksEvent(host, { action: "upserted", task: running });
+      createBackgroundTasksProps(host).onRefresh();
+      await flushAsync();
+
+      const props = createBackgroundTasksProps(host);
+      expect(props.tasks).toEqual([detail]);
+      expect(props.taskDetails.get(running.id)).toEqual(detail);
+      expect(props.subagentActivity.rows[0]?.execution).toEqual(detail.execution);
+    },
+  );
+
+  it("keeps newer execution when an older detail response arrives at the same lifecycle time", async () => {
+    const running = makeTask({
+      id: "task-1",
+      toolUseCount: 2,
+      execution: { state: "running", lastActivityAt: 3_000 },
+    });
+    const waiting = makeTask({
+      ...running,
+      toolUseCount: 1,
+      execution: {
+        state: "waiting",
+        lastActivityAt: 4_000,
+        wait: { kind: "agent_messages" },
+      },
+    });
+    const detail = deferred<unknown>();
+    const { host } = createHost({
+      request: (method) =>
+        method === "tasks.get" ? detail.promise : Promise.resolve({ tasks: [running] }),
+    });
+    createBackgroundTasksProps(host);
+    await flushAsync();
+    createBackgroundTasksProps(host).onLoadDetail?.(running);
+    handleBackgroundTasksEvent(host, { action: "upserted", task: waiting });
+    detail.resolve({ task: { ...running, prompt: "Inspect the current execution" } });
+    await flushAsync();
+
+    const expected = { ...waiting, prompt: "Inspect the current execution" };
+    const props = createBackgroundTasksProps(host);
+    expect(props.tasks).toEqual([expected]);
+    expect(props.taskDetails.get(running.id)).toEqual(expected);
+  });
+
   it("does not replace a newer detail snapshot with a stale list refresh", async () => {
     const running = makeTask({ id: "task-1", status: "running", updatedAt: 2_000 });
     const completed = makeTask({
@@ -880,7 +953,7 @@ describe("running-tasks status row", () => {
     });
 
     const elapsed = container.querySelector<HTMLElement & { startMs: number | null }>(
-      "openclaw-elapsed-time",
+      ".chat-tasks-status__time openclaw-elapsed-time",
     );
     expect(elapsed?.startMs).toBe(4_000);
     expect(
@@ -897,7 +970,7 @@ describe("running-tasks status row", () => {
 
     const row = container.querySelector(".chat-tasks-status");
     expect(row).not.toBeNull();
-    expect(row?.querySelector("openclaw-elapsed-time")).not.toBeNull();
+    expect(row?.querySelector(".chat-tasks-status__time openclaw-elapsed-time")).not.toBeNull();
     const liveStatus = row?.querySelector('[role="status"]');
     expect(liveStatus?.textContent?.trim()).toBe("1 running task");
     expect(liveStatus?.querySelector("openclaw-elapsed-time")).toBeNull();

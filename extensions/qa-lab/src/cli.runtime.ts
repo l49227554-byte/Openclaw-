@@ -1,12 +1,7 @@
-// QA Lab plugin module implements cli behavior.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  isCrablineServerChannel,
-  OPENCLAW_CRABLINE_DEFAULT_CHANNEL,
-  resolveOpenClawCrablineChannelDriverSelection,
-} from "@openclaw/crabline";
+import { isCrablineServerChannel, OPENCLAW_CRABLINE_DEFAULT_CHANNEL } from "@openclaw/crabline";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { parseStrictPositiveInteger } from "openclaw/plugin-sdk/number-runtime";
 import { parseBooleanValue, uniqueStrings } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -27,8 +22,8 @@ import {
   buildQaConfidenceReport,
   readQaConfidenceManifestFile,
   renderQaConfidenceMarkdownReport,
-  writeQaConfidenceSelfTestArtifacts,
 } from "./confidence-report.js";
+import { writeQaConfidenceSelfTestArtifacts } from "./confidence-self-test.js";
 import {
   buildQaCoverageInventory,
   findQaScenarioMatches,
@@ -1015,12 +1010,7 @@ export async function runQaSuiteCommand(opts: QaSuiteCommandOptions) {
     });
   }
   const [singleChannelDriverChannel] = channelDriverChannels;
-  const channelDriverSelection =
-    channelDriver === "crabline" && channelDriverChannels.length === 1 && singleChannelDriverChannel
-      ? resolveOpenClawCrablineChannelDriverSelection({
-          channel: singleChannelDriverChannel,
-        })
-      : undefined;
+  const channelId = channelDriverChannels.length === 1 ? singleChannelDriverChannel : liveChannelId;
   const hostScenarioIds =
     runner === "host" && channelDriverChannels.length > 1 && scenarioIds.length === 0
       ? channelDriverScenarios
@@ -1061,7 +1051,7 @@ export async function runQaSuiteCommand(opts: QaSuiteCommandOptions) {
         ? { concurrency: parseQaPositiveIntegerOption("--concurrency", opts.concurrency) }
         : {}),
       ...(runtimePair ? { runtimePair } : {}),
-      ...(channelDriverSelection ? { channelDriverSelection } : {}),
+      ...(channelDriver && channelId ? { channelDriver, channelId } : {}),
       ...(opts.enabledPluginIds !== undefined ? { enabledPluginIds: opts.enabledPluginIds } : {}),
       image: opts.image,
       cpus: parseQaPositiveIntegerOption("--cpus", opts.cpus),
@@ -1131,7 +1121,7 @@ export async function runQaSuiteCommand(opts: QaSuiteCommandOptions) {
           },
         }
       : {}),
-    channelDriverSelection,
+    ...(channelId ? { channelId } : {}),
     ...(opts.providerMode !== undefined ? { providerMode } : {}),
     primaryModel,
     alternateModel,

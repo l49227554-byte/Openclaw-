@@ -1,14 +1,15 @@
-import { toUSVString } from "node:util";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   iterateSqliteQuerySync,
   prepareSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
+import { assertSqliteJsonlReadBudget } from "../../infra/sqlite-jsonl-budget.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { extractAssistantPhaseText } from "../../shared/chat-message-content.js";
 import { isTranscriptOnlyOpenClawAssistantModel } from "../../shared/transcript-only-openclaw-assistant.js";
+import { SessionMetadataUnavailableError } from "../../state/openclaw-agent-db-read-error.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   openOpenClawAgentDatabase,
@@ -38,7 +39,7 @@ import {
   type SessionTranscriptContextVersion,
 } from "./session-accessor.sqlite-transcript-state.js";
 import {
-  readTranscriptStatsChunkFromDatabase,
+  readTranscriptStatsBatchFromDatabase,
   readTranscriptStatsFromDatabase,
 } from "./session-accessor.sqlite-transcript-stats.js";
 import {
@@ -122,6 +123,7 @@ export function readTranscriptExportSnapshotReadOnlySync(scope: SessionTranscrip
           return {
             events: loadTranscriptEventsFromDatabase(database, resolved.sessionId, {
               beforeEventSeq: fence?.beforeRawSeq,
+              maxEventBytes: scope.maxEventBytes,
             }),
             stats: readTranscriptStatsFromDatabase(database, resolved.sessionId),
             sessionKey,
@@ -130,7 +132,6 @@ export function readTranscriptExportSnapshotReadOnlySync(scope: SessionTranscrip
         { operationLabel: "session transcript export snapshot" },
       ),
     toDatabaseOptions(resolved),
-    { throwOnMissingTable: true },
   );
   return result.found ? result.value : undefined;
 }
@@ -149,6 +150,7 @@ export function loadTranscriptReadSnapshotSync(scope: SessionTranscriptReadScope
       return {
         events: loadTranscriptEventsFromDatabase(database, resolved.sessionId, {
           beforeEventSeq: fence?.beforeRawSeq,
+          maxEventBytes: scope.maxEventBytes,
         }),
         version: readTranscriptContextVersionInTransaction(database, resolved.sessionId),
       };
@@ -306,11 +308,28 @@ export function readTranscriptEventAtSeqSync(
 export function loadTranscriptEventsFromDatabase(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
-  options: { beforeEventSeq?: number; projection?: "reset-boundary" } = {},
+  options: {
+    beforeEventSeq?: number;
+    projection?: "reset-boundary";
+    maxEventBytes?: number;
+  } = {},
 ): TranscriptEvent[] {
   return readHotSessionTranscriptSnapshot(database, sessionId, "events", () => {
-    const { beforeEventSeq } = options;
+    const { beforeEventSeq, maxEventBytes } = options;
     const db = getSessionKysely(database.db);
+    if (maxEventBytes !== undefined && Number.isFinite(maxEventBytes) && maxEventBytes >= 0) {
+      assertSqliteJsonlReadBudget(
+        database.db,
+        db
+          .selectFrom("transcript_events")
+          .select("event_json")
+          .where("session_id", "=", sessionId)
+          .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!))
+          .as("events"),
+        Math.floor(maxEventBytes),
+        "Trajectory transcript store",
+      );
+    }
     const rows = iterateSqliteQuerySync(
       database.db,
       db
@@ -394,9 +413,6 @@ export function readTranscriptStatsSync(scope: SessionTranscriptReadScope): Sess
   return readTranscriptStatsFromDatabase(database, resolved.sessionId);
 }
 
-const SQLITE_TRANSCRIPT_STATS_POINT_QUERY_LIMIT = 10;
-const SQLITE_TRANSCRIPT_STATS_QUERY_CHUNK_SIZE = 400;
-
 /** Read transcript stats in database groups without joining the writable lifecycle. */
 export function readTranscriptStatsBatchReadOnlySync(
   scopes: readonly SessionTranscriptReadScope[],
@@ -420,41 +436,25 @@ export function readTranscriptStatsBatchReadOnlySync(
     groups.set(key, group);
   }
   for (const group of groups.values()) {
-    const read = withOpenClawAgentDatabaseReadOnly((database) => {
-      // Prepared point queries avoid three-query compilation on small batches.
-      if (group.items.length <= SQLITE_TRANSCRIPT_STATS_POINT_QUERY_LIMIT) {
-        for (const item of group.items) {
-          results[item.index] = readTranscriptStatsFromDatabase(database, item.sessionId);
-        }
-        return;
-      }
-      // Match node:sqlite's string binding before looking up rows by their stored ID.
-      const sessionIds = [...new Set(group.items.map((item) => toUSVString(item.sessionId)))];
-      const stats = new Map<string, SessionTranscriptStats>();
-      for (
-        let offset = 0;
-        offset < sessionIds.length;
-        offset += SQLITE_TRANSCRIPT_STATS_QUERY_CHUNK_SIZE
-      ) {
-        const chunk = sessionIds.slice(offset, offset + SQLITE_TRANSCRIPT_STATS_QUERY_CHUNK_SIZE);
-        if (chunk.length <= SQLITE_TRANSCRIPT_STATS_POINT_QUERY_LIMIT) {
-          for (const sessionId of chunk) {
-            stats.set(sessionId, readTranscriptStatsFromDatabase(database, sessionId));
-          }
-        } else {
-          for (const [sessionId, value] of readTranscriptStatsChunkFromDatabase(database, chunk)) {
-            stats.set(sessionId, value);
-          }
+    try {
+      const read = withOpenClawAgentDatabaseReadOnly(
+        (database) =>
+          readTranscriptStatsBatchFromDatabase(
+            database,
+            group.items.map((item) => item.sessionId),
+          ),
+        group.options,
+      );
+      if (read.found) {
+        for (const [index, item] of group.items.entries()) {
+          results[item.index] = read.value[index]!;
         }
       }
-      for (const item of group.items) {
-        results[item.index] = { ...stats.get(toUSVString(item.sessionId))! };
+    } catch (error) {
+      if (!(error instanceof SessionMetadataUnavailableError)) {
+        throw error;
       }
-    }, group.options);
-    if (!read.found) {
-      for (const item of group.items) {
-        results[item.index] = null;
-      }
+      // A missing table leaves the whole store unavailable, including earlier chunks.
     }
   }
   return results;

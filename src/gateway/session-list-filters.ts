@@ -15,6 +15,7 @@ import { isPinnableSessionEntry } from "../config/sessions/session-pin-policy.js
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { sessionActivityTimestamp } from "../shared/session-activity-timestamp.js";
+import { isCronSessionKey, isSystemCreatedSessionRow } from "../shared/session-list-visibility.js";
 import type { SessionOwnerFacetIdentity } from "../shared/session-types.js";
 import type { SynchronousWork } from "../shared/synchronous-work.js";
 import {
@@ -153,6 +154,8 @@ export function* filterSessionEntries(
     const storeKey = target.storeKey ?? key;
     if (
       selection.isCronRun ||
+      (opts.excludeCron === true && isCronSessionKey(key)) ||
+      (opts.excludeSystem === true && isSystemCreatedSessionRow({ ...entry, key })) ||
       (opts.excludeSubagents === true && selection.isSubagent) ||
       (!includeGlobal && storeKey === "global") ||
       (!includeUnknown && storeKey === "unknown")

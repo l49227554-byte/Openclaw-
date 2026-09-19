@@ -1463,7 +1463,7 @@ describe("previous release update compatibility", () => {
         expect(record).toThrow("Nonliteral post-swap import");
         return;
       }
-      expect(record().inventory.releases[0]?.chunks.map(({ path }) => path)).toEqual([
+      expect(record().inventory.releases[0]?.chunks.map((chunk) => chunk.path)).toEqual([
         "surface-abcdefgh.js",
       ]);
     },

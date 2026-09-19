@@ -238,6 +238,32 @@ describe("terminal file upload", () => {
     expect(await stagedName("..")).toBe("upload");
   });
 
+  it("preserves portable trailing-name invariants after truncation", async () => {
+    const root = tempDirs.make("openclaw-terminal-upload-name-truncation-test-");
+
+    const stagedName = async (name: string) =>
+      path.basename(
+        (
+          await stageTerminalUpload(
+            { name, contentBase64: "" },
+            { tempRoot: root, cleanupAfterMs: 60_000 },
+          )
+        ).path,
+      );
+
+    const asciiDot = await stagedName("a".repeat(179) + ".b");
+    const asciiSpace = await stagedName("b".repeat(179) + " c");
+    const multibyte = await stagedName("é".repeat(89) + "a.b");
+
+    expect(Buffer.byteLength(asciiDot, "utf8")).toBeLessThanOrEqual(180);
+    expect(Buffer.byteLength(asciiSpace, "utf8")).toBeLessThanOrEqual(180);
+    expect(Buffer.byteLength(multibyte, "utf8")).toBeLessThanOrEqual(180);
+
+    expect(asciiDot).not.toMatch(/[. ]$/u);
+    expect(asciiSpace).not.toMatch(/[. ]$/u);
+    expect(multibyte).not.toMatch(/[. ]$/u);
+  });
+
   it("recovers expired upload directories after restart", async () => {
     const root = tempDirs.make("openclaw-terminal-upload-recovery-test-");
     const directory = path.join(root, "openclaw-terminal-upload-stale");

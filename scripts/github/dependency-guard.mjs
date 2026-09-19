@@ -163,11 +163,11 @@ function renderApprovedDependencyComment(approval) {
     "",
     approval.kind === "author"
       ? "### ⚠️ Dependency graph changes"
-      : "### Dependency graph changes approved",
+      : "### ✅ Dependency graph changes approved",
     "",
     approval.kind === "author"
       ? "This PR makes dependency resolution changes. This comment is informational because the PR author has repository Maintain or Admin access."
-      : "A maintainer approved this revision with an explicit dependency approval comment. SecOps approval is not required.",
+      : "A maintainer approved this revision with an explicit dependency approval comment.",
     "",
     `- Current SHA: ${markdownCode(approval.sha)}`,
     `- Maintainer: @${sanitizeGuardDisplayValue(approval.login)}`,
@@ -176,7 +176,7 @@ function renderApprovedDependencyComment(approval) {
     "",
     approval.kind === "author"
       ? "Carefully review these changes before merging."
-      : "Review resolved package changes and dependency policy before merging. A later push requires a fresh approval comment for an external contributor's PR.",
+      : "A later push requires a fresh approval comment for an external contributor's PR.",
   ].join("\n");
 }
 

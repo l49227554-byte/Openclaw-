@@ -14,14 +14,28 @@ function code(value) {
 }
 
 function renderComment({ changes, pullRequest, approval }) {
+  if (changes.length > 0 && approval?.kind === "comment") {
+    return [
+      marker,
+      "",
+      "### ✅ Maintainer security changes approved",
+      "",
+      "A maintainer approved this revision with an explicit security approval comment.",
+      "",
+      `- Current SHA: ${code(approval.sha)}`,
+      `- Maintainer: @${sanitizeGuardDisplayValue(approval.login)}`,
+      `- Repository role: ${code(approval.role)}`,
+      `- Approval comment: ${approval.url}`,
+      "",
+      "A later push requires a fresh approval comment for an external contributor's PR.",
+    ].join("\n");
+  }
   const heading =
     changes.length === 0
       ? "Security-sensitive guard cleared"
       : approval?.kind === "author"
         ? "⚠️ Security-sensitive changes"
-        : approval
-          ? "Maintainer security review complete"
-          : "⚠️ Maintainer security review required";
+        : "⚠️ Maintainer security review required";
   const lines = [marker, "", `### ${heading}`, ""];
   if (changes.length > 0 && approval?.kind === "author") {
     lines.push(
@@ -59,12 +73,6 @@ function renderComment({ changes, pullRequest, approval }) {
     lines.push("");
     if (approval?.kind === "author") {
       lines.push("Carefully review these changes before merging.");
-    } else if (approval) {
-      lines.push(
-        `@${approval.login} approved this revision with ${code("/allow-security-sensitive-change")} and repository ${code(approval.role)} access.`,
-        "",
-        "A later push requires a new approval comment after the notice updates. Editing an old comment does not renew approval; deleting the command removes its approval.",
-      );
     } else {
       lines.push(
         "After reviewing the changes, post a new PR comment containing only approval commands, each on its own line:",
@@ -77,7 +85,7 @@ function renderComment({ changes, pullRequest, approval }) {
       );
     }
   }
-  if (changes.length === 0 || approval?.kind === "comment") {
+  if (changes.length === 0) {
     lines.push(
       "",
       "Separate CODEOWNERS requirements still apply to security policy and enforcement files.",

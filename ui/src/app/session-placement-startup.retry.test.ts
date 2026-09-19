@@ -300,8 +300,10 @@ describe("initial turn Retry resets the elapsed timer", () => {
       startup.retry(input.recovery.sessionKey);
       await flushStartupMicrotasks();
 
-      // The retried attempt must not keep the failed attempt's elapsed start.
+      // The retried attempt resets its elapsed timer...
       expect(startup.get(input.recovery.sessionKey)?.startedAt).toBe(20_000);
+      // ...while the queued message keeps its original creation time.
+      expect(startup.get(input.recovery.sessionKey)?.initialTurn?.createdAt).toBe(10_000);
     } finally {
       startup.dispose();
     }

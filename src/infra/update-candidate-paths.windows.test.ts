@@ -7,13 +7,11 @@ import {
   resolveUpdateCandidateStatePath,
 } from "./update-candidate-paths.js";
 
-// Extended-length \\?\ registered agent paths are the Windows-only failure mode
-// of issue #150386 (fixed on main by 2c486a2bb8f): path.relative cannot see
-// across the namespace prefix, so a raw rebase embedded \?\ mid-path and the
-// snapshot mkdir aborted with ENOENT. The Windows integration cases in
-// update-candidate-state.namespaced-paths.test.ts skip on Linux CI, so these
-// cases run the real projection functions under win32 path semantics to keep
-// the regression locked on every platform.
+// Extended-length Windows locators must project under the candidate root
+// without embedding a namespace prefix mid-path. These path-semantics cases
+// complement the native Windows snapshot-worker coverage in
+// update-candidate-state.namespaced-paths.test.ts, which skips on other platforms.
+// Related issue #150386 does not establish this defect as its underlying cause.
 vi.mock("node:path", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:path")>();
   return { ...actual, default: actual.win32 };
@@ -31,7 +29,7 @@ function namespaced(value: string): string {
 }
 
 // The snapshot mkdir creates every projected directory recursively, so a
-// namespace prefix embedded mid-path (the #150386 abort) must never appear.
+// namespace prefix embedded mid-path must never appear.
 function expectSafeProjection(projected: string): void {
   expect(projected).not.toContain("?");
   expect(isPathInside(CANARY_ROOT, projected)).toBe(true);

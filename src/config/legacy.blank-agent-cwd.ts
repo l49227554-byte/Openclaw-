@@ -33,7 +33,16 @@ function removeBlankCwdFromAgent(
   }
 }
 
-function migrateBlankAgentCwdRaw(raw: unknown): BlankCwdMigration {
+// Write-path helper: remove blank cwd values that are NOT being explicitly set
+// by this write. An unrelated `config set gateway.port` restores the authored
+// roster (io.write-prepare restoreAuthoredAgentRoster), which can carry a saved
+// blank cwd; strict write validation would otherwise reject the whole settings
+// change. Explicitly-set blank cwd paths (in explicitSetPaths) are preserved so
+// new authoring still receives the field-level error.
+function migrateBlankAgentCwdRaw(
+  raw: unknown,
+  preservedCwdPaths?: ReadonlySet<string>,
+): BlankCwdMigration {
   if (!isRecord(raw) || !isRecord(raw.agents)) {
     return { config: raw, changed: false, changes: [], warnings: [] };
   }
@@ -49,19 +58,27 @@ function migrateBlankAgentCwdRaw(raw: unknown): BlankCwdMigration {
   const changes: ConfigValidationIssue[] = [];
 
   if (isRecord(agents.defaults) && isBlankString(agents.defaults.cwd)) {
-    delete agents.defaults.cwd;
-    changes.push({ path: "agents.defaults.cwd", message: "Removed blank agents.defaults.cwd." });
+    if (!preservedCwdPaths?.has("agents.defaults.cwd")) {
+      delete agents.defaults.cwd;
+      changes.push({ path: "agents.defaults.cwd", message: "Removed blank agents.defaults.cwd." });
+    }
   }
 
   if (isRecord(agents.entries)) {
     for (const [key, entry] of Object.entries(agents.entries)) {
-      removeBlankCwdFromAgent(entry as Record<string, unknown>, `entries.${key}`, changes);
+      const cwdPath = `agents.entries.${key}.cwd`;
+      if (!preservedCwdPaths?.has(cwdPath)) {
+        removeBlankCwdFromAgent(entry as Record<string, unknown>, `entries.${key}`, changes);
+      }
     }
   }
 
   if (Array.isArray(agents.list)) {
     for (const [index, entry] of agents.list.entries()) {
-      removeBlankCwdFromAgent(entry as Record<string, unknown>, `list[${index}]`, changes);
+      const cwdPath = `agents.list[${index}].cwd`;
+      if (!preservedCwdPaths?.has(cwdPath)) {
+        removeBlankCwdFromAgent(entry as Record<string, unknown>, `list[${index}]`, changes);
+      }
     }
   }
 
@@ -74,4 +91,21 @@ export function migrateBlankAgentCwd(raw: OpenClawConfig): BlankCwdMigration<Ope
 export function migrateBlankAgentCwd(raw: unknown): BlankCwdMigration;
 export function migrateBlankAgentCwd(raw: unknown): BlankCwdMigration {
   return migrateBlankAgentCwdRaw(raw);
+}
+
+/** Write-path variant: migrate saved blank cwd values but preserve the ones the
+ * current write explicitly sets (so new authoring still gets the field error). */
+export function migrateBlankAgentCwdForWrite(
+  raw: OpenClawConfig,
+  explicitSetPaths?: ReadonlySet<string>,
+): BlankCwdMigration<OpenClawConfig>;
+export function migrateBlankAgentCwdForWrite(
+  raw: unknown,
+  explicitSetPaths?: ReadonlySet<string>,
+): BlankCwdMigration;
+export function migrateBlankAgentCwdForWrite(
+  raw: unknown,
+  explicitSetPaths?: ReadonlySet<string>,
+): BlankCwdMigration {
+  return migrateBlankAgentCwdRaw(raw, explicitSetPaths);
 }

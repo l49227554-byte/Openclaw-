@@ -2,7 +2,9 @@ import { createLazyPromiseLoader } from "../shared/lazy-runtime.js";
 import type { TaskRegistryControlRuntime } from "./task-registry-control.types.js";
 
 export type TaskRegistryDeliveryRuntime = {
+  isTaskProgressEnabled?: (typeof import("./task-registry-delivery-runtime.js"))["isTaskProgressEnabled"];
   sendMessage: (typeof import("./task-registry-delivery-runtime.js"))["sendMessage"];
+  editTaskProgressMessage?: (typeof import("./task-registry-delivery-runtime.js"))["editTaskProgressMessage"];
   // Optional so existing test overrides that stub only sendMessage stay valid;
   // delivery treats a missing resolver as "no Control UI link".
   resolveTaskControlUiSessionUrl?: (typeof import("./task-registry-delivery-runtime.js"))["resolveTaskControlUiSessionUrl"];

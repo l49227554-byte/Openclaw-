@@ -15,25 +15,12 @@ import type {
   NativeSubagentMonitorClient,
   NativeSubagentMonitorRuntime,
   ParentState,
-  ParentOwner,
+  NativeParentRegistration,
+  NativeParentRegistrationHandle,
 } from "./native-subagent-monitor-types.js";
 
-type ParentRegistration = Pick<
-  ParentState,
-  | "parentThreadId"
-  | "requesterSessionKey"
-  | "taskRuntimeScope"
-  | "historyOwner"
-  | "agentId"
-  | "submissionStore"
-> &
-  Omit<ParentOwner, "turnId">;
-
 type NativeMonitor = {
-  registerParent(params: ParentRegistration): {
-    bindTurn: (turnId: string) => void;
-    unregister: () => Promise<void>;
-  };
+  registerParent(params: NativeParentRegistration): NativeParentRegistrationHandle;
   retireParent(parentThreadId: string): void;
 };
 
@@ -67,7 +54,7 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
     onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => Promise<void> } {
+  }): NativeParentRegistrationHandle {
     let monitor = monitors.get(params.client);
     if (!monitor) {
       // Native start/completion can race; serialize each child so only its

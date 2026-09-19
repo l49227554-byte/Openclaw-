@@ -131,6 +131,23 @@ remains visible in Tasks and does not wake the parent just to narrate activity.
 Restart discards queued progress while the existing durable completion owner
 continues to own the final result.
 
+### Native Codex child progress
+
+Native Codex children keep their existing completion owner and silent task-mirror
+policy. When a parent successfully yields, its retained native monitor can hand
+progress presentation to the existing task publisher. This requires the originating
+channel account to use `streaming.mode: "progress"` with tool progress explicitly
+enabled. The registered channel owns account inheritance; unset or disabled tool
+progress stays quiet. A normal parent exit does not authorize background progress.
+
+The publisher creates one bounded activity snapshot and updates the same message
+where the channel supports message editing. It shows task labels, observed tools
+or waits, and the last activity timestamp, never child prose or tool arguments and
+results. A failed or ambiguous initial send is not blindly repeated. Resuming the
+parent, replacing or retiring its monitor, resetting the session, and Gateway
+restart invalidate the old presentation owner. Updates are best effort; the
+existing completion path still owns the final reply.
+
 Cron observes the registry's descendant settlement boundary before starting
 its bounded synthesis grace period. A yielded task remains pending between the
 last worker ending and successor admission; the successor and its completion

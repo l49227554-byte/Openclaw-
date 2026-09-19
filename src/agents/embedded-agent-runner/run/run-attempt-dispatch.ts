@@ -537,6 +537,12 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
       ? {
           agentHarnessTaskRuntimeScope: createAgentHarnessTaskRuntimeScope({
             requesterSessionKey: params.sessionKey,
+            requesterOrigin: {
+              channel: params.messageChannel ?? params.messageProvider,
+              accountId: params.agentAccountId,
+              to: params.messageTo,
+              threadId: params.messageThreadId,
+            },
             gatewayContextResolver: getGatewayContextResolver(params.admittedRunContext),
           }),
         }

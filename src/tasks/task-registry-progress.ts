@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
@@ -10,6 +10,7 @@ import { runWithGatewayDetachedWorkContinuation } from "../process/gateway-work-
 import { hasAuthoritativeTaskBacking, readTaskBackingInstance } from "./task-backing-authority.js";
 import { getTaskExecutionObservation } from "./task-execution-observation.js";
 import { shouldAutoDeliverTaskStateChange } from "./task-executor-policy.js";
+import { publishTaskProgressMessage } from "./task-progress-message.js";
 import { canDeliverToRequesterOrigin, resolveTaskDeliveryOwner } from "./task-registry-delivery.js";
 import { loadTaskRegistryDeliveryRuntime } from "./task-registry-runtime-loaders.js";
 import {
@@ -20,13 +21,77 @@ import {
   withTaskRegistryMutation,
 } from "./task-registry-state.js";
 import type { TaskProgressBatch } from "./task-registry.process-state.js";
-import type { TaskRecord } from "./task-registry.types.js";
+import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
+import { isTerminalTaskStatus } from "./task-registry.types.js";
 import { formatTaskStatusTitleText, sanitizeTaskStatusText } from "./task-status.js";
 
 const YIELDED_PROGRESS_COALESCE_MS = 15_000;
 const MAX_PROGRESS_BATCHES = 128;
 const MAX_PROGRESS_BATCH_MEMBERS = 32;
 const MAX_PROGRESS_DISPLAY_MEMBERS = 8;
+
+/** Scoped harness owners authorize presentation only; completion keeps its existing owner. */
+export function registerHarnessTaskProgress(params: {
+  readTasks: () => TaskRecord[];
+  isCurrent: () => boolean;
+  owner: {
+    sessionKey: string;
+    agentId?: string;
+    requesterOrigin: TaskDeliveryState["requesterOrigin"];
+  };
+  onStopped: () => void;
+}): { notify: () => void; dispose: () => void } | undefined {
+  const key = `harness:${randomUUID()}`;
+  let stopped = false;
+  const batch: TaskProgressBatch = {
+    lifecycleGeneration: getAgentRunLifecycleGeneration(),
+    members: new Map(),
+    revision: 0,
+    overflow: false,
+  };
+  const dispose = () => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+    }
+    if (taskProgressBatches.get(key) === batch) {
+      taskProgressBatches.delete(key);
+    }
+    params.onStopped();
+  };
+  batch.harness = { ...params, stop: dispose };
+  if (taskProgressBatches.size >= MAX_PROGRESS_BATCHES) {
+    return undefined;
+  }
+  taskProgressBatches.set(key, batch);
+  return {
+    dispose,
+    notify: () => {
+      if (stopped) {
+        return;
+      }
+      if (!params.isCurrent()) {
+        dispose();
+        return;
+      }
+      const rows = params.readTasks();
+      if (rows.length === 0) {
+        dispose();
+        return;
+      }
+      batch.members.clear();
+      for (const task of rows.slice(0, MAX_PROGRESS_BATCH_MEMBERS)) {
+        batch.members.set(task.taskId, { runId: task.runId!, generation: 0 });
+      }
+      batch.overflow = rows.length > MAX_PROGRESS_BATCH_MEMBERS;
+      batch.revision += 1;
+      scheduleProgressBatch(key, batch);
+    },
+  };
+}
 
 function resolveYieldedTaskProgress(task: TaskRecord, runId: string) {
   if (task.runtime !== "subagent" || !shouldAutoDeliverTaskStateChange(task)) {
@@ -88,6 +153,12 @@ export function scheduleYieldedSubagentRunProgress(entry: SubagentRunRecord) {
 }
 
 function enqueueYieldedTaskProgress(task: TaskRecord, runId: string) {
+  for (const [key, batch] of taskProgressBatches) {
+    if (batch.harness?.isCurrent() && batch.members.has(task.taskId)) {
+      batch.revision += 1;
+      scheduleProgressBatch(key, batch);
+    }
+  }
   const progress = resolveYieldedTaskProgress(task, runId);
   if (!progress) {
     return;
@@ -131,7 +202,53 @@ function prepareProgressBatch(key: string, batch: TaskProgressBatch) {
     taskProgressBatches.get(key) !== batch ||
     batch.lifecycleGeneration !== getAgentRunLifecycleGeneration()
   ) {
+    batch.harness?.stop();
     return undefined;
+  }
+  if (batch.harness) {
+    if (
+      !batch.harness.isCurrent() ||
+      !canDeliverToRequesterOrigin(batch.harness.owner.requesterOrigin)
+    ) {
+      batch.harness.stop();
+      return undefined;
+    }
+    const rows = batch.harness.readTasks();
+    if (rows.length === 0) {
+      batch.harness.stop();
+      return undefined;
+    }
+    const terminal = rows.every((task) => isTerminalTaskStatus(task.status));
+
+    const lines = rows.slice(0, MAX_PROGRESS_DISPLAY_MEMBERS).map((task) => {
+      const observation = getTaskExecutionObservation(task);
+      const tool = sanitizeTaskStatusText(observation.currentTool?.name, { maxChars: 50 });
+      const activity = isTerminalTaskStatus(task.status)
+        ? task.status
+        : observation.state === "waiting"
+          ? `waiting: ${observation.wait?.kind ?? "external work"}`
+          : tool
+            ? `running ${tool}`
+            : observation.state === "unknown"
+              ? "activity unavailable"
+              : "working";
+      const lastAt = observation.lastActivityAt ?? task.lastEventAt;
+      const last =
+        lastAt === undefined
+          ? "last activity unavailable"
+          : `last activity ${new Date(lastAt).toISOString()}`;
+      return `- ${formatTaskStatusTitleText(task.label, "Subagent task")}: ${activity}; ${last}.`;
+    });
+    return {
+      owner: batch.harness.owner,
+      membersKey: JSON.stringify(rows.map((task) => [task.taskId, task.runId])),
+      content:
+        `${terminal ? "Background work finished" : "Background work is in progress"}:\n${lines.join("\n")}`.slice(
+          0,
+          1800,
+        ),
+      terminal,
+    };
   }
   const rows = [...batch.members.entries()]
     .flatMap(([taskId, member]) => {
@@ -185,6 +302,7 @@ function prepareProgressBatch(key: string, batch: TaskProgressBatch) {
   }
   return {
     owner,
+    terminal: false,
     membersKey: JSON.stringify(
       rows.map(({ task, entry }) => [task.taskId, entry.runId, entry.generation]),
     ),
@@ -200,7 +318,17 @@ async function publishProgressBatch(key: string, batch: TaskProgressBatch) {
       if (!prepareProgressBatch(key, batch)) {
         return null;
       }
-      const { sendMessage } = await loadTaskRegistryDeliveryRuntime();
+      const runtime = await loadTaskRegistryDeliveryRuntime();
+      const preferenceEnabled = () =>
+        !batch.harness ||
+        runtime.isTaskProgressEnabled?.(
+          batch.harness.owner.requesterOrigin?.channel,
+          batch.harness.owner.requesterOrigin?.accountId,
+        ) === true;
+      if (!preferenceEnabled()) {
+        batch.harness?.stop();
+        return null;
+      }
       const fresh = withTaskRegistryMutation(
         () => prepareProgressBatch(key, batch),
         () => undefined,
@@ -208,14 +336,18 @@ async function publishProgressBatch(key: string, batch: TaskProgressBatch) {
       if (!fresh) {
         return null;
       }
+      if (fresh.terminal && !batch.message?.target) {
+        batch.harness?.stop();
+        return null;
+      }
       const assertCurrent = () => {
         const current = prepareProgressBatch(key, batch);
-        if (!current || current.membersKey !== fresh.membersKey) {
+        if (!current || current.membersKey !== fresh.membersKey || !preferenceEnabled()) {
           throw new Error("Background progress was superseded before delivery");
         }
       };
       const idempotencyKey = `task-progress:${createHash("sha256").update(key).digest("hex")}:${Date.now()}`;
-      await sendMessage({
+      const sendParams = {
         channel: fresh.owner.requesterOrigin?.channel,
         to: fresh.owner.requesterOrigin?.to ?? "",
         accountId: fresh.owner.requesterOrigin?.accountId,
@@ -232,7 +364,15 @@ async function publishProgressBatch(key: string, batch: TaskProgressBatch) {
         gatewayOwnedDelivery: true,
         assertDirectAdapterHandoff: assertCurrent,
         onPlatformSendDispatch: async () => assertCurrent(),
-      });
+      };
+      if (batch.harness) {
+        await publishTaskProgressMessage((batch.message ??= {}), sendParams, runtime);
+        if (fresh.terminal) {
+          batch.harness.stop();
+        }
+      } else {
+        await runtime.sendMessage(sendParams);
+      }
       return null;
     }, "tasks:progress");
   } catch (error) {
@@ -241,10 +381,19 @@ async function publishProgressBatch(key: string, batch: TaskProgressBatch) {
     });
   } finally {
     batch.publishing = false;
+    // A completion observed during transport still owes its final snapshot.
+    if (
+      batch.harness &&
+      (!batch.harness.isCurrent() ||
+        (batch.revision === revision &&
+          batch.harness.readTasks().every((task) => isTerminalTaskStatus(task.status))))
+    ) {
+      batch.harness.stop();
+    }
     if (taskProgressBatches.get(key) === batch) {
       if (batch.revision !== revision) {
         scheduleProgressBatch(key, batch);
-      } else {
+      } else if (!batch.harness) {
         taskProgressBatches.delete(key);
       }
     }

@@ -2,6 +2,7 @@ import type { Result } from "@openclaw/normalization-core/result";
 // Tracks task process state transitions used to reconcile running work.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { TaskSummary } from "../../packages/gateway-protocol/src/schema/tasks.js";
+import type { TaskProgressMessageState } from "./task-progress-message.js";
 import {
   getTaskRelatedSessionIndexKeys,
   cloneTaskRecordForObserver,
@@ -63,6 +64,17 @@ export type TaskProgressBatch = {
   timer?: ReturnType<typeof setTimeout>;
   publishing?: boolean;
   overflow: boolean;
+  message?: TaskProgressMessageState;
+  harness?: {
+    readTasks: () => TaskRecord[];
+    isCurrent: () => boolean;
+    owner: {
+      agentId?: string;
+      sessionKey: string;
+      requesterOrigin: TaskDeliveryState["requesterOrigin"];
+    };
+    stop: () => void;
+  };
 };
 
 /** Process-local indexes backing task lookup, owner access, and pending delivery scans. */
@@ -127,6 +139,7 @@ export function clearTaskProgressBatches(): void {
   const batches = getTaskRegistryProcessState().taskProgressBatches;
   for (const batch of batches.values()) {
     clearTimeout(batch.timer);
+    batch.harness?.stop();
   }
   batches.clear();
 }

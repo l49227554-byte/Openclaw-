@@ -1,8 +1,5 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
-import type {
-  AgentHarnessTaskRecord,
-  AgentHarnessTaskRuntimeScope,
-} from "openclaw/plugin-sdk/agent-harness-task-runtime";
+import type { AgentHarnessTaskRecord } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import {
   normalizeOptionalString,
   readStringField as readString,
@@ -20,10 +17,7 @@ import {
   resolveCodexNativeSubagentReceiptOwner,
   restoreCodexNativeSubagentTaskReceipts,
 } from "./native-subagent-delivery-receipts.js";
-import {
-  type CodexNativeSubagentHistoryOwner,
-  readCodexNativeSubagentHistoryOwner,
-} from "./native-subagent-history-owner.js";
+import { readCodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
 import {
   CodexNativeSubagentHistoryRecovery,
   isNoFinalCompletion,
@@ -45,6 +39,8 @@ import type {
   NativeChildAdmissionEvidence,
   NativeSubagentMonitorClient,
   NativeSubagentMonitorRuntime,
+  NativeParentRegistration,
+  NativeParentRegistrationHandle,
   NativeTurnObservation,
   ParentOwner,
   ParentState,
@@ -61,16 +57,16 @@ import {
 } from "./native-subagent-recovery-coordinator.js";
 import { CodexNativeSubagentSubmissionOwner } from "./native-subagent-submission-owner.js";
 import {
-  CODEX_NATIVE_SUBAGENT_RUN_ID_PREFIX,
-  CODEX_NATIVE_SUBAGENT_RUNTIME,
-  CODEX_NATIVE_SUBAGENT_TASK_KIND,
   codexNativeSubagentRunId,
   readCodexNativeSubagentRunId,
   readNativeSubagentThreadIds,
   readNativeTaskAssignment,
   type NativeSubagentAssignment,
 } from "./native-subagent-task-ids.js";
-import { CodexNativeSubagentTaskMirror } from "./native-subagent-task-mirror.js";
+import {
+  authorizeNativeSubagentProgress,
+  prepareNativeSubagentTaskRuntime,
+} from "./native-subagent-task-runtime.js";
 import { CodexNativeSubagentTurnObservation } from "./native-subagent-turn-observation.js";
 import type { CodexServerNotification, JsonObject } from "./protocol.js";
 import { isJsonObject } from "./protocol.js";
@@ -310,6 +306,8 @@ class Monitor {
     }
     this.parentThreadRetentions.clear();
     for (const state of this.parentStates.values()) {
+      state.progressOwner?.dispose();
+      state.progressOwner = undefined;
       state.owners.clear();
       state.turnIds.clear();
       this.childCloses.clear(state);
@@ -329,17 +327,7 @@ class Monitor {
     this.childThreadIdsByAgentPath.clear();
   }
 
-  registerParent(params: {
-    parentThreadId: string;
-    requesterSessionKey?: string;
-    taskRuntimeScope?: AgentHarnessTaskRuntimeScope;
-    historyOwner?: CodexNativeSubagentHistoryOwner;
-    submissionStore?: ParentState["submissionStore"];
-    agentId?: string;
-    claimDirectChild?: (threadId: string) => (() => void) | undefined;
-    rejectPendingDirectChild?: (threadId: string, reason: string) => void;
-    onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => Promise<void> } {
+  registerParent(params: NativeParentRegistration): NativeParentRegistrationHandle {
     const parentThreadId = params.parentThreadId.trim();
     if (!parentThreadId) {
       throw new Error("Codex native subagent monitor requires a parent thread id");
@@ -369,12 +357,16 @@ class Monitor {
     state.historyOwner ??= params.historyOwner;
     state.submissionStore ??= params.submissionStore;
     state.agentId ??= params.agentId;
+    const previousProgressOwner = state.progressOwner;
     const owner = Symbol("codex-native-subagent-owner");
     state.owners.set(owner, {
       claimDirectChild: params.claimDirectChild,
       rejectPendingDirectChild: params.rejectPendingDirectChild,
       onDirectChildAccepted: params.onDirectChildAccepted,
     });
+    // Make the new owner visible before old presentation cleanup can prune this parent.
+    previousProgressOwner?.dispose();
+    state.progressOwner = undefined;
     this.prepareParentTaskRuntime(state);
     for (const childState of this.childStates.values()) {
       if (childState.parentThreadId === parentThreadId && childState.pendingCompletion) {
@@ -394,6 +386,21 @@ class Monitor {
     });
     this.submissions.restore(registeredState);
     return {
+      authorizeProgressAfterSuccessfulYield: () =>
+        authorizeNativeSubagentProgress({
+          parent: registeredState,
+          registration: params,
+          owner,
+          children: this.childStates,
+          runtime: this.runtime,
+          executionPid: this.client.getTransportPid(),
+          isRegistered: () => registered,
+          isCurrentParent: () =>
+            !this.disposed &&
+            !this.retiredParentStates.has(registeredState) &&
+            this.parentStates.get(parentThreadId) === registeredState,
+          prune: () => this.pruneParentIfUnused(registeredState),
+        }),
       bindTurn: (turnIdInput) => {
         const turnId = turnIdInput.trim();
         if (!turnId || this.parentStates.get(parentThreadId) !== registeredState) {
@@ -435,6 +442,7 @@ class Monitor {
             current.deliveryReceipts = new CodexNativeSubagentDeliveryReceipts();
           }
           this.clearUnconsumablePendingChildAdmissionEvidence();
+          current.progressOwner?.notify();
           this.completionDelivery.deliverDetached(current, this.childStates.values());
           this.pruneParentIfUnused(current);
         }
@@ -458,6 +466,8 @@ class Monitor {
     }
     for (const state of states) {
       const parentThreadId = state.parentThreadId;
+      state.progressOwner?.dispose();
+      state.progressOwner = undefined;
       this.submissions.retire(state);
       state.owners.clear();
       this.childCloses.clear(state);
@@ -472,25 +482,7 @@ class Monitor {
   }
 
   private prepareParentTaskRuntime(state: ParentState): void {
-    if (!state.requesterSessionKey || !state.taskRuntimeScope) {
-      return;
-    }
-    state.taskRuntime ??= this.runtime.createAgentHarnessTaskRuntime({
-      runtime: CODEX_NATIVE_SUBAGENT_RUNTIME,
-      taskKind: CODEX_NATIVE_SUBAGENT_TASK_KIND,
-      scope: state.taskRuntimeScope,
-      runIdPrefix: CODEX_NATIVE_SUBAGENT_RUN_ID_PREFIX,
-      executionPid: this.client.getTransportPid(),
-    });
-    state.mirror ??= new CodexNativeSubagentTaskMirror(
-      {
-        parentThreadId: state.parentThreadId,
-        requesterSessionKey: state.requesterSessionKey,
-        historyOwner: state.historyOwner,
-        agentId: state.agentId,
-      },
-      state.taskRuntime,
-    );
+    prepareNativeSubagentTaskRuntime(state, this.runtime, this.client.getTransportPid());
   }
 
   /** Handles one notification from the client-wide router observer. */
@@ -651,6 +643,7 @@ class Monitor {
       }
     }
     await this.handleCompletionNotification(notification);
+    mirrorState?.progressOwner?.notify();
   }
 
   private resumeChild(childState: ChildState, options: { scheduleRecovery?: boolean } = {}): void {
@@ -2078,7 +2071,7 @@ class Monitor {
     if (this.submissions.hasCustody(state)) {
       return;
     }
-    if (state.owners.size > 0) {
+    if (state.owners.size > 0 || state.progressOwner) {
       return;
     }
     if (this.childCloses.hasPending(state)) {

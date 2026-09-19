@@ -282,3 +282,17 @@ owner rechecks it after asynchronous routing and immediately before a new Gatewa
 turn or message injection is accepted. Work already accepted keeps its own
 lifecycle and can finish after the source retires. Use `signal` when the caller
 also intends to cancel accepted work.
+
+### Yielded harness progress ownership
+
+A scoped `createAgentHarnessTaskRuntime(...)` can register a process-local progress
+owner with `registerProgressOwner({ runIds, agentId, isCurrent, onStopped })`.
+Register only after an intentional, successful requester yield. The host-issued
+scope supplies the original delivery target; callers cannot override it.
+
+The returned `notify()` queues a coalesced snapshot and `dispose()` revokes queued
+publication. The harness must validate its exact live parent and child ownership
+in `isCurrent`, notify after the foreground owner has released, and dispose on
+resume, reset, cancellation, or monitor retirement. Task identity and Gateway
+lifecycle are revalidated before delivery. This presentation capability does not
+change task notification policy or confer completion-delivery ownership.

@@ -1,5 +1,7 @@
 // Tooling tests that need fresh module or process state instead of the shared serial worker.
 export const toolingIsolatedTestFiles = [
+  "test/native-yield-channel-progress.integration.test.ts",
+  "test/native-yield-telegram-progress.integration.test.ts",
   "test/plugins/bundled-provider-auth-literal-parity.test.ts",
   "test/plugins/bundled-provider-auth-literal-parity.2.test.ts",
   "test/plugins/bundled-provider-auth-literal-parity.3.test.ts",

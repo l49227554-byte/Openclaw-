@@ -960,17 +960,19 @@ export async function handleTelegramAction(
         "Telegram bot token missing. Set TELEGRAM_BOT_TOKEN or channels.telegram.botToken.",
       );
     }
+    const editOptions = {
+      cfg,
+      token,
+      accountId: accountId ?? undefined,
+      gatewayClientScopes: options?.gatewayClientScopes,
+      assertPlatformSendAuthorized: options?.assertDirectAdapterHandoff,
+    };
     if (content == null && caption == null && buttons !== undefined) {
       const result = await telegramActionRuntime.editMessageReplyMarkupTelegram(
         authorizedChatId,
         messageId ?? 0,
         buttons,
-        {
-          cfg,
-          token,
-          accountId: accountId ?? undefined,
-          gatewayClientScopes: options?.gatewayClientScopes,
-        },
+        editOptions,
       );
       return jsonResult({
         ok: true,
@@ -984,12 +986,9 @@ export async function handleTelegramAction(
       messageId ?? 0,
       caption ?? content ?? "",
       {
-        cfg,
-        token,
-        accountId: accountId ?? undefined,
+        ...editOptions,
         buttons,
         editMode: caption != null ? "caption" : "auto",
-        gatewayClientScopes: options?.gatewayClientScopes,
       },
     );
     return jsonResult({

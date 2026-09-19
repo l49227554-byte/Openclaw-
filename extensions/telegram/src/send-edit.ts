@@ -31,7 +31,8 @@ type TelegramEditMessageCaptionParams = Parameters<
   TelegramApiContext["api"]["editMessageCaption"]
 >[2];
 
-type TelegramEditReplyMarkupOpts = TelegramApiCallOpts & Pick<TelegramSendOpts, "buttons">;
+type TelegramEditReplyMarkupOpts = TelegramApiCallOpts &
+  Pick<TelegramSendOpts, "buttons" | "assertPlatformSendAuthorized">;
 
 type TelegramEditOpts = TelegramEditReplyMarkupOpts &
   Pick<TelegramSendOpts, "textMode"> & {

@@ -22,9 +22,15 @@ import {
   resolveSubagentCompletionOrigin,
 } from "../agents/subagents/announce/subagent-announce-origin.js";
 import {
+  getAgentRunContext,
+  getAgentRunLifecycleGeneration,
+  listAgentRunsForSession,
+} from "../infra/agent-run-registry.js";
+import {
   getGatewayContextResolver,
   withPluginRuntimeGatewayContextResolver,
 } from "../plugins/runtime/gateway-request-scope.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import {
   assertAgentHarnessTaskRuntimeScope,
   type AgentHarnessTaskRuntimeScope,
@@ -36,7 +42,9 @@ import {
   setDetachedTaskDeliveryStatusByRunId,
 } from "../tasks/detached-task-runtime.js";
 import { listTaskRecords, type TaskRecord } from "../tasks/runtime-internal.js";
+import { readTaskBackingInstance } from "../tasks/task-backing-authority.js";
 import { captureTaskExecutionOwner } from "../tasks/task-execution-owner.js";
+import { registerHarnessTaskProgress } from "../tasks/task-registry-progress.js";
 
 export type { TaskRecord as AgentHarnessTaskRecord };
 export type { AgentHarnessTaskRuntimeScope };
@@ -102,6 +110,13 @@ export type AgentHarnessTaskRuntime = {
   setDetachedTaskDeliveryStatusByRunId(
     params: AgentHarnessScopedSetDeliveryStatusParams,
   ): TaskRecord[];
+  /** Live, explicit yield authority; does not alter task completion notification policy. */
+  registerProgressOwner?(params: {
+    runIds: string[];
+    agentId?: string;
+    isCurrent: () => boolean;
+    onStopped: () => void;
+  }): { notify: () => void; dispose: () => void } | undefined;
   listTaskRecords(): TaskRecord[];
 };
 
@@ -142,7 +157,116 @@ export function createAgentHarnessTaskRuntime(
       executionOwner,
     });
   };
+  const scopedTasks = () =>
+    listTaskRecords().filter(
+      (task) =>
+        task.runtime === runtime &&
+        (!taskKind || task.taskKind === taskKind) &&
+        task.scopeKind === "session" &&
+        task.ownerKey === requesterSessionKey &&
+        (!runIdPrefix || task.runId?.startsWith(runIdPrefix)),
+    );
   return {
+    registerProgressOwner(progress) {
+      const readRequester = () => {
+        try {
+          return loadRequesterSessionEntry(requesterSessionKey);
+        } catch {
+          // Optional presentation must fail closed without breaking turn finalization.
+          return undefined;
+        }
+      };
+      const requester = readRequester();
+      const sessionId = requester?.entry?.sessionId;
+      const lifecycleRevision = requester?.entry?.lifecycleRevision;
+      if (
+        !sessionId ||
+        !requester?.agentId ||
+        (progress.agentId && progress.agentId !== requester.agentId)
+      ) {
+        return undefined;
+      }
+      const lifecycleGeneration = getAgentRunLifecycleGeneration();
+      const readRuns = () =>
+        listAgentRunsForSession({ sessionKey: requester.canonicalKey, sessionId }).filter(
+          ({ runId }) => getAgentRunContext(runId)?.projectSessionLifecycle !== false,
+        );
+      const originalRuns = new Map(
+        readRuns().map(({ runId }) => [runId, getAgentRunContext(runId)]),
+      );
+      let retired = false;
+      let unsubscribe: (() => void) | undefined;
+      // Host run registration, not a provider thread, owns requester resumption.
+      // Latch retirement so finishing the new turn cannot revive the old card.
+      const isRequesterCurrent = () => {
+        if (retired) {
+          return false;
+        }
+        const current = readRequester();
+        const valid =
+          current !== undefined &&
+          getAgentRunLifecycleGeneration() === lifecycleGeneration &&
+          current.agentId === requester.agentId &&
+          current.canonicalKey === requester.canonicalKey &&
+          current.entry?.sessionId === sessionId &&
+          current.entry.lifecycleRevision === lifecycleRevision &&
+          readRuns().every(({ runId }) => originalRuns.get(runId) === getAgentRunContext(runId));
+        if (!valid) {
+          retired = true;
+        }
+        return valid;
+      };
+      for (const runId of progress.runIds) {
+        assertRunId(runId);
+      }
+      const ids = new Set(progress.runIds);
+      const captured = new Map(
+        scopedTasks()
+          .filter((task) => ids.has(task.runId ?? ""))
+          .map((task) => [
+            task.taskId,
+            {
+              runId: task.runId,
+              backing: JSON.stringify(readTaskBackingInstance(task.detail)),
+              createdAt: task.createdAt,
+            },
+          ]),
+      );
+      const origin = scope.requesterOrigin ? { ...scope.requesterOrigin } : undefined;
+      const registration = registerHarnessTaskProgress({
+        owner: {
+          sessionKey: requesterSessionKey,
+          requesterOrigin: origin,
+          agentId: requester.agentId,
+        },
+        readTasks: () =>
+          scopedTasks().filter((task) => {
+            const original = captured.get(task.taskId);
+            return (
+              original?.runId === task.runId &&
+              original?.createdAt === task.createdAt &&
+              original?.backing === JSON.stringify(readTaskBackingInstance(task.detail))
+            );
+          }),
+        isCurrent: () => isRequesterCurrent() && progress.isCurrent(),
+        onStopped: () => {
+          retired = true;
+          unsubscribe?.();
+          progress.onStopped();
+        },
+      });
+      if (registration) {
+        unsubscribe = sessionChanges.subscribe((change) => {
+          if ("sessionKey" in change && change.sessionKey !== requester.canonicalKey) {
+            return;
+          }
+          if (!isRequesterCurrent()) {
+            registration.dispose();
+          }
+        });
+      }
+      return registration;
+    },
     createRunningTaskRun(taskParams) {
       const task = tryCreateRunningTaskRun(taskParams);
       if (!task) {
@@ -175,16 +299,7 @@ export function createAgentHarnessTaskRuntime(
         sessionKey: requesterSessionKey,
       });
     },
-    listTaskRecords() {
-      return listTaskRecords().filter(
-        (task) =>
-          task.runtime === runtime &&
-          (!taskKind || task.taskKind === taskKind) &&
-          task.scopeKind === "session" &&
-          task.ownerKey === requesterSessionKey &&
-          (!runIdPrefix || task.runId?.startsWith(runIdPrefix)),
-      );
-    },
+    listTaskRecords: scopedTasks,
   };
 }
 

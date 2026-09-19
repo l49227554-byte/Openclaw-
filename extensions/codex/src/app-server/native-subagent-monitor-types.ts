@@ -32,6 +32,23 @@ export type ParentOwner = {
   onDirectChildAccepted?: () => void;
 };
 
+export type NativeParentRegistration = Pick<
+  ParentState,
+  | "parentThreadId"
+  | "requesterSessionKey"
+  | "taskRuntimeScope"
+  | "historyOwner"
+  | "agentId"
+  | "submissionStore"
+> &
+  Omit<ParentOwner, "turnId">;
+
+export type NativeParentRegistrationHandle = {
+  bindTurn: (turnId: string) => void;
+  unregister: () => Promise<void>;
+  authorizeProgressAfterSuccessfulYield: () => void;
+};
+
 export type DirectSpawnEvidence = {
   parentThreadId: string;
   childThreadId: string;
@@ -62,6 +79,7 @@ export type ParentState = {
   historyOwner?: CodexNativeSubagentHistoryOwner;
   agentId?: string;
   taskRuntime?: AgentHarnessTaskRuntime;
+  progressOwner?: { notify: () => void; dispose: () => void };
   mirror?: CodexNativeSubagentTaskMirror;
   submissionStore?: CodexNativeSubagentSubmissionStore;
 };

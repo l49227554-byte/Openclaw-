@@ -166,6 +166,9 @@ export function createRuntime() {
     progressSummary: params.progressSummary,
   }));
   const taskRuntime = {
+    registerProgressOwner: vi.fn<NonNullable<AgentHarnessTaskRuntime["registerProgressOwner"]>>(
+      () => ({ notify: vi.fn(), dispose: vi.fn() }),
+    ),
     createRunningTaskRun,
     tryCreateRunningTaskRun: vi.fn((params) => createRunningTaskRun(params)),
     recordTaskRunProgressByRunId: vi.fn(() => []),

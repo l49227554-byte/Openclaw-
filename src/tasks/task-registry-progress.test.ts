@@ -7,6 +7,7 @@ import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-re
 import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
 import { registerAgentRunContext } from "../infra/agent-run-registry.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
+import { createAgentHarnessTaskRuntime } from "../plugin-sdk/agent-harness-task-runtime.js";
 import {
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
@@ -17,6 +18,7 @@ import {
   createInMemoryTaskFlowRegistryStore,
   createInMemoryTaskRegistryStore,
 } from "../test-utils/task-registry-store.js";
+import { createAgentHarnessTaskRuntimeScope } from "./agent-harness-task-runtime-scope.js";
 import { createSubagentTaskBackingDetail } from "./task-backing-authority.js";
 import * as deliveryRuntime from "./task-registry-runtime-loaders.js";
 import { resetTaskRegistryListenerState } from "./task-registry-state.js";
@@ -26,6 +28,7 @@ import {
   markTaskTerminalById,
   updateTaskNotifyPolicyById,
 } from "./task-registry.js";
+import { clearTaskProgressBatches } from "./task-registry.process-state.js";
 import { configureTaskRegistryRuntime } from "./task-registry.store.js";
 import type { TaskNotifyPolicy } from "./task-registry.types.js";
 import {
@@ -35,6 +38,16 @@ import {
   resetTaskRegistryForTests,
   setTaskRegistryDeliveryRuntimeForTests,
 } from "./task-runtime.test-helpers.js";
+
+vi.mock("../agents/subagents/announce/subagent-announce-delivery.js", () => ({
+  loadRequesterSessionEntry: (key: string) => ({
+    canonicalKey: key,
+    agentId: "main",
+    entry: { sessionId: "synthetic-parent", lifecycleRevision: "one" },
+  }),
+  deliverSubagentAnnouncement: vi.fn(),
+  isInternalAnnounceRequesterSession: vi.fn(),
+}));
 
 vi.mock("../utils/message-channel.js", () => ({
   isDeliverableMessageChannel: (channel: string) => channel === "notifychat",
@@ -328,5 +341,232 @@ describe("yielded subagent progress delivery", () => {
     expect(sendMessage.mock.calls[1]![0].content).toContain(
       "Worker 1: running read; 1 tool call started.",
     );
+  });
+});
+
+describe("yield-authorized harness progress", () => {
+  function harness() {
+    const runtime = createAgentHarnessTaskRuntime({
+      runtime: "subagent",
+      taskKind: "test-native",
+      runIdPrefix: "native:",
+      scope: createAgentHarnessTaskRuntimeScope({
+        requesterSessionKey: PARENT,
+        requesterOrigin: origin,
+      }),
+    });
+    const task = runtime.createRunningTaskRun({
+      runId: "native:one",
+      task: "private assignment",
+      label: "Worker",
+      notifyPolicy: "silent",
+      deliveryStatus: "not_applicable",
+    });
+    return { runtime, task };
+  }
+
+  it("updates one silent native task card through completion without a second announcement", async () => {
+    const editTaskProgressMessage = vi.fn(async () => {});
+    sendMessage.mockResolvedValue({
+      channel: "notifychat",
+      to: origin.to,
+      via: "direct",
+      mediaUrl: null,
+      result: {
+        channel: "notifychat",
+        messageId: "card-1",
+        target: { kind: "channel", id: "test-thread" },
+      },
+    });
+    setTaskRegistryDeliveryRuntimeForTests({
+      sendMessage,
+      editTaskProgressMessage,
+      isTaskProgressEnabled: () => true,
+    });
+    const { runtime, task } = harness();
+    const stopped = vi.fn();
+    const progress = runtime.registerProgressOwner?.({
+      runIds: [task.runId!],
+      isCurrent: () => true,
+      onStopped: stopped,
+    });
+    progress?.notify();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(sendMessage).toHaveBeenCalledOnce();
+    emitAgentEvent({
+      runId: task.runId!,
+      stream: "tool",
+      data: {
+        phase: "start",
+        name: "read",
+        toolCallId: "native-tool",
+        args: { secret: "do-not-publish" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(editTaskProgressMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "card-1",
+        to: "channel:test-thread",
+        content: expect.stringContaining("read"),
+      }),
+    );
+    runtime.finalizeTaskRunByRunId({
+      runId: task.runId!,
+      status: "succeeded",
+      endedAt: Date.now(),
+    });
+    progress?.notify();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(editTaskProgressMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId: "card-1",
+        content: expect.stringContaining("succeeded"),
+      }),
+    );
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(getTaskById(task.taskId)?.notifyPolicy).toBe("silent");
+    expect(JSON.stringify(sendMessage.mock.calls)).not.toContain("private assignment");
+    expect(JSON.stringify(editTaskProgressMessage.mock.calls)).not.toContain("do-not-publish");
+  });
+
+  it.each(["send", "edit"])(
+    "publishes completion arriving during an in-flight %s",
+    async (phase) => {
+      const pending = createDeferred();
+      const receipt = {
+        channel: "notifychat",
+        to: origin.to,
+        via: "direct" as const,
+        mediaUrl: null,
+        result: {
+          channel: "notifychat",
+          messageId: "card-1",
+          target: { kind: "channel" as const, id: "test-thread" },
+        },
+      };
+      sendMessage.mockImplementation(async () => {
+        if (phase === "send") {
+          await pending.promise;
+        }
+        return receipt;
+      });
+      const editTaskProgressMessage = vi.fn(async () => {});
+      if (phase === "edit") {
+        editTaskProgressMessage.mockImplementationOnce(() => pending.promise);
+      }
+      setTaskRegistryDeliveryRuntimeForTests({
+        sendMessage,
+        editTaskProgressMessage,
+        isTaskProgressEnabled: () => true,
+      });
+      const { runtime, task } = harness();
+      const stopped = vi.fn();
+      const progress = runtime.registerProgressOwner?.({
+        runIds: [task.runId!],
+        isCurrent: () => true,
+        onStopped: stopped,
+      });
+      progress?.notify();
+      await vi.advanceTimersByTimeAsync(15_000);
+      if (phase === "edit") {
+        emitAgentEvent({
+          runId: task.runId!,
+          stream: "tool",
+          data: { phase: "start", name: "read", toolCallId: "in-flight-tool" },
+        });
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(editTaskProgressMessage).toHaveBeenCalledOnce();
+      }
+      runtime.finalizeTaskRunByRunId({
+        runId: task.runId!,
+        status: "succeeded",
+        endedAt: Date.now(),
+      });
+      progress?.notify();
+      pending.resolve();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(editTaskProgressMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          messageId: "card-1",
+          content: expect.stringContaining("succeeded"),
+        }),
+      );
+      expect(sendMessage).toHaveBeenCalledOnce();
+      expect(stopped).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retires harness ownership when the registry clears progress batches", async () => {
+    const { runtime, task } = harness();
+    const stopped = vi.fn();
+    const progress = runtime.registerProgressOwner?.({
+      runIds: [task.runId!],
+      isCurrent: () => true,
+      onStopped: stopped,
+    });
+    progress?.notify();
+    clearTaskProgressBatches();
+    expect(stopped).toHaveBeenCalledOnce();
+    progress?.notify();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(stopped).toHaveBeenCalledOnce();
+    expect(getTaskById(task.taskId)?.status).toBe("running");
+  });
+
+  it.each(["notify", "timer", "handoff"])(
+    "releases an invalid nonterminal owner at %s",
+    async (boundary) => {
+      const { runtime, task } = harness();
+      let current = true;
+      const stopped = vi.fn();
+      sendMessage.mockImplementation(async (params) => {
+        current = false;
+        params.assertDirectAdapterHandoff?.();
+        throw new Error("Invalidated before dispatch");
+      });
+      setTaskRegistryDeliveryRuntimeForTests({ sendMessage, isTaskProgressEnabled: () => true });
+      const progress = runtime.registerProgressOwner?.({
+        runIds: [task.runId!],
+        isCurrent: () => current,
+        onStopped: stopped,
+      });
+      progress?.notify();
+      if (boundary !== "handoff") {
+        current = false;
+      }
+      if (boundary === "notify") {
+        progress?.notify();
+        expect(stopped).toHaveBeenCalledOnce();
+      }
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(stopped).toHaveBeenCalledOnce();
+      expect(getTaskById(task.taskId)?.status).toBe("running");
+      progress?.notify();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(stopped).toHaveBeenCalledOnce();
+      expect(sendMessage).toHaveBeenCalledTimes(boundary === "handoff" ? 1 : 0);
+    },
+  );
+
+  it.each(["revoked", "disabled"])("does not send when progress is %s", async (mode) => {
+    setTaskRegistryDeliveryRuntimeForTests({
+      sendMessage,
+      isTaskProgressEnabled: () => mode !== "disabled",
+    });
+    const { runtime, task } = harness();
+    let current = true;
+    const progress = runtime.registerProgressOwner?.({
+      runIds: [task.runId!],
+      isCurrent: () => current,
+      onStopped: () => {},
+    });
+    progress?.notify();
+    current = mode !== "revoked";
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(sendMessage).not.toHaveBeenCalled();
+    progress?.dispose();
   });
 });

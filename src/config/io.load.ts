@@ -25,6 +25,7 @@ import {
   warnIfConfigFromFuture,
   warnOnConfigMiskeys,
 } from "./io.warnings.js";
+import { migrateBlankAgentDir } from "./legacy.blank-agent-dir.js";
 import { migrateLegacyContextBudgetConfig, migratePersistedImplicitMainRoster } from "./legacy.js";
 import { materializeRuntimeConfig } from "./materialize.js";
 import type { OpenClawConfig } from "./types.js";
@@ -167,7 +168,8 @@ function* loadConfigWithEffects(
       env: deps.env,
       homedir: deps.homedir,
     });
-    const effectiveConfigRaw = rosterMigration.config;
+    const blankAgentDirMigration = migrateBlankAgentDir(rosterMigration.config);
+    const effectiveConfigRaw = blankAgentDirMigration.config;
     const validationConfigRaw = effectiveConfigRaw;
     const snapshotRaw = raw;
     const snapshotParsed = parsed;
@@ -181,6 +183,8 @@ function* loadConfigWithEffects(
       ...contextBudgetMigration.changes.map(({ message }) => message),
       ...contextBudgetMigration.warnings.map(({ message }) => message),
       ...rosterMigration.diagnostics,
+      ...blankAgentDirMigration.changes.map(({ message }) => message),
+      ...blankAgentDirMigration.warnings.map(({ message }) => message),
     ]) {
       deps.logger.warn(`Config (${configPath}): ${diagnostic}`);
     }

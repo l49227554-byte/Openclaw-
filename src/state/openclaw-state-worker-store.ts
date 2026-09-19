@@ -131,13 +131,15 @@ function createSharedStateWorkerOwner() {
         let healthy = false;
         if (inspect) {
           try {
+            // This idle generation owns retirement while foreground callbacks may remain active.
             healthy =
               (await runWithCapturedWorkerContext(entry.context, () =>
-                runWithOpenClawStateWorkerStore(
+                runSqliteWorkerStoreOperation(
                   store,
-                  entry.context,
                   (scope) => scope.execute({ type: "database.inspectIdle", input: undefined }),
+                  entry.context,
                   () => {
+                    entry.context.admission.assertCurrent();
                     if (!isCurrentIdle()) {
                       throw new Error("Shared-state worker resumed before idle inspection");
                     }
@@ -145,7 +147,7 @@ function createSharedStateWorkerOwner() {
                   undefined,
                   true,
                 ),
-              )) === "healthy";
+              )) === "healthy" && isSqliteWorkerStoreAvailable(store);
             entry.context.admission.assertCurrent();
           } catch {
             // Unavailable inspection cannot justify retaining a potentially pinned native reader.

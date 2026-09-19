@@ -2514,6 +2514,36 @@ class TalkModeManagerTest {
     }
 
   @Test
+  fun rejectedSessionStartLeavesAFailureNoticeUntilTalkStartsAgain() =
+    runBlocking {
+      val creates =
+        java.util.concurrent.atomic
+          .AtomicInteger()
+      withStartedTalk(interceptRequest = { request, socket ->
+        if (request.getValue("method").jsonPrimitive.content == "talk.session.create" && creates.incrementAndGet() == 2) {
+          val id = request.getValue("id").jsonPrimitive.content
+          socket.send("""{"type":"res","id":"$id","ok":false,"error":{"code":"UNAVAILABLE","message":"provider unavailable"}}""")
+          true
+        } else {
+          false
+        }
+      }) { proof ->
+        proof.manager.stopAllCapture()
+        proof.drainCancelledCapture()
+        assertNull(proof.manager.failureText.value)
+        proof.manager.setEnabled(true)
+        awaitTalkWork(proof) { !proof.manager.isEnabled.value }
+        assertFalse(proof.manager.isListening.value)
+        // Chat shows this notice once Talk ends; without it a rejected start leaves no trace there.
+        assertEquals("Start failed: UNAVAILABLE: provider unavailable", proof.manager.failureText.value)
+
+        proof.manager.setEnabled(true)
+        awaitTalkWork(proof) { proof.manager.isListening.value }
+        assertNull(proof.manager.failureText.value)
+      }
+    }
+
+  @Test
   fun relayConsultReturnsCanonicalOwnedResultOverGatewayConnection() =
     runBlocking {
       for ((voiceKey, agentKey) in listOf("main" to "agent:voice:main", "global" to "global")) {

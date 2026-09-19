@@ -49,7 +49,7 @@ it("persists exact runtime custody before pausing and resumes only that id", asy
     }
     return { code: 0, stdout: "", stderr: "" };
   });
-  const resume = await quiesceLocalWorkspace({
+  const { resume } = await quiesceLocalWorkspace({
     workspaceDir: "/owned/projection",
     retained: [],
     persist,
@@ -78,7 +78,7 @@ it.each(["true", "false"])(
     await expect(quiesceLocalWorkspace({ ...input, retained: [] })).rejects.toThrow(
       "another owner",
     );
-    const resume = await quiesceLocalWorkspace({ ...input, retained: [{ name: "owned", id }] });
+    const { resume } = await quiesceLocalWorkspace({ ...input, retained: [{ name: "owned", id }] });
     await resume();
     expect(mocks.command.mock.calls.some((call) => call[1][0] === "pause")).toBe(false);
     expect(mocks.command.mock.calls.some((call) => call[1][0] === "unpause")).toBe(true);
@@ -121,7 +121,7 @@ it("fences browser writers through the same exact workspace owner", async () => 
         : "",
   }));
   const persist = vi.fn();
-  const resume = await quiesceLocalWorkspace({
+  const { resume } = await quiesceLocalWorkspace({
     workspaceDir: entry.workspaceDir,
     retained: [],
     persist,
@@ -131,7 +131,7 @@ it("fences browser writers through the same exact workspace owner", async () => 
     { name: "owned", id },
     { name: "browser-owned", id: browserId },
   ]);
-  expect(mocks.browserCurrent).toHaveBeenCalledTimes(2);
+  expect(mocks.browserCurrent).toHaveBeenCalledTimes(3);
   await resume();
   expect(
     mocks.command.mock.calls.filter((call) => call[1][0] === "unpause").map((call) => call[1][1]),
@@ -158,7 +158,7 @@ it("does not resume guest writers after their workspace owner is revoked", async
     stderr: "",
     stdout: args[0] === "inspect" ? id + " true false" : "",
   }));
-  const resume = await quiesceLocalWorkspace({
+  const { resume } = await quiesceLocalWorkspace({
     workspaceDir: entry.workspaceDir,
     retained: [],
     persist,
@@ -208,11 +208,11 @@ it("records each released generation before a later resume failure and re-fences
       retained = [...rows];
     },
   };
-  const resume = await quiesceLocalWorkspace({ ...input, retained });
+  const { resume } = await quiesceLocalWorkspace({ ...input, retained });
   await expect(resume()).rejects.toThrow("resume failed");
   expect(retained).toEqual([{ name: "owned", id }]);
   failFirst = false;
-  const recovered = await quiesceLocalWorkspace({ ...input, retained });
+  const { resume: recovered } = await quiesceLocalWorkspace({ ...input, retained });
   expect(pausedIds).toEqual(new Set([id, otherId]));
   await recovered();
   expect(retained).toEqual([]);
@@ -237,7 +237,7 @@ it.each([true, false])(
       }
     });
     const persist = vi.fn();
-    const resume = await quiesceLocalWorkspace({
+    const { resume } = await quiesceLocalWorkspace({
       workspaceDir: entry.workspaceDir,
       retained: [],
       persist,

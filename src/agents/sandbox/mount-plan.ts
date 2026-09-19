@@ -139,8 +139,11 @@ type ContainerMountInfo = {
 export async function resolveSandboxContainerOnlyMounts(params: {
   engine: SandboxContainerEngine;
   containerName: string;
+  assertCurrent?: () => void;
 }): Promise<string[]> {
+  params.assertCurrent?.();
   const inspected = await inspectSandboxMounts(params);
+  params.assertCurrent?.();
   const { stdout } = await execContainer(
     params.engine,
     ["exec", params.containerName, "cat", "/proc/self/mountinfo"],

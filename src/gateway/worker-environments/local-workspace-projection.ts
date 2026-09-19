@@ -93,7 +93,7 @@ export async function withSettledLocalWorkspace<T>(
       }
     },
   };
-  return await withLocalWorkspaceProjection(owner, async (state) => {
+  return await withLocalWorkspaceProjection(owner, async (state, quiescence) => {
     if (params.finishRestore) {
       await state.finishRestore();
     } else if (params.restoreSnapshot) {
@@ -106,19 +106,7 @@ export async function withSettledLocalWorkspace<T>(
       }
     }
     if (params.retireRuntime) {
-      const [{ readLocalWorkspaceRuntimes }, management] = await Promise.all([
-        import("../../agents/sandbox/local-workspace-quiescence.js"),
-        import("../../agents/sandbox/manage.js"),
-      ]);
-      const runtimes = await readLocalWorkspaceRuntimes(row.projection_path);
-      owner.assertCurrent();
-      for (const runtime of runtimes) {
-        owner.assertCurrent();
-        runtime.assertCurrent();
-        await (runtime.kind === "browser"
-          ? management.removeSandboxBrowserContainer(runtime.entry.containerName)
-          : management.removeSandboxContainer(runtime.entry.containerName));
-      }
+      await quiescence?.retire();
     }
     owner.assertCurrent();
     return await operation(
@@ -189,7 +177,14 @@ async function assertOwnedDirectory(directory: string) {
 /** Every operation owns the same renewable, cross-process reconciliation lease. */
 export async function withLocalWorkspaceProjection<T>(
   owner: LocalWorkspaceOwner,
-  run: (state: ReturnType<typeof projectionOperations>) => Promise<T>,
+  run: (
+    state: ReturnType<typeof projectionOperations>,
+    quiescence?: Awaited<
+      ReturnType<
+        typeof import("../../agents/sandbox/local-workspace-quiescence.js").quiesceLocalWorkspace
+      >
+    >,
+  ) => Promise<T>,
   options: { provision?: boolean } = {},
 ) {
   return await withOpenClawStateLease(
@@ -229,8 +224,8 @@ export async function withLocalWorkspaceProjection<T>(
       const operations = projectionOperations({ ...owner, assertCurrent }, lease.signal);
       const { quiesceLocalWorkspace, parseLocalWorkspacePausedRuntimes } =
         await import("../../agents/sandbox/local-workspace-quiescence.js");
-      const resume =
-        previous?.baseline_ref && !options.provision
+      const quiescence =
+        previous && !options.provision
           ? await quiesceLocalWorkspace({
               workspaceDir: previous.projection_path,
               retained: parseLocalWorkspacePausedRuntimes(previous.paused_runtimes_json),
@@ -240,13 +235,13 @@ export async function withLocalWorkspaceProjection<T>(
             })
           : undefined;
       try {
-        return await run(operations);
+        return await run(operations, quiescence);
       } finally {
         // A partially applied projection remains frozen until its exact journal
         // has recovered. Never let a resumed guest race crash recovery.
         const retained = localWorkspaceStore(owner.env).get(owner.worktree.id);
         if (retained && !retained.journal_json) {
-          await resume?.();
+          await quiescence?.resume();
         }
       }
     },

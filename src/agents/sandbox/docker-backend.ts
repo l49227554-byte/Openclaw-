@@ -105,16 +105,30 @@ async function createContainerSandboxBackend(
       ? { requireCurrentConfig: params.requireCurrentConfig }
       : {}),
   });
-  // Image volumes and engine-created tmpfs are runtime facts. Snapshot them
-  // once at preparation so file tools never read an obscured host subtree.
+  params.assertRuntimeCurrent?.();
+  // Display names are reusable; execution and cleanup retain one exact generation.
+  const identity = await execContainer(
+    boundEngine,
+    ["inspect", "--format", "{{.Id}}", containerName],
+    { signal: AbortSignal.timeout(5_000) },
+  );
+  const containerId = identity.stdout.trim();
+  if (!/^[a-f0-9]{64}$/u.test(containerId)) {
+    throw new Error("Container inspect did not return an immutable container ID.");
+  }
+  // Image volumes and engine-created tmpfs must describe that same generation.
   const containerOnlyMounts = await resolveSandboxContainerOnlyMounts({
     engine: boundEngine,
-    containerName,
+    containerName: containerId,
+    assertCurrent: params.assertRuntimeCurrent,
   });
+  params.assertRuntimeCurrent?.();
   const { createSandboxFsBridge } = await import("./fs-bridge.js");
+  params.assertRuntimeCurrent?.();
   const handle = createContainerSandboxBackendHandle({
     engine: boundEngine,
     containerName,
+    containerId,
     workdir: params.cfg.docker.workdir,
     env: params.cfg.docker.env,
     image: params.cfg.docker.image,
@@ -140,6 +154,7 @@ export async function createPodmanSandboxBackend(
 function createContainerSandboxBackendHandle(params: {
   engine: SandboxContainerEngine;
   containerName: string;
+  containerId: string;
   workdir: string;
   env?: Record<string, string>;
   image: string;
@@ -166,7 +181,7 @@ function createContainerSandboxBackendHandle(params: {
           params.engine.command,
           ...(params.engine.globalArgs ?? []),
           ...buildContainerExecArgs({
-            containerName: params.containerName,
+            containerName: params.containerId,
             command,
             workdir: workdir ?? params.workdir,
             env,
@@ -199,7 +214,7 @@ function createContainerSandboxBackendHandle(params: {
       const run = (command: SandboxBackendCommandParams, assertCurrent?: () => void) =>
         runContainerSandboxShellCommand({
           engine: params.engine,
-          containerName: params.containerName,
+          containerName: params.containerId,
           podmanTarget: params.podmanTarget,
           ...command,
           assertCurrent,
@@ -207,13 +222,33 @@ function createContainerSandboxBackendHandle(params: {
       return createSandboxProcessCleanup(
         (command) => run(command, params.assertCurrent),
         env,
-        (command) => run(command),
+        async (command) => {
+          const result = await run(command);
+          if (result.code === 0) {
+            return result;
+          }
+          // A removed generation has no remaining processes. Never follow its
+          // reusable display name, or treat an unreachable engine as removal.
+          const inspected = await execContainer(
+            params.engine,
+            ["inspect", "--format", "{{.Id}}", params.containerId],
+            { allowFailure: true, signal: command.signal },
+          );
+          if (
+            inspected.code !== 0 &&
+            inspected.stderr.includes(params.containerId) &&
+            /no such (?:container|object)/iu.test(inspected.stderr)
+          ) {
+            return { code: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+          }
+          return result;
+        },
       );
     },
     runShellCommand(command) {
       return runContainerSandboxShellCommand({
         engine: params.engine,
-        containerName: params.containerName,
+        containerName: params.containerId,
         podmanTarget: params.podmanTarget,
         ...command,
         assertCurrent: params.assertCurrent,

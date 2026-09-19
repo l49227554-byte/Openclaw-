@@ -9,7 +9,10 @@ import {
   closeOpenClawStateDatabase,
   closeOpenClawStateDatabaseAsync,
 } from "../../state/openclaw-state-db.js";
-import { withLocalWorkspaceProjection } from "./local-workspace-projection.js";
+import {
+  withLocalWorkspaceProjection,
+  withSettledLocalWorkspace,
+} from "./local-workspace-projection.js";
 import { localWorkspaceStore } from "./local-workspace-store.js";
 import type { LocalWorkspaceOwner } from "./local-workspace-types.js";
 
@@ -455,6 +458,90 @@ describe("local sandbox workspace reconciliation", () => {
       "later human edit\n",
     );
   });
+
+  it.each([
+    ["container", true],
+    ["container", false],
+    ["browser", true],
+    ["browser", false],
+  ] as const)(
+    "retirement preserves a same-name replacement %s after quiescence (running=%s)",
+    async (kind, running) => {
+      const [{ insertRegistryWorktree }, registry, engine] = await Promise.all([
+        import("../../agents/worktrees/registry.js"),
+        import("../../agents/sandbox/registry.js"),
+        import("../../agents/sandbox/container-engine.js"),
+      ]);
+      insertRegistryWorktree(process.env, owner.worktree, { provisionedPaths: [] });
+      const projection = await withLocalWorkspaceProjection(owner, (state) => state.prepare());
+      const entry = {
+        containerName: "retirement-owned",
+        backendId: "docker",
+        sessionKey: owner.sessionKey,
+        workspaceDir: projection,
+        createdAtMs: 1,
+        lastUsedAtMs: 1,
+        image: "fixture",
+        cdpPort: 9222,
+      };
+      await (kind === "browser"
+        ? registry.updateBrowserRegistry(entry)
+        : registry.updateRegistry(entry));
+      const captured = "a".repeat(64);
+      const replacement = "b".repeat(64);
+      const physical = new Set([captured]);
+      let named = captured;
+      const removeTargets: string[] = [];
+      const execute = vi
+        .spyOn(engine, "execContainer")
+        .mockImplementation(async (_engine, args) => {
+          const target = args.at(-1) === entry.containerName ? named : args.at(-1)!;
+          if (args[0] === "inspect") {
+            if (!physical.has(target)) {
+              return { code: 1, stdout: "", stderr: "no such container" };
+            }
+            if (!running && args.includes("{{.Id}} {{.State.Running}} {{.State.Paused}}")) {
+              physical.delete(captured);
+              physical.add(replacement);
+              named = replacement;
+            }
+            return {
+              code: 0,
+              stdout: args.includes("{{.State.Paused}}")
+                ? "false"
+                : args.includes("{{.Id}}")
+                  ? target
+                  : target + " " + running + " false",
+              stderr: "",
+            };
+          }
+          if (args[0] === "pause") {
+            physical.delete(captured);
+            physical.add(replacement);
+            named = replacement;
+          }
+          if (args[0] === "rm") {
+            removeTargets.push(args.at(-1)!);
+            physical.delete(target);
+          }
+          return { code: 0, stdout: "", stderr: "" };
+        });
+      const operation = vi.fn(async () => {});
+      try {
+        await expect(
+          withSettledLocalWorkspace({ worktree: owner.worktree, retireRuntime: true }, operation),
+        ).rejects.toThrow("generation");
+        expect(physical.has(replacement)).toBe(true);
+        expect(removeTargets).not.toContain(entry.containerName);
+        expect(operation).not.toHaveBeenCalled();
+        const remaining =
+          kind === "browser" ? await registry.readBrowserRegistry() : await registry.readRegistry();
+        expect(remaining.entries).toHaveLength(1);
+      } finally {
+        execute.mockRestore();
+      }
+    },
+  );
 
   it("settles edits before managed snapshot removal and preserves them after restore", async () => {
     const [{ insertRegistryWorktree }, { ManagedWorktreeService }] = await Promise.all([

@@ -4,6 +4,7 @@
  * Tracks runtime and browser containers in the shared state DB.
  */
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { Insertable, Selectable, Updateable } from "kysely";
 import { withFileLock } from "../../infra/file-lock.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
@@ -418,7 +419,16 @@ function assertReservationCurrent(
 /** Validate the exact generation; retained handles cannot outlive removal intent. */
 export function assertSandboxRegistryEntryCurrent(entry: SandboxRegistryEntry): void {
   const row = readRegistryRow("container", entry.containerName);
-  assertReservationCurrent(row ? rowToContainerEntry(row) : null, entry);
+  const current = row ? rowToContainerEntry(row) : null;
+  assertReservationCurrent(current, entry);
+  if (
+    current.createdAtMs !== entry.createdAtMs ||
+    current.workspaceDir !== entry.workspaceDir ||
+    current.configHash !== entry.configHash ||
+    !isDeepStrictEqual(current.backendTarget, entry.backendTarget)
+  ) {
+    throw new Error("Sandbox runtime generation changed");
+  }
 }
 
 /** Publish only a still-current reservation, or forget a provider-confirmed terminal generation. */
@@ -566,6 +576,40 @@ export async function updateBrowserRegistry(entry: SandboxBrowserRegistryEntry) 
     const existingRow = readRegistryRowFromDb(db, "browser", entry.containerName);
     const existing = existingRow ? rowToBrowserEntry(existingRow) : null;
     insertRegistryRow(db, browserEntryToRow(entry, existing));
+  });
+}
+
+// Activity stamps can advance without changing custody; all allocation facts must match.
+function sameSandboxRegistryGeneration(
+  current: SandboxRegistryEntry | SandboxBrowserRegistryEntry,
+  expected: SandboxRegistryEntry | SandboxBrowserRegistryEntry,
+): boolean {
+  const { lastUsedAtMs: _currentUse, ...currentGeneration } = current;
+  const { lastUsedAtMs: _expectedUse, ...expectedGeneration } = expected;
+  return isDeepStrictEqual(currentGeneration, expectedGeneration);
+}
+
+/** Forget only the inspected allocation, under the caller's still-live settlement lease. */
+export function removeSandboxRegistryGeneration(
+  kind: SandboxRegistryKind,
+  entry: SandboxRegistryEntry | SandboxBrowserRegistryEntry,
+  assertCurrent: () => void,
+): void {
+  runOpenClawStateWriteTransaction(({ db }) => {
+    assertCurrent();
+    const row = readRegistryRowFromDb(db, kind, entry.containerName);
+    const current = row && (kind === "browser" ? rowToBrowserEntry(row) : rowToContainerEntry(row));
+    if (!current || !sameSandboxRegistryGeneration(current, entry)) {
+      throw new Error("Sandbox runtime generation changed during retirement");
+    }
+    const stateDb = getSandboxRegistryKysely(db);
+    executeSqliteQuerySync(
+      db,
+      stateDb
+        .deleteFrom("sandbox_registry_entries")
+        .where("registry_kind", "=", kind)
+        .where("container_name", "=", entry.containerName),
+    );
   });
 }
 

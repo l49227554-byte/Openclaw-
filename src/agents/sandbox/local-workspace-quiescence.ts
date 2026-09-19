@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { BROWSER_BRIDGES } from "./browser-bridges.js";
 import {
   bindPodmanSandboxEngine,
   DOCKER_SANDBOX_ENGINE,
@@ -10,17 +11,10 @@ import {
   readBrowserRegistry,
   assertSandboxRegistryEntryCurrent,
   assertSandboxBrowserRegistryEntryCurrent,
-  type SandboxRegistryEntry,
 } from "./registry.js";
 
 /** Both execution and browser runtimes can write the exact private mount. */
-export async function readLocalWorkspaceRuntimes(workspaceDir: string): Promise<
-  Array<{
-    kind: "container" | "browser";
-    entry: SandboxRegistryEntry;
-    assertCurrent: () => void;
-  }>
-> {
+export async function readLocalWorkspaceRuntimes(workspaceDir: string) {
   const [containers, browsers] = await Promise.all([readRegistry(), readBrowserRegistry()]);
   return [
     ...containers.entries
@@ -34,7 +28,7 @@ export async function readLocalWorkspaceRuntimes(workspaceDir: string): Promise<
       .filter((entry) => entry.workspaceDir === workspaceDir)
       .map((entry) => ({
         kind: "browser" as const,
-        entry: { ...entry, backendId: "docker" } satisfies SandboxRegistryEntry,
+        entry,
         assertCurrent: () => assertSandboxBrowserRegistryEntryCurrent(entry),
       })),
   ];
@@ -73,23 +67,47 @@ export async function quiesceLocalWorkspace(params: {
   persist: (runtimes: LocalWorkspacePausedRuntime[]) => void;
   assertCurrent: () => void;
 }) {
-  const selected = await readLocalWorkspaceRuntimes(params.workspaceDir);
+  const selected = (await readLocalWorkspaceRuntimes(params.workspaceDir)).map((runtime) => ({
+    runtime,
+    bridges:
+      runtime.kind === "browser"
+        ? [...BROWSER_BRIDGES].filter(
+            ([, bridge]) => bridge.containerName === runtime.entry.containerName,
+          )
+        : [],
+  }));
   params.assertCurrent();
   let paused = [...params.retained];
   const releases: Array<() => Promise<void>> = [];
-  for (const runtime of selected) {
+  const retirements: Array<() => Promise<void>> = [];
+  for (const { runtime, bridges } of selected) {
     const { entry } = runtime;
-    if (entry.backendId !== "docker" && entry.backendId !== "podman") {
+    const backendId = runtime.kind === "browser" ? "docker" : runtime.entry.backendId;
+    const backendTarget = runtime.kind === "container" ? runtime.entry.backendTarget : undefined;
+    if (backendId !== "docker" && backendId !== "podman") {
       throw new Error("Local workspace backend cannot fence host projection writes");
     }
-    if (entry.backendId === "podman" && !entry.backendTarget) {
+    if (backendId === "podman" && !backendTarget) {
       throw new Error("Local workspace Podman engine owner is missing");
     }
     const engine =
-      entry.backendId === "podman"
-        ? bindPodmanSandboxEngine(entry.backendTarget!)
-        : DOCKER_SANDBOX_ENGINE;
-    await validateSandboxContainerEngineTarget(engine, entry.backendTarget);
+      backendId === "podman" ? bindPodmanSandboxEngine(backendTarget!) : DOCKER_SANDBOX_ENGINE;
+    // Stopped allocations remain owned resources, but were never live writers.
+    const captureRetirement = (id: string | null) =>
+      retirements.push(async () => {
+        const { removeSandboxRuntimeGeneration } = await import("./manage.js");
+        await removeSandboxRuntimeGeneration({
+          runtime,
+          engine,
+          id,
+          bridges,
+          assertCurrent: () => {
+            params.assertCurrent();
+            runtime.assertCurrent();
+          },
+        });
+      });
+    await validateSandboxContainerEngineTarget(engine, backendTarget);
     params.assertCurrent();
     runtime.assertCurrent();
     const inspect = await execContainer(
@@ -100,6 +118,8 @@ export async function quiesceLocalWorkspace(params: {
     params.assertCurrent();
     if (inspect.code !== 0) {
       if (/no such (?:container|object)|does not exist/iu.test(inspect.stderr)) {
+        runtime.assertCurrent();
+        captureRetirement(null);
         continue;
       }
       throw new Error("Local workspace runtime could not be inspected; workspace preserved");
@@ -113,6 +133,8 @@ export async function quiesceLocalWorkspace(params: {
     ) {
       throw new Error("Invalid local workspace runtime inspection");
     }
+    runtime.assertCurrent();
+    captureRetirement(id);
     // Podman reports a paused container as Running=false; its exact retained
     // generation still needs recovery and must not be mistaken for a stopped runtime.
     if (running !== "true" && isPaused !== "true") {
@@ -139,7 +161,7 @@ export async function quiesceLocalWorkspace(params: {
       await execContainer(engine, ["pause", id]);
     }
     releases.push(async () => {
-      await validateSandboxContainerEngineTarget(engine, entry.backendTarget);
+      await validateSandboxContainerEngineTarget(engine, backendTarget);
       params.assertCurrent();
       // Archive may have removed this exact generation while settlement held it.
       // A missing or already-running runtime needs receipt cleanup, not unpause.
@@ -170,12 +192,21 @@ export async function quiesceLocalWorkspace(params: {
       params.persist(paused);
     });
   }
-  return async () => {
-    params.assertCurrent();
-    for (const release of releases.toReversed()) {
-      await release();
-    }
-    params.assertCurrent();
-    params.persist([]);
+  return {
+    retire: async () => {
+      params.assertCurrent();
+      for (const retire of retirements) {
+        await retire();
+      }
+      params.assertCurrent();
+    },
+    resume: async () => {
+      params.assertCurrent();
+      for (const release of releases.toReversed()) {
+        await release();
+      }
+      params.assertCurrent();
+      params.persist([]);
+    },
   };
 }

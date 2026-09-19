@@ -19,6 +19,7 @@ import {
 } from "./plugin-publication-collector.ts";
 import { isRecord } from "./record-shared.mjs";
 import type { ReleasePublishGate } from "./release-publish-gates.mts";
+import { readPublishPreflightRelease } from "./release-publish-preflight-evidence.mts";
 import { collectReleaseVersionFloorErrors } from "./release-version.mjs";
 
 export function readReleasePublicationPackages(input: {
@@ -258,14 +259,6 @@ export async function observeReleaseNpmState(input: {
   };
 }
 
-type GitHubRelease = {
-  id: number;
-  draft: boolean;
-  prerelease: boolean;
-  tag_name: string;
-  html_url: string;
-  target_commitish: string;
-};
 type Run = {
   id: number;
   run_attempt: number;
@@ -309,38 +302,30 @@ export function observeReleaseGitHubState(input: {
     return value;
   };
   const api = (endpoint: string): unknown => JSON.parse(raw(endpoint));
-  let release: GitHubRelease | undefined;
+  let release: Record<string, unknown> | undefined;
   try {
-    const value = api(`releases/tags/${encodeURIComponent(input.releaseTag)}`);
-    if (
-      !isRecord(value) ||
-      typeof value.id !== "number" ||
-      typeof value.draft !== "boolean" ||
-      typeof value.prerelease !== "boolean" ||
-      typeof value.html_url !== "string" ||
-      typeof value.target_commitish !== "string" ||
-      value.tag_name !== input.releaseTag
-    ) {
-      throw new Error("Invalid GitHub release response.");
-    }
-    release = value as GitHubRelease;
+    const lookup = readPublishPreflightRelease(runGh, input.repository, input.releaseTag);
+    release = lookup.state === "found" ? lookup.release : undefined;
+    gates.push({
+      id: "github.release",
+      status: lookup.state === "absent" ? "PASS" : "WARN",
+      message: release
+        ? `${release.draft ? "Draft" : "Published"} GitHub release already exists: ${release.html_url}`
+        : lookup.state === "unresolved"
+          ? lookup.message
+          : "No GitHub release exists for the tag.",
+      remediation: release
+        ? "Resume the existing release and preserve its assets and publication evidence."
+        : lookup.state === "unresolved"
+          ? "Inspect the release with credentials that can view drafts before dispatch."
+          : "",
+    });
+  } catch {
     gates.push({
       id: "github.release",
       status: "WARN",
-      message: `${release.draft ? "Draft" : "Published"} GitHub release already exists: ${release.html_url}`,
-      remediation: "Resume the existing release and preserve its assets and publication evidence.",
-    });
-  } catch (error) {
-    const absent = error instanceof Error && /\b404\b/u.test(error.message);
-    gates.push({
-      id: "github.release",
-      status: absent ? "PASS" : "WARN",
-      message: absent
-        ? "No GitHub release exists for the tag."
-        : "GitHub release state could not be read.",
-      remediation: absent
-        ? ""
-        : `gh api repos/${input.repository}/releases/tags/${encodeURIComponent(input.releaseTag)} --method GET`,
+      message: "GitHub release state could not be read.",
+      remediation: `Inspect authenticated release visibility and exact tag ${input.releaseTag}: gh api 'repos/${input.repository}/releases?per_page=100&page=1' --method GET`,
     });
   }
   for (const workflow of [

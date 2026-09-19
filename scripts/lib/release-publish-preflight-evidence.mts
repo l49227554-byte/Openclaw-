@@ -199,7 +199,56 @@ export function createPublishPreflightGh(): PublishPreflightGh {
 }
 
 export function preflightApi(runGh: PublishPreflightGh, repo: string, endpoint: string): unknown {
-  return JSON.parse(runGh(["api", `repos/${repo}/${endpoint}`, "--method", "GET"]));
+  return JSON.parse(
+    runGh(["api", `repos/${repo}${endpoint ? `/${endpoint}` : ""}`, "--method", "GET"]),
+  );
+}
+
+export function readPublishPreflightRelease(runGh: PublishPreflightGh, repo: string, tag: string) {
+  // The tag endpoint omits drafts, and gh release view can mask a failed draft
+  // lookup as absence. One bounded list owner preserves errors and shared caching.
+  for (let page = 1; page <= 20; page++) {
+    const releases = preflightApi(runGh, repo, `releases?per_page=100&page=${page}`);
+    if (
+      !Array.isArray(releases) ||
+      releases.length > 100 ||
+      !releases.every(
+        (release): release is PublishPreflightRecord =>
+          isRecord(release) && typeof release.tag_name === "string",
+      )
+    ) {
+      throw new Error("Invalid GitHub release inventory.");
+    }
+    const release = releases.find((entry) => entry.tag_name === tag);
+    if (release) {
+      if (
+        typeof release.id !== "number" ||
+        typeof release.draft !== "boolean" ||
+        typeof release.prerelease !== "boolean" ||
+        typeof release.html_url !== "string" ||
+        typeof release.target_commitish !== "string"
+      ) {
+        throw new Error("Invalid GitHub release response.");
+      }
+      return { state: "found" as const, release };
+    }
+    if (releases.length < 100) {
+      // GitHub includes drafts only for readers with push access. A complete
+      // public-only list cannot establish that publication has no existing draft.
+      const repository = requirePreflightRecord(preflightApi(runGh, repo, ""), "repository");
+      if (!isRecord(repository.permissions) || repository.permissions.push !== true) {
+        return {
+          state: "unresolved" as const,
+          message:
+            "No matching visible release; repository push access to see drafts could not be verified.",
+        };
+      }
+      return { state: "absent" as const };
+    }
+  }
+  throw new Error(
+    "GitHub release inventory exceeds the bounded lookup; release state is unresolved.",
+  );
 }
 
 export function inspectPublishPreflightTelegramEvidence(input: {

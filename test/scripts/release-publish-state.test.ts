@@ -179,8 +179,11 @@ function observeRuns(params: { workflow: string; title?: string; log?: string; c
       if (endpoint === undefined) {
         throw new Error("Expected a GitHub REST endpoint.");
       }
-      if (endpoint.includes("/releases/tags/")) {
-        throw new Error("HTTP 404");
+      if (endpoint.includes("/releases?")) {
+        return "[]";
+      }
+      if (endpoint === "repos/openclaw/openclaw") {
+        return JSON.stringify({ permissions: { push: true } });
       }
       if (endpoint.includes("/actions/workflows/")) {
         const selected =

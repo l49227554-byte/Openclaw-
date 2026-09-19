@@ -9,6 +9,7 @@ import { loadReleaseChangelog } from "./release-changelog.mjs";
 import { evaluateStableRollbackDrill, type ReleasePublishGate } from "./release-publish-gates.mts";
 import {
   preflightApi,
+  readPublishPreflightRelease,
   requirePreflightRecord,
   type PublishPreflightGh,
 } from "./release-publish-preflight-evidence.mts";
@@ -34,20 +35,12 @@ export function inspectPublishReleasePage(input: {
     repository: input.repo,
     contributionRecordPath: notes.recordPath ?? undefined,
   });
-  let release: Record<string, unknown>;
-  try {
-    release = requirePreflightRecord(
-      preflightApi(input.runGh, input.repo, `releases/tags/${encodeURIComponent(input.tag)}`),
-      "release",
-    );
-  } catch (error) {
-    if (error instanceof Error && /\b404\b/u.test(error.message)) {
-      return undefined;
-    }
-    throw error;
+  const lookup = readPublishPreflightRelease(input.runGh, input.repo, input.tag);
+  if (lookup.state !== "found") {
+    return undefined;
   }
-  // gh release view decodes the nullable REST body into a Go string. Match
-  // that boundary so an empty draft remains admissible to the publisher.
+  const release = lookup.release;
+  // The publisher's gh release view turns a nullable REST body into an empty string.
   const body = release.body ?? "";
   if (typeof body !== "string") {
     throw new Error("Existing release body is missing.");
@@ -159,17 +152,16 @@ export function inspectStableCloseoutPreflight(input: {
       ref: input.sourceSha,
       version,
     });
-    let release: Record<string, unknown> = {};
-    try {
-      release = requirePreflightRecord(
-        api(`releases/tags/${encodeURIComponent(input.tag)}`),
-        "release",
+    const lookup = readPublishPreflightRelease(input.runGh, input.repo, input.tag);
+    if (lookup.state === "unresolved") {
+      add(
+        "release-state",
+        "WARN",
+        lookup.message,
+        "Inspect the release with credentials that can view drafts before stable closeout.",
       );
-    } catch (error) {
-      if (!(error instanceof Error && /\b404\b/u.test(error.message))) {
-        throw error;
-      }
     }
+    const release = lookup.state === "found" ? lookup.release : {};
     const result = verifyStableMainCloseout({
       tag: input.tag,
       mainPackageJson,

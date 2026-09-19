@@ -530,7 +530,7 @@ export async function runReleasePublishPreflight(
     if (options.publishOpenclawNpm !== false) {
       await check(
         "github.release-admission",
-        "Existing release page is safe for the initial publication owner.",
+        "Visible release metadata passed initial publication checks.",
         "Reconcile the exact public release's canonical notes and dependency evidence; leave docs-published bodies with their publication owner.",
         () => inspectPublishReleasePage({ repo: options.repo, tag: options.tag, sourceSha, runGh }),
       );

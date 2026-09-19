@@ -8,6 +8,7 @@ import corePackagePolicy from "../../scripts/lib/npm-core-release-packages.json"
 import {
   createPublishPreflightEvidenceClient,
   inspectPublishPreflightTelegramEvidence,
+  readPublishPreflightRelease,
   validatePublishPreflightNpm,
   verifyPublishedPreflightTarball,
 } from "../../scripts/lib/release-publish-preflight-evidence.mts";
@@ -22,6 +23,57 @@ const sha256 = (bytes: string | Uint8Array) => createHash("sha256").update(bytes
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+});
+
+describe("publish preflight release inventory", () => {
+  it.each(["malformed", "interrupted", "unbounded"])(
+    "refuses absence from an %s inventory",
+    (state) => {
+      let reads = 0;
+      const runGh = () => {
+        reads++;
+        if (state === "malformed") {
+          return JSON.stringify([{ draft: true }]);
+        }
+        if (state === "interrupted" && reads === 2) {
+          throw new Error("HTTP 403: Forbidden");
+        }
+        if (reads > 20) {
+          throw new Error("Lookup exceeded its page limit.");
+        }
+        return JSON.stringify(
+          Array.from({ length: 100 }, (_, index) => ({ tag_name: `other-${reads}-${index}` })),
+        );
+      };
+      expect(() => readPublishPreflightRelease(runGh, "openclaw/openclaw", `v${version}`)).toThrow(
+        state === "malformed"
+          ? "Invalid GitHub release inventory."
+          : state === "interrupted"
+            ? "HTTP 403: Forbidden"
+            : "GitHub release inventory exceeds the bounded lookup",
+      );
+    },
+  );
+
+  it.each([false, true])("retains matching release metadata (draft: %s)", (draft) => {
+    const release = {
+      id: 8,
+      draft,
+      prerelease: false,
+      tag_name: `v${version}`,
+      html_url: `https://github.com/openclaw/openclaw/releases/tag/v${version}`,
+      target_commitish: "a".repeat(40),
+      body: "Published release notes",
+      assets: [{ name: "dependency-evidence.zip" }],
+    };
+    expect(
+      readPublishPreflightRelease(
+        () => JSON.stringify([release]),
+        "openclaw/openclaw",
+        `v${version}`,
+      ),
+    ).toEqual({ state: "found", release });
+  });
 });
 
 describe("publish preflight optional Telegram evidence", () => {

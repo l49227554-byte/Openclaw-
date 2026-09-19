@@ -5,6 +5,7 @@ import { deserialize } from "node:v8";
 import { Worker, type Transferable } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import {
@@ -175,7 +176,7 @@ it("keeps a healthy worker when another connection holds the WAL reader", async 
 it("ignores an inspection result and old expiry when real work resumes", async () => {
   const f = await fixture();
   const postMessage = f.worker.postMessage.bind(f.worker);
-  const dispatched = Promise.withResolvers<void>();
+  const dispatched = createDeferredCore();
   let resume: (() => void) | undefined;
   const send = vi
     .spyOn(f.worker, "postMessage")
@@ -194,8 +195,8 @@ it("ignores an inspection result and old expiry when real work resumes", async (
   f.advance(minute);
   oldInspection();
   await dispatched.promise;
-  const entered = Promise.withResolvers<void>();
-  const finish = Promise.withResolvers<void>();
+  const entered = createDeferredCore();
+  const finish = createDeferredCore();
   const active = runOpenClawStateWorkerOperation(f.context, async (scope) => {
     entered.resolve();
     await finish.promise;
@@ -225,7 +226,7 @@ it("ignores an inspection result and old expiry when real work resumes", async (
 it("replaces a failed idle actor even when overlapping activity sends no command", async () => {
   const f = await fixture("unsettled-inspection");
   const postMessage = f.worker.postMessage.bind(f.worker);
-  const dispatched = Promise.withResolvers<void>();
+  const dispatched = createDeferredCore();
   let resume: (() => void) | undefined;
   const send = vi
     .spyOn(f.worker, "postMessage")
@@ -243,8 +244,8 @@ it("replaces a failed idle actor even when overlapping activity sends no command
   f.advance(minute);
   f.scheduled(minute)();
   await dispatched.promise;
-  const entered = Promise.withResolvers<void>();
-  const finish = Promise.withResolvers<void>();
+  const entered = createDeferredCore();
+  const finish = createDeferredCore();
   const active = runOpenClawStateWorkerOperation(f.context, async () => {
     entered.resolve();
     await finish.promise;

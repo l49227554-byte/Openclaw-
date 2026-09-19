@@ -53,7 +53,6 @@ import type {
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "./io.types.js";
 import { warnIfConfigFromFuture } from "./io.warnings.js";
-import { migrateBlankAgentCwd } from "./legacy.blank-agent-cwd.js";
 import {
   findLegacyConfigIssues,
   migrateLegacyContextBudgetConfig,
@@ -258,15 +257,17 @@ async function readConfigSnapshotWithPreparation(
       env: deps.env,
       homedir: deps.homedir,
     });
-    const blankCwdMigration = migrateBlankAgentCwd(rosterMigration.config);
     envVarWarnings.push(
       ...contextBudgetMigration.changes,
       ...contextBudgetMigration.warnings,
       ...rosterMigration.diagnostics.map((message) => ({ path: "agents.entries", message })),
-      ...blankCwdMigration.changes,
-      ...blankCwdMigration.warnings,
     );
-    const effectiveConfigRaw = blankCwdMigration.config;
+    // Note: blank cwd migration intentionally does NOT run here. This snapshot
+    // path feeds strict CLI validation (`openclaw config validate`), which must
+    // still see an explicitly blank cwd and report the field-level error. The
+    // load path (io.load.ts) applies the blank-cwd migration for upgrade
+    // compatibility; validation is the diagnostic surface, not the loader.
+    const effectiveConfigRaw = rosterMigration.config;
     const validationConfigRaw = effectiveConfigRaw;
     const snapshotRaw = raw;
     const snapshotParsed = effectiveParsed;

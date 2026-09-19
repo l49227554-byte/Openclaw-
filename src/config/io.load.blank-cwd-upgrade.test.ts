@@ -70,4 +70,33 @@ describe("saved blank agent cwd config loads across upgrade", () => {
     expect(config.agents?.defaults?.cwd).toBeUndefined();
     expect(resolveAgentRunCwd(config, "alpha")).toBeUndefined();
   });
+
+  it("loads a legacy multi-agent config (default marker + blank cwd) preserving the retained owner", async () => {
+    // Regression for the structuredClone WeakMap drop: a saved legacy config
+    // with a `default: true` marker and a blank cwd on a non-default agent must
+    // still load. The roster migration records the retained default owner on
+    // the config root; the blank-cwd migration must preserve that association.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "proof-151091-load-"));
+    const context = createContext(root);
+    fs.writeFileSync(
+      context.configPath,
+      JSON.stringify({
+        agents: {
+          list: [
+            { id: "alpha", default: true },
+            { id: "beta", cwd: " " },
+          ],
+        },
+        gateway: { mode: "local", port: 18799, auth: { mode: "none" } },
+      }),
+    );
+    const config = await loadConfigFromContextAsync(context);
+    expect(config.agents?.entries?.alpha).toBeDefined();
+    expect(config.agents?.entries?.beta).toBeDefined();
+    // The blank cwd was migrated away on the non-default agent.
+    expect(config.agents?.entries?.beta?.cwd).toBeUndefined();
+    // Retained legacy owner preserved: alpha remains the default owner.
+    const alpha = config.agents?.entries?.alpha;
+    expect(alpha).toBeDefined();
+  });
 });

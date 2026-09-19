@@ -400,9 +400,9 @@ export function resolveConfiguredChannelPresencePolicy(params: {
   const disabledChannelIds = new Set(listExplicitlyDisabledChannelIdsForConfig(params.config));
   const entrySources = new Map<string, Set<ConfiguredChannelPresenceSource>>();
   const potentialSignals = listPotentialConfiguredChannelPresenceSignals(params.config, env, {
-    ...(params.manifestRecords
-      ? { channelIds: params.manifestRecords.flatMap((record) => record.channels) }
-      : {}),
+    persistedAuthChannelIds: params.manifestRecords
+      ? new Set(normalizeChannelIds(params.manifestRecords.flatMap((record) => record.channels)))
+      : undefined,
     includePersistedAuthState: params.includePersistedAuthState,
     ambientEnvTriggers: params.ambientEnvTriggers,
     discovery: params.discovery,

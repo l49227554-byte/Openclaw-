@@ -26,6 +26,8 @@ export type AmbientEnvTriggerPolicy = "allow" | "suppress";
 
 type ChannelPresenceOptions = {
   channelIds?: readonly string[];
+  /** Canonical channel ids whose persisted credentials may be probed. */
+  persistedAuthChannelIds?: ReadonlySet<string>;
   discovery?: PluginDiscoveryResult;
   includePersistedAuthState?: boolean;
   ambientEnvTriggers?: AmbientEnvTriggerPolicy;
@@ -118,9 +120,7 @@ export function listPotentialConfiguredChannelPresenceSignals(
       )
     : undefined;
   const channelEnvPrefixes = listChannelEnvPrefixes(
-    listBundledChannelIds(env, options.discovery).filter(
-      (channelId) => !scopedChannelIds || scopedChannelIds.has(channelId),
-    ),
+    options.channelIds ?? listBundledChannelIds(env, options.discovery),
   );
   const officialExternalChannelEnvVars = listOfficialExternalChannelEnvVars().filter(
     ({ channelId }) => !scopedChannelIds || scopedChannelIds.has(channelId),
@@ -162,8 +162,8 @@ export function listPotentialConfiguredChannelPresenceSignals(
     // when the state directory exists to keep startup/status checks cheap.
     for (const channelId of listBundledChannelIdsWithPersistedAuthState(options.discovery)) {
       if (
-        scopedChannelIds &&
-        !scopedChannelIds.has(normalizeOptionalLowercaseString(channelId) ?? "")
+        options.persistedAuthChannelIds &&
+        !options.persistedAuthChannelIds.has(normalizeOptionalLowercaseString(channelId) ?? "")
       ) {
         continue;
       }

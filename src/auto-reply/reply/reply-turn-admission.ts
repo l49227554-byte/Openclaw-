@@ -218,7 +218,7 @@ export async function admitReplyTurn(
       : getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
   let expectedSessionId = params.expectedSessionId;
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
-  let recoveryDispatchAttempted = false;
+  let recoveryDispatchOutcome: "deferred" | "failed" | undefined;
   const waitedRotations = new Map<ReplyRotationSource["databaseIdentity"], ReplyRotationSource>();
   // Barrier snapshots retain their source lane after rekeying; active owners do not.
   const isRotationSourceCurrent = (source: ReplyRotationSource) =>
@@ -478,15 +478,17 @@ export async function admitReplyTurn(
             // new input enters ordinary queue selection; a foreground claim would
             // instead block recovery while this input rejects the old delivery claim.
             admission?.release();
-            if (recoveryDispatchAttempted) {
+            if (recoveryDispatchOutcome) {
               if (params.kind === "queued_followup") {
                 return { status: "skipped", reason: "active-run" };
               }
+              if (recoveryDispatchOutcome === "failed") {
+                throw new Error(`Restart recovery failed: ${params.sessionKey}. See Gateway logs.`);
+              }
               await waitForRecovery();
-              recoveryDispatchAttempted = false;
+              recoveryDispatchOutcome = undefined;
               continue;
             }
-            recoveryDispatchAttempted = true;
             const assertRecoveryOwnerCurrent = () => {
               assertDatabaseOwnerCurrent();
               if (
@@ -504,7 +506,7 @@ export async function admitReplyTurn(
               await import("../../agents/main-session-recovery/main-session-restart-recovery.js");
             assertRecoveryOwnerCurrent();
             params.upstreamAbortSignal?.throwIfAborted();
-            await retryRestartAbortedMainSessionRecovery({
+            const recovery = await retryRestartAbortedMainSessionRecovery({
               agentId: params.agentId,
               cfg: gatewayContext.getRuntimeConfig(),
               expectedSessionId: sessionId,
@@ -515,6 +517,7 @@ export async function admitReplyTurn(
               storePath,
             });
             assertRecoveryOwnerCurrent();
+            recoveryDispatchOutcome = recovery.failed > 0 ? "failed" : "deferred";
             // Recovery may have completed or another owner may have won. Reload
             // the exact session and its live owner instead of using this snapshot.
             continue;

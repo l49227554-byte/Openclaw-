@@ -198,9 +198,13 @@ describe("reply turn recovery admission", () => {
     },
   );
 
-  it.each(["visible", "queued_followup"] as const)(
-    "keeps %s input pending when recovery has not started",
-    async (kind) => {
+  it.each([
+    { kind: "visible", failed: false },
+    { kind: "queued_followup", failed: false },
+    { kind: "visible", failed: true },
+  ] as const)(
+    "settles or defers $kind input according to recovery failure: $failed",
+    async ({ kind, failed }) => {
       const sessionKey = "agent:main:main";
       const sessionId = "pending-recovery-session";
       const entry: SessionEntry = {
@@ -215,7 +219,12 @@ describe("reply turn recovery admission", () => {
       const context = createRecoveryGatewayContext();
       const retry = vi
         .spyOn(restartRecovery, "retryRestartAbortedMainSessionRecovery")
-        .mockResolvedValue({ started: 0, settled: 0, failed: 0, skipped: 1 });
+        .mockResolvedValue({
+          started: 0,
+          settled: 0,
+          failed: failed ? 1 : 0,
+          skipped: failed ? 0 : 1,
+        });
       const abort = new AbortController();
       let outcome: Awaited<ReturnType<typeof admitTestReplyTurn>> | undefined;
       let failure: unknown;
@@ -240,13 +249,19 @@ describe("reply turn recovery admission", () => {
         await new Promise<void>((resolve) => {
           setImmediate(resolve);
         });
-        expect(failure).toBeUndefined();
         expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject(entry);
         expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
-        if (kind === "queued_followup") {
+        if (failed) {
+          expect(failure).toMatchObject({
+            message: expect.stringMatching(/restart recovery failed/i),
+          });
+          expect(outcome).toBeUndefined();
+        } else if (kind === "queued_followup") {
+          expect(failure).toBeUndefined();
           await admission;
           expect(outcome).toEqual({ status: "skipped", reason: "active-run" });
         } else {
+          expect(failure).toBeUndefined();
           expect(outcome).toBeUndefined();
           await replaceSessionEntry(
             { storePath, sessionKey },

@@ -10,7 +10,10 @@ import {
   runProviderCatalog,
 } from "../plugins/provider-discovery.js";
 import type { ProviderPlugin } from "../plugins/types.js";
-import { createAuthProfileStoreFixture } from "./auth-profiles/credential-fixtures.test-support.js";
+import {
+  createAuthProfileStoreFixture,
+  oauthCred,
+} from "./auth-profiles/credential-fixtures.test-support.js";
 import { OAuthRefreshFailureError } from "./auth-profiles/oauth-refresh-failure.js";
 import { resolveApiKeyForProfile } from "./auth-profiles/oauth.js";
 import { prepareProviderCatalogRun } from "./models-config.providers.catalog-context.js";
@@ -38,13 +41,12 @@ it.each([true, false])(
     const profileId = "fixture:owner";
     const refresh = "synthetic-refresh-secret-that-must-not-be-logged";
     const store = createAuthProfileStoreFixture({
-      [profileId]: {
-        type: "oauth",
+      [profileId]: oauthCred({
         provider: "fixture",
         access: "expired-access",
         refresh,
         expires: 1,
-      },
+      }),
     });
     const selectedCredentials: Array<string | undefined> = [];
     const provider: ProviderPlugin = {

@@ -104,6 +104,7 @@ export function createReplyOperation(params: {
   let acceptedSteeredInboundAudio = false;
   let toolAuthorityFingerprint: string | undefined;
   let toolAuthoritySnapshot: ReplyToolAuthoritySnapshot | undefined;
+  let automaticFallbackRoute: ReplyOperation["automaticFallbackRoute"];
   let toolAuthorityRoute: { provider: string; model: string } | undefined;
   const ownerSettlement = createDeferredCore();
   let ownerCompletionBarrier: Promise<void> | undefined;
@@ -136,6 +137,7 @@ export function createReplyOperation(params: {
   const setResult = (next: ReplyOperationResult) => {
     result = next;
     recordActivity();
+    phase = next.kind;
   };
 
   const clearState = (
@@ -255,6 +257,18 @@ export function createReplyOperation(params: {
     get toolAuthorityFingerprint() {
       return toolAuthorityFingerprint;
     },
+    get automaticFallbackRoute() {
+      return automaticFallbackRoute;
+    },
+    setAutomaticFallbackRoute(route) {
+      if (result || replyRunState.activeRunsByKey.get(currentSessionKey) !== operation) {
+        return;
+      }
+      automaticFallbackRoute = route ? Object.freeze({ ...route }) : undefined;
+    },
+    get requestedToolAuthorityRoute() {
+      return toolAuthoritySnapshot?.requestedRoute;
+    },
     get toolAuthorityRoute() {
       return toolAuthorityRoute;
     },
@@ -267,9 +281,7 @@ export function createReplyOperation(params: {
     get staleExpiryReason() {
       return staleExpiryReason;
     },
-    get startedAtMs() {
-      return startedAtMs;
-    },
+    startedAtMs,
     get lastActivityAtMs() {
       return lastActivityAtMs;
     },
@@ -493,7 +505,6 @@ export function createReplyOperation(params: {
     complete() {
       if (!result) {
         setResult({ kind: "completed" });
-        phase = "completed";
       }
       clearState();
       settleOwner();
@@ -514,7 +525,6 @@ export function createReplyOperation(params: {
         : completed;
       if (!result) {
         setResult({ kind: "completed" });
-        phase = "completed";
       }
       clearState(barrier, timeoutMs);
       // This barrier owns dispatch delivery and terminal persistence. Stale
@@ -528,7 +538,6 @@ export function createReplyOperation(params: {
       finalizationLease.clear();
       if (!result) {
         setResult({ kind: "failed", code, cause });
-        phase = "failed";
       }
       if (!retainFailureUntilComplete && !retainStateUntilCompleteOperations.has(operation)) {
         clearState();
@@ -558,7 +567,6 @@ export function createReplyOperation(params: {
       beforeSupersede?.();
       if (abortFrozen) {
         setResult({ kind: "aborted", code: "aborted_for_supersession" });
-        phase = "aborted";
         scheduleTerminalSettle();
         return true;
       }
@@ -585,7 +593,6 @@ export function createReplyOperation(params: {
       // from post-output stalls (finalization/terminal cleanup; feedback is noise).
       staleExpiryReason = reason;
       setResult({ kind: "failed", code: "run_stalled" });
-      phase = "failed";
     }
     const logStaleTakeoverRelease = () => {
       diag.warn(
@@ -674,7 +681,6 @@ export function createReplyOperation(params: {
     }
     if (!result) {
       setResult({ kind: "aborted", code: "aborted_for_restart" });
-      phase = "aborted";
     }
     abortInternally(createAgentRunRestartAbortError());
     let cancelError: unknown;

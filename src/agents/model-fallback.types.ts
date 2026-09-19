@@ -31,5 +31,7 @@ export type ModelFallbackAttemptProvenance = {
   requestedProvider: string;
   requestedModel: string;
   stage: "initial" | "fallback";
+  /** Sticky selection change; later candidates are not automatic fallback for the original request. */
+  selectionChanged?: boolean;
   fallbackReason?: FailoverReason;
 };

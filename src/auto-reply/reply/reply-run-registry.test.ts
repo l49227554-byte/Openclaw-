@@ -20,6 +20,7 @@ import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-trans
 import { createTestUserTurnTranscriptTarget } from "../../sessions/user-turn-transcript.test-support.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
 import { beginReplyOperationFinalizationWork } from "./reply-run-finalization-lease.js";
+import { defineReplyRouteAuthorityTests } from "./reply-run-registry.authority.test-support.js";
 import type { ReplyToolAuthorityOverlay } from "./reply-run-registry.contracts.js";
 import {
   abortActiveReplyRuns,
@@ -228,44 +229,7 @@ describe("reply run registry", () => {
     },
   );
 
-  it("keeps the initial policy snapshot while tracking concrete fallback authority", () => {
-    const run = createQueueTestRun({ prompt: "route authority" });
-    const operation = createTestReplyOperation({ sessionId: "session-route" });
-    const snapshot = prepareReplyToolAuthority(run);
-    const primary = { provider: "openai", model: "gpt-primary" };
-    const fallback = { provider: "anthropic", model: "claude-fallback" };
-    const primaryFingerprint = resolveFollowupRunToolAuthorityFingerprint(run, primary);
-    const fallbackFingerprint = resolveFollowupRunToolAuthorityFingerprint(run, fallback);
-    const overlay = toolAuthorityOverlay(run);
-    operation.bindToolAuthoritySnapshot(snapshot);
-
-    expect(operation.bindToolAuthorityRoute(primary)).toBe(primaryFingerprint);
-    expect(operation.toolAuthorityRoute).toEqual(primary);
-    expect(operation.toolAuthorityFingerprint).toBe(primaryFingerprint);
-
-    run.run.execOverrides = { security: "deny" };
-    expect(() => operation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(run))).toThrow(
-      "Reply operation cannot change tool authority after admission",
-    );
-    expect(operation.toolAuthorityFingerprint).toBe(primaryFingerprint);
-    expect(operation.bindToolAuthorityRoute(fallback)).toBe(fallbackFingerprint);
-    expect(operation.toolAuthorityRoute).toEqual(fallback);
-    expect(operation.toolAuthorityFingerprint).toBe(fallbackFingerprint);
-    expect(operation.projectToolAuthorityFingerprint(overlay)).toBe(fallbackFingerprint);
-
-    operation.bindToolAuthoritySnapshot(snapshot);
-    expect(operation.toolAuthorityRoute).toEqual(fallback);
-    expect(operation.toolAuthorityFingerprint).toBe(fallbackFingerprint);
-    operation.attachBackend({
-      kind: "embedded",
-      cancel: vi.fn(),
-      toolAuthorityFingerprint: "backend-exact-authority",
-    });
-    operation.bindToolAuthoritySnapshot(snapshot);
-    expect(operation.toolAuthorityRoute).toEqual(fallback);
-    expect(operation.toolAuthorityFingerprint).toBe("backend-exact-authority");
-    operation.complete();
-  });
+  defineReplyRouteAuthorityTests(createTestReplyOperation, toolAuthorityOverlay);
 
   afterEach(() => {
     testing.resetReplyRunRegistry();

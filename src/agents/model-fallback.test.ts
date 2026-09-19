@@ -45,6 +45,7 @@ import { isFallbackSummaryError } from "./model-fallback-attempt.js";
 import { resolveModelCandidateChain } from "./model-fallback-candidates.js";
 import { runWithImageModelFallback } from "./model-fallback-image.js";
 import { runWithModelFallback as runWithModelFallbackBase } from "./model-fallback-runner.js";
+import { defineModelSelectionProvenanceTests } from "./model-fallback.selection.test-support.js";
 import { shouldDiscardDeferredSessionSuspension } from "./model-fallback.test-support.js";
 import {
   createAgentRunDirectAbortError,
@@ -2859,45 +2860,7 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledTimes(3);
   });
 
-  it("jumps directly to a later live-session model switch candidate (#57471)", async () => {
-    const cfg = createModelFallbackConfig("openai/gpt-4.1-mini", [
-      "anthropic/claude-haiku-3-5",
-      "anthropic/claude-sonnet-4-6",
-      "openrouter/deepseek-chat",
-    ]);
-    const switchError = new LiveSessionModelSwitchError({
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-    });
-    const run = vi.fn(async (provider: string, model: string) => {
-      if (provider === "openai" && model === "gpt-4.1-mini") {
-        throw switchError;
-      }
-      if (provider === "anthropic" && model === "claude-sonnet-4-6") {
-        return "ok";
-      }
-      throw new Error(`unexpected fallback candidate: ${provider}/${model}`);
-    });
-    const onError = vi.fn();
-
-    const result = await runWithModelFallback({
-      cfg,
-      provider: "openai",
-      model: "gpt-4.1-mini",
-      run,
-      onError,
-    });
-
-    expect(result.result).toBe("ok");
-    expect(result.provider).toBe("anthropic");
-    expect(result.model).toBe("claude-sonnet-4-6");
-    expect(result.attempts).toStrictEqual([]);
-    expect(onError).not.toHaveBeenCalled();
-    expect(run.mock.calls).toMatchObject([
-      ["openai", "gpt-4.1-mini", { isFinalFallbackAttempt: false }],
-      ["anthropic", "claude-sonnet-4-6", { isFinalFallbackAttempt: false }],
-    ]);
-  });
+  defineModelSelectionProvenanceTests(runWithModelFallback);
 
   it("returns runtime-changing live switches to the retry owner before redirecting", async () => {
     const cfg = createModelFallbackConfig("anthropic/claude-haiku-3-5", ["openai/gpt-5.6-luna"]);

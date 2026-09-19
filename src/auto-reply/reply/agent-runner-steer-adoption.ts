@@ -33,6 +33,7 @@ type ActiveReplySteerParams = {
   followupRun: RunReplyAgentParams["followupRun"];
   opts: RunReplyAgentParams["opts"];
   providedReplyOperation: ReplyOperation | undefined;
+  automaticFallbackRoute?: ReplyOperation["automaticFallbackRoute"];
   queueKey: string;
   releaseAdmissionTicket: () => void;
   replyOperationRunState: ReplyOperationRunState | undefined;
@@ -92,17 +93,14 @@ export async function runActiveReplySteer(
   // command continuation whose slot adoption was skipped (#104844) still
   // carries a source-keyed reservation; steering by its stale sessionId
   // would miss the live target run.
-  const registeredReplyOperation = sessionKey ? replyRunRegistry.get(sessionKey) : undefined;
-  const activeReplyOperation =
-    params.providedReplyOperation?.key === sessionKey
-      ? params.providedReplyOperation
-      : (registeredReplyOperation ?? params.providedReplyOperation);
+  const activeReplyOperation = params.providedReplyOperation;
   const steerSessionId = activeReplyOperation?.sessionId ?? followupRun.run.sessionId;
   // Capture exact injection authority before parking or awaiting admission.
   // A same-key successor must never inherit this turn's steer or abort.
-  const injectionTarget = replyRunRegistry.resolveCurrentMessageInjectionTarget(
-    activeReplyOperation?.key ?? queueKey,
-  );
+  const injectionTarget =
+    activeReplyOperation && replyRunRegistry.get(activeReplyOperation.key) === activeReplyOperation
+      ? replyRunRegistry.resolveCurrentMessageInjectionTarget(activeReplyOperation.key)
+      : undefined;
   const parked = parkSteerCandidate(queueKey, followupRun, resolvedQueue, runFollowup);
   if (!parked) {
     releaseAdmissionTicket();
@@ -173,6 +171,17 @@ export async function runActiveReplySteer(
       )
     ) {
       return await fallback("terminal source-reply delivery is closed");
+    }
+    // A live switch can replace an attempt on the same operation with an equal
+    // backend hash. Promotion belongs to the captured automatic-fallback attempt.
+    const automaticFallbackRoute = params.automaticFallbackRoute;
+    if (
+      automaticFallbackRoute &&
+      (activeReplyOperation?.automaticFallbackRoute !== automaticFallbackRoute ||
+        activeReplyOperation.toolAuthorityRoute?.provider !== automaticFallbackRoute.provider ||
+        activeReplyOperation.toolAuthorityRoute?.model !== automaticFallbackRoute.model)
+    ) {
+      return await fallback("automatic fallback provenance changed during admission");
     }
     const injectionAttempt = beginReplyMessageInjectionTarget(injectionTarget, followupRun.prompt, {
       steeringMode: "all",

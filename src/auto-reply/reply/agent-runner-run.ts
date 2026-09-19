@@ -153,12 +153,9 @@ export async function runReplyAgent(
     ? (replyRunRegistry.get(sessionKey) ?? providedReplyOperation)
     : providedReplyOperation;
   const activeToolAuthorityFingerprint = activeReplyOperation?.toolAuthorityFingerprint;
-  const incomingAuthorityAtActiveRoute = activeReplyOperation?.toolAuthorityRoute
-    ? resolveFollowupRunToolAuthorityFingerprint(
-        followupRun,
-        activeReplyOperation.toolAuthorityRoute,
-      )
-    : undefined;
+  const activeRoute = activeReplyOperation?.toolAuthorityRoute;
+  const incomingAuthorityAtActiveRoute =
+    activeRoute && resolveFollowupRunToolAuthorityFingerprint(followupRun, activeRoute);
   const hasAuthorityMismatch =
     activeReplyOperation !== undefined &&
     activeToolAuthorityFingerprint !== incomingToolAuthorityFingerprint;
@@ -166,8 +163,25 @@ export async function runReplyAgent(
     hasAuthorityMismatch &&
     activeToolAuthorityFingerprint !== undefined &&
     incomingAuthorityAtActiveRoute === activeToolAuthorityFingerprint;
+  const requestedRoute = activeReplyOperation?.requestedToolAuthorityRoute;
+  const hasUnchangedModelSelection =
+    requestedRoute?.provider === followupRun.run.provider &&
+    requestedRoute?.model === followupRun.run.model;
+  const hasModelSelectionChange = requestedRoute !== undefined && !hasUnchangedModelSelection;
+  // Automatic fallback changes execution, not the caller's selected model. Recompute
+  // the incoming policy at the concrete route; never substitute the owner's hash.
+  const fallbackRoute = activeReplyOperation?.automaticFallbackRoute;
+  const automaticFallbackRoute =
+    hasRouteOnlyAuthorityMismatch &&
+    hasUnchangedModelSelection &&
+    fallbackRoute?.provider === activeRoute?.provider &&
+    fallbackRoute?.model === activeRoute?.model
+      ? fallbackRoute
+      : undefined;
   const shouldQueueAuthorityMismatch =
-    effectiveShouldSteer && isActive && hasAuthorityMismatch && !hasRouteOnlyAuthorityMismatch;
+    effectiveShouldSteer &&
+    isActive &&
+    (hasModelSelectionChange || (hasAuthorityMismatch && !hasRouteOnlyAuthorityMismatch));
   if (shouldQueueAuthorityMismatch) {
     logVerbose(
       `queue: active session ${activeReplyOperation?.sessionId ?? followupRun.run.sessionId} has different or unknown tool authority; queuing instead of steering`,
@@ -326,7 +340,7 @@ export async function runReplyAgent(
     const result = await runActiveReplySteer({
       followupRun,
       opts,
-      providedReplyOperation,
+      providedReplyOperation: activeReplyOperation,
       queueKey,
       releaseAdmissionTicket,
       replyOperationRunState,
@@ -340,7 +354,10 @@ export async function runReplyAgent(
       touchActiveSessionEntry,
       typing,
       typingSignals,
-      toolAuthorityFingerprint: incomingToolAuthorityFingerprint,
+      toolAuthorityFingerprint: automaticFallbackRoute
+        ? (incomingAuthorityAtActiveRoute ?? incomingToolAuthorityFingerprint)
+        : incomingToolAuthorityFingerprint,
+      automaticFallbackRoute,
       pendingInputAuthorityFingerprint: hasRouteOnlyAuthorityMismatch
         ? activeToolAuthorityFingerprint
         : undefined,

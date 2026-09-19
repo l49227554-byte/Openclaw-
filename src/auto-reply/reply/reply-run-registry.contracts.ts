@@ -98,6 +98,8 @@ export type ReplyToolAuthorityOverlay = Readonly<{
 }>;
 
 export type ReplyToolAuthoritySnapshot = Readonly<{
+  /** Selected route at admission, before automatic fallback chooses a concrete route. */
+  requestedRoute?: ReplyToolAuthorityRoute;
   fingerprint(route?: ReplyToolAuthorityRoute): string;
   project: (overlay: ReplyToolAuthorityOverlay, route: ReplyToolAuthorityRoute) => string;
 }>;
@@ -276,6 +278,10 @@ export type ReplyOperation = {
   readonly acceptedSteeredInboundAudio: boolean;
   /** Immutable tool authority accepted by the active backend for steered user turns. */
   readonly toolAuthorityFingerprint?: string;
+  /** Original model selection; concrete fallback must not replace this identity. */
+  readonly requestedToolAuthorityRoute?: ReplyToolAuthorityRoute;
+  /** Concrete candidate admitted by the automatic fallback owner for the original selection. */
+  readonly automaticFallbackRoute?: ReplyToolAuthorityRoute;
   /** Concrete provider/model route currently selected for this operation. */
   readonly toolAuthorityRoute?: ReplyToolAuthorityRoute;
   readonly phase: ReplyOperationPhase;
@@ -311,6 +317,8 @@ export type ReplyOperation = {
   markAcceptedSteeredInboundAudio(): void;
   /** Freeze the complete caller policy before a concrete backend attempt attaches. */
   bindToolAuthoritySnapshot(snapshot: ReplyToolAuthoritySnapshot): void;
+  /** Clear on primary attempts; record only an owner-proven automatic fallback candidate. */
+  setAutomaticFallbackRoute(route: ReplyToolAuthorityRoute | undefined): void;
   /** Project an inbound turn through the current concrete route; settled owners fail closed. */
   projectToolAuthorityFingerprint(overlay: ReplyToolAuthorityOverlay): string | undefined;
   /** Prepare fingerprint and projection together for the final concrete attempt route. */

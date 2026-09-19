@@ -46,6 +46,7 @@ import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-trans
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import type { TemplateContext } from "../templating.js";
 import { createReplyAgentRestartRecoveryController } from "./agent-runner-execute.js";
+import { defineFallbackSteeringTests } from "./agent-runner.fallback-steering.test-support.js";
 import {
   mockAcceptedWaitingStatusRun,
   registerWaitingStatusCases,
@@ -1163,36 +1164,7 @@ describe("runReplyAgent active steering", () => {
     expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
   });
 
-  it("offers a route-only mismatch to the pending-input owner", async () => {
-    state.queueEmbeddedAgentMessageMock.mockReturnValueOnce(true);
-    const activeRoute = { provider: "openai", model: "gpt-fallback" };
-    const { followupRun, run } = createMinimalRun({
-      isActive: true,
-      shouldSteer: true,
-      resolvedQueueMode: "steer",
-      bindActiveAuthority: false,
-    });
-    const active = createReplyOperation({
-      sessionKey: "main",
-      sessionId: "session",
-      resetTriggered: false,
-    });
-    active.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
-    active.bindToolAuthorityRoute(activeRoute);
-    active.setPhase("running");
-
-    await expect(run()).resolves.toBeUndefined();
-
-    expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledWith(
-      "session",
-      "hello",
-      expect.objectContaining({
-        pendingInputAuthorityFingerprint: active.toolAuthorityFingerprint,
-      }),
-    );
-    expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
-    active.complete();
-  });
+  defineFallbackSteeringTests({ createMinimalRun, state, parkedSteer });
 
   it("drains an authority-mismatched turn after its provided operation clears", async () => {
     const provided = createReplyOperation({

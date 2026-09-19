@@ -327,11 +327,11 @@ suite.define(() => {
           action: () => Promise<void>,
         ) => {
           // Visibility includes closing animations; finish each input mode before starting another.
-          await cpuTooltip.evaluate((element, eventName) => {
+          await cpuTooltip.evaluate((element, transitionEvent) => {
             element.removeAttribute("data-test-transition");
             element.addEventListener(
-              eventName,
-              () => element.setAttribute("data-test-transition", eventName),
+              transitionEvent,
+              () => element.setAttribute("data-test-transition", transitionEvent),
               { once: true },
             );
           }, eventName);

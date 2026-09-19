@@ -50,7 +50,7 @@ export function inspectPublishReleasePage(input: {
       "The release already belongs to the docs-publication owner; the initial publisher must not overwrite it.",
     );
   }
-  if (release.draft !== true) {
+  if (!release.draft) {
     const canonical = verifyGithubReleaseNotes({
       body,
       changelog: notes.section,

@@ -76,6 +76,71 @@ describe("AppSidebar agent roster", () => {
     },
   );
 
+  it.each(["active", "all", "archived"] as const)(
+    "preserves archived Home children under the %s filter",
+    async (status) => {
+      const homeKey = "agent:working:main";
+      const childKey = "agent:working:archived-child";
+      const { sidebar } = await mountRoster(roster, [
+        session("working", 10, { childSessions: [childKey] }),
+        session("working", 9, {
+          key: childKey,
+          isMain: false,
+          spawnedBy: homeKey,
+          archived: true,
+        }),
+      ]);
+      sidebar.sidebarAgentsMode = "roster";
+      await vi.waitFor(() => expect(agentIds(sidebar)).toHaveLength(3));
+      await selectFilter(sidebar, `status:${status}`);
+      await vi.waitFor(() =>
+        expect(sessionKeys(sidebar)).toEqual(status === "active" ? [] : [childKey]),
+      );
+    },
+  );
+
+  it.each(
+    (["chip", "roster"] as const).flatMap((mode) =>
+      [false, true].flatMap((cached) =>
+        [undefined, "Saved work"].map((category) => ({ mode, cached, category })),
+      ),
+    ),
+  )(
+    "promotes Home descendants through parent-owned hidden-run lists ($mode, cached=$cached, category=$category)",
+    async ({ mode, cached, category }) => {
+      const agentId = mode === "chip" ? "main" : "working";
+      const runKey = `agent:${agentId}:subagent:bridge`;
+      const childKey = `agent:${agentId}:project`;
+      const descendants = [
+        session(agentId, 9, {
+          key: runKey,
+          isMain: false,
+          childSessions: [childKey],
+        }),
+        session(agentId, 8, { key: childKey, isMain: false, category }),
+      ];
+      const { sidebar } = await mountRoster(
+        roster,
+        [session(agentId, 10, { childSessions: [runKey] }), ...(cached ? [] : descendants)],
+        undefined,
+        [],
+        [],
+        cached ? descendants : undefined,
+      );
+      sidebar.sidebarAgentsMode = mode;
+      await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual([childKey]));
+      expect(sidebar.querySelector("[data-child-session-error]")).toBeNull();
+      if (mode === "chip" && category) {
+        const section = sidebar
+          .querySelector("[data-session-key]")
+          ?.closest("[data-session-section]");
+        expect(
+          section?.querySelector(".sidebar-recent-sessions__label-text")?.textContent?.trim(),
+        ).toBe(category);
+      }
+    },
+  );
+
   it("keeps configured agent order when session activity changes", async () => {
     const { sidebar, context, result } = await mountRoster();
     sidebar.sidebarAgentsMode = "roster";

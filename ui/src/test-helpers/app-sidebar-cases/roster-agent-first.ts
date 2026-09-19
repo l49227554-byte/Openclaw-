@@ -158,16 +158,19 @@ describe("AppSidebar agent roster", () => {
     },
   );
 
-  it.each([false, true])(
-    "loads Home descendants and exposes their retry (hidden run=%s)",
-    async (viaRun) => {
-      const homeKey = "agent:working:main";
-      const runKey = "agent:working:subagent:bridge";
-      const childKey = "agent:working:project";
+  it.each(
+    (["chip", "roster"] as const).flatMap((mode) =>
+      [false, true].map((viaRun) => ({ mode, viaRun })),
+    ),
+  )(
+    "loads Home descendants and exposes their retry ($mode, hidden run=$viaRun)",
+    async ({ mode, viaRun }) => {
+      const agentId = mode === "chip" ? "main" : "working";
+      const homeKey = `agent:${agentId}:main`;
+      const runKey = `agent:${agentId}:subagent:bridge`;
+      const childKey = `agent:${agentId}:project`;
       const parentKey = viaRun ? runKey : homeKey;
-      const { sidebar, sessions, result } = await mountRoster(roster, [
-        session("working", 10, { childSessions: [viaRun ? runKey : childKey] }),
-      ]);
+      const { sidebar, sessions, result } = await mountRoster(roster, []);
       let failed = false;
       sessions.list.mockImplementation(async (options) => {
         if (viaRun && options?.spawnedBy === homeKey) {
@@ -175,7 +178,7 @@ describe("AppSidebar agent roster", () => {
             ...result,
             count: 1,
             sessions: [
-              session("working", 9, {
+              session(agentId, 9, {
                 key: runKey,
                 isMain: false,
                 spawnedBy: homeKey,
@@ -193,7 +196,7 @@ describe("AppSidebar agent roster", () => {
             ...result,
             count: 1,
             sessions: [
-              session("working", 8, {
+              session(agentId, 8, {
                 key: childKey,
                 isMain: false,
                 spawnedBy: parentKey,
@@ -203,18 +206,19 @@ describe("AppSidebar agent roster", () => {
         }
         return result;
       });
-      sidebar.sidebarAgentsMode = "roster";
+      result.sessions = [session(agentId, 10, { childSessions: [viaRun ? runKey : childKey] })];
+      result.count = 1;
+      sessions.publish({ result });
+      sidebar.sidebarAgentsMode = mode;
       await vi.waitFor(() =>
-        expect(
-          sidebar.querySelector('[data-agent-group="working"] [data-child-session-error]'),
-        ).not.toBeNull(),
+        expect(sidebar.querySelector(`[data-retry-child-sessions="${parentKey}"]`)).not.toBeNull(),
       );
       sidebar
         .querySelector<HTMLButtonElement>(`[data-retry-child-sessions="${parentKey}"]`)!
         .click();
       await vi.waitFor(() => expect(sessionKeys(sidebar)).toEqual([childKey]));
       expect(sidebar.querySelector("[data-child-session-error]")).toBeNull();
-      expect(sidebar.querySelector('[data-session-key="agent:working:main"]')).toBeNull();
+      expect(sidebar.querySelector(`[data-session-key="${homeKey}"]`)).toBeNull();
     },
   );
 

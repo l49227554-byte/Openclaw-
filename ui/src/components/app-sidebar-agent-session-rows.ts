@@ -10,17 +10,19 @@ import {
   parseAgentSessionKey,
   resolveUiDefaultAgentId,
   resolveUiSessionRowAgentId,
-  resolveUiSessionNavigationParentKey,
 } from "../lib/sessions/session-key.ts";
 import { projectSidebarArchiveVisibility } from "./app-sidebar-session-archive-visibility.ts";
 import { adoptedCatalogSessionKeys } from "./app-sidebar-session-catalogs.ts";
 import {
   collectCategorizedChildRootRows,
-  collectPromotedMainChildRows,
   collectSidebarSessionRowsByKey,
   someSidebarSessionInTree,
   type SidebarSessionNavigationState,
 } from "./app-sidebar-session-navigation-logic.ts";
+import {
+  collectPromotedMainChildRows,
+  collectSidebarSessionChildKeys,
+} from "./app-sidebar-session-parent.ts";
 import { projectSessionTree } from "./app-sidebar-session-tree.ts";
 import type {
   SidebarKnownSessionAttention,
@@ -195,32 +197,20 @@ export function projectSidebarAgentSessionRows({
         : []),
     ].map(normalizeDefaultMainSessionAliasForUi),
   );
-  const parentKeys = new Map(
-    [...visibleRowsByKey.values()].map((row) => [
-      normalizeDefaultMainSessionAliasForUi(row.key),
-      normalizeDefaultMainSessionAliasForUi(resolveUiSessionNavigationParentKey(row)),
-    ]),
+  const childKeysByParent = collectSidebarSessionChildKeys(visibleRowsByKey, mainSessionKeys);
+  // Detail caches supplement the current forest, including parent-owned links,
+  // rather than every Home/category root previously visited in chip mode.
+  const reachableKeys = new Set(currentRootKeys);
+  for (const key of reachableKeys) {
+    for (const child of childKeysByParent.get(key) ?? []) {
+      reachableKeys.add(normalizeDefaultMainSessionAliasForUi(child));
+    }
+  }
+  const sessionCandidateRows = [...visibleRowsByKey.values()].filter(
+    (row) =>
+      inScope(row) &&
+      (!grouped || reachableKeys.has(normalizeDefaultMainSessionAliasForUi(row.key))),
   );
-  const sessionCandidateRows = [...visibleRowsByKey.values()].filter((row) => {
-    if (!inScope(row)) {
-      return false;
-    }
-    if (!grouped) {
-      return true;
-    }
-    // Detail caches supplement the current forest, not every main/category root
-    // ever visited in chip mode. Use the tree's canonical parent/key owners.
-    let key = normalizeDefaultMainSessionAliasForUi(row.key);
-    const visited = new Set<string>();
-    while (key && !visited.has(key)) {
-      if (currentRootKeys.has(key)) {
-        return true;
-      }
-      visited.add(key);
-      key = parentKeys.get(key) ?? "";
-    }
-    return false;
-  });
   const categorizedChildRows = collectCategorizedChildRootRows({
     rows: sessionCandidateRows.filter((row) => !isMainSession(row.key)),
     scopedRoots: scopedRootRows,
@@ -230,6 +220,8 @@ export function projectSidebarAgentSessionRows({
   const scopedRootKeys = new Set(scopedRootRows.map((row) => row.key));
   const promotedRows = collectPromotedMainChildRows({
     rows: sessionCandidateRows,
+    childKeysByParent,
+    archivedFilter: host.sessionsStatusFilter,
     mainSessionKeys,
     scopedRootKeys,
     showCron: host.sessionsShowCron,

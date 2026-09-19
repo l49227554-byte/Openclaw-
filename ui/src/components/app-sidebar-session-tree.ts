@@ -1,6 +1,13 @@
 import type { GatewaySessionRow } from "../api/types.ts";
-import { areUiSessionKeysEquivalent, isSubagentSessionKey } from "../lib/sessions/session-key.ts";
-import { resolveSidebarSessionParentKey } from "./app-sidebar-session-parent.ts";
+import {
+  areUiSessionKeysEquivalent,
+  isSubagentSessionKey,
+  normalizeDefaultMainSessionAliasForUi,
+} from "../lib/sessions/session-key.ts";
+import {
+  collectSidebarSessionChildKeys,
+  resolveSidebarSessionParentKey,
+} from "./app-sidebar-session-parent.ts";
 import {
   summarizeSidebarSessionAttention,
   type SidebarKnownSessionAttention,
@@ -88,40 +95,11 @@ export function projectSessionTree(params: {
     knownSessionAttention,
     toSidebarSession,
   } = params;
-  const childKeysByParent = new Map<string, string[]>();
+  const childKeysByParent = collectSidebarSessionChildKeys(rowsByKey, mainSessionKeys);
   const hasRootCategory = (row: GatewaySessionRow | undefined) =>
     typeof row?.category === "string" &&
     row.category.trim().length > 0 &&
     !isSubagentSessionKey(row.key);
-  const appendChild = (parentKey: string, childKey: string) => {
-    const keys = childKeysByParent.get(parentKey) ?? [];
-    if (!keys.includes(childKey)) {
-      keys.push(childKey);
-      childKeysByParent.set(parentKey, keys);
-    }
-  };
-  for (const row of rowsByKey.values()) {
-    for (const childKey of row.childSessions ?? []) {
-      const child = rowsByKey.get(childKey);
-      // Categories can place independent conversations at a section root;
-      // subagent activity always belongs to its navigation parent.
-      if (hasRootCategory(child)) {
-        continue;
-      }
-      const navigationParentKey = resolveSidebarSessionParentKey(child, mainSessionKeys, row.key);
-      // Runtime control and sidebar navigation can have different parents;
-      // known children belong to their explicit navigation parent only.
-      if (areUiSessionKeysEquivalent(navigationParentKey, row.key)) {
-        appendChild(row.key, childKey);
-      }
-    }
-  }
-  for (const row of rowsByKey.values()) {
-    const parentKey = resolveSidebarSessionParentKey(row, mainSessionKeys);
-    if (parentKey && !hasRootCategory(row)) {
-      appendChild(parentKey, row.key);
-    }
-  }
 
   const nestedKeys = new Set<string>();
   const build = (
@@ -129,7 +107,12 @@ export function projectSessionTree(params: {
     isChild: boolean,
     ancestors: Set<string>,
   ): SidebarRecentSession => {
-    const childSessionKeys = row.archived === true ? [] : (childKeysByParent.get(row.key) ?? []);
+    const childSessionKeys =
+      row.archived === true
+        ? []
+        : (childKeysByParent.get(normalizeDefaultMainSessionAliasForUi(row.key)) ?? []).filter(
+            (key) => !hasRootCategory(rowsByKey.get(key)),
+          );
     const ownsAncestor = !ancestors.has(row.key);
     ancestors.add(row.key);
     const navigationChildKeys: string[] = [];

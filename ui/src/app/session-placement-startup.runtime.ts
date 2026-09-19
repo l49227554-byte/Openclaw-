@@ -303,7 +303,7 @@ export default function createApplicationPlacementStartupRuntime(
         existing?.owner.messageId === owner.messageId ? existing.createdAt : input.createdAt,
       attemptStartedAt:
         input.mode === "retry"
-          ? input.createdAt
+          ? Date.now()
           : existing?.owner.messageId === owner.messageId
             ? existing.attemptStartedAt
             : input.createdAt,
@@ -477,10 +477,10 @@ export default function createApplicationPlacementStartupRuntime(
         recovery,
         persistRecovery: entry.persistRecovery,
         mode: "retry",
-        // A retried attempt starts its own elapsed timer instead of keeping
-        // the failed attempt's start time; the original message timestamp is
-        // preserved by start()'s createdAt branch.
-        createdAt: Date.now(),
+        // The message keeps its original creation time even when a rejected
+        // send rotates the message id; the attempt clock resets separately in
+        // start() for retry mode.
+        createdAt: entry.createdAt,
       });
     },
     subscribe(listener) {

@@ -411,12 +411,16 @@ read_when:
       writes through: each keyed entry/catalog lands in its owning include
       file and the root keeps its `$include` pointer.
     - **Interruption recovery**: a mixed write publishes its include files
-      first and `openclaw.json` last. A write that fails restores each include
-      it already published, unless another writer changed that file in the
-      meantime; the newer edit is kept. A process killed between the include
-      publish and the root publish leaves the includes updated and
-      `openclaw.json` unchanged; the config still loads, and rerunning the
-      same write brings `openclaw.json` up to date.
+      first and `openclaw.json` last. A caught failure restores each include it
+      already published, unless another writer changed that file in the
+      meantime; the newer edit is kept. A process kill or power loss between
+      those publications can leave the includes updated and `openclaw.json`
+      unchanged. That partial combination can fail validation, so do not assume
+      the same command can be rerun immediately. Restore the affected include
+      from its adjacent `.bak` file when available, or from another known-good
+      copy; if neither exists, edit the root and include files together until
+      they form a valid configuration. Run `openclaw config validate`, then
+      rerun the intended write only after validation passes.
     - **Control UI form saves**: the form edits the include-resolved authored
       config. Unchanged redacted credentials, including SecretRef ids, channel
       tokens, and provider headers, survive a save even when they are authored

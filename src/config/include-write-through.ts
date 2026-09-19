@@ -301,7 +301,12 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
 
 export type StagedIncludeWrite = {
   includePath: string[];
+  // Authored path identity. Keep it lexical so containment and path-proof
+  // checks preserve supported symlinked config roots.
   targetPath: string;
+  // Load-time canonical identity for the same target. This is the comparison
+  // and lock key; resolving the lexical path must continue to land here.
+  canonicalTargetPath: string;
   // Load-graph key for this target (path.normalize(ownership.targetPath)).
   // Publication advances this exact key; nothing downstream re-derives it.
   includeGraphKey: string;
@@ -374,15 +379,19 @@ export async function stageIncludeWriteThrough(params: {
         `Config mutation cannot update external $include target ${targetPath}; edit the included file directly or move it under the config directory.`,
       );
     }
+    const includeGraphKey = path.normalize(targetPath);
+    const canonicalTargetPath = params.includeLoadGraph.targets[includeGraphKey];
+    if (!canonicalTargetPath) {
+      throw new ConfigMutationConflictError("included config target changed since last load");
+    }
     const target = await resolveExpectedRootBoundIncludeFile({
       configPath: params.snapshot.path,
       includePath: targetPath,
       allowedRoots: [],
-      expectedAbsolutePath: targetPath,
+      expectedAbsolutePath: canonicalTargetPath,
     });
     const previousRaw = await readRootBoundFileRawIfExists(target);
     const previousHash = hashConfigIncludeRaw(previousRaw);
-    const includeGraphKey = path.normalize(targetPath);
     // Target resolution/read above yields after the whole-graph assertion.
     // Recheck the selected leaf against its load-time hash so a writer in that
     // window cannot become the staging baseline and then be overwritten.
@@ -403,7 +412,8 @@ export async function stageIncludeWriteThrough(params: {
     );
     staged.push({
       includePath: pending.includePath,
-      targetPath: target.absolutePath,
+      targetPath,
+      canonicalTargetPath: target.absolutePath,
       includeGraphKey,
       bytes: formatJsonFileValue(stagedValue),
       previousRaw,
@@ -414,13 +424,16 @@ export async function stageIncludeWriteThrough(params: {
     staged,
     overlay:
       staged.length > 0
-        ? new Map(staged.map((entry) => [path.normalize(entry.targetPath), entry.bytes]))
+        ? new Map(staged.map((entry) => [path.normalize(entry.canonicalTargetPath), entry.bytes]))
         : undefined,
   };
 }
 
 export type IncludeWriteRestorer = {
+  // Lexical and canonical identities stay paired through compensation so a
+  // symlinked config root is revalidated instead of mistaken for a redirect.
   targetPath: string;
+  canonicalTargetPath: string;
   previousRaw: string | null;
   committedRaw: string | null;
   // Same hardlink/inode identity proof publish itself relied on, carried
@@ -448,7 +461,9 @@ export async function publishStagedIncludeWrites(params: {
   // a root changed since load. Absent when the root does not exist yet.
   rootRawForGraph?: string | null;
 }): Promise<void> {
-  const ordered = params.staged.toSorted((a, b) => a.targetPath.localeCompare(b.targetPath));
+  const ordered = params.staged.toSorted((a, b) =>
+    a.canonicalTargetPath.localeCompare(b.canonicalTargetPath),
+  );
   const includeGraph = params.includeGraph ?? { hashes: {}, targets: {} };
   const rootRaw = params.rootRawForGraph;
   const leafIncludeGraph = (): IncludeLoadGraph =>
@@ -469,14 +484,14 @@ export async function publishStagedIncludeWrites(params: {
   };
   for (const entry of ordered) {
     await withConfigWriteLock(
-      entry.targetPath,
+      entry.canonicalTargetPath,
       async () => {
         params.assertConfigPathForWrite?.();
         const target = await resolveExpectedRootBoundIncludeFile({
           configPath: params.configPath,
           includePath: entry.targetPath,
           allowedRoots: [],
-          expectedAbsolutePath: entry.targetPath,
+          expectedAbsolutePath: entry.canonicalTargetPath,
         });
         const currentRaw = await readRootBoundFileRawIfExists(target);
         if (hashConfigIncludeRaw(currentRaw) !== entry.previousHash) {
@@ -535,7 +550,8 @@ export async function publishStagedIncludeWrites(params: {
           if (removal.removed) {
             const damageRaw = await readRootBoundFileRawIfExists(target);
             params.restorers.push({
-              targetPath: target.absolutePath,
+              targetPath: entry.targetPath,
+              canonicalTargetPath: target.absolutePath,
               previousRaw: entry.previousRaw,
               committedRaw: damageRaw,
               pathProof,
@@ -547,7 +563,8 @@ export async function publishStagedIncludeWrites(params: {
         // caller's own root guard, must see the bytes just committed here.
         includeGraph.hashes[entry.includeGraphKey] = hashConfigIncludeRaw(entry.bytes);
         params.restorers.push({
-          targetPath: target.absolutePath,
+          targetPath: entry.targetPath,
+          canonicalTargetPath: target.absolutePath,
           previousRaw: entry.previousRaw,
           committedRaw: entry.bytes,
           pathProof,
@@ -577,14 +594,14 @@ export async function restoreStagedIncludeWrites(
   for (const restorer of restorers.toReversed()) {
     try {
       await withConfigWriteLock(
-        restorer.targetPath,
+        restorer.canonicalTargetPath,
         async () => {
           params.restoreAuthority?.();
           const target = await resolveExpectedRootBoundIncludeFile({
             configPath: params.configPath,
             includePath: restorer.targetPath,
             allowedRoots: [],
-            expectedAbsolutePath: restorer.targetPath,
+            expectedAbsolutePath: restorer.canonicalTargetPath,
           });
           await rollbackJsonFileWriteIfUnchanged({
             target,

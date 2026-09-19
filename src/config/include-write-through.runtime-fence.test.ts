@@ -17,6 +17,7 @@ import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   publishStagedIncludeWrites,
+  restoreStagedIncludeWrites,
   stageIncludeWriteThrough,
   type IncludeWriteRestorer,
 } from "./include-write-through.js";
@@ -104,6 +105,29 @@ describe("config io write / include write-through runtime fence", () => {
       },
     });
     return { home, configPath, workPath };
+  }
+
+  async function makeSymlinkedRootCase() {
+    const home = await suiteRootTracker.make("symlink-case");
+    const realRoot = path.join(home, "real-config");
+    const linkRoot = path.join(home, "linked-config");
+    const realConfigPath = path.join(realRoot, "openclaw.json");
+    const realWorkPath = path.join(realRoot, "config", "agents", "work.json5");
+    await fs.mkdir(path.dirname(realWorkPath), { recursive: true });
+    await writeConfigJson(realWorkPath, { name: "Work", model: "gpt-4" });
+    await writeConfigJson(realConfigPath, {
+      wizard: { lastRunCommand: "install" },
+      agents: {
+        ownership: "explicit",
+        entries: { work: { $include: "./config/agents/work.json5" } },
+      },
+    });
+    await fs.symlink(realRoot, linkRoot, process.platform === "win32" ? "junction" : undefined);
+    return {
+      configPath: path.join(linkRoot, "openclaw.json"),
+      realConfigPath,
+      realWorkPath,
+    };
   }
 
   it("rejects a runtime writeConfigFile save when an included agent file changed after the snapshot read", async () => {
@@ -479,5 +503,152 @@ describe("config io write / include write-through runtime fence", () => {
     const workAfter = JSON.parse(await fs.readFile(workPath, "utf-8")) as Record<string, unknown>;
     expect(workAfter.model).toBe("gpt-4-turbo");
     expect(workAfter.name).toBe("Work");
+  });
+
+  it("publishes through a symlinked config root without conflating lexical and canonical paths", async () => {
+    const { configPath, realConfigPath, realWorkPath } = await makeSymlinkedRootCase();
+
+    await withEnvAsync({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_TEST_FAST: "1" }, async () => {
+      const snapshot = await readConfigFileSnapshot();
+      const loadGraph = expectDefined(
+        getConfigSnapshotIncludeLoadGraph(snapshot),
+        "config snapshot load graph",
+      );
+      const { staged } = await stageIncludeWriteThrough({
+        snapshot,
+        pendingIncludeWrites: [
+          {
+            includePath: ["agents", "entries", "work"],
+            value: { name: "Work", model: "gpt-4-turbo" },
+          },
+        ],
+        envForRestore: process.env,
+        homedir: os.homedir(),
+        includeLoadGraph: loadGraph,
+      });
+      await publishStagedIncludeWrites({
+        staged,
+        restorers: [],
+        configPath,
+        includeGraph: loadGraph,
+        rootRawForGraph: snapshot.raw,
+      });
+    });
+
+    const rootAfter = JSON.parse(await fs.readFile(realConfigPath, "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    expect(rootAfter.agents).toEqual({
+      ownership: "explicit",
+      entries: { work: { $include: "./config/agents/work.json5" } },
+    });
+    const workAfter = JSON.parse(await fs.readFile(realWorkPath, "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    expect(workAfter.model).toBe("gpt-4-turbo");
+  });
+
+  it("restores a published include through a symlinked config root during compensation", async () => {
+    const { configPath, realConfigPath, realWorkPath } = await makeSymlinkedRootCase();
+    const originalRootRaw = await fs.readFile(realConfigPath, "utf-8");
+    const originalWorkRaw = await fs.readFile(realWorkPath, "utf-8");
+
+    await withEnvAsync({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_TEST_FAST: "1" }, async () => {
+      const snapshot = await readConfigFileSnapshot();
+      const loadGraph = expectDefined(
+        getConfigSnapshotIncludeLoadGraph(snapshot),
+        "config snapshot load graph",
+      );
+      const { staged } = await stageIncludeWriteThrough({
+        snapshot,
+        pendingIncludeWrites: [
+          {
+            includePath: ["agents", "entries", "work"],
+            value: { name: "Work", model: "gpt-4-turbo" },
+          },
+        ],
+        envForRestore: process.env,
+        homedir: os.homedir(),
+        includeLoadGraph: loadGraph,
+      });
+      const restorers: IncludeWriteRestorer[] = [];
+      await publishStagedIncludeWrites({
+        staged,
+        restorers,
+        configPath,
+        includeGraph: loadGraph,
+        rootRawForGraph: snapshot.raw,
+      });
+      expect(restorers).toHaveLength(1);
+      await restoreStagedIncludeWrites(restorers, { configPath });
+    });
+
+    await expect(fs.readFile(realConfigPath, "utf-8")).resolves.toBe(originalRootRaw);
+    await expect(fs.readFile(realWorkPath, "utf-8")).resolves.toBe(originalWorkRaw);
+  });
+
+  it("recovers an invalid interrupted mixed write from the published include backup", async () => {
+    const home = await suiteRootTracker.make("interrupted-recovery");
+    const configPath = path.join(home, ".openclaw", "openclaw.json");
+    const includedPath = path.join(home, ".openclaw", "config", "agents", "included.json5");
+    await fs.mkdir(path.dirname(includedPath), { recursive: true });
+    const includedDir = path.join(home, "agents", "included");
+    const rootDir = path.join(home, "agents", "root");
+    const originalIncludedRaw = formatConfig({ name: "Included", agentDir: includedDir });
+    await fs.writeFile(includedPath, originalIncludedRaw, "utf-8");
+    await writeConfigJson(configPath, {
+      agents: {
+        ownership: "explicit",
+        entries: {
+          included: { $include: "./config/agents/included.json5" },
+          root: { name: "Root", agentDir: rootDir },
+        },
+      },
+    });
+
+    await withEnvAsync({ OPENCLAW_CONFIG_PATH: configPath, OPENCLAW_TEST_FAST: "1" }, async () => {
+      const snapshot = await readConfigFileSnapshot();
+      const loadGraph = expectDefined(
+        getConfigSnapshotIncludeLoadGraph(snapshot),
+        "config snapshot load graph",
+      );
+      const { staged } = await stageIncludeWriteThrough({
+        snapshot,
+        pendingIncludeWrites: [
+          {
+            includePath: ["agents", "entries", "included"],
+            value: { name: "Included", agentDir: rootDir },
+          },
+        ],
+        envForRestore: process.env,
+        homedir: os.homedir(),
+        includeLoadGraph: loadGraph,
+      });
+      await publishStagedIncludeWrites({
+        staged,
+        restorers: [],
+        configPath,
+        includeGraph: loadGraph,
+        rootRawForGraph: snapshot.raw,
+      });
+
+      expect((await readConfigFileSnapshot()).valid).toBe(false);
+      await expect(fs.readFile(`${includedPath}.bak`, "utf-8")).resolves.toBe(originalIncludedRaw);
+      await fs.copyFile(`${includedPath}.bak`, includedPath);
+      expect((await readConfigFileSnapshot()).valid).toBe(true);
+
+      await writeConfigFile({
+        agents: {
+          ownership: "explicit",
+          entries: {
+            included: { name: "Included", agentDir: rootDir },
+            root: { name: "Root", agentDir: includedDir },
+          },
+        },
+      } as unknown as OpenClawConfig);
+      expect((await readConfigFileSnapshot()).valid).toBe(true);
+    });
   });
 });

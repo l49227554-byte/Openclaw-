@@ -281,6 +281,7 @@ describe("config io write / include write-through restore authority", () => {
             {
               includePath: ["agents", "entries", "tony"],
               targetPath: tonyPath,
+              canonicalTargetPath: tonyPath,
               includeGraphKey: path.normalize(tonyPath),
               bytes: '{\n  "workspace": "/w/tony-next"\n}\n',
               previousRaw: originalTonyRaw,

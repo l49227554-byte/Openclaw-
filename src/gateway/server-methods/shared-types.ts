@@ -187,6 +187,8 @@ type GatewayKernelContext = {
   cron: GatewayCronServiceContract;
   cronStorePath: string;
   getRuntimeConfig: () => OpenClawConfig;
+  sessionRowProjectionOwner?: object;
+  ensureSessionRowProjection?: () => Promise<void>;
   /** Live reload owner, including same-config restart work and shutdown. */
   isConfigReloadSettled: () => boolean;
   /** Prepared listener certificate pin; undefined when Gateway TLS is disabled. */
@@ -445,7 +447,7 @@ export type GatewayRequestOptions = {
 
 /** Commit-time guard captured by the pre-dispatch session participation check. */
 export type SessionMutationAuthorization = {
-  talkSessionTarget?: import("../talk-session-target.types.js").PreparedTalkSessionTarget;
+  talkSessionTarget?: import("../talk/session-target.types.js").PreparedTalkSessionTarget;
   assertCurrent: () => void;
   /** Original host/session authority for committed input custody, without the selection precondition. */
   assertAdmittedInputCurrent?: () => void;

@@ -55,6 +55,7 @@ import {
   notifyRuntimeConfigWriteListeners,
   preflightManagedRuntimeConfigWrite,
   preflightRuntimeSnapshotWrite,
+  projectRuntimeConfigWritePreparedCandidates,
   registerManagedRuntimeConfigWriteOwner,
   registerRuntimeConfigWriteListener,
   type RuntimeConfigSnapshotRefreshOptions,
@@ -79,6 +80,7 @@ export function registerConfigWriteListener(
   listener: (event: ConfigWriteNotification) => void,
   options: {
     ownsRuntimeActivationFor?: string;
+    prepareSnapshot?: Parameters<typeof registerManagedRuntimeConfigWriteOwner>[2];
     preCommitRuntimePreflight?: (
       sourceConfig: OpenClawConfig,
       refreshOptions?: RuntimeConfigSnapshotRefreshOptions,
@@ -89,6 +91,7 @@ export function registerConfigWriteListener(
     ? registerManagedRuntimeConfigWriteOwner(
         options.ownsRuntimeActivationFor,
         options.preCommitRuntimePreflight,
+        options.prepareSnapshot,
       )
     : undefined;
   const unregisterListener = registerRuntimeConfigWriteListener((event) => {
@@ -623,17 +626,10 @@ async function finalizeCommittedConfigWrite(params: {
     if (!notificationRuntimeConfig) {
       return;
     }
-    const notificationPreparedCandidates = new Map(
-      [...managedPreparedCandidates].map(([ownerId, candidate]) => [
-        ownerId,
-        {
-          ...candidate,
-          runtimeConfig:
-            candidate.reapplyRuntimeOverlays?.(canonicalRuntimeConfig) ?? candidate.runtimeConfig,
-          compareConfig:
-            candidate.reapplyCompareOverlays?.(canonicalSourceConfig) ?? candidate.compareConfig,
-        },
-      ]),
+    const notificationPreparedCandidates = projectRuntimeConfigWritePreparedCandidates(
+      managedPreparedCandidates,
+      canonicalRuntimeConfig,
+      canonicalSourceConfig,
     );
     notifyRuntimeConfigWriteListeners(
       attachRuntimeConfigWriteApplication(

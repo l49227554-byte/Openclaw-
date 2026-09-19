@@ -15,6 +15,7 @@ import {
   resolveContextEngineBootstrapProjectionDecision,
 } from "./attempt-context.js";
 import {
+  CODEX_TURN_START_TEXT_INPUT_MAX_CHARS,
   fitCodexProjectedContextForTurnStart,
   CodexContextAttachmentError,
   isCodexDurableCustomMessage,
@@ -38,7 +39,10 @@ import {
   codexLegacyDynamicToolsFingerprint,
 } from "./thread-lifecycle.js";
 import { hasCodexMirrorOrigin } from "./transcript-mirror-attestation.js";
-import { buildCodexParentLocalInstructions } from "./turn-params.js";
+import {
+  buildCodexHistoryProvenancePrefix,
+  buildCodexParentLocalInstructions,
+} from "./turn-params.js";
 import { readMirrorIdentity } from "./upstream-prompt-provenance.js";
 
 function isRestrictivePromptToolsAllow(toolsAllow: string[] | undefined): boolean {
@@ -82,6 +86,8 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     sandbox,
   } = connection;
   const { toolBridge } = attemptTools;
+  const nativeHistoryProvenancePrefix =
+    params.trigger === "user" ? buildCodexHistoryProvenancePrefix(params) : undefined;
   const forkedSession =
     !mutable.startupBinding?.threadId && params.sessionTarget
       ? getSessionEntry({
@@ -102,15 +108,19 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
   );
   let contextImageGroups: CodexProjectedImageGroup[] = [];
   let turnContextImageGroups: CodexProjectedImageGroup[] = [];
-  // A refreshed native thread receives the original admitted user as historical context.
-  const currentUserTurnIdempotencyKey = params.pluginRuntimeRefreshMessages
-    ? undefined
-    : params.userTurnTranscriptRecorder?.message?.idempotencyKey;
   const assertProjectionCurrent = () => {
     params.hostCapabilities.assertActive();
     connection.assertCurrent();
     connection.runAbortController.signal.throwIfAborted();
   };
+  const admittedMessage =
+    params.userTurnTranscriptRecorder?.message ??
+    (await params.userTurnTranscriptRecorder?.resolveMessage());
+  assertProjectionCurrent();
+  // A refreshed native thread receives the original admitted user as historical context.
+  const currentUserTurnIdempotencyKey = params.pluginRuntimeRefreshMessages
+    ? undefined
+    : admittedMessage?.idempotencyKey;
   const prepareFileContext: NonNullable<
     Parameters<typeof projectContextEngineAssemblyForCodex>[0]["prepareFileContext"]
   > = async (message, maxChars) => {
@@ -271,8 +281,21 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     }
   }
   const codexModelInputHistoryMessages: typeof historyState.messages = [];
+  // Refresh changes the transport prompt, but retains the admitted request's recorder.
+  const admittedContent = admittedMessage?.content;
+  const currentUserMessage = admittedMessage
+    ? typeof admittedContent === "string"
+      ? admittedContent
+      : (admittedContent ?? [])
+          .flatMap((part) => (part.type === "text" ? [part.text] : []))
+          .join("\n")
+    : params.pluginRuntimeRefreshMessages
+      ? ""
+      : params.prompt;
   const buildPromptFromCurrentInputs = async () => {
     const result = await resolveAgentHarnessBeforePromptBuildResult({
+      currentUserMessage,
+      currentUserMessageId: admittedMessage?.idempotencyKey,
       prompt: prependCurrentInboundContext(promptState.promptText, params.currentInboundContext),
       developerInstructions: {
         build: ({ toolsAllow }) => {
@@ -396,6 +419,8 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         : undefined;
     const fitted = fitCodexProjectedContextForTurnStart({
       promptText: turnPromptText,
+      maxChars:
+        CODEX_TURN_START_TEXT_INPUT_MAX_CHARS - (nativeHistoryProvenancePrefix?.length ?? 0),
       contextRange: projectedRanges?.contextRange,
       requestRange: projectedRanges?.requestRange,
       preservedRange,
@@ -549,7 +574,6 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       binding,
       bindingStore,
       identity: bindingIdentity,
-      sessionFile: params.sessionFile,
       agentDir,
       codexHome: appServer.start.env?.CODEX_HOME,
       config: params.config,
@@ -618,6 +642,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       return turnContextImageGroups;
     },
     codexModelInputHistoryMessages,
+    nativeHistoryProvenancePrefix,
     turnState,
     refreshWorkspaceReferences: (include: boolean) => {
       turnState.codexTurnPromptText = decorateCodexTurnPromptText(turnState.promptBuild, include);

@@ -9,7 +9,10 @@ import {
   resolveLivePluginConfigObject,
 } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type {
+  PluginStateKeyedStore,
+  PluginStateSyncKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import { registerCodexCliMetadata } from "./cli-metadata.js";
 import {
   createCodexAppServerAgentHarness,
@@ -57,6 +60,11 @@ import {
   createCodexNodeExecServerCommand,
   createCodexNodeExecServerInvokePolicy,
 } from "./src/node-exec-server.js";
+import {
+  CODEX_CATALOG_STATE_NAMESPACE,
+  type StoredCodexCatalogEntry,
+} from "./src/session-catalog-index-state.js";
+import { CODEX_CATALOG_MAX_ROWS } from "./src/session-catalog-limits.js";
 import {
   createCodexSessionCatalogControl,
   createCodexSessionCatalogNodeHostCommands,
@@ -132,7 +140,7 @@ export default definePluginEntry({
       );
     }
     let bindingStateStore: PluginStateSyncKeyedStore<StoredCodexAppServerBinding> | undefined;
-    let managedThreadStateStore: PluginStateSyncKeyedStore<StoredCodexManagedThread> | undefined;
+    let managedThreadStateStore: PluginStateKeyedStore<StoredCodexManagedThread> | undefined;
     const openBindingStateStore = () =>
       (bindingStateStore ??= api.runtime.state.openSyncKeyedStore<StoredCodexAppServerBinding>({
         namespace: CODEX_APP_SERVER_BINDING_NAMESPACE,
@@ -143,11 +151,15 @@ export default definePluginEntry({
     // store only when a proxied runtime performs the first binding operation.
     const lazyBindingStateStore: Pick<
       PluginStateSyncKeyedStore<StoredCodexAppServerBinding>,
-      "deleteIf" | "entries" | "lookup" | "registerIfAbsent" | "update"
+      "deleteIf" | "entries" | "lookup" | "lookupMany" | "registerIfAbsent" | "update"
     > = {
       deleteIf: (key, predicate) => openBindingStateStore().deleteIf!(key, predicate),
       entries: () => openBindingStateStore().entries(),
       lookup: (key) => openBindingStateStore().lookup(key),
+      get lookupMany() {
+        const store = openBindingStateStore();
+        return store.lookupMany?.bind(store);
+      },
       registerIfAbsent: (key, value, options) =>
         openBindingStateStore().registerIfAbsent(key, value, options),
       get update() {
@@ -156,7 +168,7 @@ export default definePluginEntry({
       },
     };
     const openManagedThreadStateStore = () =>
-      (managedThreadStateStore ??= api.runtime.state.openSyncKeyedStore<StoredCodexManagedThread>({
+      (managedThreadStateStore ??= api.runtime.state.openKeyedStore<StoredCodexManagedThread>({
         namespace: CODEX_MANAGED_THREAD_NAMESPACE,
         maxEntries: CODEX_MANAGED_THREAD_MAX_ENTRIES,
         // Catalog-only ownership may evict its oldest row. Modern rollouts/transcripts are
@@ -164,7 +176,7 @@ export default definePluginEntry({
         overflowPolicy: "evict-oldest",
       }));
     const lazyManagedThreadStateStore: Pick<
-      PluginStateSyncKeyedStore<StoredCodexManagedThread>,
+      PluginStateKeyedStore<StoredCodexManagedThread>,
       "entries" | "lookup" | "registerIfAbsent"
     > = {
       entries: () => openManagedThreadStateStore().entries(),
@@ -185,9 +197,20 @@ export default definePluginEntry({
       config: api.config as OpenClawConfig,
       getPluginConfig: resolveCurrentPluginConfig,
       getRuntimeConfig: resolveCurrentConfig,
+      openResidentState: (homeId) =>
+        api.runtime.state.openKeyedStore<StoredCodexCatalogEntry>({
+          namespace: `${CODEX_CATALOG_STATE_NAMESPACE}.${homeId.replaceAll(":", "-")}`,
+          maxEntries: CODEX_CATALOG_MAX_ROWS + 1,
+          overflowPolicy: "reject-new",
+        }),
     });
     const sessionCatalogEnabled =
       readCodexPluginConfig(resolveCurrentPluginConfig()).sessionCatalog?.enabled !== false;
+    api.registerService({
+      id: "codex-session-catalog",
+      start: () => (sessionCatalogEnabled ? sessionCatalogControlFactory.start() : undefined),
+      stop: () => sessionCatalogControlFactory.stop(),
+    });
     if (sessionCatalogEnabled) {
       codexSessionCatalogRuntime.register({
         api,

@@ -14,26 +14,34 @@ worker or embedding provider must satisfy. Part of the
 
 ## Capability registration
 
-| Method                                           | What it registers                                                                 |
-| ------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `api.registerProvider(...)`                      | Text inference (LLM)                                                              |
-| `api.registerWorkerProvider(...)`                | Cloud-worker lifecycle leases                                                     |
-| `api.registerModelCatalogProvider(...)`          | Model catalog rows for text and media generation                                  |
-| `api.registerAgentHarness(...)`                  | [Experimental](/plugins/sdk-agent-harness) native agent executor (Codex, Copilot) |
-| `api.registerCliBackend(...)`                    | Local CLI inference backend                                                       |
-| `api.registerChannel(...)`                       | Messaging channel                                                                 |
-| `api.registerEmbeddingProvider(...)`             | Reusable vector embedding provider                                                |
-| `api.registerSpeechProvider(...)`                | Text-to-speech / STT synthesis                                                    |
-| `api.registerRealtimeTranscriptionProvider(...)` | Streaming realtime transcription                                                  |
-| `api.registerRealtimeVoiceProvider(...)`         | Duplex realtime voice sessions                                                    |
-| `api.registerMediaUnderstandingProvider(...)`    | Image/audio/video analysis                                                        |
-| `api.registerTranscriptSourceProvider(...)`      | Live or imported meeting transcript source                                        |
-| `api.registerImageGenerationProvider(...)`       | Image generation                                                                  |
-| `api.registerMusicGenerationProvider(...)`       | Music generation                                                                  |
-| `api.registerVideoGenerationProvider(...)`       | Video generation                                                                  |
-| `api.registerWebFetchProvider(...)`              | Web fetch / scrape provider                                                       |
-| `api.registerWebSearchProvider(...)`             | Web search                                                                        |
-| `api.registerCompactionProvider(...)`            | Pluggable transcript-compaction backend                                           |
+| Method                                            | What it registers                                                                 |
+| ------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `api.registerProvider(...)`                       | Text inference (LLM)                                                              |
+| `api.registerWorkerProvider(...)`                 | Cloud-worker lifecycle leases                                                     |
+| `api.registerModelCatalogProvider(...)`           | Model catalog rows for text and media generation                                  |
+| `api.registerAgentHarness(...)`                   | [Experimental](/plugins/sdk-agent-harness) native agent executor (Codex, Copilot) |
+| `api.registerCliBackend(...)`                     | Local CLI inference backend                                                       |
+| `api.registerChannel(...)`                        | Messaging channel                                                                 |
+| `api.registerEmbeddingProvider(...)`              | Reusable vector embedding provider                                                |
+| `api.registerSpeechProvider(...)`                 | Text-to-speech / STT synthesis                                                    |
+| `api.registerRealtimeTranscriptionProvider(...)`  | Streaming realtime transcription                                                  |
+| `api.registerRealtimeVoiceProvider(...)`          | Duplex realtime voice sessions                                                    |
+| `api.registerMediaUnderstandingProvider(...)`     | Image/audio/video analysis                                                        |
+| `api.registerTranscriptSourceProvider(...)`       | Live or imported meeting transcript source                                        |
+| `api.registerImageGenerationProvider(...)`        | Image generation                                                                  |
+| `api.registerMusicGenerationProvider(...)`        | Music generation                                                                  |
+| `api.registerVideoGenerationProvider(...)`        | Video generation                                                                  |
+| `api.registerWebFetchProvider(...)`               | Web fetch / scrape provider                                                       |
+| `api.registerWebSearchProvider(...)`              | Web search                                                                        |
+| `api.registerCompactionProvider(...)`             | Pluggable transcript-compaction backend                                           |
+| `api.registerActiveMemoryEscalationProvider(...)` | Active Memory escalate-mode intent decision                                       |
+
+Call `api.registerActiveMemoryEscalationProvider(...)` during plugin
+registration, then select the provider id with the Active Memory plugin's
+`config.escalationProvider`. Providers return `"recall"`, `"skip"`, or
+`"abstain"`, and must honor the supplied `AbortSignal`. Decisions arriving after
+100 ms are rejected. Cancellation is cooperative and cannot interrupt synchronous
+plugin computation.
 
 Transcript source providers that share an account namespace with an inbound
 channel declare an `accountOwnership` descriptor with that channel id and a

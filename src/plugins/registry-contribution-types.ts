@@ -62,6 +62,22 @@ export type RegisteredCompactionProvider = {
   ownerPluginId?: string;
 };
 
+export type ActiveMemoryEscalationProviderDecision = "recall" | "skip" | "abstain";
+
+export type ActiveMemoryEscalationProvider = {
+  id: string;
+  decide(params: {
+    message: string;
+    searchQuery: string;
+    signal: AbortSignal;
+  }): ActiveMemoryEscalationProviderDecision | Promise<ActiveMemoryEscalationProviderDecision>;
+};
+
+export type ActiveMemoryEscalationProviderRegistration = {
+  pluginId: string;
+  provider: ActiveMemoryEscalationProvider;
+};
+
 export type MemoryEmbeddingBatchChunk = EmbeddingBatchChunk & {
   embeddingInput?: EmbeddingInput;
 };

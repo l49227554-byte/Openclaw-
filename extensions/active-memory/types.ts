@@ -141,6 +141,7 @@ type ActiveRecallPluginConfig = Partial<
 type ResolvedActiveRecallPluginConfig = {
   enabled: boolean;
   mode: ActiveMemoryMode;
+  escalationProvider?: string;
   agents: string[];
   model?: string;
   modelFallback?: string;

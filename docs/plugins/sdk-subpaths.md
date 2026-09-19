@@ -516,6 +516,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
   <Accordion title="Memory subpaths">
     | Subpath | Key exports |
     | --- | --- |
+    | `plugin-sdk/active-memory-escalation-runtime` | Private-local lookup used by bundled Active Memory to resolve its configured escalation provider from the active plugin generation |
     | `plugin-sdk/memory-core-host-embedding-registry` | Private-local after July 2026; Lightweight memory embedding provider registry helpers |
     | `plugin-sdk/memory-core-host-engine-curated` | Private-local focused curated-memory annotation parsing for doctor and promotion paths |
     | `plugin-sdk/memory-core-host-engine-foundation` | Memory host foundation engine exports |

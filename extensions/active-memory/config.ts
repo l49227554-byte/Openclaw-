@@ -196,6 +196,7 @@ function normalizePluginConfig(
       raw.mode === "always" || raw.mode === "off" || raw.mode === "escalate"
         ? raw.mode
         : DEFAULT_ACTIVE_MEMORY_MODE,
+    escalationProvider: normalizeOptionalString(raw.escalationProvider),
     agents: Array.isArray(raw.agents) ? normalizeStringEntries(raw.agents) : [],
     model: normalizeOptionalString(raw.model),
     modelFallback: normalizeOptionalString(raw.modelFallback),

@@ -920,6 +920,9 @@
       ],
       "openclaw/plugin-sdk/sqlite-worker-runtime": [
         "../../packages/plugin-sdk/dist/src/plugin-sdk/sqlite-worker-runtime.d.ts"
+      ],
+      "openclaw/plugin-sdk/active-memory-escalation-runtime": [
+        "../../packages/plugin-sdk/dist/src/plugin-sdk/active-memory-escalation-runtime.d.ts"
       ]
     }
   }

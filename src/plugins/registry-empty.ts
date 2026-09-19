@@ -57,6 +57,7 @@ export const pluginArrays = [
   "conversationBindingResolvedHandlers",
 ] as const satisfies ReadonlyArray<keyof PluginRegistry>;
 export const pluginMaps = [
+  "activeMemoryEscalationProviders",
   "workerProviders",
   "sessionDiscussionProviders",
   "dashboardDataBindings",

@@ -35,6 +35,20 @@ describe("active-memory manifest config schema", () => {
     expect(normalizePluginConfig({}).mode).toBe("escalate");
   });
 
+  it("accepts and normalizes an escalation provider id", () => {
+    const result = validateJsonSchemaValue({
+      schema: manifest.configSchema,
+      cacheKey: "active-memory.manifest.escalation-provider",
+      value: { mode: "escalate", escalationProvider: "local-memory-intent" },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(normalizePluginConfig({ escalationProvider: " local-memory-intent " })).toMatchObject({
+      escalationProvider: "local-memory-intent",
+    });
+    expect(normalizePluginConfig({ escalationProvider: " " }).escalationProvider).toBeUndefined();
+  });
+
   it("accepts modelFallback for CLI and config.patch flows", () => {
     const result = validateJsonSchemaValue({
       schema: manifest.configSchema,

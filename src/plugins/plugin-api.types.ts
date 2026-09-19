@@ -337,6 +337,10 @@ export type OpenClawPluginApi = {
   registerCompactionProvider: (
     provider: import("./compaction-provider.js").CompactionProvider,
   ) => void;
+  /** Register an optional intent-decision provider for Active Memory escalate mode. */
+  registerActiveMemoryEscalationProvider: (
+    provider: import("./registry-contribution-types.js").ActiveMemoryEscalationProvider,
+  ) => void;
   /** Register an agent harness implementation. */
   registerAgentHarness: (harness: AgentHarness, options?: AgentHarnessRegistrationOptions) => void;
   /**

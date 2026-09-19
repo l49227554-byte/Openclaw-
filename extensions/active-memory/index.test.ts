@@ -32,6 +32,7 @@ import {
   onTestFailed,
   vi,
 } from "vitest";
+import { registerActiveMemoryEscalationIntegrationTests } from "./index.escalation.test-support.js";
 import plugin, { testing } from "./index.js";
 import * as recallRun from "./recall-run.js";
 import { resolveActiveRecallForRun } from "./recall-state.js";
@@ -55,6 +56,7 @@ const hoisted = vi.hoisted(() => {
     },
   };
   return {
+    getActiveMemoryEscalationProvider: vi.fn(),
     closeActiveMemorySearchManager: vi.fn(async () => {}),
     getActiveMemorySearchManager: vi.fn(async () => ({ manager: null })),
     cleanupSessionLifecycleArtifacts: vi.fn(),
@@ -72,6 +74,10 @@ const hoisted = vi.hoisted(() => {
     ),
   };
 });
+
+vi.mock("openclaw/plugin-sdk/active-memory-escalation-runtime", () => ({
+  getActiveMemoryEscalationProvider: hoisted.getActiveMemoryEscalationProvider,
+}));
 
 vi.mock("openclaw/plugin-sdk/memory-host-search", () => ({
   closeActiveMemorySearchManager: hoisted.closeActiveMemorySearchManager,
@@ -1874,49 +1880,18 @@ describe("active-memory plugin", () => {
     expect(runEmbeddedAgent).not.toHaveBeenCalled();
   });
 
-  it.each(["你还记得我们上次讨论的数据库配置吗？", "你还记得我们上周决定明天部署的方案吗？"])(
-    "escalates only retrospective Chinese %j when recall mode is unset",
-    async (prompt) => {
-      registerPluginConfig({ mode: undefined });
-      expect(currentActiveMemoryConfig().mode).toBeUndefined();
-
-      const context = {
-        sessionKey: "agent:main:telegram:direct:owner",
-        messageProvider: "telegram",
-        channelId: "owner",
-      };
-
-      const ordinary = await runPromptBuild({ prompt: "部署之前先整理聊天记录" }, context);
-      expectPrependContextContains(ordinary, skippedRecallContext);
-      expect(runEmbeddedAgent).not.toHaveBeenCalled();
-
-      const future = await runPromptBuild({ prompt: "你记得明天发送报告吗？" }, context);
-      expectPrependContextContains(future, skippedRecallContext);
-      expect(runEmbeddedAgent).not.toHaveBeenCalled();
-
-      const recall = await runPromptBuild({ prompt }, context);
-      expect(runEmbeddedAgent).toHaveBeenCalledOnce();
-      expectPrependContextContains(recall, "lemon pepper wings");
-      expectEmbeddedChannel("telegram");
-    },
-  );
-
-  it("records why default escalation skips an ordinary turn", async () => {
-    registerPluginConfig({ mode: undefined });
-
-    const result = await runPromptBuild(
-      { prompt: "Explain the current configuration" },
-      {
-        sessionKey: "agent:main:webchat:direct:operator",
-        messageProvider: "webchat",
-        channelId: "operator",
-      },
-    );
-
-    expectPrependContextContains(result, skippedRecallContext);
-    expect(runEmbeddedAgent).not.toHaveBeenCalled();
-    expect(hasDebugLine("active-memory: recall skipped reason=no-recall-intent")).toBe(true);
-    expect(hasInfoLine("active-memory: recall skipped reason=no-recall-intent")).toBe(false);
+  registerActiveMemoryEscalationIntegrationTests({
+    currentActiveMemoryConfig,
+    expectEmbeddedChannel,
+    expectPrependContextContains,
+    hasDebugLine,
+    hasInfoLine,
+    registerPluginConfig,
+    runEmbeddedAgent,
+    runPromptBuild,
+    setEscalationProvider: (provider) =>
+      hoisted.getActiveMemoryEscalationProvider.mockReturnValue(provider),
+    skippedRecallContext,
   });
 
   it("does not run deep recall when the live active-memory plugin entry is removed", async () => {

@@ -114,7 +114,42 @@ export function createCapabilityRegistrars(state: PluginRegistryState) {
     registry.compactionProviders.push({ provider, ownerPluginId: record.id });
   };
 
+  const registerActiveMemoryEscalationProvider = (
+    record: PluginRecord,
+    provider: Parameters<OpenClawPluginApi["registerActiveMemoryEscalationProvider"]>[0],
+  ) => {
+    const candidate:
+      | Partial<Parameters<OpenClawPluginApi["registerActiveMemoryEscalationProvider"]>[0]>
+      | null
+      | undefined = provider;
+    const id = normalizeOptionalString(candidate?.id);
+    if (!id) {
+      reportRegistrationError(record, "active memory escalation provider registration missing id");
+      return;
+    }
+    if (typeof provider?.decide !== "function") {
+      reportRegistrationError(
+        record,
+        `active memory escalation provider "${id}" registration missing decide`,
+      );
+      return;
+    }
+    const existing = registry.activeMemoryEscalationProviders.get(id);
+    if (existing) {
+      reportRegistrationError(
+        record,
+        `active memory escalation provider already registered: ${id} (owner: ${existing.pluginId})`,
+      );
+      return;
+    }
+    registry.activeMemoryEscalationProviders.set(id, {
+      pluginId: record.id,
+      provider,
+    });
+  };
+
   return {
+    registerActiveMemoryEscalationProvider,
     registerDetachedTaskRuntime,
     registerInteractiveHandler,
     registerContextEngine,

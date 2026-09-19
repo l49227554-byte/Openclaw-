@@ -15,7 +15,7 @@
       "id": "memory-recall",
       "title": "Memory recall",
       "order": 10,
-      "properties": ["enabled", "mode"]
+      "properties": ["enabled", "mode", "escalationProvider"]
     },
     {
       "id": "conversations",
@@ -81,6 +81,7 @@
         "type": "string",
         "enum": ["escalate", "always", "off"]
       },
+      "escalationProvider": { "type": "string", "minLength": 1 },
       "agents": {
         "type": "array",
         "items": { "type": "string" }
@@ -164,6 +165,10 @@
     "mode": {
       "label": "Recall Mode",
       "help": "Escalate runs deep recall only for recall-intent messages without a strong deterministic hit. Always preserves blocking recall on every eligible turn. Off disables deep recall while keeping deterministic trigger recall available."
+    },
+    "escalationProvider": {
+      "label": "Escalation Provider",
+      "help": "Optional plugin provider that decides whether escalate mode should run deep recall. Missing, failed, timed-out, invalid, or abstaining providers fall back to the built-in intent matcher."
     },
     "agents": {
       "label": "Target Agents",

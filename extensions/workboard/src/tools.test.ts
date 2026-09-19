@@ -749,4 +749,64 @@ describe("workboard tools", () => {
     expect((owner ?? "").length).toBeLessThanOrEqual(120);
     expect(owner).toMatch(/^owner:[0-9a-f]{64}$/);
   });
+
+  it("gives each session of one agent its own worker-capacity slot", async () => {
+    // The capacity slot keys on claim.ownerId (workboardCardSlotOwner returns it), so
+    // making the owner per-session (the fence fix) makes the slot per-session too. This
+    // demonstrates that documented tradeoff and its true, narrow shape: the slot is a
+    // per-owner serialization guard ("one active card per owner slot", enforced by the
+    // store's claimIfOwnerAvailable owner_busy check), NOT a global concurrency cap. So
+    // two sessions of one agent get two independent slots (loosening the per-owner
+    // spread), while a single session still serializes onto its own one active card.
+    const { store, stores } = createWorkboardSqliteTestHarness();
+    for (const id of ["card-a", "card-b", "card-c"]) {
+      await stores.cards.register(id, {
+        version: 1,
+        card: {
+          id,
+          title: `Work ${id}`,
+          status: "todo",
+          priority: "normal",
+          labels: [],
+          agentId: "main",
+          position: 1000,
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      });
+    }
+    const claimTool = (sessionKey: string) =>
+      expectDefined(
+        new Map(
+          createWorkboardTools({ store, context: { agentId: "main", sessionKey } }).map((tool) => [
+            tool.name,
+            tool,
+          ]),
+        ).get("workboard_claim"),
+        "workboard_claim",
+      );
+
+    // Session 1 claims card A and now holds an active slot under owner "session-1".
+    const claimedA = readPayload(await claimTool("session-1").execute("claim-a", { id: "card-a" }));
+    expect(claimedA.card).toMatchObject({
+      status: "running",
+      metadata: { claim: { ownerId: "session-1" } },
+    });
+
+    // A sibling session of the SAME agent claims a different card and succeeds: it owns a
+    // distinct capacity slot ("session-2"), where a per-agent slot would have collided and
+    // blocked it. This is the loosened per-owner throttling the PR documents.
+    const claimedB = readPayload(await claimTool("session-2").execute("claim-b", { id: "card-b" }));
+    expect(claimedB.card).toMatchObject({
+      status: "running",
+      metadata: { claim: { ownerId: "session-2" } },
+    });
+
+    // The guard still serializes within one owner: session 1 already has an active card,
+    // so claiming a second card under the same slot is rejected as owner_busy. The slot is
+    // a real per-owner limit — the fix only re-keys it from agent to session.
+    await expect(claimTool("session-1").execute("claim-c", { id: "card-c" })).rejects.toThrow(
+      /already has active Workboard work/,
+    );
+  });
 });

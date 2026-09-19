@@ -309,11 +309,12 @@ export function observeReleaseGitHubState(input: {
     gates.push({
       id: "github.release",
       status: lookup.state === "absent" ? "PASS" : "WARN",
-      message: release
-        ? `${release.draft ? "Draft" : "Published"} GitHub release already exists: ${release.html_url}`
-        : lookup.state === "unresolved"
-          ? lookup.message
-          : "No GitHub release exists for the tag.",
+      message:
+        lookup.state === "found"
+          ? `${lookup.release.draft ? "Draft" : "Published"} GitHub release already exists: ${lookup.release.html_url}`
+          : lookup.state === "unresolved"
+            ? lookup.message
+            : "No GitHub release exists for the tag.",
       remediation: release
         ? "Resume the existing release and preserve its assets and publication evidence."
         : lookup.state === "unresolved"

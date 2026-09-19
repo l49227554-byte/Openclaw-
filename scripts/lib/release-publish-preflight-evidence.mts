@@ -230,7 +230,19 @@ export function readPublishPreflightRelease(runGh: PublishPreflightGh, repo: str
       ) {
         throw new Error("Invalid GitHub release response.");
       }
-      return { state: "found" as const, release };
+      return {
+        state: "found" as const,
+        release: {
+          id: release.id,
+          draft: release.draft,
+          prerelease: release.prerelease,
+          tag_name: tag,
+          html_url: release.html_url,
+          target_commitish: release.target_commitish,
+          body: release.body,
+          assets: release.assets,
+        },
+      };
     }
     if (releases.length < 100) {
       // GitHub includes drafts only for readers with push access. A complete

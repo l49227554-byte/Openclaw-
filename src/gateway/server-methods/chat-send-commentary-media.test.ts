@@ -169,7 +169,11 @@ describe("webchat commentary media", () => {
         ).toMatchObject({ ok: true });
       }
       const runId = "commentary-run";
-      const warn = vi.fn();
+      // Commentary media materializes in the background; join its rewrite publication
+      // instead of polling, and surface preparation failures as the rejection reason.
+      const rewritePublished = createDeferred<InternalSessionTranscriptUpdate>();
+      void rewritePublished.promise.catch(() => {});
+      const warn = vi.fn((message: string) => rewritePublished.reject(new Error(message)));
       let current = true;
       let admittedActive = true;
       let cleanupStarted = false;
@@ -297,14 +301,13 @@ describe("webchat commentary media", () => {
           { includeCommentaryFallbacks: true },
         );
       };
-      let rewriteUpdate: InternalSessionTranscriptUpdate | undefined;
       const stopUpdates = onInternalSessionTranscriptUpdate((update) => {
         if (
           update.target?.sessionId === scope.sessionId &&
           update.messageId === "progress-row" &&
           update.message === undefined
         ) {
-          rewriteUpdate = update;
+          rewritePublished.resolve(update);
         }
       });
       let run: Promise<void> | undefined;
@@ -388,21 +391,18 @@ describe("webchat commentary media", () => {
                 if (scenario === "revoked" || scenario === "target-rewrite") {
                   return;
                 }
-                await vi.waitFor(() =>
-                  expect(readMessage()).toHaveProperty("openclawDisplayContent"),
-                );
+                const rewriteUpdate = await rewritePublished.promise;
+                expect(rewriteUpdate).toMatchObject({
+                  messageId: "progress-row",
+                  target: expect.objectContaining({ sessionId: scope.sessionId }),
+                });
+                expect(rewriteUpdate).not.toHaveProperty("message");
                 const persisted = readMessage();
+                expect(persisted).toHaveProperty("openclawDisplayContent");
                 expect(persisted).toMatchObject({
                   content: expectedContent,
                   stopReason: "toolUse",
                 });
-                await vi.waitFor(() =>
-                  expect(rewriteUpdate).toMatchObject({
-                    messageId: "progress-row",
-                    target: expect.objectContaining({ sessionId: scope.sessionId }),
-                  }),
-                );
-                expect(rewriteUpdate).not.toHaveProperty("message");
                 const displayed = readDisplayed();
                 const displayedMedia = displayed
                   .flatMap((row) => (Array.isArray(row.content) ? row.content : []))

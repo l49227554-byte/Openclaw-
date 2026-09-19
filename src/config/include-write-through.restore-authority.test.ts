@@ -16,7 +16,7 @@ import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   publishStagedIncludeWrites,
-  restoreStagedIncludeWrites,
+  restoreRootAndStagedIncludeWrites,
   type IncludeWriteRestorer,
 } from "./include-write-through.js";
 import { hashConfigIncludeRaw } from "./includes.js";
@@ -300,7 +300,12 @@ describe("config io write / include write-through restore authority", () => {
       const concurrentWriterRaw = '{\n  "workspace": "/w/concurrent-writer"\n}\n';
       await fs.writeFile(tonyPath, concurrentWriterRaw, "utf-8");
 
-      await restoreStagedIncludeWrites(restorers, { configPath });
+      await restoreRootAndStagedIncludeWrites({
+        restoreRoot: async () => true,
+        assertCurrent: () => {},
+        restorers,
+        configPath,
+      });
 
       // The restorer's fence was captured against the failed publish's own
       // damage, not the concurrent writer's save: current bytes no longer

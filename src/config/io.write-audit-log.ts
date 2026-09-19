@@ -4,6 +4,7 @@
 import type fs from "node:fs";
 import { isVerbose } from "../global-state.js";
 import { isVitestRuntimeEnv } from "../infra/env.js";
+import { restoreConfigSnapshotAuditRecord } from "./config-journal-snapshot.js";
 import {
   appendConfigAuditRecord,
   createConfigWriteAuditRecordBase,
@@ -11,6 +12,7 @@ import {
   formatConfigOverwriteLogMessage,
   type ConfigWriteAuditResult,
 } from "./io.audit.js";
+import { loggedConfigWarningFingerprints, setBoundedConfigIoWarningEntry } from "./io.state.js";
 import type { ConfigWriteAuditOrigin } from "./io.types.js";
 import { resolveConfigStatMetadata } from "./io.write-safety.js";
 
@@ -128,4 +130,29 @@ export function createConfigWriteAuditLog(params: {
   };
 
   return { logConfigOverwrite, logConfigWriteAnomalies, appendWriteAudit };
+}
+
+type RestoreSnapshotParams = Parameters<typeof restoreConfigSnapshotAuditRecord>[0];
+
+export function createConfigWriteEffectRestorer(params: {
+  configPath: string;
+  env: NodeJS.ProcessEnv;
+  homedir: () => string;
+  snapshot: RestoreSnapshotParams["snapshot"];
+  expectedSnapshot: RestoreSnapshotParams["expectedSnapshot"];
+  previousWarningFingerprint: string | undefined;
+}): (assertCurrent: () => void) => void {
+  return (assertCurrent) => {
+    assertCurrent();
+    restoreConfigSnapshotAuditRecord(params);
+    if (params.previousWarningFingerprint === undefined) {
+      loggedConfigWarningFingerprints.delete(params.configPath);
+    } else {
+      setBoundedConfigIoWarningEntry(
+        loggedConfigWarningFingerprints,
+        params.configPath,
+        params.previousWarningFingerprint,
+      );
+    }
+  };
 }

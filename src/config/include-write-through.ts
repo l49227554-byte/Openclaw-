@@ -189,12 +189,12 @@ export function captureIncludeWriteThrough(params: {
   return nextConfig;
 }
 
-export function formatJsonFileValue(value: unknown): string {
+function formatJsonFileValue(value: unknown): string {
   rejectConfigNonFiniteNumbers(value);
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
-export type RootBoundIncludeFile = {
+type RootBoundIncludeFile = {
   absolutePath: string;
   relativePath: string;
   root: FsSafeRoot;
@@ -234,7 +234,7 @@ async function resolveRootBoundIncludeFile(params: {
   throw new Error(`Config include write path has no approved existing root: ${absolutePath}`);
 }
 
-export async function resolveExpectedRootBoundIncludeFile(params: {
+async function resolveExpectedRootBoundIncludeFile(params: {
   configPath: string;
   includePath: string;
   allowedRoots: readonly string[];
@@ -259,9 +259,7 @@ export async function resolveExpectedRootBoundIncludeFile(params: {
   return target;
 }
 
-export async function readRootBoundFileRawIfExists(
-  target: RootBoundIncludeFile,
-): Promise<string | null> {
+async function readRootBoundFileRawIfExists(target: RootBoundIncludeFile): Promise<string | null> {
   try {
     return await target.root.readText(target.relativePath);
   } catch (error) {
@@ -272,7 +270,7 @@ export async function readRootBoundFileRawIfExists(
   }
 }
 
-export async function rollbackJsonFileWriteIfUnchanged(params: {
+async function rollbackJsonFileWriteIfUnchanged(params: {
   target: RootBoundIncludeFile;
   previousRaw: string | null;
   committedRaw: string | null;
@@ -617,7 +615,7 @@ export async function publishStagedIncludeWrites(params: {
  * Compensation authorizes on the original source owner plus each target's
  * path proof -- like root rollback, it must not require the old config to
  * still be the selected one. */
-export async function restoreStagedIncludeWrites(
+async function restoreStagedIncludeWrites(
   restorers: readonly IncludeWriteRestorer[],
   params: { configPath: string; env?: NodeJS.ProcessEnv; restoreAuthority?: () => void },
 ): Promise<void> {
@@ -655,6 +653,29 @@ export async function restoreStagedIncludeWrites(
   if (failures.length > 0) {
     throw new AggregateError(failures, "Include restore failed for one or more targets");
   }
+}
+
+export async function restoreRootAndStagedIncludeWrites(params: {
+  restoreRoot?: (assertCurrent: () => void) => Promise<boolean>;
+  assertCurrent: () => void;
+  restorers: readonly IncludeWriteRestorer[];
+  configPath: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  const restoreRoot = params.restoreRoot;
+  if (!restoreRoot) {
+    return false;
+  }
+  const restoredRoot = await restoreRoot(params.assertCurrent);
+  if (!restoredRoot) {
+    return false;
+  }
+  await restoreStagedIncludeWrites(params.restorers, {
+    configPath: params.configPath,
+    env: params.env,
+    restoreAuthority: params.assertCurrent,
+  });
+  return true;
 }
 
 /** Same as restoreStagedIncludeWrites, but folds a restore failure onto the

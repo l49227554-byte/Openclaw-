@@ -18,7 +18,6 @@ import {
   configSnapshotAuditRecordMatchesPath,
   fingerprintConfigSnapshotAuthoredConfig,
   readLatestConfigSnapshotAuditRecord,
-  restoreConfigSnapshotAuditRecord,
   upsertConfigSnapshotAuditRecord,
 } from "./config-journal-snapshot.js";
 import {
@@ -38,7 +37,7 @@ import {
 import {
   publishStagedIncludeWrites,
   resolveIncludeWriteThroughPaths,
-  restoreStagedIncludeWrites,
+  restoreRootAndStagedIncludeWrites,
   restoreStagedIncludeWritesOrFold,
   stageIncludeWriteThrough,
   type IncludeWriteRestorer,
@@ -61,7 +60,7 @@ import {
 } from "./io.read-helpers.js";
 import { getConfigSnapshotIncludeLoadGraph } from "./io.snapshot-shared.js";
 import { hashConfigRevision } from "./io.snapshot.js";
-import { loggedConfigWarningFingerprints, setBoundedConfigIoWarningEntry } from "./io.state.js";
+import { loggedConfigWarningFingerprints } from "./io.state.js";
 import type {
   ConfigWriteInputBasis,
   ConfigWriteOptions,
@@ -74,7 +73,10 @@ import {
   configWritePostCommitRollback,
 } from "./io.types.js";
 import { logConfigWarningsOnce } from "./io.warnings.js";
-import { createConfigWriteAuditLog } from "./io.write-audit-log.js";
+import {
+  createConfigWriteAuditLog,
+  createConfigWriteEffectRestorer,
+} from "./io.write-audit-log.js";
 import {
   ConfigWritePostCommitError,
   createConfigValidationFailedError,
@@ -652,39 +654,22 @@ export async function writeConfigFileFromContext(
         sourceConfig: sourceConfigForPreflight,
       },
       [configWritePostCommitRollback]: {
-        restoreFile: async (assertCurrent) => {
-          const restoredRoot = await restoreFile(assertCurrent);
-          if (!restoredRoot) {
-            return false;
-          }
-          // The outer runtime lock remains live after the nested factory lock
-          // closes, so it can authorize restoring the include fragments that
-          // were published before the root.
-          await restoreStagedIncludeWrites(includeWriteRestorers, {
+        restoreFile: (assertCurrent) =>
+          restoreRootAndStagedIncludeWrites({
+            restoreRoot: restoreFile,
+            assertCurrent,
+            restorers: includeWriteRestorers,
             configPath,
             env: deps.env,
-            restoreAuthority: assertCurrent,
-          });
-          return true;
-        },
-        restoreEffects: (assertCurrent) => {
-          assertCurrent();
-          restoreConfigSnapshotAuditRecord({
-            env: deps.env,
-            homedir: deps.homedir,
-            snapshot: priorSnapshotAuditRecord,
-            expectedSnapshot: writtenSnapshotAuditRecord,
-          });
-          if (previousWarningFingerprint === undefined) {
-            loggedConfigWarningFingerprints.delete(configPath);
-          } else {
-            setBoundedConfigIoWarningEntry(
-              loggedConfigWarningFingerprints,
-              configPath,
-              previousWarningFingerprint,
-            );
-          }
-        },
+          }),
+        restoreEffects: createConfigWriteEffectRestorer({
+          configPath,
+          env: deps.env,
+          homedir: deps.homedir,
+          snapshot: priorSnapshotAuditRecord,
+          expectedSnapshot: writtenSnapshotAuditRecord,
+          previousWarningFingerprint,
+        }),
       },
     };
   } catch (error) {

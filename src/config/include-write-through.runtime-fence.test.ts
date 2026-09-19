@@ -17,7 +17,7 @@ import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
   publishStagedIncludeWrites,
-  restoreStagedIncludeWrites,
+  restoreRootAndStagedIncludeWrites,
   stageIncludeWriteThrough,
   type IncludeWriteRestorer,
 } from "./include-write-through.js";
@@ -582,7 +582,12 @@ describe("config io write / include write-through runtime fence", () => {
         rootRawForGraph: snapshot.raw,
       });
       expect(restorers).toHaveLength(1);
-      await restoreStagedIncludeWrites(restorers, { configPath });
+      await restoreRootAndStagedIncludeWrites({
+        restoreRoot: async () => true,
+        assertCurrent: () => {},
+        restorers,
+        configPath,
+      });
     });
 
     await expect(fs.readFile(realConfigPath, "utf-8")).resolves.toBe(originalRootRaw);

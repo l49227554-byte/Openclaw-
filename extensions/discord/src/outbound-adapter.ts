@@ -1,4 +1,3 @@
-// Discord plugin module implements outbound adapter behavior.
 import { resolveOutboundSendDep } from "openclaw/plugin-sdk/channel-outbound";
 import {
   attachChannelToResult,
@@ -96,7 +95,10 @@ async function maybeSendDiscordWebhookText(params: DiscordOutboundMessageContext
     username: truncateUtf16Safe(username, 80) || undefined,
     avatarUrl: normalizeOptionalString(params.identity?.avatarUrl),
     tableMode: params.formatting?.tableMode,
-    chunking: { maxLines: params.formatting?.maxLinesPerMessage },
+    chunking: {
+      maxChars: params.formatting?.textLimit,
+      maxLines: params.formatting?.maxLinesPerMessage,
+    },
     ...resolveDiscordDeliveryOptions(params),
   });
 }

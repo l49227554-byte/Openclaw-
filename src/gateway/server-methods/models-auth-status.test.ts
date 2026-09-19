@@ -1,17 +1,17 @@
+import { expectDefined } from "@openclaw/normalization-core";
 // Model auth status tests cover profile health summaries, provider usage,
 // credential cleanup, secret refresh, and provider run abort side effects.
-
-import { expectDefined } from "@openclaw/normalization-core";
 import { MAX_DATE_TIMESTAMP_MS } from "@openclaw/normalization-core/number-coercion";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateModelsAuthSetApiKeyResult } from "../../../packages/gateway-protocol/src/index.js";
 import type { AuthHealthSummary } from "../../agents/auth-health.js";
 import {
   replaceRuntimeAuthProfileStoreSnapshots,
   type AuthProfileStore,
   type RuntimeAuthProfileStore,
 } from "../../agents/auth-profiles.js";
-import { NON_ENV_SECRETREF_MARKER } from "../../agents/model-auth-markers.js";
+import { createAuthProfileStoreFixture } from "../../agents/auth-profiles/credential-fixtures.test-support.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
   resetConfigRuntimeState,
@@ -21,6 +21,7 @@ import type { ModelProviderConfig } from "../../config/types.models.js";
 import type { UsageSummary } from "../../infra/provider-usage.types.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../../plugins/installed-plugin-index-policy.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { NON_ENV_SECRETREF_MARKER } from "../../secrets/provider-credential-values.js";
 import { resolveProviderAuthLookupMaps } from "../../secrets/provider-env-vars.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { createChatRunState } from "../server-chat-state.js";
@@ -50,15 +51,14 @@ const mocks = vi.hoisted(() => ({
   }),
   listProfilesForProvider: vi.fn((): string[] => []),
   removeModelAuthCredentials: vi.fn(async () => {}),
-  saveModelProviderApiKey: vi.fn(async () => "openrouter:manual"),
+  saveModelProviderApiKey:
+    vi.fn<typeof import("../../commands/models/auth-api-key.js").saveModelProviderApiKey>(),
   setAuthProfileOrder: vi.fn(async (): Promise<AuthProfileStore | null> => ({
     version: 1,
     profiles: {},
   })),
   refreshActiveProviderAuthRuntimeSnapshot: vi.fn(async () => false),
   prepareModelRuntimeSnapshot: vi.fn(async () => {}),
-  clearCurrentProviderAuthState: vi.fn(),
-  warmCurrentProviderAuthStateOffMainThread: vi.fn(async (_cfg: unknown) => {}),
   loadDeferredCatalog: vi.fn(),
   readPreparedCatalog: vi.fn(),
   buildAuthHealthSummary: vi.fn<BuildAuthHealthSummary>((): AuthHealthSummary => ({
@@ -132,16 +132,12 @@ vi.mock("../../agents/prepared-model-runtime.js", () => ({
   prepareModelRuntimeSnapshot: mocks.prepareModelRuntimeSnapshot,
 }));
 
-vi.mock("../../agents/model-provider-auth.js", () => ({
-  clearCurrentProviderAuthState: mocks.clearCurrentProviderAuthState,
-  warmCurrentProviderAuthStateOffMainThread: mocks.warmCurrentProviderAuthStateOffMainThread,
-}));
-
 vi.mock("../server-model-catalog-auth.js", () => ({
   loadDeferredCatalog: mocks.loadDeferredCatalog,
   readPreparedCatalog: mocks.readPreparedCatalog,
 }));
 
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { modelsAuthOrderHandlers } from "./models-auth-order.js";
 import { clearModelAuthStatusUsageCache } from "./models-auth-status-usage-cache.js";
 import {
@@ -337,13 +333,12 @@ function resetAuthStatusMocks(): void {
   mocks.loadDeferredCatalog.mockImplementation(async (_context, agentId: string) =>
     createPreparedOwnerSnapshot(agentId),
   );
-  mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
-    version: 1,
-    profiles: {},
-  });
+  mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
+    createAuthProfileStoreFixture({}),
+  );
   mocks.listProfilesForProvider.mockReturnValue([]);
   mocks.removeModelAuthCredentials.mockResolvedValue();
-  mocks.saveModelProviderApiKey.mockResolvedValue("openrouter:manual");
+  mocks.saveModelProviderApiKey.mockResolvedValue({ profileId: "openrouter:manual" });
   mocks.setAuthProfileOrder.mockResolvedValue({ version: 1, profiles: {} });
   mocks.buildAuthHealthSummary.mockReturnValue({
     now: 0,
@@ -354,7 +349,6 @@ function resetAuthStatusMocks(): void {
   mocks.loadProviderUsageSummary.mockResolvedValue(emptyUsageSummary());
   mocks.refreshActiveProviderAuthRuntimeSnapshot.mockResolvedValue(false);
   mocks.prepareModelRuntimeSnapshot.mockResolvedValue();
-  mocks.warmCurrentProviderAuthStateOffMainThread.mockResolvedValue();
 }
 
 function firstDeferredAuthScope() {
@@ -553,10 +547,7 @@ describe("models.authStatus", () => {
   });
 
   it("does not wait for full catalog discovery during auth status refresh", async () => {
-    let releaseDiscovery!: () => void;
-    const discovery = new Promise<void>((resolve) => {
-      releaseDiscovery = resolve;
-    });
+    const { promise: discovery, resolve: releaseDiscovery } = createDeferred();
     mocks.loadDeferredCatalog.mockImplementation(async (_context, agentId, options) => {
       const deferredOptions = requireRecord(options);
       if (deferredOptions.refreshFullCatalog !== false) {
@@ -605,9 +596,8 @@ describe("models.authStatus", () => {
   });
 
   it("returns a serialisable snapshot on first call", async () => {
-    setPreparedAuthStore({
-      version: 1,
-      profiles: {
+    setPreparedAuthStore(
+      createAuthProfileStoreFixture({
         "openai:default": {
           type: "oauth",
           provider: "openai",
@@ -615,8 +605,8 @@ describe("models.authStatus", () => {
           refresh: "refresh",
           expires: 1_000_000,
         },
-      },
-    });
+      }),
+    );
     mocks.buildAuthHealthSummary.mockReturnValue(createOpenAiCodexOauthHealthSummary());
 
     const opts = createOptions();
@@ -754,14 +744,13 @@ describe("models.authStatus", () => {
         },
       } satisfies OpenClawConfig;
       mocks.getRuntimeConfig.mockReturnValue(config);
-      setPreparedAuthStore({
-        version: 1,
-        profiles: {
+      setPreparedAuthStore(
+        createAuthProfileStoreFixture({
           "minimax:global": { type: "token", provider: "minimax", token: "global-token" },
           "minimax:cn": { type: "token", provider: "minimax-cn", token: "cn-token" },
           "anthropic:saved": { type: "token", provider: "anthropic", token: "other-token" },
-        },
-      });
+        }),
+      );
       setPreparedMetadataSnapshot(
         createPluginMetadataSnapshotFixture({
           plugins: [
@@ -1033,9 +1022,8 @@ describe("models.authStatus", () => {
       source: "store",
       label: profileId,
     } satisfies AuthHealthSummary["profiles"][number];
-    setPreparedAuthStore({
-      version: 1,
-      profiles: {
+    setPreparedAuthStore(
+      createAuthProfileStoreFixture({
         [profileId]: {
           type: "oauth",
           provider: "minimax-portal",
@@ -1043,8 +1031,8 @@ describe("models.authStatus", () => {
           refresh: "persisted-refresh",
           expires: 1,
         },
-      },
-    });
+      }),
+    );
     mocks.buildAuthHealthSummary.mockReturnValue({
       now: 2,
       warnAfterMs: 0,
@@ -1258,12 +1246,11 @@ describe("models.authStatus", () => {
         },
       },
     });
-    setPreparedAuthStore({
-      version: 1,
-      profiles: {
+    setPreparedAuthStore(
+      createAuthProfileStoreFixture({
         [profileId]: { type: "token", provider: "openrouter", token: "placeholder" },
-      },
-    });
+      }),
+    );
     mocks.buildAuthHealthSummary.mockReturnValue({
       now: 0,
       warnAfterMs: 0,
@@ -1465,16 +1452,15 @@ describe("models.authStatus", () => {
         providers: { anthropic: Object.fromEntries([["apiKey", profileId]]) },
       },
     });
-    setPreparedAuthStore({
-      version: 1,
-      profiles: {
+    setPreparedAuthStore(
+      createAuthProfileStoreFixture({
         [profileId]: {
           type: "api_key",
           provider: "anthropic",
           key: "placeholder",
         },
-      },
-    });
+      }),
+    );
     mocks.buildAuthHealthSummary.mockReturnValue({
       now: 0,
       warnAfterMs: 0,
@@ -1534,13 +1520,11 @@ describe("models.authStatus", () => {
   it("bypasses cache when params.refresh is set", async () => {
     await handler(createOptions());
     expect(mocks.buildAuthHealthSummary).toHaveBeenCalledTimes(1);
-    mocks.clearCurrentProviderAuthState.mockClear();
 
     await handler(createOptions({ refresh: true }));
     expect(mocks.buildAuthHealthSummary).toHaveBeenCalledTimes(2);
     expect(mocks.refreshActiveProviderAuthRuntimeSnapshot).toHaveBeenCalledTimes(1);
     expect(mocks.loadDeferredCatalog).toHaveBeenCalledTimes(1);
-    expect(mocks.clearCurrentProviderAuthState).not.toHaveBeenCalled();
   });
 
   it("refreshes the transient owner after secrets runtime refresh", async () => {
@@ -1772,10 +1756,7 @@ describe("models.authStatus", () => {
       expect(warmed.providers[0]?.usage?.windows[0]?.usedPercent).toBe(10);
     });
 
-    let releaseRefresh: (() => void) | undefined;
-    const refreshBlocked = new Promise<void>((resolve) => {
-      releaseRefresh = resolve;
-    });
+    const { promise: refreshBlocked, resolve: releaseRefresh } = createDeferred();
     now.mockReturnValue(61_000);
     mocks.loadProviderUsageSummary.mockImplementationOnce(async () => {
       await refreshBlocked;
@@ -1822,10 +1803,7 @@ describe("models.authStatus", () => {
       expect(warmed.providers[0]?.usage?.windows[0]?.usedPercent).toBe(10);
     });
 
-    let releaseRefresh: (() => void) | undefined;
-    const refreshBlocked = new Promise<void>((resolve) => {
-      releaseRefresh = resolve;
-    });
+    const { promise: refreshBlocked, resolve: releaseRefresh } = createDeferred();
     mocks.loadProviderUsageSummary.mockImplementationOnce(async () => {
       await refreshBlocked;
       return emptyUsageSummary();
@@ -1870,9 +1848,8 @@ describe("models.authStatus", () => {
 
   it("does not reuse usage after credentials rotate within the same provider", async () => {
     mocks.buildAuthHealthSummary.mockReturnValue(createOpenAiCodexOauthHealthSummary());
-    setPreparedAuthStore({
-      version: 1,
-      profiles: {
+    setPreparedAuthStore(
+      createAuthProfileStoreFixture({
         "openai:default": {
           type: "oauth",
           provider: "openai",
@@ -1880,8 +1857,8 @@ describe("models.authStatus", () => {
           refresh: "first-refresh",
           expires: 1_000_000,
         },
-      },
-    });
+      }),
+    );
     mocks.loadProviderUsageSummary.mockResolvedValue({
       updatedAt: 0,
       providers: [
@@ -1899,18 +1876,15 @@ describe("models.authStatus", () => {
       expect(warmed.providers[0]?.usage?.windows[0]?.usedPercent).toBe(10);
     });
 
-    const rotatedStore: AuthProfileStore = {
-      version: 1,
-      profiles: {
-        "openai:default": {
-          type: "oauth",
-          provider: "openai",
-          access: "second-access",
-          refresh: "second-refresh",
-          expires: 1_000_000,
-        },
+    const rotatedStore: AuthProfileStore = createAuthProfileStoreFixture({
+      "openai:default": {
+        type: "oauth",
+        provider: "openai",
+        access: "second-access",
+        refresh: "second-refresh",
+        expires: 1_000_000,
       },
-    };
+    });
     // Prepared catalog refresh can replace its owner before the ambient snapshot revision advances.
     preparedAuthStore = rotatedStore;
     const rotated = await readAuthStatus();
@@ -2288,9 +2262,8 @@ describe("models.authStatus", () => {
 describe("models.authOrderSet", () => {
   beforeEach(() => {
     resetAuthStatusMocks();
-    setPreparedAuthStore({
-      version: 1,
-      profiles: {
+    setPreparedAuthStore(
+      createAuthProfileStoreFixture({
         "openai:one": {
           type: "oauth",
           provider: "openai",
@@ -2305,8 +2278,8 @@ describe("models.authOrderSet", () => {
           refresh: "two-refresh",
           expires: 1_000_000,
         },
-      },
-    });
+      }),
+    );
   });
 
   it("publishes the durable order before acknowledging it", async () => {
@@ -2429,35 +2402,54 @@ describe("models.authSetApiKey", () => {
     resetAuthStatusMocks();
   });
 
-  it.each([false, true])("reports a saved key when refresh fails: %s", async (refreshFails) => {
-    const config = { agents: { list: [{ id: "main", default: true }, { id: "writer" }] } };
-    mocks.getRuntimeConfig.mockReturnValue(config);
-    mocks.listAgentIds.mockReturnValue(["main", "writer"]);
-    if (refreshFails) {
-      mocks.refreshActiveProviderAuthRuntimeSnapshot.mockRejectedValueOnce(
-        new Error("refresh failed"),
-      );
-    }
-    const opts = createOptions({ provider: "OpenRouter", apiKey: "test-key", agentId: "Writer" });
-
-    await setApiKeyHandler(opts);
-
-    expect(mocks.saveModelProviderApiKey).toHaveBeenCalledWith({
-      config,
-      provider: "openrouter",
-      apiKey: "test-key",
-      agentDir: "/tmp/agent-writer",
-    });
-    expect(firstRespondCall(opts)).toEqual([
-      true,
-      {
-        provider: "openrouter",
+  it.each([
+    { refreshFails: false, configWarning: undefined },
+    { refreshFails: true, configWarning: undefined },
+    { refreshFails: false, configWarning: "Provider settings were saved but not applied." },
+    { refreshFails: true, configWarning: "Provider settings were saved but not applied." },
+  ])(
+    "reports a saved key with application and refresh warnings: %j",
+    async ({ refreshFails, configWarning }) => {
+      const config = { agents: { list: [{ id: "main", default: true }, { id: "writer" }] } };
+      mocks.getRuntimeConfig.mockReturnValue(config);
+      mocks.listAgentIds.mockReturnValue(["main", "writer"]);
+      mocks.saveModelProviderApiKey.mockResolvedValueOnce({
         profileId: "openrouter:manual",
-        ...(refreshFails ? { warning: expect.stringContaining("openclaw gateway restart") } : {}),
-      },
-      undefined,
-    ]);
-  });
+        warning: configWarning,
+      });
+      if (refreshFails) {
+        mocks.refreshActiveProviderAuthRuntimeSnapshot.mockRejectedValueOnce(
+          new Error("refresh failed"),
+        );
+      }
+      const opts = createOptions({ provider: "OpenRouter", apiKey: "test-key", agentId: "Writer" });
+
+      await setApiKeyHandler(opts);
+
+      expect(validateModelsAuthSetApiKeyResult(firstRespondCall(opts)?.[1])).toBe(true);
+      expect(mocks.saveModelProviderApiKey).toHaveBeenCalledWith({
+        config,
+        provider: "openrouter",
+        apiKey: "test-key",
+        agentDir: "/tmp/agent-writer",
+      });
+      expect(firstRespondCall(opts)).toEqual([
+        true,
+        {
+          provider: "openrouter",
+          profileId: "openrouter:manual",
+          ...(refreshFails || configWarning ? { warning: expect.any(String) } : {}),
+        },
+        undefined,
+      ]);
+      if (configWarning) {
+        expect(firstRespondCall(opts)?.[1]?.warning).toContain(configWarning);
+      }
+      if (refreshFails) {
+        expect(firstRespondCall(opts)?.[1]?.warning).toContain("openclaw gateway restart");
+      }
+    },
+  );
 
   it.each([
     { provider: "", apiKey: "test-key" },
@@ -2557,8 +2549,6 @@ describe("models.authLogout", () => {
       profileIds: ["openrouter:default"],
     });
     expect(mocks.refreshActiveProviderAuthRuntimeSnapshot).toHaveBeenCalledTimes(1);
-    expect(mocks.clearCurrentProviderAuthState).toHaveBeenCalled();
-    expect(mocks.warmCurrentProviderAuthStateOffMainThread).toHaveBeenCalledWith({});
     const [ok, payload] = firstRespondCall(opts) ?? [];
     expect(ok).toBe(true);
     expect((payload as ModelAuthLogoutResult).removedProfiles).toEqual(["openrouter:default"]);
@@ -2568,9 +2558,8 @@ describe("models.authLogout", () => {
   });
 
   it("removes only requested saved OAuth or token profiles", async () => {
-    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
-      version: 1,
-      profiles: {
+    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
+      createAuthProfileStoreFixture({
         "openrouter:oauth": {
           type: "oauth",
           provider: "openrouter",
@@ -2583,8 +2572,8 @@ describe("models.authLogout", () => {
           provider: "openrouter",
           key: "key",
         },
-      },
-    });
+      }),
+    );
     mocks.listProfilesForProvider.mockReturnValue(["openrouter:oauth", "openrouter:api-key"]);
     const opts = createLogoutOptions({
       provider: "openrouter",
@@ -2612,12 +2601,11 @@ describe("models.authLogout", () => {
         },
       },
     });
-    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
-      version: 1,
-      profiles: {
+    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
+      createAuthProfileStoreFixture({
         [profileId]: { type: "token", provider: "openrouter", token: "placeholder" },
-      },
-    });
+      }),
+    );
     mocks.listProfilesForProvider.mockReturnValue([profileId]);
     const opts = createLogoutOptions({ provider: "openrouter", profileIds: [profileId] });
 
@@ -2636,9 +2624,8 @@ describe("models.authLogout", () => {
   });
 
   it("rejects unavailable or external targeted profiles without aborting runs", async () => {
-    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
-      version: 1,
-      profiles: {
+    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
+      createAuthProfileStoreFixture({
         "openrouter:saved": {
           type: "oauth",
           provider: "openrouter",
@@ -2646,8 +2633,8 @@ describe("models.authLogout", () => {
           refresh: "refresh",
           expires: 1_000_000,
         },
-      },
-    });
+      }),
+    );
     mocks.listProfilesForProvider.mockReturnValue(["openrouter:saved"]);
     const opts = createLogoutOptions({
       provider: "openrouter",
@@ -2690,9 +2677,8 @@ describe("models.authLogout", () => {
   });
 
   it("removes only inline API keys and preserves active provider runs", async () => {
-    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
-      version: 1,
-      profiles: {
+    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
+      createAuthProfileStoreFixture({
         "openrouter:key": { type: "api_key", provider: "openrouter", key: "test-key" },
         "openrouter:ref": {
           type: "api_key",
@@ -2707,8 +2693,8 @@ describe("models.authLogout", () => {
           refresh: "refresh",
           expires: 1_000_000,
         },
-      },
-    });
+      }),
+    );
     mocks.listProfilesForProvider.mockReturnValue([
       "openrouter:key",
       "openrouter:ref",
@@ -2819,9 +2805,8 @@ describe("models.authLogout", () => {
 
   it("preserves active provider runs on a targeted logout", async () => {
     const profileId = "openrouter:saved";
-    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue({
-      version: 1,
-      profiles: {
+    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
+      createAuthProfileStoreFixture({
         [profileId]: {
           type: "oauth",
           provider: "openrouter",
@@ -2829,8 +2814,8 @@ describe("models.authLogout", () => {
           refresh: "refresh",
           expires: 1_000_000,
         },
-      },
-    });
+      }),
+    );
     mocks.listProfilesForProvider.mockReturnValue([profileId]);
     const opts = createLogoutOptions({ provider: "openrouter", profileIds: [profileId] });
     const activeRun = createActiveRun("openrouter");

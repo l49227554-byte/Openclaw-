@@ -125,14 +125,8 @@ vi.mock("../../agents/sticky-model-selection.js", async (importOriginal) => ({
   }) => stickyModelMock.persistBestEffort(params),
 }));
 
-vi.mock("./directive-handling.auth.js", () => ({
-  formatAuthLabel: (auth: { label: string; source: string }) => {
-    if (!auth.source || auth.source === auth.label || auth.source === "missing") {
-      return auth.label;
-    }
-    return `${auth.label} (${auth.source})`;
-  },
-  resolveAuthLabel: async (
+vi.mock("../../agents/model-catalog-auth-labels.js", () => {
+  const resolveAuthLabel = (
     provider: string,
     cfg: unknown,
     _modelsPath: string,
@@ -180,8 +174,35 @@ vi.mock("./directive-handling.auth.js", () => ({
       };
     }
     return { label: "missing", source: "missing" };
-  },
-}));
+  };
+  return {
+    formatModelCatalogAuthLabel: (label: string) => label,
+    prepareModelCatalogAuthLabels: (params: {
+      config: OpenClawConfig;
+      workspaceDir?: string;
+      providers: Iterable<string>;
+    }) =>
+      new Map(
+        [...params.providers].map((provider) => {
+          const format = (acceptedProfileTypes?: readonly string[]) => {
+            const auth = resolveAuthLabel(
+              provider,
+              params.config,
+              "",
+              undefined,
+              undefined,
+              params.workspaceDir,
+              { acceptedProfileTypes },
+            );
+            return auth.source && auth.source !== "missing"
+              ? `${auth.label} (${auth.source})`
+              : auth.label;
+          };
+          return [provider, { all: format(), apiKey: format(["api_key"]) }];
+        }),
+      ),
+  };
+});
 
 vi.mock("../../agents/auth-profiles/store.js", async (importOriginal) => {
   const store = () => ({
@@ -393,9 +414,12 @@ vi.mock("../../agents/agent-scope.js", () => ({
 }));
 
 vi.mock("../../agents/prepared-model-catalog.js", async () => {
-  const { setPreparedModelRuntimeAuthStore } = await vi.importActual<
-    typeof import("../../agents/prepared-model-runtime-auth.js")
-  >("../../agents/prepared-model-runtime-auth.js");
+  const { setPreparedModelRuntimeAuthStore, setPreparedModelRuntimeAuthLabels } =
+    await vi.importActual<typeof import("../../agents/prepared-model-runtime-auth.js")>(
+      "../../agents/prepared-model-runtime-auth.js",
+    );
+  const { prepareModelCatalogAuthLabels } =
+    await import("../../agents/model-catalog-auth-labels.js");
   const { createPluginMetadataSnapshotFixture } =
     await import("../../plugins/plugin-metadata.test-support.js");
   const { loadPluginMetadataSnapshot } = await import("../../plugins/plugin-metadata-snapshot.js");
@@ -407,6 +431,9 @@ vi.mock("../../agents/prepared-model-catalog.js", async () => {
   return {
     readPreparedModelCatalog: loadModelCatalog,
     loadProviderScopedThinkingCatalog: loadModelCatalog,
+    loadPreparedModelCatalogOwnerSnapshot: vi.fn(() => {
+      throw new Error("Status should use the published catalog owner");
+    }),
     getPublishedPreparedModelCatalogOwnerSnapshot: (params: {
       config: OpenClawConfig;
       agentId?: string;
@@ -431,6 +458,23 @@ vi.mock("../../agents/prepared-model-catalog.js", async () => {
           : createPluginMetadataSnapshotFixture(),
         isCurrent: () => true,
       };
+      setPreparedModelRuntimeAuthLabels(
+        owner,
+        prepareModelCatalogAuthLabels({
+          config: params.config,
+          agentDir: owner.agentDir,
+          workspaceDir: params.workspaceDir,
+          env: process.env,
+          store: { version: 1, profiles: authProfilesStoreMock.profiles },
+          providers: [
+            "openai",
+            "anthropic",
+            "openrouter",
+            "localai",
+            ...Object.keys(params.config.models?.providers ?? {}),
+          ],
+        }),
+      );
       setPreparedModelRuntimeAuthStore(owner, {
         version: 1,
         profiles: authProfilesStoreMock.profiles,
@@ -962,32 +1006,17 @@ describe("/model chat UX", () => {
   });
 
   it.each([
-    {
-      command: "/model status --runtime codex",
-      text: "Runtime override requires a model selection.",
-    },
-    {
-      command: "/model list -s",
-      text: "Session-only scope requires a model selection.",
-    },
-    {
-      command: "/model status --agent",
-      text: "Agent scope requires a model selection.",
-    },
-    {
-      command: "/model list --global",
-      text: "Global scope requires a model selection.",
-    },
-  ])(
-    "rejects action options on informational model commands: $command",
-    async ({ command, text }) => {
-      const reply = await resolveModelInfoReply({
-        directives: parseInlineSessionDirectives(command),
-      });
+    ["/model status --runtime codex", "Runtime override requires a model selection."],
+    ["/model list -s", "Session-only scope requires a model selection."],
+    ["/model status --agent", "Agent scope requires a model selection."],
+    ["/model list --global", "Global scope requires a model selection."],
+  ])("rejects action options on informational model commands: %s", async (command, text) => {
+    const reply = await resolveModelInfoReply({
+      directives: parseInlineSessionDirectives(command),
+    });
 
-      expect(reply).toEqual({ text, isError: true });
-    },
-  );
+    expect(reply).toEqual({ text, isError: true });
+  });
 
   it("includes the thinking level in channel-specific model summaries", async () => {
     pluginPolicyMock.channels.set("telegram", {
@@ -1788,6 +1817,7 @@ describe("/model chat UX", () => {
       provider: "anthropic",
       model: "claude-opus-4-6",
       isDefault: true,
+      resetToDefault: true,
     });
   });
 
@@ -1998,25 +2028,29 @@ describe("/model chat UX", () => {
     expect(sessionEntry.agentRuntimeOverride).toBeUndefined();
   });
 
-  it("clears a provider-incompatible runtime pin during a model switch", async () => {
-    const sessionEntry = createSessionEntry({
-      providerOverride: "openai",
-      modelOverride: "gpt-4o",
-      modelOverrideSource: "user",
-      agentRuntimeOverride: "codex",
-    });
-    const { persisted } = await persistModelDirectiveForTest({
-      command: "/model anthropic/claude-opus-4-6 hello",
-      allowedModelKeys: ["anthropic/claude-opus-4-6", "openai/gpt-4o"],
-      sessionEntry,
-      provider: "openai",
-      model: "gpt-4o",
-      initialModelLabel: "openai/gpt-4o",
-    });
+  it.each(["", " --runtime codex"])(
+    "rejects an incompatible runtime without changing the session (%s)",
+    async (runtime) => {
+      const sessionEntry = createSessionEntry({
+        providerOverride: "openai",
+        modelOverride: "gpt-4o",
+        modelOverrideSource: "user",
+        agentRuntimeOverride: "codex",
+      });
+      const { persisted } = await persistModelDirectiveForTest({
+        command: `/model anthropic/claude-opus-4-6${runtime} hello`,
+        allowedModelKeys: ["anthropic/claude-opus-4-6", "openai/gpt-4o"],
+        sessionEntry,
+        provider: "openai",
+        model: "gpt-4o",
+        initialModelLabel: "openai/gpt-4o",
+      });
 
-    expect(sessionEntry.agentRuntimeOverride).toBeUndefined();
-    expect(persisted.directiveAck?.text).toContain("Runtime reset to configured policy.");
-  });
+      expect(persisted.errorText).toContain('Runtime "codex" is not supported');
+      expect(sessionEntry.agentRuntimeOverride).toBe("codex");
+      expect(sessionEntry.modelOverride).toBe("gpt-4o");
+    },
+  );
 
   it("rejects model/runtime transactions that target an unsupported runtime", async () => {
     vi.mocked(enqueueSystemEvent).mockClear();
@@ -2040,16 +2074,6 @@ describe("/model chat UX", () => {
       agentRuntimeOverride: "openclaw",
     });
     expect(enqueueSystemEvent).not.toHaveBeenCalled();
-  });
-
-  it("rejects the Codex runtime for providers the harness does not support", async () => {
-    const { persisted, sessionEntry } = await persistModelDirectiveForTest({
-      command: "/model anthropic/claude-opus-4-6 --runtime codex hello",
-      allowedModelKeys: ["anthropic/claude-opus-4-6"],
-    });
-
-    expect(persisted.errorText).toBe('Runtime "codex" is not supported for anthropic.');
-    expect(sessionEntry.agentRuntimeOverride).toBeUndefined();
   });
 
   it("rejects unsupported mixed thinking before mutating the model/runtime transaction", async () => {
@@ -2205,7 +2229,7 @@ describe("handleDirectiveOnly model persist behavior (fixes #1435)", () => {
 
   function createHandleParams(overrides: Partial<HandleParams>): HandleParams {
     return createDirectiveHandlingParams({
-      sessionKey,
+      sessionKey: `agent:${overrides.agentId ?? "main"}:dm:1`,
       elevatedEnabled: false,
       elevatedAllowed: false,
       allowedModelKeys,

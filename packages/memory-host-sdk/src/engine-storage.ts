@@ -1,4 +1,5 @@
 // Real workspace contract for memory engine storage/index helpers.
+export type { MemoryWorkspaceWatchRequest } from "./host/workspace-files.js";
 
 export {
   buildFileEntry,
@@ -43,6 +44,7 @@ export {
   isMemoryOriginEligibleForAutomaticInjection,
   resolveMemoryIndexIdentityDiagnostic,
   resolveMemoryIndexIdentityReason,
+  resolveMemoryIndexSearchDiagnostic,
   resolveMemorySearchStaleness,
 } from "./host/types.js";
 export type { ResolvedMemoryBackendConfig } from "./host/backend-config.js";

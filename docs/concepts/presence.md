@@ -25,6 +25,7 @@ Presence entries are structured objects with fields like:
 
 - `instanceId` (optional but strongly recommended): stable client identity (usually `connect.client.instanceId`)
 - `host`: human-friendly host name
+- `clientId`: client type from the accepted connection, separate from its display name; the people card uses this to distinguish **Terminal** from a native **App**
 - `ip`: best-effort IP address. The [geolocation plugin](/plugins/geolocation) resolves it to a coarse city where one is available
 - `version`: client version string
 - `deviceFamily` / `modelIdentifier`: hardware hints
@@ -128,6 +129,14 @@ qualification, using the current connection only when that user is unavailable.
 Only a displayed owner with the exact qualified profile identity is deduplicated
 from a session's live viewers. The [people card](/concepts/multi-user#people-cards) keeps online duration
 and observed activity separate from each entry's heartbeat freshness.
+
+Accepted interactions, including typing, update the exact activity timestamp on
+every live connection for that person. Activity-only presence events are coalesced
+to at most one every 30 seconds per identity. The first observed activity and
+activity after that window publish immediately; connection, disconnection,
+profile, and watched-session changes still publish immediately. The people card's
+activity age can therefore lag the latest interaction by less than 30 seconds.
+Fresh snapshots and `system-presence` reads include the latest stored timestamp.
 
 ## TTL and bounded size
 

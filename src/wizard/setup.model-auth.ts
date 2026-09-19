@@ -2,6 +2,7 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import {
   applyOnboardingPrimaryModel,
+  applyOnboardingUtilityModel,
   prepareAgentModelDefaults,
   projectAgentModelDefaults,
   resolveOnboardingSetupTarget,
@@ -190,7 +191,15 @@ export async function runSetupModelAuthStep(params: {
     persistAuthProfiles = async () => {};
 
     if (authChoice === "custom-api-key") {
-      const { promptCustomApiConfig } = await import("../commands/onboard-custom.js");
+      const [
+        { promptCustomApiConfig },
+        { prepareCustomSetupCredentials },
+        { persistProviderAuthProfileBatch },
+      ] = await Promise.all([
+        import("../commands/onboard-custom.js"),
+        import("../system-agent/setup-inference-custom.js"),
+        import("../plugins/provider-auth-persistence.js"),
+      ]);
       const customResult = await promptCustomApiConfig({
         prompter,
         runtime,
@@ -198,8 +207,19 @@ export async function runSetupModelAuthStep(params: {
         target,
         secretInputMode: opts.secretInputMode,
         setAsPrimary: !params.preserveExistingModelSelection,
+        verification: "deferred",
       });
-      nextConfig = customResult.config;
+      const custom = prepareCustomSetupCredentials(customResult);
+      nextConfig = custom.config;
+      authProfiles = custom.profiles;
+      persistAuthProfiles = async (profiles = custom.profiles) => {
+        await persistProviderAuthProfileBatch({
+          profiles,
+          config: custom.config,
+          agentDir: params.agentDir ?? target.agentDir,
+          stateDir: params.stateDir,
+        });
+      };
       prompter.disableBackNavigation?.();
       break;
     }
@@ -287,6 +307,10 @@ export async function runSetupModelAuthStep(params: {
     }
     if (authResult.agentModelOverride) {
       nextConfig = applyOnboardingPrimaryModel(nextConfig, target, authResult.agentModelOverride);
+    }
+    if (authResult.utilityModelOverride) {
+      nextConfig = applyOnboardingUtilityModel(nextConfig, target, authResult.utilityModelOverride);
+      break;
     }
 
     const authChoiceModelSelectionPolicy = await resolveAuthChoiceModelSelectionPolicy({

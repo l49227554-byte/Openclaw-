@@ -6,6 +6,7 @@ import { openSlot, type SidebarLayout } from "../sidebar-layout.ts";
 import type { BackgroundTasksProps } from "./chat-background-tasks.types.ts";
 import "./chat-sidebar.ts";
 import { assistantMediaPolicyKey } from "./chat-message-media.ts";
+import { selectSessionWorkspacePreview } from "./chat-session-workspace-state.ts";
 import { openSessionWorkspaceFile, revealSessionWorkspaceFile } from "./chat-session-workspace.ts";
 import type { SidebarContent, SidebarSelection } from "./chat-sidebar.ts";
 import { renderTaskDetailPanel } from "./chat-task-detail.ts";
@@ -49,6 +50,7 @@ export function renderChatDetailSlot(params: {
     html`<openclaw-chat-detail-panel
       class="chat-sidebar"
       .content=${content}
+      .fileNavigation=${content.kind === "file" ? (content.navigation ?? null) : null}
       .execNode=${selectedChatSessionRow(host)?.execNode ?? null}
       .attachmentRuntime=${{
         sessionKey: params.chat.sessionKey,
@@ -66,12 +68,13 @@ export function renderChatDetailSlot(params: {
       .canvasPluginSurfaceUrl=${host.canvasPluginSurfaceUrl}
       .embedSandboxMode=${host.embedSandboxMode}
       .allowExternalEmbedUrls=${host.allowExternalEmbedUrls}
-      .githubRepo=${params.chat.githubRepo}
+      .githubContext=${{ githubRepo: params.chat.githubRepo, githubRepositories: params.chat.githubRepositories }}
       .onOpenWorkspaceFile=${(target: { path: string; line?: number | null }) =>
         openSessionWorkspaceFile(host, target)}
       .onOpenSessionLink=${params.chat.onOpenSessionLink}
       .onRevealInWorkspace=${(path: string) => {
         revealSessionWorkspaceFile(host, path);
+        selectSessionWorkspacePreview(host, null);
         host.updateSidebarLayout(openSlot(host.sidebarLayout, "workspace"));
       }}
       .onOpenImage=${(item: Parameters<typeof host.handleOpenImage>[0]) =>

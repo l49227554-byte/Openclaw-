@@ -157,7 +157,20 @@ export function isDependencyGuardMarkerComment(comment, marker, trustedAuthors) 
   return Boolean(login && trustedAuthors.has(login) && comment.body?.includes(marker));
 }
 
-function renderApprovedDependencyComment(approval) {
+function renderDependencyChangeLines({
+  lockfileChanges,
+  dependencyFiles = [],
+  dependencyManifestChanges,
+}) {
+  return [
+    ...[...new Set([...lockfileChanges, ...dependencyFiles])].map(
+      (path) => `- ${markdownCode(path)} changed.`,
+    ),
+    ...dependencyManifestChanges.map(renderManifestChangeLine),
+  ];
+}
+
+function renderApprovedDependencyComment(approval, changes) {
   return [
     dependencyGraphGuardMarker,
     "",
@@ -174,6 +187,9 @@ function renderApprovedDependencyComment(approval) {
     `- Repository role: ${markdownCode(approval.role)}`,
     ...(approval.kind === "comment" ? [`- Approval comment: ${approval.url}`] : []),
     "",
+    ...(approval.kind === "author"
+      ? ["These dependency graph changes were made:", ...renderDependencyChangeLines(changes), ""]
+      : []),
     approval.kind === "author"
       ? "Carefully review these changes before merging."
       : "A later push requires a fresh approval comment for an external contributor's PR.",
@@ -256,13 +272,6 @@ export function renderBlockedDependencyComment({
 }) {
   const safeBranch = sanitizeGuardDisplayValue(baseBranch ?? "main");
   const baseRef = shellQuote(`origin/${safeBranch}`);
-  const reasons = [];
-  for (const path of new Set([...lockfileChanges, ...dependencyFiles])) {
-    reasons.push(`- ${markdownCode(path)} changed.`);
-  }
-  for (const change of dependencyManifestChanges) {
-    reasons.push(renderManifestChangeLine(change));
-  }
   const autoscrubLines = renderAutoscrubStatusLines(autoscrubStatus);
   const removalSteps =
     lockfileChanges.length > 0
@@ -283,12 +292,12 @@ export function renderBlockedDependencyComment({
     "",
     "### ⚠️ Maintainer dependency review required",
     "",
-    "This external contributor PR changes dependency resolution. A maintainer must review these dependency changes before merging.",
+    "This external contributor PR changes dependency resolution. A maintainer must review these changes before merging.",
     "",
     `Current SHA: ${markdownCode(headSha ?? "<head-sha>")}`,
     "",
-    "Detected dependency graph changes:",
-    ...reasons,
+    "These dependency graph changes were made:",
+    ...renderDependencyChangeLines({ lockfileChanges, dependencyFiles, dependencyManifestChanges }),
     ...autoscrubLines,
     ...removalSteps,
     "",
@@ -709,7 +718,14 @@ export async function reviewDependencyChanges(
             dependencyGraphChanges,
             headSha: pullRequest.head.sha,
           })
-        : withApprovalRequest(guard, renderApprovedDependencyComment(guard.approval));
+        : withApprovalRequest(
+            guard,
+            renderApprovedDependencyComment(guard.approval, {
+              lockfileChanges,
+              dependencyFiles,
+              dependencyManifestChanges,
+            }),
+          );
       await upsertComment(existingGuardComment, body);
       await writeSummary(body);
       return;

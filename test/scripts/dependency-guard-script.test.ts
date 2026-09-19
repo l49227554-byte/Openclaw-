@@ -143,6 +143,7 @@ describe("dependency guard script", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.statuses.map((call) => call.body?.state)).toEqual(["failure", "success"]);
     expect(result.stdout).toContain("informational");
+    expect(result.stdout).toContain("- `pnpm-workspace.yaml` changed.");
   });
 
   it("does not transfer command approval to a duplicate PR with the same head", () => {

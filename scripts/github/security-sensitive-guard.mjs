@@ -47,7 +47,7 @@ function renderComment({ changes, pullRequest, approval }) {
     );
   } else if (changes.length > 0 && !approval) {
     lines.push(
-      "This external contributor PR changes sensitive security components. A maintainer must review these security changes before merging.",
+      "This external contributor PR changes sensitive security components. A maintainer must review these changes before merging.",
       "",
       `Current SHA: ${code(pullRequest.head.sha)}`,
     );
@@ -60,8 +60,8 @@ function renderComment({ changes, pullRequest, approval }) {
     lines.push(
       "",
       approval?.kind === "author"
-        ? "These security responsibilities changed:"
-        : "Review these security responsibilities:",
+        ? "These security sensitive changes were made:"
+        : "These sensitive security changes were made:",
       "",
     );
     for (const change of changes.slice(0, 25)) {

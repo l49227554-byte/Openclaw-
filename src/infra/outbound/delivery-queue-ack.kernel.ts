@@ -3,7 +3,6 @@ import type { OpenClawStateDatabase } from "../../state/openclaw-state-db-contra
 import { loadDeliveryQueueEntryInDatabase } from "../delivery-queue-sqlite-bound.js";
 import { transitionOwnedDeliveryQueueEntryInDatabase } from "../delivery-queue-sqlite-claim.kernel.js";
 import {
-  completeDeliveryQueueEntryInDatabase,
   completeLoadedDeliveryQueueEntryInDatabase,
   deleteDeliveryQueueEntryInDatabase,
   prepareDeliveryQueueTerminalEntry,
@@ -21,7 +20,7 @@ export type AckDeliveryOptions = {
   retainSpoolArtifacts?: boolean;
   /** An intentionally suppressed pre-send batch must not become a success receipt. */
   suppressCompletionReceipt?: boolean;
-  /** Prevent an older provider attempt from settling a replacement owner. */
+  /** Settle only this owner; omission requires an unclaimed pending entry. */
   expectedPlatformSendAttemptId?: string | null;
 };
 
@@ -108,17 +107,21 @@ export function ackDeliveryInDatabase(
   // delete commits. A crash in between leaves an orphan for the retention sweep;
   // unlinking first could strip media from a row that still has to replay.
   let spoolPaths: string[] = [];
-  const settle = (current: QueuedDelivery | null): void => {
-    spoolPaths = current
-      ? collectEntrySpoolPaths(
-          acceptedPreparedOutboundEntries(current.preparedBatch).map(
-            (prepared) => prepared.payload,
-          ),
-          stateDir,
-        )
-      : [];
-    if (current?.completionRetention && options?.suppressCompletionReceipt !== true) {
-      if (options && "expectedPlatformSendAttemptId" in options) {
+  const settled = transitionOwnedDeliveryQueueEntryInDatabase(
+    database,
+    {
+      queueName: OUTBOUND_DELIVERY_QUEUE_NAME,
+      id,
+      platformSendAttemptId: options?.expectedPlatformSendAttemptId ?? null,
+    },
+    (entry) => {
+      // SAFETY: Pending rows in this namespace retain the prepared outbound payload.
+      const current = entry as QueuedDelivery;
+      spoolPaths = collectEntrySpoolPaths(
+        acceptedPreparedOutboundEntries(current.preparedBatch).map((prepared) => prepared.payload),
+        stateDir,
+      );
+      if (current.completionRetention && options?.suppressCompletionReceipt !== true) {
         completeLoadedDeliveryQueueEntryInDatabase(
           database,
           OUTBOUND_DELIVERY_QUEUE_NAME,
@@ -126,37 +129,18 @@ export function ackDeliveryInDatabase(
           current,
         );
       } else {
-        completeDeliveryQueueEntryInDatabase(database, OUTBOUND_DELIVERY_QUEUE_NAME, id);
+        deleteDeliveryQueueEntryInDatabase(database, OUTBOUND_DELIVERY_QUEUE_NAME, id);
       }
-    } else {
-      deleteDeliveryQueueEntryInDatabase(database, OUTBOUND_DELIVERY_QUEUE_NAME, id);
-    }
-  };
-  if (options && "expectedPlatformSendAttemptId" in options) {
-    const settled = transitionOwnedDeliveryQueueEntryInDatabase(
-      database,
-      {
-        queueName: OUTBOUND_DELIVERY_QUEUE_NAME,
-        id,
-        platformSendAttemptId: options.expectedPlatformSendAttemptId ?? null,
-      },
-      (entry) => {
-        // SAFETY: Pending rows in this namespace retain the prepared outbound payload.
-        settle(entry as QueuedDelivery);
-      },
-    );
-    if (!settled) {
-      throw new Error(`Delivery platform claim was lost: ${id}`);
-    }
-  } else {
-    const current = loadDeliveryQueueEntryInDatabase(
-      database,
-      OUTBOUND_DELIVERY_QUEUE_NAME,
-      id,
-      "pending",
-    );
-    // SAFETY: Pending rows in this namespace retain the prepared outbound payload.
-    settle(current as QueuedDelivery | null);
+    },
+  );
+  // Claimless retries remain idempotent after custody is gone. A pending row
+  // rejected by the same ownership fence must never be settled or cleaned up.
+  if (
+    !settled &&
+    ((options && "expectedPlatformSendAttemptId" in options) ||
+      loadDeliveryQueueEntryInDatabase(database, OUTBOUND_DELIVERY_QUEUE_NAME, id, "pending"))
+  ) {
+    throw new Error(`Delivery platform claim was lost: ${id}`);
   }
   return spoolPaths;
 }

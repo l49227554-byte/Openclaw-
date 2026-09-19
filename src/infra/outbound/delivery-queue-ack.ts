@@ -57,14 +57,11 @@ export async function ackDelivery(
   const stateDir = context?.stateDir ?? requestedStateDir;
   const env = resolveDeliveryQueueStateEnv(stateDir, context);
   const database = openOpenClawStateDatabase({ env });
-  const spoolPaths =
-    options && "expectedPlatformSendAttemptId" in options
-      ? runOpenClawStateWriteTransaction(
-          (writer) => ackDeliveryInDatabase(writer, id, stateDir, options),
-          { database, env },
-          { operationLabel: `mutate owned ${OUTBOUND_DELIVERY_QUEUE_NAME} delivery platform send` },
-        )
-      : ackDeliveryInDatabase(database, id, stateDir, options);
+  const spoolPaths = runOpenClawStateWriteTransaction(
+    (writer) => ackDeliveryInDatabase(writer, id, stateDir, options),
+    { database, env },
+    { operationLabel: `mutate owned ${OUTBOUND_DELIVERY_QUEUE_NAME} delivery platform send` },
+  );
   if (!options?.retainSpoolArtifacts) {
     await releaseSpoolArtifacts(spoolPaths, stateDir);
   }

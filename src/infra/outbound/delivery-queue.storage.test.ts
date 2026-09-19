@@ -63,6 +63,29 @@ describe("delivery-queue storage", () => {
   }
 
   describe("enqueue + ack lifecycle", () => {
+    it.each([false, true])(
+      "rejects claimless ack without removing claimed custody or media (dispatched=%s)",
+      async (dispatched) => {
+        const { id, artifact } = await enqueueSpoolDelivery("4");
+        const claimId = await claimDeliveryPlatformSendAttempt(id, tmpDir());
+        expect(claimId).toEqual(expect.any(String));
+        if (dispatched) {
+          await markDeliveryPlatformSendAttemptStarted(id, tmpDir(), undefined, claimId);
+        }
+        const claimed = await loadPendingDelivery(id, tmpDir());
+
+        await expect(ackDelivery(id, tmpDir())).rejects.toThrow(
+          `Delivery platform claim was lost: ${id}`,
+        );
+
+        expect(await loadPendingDelivery(id, tmpDir())).toEqual(claimed);
+        expect(await fs.readFile(artifact, "utf8")).toBe("audio-bytes");
+        await ackDelivery(id, tmpDir(), { expectedPlatformSendAttemptId: claimId });
+        expect(await loadPendingDelivery(id, tmpDir())).toBeNull();
+        await expect(fs.stat(artifact)).rejects.toMatchObject({ code: "ENOENT" });
+      },
+    );
+
     it("fences stale same-millisecond terminal mutations without releasing newer owner media", async () => {
       vi.useFakeTimers();
       try {
@@ -99,6 +122,8 @@ describe("delivery-queue storage", () => {
           throw new Error("test invariant: first platform owner must claim the durable row");
         }
         const lostClaim = `Delivery platform claim was lost: ${id}`;
+        await expect(ackDelivery(id, stateDir)).rejects.toThrow(lostClaim);
+        expect(readStatus(id)).toBe("pending");
         // Admission snapshots taken before ownership must CAS the unclaimed
         // state; a producer that claimed meanwhile retains its media and row.
         await expect(
@@ -468,6 +493,8 @@ describe("delivery-queue storage", () => {
 
       expect(repeated).toEqual({ id, created: false });
       expect(await loadPendingDeliveries(tmpDir())).toEqual([]);
+      expect(readStatus(id)).toBe("completed");
+      await expect(ackDelivery(id, tmpDir())).resolves.toBeUndefined();
       expect(readStatus(id)).toBe("completed");
     });
 

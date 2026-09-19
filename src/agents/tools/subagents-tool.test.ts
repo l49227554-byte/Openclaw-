@@ -3,8 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createSubagentTaskBackingDetail } from "../../tasks/task-backing-records.js";
 import type { cancelDetachedTaskRunById } from "../../tasks/task-executor.js";
 import { emitTaskRegistryObserverEvent } from "../../tasks/task-registry-state.js";
+import {
+  createTaskFixture,
+  resetTaskRegistryForTests,
+} from "../../tasks/task-registry.test-support.js";
 import type { TaskRecord, TaskRuntime, TaskStatus } from "../../tasks/task-registry.types.js";
 import { TASK_STATUS_DETAIL_MAX_CHARS } from "../../tasks/task-status.js";
+import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "../subagents/registry/subagent-lifecycle-events.js";
 import {
   addSubagentRunForTests,
@@ -430,6 +435,91 @@ describe("subagents tool", () => {
       expect.objectContaining({ details: expect.objectContaining({ status: "forbidden" }) }),
     );
     expect(cancelTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an owned task by runId or childSessionKey, not only taskId", async () => {
+    await withStateDirEnv("subagents-cancel-ids-", async () => {
+      resetTaskRegistryForTests({ persist: false });
+      try {
+        const owned = createTaskFixture("subagent", {
+          ownerKey: "agent:main:main",
+          requesterSessionKey: "agent:main:main",
+          runId: "spawn-run-1",
+          childSessionKey: "agent:main:subagent:child-1",
+          task: "Owned child run",
+        });
+        addSubagentRunForTests({
+          runId: "spawn-run-1",
+          childSessionKey: "agent:main:subagent:child-1",
+          controllerSessionKey: "agent:main:main",
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "agent:main:main",
+          requesterAgentId: "main",
+          task: "Owned child run",
+          generation: 1,
+          createdAt: Date.now(),
+          cleanup: "keep",
+          execution: { status: "running", startedAt: Date.now() },
+        });
+        const cancelTask = vi.fn(async () => ({ found: true, cancelled: true }));
+        const tool = createSubagentsTool({
+          agentSessionKey: "agent:main:main",
+          config: {},
+          cancelTask: cancelTask as never,
+        });
+
+        await expect(
+          tool.execute("cancel-run-id", { action: "cancel", taskId: "spawn-run-1" }),
+        ).resolves.toEqual(
+          expect.objectContaining({
+            details: expect.objectContaining({ status: "cancelled", taskId: owned.taskId }),
+          }),
+        );
+        expect(cancelTask).toHaveBeenCalledExactlyOnceWith({ cfg: {}, taskId: owned.taskId });
+        cancelTask.mockClear();
+
+        await expect(
+          tool.execute("cancel-session-key", {
+            action: "cancel",
+            taskId: "agent:main:subagent:child-1",
+          }),
+        ).resolves.toEqual(
+          expect.objectContaining({
+            details: expect.objectContaining({ status: "cancelled", taskId: owned.taskId }),
+          }),
+        );
+        expect(cancelTask).toHaveBeenCalledExactlyOnceWith({ cfg: {}, taskId: owned.taskId });
+      } finally {
+        resetSubagentRegistryForTests();
+        resetTaskRegistryForTests({ persist: false });
+      }
+    });
+  });
+
+  it("returns a distinct unknown-task error for unresolvable identifiers", async () => {
+    await withStateDirEnv("subagents-cancel-unknown-", async () => {
+      resetTaskRegistryForTests({ persist: false });
+      try {
+        const cancelTask = vi.fn(async () => ({ found: true, cancelled: true }));
+        const tool = createSubagentsTool({
+          agentSessionKey: "agent:main:main",
+          config: {},
+          cancelTask: cancelTask as never,
+        });
+        const result = await tool.execute("cancel-unknown", {
+          action: "cancel",
+          taskId: "no-such-run",
+        });
+        expect(result.details).toMatchObject({
+          status: "error",
+          error: "Unknown task: no-such-run",
+        });
+        expect(JSON.stringify(result.details)).not.toContain("outside session tree");
+        expect(cancelTask).not.toHaveBeenCalled();
+      } finally {
+        resetTaskRegistryForTests({ persist: false });
+      }
+    });
   });
 
   it.each(["list", "cancel"] as const)(

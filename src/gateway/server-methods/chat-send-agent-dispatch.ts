@@ -518,7 +518,6 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     )
     .then(async (dispatchResult) => {
       if (acceptedMessageInjection) {
-        dispatchErrorLifecycle.recordAbortedResult();
         return;
       }
       emitServerTiming("dispatch-completed", undefined, dispatchStartedAtMs);
@@ -666,8 +665,6 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 ...(returnedAgentError ? { error: returnedAgentError } : {}),
               },
             });
-          } else {
-            dispatchErrorLifecycle.recordAbortedResult();
           }
         },
         {

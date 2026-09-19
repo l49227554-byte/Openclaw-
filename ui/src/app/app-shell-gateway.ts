@@ -262,6 +262,9 @@ export class ShellGatewayOwner {
     this.host.previousGatewayPhase = snapshot.phase;
     this.updateGatewaySessionKey(snapshot);
     const context = this.host.context;
+    if (context) {
+      this.host.recoverDeletedActiveSession(context.sessions.state);
+    }
     if (snapshot.phase === "connected" && context) {
       const connectionBootstrap = context.connectionBootstrap;
       void connectionBootstrap.run("runtime-config", async () => {

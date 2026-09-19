@@ -204,7 +204,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +3: typed feature contracts, backend registration, and native Control UI hosting.
       // +1: public provider-owned asynchronous embedding batch contract.
       // +1: runtime-neutral WebSocket client/server adapter for bundled and external plugins.
-      154,
+      // +1: approved host-owned workspace access runtime entrypoint.
+      155,
       env,
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
@@ -379,7 +380,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      4486,
+      // +4: approved workspace access exports; later stack exports belong to their consumers.
+      4490,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -522,7 +524,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
       // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
-      2650,
+      // +3: approved workspace access callables; later stack exports belong to their consumers.
+      2653,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

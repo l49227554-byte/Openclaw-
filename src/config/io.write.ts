@@ -56,7 +56,6 @@ import {
   hashConfigRaw,
   hasConfigMeta,
   parseConfigJson5,
-  rejectConfigNonFiniteNumbers,
   resolveGatewayMode,
   restoreAuthoredTildePathsForWrite,
 } from "./io.read-helpers.js";
@@ -102,6 +101,7 @@ import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import type { OpenClawConfig } from "./types.js";
 import { validateConfigObjectRawWithPlugins } from "./validation.js";
+import { rejectConfigNonFiniteNumbers } from "./value-tree.js";
 import { captureConfigWriteLockGuard } from "./write-lock.js";
 
 export async function writeConfigFileFromContext(
@@ -496,6 +496,7 @@ export async function writeConfigFileFromContext(
   const publication: { phase: "unpublished" | "removed" | "published" | "accepted" } = {
     phase: "unpublished",
   };
+  let restoreFile: ((assertCurrent: () => void) => Promise<boolean>) | undefined;
   let rollbackStatus: ConfigWriteRollbackStatus = "not-restored";
   try {
     options.assertConfigPathForWrite?.();
@@ -540,14 +541,26 @@ export async function writeConfigFileFromContext(
         onRootRemoved: () => {
           publication.phase = "removed";
         },
+        onRootPublished: () => {
+          publication.phase = "published";
+        },
       },
     );
+    // The writer owns compensation identity; callers supply the still-live enclosing owner.
+    restoreFile = (assertCurrent) =>
+      rollbackConfigFileWriteIfUnchanged({
+        configPath,
+        previousSnapshot: snapshot,
+        committedHash: publication.phase === "removed" ? hashConfigRaw(null) : nextHash,
+        fsModule: deps.fs,
+        ...guardedFs.captureRollbackProof(assertCurrent),
+      });
     await using preparedFile = await prepareConfigFileWrite({
       configPath,
       content: json,
       previousRaw: snapshot.raw,
-      fsModule: guardedFs,
-      assertCurrent: options.assertConfigPathForWrite,
+      fsModule: guardedFs.fileSystem,
+      assertCurrent: guardedFs.assertCurrent,
     });
     await options.beforeCommit?.();
     const result = withDeferredPluginMigrationsCurrent(
@@ -638,50 +651,47 @@ export async function writeConfigFileFromContext(
         hash: committedRevision,
         sourceConfig: sourceConfigForPreflight,
       },
-      [configWritePostCommitRollback]: async (assertCurrent) => {
-        // sourceGuard is scoped to createConfigIO's nested lock (io.factory.ts),
-        // which closes the moment writeConfigFileFromContext returns -- dead
-        // long before post-commit finalization can invoke this rollback. Use
-        // the caller-supplied assertCurrent instead: it is the outer lock
-        // guard (io.runtime.ts's assertPostCommitCurrent), still live here,
-        // and -- like sourceGuard -- an ownership check, not a config-selection
-        // check, so it still authorizes restoration after a selection change.
-        await restoreStagedIncludeWrites(includeWriteRestorers, {
-          configPath,
-          env: deps.env,
-          restoreAuthority: assertCurrent,
-        });
-        assertCurrent();
-        restoreConfigSnapshotAuditRecord({
-          env: deps.env,
-          homedir: deps.homedir,
-          snapshot: priorSnapshotAuditRecord,
-          expectedSnapshot: writtenSnapshotAuditRecord,
-        });
-        if (previousWarningFingerprint === undefined) {
-          loggedConfigWarningFingerprints.delete(configPath);
-        } else {
-          setBoundedConfigIoWarningEntry(
-            loggedConfigWarningFingerprints,
+      [configWritePostCommitRollback]: {
+        restoreFile: async (assertCurrent) => {
+          const restoredRoot = await restoreFile(assertCurrent);
+          if (!restoredRoot) {
+            return false;
+          }
+          // The outer runtime lock remains live after the nested factory lock
+          // closes, so it can authorize restoring the include fragments that
+          // were published before the root.
+          await restoreStagedIncludeWrites(includeWriteRestorers, {
             configPath,
-            previousWarningFingerprint,
-          );
-        }
+            env: deps.env,
+            restoreAuthority: assertCurrent,
+          });
+          return true;
+        },
+        restoreEffects: (assertCurrent) => {
+          assertCurrent();
+          restoreConfigSnapshotAuditRecord({
+            env: deps.env,
+            homedir: deps.homedir,
+            snapshot: priorSnapshotAuditRecord,
+            expectedSnapshot: writtenSnapshotAuditRecord,
+          });
+          if (previousWarningFingerprint === undefined) {
+            loggedConfigWarningFingerprints.delete(configPath);
+          } else {
+            setBoundedConfigIoWarningEntry(
+              loggedConfigWarningFingerprints,
+              configPath,
+              previousWarningFingerprint,
+            );
+          }
+        },
       },
     };
   } catch (error) {
     let failure = error;
-    if (publication.phase === "removed" || publication.phase === "published") {
+    if (restoreFile && (publication.phase === "removed" || publication.phase === "published")) {
       try {
-        rollbackStatus = (await rollbackConfigFileWriteIfUnchanged({
-          configPath,
-          previousSnapshot: snapshot,
-          committedHash: publication.phase === "published" ? nextHash : hashConfigRaw(null),
-          fsModule: deps.fs,
-          assertCurrent: sourceGuard,
-        }))
-          ? "restored"
-          : "not-restored";
+        rollbackStatus = (await restoreFile(() => sourceGuard?.())) ? "restored" : "not-restored";
       } catch (rollbackError) {
         rollbackStatus = "unknown";
         failure = new AggregateError(

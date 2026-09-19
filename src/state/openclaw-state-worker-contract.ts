@@ -1,5 +1,6 @@
 import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-profiles/types.js";
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
+import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { readSqliteDatabaseBloat } from "../commands/doctor-db-bloat.read.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
@@ -16,6 +17,7 @@ import type {
 } from "../gateway/managed-image-record-store.types.js";
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
+import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import type { PreparedPromotionClaim } from "../infra/promotions-feed.kernel.js";
 import type { ApnsRegistration } from "../infra/push-apns-store.types.js";
 import type { WebPushWorkerOperations } from "../infra/push-web-store.worker-contract.js";
@@ -39,12 +41,15 @@ import type {
 } from "../sessions/session-state-events.kernel.js";
 import type { SessionUpstreamLink } from "../sessions/session-upstream-links.kernel.js";
 import type { DeviceAuthEntry } from "../shared/device-auth.js";
+import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-store-commit.js";
+import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
 import type { TaskRegistryWorkerOperations } from "../tasks/task-registry.worker-contract.js";
 import type { TranscriptReadOperations } from "../transcripts/store-worker-contract.js";
 import type { AgentProvenance } from "./agent-provenance.types.js";
 import type { PreparedBackupRunRecord } from "./backup-run-records.kernel.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
+import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
@@ -53,6 +58,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   HostedCatalogSnapshotWorkerOperations &
   PluginStateWorkerOperations &
   UserPreferenceWorkerOperations &
+  UserProfileWorkerOperations &
   CronStoreWorkerOperations &
   CronStoreSaveWorkerOperations &
   FleetRegistryWriteOperations &
@@ -60,7 +66,44 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TaskRegistryWorkerOperations & {
+    "skillUploads.commit": {
+      input: Parameters<typeof commitSkillUploadInDatabase>[0];
+      output: ReturnType<typeof commitSkillUploadInDatabase>;
+    };
+    "audit.events.list": {
+      input: AuditEventListQuery;
+      output: AuditEventListPage;
+    };
     "deviceAuth.list": { input: { deviceId: string }; output: DeviceAuthEntry[] };
+    "deviceAuth.read": {
+      input: Parameters<typeof deviceAuth.readDeviceAuthTokenObservationFromDatabase>[1] & {
+        readOnly: boolean;
+      };
+      output: ReturnType<typeof deviceAuth.readDeviceAuthTokenObservationFromDatabase>;
+    };
+    "deviceAuth.readOrigin": {
+      input: Parameters<typeof deviceAuth.readOriginDeviceTokenObservationFromDatabase>[1] & {
+        readOnly: boolean;
+      };
+      output: ReturnType<typeof deviceAuth.readOriginDeviceTokenObservationFromDatabase>;
+    };
+    "deviceAuth.store": {
+      input: Parameters<typeof deviceAuth.storeDeviceAuthTokenInDatabase>[1];
+      output: ReturnType<typeof deviceAuth.storeDeviceAuthTokenInDatabase>;
+    };
+    "deviceAuth.storeOrigin": {
+      input: Parameters<typeof deviceAuth.storeOriginDeviceTokenInDatabase>[1];
+      output: ReturnType<typeof deviceAuth.storeOriginDeviceTokenInDatabase>;
+    };
+    "deviceAuth.clear": {
+      input: Parameters<typeof deviceAuth.clearDeviceAuthTokenFromDatabase>[1];
+      output: ReturnType<typeof deviceAuth.clearDeviceAuthTokenFromDatabase>;
+    };
+    "deviceAuth.clearOrigin": {
+      input: Parameters<typeof deviceAuth.clearOriginDeviceTokenInDatabase>[1];
+      output: ReturnType<typeof deviceAuth.clearOriginDeviceTokenInDatabase>;
+    };
+
     "apns.registration.read": { input: string; output: ApnsRegistration | null };
     "apns.registrations.read": { input: readonly string[]; output: Map<string, ApnsRegistration> };
     "authProfiles.read": { input: { artifactPreserving: boolean }; output: AuthProfileRowRead };
@@ -105,6 +148,15 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       input: { project: ProjectRegistryIdentity; lease: OpenClawStateLeaseIdentity };
       output: ProjectRegistryRecord | undefined;
     };
+    "doctor.workshopMigrationRecords.read": {
+      input: { includeEvents: boolean };
+      output:
+        | {
+            records: Array<{ record: SkillProposalRecord; ownerAgentId: string | null }>;
+            appliedEvents: SkillProposalEvent[];
+          }
+        | undefined;
+    };
     "modelCatalog.remote.read": {
       input: { artifactPreservingReadOnly: boolean };
       output: ReturnType<typeof readRemoteModelCatalog>;
@@ -148,4 +200,5 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
 /** Internal inspection cannot open canonical state or execute a domain command. */
 export type OpenClawStateWorkerInspectionOperations = {
   "database.generationMatches": { input: { generation: SqliteFileGeneration }; output: boolean };
+  "database.inspectIdle": { input: undefined; output: "healthy" | "retire" };
 };

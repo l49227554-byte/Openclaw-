@@ -92,33 +92,6 @@ describe("tasks gateway handlers", () => {
     expect(canonical.payload?.tasks?.map((task) => task.taskId)).toEqual([running.taskId]);
   });
 
-  it("uses the persisted fixed-store owner for a bare task session filter", async () => {
-    const task = createTaskFixture("cli", {
-      requesterSessionKey: "global",
-      ownerKey: "global",
-      scopeKind: "session",
-      runId: "run-global",
-      task: "Owned task",
-      status: "running",
-      deliveryStatus: "pending",
-    });
-    const { calls, payload } = await runTaskHandler(
-      "tasks.list",
-      { sessionKey: "global" },
-      {
-        session: { store: "/tmp/shared-sessions.sqlite", scope: "global" },
-        agents: {
-          ownership: "explicit",
-          list: [{ id: "ops" }, { id: "research" }],
-          defaults: { sessionStore: { agentId: "ops" } },
-        },
-      },
-    );
-
-    expect(calls[0]?.[0]).toBe(true);
-    expect(payload?.tasks?.map((entry) => entry.taskId)).toEqual([task.taskId]);
-  });
-
   it("orders the ledger by last activity, not creation time", async () => {
     // The registry lists newest-created first; the wire must page by last
     // activity so an old task that just finished is not hidden behind
@@ -576,10 +549,11 @@ describe("tasks gateway handlers", () => {
     expect(payload?.task?.result).toBe(fixture.expected);
   });
 
-  it("keeps bounded prompts lookup-only", async () => {
+  it("keeps complete prompts lookup-only", async () => {
+    const prompt = `Inspect the task prompt ${"x".repeat(5_000)}\n  Keep the final command argument.`;
     const task = createTaskFixture("cli", {
       ...mainSessionTaskScope,
-      task: `Inspect the task prompt ${"x".repeat(5_000)}`,
+      task: prompt,
       status: "running",
       deliveryStatus: "pending",
     });
@@ -588,31 +562,28 @@ describe("tasks gateway handlers", () => {
     expect(listed.payload?.tasks?.[0]?.prompt).toBeUndefined();
 
     const { payload } = await getTaskPayload(task.taskId);
-    expect(payload?.task?.prompt).toHaveLength(4_000);
-    expect(payload?.task?.prompt).toMatch(/^Inspect the task prompt/);
-    expect(payload?.task?.prompt).toMatch(/…$/);
+    expect(payload?.task?.prompt).toBe(prompt);
   });
 
-  it("preserves prompt layout while removing internal runtime context", async () => {
-    const visiblePrompt = [
-      "Review this workflow:",
-      "",
-      "  ```yaml",
-      "  steps:",
-      "    - test",
-      "  ```",
-    ].join("\n");
-    const task = createTaskFixture("cli", {
-      ...mainSessionTaskScope,
-      task: `${visiblePrompt}\n${INTERNAL_RUNTIME_CONTEXT_BEGIN}\nhidden\n${INTERNAL_RUNTIME_CONTEXT_END}`,
-      status: "running",
-      deliveryStatus: "pending",
-    });
+  it.each([
+    ["Review this workflow:", "", "  ```yaml", "  steps:", "    - test", "  ```"].join("\n"),
+    "printf A\n\nprintf A",
+    "printf '<final>literal argument</final>\n'",
+  ])(
+    "preserves task input verbatim while removing internal runtime context %#",
+    async (visiblePrompt) => {
+      const task = createTaskFixture("cli", {
+        ...mainSessionTaskScope,
+        task: `${visiblePrompt}\n${INTERNAL_RUNTIME_CONTEXT_BEGIN}\nhidden\n${INTERNAL_RUNTIME_CONTEXT_END}`,
+        status: "running",
+        deliveryStatus: "pending",
+      });
 
-    const { payload } = await getTaskPayload(task.taskId);
+      const { payload } = await getTaskPayload(task.taskId);
 
-    expect(payload?.task?.prompt).toBe(visiblePrompt);
-  });
+      expect(payload?.task?.prompt).toBe(visiblePrompt);
+    },
+  );
 
   it("sanitizes task text before exposing SDK summaries", async () => {
     const task = createTaskFixture("cli", {

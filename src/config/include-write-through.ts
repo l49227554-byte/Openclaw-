@@ -27,21 +27,19 @@ import {
   resolveConfigIncludeWritePath,
   type ConfigIncludeOwnership,
 } from "./includes.js";
-import {
-  hashConfigRaw,
-  rejectConfigNonFiniteNumbers,
-  restoreAuthoredTildePathsForWrite,
-} from "./io.read-helpers.js";
+import { hashConfigRaw, restoreAuthoredTildePathsForWrite } from "./io.read-helpers.js";
 import { createConfigIncludeOwnershipError } from "./io.write-errors.js";
 import {
   assertBaseSnapshotStillCurrent,
   captureConfigFileWritePathProof,
   createGuardedConfigFileSystem,
   rollbackConfigFileWriteIfUnchanged,
+  type ConfigFileWriteRollbackProof,
 } from "./io.write-safety.js";
 import { warnIfJSON5CommentsWillBeStripped } from "./json5-comments.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
 import type { ConfigFileSnapshot } from "./types.js";
+import { rejectConfigNonFiniteNumbers } from "./value-tree.js";
 import { withConfigWriteLock } from "./write-lock.js";
 
 /** Combines the two keyed-preservation resolvers into the single path list
@@ -278,7 +276,8 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
   target: RootBoundIncludeFile;
   previousRaw: string | null;
   committedRaw: string | null;
-  assertCurrent?: () => void;
+  pathProof: IncludePublicationProof;
+  assertOwner: () => void;
 }): Promise<boolean> {
   return await rollbackConfigFileWriteIfUnchanged({
     configPath: params.target.absolutePath,
@@ -292,7 +291,7 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
     // the two hash different byte layouts for the same non-null input.
     committedHash: hashConfigRaw(params.committedRaw),
     fsModule: fsNode,
-    assertCurrent: params.assertCurrent,
+    ...params.pathProof.captureRollbackProof(params.assertOwner),
     preserveDirectoryMode: true,
     durable: true,
     destinationHardlinks: "reject",
@@ -438,8 +437,33 @@ export type IncludeWriteRestorer = {
   committedRaw: string | null;
   // Same hardlink/inode identity proof publish itself relied on, carried
   // forward so restore verifies the file is still the one it wrote.
-  pathProof: ReturnType<typeof captureConfigFileWritePathProof>;
+  pathProof: IncludePublicationProof;
 };
+
+type IncludePublicationProof = ReturnType<typeof captureConfigFileWritePathProof> & {
+  captureRollbackProof: (assertOwner: () => void) => ConfigFileWriteRollbackProof;
+};
+
+function captureFailurePublicationProof(
+  pathProof: ReturnType<typeof captureConfigFileWritePathProof>,
+  targetPath: string,
+): IncludePublicationProof {
+  const target = fsNode.lstatSync(targetPath, { bigint: true, throwIfNoEntry: false });
+  const publicationIdentity: ConfigFileWriteRollbackProof["publicationIdentity"] = target
+    ? { dev: target.dev, ino: target.ino }
+    : null;
+  return {
+    ...pathProof,
+    captureRollbackProof: (assertOwner) => {
+      const assertCurrent = () => {
+        assertOwner();
+        pathProof.assertCurrent();
+      };
+      assertCurrent();
+      return { assertCurrent, publicationIdentity };
+    },
+  };
+}
 
 /** Publish inside the caller's commit window, before the root file. Per
  * target: re-resolve (target moved/symlinked since stage -> conflict),
@@ -526,12 +550,20 @@ export async function publishStagedIncludeWrites(params: {
             },
           },
         );
+        const publicationProof: IncludePublicationProof = {
+          ...pathProof,
+          assertCurrent: () => {
+            pathProof.assertCurrent();
+            guardedFs.assertPublishedIdentity();
+          },
+          captureRollbackProof: (assertOwner) => guardedFs.captureRollbackProof(assertOwner),
+        };
         await using preparedFile = await prepareConfigFileWrite({
           configPath: target.absolutePath,
           previousRaw: currentRaw,
           content: entry.bytes,
-          fsModule: guardedFs,
-          assertCurrent,
+          fsModule: guardedFs.fileSystem,
+          assertCurrent: guardedFs.assertCurrent,
           destinationHardlinks: "reject",
           durable: true,
         });
@@ -554,7 +586,7 @@ export async function publishStagedIncludeWrites(params: {
               canonicalTargetPath: target.absolutePath,
               previousRaw: entry.previousRaw,
               committedRaw: damageRaw,
-              pathProof,
+              pathProof: captureFailurePublicationProof(pathProof, target.absolutePath),
             });
           }
           throw error;
@@ -562,12 +594,14 @@ export async function publishStagedIncludeWrites(params: {
         // Advance only this key: a later leaf in the same publish, and the
         // caller's own root guard, must see the bytes just committed here.
         includeGraph.hashes[entry.includeGraphKey] = hashConfigIncludeRaw(entry.bytes);
+        guardedFs.assertCurrent();
+        guardedFs.assertPublishedIdentity();
         params.restorers.push({
           targetPath: entry.targetPath,
           canonicalTargetPath: target.absolutePath,
           previousRaw: entry.previousRaw,
           committedRaw: entry.bytes,
-          pathProof,
+          pathProof: publicationProof,
         });
       },
       params.env,
@@ -607,10 +641,8 @@ export async function restoreStagedIncludeWrites(
             target,
             previousRaw: restorer.previousRaw,
             committedRaw: restorer.committedRaw,
-            assertCurrent: () => {
-              params.restoreAuthority?.();
-              restorer.pathProof.assertCurrent();
-            },
+            pathProof: restorer.pathProof,
+            assertOwner: () => params.restoreAuthority?.(),
           });
         },
         params.env,

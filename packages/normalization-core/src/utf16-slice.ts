@@ -1,4 +1,8 @@
-// Dependency-free UTF-16 slicing helpers shared by runtime and browser bundles.
+// Surrogate-safe UTF-16 string slicing helpers.
+//
+// Kept dependency-free (no node: imports) so browser/UI bundles can import them
+// without dragging in filesystem/runtime code. See utils.ts, which re-exports
+// these for the broad runtime surface.
 
 function isHighSurrogate(codeUnit: number): boolean {
   return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
@@ -8,12 +12,7 @@ function isLowSurrogate(codeUnit: number): boolean {
   return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
 }
 
-/**
- * Moves a chunk boundary away from the middle of a UTF-16 surrogate pair.
- *
- * Interior cuts advance past start. If the pair begins at start, include it even
- * when that exceeds end by one code unit; otherwise retreat before the pair.
- */
+/** Moves a chunk boundary away from the middle of a UTF-16 surrogate pair. */
 export function avoidTrailingHighSurrogateBreak(text: string, start: number, end: number): number {
   if (
     end <= start ||
@@ -25,102 +24,6 @@ export function avoidTrailingHighSurrogateBreak(text: string, start: number, end
   }
   const adjusted = end - 1;
   return adjusted > start ? adjusted : end + 1;
-}
-
-let graphemeSegmenter: Intl.Segmenter | undefined;
-
-// Lazy initialization keeps unused browser imports free of Segmenter side effects.
-function getGraphemeSegmenter(): Intl.Segmenter {
-  graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
-  return graphemeSegmenter;
-}
-
-/**
- * Chooses a whole-grapheme cut within the hard budget, honoring a usable preference.
- * If no whole grapheme fits, allowPartial permits a surrogate-safe progress cut;
- * a leading surrogate pair can exceed maxEnd by one code unit.
- */
-export function findGraphemeChunkEnd(
-  text: string,
-  start: number,
-  maxEnd: number,
-  preferredEnd = maxEnd,
-  allowPartial = true,
-): number {
-  const hardEnd = Math.min(maxEnd, text.length);
-  if (hardEnd <= start) {
-    return start;
-  }
-  const preferred =
-    Number.isInteger(preferredEnd) && preferredEnd > start && preferredEnd <= hardEnd
-      ? preferredEnd
-      : hardEnd;
-  if (preferred === text.length) {
-    return preferred;
-  }
-
-  const segments = getGraphemeSegmenter().segment(text);
-  let end = segments.containing(preferred)?.index ?? preferred;
-  if (end <= start && preferred < hardEnd) {
-    end = hardEnd === text.length ? hardEnd : (segments.containing(hardEnd)?.index ?? hardEnd);
-  }
-  return end > start
-    ? end
-    : allowPartial
-      ? avoidTrailingHighSurrogateBreak(text, start, hardEnd)
-      : start;
-}
-
-/** Width to reserve for the first whole grapheme, or zero for empty text. */
-export function firstGraphemeClusterLength(text: string): number {
-  if (!text) {
-    return 0;
-  }
-  return getGraphemeSegmenter().segment(text).containing(0)?.segment.length ?? 0;
-}
-
-const WHITESPACE_GRAPHEME_RE = /^\s+$/u;
-
-/** Skips only whole whitespace graphemes, never the base of a space-plus-mark cluster. */
-export function skipWhitespaceGraphemes(
-  text: string,
-  start = 0,
-  maxGraphemes = Number.POSITIVE_INFINITY,
-): number {
-  if (!/\s/u.test(text.charAt(start))) {
-    return start;
-  }
-  const segments = getGraphemeSegmenter().segment(text);
-  let cursor = start;
-  for (let count = 0; count < maxGraphemes && cursor < text.length; count += 1) {
-    const cluster = segments.containing(cursor);
-    if (!cluster || cluster.index !== cursor || !WHITESPACE_GRAPHEME_RE.test(cluster.segment)) {
-      break;
-    }
-    cursor += cluster.segment.length;
-  }
-  return cursor;
-}
-
-/** Trims only whole trailing whitespace graphemes from a source prefix. */
-export function trimEndWhitespaceGraphemes(text: string, end = text.length): string {
-  if (!/\s/u.test(text.charAt(end - 1))) {
-    return text.slice(0, end);
-  }
-  const segments = getGraphemeSegmenter().segment(text);
-  let cursor = end;
-  while (cursor > 0) {
-    const cluster = segments.containing(cursor - 1);
-    if (
-      !cluster ||
-      cluster.index + cluster.segment.length > cursor ||
-      !WHITESPACE_GRAPHEME_RE.test(cluster.segment)
-    ) {
-      break;
-    }
-    cursor = cluster.index;
-  }
-  return text.slice(0, cursor);
 }
 
 /** Slices a UTF-16 string without returning dangling surrogate halves at either edge. */

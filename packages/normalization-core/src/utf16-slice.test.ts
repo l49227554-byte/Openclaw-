@@ -1,8 +1,8 @@
 // Tests for surrogate-safe UTF-16 string slicing helpers.
 import { describe, expect, it } from "vitest";
+import { findGraphemeChunkEnd } from "./grapheme.js";
 import {
   avoidTrailingHighSurrogateBreak,
-  findGraphemeChunkEnd,
   sliceUtf16Safe,
   truncateUtf16Safe,
   truncateWithMarker,

@@ -1,9 +1,9 @@
-import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import {
   findGraphemeChunkEnd,
   skipWhitespaceGraphemes,
   trimEndWhitespaceGraphemes,
-} from "@openclaw/normalization-core/utf16-slice";
+} from "@openclaw/normalization-core/grapheme";
+import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 
 const CJK_PUNCTUATION_BREAK_AFTER_RE = /[、。，．！？；：）］｝〉》」』】〕〗〙]/u;
 

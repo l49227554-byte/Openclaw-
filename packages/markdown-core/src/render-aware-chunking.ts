@@ -1,5 +1,5 @@
+import { findGraphemeChunkEnd } from "@openclaw/normalization-core/grapheme";
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import { findGraphemeChunkEnd } from "@openclaw/normalization-core/utf16-slice";
 import { annotateAssistantTranscriptRoleMessageBoundary } from "./ir-annotations.js";
 import { sliceMarkdownIRRanges } from "./ir-slice.js";
 import { mergeAnnotationSpans, mergeStyleSpans } from "./ir-spans.js";

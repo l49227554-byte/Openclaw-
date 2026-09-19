@@ -49,6 +49,11 @@
       "import": "./dist/expect.mjs",
       "default": "./dist/expect.mjs"
     },
+    "./grapheme": {
+      "types": "./dist/grapheme.d.mts",
+      "import": "./dist/grapheme.mjs",
+      "default": "./dist/grapheme.mjs"
+    },
     "./home-dir": {
       "types": "./dist/home-dir.d.mts",
       "import": "./dist/home-dir.mjs",

@@ -3,7 +3,7 @@ import {
   firstGraphemeClusterLength,
   skipWhitespaceGraphemes,
   trimEndWhitespaceGraphemes,
-} from "@openclaw/normalization-core/utf16-slice";
+} from "@openclaw/normalization-core/grapheme";
 import {
   findFenceSpanAt,
   isSafeFenceBreak,

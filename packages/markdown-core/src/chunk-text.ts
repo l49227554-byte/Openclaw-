@@ -1,8 +1,8 @@
-import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import {
   findGraphemeChunkEnd,
   skipWhitespaceGraphemes,
-} from "@openclaw/normalization-core/utf16-slice";
+} from "@openclaw/normalization-core/grapheme";
+import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 
 export { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
 

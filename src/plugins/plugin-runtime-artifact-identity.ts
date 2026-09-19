@@ -2,8 +2,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { sha256FileSync } from "@openclaw/fs-safe/durability";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
-import { walkDirectorySync } from "../infra/fs-safe.js";
+import { FsSafeError, walkDirectorySync } from "../infra/fs-safe.js";
 import type { OpenClawPackageBuild } from "./manifest.js";
 import { safeRealpathSync } from "./path-safety.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
@@ -13,7 +14,6 @@ const MAX_RUNTIME_ARTIFACT_DEPTH = 64;
 const MAX_RUNTIME_ARTIFACT_ENTRIES = 50_000;
 const MAX_RUNTIME_ARTIFACT_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_RUNTIME_ARTIFACT_TOTAL_BYTES = 512 * 1024 * 1024;
-const READ_CHUNK_BYTES = 64 * 1024;
 const EXCLUDED_RUNTIME_ARTIFACT_DIRECTORIES = new Set([".git", ".hg", ".svn", "node_modules"]);
 
 export type PluginRuntimeArtifactIdentitySource = Readonly<{
@@ -81,30 +81,17 @@ function hashRuntimeArtifactFile(params: {
     throw new Error(`plugin runtime artifact file is not readable: ${params.relativePath}`);
   }
   try {
-    const hash = crypto.createHash("sha256");
-    const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
-    let offset = 0;
-    while (offset < opened.stat.size) {
-      const read = fs.readSync(
-        opened.fd,
-        buffer,
-        0,
-        Math.min(buffer.length, opened.stat.size - offset),
-        offset,
-      );
-      if (read === 0) {
-        throw new Error(
-          `plugin runtime artifact file changed while reading: ${params.relativePath}`,
-        );
-      }
-      hash.update(buffer.subarray(0, read));
-      offset += read;
-    }
+    const hashed = sha256FileSync(opened.fd, { maxBytes: opened.stat.size });
     const after = fs.fstatSync(opened.fd);
-    if (!sameOpenedFile(opened.stat, after)) {
+    if (hashed.bytes !== opened.stat.size || !sameOpenedFile(opened.stat, after)) {
       throw new Error(`plugin runtime artifact file changed while reading: ${params.relativePath}`);
     }
-    return { hash: hash.digest("hex"), size: opened.stat.size, mode: opened.stat.mode };
+    return { hash: hashed.digest, size: opened.stat.size, mode: opened.stat.mode };
+  } catch (error) {
+    if (error instanceof FsSafeError && error.code === "too-large") {
+      throw new Error(`plugin runtime artifact file changed while reading: ${params.relativePath}`);
+    }
+    throw error;
   } finally {
     fs.closeSync(opened.fd);
   }

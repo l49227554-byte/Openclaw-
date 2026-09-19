@@ -18,7 +18,6 @@ import {
 } from "./operator-role-policy.js";
 import {
   authenticatedProfileUnavailableError,
-  gatewayClientSessionCreator,
   isGatewayClientProfilePending,
 } from "./server-methods/gateway-client-identity.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -150,7 +149,8 @@ export function sharingIdentity(
   actor: ReturnType<typeof resolveGatewayOperatorRoleActor>,
 ) {
   const operator = actor?.kind === "operator" ? { id: actor.profileId } : undefined;
-  const identity = gatewayClientSessionCreator(client) ?? operator;
+  const profile = client?.authenticatedUserProfile;
+  const identity = profile ? { id: profile.profileId } : operator;
   // Owner attribution never narrows sharing; solo deployments stay owner-equivalent.
   return identity?.id === GATEWAY_OWNER_PROFILE_ID ? undefined : identity;
 }

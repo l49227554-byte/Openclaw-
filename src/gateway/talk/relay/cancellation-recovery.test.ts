@@ -507,4 +507,40 @@ describe("talk realtime relay cancellation recovery", () => {
       expect(payloadsOfType("close")).toEqual([]);
     },
   );
+
+  it.each(["normal", "cancelling", "discarding"] as const)(
+    "preserves transcript ownership during provider close in the %s phase",
+    async (phase) => {
+      vi.useFakeTimers();
+      const finalText = "Provider finalization transcript";
+      const { relaySessionId, payloadsOfType, request } = createRelayFixture({
+        close: vi.fn(() => {
+          request.onTranscript?.("assistant", finalText, true);
+        }),
+      });
+      await sendTalkRealtimeRelayAudio({ relaySessionId, connId: "conn-1", audioBase64: "AQI=" });
+      request.onAudio(Buffer.from("initial reply"));
+      const cancellation =
+        phase === "normal"
+          ? undefined
+          : cancelTalkRealtimeRelayTurn({
+              relaySessionId,
+              connId: "conn-1",
+              turnId: ensureActiveRelayTurnId(relaySessionId),
+            });
+      if (phase === "discarding") {
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      request.onTranscript?.("assistant", finalText, false);
+      await stopTalkRealtimeRelaySession({ relaySessionId, connId: "conn-1" });
+      if (cancellation) {
+        await expect(cancellation).resolves.toMatchObject({ status: "applied" });
+      }
+      expect(
+        payloadsOfType("transcript")
+          .filter((payload) => payload.final)
+          .map((payload) => payload.text),
+      ).toEqual(phase === "normal" ? [finalText] : []);
+    },
+  );
 });

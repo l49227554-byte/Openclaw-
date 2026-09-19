@@ -416,7 +416,7 @@ export function createTalkRealtimeRelaySession(
       if (!relay || relay.voiceSessionClose) {
         return;
       }
-      if (!relay.closing && role === "assistant" && outputOwnership.suppressingOutput) {
+      if (role === "assistant" && outputOwnership.suppressingOutput) {
         return;
       }
       if (!relay.closing && role === "user" && !final) {

@@ -169,6 +169,12 @@ regenerate the launcher if the update did not refresh it.
 
 Gateway status and Doctor read the Scheduled Task's numeric current state, independently of the Windows display language or console code page. A previous task exit result does not prove whether it is running now. Queued or unknown tasks do not count as safely stopped for Doctor maintenance. Stop a queued task through its service owner; if inspection is inaccessible, restore Task Scheduler inspection permissions before retrying.
 
+Update inspection follows the task's registered launcher, including generated
+launchers from older releases. If that launcher changes during inspection or
+contains an ambiguous command, repair it before retrying. Update refreshes retain
+the existing task principal, triggers, and settings instead of recreating the task
+with the invoking user's defaults.
+
 The task probe allows Windows PowerShell to inherit or create a console because
 some PowerShell 5.1 hosts fail inspection when console creation is disabled.
 Invoking it from an app without a console can briefly display a console window.
@@ -176,7 +182,7 @@ If inspection fails, Doctor and update refusals include the underlying probe
 detail; an empty response identifies the exit code and reports that PowerShell
 produced no output.
 
-During update preflight, the Scheduled Task runtime probe uses the update's `--timeout` budget for each attempt and retries once on timeout; if it still times out, the refusal reports the probe budget and keeps code unchanged.
+During update preflight, Scheduled Task registration and runtime probes use the update's `--timeout` budget. A timeout retries the full strict inspection once, following the registered launcher again. A repeated timeout reports its probe budget. Unavailable service inspection can let the update continue with a manual-restart warning. Automatic service maintenance stays disabled without verified ownership; refusals caused by changed ownership require inspection before retrying.
 
 Gateway startup creates private SQLite staging directories through Windows APIs,
 without compiling C# or launching PowerShell for their permissions. The owner,

@@ -171,11 +171,19 @@ async function runSandboxHttpRequest(
     if (notifications.signal.aborted) {
       abortOnSessionClose();
     } else {
+      owner.assertCurrent();
       child.stdin.end(JSON.stringify(params));
     }
     // Headers can finish the RPC while its body or backend finalization is still running.
     await completion.promise;
     await termination;
+  } catch (error) {
+    lifecycle.failed = true;
+    response.reject(error);
+    await terminate().catch((cleanupError: unknown) => {
+      embeddedAgentLog.warn("codex sandbox http/request cleanup failed", { error: cleanupError });
+    });
+    throw error;
   } finally {
     notifications.signal.removeEventListener("abort", abortOnSessionClose);
   }

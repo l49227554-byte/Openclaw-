@@ -6,6 +6,7 @@ import { useIsolatedStateGuard } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const spawnMock = vi.hoisted(() => vi.fn());
+const ptyMock = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -21,13 +22,15 @@ vi.mock("openclaw/plugin-sdk/process-runtime", async (importOriginal) => {
   const actual = await importOriginal<typeof import("openclaw/plugin-sdk/process-runtime")>();
   return {
     ...actual,
+    spawnTerminalPty: ptyMock,
     signalProcessTree: (...args: Parameters<typeof actual.signalProcessTree>) => {
       args[2]?.onComplete?.();
     },
   };
 });
 import { createSandboxContext } from "./sandbox-exec-server.test-helpers.js";
-import { startProcess, terminateProcess } from "./sandbox-exec-server/processes.js";
+import { httpRequest } from "./sandbox-exec-server/http.js";
+import { startProcess, terminateProcess, writeProcess } from "./sandbox-exec-server/processes.js";
 import type { ManagedProcess, OpenClawExecServer } from "./sandbox-exec-server/types.js";
 
 function createFakeChild(): ChildProcessWithoutNullStreams {
@@ -71,7 +74,10 @@ function processStartParams(processId: string) {
   };
 }
 useIsolatedStateGuard();
-afterEach(() => spawnMock.mockReset());
+afterEach(() => {
+  spawnMock.mockReset();
+  ptyMock.mockReset();
+});
 describe("Codex managed workspace process authority", () => {
   it("retains termination-only custody after the guest execution owner is revoked", async () => {
     const child = createFakeChild();
@@ -138,4 +144,139 @@ describe("Codex managed workspace process authority", () => {
       token: "retired",
     });
   });
+
+  it.each([false, true])(
+    "rejects retained input after workspace revocation (pty=%s) and still terminates",
+    async (tty) => {
+      const child = createFakeChild();
+      spawnMock.mockReturnValue(child);
+      const writes: string[] = [];
+      child.stdin.on("data", (chunk: Buffer) => writes.push(chunk.toString()));
+      let exitPty: ((event: { exitCode: number; signal?: number }) => void) | undefined;
+      ptyMock.mockResolvedValue({
+        pid: 42_424,
+        write: (data: string | Buffer) => writes.push(data.toString()),
+        resize: () => {},
+        pause: () => {},
+        resume: () => {},
+        onData: () => {},
+        onExit: (listener: typeof exitPty) => {
+          exitPty = listener;
+        },
+        kill: () => {
+          exitPty?.({ exitCode: 0, signal: 9 });
+        },
+      });
+      let current = true;
+      const sandbox = createSandboxContext({
+        buildExecSpec: async () => ({
+          argv: ["sandbox-child"],
+          env: {},
+          stdinMode: "pipe-open",
+          assertCurrent: () => {
+            if (!current) {
+              throw new Error("workspace revoked");
+            }
+          },
+        }),
+      });
+      const terminate = vi.fn(async () => {
+        if (tty) {
+          exitPty?.({ exitCode: 0, signal: 9 });
+        } else {
+          child.emit("close", 143, "SIGTERM");
+        }
+      });
+      sandbox.backend!.prepareProcessCleanup = (env) => ({
+        env,
+        terminate,
+        interrupt: async () => false,
+      });
+      const server = createExecServer(sandbox);
+      const processes = new Map<string, ManagedProcess>();
+      await startProcess(server, processes, vi.fn<ManagedProcess["emitNotification"]>(), {
+        ...processStartParams("input-owner"),
+        tty,
+        pipeStdin: true,
+      });
+      const input = (text: string) => ({
+        processId: "input-owner",
+        chunk: Buffer.from(text).toString("base64"),
+      });
+      try {
+        expect(writeProcess(processes, input("accepted"))).toEqual({ status: "accepted" });
+        current = false;
+        expect(() => writeProcess(processes, input("forbidden"))).toThrow("workspace revoked");
+        expect(writes).toEqual(["accepted"]);
+      } finally {
+        await terminateProcess(processes, { processId: "input-owner" });
+      }
+      expect(terminate).toHaveBeenCalledOnce();
+      expect(server.children.size).toBe(0);
+    },
+  );
+
+  it.each(["process", "http"] as const)(
+    "blocks %s input and settles cleanup when authority closes during readiness",
+    async (kind) => {
+      const child = createFakeChild();
+      spawnMock.mockReturnValue(child);
+      let current = true;
+      child.once("spawn", () => {
+        current = false;
+      });
+      const end = vi.spyOn(child.stdin, "end");
+      child.stdin.on("data", () => {
+        child.stdout.push(JSON.stringify({ status: 200, headers: [], bodyBase64: "" }));
+        child.emit("close", 0, null);
+      });
+      const sandbox = createSandboxContext({
+        buildExecSpec: async () => ({
+          argv: ["sandbox-child"],
+          env: {},
+          stdinMode: "pipe-open",
+          assertCurrent: () => {
+            if (!current) {
+              throw new Error("readiness owner revoked");
+            }
+          },
+        }),
+      });
+      const terminate = vi.fn(async () => {
+        await Promise.resolve();
+        child.emit("close", 143, "SIGTERM");
+      });
+      sandbox.backend!.prepareProcessCleanup = (env) => ({
+        env,
+        terminate,
+        interrupt: async () => false,
+      });
+      const server = createExecServer(sandbox);
+      const operations = new Set<Promise<void>>();
+      const processes = new Map<string, ManagedProcess>();
+      const request =
+        kind === "process"
+          ? startProcess(server, processes, vi.fn<ManagedProcess["emitNotification"]>(), {
+              ...processStartParams("readiness"),
+              pipeStdin: true,
+            })
+          : httpRequest(
+              server,
+              { send: vi.fn(), isOpen: () => true, signal: new AbortController().signal },
+              {
+                requestId: "readiness",
+                method: "POST",
+                url: "https://example.test/",
+                bodyBase64: Buffer.from("must not send").toString("base64"),
+              },
+              operations,
+            );
+      await expect(request).rejects.toThrow("readiness owner revoked");
+      await Promise.allSettled(operations);
+      expect(end).not.toHaveBeenCalled();
+      expect(terminate).toHaveBeenCalledOnce();
+      expect(server.children.size).toBe(0);
+      expect(processes.size).toBe(0);
+    },
+  );
 });

@@ -72,8 +72,14 @@ export async function startProcess(
   try {
     await startPromise;
   } catch (error) {
-    processes.delete(processId);
     managed.failure = coerceErrorMessage(error);
+    await managed.child?.terminate().catch((cleanupError: unknown) => {
+      embeddedAgentLog.warn("codex sandbox failed-start cleanup failed", {
+        processId,
+        error: coerceErrorMessage(cleanupError),
+      });
+    });
+    processes.delete(processId);
     managed.exitCode = null;
     managed.exited = true;
     managed.closed = true;
@@ -186,6 +192,7 @@ async function runProcess(
     managed.failure ??= error.message;
     notifyProcessWaiters(managed);
   });
+  owner.assertCurrent();
   if (!managed.tty && !managed.pipeStdin) {
     child.stdin.end();
   }
@@ -330,11 +337,13 @@ export function writeProcess(
     return { status: "stdinClosed" };
   }
   if ("pty" in managed.child) {
+    managed.child.assertCurrent();
     managed.child.pty.write(chunk);
   } else {
     if (!managed.child.process.stdin.writable) {
       return { status: "stdinClosed" };
     }
+    managed.child.assertCurrent();
     managed.child.process.stdin.write(chunk);
   }
   return { status: "accepted" };

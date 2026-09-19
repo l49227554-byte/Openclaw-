@@ -17,6 +17,8 @@ const SANDBOX_CHILD_INTERRUPT_POLL_MS = 50;
 type SandboxChildOutcome = { exitCode: number; signal: NodeJS.Signals | number | null };
 
 export type SandboxChildOwner = {
+  /** Retained input uses the same captured authority as process admission. */
+  assertCurrent: () => void;
   exited: Promise<SandboxChildOutcome>;
   closed: Promise<SandboxChildOutcome>;
   settled: Promise<SandboxChildOutcome>;
@@ -109,8 +111,15 @@ export async function spawnSandboxChild(params: SandboxChildStartParams): Promis
   });
   void settled.catch(params.onFinalizeError);
 
+  const assertCurrent = () => {
+    params.assertCurrent?.();
+    if (terminationRequested) {
+      throw new Error("Sandbox child process start cancelled");
+    }
+  };
   let terminationPromise: Promise<SandboxChildOutcome> | undefined;
   const owner: SandboxChildOwner = {
+    assertCurrent,
     exited: exited.promise,
     closed: closed.promise,
     settled,
@@ -177,12 +186,6 @@ export async function spawnSandboxChild(params: SandboxChildStartParams): Promis
     () => params.owners.delete(owner),
     () => params.owners.delete(owner),
   );
-  const assertCurrent = () => {
-    params.assertCurrent?.();
-    if (terminationRequested) {
-      throw new Error("Sandbox child process start cancelled");
-    }
-  };
   const interrupt = async () => {
     await ready.promise;
     const interruptRemote = params.interruptRemote;

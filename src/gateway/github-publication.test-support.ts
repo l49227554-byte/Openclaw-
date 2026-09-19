@@ -211,6 +211,7 @@ export async function persistPublicationTestSession(sessionKey = SESSION_KEY) {
   );
   const read = () => loadGatewaySessionEntryReadOnly(sessionKey, { agentId: "main" }).entry!;
   return {
+    storePath: loadGatewaySessionEntryReadOnly(sessionKey, { agentId: "main" }).storePath,
     read,
     async reset(placements: WorkerSessionPlacementStore) {
       const before = read();

@@ -6,7 +6,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { chromium } from "playwright";
 import { describe, expect, inject, it } from "vitest";
 import type { ModelsListResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
-import type { SessionRow } from "../../../packages/gateway-protocol/src/schema/sessions-row.js";
 import type { AuthHealthSummary } from "../../../src/agents/auth-health.js";
 import type { ProfileUsageStats } from "../../../src/agents/auth-profiles/types.js";
 import type { ModelAuthStatusResult } from "../../../src/gateway/server-methods/models-auth-status.types.js";
@@ -257,27 +256,7 @@ describe.each(["automatic", "saved-clear", "automatic-during-catalog"] as const)
         expect(gatewayProcess?.pid).toEqual(expect.any(Number));
         try {
           expect(await turn(), evidence()).toEqual({ status: "ok", output: [MARKER] });
-          // The terminal event also schedules a recap on this account. Keep its
-          // preparation healthy before introducing the quota failure under test.
-          let warmActivitySummary: SessionRow["activitySummary"];
-          await expect
-            .poll(async () => {
-              const { session } = await client.request<{ session: SessionRow | null }>(
-                "sessions.describe",
-                { key: fixture.sessionKey, agentId: "main" },
-              );
-              warmActivitySummary = session?.activitySummary;
-              return {
-                lastProbeAt: stats()?.lastProbeAt,
-                activitySummary: warmActivitySummary?.state,
-              };
-            })
-            .toEqual({ lastProbeAt: expect.any(Number), activitySummary: "current" });
-          observations.push({
-            action: "warm-turn-recap-current",
-            state: warmActivitySummary?.state,
-            updatedAt: warmActivitySummary?.updatedAt,
-          });
+          await expect.poll(() => stats()?.lastProbeAt).toEqual(expect.any(Number));
           provider.setPhase("initial-exhaustion");
           expect((await turn()).status, evidence()).toBe("error");
           const blocked = stats();

@@ -123,6 +123,71 @@ async function withPublishedRegistry(root: string, run: (url: string) => void | 
 }
 
 describe("prepublish plugin registry shell helper", () => {
+  it("repairs the published 2026.7.33 baseline's omitted AI runtime", () => {
+    const root = tempDirs.make("openclaw-survivor-2026-7-33-ai-");
+    const source = readFileSync("scripts/e2e/lib/upgrade-survivor/run.sh", "utf8");
+    const functions = ["read_installed_version", "repair_2026_7_33_ai_runtime", "install_baseline"]
+      .map((name) => {
+        const start = source.indexOf(`${name}() {`);
+        const end = source.indexOf("\n}\n", start);
+        if (start < 0 || end < start) {
+          throw new Error(`Missing survivor owner ${name}`);
+        }
+        return source.slice(start, end + 3);
+      })
+      .join("\n");
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "openclaw"), '#!/bin/sh\nprintf "2026.7.33\\n"\n', { mode: 0o755 });
+
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `
+set -euo pipefail
+${functions}
+normalize_baseline() { baseline_spec="openclaw@2026.7.33"; baseline_version="2026.7.33"; baseline_version_expected=1; }
+package_root() { printf '%s/lib/node_modules/openclaw' "$npm_config_prefix"; }
+openclaw_prepublish_plugin_registry_run_published() { "$@"; }
+openclaw_e2e_maybe_timeout() { shift; "$@"; }
+openclaw_e2e_print_log() { cat "$1"; }
+npm() {
+  local root
+  root="$(package_root)"
+  if [[ " $* " == *" -g "* ]]; then
+    mkdir -p "$root"
+    printf '%s\n' '{"name":"openclaw","version":"2026.7.33","dependencies":{"@openclaw/ai":"2026.7.33"}}' >"$root/package.json"
+    return 0
+  fi
+  mkdir -p "$root/node_modules/@openclaw/ai"
+  printf '%s\n' '{"name":"@openclaw/ai","version":"2026.7.33"}' >"$root/node_modules/@openclaw/ai/package.json"
+}
+install_baseline
+node -e 'const assert=require("node:assert/strict"); assert.equal(require(process.argv[1]).version,"2026.7.33")' \
+  "$(package_root)/node_modules/@openclaw/ai/package.json"
+`,
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          BASELINE_INSTALL_LOG: join(root, "baseline.log"),
+          npm_config_prefix: join(root, "prefix"),
+          OPENCLAW_E2E_NPM_INSTALL_TIMEOUT: "30s",
+          COMMAND_TIMEOUT: "30s",
+        },
+      },
+    );
+
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      "Repairing published 2026.7.33 baseline's omitted @openclaw/ai runtime.",
+    );
+  });
+
   it("retries failed upstream metadata while preserving published and candidate versions", async () => {
     const root = tempDirs.make("openclaw-prepublish-registry-retry-");
     const fixture = registryFixture(root, ["@openclaw/ai"]);
@@ -255,11 +320,13 @@ exit 17
         BASELINE_VERSION,
       );
       const source = readFileSync("scripts/e2e/lib/upgrade-survivor/run.sh", "utf8");
-      const functions = ["install_baseline", "start_gateway"]
+      const functions = ["repair_2026_7_33_ai_runtime", "install_baseline", "start_gateway"]
         .map((name) => {
           const start = source.indexOf(`${name}() {`);
           const end = source.indexOf("\n}\n", start);
-          if (start < 0 || end < start) throw new Error(`Missing survivor owner ${name}`);
+          if (start < 0 || end < start) {
+            throw new Error(`Missing survivor owner ${name}`);
+          }
           return source.slice(start, end + 3);
         })
         .join("\n");

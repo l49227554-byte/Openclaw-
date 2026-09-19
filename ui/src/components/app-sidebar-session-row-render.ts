@@ -294,7 +294,6 @@ function renderSidebarSessionIndicators(
       ${team && session.hasAutomation ? html`<span class="session-row-badge" role="img" aria-label=${t("tabs.cron")} title=${t("tabs.cron")}>${icons.clock}</span>` : nothing}
       ${renderSessionRowBadges({
         isChild: session.isChild,
-        workspaceKind: session.workspaceKind,
         incognito: session.incognito,
         placementState: session.placementState,
         placementProviderId: session.placementProviderId,

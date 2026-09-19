@@ -3,7 +3,9 @@
 // unexported test infra, not a shared module.
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as tmpDirOwner from "../infra/tmp-openclaw-dir.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
@@ -13,7 +15,13 @@ import {
 } from "../state/openclaw-state-db.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import {
+  publishStagedIncludeWrites,
+  stageIncludeWriteThrough,
+  type IncludeWriteRestorer,
+} from "./include-write-through.js";
 import { readConfigFileSnapshot, resetConfigRuntimeState, writeConfigFile } from "./io.js";
+import { getConfigSnapshotIncludeLoadGraph } from "./io.snapshot-shared.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
@@ -196,6 +204,259 @@ describe("config io write / include write-through runtime fence", () => {
 
     await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRootRaw);
     await expect(fs.readFile(workPath, "utf-8")).resolves.toBe(originalWorkRaw);
+  });
+
+  // Root -> config/models.json5 (intermediate) -> config/old.json5 (leaf). The
+  // intermediate is itself a load-graph key: redirecting its pointer to
+  // new.json5 must conflict even though the staged leaf old.json5 is untouched.
+  const ollamaCatalog = (models: unknown) => ({
+    providers: { ollama: { baseUrl: "http://127.0.0.1:11434", api: "ollama", models } },
+  });
+  const llama3Models = [{ id: "llama3", name: "llama3" }];
+  const qwenModels = [{ id: "qwen3", name: "qwen3" }];
+  const mixedSave = {
+    wizard: { lastRunCommand: "update" },
+    agents: { ownership: "explicit", entries: { work: { workspace: "/w/work" } } },
+    models: ollamaCatalog(qwenModels),
+  } as unknown as OpenClawConfig;
+  // Same root delta as mixedSave, but models resolves to the catalog the
+  // snapshot already read -- nothing stages, so only the root's own write
+  // exercises the guard.
+  const rootOnlySave = {
+    wizard: { lastRunCommand: "update" },
+    agents: { ownership: "explicit", entries: { work: { workspace: "/w/work" } } },
+    models: ollamaCatalog(llama3Models),
+  } as unknown as OpenClawConfig;
+
+  async function makeIncludeGraphCase() {
+    const home = await suiteRootTracker.make("case");
+    const configPath = path.join(home, ".openclaw", "openclaw.json");
+    const modelsPath = path.join(home, ".openclaw", "config", "models.json5");
+    const oldPath = path.join(home, ".openclaw", "config", "old.json5");
+    const newPath = path.join(home, ".openclaw", "config", "new.json5");
+    const redirectedModelsRaw = formatConfig(ollamaCatalog({ $include: "./new.json5" }));
+    await fs.mkdir(path.dirname(modelsPath), { recursive: true });
+    await writeConfigJson(oldPath, llama3Models);
+    await writeConfigJson(newPath, qwenModels);
+    await writeConfigJson(modelsPath, ollamaCatalog({ $include: "./old.json5" }));
+    await writeConfigJson(configPath, {
+      wizard: { lastRunCommand: "install" },
+      agents: { ownership: "explicit", entries: { work: { workspace: "/w/work" } } },
+      models: { $include: "./config/models.json5" },
+    });
+    const untouched = [configPath, oldPath, newPath];
+    const originals = await Promise.all(untouched.map((file) => fs.readFile(file, "utf-8")));
+    const originalModelsRaw = await fs.readFile(modelsPath, "utf-8");
+    return {
+      configPath,
+      modelsPath,
+      oldPath,
+      redirectIntermediate: () => fsSync.writeFileSync(modelsPath, redirectedModelsRaw, "utf-8"),
+      redirectedModelsRaw,
+      // A detached write shows up as old.json5 rewritten beside a saved root.
+      expectNothingWritten: async () => {
+        const current = await Promise.all(untouched.map((file) => fs.readFile(file, "utf-8")));
+        expect(current).toEqual(originals);
+      },
+      expectOnlyOldLeafChanged: async (expectedOldRaw: string) => {
+        await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originals[0]);
+        await expect(fs.readFile(modelsPath, "utf-8")).resolves.toBe(originalModelsRaw);
+        await expect(fs.readFile(oldPath, "utf-8")).resolves.toBe(expectedOldRaw);
+        await expect(fs.readFile(newPath, "utf-8")).resolves.toBe(originals[2]);
+      },
+    };
+  }
+
+  it("rejects a mixed save when an intermediate include is redirected after the snapshot read", async () => {
+    const graphCase = await makeIncludeGraphCase();
+    // Same window as the first test: the third path assertion follows the
+    // snapshot read and precedes staging.
+    let calls = 0;
+    const assertConfigPathForWrite = () => {
+      calls += 1;
+      if (calls === 3) {
+        graphCase.redirectIntermediate();
+      }
+    };
+
+    await withEnvAsync(
+      { OPENCLAW_CONFIG_PATH: graphCase.configPath, OPENCLAW_TEST_FAST: "1" },
+      async () => {
+        await expect(writeConfigFile(mixedSave, { assertConfigPathForWrite })).rejects.toThrow(
+          ConfigMutationConflictError,
+        );
+      },
+    );
+
+    expect(calls).toBeGreaterThanOrEqual(3);
+    await graphCase.expectNothingWritten();
+  });
+
+  it("rejects leaf publication when an intermediate include is redirected after staging", async () => {
+    const graphCase = await makeIncludeGraphCase();
+
+    await withEnvAsync(
+      { OPENCLAW_CONFIG_PATH: graphCase.configPath, OPENCLAW_TEST_FAST: "1" },
+      async () => {
+        const snapshot = await readConfigFileSnapshot();
+        // includeLoadGraph is required now; this read always binds one via
+        // the WeakMap, so this narrows the type instead of asserting past a gap.
+        const loadGraph = expectDefined(
+          getConfigSnapshotIncludeLoadGraph(snapshot),
+          "config snapshot load graph",
+        );
+        const { staged } = await stageIncludeWriteThrough({
+          snapshot,
+          pendingIncludeWrites: [
+            { includePath: ["models", "providers", "ollama", "models"], value: qwenModels },
+          ],
+          envForRestore: process.env,
+          homedir: os.homedir(),
+          includeLoadGraph: loadGraph,
+        });
+        expect(staged).toHaveLength(1);
+
+        graphCase.redirectIntermediate();
+        const restorers: IncludeWriteRestorer[] = [];
+        await expect(
+          publishStagedIncludeWrites({
+            staged,
+            restorers,
+            configPath: graphCase.configPath,
+            includeGraph: loadGraph,
+            rootRawForGraph: snapshot.raw,
+          }),
+        ).rejects.toThrow(ConfigMutationConflictError);
+        expect(restorers).toHaveLength(0);
+      },
+    );
+
+    await graphCase.expectNothingWritten();
+  });
+
+  it("restores a published leaf when an intermediate include redirects before root publish", async () => {
+    const graphCase = await makeIncludeGraphCase();
+
+    await withEnvAsync(
+      { OPENCLAW_CONFIG_PATH: graphCase.configPath, OPENCLAW_TEST_FAST: "1" },
+      async () => {
+        const snapshot = await readConfigFileSnapshot();
+        await expect(
+          writeConfigFile(mixedSave, {
+            baseSnapshot: snapshot,
+            beforeCommit: async () => {
+              graphCase.redirectIntermediate();
+            },
+          }),
+        ).rejects.toThrow(ConfigMutationConflictError);
+      },
+    );
+
+    // The external redirect survives; the root and detached leaf do not.
+    await graphCase.expectNothingWritten();
+    await expect(fs.readFile(graphCase.modelsPath, "utf-8")).resolves.toBe(
+      graphCase.redirectedModelsRaw,
+    );
+  });
+
+  it("rejects a leaf edit after the graph check but before staging reads it", async () => {
+    const graphCase = await makeIncludeGraphCase();
+    const concurrentLeafRaw = formatConfig([{ id: "external", name: "external" }]);
+
+    await withEnvAsync(
+      { OPENCLAW_CONFIG_PATH: graphCase.configPath, OPENCLAW_TEST_FAST: "1" },
+      async () => {
+        const snapshot = await readConfigFileSnapshot();
+        const loadGraph = expectDefined(
+          getConfigSnapshotIncludeLoadGraph(snapshot),
+          "config snapshot load graph",
+        );
+        const realpath = fs.realpath;
+        const realpathSpy = vi.spyOn(fs, "realpath").mockImplementationOnce(async (target) => {
+          await fs.writeFile(graphCase.oldPath, concurrentLeafRaw, "utf-8");
+          return await realpath(target);
+        });
+        try {
+          await expect(
+            stageIncludeWriteThrough({
+              snapshot,
+              pendingIncludeWrites: [
+                { includePath: ["models", "providers", "ollama", "models"], value: qwenModels },
+              ],
+              envForRestore: process.env,
+              homedir: os.homedir(),
+              includeLoadGraph: loadGraph,
+            }),
+          ).rejects.toThrow(ConfigMutationConflictError);
+        } finally {
+          realpathSpy.mockRestore();
+        }
+      },
+    );
+
+    await graphCase.expectOnlyOldLeafChanged(concurrentLeafRaw);
+  });
+
+  it("fences the include graph for a baseSnapshot writer from readConfigFileSnapshot", async () => {
+    const graphCase = await makeIncludeGraphCase();
+
+    await withEnvAsync(
+      { OPENCLAW_CONFIG_PATH: graphCase.configPath, OPENCLAW_TEST_FAST: "1" },
+      async () => {
+        // A bare baseSnapshot carries no maps: hashes and targets both come
+        // from the graph its read bound to the snapshot object.
+        const snapshot = await readConfigFileSnapshot();
+        expect(snapshot.valid).toBe(true);
+        graphCase.redirectIntermediate();
+
+        await expect(writeConfigFile(mixedSave, { baseSnapshot: snapshot })).rejects.toThrow(
+          ConfigMutationConflictError,
+        );
+      },
+    );
+
+    await graphCase.expectNothingWritten();
+  });
+
+  it("rejects a root-only save when an include file changed after the snapshot read", async () => {
+    const graphCase = await makeIncludeGraphCase();
+
+    await withEnvAsync(
+      { OPENCLAW_CONFIG_PATH: graphCase.configPath, OPENCLAW_TEST_FAST: "1" },
+      async () => {
+        // wizard.lastRunCommand is the only key that actually changes; the
+        // root publication guard must still fence on the load-time graph.
+        const snapshot = await readConfigFileSnapshot();
+        expect(snapshot.valid).toBe(true);
+        graphCase.redirectIntermediate();
+
+        await expect(writeConfigFile(rootOnlySave, { baseSnapshot: snapshot })).rejects.toThrow(
+          ConfigMutationConflictError,
+        );
+      },
+    );
+
+    await graphCase.expectNothingWritten();
+  });
+
+  it("rejects a root-only save from a cloned baseSnapshot that lost its load graph", async () => {
+    const graphCase = await makeIncludeGraphCase();
+
+    await withEnvAsync(
+      { OPENCLAW_CONFIG_PATH: graphCase.configPath, OPENCLAW_TEST_FAST: "1" },
+      async () => {
+        // A spread copy carries the same fields but is a new object, so the
+        // WeakMap-bound load graph never resolves for it.
+        const snapshot = { ...(await readConfigFileSnapshot()) };
+        graphCase.redirectIntermediate();
+
+        await expect(writeConfigFile(rootOnlySave, { baseSnapshot: snapshot })).rejects.toThrow(
+          ConfigMutationConflictError,
+        );
+      },
+    );
+
+    await graphCase.expectNothingWritten();
   });
 
   it("still publishes a mixed root+include write through the runtime entry when nothing raced it", async () => {

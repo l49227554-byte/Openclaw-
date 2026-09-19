@@ -60,7 +60,7 @@ import {
   resolveGatewayMode,
   restoreAuthoredTildePathsForWrite,
 } from "./io.read-helpers.js";
-import { getConfigSnapshotIncludeLoadHashes } from "./io.snapshot-shared.js";
+import { getConfigSnapshotIncludeLoadGraph } from "./io.snapshot-shared.js";
 import { hashConfigRevision } from "./io.snapshot.js";
 import { loggedConfigWarningFingerprints, setBoundedConfigIoWarningEntry } from "./io.state.js";
 import type {
@@ -97,6 +97,7 @@ import { prepareConfigWriteTopology } from "./io.write-topology.js";
 import { formatConfigIssueLines } from "./issue-format.js";
 import { warnIfJSON5CommentsWillBeStripped } from "./json5-comments.js";
 import { applyMergePatch, createMergePatch } from "./merge-patch.js";
+import { ConfigMutationConflictError } from "./mutation-conflict.js";
 import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import type { OpenClawConfig } from "./types.js";
@@ -134,12 +135,26 @@ export async function writeConfigFileFromContext(
     ? {
         snapshot: options.baseSnapshot,
         pluginMetadataSnapshot: options.basePluginMetadataSnapshot,
-        // Bound by the read that produced this snapshot; a bare baseSnapshot
-        // carries no maps of its own, and staging refuses an unfenced write.
-        includeFileHashesForWrite: getConfigSnapshotIncludeLoadHashes(options.baseSnapshot),
       }
     : await readSnapshot();
   const snapshot = snapshotRead.snapshot;
+  // Caller-captured maps win; otherwise the graph the producing read bound to
+  // this snapshot. Copied: publication advances written leaves in this write's
+  // graph, and the read's load fact stays immutable for every other writer.
+  const loadGraph =
+    options.includeFileHashesForWrite && options.includeFileTargetsForWrite
+      ? { hashes: options.includeFileHashesForWrite, targets: options.includeFileTargetsForWrite }
+      : getConfigSnapshotIncludeLoadGraph(snapshot);
+  const includeGraphForWrite = loadGraph ? structuredClone(loadGraph) : undefined;
+  const hasAuthoredIncludes = containsConfigIncludeDirective(snapshot.parsed);
+  if (hasAuthoredIncludes && !includeGraphForWrite) {
+    // Every write over authored includes must bind a load graph; a snapshot
+    // that lost it (cloned/spread) fails closed here, before any staging or
+    // disk effect -- for root-only writes too, not only mixed ones.
+    throw new ConfigMutationConflictError(
+      "cannot verify included config is unchanged since last load; reload and retry",
+    );
+  }
   const deferredPluginMigrations = readDeferredPluginMigrations({ env: deps.env });
   const configForWrite = preserveDeferredPluginMigrationConfig({
     sourceConfig: snapshot.sourceConfig,
@@ -196,7 +211,6 @@ export async function writeConfigFileFromContext(
     }
   }
   const identityRestoredPaths = new Set<string>();
-  const hasAuthoredIncludes = containsConfigIncludeDirective(snapshot.parsed);
   const hasIncludes = hasAuthoredIncludes && !containsConfigIncludeDirective(snapshot.sourceConfig);
   const pendingIncludeWrites: PendingIncludeWrite[] = [];
   const includeWriteRestorers: IncludeWriteRestorer[] = [];
@@ -233,14 +247,18 @@ export async function writeConfigFileFromContext(
       preserveLegacyAgentRoster,
     });
     // Stage only (no disk effects); staged bytes feed the read overlay below.
-    ({ staged: stagedIncludeWrites, overlay: includeReadOverlay } = await stageIncludeWriteThrough({
-      snapshot,
-      pendingIncludeWrites,
-      envForRestore,
-      homedir: deps.homedir(),
-      snapshotIncludeHashes:
-        options.includeFileHashesForWrite ?? snapshotRead.includeFileHashesForWrite,
-    }));
+    // No authored includes means no pending include writes, so a missing
+    // graph here never needs staging.
+    if (includeGraphForWrite) {
+      ({ staged: stagedIncludeWrites, overlay: includeReadOverlay } =
+        await stageIncludeWriteThrough({
+          snapshot,
+          pendingIncludeWrites,
+          envForRestore,
+          homedir: deps.homedir(),
+          includeLoadGraph: includeGraphForWrite,
+        }));
+    }
   }
   if (snapshot.exists && (snapshot.valid || hasIncludes)) {
     try {
@@ -495,6 +513,8 @@ export async function writeConfigFileFromContext(
       env: deps.env,
       assertConfigPathForWrite: options.assertConfigPathForWrite,
       skipOutputLogs: options.skipOutputLogs,
+      includeGraph: includeGraphForWrite,
+      rootRawForGraph: snapshot.exists ? snapshot.raw : undefined,
     });
     warnIfJSON5CommentsWillBeStripped({
       raw: snapshot.raw,
@@ -508,7 +528,15 @@ export async function writeConfigFileFromContext(
       options.assertConfigPathForWrite,
       {
         snapshot,
-        includeGraph: { hashes: includeFileHashes, targets: includeFileTargets },
+        // Load-time graph with written leaves advanced: a fresh resolution here
+        // would adopt an include redirected since load as the new baseline.
+        // The fallback below now serves only configs with no authored
+        // includes; the fail-closed check above guarantees this is defined
+        // whenever any exist.
+        includeGraph: includeGraphForWrite ?? {
+          hashes: includeFileHashes,
+          targets: includeFileTargets,
+        },
         onRootRemoved: () => {
           publication.phase = "removed";
         },

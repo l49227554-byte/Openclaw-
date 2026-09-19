@@ -34,12 +34,14 @@ import {
 } from "./io.read-helpers.js";
 import { createConfigIncludeOwnershipError } from "./io.write-errors.js";
 import {
+  assertBaseSnapshotStillCurrent,
   captureConfigFileWritePathProof,
   createGuardedConfigFileSystem,
   rollbackConfigFileWriteIfUnchanged,
 } from "./io.write-safety.js";
 import { warnIfJSON5CommentsWillBeStripped } from "./json5-comments.js";
 import { ConfigMutationConflictError } from "./mutation-conflict.js";
+import type { ConfigFileSnapshot } from "./types.js";
 import { withConfigWriteLock } from "./write-lock.js";
 
 /** Combines the two keyed-preservation resolvers into the single path list
@@ -300,18 +302,23 @@ export async function rollbackJsonFileWriteIfUnchanged(params: {
 export type StagedIncludeWrite = {
   includePath: string[];
   targetPath: string;
+  // Load-graph key for this target (path.normalize(ownership.targetPath)).
+  // Publication advances this exact key; nothing downstream re-derives it.
+  includeGraphKey: string;
   bytes: string;
   previousRaw: string | null;
   previousHash: string;
 };
+
+export type IncludeLoadGraph = { hashes: Record<string, string>; targets: Record<string, string> };
 
 /** Pure staging: no disk writes. Resolves ownership/target from provenance,
  * refuses external targets, reads the current raw + hash fence, and projects
  * the pending delta onto the AUTHORED include value so ${VAR} placeholders
  * survive (finding 3) instead of ever serializing the resolved config. */
 // Both windows are fenced: snapshot-to-stage via the caller's load-time
-// include hashes (snapshotIncludeHashes, when the load captured them) and
-// stage-to-publish via previousHash re-hashed under the publish lock.
+// include graph and stage-to-publish via previousHash re-hashed under the
+// publish lock.
 export type StagedIncludeWriteResult = {
   staged: StagedIncludeWrite[];
   // Keyed by normalized target path; feeds context.resolveRuntimePreflightSourceConfig
@@ -320,15 +327,30 @@ export type StagedIncludeWriteResult = {
 };
 
 export async function stageIncludeWriteThrough(params: {
-  snapshot: { path: string; includeProvenance?: readonly ConfigIncludeOwnership[] };
+  snapshot: Pick<ConfigFileSnapshot, "path" | "exists" | "raw" | "readError"> & {
+    includeProvenance?: readonly ConfigIncludeOwnership[];
+  };
   pendingIncludeWrites: readonly PendingIncludeWrite[];
   envForRestore: NodeJS.ProcessEnv;
   homedir: string;
-  // Load-time include hashes (caller-captured or bound to the snapshot by its
-  // read), keyed by the normalized lexical include path: the same value the
-  // provenance targetPath below carries.
-  snapshotIncludeHashes?: Record<string, string>;
+  // Load-time include graph (hashes AND canonical targets, intermediates
+  // included; caller-captured or bound to the snapshot by its read), keyed by
+  // the normalized lexical include path -- the same value the provenance
+  // targetPath below carries. Required: io.write.ts fails closed before
+  // staging when authored includes exist with no bound graph.
+  includeLoadGraph: IncludeLoadGraph;
 }): Promise<StagedIncludeWriteResult> {
+  if (params.pendingIncludeWrites.length > 0) {
+    // Snapshot-to-stage fence, fenced whole before any pending value is
+    // projected: an intermediate include redirected since load must conflict
+    // even when the leaf it currently selects is untouched.
+    assertBaseSnapshotStillCurrent(
+      params.snapshot,
+      params.snapshot.path,
+      fsNode,
+      params.includeLoadGraph,
+    );
+  }
   const staged: StagedIncludeWrite[] = [];
   for (const pending of params.pendingIncludeWrites) {
     const ownership = params.snapshot.includeProvenance?.find(
@@ -360,16 +382,11 @@ export async function stageIncludeWriteThrough(params: {
     });
     const previousRaw = await readRootBoundFileRawIfExists(target);
     const previousHash = hashConfigIncludeRaw(previousRaw);
-    // Snapshot-to-stage fence: the pending value was computed against the
-    // load-time snapshot, so an include edited since load must conflict here
-    // instead of being overwritten with a stale projection. A snapshot with no
-    // recorded load hashes fails closed; it never publishes an unfenced write.
-    if (!params.snapshotIncludeHashes) {
-      throw new ConfigMutationConflictError(
-        "cannot verify included config is unchanged since last load; reload and retry",
-      );
-    }
-    if (params.snapshotIncludeHashes[path.normalize(targetPath)] !== previousHash) {
+    const includeGraphKey = path.normalize(targetPath);
+    // Target resolution/read above yields after the whole-graph assertion.
+    // Recheck the selected leaf against its load-time hash so a writer in that
+    // window cannot become the staging baseline and then be overwritten.
+    if (params.includeLoadGraph.hashes[includeGraphKey] !== previousHash) {
       throw new ConfigMutationConflictError("included config changed since last load");
     }
     let authoredIncludeValue: unknown;
@@ -387,6 +404,7 @@ export async function stageIncludeWriteThrough(params: {
     staged.push({
       includePath: pending.includePath,
       targetPath: target.absolutePath,
+      includeGraphKey,
       bytes: formatJsonFileValue(stagedValue),
       previousRaw,
       previousHash,
@@ -422,8 +440,27 @@ export async function publishStagedIncludeWrites(params: {
   env?: NodeJS.ProcessEnv;
   assertConfigPathForWrite?: () => void;
   skipOutputLogs?: boolean;
+  // This write's own copy of the load-time graph. Each published leaf advances
+  // its key here, so later leaves and the caller's root guard expect the bytes
+  // just committed. It never holds a root entry: the root guard reuses it.
+  includeGraph?: IncludeLoadGraph;
+  // Root's load-time raw, overlaid per leaf so a leaf publish also conflicts on
+  // a root changed since load. Absent when the root does not exist yet.
+  rootRawForGraph?: string | null;
 }): Promise<void> {
   const ordered = params.staged.toSorted((a, b) => a.targetPath.localeCompare(b.targetPath));
+  const includeGraph = params.includeGraph ?? { hashes: {}, targets: {} };
+  const rootRaw = params.rootRawForGraph;
+  const leafIncludeGraph = (): IncludeLoadGraph =>
+    rootRaw == null
+      ? includeGraph
+      : {
+          hashes: { ...includeGraph.hashes, [params.configPath]: hashConfigIncludeRaw(rootRaw) },
+          targets: {
+            ...includeGraph.targets,
+            [params.configPath]: fsNode.realpathSync(params.configPath),
+          },
+        };
   // The child lock gets the caller's live authority explicitly: without it,
   // an ambient guarded owner (mutation flows) makes the lock capture a guard
   // for a path that has no scope yet, refusing every authorized mixed save.
@@ -466,7 +503,7 @@ export async function publishStagedIncludeWrites(params: {
           assertCurrent,
           {
             snapshot: { path: target.absolutePath, exists: currentRaw !== null, raw: currentRaw },
-            includeGraph: { hashes: {}, targets: {} },
+            includeGraph: leafIncludeGraph(),
             targetPathProof: pathProof,
             preserveDirectoryMode: true,
             onRootRemoved: () => {
@@ -506,6 +543,9 @@ export async function publishStagedIncludeWrites(params: {
           }
           throw error;
         }
+        // Advance only this key: a later leaf in the same publish, and the
+        // caller's own root guard, must see the bytes just committed here.
+        includeGraph.hashes[entry.includeGraphKey] = hashConfigIncludeRaw(entry.bytes);
         params.restorers.push({
           targetPath: target.absolutePath,
           previousRaw: entry.previousRaw,

@@ -6,6 +6,10 @@
 // blanks during load so existing installations keep loading and keep their
 // effective (defaulted) agent directory.
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  getRetainedLegacyDefaultAgentId,
+  setRetainedLegacyDefaultAgentId,
+} from "./legacy.default-agent-owner-state.js";
 import type { ConfigValidationIssue, OpenClawConfig } from "./types.openclaw.js";
 
 type BlankAgentDirMigration<T = unknown> = {
@@ -38,6 +42,13 @@ function migrateBlankAgentDirRaw(raw: unknown): BlankAgentDirMigration {
     return { config: raw, changed: false, changes: [], warnings: [] };
   }
   const next = structuredClone(raw) as Record<string, unknown>;
+  // structuredClone drops the retained-legacy-owner WeakMap association that
+  // the preceding roster migration attached to the root config. Preserve it on
+  // the cloned root so multi-agent configs with a legacy default marker keep
+  // loading (AgentsSchema relies on the retained owner during validation).
+  if (isRecord(raw)) {
+    setRetainedLegacyDefaultAgentId(next, getRetainedLegacyDefaultAgentId(raw));
+  }
   const agents = isRecord(next.agents) ? (next.agents as Record<string, unknown>) : {};
   const changes: ConfigValidationIssue[] = [];
 

@@ -53,4 +53,31 @@ describe("saved blank agent agentDir config loads across upgrade", () => {
       path.join(root, ".openclaw", "agents", "alpha", "agent"),
     );
   });
+
+  it("loads a legacy multi-agent config (default marker + blank agentDir) preserving the retained owner", async () => {
+    // Regression for the structuredClone WeakMap drop: a saved legacy config
+    // with a `default: true` marker and a blank agentDir on a non-default agent
+    // must still load. The roster migration records the retained default owner
+    // on the config root; the blank-agentDir migration must preserve that
+    // association across the clone.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "proof-151013-load-"));
+    const context = createContext(root);
+    fs.writeFileSync(
+      context.configPath,
+      JSON.stringify({
+        agents: {
+          list: [
+            { id: "alpha", default: true },
+            { id: "beta", agentDir: " " },
+          ],
+        },
+        gateway: { mode: "local", port: 18799, auth: { mode: "none" } },
+      }),
+    );
+    const config = await loadConfigFromContextAsync(context);
+    expect(config.agents?.entries?.alpha).toBeDefined();
+    expect(config.agents?.entries?.beta).toBeDefined();
+    // The blank agentDir was migrated away on the non-default agent.
+    expect(config.agents?.entries?.beta?.agentDir).toBeUndefined();
+  });
 });

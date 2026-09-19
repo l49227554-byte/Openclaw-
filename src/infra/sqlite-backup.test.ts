@@ -14,10 +14,10 @@ describe("node SQLite backup completion", () => {
   }) => {
     const root = dirs.make("sqlite-backup-completion-");
     const target = path.join(root, "backup.sqlite");
-    const owner = path.join(root, "node-sqlite.mjs");
+    const owner = path.join(root, "sqlite-backup.mjs");
     // Loader/cache I/O would supply the unrelated callback this regression must exclude.
     await build({
-      entryPoints: [fileURLToPath(new URL("./node-sqlite.ts", import.meta.url))],
+      entryPoints: [fileURLToPath(new URL("./sqlite-backup.ts", import.meta.url))],
       outfile: owner,
       bundle: true,
       format: "esm",
@@ -28,8 +28,9 @@ describe("node SQLite backup completion", () => {
       createNodeEvalArgs(
         `import assert from "node:assert/strict";
          import fs from "node:fs";
-         import { backupNodeSqliteDatabase, requireNodeSqlite } from ${JSON.stringify(pathToFileURL(owner).href)};
-         const sqlite = requireNodeSqlite();
+         import { createRequire } from "node:module";
+         import { backupNodeSqliteDatabase } from ${JSON.stringify(pathToFileURL(owner).href)};
+         const sqlite = createRequire(import.meta.url)("node:sqlite");
          const nativeBackup = sqlite.backup;
          const writer = new sqlite.DatabaseSync(${JSON.stringify(path.join(root, "source.sqlite"))});
          writer.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT, payload BLOB); WITH RECURSIVE rows(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM rows WHERE id<32) INSERT INTO records SELECT 'retained', zeroblob(32768) FROM rows;");

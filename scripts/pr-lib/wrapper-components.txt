@@ -649,6 +649,7 @@ src/infra/shell-wrapper-resolution.ts
 src/infra/sqlite-audit-record-store.async.ts
 src/infra/sqlite-audit-record-store.ts
 src/infra/sqlite-audit-record.kernel.ts
+src/infra/sqlite-backup.ts
 src/infra/sqlite-busy-timeout.ts
 src/infra/sqlite-coordinator.ts
 src/infra/sqlite-error-diagnostics.ts

@@ -23,7 +23,8 @@ import {
   type FileMutationFingerprint,
 } from "./file-descriptor.js";
 import { sameFileIdentity } from "./fs-safe-advanced.js";
-import { backupNodeSqliteDatabase, openNodeSqliteDatabase } from "./node-sqlite.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
+import { backupNodeSqliteDatabase } from "./sqlite-backup.js";
 import { assertSqliteIntegrity } from "./sqlite-integrity.js";
 import { createPrivateSqliteTempDirectory } from "./sqlite-private-directory.js";
 import { withSqliteSnapshotSource } from "./sqlite-snapshot-source.js";

@@ -3,7 +3,8 @@ import fs, { type BigIntStats } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { sameFileIdentity } from "./fs-safe-advanced.js";
-import { backupNodeSqliteDatabase, openNodeSqliteDatabase } from "./node-sqlite.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
+import { backupNodeSqliteDatabase } from "./sqlite-backup.js";
 import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import {
   markSqliteInspectionOperation,

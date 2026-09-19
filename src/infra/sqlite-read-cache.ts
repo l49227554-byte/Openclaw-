@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { readSqliteDataVersion, resolveNodeSqliteLocation } from "./node-sqlite.js";
+import { readSqliteDataVersion, resolveSqliteFilesystemPath } from "./node-sqlite.js";
 import { compareValidSemver } from "./semver.js";
 import { isSqliteCorruptionError } from "./sqlite-error-diagnostics.js";
 
@@ -57,8 +57,8 @@ export function prepareSqliteReadCache(
     const location = database.location();
     if (
       location &&
-      resolveNodeSqliteLocation(path.resolve(location)) ===
-        resolveNodeSqliteLocation(path.resolve(databasePath))
+      resolveSqliteFilesystemPath(path.resolve(location)) ===
+        resolveSqliteFilesystemPath(path.resolve(databasePath))
     ) {
       before = readCacheToken(database, databasePath);
     }

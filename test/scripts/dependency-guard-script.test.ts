@@ -510,10 +510,7 @@ describe("dependency guard script", () => {
       "git checkout 'origin/main' -- 'pnpm-lock.yaml' 'tools/nested/pnpm-lock.yaml'",
     );
     expect(body).toContain("```text\n/allow-dependencies-change\n```");
-    expect(body).toContain("Post the comment after this guard notice identifies the current head");
-    expect(body).toContain("A normal GitHub Approve review does not satisfy this check");
-    expect(body).toContain("SecOps approval is not required");
-    expect(body).toContain(`Current head SHA: \`${headSha}\``);
+    expect(body).toContain(`Current SHA: \`${headSha}\``);
     expect(body).toContain("A later push requires a fresh approval comment.");
   });
 

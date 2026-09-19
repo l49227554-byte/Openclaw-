@@ -168,7 +168,7 @@ describe("security-sensitive guard entry point", () => {
     const result = runGuard({ authorRole });
     expect(result.status, result.stderr).toBe(0);
     expect(result.statuses).toEqual(["failure", "success"]);
-    expect(result.comment).toContain("Informational");
+    expect(result.comment).toContain("informational");
   });
 
   it.each([

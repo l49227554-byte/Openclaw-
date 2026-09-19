@@ -18,21 +18,38 @@ function renderComment({ changes, pullRequest, approval }) {
     changes.length === 0
       ? "Security-sensitive guard cleared"
       : approval?.kind === "author"
-        ? "Security-sensitive changes noted"
+        ? "⚠️ Security-sensitive changes"
         : approval
           ? "Maintainer security review complete"
-          : "Maintainer security review required";
-  const lines = [
-    marker,
-    "",
-    `### ${heading}`,
-    "",
-    `Current revision: ${code(pullRequest.head.sha)}`,
-  ];
+          : "⚠️ Maintainer security review required";
+  const lines = [marker, "", `### ${heading}`, ""];
+  if (changes.length > 0 && approval?.kind === "author") {
+    lines.push(
+      "This PR makes security-sensitive changes. This comment is informational because the PR author has repository Maintain or Admin access.",
+      "",
+      `- Current SHA: ${code(pullRequest.head.sha)}`,
+      `- Maintainer: @${sanitizeGuardDisplayValue(approval.login)}`,
+      `- Repository role: ${code(approval.role)}`,
+    );
+  } else if (changes.length > 0 && !approval) {
+    lines.push(
+      "This external contributor PR changes sensitive security components. A maintainer must review these security changes before merging.",
+      "",
+      `Current SHA: ${code(pullRequest.head.sha)}`,
+    );
+  } else {
+    lines.push(`Current revision: ${code(pullRequest.head.sha)}`);
+  }
   if (changes.length === 0) {
     lines.push("", "This PR no longer changes files in the maintainer security-review tier.");
   } else {
-    lines.push("", "Review these security responsibilities:", "");
+    lines.push(
+      "",
+      approval?.kind === "author"
+        ? "These security responsibilities changed:"
+        : "Review these security responsibilities:",
+      "",
+    );
     for (const change of changes.slice(0, 25)) {
       lines.push(`- ${code(change.path)}: ${change.reason}`);
     }
@@ -41,28 +58,31 @@ function renderComment({ changes, pullRequest, approval }) {
     }
     lines.push("");
     if (approval?.kind === "author") {
-      lines.push(
-        `Informational: author @${approval.login} has repository ${code(approval.role)} access.`,
-      );
+      lines.push("Carefully review these changes before merging.");
     } else if (approval) {
       lines.push(
         `@${approval.login} approved this revision with ${code("/allow-security-sensitive-change")} and repository ${code(approval.role)} access.`,
+        "",
+        "A later push requires a new approval comment after the notice updates. Editing an old comment does not renew approval; deleting the command removes its approval.",
       );
     } else {
       lines.push(
-        "A GitHub user account with repository `maintain` or `admin` access must post a new comment containing `/allow-security-sensitive-change` after this notice names the current revision. SecOps approval is not required for this tier.",
-        "Use only the command, or include `/allow-dependencies-change` on a separate line if both guards need approval. A normal GitHub Approve review does not satisfy this check.",
+        "After reviewing the changes, post a new PR comment containing only approval commands, each on its own line:",
+        "",
+        "```text",
+        "/allow-security-sensitive-change",
+        "```",
+        "",
+        "A later push requires a fresh approval comment.",
       );
     }
+  }
+  if (changes.length === 0 || approval?.kind === "comment") {
     lines.push(
       "",
-      "A later push requires a new approval comment after the notice updates. Editing an old comment does not renew approval; deleting the command removes its approval.",
+      "Separate CODEOWNERS requirements still apply to security policy and enforcement files.",
     );
   }
-  lines.push(
-    "",
-    "Separate CODEOWNERS requirements still apply to security policy and enforcement files.",
-  );
   return lines.join("\n");
 }
 

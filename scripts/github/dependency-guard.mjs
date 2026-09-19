@@ -162,11 +162,11 @@ function renderApprovedDependencyComment(approval) {
     dependencyGraphGuardMarker,
     "",
     approval.kind === "author"
-      ? "### Dependency graph changes noted"
+      ? "### ⚠️ Dependency graph changes"
       : "### Dependency graph changes approved",
     "",
     approval.kind === "author"
-      ? "This PR changes dependency resolution. The guard is informational because the PR author has repository Maintain or Admin access."
+      ? "This PR makes dependency resolution changes. This comment is informational because the PR author has repository Maintain or Admin access."
       : "A maintainer approved this revision with an explicit dependency approval comment. SecOps approval is not required.",
     "",
     `- Current SHA: ${markdownCode(approval.sha)}`,
@@ -174,7 +174,9 @@ function renderApprovedDependencyComment(approval) {
     `- Repository role: ${markdownCode(approval.role)}`,
     ...(approval.kind === "comment" ? [`- Approval comment: ${approval.url}`] : []),
     "",
-    "Review resolved package changes and dependency policy before merging. A later push requires a fresh approval comment for an external contributor's PR.",
+    approval.kind === "author"
+      ? "Carefully review these changes before merging."
+      : "Review resolved package changes and dependency policy before merging. A later push requires a fresh approval comment for an external contributor's PR.",
   ].join("\n");
 }
 
@@ -279,9 +281,11 @@ export function renderBlockedDependencyComment({
   return [
     dependencyGraphGuardMarker,
     "",
-    "### Maintainer dependency review required",
+    "### ⚠️ Maintainer dependency review required",
     "",
-    "This external contributor PR changes dependency resolution. A maintainer with repository Maintain or Admin access must review the resolved packages and dependency policy before merging.",
+    "This external contributor PR changes dependency resolution. A maintainer must review these dependency changes before merging.",
+    "",
+    `Current SHA: ${markdownCode(headSha ?? "<head-sha>")}`,
     "",
     "Detected dependency graph changes:",
     ...reasons,
@@ -294,9 +298,7 @@ export function renderBlockedDependencyComment({
     dependencyApprovalCommand,
     "```",
     "",
-    "Post the comment after this guard notice identifies the current head SHA below. Do not edit an earlier comment. A normal GitHub Approve review does not satisfy this check. SecOps approval is not required; this check updates automatically.",
-    "",
-    `Current head SHA: ${markdownCode(headSha ?? "<head-sha>")}. A later push requires a fresh approval comment.`,
+    "A later push requires a fresh approval comment.",
   ].join("\n");
 }
 

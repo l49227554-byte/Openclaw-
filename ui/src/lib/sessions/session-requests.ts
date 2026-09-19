@@ -74,12 +74,6 @@ export function sessionProgressTargetQuery(agentId?: string | null): SessionList
  *  field, kept separate from the roster page so tuning one never moves the other. */
 export const SESSIONS_PAGE_DEFAULT_LIMIT = 50;
 
-const SESSION_LIST_PARAMS = {
-  includeGlobal: true,
-  includeUnknown: true,
-  configuredAgentsOnly: true,
-} as const;
-
 function buildSessionRequestParams(
   key: string,
   agentId?: string | null,
@@ -105,7 +99,11 @@ function buildTranscriptMutationParams(
 }
 
 export function buildSessionListParams(options: SessionListOptions = {}): SessionsListParams {
-  const params: SessionsListParams = { ...SESSION_LIST_PARAMS };
+  const params: SessionsListParams = {
+    includeGlobal: true,
+    includeUnknown: true,
+    configuredAgentsOnly: true,
+  };
   if (options.limit === undefined) {
     params.limit = DEFAULT_SESSION_LIST_QUERY.limit;
   } else if (options.limit > 0) {
@@ -118,6 +116,7 @@ export function buildSessionListParams(options: SessionListOptions = {}): Sessio
     "excludeSubagents",
     "excludeCron",
     "excludeSystem",
+    "hasBoard",
   ] as const) {
     if (options[key] !== undefined) {
       params[key] = options[key];
@@ -155,9 +154,6 @@ export function buildSessionListParams(options: SessionListOptions = {}): Sessio
   }
   if (options.boardFace) {
     params.boardFace = options.boardFace;
-  }
-  if (options.hasBoard !== undefined) {
-    params.hasBoard = options.hasBoard;
   }
   if (typeof options.offset === "number" && options.offset > 0) {
     params.offset = Math.floor(options.offset);

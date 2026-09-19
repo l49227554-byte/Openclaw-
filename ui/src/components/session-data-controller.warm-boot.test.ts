@@ -99,6 +99,7 @@ describe("sidebar warm roster publication", () => {
       let statusFilter: "active" | "archived" = "active";
       const host = {
         isConnected: true,
+        navigationVisible: true,
         get connected() {
           return gateway.gateway.snapshot.phase === "connected";
         },

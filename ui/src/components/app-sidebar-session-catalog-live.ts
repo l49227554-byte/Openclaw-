@@ -69,6 +69,7 @@ export class SessionCatalogLiveState {
     { headCursor: string; nextCursor: string; depth: number; cursors: Set<string> }
   >();
 
+  private navigationVisible = true;
   private activationRefresh: (() => Promise<void> | void) | null = null;
   private readonly eventRefresh = createSessionEventRefreshCoordinator({
     active: true,
@@ -86,6 +87,20 @@ export class SessionCatalogLiveState {
   private readonly requestChangedHostKeys = new Set<string>();
   private readonly warnedRequestErrors = new Set<string>();
   private requestOwner: symbol | null = null;
+
+  synchronizeNavigationVisibility(visible: boolean, onReopen: () => void) {
+    if (this.navigationVisible === visible) {
+      return;
+    }
+    this.navigationVisible = visible;
+    // Collapsed navigation stays mounted. Keep its rows but suspend refresh
+    // work, then catch up once when the shell exposes the surface again.
+    if (!visible) {
+      this.cancelScheduledRefreshes();
+    } else if (this.hasRequested) {
+      onReopen();
+    }
+  }
 
   cancelTimer() {
     const handle = this.timer;
@@ -373,6 +388,7 @@ export async function refreshSessionCatalogsLive(params: {
   catalogs: () => SessionCatalog[];
   pageDepths: ReadonlyMap<string, number>;
   connected: () => boolean;
+  visible: () => boolean;
   catalogChangedEvents: boolean;
   applyFinal: (catalogs: SessionCatalog[], revisedCatalogIds: ReadonlySet<string>) => void;
   /** Finish the finite cursor sweep without repeating the root catalog request. */
@@ -409,7 +425,7 @@ export async function refreshSessionCatalogsLive(params: {
       agentId: params.agentId,
       pageDepths: params.pageDepths,
       isCurrent: revisionIsCurrent,
-      canRequestPage: () => revisionIsCurrent() && document.visibilityState !== "hidden",
+      canRequestPage: () => revisionIsCurrent() && params.visible(),
     });
     if (!revisionIsCurrent()) {
       return;
@@ -434,7 +450,7 @@ export async function refreshSessionCatalogsLive(params: {
     if (ownsRequest) {
       live.requestGeneration = null;
     }
-    if (ownsRequest && requestIsCurrent() && params.connected()) {
+    if (ownsRequest && requestIsCurrent() && params.connected() && params.visible()) {
       const pending = live.refreshPending;
       live.refreshPending = false;
       const interval = params.catalogChangedEvents

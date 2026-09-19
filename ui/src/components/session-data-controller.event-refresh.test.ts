@@ -157,6 +157,7 @@ function createFilteredSessionController(
       return hostConnected;
     },
     connected: true,
+    navigationVisible: true,
     activeRouteId: "sessions",
     getRouteSessionKey: () => context.gateway.snapshot.sessionKey.trim(),
     sessionDataContext: context,

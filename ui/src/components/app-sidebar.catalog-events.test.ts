@@ -42,6 +42,69 @@ describe("AppSidebar catalog event refresh", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it.each([{ events: [] }, { events: ["sessions.catalog.changed"] }])(
+    "pauses hidden navigation refreshes and catches up once on reopen (events: %j)",
+    async ({ events }) => {
+      const { gateway, request, sidebar } = await mountTab(undefined, events);
+      sidebar.navigationVisible = false;
+      await sidebar.updateComplete;
+      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+      globalThis.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(request).toHaveBeenCalledTimes(1);
+
+      request.mockResolvedValue(catalogPage([{ threadId: "fresh", name: "Fresh on reopen" }]));
+      sidebar.navigationVisible = true;
+      await sidebar.updateComplete;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(sidebar.textContent).toContain("Fresh on reopen");
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(request).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("defers the initial catalog read until navigation becomes visible", async () => {
+    const request = createGatewayRequestMock().mockResolvedValue(catalogPage([]));
+    const gateway = createGatewayHarness(createTestGatewayClient(request));
+    gateway.publish({
+      hello: {
+        features: { methods: ["sessions.catalog.list"] },
+      } as ApplicationGatewaySnapshot["hello"],
+    });
+    const { sidebar } = await mountSidebar(
+      gateway.gateway,
+      createSessions("main", ["agent:main:main"]),
+    );
+    sidebar.navigationVisible = false;
+    sidebar.connected = true;
+    await sidebar.updateComplete;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(request).not.toHaveBeenCalled();
+    sidebar.navigationVisible = true;
+    await sidebar.updateComplete;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it("does not discover more pages when a pending read settles after navigation hides", async () => {
+    const pending = deferred<ReturnType<typeof catalogPage>>();
+    const request = createGatewayRequestMock()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValue(catalogPage([{ threadId: "fresh", name: "Fresh on reopen" }]));
+    const { sidebar } = await mountTab(request);
+    sidebar.navigationVisible = false;
+    await sidebar.updateComplete;
+    pending.resolve(catalogPage([], "next-page"));
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(request).toHaveBeenCalledOnce();
+    sidebar.navigationVisible = true;
+    await sidebar.updateComplete;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(sidebar.textContent).toContain("Fresh on reopen");
+  });
+
   it("keeps four stable tabs idle for five minutes and refreshes each once per catalog event", async () => {
     const tabs = [];
     for (let index = 0; index < 4; index += 1) {
@@ -132,26 +195,39 @@ describe("AppSidebar catalog event refresh", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it("rechecks visibility after queued background admission", async () => {
-    let visibility: DocumentVisibilityState = "visible";
-    const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-    try {
-      const { gateway, request, sidebar } = await mountTab();
-      const context = sidebar.sessionData.context;
-      context?.connectionBootstrap.setForegroundRoute(undefined);
-      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
-      await vi.advanceTimersByTimeAsync(200);
-      visibility = "hidden";
-      document.dispatchEvent(new Event("visibilitychange"));
-      context?.connectionBootstrap.setForegroundRoute(null);
-      await vi.advanceTimersByTimeAsync(300_000);
-      expect(request).toHaveBeenCalledTimes(1);
-      visibility = "visible";
-      document.dispatchEvent(new Event("visibilitychange"));
-      await vi.advanceTimersByTimeAsync(200);
-      expect(request).toHaveBeenCalledTimes(2);
-    } finally {
-      spy.mockRestore();
-    }
-  });
+  it.each(["tab", "navigation"])(
+    "rechecks %s visibility after queued background admission",
+    async (surface) => {
+      let visibility: DocumentVisibilityState = "visible";
+      const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+      try {
+        const { gateway, request, sidebar } = await mountTab();
+        const context = sidebar.sessionData.context;
+        context?.connectionBootstrap.setForegroundRoute(undefined);
+        gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+        await vi.advanceTimersByTimeAsync(200);
+        if (surface === "tab") {
+          visibility = "hidden";
+          document.dispatchEvent(new Event("visibilitychange"));
+        } else {
+          sidebar.navigationVisible = false;
+          await sidebar.updateComplete;
+        }
+        context?.connectionBootstrap.setForegroundRoute(null);
+        await vi.advanceTimersByTimeAsync(300_000);
+        expect(request).toHaveBeenCalledTimes(1);
+        if (surface === "tab") {
+          visibility = "visible";
+          document.dispatchEvent(new Event("visibilitychange"));
+        } else {
+          sidebar.navigationVisible = true;
+          await sidebar.updateComplete;
+        }
+        await vi.advanceTimersByTimeAsync(200);
+        expect(request).toHaveBeenCalledTimes(2);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
 });

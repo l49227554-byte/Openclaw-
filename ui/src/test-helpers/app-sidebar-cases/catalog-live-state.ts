@@ -61,6 +61,7 @@ describe("AppSidebar session catalog pagination", () => {
         catalogs: () => catalogs,
         pageDepths: new Map(),
         connected: () => true,
+        visible: () => document.visibilityState !== "hidden",
         catalogChangedEvents: true,
         applyFinal: (next) => {
           catalogs = next;

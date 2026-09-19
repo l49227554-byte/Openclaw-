@@ -1983,7 +1983,7 @@ src/agents/workspace-legacy-state.ts	2
 src/agents/workspace-state-store.ts	1
 src/agents/workspace.ts	5
 src/agents/worktrees/git.ts	2
-src/agents/worktrees/registry.ts	11
+src/agents/worktrees/registry.ts	8
 src/agents/worktrees/run-lease.ts	1
 src/audit/execution-identity-admission.ts	3
 src/audit/execution-identity-context-build.ts	3
@@ -2719,7 +2719,7 @@ src/gateway/server-methods/skills-workspace-handler.ts	1
 src/gateway/server-methods/skills.ts	3
 src/gateway/server-methods/system-agent-chat-params.ts	2
 src/gateway/server-methods/system-changes.ts	9
-src/gateway/server-methods/task-suggestions.ts	7
+src/gateway/server-methods/task-suggestions.ts	5
 src/gateway/server-methods/terminal-upload.ts	1
 src/gateway/server-methods/terminal.ts	6
 src/gateway/server-methods/tools-catalog.ts	2

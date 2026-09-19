@@ -4,6 +4,7 @@ set -euo pipefail
 
 openclaw_npm_expected_workflow_ref="${GITHUB_REF}"
 openclaw_npm_expected_workflow_sha="${PARENT_WORKFLOW_SHA}"
+openclaw_npm_run_attempt=""
 
 record_postpublish_diagnostics() {
   CHILD_PLUGIN_NPM_RUN_ID="${plugin_npm_run_id:-${CHILD_PLUGIN_NPM_RUN_ID:-}}" \
@@ -710,6 +711,8 @@ resolve_openclaw_npm_publish_state() {
     --provenance-file "${provenance_path}")"
   OPENCLAW_NPM_RESUME_RUN_ID="$(printf '%s' "${resume_state}" | jq -er '.runId')"
   echo "openclaw_npm_resume_run_id=${OPENCLAW_NPM_RESUME_RUN_ID}" >> "$GITHUB_OUTPUT"
+  openclaw_npm_run_attempt="$(printf '%s' "${resume_state}" | jq -er '.runAttempt')"
+  echo "openclaw_npm_resume_run_attempt=${openclaw_npm_run_attempt}" >> "$GITHUB_OUTPUT"
   resume_url="$(printf '%s' "${resume_state}" | jq -er '.url')"
   openclaw_npm_expected_workflow_ref="$(printf '%s' "${resume_state}" | jq -er '.workflowRef')"
   openclaw_npm_expected_workflow_sha="$(printf '%s' "${resume_state}" | jq -er '.workflowSha')"
@@ -1252,6 +1255,7 @@ verify_published_release() {
 
   OPENCLAW_NPM_EXPECTED_WORKFLOW_REF="${openclaw_npm_expected_workflow_ref}" \
     OPENCLAW_NPM_EXPECTED_WORKFLOW_SHA="${openclaw_npm_expected_workflow_sha}" \
+    OPENCLAW_NPM_EXPECTED_RUN_ATTEMPT="${openclaw_npm_run_attempt}" \
     node --import tsx \
       "${GITHUB_WORKSPACE}/.release-harness/scripts/release-verify-beta.ts" \
       "${verify_args[@]}"
@@ -1367,6 +1371,7 @@ append_release_proof_to_github_release() {
     RELEASE_VALIDATION_RUN_ID="${proof_run_id}" \
     PLUGIN_NPM_RUN_ID="${plugin_npm_run_id}" \
     OPENCLAW_NPM_RUN_ID="${openclaw_npm_run_id}" \
+    OPENCLAW_NPM_RUN_ATTEMPT="${openclaw_npm_run_attempt}" \
     CLAWHUB_LINE="${clawhub_line}" \
     CLAWHUB_BOOTSTRAP_LINE="${clawhub_bootstrap_line}" \
     TELEGRAM_LINE="${telegram_line}" \
@@ -1397,7 +1402,7 @@ const section = [
   // Resumed publishes cite the original npm publisher.
   ...(process.env.OPENCLAW_NPM_RUN_ID
     ? [
-        `- OpenClaw npm publish: https://github.com/${process.env.RELEASE_REPO}/actions/runs/${process.env.OPENCLAW_NPM_RUN_ID}`,
+        `- OpenClaw npm publish: https://github.com/${process.env.RELEASE_REPO}/actions/runs/${process.env.OPENCLAW_NPM_RUN_ID}${process.env.OPENCLAW_NPM_RUN_ATTEMPT ? `/attempts/${process.env.OPENCLAW_NPM_RUN_ATTEMPT}` : ""}`,
       ]
     : []),
   ...(process.env.STABLE_SOAK_WAIVER

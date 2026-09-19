@@ -1,6 +1,6 @@
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
 import { withPluginLifecycleLease } from "../plugins/plugin-lifecycle-lease.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -81,36 +81,25 @@ describe("nested lease-backed capture", () => {
 
   it("bounds all participants by the shortest original durable expiry", async () => {
     await withOpenClawTestState({ label: "nested-capture-expiry" }, async (state) => {
-      vi.useFakeTimers({
-        toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
-      });
-      try {
-        let entered = false;
-        await expect(
-          withOpenClawStateLease(
-            { ...options(state.env, "outer"), heartbeat: undefined, leaseMs: 1_000 },
-            async (outer) => {
-              await withOpenClawStateLease(
-                { ...options(state.env, "inner"), heartbeat: undefined },
-                async (inner) => {
-                  await capture(inner)(async (assertCurrent) => {
-                    entered = true;
-                    // Advance durable expiry without letting heartbeat timers renew either owner.
-                    vi.setSystemTime(Date.now() + 1_200);
-                    expect(() => assertCurrent()).toThrow(/expired/);
-                    expect(outer.signal.aborted).toBe(true);
-                    expect(inner.signal.aborted).toBe(true);
-                    assertCurrent();
-                  });
-                },
-              );
-            },
-          ),
-        ).rejects.toMatchObject({ code: "OPENCLAW_STATE_LEASE_LOST" });
-        expect(entered).toBe(true);
-      } finally {
-        vi.useRealTimers();
-      }
+      let entered = false;
+      await expect(
+        withOpenClawStateLease(
+          { ...options(state.env, "outer"), heartbeat: undefined, leaseMs: 1_000 },
+          async (outer) => {
+            await withOpenClawStateLease(options(state.env, "inner"), async (inner) => {
+              await capture(inner)(async (assertCurrent) => {
+                entered = true;
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1_200);
+                expect(() => assertCurrent()).toThrow(/expired/);
+                expect(outer.signal.aborted).toBe(true);
+                expect(inner.signal.aborted).toBe(true);
+                assertCurrent();
+              });
+            });
+          },
+        ),
+      ).rejects.toMatchObject({ code: "OPENCLAW_STATE_LEASE_LOST" });
+      expect(entered).toBe(true);
     });
   });
 

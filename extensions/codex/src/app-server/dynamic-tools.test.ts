@@ -46,8 +46,15 @@ import {
   projectCodexExecutableDynamicTools,
 } from "./dynamic-tools.js";
 import {
+  createBridgeWithToolResult,
+  createTool,
+  expectInputText,
+  handleMessageToolCall,
+  mediaResult,
+  textToolResult,
+} from "./dynamic-tools.test-support.js";
+import {
   CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
-  type CodexDynamicToolCallResponse,
   type CodexDynamicToolFunctionSpec,
   type CodexDynamicToolSpec,
   type JsonValue,
@@ -81,59 +88,6 @@ function frameImageIdentity(data: string, mimeType = "image/png") {
   return createHash("sha256")
     .update(JSON.stringify([mimeType, data]))
     .digest("hex");
-}
-
-function createTool(overrides: Partial<AnyAgentTool>): AnyAgentTool {
-  return {
-    name: "tts",
-    description: "Convert text to speech.",
-    parameters: { type: "object", properties: {}, additionalProperties: true },
-    execute: vi.fn(),
-    ...overrides,
-  } as unknown as AnyAgentTool;
-}
-
-function mediaResult(mediaUrl: string, audioAsVoice?: boolean): AgentToolResult<unknown> {
-  return {
-    content: [{ type: "text", text: "Generated media reply." }],
-    details: {
-      media: {
-        mediaUrl,
-        ...(audioAsVoice === true ? { audioAsVoice: true } : {}),
-      },
-    },
-  };
-}
-
-function textToolResult(text: string, details: unknown = {}): AgentToolResult<unknown> {
-  return {
-    content: [{ type: "text", text }],
-    details,
-  };
-}
-
-function createBridgeWithToolResult(
-  toolName: string,
-  toolResult: AgentToolResult<unknown>,
-  hookContext?: Parameters<typeof createCodexDynamicToolBridge>[0]["hookContext"],
-) {
-  return createCodexDynamicToolBridge({
-    tools: [
-      createTool({
-        name: toolName,
-        execute: vi.fn(async () => toolResult),
-      }),
-    ],
-    signal: new AbortController().signal,
-    hookContext,
-  });
-}
-
-function expectInputText(response: CodexDynamicToolCallResponse, text: string) {
-  expect(toCodexDynamicToolProtocolResponse(response)).toEqual({
-    success: true,
-    contentItems: [{ type: "inputText", text }],
-  });
 }
 
 const requireRecord = createRequireRecord("object", "expected-label");
@@ -205,20 +159,6 @@ function expectExecuteCall(
   expect(callArg(execute, 0, 1, "execute args")).toEqual(expected.args);
   expect(callArg(execute, 0, 2, "execute signal")).toBeInstanceOf(AbortSignal);
   expect(callArg(execute, 0, 3, "execute extra")).toBeUndefined();
-}
-
-async function handleMessageToolCall(
-  bridge: ReturnType<typeof createCodexDynamicToolBridge>,
-  arguments_: JsonValue,
-) {
-  return await bridge.handleToolCall({
-    threadId: "thread-1",
-    turnId: "turn-1",
-    callId: "call-1",
-    namespace: null,
-    tool: "message",
-    arguments: arguments_,
-  });
 }
 
 const STRICT_INSTRUCTION_SCHEMA = {
@@ -2614,6 +2554,7 @@ describe("createCodexDynamicToolBridge", () => {
 
     expectInputText(result, "Sent.");
     expect(result.terminate).toBe(true);
+    expect(result.finalCurrentSourceReply).toBe(true);
     expect(bridge.telemetry.didDeliverSourceReplyViaMessageTool).toBe(true);
     expect(bridge.telemetry.messagingToolSentTargets.at(-1)).toMatchObject({
       sourceReplyFinal: true,
@@ -2657,6 +2598,7 @@ describe("createCodexDynamicToolBridge", () => {
 
     expectInputText(progressResult, "Sent.");
     expect(progressResult.terminate).toBeUndefined();
+    expect(progressResult.finalCurrentSourceReply).toBeUndefined();
     expect(bridge.telemetry.didDeliverSourceReplyViaMessageTool).toBe(true);
     expect(bridge.telemetry.messagingToolSentTargets.at(-1)).toMatchObject({
       sourceReplyFinal: false,
@@ -2670,11 +2612,14 @@ describe("createCodexDynamicToolBridge", () => {
 
     expectInputText(result, "Sent.");
     expect(result.terminate).toBe(true);
+    expect(result.finalCurrentSourceReply).toBe(true);
     expect(bridge.telemetry.didDeliverSourceReplyViaMessageTool).toBe(true);
     expect(bridge.telemetry.messagingToolSentTargets.at(-1)).toMatchObject({
       sourceReplyFinal: true,
     });
-    expect(Object.keys(toCodexDynamicToolProtocolResponse(result))).not.toContain("terminate");
+    const protocolResponse = toCodexDynamicToolProtocolResponse(result);
+    expect(Object.keys(protocolResponse)).not.toContain("terminate");
+    expect(Object.keys(protocolResponse)).not.toContain("finalCurrentSourceReply");
   });
 
   it.each([undefined, "message_tool_only"] as const)(
@@ -3027,6 +2972,7 @@ describe("createCodexDynamicToolBridge", () => {
 
     expectInputText(result, "Sent.");
     expect(result.terminate).toBe(true);
+    expect(result.finalCurrentSourceReply).toBeUndefined();
     expect(bridge.telemetry.didDeliverSourceReplyViaMessageTool).toBe(true);
     expect(bridge.telemetry.messagingToolSentTargets.at(-1)).toMatchObject({
       sourceReplyFinal: true,

@@ -18,6 +18,7 @@ import {
 } from "./native-hook-relay.js";
 import type { CodexServerNotification, CodexDynamicToolCallParams } from "./protocol.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
+import { createCodexServerRequestAdmissionController } from "./run-attempt-server-request-admission.js";
 import { createCodexDynamicToolExecutionRegistry } from "./run-attempt-tools.js";
 import { createCodexUserInputBridge } from "./user-input-bridge.js";
 
@@ -58,6 +59,12 @@ class CodexAttemptState {
   };
   terminalDynamicToolReleaseCheckScheduled = false;
   currentTurnHadNonTerminalDynamicToolResult = false;
+  // Populated only after the source transport confirms final reply delivery.
+  finalSourceReplyCommit?: {
+    call: CodexDynamicToolCallParams;
+    committedAtMs: number;
+  };
+  terminalReleaseDeadlineTimer?: ReturnType<typeof setTimeout>;
 }
 
 export function createCodexAttemptTurnState(resources: CodexAttemptResources) {
@@ -80,12 +87,36 @@ export function createCodexAttemptTurnState(resources: CodexAttemptResources) {
   const activeTurnItemIds = new Set<string>();
   const turnIdRef: { current?: string } = {};
   const userInputBridgeRef: { current?: ReturnType<typeof createCodexUserInputBridge> } = {};
+  const serverRequestAdmission = createCodexServerRequestAdmissionController();
   const steeringQueueRef: { current?: ReturnType<typeof createCodexSteeringQueue> } = {};
+  const clearTerminalReleaseDeadline = () => {
+    clearTimeout(state.terminalReleaseDeadlineTimer);
+    state.terminalReleaseDeadlineTimer = undefined;
+  };
+  const armTerminalReleaseDeadline = (deadlineAtMs: number, onDeadline: () => void) => {
+    clearTerminalReleaseDeadline();
+    const timer = setTimeout(
+      () => {
+        if (state.terminalReleaseDeadlineTimer !== timer) {
+          return;
+        }
+        state.terminalReleaseDeadlineTimer = undefined;
+        if (!state.completed && !runAbortController.signal.aborted) {
+          onDeadline();
+        }
+      },
+      Math.max(1, deadlineAtMs - Date.now()),
+    );
+    timer.unref?.();
+    state.terminalReleaseDeadlineTimer = timer;
+  };
   const completeTurn = () => {
     if (state.completed) {
       return;
     }
     state.completed = true;
+    clearTerminalReleaseDeadline();
+    serverRequestAdmission.seal();
     steeringQueueRef.current?.cancel();
     deadlines.beginSettlement(Date.now());
     resolveCompletion();
@@ -224,7 +255,10 @@ export function createCodexAttemptTurnState(resources: CodexAttemptResources) {
     activeTurnItemIds,
     turnIdRef,
     userInputBridgeRef,
+    serverRequestAdmission,
     steeringQueueRef,
+    armTerminalReleaseDeadline,
+    clearTerminalReleaseDeadline,
     completeTurn,
     interruptTurn,
     renewNativeHookRelayForTurnProgress,

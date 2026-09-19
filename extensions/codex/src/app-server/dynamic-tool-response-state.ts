@@ -12,13 +12,13 @@ export type CodexDynamicToolRuntimeResponse = CodexDynamicToolCallResponse & {
   diagnosticTerminalType?: CodexDynamicToolDiagnosticTerminalType;
   executionStarted?: boolean;
   executedArguments?: Record<string, unknown>;
+  finalCurrentSourceReply?: boolean;
   replaySafe?: boolean;
   sideEffectEvidence?: boolean;
   terminate?: boolean;
   transcriptDetails?: unknown;
   terminalResolution?: ReturnType<NonNullable<EmbeddedRunAttemptParams["observeToolTerminal"]>>;
 };
-
 export function createFailedDynamicToolResponse(
   message: string,
   options?: {
@@ -37,4 +37,29 @@ export function createFailedDynamicToolResponse(
     executedArguments: options?.executedArguments,
     sideEffectEvidence: options?.sideEffectEvidence === true || undefined,
   };
+}
+
+/** Restores the authoritative outcome when delivery preceded a presentation failure. */
+export function createCommittedFinalSourceReplyResponse(params: {
+  executedArguments: Record<string, unknown>;
+}): CodexDynamicToolRuntimeResponse {
+  return {
+    contentItems: [{ type: "inputText", text: "Source reply delivered." }],
+    success: true,
+    executedArguments: params.executedArguments,
+    executionStarted: true,
+    finalCurrentSourceReply: true,
+    sideEffectEvidence: true,
+    terminate: true,
+  };
+}
+
+export function readDynamicToolResponseText(response: CodexDynamicToolCallResponse): string {
+  const text = response.contentItems
+    .flatMap((item) =>
+      item.type === "inputText" && typeof item.text === "string" ? [item.text] : [],
+    )
+    .join("\n")
+    .trim();
+  return text || "OpenClaw dynamic tool call failed.";
 }

@@ -48,9 +48,10 @@ describe("saved blank agent cwd config loads across upgrade", () => {
     const config = await loadConfigFromContextAsync(context);
     expect(config.agents?.entries?.alpha).toBeDefined();
     // The blank per-agent cwd was migrated away: the resolver now inherits the
-    // default cwd, matching pre-upgrade behavior.
+    // default cwd, matching pre-upgrade behavior. path.resolve makes the
+    // expectation platform-native (drive-qualified on Windows).
     expect(config.agents?.entries?.alpha?.cwd).toBeUndefined();
-    expect(resolveAgentRunCwd(config, "alpha")).toBe("/tmp/default");
+    expect(resolveAgentRunCwd(config, "alpha")).toBe(path.resolve("/tmp/default"));
   });
 
   it("loads a saved config with a blank defaults cwd (migration removes it, resolver returns undefined default)", async () => {

@@ -84,6 +84,116 @@ afterEach(() => {
 });
 
 describe.skipIf(!hasBrowserLayout)("openclaw-board-view browser layout", () => {
+  it("retains loaded tab documents and their local state while switching tabs", async () => {
+    const view = await mount();
+    const cell = view.querySelector("openclaw-board-widget-cell")!;
+    const frame = cell.querySelector("iframe")!;
+    const messages: string[] = [];
+    const fixtureStates = new Set(["ready", "Last 30 days:1", "Last 30 days:2"]);
+    const loggedState = (value: string) => (fixtureStates.has(value) ? value : "unexpected-state");
+    const startedAt = performance.timeOrigin + performance.now();
+    const timeline: {
+      phase: string;
+      elapsedMs: number;
+      visibility: DocumentVisibilityState;
+      state?: string;
+      sourceMatches?: boolean;
+      emittedAtMs?: number;
+    }[] = [];
+    const record = (
+      phase: string,
+      detail: { state?: string; sourceMatches?: boolean; emittedAtMs?: number } = {},
+    ) => {
+      if (timeline.length >= 16) {
+        return;
+      }
+      timeline.push({
+        phase,
+        elapsedMs: performance.timeOrigin + performance.now() - startedAt,
+        visibility: document.visibilityState,
+        ...detail,
+      });
+    };
+    const loaded = () => record("iframe-load");
+    frame.addEventListener("load", loaded);
+    const receive = (event: MessageEvent) => {
+      if (typeof event.data?.tabState === "string") {
+        record("message", {
+          state: loggedState(event.data.tabState),
+          sourceMatches: event.source === frame.contentWindow,
+          emittedAtMs:
+            typeof event.data.emittedAt === "number" ? event.data.emittedAt - startedAt : undefined,
+        });
+      }
+      if (event.source === frame.contentWindow && typeof event.data?.tabState === "string") {
+        messages.push(event.data.tabState);
+      }
+    };
+    window.addEventListener("message", receive);
+    record("listener-registered");
+    try {
+      record("assign-srcdoc");
+      frame.srcdoc = `<input value="All observations"><script>
+        let visits = 0;
+        addEventListener("message", ({ data }) => {
+          if (data !== "visit") return;
+          const input = document.querySelector("input");
+          if (++visits === 1) input.value = "Last 30 days";
+          parent.postMessage({ tabState: input.value + ":" + visits }, "*");
+        });
+        parent.postMessage({ tabState: "ready", emittedAt: performance.timeOrigin + performance.now() }, "*");
+      </script>`;
+      await vi.waitFor(() => expect(messages).toEqual(["ready"]));
+      frame.contentWindow!.postMessage("visit", "*");
+      await vi.waitFor(() => expect(messages.at(-1)).toBe("Last 30 days:1"));
+
+      view.callbacks = { ...view.callbacks!, selectTab: (tabId) => (view.activeTabId = tabId) };
+      const switchTab = async (tabId: string) => {
+        view
+          .querySelector(".board-tabs__track")!
+          .dispatchEvent(
+            new CustomEvent("wa-tab-show", { detail: { name: tabId }, bubbles: true }),
+          );
+        await view.updateComplete;
+        await cell.updateComplete;
+      };
+      await switchTab("ops");
+      expect(view.querySelector('[data-test-id="board-empty"]')).not.toBeNull();
+      expect(frame.isConnected).toBe(true);
+      expect(cell.active).toBe(false);
+      expect(cell.inert).toBe(true);
+      expect(frame.getBoundingClientRect().height).toBe(0);
+
+      await switchTab("main");
+      expect(cell.querySelector("iframe")).toBe(frame);
+      expect(cell.active).toBe(true);
+      expect(frame.getBoundingClientRect().height).toBeGreaterThan(0);
+      frame.contentWindow!.postMessage("visit", "*");
+      await vi.waitFor(() =>
+        expect(messages).toEqual(["ready", "Last 30 days:1", "Last 30 days:2"]),
+      );
+    } catch (error) {
+      record("failure");
+      console.error(
+        "Board tab retention diagnostics",
+        JSON.stringify({
+          timeline,
+          messages: messages.map(loggedState),
+          connected: frame.isConnected,
+          active: cell.active,
+          loading: frame.loading,
+          // Read geometry only after failure so diagnostics cannot trigger initial layout.
+          bounds: frame.getBoundingClientRect().toJSON(),
+          viewport: { width: innerWidth, height: innerHeight },
+        }),
+      );
+      throw error;
+    } finally {
+      frame.removeEventListener("load", loaded);
+      window.removeEventListener("message", receive);
+    }
+  });
+
   it("lays out adjacent first-fit cells without pixel overlap", async () => {
     const view = await mount();
     view.style.width = "1200px";
@@ -285,6 +395,7 @@ describe.skipIf(!hasBrowserLayout)("openclaw-board-view browser layout", () => {
   });
 
   it("keeps widget chrome visible while its menu is open", async () => {
+    const { userEvent } = await import("vitest/browser");
     const view = await mount();
     const sink = focusSink();
     const widget = view.querySelector<HTMLElement>('[data-test-id="board-widget"]');
@@ -295,6 +406,7 @@ describe.skipIf(!hasBrowserLayout)("openclaw-board-view browser layout", () => {
     await vi.waitFor(() => expect(getComputedStyle(bar!).visibility).toBe("visible"));
 
     menu!.open = false;
+    await userEvent.unhover(widget!);
     sink.focus();
     expect(widget!.matches(":focus-within")).toBe(false);
     await vi.waitFor(() => expectChromeHidden(widget!, bar!));

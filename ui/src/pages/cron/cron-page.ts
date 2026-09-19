@@ -21,9 +21,7 @@ import {
   hasCronFormErrors,
   invalidateCronRefresh,
   loadCronJobsPage,
-  loadCronRuns,
   loadCronStatus,
-  loadMoreCronRuns,
   normalizeCronFormState,
   removeCronJob,
   runCronJob,
@@ -31,11 +29,10 @@ import {
   startCronEdit,
   toggleCronJob,
   updateCronJobsFilter,
-  updateCronRunsFilter,
   validateCronForm,
-  type CronFormState,
-  type CronState,
 } from "../../lib/cron/index.ts";
+import { loadCronRuns, loadMoreCronRuns, updateCronRunsFilter } from "../../lib/cron/runs.ts";
+import type { CronFormState, CronState } from "../../lib/cron/types.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { loadModelCatalog, modelCatalogRefreshError } from "../../lib/model-catalog-store.ts";
 import { shouldHandleNavigationClick } from "../../lib/navigation-click.ts";
@@ -578,6 +575,7 @@ class CronPage extends OpenClawLightDomElement {
   private submitForm(options: { runNow?: boolean } = {}) {
     const connectionScope = this.gateway.capture();
     this.runCronAdminTask(async (cronState) => {
+      const editing = Boolean(cronState.cronEditingJob);
       const result = await addCronJob(cronState);
       if (!result.saved) {
         return;
@@ -590,7 +588,7 @@ class CronPage extends OpenClawLightDomElement {
       if (ownsDiscovery) {
         this.deliveryDirectory.clear(cronState);
       }
-      if (cronState.cronEditingJob) {
+      if (editing || cronState.cronEditingJob) {
         if (ownsDiscovery) {
           void this.deliveryDirectory.load(cronState);
         }
@@ -676,7 +674,10 @@ class CronPage extends OpenClawLightDomElement {
           listTab: this.listTab,
           detailTab: this.detailTab,
           error:
-            this.cron.cronError ?? this.deliveryConversationsError ?? this.modelSuggestionsError,
+            this.cron.cronError ??
+            this.cron.cronRunsError ??
+            this.deliveryConversationsError ??
+            this.modelSuggestionsError,
           busy: this.cron.cronBusy,
           form: this.cron.cronForm,
           heartbeatScratch: canManage ? this.heartbeatScratch : "",

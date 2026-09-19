@@ -100,11 +100,19 @@ async function captureFinalStatus(
   expect
     .soft(status.auth.unusableProfiles)
     .not.toContainEqual(expect.objectContaining({ profileId: fixture.profileId }));
+  // Refreshed fixture credentials stay valid for two days, outside the CLI
+  // 24-hour expiry warning; original-credential expiry scenarios remain separate.
   expect
     .soft(status.auth.oauth.profiles)
     .toContainEqual(
       expect.objectContaining({ profileId: fixture.profileId, type: "oauth", status: "ok" }),
     );
+  expect
+    .soft(
+      status.auth.oauth.profiles.find((profile) => profile.profileId === fixture.profileId)
+        ?.remainingMs,
+    )
+    .toBeGreaterThan(0);
 
   const dashboard = await fixture.gateway.cli(["dashboard", "--json"]);
   expect(dashboard.code, dashboard.stderr).toBe(0);
@@ -303,6 +311,34 @@ describe.each(["automatic", "saved-clear", "automatic-during-catalog"] as const)
 
           // Observe the next turn before CLI or browser reads can affect runtime preparation.
           const beforeRecovery = provider.requests.length;
+          let beforeRecoveryReply: ReturnType<typeof stats>;
+          if (catalogHold) {
+            const heldCatalog = catalogHold;
+            provider.observeNextSuccess(
+              () => {
+                beforeRecoveryReply = stats();
+                observations.push({
+                  action: "catalog-release-at-recovery",
+                  state: beforeRecoveryReply,
+                });
+                // Publish after recovery without spending the catalog deadline on terminal delivery.
+                heldCatalog.release();
+              },
+              { model: "gpt-5.5", path: "/v1/responses" },
+            );
+            const auxiliary = await fetch(`${provider.baseUrl}/v1/responses`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${fixture.access}`,
+                "chatgpt-account-id": ACCOUNT_ID,
+              },
+              body: JSON.stringify({ model: "gpt-5.6-luna", input: [] }),
+            });
+            expect(auxiliary.status, evidence()).toBe(200);
+            await auxiliary.text();
+            expect(beforeRecoveryReply, evidence()).toBeUndefined();
+          }
           const nextTurn = await turn();
           const inference = provider.requests
             .slice(beforeRecovery)
@@ -324,7 +360,8 @@ describe.each(["automatic", "saved-clear", "automatic-during-catalog"] as const)
           expect(gateway.child).toBe(gatewayProcess);
           expect(gatewayProcess?.exitCode).toBeNull();
           if (catalogHold) {
-            catalogHold.release();
+            expect(beforeRecoveryReply, evidence()).toBeDefined();
+            expect(beforeRecoveryReply?.blockedUntil, evidence()).toBeUndefined();
             const refreshed = await catalogRefresh;
             observations.push({ action: "held-catalog-refresh", result: refreshed });
             expect(refreshed, evidence()).toMatchObject({ ok: true });

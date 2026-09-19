@@ -1,4 +1,5 @@
 import type { UsersPrefsSetResult } from "../../../../packages/gateway-protocol/src/index.js";
+import { USER_PREFS_ENTRY_LIMIT } from "../../../../packages/gateway-protocol/src/schema/user-profile-constants.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { saveUserPreferences } from "../../app/user-prefs-cache.ts";
 import { t } from "../../i18n/index.ts";
@@ -21,6 +22,11 @@ import {
 } from "./preferences.ts";
 
 registerNewSessionSetupEnglish();
+
+export type SubmittedWorktreePreference = NewSessionPreference & {
+  // Fresh drafts know the stored override; recovery only retains the effective create input.
+  selectedBaseRef?: string;
+};
 
 type DraftPreferenceSnapshot = Readonly<{
   source: ApplicationContext["gateway"] | null;
@@ -133,7 +139,11 @@ export class DraftPreferenceState {
     return writes;
   }
 
-  capturePreferenceConsumption(agentId: string, workspace: string, expected: NewSessionPreference) {
+  capturePreferenceConsumption(
+    agentId: string,
+    workspace: string,
+    expected: SubmittedWorktreePreference,
+  ) {
     return this.preparePreferenceWrite(agentId, workspace, { worktreeName: "" }, expected);
   }
 
@@ -145,7 +155,7 @@ export class DraftPreferenceState {
     agentIdValue: string,
     workspace: string,
     patch: NewSessionPreference,
-    expected?: NewSessionPreference,
+    expected?: SubmittedWorktreePreference,
   ): ((consume?: () => void) => void | Promise<void>) | undefined {
     const snapshot = this.read();
     const accepted = expected !== undefined;
@@ -188,17 +198,29 @@ export class DraftPreferenceState {
         source.snapshot.selfUser?.id === profileId,
       );
     const nextPatch = accepted ? patch : { workspace, ...patch };
-    const matchesSubmitted = (current: NewSessionPreference | null | undefined) =>
-      !expected ||
-      Boolean(
-        current &&
-        current.worktreeName === expected.worktreeName &&
-        current.worktree === true &&
-        (current.workspace ?? workspace) === workspace &&
-        resolveNewSessionFolderPreference(current, workspace).folder === expected.folder &&
-        (!current.baseRef || current.baseRef === expected.baseRef) &&
-        (current.projectId ?? "") === (expected.projectId ?? ""),
-      );
+    const matchSubmitted = (current: NewSessionPreference | null | undefined) => {
+      if (!expected) {
+        return "match";
+      }
+      if (
+        !current ||
+        current.worktreeName !== expected.worktreeName ||
+        current.worktree !== true ||
+        (current.workspace ?? workspace) !== workspace ||
+        resolveNewSessionFolderPreference(current, workspace).folder !== expected.folder ||
+        (current.projectId ?? "") !== (expected.projectId ?? "")
+      ) {
+        return "superseded";
+      }
+      if (expected.selectedBaseRef !== undefined) {
+        return (current.baseRef ?? "") === expected.selectedBaseRef ? "match" : "superseded";
+      }
+      if (!current.baseRef && expected.baseRef) {
+        // Recovery cannot distinguish an original default from another draft clearing its base.
+        return "unconfirmed";
+      }
+      return (current.baseRef ?? "") === (expected.baseRef ?? "") ? "match" : "superseded";
+    };
     const publish = (preference: NewSessionPreference) => {
       if (!accepted) {
         return;
@@ -209,7 +231,11 @@ export class DraftPreferenceState {
       }
     };
     const writeLocal = () => {
-      if (matchesSubmitted(loadNewSessionPreference(gatewayUrl, agentId))) {
+      const match = matchSubmitted(loadNewSessionPreference(gatewayUrl, agentId));
+      if (match === "unconfirmed") {
+        return false;
+      }
+      if (match === "match") {
         const saved = patchNewSessionPreference(gatewayUrl, agentId, nextPatch);
         if (saved) {
           publish(loadNewSessionPreference(gatewayUrl, agentId) ?? {});
@@ -235,10 +261,16 @@ export class DraftPreferenceState {
       const isCurrent = () =>
         accepted
           ? ownsConnection() && writer.selection === selection
-          : this.preferenceScope === scope;
+          : ownsConnection() && this.preferenceScope === scope;
       const reportFailure = () => {
-        if (accepted && isCurrent()) {
-          showToast({ message: t("newSession.worktreeNameClearUnconfirmed") });
+        if (isCurrent()) {
+          showToast({
+            message: t(
+              accepted
+                ? "newSession.worktreeNameClearUnconfirmed"
+                : "newSession.preferenceSaveUnconfirmed",
+            ),
+          });
         }
       };
       if (this.preferenceModeValue === "local") {
@@ -263,36 +295,55 @@ export class DraftPreferenceState {
             return;
           }
           const { loadUserPreferences } = await import("../../app/user-prefs-request.ts");
-          const current = await loadUserPreferences(client, profileId);
-          if (!isCurrent()) {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            if (!isCurrent()) {
+              return;
+            }
+            const current = await loadUserPreferences(client, profileId);
+            if (!isCurrent()) {
+              return;
+            }
+            if (current.status !== "ok") {
+              reportFailure();
+              return;
+            }
+            const preferences = decodeIdentityPreferences(current.entries);
+            const preference = preferences[agentId];
+            const match = matchSubmitted(preference);
+            if (match !== "match") {
+              if (match === "unconfirmed") {
+                reportFailure();
+              }
+              return;
+            }
+            const next = { ...preference, ...nextPatch };
+            const entries = encodeIdentityPreferences({ [agentId]: next });
+            const result = await saveUserPreferences(client, {
+              entries,
+              expectedEntries: Object.fromEntries(
+                Object.keys(entries).map((key) => [key, current.entries[key] ?? null]),
+              ),
+            });
+            // A queued edit can supersede admission, but not a clear already committed by this owner.
+            if (accepted ? !ownsConnection() : !isCurrent()) {
+              return;
+            }
+            if (result.status === "conflict") {
+              continue;
+            }
+            if (result.status !== "ok") {
+              reportFailure();
+              return;
+            }
+            replaceBrowserPreference(gatewayUrl, agentId, next);
+            publish(next);
+            if (this.preferenceScope === scope) {
+              this.identityPreferences = { ...this.identityPreferences, [agentId]: next };
+              this.callbacks.requestUpdate();
+            }
             return;
           }
-          if (current.status !== "ok") {
-            reportFailure();
-            return;
-          }
-          const preferences = decodeIdentityPreferences(current.entries);
-          if (!matchesSubmitted(preferences[agentId])) {
-            return;
-          }
-          const next = { ...preferences[agentId], ...nextPatch };
-          const result = await saveUserPreferences(client, {
-            entries: encodeIdentityPreferences({ [agentId]: next }),
-          });
-          // A queued edit can supersede admission, but not a clear already committed by this owner.
-          if (accepted ? !ownsConnection() : !isCurrent()) {
-            return;
-          }
-          if (result.status !== "ok") {
-            reportFailure();
-            return;
-          }
-          replaceBrowserPreference(gatewayUrl, agentId, next);
-          publish(next);
-          if (this.preferenceScope === scope) {
-            this.identityPreferences = { ...this.identityPreferences, [agentId]: next };
-            this.callbacks.requestUpdate();
-          }
+          reportFailure();
         } catch {
           // Retain the last confirmed value without reversing an accepted session.
           reportFailure();
@@ -341,6 +392,7 @@ export class DraftPreferenceState {
     const source = this.read().source;
     const writes = source ? this.preferenceWrites(source) : undefined;
     const revision = writes?.revision;
+    let migrationConflicted = false;
     try {
       const { loadUserPreferences } = await import("../../app/user-prefs-request.ts");
       if (this.preferenceScope !== params.scope) {
@@ -357,42 +409,73 @@ export class DraftPreferenceState {
       if (writes?.revision !== revision) {
         return this.loadIdentityPreferences(params);
       }
-      let preferences = decodeIdentityPreferences(result.entries);
+      let entries = result.entries;
+      let preferences = decodeIdentityPreferences(entries);
       const browserPreferences = loadBrowserPreferences(params.gatewayUrl);
-      if (result.entries[PREFS_MIGRATION_KEY] !== true) {
+      let conflicts = 0;
+      let migrationFailed = false;
+      while (entries[PREFS_MIGRATION_KEY] !== true) {
+        if (writes?.revision !== revision) {
+          return this.loadIdentityPreferences(params);
+        }
         const missingBrowserPreferences = Object.fromEntries(
           Object.entries(browserPreferences).filter(
             ([agentId]) => !Object.hasOwn(preferences, agentId),
           ),
         );
-        const migrationEntries = [
-          ...Object.entries(encodeIdentityPreferences(missingBrowserPreferences)),
-          [PREFS_MIGRATION_KEY, true] as const,
-        ];
-        let migrationFailed = false;
-        for (let offset = 0; offset < migrationEntries.length; offset += 32) {
-          const batch = Object.fromEntries(migrationEntries.slice(offset, offset + 32));
-          let response: UsersPrefsSetResult;
-          try {
-            response = await saveUserPreferences(params.client, {
-              entries: batch,
-            });
-          } catch {
-            migrationFailed = true;
-            break;
-          }
+        const missingEntries = Object.entries(encodeIdentityPreferences(missingBrowserPreferences));
+        // Every batch guards the marker, including batches that do not complete migration.
+        const batch = Object.fromEntries(missingEntries.slice(0, USER_PREFS_ENTRY_LIMIT - 1));
+        if (missingEntries.length < USER_PREFS_ENTRY_LIMIT) {
+          batch[PREFS_MIGRATION_KEY] = true;
+        }
+        let response: UsersPrefsSetResult;
+        try {
+          response = await saveUserPreferences(params.client, {
+            entries: batch,
+            expectedEntries: {
+              ...Object.fromEntries(Object.keys(batch).map((key) => [key, entries[key] ?? null])),
+              [PREFS_MIGRATION_KEY]: entries[PREFS_MIGRATION_KEY] ?? null,
+            },
+          });
+        } catch {
+          migrationFailed = true;
+          break;
+        }
+        if (this.preferenceScope !== params.scope) {
+          return;
+        }
+        if (response.status === "conflict") {
+          migrationConflicted = true;
+          const current = await loadUserPreferences(params.client, params.profileId);
           if (this.preferenceScope !== params.scope) {
             return;
           }
-          if (response.status !== "ok") {
-            migrationFailed = true;
+          if (current.status !== "ok") {
+            this.preferenceModeValue = "remote";
+            this.callbacks.requestUpdate();
+            return;
+          }
+          entries = current.entries;
+          preferences = decodeIdentityPreferences(entries);
+          conflicts += 1;
+          if (conflicts >= 3) {
             break;
           }
-          Object.assign(preferences, decodeIdentityPreferences(batch));
+          continue;
         }
-        if (migrationFailed) {
-          preferences = { ...browserPreferences, ...preferences };
+        if (response.status !== "ok") {
+          migrationFailed = true;
+          break;
         }
+        entries = { ...entries, ...batch };
+        Object.assign(preferences, decodeIdentityPreferences(batch));
+      }
+      if (this.preferenceScope !== params.scope) {
+        return;
+      }
+      if (migrationFailed && !migrationConflicted) {
+        preferences = { ...browserPreferences, ...preferences };
       }
       if (writes?.revision !== revision) {
         return this.loadIdentityPreferences(params);
@@ -408,7 +491,7 @@ export class DraftPreferenceState {
       this.callbacks.requestUpdate();
     } catch {
       if (this.preferenceScope === params.scope) {
-        this.preferenceModeValue = "local";
+        this.preferenceModeValue = migrationConflicted ? "remote" : "local";
         this.callbacks.requestUpdate();
       }
     }

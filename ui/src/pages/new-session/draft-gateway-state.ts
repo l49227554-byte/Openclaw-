@@ -9,7 +9,10 @@ import * as catalog from "./catalog-target.ts";
 import { CLOUD_PROFILE_RETRY_DELAYS_MS } from "./cloud-profile-discovery.ts";
 import { requestPlaceCatalog } from "./cloud-target.ts";
 import type { DraftCloudProfile, DraftEnvironment } from "./discovery.ts";
-import { DraftPreferenceState } from "./draft-preference-state.ts";
+import {
+  DraftPreferenceState,
+  type SubmittedWorktreePreference,
+} from "./draft-preference-state.ts";
 import { discoverGatewayName } from "./gateway-name-discovery.ts";
 import type { NewSessionRouteData } from "./location.ts";
 import type { NewSessionPreference } from "./preferences.ts";
@@ -433,7 +436,11 @@ export class DraftGatewayState {
     return this.preferences.readPreference(agentId);
   }
 
-  capturePreferenceConsumption(agentId: string, workspace: string, expected: NewSessionPreference) {
+  capturePreferenceConsumption(
+    agentId: string,
+    workspace: string,
+    expected: SubmittedWorktreePreference,
+  ) {
     return this.preferences.capturePreferenceConsumption(agentId, workspace, expected);
   }
 

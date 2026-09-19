@@ -45,9 +45,14 @@ mode, and base branch. Background starts do the same. Failed admission leaves th
 name available to retry; an accepted placement keeps its original session and
 worktree request for recovery, even if workspace preparation later fails. If
 clearing the saved name cannot be confirmed, the UI warns you to check Name
-before starting another worktree; the accepted session continues.
+before starting another worktree; the accepted session continues. Cleanup preserves
+newer checkout choices saved by another draft or browser, and keeps concurrent
+model changes. A restored start whose original base choice cannot be distinguished
+from a later edit also leaves the saved name unchanged and shows that warning.
+If saving a new draft choice cannot be confirmed, a separate warning asks you to
+check the choices before starting; session creation is never retried by preference cleanup.
 
-On the first identified connection, the Control UI uploads existing browser-local new-session preferences only when the Gateway has no such preferences yet. Later changes write to the Gateway first and then update the browser mirror. Connections without a durable identity continue using browser-local preferences and the loaded session roster for recents.
+On the first identified connection, the Control UI uploads existing browser-local new-session preferences only when the Gateway has no such preferences yet. Concurrent first connections preserve choices already saved by another browser, including a cleared worktree name. Later changes write to the Gateway first and then update the browser mirror. Connections without a durable identity continue using browser-local preferences and the loaded session roster for recents.
 
 When a remote project session starts before its repository finishes cloning, chat shows workspace preparation progress. If preparation fails, opening or reloading chat restores the session's failure summary. Correct the reported problem, then send a new message in the same session to retry preparation.
 

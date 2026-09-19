@@ -1,15 +1,20 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type {
+  AgentSummary,
   ProjectRecord,
   WorktreesBranchesResult,
 } from "../../../../packages/gateway-protocol/src/index.js";
 import type { ApplicationContext } from "../../app/context.ts";
 import type { SessionCreateParams } from "../../lib/sessions/create.ts";
+import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import type { DraftRepositoryState } from "./discovery.ts";
+import type { SubmittedWorktreePreference } from "./draft-preference-state.ts";
 import type { NewSessionPreference } from "./preferences.ts";
 import type { DraftRemoteProject } from "./project-chip.ts";
 
 type DraftRepositorySnapshot = Readonly<{
   agentId: string;
+  agents: readonly AgentSummary[];
   remotePlacement: boolean;
   selectedProject: ProjectRecord | undefined;
   remoteProject: DraftRemoteProject | null;
@@ -24,7 +29,7 @@ type DraftRepositoryCallbacks = {
   persistPreference: (patch: NewSessionPreference) => void;
   capturePreferenceConsumption: (
     owner: Readonly<{ agentId: string; workspace: string }>,
-    expected: NewSessionPreference,
+    expected: SubmittedWorktreePreference,
   ) => ((consume: () => void) => void | Promise<void>) | undefined;
 };
 
@@ -210,7 +215,7 @@ export class DraftRepositoryController {
       SessionCreateParams,
       "worktree" | "worktreeName" | "worktreeBaseRef" | "cwd" | "projectId"
     >,
-    owner: Readonly<{ agentId: string; workspace: string }>,
+    submission: Readonly<{ agentId: string; recovered?: boolean }>,
   ) {
     const name = params.worktreeName?.trim();
     if (!params.worktree || !name) {
@@ -218,9 +223,13 @@ export class DraftRepositoryController {
     }
     const revision = this.selectionRevision;
     const snapshot = this.read();
+    const agentId = normalizeAgentId(submission.agentId);
+    const agent = snapshot.agents.find((candidate) => normalizeAgentId(candidate.id) === agentId);
+    const owner = { agentId, workspace: normalizeOptionalString(agent?.workspace) ?? "" };
     const currentAgent = owner.agentId === snapshot.agentId;
     const persist = this.callbacks.capturePreferenceConsumption(owner, {
       worktreeName: name,
+      ...(!submission.recovered ? { selectedBaseRef: this.baseRefOverride?.trim() ?? "" } : {}),
       folder:
         params.cwd ?? (currentAgent ? snapshot.folder.trim() || owner.workspace : owner.workspace),
       baseRef: params.worktreeBaseRef ?? (currentAgent ? this.baseRef : undefined),

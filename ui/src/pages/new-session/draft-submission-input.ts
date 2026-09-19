@@ -62,7 +62,11 @@ export function prepareDraftSubmission(
   return {
     consumeWorktreeName:
       submittedPlacement &&
-      place.captureSubmittedWorktreeName(submittedPlacement, submissionAgentId),
+      place.captureSubmittedWorktreeName(
+        submittedPlacement,
+        submissionAgentId,
+        Boolean(startup || pendingPlacement),
+      ),
     pendingPlacement,
     message,
     mentions,

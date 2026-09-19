@@ -122,6 +122,7 @@ export class DraftPlaceState {
     this.repositoryState = new DraftRepositoryController(
       () => ({
         agentId: this.agentIdValue,
+        agents: this.agents(),
         remotePlacement: this.remotePlacement,
         selectedProject: this.browser.selectedProject(),
         remoteProject: this.browser.remoteProject,
@@ -682,15 +683,9 @@ export class DraftPlaceState {
   captureSubmittedWorktreeName(
     params: Parameters<DraftRepositoryController["captureSubmittedName"]>[0],
     agentId: string,
+    recovered = false,
   ) {
-    const submittedAgentId = normalizeAgentId(agentId);
-    const agent = this.agents().find(
-      (candidate) => normalizeAgentId(candidate.id) === submittedAgentId,
-    );
-    return this.repositoryState.captureSubmittedName(params, {
-      agentId: submittedAgentId,
-      workspace: normalizeOptionalString(agent?.workspace) ?? "",
-    });
+    return this.repositoryState.captureSubmittedName(params, { agentId, recovered });
   }
 
   restorePreferenceSelections() {

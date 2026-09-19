@@ -1,112 +1,17 @@
 import { afterEach, expect, it, vi } from "vitest";
-import type { UsersPrefsSetParams } from "../../../../packages/gateway-protocol/src/schema/users.ts";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
-import { saveUserPreferences } from "../../app/user-prefs-cache.ts";
 import type { SessionCreateOutcome } from "../../lib/sessions/create.ts";
 import * as toast from "../../lib/toast.ts";
 import { CHAT_ROUTE_READY_EVENT } from "../chat/chat-history-events.ts";
-import { createDraftFixture } from "./draft-submission-flow.test-support.ts";
+import { identityPreferences } from "./draft-worktree-preferences.test-support.ts";
 import { renderControl } from "./model-control.test-support.ts";
-import { loadNewSessionPreference, patchNewSessionPreference } from "./preferences.ts";
+import { loadNewSessionPreference } from "./preferences.ts";
 
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
   sessionStorage.clear();
 });
-
-function identityPreferences(
-  identified = true,
-  modelCatalog?: NonNullable<Parameters<typeof createDraftFixture>[0]>["modelCatalog"],
-) {
-  let entries: Record<string, unknown> = {
-    "new-session.migration.v1": true,
-    "new-session.v1:work": {
-      workspace: "/work",
-      folder: "/work",
-      worktree: true,
-      baseRef: "main",
-      worktreeName: "work-task",
-    },
-    "new-session.v1:main": {
-      workspace: "/repo",
-      folder: "/repo",
-      worktree: true,
-      baseRef: "main",
-      worktreeName: "first-task",
-    },
-  };
-  if (!identified) {
-    patchNewSessionPreference("ws://gateway.example", "main", {
-      workspace: "/repo",
-      folder: "/repo",
-      worktree: true,
-      baseRef: "main",
-      worktreeName: "first-task",
-    });
-  }
-  const beforeSave = vi.fn(async (_params: UsersPrefsSetParams) => {});
-  const beforeRead = vi.fn(async () => {});
-  const options = {
-    modelCatalog,
-    ...(identified ? { selfUser: { id: "person-a" } } : {}),
-    scopes: ["operator.admin", "operator.read", "operator.write"],
-    methods: ["sessions.create", "sessions.dispatch", "users.prefs.get", "users.prefs.set"],
-    agents: [
-      {
-        id: "work",
-        workspace: "/work",
-        workspaceGit: true,
-        model: { primary: "openai/gpt-5.6-luna" },
-      },
-      {
-        id: "main",
-        workspace: "/repo",
-        workspaceGit: true,
-        model: { primary: "openai/gpt-5.6-luna" },
-      },
-    ],
-    request: async (method: string, params?: unknown) => {
-      if (method === "users.prefs.get") {
-        const snapshot = structuredClone(entries);
-        await beforeRead();
-        return { status: "ok", entries: snapshot };
-      }
-      if (method === "users.prefs.set") {
-        const write = params as UsersPrefsSetParams;
-        await beforeSave(write);
-        entries = { ...entries, ...structuredClone(write.entries) };
-        return { status: "ok" };
-      }
-      if (method === "worktrees.branches") {
-        return { repositoryStatus: "git", branches: ["main"], defaultBranch: "main" };
-      }
-      return { status: "ok", endedAt: 1 };
-    },
-  };
-  const make = (gateway?: NonNullable<Parameters<typeof createDraftFixture>[0]>["gateway"]) =>
-    createDraftFixture({ ...options, gateway });
-  const ready = async (fixture: ReturnType<typeof make>) => {
-    await vi.waitFor(() => expect(fixture.gateway.preferenceLoading).toBe(false));
-    await vi.waitFor(() => expect(fixture.place.repository.kind).toBe("git"));
-  };
-  return {
-    make,
-    ready,
-    beforeSave,
-    beforeRead,
-    publish: (fixture: ReturnType<typeof make>, patch: Record<string, unknown>) =>
-      saveUserPreferences(fixture.context.gateway.snapshot.client!, {
-        entries: {
-          "new-session.v1:main": { ...(entries["new-session.v1:main"] as object), ...patch },
-        },
-      }),
-    stored: (agentId = "main") =>
-      identified
-        ? entries[`new-session.v1:${agentId}`]
-        : loadNewSessionPreference("ws://gateway.example", agentId),
-  };
-}
 
 it.each([false, true])(
   "consumes the accepted name while preserving a newer model and thinking selection, identity=%s",

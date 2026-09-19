@@ -4,6 +4,8 @@ import { en } from "./en.ts";
 // Session setup messages load with their consumers instead of every UI startup.
 const enNewSessionSetup = {
   newSession: {
+    preferenceSaveUnconfirmed:
+      "Saving your new-session choices could not be confirmed. Check them before starting a session.",
     worktreeNameClearUnconfirmed:
       "Session accepted, but clearing the saved worktree name could not be confirmed. Check Name before starting another worktree.",
     agent: "Agent",

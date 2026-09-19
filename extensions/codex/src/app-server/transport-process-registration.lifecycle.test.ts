@@ -122,7 +122,9 @@ describe("Codex registration settlement", () => {
     const closing = closeCodexAppServerTransportAndWait(spawned).then(() => {
       closed = true;
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
     expect(closed).toBe(false);
     expect(state.delete).not.toHaveBeenCalled();
     admission.resolve();
@@ -214,7 +216,9 @@ describe("Codex registration settlement", () => {
     const stopping = Promise.resolve(service.stop?.(ctx)).then(() => {
       stopped = true;
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
     expect(stopped).toBe(false);
     reading.resolve([]);
     await stopping;

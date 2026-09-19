@@ -177,7 +177,9 @@ export async function prepareCodexAppServerProcessRegistration(): Promise<
     };
     // Observe exit before yielding to the database worker. Deletion must follow
     // insertion settlement even when the child exits while admission is queued.
-    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    const exited = new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+    });
     const registered = store.register(key, value);
     const cleanup = (async () => {
       await exited;

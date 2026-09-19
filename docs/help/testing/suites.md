@@ -251,49 +251,31 @@ Native dependency policy:
 
 The dedicated real-Gateway CI job uses `test/vitest/vitest.ui-e2e-prebuilt.config.ts` after `OPENCLAW_BUILD_PRIVATE_QA=1 pnpm build:ci-artifacts` completes in a clean checkout. Keep source and built outputs unchanged until all workers and children finish. Files outside the prebuilt config’s shared-reader/writer allowlist run serially first. Audited fixtures own their HOME, state, ports, and cleanup, and share at most two workers in the same invocation, with no extra jobs or shards. Readiness failures stop execution without rebuilding or falling back. The ordinary local config keeps real-Gateway files serial; frozen targets without the prebuilt config keep their original serial command. See [CI](/ci) for the resource policy and bounded timing evidence.
 
-### Isolated local UI E2E
+### Network-isolated local E2E
 
-UI E2E checks loopback HTTP through the executing Node process's normal `fetch`
-transport before acquiring Gateway fixtures or the shared UI build. A proxy refusal
-or malformed loopback response fails the environment preflight rather than spending
-the Gateway startup budget. The existing Chromium executable availability check is
-required in isolated mode; full browser launch and cleanup remain fixture-owned.
-Existing optional missing-browser skips remain unchanged for ordinary local runs.
+When Chromium is available, UI E2E setup proves loopback HTTP through the parent
+Node process's normal `fetch` before acquiring Gateway fixtures or the shared UI
+build. A proxy refusal or malformed response fails this environment preflight
+with a sanitized error instead of consuming the Gateway startup budget. Existing
+optional missing-browser skips remain unchanged. If later Gateway readiness
+expires, its error also retains the last completed HTTP failure so a final
+deadline-edge timeout does not hide useful status and error-category evidence.
 
-For synthetic real-Gateway tests launched from an environment with protected
-proxy credentials, use a separate secretless stack rather than overriding
-`HTTP_PROXY`, adding `NO_PROXY`, or changing the Gateway readiness check. On Linux,
-with trusted checkout tooling, an already-configured rootless Podman engine, and an
-existing compatible image:
+Gateway-hosted exec can inherit the [secret egress proxy](/gateway/secrets/secret-store-and-egress#secret-egress-proxy). Its plain-HTTP refusal also applies to a test process calling its own loopback fixture. A Gateway can therefore log that it is ready while its parent receives a proxy error from `/readyz`. Building the UI again or increasing the readiness timeout does not repair that transport mismatch.
+
+For trusted, keyless local tests, run the complete invocation in an isolated Linux container instead. Select an already prepared, trusted image by its full image ID or digest; the runner never pulls an image or falls back to the host:
 
 ```bash
-OPENCLAW_BUILD_PRIVATE_QA=1 pnpm build:ci-artifacts
-pnpm test:ui:e2e:isolated --image 'sha256:<existing-image-id>' --output .artifacts/ui-e2e-isolated -- ui/src/e2e/quota-reset-status.real-gateway.e2e.test.ts
+node scripts/run-vitest.mjs --isolated-image "$IMAGE_ID" run \
+  --config test/vitest/vitest.ui-e2e.config.ts --configLoader runner \
+  ui/src/e2e/command-palette-catalog.real-gateway.e2e.test.ts
 ```
 
-This local launcher currently refuses SELinux-confined hosts rather than relabel
-host binaries or disable a security policy. It is not an untrusted-PR executor; use
-the [approved remote proof workflow](/reference/test/remote-proof) for untrusted code.
+The adapter requires Linux, an existing rootless Podman installation, checkout-local `pnpm install --frozen-lockfile` dependencies, and native Node and pnpm executables compatible with the image. Put the native pnpm executable matching `package.json` on `PATH`, or select it through the existing `npm_execpath` environment variable; a Corepack/download shim is not an offline executable. The image must already contain the Chromium revision required by the installed Playwright package under `/ms-playwright`, including its headless shell and system libraries. The runner checks versions and launches Chromium before starting the test command. SELinux-labeled hosts are not supported by this initial adapter: it refuses before creating a container rather than relabeling shared host files or disabling enforcement. Use an already supported isolated runner instead of changing host security policy.
 
-The image must provide the system libraries needed by the prepared host Node and
-Playwright Chromium binaries. Prepare dependencies, the runtime/UI build, and the
-browser before launching, and stage new source files with `git add` so the input
-snapshot includes them. The launcher never pulls an image, installs dependencies,
-repairs prerequisite builds, changes host policy, or falls back to host execution.
-Test-owned temporary workers and UI previews still use their existing lifecycle
-owners; they do not rewrite the prepared runtime.
+It runs Vitest, Chromium, the provider fixture, and the test Gateway in the same network-none namespace. Host proxy settings stay unchanged; host credentials, Gateway state, Git metadata, and private scratch are not exposed to the container. There are no published ports or external network access. Missing prerequisites fail with setup guidance instead of installing packages or weakening isolation.
 
-The test runner, synthetic provider, Gateway, and browser share a new network-none
-namespace. Inputs are read-only, HOME/state and output are owned, and host
-credentials, proxy material, private scratch, and Git metadata are excluded.
-Before tests start, the launcher checks the initialized OCI environment and mounts
-against its input allowlist, refusing extra Podman defaults without changing them.
-Resources remain bounded; cleanup joins the owned container on success or failure.
-Live child output is retained in the selected output directory's `run.log`; the CLI
-reports completion only after cleanup. Keeping attached output off the caller's
-pipes prevents an early pipe close from abandoning the container.
-A successful readiness check is not a full test pass: browser capacity and all
-selected assertions must also succeed.
+Use the ordinary local config, not the CI-only prebuilt config. For the canonical Control UI E2E config, the adapter runs the existing private-QA `ciArtifacts` build inside the container before admitting tests; backend readiness alone does not mean the dashboard assets are ready. The isolated source snapshot uses tracked working-tree files, including staged new files; stage a new test before selecting it. Keep source and dependencies unchanged during the invocation, and keep dependency installation separate. The initial interface supports exact tracked test files, a tracked config, and console reporters; it does not export files from the disposable snapshot. This route is not suitable for live-provider tests or tests that must contact services outside their own container.
 
 ### E2E: OpenShell backend smoke
 

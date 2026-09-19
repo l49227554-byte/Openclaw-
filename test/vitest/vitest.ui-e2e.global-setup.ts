@@ -26,11 +26,6 @@ export default async function setup(project: TestProject) {
   project.provide("controlUiE2eCleanup", { pool: "forks", isolate: true, timeoutMs });
   const executablePath = resolvePlaywrightChromiumExecutablePath(chromium.executablePath());
   const available = canRunPlaywrightChromium(executablePath);
-  if (!available && process.env.OPENCLAW_UI_E2E_REQUIRE_BROWSER === "1") {
-    throw new Error(
-      "UI E2E requires an executable Chromium runtime; check the prepared browser and image system libraries. No tests were started.",
-    );
-  }
   if (available) {
     const root = project.vitest.getRootProject();
     let preflight = preflights.get(root);

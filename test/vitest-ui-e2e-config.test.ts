@@ -173,7 +173,6 @@ function probeOwnership(
     include?: string[];
     skipRealGateway?: boolean;
     available?: boolean;
-    requireBrowser?: boolean;
     initialize?: string[][];
     failure?: "build" | "provide" | "admission" | "preflight";
   } = {},
@@ -310,7 +309,6 @@ function probeOwnership(
         ...process.env,
         OPENCLAW_VITEST_INCLUDE_FILE: options.include ? includeFile : "",
         OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: options.skipRealGateway ? "1" : "",
-        OPENCLAW_UI_E2E_REQUIRE_BROWSER: options.requireBrowser ? "1" : "",
       },
     },
   );
@@ -322,16 +320,6 @@ function probeOwnership(
 }
 
 describe("Control UI E2E resource ownership", () => {
-  it("fails strict browser admission instead of crediting skipped isolated tests", () => {
-    const result = probeOwnership({
-      filters: [bundledFile],
-      available: false,
-      requireBrowser: true,
-    });
-    expect(result.setupError).toContain("requires an executable Chromium runtime");
-    expect(result.leases).toEqual([]);
-  });
-
   it("refuses a selected project before acquiring fixtures when environment preflight fails", () => {
     const result = probeOwnership({ filters: [bundledFile], failure: "preflight" });
     expect(result.setupError).toBe("fixture preflight failed");

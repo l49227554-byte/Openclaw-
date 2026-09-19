@@ -408,12 +408,15 @@ export function readRecentSessionTranscriptHistoryEventsFromProjection(
     projection.database.path,
     projection.resolved.agentId,
     projection.resolved.sessionId,
+  ]);
+  const revision = JSON.stringify([
+    projection.generation,
+    projection.state.indexedSeq,
     options.maxMessages,
     options.maxLines,
     options.maxBytes,
     Boolean(options.captureReadWindow),
   ]);
-  const revision = JSON.stringify([projection.generation, projection.state.indexedSeq]);
   const cached = recentHistoryWindows.get(key);
   if (cached?.database === projection.database.db && cached.revision === revision) {
     return structuredClone(cached.page);

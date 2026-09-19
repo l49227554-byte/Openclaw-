@@ -238,37 +238,4 @@ describe("SQLite transcript history cache", () => {
       readerScope.close();
     }
   });
-
-  it("reuses both recent windows when callers alternate their limits", async () => {
-    await replaceTranscriptEvents(scope, [
-      { type: "session", version: 3, id: scope.sessionId },
-      {
-        type: "message",
-        id: "older",
-        parentId: null,
-        message: { role: "user", content: "alternating-cache-window-older" },
-      },
-      {
-        type: "message",
-        id: "newer",
-        parentId: "older",
-        message: { role: "assistant", content: "alternating-cache-window-newer" },
-      },
-    ]);
-    const readOne = () =>
-      readRecentSessionTranscriptHistoryEvents(scope, { ...limits, maxMessages: 1 });
-    read();
-    readOne();
-    const parse = vi.spyOn(JSON, "parse");
-    try {
-      expect(read().events.map(historyEventId)).toEqual(["older", "newer"]);
-      expect(readOne().events.map(historyEventId)).toEqual(["newer"]);
-      expect(read().events.map(historyEventId)).toEqual(["older", "newer"]);
-      expect(
-        parse.mock.calls.filter(([json]) => json.includes("alternating-cache-window-")),
-      ).toHaveLength(0);
-    } finally {
-      parse.mockRestore();
-    }
-  });
 });

@@ -387,6 +387,40 @@ export function createAppServerOptions(): CodexAppServerRuntimeOptions {
   } as unknown as CodexAppServerRuntimeOptions;
 }
 
+export function createDefaultCurrentReplyAdditionalContextExpectation() {
+  return {
+    openclaw_current_reply: {
+      kind: "application",
+      value: expect.stringContaining(
+        '{"replyTargetPresent":false,"quotePresent":false,"replyChainPresent":false}',
+      ),
+    },
+    openclaw_current_reply_identifiers: {
+      kind: "untrusted",
+      value: expect.stringContaining("{}"),
+    },
+  };
+}
+
+export function createSupervisedTurnAdditionalContextExpectation(notice?: string) {
+  return {
+    ...createDefaultCurrentReplyAdditionalContextExpectation(),
+    openclaw_source_delivery: {
+      kind: "application",
+      value: expect.stringContaining("reply normally in your final assistant message"),
+    },
+    openclaw_temporal_context: {
+      kind: "application",
+      value: expect.stringContaining("## Temporal Context"),
+    },
+    ...(notice
+      ? {
+          openclaw_permission_change: { kind: "application", value: notice },
+        }
+      : {}),
+  };
+}
+
 export function createParams(
   sessionFile: string,
   workspaceDir: string,

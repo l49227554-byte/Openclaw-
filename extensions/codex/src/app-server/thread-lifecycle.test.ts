@@ -51,7 +51,10 @@ import {
   resolveCodexAppServerThreadModelSelection,
   startOrResumeThread as startOrResumeThreadImpl,
 } from "./thread-lifecycle.js";
-import { createLeasedCodexLifecycleHarness } from "./thread-lifecycle.test-fixtures.js";
+import {
+  createLeasedCodexLifecycleHarness,
+  createSupervisedTurnAdditionalContextExpectation,
+} from "./thread-lifecycle.test-fixtures.js";
 import { attestCodexRestrictedToolSurfaceMcpServersDisabled } from "./thread-requests.js";
 
 type CodexThreadLifecycleTimingLogger = NonNullable<
@@ -1833,21 +1836,9 @@ describe("Codex app-server native code mode config", () => {
       expect(request).not.toHaveProperty("effort");
       expect(request).not.toHaveProperty("collaborationMode");
       expect(request).not.toHaveProperty("personality");
-      expect(request.additionalContext).toEqual({
-        openclaw_source_delivery: {
-          kind: "application",
-          value: expect.stringContaining("reply normally in your final assistant message"),
-        },
-        openclaw_temporal_context: {
-          kind: "application",
-          value: expect.stringContaining("## Temporal Context"),
-        },
-        ...(notice
-          ? {
-              openclaw_permission_change: { kind: "application", value: notice },
-            }
-          : {}),
-      });
+      expect(request.additionalContext).toEqual(
+        createSupervisedTurnAdditionalContextExpectation(notice),
+      );
     },
   );
 

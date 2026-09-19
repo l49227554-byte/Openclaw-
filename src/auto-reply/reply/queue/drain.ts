@@ -45,6 +45,7 @@ import {
 } from "../../../utils/queue-helpers.js";
 import { resolveReplyScreenToolTarget } from "../reply-tool-authority.js";
 import { isRoutableChannel } from "../route-reply.js";
+import { collectCurrentInboundContext } from "./current-inbound-context.js";
 import {
   admitFollowupRunLifecycle,
   completeFollowupRunLifecycle,
@@ -786,43 +787,6 @@ function createAggregateCancellation(items: readonly FollowupRun[]): AggregateCa
         disposeSignal(signal);
       }
     },
-  };
-}
-
-function collectCurrentInboundContext(items: FollowupRun[]): FollowupRun["currentInboundContext"] {
-  const contexts = items.flatMap((item, index) =>
-    item.currentInboundContext ? [{ context: item.currentInboundContext, index }] : [],
-  );
-  if (contexts.length === 0) {
-    return undefined;
-  }
-  if (contexts.length === 1) {
-    return contexts[0]?.context;
-  }
-  const renderField = (field: "text" | "resumableText") => {
-    const blocks = contexts.flatMap(({ context, index }) => {
-      const value = context[field];
-      return value ? [`Queued #${index + 1} context:\n${value}`] : [];
-    });
-    return blocks.length > 0 ? blocks.join("\n\n") : undefined;
-  };
-  const text = renderField("text");
-  if (!text) {
-    return undefined;
-  }
-  const resumableText = renderField("resumableText");
-  const injectedGoalContexts = [
-    ...new Set(contexts.flatMap(({ context }) => context.injectedGoalContexts ?? [])),
-  ];
-  return {
-    text,
-    ...(resumableText ? { resumableText } : {}),
-    fragments: contexts.flatMap(
-      ({ context }) =>
-        context.fragments ?? [{ kind: "conversation-data" as const, text: context.text }],
-    ),
-    promptJoiner: "\n\n",
-    ...(injectedGoalContexts.length > 0 ? { injectedGoalContexts } : {}),
   };
 }
 

@@ -196,15 +196,18 @@ function createContainerSandboxBackendHandle(params: {
     },
     prepareProcessCleanup(env) {
       params.assertCurrent?.();
+      const run = (command: SandboxBackendCommandParams, assertCurrent?: () => void) =>
+        runContainerSandboxShellCommand({
+          engine: params.engine,
+          containerName: params.containerName,
+          podmanTarget: params.podmanTarget,
+          ...command,
+          assertCurrent,
+        });
       return createSandboxProcessCleanup(
-        (command) =>
-          runContainerSandboxShellCommand({
-            engine: params.engine,
-            containerName: params.containerName,
-            podmanTarget: params.podmanTarget,
-            ...command,
-          }),
+        (command) => run(command, params.assertCurrent),
         env,
+        (command) => run(command),
       );
     },
     runShellCommand(command) {

@@ -130,6 +130,43 @@ export async function proveRequiredPodmanWorkspace(root: string, owner: LocalWor
     if (!sandbox?.backend || !sandbox.fsBridge) {
       throw new Error("Sandbox was not prepared");
     }
+    // Reconciliation may lose its owner after pausing. Only a fresh live owner
+    // can release the retained exact runtime generation.
+    const { withLocalWorkspaceProjection } = await import("./local-workspace-projection.js");
+    const { bindPodmanSandboxEngine } = await import("../../agents/sandbox/docker.js");
+    const runtimeEntry = (await readRegistry()).entries.find(
+      (row) => row.containerName === sandbox.containerName,
+    );
+    if (!runtimeEntry?.backendTarget) {
+      throw new Error("Podman target was not retained");
+    }
+    const runtimeEngine = bindPodmanSandboxEngine(runtimeEntry.backendTarget);
+    let reconciliationCurrent = true;
+    await expect(
+      withLocalWorkspaceProjection(
+        {
+          ...owner,
+          assertCurrent: () => {
+            owner.assertCurrent();
+            if (!reconciliationCurrent) {
+              throw new Error("reconciliation revoked");
+            }
+          },
+        },
+        async () => {
+          reconciliationCurrent = false;
+        },
+      ),
+    ).rejects.toThrow("reconciliation revoked");
+    const pausedState = () =>
+      execute(runtimeEngine, ["inspect", "-f", "{{.State.Paused}}", sandbox.containerName]);
+    expect((await pausedState()).stdout.trim()).toBe("true");
+    expect(localWorkspaceStore().get(owner.worktree.id)?.paused_runtimes_json).toContain(
+      sandbox.containerName,
+    );
+    await withLocalWorkspaceProjection(owner, (state) => state.prepare());
+    expect((await pausedState()).stdout.trim()).toBe("false");
+    expect(localWorkspaceStore().get(owner.worktree.id)?.paused_runtimes_json).toBeNull();
     const skillScaffold = path.join(sandbox.workspaceDir, ".openclaw/sandbox-skills/skills");
     expect((await fs.stat(skillScaffold)).uid).toBe((await fs.stat(sandbox.workspaceDir)).uid);
     await sandbox.fsBridge.writeFile({ filePath: "source.txt", data: "real sandbox edit\n" });
@@ -293,6 +330,7 @@ export async function proveRequiredPodmanWorkspace(root: string, owner: LocalWor
       await expect(
         backend.runShellCommand({ script: "touch forbidden-child-write" }),
       ).rejects.toThrow("child owner revoked");
+      await expect(cleanup.interrupt(1000)).rejects.toThrow("child owner revoked");
       await cleanup.terminate();
       await closed;
       const stoppedBytes = await fs.readFile(path.join(childSandbox!.workspaceDir, "child-writes"));

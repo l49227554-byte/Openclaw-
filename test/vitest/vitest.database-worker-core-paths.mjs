@@ -3,6 +3,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/audit/audit-events.test.ts",
   "src/audit/audit-event-store.message.test.ts",
   "src/audit/audit-event-writer.test.ts",
+  "src/audit/execution-identity-context.test.ts",
   "src/agents/tools/transcripts-tool-read.test.ts",
   "src/agents/tools/transcripts-tool.account-ownership.test.ts",
   "src/agents/tools/transcripts-tool.auto-start.test.ts",
@@ -119,6 +120,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/status.runtime-inspection.test.ts",
 
   "src/plugins/plugin-metadata-state-worker.test.ts",
+  "src/plugins/public-artifact-environment.test.ts",
   "src/plugins/official-external-plugin-catalog-snapshot-store.worker.test.ts",
   "src/plugins/official-external-plugin-catalog.test.ts",
   "src/infra/device-pairing.test.ts",

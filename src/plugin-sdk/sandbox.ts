@@ -32,6 +32,7 @@ export type { OpenClawConfig } from "../config/config.js";
 export type { DirectoryEntry } from "../infra/directory-entries.js";
 export { prepareSandboxProcessCleanup } from "../agents/sandbox/process-cleanup.js";
 export { resolveReadOnlyWorkspaceSkillMounts } from "../agents/sandbox/workspace-mounts.js";
+export { SANDBOX_COMMAND_MAX_BUFFER_BYTES } from "../agents/sandbox/constants.js";
 
 export {
   buildExecRemoteCommand,

@@ -232,7 +232,9 @@ Docker and Podman provide `prepareProcessCleanup`: a live owner mints a random
 process marker and a termination-only callback pinned to that runtime. Revoking
 execution blocks new preparation, commands, and file writes, but the previously
 minted callback can still stop its marked process tree. It cannot execute an
-arbitrary script or select a different runtime. Backends without this optional
+arbitrary script or select a different runtime. The returned `interrupt` callback
+keeps ordinary live execution checks because a signal handler can run guest code.
+Backends without this optional
 capability retain the existing shell-command cleanup path; they must preserve
 cleanup authority according to their own lifecycle contract.
 

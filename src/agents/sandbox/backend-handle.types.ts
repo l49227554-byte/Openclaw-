@@ -102,6 +102,8 @@ export type SandboxBackendHandle = {
   prepareProcessCleanup?: (env: Record<string, string>) => {
     env: Record<string, string>;
     terminate: () => Promise<void>;
+    /** Interrupt may run guest signal handlers, so it retains ordinary live execution checks. */
+    interrupt: (timeoutMs: number) => Promise<boolean>;
   };
   runShellCommand(params: SandboxBackendCommandParams): Promise<SandboxBackendCommandResult>;
   createFsBridge?: (params: { sandbox: SandboxFsBridgeContext }) => SandboxFsBridge;

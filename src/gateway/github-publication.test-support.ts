@@ -195,6 +195,8 @@ export let commandCalls: Array<{ argv: string[]; input?: string }>;
 export async function persistPublicationTestSession(sessionKey = SESSION_KEY) {
   setRuntimeConfigSnapshot({
     agents: { list: [{ id: "main", default: true, workspace: path.join(root, "workspace") }] },
+    // Publication fixtures exercise lifecycle writes without unrelated maintenance workers.
+    session: { maintenance: { mode: "warn" } },
   });
   const { loadGatewaySessionEntryReadOnly } =
     await vi.importActual<typeof import("./session-utils.js")>("./session-utils.js");

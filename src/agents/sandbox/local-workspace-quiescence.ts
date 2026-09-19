@@ -75,7 +75,7 @@ export async function quiesceLocalWorkspace(params: {
 }) {
   const selected = await readLocalWorkspaceRuntimes(params.workspaceDir);
   params.assertCurrent();
-  const paused = [...params.retained];
+  let paused = [...params.retained];
   const releases: Array<() => Promise<void>> = [];
   for (const runtime of selected) {
     const { entry } = runtime;
@@ -113,7 +113,9 @@ export async function quiesceLocalWorkspace(params: {
     ) {
       throw new Error("Invalid local workspace runtime inspection");
     }
-    if (running !== "true") {
+    // Podman reports a paused container as Running=false; its exact retained
+    // generation still needs recovery and must not be mistaken for a stopped runtime.
+    if (running !== "true" && isPaused !== "true") {
       continue;
     }
     const retained = paused.some(
@@ -130,24 +132,50 @@ export async function quiesceLocalWorkspace(params: {
       params.persist(paused);
     }
     if (isPaused !== "true") {
+      // A retained receipt may outlive an unpause. Re-fence the live writer
+      // before reconciliation rather than trusting stale pause metadata.
       params.assertCurrent();
       runtime.assertCurrent();
       await execContainer(engine, ["pause", id]);
     }
     releases.push(async () => {
-      const result = await execContainer(engine, ["unpause", id], { allowFailure: true });
-      if (
-        result.code !== 0 &&
-        !/no such (?:container|object)|does not exist/iu.test(result.stderr)
-      ) {
-        throw new Error("Local workspace runtime resume failed; exact paused owner retained");
+      await validateSandboxContainerEngineTarget(engine, entry.backendTarget);
+      params.assertCurrent();
+      // Archive may have removed this exact generation while settlement held it.
+      // A missing or already-running runtime needs receipt cleanup, not unpause.
+      const observed = await execContainer(engine, ["inspect", "-f", "{{.State.Paused}}", id], {
+        allowFailure: true,
+      });
+      params.assertCurrent();
+      if (observed.code !== 0) {
+        if (!/no such (?:container|object)|does not exist/iu.test(observed.stderr)) {
+          throw new Error(
+            "Local workspace runtime resume inspection failed; exact paused owner retained",
+          );
+        }
+      } else if (observed.stdout.trim() === "true") {
+        runtime.assertCurrent();
+        const result = await execContainer(engine, ["unpause", id], { allowFailure: true });
+        if (
+          result.code !== 0 &&
+          !/no such (?:container|object)|does not exist/iu.test(result.stderr)
+        ) {
+          throw new Error("Local workspace runtime resume failed; exact paused owner retained");
+        }
+      } else if (observed.stdout.trim() !== "false") {
+        throw new Error("Invalid local workspace runtime resume inspection");
       }
+      params.assertCurrent();
+      paused = paused.filter((held) => held.name !== entry.containerName || held.id !== id);
+      params.persist(paused);
     });
   }
   return async () => {
+    params.assertCurrent();
     for (const release of releases.toReversed()) {
       await release();
     }
+    params.assertCurrent();
     params.persist([]);
   };
 }

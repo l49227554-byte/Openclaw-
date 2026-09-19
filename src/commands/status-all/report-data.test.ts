@@ -7,6 +7,7 @@ import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
 import { writeSkill } from "../../skills/test-support/e2e-test-helpers.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { createStatusGatewayProbeBudget } from "../status.gateway-probe-budget.js";
 import { baseStatusGatewaySnapshot, baseStatusOverviewSurface } from "../status.test-support.ts";
 
 const mocks = vi.hoisted(() => ({
@@ -108,12 +109,17 @@ describe("buildStatusAllReportData", () => {
       eligible: 0,
       missing: 0,
     });
+    vi.spyOn(performance, "now").mockReturnValue(0);
     mocks.listUpdateRuns.mockReturnValue([]);
     mocks.findActiveUpdateRun.mockReturnValue(undefined);
     mocks.getUpdateRun.mockReturnValue(undefined);
     mocks.readRestartSentinelReadOnly.mockResolvedValue(null);
     mocks.resolveStatusGatewayDiagnosticsSafe.mockResolvedValue({ ok: true, value: {} });
     mocks.resolveStatusGatewayHealthSafe.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it.each([
@@ -197,6 +203,7 @@ describe("buildStatusAllReportData", () => {
         });
       }
       const report = await buildStatusAllReportData({
+        ...createStatusGatewayProbeBudget(),
         overview: {
           ...baseStatusOverviewSurface,
           cfg: {},
@@ -268,6 +275,7 @@ describe("buildStatusAllReportData", () => {
     "collects stability projections only after readiness (starting: %s)",
     async (starting) => {
       const report = await buildStatusAllReportData({
+        ...createStatusGatewayProbeBudget(),
         overview: {
           cfg: {},
           gatewaySnapshot: {
@@ -304,11 +312,13 @@ describe("buildStatusAllReportData", () => {
         [
           expect.objectContaining({
             gatewayReachable: true,
+            gatewayProbeDeadlineMs: 60_000,
           }),
         ],
         [
           expect.objectContaining({
             gatewayReachable: true,
+            gatewayProbeDeadlineMs: 60_000,
             type: "telemetry.exporter",
           }),
         ],
@@ -353,6 +363,7 @@ describe("buildStatusAllReportData", () => {
     );
     mocks.buildWorkspaceSkillReadiness.mockImplementation(actual.buildWorkspaceSkillReadiness);
     const params = {
+      ...createStatusGatewayProbeBudget(),
       overview: {
         cfg: {
           plugins: { enabled: false },
@@ -453,6 +464,7 @@ describe("buildStatusAllReportData", () => {
 
   it("does not inspect the first workspace when an explicit fleet has no owner", async () => {
     await buildStatusAllReportData({
+      ...createStatusGatewayProbeBudget(),
       overview: {
         cfg: {
           agents: {

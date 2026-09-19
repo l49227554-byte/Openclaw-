@@ -1,6 +1,7 @@
+import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
-import { resolveMatrixAccount } from "./accounts.js";
+import { listMatrixAccountIds, resolveMatrixAccount } from "./accounts.js";
 import { resolveMatrixInboundRoute } from "./monitor/route.js";
 
 export function resolveMatrixConversationRouteOwner(params: {
@@ -13,11 +14,21 @@ export function resolveMatrixConversationRouteOwner(params: {
     nativeChannelId?: string;
   };
 }) {
-  const { cfg, accountId, conversation } = params;
+  const { cfg, conversation } = params;
   const roomId =
     conversation.nativeChannelId?.trim() ||
     (conversation.kind === "direct" ? "" : conversation.peerId.trim());
   if (!roomId) {
+    return null;
+  }
+  const accountId = normalizeAccountId(params.accountId);
+  const account = resolveMatrixAccount({ cfg, accountId });
+  // A removed or disabled account can never regain a binding owner, so reject its retained
+  // history here instead of reporting the missing adapter as a temporary outage below.
+  if (
+    !listMatrixAccountIds(cfg).some((id) => normalizeAccountId(id) === accountId) ||
+    !account.enabled
+  ) {
     return null;
   }
   const isDirectMessage = conversation.kind === "direct";
@@ -27,7 +38,7 @@ export function resolveMatrixConversationRouteOwner(params: {
     roomId,
     senderId: conversation.peerId,
     isDirectMessage,
-    dmSessionScope: resolveMatrixAccount({ cfg, accountId }).config.dm?.sessionScope,
+    dmSessionScope: account.config.dm?.sessionScope,
     threadId: conversation.threadId,
     resolveAgentRoute,
   });

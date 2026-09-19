@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   registerSessionBindingAdapter,
   testing as sessionBindingTesting,
@@ -106,5 +107,37 @@ describe("inspectSlackConversationRouteOwner", () => {
     releaseInstallation?.();
     releaseInstallation = undefined;
     expect(inspectSlackConversationRouteOwner(input)).toEqual({ kind: "unavailable" });
+  });
+  it.each([
+    {
+      name: "removed account",
+      accountId: "retired",
+      slack: { accounts: { default: {} } },
+    },
+    {
+      name: "disabled account",
+      accountId: "default",
+      slack: { accounts: { default: { enabled: false } } },
+    },
+    {
+      name: "disabled channel",
+      accountId: "default",
+      slack: { enabled: false, accounts: { default: { enabled: true } } },
+    },
+  ] satisfies Array<{
+    name: string;
+    accountId: string;
+    slack: NonNullable<OpenClawConfig["channels"]>["slack"];
+  }>)("rejects a $name without requiring installation identity", ({ accountId, slack }) => {
+    releaseInstallation?.();
+    releaseInstallation = undefined;
+
+    expect(
+      inspectSlackConversationRouteOwner({
+        cfg: { channels: { slack } },
+        accountId,
+        conversation: { kind: "channel", peerId: "C456" },
+      }),
+    ).toBeNull();
   });
 });

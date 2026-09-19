@@ -1,5 +1,7 @@
+import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
+import { listSlackAccountIds, resolveSlackAccount } from "./accounts.js";
 import {
   normalizeSlackRouteBindingConfig,
   resolveSlackConversationBindingRoute,
@@ -22,7 +24,16 @@ export function inspectSlackConversationRouteOwner(params: {
     context?: { teamId?: string };
   };
 }) {
-  const installationKind = getSlackInstallationKind(params.accountId);
+  const accountId = normalizeAccountId(params.accountId);
+  // A removed or disabled account keeps no installation identity, so reject its retained history
+  // here instead of reporting the missing identity as a temporary outage below.
+  if (
+    !listSlackAccountIds(params.cfg).some((id) => normalizeAccountId(id) === accountId) ||
+    !resolveSlackAccount({ cfg: params.cfg, accountId }).enabled
+  ) {
+    return null;
+  }
+  const installationKind = getSlackInstallationKind(accountId);
   const direct = params.conversation.kind === "direct";
   const target = parseSlackTarget(params.conversation.peerId, {
     defaultKind: direct ? "user" : "channel",
@@ -63,7 +74,7 @@ export function inspectSlackConversationRouteOwner(params: {
   const route = resolveAgentRoute({
     cfg: normalizeSlackRouteBindingConfig(params.cfg),
     channel: "slack",
-    accountId: params.accountId,
+    accountId,
     teamId,
     peer: {
       kind: params.conversation.kind,
@@ -81,7 +92,7 @@ export function inspectSlackConversationRouteOwner(params: {
   const bindingRoute = resolveSlackConversationBindingRoute({
     cfg: params.cfg,
     route,
-    accountId: params.accountId,
+    accountId,
     baseConversationId,
     runtimeBindingThreadId: params.conversation.threadId,
     bindingsEnabled: !enterpriseRoute,

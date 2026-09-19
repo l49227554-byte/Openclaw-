@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   registerSessionBindingAdapter,
   type SessionBindingAdapter,
@@ -133,5 +134,36 @@ describe("resolveMatrixConversationRouteOwner", () => {
         conversation: { kind: "channel", peerId: "!room:example.org" },
       }),
     ).toEqual({ kind: "unavailable" });
+  });
+  it.each([
+    {
+      name: "removed account",
+      accountId: "retired",
+      matrix: { accounts: { default: {} } },
+    },
+    {
+      name: "disabled account",
+      accountId: "default",
+      matrix: { accounts: { default: { enabled: false } } },
+    },
+    {
+      name: "disabled channel",
+      accountId: "default",
+      matrix: { enabled: false, accounts: { default: { enabled: true } } },
+    },
+  ] satisfies Array<{
+    name: string;
+    accountId: string;
+    matrix: NonNullable<OpenClawConfig["channels"]>["matrix"];
+  }>)("rejects a $name without requiring a runtime binding owner", ({ accountId, matrix }) => {
+    unregisterSessionBindingAdapter({ channel: "matrix", accountId: "default", adapter });
+
+    expect(
+      resolveMatrixConversationRouteOwner({
+        cfg: { channels: { matrix } },
+        accountId,
+        conversation: { kind: "channel", peerId: "!room:example.org" },
+      }),
+    ).toBeNull();
   });
 });

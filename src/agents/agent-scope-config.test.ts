@@ -553,17 +553,20 @@ describe("resolveAgentConfig model policy", () => {
   });
 });
 
-describe("resolveAgentRunCwd blank cwd rejection", () => {
-  it.each(["", "   ", "\t\n "])("rejects an explicitly blank per-agent cwd %j", (cwd) => {
-    const cfg = { agents: { defaults: { cwd: "/tmp/default" }, entries: { alpha: { cwd } } } };
+describe("resolveAgentRunCwd blank cwd fallback", () => {
+  it.each(["", "   ", "\t\n "])(
+    "keeps falling back to the default cwd for an explicitly blank per-agent cwd %j",
+    (cwd) => {
+      const cfg = { agents: { defaults: { cwd: "/tmp/default" }, entries: { alpha: { cwd } } } };
 
-    expect(() => resolveAgentRunCwd(cfg, "alpha")).toThrow("agents.alpha.cwd must not be blank");
-  });
+      expect(resolveAgentRunCwd(cfg, "alpha")).toBe(path.resolve("/tmp/default"));
+    },
+  );
 
-  it("rejects an explicitly blank defaults cwd", () => {
-    const cfg = { agents: { defaults: { cwd: "   " }, entries: { alpha: {} } } };
+  it("keeps returning undefined for a blank defaults cwd that is not depended on", () => {
+    const cfg = { agents: { defaults: { cwd: "   " }, entries: { alpha: { cwd: "/tmp/alpha" } } } };
 
-    expect(() => resolveAgentRunCwd(cfg, "alpha")).toThrow("agents.defaults.cwd must not be blank");
+    expect(resolveAgentRunCwd(cfg, "alpha")).toBe(path.resolve("/tmp/alpha"));
   });
 
   it("keeps resolving a valid per-agent cwd over the default", () => {

@@ -455,21 +455,9 @@ export function resolveAgentWorkspaceDir(
 
 /** Resolves the configured task directory without changing the agent workspace. */
 export function resolveAgentRunCwd(cfg: OpenClawConfig, agentId: string): string | undefined {
-  const id = normalizeAgentId(agentId);
-  // Only omission selects the fallback cwd. An explicit blank value (often from
-  // an unset shell variable in `config set`) must fail loudly instead of
-  // silently inheriting the default cwd directory.
-  const configuredCwd = resolveAgentEntry(cfg, id)?.cwd;
-  const normalizedAgentCwd = normalizeOptionalString(configuredCwd);
-  if (typeof configuredCwd === "string" && !normalizedAgentCwd) {
-    throw new Error(`agents.${id}.cwd must not be blank`);
-  }
-  const defaultsCwd = cfg.agents?.defaults?.cwd;
-  const normalizedDefaultCwd = normalizeOptionalString(defaultsCwd);
-  if (typeof defaultsCwd === "string" && !normalizedDefaultCwd) {
-    throw new Error("agents.defaults.cwd must not be blank");
-  }
-  const cwd = normalizedAgentCwd ?? normalizedDefaultCwd;
+  const cwd =
+    normalizeOptionalString(resolveAgentEntry(cfg, agentId)?.cwd) ??
+    normalizeOptionalString(cfg.agents?.defaults?.cwd);
   return cwd ? stripNullBytes(resolveUserPath(cwd)) : undefined;
 }
 

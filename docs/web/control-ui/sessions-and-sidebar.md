@@ -115,6 +115,8 @@ dragged out of Pages to unpin them; optional plugin destinations can still be un
 
 To inspect Home’s subagents, open **Home**, choose **Show background tasks**, and use the right-hand **Tasks** panel. Expand **Finished** for recent completed runs; selecting a task opens its details and available transcript.
 
+Follow-up turns in an existing subagent session keep the parent’s activity ring running, even after the original task has finished. Opening the parent refreshes its hidden subagent activity without adding subagent rows to the sidebar. The ring clears when no work remains active.
+
 Hover a session to see its project and branch. Repository details and the working directory stay in the hovercard and tooltip, leaving sidebar rows clear for session titles and activity indicators.
 
 Hover a session with an enabled automation and choose **Automation attached** to open its **Automations** page. A single matching automation opens directly in the editor; multiple matches appear in a session-filtered list. You can inspect settings and history or edit with the usual permissions. **Show all automations** clears the session filter. Cmd/Ctrl-click opens the link in a new browser tab.
@@ -215,6 +217,7 @@ The menu groups routine actions first: **Pin/Unpin**, **Rename**, **Mark as unre
 - **Move to group** includes **New group** and **Remove from group**. Multi-user gateways also offer **Assign to** ([session ownership](/concepts/multi-user#assigning-an-owner)).
 - **Fork conversation** creates a separate conversation; while a run is active, it forks from the last completed message. Forks of local folder and project sessions keep that workspace, so existing file references continue to open. **Fork from here** keeps the same local workspace as well.
 - **Copy** offers a session link, conversation text as Markdown, and the session ID. The link requires normal Gateway authentication and session access; copying it does not grant access. Markdown loads the available conversation history, not just the messages currently visible. Both copied Markdown and `/export` downloads retain the conversation's sender labels, so messages from different participants remain distinguishable.
+- In the Control UI, `/export` and `/export-session` download Markdown through your browser and take no file path. An argument leaves the draft intact and shows how to retry. The server-side HTML export available through other clients keeps its separate workspace-path behavior.
 - The chat header's **Session sharing** control manages authenticated teammate visibility and membership. For a saved, non-incognito session, its creator or a Gateway admin can also enable world-readable, read-only public access.
 - **Open in** offers a new browser tab or window. Desktop chat also offers **Split right** and **Split below**. Eligible local workspaces expose native editor destinations, and the chat header includes **Continue in terminal** in this submenu.
 
@@ -257,7 +260,13 @@ Choose **Icon & color** from a session menu and select a color swatch to add a n
 
 The command palette can start an independent task without leaving your current
 conversation or settings page. Search sessions, settings, and commands as usual,
-or write a prompt in the same field.
+or write a prompt in the same field. Multiline text or a prompt of 60 or more
+characters pauses palette searches and gently hides the search tabs, results, and
+hints. The input stays anchored in place. Search returns when the text is
+single-line and shortened to 50 characters or fewer, or cleared. Between 51 and
+59 characters, the palette keeps its current mode to avoid flickering while you
+edit. Counts exclude leading and trailing whitespace. Session-creation errors and
+recovery actions remain visible in either mode.
 
 - **Enter** opens or runs the selected result. With no result, Enter does not send.
 - **Shift+Enter** adds a line. The field grows downward to three lines, then scrolls
@@ -279,8 +288,8 @@ Accepted creation closes the palette and offers **Open session** without changin
 the foreground view or its draft. A failed submission retains the prompt and
 choices with an error. These settings do not affect sessions opened from search,
 and the existing conversation composer keeps its own send and steer/queue
-shortcuts. Prompts longer than the transcript-search limit are not sent as search
-queries; they remain intact for session creation.
+shortcuts. Long prompts remain intact for session creation and are never sent as
+search queries.
 
 ## New session page
 

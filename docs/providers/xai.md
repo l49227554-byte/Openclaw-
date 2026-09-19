@@ -115,8 +115,9 @@ subscription quota are separate billing buckets.
   or was revoked. The warning includes the redacted cause and the resulting
   live catalog origin, or reports that no live catalog was returned.
   An existing API key can still supply the API catalog; OAuth-only models stay
-  unavailable. Re-authenticate with the command in the warning. This describes
-  catalog discovery, not proof of an inference request or an API charge.
+  unavailable. Run the warning's sign-in command on the Gateway host; it targets
+  the catalog's agent and saved profile. This describes catalog discovery, not
+  proof of an inference request or an API charge.
 
 Existing `xai/auto` selections on the native xAI API and Grok subscription routes are retired.
 Run `openclaw doctor --fix` to replace affected config and session selections

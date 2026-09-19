@@ -490,13 +490,15 @@ it("can hold publisher exclusion during an existing reclaim claim without taking
     });
     expect(entered).toBe(true);
     expect(placements.validateWorkspaceResultClaim(claim)).toBe(true);
-    const operationTimeout = new OpenClawStateLeaseError("Nested operation timed out", {
-      code: "OPENCLAW_STATE_LEASE_TIMEOUT",
-    });
-    await expect(
-      placements.withWorkspaceExclusion(REQUEST.sessionId, async () => {
-        throw operationTimeout;
-      }),
-    ).rejects.toBe(operationTimeout);
+    for (const code of ["OPENCLAW_STATE_LEASE_TIMEOUT", "STATE_LEASE_BUSY"] as const) {
+      const operationFailure = new OpenClawStateLeaseError("Nested operation refused admission", {
+        code,
+      });
+      await expect(
+        placements.withWorkspaceExclusion(REQUEST.sessionId, async () => {
+          throw operationFailure;
+        }),
+      ).rejects.toBe(operationFailure);
+    }
   });
 });

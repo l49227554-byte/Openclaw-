@@ -118,7 +118,7 @@ export function createPlacementWorkspaceReservationOps(runtime: PlacementStoreRu
       if (
         !entered &&
         error instanceof OpenClawStateLeaseError &&
-        error.code === "OPENCLAW_STATE_LEASE_TIMEOUT"
+        error.code === "STATE_LEASE_BUSY"
       ) {
         throw new SessionWorkspaceReservationBusyError(error.message, { cause: error });
       }

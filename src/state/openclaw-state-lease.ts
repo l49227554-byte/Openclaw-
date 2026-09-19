@@ -175,6 +175,20 @@ function validateOptions(options: OpenClawStateLeaseOptions) {
   };
 }
 
+function acquisitionRefusal(
+  options: ReturnType<typeof validateOptions>,
+  message: string,
+  cause?: unknown,
+): OpenClawStateLeaseError {
+  if (options.waitForLease) {
+    return leaseError(
+      "OPENCLAW_STATE_LEASE_TIMEOUT",
+      `timed out waiting for ${options.leaseLabel} ${options.scope}/${options.key}`,
+    );
+  }
+  return leaseError("STATE_LEASE_BUSY", message, cause);
+}
+
 type LeaseIdentity = {
   scope: string;
   key: string;
@@ -365,8 +379,8 @@ export async function withOpenClawStateLease<T>(
         if (validated.signal?.aborted) {
           throw abortError(validated.signal, "acquisition", validated.leaseLabel);
         }
-        throw leaseError(
-          "OPENCLAW_STATE_LEASE_TIMEOUT",
+        throw acquisitionRefusal(
+          validated,
           `could not finish acquiring ${validated.leaseLabel} ${validated.scope}/${validated.key} within the ${validated.waitMs} ms wait budget. Retry the operation.`,
         );
       }
@@ -376,8 +390,8 @@ export async function withOpenClawStateLease<T>(
       const reason = storageContention
         ? "shared-state database is busy"
         : "another operation holds the lease";
-      throw leaseError(
-        "OPENCLAW_STATE_LEASE_TIMEOUT",
+      throw acquisitionRefusal(
+        validated,
         `could not acquire ${validated.leaseLabel} ${validated.scope}/${validated.key} (wait budget ${validated.waitMs} ms): ${reason}. Retry after the current operation finishes.`,
         storageContention,
       );

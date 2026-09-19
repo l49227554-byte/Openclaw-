@@ -2,6 +2,7 @@ import { sql } from "kysely";
 import type { TranscriptDisplayPosition } from "../../chat/transcript-display-position.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
+import { hasSqlitePostCommitScope } from "../../infra/sqlite-post-commit.js";
 import {
   resolveHistoryAnchorPageRange,
   resolveTranscriptPageEnd,
@@ -396,6 +397,7 @@ export function readRecentSessionTranscriptHistoryEventsFromProjection(
     );
   if (
     !projection.generation ||
+    hasSqlitePostCommitScope(projection.database.db) ||
     projection.database.db.location() === null ||
     options.expectedReadWindow ||
     resolveSessionTranscriptReadFence(projection.resolved)
@@ -406,15 +408,12 @@ export function readRecentSessionTranscriptHistoryEventsFromProjection(
     projection.database.path,
     projection.resolved.agentId,
     projection.resolved.sessionId,
-  ]);
-  const revision = JSON.stringify([
-    projection.generation,
-    projection.state.indexedSeq,
     options.maxMessages,
     options.maxLines,
     options.maxBytes,
     Boolean(options.captureReadWindow),
   ]);
+  const revision = JSON.stringify([projection.generation, projection.state.indexedSeq]);
   const cached = recentHistoryWindows.get(key);
   if (cached?.database === projection.database.db && cached.revision === revision) {
     return structuredClone(cached.page);

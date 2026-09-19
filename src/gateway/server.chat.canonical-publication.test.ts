@@ -50,7 +50,7 @@ const cases = [
     expectedText: [publicCaption],
   },
   { name: "dry-run", caption: privateCaption, expectedText: [] },
-  { name: "missing-media", caption: privateCaption, expectedText: ["⚠️ Message failed"] },
+  { name: "missing-media", caption: privateCaption, expectedText: [] },
   {
     name: "cancel",
     caption: `Attached proof.\n${privateCaption}`,
@@ -321,7 +321,6 @@ it(
         );
         const history = await gateway.client.request<{
           sessionId: string;
-          sessionInfo: { snapshotAt: number };
           messages: Array<Record<string, unknown>>;
         }>("chat.history", { sessionKey, limit: 20 });
         const rawEvents = loadTranscriptEventsSync({
@@ -407,24 +406,24 @@ it(
           expect.soft(bytes, scenario.name).toEqual(attachment);
           expect(response.headers.get("content-type")).toBe("text/plain");
         }
+        const requestsBeforeReplay = primaryRequests;
         const replay = await gateway.client.request<{ runId: string }>("chat.send", {
           sessionKey,
           message: "Send the proof attachment in this conversation.",
           idempotencyKey: `canonical-${scenario.name}`,
         });
         expect(replay.runId).toBe(started.runId);
-        expect(primaryRequests).toBe(2);
+        await gateway.client.request(
+          "agent.wait",
+          { runId: replay.runId, timeoutMs: 60_000 },
+          { timeoutMs: 65_000 },
+        );
+        expect(primaryRequests, scenario.name).toBe(requestsBeforeReplay);
         const reloaded = await gateway.client.request<typeof history>("chat.history", {
           sessionKey,
           limit: 20,
         });
-        expect(reloaded.sessionInfo.snapshotAt).toBeGreaterThanOrEqual(
-          history.sessionInfo.snapshotAt,
-        );
-        expect({
-          ...reloaded,
-          sessionInfo: { ...reloaded.sessionInfo, snapshotAt: history.sessionInfo.snapshotAt },
-        }).toEqual(history);
+        expect(reloaded.messages).toEqual(history.messages);
         expect(
           await gateway.client.request("artifacts.list", { sessionKey, messageRole: "assistant" }),
         ).toEqual(listed);

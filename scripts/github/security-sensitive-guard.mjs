@@ -34,12 +34,12 @@ function renderComment({ changes, pullRequest, approval }) {
     changes.length === 0
       ? "Security-sensitive guard cleared"
       : approval?.kind === "author"
-        ? "⚠️ Security-sensitive changes"
+        ? "⚠️ Security sensitive changes"
         : "⚠️ Maintainer security review required";
   const lines = [marker, "", `### ${heading}`, ""];
   if (changes.length > 0 && approval?.kind === "author") {
     lines.push(
-      "This PR makes security-sensitive changes. This comment is informational because the PR author has repository Maintain or Admin access.",
+      "This PR makes security sensitive changes. This comment is informational because the PR author has repository Maintain or Admin access.",
       "",
       `- Current SHA: ${code(pullRequest.head.sha)}`,
       `- Maintainer: @${sanitizeGuardDisplayValue(approval.login)}`,

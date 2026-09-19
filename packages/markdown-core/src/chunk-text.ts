@@ -1,27 +1,15 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import {
   avoidTrailingGraphemeBreak,
-  avoidTrailingHighSurrogateBreak,
+  firstGraphemeClusterLength,
+  skipWhitespaceGraphemes,
 } from "@openclaw/normalization-core/utf16-slice";
 
-export { avoidTrailingGraphemeBreak, avoidTrailingHighSurrogateBreak };
+export { avoidTrailingHighSurrogateBreak } from "@openclaw/normalization-core/utf16-slice";
 
 function normalizeChunkLimit(limit: number): number {
   // String slicing truncates fractional indexes, so positive limits need an integer progress step.
   return Number.isFinite(limit) && limit > 0 ? resolveIntegerOption(limit, 1, { min: 1 }) : limit;
-}
-
-function resolveChunkEarlyReturn(text: string, limit: number): string[] | undefined {
-  if (!text) {
-    return [];
-  }
-  if (limit <= 0) {
-    return [text];
-  }
-  if (text.length <= limit) {
-    return [text];
-  }
-  return undefined;
 }
 
 function scanParenAwareBreakpoints(text: string): { lastNewline: number; lastWhitespace: number } {
@@ -110,7 +98,10 @@ export function chunkTextRanges(text: string, options: ChunkTextRangesOptions): 
       options.mode === "preferred" && maxEnd < text.length
         ? findPreferredRangeEnd(text, start, maxEnd)
         : undefined;
-    const candidateEnd = preferredEnd && preferredEnd > start ? preferredEnd : maxEnd;
+    const candidateEnd =
+      preferredEnd && preferredEnd >= start + firstGraphemeClusterLength(text.slice(start))
+        ? preferredEnd
+        : maxEnd;
     const end = avoidTrailingGraphemeBreak(text, start, candidateEnd);
     ranges.push({ start, end });
     start = end;
@@ -125,9 +116,11 @@ export function chunkTextRanges(text: string, options: ChunkTextRangesOptions): 
  */
 export function chunkText(text: string, limit: number): string[] {
   const normalizedLimit = normalizeChunkLimit(limit);
-  const early = resolveChunkEarlyReturn(text, normalizedLimit);
-  if (early) {
-    return early;
+  if (!text) {
+    return [];
+  }
+  if (normalizedLimit <= 0 || text.length <= normalizedLimit) {
+    return [text];
   }
 
   const chunks: string[] = [];
@@ -146,13 +139,12 @@ export function chunkText(text: string, limit: number): string[] {
     const end = avoidTrailingGraphemeBreak(
       text,
       cursor,
-      breakOffset > 0 ? cursor + breakOffset : windowEnd,
+      breakOffset > 0 && breakOffset >= firstGraphemeClusterLength(text.slice(cursor))
+        ? cursor + breakOffset
+        : windowEnd,
     );
     chunks.push(text.slice(cursor, end));
-    cursor = end;
-    while (cursor < text.length && /\s/.test(text[cursor] ?? "")) {
-      cursor += 1;
-    }
+    cursor = skipWhitespaceGraphemes(text, end);
   }
   return chunks;
 }

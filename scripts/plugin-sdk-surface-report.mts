@@ -378,10 +378,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
-      // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +4: approved workspace access exports; later stack exports belong to their consumers.
-      4490,
+      4489,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -522,10 +521,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +2: approved process-diagnostics predicate and lightweight subsystem logger.
       // +1: approved shared native-command argument-menu applicability predicate.
       // +4: shared activity projectors and complete-preamble admission, including the shipped barrel.
-      // +1: shared grapheme-safe chunk boundary helper for channel outbound cutters.
       // -1: keep complete-preamble admission off the deprecated compatibility facade.
       // +3: approved workspace access callables; later stack exports belong to their consumers.
-      2653,
+      2652,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

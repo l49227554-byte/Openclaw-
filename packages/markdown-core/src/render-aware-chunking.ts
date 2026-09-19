@@ -1,5 +1,8 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
-import { avoidTrailingGraphemeBreak } from "./chunk-text.js";
+import {
+  avoidTrailingGraphemeBreak,
+  firstGraphemeClusterLength,
+} from "@openclaw/normalization-core/utf16-slice";
 import { annotateAssistantTranscriptRoleMessageBoundary } from "./ir-annotations.js";
 import { sliceMarkdownIRRanges } from "./ir-slice.js";
 import { mergeAnnotationSpans, mergeStyleSpans } from "./ir-spans.js";
@@ -155,6 +158,7 @@ function findLargestChunkTextLengthWithinRenderedLimit<TRendered>(
     if (options.measureRendered(rendered) <= renderedLimit) {
       return safeCandidateLength;
     }
+    candidateLength = Math.min(candidateLength, safeCandidateLength);
   }
   return 0;
 }
@@ -238,7 +242,7 @@ function findMarkdownIRPreservedSplitIndex(text: string, start: number, limit: n
   if (lastAnyWhitespaceBreak > start) {
     return resolveWhitespaceBreak(lastAnyWhitespaceBreak, lastAnyWhitespaceRunStart);
   }
-  return avoidTrailingGraphemeBreak(text, start, maxEnd);
+  return maxEnd;
 }
 
 function splitMarkdownIRPreserveWhitespace(ir: MarkdownIR, limit: number): MarkdownIR[] {
@@ -254,7 +258,12 @@ function splitMarkdownIRPreserveWhitespace(ir: MarkdownIR, limit: number): Markd
   const ranges: SourceRange[] = [];
   let cursor = 0;
   while (cursor < ir.text.length) {
-    const end = findMarkdownIRPreservedSplitIndex(ir.text, cursor, normalizedLimit);
+    const maxEnd = Math.min(ir.text.length, cursor + normalizedLimit);
+    let end = findMarkdownIRPreservedSplitIndex(ir.text, cursor, normalizedLimit);
+    if (end < maxEnd && end < cursor + firstGraphemeClusterLength(ir.text.slice(cursor))) {
+      end = maxEnd;
+    }
+    end = avoidTrailingGraphemeBreak(ir.text, cursor, end);
     ranges.push({ start: cursor, end });
     cursor = end;
   }
@@ -332,8 +341,10 @@ function coalesceWhitespaceOnlyMarkdownIRChunks<TRendered>(
     }
 
     if (prev && next) {
-      // Split whitespace between neighbors when neither can retain the whole range.
-      for (let prefixLength = chunkLength - 1; prefixLength >= 1; prefixLength -= 1) {
+      // Redistribute only complete graphemes; a CRLF separator is indivisible.
+      const minPrefixLength = firstGraphemeClusterLength(chunk.rawSource.text);
+      for (let prefixLength = chunkLength - 1; prefixLength >= minPrefixLength; prefixLength -= 1) {
+        prefixLength = avoidTrailingGraphemeBreak(chunk.rawSource.text, 0, prefixLength);
         const boundary = chunk.start + prefixLength;
         const mergedPrev = renderIfFits([...prev.ranges, { start: chunk.start, end: boundary }]);
         const mergedNext = mergedPrev && renderIfFits([{ start: boundary, end: next.end }]);

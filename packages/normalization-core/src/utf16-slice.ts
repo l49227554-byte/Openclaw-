@@ -1,8 +1,4 @@
-// Surrogate-safe UTF-16 string slicing helpers.
-//
-// Kept dependency-free (no node: imports) so browser/UI bundles can import them
-// without dragging in filesystem/runtime code. See utils.ts, which re-exports
-// these for the broad runtime surface.
+// Dependency-free UTF-16 slicing helpers shared by runtime and browser bundles.
 
 function isHighSurrogate(codeUnit: number): boolean {
   return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
@@ -15,15 +11,8 @@ function isLowSurrogate(codeUnit: number): boolean {
 /**
  * Moves a chunk boundary away from the middle of a UTF-16 surrogate pair.
  *
- * Supported limit and progress contract, for an interior cut (`start < end < text.length`):
- * the result is always strictly greater than `start`, so a caller looping on it advances.
- * The result honors `end` in every case but one. When the pair begins exactly at `start`,
- * retreating would return `start` and stall the caller, so the boundary moves forward to
- * `end + 1` instead and the chunk overshoots the caller's budget by a single code unit:
- * `avoidTrailingHighSurrogateBreak("\u{1F600}X", 0, 1)` returns 2. That one-unit overshoot
- * is cheaper than emitting a lone surrogate half, which is invalid UTF-16 and renders as a
- * replacement character. Degenerate inputs (`end <= start`, or `end` at or past the end of
- * the text) are returned unchanged.
+ * Interior cuts advance past start. If the pair begins at start, include it even
+ * when that exceeds end by one code unit; otherwise retreat before the pair.
  */
 export function avoidTrailingHighSurrogateBreak(text: string, start: number, end: number): number {
   if (
@@ -40,67 +29,80 @@ export function avoidTrailingHighSurrogateBreak(text: string, start: number, end
 
 let graphemeSegmenter: Intl.Segmenter | undefined;
 
-/**
- * Shared grapheme segmenter: constructing one per call dominates chunking loops, so the
- * instance is built once and reused.
- *
- * It is built on first use rather than at module load because this module is deliberately
- * dependency-free and reaches browser bundles through `plugin-sdk/string-coerce-runtime`. A
- * module-level `new` is a side effect that a bundler must keep even after tree-shaking the
- * functions around it, so every such bundle would construct a segmenter at load for code it
- * may never call, and fail outright on a runtime without `Intl.Segmenter`.
- */
+// Lazy initialization keeps unused browser imports free of Segmenter side effects.
 function getGraphemeSegmenter(): Intl.Segmenter {
   graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
   return graphemeSegmenter;
 }
 
 /**
- * Moves a chunk boundary back to an extended-grapheme-cluster boundary.
- *
- * Hard transport limits win: a cluster wider than the whole budget is split rather than
- * allowed to overflow the cap. That split is still surrogate-safe, because a lone surrogate
- * half is invalid UTF-16 that renders as a replacement character, which is strictly worse
- * than a partial cluster.
- *
- * Supported limit and progress contract, for an interior cut (`start < end < text.length`):
- * the result is always strictly greater than `start`, so a caller looping on it advances.
- * The result honors `end` except for the single one-code-unit overshoot inherited from
- * `avoidTrailingHighSurrogateBreak`, which applies when the cluster starts at or before
- * `start` and a surrogate pair begins exactly at `start`:
- * `avoidTrailingGraphemeBreak("\u{1F600}X", 0, 1)` returns 2, not 1. Callers that must not
- * exceed a byte-exact cap have to re-check the returned width. Degenerate inputs
- * (`end <= start`, or `end` at or past the end of the text) are returned unchanged.
+ * Retreats to a grapheme boundary, falling back to a surrogate-safe cut when the
+ * leading cluster exceeds the budget. Interior cuts always advance; as with the
+ * surrogate helper, a leading pair can exceed end by one code unit.
  */
 export function avoidTrailingGraphemeBreak(text: string, start: number, end: number): number {
   if (end <= start || end >= text.length) {
     return end;
   }
 
-  // `containing` is undefined only past the end of the text, which the guard above excludes.
+  // An interior end always belongs to a segment.
   const cluster = getGraphemeSegmenter().segment(text).containing(end);
   if (cluster === undefined || cluster.index === end) {
     return end;
   }
-  // Inside a cluster: retreat to its start when that still advances past `start`,
-  // otherwise the cluster alone exceeds the budget and the cut stays at the cap.
   return cluster.index > start ? cluster.index : avoidTrailingHighSurrogateBreak(text, start, end);
 }
 
-/**
- * Width of the leading extended grapheme cluster, for budgets that must reserve room ahead
- * of the cut rather than retreat to a boundary after it.
- *
- * `avoidTrailingGraphemeBreak` deliberately never moves a cut forward, so a caller sizing a
- * prefix against "one whole grapheme" cannot ask it for this and has to measure instead.
- */
+/** Width to reserve for the first whole grapheme, or zero for empty text. */
 export function firstGraphemeClusterLength(text: string): number {
   if (!text) {
     return 0;
   }
-  // `containing(0)` is defined for any non-empty string.
-  const cluster = getGraphemeSegmenter().segment(text).containing(0);
-  return cluster ? cluster.segment.length : 0;
+  return getGraphemeSegmenter().segment(text).containing(0)?.segment.length ?? 0;
+}
+
+const WHITESPACE_GRAPHEME_RE = /^\s+$/u;
+
+/** Skips only whole whitespace graphemes, never the base of a space-plus-mark cluster. */
+export function skipWhitespaceGraphemes(
+  text: string,
+  start = 0,
+  maxGraphemes = Number.POSITIVE_INFINITY,
+): number {
+  if (!/\s/u.test(text.charAt(start))) {
+    return start;
+  }
+  const segments = getGraphemeSegmenter().segment(text);
+  let cursor = start;
+  for (let count = 0; count < maxGraphemes && cursor < text.length; count += 1) {
+    const cluster = segments.containing(cursor);
+    if (!cluster || cluster.index !== cursor || !WHITESPACE_GRAPHEME_RE.test(cluster.segment)) {
+      break;
+    }
+    cursor += cluster.segment.length;
+  }
+  return cursor;
+}
+
+/** Trims only whole trailing whitespace graphemes from a source prefix. */
+export function trimEndWhitespaceGraphemes(text: string, end = text.length): string {
+  if (!/\s/u.test(text.charAt(end - 1))) {
+    return text.slice(0, end);
+  }
+  const segments = getGraphemeSegmenter().segment(text);
+  let cursor = end;
+  while (cursor > 0) {
+    const cluster = segments.containing(cursor - 1);
+    if (
+      !cluster ||
+      cluster.index + cluster.segment.length > cursor ||
+      !WHITESPACE_GRAPHEME_RE.test(cluster.segment)
+    ) {
+      break;
+    }
+    cursor = cluster.index;
+  }
+  return text.slice(0, cursor);
 }
 
 /** Slices a UTF-16 string without returning dangling surrogate halves at either edge. */

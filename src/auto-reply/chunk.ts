@@ -1,4 +1,10 @@
 import {
+  avoidTrailingGraphemeBreak,
+  firstGraphemeClusterLength,
+  skipWhitespaceGraphemes,
+  trimEndWhitespaceGraphemes,
+} from "@openclaw/normalization-core/utf16-slice";
+import {
   findFenceSpanAt,
   isSafeFenceBreak,
   parseFenceSpans,
@@ -8,12 +14,7 @@ import { resolveChannelStreamingChunkMode } from "../channels/streaming.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveChannelAccountEntry } from "../routing/account-lookup.js";
 import { normalizeAccountId } from "../routing/session-key.js";
-import {
-  avoidTrailingGraphemeBreak,
-  chunkTextByBreakResolver,
-  firstGraphemeClusterLength,
-  normalizeChunkLimit,
-} from "../shared/text-chunking.js";
+import { chunkTextByBreakResolver, normalizeChunkLimit } from "../shared/text-chunking.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
 
 export type TextChunkProvider = ChannelId;
@@ -142,17 +143,17 @@ export function chunkByNewline(
   let pendingBlankLines = 0;
 
   for (const line of lines) {
-    const trimmed = line.trim();
+    const trimmed = trimEndWhitespaceGraphemes(line.slice(skipWhitespaceGraphemes(line)));
     if (!trimmed) {
       pendingBlankLines += 1;
       continue;
     }
 
     const lineValue = trimLines ? trimmed : line;
-    // Leave room for the first whole grapheme before folding in blank lines; reserving only a
-    // code point lets the prefix squeeze the head cut into the middle of a leading cluster.
-    const firstGraphemeLength = Math.min(firstGraphemeClusterLength(lineValue), lineLimit);
-    const maxPrefix = Math.max(0, lineLimit - firstGraphemeLength);
+    // Blank-line prefixes must leave room for the leading cluster.
+    const maxPrefix = pendingBlankLines
+      ? Math.max(0, lineLimit - firstGraphemeClusterLength(lineValue))
+      : 0;
     const prefix = "\n".repeat(Math.min(pendingBlankLines, maxPrefix));
     pendingBlankLines = 0;
 
@@ -161,8 +162,6 @@ export function chunkByNewline(
       continue;
     }
 
-    // Back the head cut off to a grapheme boundary so an over-long line never splits a cluster;
-    // the recursive chunkText below is already grapheme-safe, only this first cut was raw.
     const rawLimit = Math.max(1, lineLimit - prefix.length);
     const firstLimit = avoidTrailingGraphemeBreak(lineValue, 0, rawLimit);
     const first = lineValue.slice(0, firstLimit);
@@ -272,7 +271,7 @@ export function chunkByParagraph(
   };
 
   for (const [index, part] of parts.entries()) {
-    const paragraph = part.trimEnd();
+    const paragraph = trimEndWhitespaceGraphemes(part);
     if (!paragraph) {
       continue;
     }
@@ -361,24 +360,7 @@ function splitPackedFenceParagraphChunk(chunk: string): string[] {
   return chunks;
 }
 
-function resolveChunkEarlyReturn(text: string, limit: number): string[] | undefined {
-  if (!text) {
-    return [];
-  }
-  if (limit <= 0) {
-    return [text];
-  }
-  if (text.length <= limit) {
-    return [text];
-  }
-  return undefined;
-}
-
 export function chunkText(text: string, limit: number): string[] {
-  const early = resolveChunkEarlyReturn(text, limit);
-  if (early) {
-    return early;
-  }
   return chunkTextByBreakResolver(text, limit, (window) => {
     // 1) Prefer a newline break inside the window (outside parentheses).
     const { lastNewline, lastWhitespace } = scanParenAwareBreakpoints(window, 0, window.length);
@@ -389,9 +371,11 @@ export function chunkText(text: string, limit: number): string[] {
 
 export function chunkMarkdownText(text: string, limit: number): string[] {
   const normalizedLimit = normalizeChunkLimit(limit);
-  const early = resolveChunkEarlyReturn(text, normalizedLimit);
-  if (early) {
-    return early;
+  if (!text) {
+    return [];
+  }
+  if (normalizedLimit <= 0 || text.length <= normalizedLimit) {
+    return [text];
   }
 
   const chunks: string[] = [];
@@ -415,7 +399,10 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
     reopenFence = undefined;
     const windowEnd = Math.min(text.length, start + contentLimit);
     const softBreak = pickSafeBreakIndex(text, start, windowEnd, spans);
-    let breakIdx = softBreak > start ? softBreak : windowEnd;
+    let breakIdx =
+      softBreak > start && softBreak >= start + firstGraphemeClusterLength(text.slice(start))
+        ? softBreak
+        : windowEnd;
 
     const initialFence = findFenceSpanAt(spans, breakIdx);
 
@@ -491,8 +478,7 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
       reopenFence = fenceToSplit;
     } else if (!initialFence) {
       // Only prose separators are disposable; fenced whitespace can be code indentation.
-      const brokeOnSeparator = breakIdx < text.length && /\s/.test(text.charAt(breakIdx));
-      nextStart = Math.min(text.length, breakIdx + (brokeOnSeparator ? 1 : 0));
+      nextStart = skipWhitespaceGraphemes(text, breakIdx, 1);
       nextStart = skipLeadingNewlines(text, nextStart);
     }
 
@@ -515,7 +501,10 @@ function resolveFenceReopenLine(
 }
 
 function skipLeadingNewlines(value: string, start = 0): number {
-  let i = start;
+  let i = value[start] === "\n" ? skipWhitespaceGraphemes(value, start, 1) : start;
+  if (i === start) {
+    return start;
+  }
   while (i < value.length && value[i] === "\n") {
     i++;
   }

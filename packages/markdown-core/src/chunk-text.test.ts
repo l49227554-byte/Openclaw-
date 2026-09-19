@@ -1,14 +1,6 @@
 // Markdown Core tests cover plain-text chunking behavior.
 import { describe, expect, it } from "vitest";
 import { chunkText, chunkTextRanges } from "./chunk-text.js";
-import {
-  buildGraphemeCutWitness,
-  findGraphemeChunkViolations,
-  findOversizedGraphemeViolations,
-  GRAPHEME_WITNESSES,
-  OVERSIZED_GRAPHEME_LIMIT,
-  OVERSIZED_GRAPHEME_TEXT,
-} from "./chunk-text.test-support.js";
 
 describe("chunkText", () => {
   it("normalizes positive fractional limits without emitting empty chunks", () => {
@@ -17,49 +9,45 @@ describe("chunkText", () => {
   });
 });
 
-describe("grapheme-safe hard cuts", () => {
-  const LIMIT = 12;
-
-  it.each(GRAPHEME_WITNESSES)("chunkText keeps a $name whole at the hard cut", (witness) => {
-    const text = buildGraphemeCutWitness(witness, LIMIT);
-    const chunks = chunkText(text, LIMIT);
-
-    expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
-    expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
+describe("grapheme boundaries", () => {
+  it.each(["plain", "hard", "preferred"] as const)("keeps clusters whole in %s chunks", (mode) => {
+    const text = "aaaaaaaaaa👨‍👩‍👧‍👦Z";
+    const chunks =
+      mode === "plain"
+        ? chunkText(text, 12)
+        : chunkTextRanges(text, { limit: 12, mode }).map(({ start, end }) =>
+            text.slice(start, end),
+          );
+    expect(chunks).toEqual(["aaaaaaaaaa", "👨‍👩‍👧‍👦Z"]);
   });
 
-  it.each(GRAPHEME_WITNESSES)("chunkTextRanges keeps a $name whole in hard mode", (witness) => {
-    const text = buildGraphemeCutWitness(witness, LIMIT);
-    const ranges = chunkTextRanges(text, { limit: LIMIT, mode: "hard" });
-    const chunks = ranges.map(({ start, end }) => text.slice(start, end));
-
-    expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
-    expect(chunks.join("")).toBe(text);
-    expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
+  it.each([
+    { text: "ab \u0301cd", expected: ["ab", " \u0301cd"] },
+    { text: "\u0600 \u0301abcd", expected: ["\u0600 \u0301a", "bcd"] },
+  ])("keeps preferred whitespace boundaries outside clusters: $text", ({ text, expected }) => {
+    const ranges = chunkTextRanges(text, { limit: 4, mode: "preferred" });
+    expect(ranges.map(({ start, end }) => text.slice(start, end))).toEqual(expected);
   });
 
-  it.each(GRAPHEME_WITNESSES)(
-    "chunkTextRanges keeps a $name whole when preferred mode falls back to a hard cut",
-    (witness) => {
-      // No whitespace inside the first window, so preferred mode takes the hard-cut fallback.
-      const text = `${buildGraphemeCutWitness(witness, LIMIT)} tail`;
-      const ranges = chunkTextRanges(text, { limit: LIMIT, mode: "preferred" });
-      const chunks = ranges.map(({ start, end }) => text.slice(start, end));
+  it.each([
+    { text: "\u0600 \u0301abcd", limit: 4, expected: ["\u0600 \u0301a", "bcd"] },
+    { text: "ab \u0301cd", limit: 2, expected: ["ab", " \u0301", "cd"] },
+    { text: "ab  \u0301cd", limit: 2, expected: ["ab", " \u0301", "cd"] },
+  ])("keeps plain-text whitespace clusters intact: $text", ({ text, limit, expected }) => {
+    expect(chunkText(text, limit)).toEqual(expected);
+  });
 
-      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
-      expect(chunks.join("")).toBe(text);
-      expect(chunks[0]).toBe("a".repeat(LIMIT - witness.cut));
+  it.each(["plain", "hard", "preferred"] as const)(
+    "makes surrogate-safe progress through oversized clusters in %s chunks",
+    (mode) => {
+      const text = "👨‍👩‍👧‍👦";
+      const chunks =
+        mode === "plain"
+          ? chunkText(text, 4)
+          : chunkTextRanges(text, { limit: 4, mode }).map(({ start, end }) =>
+              text.slice(start, end),
+            );
+      expect(chunks).toEqual(["👨‍", "👩‍", "👧‍", "👦"]);
     },
   );
-
-  it("still advances through a single grapheme wider than the whole limit", () => {
-    const limit = OVERSIZED_GRAPHEME_LIMIT;
-    const chunks = chunkText(OVERSIZED_GRAPHEME_TEXT, limit);
-    const ranges = chunkTextRanges(OVERSIZED_GRAPHEME_TEXT, { limit, mode: "hard" });
-    const rangeChunks = ranges.map(({ start, end }) => OVERSIZED_GRAPHEME_TEXT.slice(start, end));
-
-    expect(findOversizedGraphemeViolations(chunks, limit)).toEqual([]);
-    expect(findOversizedGraphemeViolations(rangeChunks, limit)).toEqual([]);
-    expect(chunks.length).toBeGreaterThanOrEqual(Math.ceil(OVERSIZED_GRAPHEME_TEXT.length / limit));
-  });
 });

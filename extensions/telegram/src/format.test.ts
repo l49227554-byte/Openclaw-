@@ -1,7 +1,6 @@
 // Telegram tests cover format plugin behavior.
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
-import { findTelegramHtmlSafeSplitIndex } from "./format-split-index.js";
 import {
   markdownToTelegramChunks,
   markdownToTelegramHtml,
@@ -394,9 +393,12 @@ describe("markdownToTelegramHtml", () => {
     },
   );
 
-  it("fails loudly when a leading entity cannot fit inside a chunk", () => {
-    expect(() => splitTelegramHtmlChunks(`A&amp;${"B".repeat(20)}`, 4)).toThrow(/leading entity/i);
-  });
+  it.each([`A&amp;${"B".repeat(20)}`, "<b>&amp;</b>"])(
+    "fails loudly when an entity cannot fit even without formatting: %s",
+    (html) => {
+      expect(() => splitTelegramHtmlChunks(html, 4)).toThrow(/leading entity/i);
+    },
+  );
 
   it("treats malformed leading ampersands as plain text when chunking html", () => {
     const chunks = splitTelegramHtmlChunks(`&${"A".repeat(5000)}`, 4000);
@@ -483,7 +485,6 @@ describe("markdownToTelegramHtml", () => {
     for (const [name, input, expected] of cases) {
       const output = telegramHtmlToPlainTextFallback(input);
       expect(output, name).toBe(expected);
-      expect(containsLoneSurrogate(output), name).toBe(false);
     }
   });
 
@@ -491,14 +492,21 @@ describe("markdownToTelegramHtml", () => {
     const output = telegramHtmlToPlainTextFallback("x &#x1F600; &#128512; y");
 
     expect(output).toBe("x 😀 😀 y");
-    expect(containsLoneSurrogate(output)).toBe(false);
   });
 
-  it("delivers content as plain text when tag overhead fills the chunk", () => {
-    const chunks = splitTelegramHtmlChunks("<b><i><u>x</u></i></b>", 10);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toBe("x");
-  });
+  it.each([
+    ["<b><i><u>x</u></i></b>", 10, ["x"]],
+    ["<b>😀x</b>", 8, ["😀x"]],
+    ["<b>e\u0301x</b>", 8, ["e\u0301x"]],
+    ["<b>&amp;</b>", 10, ["&amp;"]],
+    ["<b></b>abc", 4, ["abc"]],
+    ["<b></b>e\u0301x", 8, ["e\u0301x"]],
+  ] as const)(
+    "drops tag overhead that prevents payload from fitting: %s",
+    (html, cap, expected) => {
+      expect(splitTelegramHtmlChunks(html, cap)).toEqual(expected);
+    },
+  );
 
   it("keeps later formatting balanced after dropping an oversized tag scope", () => {
     const oversizedLink = `<a href="https://example.com/${"x".repeat(40)}">first</a>`;
@@ -510,13 +518,12 @@ describe("markdownToTelegramHtml", () => {
   });
 
   it("does not split an astral char across the chunk boundary", () => {
-    // Emoji surrogate pair straddles index 10 (limit): high at 9, low at 10.
     const input = `${"A".repeat(9)}😀${"B".repeat(20)}`;
     const chunks = splitTelegramHtmlChunks(input, 10);
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.join("")).toBe(input);
     for (const chunk of chunks) {
-      expect(containsLoneSurrogate(chunk)).toBe(false);
+      expect(chunk).not.toMatch(/[\uD800-\uDFFF]/u);
     }
   });
 
@@ -529,211 +536,92 @@ describe("markdownToTelegramHtml", () => {
 
     expect(chunks.map((chunk) => chunk.text)).toEqual(["A", "😀", "B"]);
     for (const chunk of chunks) {
-      expect(containsLoneSurrogate(chunk.html)).toBe(false);
-      expect(containsLoneSurrogate(chunk.text)).toBe(false);
+      expect(chunk.html).not.toMatch(/[\uD800-\uDFFF]/u);
     }
   });
 
   it("keeps a family emoji whole when the Telegram cap lands inside its ZWJ sequence", () => {
     const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
-    const cap = 4000;
-    // The issue's witness: the cap lands two units into the sequence, after the first person.
-    const input = `${"a".repeat(cap - 2)}${family}Z`;
-    const expected = ["a".repeat(cap - 2), `${family}Z`];
-
-    const htmlChunks = splitTelegramHtmlChunks(input, cap);
-    expect(htmlChunks).toEqual(expected);
-    expect(htmlChunks.every((chunk) => chunk.length <= cap)).toBe(true);
-
-    const renderedChunks = markdownToTelegramChunks(input, cap);
-    expect(renderedChunks.map((chunk) => chunk.text)).toEqual(expected);
-    expect(renderedChunks.every((chunk) => chunk.html.length <= cap)).toBe(true);
+    const prefix = "a".repeat(3998);
+    const input = `${prefix}${family}Z`;
+    const expected = [prefix, `${family}Z`];
+    expect(splitTelegramHtmlChunks(input, 4000)).toEqual(expected);
+    expect(markdownToTelegramChunks(input, 4000).map((chunk) => chunk.text)).toEqual(expected);
   });
 
-  it("keeps an HTML entity whole when a combining mark follows it at the cap", () => {
-    // `;` + U+0301 is one grapheme cluster, so the grapheme clamp retreats from 4000 to
-    // 3999; the entity check must then move the cut before `&amp;` instead of leaving a
-    // bare `&amp` at the end of the first message and a `;` at the start of the next.
-    const cap = 4000;
-    const input = `${"a".repeat(cap - 5)}&amp;\u0301tail`;
-
-    const chunks = splitTelegramHtmlChunks(input, cap);
-    expect(chunks).toEqual(["a".repeat(cap - 5), "&amp;\u0301tail"]);
-    expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
-    expect(chunks[0]?.endsWith("&amp")).toBe(false);
-    expect(chunks[1]?.startsWith(";")).toBe(false);
-  });
-
-  it("still makes progress when an entity-leading grapheme cluster exceeds the cap", () => {
-    // Same entity/combining-mark shape as the test above, scaled past the cap: the marks
-    // glue onto the entity's `;`, so the whole run is one cluster that cannot fit. The
-    // grapheme clamp retreats to the entity and the entity re-check then drops the cut to
-    // zero, which used to stall chunking and reject a message that does fit in two.
-    const cap = 4000;
-    const input = `&amp;${"\u0301".repeat(cap)}Z`;
-
-    const chunks = splitTelegramHtmlChunks(input, cap);
-    expect(chunks.map((chunk) => chunk.length)).toEqual([4000, 6]);
-    expect(chunks.join("")).toBe(input);
-    expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
-    expect(chunks[0]?.startsWith("&amp;")).toBe(true);
-    expect(chunks[0]?.endsWith("&amp")).toBe(false);
-    expect(chunks[1]?.startsWith(";")).toBe(false);
-  });
-});
-
-describe("unusable chunk limits", () => {
-  // Regression: `Math.max(1, Math.floor(NaN))` is NaN, and every comparison against NaN is
-  // false. That made the split-index search re-run its entity check without converging and
-  // made `appendText` re-slice `remaining` at NaN without ever consuming input. At the merge
-  // base that loop did not hang; it pushed one chunk per pass until V8 threw
-  // `RangeError: Invalid array length` after about 10 s, or until the heap was exhausted and
-  // the process aborted when a tag was open at the cut. A throw is immediate and catchable,
-  // which keeps the delivery planner's existing degrade path working. These cases terminating
-  // at all is the assertion; the suite would time out rather than fail if either guard
-  // regressed, because Vitest's default timeout is well under the base's 10 s.
-  //
-  // Only limits that coerce to NaN are here. Everything the base could read as a number,
-  // `Infinity` and `-Infinity` included, stays usable and is covered by the suites below.
-  const unusableLimits: [string, number][] = [
-    ["NaN", Number.NaN],
-    ["undefined", undefined as never],
-    ["non-numeric string", "abc" as unknown as number],
-    ["plain object", {} as unknown as number],
-  ];
-
-  it.each(unusableLimits)("splitTelegramHtmlChunks rejects a %s limit", (_label, limit) => {
-    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(TypeError);
-    expect(() => splitTelegramHtmlChunks("abcdef", limit)).toThrow(/chunk limit coerces to NaN/);
-  });
-
-  it.each(unusableLimits)(
-    "findTelegramHtmlSafeSplitIndex rejects a %s maxLength",
-    (_label, limit) => {
-      expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(TypeError);
-      expect(() => findTelegramHtmlSafeSplitIndex("abcdef", limit)).toThrow(
-        /maxLength coerces to NaN/,
-      );
+  it.each([
+    ["literal family", 3991, "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}Z"],
+    ["entity with combining mark", 3988, "&amp;\u0301Z"],
+    ["entity-encoded flag", 3984, "&#x1F1FA;&#x1F1F8;Z"],
+  ] as const)(
+    "moves a leading %s to a fresh chunk after closing tags",
+    (_, prefixLength, suffix) => {
+      const prefix = `<i>${"a".repeat(prefixLength)}</i>`;
+      expect(splitTelegramHtmlChunks(`${prefix}${suffix}`, 4000)).toEqual([prefix, suffix]);
     },
   );
 
-  it("names the received type rather than a number the caller never passed", () => {
-    expect(() => splitTelegramHtmlChunks("abcdef", "abc" as unknown as number)).toThrow(
-      "Telegram HTML chunk limit coerces to NaN (received string: abc)",
-    );
-    expect(() => splitTelegramHtmlChunks("abcdef", undefined as never)).toThrow(
-      "Telegram HTML chunk limit coerces to NaN (received undefined: undefined)",
-    );
+  it("keeps a leading cluster whole when a preferred word break falls inside it", () => {
+    expect(splitTelegramHtmlChunks("\u0600 \u0301abc", 4)).toEqual(["\u0600 \u0301", "abc"]);
   });
 
-  it("still chunks normally at the smallest finite limit", () => {
-    expect(splitTelegramHtmlChunks("abcdef", 3)).toEqual(["abc", "def"]);
-    expect(findTelegramHtmlSafeSplitIndex("abcdef", 3)).toBe(3);
-  });
-});
-
-describe("limits the merge base coerced", () => {
-  // The guard reads the limit through `Math.floor`, the same way the chunkers always did, so
-  // no limit that produced chunks before this branch throws now. Measured at the merge base
-  // `782649ad453`: the right-hand column is that tree's output for the same call.
-  const coercedLimits: [string, number, string[]][] = [
-    ["a numeric string", "4000" as unknown as number, ["abcdefghij"]],
-    ["a whitespace-padded numeric string", " 3 " as unknown as number, ["abc", "def", "ghi", "j"]],
-    ["a fractional string", "3.7" as unknown as number, ["abc", "def", "ghi", "j"]],
-    ["a single-element array", [3] as unknown as number, ["abc", "def", "ghi", "j"]],
-    [
-      "an object with a numeric valueOf",
-      { valueOf: () => 3 } as unknown as number,
-      ["abc", "def", "ghi", "j"],
-    ],
-  ];
-
-  it.each(coercedLimits)("chunks with %s", (_label, limit, expected) => {
-    expect(splitTelegramHtmlChunks("abcdefghij", limit)).toEqual(expected);
+  it("keeps an HTML entity with its combining mark at the cap", () => {
+    const prefix = "a".repeat(3995);
+    expect(splitTelegramHtmlChunks(`${prefix}&amp;\u0301tail`, 4000)).toEqual([
+      prefix,
+      "&amp;\u0301tail",
+    ]);
   });
 
-  // Base ran `Math.max(1, Math.floor(limit))`, so every budget below 1 landed on 1 and
-  // emitted one code unit per chunk. `-Infinity` is not special: it clamps like any other
-  // negative, which is why it is not in the throwing suite above.
-  const clampedLimits: [string, number][] = [
-    ["-Infinity", Number.NEGATIVE_INFINITY],
-    ["a negative finite limit", -5],
-    ["zero", 0],
-    ["null", null as unknown as number],
-    ["false", false as unknown as number],
-    ["an empty array", [] as unknown as number],
-  ];
+  it("keeps entity-encoded regional indicators together as a decoded flag", () => {
+    const prefix = "a".repeat(4087);
+    const flag = "&#x1F1FA;&#x1F1F8;";
+    expect(splitTelegramHtmlChunks(`${prefix}${flag}`, 4096)).toEqual([prefix, flag]);
+  });
 
-  it.each(clampedLimits)("clamps %s to a limit of 1", (_label, limit) => {
-    expect(splitTelegramHtmlChunks("abc", limit)).toEqual(["a", "b", "c"]);
-    expect(findTelegramHtmlSafeSplitIndex("abc", limit)).toBe(1);
+  it.each([
+    ["named base", "&amp;", "&#769;"],
+    ["hexadecimal base", "&#x65;", "&#769;"],
+  ])("keeps a decoded combining mark with its %s across entity spellings", (_, base, mark) => {
+    const prefix = "a".repeat(4096 - base.length);
+    expect(splitTelegramHtmlChunks(`${prefix}${base}${mark}`, 4096)).toEqual([
+      prefix,
+      `${base}${mark}`,
+    ]);
+  });
+
+  it.each(["&unknown;", "&#xD800;"])(
+    "preserves an undecoded entity as an indivisible source atom: %s",
+    (entity) => {
+      expect(splitTelegramHtmlChunks(`A${entity}B`, entity.length)).toEqual(["A", entity, "B"]);
+    },
+  );
+
+  it("makes progress when an entity-leading cluster exceeds the cap", () => {
+    expect(splitTelegramHtmlChunks(`&amp;${"\u0301".repeat(4000)}Z`, 4000)).toEqual([
+      `&amp;${"\u0301".repeat(3995)}`,
+      `${"\u0301".repeat(5)}Z`,
+    ]);
   });
 });
 
-describe("Infinity means no limit", () => {
-  // `Infinity` is how an external caller asks for no splitting at all, and it behaved that
-  // way before this branch added a limit guard. These cases pin the pre-existing
-  // contract: one chunk holding the input verbatim, with entities and astral characters
-  // untouched because no cut is attempted.
-  const noLimitInputs: [string, string][] = [
-    ["plain text", "hello world"],
-    ["text longer than the Telegram cap", "a".repeat(12000)],
-    ["HTML entities", "a &amp; b &lt;tag&gt; c &#8212; d ".repeat(400)],
-    ["astral characters", "hi \u{1F600}\u{1F4A9}\u{1F680} there ".repeat(500)],
-    ["entities and astral characters together", "x &amp; \u{1F600} y &lt;b&gt; ".repeat(900)],
-    ["HTML tags", "<b>bold</b> <i>it</i> <code>c</code> ".repeat(600)],
-  ];
+describe("splitTelegramHtmlChunks limits", () => {
+  it("rejects NaN instead of repeatedly emitting chunks without consuming input", () => {
+    expect(() => splitTelegramHtmlChunks("<b>abcdef</b>", Number.NaN)).toThrow(TypeError);
+  });
 
-  it.each(noLimitInputs)("returns %s as a single verbatim chunk", (_label, html) => {
+  it.each([
+    [0, ["a", "b", "c"]],
+    [Number.NEGATIVE_INFINITY, ["a", "b", "c"]],
+    [2.9, ["ab", "c"]],
+    ["2" as unknown as number, ["ab", "c"]],
+  ] as const)("normalizes limit %s before splitting", (limit, expected) => {
+    expect(splitTelegramHtmlChunks("abc", limit)).toEqual(expected);
+  });
+
+  it("supports unlimited HTML and empty input", () => {
+    const html = "<b>&amp;😀</b>".repeat(1000);
     expect(splitTelegramHtmlChunks(html, Number.POSITIVE_INFINITY)).toEqual([html]);
-  });
-
-  it("keeps the empty-input contract", () => {
     expect(splitTelegramHtmlChunks("", Number.POSITIVE_INFINITY)).toEqual([]);
   });
-
-  it("findTelegramHtmlSafeSplitIndex reports no cut for an Infinity maxLength", () => {
-    const text = "abc &amp; \u{1F600} def";
-    expect(findTelegramHtmlSafeSplitIndex(text, Number.POSITIVE_INFINITY)).toBe(text.length);
-  });
 });
-
-describe("chunk width against the hard cap", () => {
-  // The boundary helpers may return one code unit past the requested end so a grapheme
-  // cluster survives; utf16-slice.ts documents that and tells byte-exact callers to re-check.
-  // Telegram is such a caller, so when the astral char lands on a one-unit remaining budget
-  // the chunk must be flushed rather than widened past the cap.
-  it.each([
-    [4000, 3992],
-    [4096, 4088],
-  ])(
-    "keeps every chunk within a cap of %i when an astral char lands on a full chunk",
-    (cap, filler) => {
-      const input = `<i>${"a".repeat(filler)}</i>\u{1F600}Z`;
-
-      const chunks = splitTelegramHtmlChunks(input, cap);
-      expect(chunks.every((chunk) => chunk.length <= cap)).toBe(true);
-      expect(chunks.join("")).toBe(input);
-      expect(chunks.some((chunk) => chunk.includes("\u{1F600}"))).toBe(true);
-      expect(chunks.some((chunk) => containsLoneSurrogate(chunk))).toBe(false);
-    },
-  );
-});
-
-function containsLoneSurrogate(text: string): boolean {
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-    const isHigh = code >= 0xd800 && code <= 0xdbff;
-    const isLow = code >= 0xdc00 && code <= 0xdfff;
-    if (isHigh) {
-      const next = text.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        return true;
-      }
-      index += 1;
-    } else if (isLow) {
-      return true;
-    }
-  }
-  return false;
-}

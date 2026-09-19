@@ -1,13 +1,5 @@
 // Text chunking tests cover splitting text into bounded model-safe chunks.
 import { describe, expect, it } from "vitest";
-import {
-  buildGraphemeCutWitness,
-  findGraphemeChunkViolations,
-  findOversizedGraphemeViolations,
-  GRAPHEME_WITNESSES,
-  OVERSIZED_GRAPHEME_LIMIT,
-  OVERSIZED_GRAPHEME_TEXT,
-} from "../../packages/markdown-core/src/chunk-text.test-support.js";
 import { chunkTextByBreakResolver, splitLongTextLine } from "./text-chunking.js";
 
 describe("shared/text-chunking", () => {
@@ -55,17 +47,23 @@ describe("shared/text-chunking", () => {
     ).toEqual(["word", "next"]);
   });
 
-  it("trims trailing whitespace from emitted chunks before continuing", () => {
-    expect(chunkTextByBreakResolver("abc   def", 6, (window) => window.lastIndexOf(" "))).toEqual([
-      "abc",
-      "def",
-    ]);
+  it.each([
+    { text: "abc   def", limit: 6, expected: ["abc", "def"] },
+    { text: "ab \u0301cd", limit: 2, expected: ["ab", " \u0301", "cd"] },
+    { text: "ab  \u0301cd", limit: 2, expected: ["ab", " \u0301", "cd"] },
+    { text: "ab\u0600  cd", limit: 5, expected: ["ab\u0600 ", "cd"] },
+    { text: " \u0301x", limit: 1, expected: [" ", "\u0301", "x"] },
+  ])("trims only whole separator graphemes: $text", ({ text, limit, expected }) => {
+    expect(chunkTextByBreakResolver(text, limit, (window) => window.lastIndexOf(" "))).toEqual(
+      expected,
+    );
   });
 
   it.each([
     { text: "  ! ", limit: 2, expected: ["!"] },
     { text: "a b ", limit: 2, expected: ["a", "b"] },
     { text: "alpha beta   ", limit: 8, expected: ["alpha", "beta"] },
+    { text: "ab\u0600  ", limit: 3, expected: ["ab", "\u0600 "] },
   ])("trims trailing whitespace from the final chunk: $text", ({ text, limit, expected }) => {
     expect(chunkTextByBreakResolver(text, limit, (window) => window.lastIndexOf(" "))).toEqual(
       expected,
@@ -73,55 +71,36 @@ describe("shared/text-chunking", () => {
   });
 });
 
-describe("grapheme-safe hard cuts", () => {
-  const LIMIT = 12;
-  const lastSpace = (window: string) => window.lastIndexOf(" ");
-
-  it.each(GRAPHEME_WITNESSES)(
-    "splitLongTextLine keeps a $name whole with preserved whitespace",
-    (witness) => {
-      const text = buildGraphemeCutWitness(witness, LIMIT);
-      const chunks = splitLongTextLine(text, LIMIT, { preserveWhitespace: true });
-
-      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
-      expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
+describe("grapheme boundaries", () => {
+  it.each([true, false])(
+    "preserves hard-cut clusters with preserveWhitespace=%s",
+    (preserveWhitespace) => {
+      expect(splitLongTextLine("aaaaaaaaaa👨‍👩‍👧‍👦Z", 12, { preserveWhitespace })).toEqual([
+        "aaaaaaaaaa",
+        "👨‍👩‍👧‍👦Z",
+      ]);
+      expect(splitLongTextLine("👨‍👩‍👧‍👦", 4, { preserveWhitespace })).toEqual(["👨‍", "👩‍", "👧‍", "👦"]);
     },
   );
 
-  it.each(GRAPHEME_WITNESSES)(
-    "splitLongTextLine keeps a $name whole when no whitespace break exists",
-    (witness) => {
-      const text = buildGraphemeCutWitness(witness, LIMIT);
-      const chunks = splitLongTextLine(text, LIMIT, { preserveWhitespace: false });
+  it("adjusts CJK punctuation and CRLF soft breaks to whole clusters", () => {
+    expect(splitLongTextLine("ab。\u0301cd", 4, { preserveWhitespace: false })).toEqual([
+      "ab",
+      "。\u0301cd",
+    ]);
+    expect(splitLongTextLine("ab\r\ncd", 4, { preserveWhitespace: false })).toEqual([
+      "ab",
+      "\r\ncd",
+    ]);
+    expect(splitLongTextLine("\u0600 \u0301abcd", 4, { preserveWhitespace: false })).toEqual([
+      "\u0600 \u0301a",
+      "bcd",
+    ]);
+  });
 
-      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
-      expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
-    },
-  );
-
-  it.each(GRAPHEME_WITNESSES)(
-    "chunkTextByBreakResolver keeps a $name whole at the hard-limit fallback",
-    (witness) => {
-      const text = buildGraphemeCutWitness(witness, LIMIT);
-      const chunks = chunkTextByBreakResolver(text, LIMIT, lastSpace);
-
-      expect(findGraphemeChunkViolations(text, chunks, LIMIT)).toEqual([]);
-      expect(chunks).toEqual(["a".repeat(LIMIT - witness.cut), `${witness.cluster}Z`]);
-    },
-  );
-
-  it("still advances through a single grapheme wider than the whole limit", () => {
-    const limit = OVERSIZED_GRAPHEME_LIMIT;
-    const preserved = splitLongTextLine(OVERSIZED_GRAPHEME_TEXT, limit, {
-      preserveWhitespace: true,
-    });
-    const collapsed = splitLongTextLine(OVERSIZED_GRAPHEME_TEXT, limit, {
-      preserveWhitespace: false,
-    });
-    const resolved = chunkTextByBreakResolver(OVERSIZED_GRAPHEME_TEXT, limit, lastSpace);
-
-    expect(findOversizedGraphemeViolations(preserved, limit)).toEqual([]);
-    expect(findOversizedGraphemeViolations(collapsed, limit)).toEqual([]);
-    expect(findOversizedGraphemeViolations(resolved, limit)).toEqual([]);
+  it("adjusts resolver-selected cuts inside a cluster and handles oversized clusters", () => {
+    expect(chunkTextByBreakResolver("aaaaa👨‍👩‍👧‍👦Z", 16, () => 7)).toEqual(["aaaaa", "👨‍👩‍👧‍👦Z"]);
+    expect(chunkTextByBreakResolver("👨‍👩‍👧‍👦AB", 12, () => 2)).toEqual(["👨‍👩‍👧‍👦A", "B"]);
+    expect(chunkTextByBreakResolver("👨‍👩‍👧‍👦", 4, () => -1)).toEqual(["👨‍", "👩‍", "👧‍", "👦"]);
   });
 });

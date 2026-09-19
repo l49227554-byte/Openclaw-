@@ -1,13 +1,5 @@
 // Markdown Core tests cover render aware chunking behavior.
 import { describe, expect, it } from "vitest";
-import {
-  buildGraphemeCutWitness,
-  findGraphemeChunkViolations,
-  findOversizedGraphemeViolations,
-  GRAPHEME_WITNESSES,
-  OVERSIZED_GRAPHEME_LIMIT,
-  OVERSIZED_GRAPHEME_TEXT,
-} from "./chunk-text.test-support.js";
 import { FormatCapabilityProfile } from "./format-capabilities.js";
 import type { MarkdownIR } from "./ir.js";
 import { markdownToIR, sliceMarkdownIR } from "./ir.js";
@@ -189,63 +181,53 @@ describe("renderMarkdownIRChunksWithinLimit", () => {
 });
 
 describe("grapheme-safe rendered chunk boundaries", () => {
-  const measureLength = (rendered: string) => rendered.length;
+  it.each([false, true])("keeps clusters whole with render expansion=%s", (expand) => {
+    const prefix = "a".repeat(expand ? 12 : 10);
+    const chunks = renderMarkdownIRChunksWithinLimit({
+      ir: markdownToIR(`${prefix}👨‍👩‍👧‍👦Z`),
+      limit: expand ? 26 : 12,
+      renderChunk: (chunk) => (expand ? chunk.text.replaceAll("a", "aa") : chunk.text),
+      measureRendered: (rendered) => rendered.length,
+    });
+    expect(chunks.map((chunk) => chunk.source.text)).toEqual([prefix, "👨‍👩‍👧‍👦Z"]);
+    expect(chunks.map((chunk) => chunk.rendered)).toEqual([
+      expand ? prefix.repeat(2) : prefix,
+      "👨‍👩‍👧‍👦Z",
+    ]);
+  });
 
-  it.each(GRAPHEME_WITNESSES)(
-    "keeps a $name whole in the preserved-whitespace split",
-    (witness) => {
-      const limit = 12;
-      const text = buildGraphemeCutWitness(witness, limit);
+  it.each([
+    { text: "ab \u0301cd", limit: 4, styled: false, expected: ["ab", " \u0301cd"] },
+    { text: "\u0600 \u0301abcd", limit: 4, styled: false, expected: ["\u0600 \u0301a", "bcd"] },
+    { text: "ab\r\n😀", limit: 3, styled: false, expected: ["ab", "😀"] },
+    { text: "ab\r\n😀", limit: 3, styled: true, expected: ["ab", "\r\n", "😀"] },
+    { text: "abc\r\n\r\nx", limit: 4, styled: false, expected: ["abc", "x"] },
+    { text: "abc\r\n\r\nx", limit: 4, styled: true, expected: ["abc", "\r\n\r\n", "x"] },
+  ])(
+    "keeps whitespace cuts outside clusters: $text (styled=$styled)",
+    ({ text, limit, styled, expected }) => {
       const chunks = renderMarkdownIRChunksWithinLimit({
-        ir: markdownToIR(text),
+        ir: {
+          text,
+          styles: styled ? [{ start: 0, end: text.length, style: "code_block" }] : [],
+          links: [],
+        },
         limit,
         renderChunk: (chunk) => chunk.text,
-        measureRendered: measureLength,
+        measureRendered: (rendered) => rendered.length,
       });
-      const texts = chunks.map((chunk) => chunk.source.text);
-
-      expect(findGraphemeChunkViolations(text, texts, limit)).toEqual([]);
-      expect(texts).toEqual(["a".repeat(limit - witness.cut), `${witness.cluster}Z`]);
+      expect(chunks.map((chunk) => chunk.rendered)).toEqual(expected);
     },
   );
 
-  it.each(GRAPHEME_WITNESSES)(
-    "keeps a $name whole when rendered size forces a retry split",
-    (witness) => {
-      // The source fits the limit by text length, but doubling the ASCII run on render
-      // overflows it, so the cut comes from the exact-candidate retry loop and lands
-      // `cut` units inside the cluster.
-      const prefix = 12;
-      const limit = prefix * 2 + witness.cut;
-      const text = `${"a".repeat(prefix)}${witness.cluster}Z`;
-      expect(text.length).toBeLessThanOrEqual(limit);
-
-      const chunks = renderMarkdownIRChunksWithinLimit({
-        ir: markdownToIR(text),
-        limit,
-        renderChunk: (chunk) => chunk.text.replaceAll("a", "aa"),
-        measureRendered: measureLength,
-      });
-      const texts = chunks.map((chunk) => chunk.source.text);
-
-      expect(findGraphemeChunkViolations(text, texts, limit)).toEqual([]);
-      expect(chunks.every((chunk) => chunk.rendered.length <= limit)).toBe(true);
-      expect(texts).toEqual(["a".repeat(prefix), `${witness.cluster}Z`]);
-    },
-  );
-
-  it("still advances through a single grapheme wider than the rendered limit", () => {
-    const limit = OVERSIZED_GRAPHEME_LIMIT;
+  it("makes surrogate-safe progress through an oversized cluster", () => {
     const chunks = renderMarkdownIRChunksWithinLimit({
-      ir: markdownToIR(OVERSIZED_GRAPHEME_TEXT),
-      limit,
+      ir: markdownToIR("👨‍👩‍👧‍👦"),
+      limit: 4,
       renderChunk: (chunk) => chunk.text,
-      measureRendered: measureLength,
+      measureRendered: (rendered) => rendered.length,
     });
-    const texts = chunks.map((chunk) => chunk.source.text);
-
-    expect(findOversizedGraphemeViolations(texts, limit)).toEqual([]);
-    expect(chunks.every((chunk) => chunk.rendered.length <= limit)).toBe(true);
+    expect(chunks.map((chunk) => chunk.rendered)).toEqual(["👨‍", "👩‍", "👧‍", "👦"]);
   });
 });
 

@@ -3,10 +3,6 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  FAMILY_EMOJI,
-  findGraphemeChunkViolations,
-} from "../../packages/markdown-core/src/chunk-text.test-support.js";
-import {
   chunkTextForOutbound,
   chunkTextRanges,
   findCodeRegions,
@@ -135,46 +131,4 @@ describe("chunkTextRanges", () => {
       { start: 3, end: 4 },
     ]);
   });
-});
-
-describe("grapheme clusters at channel caps", () => {
-  // Effective plain-text caps of the ordinary send paths that route through this facade.
-  const CHANNEL_CAPS = [
-    { channel: "discord", cap: 2000 },
-    { channel: "telegram", cap: 4000 },
-    { channel: "slack", cap: 8000 },
-  ];
-  // The issue's witness: the cap lands two units into the ZWJ sequence, after the first person.
-  const witnessAt = (cap: number) => `${"a".repeat(cap - 2)}${FAMILY_EMOJI}Z`;
-
-  it.each(CHANNEL_CAPS)(
-    "chunkTextForOutbound keeps a family emoji whole at the $channel cap of $cap",
-    ({ cap }) => {
-      const text = witnessAt(cap);
-      const expected = ["a".repeat(cap - 2), `${FAMILY_EMOJI}Z`];
-
-      for (const chunks of [
-        chunkTextForOutbound(text, cap),
-        chunkTextForOutbound(text, cap, { preserveWhitespace: true }),
-        chunkTextForOutbound(text, cap, { preserveWhitespace: false }),
-      ]) {
-        expect(findGraphemeChunkViolations(text, chunks, cap)).toEqual([]);
-        expect(chunks).toEqual(expected);
-      }
-    },
-  );
-
-  it.each(CHANNEL_CAPS)(
-    "chunkTextRanges keeps a family emoji whole at the $channel cap of $cap",
-    ({ cap }) => {
-      const text = witnessAt(cap);
-
-      for (const mode of ["hard", "preferred"] as const) {
-        const ranges = chunkTextRanges(text, { limit: cap, mode });
-        const chunks = ranges.map(({ start, end }) => text.slice(start, end));
-        expect(findGraphemeChunkViolations(text, chunks, cap)).toEqual([]);
-        expect(chunks).toEqual(["a".repeat(cap - 2), `${FAMILY_EMOJI}Z`]);
-      }
-    },
-  );
 });

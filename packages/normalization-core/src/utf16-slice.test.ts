@@ -21,13 +21,7 @@ describe("avoidTrailingHighSurrogateBreak", () => {
 
   it("includes the full pair when a one-unit chunk starts with it", () => {
     expect(avoidTrailingHighSurrogateBreak("🤖b", 0, 1)).toBe(2);
-  });
-
-  it("overshoots the limit by exactly one code unit when the pair starts at start", () => {
-    // Pins the documented exception to the "never exceeds end" rule. Retreating here would
-    // return `start` and stall the caller, so the helper trades one code unit for progress.
-    expect(avoidTrailingHighSurrogateBreak("\u{1F600}X", 0, 1)).toBe(2);
-    expect(avoidTrailingHighSurrogateBreak("A\u{1F600}X", 1, 2)).toBe(3);
+    expect(avoidTrailingHighSurrogateBreak("a🤖b", 1, 2)).toBe(3);
   });
 });
 
@@ -111,75 +105,39 @@ describe("truncateWithMarker", () => {
   });
 });
 
-describe("avoidTrailingGraphemeBreak", () => {
-  // Escape-literal on purpose: a typed "café" is a legal spelling of both the precomposed
-  // (4 unit) and decomposed (5 unit) forms, and they render identically.
-  const witnesses: Record<string, string> = {
-    family: "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}",
-    aFamilyB: "a\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}b",
-    flag: "\u{1F1FA}\u{1F1F8}",
-    skin: "\u{1F44D}\u{1F3FB}",
-    combining: "cafe\u0301",
-    indic: "\u0915\u094D\u0937\u093F",
-    robot: "a\u{1F916}b",
-  };
-
-  // contract:begin
-  const CONTRACT = [
-    { witness: "aFamilyB", start: 0, end: 2, expected: 1 },
-    { witness: "robot", start: 0, end: 2, expected: 1 },
-    { witness: "aFamilyB", start: 1, end: 5, expected: 4 },
-    { witness: "aFamilyB", start: 0, end: 6, expected: 1 },
-    { witness: "family", start: 0, end: 5, expected: 5 },
-    { witness: "flag", start: 0, end: 2, expected: 2 },
-    { witness: "skin", start: 0, end: 2, expected: 2 },
-    { witness: "combining", start: 0, end: 4, expected: 3 },
-    { witness: "indic", start: 0, end: 2, expected: 2 },
-    { witness: "family", start: 0, end: 11, expected: 11 },
-    { witness: "aFamilyB", start: 0, end: 13, expected: 13 },
-    { witness: "robot", start: 2, end: 2, expected: 2 },
-  ] as const;
-  // contract:end
-
-  it.each(CONTRACT)("$witness[$start:$end] -> $expected", ({ witness, start, end, expected }) => {
-    const text = witnesses[witness];
-    if (text === undefined) {
-      throw new Error(`missing witness text for case ${witness}`);
-    }
-    const result = avoidTrailingGraphemeBreak(text, start, end);
-    expect(result).toBe(expected);
-    // Every case here retreats within the budget; the documented one-unit overshoot is
-    // pinned separately below because it is the sole exception to this bound.
-    expect(result).toBeLessThanOrEqual(end);
-    if (end > start) {
-      expect(result).toBeGreaterThan(start);
-    }
-  });
-
-  it("overshoots the limit by exactly one code unit when a pair starts at start", () => {
-    // The cluster starts at `start`, so the helper cannot retreat and delegates to the
-    // surrogate guard, which moves forward instead of returning a zero-width cut.
-    expect(avoidTrailingGraphemeBreak("\u{1F600}X", 0, 1)).toBe(2);
-    expect(avoidTrailingGraphemeBreak("A\u{1F600}X", 1, 2)).toBe(3);
-  });
-});
-
-describe("firstGraphemeClusterLength", () => {
-  // Escape-literal for the same reason as above: these clusters are invisible in source.
+describe("grapheme boundaries", () => {
   it.each([
-    { name: "empty text", text: "", expected: 0 },
-    { name: "ascii", text: "abc", expected: 1 },
-    { name: "surrogate pair", text: "\u{1F916}b", expected: 2 },
-    {
-      name: "family ZWJ sequence",
-      text: "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}b",
-      expected: 11,
-    },
-    { name: "regional indicator flag", text: "\u{1F1FA}\u{1F1F8}\u{1F1FA}", expected: 4 },
-    { name: "skin tone modifier", text: "\u{1F44D}\u{1F3FB}!", expected: 4 },
-    { name: "base plus combining mark", text: "e\u0301x", expected: 2 },
-    { name: "Indic conjunct with vowel sign", text: "\u0915\u094D\u0937\u093Fx", expected: 4 },
-  ] as const)("$name", ({ text, expected }) => {
-    expect(firstGraphemeClusterLength(text)).toBe(expected);
+    ["family ZWJ", "👨‍👩‍👧‍👦"],
+    ["flag", "🇺🇸"],
+    ["skin tone", "👍🏽"],
+    ["combining mark", "e\u0301"],
+    ["Indic conjunct", "\u0915\u094D\u0937\u093F"],
+    ["CRLF", "\r\n"],
+    ["whitespace with combining mark", " \u0301"],
+    ["punctuation with combining mark", "。\u0301"],
+    ["prepended whitespace with combining mark", "\u0600 \u0301"],
+  ])("preserves a whole %s cluster", (_name, cluster) => {
+    const text = `a${cluster}b`;
+    for (let end = 2; end < cluster.length + 1; end++) {
+      expect(avoidTrailingGraphemeBreak(text, 0, end)).toBe(1);
+    }
+    expect(avoidTrailingGraphemeBreak(text, 0, cluster.length + 1)).toBe(cluster.length + 1);
+    expect(firstGraphemeClusterLength(`${cluster}b`)).toBe(cluster.length);
+  });
+
+  it.each([
+    { text: "👨‍👩‍👧‍👦", start: 0, end: 5, expected: 5 },
+    { text: "a👨‍👩‍👧‍👦b", start: 1, end: 5, expected: 4 },
+    { text: "a🤖b", start: 1, end: 2, expected: 3 },
+    { text: "abc", start: 1, end: 1, expected: 1 },
+    { text: "abc", start: 0, end: 5, expected: 5 },
+  ])("advances safely or leaves terminal cuts unchanged: $text[$start:$end]", (test) => {
+    expect(avoidTrailingGraphemeBreak(test.text, test.start, test.end)).toBe(test.expected);
+  });
+
+  it("measures empty and ordinary leading text", () => {
+    expect(firstGraphemeClusterLength("")).toBe(0);
+    expect(firstGraphemeClusterLength("abc")).toBe(1);
+    expect(firstGraphemeClusterLength("🤖b")).toBe(2);
   });
 });

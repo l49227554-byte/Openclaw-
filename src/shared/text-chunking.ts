@@ -2,20 +2,15 @@ import { resolveIntegerOption } from "@openclaw/normalization-core/number-coerci
 import {
   avoidTrailingGraphemeBreak,
   firstGraphemeClusterLength,
+  skipWhitespaceGraphemes,
+  trimEndWhitespaceGraphemes,
 } from "@openclaw/normalization-core/utf16-slice";
-
-export { avoidTrailingGraphemeBreak, firstGraphemeClusterLength };
 
 const CJK_PUNCTUATION_BREAK_AFTER_RE = /[、。，．！？；：）］｝〉》」』】〕〗〙]/u;
 
 export function normalizeChunkLimit(limit: number): number {
   // String slicing truncates fractional indexes, so positive limits need an integer progress step.
   return Number.isFinite(limit) && limit > 0 ? resolveIntegerOption(limit, 1, { min: 1 }) : limit;
-}
-
-function clampToCodePointBoundary(text: string, index: number): number {
-  const boundary = Math.min(Math.max(0, index), text.length);
-  return avoidTrailingGraphemeBreak(text, 0, boundary);
 }
 
 function findWhitespaceBreak(window: string): number {
@@ -28,13 +23,10 @@ function findWhitespaceBreak(window: string): number {
 }
 
 function findCjkPunctuationBreak(window: string): number {
-  for (let end = window.length; end > 0;) {
-    const code = window.charCodeAt(end - 1);
-    const start = code >= 0xdc00 && code <= 0xdfff && end > 1 ? end - 2 : end - 1;
-    if (start > 0 && CJK_PUNCTUATION_BREAK_AFTER_RE.test(window.slice(start, end))) {
+  for (let end = window.length; end > 1; end--) {
+    if (CJK_PUNCTUATION_BREAK_AFTER_RE.test(window.charAt(end - 1))) {
       return end;
     }
-    end = start;
   }
   return -1;
 }
@@ -51,17 +43,18 @@ export function splitLongTextLine(
   const chunks: string[] = [];
   let remaining = line;
   while (remaining.length > normalizedLimit) {
-    let breakIndex = clampToCodePointBoundary(remaining, normalizedLimit);
+    let breakIndex = normalizedLimit;
     if (!options.preserveWhitespace) {
       const window = remaining.slice(0, normalizedLimit);
       breakIndex = findWhitespaceBreak(window);
       if (breakIndex <= 0) {
         breakIndex = findCjkPunctuationBreak(window);
       }
-      if (breakIndex <= 0) {
-        breakIndex = clampToCodePointBoundary(remaining, normalizedLimit);
+      if (breakIndex <= 0 || breakIndex < firstGraphemeClusterLength(remaining)) {
+        breakIndex = normalizedLimit;
       }
     }
+    breakIndex = avoidTrailingGraphemeBreak(remaining, 0, breakIndex);
     chunks.push(remaining.slice(0, breakIndex));
     remaining = remaining.slice(breakIndex);
   }
@@ -96,23 +89,22 @@ export function chunkTextByBreakResolver(
     const candidateBreak = resolveBreakIndex(window);
     // Invalid, fractional, or zero-width soft breaks would stall the loop.
     const breakIdx =
-      Number.isInteger(candidateBreak) && candidateBreak > 0 && candidateBreak <= normalizedLimit
+      Number.isInteger(candidateBreak) &&
+      candidateBreak > 0 &&
+      candidateBreak <= normalizedLimit &&
+      (candidateBreak === normalizedLimit ||
+        candidateBreak >= firstGraphemeClusterLength(remaining))
         ? candidateBreak
         : normalizedLimit;
     const safeBreakIdx = avoidTrailingGraphemeBreak(remaining, 0, breakIdx);
-    const rawChunk = remaining.slice(0, safeBreakIdx);
-    const chunk = rawChunk.trimEnd();
+    const chunk = trimEndWhitespaceGraphemes(remaining, safeBreakIdx);
     if (chunk.length > 0) {
       chunks.push(chunk);
     }
-    // Keep separator ownership with the boundary: one matched separator is
-    // consumed here, and any adjacent whitespace is trimmed before the next window.
-    const brokeOnSeparator =
-      safeBreakIdx < remaining.length && /\s/.test(remaining.charAt(safeBreakIdx));
-    const nextStart = Math.min(remaining.length, safeBreakIdx + (brokeOnSeparator ? 1 : 0));
-    remaining = remaining.slice(nextStart).trimStart();
+    // Consume only complete disposable separators before the next window.
+    remaining = remaining.slice(skipWhitespaceGraphemes(remaining, safeBreakIdx));
   }
-  const finalChunk = remaining.trimEnd();
+  const finalChunk = trimEndWhitespaceGraphemes(remaining);
   if (finalChunk.length) {
     chunks.push(finalChunk);
   }

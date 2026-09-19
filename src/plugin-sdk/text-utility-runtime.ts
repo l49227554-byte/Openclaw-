@@ -4,6 +4,10 @@ import { withTimeout } from "../utils/with-timeout.js";
 
 export { estimateStringChars } from "@openclaw/normalization-core/cjk-chars";
 export { truncateCodePoints } from "@openclaw/normalization-core/code-points";
+export {
+  avoidTrailingGraphemeBreak,
+  firstGraphemeClusterLength,
+} from "@openclaw/normalization-core/utf16-slice";
 
 export {
   estimateToolResultTextChars,

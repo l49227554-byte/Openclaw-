@@ -21,12 +21,10 @@ import {
   escapeTelegramHtml,
   escapeTelegramHtmlAttr,
   findTelegramHtmlEntityEnd,
+  prepareTelegramHtmlTextSplitter,
+  type TelegramHtmlTextSplitter,
 } from "./format-html.js";
 import { renderTelegramMarkdownIR } from "./format-render.js";
-import {
-  findTelegramHtmlSafeSplitIndex,
-  isUsableTelegramChunkLimit,
-} from "./format-split-index.js";
 import { renderTelegramMonospaceGrid } from "./text-width.js";
 
 export { escapeTelegramHtml } from "./format-html.js";
@@ -652,25 +650,10 @@ function popTelegramHtmlTag(tags: TelegramHtmlTag[], name: string): void {
   }
 }
 
-function splitTelegramHtmlChunksRaw(html: string, limit: number): string[] {
-  // A limit that coerces to `NaN` makes `available` NaN below, and `appendText` then pushes a
-  // chunk per pass while `remaining.slice(NaN)` consumes nothing. That loop does not hang: at
-  // the merge base it ran until V8 refused to grow the chunk array and threw
-  // `RangeError: Invalid array length` (about 10 s and 1.9 GB of heap on Node 24), or, with a
-  // tag open at the cut, until the heap was exhausted and the process aborted outright.
-  // Reject it here instead of coercing to a default: a caller that arrives with NaN has a bug
-  // worth surfacing, and an immediate throw is catchable where the abort was not. Every limit
-  // the base could read as a number is still read the same way: `Infinity` asks for no limit
-  // and the whole-input return below answers that, negative budgets clamp to 1.
-  if (!isUsableTelegramChunkLimit(limit)) {
-    throw new TypeError(
-      `Telegram HTML chunk limit coerces to NaN (received ${typeof limit}: ${String(limit)})`,
-    );
-  }
+function splitTelegramHtmlChunksRaw(html: string, normalizedLimit: number): string[] {
   if (!html) {
     return [];
   }
-  const normalizedLimit = Math.max(1, Math.floor(limit));
   if (html.length <= normalizedLimit) {
     return [html];
   }
@@ -695,51 +678,42 @@ function splitTelegramHtmlChunksRaw(html: string, limit: number): string[] {
   };
 
   const appendText = (segment: string) => {
-    let remaining = segment;
-    while (remaining.length > 0) {
+    let findSplitIndex: TelegramHtmlTextSplitter | undefined;
+    let start = 0;
+    while (start < segment.length) {
       const available =
         normalizedLimit - current.length - buildTelegramHtmlCloseSuffixLength(openTags);
-      if (available <= 0) {
-        if (!chunkHasPayload) {
-          // Preserve the matching closes separately when tag overhead alone
-          // fills a chunk. Dropping only this active scope keeps later tags
-          // balanced while the affected text degrades to plain HTML content.
-          suppressedTagNames.push(...openTags.map((tag) => tag.name));
-          openTags.length = 0;
-          resetCurrent();
-          continue;
+      let splitAt = start;
+      if (available > 0) {
+        if (segment.length - start <= available) {
+          splitAt = segment.length;
+        } else {
+          findSplitIndex ??= prepareTelegramHtmlTextSplitter(segment);
+          splitAt = findSplitIndex(start, available, current.length === 0);
         }
+      }
+      if (chunkHasPayload && splitAt <= start) {
         flushCurrent();
         continue;
       }
-      if (remaining.length <= available) {
-        current += remaining;
-        chunkHasPayload = true;
-        break;
-      }
-      const splitAt = findTelegramHtmlSafeSplitIndex(remaining, available);
-      if (splitAt <= 0) {
-        if (!chunkHasPayload) {
-          throw new Error(
-            `Telegram HTML chunk limit exceeded by leading entity (limit=${normalizedLimit})`,
-          );
-        }
-        flushCurrent();
+      if (current.length > 0 && (splitAt <= start || splitAt - start > available)) {
+        // Discard empty tag overhead, suppressing only active scopes that block the next payload.
+        suppressedTagNames.push(...openTags.map((tag) => tag.name));
+        openTags.length = 0;
+        resetCurrent();
         continue;
       }
-      if (splitAt > available && chunkHasPayload) {
-        // The boundary helpers may overshoot the budget by one code unit to keep a grapheme
-        // cluster whole, which utf16-slice.ts documents. Earlier payload in this chunk means
-        // there is a cheaper option than busting the limit: flush now and give the cluster a
-        // full budget. `chunkHasPayload` is false after the flush, so this runs at most once
-        // per chunk and the overshoot is only accepted when the cluster alone cannot fit.
-        flushCurrent();
-        continue;
+      if (splitAt <= start) {
+        throw new Error(
+          `Telegram HTML chunk limit exceeded by leading entity (limit=${normalizedLimit})`,
+        );
       }
-      current += remaining.slice(0, splitAt);
+      current += segment.slice(start, splitAt);
       chunkHasPayload = true;
-      remaining = remaining.slice(splitAt);
-      flushCurrent();
+      start = splitAt;
+      if (start < segment.length) {
+        flushCurrent();
+      }
     }
   };
 
@@ -796,12 +770,15 @@ function splitTelegramHtmlChunksRaw(html: string, limit: number): string[] {
 }
 
 export function splitTelegramHtmlChunks(html: string, limit: number): string[] {
-  const chunks = splitTelegramHtmlChunksRaw(html, limit);
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  if (Number.isNaN(normalizedLimit)) {
+    throw new TypeError("Telegram HTML chunk limit must be numeric");
+  }
+  const chunks = splitTelegramHtmlChunksRaw(html, normalizedLimit);
   if (chunks.every((chunk) => protectTelegramAssistantTranscriptRoleHeaders(chunk) === chunk)) {
     return chunks;
   }
 
-  const normalizedLimit = Math.max(1, Math.floor(limit));
   const protectedContentLimit = normalizedLimit - TELEGRAM_ASSISTANT_TRANSCRIPT_PREFIX.length;
   if (protectedContentLimit < 1) {
     throw new Error(

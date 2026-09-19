@@ -82,6 +82,8 @@ export type SqliteWalMaintenance = {
   /** Last maintenance observation; reading it never checkpoints or probes storage. */
   readonly health?: SqliteWalHealth;
   checkpoint: () => boolean;
+  /** Inspect this retained WAL connection, independently of checkpoint completion elsewhere. */
+  inspectIdle?: () => "healthy" | "retire";
   close: (options?: { checkpointMode?: SqliteWalCheckpointMode }) => boolean;
 };
 
@@ -733,6 +735,12 @@ export function configureSqliteWalMaintenance(
       return checkpointOwner.health;
     },
     checkpoint,
+    inspectIdle: () =>
+      runMaintenance(() =>
+        checkpointOwner.inspectIdle(db.prepare("PRAGMA wal_checkpoint(PASSIVE);").get()),
+      )
+        ? "healthy"
+        : "retire",
     close: (closeOptions) => {
       clearInterval(timer ?? undefined);
       timer = null;

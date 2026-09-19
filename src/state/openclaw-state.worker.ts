@@ -317,6 +317,18 @@ function createSharedStateWorkerBackend(
           readStableSqliteFileGeneration(context.databasePath),
         );
       }
+      if (command.type === "database.inspectIdle") {
+        // Idle maintenance must never materialize a connection for an artifact-preserving reader.
+        if (
+          !nativeDatabase?.db.isOpen ||
+          openClawStateDatabaseCache.getCachedOpenClawStateDatabase(nativeDatabase.path) !==
+            nativeDatabase
+        ) {
+          return "retire";
+        }
+        assertOpenClawStateDatabaseOwner(nativeDatabase.db, { pathname: nativeDatabase.path });
+        return nativeDatabase.walMaintenance.inspectIdle?.() ?? "retire";
+      }
       if (command.type === "userPreferences.read" || command.type === "userPreferences.write") {
         return executeUserPreferenceCommand(command, {
           database: open(),

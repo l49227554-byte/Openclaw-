@@ -586,6 +586,31 @@ describe("generateVoiceResponse", () => {
     expect(result.text).toBe("Fenced JSON works.");
   });
 
+  it("reports an error when the run produces no payloads at all", async () => {
+    const { result } = await runGenerateVoiceResponse([]);
+
+    expect(result.text).toBeNull();
+    expect(result.error).toBe("Response generation produced no output");
+  });
+
+  it("reports an error when the run produces only an error payload", async () => {
+    // The extractor filters error payloads out, so a nonempty error payload
+    // still leaves the caller with nothing to hear.
+    const { result } = await runGenerateVoiceResponse([
+      { text: "429 Too Many Requests", isError: true },
+    ]);
+
+    expect(result.text).toBeNull();
+    expect(result.error).toBe("Response generation produced no output");
+  });
+
+  it("keeps deliberate silence silent rather than reporting an error", async () => {
+    const { result } = await runGenerateVoiceResponse([{ text: '{"spoken":""}' }]);
+
+    expect(result.text).toBeNull();
+    expect(result.error).toBeUndefined();
+  });
+
   it("returns silence for an explicit empty spoken contract response", async () => {
     const { result } = await runGenerateVoiceResponse([{ text: '{"spoken":""}' }]);
 

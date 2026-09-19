@@ -15,7 +15,7 @@ import { VoiceCallWebhookServer } from "./webhook.js";
 import { connectWs, waitForClose } from "./websocket-test-support.js";
 
 type ResponseParams = { userMessage: string; onEarlyText?: (text: string) => Promise<boolean> };
-type ResponseResult = { text: string; deliveredEarly: boolean };
+type ResponseResult = { text: string | null; deliveredEarly: boolean; error?: string };
 const mocks = vi.hoisted(() => ({
   generate: vi.fn<(params: ResponseParams) => Promise<ResponseResult>>(),
   createTranscription: vi.fn<(request: RealtimeTranscriptionSessionCreateRequest) => void>(),
@@ -156,6 +156,10 @@ async function responseAt(index: number) {
     early,
     finish: async (text: string) => {
       response.resolve({ text, deliveredEarly: false });
+      await completion.promise;
+    },
+    fail: async (error: string) => {
+      response.resolve({ text: null, deliveredEarly: false, error });
       await completion.promise;
     },
   };
@@ -362,6 +366,37 @@ describe("automatic phone reply ownership", () => {
       }
     },
   );
+
+  it("tells the caller when response generation fails before any speech", async () => {
+    const call = await startCall();
+    await call.speech("first question");
+    const first = await responseAt(0);
+    await first.fail("Response generation produced no output");
+    expect(call.provider.playTtsCalls.map((entry) => entry.text)).toEqual([
+      "Sorry, I hit a problem working out a response. Please try again.",
+    ]);
+  });
+
+  it("names rate limiting when the provider reports it", async () => {
+    const call = await startCall();
+    await call.speech("first question");
+    const first = await responseAt(0);
+    await first.fail("Error: 429 Too Many Requests");
+    expect(call.provider.playTtsCalls.map((entry) => entry.text)).toEqual([
+      "Sorry, my language service is rate limited right now, so I can't answer that. Please try again in a little while.",
+    ]);
+  });
+
+  it("stays silent on a failure that follows a delivered early reply", async () => {
+    const call = await startCall();
+    await call.speech("first question");
+    const first = await responseAt(0);
+    expect(await first.early("here is the answer")).toBe(true);
+    await first.fail("Error: 429 Too Many Requests");
+    // The caller already heard a valid answer, so the turn must not follow it
+    // with an apology that contradicts what was just delivered.
+    expect(call.provider.playTtsCalls.map((entry) => entry.text)).toEqual(["here is the answer"]);
+  });
 
   it("invalidates on accepted carrier interim speech without blocking explicit speech", async () => {
     const call = await startCall();

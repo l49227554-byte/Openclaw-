@@ -1449,8 +1449,9 @@ async function runLightDreaming(
       data,
       nowMs,
       timezone: params.config.timezone,
-      model: params.config.execution?.model,
-      timeoutMs: params.config.execution?.timeoutMs,
+      // Line-neutral spread: forwards model + timeoutMs from the execution config
+      // without growing this over-cap file (line-cap ratchet).
+      ...params.config.execution,
       logger: params.logger,
       detached: params.detachNarratives,
     });
@@ -1542,8 +1543,9 @@ async function runRemDreaming(
       data,
       nowMs,
       timezone: params.config.timezone,
-      model: params.config.execution?.model,
-      timeoutMs: params.config.execution?.timeoutMs,
+      // Line-neutral spread: forwards model + timeoutMs from the execution config
+      // without growing this over-cap file (line-cap ratchet).
+      ...params.config.execution,
       logger: params.logger,
       detached: params.detachNarratives,
     });

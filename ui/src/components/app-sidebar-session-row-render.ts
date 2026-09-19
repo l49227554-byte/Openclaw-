@@ -243,21 +243,16 @@ function renderSidebarSessionIndicators(
   const hasTrail = session.isChild && (session.runtimeMs != null || session.startedAt != null);
   const metaId = hasTrail ? sidebarSessionMetaId(session.key) : undefined;
   const stateId = !team && stateDescription ? sidebarSessionStateId(session.key) : undefined;
-  const persistentIndicator =
-    team && leadingIndicator === nothing && session.visibility !== "draft"
-      ? nothing
-      : html`<span class="sidebar-session-indicator"
-          >${leadingIndicator}
-          ${
-            session.visibility === "draft"
-              ? html`<span
-                  class="session-row-draft-indicator"
-                  title=${t("chat.sessionSharing.draft")}
-                  >👻</span
-                >`
-              : nothing
-          }</span
-        >`;
+  const persistentIndicator = html`<span class="sidebar-session-indicator"
+    >${leadingIndicator}
+    ${
+      session.visibility === "draft"
+        ? html`<span class="session-row-draft-indicator" title=${t("chat.sessionSharing.draft")}
+            >👻</span
+          >`
+        : nothing
+    }</span
+  >`;
   const originIndicators = html`${session.archived ? html`<span class="sidebar-session__archive-glyph" role="img" aria-label=${t("sessionsView.archived")} title=${t("sessionsView.archived")}>${icons.archive}</span>` : nothing}${session.forkSource ? html`<span class="sidebar-session-fork-indicator" aria-hidden=${team || session.isChild ? nothing : "true"} role="img" aria-label=${t("sessionsView.forkedSession")}>${icons.gitFork}</span>` : nothing}`;
   const trail = hasTrail
     ? html`<span class="session-row-trail" id=${metaId}
@@ -293,7 +288,7 @@ function renderSidebarSessionIndicators(
         .maxVisible=${3}
         variant="session"
       ></openclaw-viewer-facepile>
-      ${team ? originIndicators : nothing} ${team ? persistentIndicator : nothing}
+      ${team ? originIndicators : nothing}
       ${team && (session.workSession || session.acpSession) && !session.workspaceKind && !pullRequest ? html`<span class="session-row-badge" role="img" aria-label=${t("chat.sidebar.coding")} title=${session.subtitle ?? t("chat.sidebar.coding")}>${icons.terminal}</span>` : nothing}
       ${team && session.hasAutomation ? html`<span class="session-row-badge" role="img" aria-label=${t("tabs.cron")} title=${t("tabs.cron")}>${icons.clock}</span>` : nothing}
       ${renderSessionRowBadges({
@@ -457,7 +452,7 @@ export function renderRecentSession(params: {
         aria-describedby=${[stateId, metaId].filter(Boolean).join(" ") || nothing}
         @click=${(event: MouseEvent) => host.handleSessionRowClick(event, session)}
       >
-        ${team ? nothing : persistentIndicator}
+        ${persistentIndicator}
         <span class="sidebar-recent-session__text">
           <span class="sidebar-recent-session__title-row"> ${marqueeLabel} </span>
           <span class="sidebar-recent-session__details">

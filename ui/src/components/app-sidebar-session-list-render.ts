@@ -668,7 +668,8 @@ export function renderSessionList(params: {
 }
 
 export function renderSessionListFrame(host: SidebarSessionListHost, body: unknown) {
-  const hiddenMainSessionKey = host.mainSessionRow()?.key;
+  const hiddenMainSessionKey =
+    host.sidebarAgentsMode === "roster" ? undefined : host.mainSessionRow()?.key;
   return html`
     <section
       class="sidebar-sessions ${

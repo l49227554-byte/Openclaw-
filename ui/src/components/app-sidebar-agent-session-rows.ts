@@ -26,6 +26,7 @@ import type {
   SidebarKnownSessionAttention,
   SidebarRecentSession,
   SidebarSessionStatusFilter,
+  SidebarSessionAttention,
 } from "./app-sidebar-session-types.ts";
 import type { SessionDataController } from "./session-data-controller.ts";
 
@@ -113,7 +114,7 @@ export function projectSidebarAgentSessionRows({
     rows,
     childRowsByParent: childSessionRowsByParent,
   });
-  // Home owns the main conversation in chip mode; its subagents remain in Tasks.
+  // Home belongs to its navigation entry (the agent header in team mode), never a session row.
   const canonicalMainKeys = agentIds.map((agentId) => host.selectedAgentMainSessionKey(agentId));
   const isMainSession = (key: string) =>
     canonicalMainKeys.some((mainKey) => areUiSessionKeysEquivalent(key, mainKey));
@@ -124,21 +125,6 @@ export function projectSidebarAgentSessionRows({
           return row ? [row] : [];
         })
       : filterVisibleSessionRows(rows.filter(inScope), visibilityOptions).toSorted(compareSessions);
-  if (grouped) {
-    // The generic chat filter excludes global streams; their canonical main
-    // conversation still belongs to its agent in team mode.
-    for (const row of rows) {
-      if (
-        row.kind === "global" &&
-        inScope(row) &&
-        isMainSession(row.key) &&
-        sessionMatchesArchivedFilter(row, host.sessionsStatusFilter) &&
-        !rootRows.some((root) => areUiSessionKeysEquivalent(root.key, row.key))
-      ) {
-        rootRows.push(row);
-      }
-    }
-  }
   const lineageAgentId = normalizeAgentId(
     parseAgentSessionKey(lineageRoot?.key ?? "")?.agentId ?? "",
   );
@@ -150,17 +136,10 @@ export function projectSidebarAgentSessionRows({
       session.key === navigationState.activeRowKey &&
       !isSessionHidden(session) &&
       !adopted.has(session.key) &&
-      (!isMainSession(session.key) ||
-        (grouped && navigationState.toSidebarSession(session).visuallyActive)),
+      !isMainSession(session.key),
   );
   const mainSessionKeys = new Set(canonicalMainKeys);
-  const scopedRootRows = rootRows.filter((row) => {
-    if (isMainSession(row.key)) {
-      mainSessionKeys.add(row.key);
-      return grouped;
-    }
-    return true;
-  });
+  const scopedRootRows = rootRows.filter((row) => !isMainSession(row.key));
   const lineageRouteAgentId = normalizeAgentId(
     parseAgentSessionKey(navigationState.routeSessionKey)?.agentId ?? "",
   );
@@ -173,7 +152,7 @@ export function projectSidebarAgentSessionRows({
       ? inScope(lineageRoot)
       : lineageAgentId === selected || lineageRouteAgentId === selected) &&
     !adopted.has(lineageRoot.key) &&
-    (!isMainSession(lineageRoot.key) || grouped) &&
+    !isMainSession(lineageRoot.key) &&
     !scopedRootRows.some((row) => row.key === lineageRoot.key)
   ) {
     scopedRootRows.push(lineageRoot);
@@ -243,21 +222,19 @@ export function projectSidebarAgentSessionRows({
     return false;
   });
   const categorizedChildRows = collectCategorizedChildRootRows({
-    rows: sessionCandidateRows,
+    rows: sessionCandidateRows.filter((row) => !isMainSession(row.key)),
     scopedRoots: scopedRootRows,
     visibilityOptions,
   });
   scopedRootRows.push(...categorizedChildRows);
   const scopedRootKeys = new Set(scopedRootRows.map((row) => row.key));
-  const promotedRows = grouped
-    ? []
-    : collectPromotedMainChildRows({
-        rows: sessionCandidateRows,
-        mainSessionKeys,
-        scopedRootKeys,
-        showCron: host.sessionsShowCron,
-        showSystem: host.sessionsShowSystem,
-      });
+  const promotedRows = collectPromotedMainChildRows({
+    rows: sessionCandidateRows,
+    mainSessionKeys,
+    scopedRootKeys,
+    showCron: host.sessionsShowCron,
+    showSystem: host.sessionsShowSystem,
+  });
   for (const row of promotedRows) {
     if (!scopedRootKeys.has(row.key)) {
       scopedRootKeys.add(row.key);
@@ -290,4 +267,65 @@ export function projectSidebarAgentSessionRows({
     projected.unshift(navigationState.toSidebarSession(selectedFallback));
   }
   return projected;
+}
+
+/** Home navigation owns its own state; persistent child conversations own separate rows. */
+export function projectSidebarHomeSession({
+  host,
+  row,
+  agentId,
+  result,
+  navigationState,
+  knownSessionAttention,
+}: {
+  host: AgentSessionRowsHost & {
+    resolveHomeSessionAttention(key: string, row: GatewaySessionRow): SidebarSessionAttention;
+  };
+  row: GatewaySessionRow;
+  agentId: string;
+  result?: SessionsListResult | null;
+  navigationState: SidebarSessionNavigationState;
+  knownSessionAttention: readonly SidebarKnownSessionAttention[];
+}): SidebarRecentSession {
+  const { rows, childSessionRowsByParent } = projectSidebarArchiveVisibility({
+    sessionData:
+      result !== undefined
+        ? {
+            childSessionRowsByParent: host.sessionData.childSessionRowsByParent,
+            sessionResultsByAgent: host.sessionData.sessionResultsByAgent,
+            sessionsAgentId: agentId,
+            sessionsResult: result,
+          }
+        : host.sessionData,
+    selectedAgentId: agentId,
+    statusFilter: host.sessionsStatusFilter,
+    deletionState: (key, owner) => host.sessionDataContext?.sessions.deletionState(key, owner),
+    archiveVisibility: (key) => host.sessionDataContext?.sessions.archiveVisibility(key),
+  });
+  const own = navigationState.toSidebarSession(row);
+  const home = projectSessionTree({
+    roots: [row],
+    mainSessionKeys: new Set([row.key, host.selectedAgentMainSessionKey(agentId)]),
+    rowsByKey: collectSidebarSessionRowsByKey({
+      rows,
+      childRowsByParent: childSessionRowsByParent,
+    }),
+    loadingChildKeys: host.sessionData.loadingChildSessionKeys,
+    knownSessionAttention,
+    toSidebarSession: (session, isChild) =>
+      isChild
+        ? navigationState.toSidebarSession(session, true)
+        : { ...own, attention: host.resolveHomeSessionAttention(row.key, row) },
+  })[0]!;
+  if (result === undefined) {
+    return home;
+  }
+  // Team mode promotes persistent Home children, so the header must not count them twice.
+  return {
+    ...home,
+    ...home.subagentSummary,
+    workspaceConflictCount:
+      (own.workspaceConflictCount ?? 0) + (home.subagentSummary?.workspaceConflictCount ?? 0) ||
+      undefined,
+  };
 }

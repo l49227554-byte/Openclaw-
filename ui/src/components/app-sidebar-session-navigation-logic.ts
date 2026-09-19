@@ -34,6 +34,7 @@ import {
   isPinnableUiSessionRow,
   isUiGlobalScopeConfigured,
   normalizeAgentId,
+  normalizeDefaultMainSessionAliasForUi,
   readSessionDefaults,
   resolveUiConfiguredMainKey,
   resolveUiDefaultAgentId,
@@ -495,11 +496,27 @@ export function collectPromotedMainChildRows(input: {
   showCron: boolean;
   showSystem: boolean;
 }): GatewaySessionRow[] {
+  const parents = new Map(
+    input.rows.map((row) => [
+      normalizeDefaultMainSessionAliasForUi(row.key),
+      resolveUiSessionNavigationParentKey(row),
+    ]),
+  );
   return input.rows.filter((row) => {
-    const parentKey = resolveUiSessionNavigationParentKey(row);
+    let parentKey = resolveUiSessionNavigationParentKey(row);
+    const visited = new Set<string>();
+    // Runs are not navigation rows; keep the first persistent conversation beneath Home.
+    while (parentKey && isSubagentSessionKey(parentKey)) {
+      const key = normalizeDefaultMainSessionAliasForUi(parentKey);
+      if (visited.has(key)) {
+        return false;
+      }
+      visited.add(key);
+      parentKey = parents.get(key);
+    }
     return (
       parentKey != null &&
-      input.mainSessionKeys.has(parentKey) &&
+      [...input.mainSessionKeys].some((key) => areUiSessionKeysEquivalent(key, parentKey)) &&
       !input.scopedRootKeys.has(row.key) &&
       !isSubagentSessionKey(row.key) &&
       !row.archived &&

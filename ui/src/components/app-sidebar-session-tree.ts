@@ -45,7 +45,9 @@ function summarizeChildren(
     queuedChildCount +=
       Number(child.hasActiveRun && child.status === "queued") +
       (descendants?.queuedChildCount ?? 0);
-    workspaceConflictCount += child.workspaceConflictCount ?? 0;
+    workspaceConflictCount += onlySubagents
+      ? (child.ownWorkspaceConflictCount ?? 0) + (descendants?.workspaceConflictCount ?? 0)
+      : (child.workspaceConflictCount ?? 0);
   }
   childAttention.push(...knownAttention);
   return {
@@ -197,10 +199,12 @@ export function projectSessionTree(params: {
       ...projected,
       ...summary,
       ownAttention: projected.attention,
+      ownWorkspaceConflictCount: projected.workspaceConflictCount,
       subagentSummary,
       attention,
       childSessionKeys: navigationChildKeys,
-      childLoadParentKeys: navigationChildKeys.length > 0 ? [...childLoadParentKeys] : [],
+      // Hidden runs still need reads to discover their persistent descendants.
+      childLoadParentKeys: childSessionKeys.length > 0 ? [...childLoadParentKeys] : [],
       children,
       loadingChildren: [...childLoadParentKeys].some((key) => loadingChildKeys.has(key)),
       containsActiveDescendant: children.some(

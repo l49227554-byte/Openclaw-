@@ -2,7 +2,7 @@
  * Requester completion calls, direct fallback, and source-delivery evidence.
  */
 import { sanitizePendingFinalDeliveryText } from "../../../auto-reply/reply/pending-final-delivery-state.js";
-<<<<<<< HEAD
+import type { ChannelId } from "../../../channels/plugins/types.public.js";
 import {
   getRestartRecoveryTerminalDeliveryEvidence,
   hasRestartRecoverySourceClaim,
@@ -10,7 +10,6 @@ import {
 } from "../../../config/sessions/restart-recovery-state.js";
 import type { RestartRecoveryTerminalDeliveryEvidence } from "../../../config/sessions/restart-recovery-types.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
-import type { ChannelId } from "../../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { waitForGatewayDispatch } from "../../../gateway/server-in-process-dispatch.js";
 import { resolveOutboundSessionRoute } from "../../../infra/outbound/outbound-session.js";
@@ -18,8 +17,8 @@ import { sourceDeliveryTargetsMatch } from "../../../infra/outbound/source-deliv
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../../sessions/input-provenance.js";
 import { deriveSessionChatTypeFromKey } from "../../../sessions/session-chat-type-shared.js";
 import { isNonTerminalAgentRunStatus } from "../../../shared/agent-run-status.js";
-import { buildAgentRunTerminalOutcomeFromWaitResult } from "../../agent-run-terminal-outcome.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
+import { buildAgentRunTerminalOutcomeFromWaitResult } from "../../agent-run-terminal-outcome.js";
 import { sanitizeAgentRunTerminalReplyText } from "../../agent-run-terminal-reply.js";
 import {
   hasCommittedSourceReplyDeliveryEvidence,

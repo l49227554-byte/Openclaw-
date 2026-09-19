@@ -154,6 +154,8 @@ export type ConfigProps = {
   setChatMessageMaxWidth: (value: string | undefined) => void;
   chatCollapseTaskProgress: boolean;
   setChatCollapseTaskProgress: (enabled: boolean) => void;
+  disableUiTransitions: boolean;
+  setDisableUiTransitions: (enabled: boolean) => void;
   showAdvancedSettings: boolean;
   setShowAdvancedSettings: (enabled: boolean) => void;
   forceShowAdvanced?: boolean;

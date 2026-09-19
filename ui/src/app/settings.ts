@@ -167,6 +167,8 @@ export const UI_APPEARANCE_DEFAULTS = {
   theme: "claw",
   themeMode: "system",
   textScale: 100,
+  // Browser-local motion preference; the Control UI keeps its shipped transitions by default.
+  disableUiTransitions: false,
   sidebarLiveActivity: true,
   chatMessageMaxWidth: "48rem",
   chatCollapseTaskProgress: false,
@@ -196,6 +198,8 @@ export type UiSettings = {
   chatPersistCommentary?: boolean;
   // Browser-local presentation preference; false preserves active-card auto-expand.
   chatCollapseTaskProgress?: boolean;
+  // Browser-local motion preference; undefined or false keeps shipped transitions.
+  disableUiTransitions?: boolean;
   chatSendShortcut?: ChatSendShortcut;
   chatFollowUpMode?: ChatFollowUpMode; // Default handling for messages sent while a run is active
   catalogOpenTarget?: CatalogOpenTarget;
@@ -472,6 +476,7 @@ export function loadUiPreferences(
     chatShowToolCalls: true,
     chatPersistCommentary: true,
     chatCollapseTaskProgress: UI_APPEARANCE_DEFAULTS.chatCollapseTaskProgress,
+    disableUiTransitions: UI_APPEARANCE_DEFAULTS.disableUiTransitions,
     chatSendShortcut: UI_APPEARANCE_DEFAULTS.chatSendShortcut,
     catalogOpenTarget: UI_APPEARANCE_DEFAULTS.catalogOpenTarget,
     navCollapsed: false,
@@ -542,6 +547,10 @@ export function loadUiPreferences(
         typeof parsed.chatCollapseTaskProgress === "boolean"
           ? parsed.chatCollapseTaskProgress
           : defaults.chatCollapseTaskProgress,
+      disableUiTransitions:
+        typeof parsed.disableUiTransitions === "boolean"
+          ? parsed.disableUiTransitions
+          : defaults.disableUiTransitions,
       chatSendShortcut: normalizeChatSendShortcut(parsed.chatSendShortcut),
       chatFollowUpMode: normalizeChatFollowUpModeOverride(parsed.chatFollowUpMode),
       catalogOpenTarget: normalizeCatalogOpenTarget(parsed.catalogOpenTarget),
@@ -696,6 +705,7 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
     chatShowToolCalls: next.chatShowToolCalls,
     chatPersistCommentary: next.chatPersistCommentary ?? true,
     ...(next.chatCollapseTaskProgress === true ? { chatCollapseTaskProgress: true } : {}),
+    ...(next.disableUiTransitions === true ? { disableUiTransitions: true } : {}),
     ...(normalizeChatSendShortcut(next.chatSendShortcut) === "modifier-enter"
       ? { chatSendShortcut: "modifier-enter" as const }
       : {}),

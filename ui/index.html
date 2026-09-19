@@ -107,6 +107,11 @@
           document.documentElement.setAttribute("data-theme-mode", resolvedMode);
           // Plugin semantic styles select on [data-theme-resolved]; keep in lockstep.
           document.documentElement.setAttribute("data-theme-resolved", resolvedMode);
+          // Browser-local motion preference; apply before first paint so no
+          // transition runs on the first frame.
+          if (s && s.disableUiTransitions === true) {
+            document.documentElement.setAttribute("data-disable-ui-transitions", "true");
+          }
         } catch (e) {}
       })();
     </script>

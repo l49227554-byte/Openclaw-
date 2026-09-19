@@ -248,6 +248,33 @@ describe("settings preference persistence", () => {
     expect(loadSettings().chatCollapseTaskProgress).toBe(false);
   });
 
+  it("defaults UI transition disabling off and persists only the opt-in", () => {
+    setTestLocation({
+      protocol: "https:",
+      host: "gateway.example:8443",
+      pathname: "/",
+    });
+
+    const gwUrl = expectedGatewayUrl("");
+    const scopedKey = `openclaw.control.settings.v1:${gwUrl}`;
+    expect(loadSettings().disableUiTransitions).toBe(false);
+
+    saveSettings({ ...loadSettings(), disableUiTransitions: true });
+    expect(JSON.parse(localStorage.getItem(scopedKey) ?? "{}").disableUiTransitions).toBe(true);
+    expect(loadSettings().disableUiTransitions).toBe(true);
+
+    saveSettings({ ...loadSettings(), disableUiTransitions: false });
+    expect(JSON.parse(localStorage.getItem(scopedKey) ?? "{}")).not.toHaveProperty(
+      "disableUiTransitions",
+    );
+
+    localStorage.setItem(
+      scopedKey,
+      JSON.stringify({ gatewayUrl: gwUrl, disableUiTransitions: "yes" }),
+    );
+    expect(loadSettings().disableUiTransitions).toBe(false);
+  });
+
   it("persists only the non-default catalog open target", () => {
     setTestLocation({
       protocol: "https:",

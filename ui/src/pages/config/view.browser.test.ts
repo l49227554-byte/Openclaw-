@@ -100,6 +100,8 @@ describe("config view", () => {
     setChatMessageMaxWidth: vi.fn(),
     chatCollapseTaskProgress: false,
     setChatCollapseTaskProgress: vi.fn(),
+    disableUiTransitions: false,
+    setDisableUiTransitions: vi.fn(),
     showAdvancedSettings: false,
     setShowAdvancedSettings: vi.fn(),
     chatSendShortcut: "enter" as const,
@@ -2189,6 +2191,28 @@ describe("config view", () => {
     expect(toggle?.checked).toBe(false);
     row?.click();
     expect(setChatCollapseTaskProgress).toHaveBeenCalledWith(true);
+    expect(row?.textContent).toContain("Using default: Disabled");
+    expect(row?.textContent).toContain("Stored in this browser only");
+  });
+
+  it("renders UI transition disabling off by default and enables it from Theme settings", () => {
+    const setDisableUiTransitions = vi.fn();
+    const { container } = renderConfigView({
+      activeSection: "__appearance__",
+      includeSections: ["__appearance__"],
+      disableUiTransitions: false,
+      setDisableUiTransitions,
+    });
+    const row = Array.from(container.querySelectorAll<HTMLElement>(".settings-row")).find(
+      (candidate) =>
+        candidate.querySelector(".settings-row__title")?.textContent?.trim() ===
+        "Disable UI transition animations",
+    );
+    const toggle = row?.querySelector<HTMLElement & { checked: boolean }>("wa-switch");
+
+    expect(toggle?.checked).toBe(false);
+    row?.click();
+    expect(setDisableUiTransitions).toHaveBeenCalledWith(true);
     expect(row?.textContent).toContain("Using default: Disabled");
     expect(row?.textContent).toContain("Stored in this browser only");
   });

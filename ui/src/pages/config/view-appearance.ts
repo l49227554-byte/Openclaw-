@@ -21,6 +21,7 @@ import {
   renderSettingsRow,
   renderSettingsSegmented,
   renderSettingsStatus,
+  renderSettingsToggleRow,
   renderSettingsValue,
 } from "../../components/settings-ui.ts";
 import { t } from "../../i18n/index.ts";
@@ -371,6 +372,17 @@ export function renderAppearanceSection(
                 }
               },
             }),
+          })}
+          ${renderSettingsToggleRow({
+            title: t("configView.appearance.disableTransitions"),
+            description: html`${t("configView.appearance.disableTransitionsHint")}<br />
+              ${renderSettingsDefaultDescription(
+                t("common.disabled"),
+                props.disableUiTransitions !== UI_APPEARANCE_DEFAULTS.disableUiTransitions,
+              )}
+              ${t("quickSettings.personal.browserOnly")}`,
+            checked: props.disableUiTransitions,
+            onChange: props.setDisableUiTransitions,
           })}
           <div class="settings-row settings-row--stacked">
             ${

@@ -949,6 +949,9 @@ const enSettings = {
       intro: "Theme, chat, and sidebar preferences for this Control UI client.",
       theme: "Theme",
       chooseTheme: "Choose a theme family.",
+      disableTransitions: "Disable UI transition animations",
+      disableTransitionsHint:
+        "Turns off CSS transitions in the Control UI. Animations are unaffected.",
       typography: "Typography",
       fonts: {
         ui: "Interface",

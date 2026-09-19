@@ -1156,6 +1156,15 @@ wa-popover::part(body)::-webkit-scrollbar-thumb:hover {
   }
 }
 
+/* Browser-local escape hatch for jank caused by layout-wide transitions
+   (Settings -> Appearance -> Theme). Only transition-property is cleared, so CSS
+   animations keep running. */
+html[data-disable-ui-transitions="true"] *,
+html[data-disable-ui-transitions="true"] *::before,
+html[data-disable-ui-transitions="true"] *::after {
+  transition-property: none !important;
+}
+
 /* Focus visible styles */
 :focus-visible {
   outline: 2px solid var(--accent);

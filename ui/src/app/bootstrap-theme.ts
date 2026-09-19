@@ -36,6 +36,13 @@ function applyThemePresentation(settings: UiPreferences): void {
   root.classList.toggle("wa-light", root.dataset.themeMode === "light");
   root.classList.toggle("wa-dark", root.dataset.themeMode === "dark");
   root.style.colorScheme = root.dataset.themeMode;
+  // Browser-local motion preference; mirrors the startup attribute in index.html so
+  // toggling the setting applies without a reload.
+  if (settings.disableUiTransitions === true) {
+    root.setAttribute("data-disable-ui-transitions", "true");
+  } else {
+    root.removeAttribute("data-disable-ui-transitions");
+  }
   root.style.setProperty("--control-ui-text-scale", `${(settings.textScale ?? 100) / 100}`);
   const typefaces = resolveTypefaces(settings.theme, settings.fontUi, settings.fontChat);
   syncTypefaceStylesheets(typefaces);

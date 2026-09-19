@@ -37,7 +37,7 @@ type StoreOperations = OpenClawStateWorkerOperations & OpenClawStateWorkerInspec
 type Store = SqliteWorkerStore<StoreOperations>;
 type DomainScope = Pick<SqliteWorkerStore<OpenClawStateWorkerOperations>, "execute">;
 type OperationOptions = {
-  /** Acquire matching host lifecycle custody for each dispatched command. */
+  /** Acquire matching lifecycle custody for each dispatched command. */
   requireStateLifecycle?: boolean;
   assertCurrent?: (commandType?: PropertyKey) => void;
   createAdmission?: SqliteWorkerAdmissionFactory;
@@ -143,6 +143,19 @@ function createSharedStateWorkerOwner() {
       }
       released = true;
       entry.activeOperations -= 1;
+      if (
+        entry.activeOperations === 0 &&
+        stores.has(entry) &&
+        !isSqliteWorkerStoreAvailable(store)
+      ) {
+        void retire(entry).catch((error: unknown) => {
+          log.warn("Shared-state worker retirement failed", {
+            path: entry.context.admission.databasePath,
+            error,
+          });
+        });
+        return;
+      }
       scheduleIdleRetirement(entry);
     };
   };
@@ -178,7 +191,12 @@ function createSharedStateWorkerOwner() {
   return {
     close,
     async retireFailedStore(store: Store): Promise<void> {
-      await Promise.all([...stores.values()].filter((entry) => entry.store === store).map(retire));
+      // An enclosing callback may await this operation; its final release owns retirement.
+      await Promise.all(
+        [...stores.values()]
+          .filter((entry) => entry.store === store && entry.activeOperations <= 1)
+          .map(retire),
+      );
     },
     retainOperation,
     async open(
@@ -375,7 +393,7 @@ async function runAdmittedOpenClawStateWorkerOperation<T>(
         operation,
         options?.assertCurrent,
         options?.createAdmission,
-        // Host-held lifecycle custody keeps native writers from blocking the worker's grant handler.
+        // Commands with live admission retain lifecycle custody through native settlement.
         options?.requireStateLifecycle === true || options?.createAdmission !== undefined,
       );
     } finally {
@@ -444,8 +462,9 @@ async function runWithOpenClawStateWorkerStore<T>(
   requireStateLifecycle = false,
 ): Promise<T> {
   const { admission } = context;
+  let result: T;
   try {
-    return await runSqliteWorkerStoreOperation<StoreOperations, T>(
+    result = await runSqliteWorkerStoreOperation<StoreOperations, T>(
       store,
       operation,
       context,
@@ -470,6 +489,18 @@ async function runWithOpenClawStateWorkerStore<T>(
     }
     throw error;
   }
+  if (!isSqliteWorkerStoreAvailable(store)) {
+    try {
+      await owner().retireFailedStore(store);
+    } catch (error) {
+      // Keep a completed outcome while canonical cleanup retains the failed entry.
+      log.warn("Completed shared-state operation retirement failed", {
+        path: admission.databasePath,
+        error,
+      });
+    }
+  }
+  return result;
 }
 
 /** Retain the actual lease until every admitted worker transaction has settled. */

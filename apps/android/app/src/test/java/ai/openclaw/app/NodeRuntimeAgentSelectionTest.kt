@@ -20,7 +20,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
@@ -484,15 +483,16 @@ class NodeRuntimeAgentSelectionTest {
     runBlocking {
       val runtime = createConnectedRuntime()
       try {
-        answerAgentList(runtime, "main", "scout")
+        val agentRefreshes = answerAgentList(runtime, "main", "scout")
         runtime.selectChatAgent("scout")
         assertEquals("scout", talkAgentId(runtime))
 
         // A gateway restart: the transport reports the drop more than once, then hello
         // arrives naming the gateway default. No screen refreshes agents.
         reconnectOperator(runtime, disconnectCallbacks = 2)
+        awaitAgentRefresh(agentRefreshes)
 
-        awaitTalkAgent(runtime, "scout")
+        assertEquals("scout", talkAgentId(runtime))
         assertEquals("scout", resolveAgentIdFromMainSessionKey(runtime.mainSessionKey.value))
         assertEquals(runtime.mainSessionKey.value, runtime.chatSessionKey.value)
       } finally {
@@ -505,17 +505,19 @@ class NodeRuntimeAgentSelectionTest {
     runBlocking {
       val runtime = createConnectedRuntime()
       try {
-        answerAgentList(runtime, "main", "scout", "ops")
+        val agentRefreshes = answerAgentList(runtime, "main", "scout", "ops")
         runtime.selectChatAgent("scout")
         reconnectOperator(runtime)
-        awaitTalkAgent(runtime, "scout")
+        awaitAgentRefresh(agentRefreshes)
+        assertEquals("scout", talkAgentId(runtime))
 
         // No agents.list round trip is needed for a tap to reach Talk.
         runtime.selectChatAgent("ops")
         assertEquals("ops", talkAgentId(runtime))
 
         reconnectOperator(runtime)
-        awaitTalkAgent(runtime, "ops")
+        awaitAgentRefresh(agentRefreshes)
+        assertEquals("ops", talkAgentId(runtime))
       } finally {
         closeNodeRuntimeTestFixture(runtime)
       }
@@ -529,17 +531,17 @@ class NodeRuntimeAgentSelectionTest {
         answerAgentList(runtime, "main", "scout")
         runtime.selectChatAgent("scout")
 
-        answerAgentList(runtime, "main")
+        val withoutScout = answerAgentList(runtime, "main")
         reconnectOperator(runtime)
-        withTimeout(2_000) { runtime.gatewayAgents.first { it.isNotEmpty() } }
+        awaitAgentRefresh(withoutScout)
         assertEquals("main", talkAgentId(runtime))
         assertEquals("main", resolveAgentIdFromMainSessionKey(runtime.mainSessionKey.value))
 
         // The fallback forgets the removed choice instead of resurrecting it later.
-        answerAgentList(runtime, "main", "scout")
+        val withScout = answerAgentList(runtime, "main", "scout")
         reconnectOperator(runtime)
         runtime.refreshAgents()
-        withTimeout(2_000) { runtime.gatewayAgents.first { it.size == 2 } }
+        awaitAgentRefresh(withScout)
         assertEquals("main", talkAgentId(runtime))
       } finally {
         closeNodeRuntimeTestFixture(runtime)
@@ -1510,19 +1512,39 @@ class NodeRuntimeAgentSelectionTest {
     ReflectionHelpers.setField(chat, "requestGatewayForGateway", request)
   }
 
+  // Answers agents.list with the given ids and reports each refresh coroutine, so tests can
+  // join the whole refresh (agents, remembered choice, Talk, runtime key, Chat) before asserting.
   private fun answerAgentList(
     runtime: NodeRuntime,
     vararg agentIds: String,
-  ) {
+  ): Channel<Job> {
     val agents = agentIds.joinToString(",") { """{"id":"$it"}""" }
+    val refreshes = Channel<Job>(Channel.UNLIMITED)
     runtime.gatewayDataRequestOverrideForTests = { _, method, _ ->
       when (method) {
-        "agents.list" -> """{"defaultId":"main","mainKey":"main","agents":[$agents]}"""
-        "models.list" -> """{"models":[]}"""
-        "models.authStatus" -> """{"providers":[]}"""
-        else -> "{}"
+        "agents.list" -> {
+          refreshes.send(currentCoroutineContext().job)
+          """{"defaultId":"main","mainKey":"main","agents":[$agents]}"""
+        }
+
+        "models.list" -> {
+          """{"models":[]}"""
+        }
+
+        "models.authStatus" -> {
+          """{"providers":[]}"""
+        }
+
+        else -> {
+          "{}"
+        }
       }
     }
+    return refreshes
+  }
+
+  private suspend fun awaitAgentRefresh(refreshes: Channel<Job>) {
+    withTimeout(2_000) { refreshes.receive().join() }
   }
 
   // Drives the operator session's own callbacks, as a gateway restart does.
@@ -1549,15 +1571,6 @@ class NodeRuntimeAgentSelectionTest {
   private fun talkAgentId(runtime: NodeRuntime): String? {
     val talkMode = ReflectionHelpers.getField<Lazy<TalkModeManager>>(runtime, "talkMode\$delegate").value
     return resolveAgentIdFromMainSessionKey(ReflectionHelpers.getField<String>(talkMode, "mainSessionKey"))
-  }
-
-  private suspend fun awaitTalkAgent(
-    runtime: NodeRuntime,
-    agentId: String,
-  ) {
-    withTimeout(2_000) {
-      while (talkAgentId(runtime) != agentId) delay(10)
-    }
   }
 
   private fun createConnectedRuntime(): NodeRuntime {

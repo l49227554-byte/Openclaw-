@@ -6,7 +6,7 @@ import type { GatewayBrowserClient, GatewayEventListener } from "../../api/gatew
 import type { CronJob, CronJobsListResult } from "../../api/types.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
-import type { CronState } from "../../lib/cron/index.ts";
+import type { CronState } from "../../lib/cron/types.ts";
 import { createCronViewJob } from "./view.test-support.ts";
 import "./cron-page.ts";
 

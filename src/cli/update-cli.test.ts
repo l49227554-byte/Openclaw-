@@ -63,6 +63,7 @@ import { quoteCliArg } from "./quote-cli-arg.js";
 import { createCliRuntimeCapture, getMockCallOutput } from "./test-runtime-capture.js";
 import * as runtimeRecovery from "./update-cli/update-command-runtime-recovery.test-support.js";
 import { createGlobalUserServiceCommand } from "./update-cli/update-command-service-state.test-support.js";
+import { isLegacyUpdateDoctorCommand } from "./update-cli/update-command-transport.test-support.js";
 
 const commandTransport = vi.hoisted(() => ({
   run: vi.fn<typeof import("../process/exec.js").runCommandWithTimeout>(),
@@ -419,33 +420,14 @@ vi.mock("node:child_process", async () => {
 });
 
 vi.mock("../process/exec.js", async (importOriginal) => {
-  const { createUpdateCommandTransportFixture } =
+  const { createUpdateCommandTransportFixture, createUpdateUtf8CommandTransportFixture } =
     await import("./update-cli/update-command-transport.test-support.js");
   const actual = await importOriginal<typeof import("../process/exec.js")>();
-  const { spawnSync: spawnMetadata } =
-    await vi.importActual<typeof import("node:child_process")>("node:child_process");
   return {
     // The real snapshot worker has separate WAL/source-inode boundary coverage.
     // Retain real rehearsal config projection and drift checks in this CLI fixture.
     runCommandBuffered: async (argv: string[], options: { input: string; timeoutMs?: number }) => {
       const input: unknown = JSON.parse(options.input);
-      if (isRecord(input) && input.mode === undefined && Array.isArray(input.files)) {
-        // Keep budget metadata real; only snapshot mutation is simulated below.
-        const metadata = spawnMetadata(
-          expectDefined(argv[0], "metadata executable"),
-          argv.slice(1),
-          {
-            input: options.input,
-            timeout: options.timeoutMs,
-            cwd: commandTransport.hostCwd,
-            env: commandTransport.hostEnv,
-          },
-        );
-        if (metadata.error) {
-          throw metadata.error;
-        }
-        return { code: metadata.status, stdout: metadata.stdout, stderr: metadata.stderr };
-      }
       const mode = isRecord(input) ? input.mode : undefined;
       if (mode !== "inventory" && mode !== "snapshot") {
         throw new Error("Unexpected update state worker mode");
@@ -463,7 +445,12 @@ vi.mock("../process/exec.js", async (importOriginal) => {
       };
     },
     runCommandWithTimeout: await createUpdateCommandTransportFixture(commandTransport),
-    runUtf8CommandWithTimeout: vi.fn(actual.runUtf8CommandWithTimeout),
+    runUtf8CommandWithTimeout: vi.fn(
+      await createUpdateUtf8CommandTransportFixture(
+        commandTransport,
+        actual.runUtf8CommandWithTimeout,
+      ),
+    ),
     runExec: vi.fn(async () => ({
       stdout: new Date(Date.now() - 1000).toString(),
       stderr: "",
@@ -931,20 +918,10 @@ describe("update-cli", () => {
   };
 
   const doctorCommandCall = () =>
-    commandCalls().find(
-      ([argv]) =>
-        argv[2] === "doctor" &&
-        argv[3] === "--non-interactive" &&
-        (argv.length === 4 || argv[4] === "--fix"),
-    );
+    commandCalls().find(([argv]) => isLegacyUpdateDoctorCommand(argv));
 
   const doctorCommandCallIndex = () =>
-    commandCalls().findIndex(
-      ([argv]) =>
-        argv[2] === "doctor" &&
-        argv[3] === "--non-interactive" &&
-        (argv.length === 4 || argv[4] === "--fix"),
-    );
+    commandCalls().findIndex(([argv]) => isLegacyUpdateDoctorCommand(argv));
 
   const freshRestartCalls = () =>
     vi
@@ -3459,8 +3436,9 @@ describe("update-cli", () => {
       expect(activations.filter((entry) => !entry.afterPlugin)).toEqual([]);
       expect(activations.filter((entry) => entry.afterPlugin)).toEqual([
         { version: "1.0.0", afterPlugin: true },
-        { version: "1.0.0", afterPlugin: true },
       ]);
+      expect(gatewayCommandCall(entryPath, "install")).toBeUndefined();
+      expect(gatewayCommandCall(entryPath, "restart")?.[0]).toContain("--preserve-definition");
       expect(resumeScheduledTaskAutoStartAfterUpdate.mock.invocationCallOrder[0]).toBeGreaterThan(
         pluginStartOrder,
       );
@@ -4013,9 +3991,18 @@ describe("update-cli", () => {
   ])(
     "finalizes downgrade to $targetVersion with target writer=$fresh",
     async ({ targetVersion, fresh }) => {
-      vi.mocked(runUtf8CommandWithTimeout).mockRejectedValue(
-        new Error("Older target does not contain the migration-continuation worker"),
+      const runWorker = expectDefined(
+        vi.mocked(runUtf8CommandWithTimeout).getMockImplementation(),
+        "worker transport is initialized",
       );
+      vi.mocked(runUtf8CommandWithTimeout).mockImplementation((argv, options) => {
+        if (argv.includes("--check")) {
+          return Promise.reject(
+            new Error("Older target does not contain the migration-continuation worker"),
+          );
+        }
+        return runWorker(argv, options);
+      });
       candidateValidation.mockImplementation(async (options) =>
         reportCandidateSteps(options, {
           status: "ok",
@@ -4866,6 +4853,7 @@ describe("update-cli", () => {
   it.each([false, true])(
     "reports successful plugin source fallback without failing the core update (json=%s)",
     async (json) => {
+      mockGitUpdateAfterMutation();
       const fallback = "@openclaw/demo unavailable; using clawhub:@openclaw/demo instead.";
       syncPluginsForUpdateChannel.mockImplementationOnce(
         async (params: {
@@ -5124,6 +5112,7 @@ describe("update-cli", () => {
   });
 
   it("includes colored ClawHub trust warnings in json post-core plugin output", async () => {
+    mockGitUpdateAfterMutation();
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
       "/tmp/openclaw-updated-entry.mjs",
     );
@@ -5291,6 +5280,7 @@ describe("update-cli", () => {
   });
 
   it("marks disabled-after-failure plugin skips as post-update warnings", async () => {
+    mockGitUpdateAfterMutation();
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
       "/tmp/openclaw-updated-entry.mjs",
     );
@@ -10596,7 +10586,7 @@ describe("update-cli", () => {
     expect(updateCall?.beforeGitMutation).toEqual(expect.any(Function));
     expect(updateCall?.allowGatewayActivation).toBe(false);
     expect(preparations).toEqual([
-      { allowGatewayServiceRepair: true, allowGatewayActivation: true },
+      { allowGatewayServiceRepair: false, allowGatewayActivation: false },
     ]);
   });
 
@@ -13059,10 +13049,8 @@ describe("update-cli", () => {
 
       expect(gatewayCommandCall(updatedEntrypoint, "install")).toBeDefined();
       const restartCall = gatewayCommandCall(updatedEntrypoint, "restart");
-      expect(restartCall?.[0].slice(1)).toEqual([
-        updatedEntrypoint,
-        "gateway",
-        "restart",
+      expect(restartCall?.[0].slice(4)).toEqual([
+        "--preserve-definition",
         "--json",
         "--update-executor",
         "run",
@@ -13164,10 +13152,8 @@ describe("update-cli", () => {
     expectNoSideEffects(runRestartScript, runDaemonRestart);
     const restartCall = gatewayCommandCall(updatedEntrypoint, "restart");
     expect(restartCall?.[0][0]).toContain("node");
-    expect(restartCall?.[0].slice(1)).toEqual([
-      updatedEntrypoint,
-      "gateway",
-      "restart",
+    expect(restartCall?.[0].slice(4)).toEqual([
+      "--preserve-definition",
       "--json",
       "--update-executor",
       "run",

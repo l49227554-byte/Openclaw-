@@ -1,5 +1,5 @@
 import type { ConversationListItem, ConversationListResult } from "@openclaw/gateway-protocol";
-import type { CronState } from "../../lib/cron/index.ts";
+import type { CronState } from "../../lib/cron/types.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import type { GatewayConnectionScope } from "../../lib/gateway-connection-lifecycle.ts";
 

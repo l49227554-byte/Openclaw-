@@ -89,9 +89,9 @@ function createSharedStateWorkerOwner() {
     }
   };
   const hasPendingCleanup = (entry: Entry) =>
-    entry.context.maintenanceScope
-      ? entry.cleanup?.pending === true
-      : hasUnclaimedSharedStateSqliteCleanup(entry.context.admission.databasePath);
+    entry.cleanup?.pending ??
+    (!entry.context.maintenanceScope &&
+      hasUnclaimedSharedStateSqliteCleanup(entry.context.admission.databasePath));
   const retire = (entry: Entry) => {
     clearIdleRetirement(entry);
     forget(entry);
@@ -112,9 +112,11 @@ function createSharedStateWorkerOwner() {
         : entry.opening.then(
             (store) => store?.close(),
             () =>
-              entry.context.maintenanceScope
-                ? entry.cleanup?.close()
-                : closeUnclaimedSharedStateSqliteWorkers(entry.context.admission.databasePath),
+              entry.cleanup
+                ? entry.cleanup.close()
+                : entry.context.maintenanceScope
+                  ? undefined
+                  : closeUnclaimedSharedStateSqliteWorkers(entry.context.admission.databasePath),
           )
     ).catch(async (error: unknown) => {
       if (!attempt.actorSettlement) {
@@ -386,6 +388,11 @@ function createSharedStateWorkerOwner() {
             retiringEntry.context.maintenanceScope === context.maintenanceScope
           ) {
             if (!attempt.pending) {
+              // Another retained owner may have completed the failed admission's cleanup.
+              if (!hasPendingCleanup(retiringEntry)) {
+                retiring.delete(retiringEntry);
+                continue;
+              }
               throw new Error(
                 "Shared-state SQLite cleanup is pending; close the database before reopening",
               );

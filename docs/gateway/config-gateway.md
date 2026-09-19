@@ -177,7 +177,7 @@ For the full key index and the other top-level config domains, see [Configuratio
 - `controlUi.communityInvite`: show the Discord community invitation in the sidebar. Default: `true`. Set `false` on the Gateway serving the UI to hide it for every browser using that deployment, including browsers connected to a different remote Gateway. The setting hot-reloads; existing pages pick it up after browser refresh or reconnect. Re-enabling preserves browser-local dismissals.
 - `controlUi.github.token`: optional SecretRef-backed service credential for GitHub-backed profile verification, Control UI project discovery, and GitHub hover previews without a managed agent identity. Profile verification uses the service credential only for public account metadata; the sign-in provider owns the person's identity. Metadata caching and quota cooldowns are automatic; see [Gateway profile and GitHub credit](/concepts/user-model#gateway-profile-and-github-credit). Hover previews prefer the selected agent's effective `tools.github` identity, including an inherited system identity, and remain restricted to public repositories. Prefer this explicit setting when the Gateway should own service access independently of its shared process environment. When omitted, service access retains the shipped `GH_TOKEN` then `GITHUB_TOKEN` process-environment fallback. An explicitly configured but unavailable credential fails closed instead of using an unrelated credential. Its exact environment or store name is excluded from agent execution; a custom name does not clear unrelated native `GH_TOKEN` or `GITHUB_TOKEN` values. This credential is separate from `tools.github` agent identities and does not create an OS-user security boundary.
 - Tool activity descriptions appear automatically when supplied by the acting agent; viewing tool calls does not request utility-model completions. The former `controlUi.toolTitles` setting is retired. Run `openclaw doctor --fix` to remove it from existing configs.
-- `controlUi.automaticallyFetchFavicons`: link favicons in Control UI chat. Default: `true`. The authenticated browser asks its same-origin Gateway for each hostname. The Gateway requests only `https://<hostname>/favicon.ico`, rejects IP literals and private/internal destinations, pins public DNS results, revalidates every redirect under the same strict SSRF policy, limits redirects/time/bytes/concurrency, validates the image, and returns a private-cacheable image blob. OpenClaw does not use Google or another favicon service for this flow. This discloses linked hostnames and the Gateway's network address to those destination sites. Set `false` to prevent the browser from requesting favicon routes and the Gateway from contacting link destinations.
+- `controlUi.automaticallyFetchFavicons`: link favicons and browser-tab social previews in Control UI chat. Default: `true`. The authenticated browser asks its same-origin Gateway for each hostname. For inline link favicons, the Gateway requests `https://<hostname>/favicon.ico`, rejects IP literals and private/internal destinations, pins public DNS results, revalidates every redirect under the same strict SSRF policy, limits redirects/time/bytes/concurrency, validates the image, and returns a private-cacheable image blob. OpenClaw does not use Google or another favicon service for this flow. This discloses linked hostnames and the Gateway's network address to those destination sites. Browser-tab cards additionally request the public page title, declared favicon, and Open Graph or Twitter image through the Gateway, with the same public-network restrictions and bounded HTML/image processing. No browser cookies or site credentials are forwarded. These previews disclose the page URL and the Gateway’s network address to the destination and its declared image hosts. Set `false` to disable both automatic favicon and page-preview fetches; existing live browser screenshot previews are unaffected.
 - `controlUi.dangerouslyAllowHostHeaderOriginFallback`: dangerous mode that enables Host-header origin fallback for deployments that intentionally rely on Host-header origin policy.
 - `cliAgents.enabled`: show the **CLI agents** group in the Control UI new-session model picker. Default: `true`; set `false` to disable CLI agents and native CLI session creation. The group appears only when the Gateway advertises `sessions.catalog.list`, and it includes only catalog providers that support creating sessions. Selecting one opens the same catalog-target new-session flow used by the sidebar catalog action.
 
@@ -268,7 +268,27 @@ See [Multiple Gateways](/gateway/multiple-gateways).
 - `keyPath`: filesystem path to the TLS private key file; keep permission-restricted.
 - `caPath`: optional CA bundle path for client verification or custom trust chains.
 
+With automatic reload enabled, the Gateway watches the certificate, key, and CA
+files at their accepted paths. Replacing their contents renews all Gateway HTTPS
+listeners without disconnecting existing connections. The complete material is
+validated first; a missing, unreadable, or mismatched pair keeps the previous
+certificate serving and logs the failure. Renewal never generates missing files.
+Background observation follows atomic symlink and projected-directory replacements too.
+Changing TLS configuration or file paths still requires a Gateway restart.
+
+`gateway.reload.mode: "off"` pauses certificate renewal too. Re-enabling reload
+checks the current files, including renewals made while paused. Discovery and new
+pairing payloads use the served fingerprint. Saved remote certificate pins remain
+operator-controlled: update them before reconnecting with a renewed certificate.
+
 Client commands such as `triage`, `gateway status`, and `gateway probe` only read the public certificate to determine a local TLS pin. They never generate or repair TLS files and do not need the server private key or CA bundle. Without `certPath`, they inspect `gateway/tls/gateway-cert.pem` under the state directory. A missing or unreadable certificate supplies no implicit pin; normal connection trust checks still apply. Start the Gateway to generate a missing pair, or provide the configured certificate files before connecting.
+
+Long-lived local health probes remember the last verified certificate for their
+endpoint, preserving health checks while replacement files are incomplete or
+reload is paused. They adopt a replacement only after verifying a connection.
+A new probe, or one that missed an intermediate renewal, cannot trust a serving
+certificate that is no longer in the configured file and was never verified.
+Complete or re-enable renewal so the listener and configured certificate agree.
 
 ### `gateway.reload`
 

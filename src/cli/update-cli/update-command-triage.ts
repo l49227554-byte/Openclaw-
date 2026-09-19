@@ -7,9 +7,11 @@ import {
 import { resolveStateDir } from "../../config/paths.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { readControlPlaneUpdateSentinelMeta } from "../../infra/update-control-plane-sentinel.js";
+import { preparePublicUpdateFailureIdentifiers } from "../../infra/update-failure-public-identifiers.js";
 import { POST_CORE_UPDATE_ENV } from "../../infra/update-post-core-context.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import type { UpdateTriageTarget as TriageTarget } from "../../infra/update-triage.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import { classifyUpdateOutcome } from "../../shared/update-outcome.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
@@ -57,6 +59,9 @@ export async function prepareUpdateCommandFailureTriage(
     : !opts.yes && isTerminalInteractive()
       ? "interactive"
       : "non-interactive";
+  if (mode === "interactive") {
+    await preparePublicUpdateFailureIdentifiers();
+  }
   const { prepareUpdateFailureTriage } = await import("../../infra/update-triage.js");
   const runTriage = await prepareUpdateFailureTriage({
     mode,
@@ -67,6 +72,11 @@ export async function prepareUpdateCommandFailureTriage(
     invocationCwd: opts.invocationCwd,
   });
   return async (error) => {
+    // Recovery can replace files still owned by an uncertain command. Preserve
+    // the original failure and retained executor for its recovery owner.
+    if (hasCommandProcessCleanupError(error)) {
+      throw error;
+    }
     if (error instanceof UpdateCommandFinalizedRecoveryFailure) {
       return exitCliAfterOutput(defaultRuntime, error.exitCode);
     }
@@ -74,6 +84,9 @@ export async function prepareUpdateCommandFailureTriage(
       return reportUpdateCommandPendingRecovery(error, opts);
     }
     const reportedFailure = error instanceof UpdateCommandFailure;
+    if (reportedFailure && error.result.reason === "invalid-dev-target") {
+      return exitCliAfterOutput(defaultRuntime, error.exitCode);
+    }
     const rollbackCompleted = reportedFailure && isVerifiedUpdateRollback(error.result);
     // A healthy restored installation needs only an explicit terminal choice,
     // never automatic diagnostics or a second managed-helper report.

@@ -2,7 +2,8 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatUpdateDoctorConfigChange } from "./update-doctor-config.js";
 import { UPDATE_RUN_DIAGNOSTIC_LIMIT, UPDATE_RUN_TEXT_LIMIT } from "./update-run-limits.js";
 import { summarizeUpdateStepFailure, type UpdateRunStep } from "./update-run-record.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateRunResult, UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 
 type ResultStep = Pick<
   UpdateStepResult,
@@ -13,9 +14,19 @@ type ResultStep = Pick<
   | "termination"
   | "stdoutTail"
   | "stderrTail"
+  | "failureFacts"
   | "configChanges"
   | "configWriteRefusal"
+  | "snapshotCapacity"
 >;
+
+export function isUpdateGatewayReadinessPending(result: UpdateRunResult): boolean {
+  const step = result.steps.findLast(
+    (entry) =>
+      entry.name === "gateway verification" || entry.name === "rollback gateway verification",
+  );
+  return step?.termination === "timeout" && step.advisory?.kind === "recoverable-maintenance";
+}
 
 /** Warning rows preserve producer-classified advisories in the existing diagnostic ledger. */
 export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] {
@@ -28,16 +39,41 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
         keys: refusal.keys.slice(0, UPDATE_RUN_DIAGNOSTIC_LIMIT).map(text),
       }
     : undefined;
-  const warnings = step.advisory
-    ? step.warnings?.length
-      ? step.warnings
-      : [step.advisory.message]
-    : [];
+  const capacity = step.snapshotCapacity;
+  const snapshotCapacity = capacity
+    ? {
+        ...capacity,
+        candidates: capacity.candidates.slice(0, 3).map((candidate) => {
+          const copied: UpdateSnapshotCapacity["candidates"][number] = {
+            kind: candidate.kind,
+            availableBytes: candidate.availableBytes,
+            directory: text(candidate.directory),
+          };
+          if (candidate.allocationError) {
+            copied.allocationError = text(candidate.allocationError);
+          }
+          return copied;
+        }),
+        selection: capacity.selection
+          ? { ...capacity.selection, directory: text(capacity.selection.directory) }
+          : null,
+      }
+    : undefined;
+  const warnings = step.warnings?.length
+    ? step.warnings
+    : step.advisory
+      ? [step.advisory.message]
+      : [];
   return [
     {
       step: text(step.name),
       status: step.exitCode === 0 || step.advisory ? "completed" : "failed",
+      exitCode: step.exitCode,
+      ...(step.failureFacts?.length && !step.advisory
+        ? { failureFacts: step.failureFacts.slice(0, 5) }
+        : {}),
       ...(configWriteRefusal ? { configWriteRefusal } : {}),
+      ...(snapshotCapacity ? { snapshotCapacity } : {}),
       ...(step.exitCode !== 0
         ? { detail: text(step.advisory?.message ?? summarizeUpdateStepFailure(step)) }
         : {}),

@@ -9,6 +9,16 @@ import {
   parseReleaseVersion,
 } from "./release-version.mjs";
 
+// npm may accept a publish before its exact version becomes readable. Publication
+// callers keep their one-shot probes; only postpublish readback uses this budget.
+export function npmRegistryReadbackDeadline() {
+  const timeoutMs = Number(process.env.OPENCLAW_NPM_READBACK_TIMEOUT_MS ?? 15 * 60_000);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
+    throw new Error("OPENCLAW_NPM_READBACK_TIMEOUT_MS must be a positive integer <= 2147483647.");
+  }
+  return Date.now() + timeoutMs;
+}
+
 /**
  * @typedef {object} NpmPublishPlan
  * @property {"stable" | "alpha" | "beta"} channel
@@ -59,6 +69,7 @@ async function cancelNpmRegistryResponseBody(response) {
  *   fetchImpl?: (input: string, init: RequestInit) => Promise<Response>;
  *   sleep?: (delayMs: number) => Promise<void>;
  *   createSignal?: (timeoutMs: number) => AbortSignal;
+ *   signal?: AbortSignal;
  * }} NpmRegistryReadOptions
  */
 
@@ -116,13 +127,17 @@ async function fetchNpmRegistryWithRetry(params, reader) {
   let lastError;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    params.signal?.throwIfAborted();
     let response;
     const remainingMs = deadlineMs - Date.now();
     if (remainingMs <= 0) {
       throw new Error(`${reader.label} deadline exceeded.`);
     }
     try {
-      const signal = createSignal(Math.min(timeoutMs, remainingMs));
+      const attemptSignal = createSignal(Math.min(timeoutMs, remainingMs));
+      const signal = params.signal
+        ? AbortSignal.any([params.signal, attemptSignal])
+        : attemptSignal;
       response = await fetchImpl(params.packageUrl, {
         headers: reader.headers,
         redirect: reader.redirect,
@@ -144,6 +159,7 @@ async function fetchNpmRegistryWithRetry(params, reader) {
         return { status: response.status, ok: false, body: null };
       }
       const body = await reader.read(response, signal);
+      params.signal?.throwIfAborted();
       if (Date.now() >= deadlineMs) {
         throw new Error(`${reader.label} deadline exceeded.`);
       }
@@ -152,6 +168,8 @@ async function fetchNpmRegistryWithRetry(params, reader) {
       if (response?.ok) {
         await cancelNpmRegistryResponseBody(response);
       }
+      // An owning collection's cancellation is not a transient attempt timeout.
+      params.signal?.throwIfAborted();
       if (
         !(error instanceof RetryableNpmRegistryError) &&
         !["AbortError", "TimeoutError", "TypeError"].includes(error?.name) &&
@@ -168,7 +186,12 @@ async function fetchNpmRegistryWithRetry(params, reader) {
           cause: lastError,
         });
       }
-      await sleep(retryDelayMs);
+      if (params.signal && !params.sleep) {
+        await delay(retryDelayMs, undefined, { signal: params.signal });
+      } else {
+        await sleep(retryDelayMs);
+      }
+      params.signal?.throwIfAborted();
     }
   }
 
@@ -178,13 +201,34 @@ async function fetchNpmRegistryWithRetry(params, reader) {
   });
 }
 
-/** @param {NpmRegistryReadOptions} params @returns {Promise<NpmRegistryPackumentResult>} */
+/**
+ * @param {NpmRegistryReadOptions & { maxBytes?: number; redirect?: RequestRedirect }} params
+ * @returns {Promise<NpmRegistryPackumentResult>}
+ */
 export async function fetchNpmRegistryPackumentWithRetry(params) {
+  const maxBytes =
+    params.maxBytes === undefined
+      ? undefined
+      : boundedReadLimit(params.maxBytes, undefined, 16 * 1024 * 1024, "packument byte limit");
   const result = await fetchNpmRegistryWithRetry(params, {
     label: `${params.packageName}: npm publication-route probe`,
     headers: { accept: "application/vnd.npm.install-v1+json" },
-    read: async (response) => {
-      const body = await response.text();
+    redirect: params.redirect,
+    read: async (response, signal) => {
+      const body =
+        maxBytes === undefined
+          ? await response.text()
+          : (
+              await readBoundedResponseBytes(
+                response,
+                `${params.packageName}: npm packument`,
+                maxBytes,
+                {
+                  signal,
+                  createTooLargeError: createBoundedResponseTooLargeError,
+                },
+              )
+            ).toString("utf8");
       try {
         return JSON.parse(body);
       } catch (error) {

@@ -55,7 +55,10 @@ import { resolveAgentRuntimeLabel } from "../../status/agent-runtime-label.js";
 import type { ReplyPayload } from "../types.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";
 import type { CommandHandler } from "./commands-types.js";
-import { resolveRuntimeNormalization } from "./model-runtime-normalization.js";
+import {
+  normalizeRuntimeChoiceId,
+  resolveRuntimeNormalization,
+} from "./model-runtime-normalization.js";
 
 const PAGE_SIZE_DEFAULT = 20;
 const PAGE_SIZE_MAX = 100;
@@ -81,6 +84,7 @@ type ModelsCommandSessionEntry = Partial<
 
 export type ModelsProviderData = {
   byProvider: Map<string, Set<string>>;
+  pendingProviders?: readonly string[];
   providers: string[];
   resolvedDefault: { provider: string; model: string };
   modelNames: Map<string, string>;
@@ -130,14 +134,6 @@ type ParsedModelsCommand =
 
 function isModelsBrowseVisibleProvider(provider: string): boolean {
   return !isRetiredModelPickerProvider(provider);
-}
-
-function normalizeRuntimeChoiceId(runtime: string | undefined): string {
-  const normalized = normalizeLowercaseStringOrEmpty(runtime);
-  if (!normalized || normalized === "auto" || normalized === "default") {
-    return "openclaw";
-  }
-  return normalized;
 }
 
 function buildRuntimeChoice(params: { cfg: OpenClawConfig; runtime: string }): ModelsRuntimeChoice {
@@ -224,7 +220,7 @@ async function projectPreparedModelsProviderData(
     cfg,
     catalog,
     defaultProvider: resolvedDefault.provider,
-    defaultModel: resolvedDefault.model,
+    defaultModel: resolvedDefault,
     agentId,
     ...runtimeNormalization,
   });
@@ -270,9 +266,10 @@ async function projectPreparedModelsProviderData(
         };
   const visibleCatalog = await resolveLogicalVisibleModelCatalog({
     cfg,
+    metadataSnapshot: owner.metadataSnapshot,
     catalog,
     defaultProvider: resolvedDefault.provider,
-    defaultModel: resolvedDefault.model,
+    defaultModel: resolvedDefault,
     agentId,
     workspaceDir,
     view: options.view,
@@ -426,6 +423,19 @@ async function projectPreparedModelsProviderData(
   }
   addModelConfigEntries();
 
+  const pendingProviders = decisions.snapshot.pendingProviders?.filter(
+    (provider) =>
+      isModelsBrowseVisibleProvider(provider) &&
+      (options.view === "all" ||
+        visibilityPolicy.allowAny ||
+        [...visibilityPolicy.allowedKeys].some((key) => key.startsWith(`${provider}/`))),
+  );
+  for (const provider of pendingProviders ?? []) {
+    if (!byProvider.has(provider)) {
+      byProvider.set(provider, new Set());
+    }
+  }
+
   const providers = [...byProvider.keys()].toSorted();
   const loginProviders = new Set(
     providers.filter(
@@ -490,6 +500,7 @@ async function projectPreparedModelsProviderData(
 
   return {
     byProvider,
+    pendingProviders,
     providers,
     resolvedDefault,
     modelNames,
@@ -787,7 +798,13 @@ function buildModelsCommandReply(
           .map((provider) => provider.notice)
           .filter(Boolean)
           .join("\n");
-  const withAvailability = (text: string) => [text, notice].filter(Boolean).join("\n\n");
+  const checking = data.pendingProviders
+    ?.filter(
+      (provider) => parsed.action !== "list" || !parsed.provider || parsed.provider === provider,
+    )
+    .map((provider) => `${provider}: checking models…`)
+    .join("\n");
+  const withAvailability = (text: string) => [text, notice, checking].filter(Boolean).join("\n\n");
   const commandPlugin = params.surface ? getChannelPlugin(params.surface) : null;
   const providerInfos = buildProviderInfos({ providers, byProvider });
 
@@ -848,6 +865,9 @@ function buildModelsCommandReply(
   const total = models.length;
 
   if (total === 0) {
+    if (checking) {
+      return { text: checking };
+    }
     const emptyProviderLabel = resolveProviderLabel({
       provider,
       cfg: params.cfg,

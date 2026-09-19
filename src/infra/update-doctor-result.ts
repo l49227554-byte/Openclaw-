@@ -4,8 +4,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { z } from "zod";
 import { ConfigMutationConflictError } from "../config/mutation-conflict.js";
+import { collectNestedErrorCandidates } from "./error-graph-internal.js";
 import {
   resolvePreferredOpenClawTmpDir,
   type ResolvePreferredOpenClawTmpDirOptions,
@@ -18,6 +20,8 @@ import type {
   UpdateDoctorConfigChange,
   UpdateDoctorConfigWriteRefusal,
 } from "./update-doctor-config.js";
+import { normalizeUpdateFailureFacts, type UpdateFailureFact } from "./update-failure-facts.js";
+import { UpdateFailureFactSchema } from "./update-run-schema.js";
 
 // IPC contract between package update parents and the post-install doctor child.
 export const UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV =
@@ -42,6 +46,8 @@ const doctorResultEvidence = {
   configHash: z.union([z.literal("unchanged"), configHashSchema]).optional(),
   configInputHash: configHashSchema.optional(),
   warnings: z.array(z.string()).optional(),
+  // Invalid optional diagnostics cannot change the child's classified outcome.
+  failureFacts: z.array(UpdateFailureFactSchema).catch([]).optional(),
   configChanges: z.array(UpdateDoctorConfigChangeSchema).optional(),
   configWriteRefusal: UpdateDoctorConfigWriteRefusalSchema.optional(),
 };
@@ -60,11 +66,33 @@ const UpdatePostInstallDoctorResultSchema = z.discriminatedUnion("status", [
 ]);
 export type UpdatePostInstallDoctorResult = z.infer<typeof UpdatePostInstallDoctorResultSchema>;
 
+export class UpdateDoctorError extends Error {
+  readonly exitCode: number | null | undefined;
+
+  constructor(
+    message: string,
+    readonly failureFacts: UpdateFailureFact[],
+    options?: ErrorOptions & { exitCode?: number | null },
+  ) {
+    super(message, options);
+    this.name = "UpdateDoctorError";
+    this.exitCode = options?.exitCode;
+  }
+}
+
+export function collectUpdateDoctorFailureFacts(error: unknown): UpdateFailureFact[] {
+  return normalizeUpdateFailureFacts(
+    collectNestedErrorCandidates(error).flatMap((candidate) =>
+      candidate instanceof UpdateDoctorError ? candidate.failureFacts : [],
+    ),
+  );
+}
+
 /** Keep optional health diagnostics bounded across Doctor and its update parent. */
 export function normalizeUpdatePostInstallDoctorWarnings(warnings: readonly string[]): string[] {
   const normalized: string[] = [];
   for (const warning of warnings) {
-    const message = warning.trim().slice(0, 500);
+    const message = truncateUtf16Safe(warning.trim(), 500);
     if (message) {
       normalized.push(message);
       if (normalized.length === 32) {
@@ -254,14 +282,16 @@ export async function writeUpdatePostInstallDoctorResult(params: {
   result: UpdatePostInstallDoctorResult;
 }): Promise<void> {
   const resultPath = resolveSafeUpdatePostInstallDoctorResultPath(params.resultPath);
-  const { warnings, ...result } = params.result;
+  const { warnings, failureFacts, ...result } = params.result;
   const normalizedWarnings = normalizeUpdatePostInstallDoctorWarnings(warnings ?? []);
+  const facts = normalizeUpdateFailureFacts(failureFacts ?? []);
   // Advisory details can contain config-derived IDs; pre-existing paths must fail closed.
   await fs.writeFile(
     resultPath,
     `${JSON.stringify({
       ...result,
       ...(normalizedWarnings.length ? { warnings: normalizedWarnings } : {}),
+      ...(facts.length ? { failureFacts: facts } : {}),
     })}\n`,
     {
       encoding: "utf8",
@@ -296,10 +326,12 @@ function parseUpdatePostInstallDoctorResult(value: unknown): UpdatePostInstallDo
   if (!parsed.success) {
     return null;
   }
-  const { warnings, ...result } = parsed.data;
+  const { warnings, failureFacts, ...result } = parsed.data;
   const normalizedWarnings = normalizeUpdatePostInstallDoctorWarnings(warnings ?? []);
+  const facts = normalizeUpdateFailureFacts(failureFacts ?? []);
   return {
     ...result,
     ...(normalizedWarnings.length ? { warnings: normalizedWarnings } : {}),
+    ...(facts.length ? { failureFacts: facts } : {}),
   };
 }

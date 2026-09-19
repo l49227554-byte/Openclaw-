@@ -43,11 +43,11 @@ describe("Signal Doctor account key repair", () => {
   });
 
   it.each(["Work Phone", "Default.", "!!!"])(
-    "preserves a working inherited account for %s",
+    "normalizeCompatibilityConfig and doctor preserve an account without its own number for %s",
     async (key) => {
       const cfg: OpenClawConfig = {
         channels: {
-          signal: { account: "+12025550123", accounts: { [key]: { account: "+12025550124" } } },
+          signal: { account: "+12025550123", accounts: { [key]: { enabled: false } } },
         },
       };
       const promoted = moveSingleAccountChannelSectionToDefaultAccount({
@@ -84,7 +84,7 @@ describe("Signal Doctor account key repair", () => {
     },
   );
 
-  it("keeps the active default transport while repairing an independent named account", () => {
+  it("normalizeCompatibilityConfig keeps root transport while normalizing accounts with owned numbers", () => {
     const cfg: OpenClawConfig = {
       channels: {
         signal: {
@@ -98,15 +98,15 @@ describe("Signal Doctor account key repair", () => {
     };
     const result = normalizeCompatibilityConfig({ cfg });
     expect(Object.keys(result.config.channels?.signal?.accounts ?? {})).toEqual([
-      "Default.",
+      "default",
       "work-phone",
     ]);
     expect(resolveSignalAccount({ cfg: result.config, accountId: "default" }).baseUrl).toBe(
       "http://127.0.0.1:18996",
     );
-    expect(
-      resolveSignalAccount({ cfg: result.config, accountId: "default" }).config.account,
-    ).toBeUndefined();
+    expect(resolveSignalAccount({ cfg: result.config, accountId: "default" }).config.account).toBe(
+      "+12025550124",
+    );
   });
 });
 
@@ -719,6 +719,34 @@ describe("signal transport compatibility", () => {
       kind: "managed-native",
       httpHost: "127.0.0.1",
       httpPort: 8181,
+    });
+  });
+
+  it("does not turn an invalid socket opt-in into HTTP during legacy repair", async () => {
+    const cfg = signalConfig({
+      account: "+15555550123",
+      cliPath: "signal-cli",
+      transport: { kind: "managed-native", socketPath: "relative.sock" },
+    });
+    const result = await migrateLegacySignalTransportConfig({ cfg });
+    expect(result.config).toEqual(cfg);
+    expect(result.changes).toEqual([]);
+    expect(result.warnings?.join(" ")).toContain("invalid transport.socketPath");
+  });
+
+  it("preserves canonical sockets while allocating a legacy sibling's HTTP port", async () => {
+    const transport = { kind: "managed-native", socketPath: "/tmp/signal-private/daemon.sock" };
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        account: "+15555550123",
+        transport,
+        accounts: { http: { account: "+15555550124", autoStart: true, cliPath: "signal-cli" } },
+      }),
+    });
+    expect(result.config.channels?.signal?.transport).toEqual(transport);
+    expect(result.config.channels?.signal?.accounts?.http?.transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8080,
     });
   });
 

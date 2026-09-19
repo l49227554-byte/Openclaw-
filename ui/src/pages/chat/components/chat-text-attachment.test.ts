@@ -59,22 +59,49 @@ it("keeps one pending presentation through metadata and text-body loading", asyn
     src: undefined,
     resolveSource: () => (pending ? { status: "pending" } : { status: "ready", src: "/notes.txt" }),
   });
-  await vi.waitFor(() => expect(panel.querySelector('[role="status"]')).not.toBeNull());
-  const presentation = panel.querySelector('[role="status"]');
+  await vi.waitFor(() =>
+    expect(panel.querySelector('[role="status"]:not([hidden])')).not.toBeNull(),
+  );
+  const presentation = panel.querySelector('[role="status"]:not([hidden])');
   const header = panel.querySelector(".chat-assistant-attachment-card__header");
   expect(fetchMock).not.toHaveBeenCalled();
   pending = false;
   panel.content = { ...panel.content };
   await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-  expect(panel.querySelector('[role="status"]')).toBe(presentation);
+  expect(panel.querySelector('[role="status"]:not([hidden])')).toBe(presentation);
   expect(panel.querySelector(".chat-assistant-attachment-card__header")).toBe(header);
   resolveBody(new Response("Ready text"));
   await vi.waitFor(() => expect(panel.querySelector("pre")?.textContent).toBe("Ready text"));
-  expect(panel.querySelector('[role="status"]')).toBeNull();
+  expect(panel.querySelector('[role="status"]:not([hidden])')).toBeNull();
+});
+
+it("retries a source-resolution failure through the attachment owner", async () => {
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response("Recovered text")));
+  let ready = false;
+  const panel = await mountAttachment({
+    src: undefined,
+    resolveSource: (requestUpdate) =>
+      ready
+        ? { status: "ready", src: "/recovered.txt" }
+        : {
+            status: "error",
+            reason: "Temporarily unavailable",
+            onRetry: () => {
+              ready = true;
+              requestUpdate();
+            },
+          },
+  });
+  await vi.waitFor(() => expect(panel.textContent).toContain("Temporarily unavailable"));
+  const retry = Array.from(panel.querySelectorAll("button")).find(
+    (button) => button.textContent?.trim() === "Retry",
+  );
+  expect(retry).toBeDefined();
+  retry!.click();
+  await vi.waitFor(() => expect(panel.querySelector("pre")?.textContent).toBe("Recovered text"));
 });
 
 it.each([
-  ["preview.html", "text/html", "<h1>literal HTML</h1>"],
   ["rows.csv", "text/csv", "name,status\nalpha,ready\n"],
   ["settings.json", "application/json", '{"ready":true}\n'],
   ["config.xml", "application/xml", "<ready>true</ready>"],
@@ -137,6 +164,7 @@ it.each([
   { title: "notes.txt", mimeType: "application/pdf" },
   { title: "archive.bin", mimeType: "application/octet-stream" },
   { title: "notes.txt", src: "https://files.example/notes.txt" },
+  { title: "page.html", mimeType: "text/html", src: "https://files.example/page.html" },
 ])("does not fetch unsupported or external documents: $title $mimeType $src", async (content) => {
   const fetchMock = vi.fn<typeof fetch>();
   vi.stubGlobal("fetch", fetchMock);
@@ -200,34 +228,38 @@ it("shows a download fallback for an unavailable response", async () => {
   expect(panel.querySelector("pre")).toBeNull();
 });
 
-it("aborts a superseded read and never displays its late contents", async () => {
-  let resolveOld!: (response: Response) => void;
-  const fetchMock = vi
-    .fn<typeof fetch>()
-    .mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveOld = resolve;
-        }),
-    )
-    .mockResolvedValueOnce(new Response("Current file"));
-  vi.stubGlobal("fetch", fetchMock);
-  const panel = await mountAttachment();
-  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-  const signal = fetchMock.mock.calls[0]?.[1]?.signal;
-  panel.content = {
-    kind: "attachment",
-    title: "next.txt",
-    src: "/next.txt",
-    mimeType: "text/plain",
-  };
-  await vi.waitFor(() => expect(panel.querySelector("pre")?.textContent).toBe("Current file"));
-  expect(signal?.aborted).toBe(true);
-  resolveOld(new Response("Old file"));
-  await vi.waitFor(() => expect(fetchMock.mock.settledResults[0]?.type).toBe("fulfilled"));
-  await panel.querySelector("openclaw-chat-text-attachment")?.updateComplete;
-  expect(panel.querySelector("pre")?.textContent).toBe("Current file");
-});
+it.each(["same", "different"])(
+  "aborts a superseded read for the %s identity and never displays its late contents",
+  async (identity) => {
+    let resolveOld!: (response: Response) => void;
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOld = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(new Response("Current file"));
+    vi.stubGlobal("fetch", fetchMock);
+    const panel = await mountAttachment({ sourceIdentity: "attachment:notes" });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const signal = fetchMock.mock.calls[0]?.[1]?.signal;
+    panel.content = {
+      kind: "attachment",
+      title: "next.txt",
+      src: "/next.txt",
+      mimeType: "text/plain",
+      sourceIdentity: identity === "same" ? "attachment:notes" : "attachment:next",
+    };
+    await vi.waitFor(() => expect(panel.querySelector("pre")?.textContent).toBe("Current file"));
+    expect(signal?.aborted).toBe(true);
+    resolveOld(new Response("Old file"));
+    await vi.waitFor(() => expect(fetchMock.mock.settledResults[0]?.type).toBe("fulfilled"));
+    await panel.querySelector("openclaw-chat-text-attachment")?.updateComplete;
+    expect(panel.querySelector("pre")?.textContent).toBe("Current file");
+  },
+);
 
 it("aborts a closed preview and reloads it after remount", async () => {
   const fetchMock = vi
@@ -272,3 +304,81 @@ it("times out even when a response stalls while reading its body", async () => {
   expect(panel.textContent).toContain("Download it to read the full file");
   expect(panel.querySelector("pre")).toBeNull();
 });
+
+it.each([
+  ["page.html", "text/html"],
+  ["page.HTM", "application/octet-stream"],
+  ["page.html", ""],
+  ["download", "Text/HTML; charset=UTF-8"],
+])(
+  "renders HTML attachment %s (%s) in a sandbox and preserves exact Source and download",
+  async (title, mimeType) => {
+    const text =
+      "\ufeff<!doctype html>\r\n<style>h1{color:red}</style><h1>Rendered page</h1><script>window.ready=true</script>\n";
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(text)));
+    const panel = await mountAttachment({ title, mimeType });
+    await customElements.whenDefined("openclaw-chat-html-preview");
+    await expect.poll(() => panel.querySelector("openclaw-chat-html-preview")).not.toBeNull();
+    const preview = panel.querySelector("openclaw-chat-html-preview")!;
+    const request = vi.fn().mockResolvedValue({
+      html: text,
+      sandboxUrl: "/mcp-app-sandbox?frames=none",
+      sandboxPort: 8444,
+    });
+    Reflect.set(preview, "context", {
+      gateway: {
+        snapshot: { client: { request }, phase: "connected" },
+        connection: { gatewayUrl: "ws://gateway.example:8443" },
+        subscribe: () => () => {},
+      },
+    });
+    await expect.poll(() => panel.querySelector("iframe")).not.toBeNull();
+    const frame = panel.querySelector("iframe");
+    expect(panel.querySelector("h1, script, style")).toBeNull();
+    expect(panel.querySelector("pre")?.hidden).toBe(true);
+    expect(panel.querySelector("pre")?.textContent).toBe(text);
+    const toggle = panel.querySelector<HTMLButtonElement>(
+      ".sidebar-file-toolbar button[aria-pressed]",
+    )!;
+    expect(toggle.textContent?.trim()).toBe("Source");
+    toggle.click();
+    await panel.querySelector("openclaw-chat-text-attachment")!.updateComplete;
+    expect(panel.querySelector("pre")?.hidden).toBe(false);
+    expect(panel.querySelector(".chat-html-preview")?.hasAttribute("hidden")).toBe(true);
+    expect(toggle.textContent?.trim()).toBe("Preview");
+    toggle.click();
+    await panel.querySelector("openclaw-chat-text-attachment")!.updateComplete;
+    expect(panel.querySelector("iframe")).toBe(frame);
+    expect(request).toHaveBeenCalledOnce();
+    expect(panel.querySelector<HTMLAnchorElement>("a[download]")?.getAttribute("href")).toBe(
+      "/__openclaw__/assistant-media?mediaTicket=text-preview",
+    );
+    Reflect.set(panel, "embedSandboxMode", "strict");
+    await expect
+      .poll(() => {
+        const current = panel.querySelector("iframe");
+        return current !== null && current !== frame;
+      })
+      .toBe(true);
+    const strictFrame = panel.querySelector("iframe")!;
+    expect(strictFrame.hasAttribute("srcdoc")).toBe(false);
+    expect(strictFrame.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms");
+    const post = vi.spyOn(strictFrame.contentWindow!, "postMessage");
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: strictFrame.contentWindow,
+        origin: new URL(strictFrame.src).origin,
+        data: {
+          method: "ui/notifications/sandbox-proxy-ready",
+          params: { sandboxUrl: strictFrame.src },
+        },
+      }),
+    );
+    await expect.poll(() => post.mock.calls.length).toBe(1);
+    expect(post.mock.calls[0]![0].params).toEqual({
+      html: text,
+      renderId: expect.any(String),
+      allowScripts: false,
+    });
+  },
+);

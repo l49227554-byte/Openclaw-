@@ -87,13 +87,14 @@ function selectGatewayConfigGetResult(snapshot: unknown, path: string | undefine
 }
 
 function createGatewayConfigGetToolResult(result: unknown) {
-  const text = JSON.stringify({ ok: true, result }, null, 2);
+  const payload = { ok: true, result };
+  const text = JSON.stringify(payload, null, 2);
   if (text.length > MAX_GATEWAY_CONFIG_GET_TEXT_CHARS) {
     throw new ToolInputError(
       "config.get response is too large; use path to request a narrower config subtree",
     );
   }
-  return textResult(text, { ok: true });
+  return textResult(text, payload);
 }
 
 function isConfigSchemaPathNotFoundError(error: unknown): boolean {
@@ -173,7 +174,6 @@ export function createGatewayTool(options?: {
             sessionKey: caller?.sessionKey,
             deliveryContext,
             note: readToolStringParam(params, "note"),
-            timeoutMs: DEFAULT_UPDATE_TIMEOUT_MS,
           },
           {
             // An explicit binding prevents the standalone client's remote fallback.
@@ -188,10 +188,12 @@ export function createGatewayTool(options?: {
         throw new ToolInputError(`Action not available: ${action}`);
       }
       const gatewayOpts = readGatewayCallOptions(params);
+      const callConfigGateway = (method: string, requestParams: Record<string, unknown>) =>
+        callGatewayTool(method, gatewayOpts, requestParams, { signal });
 
       if (action === "config.get") {
         const path = readToolStringParam(params, "path");
-        const snapshot = await callGatewayTool("config.get", gatewayOpts, {}, { signal });
+        const snapshot = await callConfigGateway("config.get", {});
         const result = selectGatewayConfigGetResult(snapshot, path);
         return createGatewayConfigGetToolResult(result);
       }
@@ -201,12 +203,7 @@ export function createGatewayTool(options?: {
           label: "path",
         });
         try {
-          const result = await callGatewayTool(
-            "config.schema.lookup",
-            gatewayOpts,
-            { path },
-            { signal },
-          );
+          const result = await callConfigGateway("config.schema.lookup", { path });
           return jsonResult({ ok: true, result });
         } catch (error) {
           if (isConfigSchemaPathNotFoundError(error)) {

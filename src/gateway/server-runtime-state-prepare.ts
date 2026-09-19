@@ -20,12 +20,12 @@ import { resolveGatewayAuth } from "./auth.js";
 import { createDesktopSessionRegistry } from "./desktop/session-registry.js";
 import { isLoopbackHost } from "./net.js";
 import { createNodeReapprovalCoordinator } from "./node-reapproval-coordinator.js";
-import { resolveGatewayPluginConfig } from "./runtime-plugin-config.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import { createGatewayControlUiRootLifecycle } from "./server-control-ui-root.js";
 import type { GatewayInstanceRuntime } from "./server-instance-runtime.types.js";
 import type { GatewayServerLiveState } from "./server-live-state.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
+import type { GatewayPluginReloadStatus } from "./server-plugin-runtime-generation.js";
 import type { SharedGatewaySessionGenerationState } from "./server-shared-auth-generation.js";
 import type { prepareGatewayServerBootstrap } from "./server-startup-bootstrap.js";
 import { createGatewayTransportBridge } from "./server-transport-bridge.js";
@@ -45,6 +45,7 @@ export async function prepareGatewayKernelState(params: {
   bootstrap: GatewayBootstrap;
   bootId: string;
   pluginRegistryOwner: ReturnType<typeof createPluginRegistryOwner>;
+  getPluginReloadStatus: () => GatewayPluginReloadStatus | undefined;
   port: number;
   opts: GatewayBootstrap["opts"];
   log: GatewayLogger;
@@ -121,6 +122,16 @@ export async function prepareGatewayKernelState(params: {
           registry: desktopSessionRegistry,
         })
       : undefined;
+  const gatewayComputerService = (
+    await startupTrace.measure(
+      "computer.runtime-import",
+      () => import("./desktop/computer-service.js"),
+    )
+  ).createGatewayComputerService({
+    getConfig: getRuntimeConfig,
+    getPluginRegistry: () => pluginRuntime.registry,
+    hostDesktopService,
+  });
   const workerEnvironmentRuntime = workerEnvironmentStartup
     ? await startupTrace.measure("worker-environments.runtime-imports", async () => {
         const workerModule = await loadWorkerEnvironmentStartupModule();
@@ -216,7 +227,16 @@ export async function prepareGatewayKernelState(params: {
           }),
         )
       : undefined;
-  if (workerPlacementRuntime) {
+  if (workerPlacementRuntime && workerEnvironmentService) {
+    const { createDevicePlacementDemandReader } =
+      await import("./worker-environments/device-placement-demand.js");
+    Object.assign(workerPlacementRuntime.dispatchService, {
+      getAdmittedDeviceSessionCounts: createDevicePlacementDemandReader({
+        resolveGatewayContext: resolvePluginGatewayContext,
+        placements: workerPlacementRuntime.placements,
+        environments: workerEnvironmentService,
+      }),
+    });
     bindNodeWorkspaceBindingResolver?.(workerPlacementRuntime.resolveNodeWorkspaceBinding);
     workerEnvironmentRuntime.bindWorkerSessionDispatch?.(
       workerPlacementRuntime.dispatchService.dispatch,
@@ -236,9 +256,9 @@ export async function prepareGatewayKernelState(params: {
   const channelRuntimeEnvs: Partial<Record<ChannelId, RuntimeEnv>> = Object.fromEntries(
     Object.entries(channelLogs).map(([id, logger]) => [id, runtimeForLogger(logger)]),
   );
-  const listStartupChannelGatewayMethods = () => {
+  const listStartupChannelGatewayMethods = (registry = pluginRuntime.registry) => {
     const methods: string[] = [];
-    for (const plugin of listGatewayStartupChannelPlugins()) {
+    for (const plugin of listGatewayStartupChannelPlugins(registry)) {
       methods.push(...(plugin.gatewayMethods ?? []));
       for (const descriptor of plugin.gatewayMethodDescriptors ?? []) {
         methods.push(descriptor.name);
@@ -389,12 +409,7 @@ export async function prepareGatewayKernelState(params: {
     () => import("./server-channels.js"),
   );
   const channelManager = createChannelManager({
-    getRuntimeConfig: () => {
-      const runtimeConfigLocal = getRuntimeConfig();
-      return resolveGatewayPluginConfig({
-        config: runtimeConfigLocal,
-      });
-    },
+    getRuntimeConfig,
     channelLogs,
     channelRuntimeEnvs,
     resolveChannelRuntime: getChannelRuntime,
@@ -425,6 +440,7 @@ export async function prepareGatewayKernelState(params: {
     getEventLoopHealth: readinessEventLoopHealth.snapshot,
     getStateDatabaseFailure: () =>
       openClawStateDatabaseCache.getOpenClawStateDatabaseRuntimeFailure(resolveDatabasePath()),
+    getPluginReloadStatus: params.getPluginReloadStatus,
     shouldSkipChannelReadiness: () =>
       isTruthyEnvValue(process.env.OPENCLAW_SKIP_CHANNELS) ||
       isTruthyEnvValue(process.env.OPENCLAW_SKIP_PROVIDERS),
@@ -458,7 +474,8 @@ export async function prepareGatewayKernelState(params: {
     isTerminalEnabled: terminalLaunchPolicy.isEnabled,
     gatewayTls,
     getResolvedAuth,
-    hooksConfig: () => runtimeStateRef.current?.hooksConfig ?? initialHooksConfig,
+    hooksConfig: () =>
+      runtimeStateRef.current === null ? initialHooksConfig : runtimeStateRef.current.hooksConfig,
     getHookClientIpConfig: () =>
       runtimeStateRef.current?.hookClientIpConfig ?? initialHookClientIpConfig,
     pluginRegistry: pluginRuntime.registry,
@@ -521,6 +538,7 @@ export async function prepareGatewayKernelState(params: {
     desktopSessionRegistry,
     nodeDesktopStreamBroker,
     hostDesktopService,
+    gatewayComputerService,
     channelLogs,
     channelRuntimeEnvs,
     listStartupChannelGatewayMethods,
@@ -565,6 +583,8 @@ export async function prepareGatewayKernelState(params: {
     createHttpTransportOptions,
     transportBridge,
     connectionWork: connectionState.connectionWork,
+    getSessionRowProjection: connectionState.getSessionRowProjection,
+    attachSessionRowProjection: connectionState.attachSessionRowProjection,
     clients,
     mentionInbox,
     broadcast,

@@ -2,6 +2,7 @@
 
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import { i18n } from "../../i18n/index.ts";
 import type { PluginDiscoveryEntry, PluginListResult } from "../../lib/plugins/index.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
@@ -16,7 +17,6 @@ import {
   createPluginsRouteData,
   createPluginsRouteLocation,
   createResult,
-  deferred,
   mountPage,
   resetPluginsPageTestState,
 } from "./plugins-page.test-support.ts";
@@ -461,6 +461,10 @@ describe("Model Setup icon lifecycle through the shared proxy", () => {
             })
           : undefined;
       installedIcons = pluginIcons;
+      const iconView = document.createDocumentFragment();
+      const iconTile = document.createElement("span");
+      iconTile.dataset.pluginIconId = key;
+      iconView.append(iconTile);
       let present = true;
       const reconcile = () => {
         if (!pluginIcons) {
@@ -469,7 +473,7 @@ describe("Model Setup icon lifecycle through the shared proxy", () => {
         }
         const result = createResult(present ? [createPlugin({ id: key, hasIcon: true })] : []);
         pluginIcons.reconcileInstalled(result);
-        pluginIcons.syncInstalled(result, new Set([key]));
+        pluginIcons.syncInstalled(result, iconView);
       };
       const eligible = (value: boolean) => {
         present = value;

@@ -1,5 +1,6 @@
 import { sanitizeTriageUpdateFailure } from "../../commands/triage-update.js";
 import { readConfigFileSnapshot } from "../../config/config.js";
+import { hashConfigRaw } from "../../config/io.read-helpers.js";
 import { resolveInstallationTarget } from "../../infra/installation-target-context.js";
 import {
   prepareUpdateCandidateRehearsal,
@@ -61,7 +62,7 @@ export async function runUpdateCommandRepair(params: {
   let completedTurns = 0;
   let activeTurn = 0;
   let lastValidation: UpdateRepairValidation | undefined;
-  const targetClass = params.phase === "validating" ? "candidate rehearsal" : "live";
+  const targetClass = params.phase === "validating" ? "update checks" : "installed version";
   if (runId) {
     recordUpdateRunPhase(
       runId,
@@ -83,7 +84,7 @@ export async function runUpdateCommandRepair(params: {
         rehearsal = await prepareUpdateCandidateRehearsal({
           candidateRoot: params.candidateRoot ?? params.root,
           config: snapshot.config,
-          sourceConfigHash: snapshot.hash,
+          sourceConfigHash: hashConfigRaw(snapshot.raw),
           stateDir: target.stateDir,
           env: params.env,
           nodeRunner: params.nodeRunner,

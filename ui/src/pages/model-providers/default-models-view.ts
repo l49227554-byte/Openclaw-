@@ -17,6 +17,7 @@ import {
   listEffectiveModelAuthProviders,
 } from "../../lib/model-auth.ts";
 import { describeModelProviderAuth } from "../../lib/model-provider-auth-label.ts";
+import type { ModelProviderRowMessage } from "./config-mutation.ts";
 import { modelCatalogRef, type DefaultModelSelection, type ModelPickerEntry } from "./data.ts";
 
 type DefaultModelsViewProps = {
@@ -29,14 +30,14 @@ type DefaultModelsViewProps = {
   fastMode: FastMode | undefined;
   fastModeOverridden: boolean;
   loading?: boolean;
-  /** True while additional catalog models are being discovered on picker open. */
+  /** True while the Gateway is discovering additional models. */
   catalogDiscovering?: boolean;
-  /** Retryable discovery error; set when a picker-triggered discovery fails. */
+  /** Retryable discovery error from the current catalog publication or explicit Retry. */
   catalogDiscoveryError?: string | null;
   canMutate: boolean;
   mutationBlockedReason: string | null;
   busy: Record<string, boolean>;
-  message?: { kind: "success" | "error"; text: string; warning?: string };
+  message?: ModelProviderRowMessage;
   onPrimaryChange: (model: string) => void;
   onFallbackChange: (model: string | null) => void;
   onUtilityChange: (model: string | null) => void;
@@ -44,8 +45,6 @@ type DefaultModelsViewProps = {
   onThinkingReset: () => void;
   onFastModeChange: (mode: FastMode) => void;
   onFastModeReset: () => void;
-  /** Invoked when any default-model picker opens; triggers demand-driven discovery. */
-  onOpen: () => void;
   onCatalogRetry: () => void;
 };
 
@@ -156,6 +155,7 @@ function fastModeOptionValue(value: "auto" | "on" | "off"): FastMode {
   return value === "auto" ? "auto" : value === "on";
 }
 
+// Discovery progress does not change the saved selection or disable known models.
 function renderCatalogProgress(props: DefaultModelsViewProps): TemplateResult | typeof nothing {
   if (props.catalogDiscovering) {
     return html`
@@ -236,7 +236,6 @@ export function renderDefaultModels(props: DefaultModelsViewProps) {
           disabled: modelControlsDisabled || saving,
           title,
           showSelectedDetail: true,
-          onOpen: props.onOpen,
           onChange: props.onPrimaryChange,
         }),
       })}
@@ -272,7 +271,6 @@ export function renderDefaultModels(props: DefaultModelsViewProps) {
           disabled: modelControlsDisabled || saving,
           title,
           showSelectedDetail: true,
-          onOpen: props.onOpen,
           onChange: (value) =>
             props.onUtilityChange(value === AUTOMATIC_UTILITY_VALUE ? null : value),
         }),
@@ -289,7 +287,6 @@ export function renderDefaultModels(props: DefaultModelsViewProps) {
           disabled: modelControlsDisabled || saving || !props.selection.primary,
           title,
           showSelectedDetail: true,
-          onOpen: props.onOpen,
           onChange: (value) => props.onFallbackChange(value || null),
         }),
       })}

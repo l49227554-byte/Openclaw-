@@ -13,8 +13,6 @@ import {
 } from "../agents/sessions/session-manager-codec.js";
 import type { FileEntry } from "../agents/sessions/session-manager-types.js";
 import { extractGeneratedTranscriptSessionId } from "../config/sessions/generated-transcript-session-id.js";
-import { parseSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
-import { resolveSessionFilePathCore } from "../config/sessions/paths.js";
 import type { TranscriptEvent } from "../config/sessions/session-accessor.js";
 import {
   resolveSqliteReadScope,
@@ -28,6 +26,7 @@ import type { SessionStoreTarget as ResolvedSessionStoreTarget } from "../config
 import { resolveAllAgentSessionStoreCandidateTargetsSync } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import { tableExists, tableHasColumn } from "../state/openclaw-state-db-schema-helpers.js";
 
@@ -68,42 +67,6 @@ type TranscriptEventCountResult =
 
 const JSONL_READ_CHUNK_BYTES = 64 * 1024;
 const MAX_LEGACY_COMPACTION_TARGETS = 100_000;
-
-export function resolveLegacyTranscriptPaths(
-  target: Pick<SessionStoreTarget, "agentId" | "storePath">,
-  entry: { sessionId: string; sessionFile?: unknown },
-): { transcriptPath?: string; transcriptDependencies: string[] } {
-  const legacySessionFile = typeof entry.sessionFile === "string" ? entry.sessionFile : undefined;
-  if (parseSqliteSessionFileMarker(legacySessionFile)) {
-    return { transcriptDependencies: [] };
-  }
-  const sessionsDir = path.dirname(target.storePath);
-  const relocatedPath = legacySessionFile?.trim()
-    ? path.join(sessionsDir, path.basename(legacySessionFile))
-    : undefined;
-  let defaultPath: string;
-  try {
-    defaultPath = resolveSessionFilePathCore(entry.sessionId, entry, {
-      agentId: target.agentId,
-      sessionsDir,
-    });
-  } catch (error) {
-    if (!relocatedPath) {
-      throw error;
-    }
-    defaultPath = relocatedPath;
-  }
-  const transcriptPaths = relocatedPath ? [defaultPath, relocatedPath] : [defaultPath];
-  const transcriptPath =
-    transcriptPaths.find((file) => fs.existsSync(file)) ??
-    (relocatedPath ? defaultPath : undefined);
-  // Reads may retain a foreign root after archival, but recovery artifacts are direct
-  // files in this target's sessions directory. Their dependencies must stay local too.
-  const transcriptDependencies = transcriptPaths.map((file) =>
-    path.join(sessionsDir, path.basename(file)),
-  );
-  return { transcriptPath, transcriptDependencies };
-}
 
 /** Validate an unregistered primary without retaining transcript payloads in memory. */
 export function readLegacyPrimaryTranscriptIdentity(
@@ -183,7 +146,10 @@ export function countTranscriptEventsForPath(
     }
     return { status: "ok", events };
   } catch (err) {
-    return { status: "malformed", message: String(err) };
+    return {
+      status: "malformed",
+      message: `${transcriptPath}: ${String(err)}. Only the readable prefix can be imported; the original remains protected for recovery.`,
+    };
   }
 }
 
@@ -604,6 +570,9 @@ export function projectExistingAgentDatabaseTargets(
 ): ExistingAgentDatabaseTarget[] {
   const seenPaths = new Set<string>();
   return targets.flatMap((target) => {
+    if (readAgentDatabaseAdmissionRefusal(target.agentId, { env })) {
+      return [];
+    }
     const sqlitePath = resolveTargetSqlitePath(target, env);
     if (seenPaths.has(sqlitePath) || !fs.existsSync(sqlitePath)) {
       return [];

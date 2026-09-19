@@ -119,8 +119,12 @@ OpenClaw release:
         Gateway startup shares the native login availability check across agent
         workspaces using the same config and environment. Explicit catalog/auth
         captures recheck availability for their own generation.
-        Explicitly selected API-key or token credentials still use protected
-        file-descriptor forwarding. Native-tool approvals remain under OpenClaw
+        New sessions select saved subscription credentials by account order and
+        use protected file-descriptor forwarding, including tokens saved with
+        `openclaw models auth paste-token --provider anthropic`. API keys saved for
+        the `anthropic` provider require an explicit account selection for CLI
+        forwarding. Existing sessions keep their account until you select another
+        or remove its saved profile. Native-tool approvals remain under OpenClaw
         control. Schema-valid native calls pass through OpenClaw's canonical
         tool policy before native approval. Isolated side-question completions
         and paired-node execution retain the supervised CLI path.
@@ -697,8 +701,11 @@ OpenClaw supports Anthropic's prompt caching feature for API-key auth.
 
     OpenClaw adds the `compact-2026-01-12` beta header and sends an Anthropic
     `context_management` compaction edit. When compaction occurs, OpenClaw
-    stores the newest summary as hidden provider replay state and sends it
-    first on the next matching request. The full transcript remains local;
+    assembles the streamed summary and stores it with the provider's opaque
+    compaction metadata as hidden replay state. Both survive session reopening
+    and are sent first on the next matching request. Summary text still passes
+    through transcript redaction; opaque metadata is preserved for replay.
+    The full transcript remains local;
     only the outbound history before the checkpoint is omitted.
     If Anthropic rejects a stored checkpoint, that turn reports the provider
     error and the following turn falls back to full local history.
@@ -822,7 +829,14 @@ OpenClaw supports Anthropic's prompt caching feature for API-key auth.
   </Accordion>
 
   <Accordion title='No API key found for provider "anthropic"'>
-    Anthropic auth is **per agent**; new agents do not inherit the main agent's keys. Re-run onboarding for that agent (or configure an API key on the gateway host), then verify with `openclaw models status`.
+    Agents read shared auth profiles at runtime, with agent-local profiles overriding shared profiles with the same ID. A new agent does not need a separate API key when a usable shared Anthropic profile exists.
+
+    Check the affected agent with `openclaw models status --agent <agentId>`. If no usable credential is available, configure an Anthropic API key on the Gateway host or set up auth for that agent.
+
+    Read-through is separate from copying: non-portable profiles can still be used from the shared store. Explicit copy flows follow the [agent copy portability policy](/auth-credential-semantics#agent-copy-portability).
+
+    Native Claude CLI logins remain owned by Claude Code, not the shared OpenClaw auth store. For that route, use the [Claude CLI setup](/providers/anthropic#getting-started); do not copy native OAuth tokens into OpenClaw.
+
   </Accordion>
 
   <Accordion title='No credentials found for profile "anthropic:default"'>

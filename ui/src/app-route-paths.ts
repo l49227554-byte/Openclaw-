@@ -48,7 +48,8 @@ const APP_ROUTE_DEFINITIONS = {
   meetings: { path: "/meetings" },
   apps: { path: "/apps" },
   portals: { path: "/portals" },
-  agents: { path: "/settings/agents", aliases: ["/agents"] },
+  "agents-home": { path: "/agents" },
+  agents: { path: "/settings/agents" },
   channels: { path: "/settings/channels", aliases: ["/channels"] },
   connection: { path: "/settings/connection" },
   config: { path: "/settings/general", aliases: ["/config"] },
@@ -80,6 +81,7 @@ const APP_ROUTE_DEFINITIONS = {
   workboard: { path: "/workboard" },
   worktrees: { path: "/worktrees", aliases: ["/settings/worktrees"] },
   sessions: { path: "/sessions", aliases: ["/settings/sessions"] },
+  systems: { path: "/systems" },
   usage: { path: "/usage" },
   debug: { path: "/debug" },
   logs: { path: "/logs" },
@@ -615,4 +617,15 @@ export function restoreBridgedRouteLocation(
     search: search ? `?${search}` : "",
     hash: location.hash,
   };
+}
+
+export function sameRouteLocation(
+  left: RouteLocation | undefined,
+  right: RouteLocation | undefined,
+): boolean {
+  return (
+    left?.pathname === right?.pathname &&
+    left?.search === right?.search &&
+    left?.hash === right?.hash
+  );
 }

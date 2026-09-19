@@ -1,10 +1,7 @@
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeAgentToolResultMiddlewareRuntimeIds } from "./agent-tool-result-middleware.js";
 import { createUnavailableRuntime } from "./api-builder.js";
-import {
-  recordPluginInstallOwnerLookup,
-  resolvePluginCandidateInstallOwner,
-} from "./candidate-install-owner.js";
+import { resolvePluginCandidateInstallOwner } from "./candidate-install-owner.js";
 import { resolveEffectivePluginActivationState } from "./config-state.js";
 import { isPluginEnabledByDefaultForPlatform } from "./default-enablement.js";
 import { isPluginRegistryCacheEnabled } from "./loader-cache.js";
@@ -39,10 +36,8 @@ import {
   isPluginRegistryActivated,
   withPluginRegistryPreparationScope,
 } from "./registry-lifecycle.js";
-import { getPluginRegistryRuntime } from "./registry-runtime-binding.js";
 import { createPluginRegistry, type PluginRegistry } from "./registry.js";
 import { degradedPluginMatchesRoot, findActiveDegradedPlugin } from "./runtime-degraded-state.js";
-import { getActivePluginRegistry } from "./runtime.js";
 import { setPluginRuntimeLoadContext } from "./runtime/load-context.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { hasKind } from "./slots.js";
@@ -81,6 +76,14 @@ export type NativePluginLoadBindings = Pick<PluginRuntime, "modelAuth" | "modelC
   capabilityCatalogContext: NonNullable<PluginLoadOptions["capabilityCatalogContext"]>;
 };
 
+function createCapabilityCatalogContextResolver(
+  context: NativePluginLoadBindings["capabilityCatalogContext"],
+) {
+  // Registrars retain this callback. Keep it outside the loader's lexical scope so
+  // a live replacement cannot retain options.previousRegistry and all older generations.
+  return () => context;
+}
+
 export function loadOpenClawPluginsCore(
   options: PluginLoadOptions,
   nativeBindings: NativePluginLoadBindings,
@@ -111,7 +114,8 @@ export function loadOpenClawPluginsCore(
   const logger = options.logger ?? createSubsystemLogger("plugins");
   const validateOnly = options.mode === "validate";
   const onlyPluginIdSet = createPluginIdScopeSet(context.onlyPluginIds);
-  const cacheEnabled = !options.previousRegistry && isPluginRegistryCacheEnabled(options);
+  const cacheEnabled =
+    !options.previousRegistry && !options.moduleRecoveries && isPluginRegistryCacheEnabled(options);
   if (cacheEnabled) {
     const cached = context.cacheState.get(context.cacheKey);
     if (cached) {
@@ -135,20 +139,14 @@ export function loadOpenClawPluginsCore(
     const loadPluginModule = createPluginModuleLoader({
       devSourceRoot: context.devSourceRoot,
       pluginSdkResolution: options.pluginSdkResolution,
+      expectedSourceDigests: options.expectedSourceDigests,
       ...overrides?.moduleLoader,
     });
-    const activeRuntime =
-      options.runtimeOptions?.allowGatewaySubagentBinding === true
-        ? getActivePluginRegistry()
-        : undefined;
-    const activeGatewayRuntime = activeRuntime
-      ? getPluginRegistryRuntime(activeRuntime)
+    const borrowedSubagent = context.borrowedGatewayRuntime
+      ? createDeferredGatewaySubagentRuntime(context.borrowedGatewayRuntime)
       : undefined;
-    const borrowedSubagent = activeGatewayRuntime
-      ? createDeferredGatewaySubagentRuntime(activeGatewayRuntime)
-      : undefined;
-    const borrowedNodes = activeGatewayRuntime
-      ? createDeferredGatewayNodesRuntime(activeGatewayRuntime)
+    const borrowedNodes = context.borrowedGatewayRuntime
+      ? createDeferredGatewayNodesRuntime(context.borrowedGatewayRuntime)
       : undefined;
     const runtime =
       options.mode === "cli-metadata"
@@ -179,14 +177,15 @@ export function loadOpenClawPluginsCore(
     registryBuilder = createPluginRegistry({
       logger,
       runtime,
-      resolveCapabilityCatalogContext: () => capabilityCatalogContext,
+      resolveCapabilityCatalogContext:
+        createCapabilityCatalogContextResolver(capabilityCatalogContext),
       allowProcessHomeSessionCatalogs: options.allowProcessHomeSessionCatalogs ?? true,
       coreGatewayHandlers: options.coreGatewayHandlers,
       ...(options.coreGatewayMethodNames !== undefined && {
         coreGatewayMethodNames: options.coreGatewayMethodNames,
       }),
       ...(options.hostServices !== undefined && { hostServices: options.hostServices }),
-      activateGlobalSideEffects: context.shouldActivate,
+      activateGlobalSideEffects: context.runtimeSideEffects,
     });
     const builder = registryBuilder;
     const { registry } = builder;
@@ -201,6 +200,10 @@ export function loadOpenClawPluginsCore(
         emitWarning: context.shouldActivate,
         warningCacheKey: context.cacheKey,
       });
+    const loaderCacheIdentity = Object.freeze({
+      requestKey: context.cacheKey,
+      resolvedKey: context.resolveManifestCacheKey(manifestRegistry),
+    });
     // Raw and prepared loads share one owner; absent workspace means shared-root scope.
     setPluginRuntimeLoadContext(
       registry,
@@ -217,12 +220,12 @@ export function loadOpenClawPluginsCore(
         preferBuiltPluginArtifacts: options.preferBuiltPluginArtifacts,
       },
       context.registrationConfigKey,
-      Object.freeze({
-        requestKey: context.cacheKey,
-        resolvedKey: context.resolveManifestCacheKey(manifestRegistry),
-      }),
+      loaderCacheIdentity,
     );
-    const replacedIds = new Set(options.replacePluginIds ?? []);
+    const replacedIds = new Set([
+      ...(options.replacePluginIds ?? []),
+      ...(options.moduleRecoveries?.keys() ?? []),
+    ]);
     const memorySlot = context.normalized.slots.memory;
     const dreamingSidecar = resolveAuthorizedDreamingSidecar({
       cfg: context.cfg,
@@ -274,7 +277,7 @@ export function loadOpenClawPluginsCore(
         hasKind(manifest.kind, "memory") ? memorySlot : undefined,
         manifest.id === dreamingSidecar?.engineId ? dreamingSidecar : undefined,
         context.artifactPreference,
-        context.shouldActivate,
+        context.runtimeSideEffects,
         context.channelPluginLoadIntent,
         context.includeSetupOnlyChannelPlugins,
         context.forceSetupOnlyChannelPlugins,
@@ -412,34 +415,30 @@ export function loadOpenClawPluginsCore(
       });
     }
     if (options.mode !== "cli-metadata") {
-      warnAboutUntrackedLoadedPlugins(
-        recordPluginInstallOwnerLookup(
-          {
-            registry,
-            provenance,
-            allowlist: context.normalized.allow,
-            emitWarning: context.shouldActivate,
-            logger,
-            env: context.env,
-          },
-          new Map(
-            orderedCandidates.flatMap((candidate) => {
-              const pluginId = manifestBySource.get(candidate.source)?.id;
-              const installOwner = resolvePluginCandidateInstallOwner(candidate);
-              return pluginId && installOwner ? [[pluginId, installOwner] as const] : [];
-            }),
-          ),
+      warnAboutUntrackedLoadedPlugins({
+        registry,
+        provenance,
+        allowlist: context.normalized.allow,
+        emitWarning: context.shouldActivate,
+        logger,
+        env: context.env,
+        installOwnerByPluginId: new Map(
+          orderedCandidates.flatMap((candidate) => {
+            const pluginId = manifestBySource.get(candidate.source)?.id;
+            const installOwner = resolvePluginCandidateInstallOwner(candidate);
+            return pluginId && installOwner ? [[pluginId, installOwner] as const] : [];
+          }),
         ),
-      );
+      });
     }
-    maybeThrowOnPluginLoadError(registry, options.throwOnLoadError);
+    maybeThrowOnPluginLoadError(registry, options.throwOnLoadError, retained);
     if (context.shouldActivate && options.mode !== "validate") {
       const failedPlugins = registry.plugins.filter((plugin) => plugin.failedAt != null);
       if (failedPlugins.length > 0) {
         logger.warn(
           `[plugins] ${failedPlugins.length} plugin(s) failed to initialize (${formatPluginFailureSummary(
             failedPlugins,
-          )}). Run 'openclaw plugins inspect <id> --runtime --json' for runtime diagnostics and 'openclaw plugins list' for registry state. Restart the Gateway after fixing plugin code or load paths.`,
+          )}). Run 'openclaw plugins inspect <id> --runtime --json' for runtime diagnostics and 'openclaw plugins list' for registry state. After fixing plugin code or load paths, run 'openclaw plugins reload <id>' to retry.`,
         );
       }
     }
@@ -456,6 +455,9 @@ export function loadOpenClawPluginsCore(
     // then the catch below can discard this builder without poisoning a reusable cache value.
     if (cacheEnabled) {
       context.cacheState.set(context.cacheKey, registry);
+      if (loaderCacheIdentity.resolvedKey !== context.cacheKey) {
+        context.cacheState.set(loaderCacheIdentity.resolvedKey, registry);
+      }
     }
     registryInputs.set(registry, inputs);
     return registry;

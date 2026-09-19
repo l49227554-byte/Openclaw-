@@ -27,6 +27,7 @@ import {
   type MemoryRouteTab,
 } from "./app-route-paths.ts";
 import { createApplicationRouter, startApplicationRouter } from "./app-routes.ts";
+import { createAgentSelectionCapability } from "./app/agent-selection.ts";
 import type { ApplicationContext } from "./app/context.ts";
 import type { AgentsPanel } from "./lib/agents/panels.ts";
 import { createApplicationGateway } from "./test-helpers/application-context.ts";
@@ -164,7 +165,17 @@ function createStartupContext(basePath = ""): ApplicationContext {
     lastError: null,
     lastErrorCode: null,
   });
-  return { basePath, gateway } as unknown as ApplicationContext;
+  return {
+    basePath,
+    gateway,
+    settingsAgentSelection: createAgentSelectionCapability(
+      gateway,
+      { state: { agentsList: null }, subscribe: () => () => {} },
+      undefined,
+      undefined,
+      { requireConfiguredAgent: true },
+    ),
+  } as unknown as ApplicationContext;
 }
 
 describe("Dynamic route startup bridge", () => {
@@ -315,6 +326,13 @@ describe("Dynamic route startup bridge", () => {
   it("registers the Portals workspace path", () => {
     expect(pathForRoute("portals")).toBe("/portals");
     expect(routeIdFromPath("/portals")).toBe("portals");
+  });
+
+  it("keeps the mounted Agents roster separate from agent settings", () => {
+    expect(routeIdFromPath("/ui/agents", "/ui")).toBe("agents-home");
+    expect(inferBasePathFromPathname("/ui/agents")).toBe("/ui");
+    expect(agentRouteFromPath("/ui/agents", "/ui")).toBeNull();
+    expect(routeIdFromPath("/ui/settings/agents", "/ui")).toBe("agents");
   });
 
   it("matches mixed-case deep links exactly like the uirouter path key", () => {
@@ -654,8 +672,7 @@ describe("Agent panel route paths", () => {
       agents: [{ id: "main" }],
     };
     const context = {
-      basePath: "",
-      gateway: createStartupContext().gateway,
+      ...createStartupContext(),
       agents: {
         state: { agentsList, agentsError: null },
         ensureList: () => Promise.resolve(agentsList),

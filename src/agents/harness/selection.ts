@@ -32,10 +32,12 @@ import {
 } from "../provider-secret-egress.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { isKnownCoreToolId } from "../tool-catalog.js";
+import { isToolAllowedByPolicies } from "../tool-policy-match.js";
 import {
   expandToolGroups,
   mergeAlsoAllowPolicy,
   normalizeToolPolicyName,
+  readToolAllowlistIntersection,
   toolPolicyRestrictsTools,
 } from "../tool-policy.js";
 import type { SystemAgentToolOptions } from "../tools/system-agent-tool.js";
@@ -157,16 +159,6 @@ export function selectAgentHarnessForPreparedModelProviders(
     decisions.find((decision) => decision.selectedHarnessId === "openclaw")?.harness ??
     createOpenClawAgentHarness()
   );
-}
-
-/** Returns whether a plugin harness constructs OpenClaw tools inside its runtime. */
-export function agentHarnessBuildsOpenClawTools(harnessId: string): boolean {
-  return harnessId === "codex" || harnessId === "copilot";
-}
-
-/** Returns whether the selected harness exposes OpenClaw's agent-tool surface. */
-export function agentHarnessExposesOpenClawTools(harnessId: string): boolean {
-  return harnessId === "openclaw" || agentHarnessBuildsOpenClawTools(harnessId);
 }
 
 function selectAgentHarnessDecision(
@@ -404,12 +396,19 @@ export async function runAgentHarnessAttempt(
       yieldAborted:
         result.terminal.kind === "aborted" && result.terminal.source === "yield_cleanup",
       isHeartbeat: isHeartbeatLifecycleRunKind(internalParams.bootstrapContextRunKind),
-      runtimeContext: {
-        provider: internalParams.provider,
-        modelId: internalParams.modelId,
-        modelContextWindow: internalParams.modelContextWindow,
-        tokenBudget: internalParams.contextTokenBudget,
-      },
+      // Native model identity does not attest the host's window or context cap.
+      runtimeContext:
+        nativeSessionRuntime && result.runtimeModelSelection
+          ? {
+              provider: result.runtimeModelSelection.provider,
+              modelId: result.runtimeModelSelection.model,
+            }
+          : {
+              provider: internalParams.provider,
+              modelId: internalParams.modelId,
+              modelContextWindow: internalParams.modelContextWindow,
+              tokenBudget: internalParams.contextTokenBudget,
+            },
     });
   }
   const { contextEngineTerminalAnchor: _contextEngineTerminalAnchor, ...publicResult } = result;
@@ -583,6 +582,7 @@ function preparePluginHarnessParams(
     harness.conversationToolPolicySupport === "exact"
       ? harness.conversationToolPolicySafeDenyTools
       : undefined,
+    harness.conversationToolPolicyNativeTools,
   );
   return applyPluginHarnessDenyAllToolPolicy(
     {
@@ -654,6 +654,7 @@ export function resolveAgentHarnessNativeToolPolicyRestricted(
     harness.conversationToolPolicySupport === "exact"
       ? harness.conversationToolPolicySafeDenyTools
       : undefined,
+    harness.conversationToolPolicyNativeTools,
   ).toolPolicyRestricted;
 }
 
@@ -677,6 +678,7 @@ function resolvePluginHarnessDenyAllToolPolicyPrompt(
 export function resolvePluginHarnessToolPolicies(
   params: PluginHarnessToolPolicyContext,
   safeDenyToolNames?: readonly string[],
+  nativeToolNames?: readonly string[],
 ): ResolvedPluginHarnessToolPolicies {
   const messageProvider = params.messageProvider ?? params.messageChannel;
   const sandboxSessionKey = params.sandboxSessionKey ?? params.sessionKey;
@@ -735,8 +737,10 @@ export function resolvePluginHarnessToolPolicies(
   };
   const { policy } = capabilityProfile;
   // Runtime allowlists treat [] as deny-all; config allow: [] means unrestricted.
+  const runtimeRestrictions =
+    params.toolsAllow && (readToolAllowlistIntersection(params.toolsAllow) ?? [params.toolsAllow]);
   const requestedToolPolicy =
-    params.disableTools || params.toolsAllow?.length === 0
+    params.disableTools || runtimeRestrictions?.some((allow) => allow.length === 0)
       ? { deny: ["*"] }
       : params.toolsAllow
         ? { allow: params.toolsAllow }
@@ -757,6 +761,10 @@ export function resolvePluginHarnessToolPolicies(
   const safeDenyToolNameSet = safeDenyToolNames
     ? new Set(safeDenyToolNames.map(normalizeToolPolicyName))
     : undefined;
+  const profilePolicies = [
+    mergeAlsoAllowPolicy(policy.profilePolicy, policy.profileAlsoAllow),
+    mergeAlsoAllowPolicy(policy.providerProfilePolicy, policy.providerProfileAlsoAllow),
+  ];
   return {
     senderPolicy: policy.senderPolicy,
     senderScopedGroupPolicy: resolveSenderScopedGroupToolPolicy(
@@ -766,8 +774,7 @@ export function resolvePluginHarnessToolPolicies(
     ),
     groupPolicy: policy.groupPolicy,
     runtimePolicies: [
-      mergeAlsoAllowPolicy(policy.profilePolicy, policy.profileAlsoAllow),
-      mergeAlsoAllowPolicy(policy.providerProfilePolicy, policy.providerProfileAlsoAllow),
+      ...profilePolicies,
       policy.globalPolicy,
       policy.globalProviderPolicy,
       policy.agentPolicy,
@@ -782,6 +789,8 @@ export function resolvePluginHarnessToolPolicies(
     // Keep policy-allowed host replacements, without ambient input or approval surfaces.
     toolPolicyRestricted:
       params.swarmCollector === true ||
+      nativeToolNames?.some((toolName) => !isToolAllowedByPolicies(toolName, profilePolicies)) ===
+        true ||
       explicitPolicies.some((explicitPolicy) =>
         toolPolicyRestrictsHarnessNativeTools(explicitPolicy, safeDenyToolNameSet),
       ),

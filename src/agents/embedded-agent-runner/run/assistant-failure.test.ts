@@ -1,6 +1,9 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createFailureMessage } from "../../../../packages/agent-core/src/turn-interruption.js";
+import { createApiRegistry } from "../../../../packages/ai/src/api-registry.js";
+import { createLlmRuntime } from "../../../../packages/ai/src/stream.js";
 import type { Context, Model } from "../../../../packages/ai/src/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { AssistantMessage } from "../../../llm/types.js";
@@ -115,6 +118,60 @@ function makeExhaustedCredentialFailureInput(options?: { replaySafe?: boolean })
     maybeMarkAuthProfileFailure,
     traceAttempts,
   };
+}
+
+const UNREGISTERED_ANTHROPIC_MODEL = {
+  id: "claude-opus-4-8",
+  name: "Claude Opus 4.8",
+  api: "anthropic",
+  provider: "anthropic",
+  baseUrl: "https://example.invalid",
+  input: ["text"],
+  reasoning: false,
+  contextWindow: 200_000,
+  maxTokens: 8192,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+} satisfies Model;
+
+function captureUnregisteredApiProviderError(): Error {
+  try {
+    createLlmRuntime(createApiRegistry()).stream(UNREGISTERED_ANTHROPIC_MODEL, {
+      messages: [],
+    } as Context);
+  } catch (error) {
+    if (error instanceof Error) {
+      return error;
+    }
+  }
+  throw new Error("expected createLlmRuntime to throw for an unregistered api");
+}
+
+function makeRuntimeBlankContentFailureInput(options?: { emptyErrorRetries?: number }) {
+  const fixture = makeExhaustedCredentialFailureInput();
+  const assistant = createFailureMessage(
+    UNREGISTERED_ANTHROPIC_MODEL,
+    captureUnregisteredApiProviderError(),
+    false,
+  );
+  const attempt = makeEmbeddedRunnerAttempt({
+    assistantTexts: [],
+    lastAssistant: assistant,
+    currentAttemptAssistant: assistant,
+    currentAttemptReplayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+  });
+  fixture.input.attempt = attempt;
+  fixture.input.attemptAssistant = assistant;
+  fixture.input.currentAttemptAssistant = assistant;
+  fixture.input.terminalState = resolveEmbeddedRunAttemptTerminalState({ attempt, assistant });
+  fixture.input.activeErrorContext = {
+    provider: "anthropic",
+    model: "claude-opus-4-8",
+  };
+  fixture.input.provider = "anthropic";
+  fixture.input.modelId = "claude-opus-4-8";
+  fixture.input.model = "claude-opus-4-8";
+  fixture.input.emptyErrorRetries = options?.emptyErrorRetries ?? 0;
+  return { assistant, fixture };
 }
 
 function makeIdleTimeoutFailureInput(options?: { replaySafe?: boolean }) {
@@ -708,6 +765,45 @@ describe("handleEmbeddedAssistantFailure", () => {
       expect(fixture.traceAttempts).toEqual([]);
     },
   );
+
+  it("retries a runtime blank-content error before failover", async () => {
+    const { assistant, fixture } = makeRuntimeBlankContentFailureInput({ emptyErrorRetries: 0 });
+
+    expect(assistant.content).toEqual([{ type: "text", text: "" }]);
+    expect(assistant.errorMessage).toBe("No API provider registered for api: anthropic");
+    expect(classifyAssistantFailoverReason(assistant)).toBeNull();
+
+    const outcome = await handleEmbeddedAssistantFailure(fixture.input);
+
+    expect(outcome).toMatchObject({
+      action: "retry",
+      emptyErrorRetries: 1,
+    });
+    expect(fixture.advanceAuthProfile).not.toHaveBeenCalled();
+    expect(fixture.traceAttempts).toEqual([]);
+  });
+
+  it("hands a runtime blank-content error to the configured fallback model once retries are spent", async () => {
+    const { fixture } = makeRuntimeBlankContentFailureInput({ emptyErrorRetries: 3 });
+    fixture.input.fallbackConfigured = true;
+
+    await expect(handleEmbeddedAssistantFailure(fixture.input)).rejects.toMatchObject({
+      reason: "unknown",
+      provider: "anthropic",
+      model: "claude-opus-4-8",
+      rawError: "No API provider registered for api: anthropic",
+    });
+    expect(fixture.advanceAuthProfile).not.toHaveBeenCalled();
+    expect(fixture.traceAttempts).toEqual([
+      {
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        result: "fallback_model",
+        reason: "unknown",
+        stage: "assistant",
+      },
+    ]);
+  });
 
   it("retries a replay-safe reasoning-only assistant error before failover", async () => {
     const fixture = makeExhaustedCredentialFailureInput();

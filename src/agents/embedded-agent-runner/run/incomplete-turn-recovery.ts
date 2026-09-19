@@ -40,6 +40,20 @@ const EMPTY_RESPONSE_RETRY_INSTRUCTION =
 const SETTLED_TOOL_TERMINAL_CONTINUATION_INSTRUCTION =
   "The previous assistant turn completed its tool calls but did not produce a user-visible answer. Continue from the current transcript and produce the final user-visible answer now. Do not repeat completed tool calls or restart from scratch. Tools are unavailable in this step: it is a text-only pass, so reply with plain text and do not attempt any tool call.";
 
+function isBlankTextOnlyAssistantContent(content: unknown[]): boolean {
+  return content.every((block) => {
+    if (!block || typeof block !== "object" || !("type" in block)) {
+      return false;
+    }
+    return (
+      block.type === "text" &&
+      "text" in block &&
+      typeof block.text === "string" &&
+      !block.text.trim()
+    );
+  });
+}
+
 export function shouldRetrySilentErrorAssistantTurn(params: {
   attempt: Pick<
     EmbeddedRunAttemptResult,
@@ -86,7 +100,7 @@ export function shouldRetrySilentErrorAssistantTurn(params: {
   if (!Array.isArray(content)) {
     return false;
   }
-  if (content.length === 0) {
+  if (isBlankTextOnlyAssistantContent(content)) {
     // Rejected arguments can consume tokens without output; the preceding guards own replay safety.
     return (
       !hasPositiveOutputTokenUsage(assistant) ||

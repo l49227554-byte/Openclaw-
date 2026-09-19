@@ -1,5 +1,9 @@
 // Focused incomplete-turn behavior coverage.
 import { describe, expect, it } from "vitest";
+import { createFailureMessage } from "../../../packages/agent-core/src/turn-interruption.js";
+import { createApiRegistry } from "../../../packages/ai/src/api-registry.js";
+import { createLlmRuntime } from "../../../packages/ai/src/stream.js";
+import type { Model } from "../../../packages/ai/src/types.js";
 import { PROVIDER_POST_DISPATCH_AMBIGUITY_ERROR_CODE } from "../../llm/types.js";
 import {
   buildEmbeddedRunnerAssistant,
@@ -74,7 +78,80 @@ function makeSilentReplyParams(
   };
 }
 
+const UNREGISTERED_ANTHROPIC_MODEL = {
+  id: "claude-opus-4-8",
+  name: "Claude Opus 4.8",
+  api: "anthropic",
+  provider: "anthropic",
+  baseUrl: "https://example.invalid",
+  input: ["text"],
+  reasoning: false,
+  contextWindow: 200_000,
+  maxTokens: 8192,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+} satisfies Model;
+
+function captureUnregisteredApiProviderError(): Error {
+  try {
+    createLlmRuntime(createApiRegistry()).stream(UNREGISTERED_ANTHROPIC_MODEL, { messages: [] });
+  } catch (error) {
+    if (error instanceof Error) {
+      return error;
+    }
+  }
+  throw new Error("expected createLlmRuntime to throw for an unregistered api");
+}
+
+function makeRuntimeBlankContentFailure(overrides: Record<string, unknown> = {}) {
+  const assistant = {
+    ...createFailureMessage(
+      UNREGISTERED_ANTHROPIC_MODEL,
+      captureUnregisteredApiProviderError(),
+      false,
+    ),
+    ...overrides,
+  } as LastAssistant;
+  return {
+    assistant,
+    attempt: makeAttemptResult({
+      assistantTexts: [],
+      lastAssistant: assistant,
+      currentAttemptAssistant: assistant,
+    }),
+  };
+}
+
 describe("incomplete-turn error recovery", () => {
+  it("retries a runtime blank-content error with zero usage", () => {
+    const { assistant, attempt } = makeRuntimeBlankContentFailure();
+    expect(assistant.content).toEqual([{ type: "text", text: "" }]);
+    expect(assistant.errorMessage).toBe("No API provider registered for api: anthropic");
+    expect(shouldRetrySilentErrorAssistantTurn({ attempt, assistant })).toBe(true);
+  });
+
+  it("does not retry a runtime blank-content error after side effects", () => {
+    const { assistant } = makeRuntimeBlankContentFailure();
+    expect(
+      shouldRetrySilentErrorAssistantTurn({
+        attempt: makeAttemptResult({
+          assistantTexts: [],
+          lastAssistant: assistant,
+          currentAttemptAssistant: assistant,
+          toolMetas: [{ toolName: "write", replaySafe: false }],
+          currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+        }),
+        assistant,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not retry a runtime blank-content error with positive output", () => {
+    const { assistant, attempt } = makeRuntimeBlankContentFailure({
+      usage: { input: 100, output: 12, totalTokens: 112 },
+    });
+    expect(shouldRetrySilentErrorAssistantTurn({ attempt, assistant })).toBe(false);
+  });
+
   it("retries replay-safe errored turns that only emitted thinking blocks", () => {
     const assistant = makeLastAssistant({
       stopReason: "error",

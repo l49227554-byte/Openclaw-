@@ -4,9 +4,15 @@ import {
   copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
   isReplyPayloadStatusNotice,
+  isReplyPayloadTerminalContent,
 } from "../reply-payload.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
-import { createBlockReplySource, setBlockReplyDelivery } from "./block-reply-delivery.js";
+import {
+  createBlockReplySource,
+  resolveWaitForIdleBlockReplyDelivery,
+  setBlockReplyDelivery,
+  type BlockReplyDelivery,
+} from "./block-reply-delivery.js";
 import type { BlockReplySource } from "./block-reply-source.types.js";
 import {
   prepareReplyPayloadForSideEffects as preparePayload,
@@ -199,9 +205,24 @@ export function createDispatchBlockReplyHandler(state: PrepareDispatchExecutionR
           if (delivery.queued) {
             // This block's receipt owns its settlement. A turn-wide no-send
             // verdict is premature while a recovery final can still arrive.
-            const pending = (delivery.outcome ?? dispatcher.waitForIdle()).then(() => undefined);
+            // Keep the resolved receipt so settlement can tell confirmed
+            // delivery from a failed or still-pending send.
+            const receipt: Promise<BlockReplyDelivery> = delivery.outcome
+              ? delivery.outcome.then((outcome): BlockReplyDelivery => ({
+                  outcome,
+                  pending: delivery.hasPendingDelivery?.(),
+                }))
+              : dispatcher.waitForIdle().then(resolveWaitForIdleBlockReplyDelivery);
+            const pending = receipt.then(() => undefined);
             void pending.catch(() => undefined);
+            // Every queued send joins the drain barrier, but only terminal
+            // content owns the settlement receipt: supplemental sends (status
+            // notices, reasoning, commentary) trail the answer and must not
+            // replace its confirmed delivery evidence.
             state.progressState.pendingDirectBlockReplyDelivery = pending;
+            if (isReplyPayloadTerminalContent(payload)) {
+              state.progressState.pendingDirectBlockReplyDeliveryReceipt = receipt;
+            }
           }
           if (
             delivery.queued &&

@@ -10,6 +10,7 @@ import { defaultRuntime } from "../../runtime.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { readPendingUserTurnTranscriptAdmission } from "../../sessions/user-turn-transcript-admission.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.shared.js";
+import type { QueuedFollowupSettlement } from "../get-reply-options.types.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveRunAfterAutoFallbackPrimaryProbeRecheck } from "./agent-runner-auto-fallback.js";
@@ -56,9 +57,10 @@ export type FollowupRunnerParams = {
 
 export async function settleQueuedFollowupPresentation(
   defaults: FollowupRunnerParams,
+  settlement: QueuedFollowupSettlement,
 ): Promise<void> {
   try {
-    await defaults.opts?.onQueuedFollowupSettled?.();
+    await defaults.opts?.onQueuedFollowupSettled?.(settlement);
   } catch (error) {
     defaultRuntime.error?.(
       `followup queue: queued presentation cleanup failed: ${formatErrorMessage(error)}`,
@@ -479,7 +481,8 @@ export async function admitFollowupTurn(params: {
     return { kind: "admitted", turn };
   } catch (error) {
     if (queuedFollowupAdmitted) {
-      await settleQueuedFollowupPresentation(params.defaults);
+      // Admission failed before any final delivery, so draft cleanup may proceed.
+      await settleQueuedFollowupPresentation(params.defaults, { finalDeliveryFailed: false });
     }
     operation.complete();
     throw error instanceof Error ? error : new Error(formatErrorMessage(error));

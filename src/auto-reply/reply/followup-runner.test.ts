@@ -4,6 +4,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import type { QueuedFollowupSettlement } from "../get-reply-options.types.js";
 import type { ReplyPayload } from "../types.js";
 import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
 import type { FollowupExecutionResult } from "./followup-turn-execution.js";
@@ -34,11 +35,16 @@ vi.mock("./agent-runner-result-accounting.js", () => ({
 
 vi.mock("./followup-turn-admission.js", () => ({
   admitFollowupTurn: (...args: unknown[]) => state.admit(...args),
-  settleQueuedFollowupPresentation: async (defaults: {
-    opts?: { onQueuedFollowupSettled?: () => Promise<void> | void };
-  }) => {
+  settleQueuedFollowupPresentation: async (
+    defaults: {
+      opts?: {
+        onQueuedFollowupSettled?: (settlement: QueuedFollowupSettlement) => Promise<void> | void;
+      };
+    },
+    settlement: QueuedFollowupSettlement,
+  ) => {
     try {
-      await defaults.opts?.onQueuedFollowupSettled?.();
+      await defaults.opts?.onQueuedFollowupSettled?.(settlement);
     } catch {}
   },
 }));
@@ -225,6 +231,33 @@ describe("createFollowupRunner", () => {
       }
     },
   );
+
+  it("retains the queued draft when accounting fails before final delivery", async () => {
+    const turn = createTurn();
+    const source = createChatSendLateFollowupDisposition({
+      runId: "source-run",
+      originatingChannel: "webchat",
+      logGateway: { info: vi.fn() } as never,
+      deliver: async () => ({ kind: "delivered" }),
+    });
+    source.recordQueued();
+    turn.queued.queuedFollowupReplyDisposition = { kind: "deliver", deliver: source.deliver };
+    const onQueuedFollowupSettled = vi.fn(async (_settlement?: QueuedFollowupSettlement) => {});
+    state.admit.mockResolvedValue({ kind: "admitted", turn });
+    state.execute.mockImplementation(async () => createSettledExecution());
+    state.account.mockRejectedValue(new Error("compaction accounting storage write failed"));
+    const run = createFollowupRunner({
+      typing: createTypingController(),
+      typingMode: "never",
+      defaultModel: "claude",
+      opts: { onQueuedFollowupSettled },
+    });
+    await run(turn.queued);
+    expect(state.deliver).not.toHaveBeenCalled();
+    // Accounting rejected before terminal delivery ran, so the outcome is
+    // unconfirmed: settlement must retain the draft, not clear it.
+    expect(onQueuedFollowupSettled).toHaveBeenCalledWith({ finalDeliveryFailed: true });
+  });
 
   it("delivers ordinary channel compaction-start while admission is still compacting", async () => {
     const turn = createTurn();

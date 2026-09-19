@@ -837,4 +837,116 @@ describe("processDiscordMessage draft streaming progress", () => {
       },
     );
   });
+
+  it("clears the queued progress draft when the follow-up settles after dispatch returned", async () => {
+    const elapseProgressDraftStartDelay = useProgressDraftStartDelay();
+    const draftStream = createMockDraftStreamForTest();
+
+    let retainedParams: DispatchInboundParams | undefined;
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      // The queue admits this turn only after its dispatch returned, so the
+      // processing finally block cannot settle the progress message the
+      // drained turn publishes.
+      retainedParams = params;
+      return { queuedFinal: true, counts: { final: 1, tool: 0, block: 0 } };
+    });
+
+    const ctx = await createAutomaticDraftContext({
+      discordConfig: {
+        streaming: { mode: "progress", progress: { toolProgress: true, label: "Shelling" } },
+      },
+    });
+
+    await runProcessDiscordMessage(ctx);
+
+    await retainedParams?.replyOptions?.onQueuedFollowupAdmitted?.();
+    await retainedParams?.replyOptions?.onToolStart?.({ name: "read", phase: "start" });
+    await retainedParams?.replyOptions?.onItemEvent?.({ progressText: "queued work" });
+    await elapseProgressDraftStartDelay();
+    await retainedParams?.replyOptions?.onQueuedFollowupSettled?.({
+      finalDeliveryFailed: false,
+    });
+
+    expect(draftStream.messageId()).toBeUndefined();
+  });
+
+  it("keeps the queued progress draft when the settled follow-up failed final delivery", async () => {
+    const elapseProgressDraftStartDelay = useProgressDraftStartDelay();
+    const draftStream = createMockDraftStreamForTest();
+
+    let retainedParams: DispatchInboundParams | undefined;
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      // Same drained-turn shape as the settlement test above; the queue runner
+      // reports a failed final send through the settle callback.
+      retainedParams = params;
+      return { queuedFinal: true, counts: { final: 1, tool: 0, block: 0 } };
+    });
+
+    const ctx = await createAutomaticDraftContext({
+      discordConfig: {
+        streaming: { mode: "progress", progress: { toolProgress: true, label: "Shelling" } },
+      },
+    });
+
+    await runProcessDiscordMessage(ctx);
+
+    await retainedParams?.replyOptions?.onQueuedFollowupAdmitted?.();
+    await retainedParams?.replyOptions?.onToolStart?.({ name: "read", phase: "start" });
+    await retainedParams?.replyOptions?.onItemEvent?.({ progressText: "queued work" });
+    await elapseProgressDraftStartDelay();
+    const clearsBeforeSettlement = draftStream.clear.mock.calls.length;
+    await retainedParams?.replyOptions?.onQueuedFollowupSettled?.({
+      finalDeliveryFailed: true,
+    });
+
+    // The progress draft is the only visible record of the failed turn, so the
+    // settlement cleanup must retain it for recovery instead of clearing it.
+    expect(draftStream.messageId()).toBeDefined();
+    expect(draftStream.clear.mock.calls.length).toBe(clearsBeforeSettlement);
+
+    // A retried follow-up re-owns the lane and settles successfully, clearing
+    // the retained draft through the same settlement callback.
+    await retainedParams?.replyOptions?.onQueuedFollowupAdmitted?.();
+    await retainedParams?.replyOptions?.onToolStart?.({ name: "read", phase: "start" });
+    await retainedParams?.replyOptions?.onItemEvent?.({ progressText: "retried work" });
+    await elapseProgressDraftStartDelay();
+    expect(draftStream.messageId()).toBeDefined();
+    await retainedParams?.replyOptions?.onQueuedFollowupSettled?.({
+      finalDeliveryFailed: false,
+    });
+    expect(draftStream.messageId()).toBeUndefined();
+  });
+
+  it("keeps the queued progress draft when a pre-settlement host invokes the hook without a settlement", async () => {
+    const elapseProgressDraftStartDelay = useProgressDraftStartDelay();
+    const draftStream = createMockDraftStreamForTest();
+
+    let retainedParams: DispatchInboundParams | undefined;
+    dispatchInboundMessage.mockImplementationOnce(async (params?: DispatchInboundParams) => {
+      // Released hosts without the settlement contract call this hook with no
+      // arguments; the handler must survive the legacy invocation shape.
+      retainedParams = params;
+      return { queuedFinal: true, counts: { final: 1, tool: 0, block: 0 } };
+    });
+
+    const ctx = await createAutomaticDraftContext({
+      discordConfig: {
+        streaming: { mode: "progress", progress: { toolProgress: true, label: "Shelling" } },
+      },
+    });
+
+    await runProcessDiscordMessage(ctx);
+
+    await retainedParams?.replyOptions?.onQueuedFollowupAdmitted?.();
+    await retainedParams?.replyOptions?.onToolStart?.({ name: "read", phase: "start" });
+    await retainedParams?.replyOptions?.onItemEvent?.({ progressText: "queued work" });
+    await elapseProgressDraftStartDelay();
+    const clearsBeforeSettlement = draftStream.clear.mock.calls.length;
+    await retainedParams?.replyOptions?.onQueuedFollowupSettled?.();
+
+    // An unknown settlement outcome is not a confirmed delivery, so the draft
+    // stays as the visible record instead of being cleared.
+    expect(draftStream.messageId()).toBeDefined();
+    expect(draftStream.clear.mock.calls.length).toBe(clearsBeforeSettlement);
+  });
 });

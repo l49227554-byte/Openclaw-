@@ -98,6 +98,10 @@ export function createFollowupRunner(
     let admittedRunId: string | undefined;
     let admittedTurn: AdmittedFollowupTurn | undefined;
     let terminalPayloads: ReplyPayload[] = [];
+    // Undefined until terminal delivery actually settles: accounting or notice
+    // failures before delivery must not confirm a draft deletion that delivery
+    // never earned.
+    let terminalDeliveryFailed: boolean | undefined;
     const admissionNotices: ReplyPayload[] = [];
     let completion: QueuedFollowupReplyBatch["completion"] = { kind: "completed" };
     let queuedFollowupAdmitted = false;
@@ -232,15 +236,22 @@ export function createFollowupRunner(
       ) {
         completion = { ...completion, allowCanvasOnly: true };
       }
-      const delivery = await deliverFollowupDecision({
-        decision,
-        turn,
-        defaults,
-        runId: execution.execution.runId,
-        runFollowup,
-      });
-      // Source recovery has its own queued callback; this execution still closes once.
-      terminalPayloads = delivery.kind === "completed" ? delivery.payloads : [];
+      try {
+        const delivery = await deliverFollowupDecision({
+          decision,
+          turn,
+          defaults,
+          runId: execution.execution.runId,
+          runFollowup,
+        });
+        // Source recovery has its own queued callback; this execution still closes once.
+        terminalPayloads = delivery.kind === "completed" ? delivery.payloads : [];
+        terminalDeliveryFailed =
+          delivery.kind !== "completed" || delivery.finalDeliveryFailed === true;
+      } catch (error) {
+        terminalDeliveryFailed = true;
+        throw error;
+      }
     } catch (error) {
       if (error instanceof FollowupRunDeferredError) {
         disposition = { kind: "deferred", reason: error.message };
@@ -275,6 +286,7 @@ export function createFollowupRunner(
             completion,
           });
         } catch (error) {
+          terminalDeliveryFailed = true;
           defaultRuntime.error?.(
             `followup queue: completion delivery failed; refusing replay: ${formatErrorMessage(error)}`,
           );
@@ -282,7 +294,10 @@ export function createFollowupRunner(
         }
       }
       if (queuedFollowupAdmitted) {
-        await settleQueuedFollowupPresentation(defaults);
+        await settleQueuedFollowupPresentation(defaults, {
+          // Unconfirmed outcomes keep the draft, matching the failed-final retention.
+          finalDeliveryFailed: terminalDeliveryFailed ?? true,
+        });
       }
       for (const end of endDeliveryCorrelations.toReversed()) {
         try {

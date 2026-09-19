@@ -4215,7 +4215,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     await requireCapturedItemEventHandler()({ progressText: "queued turn" });
     const clearCallsBeforeSettlement = draftStream.clear.mock.calls.length;
     const dropCallsBeforeSettlement = draftStream.dropDetachedMessages.mock.calls.length;
-    await capturedReplyOptions?.onQueuedFollowupSettled?.();
+    await capturedReplyOptions?.onQueuedFollowupSettled?.({ finalDeliveryFailed: false });
 
     expectLastDraftUpdateText(draftStream, "Working\n\n• queued turn");
     expect(draftStream.clear).toHaveBeenCalledTimes(clearCallsBeforeSettlement + 1);

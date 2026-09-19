@@ -7,8 +7,9 @@ import {
   shouldRetryReplyDispatch,
   type ReplyDispatchDeliveryOutcome,
 } from "./reply-dispatch-outcome.js";
+import type { ReplyDispatchReceipt } from "./reply-dispatcher.types.js";
 
-type BlockReplyDelivery = {
+export type BlockReplyDelivery = {
   outcome: ReplyDispatchDeliveryOutcome;
   pending?: boolean;
   source?: BlockReplySource;
@@ -19,6 +20,39 @@ export function hasBlockReplyDeliveryCustody(delivery: BlockReplyDelivery): bool
     delivery.pending === true ||
     (delivery.outcome !== "delivered" && !shouldRetryReplyDispatch(delivery.outcome))
   );
+}
+
+/**
+ * A settled queued followup may only clear the channel's progress draft once
+ * its terminal send confirmed delivery; failed or still-pending receipts must
+ * keep the draft because the final outcome is unconfirmed.
+ */
+export function isUnconfirmedBlockReplyDelivery(delivery?: BlockReplyDelivery): boolean {
+  return (
+    delivery !== undefined &&
+    (delivery.pending === true ||
+      delivery.outcome === "failed-before-deliver" ||
+      delivery.outcome === "failed-deliver")
+  );
+}
+
+/**
+ * Turn-wide idle receipts are the only evidence receipt-less dispatchers give
+ * about a queued send. Absence of failure and pending custody reads as
+ * delivered; any settled failure or ambiguity keeps the delivery unconfirmed.
+ */
+export function resolveWaitForIdleBlockReplyDelivery(
+  receipt: void | ReplyDispatchReceipt,
+): BlockReplyDelivery {
+  if (!receipt) {
+    return { outcome: "delivered" };
+  }
+  const counts = receipt.counts.block;
+  const failed = counts.failedBeforeSend + counts.failedAfterSend > 0;
+  return {
+    outcome: failed ? "failed-deliver" : "delivered",
+    ...(receipt.hasPendingDelivery ? { pending: true } : {}),
+  };
 }
 
 // Invocation identity survives payload normalization without changing channel callback contracts.

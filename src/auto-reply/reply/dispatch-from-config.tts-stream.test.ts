@@ -211,7 +211,7 @@ it.each([false, true])(
     for (const text of ["See [", "Intro [[tts:text]]hidden[", "After ["]) {
       await retained?.onBlockReply?.({ text });
       await dispatcher.waitForIdle();
-      await retained?.onQueuedFollowupSettled?.();
+      await retained?.onQueuedFollowupSettled?.({ finalDeliveryFailed: false });
     }
     expect(delivered.join("")).toBe("initialSee [Intro After [");
     expect(settled).toEqual(

@@ -10,6 +10,7 @@ import { shouldCleanTtsDirectiveText } from "../../tts/tts-config.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
 import type { ReplyPayload } from "../reply-payload.js";
+import type { BlockReplyDelivery } from "./block-reply-delivery.js";
 import { resolveTurnCommentaryProgressOwner } from "./commentary-progress-owner.js";
 import type { ChooseDispatchRouteReadyState } from "./dispatch-from-config.choose-route.js";
 import {
@@ -105,8 +106,13 @@ export async function prepareDispatchExecution(state: ChooseDispatchRouteReadySt
     blockCount: 0,
     channelTransformSuppressed: false,
     pendingDirectBlockReplyDelivery: Promise.resolve(),
+    pendingDirectBlockReplyDeliveryReceipt: Promise.resolve<BlockReplyDelivery | undefined>(
+      undefined,
+    ),
     progressCallbackStartTail: Promise.resolve(),
   };
+  const latestDirectBlockReplyDeliveryReceipt = (): Promise<BlockReplyDelivery | undefined> =>
+    progressState.pendingDirectBlockReplyDeliveryReceipt.catch(() => undefined);
   const cleanBlockTtsDirectiveText = shouldCleanTtsDirectiveText({
     cfg,
     ttsAuto: state.sessionTtsAuto,
@@ -379,6 +385,7 @@ export async function prepareDispatchExecution(state: ChooseDispatchRouteReadySt
     onApprovalEventFromReplyOptions,
     onPatchSummaryFromReplyOptions,
     waitForPendingDirectBlockReplyDelivery,
+    latestDirectBlockReplyDeliveryReceipt,
     shouldForwardProgressCallback,
     preserveProgressCallbackStartOrder,
     wrapProgressCallback,

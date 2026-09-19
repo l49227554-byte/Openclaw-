@@ -859,7 +859,7 @@ describe("deliverFollowupDecision", () => {
       error: "offline",
     });
 
-    await deliverFollowupDecision({
+    const result = await deliverFollowupDecision({
       decision: { kind: "deliver", payloads: [{ text: "undelivered" }] },
       turn: createTurn(),
       defaults: {
@@ -874,6 +874,129 @@ describe("deliverFollowupDecision", () => {
     expect(deliveryState.runtimeError).toHaveBeenCalledWith(
       expect.stringContaining("route-reply failed: offline"),
     );
+    // The final was only logged, never delivered; settlement must retain the
+    // progress draft instead of reporting a confirmed delivery.
+    expect(result).toEqual({
+      kind: "completed",
+      payloads: [],
+      finalDeliveryFailed: true,
+    });
+  });
+
+  it.each(["held", "ambiguous"] as const)(
+    "keeps a routed final pending under %s custody unconfirmed for settlement",
+    async (custody) => {
+      deliveryState.routeReply.mockReset();
+      deliveryState.routeReply.mockResolvedValue(
+        custody === "held"
+          ? { ok: false, delivered: false, queueCustody: "held", error: "custody held" }
+          : { ok: false, delivered: false, ambiguous: true },
+      );
+
+      const result = await deliverFollowupDecision({
+        decision: { kind: "deliver", payloads: [{ text: "still pending" }] },
+        turn: createTurn(),
+        defaults: {
+          defaultModel: "claude",
+          typingMode: "never",
+          typing: createDefaults(vi.fn(async (_payload: ReplyPayload) => {})).typing,
+        },
+        runId: "run-1",
+        runFollowup: vi.fn(async () => {}),
+      });
+
+      // A pending route never confirmed the recipient-visible final, so the
+      // settlement owner must keep the draft until delivery or recovery lands.
+      expect(result).toEqual({
+        kind: "completed",
+        payloads: [],
+        finalDeliveryFailed: true,
+      });
+    },
+  );
+
+  it.each(["held", "ambiguous"] as const)(
+    "keeps a delivered final confirmed when only a %s status notice stays pending",
+    async (custody) => {
+      deliveryState.routeReply.mockReset();
+      deliveryState.routeReply.mockImplementation(async (params: { payload: ReplyPayload }) =>
+        params.payload.isStatusNotice === true
+          ? custody === "held"
+            ? { ok: false, delivered: false, queueCustody: "held", error: "custody held" }
+            : { ok: false, delivered: false, ambiguous: true }
+          : { ok: true, delivered: true },
+      );
+
+      const result = await deliverFollowupDecision({
+        decision: {
+          kind: "deliver",
+          payloads: [{ text: "delivered final" }, { text: "usage note", isStatusNotice: true }],
+        },
+        turn: createTurn(),
+        defaults: {
+          defaultModel: "claude",
+          typingMode: "never",
+          typing: createDefaults(vi.fn(async (_payload: ReplyPayload) => {})).typing,
+        },
+        runId: "run-1",
+        runFollowup: vi.fn(async () => {}),
+      });
+
+      // The terminal reply confirmed delivery; a held diagnostic supplement
+      // must not retain the progress draft after the answer arrived.
+      expect(result).toEqual({ kind: "completed", payloads: [] });
+    },
+  );
+
+  it("keeps a delivered final confirmed when only a logged status-notice failure follows", async () => {
+    deliveryState.routeReply.mockReset();
+    deliveryState.runtimeError.mockReset();
+    deliveryState.routeReply.mockImplementation(async (params: { payload: ReplyPayload }) =>
+      params.payload.isStatusNotice === true
+        ? { ok: false, delivered: false, error: "notice offline" }
+        : { ok: true, delivered: true },
+    );
+
+    const result = await deliverFollowupDecision({
+      decision: {
+        kind: "deliver",
+        payloads: [{ text: "delivered final" }, { text: "usage note", isStatusNotice: true }],
+      },
+      turn: createTurn(),
+      defaults: {
+        defaultModel: "claude",
+        typingMode: "never",
+        typing: createDefaults(vi.fn(async (_payload: ReplyPayload) => {})).typing,
+      },
+      runId: "run-1",
+      runFollowup: vi.fn(async () => {}),
+    });
+
+    // Only-logged supplement failures stay below the confirmed terminal reply;
+    // the draft clears even though the diagnostic never reached the recipient.
+    expect(result).toEqual({ kind: "completed", payloads: [] });
+    expect(deliveryState.runtimeError).toHaveBeenCalledWith(
+      expect.stringContaining("route-reply failed: notice offline"),
+    );
+  });
+
+  it("reports a confirmed routed final as delivered for settlement", async () => {
+    deliveryState.routeReply.mockReset();
+    deliveryState.routeReply.mockResolvedValue({ ok: true, delivered: true });
+
+    const result = await deliverFollowupDecision({
+      decision: { kind: "deliver", payloads: [{ text: "delivered final" }] },
+      turn: createTurn(),
+      defaults: {
+        defaultModel: "claude",
+        typingMode: "never",
+        typing: createDefaults(vi.fn(async (_payload: ReplyPayload) => {})).typing,
+      },
+      runId: "run-1",
+      runFollowup: vi.fn(async () => {}),
+    });
+
+    expect(result).toEqual({ kind: "completed", payloads: [] });
   });
 
   it("does not duplicate a follow-up after a partial route failure delivered it", async () => {

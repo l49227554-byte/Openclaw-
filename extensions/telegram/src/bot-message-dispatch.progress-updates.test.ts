@@ -508,7 +508,7 @@ describeTelegramDispatch("dispatchTelegramMessage progress-updates", () => {
       ),
     );
 
-    await queuedReplyOptions?.onQueuedFollowupSettled?.();
+    await queuedReplyOptions?.onQueuedFollowupSettled?.({ finalDeliveryFailed: false });
     expect(draftStream.clear).toHaveBeenCalledTimes(2);
   });
 

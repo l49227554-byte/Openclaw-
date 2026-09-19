@@ -37,7 +37,10 @@ function removeBlankAgentDirFromAgent(
   }
 }
 
-function migrateBlankAgentDirRaw(raw: unknown): BlankAgentDirMigration {
+function migrateBlankAgentDirRaw(
+  raw: unknown,
+  preservedAgentDirPaths?: ReadonlySet<string>,
+): BlankAgentDirMigration {
   if (!isRecord(raw) || !isRecord(raw.agents)) {
     return { config: raw, changed: false, changes: [], warnings: [] };
   }
@@ -54,13 +57,19 @@ function migrateBlankAgentDirRaw(raw: unknown): BlankAgentDirMigration {
 
   if (isRecord(agents.entries)) {
     for (const [key, entry] of Object.entries(agents.entries)) {
-      removeBlankAgentDirFromAgent(entry as Record<string, unknown>, `entries.${key}`, changes);
+      const agentDirPath = `agents.entries.${key}.agentDir`;
+      if (!preservedAgentDirPaths?.has(agentDirPath)) {
+        removeBlankAgentDirFromAgent(entry as Record<string, unknown>, `entries.${key}`, changes);
+      }
     }
   }
 
   if (Array.isArray(agents.list)) {
     for (const [index, entry] of agents.list.entries()) {
-      removeBlankAgentDirFromAgent(entry as Record<string, unknown>, `list[${index}]`, changes);
+      const agentDirPath = `agents.list[${index}].agentDir`;
+      if (!preservedAgentDirPaths?.has(agentDirPath)) {
+        removeBlankAgentDirFromAgent(entry as Record<string, unknown>, `list[${index}]`, changes);
+      }
     }
   }
 
@@ -73,4 +82,21 @@ export function migrateBlankAgentDir(raw: OpenClawConfig): BlankAgentDirMigratio
 export function migrateBlankAgentDir(raw: unknown): BlankAgentDirMigration;
 export function migrateBlankAgentDir(raw: unknown): BlankAgentDirMigration {
   return migrateBlankAgentDirRaw(raw);
+}
+
+/** Write-path variant: migrate saved blank agentDir values but preserve the ones
+ * the current write explicitly sets (so new authoring still gets the field error). */
+export function migrateBlankAgentDirForWrite(
+  raw: OpenClawConfig,
+  explicitSetPaths?: ReadonlySet<string>,
+): BlankAgentDirMigration<OpenClawConfig>;
+export function migrateBlankAgentDirForWrite(
+  raw: unknown,
+  explicitSetPaths?: ReadonlySet<string>,
+): BlankAgentDirMigration;
+export function migrateBlankAgentDirForWrite(
+  raw: unknown,
+  explicitSetPaths?: ReadonlySet<string>,
+): BlankAgentDirMigration {
+  return migrateBlankAgentDirRaw(raw, explicitSetPaths);
 }

@@ -74,6 +74,24 @@ class RealtimePlayoutTest {
   }
 
   @Test
+  fun relayFramedBacklogIsBoundedByBytesNotEntries() {
+    // Gateway relay output: 20 ms PCM frames at 24 kHz, each followed by a mark in the worst case.
+    val frame = ByteArray(960)
+    val frames = (RealtimePlayout.MAX_QUEUED_BYTES / frame.size).toInt()
+    repeat(frames) { index ->
+      assertEquals(null, playout.audio(session, frame, statusOwner))
+      assertEquals(null, playout.mark(session, "mark-$index"))
+    }
+    assertTrue(failures.isEmpty())
+    assertTrue(session.active)
+
+    val overflow = checkNotNull(playout.audio(session, frame, statusOwner))
+    overflow()
+    assertEquals(listOf("session/audio playback queue overflow"), failures)
+    assertFalse(session.active)
+  }
+
+  @Test
   fun zeroWriteYieldsSoClearCanDiscardTheOldAudio() {
     PlayoutAudioTrack.result = 0
     playout.audio(session, ByteArray(4_800), statusOwner)

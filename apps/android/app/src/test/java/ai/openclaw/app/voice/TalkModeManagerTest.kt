@@ -501,6 +501,7 @@ class TalkModeManagerTest {
 
     installRealtimeSession(manager, "relay-1")
     setMutableStateFlow(manager, "_isEnabled", true)
+    assertNull(manager.failureText.value)
 
     manager.realtimeEvent("""{"relaySessionId":"relay-1","type":"close","reason":"error"}""")
 
@@ -510,6 +511,8 @@ class TalkModeManagerTest {
       "Talk failed: Realtime provider closed unexpectedly.",
       manager.statusText.value,
     )
+    // Chat renders this after Talk ends; the status line alone is not shown there.
+    assertEquals(manager.statusText.value, manager.failureText.value)
   }
 
   @Test
@@ -1592,6 +1595,7 @@ class TalkModeManagerTest {
           proof.manager.statusText.value
             .contains("audio playback device error"),
         )
+        assertEquals(proof.manager.statusText.value, proof.manager.failureText.value)
         assertFalse(proof.manager.isSpeaking.value)
       }
     }

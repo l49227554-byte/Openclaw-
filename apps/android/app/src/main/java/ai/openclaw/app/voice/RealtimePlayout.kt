@@ -73,7 +73,7 @@ internal class RealtimePlayout(
   private var queuedBytes = 0L
   private var queuedMedia = 0
   private val commands =
-    Channel<Command>(4_096 + 32, onUndeliveredElement = {
+    Channel<Command>(MAX_QUEUED_MEDIA + 32, onUndeliveredElement = {
       if (it is Command.Clear) it.completion.cancel()
     })
   private var track: AudioTrack? = null
@@ -90,6 +90,15 @@ internal class RealtimePlayout(
 
   @Volatile var isPlaying = false
     private set
+
+  internal companion object {
+    // Bytes bound the unplayed backlog. The gateway relay splits output into 20 ms frames and
+    // adds a mark per provider chunk, so the entry cap must admit the whole byte budget as
+    // 20 ms frames plus one mark each; a smaller entry cap ended long replies at ~77 s.
+    const val MAX_QUEUED_BYTES = 12L * 1024 * 1024
+    private const val RELAY_FRAME_BYTES = 24_000 * 2 * 20 / 1000
+    const val MAX_QUEUED_MEDIA = ((MAX_QUEUED_BYTES + RELAY_FRAME_BYTES - 1) / RELAY_FRAME_BYTES * 2).toInt()
+  }
 
   init {
     scope
@@ -199,7 +208,7 @@ internal class RealtimePlayout(
     val overflow =
       synchronized(mailboxLock) {
         if (!session.active) return null
-        if (queuedMedia >= 4_096 || queuedBytes + bytes > 12L * 1024 * 1024 || !commands.trySend(command()).isSuccess) {
+        if (queuedMedia >= MAX_QUEUED_MEDIA || queuedBytes + bytes > MAX_QUEUED_BYTES || !commands.trySend(command()).isSuccess) {
           true
         } else {
           queuedMedia++

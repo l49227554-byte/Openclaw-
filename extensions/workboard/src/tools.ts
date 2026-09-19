@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { WorkboardCard } from "@openclaw/workboard-contract";
 // Workboard plugin module implements tools behavior.
 import { jsonResult, readStringParam } from "openclaw/plugin-sdk/core";
@@ -21,14 +22,32 @@ import { createWorkboardOrchestrationTools } from "./tools-orchestration.js";
 // complete — a card claimed by another live session while holding no claim token.
 // Token-less owner release/reclaim (the intended path) still works, for the session
 // that actually holds the claim.
+// The claim owner is persisted through normalizeBoundedString(..., 120, "claim owner"),
+// which throws above 120 chars. A bare agentId always fit, but a sessionKey (e.g.
+// "agent:main:dashboard:<long>") can exceed it, so bound the session-derived owner to a
+// stable, collision-safe id. Hashing keeps a distinct owner per session while staying
+// well under the cap; short owners pass through unchanged for readability.
+const MAX_CLAIM_OWNER_LENGTH = 120;
+
+function boundClaimOwner(owner: string): string {
+  if (owner.length <= MAX_CLAIM_OWNER_LENGTH) {
+    return owner;
+  }
+  const digest = createHash("sha256")
+    .update("openclaw.workboard.claim-owner.v1\0")
+    .update(owner)
+    .digest("hex");
+  return `owner:${digest}`;
+}
+
 function contextOwner(ctx: OpenClawPluginToolContext | undefined): string {
   const record = (ctx ?? {}) as Record<string, unknown>;
-  return (
+  const owner =
     (typeof record.sessionKey === "string" && record.sessionKey) ||
     (typeof record.sessionId === "string" && record.sessionId) ||
     (typeof record.agentId === "string" && record.agentId) ||
-    "agent"
-  );
+    "agent";
+  return boundClaimOwner(owner);
 }
 
 function canMutateCard(card: WorkboardCard, ownerId: string, token?: string): boolean {

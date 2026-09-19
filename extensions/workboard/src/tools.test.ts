@@ -174,7 +174,9 @@ describe("workboard tools", () => {
     );
     expect(claimed.card).toMatchObject({
       status: "running",
-      metadata: { claim: { ownerId: "main", token: "[redacted]" } },
+      // Claim ownership is scoped to the calling session, not the agent, so the owner
+      // is the sessionKey ("session-1"), not the agentId ("main").
+      metadata: { claim: { ownerId: "session-1", token: "[redacted]" } },
     });
     const token = (claimed.token as string | undefined) ?? "";
 
@@ -640,5 +642,111 @@ describe("workboard tools", () => {
       }),
     );
     expect(claimed.card).toMatchObject({ status: "review" });
+  });
+
+  it("claims through the tool with a session-scoped owner and fences a sibling session", async () => {
+    const { store, stores } = createWorkboardSqliteTestHarness();
+    await stores.cards.register("card-fence", {
+      version: 1,
+      card: {
+        id: "card-fence",
+        title: "Fenced work",
+        status: "todo",
+        priority: "normal",
+        labels: [],
+        agentId: "main",
+        position: 1000,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+    const claimTool = (sessionKey: string) =>
+      expectDefined(
+        new Map(
+          createWorkboardTools({ store, context: { agentId: "main", sessionKey } }).map((tool) => [
+            tool.name,
+            tool,
+          ]),
+        ).get("workboard_claim"),
+        "workboard_claim",
+      );
+    const mutateTool = (sessionKey: string, name: string) =>
+      expectDefined(
+        new Map(
+          createWorkboardTools({ store, context: { agentId: "main", sessionKey } }).map((tool) => [
+            tool.name,
+            tool,
+          ]),
+        ).get(name),
+        name,
+      );
+
+    // Session 1 claims the card; the persisted owner is the sessionKey, not the agentId.
+    const claimed = readPayload(
+      await claimTool("session-1").execute("claim-1", { id: "card-fence" }),
+    );
+    expect(claimed.card).toMatchObject({
+      status: "running",
+      metadata: { claim: { ownerId: "session-1" } },
+    });
+
+    // A sibling session of the SAME agent holds no token and no longer matches the
+    // session-scoped claim owner, so the claim fence blocks it from completing the card
+    // (the pre-fix bug: an agent-scoped owner let any sibling session mutate it).
+    await expect(
+      mutateTool("session-2", "workboard_complete").execute("complete-2", {
+        id: "card-fence",
+        summary: "hijacked",
+      }),
+    ).rejects.toThrow(/claimed/);
+
+    // The owning session (or a caller presenting the token) can still act on it.
+    const token = (claimed.token as string | undefined) ?? "";
+    const released = readPayload(
+      await mutateTool("session-1", "workboard_release").execute("release-1", {
+        id: "card-fence",
+        token,
+        status: "review",
+      }),
+    );
+    expect(released.card).toMatchObject({ status: "review" });
+  });
+
+  it("bounds an over-long session key to a stable claim owner within the persisted cap", async () => {
+    const { store, stores } = createWorkboardSqliteTestHarness();
+    await stores.cards.register("card-long", {
+      version: 1,
+      card: {
+        id: "card-long",
+        title: "Long session key",
+        status: "todo",
+        priority: "normal",
+        labels: [],
+        agentId: "main",
+        position: 1000,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    });
+    const longSessionKey = `agent:main:dashboard:${"x".repeat(400)}`;
+    const claimTool = expectDefined(
+      new Map(
+        createWorkboardTools({
+          store,
+          context: { agentId: "main", sessionKey: longSessionKey },
+        }).map((tool) => [tool.name, tool]),
+      ).get("workboard_claim"),
+      "workboard_claim",
+    );
+
+    // A bare agentId always fit the 120-char claim-owner cap; a long sessionKey does
+    // not, so it is hashed to a stable, bounded owner instead of throwing on persist.
+    const claimed = readPayload(await claimTool.execute("claim-long", { id: "card-long" }));
+    const owner = (claimed.card as { metadata?: { claim?: { ownerId?: string } } }).metadata?.claim
+      ?.ownerId;
+    expect(owner).toBeDefined();
+    expect(owner).not.toBe(longSessionKey);
+    expect((owner ?? "").length).toBeLessThanOrEqual(120);
+    expect(owner).toMatch(/^owner:[0-9a-f]{64}$/);
   });
 });

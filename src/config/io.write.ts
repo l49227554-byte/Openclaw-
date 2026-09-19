@@ -256,18 +256,19 @@ export async function writeConfigFileFromContext(
   const resolveValidationCandidate = (candidate: unknown) => {
     // Validate removals now; apply them once to the final authored output after materialization.
     let config = applyUnsetPathsForWrite(candidate as OpenClawConfig, unsetPaths);
-    // A saved blank agentDir (restored by restoreAuthoredAgentRoster) must not
-    // block an unrelated settings change: migrate it unless the current write
-    // itself sets that path (new blank authoring keeps the strict field error).
-    const explicitSet = new Set(
-      (options.explicitSetPaths ?? []).map((p) => p.filter((s) => s.length > 0).join(".")),
-    );
-    config = migrateBlankAgentDirForWrite(config as OpenClawConfig, explicitSet).config;
-    return containsConfigIncludeDirective(config)
+    const preflight = containsConfigIncludeDirective(config)
       ? context.resolveRuntimePreflightSourceConfig(
           restoreEnvVarRefs(config, snapshot.parsed, envForRestore) as OpenClawConfig,
         )
       : config;
+    // A saved blank agentDir (authored or included, restored by
+    // restoreAuthoredAgentRoster / include expansion) must not block an
+    // unrelated settings change: migrate it unless the current write itself
+    // sets that path (new blank authoring keeps the strict field error).
+    const explicitSet = new Set(
+      (options.explicitSetPaths ?? []).map((p) => p.filter((s) => s.length > 0).join(".")),
+    );
+    return migrateBlankAgentDirForWrite(preflight as OpenClawConfig, explicitSet).config;
   };
   const validationCandidate = resolveValidationCandidate(persistCandidate);
   const validateCandidate = (candidate: unknown) => {

@@ -37,6 +37,21 @@ function removeBlankAgentDirFromAgent(
   }
 }
 
+function isPreservedAgentDirPath(
+  preservedAgentDirPaths: ReadonlySet<string> | undefined,
+  agentDirPath: string,
+): boolean {
+  if (!preservedAgentDirPaths) {
+    return false;
+  }
+  for (const p of preservedAgentDirPaths) {
+    if (agentDirPath === p || agentDirPath.startsWith(`${p}.`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function migrateBlankAgentDirRaw(
   raw: unknown,
   preservedAgentDirPaths?: ReadonlySet<string>,
@@ -58,7 +73,7 @@ function migrateBlankAgentDirRaw(
   if (isRecord(agents.entries)) {
     for (const [key, entry] of Object.entries(agents.entries)) {
       const agentDirPath = `agents.entries.${key}.agentDir`;
-      if (!preservedAgentDirPaths?.has(agentDirPath)) {
+      if (!isPreservedAgentDirPath(preservedAgentDirPaths, agentDirPath)) {
         removeBlankAgentDirFromAgent(entry as Record<string, unknown>, `entries.${key}`, changes);
       }
     }
@@ -67,7 +82,7 @@ function migrateBlankAgentDirRaw(
   if (Array.isArray(agents.list)) {
     for (const [index, entry] of agents.list.entries()) {
       const agentDirPath = `agents.list[${index}].agentDir`;
-      if (!preservedAgentDirPaths?.has(agentDirPath)) {
+      if (!isPreservedAgentDirPath(preservedAgentDirPaths, agentDirPath)) {
         removeBlankAgentDirFromAgent(entry as Record<string, unknown>, `list[${index}]`, changes);
       }
     }

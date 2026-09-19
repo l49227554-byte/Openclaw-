@@ -9,7 +9,10 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { hasErrnoCode } from "../../infra/errno.js";
 import { collectNestedErrorCandidates } from "../../infra/error-graph-internal.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
-import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
+import {
+  CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
+  MANAGED_SERVICE_UPDATE_UNSAFE_EXIT_CODE,
+} from "../../infra/update-control-plane-sentinel.js";
 import {
   captureManagedUpdateLeaseDatabaseIdentity,
   createManagedHandoffLeaseDatabase,
@@ -37,12 +40,80 @@ import {
 } from "./update-command-terminal.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
-
 const dirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+});
+
+it("preserves the rollback result when recovery fails before terminal settlement", async () => {
+  const root = await fs.realpath(dirs.make("update-terminal-rollback-"));
+  const candidateRoot = path.join(root, "candidate");
+  const previousRoot = path.join(root, "previous");
+  const pendingResult: UpdateRunResult = {
+    status: "ok",
+    mode: "npm",
+    root: candidateRoot,
+    after: { version: "2026.9.4" },
+    steps: [],
+    durationMs: 1,
+  };
+  const rollbackResult: UpdateRunResult = {
+    ...pendingResult,
+    status: "error",
+    root: previousRoot,
+    after: { version: "2026.9.3" },
+    reason: "update-state-rollback-failed",
+    recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+    steps: [
+      {
+        name: "global install rollback",
+        command: "openclaw update",
+        cwd: previousRoot,
+        durationMs: 1,
+        exitCode: 0,
+      },
+      {
+        name: "update state rollback",
+        command: "openclaw update",
+        cwd: previousRoot,
+        durationMs: 1,
+        exitCode: 1,
+        stderrTail: "State restore failed; retained recovery set requires repair.",
+      },
+    ],
+  };
+  const failure = new UpdateCommandPendingRecoveryFailure(rollbackResult);
+  const settled = await resolveSettledUpdateCommandResult(
+    {
+      opts: {},
+      root: candidateRoot,
+      ownedManagedUpdateEnv: {
+        OPENCLAW_STATE_DIR: path.join(root, "state"),
+        OPENCLAW_CONFIG_PATH: path.join(root, "state", "openclaw.json"),
+      },
+    },
+    pendingResult,
+    failure,
+  );
+
+  expect(settled.settlementFailed).toBe(true);
+  expect(settled.result).toMatchObject({
+    status: "error",
+    reason: "update-executor-settlement-failed",
+    root: previousRoot,
+    after: { version: "2026.9.3" },
+    recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+  });
+  expect(settled.result.steps).toEqual([
+    ...rollbackResult.steps,
+    expect.objectContaining({
+      name: "update executor settlement",
+      cwd: previousRoot,
+      exitCode: 1,
+    }),
+  ]);
 });
 
 it.each([
@@ -272,7 +343,7 @@ it.each([
     }
     expect(exit).toBeInstanceOf(ExitError);
     const unsettled = trial.revoked || trial.releaseDenied;
-    expect(observation.exitCode).toBe(unsettled ? 1 : 7);
+    expect(observation.exitCode).toBe(unsettled ? MANAGED_SERVICE_UPDATE_UNSAFE_EXIT_CODE : 7);
     expect(statusAtPublication).toBe("running");
     expect(pendingAtPublication).toBe(trial.revoked);
     expect(releasePendingAtPublication).toBe(trial.releaseDenied);
@@ -303,6 +374,11 @@ it.each([
         : { owner: trial.revoked ? "replacement-owner" : owner },
     });
     if (unsettled) {
+      if (trial.revoked) {
+        expect(output.mock.calls[0]?.[0]).toMatchObject({
+          recovery: { serviceRestartSafe: false, reason: "runtime-verification-failed" },
+        });
+      }
       expect(artifactOpens).toBe(0);
       expect(artifactRenames).toBe(0);
       expect(after).toBe(trial.existing ? previous : null);
@@ -338,4 +414,31 @@ it.each([
       }
     }
   }
+});
+
+it("replaces stale restart authority with an explicit unsafe settlement result", async () => {
+  const root = dirs.make("unsafe-terminal-owner-");
+  const result: UpdateRunResult = {
+    status: "ok",
+    mode: "npm",
+    root,
+    steps: [],
+    durationMs: 1,
+    recovery: {
+      serviceRestartSafe: true,
+      packageRollbackVerified: true,
+      version: "1.0.0",
+      service: "healthy",
+    },
+  };
+  const settled = await resolveSettledUpdateCommandResult(
+    { opts: {}, root, ownedManagedUpdateEnv: { OPENCLAW_STATE_DIR: path.join(root, "state") } },
+    result,
+    new Error("executor lost during publication"),
+  );
+  expect(settled.settlementFailed).toBe(true);
+  expect(settled.result.recovery).toEqual({
+    serviceRestartSafe: false,
+    reason: "runtime-verification-failed",
+  });
 });

@@ -6,7 +6,6 @@ import { writePersistedInstalledPluginIndex } from "../plugins/installed-plugin-
 import { readPersistedInstalledPluginIndex } from "../plugins/installed-plugin-index-store.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "../plugins/test-helpers/fs-fixtures.js";
 import { maybeRepairStaleManagedNpmBundledPlugins } from "./doctor-plugin-registry.js";
-
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -74,7 +73,7 @@ describe("stale managed bundled plugin retirement", () => {
       VITEST: "true",
     };
 
-    const result = maybeRepairStaleManagedNpmBundledPlugins({
+    const result = await maybeRepairStaleManagedNpmBundledPlugins({
       stateDir,
       candidates: [],
       env,

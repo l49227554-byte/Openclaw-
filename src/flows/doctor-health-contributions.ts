@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 // exposing the same checks to structured lint and repair commands.
 import fs from "node:fs";
 import { shouldManageGatewayService } from "../commands/doctor-service-repair-policy.js";
+import { captureDoctorUpdateRecoveryGuard } from "../commands/doctor-update-recovery.js";
 import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
 import {
   DoctorStateMigrationRefusalError,
@@ -502,6 +503,7 @@ async function runDoctorHealthContributionList(
   ctx: DoctorHealthFlowContext,
   contributions: readonly DoctorHealthContribution[],
 ): Promise<void> {
+  const assertCurrent = captureDoctorUpdateRecoveryGuard();
   const runWithPluginMetadataSnapshot = ctx.runWithPluginMetadataSnapshot;
   throwIfDoctorStateMigrationRefused(ctx.configResult.stateMigrationStepReceipts);
   const env = ctx.env ?? process.env;
@@ -535,6 +537,7 @@ async function runDoctorHealthContributionList(
     : contributions;
   try {
     for (const contribution of ordered) {
+      assertCurrent?.();
       // Skip before opening a plugin snapshot; these diagnostics cannot establish
       // required migration readiness and have their own standalone invocation.
       if (updateDoctorRun && contribution.updateWork?.kind === "standalone") {
@@ -555,15 +558,18 @@ async function runDoctorHealthContributionList(
       }
       try {
         const run = async () => {
+          assertCurrent?.();
           try {
             await contribution.run(ctx);
           } finally {
+            assertCurrent?.();
             // Deferred session writers settle here. An optional diagnostic cannot
             // turn their recorded refusal into permission for later repairs.
             throwIfDoctorStateMigrationRefused(ctx.configResult.stateMigrationStepReceipts);
           }
           if (ctx.configWriteRefusal) {
             await reportDeferredLegacyState(ctx);
+            assertCurrent?.();
           }
         };
         if (!runWithPluginMetadataSnapshot) {
@@ -578,6 +584,7 @@ async function runDoctorHealthContributionList(
           return;
         }
       } catch (error) {
+        assertCurrent?.();
         if (
           contribution.required ||
           error instanceof DoctorStateMigrationRefusalError ||
@@ -586,12 +593,14 @@ async function runDoctorHealthContributionList(
           throw error;
         }
         const { note } = await loadNoteModule();
+        assertCurrent?.();
         const message = `${contribution.id} run failed: ${scrubDoctorErrorMessage(error)}`;
         note(message, "Doctor warnings");
         recordDoctorHealthWarnings(ctx, [], [message]);
       }
     }
   } finally {
+    assertCurrent?.();
     const findings = [...(ctx.updateBudget?.deferred.values() ?? [])];
     // Preserve the deferred set before the existing bounded advisory digest.
     recordDoctorHealthWarnings(ctx, findings, [], { prepend: true });

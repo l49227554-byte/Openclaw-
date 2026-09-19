@@ -6,7 +6,11 @@ import { hasErrnoCode } from "../../infra/errno.js";
 import { resolveCanonicalPath } from "../../infra/package-update-manager-preflight.js";
 import { isPathStrictlyInside } from "../../infra/path-guards.js";
 import { createUpdateFailureFact } from "../../infra/update-failure-facts.js";
-import { inspectNpmLauncher, probeNpmGlobalPrefix } from "../../infra/update-npm-prefix.js";
+import {
+  inspectNpmLauncher,
+  probeNpmGlobalPrefix,
+  resolveNpmGlobalPrefixLayoutFromGlobalRoot,
+} from "../../infra/update-npm-prefix.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { UPDATE_FOREIGN_DESTINATION_REASON } from "../../shared/update-outcome.js";
 import { formatCliCommand } from "../command-format.js";
@@ -18,7 +22,11 @@ import {
 } from "./update-command-service-plan.js";
 
 /** Re-invocation after a Node switch admits only a positively inspected empty or owned destination. */
-export async function inspectNpmGlobalDestination(root: string, timeoutMs: number) {
+export async function inspectNpmGlobalDestination(
+  root: string,
+  timeoutMs: number,
+  selected?: { globalRoot: string | null; directNodeModulesRoot?: boolean },
+) {
   const quote = process.platform === "win32" ? quotePowerShellArg : quoteCliArg;
   const retry = formatCliCommand("openclaw update").replace(
     /^openclaw\b/,
@@ -37,7 +45,13 @@ export async function inspectNpmGlobalDestination(root: string, timeoutMs: numbe
   });
   let prefix: string | null = null;
   try {
-    const destinationLayout = await probeNpmGlobalPrefix(runCommandWithTimeout, timeoutMs);
+    const destinationLayout = selected
+      ? selected.globalRoot
+        ? resolveNpmGlobalPrefixLayoutFromGlobalRoot(selected.globalRoot, {
+            allowDirectNodeModulesRoot: selected.directNodeModulesRoot,
+          })
+        : null
+      : await probeNpmGlobalPrefix(runCommandWithTimeout, timeoutMs);
     if (!destinationLayout) {
       return unknown(prefix, "probe-failure");
     }

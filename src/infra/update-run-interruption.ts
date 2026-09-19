@@ -9,15 +9,20 @@ import {
 } from "./update-run-activity.js";
 import type { UpdateRunLedgerOptions } from "./update-run-codec.js";
 import { inspectUpdateRunDriver } from "./update-run-driver.js";
+import { updateRunLedgerSchema } from "./update-run-ledger-schema.js";
 import {
   readActiveUpdateRun,
   readLatestUpdateRun,
   readUpdateRunRecord,
 } from "./update-run-reader.js";
-import { finishUpdateRunRecord, type UpdateRunRecord } from "./update-run-record.js";
+import {
+  finishUpdateRunRecord,
+  type UpdateRunRecord,
+  upsertUpdateRunStep,
+} from "./update-run-record.js";
 import { hasStoredUpdateRecovery } from "./update-run-recovery-store.js";
 import { recordUpdateRunVerificationRecord } from "./update-run-verification.js";
-import { persistRun, updateRunLedgerSchema, upsertStep } from "./update-run-write.js";
+import { persistRun } from "./update-run-write.js";
 
 const CANDIDATE_STEP = "finalize:installed-candidate";
 const candidateSchema = z.object({
@@ -63,7 +68,7 @@ export function recordPostCoreUpdateEvidence(
       if (candidate.success && !hasStoredUpdateRecovery(db, runId)) {
         // Keep after.version empty until serving verification: released rollback
         // readers use that absence to recognize restored-generation observations.
-        upsertStep(run, {
+        upsertUpdateRunStep(run, {
           step: CANDIDATE_STEP,
           status: "completed",
           endedAtMs: Date.now(),
@@ -71,7 +76,7 @@ export function recordPostCoreUpdateEvidence(
         });
       }
       for (const [index, detail] of input.warnings.entries()) {
-        upsertStep(run, {
+        upsertUpdateRunStep(run, {
           step: `warning:finalize:plugins:${index}`,
           status: "completed",
           endedAtMs: Date.now(),
@@ -163,7 +168,7 @@ export async function reconcileInterruptedUpdateRuns(
         }
       }
       recordUpdateRunVerificationRecord(current, verification);
-      upsertStep(current, {
+      upsertUpdateRunStep(current, {
         step: "warning:finalize:interrupted-completion",
         status: "completed",
         endedAtMs: Date.now(),

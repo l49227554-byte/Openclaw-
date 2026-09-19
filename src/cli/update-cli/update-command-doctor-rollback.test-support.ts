@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
@@ -16,9 +17,16 @@ import {
   recordUpdateRunVerification,
 } from "../../infra/update-run-ledger.js";
 import { renderUpdateRunReport } from "../../infra/update-run-report.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { finishUpdate } from "./update-command-post-update.js";
 import { UpdateCommandFailure } from "./update-command-result.js";
+import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
+import {
+  beginUpdateWriterCustody,
+  captureUpdateWriterCustody,
+  withUpdateWriterCustody,
+} from "./update-command-writer-custody.js";
 
 type FreshProcess =
   typeof import("./update-command-post-core.js").continuePostCoreUpdateInFreshProcess;
@@ -111,7 +119,30 @@ export function registerDoctorRestorationRollbackTests(
         },
       };
       harness.stopCandidate.mockResolvedValueOnce(before);
+      let pins: string[] = [];
+      let successorAdmission: boolean[] | undefined;
       harness.restartCandidate.mockImplementationOnce(async (params) => {
+        const available = execFileSync(
+          process.execPath,
+          [
+            "--import",
+            path.resolve("scripts/tsx.mjs"),
+            "--input-type=module",
+            "-e",
+            `
+          import { tryAcquireExclusiveSqliteCoordinator } from ${JSON.stringify(new URL("../../infra/sqlite-coordinator.ts", import.meta.url).href)};
+          const pins = JSON.parse(process.argv[1]);
+          process.stdout.write(JSON.stringify(pins.map(path => {
+            const owner = tryAcquireExclusiveSqliteCoordinator(path);
+            owner?.release(); return Boolean(owner);
+          })));
+        `,
+            JSON.stringify(pins),
+          ],
+          { encoding: "utf8", timeout: 15_000 },
+        );
+        successorAdmission = JSON.parse(available);
+        expect(successorAdmission).toEqual([true, true]);
         expect(params.requireRunningServiceAfterRestart).toBe(true);
         expect(params.result.after?.version).toBe("1.0.0");
         expect(
@@ -134,42 +165,53 @@ export function registerDoctorRestorationRollbackTests(
         return "ok";
       });
       let failure: UpdateCommandFailure | undefined;
-      try {
-        await finishUpdate({
-          mutationStarted: true,
-          result: {
-            status: "ok",
-            mode: "npm",
-            root: fixture.packageRoot,
-            before: { version: "1.0.0" },
-            after: { version: "9999.1.1" },
-            steps: [],
-            durationMs: 1,
+      closeOpenClawStateDatabaseForTest();
+      await withOwnedManagedUpdateEnv(env, () =>
+        withUpdateWriterCustody(
+          () => {},
+          async () => {
+            await beginUpdateWriterCustody(env);
+            pins = captureUpdateWriterCustody()!.coordinators.map((pin) => pin.path);
+            try {
+              await finishUpdate({
+                mutationStarted: true,
+                result: {
+                  status: "ok",
+                  mode: "npm",
+                  root: fixture.packageRoot,
+                  before: { version: "1.0.0" },
+                  after: { version: "9999.1.1" },
+                  steps: [],
+                  durationMs: 1,
+                },
+                root: fixture.packageRoot,
+                packageTransaction: transaction,
+                schemaVersions,
+                previousVerified: true,
+                installKindChanged: false,
+                configSnapshot,
+                requestedChannel: null,
+                storedChannel: "stable",
+                channel: "stable",
+                downgradeRisk: false,
+                shouldRestart: true,
+                preManagedServiceStop: before,
+                preUpdatePluginInstallRecords: {},
+                updateStepTimeoutMs: 1000,
+                opts: { json: true, run },
+                startedAt: Date.now(),
+                controlPlaneUpdateSentinelMeta: null,
+              });
+            } catch (caught) {
+              if (!(caught instanceof UpdateCommandFailure)) {
+                throw caught;
+              }
+              failure = caught;
+            }
           },
-          root: fixture.packageRoot,
-          packageTransaction: transaction,
-          schemaVersions,
-          previousVerified: true,
-          installKindChanged: false,
-          configSnapshot,
-          requestedChannel: null,
-          storedChannel: "stable",
-          channel: "stable",
-          downgradeRisk: false,
-          shouldRestart: true,
-          preManagedServiceStop: before,
-          preUpdatePluginInstallRecords: {},
-          updateStepTimeoutMs: 1000,
-          opts: { json: true, run },
-          startedAt: Date.now(),
-          controlPlaneUpdateSentinelMeta: null,
-        });
-      } catch (caught) {
-        if (!(caught instanceof UpdateCommandFailure)) {
-          throw caught;
-        }
-        failure = caught;
-      }
+        ),
+      );
+      expect(successorAdmission).toEqual([true, true]);
       expect(failure?.exitCode).toBe(1);
       expect(rollback).toHaveBeenCalledOnce();
       expect(harness.stopCandidate).toHaveBeenCalledOnce();

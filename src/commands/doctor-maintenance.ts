@@ -87,6 +87,8 @@ export async function beginDoctorMaintenance(params: {
   runId?: string;
 }): Promise<
   | {
+      assertCurrent(): void;
+      closeStores(): Promise<void>;
       run<T>(operation: () => T): T;
       releaseState(): Promise<void>;
       release(): Promise<void>;
@@ -114,6 +116,8 @@ export async function beginDoctorMaintenance(params: {
   const warnings: string[] = [];
   let repairStoresMayBeOpen = false;
   let resources: OpenClawDatabaseMaintenanceScope | undefined;
+  let storesClosed = false;
+  let schemaDelegate: OpenClawDatabaseMaintenanceScope["createSchemaFenceDelegate"] | undefined;
   let inspectingActivation = false;
   let parentMustStopGateway = false;
   let staleReplacement: DoctorStaleGateway | undefined;
@@ -140,7 +144,8 @@ export async function beginDoctorMaintenance(params: {
     }
     const owner = acquireGatewayMaintenanceCoordinator({ databasePath, busyTimeoutMs: 0 });
     coordinators.push(owner);
-    resources = createOpenClawDatabaseMaintenanceScope(owner.createSchemaFenceDelegate);
+    schemaDelegate = owner.createSchemaFenceDelegate;
+    resources = createOpenClawDatabaseMaintenanceScope(schemaDelegate);
     coordinators.push(acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 250 }));
   };
   const releaseState = async () => {
@@ -518,7 +523,31 @@ export async function beginDoctorMaintenance(params: {
   let custody: "held" | "restoring" | "released" = "held";
   const maintenance = {
     warnings,
-    run: <T>(operation: () => T) => resources!.run(operation),
+    assertCurrent() {
+      if (
+        this !== maintenance ||
+        custody !== "held" ||
+        coordinators.length !== 2 ||
+        cleanupFailure
+      ) {
+        throw new Error("Doctor maintenance authority has expired.");
+      }
+      assertUpdateAdmissionCurrent?.();
+    },
+    closeStores: async () => {
+      await resources?.close();
+      storesClosed = true;
+    },
+    run: <T>(operation: () => T): T => {
+      maintenance.assertCurrent();
+      if (storesClosed) {
+        // Forward repair starts a new resource interval under the same physical
+        // owners. Escaped callbacks retain the closed interval, never this one.
+        resources = createOpenClawDatabaseMaintenanceScope(schemaDelegate);
+        storesClosed = false;
+      }
+      return resources!.run(operation);
+    },
     releaseState: () => settle(releaseState),
     async release() {
       if (this !== maintenance) {

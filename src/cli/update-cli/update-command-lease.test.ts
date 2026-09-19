@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stageBundledPluginRuntime } from "../../../scripts/stage-bundled-plugin-runtime.mts";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -13,14 +13,11 @@ import type { PluginInstallRecord } from "../../config/types.plugins.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
 import {
-  createUpdateRun,
   getUpdateRun,
   listUpdateRuns,
-  recordUpdateRunPhase,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
 import type { UpdateRunRecord } from "../../infra/update-run-record.js";
-import { ABANDONED_UPDATE_RUN_MS } from "../../infra/update-run-timeouts.js";
 import { loadInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { seedInstalledPluginIndex } from "../../plugins/test-helpers/installed-plugin-index.js";
 import { runExec } from "../../process/exec.js";
@@ -32,7 +29,18 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import { VERSION } from "../../version.js";
 import { registerUpdateCli } from "../update-cli.js";
-
+import { convergeUpdatePlugins } from "./update-command-convergence.js";
+import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
+import { updateFinalizeCommand } from "./update-command-finalize.js";
+import {
+  seedInterruptedPostCoreRun,
+  expectRecoveredRun,
+  mockRepairManagedService,
+} from "./update-command-lease-service.test-support.js";
+import type { LeaseScenario } from "./update-command-lease.test-support.js";
+import type { ProducedPluginUpdateResult } from "./update-command-plugins-internals.js";
+import { finishUpdate } from "./update-command-post-update.js";
+import { resumePostCoreUpdate } from "./update-command-resume.js";
 const mocks = vi.hoisted(() => ({
   entrypoint: vi.fn(),
   root: vi.fn(),
@@ -77,15 +85,6 @@ vi.mock("../../infra/update-triage.js", () => ({
   prepareUpdateFailureTriage: async () => async () => ({ status: "completed", hint: "" }),
 }));
 
-import { convergeUpdatePlugins } from "./update-command-convergence.js";
-import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
-import { updateFinalizeCommand } from "./update-command-finalize.js";
-import { mockRepairManagedService } from "./update-command-lease-service.test-support.js";
-import type { LeaseScenario } from "./update-command-lease.test-support.js";
-import type { ProducedPluginUpdateResult } from "./update-command-plugins-internals.js";
-import { finishUpdate } from "./update-command-post-update.js";
-import { resumePostCoreUpdate } from "./update-command-resume.js";
-
 const pluginResult: ProducedPluginUpdateResult = {
   assessment: { kind: "no-payload-repair" },
   status: "ok",
@@ -112,6 +111,9 @@ beforeEach(async () => {
   state = await createOpenClawTestState({
     label: "update-lease",
     env: {
+      // Doctor's source descendants inherit the synthetic install cwd.
+      TSX_TSCONFIG_PATH: path.resolve("tsconfig.json"),
+      OPENCLAW_PROFILE: undefined,
       OPENCLAW_COMPATIBILITY_HOST_VERSION: undefined,
       OPENCLAW_UPDATE_POST_CORE_RESULT_PATH: undefined,
       OPENCLAW_UPDATE_POST_CORE_INSTALL_RECORDS_PATH: undefined,
@@ -157,6 +159,11 @@ beforeEach(async () => {
     }
   `,
   );
+  await fs.mkdir(state.path("dist", "infra"), { recursive: true });
+  await fs.writeFile(
+    state.path("dist", "infra", "update-migrated-finalize.worker.js"),
+    `import ${JSON.stringify(pathToFileURL(entrypoint).href)};\n`,
+  );
   mocks.entrypoint.mockResolvedValue(entrypoint);
   mocks.root.mockResolvedValue(state.root);
   mocks.plugins.mockReset().mockResolvedValue(pluginResult);
@@ -174,7 +181,7 @@ afterEach(async () => {
 
 async function writeScenario(
   lane: Lane,
-  scenario: Omit<LeaseScenario, "lane"> = {},
+  scenario: Omit<LeaseScenario, "lane" | "installRoot"> = {},
 ): Promise<void> {
   // Fresh-process fixtures must advertise a runtime supporting continuation;
   // legacy targets intentionally exercise the current-process fallback.
@@ -182,7 +189,12 @@ async function writeScenario(
     state.path("package.json"),
     JSON.stringify({ version: lane === "fresh-process" ? VERSION : "1.0.0" }),
   );
-  await state.writeJson("scenario.json", { pluginUpdate: pluginResult, ...scenario, lane });
+  await state.writeJson("scenario.json", {
+    pluginUpdate: pluginResult,
+    ...scenario,
+    lane,
+    installRoot: await fs.realpath(state.root),
+  });
   if (lane === "resume") {
     vi.stubEnv("OPENCLAW_UPDATE_POST_CORE_RESULT_PATH", state.path("post-core-result.json"));
     await fs.writeFile(state.path("handoff.json"), JSON.stringify({ completionOwner: "parent" }));
@@ -363,28 +375,6 @@ function reportedResult(lane: Lane): unknown {
     : mocks.print.mock.lastCall?.[0];
 }
 
-function seedInterruptedPostCoreRun(): UpdateRunRecord {
-  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 2 * ABANDONED_UPDATE_RUN_MS);
-  try {
-    const run = createUpdateRun({ trigger: "cli", before: { version: "2026.9.2" } });
-    return recordUpdateRunPhase(run.runId, "verifying", {
-      step: { step: "post-update verification", status: "in_progress" },
-    });
-  } finally {
-    clock.mockRestore();
-  }
-}
-
-function expectRecoveredRun(run: UpdateRunRecord | undefined): void {
-  expect(run).toMatchObject({
-    status: "failed",
-    reason: "abandoned",
-    steps: expect.arrayContaining([
-      expect.objectContaining({ step: "reconcile:acknowledged", status: "completed" }),
-    ]),
-  });
-}
-
 async function prepareIncompleteSourceRuntime() {
   await runExec("git", ["init", "--quiet", state.root], { timeoutMs: 15_000 });
   await fs.symlink(
@@ -512,7 +502,7 @@ describe("update orchestration lifecycle ownership", () => {
   );
 
   it.each(["resume", "repair"] as const)(
-    "%s completes missing source artifacts before consumers and leaves an exact online retry untouched",
+    "%s completes missing source artifacts and preserves its publication on retry",
     async (lane) => {
       await writeScenario(lane, { runtimeRoot: state.root });
       const { aliasRoot, runtimeEntry, runtimeMetadata, aliasBefore } =
@@ -539,8 +529,13 @@ describe("update orchestration lifecycle ownership", () => {
       mocks.publication.mockImplementationOnce(async () => {
         throw new Error("A running Gateway cannot publish changed artifacts.");
       });
-      await invoke(lane);
-      expectSuccess(lane, lane === "repair");
+      if (lane === "repair") {
+        // Offline repair cannot certify Gateway health or retire its capture.
+        await expect(invoke(lane)).rejects.toThrow("another protected mutation is refused");
+      } else {
+        await invoke(lane);
+        expectSuccess(lane, false);
+      }
       expect(mocks.publication).toHaveBeenCalledOnce();
       expect(await fs.stat(runtimeEntry)).toMatchObject({
         ino: beforeRetry.ino,
@@ -681,15 +676,15 @@ describe("update orchestration lifecycle ownership", () => {
         }
       });
       void completed.promise.catch(() => {});
-      const beforeDoctor = createDeferred();
+      const beforeCapture = createDeferred();
       if (lane === "repair") {
-        // Enter with the old config, then release the foreign writer before the
-        // fixture's zero-retry Doctor acquisition. This still detects a parent
-        // retaining its own lease without racing the deliberately competing one.
-        mocks.entrypoint.mockImplementationOnce(async () => {
-          beforeDoctor.resolve();
+        // Finish the independent writer before capture closes canonical admission.
+        // The parent's cached install records still predate this commit and must
+        // be reloaded; a post-capture writer is intentionally excluded.
+        mocks.root.mockImplementationOnce(async () => {
+          beforeCapture.resolve();
           await completed.promise;
-          return entrypoint;
+          return state.root;
         });
       }
       try {
@@ -697,7 +692,7 @@ describe("update orchestration lifecycle ownership", () => {
         const update = invoke(lane);
         void update.catch(() => {});
         if (lane === "repair") {
-          await Promise.race([beforeDoctor.promise, update]);
+          await Promise.race([beforeCapture.promise, update]);
         }
         child.send("commit");
         await completed.promise;
@@ -969,58 +964,92 @@ describe("update orchestration lifecycle ownership", () => {
   });
 
   it.each([
-    ["resume", true],
-    ["fresh-process", true],
-    ["repair", true],
-    ["resume", false],
-    ["fresh-process", false],
-    ["repair", false],
-  ] as const)("%s stamps only strictly valid downgrade config (valid=%s)", async (lane, valid) => {
-    const futureVersion = "2099.1.1";
-    await state.writeConfig({
-      meta: { lastTouchedVersion: futureVersion },
-      plugins: { enabled: false },
-      update: { channel: "stable" },
-      gateway: { port: valid ? 19004 : -1 },
-    });
-    await writeScenario(lane, { failDoctor: "post", invalidConfig: !valid });
-
-    if (lane === "resume") {
-      await invoke(lane);
-      expectSuccess(lane, false);
-    } else {
-      await invokeReportedFailure(lane);
-      expect(reportedResult(lane)).toMatchObject({
-        status: "error",
-        postUpdate: {
-          plugins: {
-            reason: valid
-              ? "post-plugin-doctor-execution-failed"
-              : "post-plugin-doctor-invalid-config",
-          },
-        },
+    { lane: "resume", valid: true },
+    { lane: "fresh-process", valid: true },
+    { lane: "repair", valid: true },
+    { lane: "resume", valid: false },
+    { lane: "fresh-process", valid: false },
+    { lane: "repair", valid: false },
+  ] as const)(
+    "$lane stamps only strictly valid downgrade config (valid=$valid)",
+    async ({ lane, valid }) => {
+      const futureVersion = "2099.1.1";
+      await state.writeConfig({
+        meta: { lastTouchedVersion: futureVersion },
+        plugins: { enabled: false },
+        update: { channel: "stable" },
+        gateway: { port: valid ? 19004 : -1 },
       });
-    }
-    const persisted = JSON.parse(await fs.readFile(state.configPath, "utf8")) as OpenClawConfig;
-    expect(persisted.meta?.lastTouchedVersion).toBe(valid ? VERSION : futureVersion);
-    expect(persisted.update?.channel).toBe("stable");
-    const startupBlock = resolveFutureConfigActionBlock({
-      action: "start gateway service",
-      config: persisted,
-      env: {},
-    });
-    expect(startupBlock === null).toBe(valid);
-    expect(await events(), JSON.stringify(vi.mocked(defaultRuntime.error).mock.calls)).toEqual(
-      lane === "resume"
-        ? []
-        : [
-            ...(lane === "repair" ? ["pre-attempt", "pre-acquired"] : []),
-            ...(lane === "fresh-process" ? ["packages-acquired", "packages-released"] : []),
-            "post-attempt",
-            "post-acquired",
-            "validate",
-            ...(valid ? ["readiness"] : []),
-          ],
-    );
-  });
+      const originalConfig = await fs.readFile(state.configPath, "utf8");
+      await writeScenario(lane, { failDoctor: "post", invalidConfig: !valid });
+
+      if (lane === "resume") {
+        await invoke(lane);
+        expectSuccess(lane, false);
+      } else {
+        await invokeReportedFailure(lane);
+        expect(reportedResult(lane)).toMatchObject({
+          status: "error",
+          postUpdate: {
+            plugins: {
+              reason: valid
+                ? "post-plugin-doctor-execution-failed"
+                : "post-plugin-doctor-invalid-config",
+            },
+          },
+        });
+      }
+      const persistedRaw = await fs.readFile(state.configPath, "utf8");
+      const persisted = JSON.parse(persistedRaw) as OpenClawConfig;
+      expect(persisted.update?.channel).toBe("stable");
+      const startupBlock = resolveFutureConfigActionBlock({
+        action: "start gateway service",
+        config: persisted,
+        env: {},
+      });
+      if (lane === "repair") {
+        // Uncertified reverse publication is refused. Preserve newer Doctor output
+        // and the exact prior config in B, without reporting a restored outcome.
+        expect(persisted.meta?.lastTouchedVersion).toBe(valid ? VERSION : futureVersion);
+        expect(startupBlock === null).toBe(valid);
+        expect(mocks.restart).not.toHaveBeenCalled();
+        const { inspectUpdateRecoveryBackups, verifyUpdateRecoveryBackup } =
+          await import("../../infra/update-recovery-backup.js");
+        const captures = await inspectUpdateRecoveryBackups({ installRoot: state.root });
+        expect(captures).toHaveLength(1);
+        const [capture] = captures;
+        if (!capture) {
+          throw new Error("Expected failed repair retained capture");
+        }
+        expect(capture.terminalOutcome).not.toBe("restored");
+        const manifest = await verifyUpdateRecoveryBackup(capture.ref);
+        const original = manifest.entries.find((entry) => entry.sourcePath === state.configPath);
+        if (original?.kind !== "file") {
+          throw new Error("Expected baseline config payload");
+        }
+        expect(
+          await fs.readFile(path.join(capture.ref.directory, original.archivePath), "utf8"),
+        ).toBe(originalConfig);
+        const failedRun = getUpdateRun(manifest.runId);
+        expect(failedRun?.status).toBe("failed");
+        expect(failedRun?.origin.updateRecoveryCapture?.restored).not.toBe(true);
+        expect(failedRun?.origin.updateRecoveryCapture?.forwardResolution).toBeUndefined();
+      } else {
+        expect(persisted.meta?.lastTouchedVersion).toBe(valid ? VERSION : futureVersion);
+        expect(startupBlock === null).toBe(valid);
+      }
+      expect(await events(), JSON.stringify(vi.mocked(defaultRuntime.error).mock.calls)).toEqual(
+        lane === "resume"
+          ? []
+          : [
+              ...(lane === "repair" ? ["pre-attempt", "pre-acquired"] : []),
+              ...(lane === "fresh-process" ? ["packages-acquired", "packages-released"] : []),
+              "post-attempt",
+              "post-acquired",
+              "validate",
+              ...(valid ? ["readiness"] : []),
+            ],
+      );
+    },
+  );
 });

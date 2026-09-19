@@ -30,6 +30,7 @@ export {
   cancelManagedServiceUpdateHandoff,
   claimManagedServiceUpdateHandoff,
   commitManagedServiceUpdateHandoff,
+  prepareManagedServiceUpdateHandoffPark,
   requestManagedServiceUpdateHandoffPark,
 } from "../../infra/update-managed-service-handoff.js";
 export { resetGatewaySuspendCoordinatorForLifecycleRestart } from "../../infra/gateway-suspend-coordinator.js";

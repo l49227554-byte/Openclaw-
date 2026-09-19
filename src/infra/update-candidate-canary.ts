@@ -44,7 +44,6 @@ import { cleanupUpdateTemporaryDirectory } from "./update-maintenance.js";
 import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 import { UpdateSnapshotCapacityError } from "./update-snapshot-capacity.js";
-
 type CanaryPhase =
   | "snapshot"
   | "doctor"
@@ -61,6 +60,7 @@ type CanaryResult = {
   logTail: string[];
   steps: UpdateStepResult[];
   candidateSchemaVersions?: OpenClawSchemaVersions;
+  candidateUpdateRecovery?: "parent-v1";
   doctorConfigWrites?: boolean;
   doctorConfigChanges?: UpdateDoctorConfigChange[];
   listenerIsolation?: {
@@ -86,6 +86,7 @@ export async function validateUpdateCandidateCanary(params: {
   nodeRunner?: string;
   rehearsal?: UpdateCandidateRehearsal;
   assertCurrent?: () => void;
+  requireWriterCustody?: boolean;
   /** Emit at completion; replaying after the canary shifts persisted step timestamps. */
   onStep?: (step: UpdateStepResult) => void;
 }): Promise<CanaryResult> {
@@ -98,6 +99,7 @@ export async function validateUpdateCandidateCanary(params: {
   let stepStartedAt = started;
   const steps: UpdateStepResult[] = [];
   let candidateSchemaVersions: OpenClawSchemaVersions | undefined;
+  let candidateUpdateRecovery: "parent-v1" | undefined;
   let doctorConfigWrites = false;
   let doctorConfigChanges: UpdateDoctorConfigChange[] = [];
   let listenerIsolation: CanaryResult["listenerIsolation"];
@@ -262,6 +264,11 @@ export async function validateUpdateCandidateCanary(params: {
       if (!hasErrnoCode(error, "ENOENT")) {
         throw error;
       }
+      if (params.requireWriterCustody) {
+        throw new Error("The update cannot preserve writer exclusion through candidate migration", {
+          cause: error,
+        });
+      }
       const message = "This version uses the current updater to finish installation";
       const step: UpdateStepResult = {
         name: "Checking update recovery",
@@ -308,7 +315,8 @@ export async function validateUpdateCandidateCanary(params: {
     };
     steps.push(snapshotStep);
     params.onStep?.(snapshotStep);
-    env = { ...rehearsal.env };
+    // The copied rehearsal cannot inherit the serving update transaction.
+    env = { ...rehearsal.env, OPENCLAW_UPDATE_IN_PROGRESS: "0" };
     const { port, stateDir: copiedStateDir } = rehearsal;
     const doctorResultOptions = { tmpdir: () => copiedStateDir };
     listenerIsolation = {
@@ -503,9 +511,18 @@ export async function validateUpdateCandidateCanary(params: {
           : JSON.parse(running.stdout());
         candidateSchemaVersions = parseOpenClawSchemaVersions(contract);
         doctorConfigWrites = isRecord(contract) && contract.doctorConfigWrites === "pid-start-v1";
+        if (
+          params.requireWriterCustody &&
+          (!isRecord(contract) || contract.writerCustody !== "native-pins-v1")
+        ) {
+          code = 1;
+          capture("The update cannot preserve writer exclusion through candidate migration");
+        }
         if (!candidateSchemaVersions) {
           code = 1;
           capture("The update did not report its supported database versions");
+        } else if (isRecord(contract) && contract.updateRecovery === "parent-v1") {
+          candidateUpdateRecovery = "parent-v1";
         }
       }
       const step: UpdateStepResult = {
@@ -610,6 +627,7 @@ export async function validateUpdateCandidateCanary(params: {
       durationMs: Date.now() - started,
       logTail,
       candidateSchemaVersions,
+      ...(candidateUpdateRecovery ? { candidateUpdateRecovery } : {}),
       ...(doctorConfigWrites ? { doctorConfigWrites } : {}),
       ...(doctorConfigChanges.length ? { doctorConfigChanges } : {}),
       listenerIsolation,

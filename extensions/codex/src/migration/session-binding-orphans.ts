@@ -6,7 +6,6 @@ import type {
 } from "openclaw/plugin-sdk/runtime-doctor-migrations";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { CODEX_APP_SERVER_BINDING_NAMESPACE } from "../app-server/session-binding-meta.js";
-
 const PAGE_SIZE = 512;
 const KEY_PREFIXES = ["session-key:", "session:"] as const;
 
@@ -143,6 +142,8 @@ export const codexOrphanedSessionBindingMigration: PluginDoctorStateMigration = 
   label: "Codex app-server orphaned session bindings",
   doctorOnly: true,
   phase: "after-session-repair",
+  // Binding rows and session ownership are stored in host-managed SQLite.
+  collectBackupResources: () => [],
   async detectLegacyState(params) {
     for await (const _ of iterateOrphanBindingPages(params)) {
       return { preview: ["- Codex app-server bindings: remove orphaned session ownership"] };

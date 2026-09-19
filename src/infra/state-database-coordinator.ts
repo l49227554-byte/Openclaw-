@@ -1,6 +1,5 @@
 // Coordinates Gateway presence and shared-state lifecycle operations outside removable state.
 import { AsyncLocalStorage } from "node:async_hooks";
-import os from "node:os";
 import path from "node:path";
 import type { MessagePort } from "node:worker_threads";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
@@ -11,6 +10,7 @@ import {
   SqliteCoordinatorError,
   type SqliteCoordinatorLease,
   tryAcquireExclusiveSqliteCoordinator,
+  tryAcquireReservedSqliteCoordinator,
   tryAcquireSharedSqliteCoordinator,
 } from "./sqlite-coordinator.js";
 import { withSqliteInspectionOperation } from "./sqlite-error-diagnostics.js";
@@ -32,10 +32,26 @@ import {
   resolveLifecycleCoordinatorPath,
   type CoordinatorFamily,
 } from "./state-database-coordinator-paths.js";
+import {
+  captureStateDatabaseCoordinatorRuntime,
+  resolveStateLifecycleRuntimeDirectory,
+} from "./state-database-coordinator-runtime.js";
+import {
+  assertStateLifecycleTransfer,
+  captureStateLifecycleTransfer,
+  type StateLifecycleTransferAdmission,
+} from "./state-database-coordinator-transfer.js";
 export {
   StateDatabaseCoordinatorContentionError,
   StateSchemaMutationConflictError,
 } from "./state-database-coordinator-errors.js";
+
+export {
+  captureStateDatabaseCoordinatorRuntime,
+  resolveStateLifecycleRuntimeDirectory,
+  withStateDatabaseCoordinatorRuntimeDirectory,
+  type StateDatabaseCoordinatorRuntime,
+} from "./state-database-coordinator-runtime.js";
 
 type HeldCoordinator = {
   coordinator: SqliteCoordinatorLease;
@@ -43,6 +59,7 @@ type HeldCoordinator = {
   keepAlive: boolean;
   gatewayOwners: number;
   gatewayDelegates: Set<Int32Array>;
+  transfer?: StateLifecycleTransferAdmission;
 };
 
 type SourceReadScope = {
@@ -53,26 +70,16 @@ type SourceReadScope = {
   snapshot?: (signal?: AbortSignal) => Promise<PreparedSqliteReadOnlyLocation>;
   snapshots?: Promise<unknown>[];
 };
-export type StateDatabaseCoordinatorRuntime = Readonly<{
-  directory: string;
-  keepAlive: boolean;
-}>;
 // Retained brokers and freshly loaded callers must borrow the same live owners and scopes.
-const {
-  heldCoordinators,
-  sourceReadScopes,
-  canonicalWriteScopes,
-  coordinatorRuntimeDirectories,
-  gatewaySchemaScopes,
-} = resolveGlobalSingleton(Symbol.for("openclaw.stateDatabaseCoordinator"), () => ({
-  heldCoordinators: new Map<string, HeldCoordinator>(),
-  sourceReadScopes: new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>(),
-  canonicalWriteScopes: new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>(),
-  coordinatorRuntimeDirectories: new AsyncLocalStorage<StateDatabaseCoordinatorRuntime>(),
-  gatewaySchemaScopes: new AsyncLocalStorage<
-    ReadonlyMap<string, { active: boolean; assertCurrent: () => void }>
-  >(),
-}));
+const { heldCoordinators, sourceReadScopes, canonicalWriteScopes, gatewaySchemaScopes } =
+  resolveGlobalSingleton(Symbol.for("openclaw.stateDatabaseCoordinator"), () => ({
+    heldCoordinators: new Map<string, HeldCoordinator>(),
+    sourceReadScopes: new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>(),
+    canonicalWriteScopes: new AsyncLocalStorage<ReadonlyMap<string, SourceReadScope>>(),
+    gatewaySchemaScopes: new AsyncLocalStorage<
+      ReadonlyMap<string, { active: boolean; assertCurrent: () => void }>
+    >(),
+  }));
 
 type CoordinatorOptions = {
   databasePath: string;
@@ -88,34 +95,8 @@ type StateDatabaseCoordinatorLease = {
   // A remaining reference can accept custody without closing the native handle.
   readonly closed: boolean;
   release: () => void;
+  assertSoleOwner?: () => void;
 };
-
-export function resolveStateLifecycleRuntimeDirectory(): string {
-  const captured = coordinatorRuntimeDirectories.getStore();
-  if (captured !== undefined) {
-    return captured.directory;
-  }
-  return process.platform === "win32"
-    ? path.join(os.homedir(), "AppData", "Local", "OpenClaw", "locks")
-    : "/tmp";
-}
-
-/** Capture the directory owner's retention policy before crossing an async or worker boundary. */
-export function captureStateDatabaseCoordinatorRuntime(): StateDatabaseCoordinatorRuntime {
-  const captured = coordinatorRuntimeDirectories.getStore();
-  return captured
-    ? { ...captured }
-    : { directory: resolveStateLifecycleRuntimeDirectory(), keepAlive: true };
-}
-
-export function withStateDatabaseCoordinatorRuntimeDirectory<T>(
-  runtime: string | StateDatabaseCoordinatorRuntime,
-  operation: () => T,
-): T {
-  const captured =
-    typeof runtime === "string" ? { directory: runtime, keepAlive: false } : { ...runtime };
-  return coordinatorRuntimeDirectories.run(captured, operation);
-}
 
 export function resolveStateDatabaseCoordinatorPath(params: {
   databasePath: string;
@@ -143,8 +124,15 @@ function acquireLifecycleCoordinator(
       return delegate;
     }
   }
+  const transfer = captureStateLifecycleTransfer(coordinatorPath);
   let held = heldCoordinators.get(coordinatorPath);
   if (held) {
+    if (held.transfer !== transfer) {
+      throw new StateDatabaseCoordinatorContentionError(family);
+    }
+    if (held.transfer) {
+      assertStateLifecycleTransfer(coordinatorPath, held.transfer);
+    }
     if (held.references === 0) {
       throw new SqliteCoordinatorError(
         `${family} coordinator cleanup is pending; retry its close before reacquiring`,
@@ -154,9 +142,15 @@ function acquireLifecycleCoordinator(
     held.keepAlive &&= keepAlive;
   } else {
     ensurePrivateSqliteCoordinatorDirectory(path.dirname(coordinatorPath), `${family} coordinator`);
-    const coordinator = tryAcquireExclusiveSqliteCoordinator(coordinatorPath, {
+    const acquire =
+      transfer?.mode === "reserved"
+        ? tryAcquireReservedSqliteCoordinator
+        : transfer?.mode === "shared"
+          ? tryAcquireSharedSqliteCoordinator
+          : tryAcquireExclusiveSqliteCoordinator;
+    const coordinator = acquire(coordinatorPath, {
       busyTimeoutMs: params.busyTimeoutMs,
-      keepAlive,
+      keepAlive: transfer ? false : keepAlive,
     });
     if (!coordinator) {
       throw new StateDatabaseCoordinatorContentionError(family);
@@ -167,6 +161,7 @@ function acquireLifecycleCoordinator(
       keepAlive,
       gatewayOwners: 0,
       gatewayDelegates: new Set(),
+      transfer,
     };
     heldCoordinators.set(coordinatorPath, held);
   }
@@ -179,6 +174,11 @@ function acquireLifecycleCoordinator(
   let settled = false;
   return {
     path: coordinatorPath,
+    assertSoleOwner() {
+      if (relinquished || owner.references !== 1) {
+        throw new SqliteCoordinatorError("State lifecycle transfer still has participating owners");
+      }
+    },
     get closed() {
       return settled || (relinquished && owner.coordinator.closed);
     },
@@ -397,13 +397,14 @@ export async function attachStateLifecycleDelegate(
 
 /** Borrow only a coordinator already owned by this process. The returned
  * reference must remain held until the participating worker has exited. */
-export function retainHeldStateDatabaseCoordinator(databasePath: string) {
+export function retainHeldStateDatabaseCoordinator(databasePath: string, transferredOnly = false) {
   const pathname = resolveStateDatabaseCoordinatorPath({
     databasePath,
     runtimeDirectory: resolveStateLifecycleRuntimeDirectory(),
     uid: typeof process.getuid === "function" ? process.getuid() : undefined,
   });
-  return heldCoordinators.has(pathname)
+  return heldCoordinators.has(pathname) &&
+    (!transferredOnly || heldCoordinators.get(pathname)?.transfer)
     ? acquireStateDatabaseCoordinator({ databasePath, busyTimeoutMs: 0 })
     : undefined;
 }
@@ -412,7 +413,7 @@ const shouldKeepStateCoordinatorAlive = (params: CoordinatorOptions) =>
   params.keepAlive !== false &&
   params.coordinatorPath === undefined &&
   params.runtimeDirectory === undefined &&
-  (coordinatorRuntimeDirectories.getStore()?.keepAlive ?? true);
+  captureStateDatabaseCoordinatorRuntime().keepAlive;
 
 export function acquireStateDatabaseCoordinator(params: CoordinatorOptions) {
   // Caller-owned locations must remain removable immediately after release,

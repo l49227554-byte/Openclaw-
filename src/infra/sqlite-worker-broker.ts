@@ -10,6 +10,7 @@ import {
   captureSqliteWorkerOpen,
   captureSqliteWorkerAdmissionPaths,
   findUnclaimedSharedStateActors,
+  forgetSqliteWorkerActor,
   releaseSqliteWorkerActorCoordinators,
   prepareSqliteWorkerDatabaseAdmission,
   resolveOpenedSqliteWorkerIdentity,
@@ -165,6 +166,7 @@ export class SqliteWorkerBroker {
       actor = {
         pendingStateLifecycles: new Set(),
         id: ++this.nextActor,
+        closeRequestId: ++this.nextRequest,
         key,
         // Native ownership pins its opening paths even after the first client closes.
         pathReferences: new Map([...admittedPaths].map((pathname) => [pathname, 1])),
@@ -244,7 +246,7 @@ export class SqliteWorkerBroker {
               this.fail(actor.slot, error);
               await actor.slot.exit;
             }
-            this.forget(actor);
+            forgetSqliteWorkerActor(this.actors, actor);
             if (!actor.slot.actors.size && !actor.slot.pendingOpens) {
               await this.retire(actor.slot);
             }
@@ -464,7 +466,13 @@ export class SqliteWorkerBroker {
       createAdmission,
       assertCurrent,
       dispatchState,
-      request: { ...body, id: ++this.nextRequest },
+      request: {
+        ...body,
+        id:
+          (body.type === "close"
+            ? [...slot.actors].find((actor) => actor.id === body.actor)?.closeRequestId
+            : undefined) ?? ++this.nextRequest,
+      },
       bytes: reservedBytes,
       resolve: result.resolve,
       reject: result.reject,
@@ -620,7 +628,7 @@ export class SqliteWorkerBroker {
       } catch (error) {
         errors.push(error);
       } finally {
-        this.forget(actor);
+        forgetSqliteWorkerActor(this.actors, actor);
       }
       if (errors.length === 1) {
         throw errors[0];
@@ -634,18 +642,6 @@ export class SqliteWorkerBroker {
       actor.closing = undefined;
     });
     return actor.closing;
-  }
-
-  private forget(actor: Actor): void {
-    if (actor.gatewaySchemaFence || actor.pendingStateLifecycles.size) {
-      actor.cleanupState = "pending";
-      return;
-    }
-    if (this.actors.get(actor.key) === actor) {
-      this.actors.delete(actor.key);
-    }
-    actor.slot.actors.delete(actor);
-    actor.cleanupState = "complete";
   }
 
   private retire(slot: Slot): Promise<void> {

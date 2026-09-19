@@ -22,18 +22,17 @@ import {
   type ChildOperation,
   type UpdateCommandChildGrant,
 } from "./update-command-executor-children.js";
+import type { UpdateCommandExecutor } from "./update-command-executor-contract.js";
 import { createUpdateIdentityWarningReporter } from "./update-command-identity-warning.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
+import { withUpdateWriterCustody } from "./update-command-writer-custody.js";
 import { createUpdateOperationDeadline } from "./update-operation-deadline.js";
 
-/** A live invocation, never a serialized claim, PID or recovered history row. */
-export type UpdateCommandExecutor = {
-  /** Acquire only after read-only service admission, before the first mutable phase. */
-  enter(
-    root: string,
-    options?: { preflight?: true; activationTimeoutMs?: number },
-  ): Promise<UpdateRecoveryFence>;
-};
+export type { UpdateCommandExecutor } from "./update-command-executor-contract.js";
+
+export class UpdateCommandExecutorBusyError extends UpdateCommandRecoveryPendingError {
+  override name = "UpdateCommandExecutorBusyError";
+}
 
 type ManagedUpdateLeaseAuthority = ManagedUpdateLeaseDatabaseIdentity &
   Readonly<{ installKey: string; owner: string }>;
@@ -139,6 +138,8 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         (!lineageBound && !legacyGrant) ||
         (!legacyGrant && databasePath !== grant.databasePath) ||
         grant.runId !== runId ||
+        (grant.writerCustody?.activationChannel !== undefined &&
+          grant.writerCustody.activationChannel.runId !== runId) ||
         grant.root !== resolveUpdateInstallRoot(root) ||
         parent.kind !== "current" ||
         !isDeepStrictEqual(parent.lease, grant.parent) ||
@@ -227,52 +228,57 @@ export async function withDelegatedUpdateCommandExecutor<T>(
       };
       childOwners.set(fence, (childRoot, childOperation) => owner.run(childRoot, childOperation));
       try {
-        return await withCommandProcessScope(async () => {
-          let outcome: { result: T } | { error: unknown };
-          try {
-            fence.assertCurrent();
-            if (databaseIdentity) {
-              admittedAuthorities.set(
-                fence,
-                Object.freeze({
-                  ...databaseIdentity,
-                  installKey: original.key,
-                  owner: original.owner,
-                }),
-              );
-            }
-            if (options) {
-              activation.start(
-                new UpdateActivationTimeoutError(root, options.activationTimeoutMs),
-                options.activationTimeoutMs,
-              );
-            }
-            outcome = { result: await operation(fence) };
-          } catch (error) {
-            outcome = { error };
-          }
-          owner.close();
-          try {
-            await owner.settle();
-            fence.assertCurrent();
-            identityWarnings.flush();
-          } catch (cause) {
-            outcome = {
-              error:
-                "error" in outcome && outcome.error !== cause
-                  ? new AggregateError(
-                      [outcome.error, cause],
-                      "Unable to finish stopping the update process and its children",
-                      { cause },
-                    )
-                  : cause,
-            };
-          }
-          if ("error" in outcome) {
-            throw outcome.error;
-          }
-          return outcome.result;
-        });
+        return await withUpdateWriterCustody(
+          assertBase,
+          () =>
+            withCommandProcessScope(async () => {
+              let outcome: { result: T } | { error: unknown };
+              try {
+                fence.assertCurrent();
+                if (databaseIdentity) {
+                  admittedAuthorities.set(
+                    fence,
+                    Object.freeze({
+                      ...databaseIdentity,
+                      installKey: original.key,
+                      owner: original.owner,
+                    }),
+                  );
+                }
+                if (options) {
+                  activation.start(
+                    new UpdateActivationTimeoutError(root, options.activationTimeoutMs),
+                    options.activationTimeoutMs,
+                  );
+                }
+                outcome = { result: await operation(fence) };
+              } catch (error) {
+                outcome = { error };
+              }
+              owner.close();
+              try {
+                await owner.settle();
+                fence.assertCurrent();
+                identityWarnings.flush();
+              } catch (cause) {
+                outcome = {
+                  error:
+                    "error" in outcome && outcome.error !== cause
+                      ? new AggregateError(
+                          [outcome.error, cause],
+                          "Unable to finish stopping the update process and its children",
+                          { cause },
+                        )
+                      : cause,
+                };
+              }
+              if ("error" in outcome) {
+                throw outcome.error;
+              }
+              return outcome.result;
+            }),
+          grant.writerCustody,
+        );
       } finally {
         active = false;
         childOwners.delete(fence);
@@ -470,7 +476,7 @@ export async function withUpdateCommandExecutor<T>(
             } else {
               const acquired = store.acquire(key, randomUUID(), { kind: "update" });
               if (acquired.kind !== "acquired") {
-                throw new UpdateCommandRecoveryPendingError(
+                throw new UpdateCommandExecutorBusyError(
                   "Another update executor owns this installation.",
                 );
               }
@@ -534,44 +540,52 @@ export async function withUpdateCommandExecutor<T>(
       let outcome: { result: T } | { error: Error };
       try {
         outcome = {
-          result: await withCommandProcessScope(async () => {
-            let operationOutcome: { result: T } | { error: Error };
-            try {
-              operationOutcome = { result: await operation(executor) };
-            } catch (cause) {
-              operationOutcome = {
-                error:
-                  cause instanceof Error ? cause : new Error("Update execution failed", { cause }),
-              };
-            }
-            // Admitted children retain authority after the callback returns or
-            // rejects. Join them before this scope stops its remaining commands.
-            children.close();
-            try {
-              await children.settle();
-              if ("result" in operationOutcome) {
-                if (lease) {
-                  assertCurrent();
-                }
-                identityWarnings.flush();
-              }
-            } catch (cause) {
-              operationOutcome = {
-                error:
-                  "error" in operationOutcome && operationOutcome.error !== cause
-                    ? new AggregateError([operationOutcome.error, cause], "Update cleanup failed", {
-                        cause,
-                      })
-                    : cause instanceof Error
+          result: await withUpdateWriterCustody(assertBase, () =>
+            withCommandProcessScope(async () => {
+              let operationOutcome: { result: T } | { error: Error };
+              try {
+                operationOutcome = { result: await operation(executor) };
+              } catch (cause) {
+                operationOutcome = {
+                  error:
+                    cause instanceof Error
                       ? cause
-                      : new Error("Update settlement failed", { cause }),
-              };
-            }
-            if ("error" in operationOutcome) {
-              throw operationOutcome.error;
-            }
-            return operationOutcome.result;
-          }),
+                      : new Error("Update execution failed", { cause }),
+                };
+              }
+              // Admitted children retain authority after the callback returns or
+              // rejects. Join them before this scope stops its remaining commands.
+              children.close();
+              try {
+                await children.settle();
+                if ("result" in operationOutcome) {
+                  if (lease) {
+                    assertCurrent();
+                  }
+                  identityWarnings.flush();
+                }
+              } catch (cause) {
+                operationOutcome = {
+                  error:
+                    "error" in operationOutcome && operationOutcome.error !== cause
+                      ? new AggregateError(
+                          [operationOutcome.error, cause],
+                          "Update cleanup failed",
+                          {
+                            cause,
+                          },
+                        )
+                      : cause instanceof Error
+                        ? cause
+                        : new Error("Update settlement failed", { cause }),
+                };
+              }
+              if ("error" in operationOutcome) {
+                throw operationOutcome.error;
+              }
+              return operationOutcome.result;
+            }),
+          ),
         };
       } catch (cause) {
         outcome = {

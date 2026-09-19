@@ -1,4 +1,3 @@
-// Install the fixture mocks before loading the execution owner and its dependencies.
 import "./update-command-execution.test-support.js";
 import { once } from "node:events";
 import fs from "node:fs/promises";
@@ -33,6 +32,7 @@ import {
   gatewayServiceCommandUsesRoot,
   GatewayServiceUpdateOwnershipError,
 } from "./update-command-service-plan.js";
+// Install the fixture mocks before loading the execution owner and its dependencies.
 
 const { executionParams, inspectOrStopService, mocks, schemaContext, successfulUpdate } =
   await import("./update-command-execution.test-support.js");
@@ -340,6 +340,21 @@ describe("mutable update execution", () => {
     });
   });
 
+  it("refuses another protected update before housekeeping or service stop", async () => {
+    const detail =
+      "Unresolved capture /fixture/state.update-captures/failed-run. Run openclaw update status --json; resolve with npx openclaw@latest doctor --fix.";
+    mocks.assertNoUnresolvedCapture.mockRejectedValue(new Error(detail));
+    const execution = await executeMutableUpdate(executionParams("package"));
+    expect(execution).toMatchObject({
+      mutationStarted: false,
+      result: { status: "error", reason: "update-recovery-pending" },
+      failure: { detail },
+    });
+    expect(mocks.prepareMutableUpdate).not.toHaveBeenCalled();
+    expect(mocks.runPackageUpdate).not.toHaveBeenCalled();
+    expect(mocks.serviceStopped).toBe(false);
+  });
+
   it("refuses service admission before mutable startup housekeeping", async () => {
     mocks.maybeStopService.mockImplementation(async ({ phase, handoffFromGateway }) => {
       if (handoffFromGateway) {
@@ -599,6 +614,7 @@ describe("mutable update execution", () => {
           tag: "2026.9.2",
           packageInstallSpec: "openclaw@2026.9.2",
           packageTargetVersion: "2026.9.2",
+          packageTargetSchemaVersions: { state: 15, agent: 19 },
         });
 
         expect(mocks.validateCanary.mock.calls.length).toBe(0);

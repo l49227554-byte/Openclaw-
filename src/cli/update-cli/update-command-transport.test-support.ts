@@ -102,3 +102,22 @@ export async function createUpdateUtf8CommandTransportFixture(
     return run(argv, options);
   };
 }
+
+/** Gateway RPC semantics have dedicated coverage; preserve enclosing executor checks here. */
+export async function prepareGatewayCutoverFixture(params: { assertCurrent: () => void }) {
+  params.assertCurrent();
+  let released = false;
+  const assertCurrent = () => {
+    params.assertCurrent();
+    if (released) {
+      throw new Error("Fixture cutover already released");
+    }
+  };
+  return {
+    assertCurrent,
+    refresh: async () => assertCurrent(),
+    release: async () => {
+      released = true;
+    },
+  };
+}

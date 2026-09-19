@@ -17,10 +17,10 @@ import {
 } from "./kysely-sync.js";
 import { inspectUpdateRunAbandonment } from "./update-run-activity.js";
 import { decodeRun } from "./update-run-codec.js";
+import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "./update-run-legacy-expiry.js";
 import type { UpdateFetchFailure, UpdateRunRecord } from "./update-run-record.js";
 import { hasStoredUpdateRecovery } from "./update-run-recovery-store.js";
 import { ABANDONED_UPDATE_RUN_MS } from "./update-run-timeouts.js";
-
 export function readUpdateRunRecord(db: DatabaseSync, runId: string): UpdateRunRecord | undefined {
   const query = getNodeSqliteKysely<Pick<DB, "update_runs">>(db)
     .selectFrom("update_runs")
@@ -69,6 +69,16 @@ export async function getUpdateRunAsync(
 }
 
 type ListInput = { limit?: number; active?: boolean; reason?: string; includeRunId?: string };
+
+/** A capped active-owner listing cannot establish complete recovery ownership. */
+export function requireCompleteActiveUpdateRuns(runs: UpdateRunRecord[]): UpdateRunRecord[] {
+  if (runs.length >= 100) {
+    throw new Error(
+      "Doctor cannot verify every active update owner; resolve update history first.",
+    );
+  }
+  return runs;
+}
 
 function readRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
   if (!tableExists(db, "update_runs")) {
@@ -235,5 +245,17 @@ export function readUpdateRunReconciliationCandidates(
   }
   return executeSqliteQuerySync(db, query.orderBy("run_id")).rows.map((row) =>
     inspectUpdateRunReconciliation(db, decodeRun(row), input),
+  );
+}
+
+export function canReconcileCandidates(
+  candidates: UpdateRunReconciliationCandidate[],
+  input: UpdateRunReconciliationInput,
+): boolean {
+  return (
+    candidates.some(
+      ({ rule }) => rule && (!input.legacyOnly || rule === LEGACY_UPDATE_RUN_EXPIRED_REASON),
+    ) &&
+    !(input.explicit && candidates.some(({ record, rule }) => record.status === "running" && !rule))
   );
 }

@@ -20,12 +20,16 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { removePreparedWorkerOwnershipColumns } from "../../state/openclaw-state-schema-v17.test-support.js";
+import {
+  completePostCorePluginUpdate,
+  runUpdateFinalizationDoctorInFreshProcess,
+} from "./update-command-fresh-doctor.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
-
 const mocks = vi.hoisted(() => ({
   readConfig: vi.fn(),
   resolveEntrypoint: vi.fn(),
   runExec: vi.fn(),
+  runDoctor: vi.fn(),
 }));
 
 vi.mock("../../config/config.js", async (importOriginal) => ({
@@ -37,10 +41,17 @@ vi.mock("../../daemon/gateway-entrypoint.js", () => ({
   resolveGatewayInstallEntrypoint: mocks.resolveEntrypoint,
 }));
 
-vi.mock("../../process/exec.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../process/exec.js")>()),
-  runExec: mocks.runExec,
-}));
+vi.mock("../../process/exec.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../process/exec.js")>();
+  return {
+    ...actual,
+    runExec: mocks.runExec,
+    runUtf8CommandWithTimeout: (...args: Parameters<typeof actual.runUtf8CommandWithTimeout>) =>
+      args[0][1] === "--input-type=commonjs"
+        ? actual.runUtf8CommandWithTimeout([process.execPath, ...args[0].slice(1)], args[1])
+        : mocks.runDoctor(...args),
+  };
+});
 
 vi.mock("../../runtime.js", () => ({
   defaultRuntime: { error: vi.fn(), log: vi.fn() },
@@ -50,11 +61,6 @@ vi.mock("./shared.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./shared.js")>()),
   resolveNodeRunner: vi.fn(() => "/usr/bin/node"),
 }));
-
-import {
-  completePostCorePluginUpdate,
-  runUpdateFinalizationDoctorInFreshProcess,
-} from "./update-command-fresh-doctor.js";
 
 const pluginUpdate: PostCorePluginUpdateResult = {
   status: "ok",
@@ -98,11 +104,21 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
   vi.unstubAllEnvs();
 });
+const doctorExit = {
+  stdout: "",
+  stderr: "",
+  code: 0,
+  signal: null,
+  killed: false,
+  termination: "exit" as const,
+  cleanup: "normal" as const,
+};
 
 describe("post-plugin update readiness", () => {
   beforeEach(() => {
     mocks.readConfig.mockReset().mockResolvedValue(validConfigSnapshot);
     mocks.resolveEntrypoint.mockReset().mockResolvedValue("/opt/openclaw/dist/index.js");
+    mocks.runDoctor.mockReset().mockResolvedValue(doctorExit);
     mocks.runExec.mockReset().mockImplementation(async (_command, args: string[]) => ({
       stdout: args.includes("--lint")
         ? `${JSON.stringify({ ok: true, checksRun: 1, checksSkipped: 0, findings: [] })}\n`
@@ -153,10 +169,33 @@ describe("post-plugin update readiness", () => {
       phase: "pre-plugin",
       timeoutMs,
     });
-    expect(mocks.runExec).toHaveBeenCalledExactlyOnceWith(
-      "/usr/bin/node",
-      expect.arrayContaining(["doctor", "--repair"]),
-      expect.objectContaining({ timeoutMs }),
+    expect(mocks.runDoctor).toHaveBeenCalledExactlyOnceWith(
+      expect.arrayContaining(["/usr/bin/node", "doctor", "--repair"]),
+      expect.objectContaining({
+        timeoutMs,
+        killProcessTree: true,
+        requireProcessTreeExtinction: true,
+      }),
+    );
+  });
+
+  it("passes the driver recovery reference to the Doctor child through argv", async () => {
+    const updateRecoveryBackup = {
+      directory: "/var/tmp/openclaw-fixture/backup",
+      manifestPath: "/var/tmp/openclaw-fixture/backup/manifest.json",
+      manifestSha256: "a".repeat(64),
+    };
+    await runUpdateFinalizationDoctorInFreshProcess({
+      ...updateOptions,
+      phase: "pre-plugin",
+      updateRecoveryBackup,
+    });
+    expect(mocks.runDoctor).toHaveBeenCalledExactlyOnceWith(
+      expect.arrayContaining([
+        "--update-recovery-owner=driver",
+        `--update-recovery-backup=${JSON.stringify(updateRecoveryBackup)}`,
+      ]),
+      expect.any(Object),
     );
   });
 
@@ -169,7 +208,7 @@ describe("post-plugin update readiness", () => {
         timeoutMs,
       });
 
-      expect(mocks.runExec.mock.calls.map(([, args]) => args)).toEqual([
+      expect(mocks.runDoctor.mock.calls.map(([args]) => args.slice(1))).toEqual([
         [
           "/opt/openclaw/dist/index.js",
           "doctor",
@@ -178,17 +217,22 @@ describe("post-plugin update readiness", () => {
           "--no-workspace-suggestions",
           "--yes",
         ],
+      ]);
+      expect(mocks.runExec.mock.calls.map(([, args]) => args)).toEqual([
         ["/opt/openclaw/dist/index.js", "config", "validate", "--json"],
         ["/opt/openclaw/dist/index.js", "doctor", "--lint", "--json", "--severity-min", "error"],
       ]);
-      expect(mocks.runExec.mock.calls[2]?.[2]).toMatchObject({
+      expect(mocks.runDoctor.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.runExec.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      );
+      expect(mocks.runExec.mock.calls[1]?.[2]).toMatchObject({
         env: { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" },
       });
       expect(mocks.runExec.mock.calls.map((call) => call[2].timeoutMs)).toEqual([
-        timeoutMs,
         timeoutMs ?? 300_000,
         timeoutMs ?? 300_000,
       ]);
+      expect(mocks.runDoctor.mock.calls[0]?.[1].timeoutMs).toBe(timeoutMs);
     },
   );
 
@@ -213,19 +257,19 @@ describe("post-plugin update readiness", () => {
       }
       await fs.truncate(databasePath, bytes);
     }
-    mocks.runExec.mockImplementationOnce(async () => {
+    mocks.runDoctor.mockImplementationOnce(async () => {
       for (const databasePath of databases) {
         await fs.truncate(`${databasePath}-wal`, bytes);
       }
-      return { stdout: "", stderr: "" };
+      return doctorExit;
     });
     const result = await completePostCorePluginUpdate({ ...updateOptions, timeoutMs: undefined });
     expect(result.pluginUpdate.status).toBe("ok");
     expect(mocks.runExec.mock.calls.map((call) => call[2].timeoutMs)).toEqual([
-      undefined,
       testCase.budget,
       testCase.budget,
     ]);
+    expect(mocks.runDoctor.mock.calls[0]?.[1].timeoutMs).toBeUndefined();
   });
 
   it("budgets configured agent stores without enumerating unrelated agent directories", async () => {
@@ -300,7 +344,8 @@ describe("post-plugin update readiness", () => {
       });
 
       expect(beforeDoctor).toHaveBeenCalledOnce();
-      expect(mocks.runExec.mock.calls[0]?.[1]).toEqual([
+      expect(mocks.runDoctor.mock.calls[0]?.[0]).toEqual([
+        "/usr/bin/node",
         "/opt/openclaw/dist/index.js",
         "doctor",
         "--repair",
@@ -308,7 +353,7 @@ describe("post-plugin update readiness", () => {
         "--no-workspace-suggestions",
         "--yes",
       ]);
-      expect(mocks.runExec.mock.calls[0]?.[2]).toMatchObject({
+      expect(mocks.runDoctor.mock.calls[0]?.[1]).toMatchObject({
         env: { OPENCLAW_UPDATE_POST_CORE_CONVERGENCE: "1" },
       });
     });
@@ -347,11 +392,12 @@ describe("post-plugin update readiness", () => {
       const configPath = path.join(home, ".openclaw", "openclaw.json");
       const io = createConfigIO({ configPath, observe: false });
       mocks.readConfig.mockImplementation(() => io.readConfigFileSnapshot());
+      mocks.runDoctor.mockImplementation(async () => {
+        await fs.mkdir(path.dirname(configPath), { recursive: true });
+        await fs.writeFile(configPath, '{"gateway":{"mode":"invalid"}}');
+        return doctorExit;
+      });
       mocks.runExec.mockImplementation(async (_command, args: string[]) => {
-        if (args.includes("--repair")) {
-          await fs.mkdir(path.dirname(configPath), { recursive: true });
-          await fs.writeFile(configPath, '{"gateway":{"mode":"invalid"}}');
-        }
         if (args.includes("validate")) {
           throw new Error("Config invalid");
         }
@@ -372,16 +418,13 @@ describe("post-plugin update readiness", () => {
     const warnings = ["Optional probe timed out; recheck after restart."];
     const onWarnings = vi.fn();
     let resultPath = "";
-    const runNormally = mocks.runExec.getMockImplementation()!;
-    mocks.runExec.mockImplementation(async (command, args: string[], options) => {
-      if (args.includes("--repair")) {
-        resultPath = options.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV];
-        await writeUpdatePostInstallDoctorResult({
-          resultPath,
-          result: { status: "ok", warnings },
-        });
-      }
-      return await runNormally(command, args, options);
+    mocks.runDoctor.mockImplementation(async (_args, options) => {
+      resultPath = options.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV];
+      await writeUpdatePostInstallDoctorResult({
+        resultPath,
+        result: { status: "ok", warnings },
+      });
+      return doctorExit;
     });
 
     const result = await completePostCorePluginUpdate({ ...updateOptions, onWarnings });
@@ -394,29 +437,39 @@ describe("post-plugin update readiness", () => {
   it.each([false, true])(
     "preserves deferred repair advisory semantics (timed out: %s)",
     async (timedOut) => {
-      mocks.runExec.mockImplementation(async (_command, _args, options) => {
+      mocks.runDoctor.mockImplementation(async (_args, options) => {
         await writeUpdatePostInstallDoctorResult({
           resultPath: options.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV],
           result: createDeferredConfiguredPluginRepairDoctorResult(["plugin repair deferred"]),
         });
-        throw Object.assign(new Error("Doctor advisory"), {
-          failed: true,
-          exitCode: UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
-          timedOut,
-        });
+        return {
+          ...doctorExit,
+          code: UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
+          termination: timedOut ? "timeout" : "exit",
+        };
       });
       const run = runUpdateFinalizationDoctorInFreshProcess({
         ...updateOptions,
         phase: "pre-plugin",
       });
       if (timedOut) {
-        await expect(run).rejects.toThrow("Doctor advisory");
+        await expect(run).rejects.toThrow("timeout");
       } else {
         await expect(run).resolves.toBeUndefined();
       }
     },
   );
 
+  it.each([undefined, "uncertain"])(
+    "refuses convergence without Doctor process settlement (%s)",
+    async (cleanup) => {
+      mocks.runDoctor.mockResolvedValue({ ...doctorExit, cleanup });
+      await expect(completePostCorePluginUpdate(updateOptions)).rejects.toThrow(
+        "Doctor child processes have not been proven settled",
+      );
+      expect(mocks.runExec).not.toHaveBeenCalled();
+    },
+  );
   it("carries the Doctor's failing check through fresh-process convergence", async () => {
     const failureFacts = [
       {
@@ -425,19 +478,12 @@ describe("post-plugin update readiness", () => {
         message: "Required session migration could not acquire its writer.",
       },
     ];
-    const runNormally = mocks.runExec.getMockImplementation()!;
-    mocks.runExec.mockImplementation(async (command, args: string[], options) => {
-      if (!args.includes("--repair")) {
-        return await runNormally(command, args, options);
-      }
+    mocks.runDoctor.mockImplementation(async (_args, options) => {
       await writeUpdatePostInstallDoctorResult({
         resultPath: options.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV],
         result: { status: "error", failureFacts },
       });
-      throw Object.assign(new Error("Doctor exited"), {
-        exitCode: 23,
-        stderr: "Last cleanup message",
-      });
+      return { ...doctorExit, code: 23, stderr: "Last cleanup message" };
     });
     await expect(
       runUpdateFinalizationDoctorInFreshProcess({
@@ -457,7 +503,7 @@ describe("post-plugin update readiness", () => {
     });
     expect(beforeDoctor).toHaveBeenCalledOnce();
     expect(beforeDoctor.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.runExec.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+      mocks.runDoctor.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
   });
 
@@ -521,7 +567,7 @@ describe("post-plugin update readiness", () => {
       beforeDoctor,
     });
     expect(beforeDoctor).toHaveBeenCalledOnce();
-    expect(mocks.runExec.mock.calls.some(([, args]) => args.includes("--repair"))).toBe(false);
+    expect(mocks.runDoctor).not.toHaveBeenCalled();
     expect(result.pluginUpdate).toMatchObject({
       status: "error",
       warnings: [

@@ -8,12 +8,17 @@ import {
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery.js";
+import {
+  captureUpdateWriterCustody,
+  type UpdateWriterCustodyGrant,
+} from "./update-command-writer-custody.js";
 
 /** Private correlation sent only to the spawned candidate's stdin. The receiver
  * independently reads both live owners and checks its own PID/start identity. */
 export type UpdateCommandChildGrant = {
   runId: string;
   root: string;
+  writerCustody?: UpdateWriterCustodyGrant;
   databasePath: string;
   parent: ManagedHandoffLease;
   /** Original owner and its lineage survive a package-generation change. */
@@ -154,6 +159,7 @@ export function createChildOwner(params: {
           }
           const grant: UpdateCommandChildGrant = {
             runId: params.runId,
+            writerCustody: captureUpdateWriterCustody(),
             root: candidateParent.key,
             databasePath,
             parent: candidateParent,

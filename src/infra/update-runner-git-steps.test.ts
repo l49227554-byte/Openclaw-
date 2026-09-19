@@ -27,7 +27,6 @@ import {
 } from "./update-runner-doctor.js";
 import { runGitDoctorStep } from "./update-runner-git-steps.js";
 import type { UpdateStepProgress, UpdateStepResult } from "./update-runner-types.js";
-
 const dirs = createTempDirTracker();
 
 describe("resolveUpdateDoctorExecutionPolicy", () => {
@@ -128,6 +127,7 @@ describe("direct Git Doctor receipts", () => {
         entryPath: "/synthetic/checkout/openclaw.mjs",
         nodePath: "/synthetic/node",
         fix: true,
+        doctorEnvOptions: { allowGatewayServiceRepair: false, allowGatewayActivation: false },
         env: {},
         step: (name, argv, cwd, env) => ({
           name,
@@ -211,6 +211,7 @@ describe("activation Doctor ledger writes", () => {
       entryPath: "/synthetic/checkout/openclaw.mjs",
       nodePath: "/synthetic/node",
       fix: true,
+      doctorEnvOptions: { allowGatewayServiceRepair: false, allowGatewayActivation: false },
       env: {},
       step: (name, argv, cwd, env) => ({
         name,

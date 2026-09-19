@@ -25,6 +25,7 @@ import {
   CODEX_APP_SERVER_BINDING_NAMESPACE,
 } from "../app-server/session-binding-meta.js";
 import { readLegacySessionIndex } from "./session-binding-legacy-index.js";
+import { readDirectoryEntries } from "./session-binding-sidecar-paths.js";
 
 const LEGACY_BINDING_SUFFIX = ".codex-app-server.json";
 const CODEX_AGENT_HARNESS_ID = "codex";
@@ -763,17 +764,9 @@ async function recordSessionOwner(
       : "Codex harness ownership could not be recorded on its session";
 }
 
-async function readDirectoryEntries(directory: string) {
-  try {
-    return await fs.readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if (
-      ["EACCES", "ENOENT", "ENOTDIR", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")
-    ) {
-      return [];
-    }
-    throw error;
-  }
+export async function collectLegacySessionBindingBackupResources(params: MigrationEnvironment) {
+  const { sources } = await collectLegacyBindingSources(params);
+  return sources.map(({ sidecarPath }) => ({ path: sidecarPath, kind: "file" as const }));
 }
 
 export async function detectLegacySessionBindingSidecars(params: MigrationParams) {

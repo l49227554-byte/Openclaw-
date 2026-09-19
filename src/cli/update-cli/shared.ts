@@ -11,6 +11,10 @@ import { resolveOpenClawPackageRoot } from "../../infra/openclaw-root.js";
 import { readPackageName, readPackageVersion } from "../../infra/package-json.js";
 import { normalizePackageTagInput } from "../../infra/package-tag.js";
 import { parseSemver } from "../../infra/runtime-guard.js";
+import {
+  resolveBoundUpdateTarget,
+  type AdmittedUpdateBridgeContext,
+} from "../../infra/update-bridge-binding.js";
 import { fetchNpmTagVersion } from "../../infra/update-check.js";
 import {
   normalizeUpdateFailureFacts,
@@ -52,6 +56,8 @@ import { resolveNodeRunner } from "./node-runner.js";
 export { resolveNodeRunner } from "./node-runner.js";
 
 export type UpdateCommandOptions = {
+  /** Private external bridge capability; never serialize or expose as a root override. */
+  bridge?: AdmittedUpdateBridgeContext;
   /** Doctor's accepted source update targets dev without changing the saved channel. */
   sourceUpdate?: { root: string };
   /** In-process reporting only, after the update owner settles. Never serialized. */
@@ -251,7 +257,10 @@ export function tryResolveInvocationCwd(): string | undefined {
 }
 
 /** Locate the installed OpenClaw package root that should receive update operations. */
-export async function resolveUpdateRoot(): Promise<string> {
+export async function resolveUpdateRoot(bridge?: AdmittedUpdateBridgeContext): Promise<string> {
+  if (bridge !== undefined) {
+    return resolveBoundUpdateTarget(bridge);
+  }
   // Preserve the lexical package path from the invoking shim. pnpm 11 package
   // modules realpath into a shared store, which is not the install owner.
   const invocationRoot = process.argv[1]

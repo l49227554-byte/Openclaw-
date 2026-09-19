@@ -25,6 +25,20 @@ import { resolveSafeChildProcessInvocation } from "./windows-command.js";
 
 export const COMMAND_PROCESS_TREE_KILL_GRACE_MS = 300;
 
+/** Retire only settled operation ownership before an intentional process handoff. */
+export async function retireCommandProcessJobForHandoff(): Promise<void> {
+  if (process.platform !== "win32") {
+    return;
+  }
+  const { retireRetainedWindowsProcessJob } =
+    await import("./supervisor/service-child-windows-job-native.js");
+  try {
+    retireRetainedWindowsProcessJob();
+  } catch (cause) {
+    throw new CommandProcessCleanupError({ cause });
+  }
+}
+
 /** Remote PID and pipes arrive together before admission or stream subscription. */
 export async function waitForCommandSpawn(
   child: { nodeChildProcess: ChildProcess } & PromiseLike<unknown>,
@@ -89,6 +103,14 @@ export async function withCommandProcessScope<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const parent = commandProcessScope.getStore();
+  if (parent?.signal.aborted) {
+    throw new Error("Command process scope is closed");
+  }
+  if (process.platform === "win32") {
+    const { rearmRetainedWindowsProcessJob } =
+      await import("./supervisor/service-child-windows-job-native.js");
+    rearmRetainedWindowsProcessJob();
+  }
   const controller = new AbortController();
   const inherited = resolveCommandProcessSignal(signal);
   const scope: CommandProcessScope = {
@@ -246,7 +268,9 @@ function retainCommandProcess(
       // Windows executable finalizers retain a Job until process exit. POSIX
       // pipe closure is not extinction: observe this exact group after its stop.
       if (process.platform === "win32") {
-        if (!observedExit) {
+        const { areRetainedWindowsProcessJobChildrenSettled } =
+          await import("./supervisor/service-child-windows-job-native.js");
+        if (!observedExit || !areRetainedWindowsProcessJobChildrenSettled()) {
           throw new CommandProcessCleanupError();
         }
         return;

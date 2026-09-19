@@ -106,6 +106,26 @@ export function signalMockManagedUpdateHandoffReady(params: {
   child.stdout.write("OPENCLAW_UPDATE_HANDOFF_READY\n");
 }
 
+/** Model the serving RPC only; real helper/native ownership checks remain active. */
+export async function writeGatewayCutoverFixtureModule(file: string, extraSource = "") {
+  await fs.promises.mkdir(path.dirname(file), { recursive: true });
+  await fs.promises.writeFile(
+    file,
+    `
+export async function prepareGatewayUpdateCutover({ assertCurrent }) {
+  assertCurrent();
+  let released = false;
+  const check = () => {
+    assertCurrent();
+    if (released) throw new Error("Fixture cutover already released");
+  };
+  return { assertCurrent: check, refresh: async () => check(), release: async () => { released = true; } };
+}
+${extraSource}`,
+  );
+  return file;
+}
+
 export async function writeConcurrentManagedHandoffParams(
   params: {
     tmpDir: string;
@@ -133,11 +153,15 @@ export async function writeConcurrentManagedHandoffParams(
   }
   const paramsPath = path.join(params.tmpDir, `${params.name}.json`);
   handoffParents.set(paramsPath, parent);
+  const recoveryModulePath = await writeGatewayCutoverFixtureModule(
+    path.join(params.tmpDir, `${params.name}-cutover.mjs`),
+  );
   await fs.promises.writeFile(
     paramsPath,
     `${JSON.stringify(
       {
         ...params.baseParams,
+        recoveryModulePath,
         parentPid,
         parentStartIdentity: String(startIdentity),
         parentExitTimeoutMs: 5_000,
@@ -157,4 +181,27 @@ export async function writeConcurrentManagedHandoffParams(
     )}\n`,
   );
   return paramsPath;
+}
+
+export function driveManagedHandoffProtocol(
+  child: import("node:child_process").ChildProcess,
+  paramsPath: string,
+  handoffParents: ReadonlyMap<string, import("node:child_process").ChildProcess>,
+): void {
+  let buffered = "";
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    buffered += chunk.toString();
+    let newline: number;
+    while ((newline = buffered.indexOf("\n")) >= 0) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      if (line === "OPENCLAW_UPDATE_HANDOFF_READY") {
+        child.stdin?.write("park\n");
+      } else if (line === "parked") {
+        child.stdin?.write("commit\n");
+      } else if (line === "committed") {
+        handoffParents.get(paramsPath)?.stdin?.end();
+      }
+    }
+  });
 }

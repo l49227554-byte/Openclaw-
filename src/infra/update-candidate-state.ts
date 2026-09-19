@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import type { OpenClawSchemaVersions } from "../state/openclaw-schema-versions.js";
+import { clearOpenClawStateCopyLeases } from "../state/openclaw-state-copy-leases.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import { readStateSchemaContentVersion } from "../state/openclaw-state-db-schema-version.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
@@ -41,7 +42,6 @@ import {
   runUpdateStateInspectionWorker,
 } from "./update-candidate-state.inspection.js";
 import { readUpdateStateDatabaseSizes } from "./update-candidate-state.sizes.js";
-
 const UpdateStateSchemaVersionsSchema = z.array(
   z.object({
     path: z.string(),
@@ -55,10 +55,7 @@ export const UpdateCandidateStateSnapshotSchema = z.object({
   pluginPaths: z.record(z.string(), z.string()),
 });
 type StateInput = { stateDir: string; config: OpenClawConfig; env?: NodeJS.ProcessEnv };
-type CandidateStateDatabase = Pick<
-  DB,
-  "agent_databases" | "agent_database_leases" | "state_leases"
->;
+type CandidateStateDatabase = Pick<DB, "agent_databases">;
 
 /** Older inspection workers report only the published version; agent stores never defer it. */
 export function resolveUpdateStateContentVersion(entry: UpdateStateSchemaVersion): number | null {
@@ -631,12 +628,7 @@ export async function snapshotUpdateCandidateState(
                 transform: (db: DatabaseSync) => {
                   contentVersion = readStateSchemaContentVersion(db);
                   const queries = getNodeSqliteKysely<CandidateStateDatabase>(db);
-                  // Source process leases cannot own the independently opened rehearsal copy.
-                  for (const table of ["agent_database_leases", "state_leases"] as const) {
-                    if (tableExists(db, table)) {
-                      executeSqliteQuerySync(db, queries.deleteFrom(table));
-                    }
-                  }
+                  clearOpenClawStateCopyLeases(db);
                   for (const { stored, source } of collectRegisteredPaths(db, shared, files)) {
                     const rebound = targetPath(source);
                     const reboundStored = path.relative(input.targetStateDir, rebound);

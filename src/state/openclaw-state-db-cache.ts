@@ -41,6 +41,8 @@ import {
 import {
   assertStateDatabaseBorrowersReleased,
   createStateDatabaseRetainer,
+  retainStateDatabaseCloseCustody,
+  releaseStateDatabaseCloseCustody,
   type StateDatabaseBorrowers,
 } from "./openclaw-state-db-borrow.js";
 import type { StateDatabaseLifecycle } from "./openclaw-state-db-cache.types.js";
@@ -162,7 +164,14 @@ function retainStateDatabaseClose(database: StateDatabaseHandle): void {
 }
 
 function ownMaintenanceStateDatabaseHandle(database: StateDatabaseHandle): void {
-  getOpenClawDatabaseMaintenanceScope()?.own(database.db, "shared-handles", () => {
+  const scope = getOpenClawDatabaseMaintenanceScope();
+  if (!scope) {
+    return;
+  }
+  // Capture close-only custody while admission is live. Executor revocation
+  // rejects new writes, but must not strand this exact already-open native handle.
+  retainStateDatabaseCloseCustody(database, borrowers);
+  scope.own(database.db, "shared-handles", () => {
     if (
       cachedDatabases.get(database.path) === database ||
       retainedDatabaseHandles.get(database.db) === database
@@ -248,6 +257,11 @@ function closeOpenClawStateDatabaseHandle(
       errors.push(error);
       cleanupPending = true;
     }
+  }
+  if (!database.db.isOpen && !cleanupPending) {
+    const custodyErrors = releaseStateDatabaseCloseCustody(borrowers.get(database.db));
+    errors.push(...custodyErrors);
+    cleanupPending = custodyErrors.length > 0;
   }
   if (database.db.isOpen || cleanupPending) {
     retainStateDatabaseClose(database);

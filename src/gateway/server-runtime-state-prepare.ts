@@ -10,7 +10,10 @@ import { loadGatewayTlsServerRuntime } from "../infra/tls/gateway.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { runtimeForLogger } from "../logging/subsystem.js";
 import type { createPluginRegistryOwner } from "../plugins/runtime.js";
-import { isGatewayDraining } from "../process/command-queue.js";
+import {
+  getGatewaySuspendAdmissionPhase,
+  isGatewayRestartDraining,
+} from "../process/gateway-work-admission.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
 import { openClawStateDatabaseCache } from "../state/openclaw-state-db-cache.js";
@@ -431,7 +434,11 @@ export async function prepareGatewayKernelState(params: {
     startedAt: serverStartedAt,
     getStartupPending: isGatewayStartupPending,
     getStartupPendingReason: () => startupState.pendingReason,
-    getGatewayDraining: () => lifecycle.closePreludeStarted || isGatewayDraining(),
+    // Update settlement fences work, not the readiness proof needed to settle it.
+    getGatewayDraining: () =>
+      lifecycle.closePreludeStarted ||
+      isGatewayRestartDraining() ||
+      getGatewaySuspendAdmissionPhase() !== "accepting",
   };
   const getStartup = createStartupChecker(startupCheckerDeps);
   const getReadiness = createReadinessChecker({

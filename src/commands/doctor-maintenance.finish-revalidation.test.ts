@@ -39,6 +39,19 @@ const mocks = vi.hoisted(() => ({
   stops: 0,
 }));
 
+// This suite owns the native service fixture; authenticated suspension itself is covered
+// by update-cutover tests. Keep the same live native admission callback on every refresh.
+vi.mock("../cli/daemon-cli/update-cutover.js", () => ({
+  prepareGatewayUpdateCutover: async (params: { assertCurrent: () => void }) => {
+    params.assertCurrent();
+    return {
+      assertCurrent: params.assertCurrent,
+      refresh: async () => params.assertCurrent(),
+      release: async () => {},
+    };
+  },
+}));
+
 vi.mock("../daemon/service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../daemon/service.js")>()),
   resolveGatewayService: (...args: []) => mocks.resolveService(...args),

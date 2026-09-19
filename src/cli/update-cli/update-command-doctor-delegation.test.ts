@@ -44,6 +44,11 @@ it.each(
       await fs.writeFile(path.join(root, "dist", "index.js"), "");
       const owner = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.executor);
       const marker = path.join(root, "doctor-ran");
+      const updateRecoveryBackup = {
+        directory: path.join(root, "recovery"),
+        manifestPath: path.join(root, "recovery", "manifest.json"),
+        manifestSha256: "a".repeat(64),
+      };
       const received = path.join(root, "doctor-input-received");
       await fs.writeFile(
         path.join(root, "dist", runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath),
@@ -56,7 +61,7 @@ it.each(
       const input=JSON.parse(raw);
       await withDelegatedUpdateCommandExecutor(input.executor,input.runId,input.root,async fence=>{
         fence.assertCurrent();
-        fs.writeFileSync(${JSON.stringify(marker)},"owned");
+        fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({owner:"owned",backup:input.updateRecoveryBackup}));
       });
     `,
       );
@@ -106,6 +111,7 @@ it.each(
           timeoutMs: 20_000,
           progress: {},
           managedServiceEnv: env,
+          updateRecoveryBackup,
           getDoctorContext: options.getDoctorContext,
         });
         return {
@@ -131,7 +137,10 @@ it.each(
           status: "ok",
           steps: [{ name: "openclaw doctor", exitCode: 0 }],
         });
-        expect(await fs.readFile(marker, "utf8")).toBe("owned");
+        expect(JSON.parse(await fs.readFile(marker, "utf8"))).toEqual({
+          owner: "owned",
+          backup: updateRecoveryBackup,
+        });
       }
       expect(reachedSpawn).toBe(true);
       expect(createManagedHandoffLeaseStore().read(root)).toEqual({ kind: "absent" });

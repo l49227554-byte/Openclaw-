@@ -101,7 +101,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("persists fingerprint warnings before closing a rolled-back run", () => {
+it("persists fingerprint warnings before closing a rolled-back run", async () => {
   const env = { OPENCLAW_STATE_DIR: dirs.make("rollback-fingerprint-warning-") };
   const run = { runId: createUpdateRun({ trigger: "cli" }, { env }).runId, env };
   const warnings = [
@@ -109,7 +109,7 @@ it("persists fingerprint warnings before closing a rolled-back run", () => {
     "Package fingerprint verification unavailable; rollback verified by the retained package copy's directory identity and version.",
   ];
   vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
-  const result = publishUpdateCommandTerminalResult(
+  const result = await publishUpdateCommandTerminalResult(
     { opts: { json: true, run }, ownedManagedUpdateEnv: env },
     {
       status: "error",

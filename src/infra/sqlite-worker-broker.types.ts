@@ -71,6 +71,8 @@ export type Slot = {
 };
 export type Actor = {
   id: number;
+  closeRequestId?: number;
+  closeCustody?: { schema?: StateLifecycleDelegate; lifecycle?: StateLifecycleDelegate };
   key: string;
   databasePath: string;
   pathReferences: Map<string, number>;

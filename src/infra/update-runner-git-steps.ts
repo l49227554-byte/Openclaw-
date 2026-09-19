@@ -8,13 +8,14 @@ import {
   createUpdatePostInstallDoctorResultPath,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
 } from "./update-doctor-result.js";
+import type { UpdateRecoveryBackupRef } from "./update-recovery-backup-contract.js";
 import { runStep } from "./update-runner-command.js";
+import { buildUpdateDoctorEnv, buildUpdateRecoveryDoctorArgs } from "./update-runner-doctor.js";
 import type {
   RunStepOptions,
   UpdateRunnerOptions,
   UpdateStepResult,
 } from "./update-runner-types.js";
-
 // A successful Git status command does not imply a clean checkout.
 export async function runGitCleanCheckStep(options: RunStepOptions) {
   const result = await runStep({
@@ -90,7 +91,10 @@ export async function runGitDoctorStep(params: {
   entryPath: string;
   nodePath: string;
   fix: boolean;
-  env: NodeJS.ProcessEnv;
+  updateRecoveryBackup?: UpdateRecoveryBackupRef;
+  updateRecoveryOwner?: "unprotected";
+  env?: NodeJS.ProcessEnv;
+  doctorEnvOptions: Parameters<typeof buildUpdateDoctorEnv>[0];
   step: (name: string, argv: string[], cwd: string, env?: NodeJS.ProcessEnv) => RunStepOptions;
 }) {
   const options = params.step(
@@ -101,9 +105,10 @@ export async function runGitDoctorStep(params: {
       "doctor",
       "--non-interactive",
       ...(params.fix ? ["--fix"] : []),
+      ...buildUpdateRecoveryDoctorArgs(params.updateRecoveryBackup, params.updateRecoveryOwner),
     ],
     params.root,
-    params.env,
+    { ...params.env, ...buildUpdateDoctorEnv(params.doctorEnvOptions) },
   );
   if (params.runDoctor) {
     const result = await params.runDoctor(params.root);

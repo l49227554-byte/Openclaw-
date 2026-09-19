@@ -8,10 +8,7 @@ import { readBuiltGatewayBuildId, verifyGitUpdateRecovery } from "./update-git-r
 import { createUpdatePreflightFailure } from "./update-preflight-details.js";
 import { UpdateRequesterRevokedError } from "./update-requester-authority.js";
 import { runStep } from "./update-runner-command.js";
-import {
-  buildUpdateDoctorEnv,
-  resolveUpdateDoctorExecutionPolicy,
-} from "./update-runner-doctor.js";
+import { resolveUpdateDoctorExecutionPolicy } from "./update-runner-doctor.js";
 import { gitCleanCheckArgs } from "./update-runner-git-commands.js";
 import { runGitCandidatePreflight } from "./update-runner-git-preflight.js";
 import { readCurrentGitUpdateRecovery } from "./update-runner-git-recovery.js";
@@ -38,7 +35,6 @@ import type {
   UpdateRunnerOptions,
   UpdateStepResult,
 } from "./update-runner-types.js";
-
 export async function updateGitCheckout(params: {
   opts: UpdateRunnerOptions;
   gitRoot: string;
@@ -606,13 +602,16 @@ export async function updateGitCheckout(params: {
         entryPath: doctorEntry,
         nodePath: doctorNodePath,
         fix: doctorPolicy.fix,
+        updateRecoveryBackup: opts.getUpdateRecoveryBackup?.(),
+        updateRecoveryOwner: opts.updateRecoveryOwner,
         step,
-        env: buildUpdateDoctorEnv({
+        env: opts.getDoctorEnv?.(),
+        doctorEnvOptions: {
           allowGatewayServiceRepair,
           allowGatewayActivation,
           serviceRepairPolicy: doctorPolicy.serviceRepairPolicy,
           deferConfiguredPluginInstallRepair: opts.deferConfiguredPluginInstallRepair,
-        }),
+        },
       });
       if (!doctorStep) {
         return await rollbackError("doctor-entry-missing");

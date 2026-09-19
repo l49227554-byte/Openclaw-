@@ -1,10 +1,12 @@
-// Child fixture: keep registration, finalization, JSON routing, and terminal writers real;
-// replace filesystem/plugin work and emit synthetic Doctor and fresh-triage diagnostics.
+// Keep registration, finalization, capture reads, JSON routing, and terminal writers real;
+// substitute plugin work and emit synthetic Doctor and fresh-triage diagnostics.
 import fs from "node:fs/promises";
-import { createRequire, registerHooks } from "node:module";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { SQLITE_READONLY_CHILD_ARG } from "../infra/runtime-process-entrypoints.js";
+// Keep registration, finalization, capture reads, JSON routing, and terminal writers real;
+// substitute plugin work and emit synthetic Doctor and fresh-triage diagnostics.
 
 const require = createRequire(import.meta.url);
 const root = process.env.HOME!;
@@ -14,6 +16,9 @@ await fs.writeFile(
   JSON.stringify({ name: "openclaw", version: "2026.9.4" }),
 );
 const [runtimeProcessEntrypointsJson, scenario, ...args] = process.argv.slice(2);
+if (!runtimeProcessEntrypointsJson) {
+  throw new Error("Missing prepared worker entrypoints");
+}
 const borrowed = scenario?.startsWith("borrowed-");
 const repairDeadline = scenario === "repair-deadline";
 const blockedChildSource = `
@@ -114,11 +119,6 @@ try {
 }
 `,
 );
-const snapshotSource = `
-const config = { update: { channel: 'dev' }, plugins: { enabled: false } };
-export const readConfigFileSnapshot = async () => ({ valid: true, config, sourceConfig: config, parsed: config });
-export const assertConfigWriteAllowedInCurrentMode = () => {};
-`;
 const stubs = new Map<string, string>([
   // Forward prepared locations, not currentModuleUrl as an import: builds may
   // place that URL in a shared chunk. Workers still execute their real compiled code.
@@ -128,10 +128,18 @@ const stubs = new Map<string, string>([
 export const SQLITE_READONLY_CHILD_ARG = ${JSON.stringify(SQLITE_READONLY_CHILD_ARG)};`,
   ],
   [sourceUrl("../commands/doctor.ts"), doctorSource],
-  [sourceUrl("../config/config.ts"), snapshotSource],
   [
-    sourceUrl("../plugins/installed-plugin-index-records.ts"),
-    "export const loadInstalledPluginIndexInstallRecords = async () => ({});",
+    sourceUrl("../flows/doctor-health.ts"),
+    `
+import fs from 'node:fs/promises';
+${doctorSource}
+export async function runDoctorHealthFlow(_runtime, options, authority) {
+  authority.assertCurrent();
+  if (!options.workspaceSuggestions) process.argv.push('--no-workspace-suggestions');
+  await doctorCommand();
+  authority.assertCurrent();
+}
+`,
   ],
   [
     sourceUrl("../plugins/plugin-lifecycle-lease.ts"),
@@ -186,16 +194,22 @@ const blockedPhase = repairDeadline
       : scenario === "completion-hang"
         ? "completionCache"
         : undefined;
-if (blockedPhase) {
+const shortBudgetPhase = scenario === "borrowed-phase" ? "configSnapshot" : blockedPhase;
+if (shortBudgetPhase) {
   const lifecycleUrl = sourceUrl("./update-cli/update-finalization-lifecycle.ts");
-  // Keep real phase ownership; only the deliberately blocked phase gets a short budget.
+  // Keep the short budget on the phase under test, not sibling child startup.
   stubs.set(
     lifecycleUrl,
     `import { UpdateFinalizationLifecycle as RealLifecycle } from ${JSON.stringify(`${lifecycleUrl}?fixture-original`)};
 export class UpdateFinalizationLifecycle extends RealLifecycle {
-  budget(phase) { return phase === ${JSON.stringify(blockedPhase)} ? 1_000 : super.budget(phase); }
+  budget(phase) { return phase === ${JSON.stringify(shortBudgetPhase)} ? 1_000 : super.budget(phase); }
 }`,
   );
+}
+if (blockedPhase === "doctor") {
+  const { prepareDoctorOutputDeadlineFixture } =
+    await import("./update-finalization-deadline.test-support.js");
+  await prepareDoctorOutputDeadlineFixture(stubs, sourceUrl, root, scenario === "doctor-progress");
 }
 if (scenario === "human-recovery-plugin-error") {
   stubs.set(
@@ -213,19 +227,82 @@ if (repairDeadline) {
     await import("./update-finalization-repair.test-support.js");
   await prepareRepairDeadlineFixture(stubs, sourceUrl, root, installedEntry);
 }
+// TSX's CommonJS loader reads resolved module paths from disk. Data URLs work
+// for ESM but fail that path; keep identical fixture source in owned .mjs files.
+const stubDirectory = path.join(root, "fixture-modules");
+await fs.mkdir(stubDirectory);
+const stubUrls = new Map<string, string>();
+for (const [url, source] of stubs) {
+  const stubPath = path.join(stubDirectory, `${stubUrls.size}.mjs`);
+  await fs.writeFile(stubPath, source);
+  stubUrls.set(url, pathToFileURL(stubPath).href);
+}
+
+// Each real delegated process needs the same fixture-only diagnostic adapters.
+async function writeHooks(name: string, overrides: Map<string, string>): Promise<string> {
+  const hooksPath = path.join(stubDirectory, name);
+  await fs.writeFile(
+    hooksPath,
+    `
+import { registerHooks } from 'node:module';
+const stubUrls = new Map(${JSON.stringify([...overrides])});
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier.startsWith(".") || specifier.startsWith("file:")) {
-      const url = new URL(specifier, context.parentURL).href.replace(/\.js$/, ".ts");
-      const source = stubs.get(url);
-      if (source !== undefined) {
-        return { url: `data:text/javascript,${encodeURIComponent(source)}`, shortCircuit: true };
-      }
+      const url = new URL(specifier, context.parentURL).href;
+      const stubUrl = stubUrls.get(url) ?? stubUrls.get(url.replace(/\\.js$/, ".ts"));
+      if (stubUrl !== undefined) return { url: stubUrl, shortCircuit: true };
     }
     return nextResolve(specifier, context);
   },
 });
+`,
+  );
+  return pathToFileURL(hooksPath).href;
+}
+await import(await writeHooks("hooks.mjs", stubUrls));
+const entrypoints: typeof import("../infra/runtime-process-entrypoints.js").runtimeProcessEntrypoints =
+  JSON.parse(runtimeProcessEntrypointsJson);
+// Use the invocation's existing preserved-module build. Doctor's phase budget
+// measures work and settlement, not a second transformation of the source graph.
+const preparedSourceRoot = new URL(
+  "./legacy-finalizer/src/",
+  entrypoints.updateMigratedFinalize.currentModuleUrl,
+);
+const preparedDoctor = new URL("infra/update-migrated-finalize.worker.js", preparedSourceRoot);
+await fs.access(fileURLToPath(preparedDoctor));
+const sourceRoot = new URL("../", import.meta.url).href;
+const preparedUrl = (url: string) =>
+  new URL(url.slice(sourceRoot.length).replace(/\.ts(?=$|\?)/u, ".js"), preparedSourceRoot).href;
+const preparedOverrides = new Map<string, string>();
+for (const [url, source] of stubs) {
+  const stubPath = path.join(stubDirectory, `doctor-${preparedOverrides.size}.mjs`);
+  // Fixture imports must share the child's compiled graph, including unmocked dependencies.
+  const compiledSource = source.replace(/file:[^"'\s]+/gu, (importUrl) =>
+    importUrl.startsWith(sourceRoot) ? preparedUrl(importUrl) : importUrl,
+  );
+  await fs.writeFile(
+    stubPath,
+    `export * from ${JSON.stringify(`${preparedUrl(url)}?fixture-original`)};\n${compiledSource}`,
+  );
+  preparedOverrides.set(preparedUrl(url), pathToFileURL(stubPath).href);
+}
+const doctorHooks = await writeHooks("doctor-hooks.mjs", preparedOverrides);
+const doctorWorker = path.join(root, "dist", entrypoints.updateMigratedFinalize.distWorkerPath);
+await fs.mkdir(path.dirname(doctorWorker), { recursive: true });
+await fs.writeFile(
+  doctorWorker,
+  `
+await import(${JSON.stringify(doctorHooks)});
+await import(${JSON.stringify(preparedDoctor.href)});
+`,
+);
 
+// CI can reach plugin state through TSX's CommonJS loader as well as ESM.
+// Exercise that real import before running the same registered update action.
+if (scenario === "commonjs-state") {
+  require("../plugin-state/plugin-state-store.ts");
+}
 if (repairDeadline) {
   const { withPluginLifecycleLease } = await import("../plugins/plugin-lifecycle-lease.js");
   await withPluginLifecycleLease({}, async () => {});

@@ -1,4 +1,5 @@
 import type { TriageFailureContext } from "../../commands/triage-prompt.js";
+import type { UpdateRecoveryBackupRef } from "../../infra/update-recovery-backup-contract.js";
 import type {
   UpdateRequester,
   UpdateRequesterAuthority,
@@ -8,14 +9,16 @@ import type { UpdateRecoveryHandoff } from "../../infra/update-run-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import type { UpdateCommandChildGrant } from "./update-command-executor.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
-
 export type UpdateDoctorInput = {
+  updateRecoveryBackup?: UpdateRecoveryBackupRef;
   executor: UpdateCommandChildGrant;
   runId: string;
   root: string;
   configInputHash: string;
   requester?: UpdateRequester;
   repair: boolean;
+  yes?: boolean;
+  workspaceSuggestions?: boolean;
 };
 
 export type MigratedUpdateFinalizationInput = {
@@ -35,15 +38,32 @@ export type MigratedUpdateFinalizationInput = {
   };
   executor?: UpdateCommandChildGrant;
   recoveryHandoff?: UpdateRecoveryHandoff;
+  /** Absent in published 2026.9.3/9.4 drivers; the candidate reconciles after parent exit. */
+  captureRetirement?: "parent-settled-v1";
   bufferedSteps: UpdateRunStep[];
   windowsTaskAutoStartSuspended?: true;
   resultPath: string;
 };
 
-export type MigratedUpdateFinalizationResult = {
+type MigratedUpdateFinalizationOutcome = {
   result: UpdateRunResult;
   exitCode: number;
-  terminalRunId: string;
   executorDelegation?: "pid-start-v1";
   automaticTriage?: TriageFailureContext;
+};
+
+export type MigratedUpdateFinalizationResult = MigratedUpdateFinalizationOutcome &
+  (
+    | { terminalRunId: string; recoveryRequired?: never }
+    | { terminalRunId?: never; recoveryRequired: true }
+  );
+
+export type UpdateCaptureRetirementInput = {
+  executor?: UpdateCommandChildGrant;
+  runId: string;
+  root: string;
+  runtimeRoot: string;
+  runtimeBuildId: string;
+  backup: UpdateRecoveryBackupRef;
+  result: UpdateRunResult;
 };

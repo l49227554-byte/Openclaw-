@@ -233,6 +233,8 @@ function listScriptShimEntries(dir = "scripts"): string[] {
 }
 
 const rootEntries = [
+  // tsdown emits the independently launched update bridge executable.
+  "src/cli/update-bridge-entry.ts!",
   ...repositoryScriptEntries,
   ...listScriptShimEntries(),
   // Runtime launchers resolve these by URL rather than a static import edge.

@@ -10,6 +10,7 @@ import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { reconcileOpenClawStateSchemaPublication } from "../state/openclaw-state-db.js";
 import { GATEWAY_EVENT_UPDATE_RUN_CHANGED } from "./events.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
+import { refreshGatewayUpdateStartupAdmission } from "./update-startup-admission.js";
 
 const UPDATE_RUN_POLL_MS = 2_000;
 let wakeCurrentWatcher: (() => void) | undefined;
@@ -29,6 +30,9 @@ export function startUpdateRunWatcher(params: {
   let publicationTimer: ReturnType<typeof setTimeout> | undefined;
   let watched: { runId: string; revision?: number; phase?: UpdateRunPhase } | undefined;
   let notices = Promise.resolve();
+  let captureReconciliation: Promise<void> | undefined;
+  let capturesPending = true;
+  let captureGeneration = 0;
   const reconciled: UpdateRunRecord[] = [];
   let polling = false;
   let pollAgain = false;
@@ -56,6 +60,41 @@ export function startUpdateRunWatcher(params: {
     }
   };
 
+  const reconcileCaptures = () => {
+    if (!capturesPending || captureReconciliation || work.isClosing) {
+      return;
+    }
+    const generation = captureGeneration;
+    captureReconciliation = work.track(async () => {
+      try {
+        const { reconcileCandidateUpdateCaptureRetirement } =
+          await import("../commands/doctor-update-candidate-retirement.js");
+        if (work.isClosing) {
+          return;
+        }
+        const { defaultRuntime } = await import("../runtime.js");
+        const pending = await reconcileCandidateUpdateCaptureRetirement({
+          runtime: {
+            ...defaultRuntime,
+            log: () => {},
+            error: (...args) => params.log.warn(args.map(String).join(" ")),
+          },
+          signal: work.signal,
+        });
+        capturesPending = pending || generation !== captureGeneration;
+      } catch (error) {
+        capturesPending = false;
+        params.log.warn(`update capture reconciliation deferred: ${formatErrorMessage(error)}`);
+      } finally {
+        captureReconciliation = undefined;
+        if (capturesPending && !work.isClosing && !timer) {
+          timer = setTimeout(poll, UPDATE_RUN_POLL_MS);
+          timer.unref?.();
+        }
+      }
+    });
+  };
+
   const scan = (reconcileAll = true) => {
     if (work.isClosing) {
       return;
@@ -70,12 +109,18 @@ export function startUpdateRunWatcher(params: {
           (run) => run.runId !== watched?.runId,
         ),
       );
+      const startupPending = refreshGatewayUpdateStartupAdmission();
       schedulePublication();
+      reconcileCaptures();
       const run = watched
         ? getUpdateRun(watched.runId)
         : (reconciled.shift() ?? findActiveUpdateRun());
       if (!run) {
         watched = undefined;
+        if (startupPending) {
+          timer = setTimeout(poll, UPDATE_RUN_POLL_MS);
+          timer.unref?.();
+        }
         return;
       }
       watched ??= { runId: run.runId };
@@ -115,6 +160,8 @@ export function startUpdateRunWatcher(params: {
         }
       }
       if (terminal) {
+        captureGeneration++;
+        capturesPending = true;
         watched = undefined;
         scan(reconcileAll);
         return;
@@ -126,7 +173,9 @@ export function startUpdateRunWatcher(params: {
       timer.unref?.();
     } catch (error) {
       watched = undefined;
-      params.log.warn(`update run watcher stopped: ${formatErrorMessage(error)}`);
+      timer = setTimeout(poll, UPDATE_RUN_POLL_MS);
+      timer.unref?.();
+      params.log.warn(`update run watcher deferred: ${formatErrorMessage(error)}`);
     }
   };
   const poll = () => {

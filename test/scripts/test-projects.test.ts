@@ -81,6 +81,8 @@ describe("test runtime prerequisites", () => {
     ],
     ["ACP CLI process", ["src/cli/acp-cli-exit.process.test.ts"], "runtime"],
     ["update CLI process", ["src/cli/update-dry-run-state.process.test.ts"], "runtime"],
+    ["update CLI built identity", ["src/cli/update-cli.test.ts"], "runtime"],
+    ["private deferred completion", ["src/cli/update-cli.deferred-completion.test.ts"], undefined],
     ["migrated update process", ["src/cli/update-cli/update-command-migrated.test.ts"], "runtime"],
     ["update rollback", ["src/cli/update-cli/update-command-rollback.test.ts"], "runtime"],
     [
@@ -3316,7 +3318,10 @@ describe("scripts/test-projects changed-target routing", () => {
         {
           config: "test/vitest/vitest.cli-process.config.ts",
           forwardedArgs: [],
-          includePatterns: ["src/state/openclaw-database-verify.process.test.ts"],
+          includePatterns: [
+            "src/state/openclaw-database-verify.process.test.ts",
+            "src/state/openclaw-database-paths.windows.test.ts",
+          ],
           watchMode: false,
         },
       ]);
@@ -3334,7 +3339,10 @@ describe("scripts/test-projects changed-target routing", () => {
       {
         config: "test/vitest/vitest.cli-process.config.ts",
         forwardedArgs: [],
-        includePatterns: ["src/state/openclaw-database-verify.process.test.ts"],
+        includePatterns: [
+          "src/state/openclaw-database-verify.process.test.ts",
+          "src/state/openclaw-database-paths.windows.test.ts",
+        ],
         watchMode: false,
       },
     ]);

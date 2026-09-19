@@ -24,7 +24,12 @@ import {
 import { renderUpdateRunNotice, renderUpdateRunReport } from "../../infra/update-run-report.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
-
+import { UpdatePreMutationError } from "./shared.js";
+import { finishUpdate } from "./update-command-post-update.js";
+import { repairUpdateService } from "./update-command-repair-service.js";
+import { UpdateCommandFailure } from "./update-command-result.js";
+import * as servicePlan from "./update-command-service-plan.js";
+import * as verificationOwner from "./update-command-verification.js";
 const mocks = vi.hoisted(() => ({
   printResult: vi.fn(),
   gatewayCommand: vi.fn<
@@ -85,12 +90,12 @@ vi.mock("../../daemon/service.js", async (importOriginal) => ({
 }));
 vi.mock("./update-command-service-maintenance.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service-maintenance.js")>()),
+  maybeResumeWindowsTaskAutoStartAfterPackageUpdate: mocks.restoreWindowsAutoStart,
   revalidateManagedGatewayServiceAfterUpdate: mocks.revalidateService,
 }));
 vi.mock("./update-command-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./update-command-service.js")>()),
   maybeRestartServiceAfterFailedMutableUpdate: mocks.restart,
-  maybeResumeWindowsTaskAutoStartAfterPackageUpdate: mocks.restoreWindowsAutoStart,
   maybeRestartService: mocks.restartCandidate,
   maybeStopManagedServiceBeforeMutableUpdate: mocks.stopCandidate,
   resolveUpdatedGatewayRestartPort: async () => 19101,
@@ -105,13 +110,7 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
   writeControlPlaneUpdateRestartSentinelBestEffort: mocks.writeSentinel,
 }));
 
-import { UpdatePreMutationError } from "./shared.js";
 import { registerDoctorRestorationRollbackTests } from "./update-command-doctor-rollback.test-support.js";
-import { finishUpdate } from "./update-command-post-update.js";
-import { repairUpdateService } from "./update-command-repair-service.js";
-import { UpdateCommandFailure } from "./update-command-result.js";
-import * as servicePlan from "./update-command-service-plan.js";
-import * as verificationOwner from "./update-command-verification.js";
 
 type FinishUpdateParams = Parameters<typeof finishUpdate>[0];
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -275,6 +274,7 @@ describe("failed update recovery restart", () => {
       );
 
       expect(mocks.restart).toHaveBeenCalledOnce();
+      expect(mocks.restart.mock.lastCall?.[0].updateRun).toBe(run);
       expect(mocks.writeSentinel).toHaveBeenCalledOnce();
       expect(mocks.writeSentinel.mock.lastCall?.[0].result.durationMs).toBe(0);
       expect(mocks.printResult).toHaveBeenCalledOnce();

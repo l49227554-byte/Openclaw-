@@ -1,6 +1,9 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import type { acquireStateDatabaseCoordinator } from "../infra/state-database-coordinator.js";
+import {
+  retainHeldStateDatabaseCoordinator,
+  type acquireStateDatabaseCoordinator,
+} from "../infra/state-database-coordinator.js";
 import {
   getOpenClawDatabaseMaintenanceScope,
   isOpenClawDatabaseMaintenanceResourceOwned,
@@ -169,4 +172,40 @@ function retainStateDatabaseReference(params: {
       released = true;
     },
   };
+}
+
+/** Reserve disposal only for a handle opened under transferred update custody. */
+export function retainStateDatabaseCloseCustody(
+  database: Pick<OpenClawStateDatabase, "db" | "path">,
+  borrowers: WeakMap<DatabaseSync, StateDatabaseBorrowers>,
+): void {
+  const existing = borrowers.get(database.db);
+  if (existing?.closeCoordinator) {
+    return;
+  }
+  const coordinator = retainHeldStateDatabaseCoordinator(database.path, true);
+  if (!coordinator) {
+    return;
+  }
+  const owner: StateDatabaseBorrowers = existing ?? {
+    references: new Set<object>(),
+    retiring: false,
+    cleanupComplete: false,
+  };
+  owner.closeCoordinator = coordinator;
+  borrowers.set(database.db, owner);
+}
+
+export function releaseStateDatabaseCloseCustody(
+  owner: StateDatabaseBorrowers | undefined,
+): unknown[] {
+  try {
+    owner?.closeCoordinator?.release();
+    if (owner?.closeCoordinator?.closed) {
+      owner.closeCoordinator = undefined;
+    }
+    return [];
+  } catch (error) {
+    return [error];
+  }
 }

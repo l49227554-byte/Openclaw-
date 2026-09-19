@@ -53,6 +53,8 @@ import {
   REEF_KEYS_MIGRATION_MAX_ENTRIES,
   REEF_KEYS_MIGRATION_NAMESPACE,
 } from "./state.js";
+// Import from defining modules, not the protocol barrel: index.js re-exports
+// guard-adapters, whose provider-http graph doctor enumeration must not cold-load.
 
 const REEF_RUNTIME_LEGACY_FILENAMES = ["replay.jsonl", "reviews.json", "delivered.json"];
 
@@ -293,6 +295,9 @@ async function readLegacyReefDelivered(filePath: string): Promise<string[]> {
 export const reefAuditStateMigration: PluginDoctorStateMigration = {
   id: "reef-audit-jsonl-to-plugin-state",
   label: "Reef audit trail",
+  collectBackupResources(params) {
+    return [{ path: path.join(resolveLegacyReefStateDir(params), "audit.jsonl"), kind: "file" }];
+  },
   async detectLegacyState(params) {
     const filePath = path.join(resolveLegacyReefStateDir(params), "audit.jsonl");
     const migrationStore = params.context.openPluginStateKeyedStore<ReefAuditMigrationRecord>({
@@ -464,6 +469,12 @@ export const reefAuditStateMigration: PluginDoctorStateMigration = {
 export const reefRuntimeStateMigration: PluginDoctorStateMigration = {
   id: "reef-runtime-files-to-plugin-state",
   label: "Reef durable runtime state",
+  collectBackupResources(params) {
+    return ["replay.jsonl", "reviews.json", "delivered.json"].map((filename) => ({
+      path: path.join(resolveLegacyReefStateDir(params), filename),
+      kind: "file" as const,
+    }));
+  },
   async detectLegacyState(params) {
     const stateDir = resolveLegacyReefStateDir(params);
     const files = (

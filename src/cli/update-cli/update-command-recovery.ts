@@ -1,4 +1,5 @@
 import { formatErrorMessage } from "../../infra/errors.js";
+import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import {
   loadUpdateRecovery,
@@ -85,4 +86,21 @@ export function createUpdateCommandFinalizationFence(
     }
   };
   return assertCurrent;
+}
+
+export function createUpdateCommandExecutionAssertions(
+  opts: UpdateCommandOptions,
+  originalRun: UpdateCommandOptions["run"],
+) {
+  const requesterAuthority = originalRun?.requesterAuthority;
+  const assertRequesterCurrent = () => {
+    if (opts.run !== originalRun || requesterAuthority?.isCurrent() === false) {
+      throw new UpdateRequesterRevokedError();
+    }
+  };
+  const assertExecutionCurrent = () => {
+    assertUpdateCommandRecovery(opts);
+    assertRequesterCurrent();
+  };
+  return { requesterAuthority, assertRequesterCurrent, assertExecutionCurrent };
 }

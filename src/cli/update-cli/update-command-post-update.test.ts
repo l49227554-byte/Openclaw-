@@ -12,8 +12,12 @@ import {
 import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
 import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import * as postCoreModule from "./update-command-post-core.js";
+import { finishUpdate } from "./update-command-post-update.js";
 import {
   createManagedServiceIdentityFixture,
+  expectUpdateFailure,
+  expectRollbackTaskOwnerSettlement,
   finishSuccessfulPackageSwitch,
   managedServiceState,
   programArguments,
@@ -21,7 +25,9 @@ import {
   taskRecovery,
   validConfigSnapshot,
 } from "./update-command-post-update.test-support.js";
-
+import * as rollbackModule from "./update-command-rollback.js";
+import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
+import { resolveUpdatedGatewayRestartPort } from "./update-command-service.js";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const mocks = vi.hoisted(() => ({
   checkCompletionStatus: vi.fn(),
@@ -96,7 +102,10 @@ vi.mock("./update-command-config.js", async (importOriginal) => ({
     restoredAuthoredChannels: [],
   }),
 }));
-vi.mock("./update-command-fresh-doctor.js", () => ({
+vi.mock("./update-command-fresh-doctor.js", async (importOriginal) => ({
+  UpdateDoctorProcessUnsettledError: (
+    await importOriginal<typeof import("./update-command-fresh-doctor.js")>()
+  ).UpdateDoctorProcessUnsettledError,
   completePostCorePluginUpdate: mocks.completePluginUpdate,
 }));
 vi.mock("./update-command-plugins.js", () => ({
@@ -117,12 +126,6 @@ vi.mock("./update-command-result.js", async (importOriginal) => ({
   writeControlPlaneUpdateRestartSentinelBestEffort: mocks.writeSentinel,
 }));
 
-import * as postCoreModule from "./update-command-post-core.js";
-import { finishUpdate } from "./update-command-post-update.js";
-import * as rollbackModule from "./update-command-rollback.js";
-import { UpdateServiceLoadBoundaryError } from "./update-command-service-load.js";
-import { resolveUpdatedGatewayRestartPort } from "./update-command-service.js";
-
 type FinishUpdateParams = Parameters<typeof finishUpdate>[0];
 const stdinIsTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 function expectFailureReport(reason: string, options: unknown = expect.any(Object)) {
@@ -132,15 +135,6 @@ function expectFailureReport(reason: string, options: unknown = expect.any(Objec
     expect.any(Object),
   );
   expect(defaultRuntime.exit).not.toHaveBeenCalled();
-}
-
-function expectUpdateFailure(promise: Promise<unknown>, reason: string, details: object = {}) {
-  return expect(promise).rejects.toMatchObject({
-    name: "UpdateCommandFailure",
-    exitCode: 1,
-    result: { status: "error", reason },
-    ...details,
-  });
 }
 
 afterEach(() => {
@@ -182,6 +176,11 @@ describe("successful update finalization ordering", () => {
     vi.spyOn(defaultRuntime, "error").mockImplementation(() => undefined);
     vi.spyOn(defaultRuntime, "log").mockImplementation(() => undefined);
   });
+
+  it(
+    "closes a new rollback task owner when publication remains pending",
+    expectRollbackTaskOwnerSettlement,
+  );
 
   it("does not finalize or clean an active durable run without its live executor", async () => {
     const home = tempDirs.make("finalizer-pending-recovery-");

@@ -27,6 +27,7 @@ import {
   isGatewayRestartDraining,
   tryBeginGatewayPreparedRestartRootWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
+  isGatewayUpdateSettlementPending,
 } from "../process/gateway-work-admission.js";
 import { formatControlPlaneActor, resolveControlPlaneActor } from "./control-plane-audit.js";
 import {
@@ -474,7 +475,19 @@ export async function runWithGatewayRequestEnvelope<T>(
       }),
     );
   }
-  if (!rootWorkAdmission && !SUSPEND_CONTROL_METHODS.has(method)) {
+  if (
+    !rootWorkAdmission &&
+    !(
+      SUSPEND_CONTROL_METHODS.has(method) &&
+      (!isGatewayUpdateSettlementPending() || method === "gateway.suspend.status")
+    ) &&
+    !(
+      isGatewayUpdateSettlementPending() &&
+      !isGatewayRestartDraining() &&
+      getGatewaySuspendAdmissionPhase() === "accepting" &&
+      method === "health"
+    )
+  ) {
     const restartDraining = isGatewayRestartDraining();
     return await options.reject(
       errorShape(

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import nodePath from "node:path";
+import { captureDoctorUpdateRecoveryGuard } from "../commands/doctor-update-recovery.js";
 import { shouldSkipLegacyUpdateDoctorConfigWrite } from "../commands/doctor/shared/update-phase.js";
 import { resolveIsConfigReadOnly, resolveIsNixMode } from "../config/paths.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -37,6 +38,7 @@ export async function runWriteConfigHealth(
   ctx: DoctorHealthFlowContext,
   options: { runPostWriteRepairs?: boolean } = {},
 ): Promise<void> {
+  const assertCurrent = captureDoctorUpdateRecoveryGuard();
   if (ctx.configWriteRefusal) {
     // The initial write already reported the refusal; retrying the
     // same candidate would fail identically and duplicate the warning.
@@ -105,6 +107,7 @@ export async function runWriteConfigHealth(
         transformConfigFile({
           ...(writeSource ? { baseHash: writeSource.hash } : {}),
           transform: (_current, { snapshot }, { envSnapshotForRestore }) => {
+            assertCurrent?.();
             authority?.assertCurrent();
             // Revalidate the copied source under the config lock; never import after plugin repair.
             assertShippedPluginInstallConfigImportCurrent(
@@ -139,6 +142,10 @@ export async function runWriteConfigHealth(
           },
           afterWrite: { mode: "auto" },
           writeOptions: {
+            assertCurrent: () => {
+              assertCurrent?.();
+              authority?.assertCurrent();
+            },
             ...(writeSource ? { expectedConfigPath: writeSource.path } : {}),
             auditOrigin: "doctor",
             allowConfigSizeDrop: ctx.configResult.shouldWriteConfig === true || updateDoctorRun,
@@ -179,6 +186,7 @@ export async function runWriteConfigHealth(
         committed = await writeConfig();
       }
     } catch (error) {
+      assertCurrent?.();
       recordUpdateDoctorConfigWriteRefusal({
         reason: "config-write-refused",
         message: formatErrorMessage(error),
@@ -259,11 +267,13 @@ export async function runWriteConfigHealth(
       ctx.configWriteRefusal = "cron-owner-safety";
       return;
     }
+    assertCurrent?.();
     // The atomic write committed: repair panels queued by the config flow are now
     // true statements about disk state, so print them exactly once.
     const pendingChangePanels = ctx.configResult.pendingChangePanels;
     if (pendingChangePanels?.length) {
       const { note } = await import("../../packages/terminal-core/src/note.js");
+      assertCurrent?.();
       for (const panel of pendingChangePanels) {
         note(panel, "Doctor changes");
         for (const message of panel.split("\n")) {

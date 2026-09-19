@@ -1,5 +1,4 @@
 // `openclaw update status`: combines install metadata, configured channel, and remote update checks.
-
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import { getTerminalTableWidth, renderTable } from "../../../packages/terminal-core/src/table.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
@@ -37,6 +36,25 @@ import { redactSensitiveText } from "../../logging/redact.js";
 import { defaultRuntime } from "../../runtime.js";
 import { VERSION } from "../../version.js";
 import { parseTimeoutMsOrExit, resolveUpdateRoot, type UpdateStatusOptions } from "./shared.js";
+// `openclaw update status`: combines install metadata, configured channel, and remote update checks.
+
+async function readUpdateRecoverySetStatus() {
+  try {
+    const { inspectUpdateRecoveryBackups } = await import("../../infra/update-recovery-backup.js");
+    const sets = await inspectUpdateRecoveryBackups();
+    return {
+      recoverySets: sets.map(({ ref, runId, status, message, nextAction }) => ({
+        runId,
+        manifestPath: ref.manifestPath,
+        status,
+        message,
+        nextAction,
+      })),
+    };
+  } catch (error) {
+    return { recoverySetsError: formatErrorMessage(error) };
+  }
+}
 
 async function readChannelStatusIssues(
   config: OpenClawConfig,
@@ -103,6 +121,7 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
   const updateAvailability = resolveUpdateAvailability(update);
 
   const runStatus = readUpdateRunStatus();
+  const recoveryStatus = await readUpdateRecoverySetStatus();
   const safeMessage = (message: string) =>
     sanitizeTerminalText(redactSensitiveText(message, { mode: "tools" }));
   let serviceDefinition: { drift: ServiceDefinitionDrift[]; warnings: string[] } | undefined;
@@ -173,6 +192,7 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
       ...(migrationWarnings.length > 0 ? { migrationWarnings } : {}),
       ...(migrationWarningsError ? { migrationWarningsError } : {}),
       ...runStatus,
+      ...recoveryStatus,
     });
     return;
   }
@@ -287,6 +307,21 @@ export async function updateStatusCommand(opts: UpdateStatusOptions): Promise<vo
       for (const line of report.lines) {
         defaultRuntime.log(line);
       }
+      defaultRuntime.log("");
+    }
+  }
+
+  if ("recoverySetsError" in recoveryStatus) {
+    defaultRuntime.log(
+      theme.warn(`Update recovery sets unavailable: ${recoveryStatus.recoverySetsError}`),
+    );
+    defaultRuntime.log("");
+  } else {
+    for (const set of recoveryStatus.recoverySets) {
+      defaultRuntime.log(`Update recovery set ${set.runId}: ${set.status}`);
+      defaultRuntime.log(set.manifestPath);
+      defaultRuntime.log(set.message);
+      defaultRuntime.log(`Next action: ${set.nextAction}`);
       defaultRuntime.log("");
     }
   }

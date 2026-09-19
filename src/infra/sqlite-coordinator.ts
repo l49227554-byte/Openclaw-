@@ -255,7 +255,7 @@ function retainIdleCoordinator(location: string, database: DatabaseSync, identit
 
 function tryAcquireSqliteCoordinator(
   location: string,
-  mode: "shared" | "exclusive",
+  mode: "shared" | "exclusive" | "reserved",
   options: { busyTimeoutMs?: number; keepAlive?: boolean },
 ): SqliteCoordinatorLease | null {
   const busyTimeoutMs = Math.max(0, Math.trunc(options.busyTimeoutMs ?? 0));
@@ -291,7 +291,9 @@ function tryAcquireSqliteCoordinator(
           `PRAGMA busy_timeout = ${attemptTimeout}; PRAGMA journal_mode = MEMORY; ${
             mode === "exclusive"
               ? "BEGIN EXCLUSIVE;"
-              : "BEGIN; SELECT rootpage FROM sqlite_schema LIMIT 1;"
+              : mode === "reserved"
+                ? "BEGIN IMMEDIATE;"
+                : "BEGIN; SELECT rootpage FROM sqlite_schema LIMIT 1;"
           }`,
         );
         break;
@@ -397,4 +399,13 @@ export function tryAcquireSharedSqliteCoordinator(
   options: { busyTimeoutMs?: number } = {},
 ): SqliteCoordinatorLease | null {
   return tryAcquireSqliteCoordinator(location, "shared", options);
+}
+
+/** Reserve the writer slot while an authenticated subprocess retains read pins.
+ * Ordinary lifecycle users require EXCLUSIVE and stay excluded throughout transfer. */
+export function tryAcquireReservedSqliteCoordinator(
+  location: string,
+  options: { busyTimeoutMs?: number } = {},
+): SqliteCoordinatorLease | null {
+  return tryAcquireSqliteCoordinator(location, "reserved", options);
 }

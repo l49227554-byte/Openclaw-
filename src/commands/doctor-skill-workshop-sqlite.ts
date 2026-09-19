@@ -1,6 +1,5 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { truncateWithMarker } from "@openclaw/normalization-core/utf16-slice";
 import { assertWorkspaceStateMigrationReady } from "../agents/workspace-legacy-state.js";
 import {
   resolveCanonicalWorkspacePath,
@@ -42,16 +41,11 @@ import {
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
-  inspectWorkshopAutomationReferences,
-  type WorkshopAutomationReference,
-} from "./doctor-skill-workshop-automations.js";
-import {
   listPendingLegacyCollectionBackupRoots,
   migrateLegacyCollectionBackups,
   type LegacyCollectionBackupRoot,
 } from "./doctor-skill-workshop-collection-backups.js";
 import {
-  classifyWorkshopRelocation,
   inferOwnerAgentId,
   isReadOnlyRehearsalProposal,
   planWorkshopRelocation,
@@ -63,12 +57,11 @@ import {
   importLegacySkillProposalSidecars,
   type MigrationResult,
 } from "./doctor-skill-workshop-sidecars.js";
-import { readWorkshopMigrationRecords } from "./doctor-skill-workshop-sources.js";
 import {
   finishWorkshopWorkspaceRelocations,
   prepareWorkshopWorkspaceRelocation,
 } from "./doctor-skill-workshop-workspaces.js";
-
+export { inspectLegacySkillWorkshopMigration } from "./doctor-skill-workshop-readonly.js";
 type WorkshopRelocationResult = {
   movedSkills: number;
   retargetedProposals: number;
@@ -77,65 +70,6 @@ type WorkshopRelocationResult = {
   warnings: string[];
   recoverableWarningCount: number;
 };
-
-export type LegacyWorkshopMigrationInspection = {
-  externalProposalCount: number;
-  externalProposalCountsByAgent: Record<string, number>;
-  externalProposalDetails?: string[];
-  legacyBackupRootCount: number;
-  preservedLegacyBackupRootCount: number;
-  automationReferences?: WorkshopAutomationReference[];
-};
-
-export async function inspectLegacySkillWorkshopMigration(params: {
-  config: OpenClawConfig;
-  env?: NodeJS.ProcessEnv;
-  // Lint's private database snapshot does not change persisted filesystem targets.
-  stateEnv?: NodeJS.ProcessEnv;
-}): Promise<LegacyWorkshopMigrationInspection> {
-  const env = params.env ?? process.env;
-  const stateEnv = params.stateEnv ?? env;
-  const { records, appliedEvents } = await readWorkshopMigrationRecords(stateEnv, true);
-  // Lint needs ownership counts, not adoption verification through writable recovery readers.
-  const { external } = classifyWorkshopRelocation(
-    records.filter(({ record }) => !isReadOnlyRehearsalProposal(record, env)),
-    params.config,
-    env,
-  );
-  const backups = await listPendingLegacyCollectionBackupRoots(params.config, env);
-  const automationReferences = await inspectWorkshopAutomationReferences({
-    config: params.config,
-    env,
-    stateEnv,
-    records,
-    appliedEvents,
-  });
-  return {
-    externalProposalCount: external.length,
-    externalProposalCountsByAgent: external.reduce<Record<string, number>>((counts, plan) => {
-      const ownerAgentId = plan.ownerAgentId ?? plan.unconfiguredOwnerAgentId ?? "unknown";
-      counts[ownerAgentId] = (counts[ownerAgentId] ?? 0) + 1;
-      return counts;
-    }, {}),
-    ...(external.length > 0
-      ? {
-          externalProposalDetails: external
-            .toSorted((left, right) => left.record.id.localeCompare(right.record.id))
-            .slice(0, 20)
-            .map(({ record, ownerAgentId, unconfiguredOwnerAgentId }) =>
-              truncateWithMarker(
-                `${record.id}: ${record.target.skillDir} (owner: ${ownerAgentId ?? unconfiguredOwnerAgentId ?? "unknown"})`,
-                2000,
-                { marker: "…", reserve: 1, trimEnd: true },
-              ),
-            ),
-        }
-      : {}),
-    legacyBackupRootCount: backups.length,
-    preservedLegacyBackupRootCount: backups.filter((backup) => "warning" in backup).length,
-    ...(automationReferences.length > 0 ? { automationReferences } : {}),
-  };
-}
 
 async function relocateLegacyWorkshopTargets(
   config: OpenClawConfig,

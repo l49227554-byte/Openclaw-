@@ -1,10 +1,11 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { z } from "zod";
+import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "./update-run-legacy-expiry.js";
 import type { UpdateRunRecoveryState } from "./update-run-recovery-state.js";
 import type { UpdateRunRecordSchema } from "./update-run-schema.js";
-import type { UpdateStepResult } from "./update-runner-types.js";
-
+import type { UpdateStepResult, UpdateRunResult } from "./update-runner-types.js";
 export function updateStepDiagnostics(
   step: Pick<UpdateStepResult, "failureFacts" | "stdoutTail" | "stderrTail">,
 ): { tails: string[]; reasonDetails?: string } {
@@ -88,6 +89,15 @@ export function summarizeUpdateStepFailure(
 export type UpdateRunRecord = z.infer<typeof UpdateRunRecordSchema>;
 export type UpdateRunPhase = UpdateRunRecord["phase"];
 export type UpdateRunStep = UpdateRunRecord["steps"][number];
+
+export function hasActiveUpdateDoctorStep(
+  run: UpdateRunRecord | undefined,
+): run is UpdateRunRecord {
+  return (
+    run?.status === "running" &&
+    run.steps.some((step) => step.step === "openclaw doctor" && step.status === "in_progress")
+  );
+}
 
 // Record recovery depends on legacy expiry for its reason; both use the leaf recovery-state type.
 export function isAbandonedUpdateRun(
@@ -181,3 +191,112 @@ export type UpdateFetchFailure = {
   detail: string;
   runId: string;
 };
+
+export const UNPROTECTED_GATEWAY_UPDATE_ADVISORY =
+  "This Gateway-initiated update is not protected by a recovery capture. Run `openclaw update` from a terminal for a protected update.";
+
+export function resolveUpdateRecoveryTerminalOutcome(
+  run: UpdateRunRecord | undefined,
+  manifestSha256: string,
+): "committed" | "restored" | undefined {
+  if (run?.status === "succeeded") {
+    return "committed";
+  }
+  if (
+    run?.status === "rolled-back" ||
+    (run?.origin.updateRecoveryCapture?.restored === true &&
+      run.origin.updateRecoveryCapture.manifestSha256 === manifestSha256) ||
+    run?.steps.some(
+      (step) =>
+        (step.step === "state rollback" || step.step === "previous generation restoration") &&
+        step.status === "completed",
+    )
+  ) {
+    return "restored";
+  }
+  return undefined;
+}
+
+export function withUnprotectedGatewayUpdateAdvisory(result: UpdateRunResult): UpdateRunResult {
+  return {
+    ...result,
+    steps: [
+      ...result.steps,
+      {
+        name: "unprotected Gateway update",
+        command: "openclaw update",
+        cwd: result.root ?? process.cwd(),
+        durationMs: 0,
+        exitCode: 0,
+        advisory: { kind: "recoverable-maintenance", message: UNPROTECTED_GATEWAY_UPDATE_ADVISORY },
+      },
+    ],
+  };
+}
+
+export function upsertUpdateRunStep(record: UpdateRunRecord, step: UpdateRunStep): void {
+  const index = record.steps.findIndex((existing) => existing.step === step.step);
+  if (index >= 0) {
+    record.steps[index] = { ...record.steps[index], ...step };
+  } else {
+    record.steps.push(step);
+  }
+  while (record.steps.length > 128) {
+    const disposable = record.steps.findIndex((entry) => !isRetainedStep(entry));
+    if (disposable < 0) {
+      throw new Error("Update run retained steps exceed the step limit");
+    }
+    record.steps.splice(disposable, 1);
+  }
+}
+
+const RETAINED_STEP_NAMES = [
+  ...UPDATE_RUN_PHASES,
+  "notice:ack",
+  "notice:activating",
+  "notice:verifying",
+  "previous generation restoration",
+  "post-update verification",
+  "task-delivery-recovery",
+  "driver:adopted",
+  "driver:identity-unavailable",
+  "reconcile:abandoned",
+  "reconcile:superseded",
+  "reconcile:acknowledged",
+];
+export function isRetainedStep(item: unknown): boolean {
+  return (
+    isRecord(item) &&
+    typeof item.step === "string" &&
+    (item.step.startsWith("finalize:") || RETAINED_STEP_NAMES.some((name) => name === item.step))
+  );
+}
+
+export function hasVerifiedCompletedUpdate(
+  run: UpdateRunRecord | undefined,
+): run is UpdateRunRecord {
+  if (!run) {
+    return false;
+  }
+  const completed = (names: string[]) =>
+    run.steps.some((step) => names.includes(step.step) && step.status === "completed");
+  const health = run.verification;
+  return (
+    run.status === "succeeded" &&
+    run.finishedAtMs !== null &&
+    run.confirmedAtMs !== null &&
+    Boolean(run.after.version) &&
+    health.runningVersion === run.after.version &&
+    (!run.after.buildId || health.runningBuildId === run.after.buildId) &&
+    health.serviceRunning === true &&
+    health.versionMatch === true &&
+    health.readyz !== false &&
+    health.settled !== false &&
+    health.channelsReady !== false &&
+    health.pluginErrors?.length === 0 &&
+    completed(["openclaw doctor", "post-update verification"]) &&
+    completed(["gateway verification", "verifying"]) &&
+    run.origin.updateRecoveryCapture?.status !== "restore-failed" &&
+    run.origin.updateRecoveryCapture?.restored !== true
+  );
+}

@@ -27,6 +27,8 @@ import { normalizeShortTermPhaseSignalStore } from "../short-term-promotion-stor
 import { normalizeShortTermRecallStore } from "../short-term-promotion-utils.js";
 import { resolveConfiguredWorkspaces } from "./doctor-workspaces.js";
 import { dreamingStateComparison } from "./dreaming-state-comparison.js";
+// Import from the defining modules, not the short-term-promotion barrel: the
+// barrel pulls memory-host-events/kysely, which doctor enumeration cold-loads.
 
 type LegacySource = {
   workspaceDir: string;
@@ -148,6 +150,12 @@ async function migrateSource(source: LegacySource): Promise<number> {
 export const dreamingStateMigration: PluginDoctorStateMigration = {
   id: "memory-core-dreams-json-to-sqlite",
   label: "Memory Core dreaming state",
+  async collectBackupResources({ config, env }) {
+    const sources = await collectLegacySources(config, env);
+    return [...new Set(sources.map(({ filePath }) => path.dirname(filePath)))]
+      .toSorted()
+      .map((directory) => ({ path: directory, kind: "directory" as const }));
+  },
   async detectLegacyState(params) {
     configureMemoryCoreDreamingState(params.context.openPluginStateKeyedStore);
     const sources = await collectLegacySources(params.config, params.env);

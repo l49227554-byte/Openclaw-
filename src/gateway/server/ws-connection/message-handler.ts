@@ -34,6 +34,7 @@ import {
   runWithGatewayIndependentRootWorkAdmission,
   tryBeginGatewayRestartStartupRootWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
+  isGatewayUpdateSettlementPending,
 } from "../../../process/gateway-work-admission.js";
 import { isWebchatClient } from "../../../utils/message-channel.js";
 import { isLocalishHost, isLoopbackAddress } from "../../net.js";
@@ -526,7 +527,8 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
       if (
         !isGatewayRestartDraining() &&
         (getGatewaySuspendAdmissionPhase() === "draining" ||
-          getGatewaySuspendAdmissionPhase() === "prepared") &&
+          getGatewaySuspendAdmissionPhase() === "prepared" ||
+          isGatewayUpdateSettlementPending()) &&
         isPreparedControlConnect(data)
       ) {
         // Suspension fences work, not authenticated owner recovery. Operators

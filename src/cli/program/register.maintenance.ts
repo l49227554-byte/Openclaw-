@@ -1,5 +1,5 @@
 // Maintenance command registration: doctor, triage, dashboard, reset, and uninstall.
-import type { Command } from "commander";
+import { Option, type Command } from "commander";
 import { detectCurrentSqliteCapabilities, nodeRuntimeFailure } from "../../../node-sqlite.mjs";
 import { formatDocsLink } from "../../../packages/terminal-core/src/links.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
@@ -11,6 +11,7 @@ import { formatCliJsonFailure } from "../failure-output.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import type { ProgramContext } from "./context.js";
 import { setCommandJsonMode } from "./json-mode.js";
+// Maintenance command registration: doctor, triage, dashboard, reset, and uninstall.
 
 const STATE_SQLITE_CONFLICTING_OPTION_NAMES = [
   "workspaceSuggestions",
@@ -67,6 +68,10 @@ export function registerMaintenanceCommands(
       false,
     )
     .option("--non-interactive", "Run without prompts (safe migrations only)", false)
+    .addOption(
+      new Option("--update-recovery-owner <owner>").choices(["driver", "unprotected"]).hideHelp(),
+    )
+    .addOption(new Option("--update-recovery-backup <reference>").hideHelp())
     .option("--generate-gateway-token", "Generate and configure a gateway token", false)
     .option(
       "--allow-exec",
@@ -204,36 +209,48 @@ export function registerMaintenanceCommands(
           });
           exitCliAfterOutput(defaultRuntime, jsonImpliesLint ? 0 : exitCode);
         }
-        return await runCommandWithRuntime(defaultRuntime, async () => {
-          const { doctorCommand } = await import("../../commands/doctor.js");
-          await doctorCommand(
-            defaultRuntime,
-            {
-              workspaceSuggestions: opts.workspaceSuggestions,
-              yes: Boolean(opts.yes),
-              repair: Boolean(opts.repair) || Boolean(opts.fix),
-              force: Boolean(opts.force),
-              nonInteractive: Boolean(opts.nonInteractive),
-              generateGatewayToken: Boolean(opts.generateGatewayToken),
-              allowExec: Boolean(opts.allowExec),
-              deep: Boolean(opts.deep),
-              postUpgrade: Boolean(opts.postUpgrade),
-              ...(stateSqlite ? { stateSqlite } : {}),
-              ...(sessionSqlite ? { sessionSqlite } : {}),
-              ...(typeof opts.sessionSqliteStore === "string"
-                ? { sessionSqliteStore: opts.sessionSqliteStore }
-                : {}),
-              ...(typeof opts.sessionSqliteAgent === "string"
-                ? { sessionSqliteAgent: opts.sessionSqliteAgent }
-                : {}),
-              sessionSqliteAllAgents: Boolean(opts.sessionSqliteAllAgents),
-              sessionSqliteGithubIssue: Boolean(opts.githubIssue),
-              json: Boolean(opts.json),
-            },
-            ctx?.doctorDatabasePreflight,
-          );
-          exitCliAfterOutput(defaultRuntime, 0);
-        });
+        const { doctorUpdateRecoveryRuntime } =
+          await import("../../commands/doctor-update-recovery.js");
+        return await runCommandWithRuntime(
+          doctorUpdateRecoveryRuntime(defaultRuntime),
+          async () => {
+            const { doctorCommand } = await import("../../commands/doctor.js");
+            await doctorCommand(
+              defaultRuntime,
+              {
+                ...(opts.updateRecoveryOwner === "driver" ||
+                opts.updateRecoveryOwner === "unprotected"
+                  ? { updateRecoveryOwner: opts.updateRecoveryOwner }
+                  : {}),
+                ...(typeof opts.updateRecoveryBackup === "string"
+                  ? { updateRecoveryBackup: opts.updateRecoveryBackup }
+                  : {}),
+                workspaceSuggestions: opts.workspaceSuggestions,
+                yes: Boolean(opts.yes),
+                repair: Boolean(opts.repair) || Boolean(opts.fix),
+                force: Boolean(opts.force),
+                nonInteractive: Boolean(opts.nonInteractive),
+                generateGatewayToken: Boolean(opts.generateGatewayToken),
+                allowExec: Boolean(opts.allowExec),
+                deep: Boolean(opts.deep),
+                postUpgrade: Boolean(opts.postUpgrade),
+                ...(stateSqlite ? { stateSqlite } : {}),
+                ...(sessionSqlite ? { sessionSqlite } : {}),
+                ...(typeof opts.sessionSqliteStore === "string"
+                  ? { sessionSqliteStore: opts.sessionSqliteStore }
+                  : {}),
+                ...(typeof opts.sessionSqliteAgent === "string"
+                  ? { sessionSqliteAgent: opts.sessionSqliteAgent }
+                  : {}),
+                sessionSqliteAllAgents: Boolean(opts.sessionSqliteAllAgents),
+                sessionSqliteGithubIssue: Boolean(opts.githubIssue),
+                json: Boolean(opts.json),
+              },
+              ctx?.doctorDatabasePreflight,
+            );
+            exitCliAfterOutput(defaultRuntime, 0);
+          },
+        );
       } catch (error) {
         // Completed reports retain their status and the shared output-drain lifecycle.
         if (error instanceof ExitError || (!lintMode && !opts.json)) {

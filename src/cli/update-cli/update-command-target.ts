@@ -321,12 +321,18 @@ export async function resolveUpdateCommandTarget(
             timeoutMs: updateStepTimeoutMs,
             pkgRoot: root,
             honorPackageRoot:
-              managedServiceRootRedirect !== null || managedServiceNodeRunner !== undefined,
+              opts.bridge !== undefined ||
+              managedServiceRootRedirect !== null ||
+              managedServiceNodeRunner !== undefined,
             packageName: installedPackageName,
             pkgOwnership,
           });
           if (packageInstallTarget.manager === "npm") {
-            const destination = await inspectNpmGlobalDestination(root, updateStepTimeoutMs);
+            const destination = await inspectNpmGlobalDestination(
+              root,
+              updateStepTimeoutMs,
+              packageInstallTarget,
+            );
             if (destination.kind !== "owned" && destination.kind !== "empty") {
               await refuseUpdate(destination.reason, destination.message, destination.failureFacts);
               return undefined;
@@ -443,10 +449,18 @@ export async function resolveUpdateCommandTarget(
             await refuseUpdate("target-metadata-preflight", failure.message, failure.failureFacts);
             return undefined;
           }
-          packageTargetSchemaVersions = targetMetadata.schemaVersions;
-          // Runtime and schema checks must use the same exact package that will be
-          // installed; rereading a mutable dist-tag can inspect a different release.
-          packageRuntimeTarget = { version: targetVersion, nodeEngine: targetMetadata.nodeEngine };
+          if (packageAlreadyCurrent) {
+            const { readInstalledUpdateSchemaVersions } =
+              await import("./update-command-schema.js");
+            packageTargetSchemaVersions = await readInstalledUpdateSchemaVersions(root);
+          } else {
+            packageTargetSchemaVersions = targetMetadata.schemaVersions;
+            // Pin runtime/schema checks to the package selected for installation.
+            packageRuntimeTarget = {
+              version: targetVersion,
+              nodeEngine: targetMetadata.nodeEngine,
+            };
+          }
           // Always install the exact inspected version: a dist-tag can move between
           // this lookup and the install, and an uninspected version would bypass
           // the schema and runtime decisions made here. Missing schema metadata

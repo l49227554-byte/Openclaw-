@@ -1,4 +1,4 @@
-import "../flows/doctor-health.test-support.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -6,7 +6,6 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runCommandWithRuntime } from "../cli/cli-utils.js";
 import { resolveConfiguredAgentDatabaseTargets } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { runDoctorHealthFlow } from "../flows/doctor-health.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { createLegacyDatabaseFixture } from "../infra/state-migrations.media-persistence.test-support.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
@@ -18,8 +17,10 @@ import {
 } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
+import "../flows/doctor-health.test-support.js";
 
 const { mocks } = await import("../flows/doctor-health.test-support.js");
+const { runDoctorHealthFlow } = await import("../flows/doctor-health.js");
 beforeEach(() => {
   mocks.config.mockReturnValue({});
   mocks.packageRoot.mockReturnValue(undefined);
@@ -29,6 +30,41 @@ beforeEach(() => {
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => vi.unstubAllEnvs());
+
+it("closes its owned stores without closing an independent caller's stores", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const maintenance = await beginDoctorMaintenance({
+      options: { repair: true },
+      root: null,
+      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    });
+    if (!maintenance) {
+      throw new Error("Expected Doctor maintenance");
+    }
+    try {
+      const owned = maintenance.run(() => openOpenClawStateDatabase({ env: state.env }));
+      const escaped = maintenance.run(() => AsyncLocalStorage.snapshot());
+      await maintenance.closeStores();
+      expect(owned.db.isOpen).toBe(false);
+      const independent = openOpenClawStateDatabase({ env: state.env });
+      await maintenance.closeStores();
+      expect(independent.db.isOpen).toBe(true);
+      expect(() => escaped(() => openOpenClawStateDatabase({ env: state.env }))).toThrow(
+        "Database maintenance resource scope is closed",
+      );
+      const renewed = maintenance.run(() => openOpenClawStateDatabase({ env: state.env }));
+      expect(renewed.db.isOpen).toBe(true);
+      await maintenance.closeStores();
+      // Reusing an independent caller's cached handle does not transfer its ownership.
+      expect(renewed.db).toBe(independent.db);
+      expect(renewed.db.isOpen).toBe(true);
+      expect(independent.db.isOpen).toBe(true);
+      maintenance.assertCurrent();
+    } finally {
+      await maintenance.release();
+    }
+  });
+});
 
 function createLegacyRegistryFixture() {
   const root = tempDirs.make("openclaw-doctor-legacy-registry-");

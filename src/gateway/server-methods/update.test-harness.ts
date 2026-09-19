@@ -7,16 +7,18 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../../config/types.open
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import type { RespawnSupervisor } from "../../infra/supervisor-markers.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
+import { writeGatewayCutoverFixtureModule } from "../../infra/update-managed-service-handoff.test-support.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import { createTempHomeEnv, type TempHomeEnv } from "../../test-utils/temp-home.js";
-
 let ledgerHome: TempHomeEnv | undefined;
 beforeEach(async () => {
+  vi.stubEnv("OPENCLAW_PROFILE", undefined);
   ledgerHome = await createTempHomeEnv("openclaw-update-rpc-");
 });
 afterEach(async () => {
   await ledgerHome?.restore();
   ledgerHome = undefined;
+  vi.unstubAllEnvs();
 });
 
 export const sentinelState: {
@@ -85,12 +87,16 @@ export async function withTransferredUpdateHandoff(
   run: (activate: () => Promise<void>) => Promise<void>,
 ) {
   await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, "package.json"), '{"type":"module"}');
+  await writeGatewayCutoverFixtureModule(path.join(root, "dist", "cli", "daemon-cli.js"));
   const activatePath = path.join(root, "activate");
   const updatedPath = path.join(root, "updated");
   const updaterPath = path.join(root, "updater.cjs");
   const managerStatePath = path.join(root, "manager-state.json");
   const managerPath = path.join(root, "manager.cjs");
   const managerPreloadPath = path.join(root, "manager-preload.cjs");
+  const noticePath = path.join(root, "notice-committed");
+  const stoppedPath = path.join(root, "native-stopped");
   await fs.writeFile(
     updaterPath,
     `
@@ -141,9 +147,19 @@ export async function withTransferredUpdateHandoff(
       `
     const children = require("node:child_process");
     const spawn = children.spawn;
-    children.spawn = (command, args, options) => command === "launchctl"
-      ? spawn(process.execPath, [${JSON.stringify(managerPath)}, ...args], options)
-      : spawn(command, args, options);
+    children.spawn = (command, args, options) => {
+      if (command !== "launchctl") return spawn(command, args, options);
+      const fs = require("node:fs");
+      const action = args.find((value) => value === "disable" || value === "bootout");
+      if (action && !fs.existsSync(${JSON.stringify(noticePath)})) {
+        throw new Error("Native stop preceded the committed lifecycle notice");
+      }
+      const child = spawn(process.execPath, [${JSON.stringify(managerPath)}, ...args], options);
+      if (action === "bootout") child.once("exit", (code) => {
+        if (code === 0) fs.writeFileSync(${JSON.stringify(stoppedPath)}, "stopped");
+      });
+      return child;
+    };
   `,
     );
     startManagedServiceUpdateHandoffMock.mockImplementationOnce(async (params) => {
@@ -165,6 +181,7 @@ export async function withTransferredUpdateHandoff(
           await params.beforePark?.();
           await onNotice(params.runId!);
           expect(parent.exitCode).toBeNull();
+          await fs.writeFile(noticePath, "committed");
         },
       });
       return helper;
@@ -183,6 +200,10 @@ export async function withTransferredUpdateHandoff(
     );
     parent.stdin?.end();
     await vi.waitFor(() => fs.access(updatedPath), { timeout: 5_000 });
+    expect(await fs.readFile(stoppedPath, "utf8")).toBe("stopped");
+  } catch (error) {
+    const log = helper ? await fs.readFile(helper.logPath, "utf8") : "Helper did not start";
+    throw new Error(`Managed handoff fixture failed: ${log}`, { cause: error });
   } finally {
     parent.stdin?.end();
     if (helper?.pid) {

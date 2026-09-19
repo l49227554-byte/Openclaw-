@@ -1265,11 +1265,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         planConcurrency: 1,
         runner: "blacksmith-16vcpu-ubuntu-2404",
       });
-      // The combined bin uses the larger CLI budget, beyond the 150s child limit.
+      // Plain CLI has no runtime-build consumer and can share only a complete
+      // non-build bin that stays within the combined budget.
       expect(cliJobs[0]!.predictedSeconds).toBeGreaterThan(150);
+      expect(cliJobs[0]!.predictedSeconds).toBeLessThanOrEqual(250);
       expect(cliJobs[0]!.pretestBuildMode).toBeUndefined();
-      expect(cliJobs[0]!.groups).toHaveLength(2);
-      expect(cliJobs[0]!.groups[0]!.includePatterns).toBeUndefined();
+      expect(isCombinedUnbuiltCliJob(cliJobs[0]!)).toBe(true);
+      expect(cliJobs[0]!.groups.every((group) => !group.pretestBuildMode)).toBe(true);
+      expect(
+        cliJobs[0]!.groups.find((group) => group.shard_name === "agentic-cli")!.includePatterns,
+      ).toBeUndefined();
       const processGroups = plan.flatMap((job) =>
         job.groups.filter((group) =>
           group.configs.includes("test/vitest/vitest.cli-process.config.ts"),
@@ -1282,7 +1287,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         combined.every((job) => job.predictedSeconds! <= 250 && job.planConcurrency === 1),
       ).toBe(true);
       for (const job of plan.filter((candidate) => candidate.pretestBuildMode)) {
-        expect(job.predictedSeconds).toBeLessThanOrEqual(150);
+        if (job !== cliJobs[0]) {
+          expect(job.predictedSeconds).toBeLessThanOrEqual(150);
+        }
         expect(job.groups.every((group) => group.pretestBuildMode === "runtime")).toBe(true);
       }
       const combinedProcessGroups = combined
@@ -3544,7 +3551,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         checkName: `checks-node-${shard.shardName}`,
         configs: ["test/vitest/vitest.commands.config.ts"],
         includePatterns: shard.includePatterns,
-        ...(shard.shardName === "agentic-commands-doctor-config-state" ||
+        ...(shard.shardName === "agentic-commands-doctor" ||
+        shard.shardName === "agentic-commands-doctor-config-state" ||
         shard.shardName === "agentic-commands-doctor-plugins-tools"
           ? { pretestBuildMode: "runtime" }
           : {}),

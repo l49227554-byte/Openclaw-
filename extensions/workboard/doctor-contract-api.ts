@@ -12,6 +12,7 @@ import type {
   PersistedWorkboardNotificationSubscription,
   WorkboardKeyedStore,
 } from "./src/persistence-types.js";
+// Workboard API module exposes the plugin public contract.
 
 const MAX_CARDS = 2000;
 
@@ -176,6 +177,10 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
   {
     id: "workboard-28-kv-to-sqlite",
     label: "Workboard .28 plugin-state KV",
+    async collectBackupResources(params) {
+      const { resolveWorkboardSqlitePath } = await import("./src/sqlite-store-paths.js");
+      return [{ path: resolveWorkboardSqlitePath(migrationEnv(params)), kind: "sqlite" }];
+    },
     async detectLegacyState(params) {
       const env = migrationEnv(params);
       const cards = openLegacyStore<PersistedWorkboardCard>({

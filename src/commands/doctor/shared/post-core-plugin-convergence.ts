@@ -27,6 +27,9 @@ import { VERSION } from "../../../version.js";
 import { maybeRepairStaleManagedNpmBundledPlugins } from "../../doctor-plugin-registry.js";
 import { repairMissingConfiguredPluginInstalls } from "./missing-configured-plugin-install.js";
 import { UPDATE_POST_CORE_CONVERGENCE_ENV } from "./update-phase.js";
+// Reconciles configured plugin installs after the core package update has completed.
+
+// Link mandatory repairs before a package swap can remove this updater's old chunks.
 
 type PostCoreConvergenceWarning = {
   kind?: "load" | "repair";
@@ -78,6 +81,7 @@ async function repairInstalledOpenClawHostLinks(params: {
   env: NodeJS.ProcessEnv;
   installRecords: Record<string, PluginInstallRecord>;
   beforePersistentEffect?: () => void;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<{
   changes: string[];
   warnings: PostCoreConvergenceWarning[];
@@ -98,6 +102,20 @@ async function repairInstalledOpenClawHostLinks(params: {
         }
       }
     : undefined;
+  const preparePersistentEffect = params.preparePersistentEffect
+    ? async () => {
+        if (effectFailure) {
+          throw effectFailure.error;
+        }
+        try {
+          await params.preparePersistentEffect?.();
+          beforePersistentEffect?.();
+        } catch (error) {
+          effectFailure ??= { error };
+          throw effectFailure.error;
+        }
+      }
+    : undefined;
   try {
     const npmRoots = await listManagedPluginNpmRoots(resolveDefaultPluginNpmDir(params.env));
     const results = await Promise.allSettled(
@@ -105,6 +123,7 @@ async function repairInstalledOpenClawHostLinks(params: {
         relinkOpenClawPeerDependenciesInManagedNpmRoot({
           npmRoot,
           beforePersistentApply: beforePersistentEffect,
+          beforePersistentEffect: preparePersistentEffect,
           logger: {},
           onPackageReadError: (error, packageDir) => {
             packageReadFailures.push({ error, packageDir });
@@ -131,6 +150,7 @@ async function repairInstalledOpenClawHostLinks(params: {
       env: params.env,
       mode: "repair",
       beforePersistentApply: beforePersistentEffect,
+      beforePersistentEffect: preparePersistentEffect,
       onPackageReadError: (error, packageDir) => {
         packageReadFailures.push({ error, packageDir });
       },
@@ -201,6 +221,7 @@ export async function runPostCorePluginConvergence(params: {
   baselineInstallRecords?: Record<string, PluginInstallRecord>;
   onCapabilityConsent?: PluginCapabilityConsentHandler;
   beforePersistentEffect?: () => void;
+  preparePersistentEffect?: () => void | Promise<void>;
 }): Promise<PostCoreConvergenceResult> {
   return await withPluginLifecycleLease(
     { env: params.env, assertCurrent: params.beforePersistentEffect },
@@ -223,10 +244,14 @@ async function runPostCorePluginConvergenceWithLease(
   // Retire obsolete managed shadows before relinking or smoke-checking them. A package that
   // became bundled with the new core must not survive into the next startup's contract graph.
   params.beforePersistentEffect?.();
-  const staleManagedNpmBundledPluginRepair = maybeRepairStaleManagedNpmBundledPlugins({
+  const staleManagedNpmBundledPluginRepair = await maybeRepairStaleManagedNpmBundledPlugins({
     config: params.cfg,
     env,
     prompter: { shouldRepair: true },
+    beforePersistentEffect: async () => {
+      await params.preparePersistentEffect?.();
+      params.beforePersistentEffect?.();
+    },
     ...(params.baselineInstallRecords ? { installRecords: params.baselineInstallRecords } : {}),
   });
   const convergenceBaseline =
@@ -252,7 +277,10 @@ async function runPostCorePluginConvergenceWithLease(
         guidance: [REPAIR_GUIDANCE],
       });
     },
-    beforePersistentEffect: params.beforePersistentEffect,
+    beforePersistentEffect: async () => {
+      await params.preparePersistentEffect?.();
+      params.beforePersistentEffect?.();
+    },
   });
   params.beforePersistentEffect?.();
 
@@ -260,6 +288,7 @@ async function runPostCorePluginConvergenceWithLease(
     env,
     installRecords: repair.records,
     beforePersistentEffect: params.beforePersistentEffect,
+    preparePersistentEffect: params.preparePersistentEffect,
   });
   params.beforePersistentEffect?.();
   warnings.push(...peerLinkRepair.warnings);

@@ -3,12 +3,14 @@ import path from "node:path";
 import { finishUpdateRun } from "../cli/daemon-cli.js";
 import { retainCliProcessJobUntilExit, withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
 import type { UpdateCommandOptions } from "../cli/update-cli/shared.js";
+import { retireVerifiedUpdateCommandCapture } from "../cli/update-cli/update-command-backup-lifecycle.js";
 import {
   withDelegatedUpdateCommandExecutor,
   withUpdateCommandExecutor,
 } from "../cli/update-cli/update-command-executor.js";
 import type {
   UpdateDoctorInput,
+  UpdateCaptureRetirementInput,
   MigratedUpdateFinalizationInput,
   MigratedUpdateFinalizationResult,
 } from "../cli/update-cli/update-command-migrated-types.js";
@@ -21,10 +23,12 @@ import { createWindowsTaskAutoStartGuard } from "../cli/update-cli/update-comman
 import { withUpdateCommandTerminalResult } from "../cli/update-cli/update-command-terminal.js";
 import { createWindowsTaskAutoStartRecovery } from "../cli/update-cli/update-command-windows-task.js";
 import { routeLogsToStderr } from "../logging/console.js";
-import { defaultRuntime } from "../runtime.js";
+import { defaultRuntime, ExitError } from "../runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
+import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
+import { readPackageVersion } from "./package-json.js";
 import { resolveEnvironmentValue } from "./process-env.js";
 import {
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
@@ -32,6 +36,7 @@ import {
   writeUpdatePostInstallDoctorResult,
 } from "./update-doctor-result.js";
 import { resolveUpdateFinalizationTimeoutMs } from "./update-finalization-budget.js";
+import { readBuiltGatewayBuildId } from "./update-git-runtime.js";
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import {
   createManagedUpdateRequesterAuthority,
@@ -39,7 +44,6 @@ import {
 } from "./update-requester-authority.js";
 import { adoptUpdateRun, getUpdateRun, recordUpdateRunStep } from "./update-run-ledger.js";
 import type { UpdateRecoveryFence } from "./update-run-recovery.js";
-
 async function finalizeMigratedUpdate(): Promise<void> {
   // Validation imports this whole candidate graph before activation. The helper
   // also needs the stable recovery barrel's writer after an actual schema bump.
@@ -51,6 +55,9 @@ async function finalizeMigratedUpdate(): Promise<void> {
     process.stdout.write(
       JSON.stringify({
         executorDelegation: "pid-start-v1",
+        writerCustody: "native-pins-v1",
+        updateRecovery: "parent-v1",
+        captureRetirement: "settled-v1",
         doctorConfigWrites: "pid-start-v1",
         state: OPENCLAW_STATE_SCHEMA_VERSION,
         agent: OPENCLAW_AGENT_SCHEMA_VERSION,
@@ -67,6 +74,50 @@ async function finalizeMigratedUpdate(): Promise<void> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   const text = Buffer.concat(chunks).toString("utf8");
+  if (process.argv[2] === "--retire-capture") {
+    const retirementInput: UpdateCaptureRetirementInput = JSON.parse(text);
+    const runtimeRoot = await resolveOpenClawPackageRoot({ moduleUrl: import.meta.url });
+    if (
+      !runtimeRoot ||
+      !retirementInput.result.root ||
+      (await fs.realpath(retirementInput.result.root)) !== retirementInput.runtimeRoot ||
+      (await fs.realpath(runtimeRoot)) !== retirementInput.runtimeRoot ||
+      (await readPackageVersion(runtimeRoot)) !== retirementInput.result.after?.version ||
+      (await readBuiltGatewayBuildId(runtimeRoot)) !== retirementInput.runtimeBuildId ||
+      (retirementInput.result.after?.buildId &&
+        retirementInput.result.after.buildId !== retirementInput.runtimeBuildId)
+    ) {
+      throw new Error("Capture retirement runtime no longer matches the verified target.");
+    }
+    const retire = (executorFence?: UpdateRecoveryFence) =>
+      retireVerifiedUpdateCommandCapture(
+        {
+          backup: retirementInput.backup,
+          root: retirementInput.root,
+          run: { runId: retirementInput.runId, env: { ...process.env } },
+          env: { ...process.env },
+          executorFence,
+        },
+        retirementInput.result,
+      );
+    const warning = retirementInput.executor
+      ? await withDelegatedUpdateCommandExecutor(
+          retirementInput.executor,
+          retirementInput.runId,
+          retirementInput.runtimeRoot,
+          retire,
+        )
+      : await retire();
+    process.stdout.write(
+      JSON.stringify({
+        retired: true,
+        runId: retirementInput.runId,
+        manifestSha256: retirementInput.backup.manifestSha256,
+        warning,
+      }),
+    );
+    return;
+  }
   if (process.argv[2] === "--doctor") {
     // SAFETY: The typed parent sends this private input only after binding this child.
     return await runDelegatedDoctor(JSON.parse(text) as UpdateDoctorInput);
@@ -150,6 +201,16 @@ async function finalizeMigratedUpdate(): Promise<void> {
       legacyManagedParent ? { legacyManagedParent } : undefined,
     );
   }, input.params.opts);
+  if (input.params.updateRecoveryBackup && finalized.result.status === "error") {
+    const response: MigratedUpdateFinalizationResult = {
+      result: { ...finalized.result, runId: finalized.run.runId },
+      exitCode: finalized.exitCode || 1,
+      recoveryRequired: true,
+      executorDelegation: "pid-start-v1",
+    };
+    await fs.writeFile(input.resultPath, JSON.stringify(response), { mode: 0o600 });
+    return;
+  }
   const terminal = getUpdateRun(finalized.run.runId, { env: finalized.run.env });
   if (!terminal || terminal.status === "running") {
     throw new Error("Update finalization left the update run nonterminal.");
@@ -213,16 +274,51 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
       }
       const { runDoctorHealthFlow } = await import("../flows/doctor-health.js");
       assertCurrent();
-      await runDoctorHealthFlow(
-        {
-          ...defaultRuntime,
-          exit: (code) => {
-            process.exitCode = code;
-          },
+      const {
+        withDoctorUpdateRecovery,
+        prepareDoctorUpdateRecovery,
+        runWithPreparedDoctorUpdateRecovery,
+      } = await import("../commands/doctor-update-recovery.js");
+      const runtime = {
+        ...defaultRuntime,
+        exit(code: number): never {
+          // The recovery owner must finish before this executable publishes exit.
+          throw new ExitError(code);
         },
-        { repair: input.repair, nonInteractive: true },
-        { inputHash: input.configInputHash, assertCurrent },
-      );
+      };
+      const options = {
+        repair: input.repair,
+        yes: input.yes,
+        workspaceSuggestions: input.workspaceSuggestions,
+        nonInteractive: true,
+        ...(input.updateRecoveryBackup
+          ? {
+              updateRecoveryOwner: "driver" as const,
+              updateRecoveryBackup: JSON.stringify(input.updateRecoveryBackup),
+            }
+          : {}),
+      };
+      try {
+        await withDoctorUpdateRecovery(
+          runtime,
+          async () => {
+            await prepareDoctorUpdateRecovery(options);
+            assertCurrent();
+            await runWithPreparedDoctorUpdateRecovery(() =>
+              runDoctorHealthFlow(runtime, options, {
+                inputHash: input.configInputHash,
+                assertCurrent,
+              }),
+            );
+          },
+          assertCurrent,
+        );
+      } catch (error) {
+        if (!(error instanceof ExitError)) {
+          throw error;
+        }
+        process.exitCode = error.code;
+      }
     },
   );
 }
@@ -236,7 +332,8 @@ async function finalizeInput(
   if (
     !transferredRun ||
     "executorFence" in transferredRun ||
-    (!input.recoveryHandoff &&
+    (!input.params.updateRecoveryBackup &&
+      !input.recoveryHandoff &&
       input.params.rollbackBlockedReason !== "state-migrated-no-rollback" &&
       input.params.rollbackBlockedReason !== "rollback-state-unverified")
   ) {
@@ -261,6 +358,21 @@ async function finalizeInput(
   };
   executorFence.assertCurrent();
   registerRun(run);
+  // Shipped drivers cannot schedule --retire-capture after releasing their lease.
+  // Persist custody for the existing Gateway reconciler before terminal publication;
+  // this marker authorizes no deletion while any driver or executor remains live.
+  if (input.captureRetirement !== "parent-settled-v1") {
+    recordUpdateRunStep(
+      run.runId,
+      {
+        step: "finalize:capture-retirement",
+        status: "completed",
+        detail: "candidate-reconciliation-v1",
+        endedAtMs: Date.now(),
+      },
+      { env: run.env },
+    );
+  }
   for (const step of input.bufferedSteps) {
     executorFence?.assertCurrent();
     recordUpdateRunStep(run.runId, step, { env: run.env });
@@ -294,6 +406,7 @@ async function finalizeInput(
   try {
     result = await finishUpdate({
       ...input.params,
+      deferFailureRecoveryToParent: Boolean(input.params.updateRecoveryBackup),
       result: { ...input.params.result, runId: run.runId },
       opts: { ...input.params.opts, run },
       ...(stopped

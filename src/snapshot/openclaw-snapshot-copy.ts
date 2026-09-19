@@ -8,13 +8,10 @@ import {
 import { assertNotUpdateCapturePath } from "../infra/update-capture-paths.js";
 import { isValidAgentId, normalizeAgentId } from "../routing/session-key.js";
 import { assertOpenClawAgentDatabaseForMaintenance } from "../state/openclaw-agent-db.js";
+import { clearOpenClawStateCopyLeases } from "../state/openclaw-state-copy-leases.js";
 import { assertOpenClawStateDatabaseForMaintenance } from "../state/openclaw-state-db.js";
-import {
-  sanitizeOpenClawGlobalStateSnapshot,
-  sanitizeOpenClawStateLeaseRows,
-} from "../state/openclaw-state-snapshot-sanitizer.js";
+import { sanitizeOpenClawGlobalStateSnapshot } from "../state/openclaw-state-snapshot-sanitizer.js";
 import type { SnapshotDatabaseIdentity, SnapshotDatabaseRef } from "./snapshot-provider.js";
-
 export function normalizeSnapshotIdentity(
   identity: SnapshotDatabaseIdentity,
 ): SnapshotDatabaseIdentity {
@@ -67,7 +64,7 @@ export async function createOpenClawSnapshotCopy(params: {
       if (identity.role === "global") {
         sanitizeOpenClawGlobalStateSnapshot(database);
       } else if (identity.role === "agent") {
-        sanitizeOpenClawStateLeaseRows(database);
+        clearOpenClawStateCopyLeases(database);
       }
       await embedSessionColdArchivesInSnapshot({
         database,

@@ -102,8 +102,8 @@ import { resolveIncludeRoots } from "./paths.js";
 import { preflightRuntimeSnapshotWrite } from "./runtime-snapshot.js";
 import type { OpenClawConfig } from "./types.js";
 import { validateConfigObjectRawWithPlugins } from "./validation.js";
+import { captureCommittedConfigFileWrite } from "./write-capture.js";
 import { captureConfigWriteLockGuard } from "./write-lock.js";
-
 export async function writeConfigFileFromContext(
   context: ConfigIoContext,
   cfg: OpenClawConfig,
@@ -615,6 +615,7 @@ export async function writeConfigFileFromContext(
     if (!options.skipPluginValidation) {
       logConfigWarningsOnce({ configPath, warnings: validated.warnings, logger: deps.logger });
     }
+    captureCommittedConfigFileWrite(configPath, snapshot, nextHash, options);
     if (clearedSessionStoreOwner && !options.skipOutputLogs) {
       deps.logger.warn(
         "Cleared agents.defaults.sessionStore.agentId because session.store changed. Set that owner path explicitly to assign the destination store's owner.",

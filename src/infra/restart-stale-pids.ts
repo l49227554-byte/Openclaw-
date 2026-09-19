@@ -26,6 +26,7 @@ import {
   type WindowsListeningPidsResult,
 } from "./windows-port-pids.js";
 import { readWindowsProcessAncestorsSync } from "./windows-process-start.js";
+// Finds and cleans stale gateway process ids.
 
 // macOS lsof needs seconds on hosts with many mounted volumes; keep that
 // allowance separate so process and ancestor probes retain their tighter bound.
@@ -172,6 +173,25 @@ function readParentPidFromPs(pid: number, spawnTimeoutMs: number): number | null
   }
 }
 
+/** Native parent observation; unavailable process metadata never establishes ownership. */
+export function readProcessParentPidSync(
+  pid: number,
+  spawnTimeoutMs = PROCESS_INSPECTION_TIMEOUT_MS,
+): number | null {
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    return null;
+  }
+  if (pid === process.pid) {
+    const parent = process.ppid;
+    return Number.isFinite(parent) && parent > 0 ? parent : null;
+  }
+  return process.platform === "linux"
+    ? readParentPidFromProc(pid)
+    : process.platform === "darwin"
+      ? readParentPidFromPs(pid, spawnTimeoutMs)
+      : null;
+}
+
 /**
  * Collect the set of PIDs whose termination would cascade-kill the caller:
  * the current process, its direct parent, and — where the platform permits
@@ -210,8 +230,8 @@ export function getSelfAndAncestorPidsSync(
   options: { requireVerifiedParent?: boolean } = {},
 ): Set<number> {
   const pids = new Set<number>([process.pid]);
-  const immediateParent = process.ppid;
-  if (!Number.isFinite(immediateParent) || immediateParent <= 0) {
+  const immediateParent = readProcessParentPidSync(process.pid, spawnTimeoutMs);
+  if (immediateParent === null) {
     return pids;
   }
   // Windows retains an inherited PID after parent exit. Cleanup can exclude it
@@ -244,7 +264,7 @@ export function getSelfAndAncestorPidsSync(
   // parent` after the same check, so no separate top-of-loop guard is needed.
   let current = immediateParent;
   for (let depth = 0; depth < MAX_ANCESTOR_WALK_DEPTH; depth++) {
-    const parent = readTransitiveParent(current);
+    const parent = readProcessParentPidSync(current, spawnTimeoutMs);
     if (parent == null || parent <= 0 || pids.has(parent)) {
       break;
     }

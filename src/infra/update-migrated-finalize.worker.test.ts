@@ -5,17 +5,40 @@ import { loggingState } from "../logging/state.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
-
 const fixture = vi.hoisted(() => ({
   close: vi.fn<() => Promise<void>>(),
+  doctor: vi.fn(),
+  recoveryActive: false,
+  prepareRecovery: vi.fn(),
+  settleRecovery: vi.fn<() => Promise<void>>(),
   budget: vi.fn(),
   finish: vi.fn(),
   terminal: vi.fn(),
   writeFile: vi.fn(),
+  stderrWrite: vi.fn<typeof process.stderr.write>(),
 }));
 
 // Exercise the executable's output boundary without update, service, or database effects.
 vi.mock("node:fs/promises", () => ({ default: { writeFile: fixture.writeFile } }));
+vi.mock("../flows/doctor-health.js", () => ({ runDoctorHealthFlow: fixture.doctor }));
+vi.mock("../commands/doctor-update-recovery.js", () => ({
+  runWithPreparedDoctorUpdateRecovery: <T>(run: () => T) => run(),
+  prepareDoctorUpdateRecovery: fixture.prepareRecovery,
+  withDoctorUpdateRecovery: async (
+    _runtime: unknown,
+    run: () => Promise<void>,
+    assertCurrent: () => void,
+  ) => {
+    assertCurrent();
+    fixture.recoveryActive = true;
+    try {
+      return await run();
+    } finally {
+      await fixture.settleRecovery();
+      fixture.recoveryActive = false;
+    }
+  },
+}));
 vi.mock("../cli/daemon-cli.js", () => ({ finishUpdateRun: vi.fn() }));
 vi.mock("../cli/runtime-cleanup-scope.js", () => ({
   retainCliProcessJobUntilExit: vi.fn(),
@@ -79,6 +102,9 @@ const result = { status: "ok", mode: "npm", steps: [], durationMs: 0 };
 beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
+  fixture.recoveryActive = false;
+  fixture.prepareRecovery.mockReset().mockResolvedValue(undefined);
+  fixture.settleRecovery.mockReset().mockResolvedValue(undefined);
   stdout.length = 0;
   stderr.length = 0;
   loggingState.forceConsoleToStderr = false;
@@ -93,7 +119,8 @@ beforeEach(() => {
     stdout.push(String(value));
     return true;
   });
-  vi.spyOn(process.stderr, "write").mockImplementation((value) => {
+  vi.spyOn(process.stderr, "write").mockImplementation(fixture.stderrWrite);
+  fixture.stderrWrite.mockImplementation((value) => {
     stderr.push(String(value));
     return true;
   });
@@ -106,6 +133,7 @@ afterEach(() => {
   loggingState.rawConsole = originalConsole;
   setLoggerOverride(null);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 it.each(["json", "human", "check"] as const)(
@@ -172,5 +200,99 @@ it.each(["json", "human", "check"] as const)(
         expect(stderr.join("")).toContain("terminal snapshot diagnostic");
       }
     }
+  },
+);
+
+it.each([false, true])(
+  "passes delegated Doctor recovery ownership only with a backup (%s)",
+  async (hasBackup) => {
+    const backup = {
+      directory: "/synthetic/recovery",
+      manifestPath: "/synthetic/recovery/manifest.json",
+      manifestSha256: "a".repeat(64),
+    };
+    const settled = createDeferredCore();
+    fixture.close.mockImplementation(async () => {
+      settled.resolve();
+    });
+    fixture.doctor.mockImplementation(async () => {
+      expect(fixture.recoveryActive).toBe(true);
+      expect(fixture.prepareRecovery).toHaveBeenCalledOnce();
+    });
+    vi.stubEnv("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH", "/synthetic/doctor-result.json");
+    process.argv = [process.execPath, "update-migrated-finalize.worker.js", "--doctor"];
+    vi.spyOn(process.stdin, Symbol.asyncIterator).mockImplementation(async function* () {
+      yield JSON.stringify({
+        executor: {},
+        runId: "synthetic-run",
+        root: "/synthetic",
+        repair: true,
+        configInputHash: "captured-config-hash",
+        ...(hasBackup ? { updateRecoveryBackup: backup } : {}),
+      });
+      return undefined;
+    });
+    await import("./update-migrated-finalize.worker.js");
+    await settled.promise;
+    expect(fixture.doctor).toHaveBeenCalledExactlyOnceWith(
+      expect.any(Object),
+      {
+        repair: true,
+        nonInteractive: true,
+        ...(hasBackup
+          ? { updateRecoveryOwner: "driver", updateRecoveryBackup: JSON.stringify(backup) }
+          : {}),
+      },
+      { inputHash: "captured-config-hash", assertCurrent: expect.any(Function) },
+    );
+    expect(process.exitCode).toBe(originalExitCode);
+  },
+);
+
+it.each(["admission", "settlement", "advisory"] as const)(
+  "does not publish delegated Doctor exit ahead of recovery %s",
+  async (phase) => {
+    const settled = createDeferredCore();
+    fixture.close.mockImplementation(async () => settled.resolve());
+    const failureReported = createDeferredCore();
+    fixture.stderrWrite.mockImplementation((value) => {
+      stderr.push(String(value));
+      failureReported.resolve();
+      return true;
+    });
+    fixture.doctor.mockImplementation((runtime) => runtime.exit(23));
+    if (phase === "admission") {
+      fixture.prepareRecovery.mockRejectedValue(new Error("capture admission refused"));
+    } else if (phase === "settlement") {
+      fixture.settleRecovery.mockRejectedValue(new Error("capture settlement failed"));
+    }
+    vi.stubEnv("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH", "/synthetic/doctor-result.json");
+    process.argv = [process.execPath, "update-migrated-finalize.worker.js", "--doctor"];
+    vi.spyOn(process.stdin, Symbol.asyncIterator).mockImplementation(async function* () {
+      yield JSON.stringify({
+        executor: {},
+        runId: "synthetic-run",
+        root: "/synthetic",
+        repair: true,
+        configInputHash: "captured-config-hash",
+      });
+      return undefined;
+    });
+    await import("./update-migrated-finalize.worker.js");
+    await settled.promise;
+    // Failure output is published only after the executable's finally closes state.
+    if (phase !== "advisory") {
+      await failureReported.promise;
+    }
+    expect(fixture.settleRecovery).toHaveBeenCalledOnce();
+    if (phase === "admission") {
+      expect(fixture.doctor).not.toHaveBeenCalled();
+      expect(stderr.join("")).toContain("capture admission refused");
+    } else if (phase === "settlement") {
+      expect(stderr.join("")).toContain("capture settlement failed");
+    } else {
+      expect(stderr.join("")).toBe("");
+    }
+    expect(process.exitCode).toBe(phase === "advisory" ? 23 : 1);
   },
 );

@@ -13,11 +13,13 @@ import { resolveStableNodePath } from "./stable-node-path.js";
 import type { UpdateChannel } from "./update-channels.js";
 import type { DevUpdateTarget } from "./update-dev-target.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
+import { registerGitDoctorOwnershipTests } from "./update-runner-doctor.suite.js";
 import {
   resolveUpdateInstallSurface,
   runGatewayUpdate,
   runGatewayUpdatePreflight,
 } from "./update-runner.js";
+// Covers gateway update runner scenarios.
 
 const { runCommandWithTimeout } = processExec;
 const execFileSyncMock = vi.hoisted(() => vi.fn(() => "/tmp/openclaw-test-global-npmrc\n"));
@@ -707,6 +709,10 @@ describe("runGatewayUpdate", () => {
       cwd?: string;
       devTarget?: DevUpdateTarget;
       progress?: NonNullable<Parameters<typeof runGatewayUpdate>[0]>["progress"];
+      getDoctorEnv?: NonNullable<Parameters<typeof runGatewayUpdate>[0]>["getDoctorEnv"];
+      getUpdateRecoveryBackup?: NonNullable<
+        Parameters<typeof runGatewayUpdate>[0]
+      >["getUpdateRecoveryBackup"];
       deferConfiguredPluginInstallRepair?: boolean;
       allowGatewayServiceRepair?: boolean;
       allowGatewayActivation?: boolean;
@@ -765,6 +771,8 @@ describe("runGatewayUpdate", () => {
       ...(options?.allowGatewayActivation ? { allowGatewayActivation: true } : {}),
       ...(options?.beforeGitMutation ? { beforeGitMutation: options.beforeGitMutation } : {}),
       ...(options?.progress ? { progress: options.progress } : {}),
+      getDoctorEnv: options?.getDoctorEnv,
+      getUpdateRecoveryBackup: options?.getUpdateRecoveryBackup,
     });
   }
 
@@ -1580,78 +1588,14 @@ describe("runGatewayUpdate", () => {
     },
   );
 
-  it("marks git update doctor passes for configured-plugin repair deferral when requested", async () => {
-    await setupGitCheckout({ packageManager: PNPM_PACKAGE_MANAGER });
-    await setupUiIndex();
-    const stableTag = "v1.0.1-1";
-    let doctorEnv: NodeJS.ProcessEnv | undefined;
-    const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive --fix`;
-    const { runCommand } = createGitInstallRunner({
-      stableTag,
-      installCommand: "pnpm install",
-      buildCommand: "pnpm build",
-      uiBuildCommand: "pnpm ui:build",
-      doctorCommand,
-      onCommand: (key, options) => {
-        if (key === doctorCommand) {
-          doctorEnv = options?.env;
-        }
-        return undefined;
-      },
-    });
-
-    const result = await runWithCommand(runCommand, {
-      channel: "stable",
-      deferConfiguredPluginInstallRepair: true,
-      allowGatewayServiceRepair: true,
-      allowGatewayActivation: true,
-    });
-
-    expect(result.status).toBe("ok");
-    expect(doctorEnv?.OPENCLAW_UPDATE_IN_PROGRESS).toBe("1");
-    expect(doctorEnv?.OPENCLAW_UPDATE_DEFER_CONFIGURED_PLUGIN_INSTALL_REPAIR).toBe("1");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE).toBe("1");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_SUPPORTS_GATEWAY_RESTART).toBe("1");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR).toBe("1");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION).toBe("1");
-  });
-
-  it("uses the pre-mutation activation decision for the git update doctor pass", async () => {
-    await setupGitCheckout({ packageManager: PNPM_PACKAGE_MANAGER });
-    await setupUiIndex();
-    const stableTag = "v1.0.1-1";
-    let doctorEnv: NodeJS.ProcessEnv | undefined;
-    const doctorNodePath = await resolveStableNodePath(process.execPath);
-    const doctorCommand = `${doctorNodePath} ${path.join(tempDir, "openclaw.mjs")} doctor --non-interactive`;
-    const { runCommand } = createGitInstallRunner({
-      stableTag,
-      installCommand: "pnpm install",
-      buildCommand: "pnpm build",
-      uiBuildCommand: "pnpm ui:build",
-      doctorCommand,
-      onCommand: (key, options) => {
-        if (key === doctorCommand) {
-          doctorEnv = options?.env;
-        }
-        return undefined;
-      },
-    });
-
-    const result = await runWithCommand(runCommand, {
-      channel: "stable",
-      allowGatewayServiceRepair: true,
-      allowGatewayActivation: true,
-      beforeGitMutation: async () => ({
-        allowGatewayServiceRepair: false,
-        allowGatewayActivation: false,
-      }),
-    });
-
-    expect(result.status).toBe("ok");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR).toBe("0");
-    expect(doctorEnv?.OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION).toBe("0");
-    expect(doctorEnv?.OPENCLAW_SERVICE_REPAIR_POLICY).toBeUndefined();
+  registerGitDoctorOwnershipTests({
+    root: () => tempDir,
+    prepare: async () => {
+      await setupGitCheckout({ packageManager: PNPM_PACKAGE_MANAGER });
+      await setupUiIndex();
+    },
+    createRunner: createGitInstallRunner,
+    run: runWithCommand,
   });
 
   it("uses pnpm highest resolution mode for dev preflight installs", async () => {

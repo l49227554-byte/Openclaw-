@@ -1,3 +1,4 @@
+import type { Serializable } from "node:child_process";
 import process from "node:process";
 import { expectDefined } from "@openclaw/normalization-core";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
@@ -56,6 +57,11 @@ export type CommandOptions = {
   input?: string | Uint8Array;
   /** Synchronous admission with the spawned PID and argv, before input is released. */
   beforeInput?: (pid: number, argv?: readonly string[]) => void;
+  /** Private IPC owned by the exact spawned process; handlers settle before command completion. */
+  onChildMessage?: (
+    message: unknown,
+    reply: (message: Serializable) => Promise<void>,
+  ) => void | Promise<void>;
   baseEnv?: NodeJS.ProcessEnv;
   env?: NodeJS.ProcessEnv;
   windowsVerbatimArguments?: boolean;
@@ -212,6 +218,7 @@ async function runCommandWithOutputEncoding(
 
   const { child, invocation } = spawnCommandWithInvocation(argv, {
     buffer: false,
+    ...(options.onChildMessage ? { ipc: true } : {}),
     cancelSignal: cancelController.signal,
     inheritScopeCancellation: false,
     cwd,
@@ -498,6 +505,41 @@ async function runCommandWithOutputEncoding(
   });
 
   let inputAdmissionError: Error | undefined;
+  const controlWork = new Set<Promise<void>>();
+  const onChildMessage = (message: unknown) => {
+    const handler = options.onChildMessage;
+    if (!handler) {
+      return;
+    }
+    if (controlWork.size >= 32) {
+      inputAdmissionError ??= new Error("Command control channel capacity exceeded");
+      cancel("signal");
+      return;
+    }
+    const task = Promise.resolve()
+      .then(() =>
+        handler(
+          message,
+          (response) =>
+            new Promise<void>((resolve, reject) => {
+              if (!nodeChild.connected) {
+                reject(new Error("Command control channel disconnected"));
+                return;
+              }
+              nodeChild.send(response, (error) => (error ? reject(error) : resolve()));
+            }),
+        ),
+      )
+      .catch((cause: unknown) => {
+        inputAdmissionError ??= toErrorObject(cause, "Command control channel failed");
+        cancel("signal");
+      })
+      .finally(() => controlWork.delete(task));
+    controlWork.add(task);
+  };
+  if (options.onChildMessage) {
+    nodeChild.on("message", onChildMessage);
+  }
   if (options.beforeInput) {
     nodeChild.stdin?.once("error", (cause) => {
       inputAdmissionError ??= toErrorObject(cause, "Command input failed");
@@ -524,10 +566,12 @@ async function runCommandWithOutputEncoding(
 
   const result = await child.finally(() => {
     commandSettled = true;
+    nodeChild.off("message", onChildMessage);
     clearTimers();
     releaseOutput?.();
   });
   let cleanup = await processCleanup;
+  await Promise.all(controlWork);
   const resolvedSignal = result.signal ?? childExitState?.signal ?? nodeChild.signalCode ?? null;
   if (cleanup === "normal" && resolvedSignal) {
     cleanup = "uncertain";

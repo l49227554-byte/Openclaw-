@@ -26,6 +26,7 @@ import {
   getCallHistoryFromStore,
   loadActiveCallsFromStore,
 } from "./src/manager/store.js";
+// Voice Call tests cover doctor contract api plugin behavior.
 
 function createDoctorContext(
   env: NodeJS.ProcessEnv,
@@ -383,6 +384,9 @@ describe("voice-call doctor state migration", () => {
       context: createDoctorContext(env),
     };
 
+    expect((await migration.collectBackupResources?.({ config, env, stateDir })) ?? []).toEqual([
+      { path: storePath, kind: "directory" },
+    ]);
     await expect(migration.detectLegacyState(params)).resolves.toEqual({
       preview: [
         "- Voice Call SQLite schema: audit event ledger -> versioned message lifecycle schema",

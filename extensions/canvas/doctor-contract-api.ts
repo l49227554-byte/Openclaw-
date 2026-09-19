@@ -8,6 +8,7 @@ import {
   migrateCanvasHostConfig,
   resolveLegacyCanvasDocumentsDir,
 } from "./src/config-migration.js";
+// Canvas Doctor keeps copy-time dependencies cold until legacy documents exist.
 
 const RETIRED_CANVAS_HOST_CONFIG_PATH = ["plugins", "entries", "canvas", "config", "host"] as const;
 
@@ -36,6 +37,15 @@ export const stateMigrations: PluginDoctorStateMigration[] = [
   {
     id: "canvas-custom-root-documents-to-core",
     label: "Canvas documents in a custom host root",
+    collectBackupResources(params) {
+      const legacyDir = resolveLegacyCanvasDocumentsDir(params);
+      return legacyDir
+        ? [
+            { path: legacyDir, kind: "directory" },
+            { path: path.resolve(params.stateDir, "canvas", "documents"), kind: "directory" },
+          ]
+        : [];
+    },
     async detectLegacyState(params) {
       const legacyDir = resolveLegacyCanvasDocumentsDir(params);
       if (!legacyDir) {

@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
+import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
 import type { captureTargetDatabaseSchemaContext } from "./schema-preflight.js";
 import type { executeMutableUpdate } from "./update-command-execution.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
-
 const mocks = vi.hoisted(() => ({
   captureManagedContext: vi.fn(),
+  assertNoUnresolvedCapture: vi.fn<() => Promise<void>>(),
   captureManagedPreflight:
     vi.fn<
       typeof import("./update-command-managed-context.js").captureOwnedManagedUpdatePreflightContext
@@ -45,6 +47,11 @@ vi.mock("./update-command-service-command.js", async (importOriginal) => ({
 }));
 
 afterEach(() => vi.restoreAllMocks());
+
+vi.mock("../../infra/update-recovery-backup.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/update-recovery-backup.js")>()),
+  assertNoUnresolvedUpdateRecoveryBackup: mocks.assertNoUnresolvedCapture,
+}));
 
 vi.mock("../../infra/update-global.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/update-global.js")>()),
@@ -154,7 +161,10 @@ function executionParams(
     invocationCwd: "/work",
     recoveryState: { triageTarget: { env: {} } },
     prepareMutableUpdate: mocks.prepareMutableUpdate,
-    packageTargetSchemaVersions: { state: 15, agent: 19 },
+    packageTargetSchemaVersions: {
+      state: OPENCLAW_STATE_SCHEMA_VERSION,
+      agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+    },
   };
 }
 
@@ -206,6 +216,7 @@ function inspectOrStopService(phase: "inspect" | "prepare" = "prepare"): PreMana
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.serviceStopped = false;
+  mocks.assertNoUnresolvedCapture.mockResolvedValue(undefined);
   mocks.validateCanary.mockResolvedValue({
     status: "ok",
     phase: "readiness",

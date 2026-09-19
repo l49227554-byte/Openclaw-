@@ -404,10 +404,17 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
         ? normalizeHookEligibility(opts?.eligibleDispatchKinds, isPluginHookReplyDispatchKind)
         : undefined;
     const matcher =
-      hookName === "before_tool_call" || hookName === "after_tool_call"
+      hookName === "before_tool_call" ||
+      hookName === "after_tool_call" ||
+      hookName === "tool_result_transform"
         ? normalizePluginToolMatcher(opts?.matcher)
         : undefined;
-    if (opts?.matcher && hookName !== "before_tool_call" && hookName !== "after_tool_call") {
+    if (
+      opts?.matcher &&
+      hookName !== "before_tool_call" &&
+      hookName !== "after_tool_call" &&
+      hookName !== "tool_result_transform"
+    ) {
       reportRegistrationWarning(record, `typed hook "${hookName}" ignores tool matcher`);
     }
     record.hookCount += 1;

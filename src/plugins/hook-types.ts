@@ -119,6 +119,7 @@ export type PluginHookName =
   | "message_sent"
   | "before_tool_call"
   | "after_tool_call"
+  | "tool_result_transform"
   | "tool_result_persist"
   | "before_message_write"
   | "session_start"
@@ -163,6 +164,7 @@ const PLUGIN_HOOK_NAMES = [
   "message_sent",
   "before_tool_call",
   "after_tool_call",
+  "tool_result_transform",
   "tool_result_persist",
   "before_message_write",
   "session_start",
@@ -278,7 +280,7 @@ export type PluginHookRegistrationOptions<K extends PluginHookName> = {
         ];
       }
     : { eligibleDispatchKinds?: never }) &
-  (K extends "before_tool_call" | "after_tool_call"
+  (K extends "before_tool_call" | "after_tool_call" | "tool_result_transform"
     ? { matcher?: PluginToolMatcher }
     : { matcher?: never }) &
   (K extends "before_prompt_build"
@@ -755,6 +757,10 @@ export type PluginHookAfterToolCallEvent = {
   result?: unknown;
   error?: string;
   durationMs?: number;
+};
+
+export type PluginHookToolResultTransformResult = {
+  result: { content: unknown[]; details?: unknown; [key: string]: unknown };
 };
 
 export type PluginHookToolResultPersistContext = {
@@ -1299,6 +1305,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookAfterToolCallEvent,
     ctx: PluginHookToolContext,
   ) => Promise<void> | void;
+  tool_result_transform: (
+    event: PluginHookAfterToolCallEvent,
+    ctx: PluginHookToolContext,
+  ) =>
+    | Promise<PluginHookToolResultTransformResult | void>
+    | PluginHookToolResultTransformResult
+    | void;
   tool_result_persist: (
     event: PluginHookToolResultPersistEvent,
     ctx: PluginHookToolResultPersistContext,

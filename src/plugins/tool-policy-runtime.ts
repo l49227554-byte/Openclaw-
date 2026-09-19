@@ -23,7 +23,12 @@ export function adoptRuntimeToolPolicyRegistrations(
     );
   };
   const permitsHook = (pluginId: string, hookName: PluginHookName) => {
-    if (hookName === "before_tool_call" || hookName === "after_tool_call") return true;
+    if (
+      hookName === "before_tool_call" ||
+      hookName === "after_tool_call" ||
+      hookName === "tool_result_transform"
+    )
+      return true;
     if (!isConversationHookName(hookName)) return false;
     const owner = target.plugins.find((plugin) => plugin.id === pluginId);
     const policy = config?.plugins?.entries?.[pluginId]?.hooks;

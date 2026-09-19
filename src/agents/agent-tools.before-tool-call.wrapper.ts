@@ -13,6 +13,7 @@ import {
   freezeDiagnosticTraceContext,
 } from "../infra/diagnostic-trace-context.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
+import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import { recordRunSkillUsage } from "../skills/runtime/run-usage.js";
 import { copyBeforeToolCallWrapperMetadata } from "./agent-tool-metadata.js";
@@ -565,6 +566,35 @@ export function wrapToolWithBeforeToolCallHook(
             getBeforeToolCallFailureDisposition(error) === undefined
             ? protectNetworkToolExecutionError(error, "Tool execution failed.", signal)
             : error;
+        }
+        const hooks = getGlobalHookRunner();
+        if (hooks?.hasHooks("tool_result_transform")) {
+          const transformed = await hooks.runToolResultTransform(
+            {
+              toolName: normalizedToolName,
+              params: executeParams as Record<string, unknown>,
+              result,
+              runId: ctx?.runId,
+              toolCallId,
+            },
+            {
+              toolName: normalizedToolName,
+              agentId: ctx?.agentId,
+              sessionKey: ctx?.sessionKey,
+              sessionId: ctx?.sessionId,
+              runId: ctx?.runId,
+              toolCallId,
+              channelId: ctx?.channelId,
+              requester: ctx?.requester,
+              abortSignal: signal,
+            },
+          );
+          // Revoked admission must not release an awaited transformed result.
+          signal?.throwIfAborted();
+          runAgentToolSourceExecutionGuard(tool);
+          if (transformed?.result && Array.isArray(transformed.result.content)) {
+            result = transformed.result as typeof result;
+          }
         }
         const durationMs = Date.now() - startedAt;
         const terminalPresentation = resolveToolTerminalPresentation({

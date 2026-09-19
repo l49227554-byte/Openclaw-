@@ -34,6 +34,7 @@ import type { GlobalHookRunnerRegistry, HookRunnerRegistry } from "./hook-regist
 import { isPluginHookReplyDispatchKind } from "./hook-types.js";
 import type {
   PluginHookAfterToolCallEvent,
+  PluginHookToolResultTransformResult,
   PluginHookAgentContext,
   PluginHookAgentTrigger,
   PluginHookAgentEndEvent,
@@ -169,6 +170,7 @@ const DEFAULT_MODIFYING_HOOK_TIMEOUT_MS_BY_HOOK: Partial<Record<PluginHookName, 
   // stalled policy process into a denial instead of freezing the operation.
   before_install: 15_000,
   before_tool_call: 15_000,
+  tool_result_transform: 2_000,
   // Terminal finalization hooks sit on the runner's completion path. A hung
   // handler must not freeze final delivery or keep compaction retry recovery
   // unresolved; timeout fail-opens with the original final answer.
@@ -283,7 +285,7 @@ function getHooksForName<K extends PluginHookName>(
 
 export function getToolHookMatcherScope(
   registry: HookRunnerRegistry,
-  hookName: "before_tool_call" | "after_tool_call",
+  hookName: "before_tool_call" | "after_tool_call" | "tool_result_transform",
 ): PluginToolMatcherScope | undefined {
   return createPluginToolMatcherScope(
     getHooksForName(registry, hookName).map((registration) => registration.matcher),
@@ -1519,6 +1521,21 @@ export function createHookRunner(
     return runVoidHook("after_tool_call", event, ctx, {}, event.toolName);
   }
 
+  // Transform only the already-authorized terminal result. Every handler gets
+  // an isolated original value; timeout/error leaves it untouched.
+  async function runToolResultTransform(
+    event: PluginHookAfterToolCallEvent,
+    ctx: PluginHookToolContext,
+  ): Promise<PluginHookToolResultTransformResult | undefined> {
+    return runModifyingHook<"tool_result_transform", PluginHookToolResultTransformResult>(
+      "tool_result_transform",
+      event,
+      ctx,
+      { isolateEventPerHandler: true, shouldStop: () => true },
+      event.toolName,
+    );
+  }
+
   /**
    * Run tool_result_persist hook.
    *
@@ -1775,6 +1792,7 @@ export function createHookRunner(
     // Tool hooks
     runBeforeToolCall,
     runAfterToolCall,
+    runToolResultTransform,
     runToolResultPersist,
     // Message write hooks
     runBeforeMessageWrite,

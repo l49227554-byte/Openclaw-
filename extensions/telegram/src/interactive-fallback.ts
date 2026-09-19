@@ -15,9 +15,11 @@ import {
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload";
 import {
+  appendTelegramDroppedControlFallback,
   buildTelegramPresentationButtons,
   resolveTelegramInlineButtons,
   type TelegramButtonBuildOptions,
+  type TelegramDroppedControl,
 } from "./button-types.js";
 import { buildInlineKeyboard } from "./inline-keyboard.js";
 
@@ -355,12 +357,19 @@ export function resolveFinalTelegramPresentationText(params: {
   const telegramData = params.payload.channelData?.telegram as
     | { buttons?: Parameters<typeof resolveTelegramInlineButtons>[0]["buttons"] }
     | undefined;
+  // Dispatch resolves the same legacy controls with a collection hook and
+  // appends their labels to the text this renderer replaces, so the fallback
+  // final must re-collect them or the only visible label is lost.
+  const droppedControls: TelegramDroppedControl[] = [];
   const existingButtons = resolveTelegramInlineButtons(
     {
       buttons: telegramData?.buttons,
       interactive: normalizeLegacyInteractiveReply(params.payload.interactive),
     },
-    buttonOptions,
+    {
+      ...buttonOptions,
+      onDroppedControl: (control) => droppedControls.push(control),
+    },
   );
   const { fallbackBlocks } = partitionTelegramPresentationBlocks({
     presentation,
@@ -377,5 +386,9 @@ export function resolveFinalTelegramPresentationText(params: {
           presentation: { ...presentation, blocks: fallbackBlocks },
         })
   ).trimEnd();
-  return rendered && rendered !== params.text.trimEnd() ? rendered : undefined;
+  if (!rendered) {
+    return undefined;
+  }
+  const finalText = appendTelegramDroppedControlFallback(rendered, droppedControls);
+  return finalText !== params.text.trimEnd() ? finalText : undefined;
 }

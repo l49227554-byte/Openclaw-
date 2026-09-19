@@ -242,6 +242,53 @@ describeTelegramDispatch("dispatchTelegramMessage draft-finalization", () => {
     expect(deliverReplies).not.toHaveBeenCalled();
   });
 
+  it("keeps the dropped legacy-control label when a fallback final mixes a table with a legacy interactive control", async () => {
+    const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver(
+        {
+          text: "Gateway status as plain text",
+          presentationTextMode: "fallback",
+          presentation: {
+            blocks: [
+              {
+                type: "table",
+                caption: "Status",
+                headers: ["Key", "Value"],
+                rows: [["Gateway", "running"]],
+                rowHeaderColumnIndex: 0,
+              },
+            ],
+          },
+          interactive: {
+            blocks: [
+              {
+                type: "buttons",
+                buttons: [{ label: "Copy manually", value: "x".repeat(65) }],
+              },
+            ],
+          },
+        },
+        { kind: "final" },
+      );
+      return { queuedFinal: true };
+    });
+
+    await dispatchWithContext({
+      context: createContext(),
+      streamMode: "partial",
+      telegramCfg: { richMessages: true, streaming: { mode: "partial" } },
+    });
+
+    // Dispatch appends the dropped legacy-control label to the recovered text;
+    // the presentation-only finalization must re-collect it, not erase it.
+    const finalUpdate = answerDraftStream.update.mock.calls.at(-1)?.[0] as string;
+    expect(finalUpdate).toContain("<table><caption>Status</caption>");
+    expect(finalUpdate).toContain("- Copy manually");
+    expect(finalUpdate).not.toBe("Gateway status as plain text");
+    expect(deliverReplies).not.toHaveBeenCalled();
+  });
+
   it("keeps the group web-app label when a fallback final mixes a table with a web-app control", async () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {

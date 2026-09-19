@@ -4,6 +4,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { html, nothing } from "lit";
+import { live } from "lit/directives/live.js";
 import type { SessionsSearchHit } from "../../../../packages/gateway-protocol/src/index.js";
 import type {
   AgentIdentityResult,
@@ -842,6 +843,7 @@ function renderCategoryCell(row: GatewaySessionRow, props: SessionsProps) {
         title=${props.groupWriteDisabledReason ?? nothing}
         aria-label=${t("sessionsView.moveToGroup")}
         class="session-group-select"
+        .value=${live(current)}
         @change=${(e: Event) => {
           if (props.groupWriteDisabledReason) {
             return;
@@ -919,6 +921,7 @@ function renderOverrideSelect(params: {
       <span class="session-override-field__label">${params.label}</span>
       <select
         class="settings-select"
+        .value=${live(params.current)}
         ?disabled=${params.disabled}
         title=${params.disabledReason ?? nothing}
         @change=${(e: Event) => params.onChange((e.target as HTMLSelectElement).value)}

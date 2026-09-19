@@ -1,7 +1,8 @@
 import path from "node:path";
 import { expect } from "vitest";
+import { acquireGatewayTestClient } from "../../../../test/helpers/gateway-client.js";
 import type { OpenClawConfig } from "../../../config/config.js";
-import { GatewayClient } from "../../../gateway/client.js";
+import type { GatewayClient } from "../../../gateway/client.js";
 import { createOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../../../utils/message-channel.js";
 
@@ -191,8 +192,8 @@ export function createGatewayClient(params: {
   token: string;
   onEvent?: ConstructorParameters<typeof GatewayClient>[0]["onEvent"];
 }): Promise<GatewayClient> {
-  return new Promise((resolve, reject) => {
-    const client = new GatewayClient({
+  return acquireGatewayTestClient(
+    {
       url: `ws://127.0.0.1:${params.port}`,
       token: params.token,
       deviceIdentity: null,
@@ -201,11 +202,13 @@ export function createGatewayClient(params: {
       scopes: ["operator.admin"],
       requestTimeoutMs: REQUEST_TIMEOUT_MS,
       onEvent: params.onEvent,
-      onHelloOk: () => resolve(client),
-      onConnectError: reject,
-    });
-    client.start();
-  });
+    },
+    {
+      timeoutMs: 30_000,
+      timeoutMessage: "Live subagent Gateway connection timed out",
+      closeMessage: "Live subagent Gateway closed before hello",
+    },
+  );
 }
 
 export function createLiveSubagentState(

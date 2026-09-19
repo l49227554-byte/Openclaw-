@@ -17,10 +17,12 @@ import {
 } from "../agents/subagents/registry/subagent-registry.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import { createSessionsSendTool } from "../agents/tools/sessions-send-tool.js";
+import { getRuntimeConfig } from "../config/config.js";
 import {
   listSessionPendingInputReceipts,
   listSessionPendingInputs,
 } from "../config/sessions/session-accessor.js";
+import { publishSystemEventStoreConfig } from "../config/sessions/session-store-path.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { unregisterOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
@@ -91,6 +93,7 @@ async function arrangeAuthorityProof(name: string) {
     },
   });
   await prepareGatewayReplyRuntimeForTest();
+  publishSystemEventStoreConfig(getRuntimeConfig());
   registerSubagentRun({
     runId: previousRunId,
     childSessionKey: child,
@@ -408,6 +411,7 @@ it("continues a paused child through ordinary sessions_send and delivers exactly
       },
     });
     await prepareGatewayReplyRuntimeForTest();
+    publishSystemEventStoreConfig(getRuntimeConfig());
     // Seed paused registry/canonical-task state without polling a nonexistent source execution.
     registerSubagentRun({
       runId: previousRunId,

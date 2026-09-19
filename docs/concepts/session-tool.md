@@ -179,6 +179,7 @@ an inline wait or a second watcher. Explicit `mode: "resume"` rejects `watch: tr
 and positive waits. Resume requires trusted in-process
 Gateway admission. Unrelated callers, completed tasks, and changed child sessions
 are rejected rather than falling back to ordinary messaging.
+Controller ownership remains bound to the originally recorded session store.
 
 `timeoutSeconds` limits the sending tool's wait, not the receiver's execution
 budget. For nonblocking coordination, use `sessions_send` with `timeoutSeconds: 0`.

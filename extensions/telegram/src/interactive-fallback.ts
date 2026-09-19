@@ -333,6 +333,7 @@ export function resolveFinalTelegramPresentationText(params: {
   payload: ReplyPayload;
   text: string;
   richMessages: boolean;
+  allowWebAppButtons?: boolean;
 }): string | undefined {
   if (params.payload.presentationTextMode !== "fallback") {
     return undefined;
@@ -341,20 +342,38 @@ export function resolveFinalTelegramPresentationText(params: {
   if (!presentation) {
     return undefined;
   }
-  // Dispatch already routed interactive blocks to native controls or appended
-  // them to the authored text, so only presentational blocks are left for the
-  // streamed final message to render.
-  const presentationalBlocks = presentation.blocks.filter(
-    (block) => !isMessagePresentationInteractiveBlock(block),
+  // The streamed final must land on the same text the non-streamed sender's
+  // canonicalization would produce: presentational blocks and controls Telegram
+  // cannot encode stay in the message text, while native-encodable controls
+  // move to the inline keyboard and out of the text. Filtering interactive
+  // blocks wholesale would erase the only visible fallback for dropped controls.
+  const buttonOptions: TelegramButtonBuildOptions = {
+    allowWebAppButtons: params.allowWebAppButtons === true,
+    questionOptionIndices: resolveAskUserQuestionOptionIndices(params.payload),
+  };
+  const telegramData = params.payload.channelData?.telegram as
+    | { buttons?: Parameters<typeof resolveTelegramInlineButtons>[0]["buttons"] }
+    | undefined;
+  const existingButtons = resolveTelegramInlineButtons(
+    {
+      buttons: telegramData?.buttons,
+      interactive: normalizeLegacyInteractiveReply(params.payload.interactive),
+    },
+    buttonOptions,
   );
-  if (presentationalBlocks.length === 0) {
+  const { fallbackBlocks } = partitionTelegramPresentationBlocks({
+    presentation,
+    presentationControlsSelected: existingButtons === undefined,
+    buttonOptions,
+  });
+  if (fallbackBlocks.length === 0) {
     return undefined;
   }
   const rendered = (
     params.richMessages
-      ? renderTelegramRichFallbackText({ ...presentation, blocks: presentationalBlocks })
+      ? renderTelegramRichFallbackText({ ...presentation, blocks: fallbackBlocks })
       : renderMessagePresentationFallbackText({
-          presentation: { ...presentation, blocks: presentationalBlocks },
+          presentation: { ...presentation, blocks: fallbackBlocks },
         })
   ).trimEnd();
   return rendered && rendered !== params.text.trimEnd() ? rendered : undefined;

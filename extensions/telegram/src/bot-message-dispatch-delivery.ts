@@ -700,6 +700,8 @@ export function createDeliveryState(
         payload,
         text,
         richMessages: getTurn().telegramCfg.richMessages === true,
+        allowWebAppButtons:
+          resolveTelegramTargetChatType(String(getTurn().context.chatId)) === "direct",
       }),
     log: logVerbose,
     markDelivered: deliveryState.markDelivered,

@@ -98,6 +98,14 @@ export class TalkRealtimeRelayOutputOwnership {
   turnId?: string;
   responseId?: string;
   drain?: { promise: Promise<void>; resolve: () => void };
+  /**
+   * Set when the provider never confirmed a cancelled response: the relay released the
+   * drain itself and drops the interrupted generation's remaining output until that
+   * generation ends at a provider boundary or continuity resets. Each fence has its own
+   * id so a watchdog armed for one cancellation cannot retire a later one.
+   */
+  private discardFence?: { id: number; responseId?: string };
+  private discardFenceCount = 0;
 
   constructor(
     private readonly activeTurnId: () => string | undefined,
@@ -105,8 +113,30 @@ export class TalkRealtimeRelayOutputOwnership {
     private readonly fail: (message: string) => void,
   ) {}
 
+  get discarding(): boolean {
+    return this.discardFence !== undefined;
+  }
+
+  /** Whether the discard fence with this id still holds the stale generation. */
+  isDiscarding(fenceId: number): boolean {
+    return this.discardFence?.id === fenceId;
+  }
+
+  /** Output is refused while a cancellation drains or a stale generation is discarded. */
+  get suppressingOutput(): boolean {
+    return this.phase === "cancelling" || this.discarding;
+  }
+
   responseCreated(responseId: string | undefined): boolean {
     const normalizedResponseId = responseId?.trim();
+    if (
+      this.discardFence &&
+      normalizedResponseId &&
+      normalizedResponseId !== this.discardFence.responseId
+    ) {
+      // An identified replacement response is the provider boundary that ends the stale one.
+      this.discardFence = undefined;
+    }
     if (this.phase === "unowned") {
       Object.assign(this, {
         mode: normalizedResponseId ? ("exact-response" as const) : ("turn-bound" as const),
@@ -129,6 +159,9 @@ export class TalkRealtimeRelayOutputOwnership {
   }
 
   resolve(claim: boolean): string | undefined {
+    if (this.discarding) {
+      return undefined;
+    }
     const activeTurnId = this.activeTurnId();
     if (
       this.phase !== "cancelling" &&
@@ -148,6 +181,9 @@ export class TalkRealtimeRelayOutputOwnership {
   }
 
   finish(responseId: string | undefined, cancellationEvent = false) {
+    if (this.discardFence) {
+      return this.endDiscardedGeneration(responseId) ? "cancelled" : "ignore";
+    }
     const cancelled = this.phase === "cancelling";
     if (
       (cancellationEvent && !cancelled) ||
@@ -159,6 +195,53 @@ export class TalkRealtimeRelayOutputOwnership {
     this.drain?.resolve();
     Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
     return cancelled ? "cancelled" : "completed";
+  }
+
+  /**
+   * Completes a pending cancellation without provider confirmation and fences the cancelled
+   * generation's output. Returns the fence id, or undefined when no cancellation is pending.
+   */
+  completeCancellationLocally(): number | undefined {
+    if (this.phase !== "cancelling") {
+      return undefined;
+    }
+    // A cancellation that overlaps a held fence targets the same provider generation, since
+    // fenced output is never owned: keep that fence rather than open one for nothing.
+    const fence = this.discardFence ?? {
+      id: ++this.discardFenceCount,
+      responseId: this.responseId,
+    };
+    this.discardFence = fence;
+    this.drain?.resolve();
+    Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
+    return fence.id;
+  }
+
+  /**
+   * Consumes the fenced generation's provider boundary; nothing was owned meanwhile.
+   * Returns false when no fence holds or the boundary belongs to another response.
+   */
+  endDiscardedGeneration(responseId: string | undefined): boolean {
+    const fence = this.discardFence;
+    if (!fence || (fence.responseId && responseId && fence.responseId !== responseId)) {
+      return false;
+    }
+    this.discardFence = undefined;
+    if (this.phase === "cancelling") {
+      // A cancellation that overlapped the fence could only target this generation, so its
+      // end confirms that cancellation too.
+      this.drain?.resolve();
+      Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
+    }
+    return true;
+  }
+
+  /** Retires the provider generation, its drain, and any discard fence on continuity loss. */
+  resetContinuity(): void {
+    this.outputGeneration += 1;
+    this.discardFence = undefined;
+    this.drain?.resolve();
+    Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
   }
 
   bind(provider: RelayProvider, runAgentConsult: RealtimeVoiceAgentConsultRunner): RelayProvider {
@@ -176,6 +259,13 @@ export class TalkRealtimeRelayOutputOwnership {
               return;
             }
             request.onEvent?.(event);
+          },
+          onResponseDone: (outcome) => {
+            // The stale generation's end must not settle the turn the microphone opened
+            // since; the relay already cancelled the stale turn when it fenced the output.
+            if (!this.endDiscardedGeneration(outcome.responseId)) {
+              request.onResponseDone?.(outcome);
+            }
           },
           runAgentConsult,
         }),

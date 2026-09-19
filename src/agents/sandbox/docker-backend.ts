@@ -25,6 +25,7 @@ import {
   validateSandboxContainerEngineTarget,
 } from "./docker.js";
 import { resolveSandboxContainerOnlyMounts } from "./mount-plan.js";
+import { createSandboxProcessCleanup } from "./process-cleanup.js";
 import type { SandboxRegistryEntry } from "./registry.js";
 
 type ContainerExecFinalizeToken = () => Promise<void>;
@@ -192,6 +193,19 @@ function createContainerSandboxBackendHandle(params: {
         throw new Error("Invalid container sandbox execution cleanup token.");
       }
       await token();
+    },
+    prepareProcessCleanup(env) {
+      params.assertCurrent?.();
+      return createSandboxProcessCleanup(
+        (command) =>
+          runContainerSandboxShellCommand({
+            engine: params.engine,
+            containerName: params.containerName,
+            podmanTarget: params.podmanTarget,
+            ...command,
+          }),
+        env,
+      );
     },
     runShellCommand(command) {
       return runContainerSandboxShellCommand({

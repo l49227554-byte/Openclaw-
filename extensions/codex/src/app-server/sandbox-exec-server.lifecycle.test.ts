@@ -101,6 +101,72 @@ afterEach(() => {
 });
 
 describe("Codex sandbox exec-server lifecycle", () => {
+  it("retains termination-only custody after the guest execution owner is revoked", async () => {
+    const child = createFakeChild();
+    spawnMock.mockReturnValue(child);
+    let current = true;
+    const terminate = vi.fn(async () => {
+      child.emit("close", 137, "SIGKILL");
+    });
+    const runShellCommand = vi.fn(async () => {
+      throw new Error("revoked execution");
+    });
+    const sandbox = createSandboxContext({
+      buildExecSpec: async () => ({ argv: ["sandbox-child"], env: {}, stdinMode: "pipe-closed" }),
+      runShellCommand,
+    });
+    sandbox.backend!.prepareProcessCleanup = (env) => {
+      if (!current) {
+        throw new Error("revoked execution");
+      }
+      return { env, terminate };
+    };
+    const processes = new Map<string, ManagedProcess>();
+    const server = createExecServer(sandbox);
+    await startProcess(
+      server,
+      processes,
+      createFakeNotifications().send,
+      processStartParams("owned-child"),
+    );
+    current = false;
+    await terminateProcess(processes, { processId: "owned-child" });
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(runShellCommand).not.toHaveBeenCalled();
+    expect(server.children.size).toBe(0);
+  });
+
+  it("revalidates a prepared exec spec immediately before spawning the transport", async () => {
+    const finalizeExec = vi.fn(async () => undefined);
+    const sandbox = createSandboxContext({
+      buildExecSpec: async () => ({
+        argv: ["must-not-spawn"],
+        env: {},
+        stdinMode: "pipe-closed",
+        finalizeToken: "retired",
+        assertCurrent: () => {
+          throw new Error("prepared owner revoked");
+        },
+      }),
+      finalizeExec,
+    });
+    await expect(
+      startProcess(
+        createExecServer(sandbox),
+        new Map(),
+        createFakeNotifications().send,
+        processStartParams("retired"),
+      ),
+    ).rejects.toThrow("prepared owner revoked");
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(finalizeExec).toHaveBeenCalledWith({
+      status: "failed",
+      exitCode: null,
+      timedOut: false,
+      token: "retired",
+    });
+  });
+
   it.each([
     { key: "HOME", via: "path" },
     { key: "OPENCLAW_STATE_DIR", via: "path" },

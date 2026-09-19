@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   resolveLocalWorkspaceOwner,
@@ -27,6 +28,10 @@ export async function prepareLocalSandboxWorkspace(params: {
   owner.assertCurrent();
   return {
     workspaceDir,
+    workspaceCwd: path.join(
+      workspaceDir,
+      path.relative(owner.worktree.path, params.workspaceDir ?? owner.worktree.path),
+    ),
     assertCurrent: owner.assertCurrent,
     provision: async <T>(run: () => Promise<T>) =>
       await withLocalWorkspaceProjection(
@@ -53,6 +58,13 @@ export function bindLocalSandboxWorkspace(
   const backend = sandbox.backend;
   if (!backend) {
     throw new Error("Managed guest project has no sandbox execution owner");
+  }
+  const prepareCleanup = backend.prepareProcessCleanup?.bind(backend);
+  if (prepareCleanup) {
+    backend.prepareProcessCleanup = (env) => {
+      projection.assertCurrent();
+      return prepareCleanup(env);
+    };
   }
   const shell = backend.runShellCommand.bind(backend);
   backend.runShellCommand = async (params) => {

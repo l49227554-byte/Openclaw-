@@ -87,7 +87,7 @@ export async function resolveAttemptWorkspaceSandbox(params: WorkspaceSandboxPar
   const projectedWorkspace = sandbox?.enabled && sandbox.workspaceSource === "managed-worktree";
   const effectiveWorkspace =
     sandbox?.enabled && (sandbox.workspaceAccess !== "rw" || projectedWorkspace)
-      ? sandbox.workspaceDir
+      ? (sandbox.workspaceCwd ?? sandbox.workspaceDir)
       : resolvedWorkspace;
   if (params.requireWritableSandbox && sandbox?.enabled && sandbox.workspaceAccess !== "rw") {
     throw new Error("sandbox workspace is not read-write; collection review skipped");

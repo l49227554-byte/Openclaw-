@@ -98,6 +98,11 @@ export type SandboxBackendHandle = {
     timedOut: boolean;
     token?: unknown;
   }) => Promise<void>;
+  /** Mint termination-only custody while execution is admitted; retained cleanup cannot run arbitrary commands. */
+  prepareProcessCleanup?: (env: Record<string, string>) => {
+    env: Record<string, string>;
+    terminate: () => Promise<void>;
+  };
   runShellCommand(params: SandboxBackendCommandParams): Promise<SandboxBackendCommandResult>;
   createFsBridge?: (params: { sandbox: SandboxFsBridgeContext }) => SandboxFsBridge;
 };

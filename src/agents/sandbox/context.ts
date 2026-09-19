@@ -446,7 +446,9 @@ async function resolveProvisionedSandboxContext(
   const sandboxContext: SandboxContext = {
     enabled: true,
     ...(runtime.sandboxRequired ? { required: true } : {}),
-    ...(localWorkspace ? { workspaceSource: "managed-worktree" as const } : {}),
+    ...(localWorkspace
+      ? { workspaceSource: "managed-worktree" as const, workspaceCwd: localWorkspace.workspaceCwd }
+      : {}),
     backendId: backend.id,
     sessionKey: rawSessionKey,
     workspaceDir,

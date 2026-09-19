@@ -195,13 +195,12 @@ export let commandCalls: Array<{ argv: string[]; input?: string }>;
 export async function persistPublicationTestSession(sessionKey = SESSION_KEY) {
   setRuntimeConfigSnapshot({
     agents: { list: [{ id: "main", default: true, workspace: path.join(root, "workspace") }] },
-    session: { store: path.join(root, "sessions.json") },
   });
   const { loadGatewaySessionEntryReadOnly } =
     await vi.importActual<typeof import("./session-utils.js")>("./session-utils.js");
   const original = mocks.loadSession.getMockImplementation()!;
   await upsertSessionEntryCore(
-    { agentId: "main", sessionKey, storePath: path.join(root, "sessions.json") },
+    { agentId: "main", sessionKey },
     { ...original(sessionKey).entry, updatedAt: Date.now(), lifecycleRevision: randomUUID() },
   );
   mocks.loadSession.mockImplementation(
@@ -439,6 +438,9 @@ export function installGitHubPublicationTestHarness(): void {
       { agentId: "main", sessionKey: SESSION_KEY },
       { ...mocks.loadSession(SESSION_KEY).entry, updatedAt: Date.now() },
     );
+    // Custody remains persisted for policy reads; release its writer lease so
+    // receipt-only tests can observe a genuinely cold shared database.
+    await closeOpenClawAgentDatabasesAsync();
   });
 
   afterEach(async () => {

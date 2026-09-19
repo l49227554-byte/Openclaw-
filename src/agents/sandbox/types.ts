@@ -105,6 +105,8 @@ export type SandboxContext = {
   required?: true;
   /** Core-prepared execution projection; ordinary rw sandboxes retain the requested workspace. */
   workspaceSource?: "managed-worktree";
+  /** Selected repository subdirectory within the full private projection. */
+  workspaceCwd?: string;
   backendId: SandboxBackendId;
   sessionKey: string;
   workspaceDir: string;

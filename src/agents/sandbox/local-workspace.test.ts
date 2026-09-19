@@ -51,6 +51,7 @@ it.runIf(process.platform !== "win32")(
     try {
       bindLocalSandboxWorkspace(sandbox, {
         workspaceDir: root,
+        workspaceCwd: root,
         checkpoint,
         provision: async (run) => await run(),
         assertCurrent: () => {
@@ -135,6 +136,7 @@ it.runIf(process.platform !== "win32")(
     sandbox.fsBridge = createSandboxFsBridge({ sandbox });
     bindLocalSandboxWorkspace(sandbox, {
       workspaceDir: root,
+      workspaceCwd: root,
       provision: async (run) => await run(),
       checkpoint: async () => {},
       assertCurrent: () => {

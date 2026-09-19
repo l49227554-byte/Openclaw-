@@ -309,7 +309,9 @@ export async function main(
     splitExtensions,
   });
   const selectedShards = selectExtensionOxlintStripe(
-    selectCoreOxlintStripe(filterOxlintShards(shards, shardArgs.only), shardArgs.coreStripe),
+    selectCoreOxlintStripe(filterOxlintShards(shards, shardArgs.only), shardArgs.coreStripe, {
+      isolateLargeTargets: true,
+    }),
     shardArgs.extensionStripe,
   );
 
@@ -475,7 +477,11 @@ export function filterOxlintShards<T extends { name: string }>(shards: T[], only
 }
 
 /** Keep stripe coverage stable while bounding the largest targets' semantic caches. */
-export function selectCoreOxlintStripe(shards: OxlintShard[], stripe: ShardStripe | undefined) {
+export function selectCoreOxlintStripe(
+  shards: OxlintShard[],
+  stripe: ShardStripe | undefined,
+  { isolateLargeTargets = false }: { isolateLargeTargets?: boolean } = {},
+) {
   if (!stripe) {
     return shards;
   }
@@ -485,7 +491,12 @@ export function selectCoreOxlintStripe(shards: OxlintShard[], stripe: ShardStrip
   const targets = shards
     .filter((_, index) => index % stripe.total === stripe.index - 1)
     .flatMap((shard) => shard.args.slice(2));
-  const sharedTargets = targets.filter((target) => !ISOLATED_CORE_TARGETS.has(target));
+  // Published Git updaters call full lint under a fixed command deadline. Only
+  // explicit CI stripes may add compiler startups; automatic full lint stays aggregated.
+  const isolatedTargets = isolateLargeTargets
+    ? targets.filter((target) => ISOLATED_CORE_TARGETS.has(target))
+    : [];
+  const sharedTargets = targets.filter((target) => !isolatedTargets.includes(target));
   return [
     ...(sharedTargets.length > 0
       ? [
@@ -495,12 +506,10 @@ export function selectCoreOxlintStripe(shards: OxlintShard[], stripe: ShardStrip
           },
         ]
       : []),
-    ...targets
-      .filter((target) => ISOLATED_CORE_TARGETS.has(target))
-      .map((target) => ({
-        name: `core:stripe:${stripe.index}:${target.replaceAll("/", ":")}`,
-        args: ["--tsconfig", CORE_TS_CONFIG, target],
-      })),
+    ...isolatedTargets.map((target) => ({
+      name: `core:stripe:${stripe.index}:${target.replaceAll("/", ":")}`,
+      args: ["--tsconfig", CORE_TS_CONFIG, target],
+    })),
   ];
 }
 

@@ -741,12 +741,14 @@ describe("run-oxlint", () => {
 
   it.each([
     { platform: "linux", env: { CI: "true" } },
+    { platform: "linux", env: {} },
+    { platform: "linux", env: { GITHUB_ACTIONS: "true" } },
     { platform: "darwin", env: {} },
     { platform: "win32", env: {} },
   ] as const)(
-    "bounds small-host core Programs without losing targets on $platform",
+    "preserves the published updater's automatic full-lint plan on $platform with $env",
     ({ platform, env }) => {
-      const directories = ["alpha", "beta", "delta", "epsilon", "gamma", "zeta"];
+      const directories = ["agents", "alpha", "beta", "gateway", "infra", "zeta"];
       const cwd = createTempDir("openclaw-oxlint-core-memory-");
       for (const directory of directories) {
         mkdirSync(join(cwd, "src", directory), { recursive: true });
@@ -762,7 +764,13 @@ describe("run-oxlint", () => {
         new Set(["core"]),
       );
 
-      expect(shards).toHaveLength(6);
+      expect(shards.map((shard) => shard.args.slice(2))).toEqual([
+        ["src/agents", "src/zeta"],
+        ["src/alpha", "src/root.ts"],
+        ["src/beta", "ui"],
+        ["src/gateway", "packages"],
+        ["src/infra"],
+      ]);
       expect(shards.every((shard) => shard.args[1] === "config/tsconfig/oxlint.core.json")).toBe(
         true,
       );
@@ -815,7 +823,9 @@ describe("run-oxlint", () => {
           { name: "misc", isDirectory: () => true, isFile: () => false },
         ] as never,
     }).filter((shard) => shard.name.startsWith("core:"));
-    const stripes = [1, 2, 3].map((index) => selectCoreOxlintStripe(shards, { index, total: 3 }));
+    const stripes = [1, 2, 3].map((index) =>
+      selectCoreOxlintStripe(shards, { index, total: 3 }, { isolateLargeTargets: true }),
+    );
 
     const programs = stripes.flat();
     for (const target of ["src/agents", "src/gateway", "src/infra", "ui"]) {

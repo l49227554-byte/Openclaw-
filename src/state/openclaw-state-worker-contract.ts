@@ -52,7 +52,10 @@ import type { TranscriptReadOperations } from "../transcripts/store-worker-contr
 import type { AgentProvenance } from "./agent-provenance.types.js";
 import type { PreparedBackupRunRecord } from "./backup-run-records.kernel.js";
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
-import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
+import type {
+  OpenClawStateLeaseIdentity,
+  OpenClawStateLeaseAcquisition,
+} from "./openclaw-state-lease-store.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
@@ -80,6 +83,15 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
     "audit.events.list": {
       input: AuditEventListQuery;
       output: AuditEventListPage;
+    };
+    "stateLease.acquire": {
+      input: {
+        identity: OpenClawStateLeaseIdentity;
+        leaseMs: number;
+        operationLabel: string;
+        schemaPolicy?: "existing";
+      };
+      output: OpenClawStateLeaseAcquisition;
     };
     "deviceAuth.list": { input: { deviceId: string }; output: DeviceAuthEntry[] };
     "deviceAuth.read": {

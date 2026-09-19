@@ -154,13 +154,18 @@ export async function resolveSubagentChildPlan(params: {
       requesterInternalKey: params.requesterInternalKey,
       requesterAgentId: params.requesterAgentId,
     });
+  // Fast mode is a per-model parameter: only inherit the requester's setting when
+  // the child has not named a different model (an inherited fastMode targeting one
+  // model would otherwise leak onto a child running a different provider/model).
   const inheritedFastMode =
     params.swarmEnabled && params.request.fastMode === undefined
-      ? readRequesterFastMode({
-          cfg: params.cfg,
-          requesterInternalKey: params.requesterInternalKey,
-          requesterAgentId: params.requesterAgentId,
-        })
+      ? params.request.model === undefined
+        ? readRequesterFastMode({
+            cfg: params.cfg,
+            requesterInternalKey: params.requesterInternalKey,
+            requesterAgentId: params.requesterAgentId,
+          })
+        : undefined
       : params.request.fastMode;
   const modelPlan = await resolveSubagentModelAndThinkingPlan({
     cfg: params.cfg,

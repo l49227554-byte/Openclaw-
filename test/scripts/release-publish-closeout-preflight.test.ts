@@ -41,6 +41,33 @@ function sourceFixture(changelog?: string) {
 }
 
 describe("publication preflight closeout phase", () => {
+  it.each([null, undefined, ""])("accepts a draft with an empty REST body: %s", (body) => {
+    const { dir, sha } = sourceFixture("## 2026.9.5\n\n### Fixes\n\n- Correct release behavior.\n");
+    const result = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+      import { inspectPublishReleasePage } from ${JSON.stringify(moduleUrl)};
+      try {
+        inspectPublishReleasePage({
+          repo: 'openclaw/openclaw', tag: 'v2026.9.5', sourceSha: ${JSON.stringify(sha)},
+          runGh() { return JSON.stringify({ draft: true, body: ${JSON.stringify(body)} }); },
+        });
+        console.log(JSON.stringify({ admitted: true }));
+      } catch (error) {
+        console.log(JSON.stringify({ admitted: false, message: error.message }));
+      }
+    `,
+        ],
+        { cwd: dir, env: createNestedGitEnv(), encoding: "utf8" },
+      ),
+    );
+    expect(result).toEqual({ admitted: true });
+  });
+
   it("reports pending main reconciliation without making it a publication prerequisite", () => {
     const { dir, sha } = sourceFixture();
     const result = JSON.parse(

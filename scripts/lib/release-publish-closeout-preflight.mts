@@ -46,7 +46,9 @@ export function inspectPublishReleasePage(input: {
     }
     throw error;
   }
-  const body = release.body;
+  // gh release view decodes the nullable REST body into a Go string. Match
+  // that boundary so an empty draft remains admissible to the publisher.
+  const body = release.body ?? "";
   if (typeof body !== "string") {
     throw new Error("Existing release body is missing.");
   }

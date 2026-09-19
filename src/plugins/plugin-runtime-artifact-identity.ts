@@ -2,8 +2,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { sha256FileSync } from "@openclaw/fs-safe/durability";
 import { openRootFileSync } from "../infra/boundary-file-read.js";
+import { hashFileDescriptorSync } from "../infra/file-descriptor.js";
 import { FsSafeError, walkDirectorySync } from "../infra/fs-safe.js";
 import type { OpenClawPackageBuild } from "./manifest.js";
 import { safeRealpathSync } from "./path-safety.js";
@@ -80,16 +80,17 @@ function hashRuntimeArtifactFile(params: {
   if (!opened.ok) {
     throw new Error(`plugin runtime artifact file is not readable: ${params.relativePath}`);
   }
+  const changedMessage = `plugin runtime artifact file changed while reading: ${params.relativePath}`;
   try {
-    const hashed = sha256FileSync(opened.fd, { maxBytes: opened.stat.size });
+    const hashed = hashFileDescriptorSync(opened.fd, opened.stat.size);
     const after = fs.fstatSync(opened.fd);
-    if (hashed.bytes !== opened.stat.size || !sameOpenedFile(opened.stat, after)) {
-      throw new Error(`plugin runtime artifact file changed while reading: ${params.relativePath}`);
+    if (hashed.sizeBytes !== opened.stat.size || !sameOpenedFile(opened.stat, after)) {
+      throw new Error(changedMessage);
     }
-    return { hash: hashed.digest, size: opened.stat.size, mode: opened.stat.mode };
+    return { hash: hashed.sha256, size: opened.stat.size, mode: opened.stat.mode };
   } catch (error) {
     if (error instanceof FsSafeError && error.code === "too-large") {
-      throw new Error(`plugin runtime artifact file changed while reading: ${params.relativePath}`);
+      throw new Error(changedMessage, { cause: error });
     }
     throw error;
   } finally {

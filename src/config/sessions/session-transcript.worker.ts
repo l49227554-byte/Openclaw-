@@ -4,6 +4,14 @@ import type {
   readSessionEntryResetRecallCutoff,
 } from "../../../packages/memory-host-sdk/src/host/session-files.js";
 import type { PreparedSessionHistoryReadTarget } from "../../gateway/session-history-read.types.js";
+import type {
+  SessionCostUsageCacheRead,
+  SessionCostUsageCacheReadResult,
+} from "../../infra/session-cost-usage-cache-read.js";
+import type {
+  UsageCostWorkerInput,
+  UsageCostWorkerReply,
+} from "../../infra/session-cost-usage-worker.types.js";
 import { serveWorkerTasks } from "../../infra/worker-task-pool.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
@@ -74,6 +82,13 @@ export type SessionMembersWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+export type SessionUsageCacheWorkerInput = {
+  kind: "usage-cache";
+  database: { agentId: string; path: string };
+  request: SessionCostUsageCacheRead;
+  env: NodeJS.ProcessEnv;
+};
+
 export type SessionBranchSummaryWorkerInput = {
   kind: "branch-summaries";
   request: SessionBranchSummaryReadRequest;
@@ -84,6 +99,7 @@ type SessionTranscriptWorkerValues = {
   "history-page": SessionHistoryWorkerResult;
   "session-row-presence": boolean;
   "session-members": SessionMember[];
+  "usage-cache": SessionCostUsageCacheReadResult;
   "model-context": ReturnType<typeof readSessionTranscriptModelContext>;
   "session-entry": {
     entry: SessionFileEntry | null;
@@ -154,7 +170,13 @@ async function withHistoryDatabase<T>(
 }
 
 serveWorkerTasks(
-  async (input): Promise<SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues>> => {
+  async (
+    input,
+    channel,
+    control,
+  ): Promise<
+    SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues> | UsageCostWorkerReply
+  > => {
     // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
     const request = input as
       | SessionModelContextWorkerInput
@@ -162,8 +184,49 @@ serveWorkerTasks(
       | SessionTranscriptHistoryWorkerInput
       | SessionRowPresenceWorkerInput
       | SessionMembersWorkerInput
-      | SessionBranchSummaryWorkerInput;
+      | SessionUsageCacheWorkerInput
+      | SessionBranchSummaryWorkerInput
+      | UsageCostWorkerInput;
+    if (request.kind === "usage-cost") {
+      const { executeUsageCostWorker, usageCostWorkerFailure } =
+        await import("../../infra/session-cost-usage-worker.js");
+      try {
+        if (!channel) {
+          throw new Error("Usage cost worker requires its host channel");
+        }
+        const closed = new Map<string, UsageCostWorkerInput["databases"][number]>();
+        const value = await executeUsageCostWorker(
+          request,
+          channel,
+          control,
+          async (database, read) => {
+            closed.delete(JSON.stringify(database));
+            const result = await withHistoryDatabase(database, read);
+            if (result.closedHistoryDatabase) {
+              closed.set(
+                JSON.stringify(result.closedHistoryDatabase),
+                result.closedHistoryDatabase,
+              );
+            }
+            return result.value;
+          },
+        );
+        return { ok: true, value, closedDatabases: [...closed.values()] };
+      } catch (error) {
+        return usageCostWorkerFailure(error);
+      }
+    }
     try {
+      if (request.kind === "usage-cache") {
+        const { readSessionCostUsageCache } =
+          await import("../../infra/session-cost-usage-cache-read.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () =>
+            readSessionCostUsageCache({ ...request.database, env: request.env }, request.request),
+          )),
+        };
+      }
       if (request.kind === "branch-summaries") {
         const { readSessionBranchSummariesInWorker } =
           await import("./session-accessor.sqlite-branches.js");

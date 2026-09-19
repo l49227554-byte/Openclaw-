@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { sql, type RawBuilder } from "kysely";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import { chunkItems } from "../utils/chunk-items.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
@@ -18,6 +19,21 @@ export type SessionCostUsageRollupRow = {
   valueJson: string;
 };
 
+export type SessionCostUsageRollupByteRow = Omit<SessionCostUsageRollupRow, "valueJson"> & {
+  valueJson: Uint8Array;
+};
+
+type SessionCostUsageJson = string | Uint8Array;
+
+export type SessionCostUsageRollupSnapshot = Omit<SessionCostUsageRollupRow, "valueJson"> & {
+  valueJson: SessionCostUsageJson;
+};
+
+function cacheJsonText(value: SessionCostUsageJson) {
+  // kysely-allow-raw: bind worker-prepared UTF-8 bytes as text without decoding them on the host.
+  return typeof value === "string" ? value : sql<string>`CAST(${value} AS TEXT)`;
+}
+
 export function readSessionCostUsageRefreshLockInDatabase(db: DatabaseSync): string | null {
   const kysely = getNodeSqliteKysely<AgentCacheDatabase>(db);
   const row = executeSqliteQuerySync(
@@ -36,6 +52,30 @@ export function readSessionCostUsageRollupRowsInDatabase(
   db: DatabaseSync,
   filePaths?: readonly string[],
 ): SessionCostUsageRollupRow[] {
+  return readSessionCostUsageRollupValuesInDatabase(
+    db,
+    filePaths,
+    sql.ref<string | null>("value_json"),
+  );
+}
+
+export function readSessionCostUsageRollupByteRowsInDatabase(
+  db: DatabaseSync,
+  filePaths?: readonly string[],
+): SessionCostUsageRollupByteRow[] {
+  return readSessionCostUsageRollupValuesInDatabase(
+    db,
+    filePaths,
+    // kysely-allow-raw: read native bytes without decoding cache JSON on the host.
+    sql<Uint8Array | null>`CAST(value_json AS BLOB)`,
+  );
+}
+
+function readSessionCostUsageRollupValuesInDatabase<Value extends string | Uint8Array>(
+  db: DatabaseSync,
+  filePaths: readonly string[] | undefined,
+  valueJson: RawBuilder<Value | null>,
+) {
   const kysely = getNodeSqliteKysely<AgentCacheDatabase>(db);
   // Bound SQL parameters even when a historical family contains many instances.
   const batches = filePaths ? chunkItems([...new Set(filePaths)], 500) : [undefined];
@@ -43,7 +83,7 @@ export function readSessionCostUsageRollupRowsInDatabase(
     .flatMap((keys) => {
       const query = kysely
         .selectFrom("cache_entries")
-        .select(["key", "value_json", "updated_at"])
+        .select(["key", valueJson.as("value_json"), "updated_at"])
         .where("scope", "=", ROLLUP_SCOPE);
       return executeSqliteQuerySync(db, keys ? query.where("key", "in", keys) : query).rows;
     })
@@ -58,52 +98,47 @@ export function writeSessionCostUsageRollupInDatabase(
   db: DatabaseSync,
   params: {
     rollupId: string;
-    previousValueJson: string | null;
-    valueJson: string;
+    previousValueJson: Uint8Array | null;
+    valueJson: Uint8Array;
     updatedAt: number;
   },
 ): boolean {
   const kysely = getNodeSqliteKysely<AgentCacheDatabase>(db);
-  const currentValueJson =
+  const values = {
+    value_json: cacheJsonText(params.valueJson),
+    blob: null,
+    expires_at: null,
+    updated_at: params.updatedAt,
+  };
+  if (params.previousValueJson === null) {
+    return (
+      executeSqliteQuerySync(
+        db,
+        kysely
+          .insertInto("cache_entries")
+          .values({ scope: ROLLUP_SCOPE, key: params.rollupId, ...values })
+          .onConflict((conflict) =>
+            conflict.columns(["scope", "key"]).doUpdateSet(values).where("value_json", "is", null),
+          ),
+      ).numAffectedRows === 1n
+    );
+  }
+  return (
     executeSqliteQuerySync(
       db,
       kysely
-        .selectFrom("cache_entries")
-        .select("value_json")
+        .updateTable("cache_entries")
+        .set(values)
         .where("scope", "=", ROLLUP_SCOPE)
         .where("key", "=", params.rollupId)
-        .limit(1),
-    ).rows[0]?.value_json ?? null;
-  if (currentValueJson !== params.previousValueJson) {
-    return false;
-  }
-  executeSqliteQuerySync(
-    db,
-    kysely
-      .insertInto("cache_entries")
-      .values({
-        scope: ROLLUP_SCOPE,
-        key: params.rollupId,
-        value_json: params.valueJson,
-        blob: null,
-        expires_at: null,
-        updated_at: params.updatedAt,
-      })
-      .onConflict((conflict) =>
-        conflict.columns(["scope", "key"]).doUpdateSet({
-          value_json: params.valueJson,
-          blob: null,
-          expires_at: null,
-          updated_at: params.updatedAt,
-        }),
-      ),
+        .where("value_json", "=", cacheJsonText(params.previousValueJson)),
+    ).numAffectedRows === 1n
   );
-  return true;
 }
 
 export function pruneSessionCostUsageRollupsInDatabase(
   db: DatabaseSync,
-  existing: readonly SessionCostUsageRollupRow[],
+  existing: readonly SessionCostUsageRollupSnapshot[],
 ): void {
   const kysely = getNodeSqliteKysely<AgentCacheDatabase>(db);
   for (const batch of chunkItems(existing, ROLLUP_PRUNE_BATCH_SIZE)) {
@@ -123,7 +158,7 @@ export function pruneSessionCostUsageRollupsInDatabase(
             batch.map((row) =>
               eb.and([
                 eb("key", "=", row.key),
-                eb("value_json", "=", row.valueJson),
+                eb("value_json", "=", cacheJsonText(row.valueJson)),
                 eb("updated_at", "=", row.updatedAt),
               ]),
             ),

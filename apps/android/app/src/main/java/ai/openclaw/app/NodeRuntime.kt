@@ -2481,6 +2481,9 @@ class NodeRuntime private constructor(
   val talkModeStatusText: StateFlow<String>
     get() = talkMode.statusText
 
+  val talkModeFailureText: StateFlow<String?>
+    get() = talkMode.failureText
+
   private val wearRealtimeLifecycleMutex = Mutex()
 
   private val wearRealtimeTalkControllerLazy: Lazy<WearRealtimeTalkController> =
@@ -4049,6 +4052,10 @@ class NodeRuntime private constructor(
     micCapture.cancelMicCapture()
     setVoiceCaptureMode(VoiceCaptureMode.Off, persistManualMic = false)
     prefs.setVoiceMicEnabled(false)
+  }
+
+  fun acknowledgeTalkModeFailure() {
+    talkMode.acknowledgeFailure()
   }
 
   fun setTalkModeEnabled(value: Boolean) {

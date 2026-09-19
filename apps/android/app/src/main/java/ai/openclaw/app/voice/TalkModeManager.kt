@@ -145,6 +145,7 @@ private data class TalkStatus(
   val state: TalkStatusState,
   val awaitingAgent: Boolean = false,
   val owner: TalkStatusOwner = TalkStatusOwner(),
+  val failureAcknowledged: Boolean = false,
 )
 
 private data class TalkConfigCache(
@@ -267,6 +268,10 @@ class TalkModeManager internal constructor(
   private val status = MutableStateFlow(TalkStatus(text = nativeText("Off"), state = TalkStatusState.Off))
   private val currentStatus: TalkStatus get() = status.value
   val statusText: StateFlow<String> = LocaleResolvingStateFlow(status) { it.text.resolveNativeText() }
+  val failureText: StateFlow<String?> =
+    LocaleResolvingStateFlow(status) { status ->
+      status.takeIf { it.state == TalkStatusState.TalkFailure && !it.failureAcknowledged }?.text?.resolveNativeText()
+    }
   val awaitingAgent: StateFlow<Boolean> = LocaleResolvingStateFlow(status) { it.awaitingAgent }
 
   private fun setStatus(
@@ -283,6 +288,15 @@ class TalkModeManager internal constructor(
 
   private fun setTalkFailure(text: NativeText) {
     setStatus(text, state = TalkStatusState.TalkFailure)
+  }
+
+  /** Dismisses this failure across Chat recreation while retaining its terminal status. */
+  fun acknowledgeFailure() {
+    synchronized(realtimeCapturePauseLock) {
+      status.update { current ->
+        if (current.state == TalkStatusState.TalkFailure) current.copy(failureAcknowledged = true) else current
+      }
+    }
   }
 
   private val _conversation = MutableStateFlow<List<VoiceConversationEntry>>(emptyList())
@@ -1410,7 +1424,7 @@ class TalkModeManager internal constructor(
     val stopped =
       synchronized(realtimeCapturePauseLock) {
         if (generation != startGeneration.get()) return
-        setStatus(status)
+        setTalkFailure(status)
         stopRealtimeRelay(closeSession = false, preserveStatus = true)
         disableRealtimeModeLocked()
       }

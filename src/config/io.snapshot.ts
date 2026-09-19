@@ -53,6 +53,7 @@ import type {
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "./io.types.js";
 import { warnIfConfigFromFuture } from "./io.warnings.js";
+import { migrateBlankAgentCwd } from "./legacy.blank-agent-cwd.js";
 import {
   findLegacyConfigIssues,
   migrateLegacyContextBudgetConfig,
@@ -257,12 +258,15 @@ async function readConfigSnapshotWithPreparation(
       env: deps.env,
       homedir: deps.homedir,
     });
+    const blankCwdMigration = migrateBlankAgentCwd(rosterMigration.config);
     envVarWarnings.push(
       ...contextBudgetMigration.changes,
       ...contextBudgetMigration.warnings,
       ...rosterMigration.diagnostics.map((message) => ({ path: "agents.entries", message })),
+      ...blankCwdMigration.changes,
+      ...blankCwdMigration.warnings,
     );
-    const effectiveConfigRaw = rosterMigration.config;
+    const effectiveConfigRaw = blankCwdMigration.config;
     const validationConfigRaw = effectiveConfigRaw;
     const snapshotRaw = raw;
     const snapshotParsed = effectiveParsed;

@@ -142,6 +142,50 @@ describe("task-executor-policy", () => {
     );
   });
 
+  it.each(["succeeded", "failed", "lost"] as const)(
+    "keeps a bounded useful terminal summary for %s tasks",
+    (status) => {
+      const terminalSummary = "The export is ready. " + "Review the generated report. ".repeat(20);
+      const task = createTask({ status, label: "Export", terminalSummary });
+      const message = formatTaskTerminalMessage(task);
+      const prefix = `Background task ${status === "succeeded" ? "done" : status}: Export. `;
+
+      expect(message).toContain("The export is ready.");
+      expect(message.length).toBeLessThanOrEqual(prefix.length + 120);
+      expect(message.endsWith("…")).toBe(true);
+      expect(task.terminalSummary).toBe(terminalSummary);
+    },
+  );
+
+  it("bounds blocked and parent-review details without dropping their follow-up instructions", () => {
+    const terminalSummary = "Sign in again. " + "The previous login link has expired. ".repeat(20);
+    const task = createTask({ status: "succeeded", label: "Import", terminalSummary });
+    const blocked = { ...task, terminalOutcome: "blocked" as const };
+    const expectedDetail = terminalSummary.slice(0, 119).trimEnd() + "…";
+
+    expect(formatTaskTerminalMessage(blocked)).toBe(
+      `Background task blocked: Import. ${expectedDetail}`,
+    );
+    expect(formatTaskBlockedFollowupMessage(blocked)).toBe(
+      `Task needs follow-up: Import. ${expectedDetail}`,
+    );
+    expect(formatTaskTerminalMessage(task, { surface: "parent_session" })).toBe(
+      `Background task ready for review: Import. ${expectedDetail} Next: parent will review/verify before calling it done.`,
+    );
+  });
+
+  it("preserves short actionable error text", () => {
+    expect(
+      formatTaskTerminalMessage(
+        createTask({
+          status: "failed",
+          label: "Sign in",
+          error: "Error: The login link expired. Sign in again.",
+        }),
+      ),
+    ).toBe("Background task failed: Sign in. Error: The login link expired. Sign in again.");
+  });
+
   it("keeps delivery policy decisions explicit", () => {
     expect(
       shouldAutoDeliverTaskTerminalUpdate(

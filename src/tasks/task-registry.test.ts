@@ -1,6 +1,7 @@
 // Covers task registry lifecycle, delivery, notification, and query behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AcpRuntimeError, formatAcpErrorChain } from "../acp/runtime/errors.js";
 import type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
 import { emitAcpLifecycleStart } from "../agents/command/attempt-execution.js";
 import { startAcpSpawnParentStreamRelay } from "../agents/subagents/spawn/acp-spawn-parent-stream.js";
@@ -4524,6 +4525,52 @@ describe("task-registry", () => {
       expect(peekSystemEvents("agent:main:main")).toStrictEqual([]);
     });
   });
+
+  it.each(["direct", "parent_session"] as const)(
+    "bounds ACP failure notices on the %s route while retaining the full task error",
+    async (surface) => {
+      await withTaskRegistryTempDir(async () => {
+        resetSystemEventsForTest();
+        hoisted.sendMessageMock.mockResolvedValue({
+          channel: "guildchat",
+          to: "guildchat:123",
+          via: "direct",
+        });
+        const task = createTaskFixture("acp", {
+          ...(surface === "direct" ? { requesterOrigin: GUILDCHAT_ORIGIN } : {}),
+          childSessionKey: "agent:codex:acp:child",
+          runId: "run-bounded-terminal",
+          label: "Sign in",
+          task: "Sign in",
+          deliveryStatus: "pending",
+        });
+        const error = formatAcpErrorChain(
+          new AcpRuntimeError(
+            "ACP_TURN_FAILED",
+            "The login link expired. Sign in again. " + "Provider diagnostic detail. ".repeat(60),
+          ),
+        );
+        emitAgentEvent({
+          runId: "run-bounded-terminal",
+          stream: "lifecycle",
+          data: { phase: "error", endedAt: 250, error },
+        });
+        await flushAsyncWork();
+
+        const content =
+          surface === "direct" ? sentMessageCall().content : peekSystemEvents("agent:main:main")[0];
+        expect(content).toContain("The login link expired. Sign in again.");
+        expect(content).toHaveLength(
+          "Background task failed: Sign in (run run-boun). ".length + 120,
+        );
+        expect(content).toMatch(/…$/u);
+        expect(getTaskById(task.taskId)?.error).toBe(error);
+        if (surface === "parent_session") {
+          expect(hoisted.sendMessageMock).not.toHaveBeenCalled();
+        }
+      });
+    },
+  );
 
   it("emits concise state-change updates without surfacing raw ACP chatter", async () => {
     await withTaskRegistryTempDir(async () => {

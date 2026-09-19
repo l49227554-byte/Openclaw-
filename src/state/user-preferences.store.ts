@@ -17,43 +17,17 @@ export const ensureUserPreferencesSchema = createOpenClawStateSchemaEnsurer({
   operationLabel: "users.preferences.schema.ensure",
 });
 
-export function mutateUserPreference(
-  database: DatabaseSync,
-  profileId: string,
-  key: string,
-  value?: boolean,
-): void {
+export function deleteUserPreference(database: DatabaseSync, profileId: string, key: string): void {
   const db = getNodeSqliteKysely<UserPreferencesDatabase>(database);
-  if (value === undefined) {
-    if (tableExists(database, "user_preferences")) {
-      executeSqliteQuerySync(
-        database,
-        db
-          .deleteFrom("user_preferences")
-          .where("profile_id", "=", profileId)
-          .where("pref_key", "=", key),
-      );
-    }
+  if (!tableExists(database, "user_preferences")) {
     return;
   }
-  const updatedAtMs = Date.now();
-  const valueJson = JSON.stringify(value);
   executeSqliteQuerySync(
     database,
     db
-      .insertInto("user_preferences")
-      .values({
-        profile_id: profileId,
-        pref_key: key,
-        value_json: valueJson,
-        updated_at_ms: updatedAtMs,
-      })
-      .onConflict((conflict) =>
-        conflict.columns(["profile_id", "pref_key"]).doUpdateSet({
-          value_json: valueJson,
-          updated_at_ms: updatedAtMs,
-        }),
-      ),
+      .deleteFrom("user_preferences")
+      .where("profile_id", "=", profileId)
+      .where("pref_key", "=", key),
   );
 }
 

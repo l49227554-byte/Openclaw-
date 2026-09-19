@@ -209,7 +209,10 @@ function prepareGatewaySessionStoreLookup(
       ...(params.projection ? { projection: params.projection } : {}),
       ...(params.storeCache ? { cache: params.storeCache } : {}),
     },
-    store: index === 0 && target.storePath === fallback.storePath ? params.store : undefined,
+    result:
+      index === 0 && target.storePath === fallback.storePath && params.store !== undefined
+        ? ok(params.store)
+        : undefined,
   }));
   return {
     reads,
@@ -405,7 +408,6 @@ export function resolveGatewaySessionStoreTargetWithStore(
   return includeDirectChildEntries(
     deletedMain ?? prepareGatewaySessionStoreTarget(normalized).resolve(),
     params.includeStoreChildEntries,
-    params.projection,
     params.cfg,
   );
 }
@@ -543,7 +545,6 @@ export function prepareGatewaySessionStoreTargetsReadOnly(params: {
 function includeDirectChildEntries(
   target: GatewaySessionStoreTargetWithStore,
   include: boolean | undefined,
-  projection: SessionEntryListScope["projection"],
   cfg: OpenClawConfig,
 ): GatewaySessionStoreTargetWithStore {
   if (!include) {
@@ -556,11 +557,14 @@ function includeDirectChildEntries(
       for (const { sessionKey, entry } of listSessionChildEntriesReadOnly({
         agentId: target.agentId,
         clone: false,
-        projection,
+        projection: "list",
         sessionKey: parentKey,
         storePath: target.storePath,
       })) {
-        target.store[sessionKey] = entry;
+        // Child discovery must not replace a selected full entry with metadata.
+        if (!parentKeys.has(sessionKey)) {
+          target.store[sessionKey] = entry;
+        }
       }
     }
     for (const { childSessionKey } of listSubagentSessionListRunsForControllers([...parentKeys])) {
@@ -571,10 +575,10 @@ function includeDirectChildEntries(
     for (const child of resolveGatewaySessionStoreTargetsReadOnly({
       cfg,
       targets,
-      projection: projection ?? "full",
+      projection: "list",
     })) {
       const entry = child.store[child.canonicalKey];
-      if (entry) {
+      if (entry && !parentKeys.has(child.canonicalKey)) {
         target.store[child.canonicalKey] = entry;
       }
     }

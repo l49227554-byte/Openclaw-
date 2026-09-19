@@ -1,4 +1,3 @@
-// Msteams plugin module implements polls behavior.
 import crypto from "node:crypto";
 import {
   parseStrictNonNegativeInteger,

@@ -353,7 +353,9 @@ export class ChatPane extends ChatPaneLayoutRender {
         (placementComposer.state.kind === "failed" && !placementComposer.state.recoveryAction
           ? placementComposer.failedUnavailableMessage
           : null) ??
-        (placementStartup || initialHistoryUnavailable ? null : sendHoldReason),
+        (state.connected && (placementStartup || initialHistoryUnavailable)
+          ? null
+          : sendHoldReason),
       disabledReasonTone:
         placementComposer.busyMessage || (sessionParticipationBlocked && !suggestionViewer)
           ? ("info" as const)
@@ -388,7 +390,7 @@ export class ChatPane extends ChatPaneLayoutRender {
         state.chatSending ||
         this.recoveringSession ||
         this.sessionSuggestionAddOperation !== undefined,
-      placementStartup,
+      placementStartup: placementStartup ?? placementComposer.startup,
       onRetrySessionPlacementStartup: placementStartup?.retryable
         ? () => this.context.placementStartup.retry(state.sessionKey)
         : undefined,
@@ -547,8 +549,8 @@ export class ChatPane extends ChatPaneLayoutRender {
       pullRequestsStatus: this.sessionPullRequestsStatus,
       pullRequestsExpanded: this.sessionPullRequestsExpanded,
       onOpenSessionDiff: sessionWorkspace.onOpenDiff,
-      onExpandPullRequests: () => {
-        this.sessionPullRequestsExpanded = true;
+      onTogglePullRequests: () => {
+        this.sessionPullRequestsExpanded = !this.sessionPullRequestsExpanded;
         this.requestUpdate();
       },
       onDismissPullRequest: this.dismissSessionPullRequest,

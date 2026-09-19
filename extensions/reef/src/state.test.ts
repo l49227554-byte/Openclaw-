@@ -22,13 +22,12 @@ import reefChannelEntry from "../index.js";
 import {
   base64url,
   generateIdentity,
-  MemoryAuditStore,
-  MemoryReplayStore,
   signReceipt,
   verifyChain,
   verifyChainSegment,
   type ReviewRequest,
 } from "../protocol/index.js";
+import { MemoryAuditStore, MemoryReplayStore } from "../protocol/memory-stores.test-support.js";
 import { ReefChannelConfigSchema } from "./config-schema.js";
 import { ReefMessageFlow } from "./flow.js";
 import { ReefFriendManager } from "./friends.js";

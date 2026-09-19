@@ -11,6 +11,7 @@ import {
   testing as subagentRegistryTesting,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
 
@@ -225,7 +226,7 @@ describe("sessions.abort agent scope", () => {
   beforeEach(() => {
     chatAbortMock.mockReset();
     resolveSessionKeyForRunMock.mockReset();
-    loadSessionEntryMock.mockClear();
+    loadSessionEntryMock.mockReset();
     isEmbeddedAgentRunInProgressMock.mockReset();
     isEmbeddedAgentRunInProgressMock.mockReturnValue(false);
     abortEmbeddedAgentRunMock.mockReset();
@@ -410,6 +411,11 @@ describe("sessions.abort agent scope", () => {
         removeChatRun: vi.fn(),
       },
     });
+
+    loadSessionEntryMock.mockImplementation((sessionKey: string) => ({
+      cfg: context.getRuntimeConfig(),
+      canonicalKey: sessionKey,
+    }));
 
     const respond = await callSessions(
       "sessions.abort",
@@ -677,7 +683,7 @@ describe("sessions.abort agent scope", () => {
   ])(
     "applies MCP stop ownership (clearQueued=$clearQueued, global=$globalScope)",
     async ({ clearQueued, globalScope }) => {
-      const { getOrCreateSessionMcpRuntime } =
+      const { getOrCreateSessionMcpRuntime, unopenedMcpConfig } =
         await import("../../agents/agent-bundle-mcp-manager.test-support.js");
       const { getSessionMcpRuntimeManagerForTesting } =
         await import("../../agents/agent-bundle-mcp-manager-api.js");
@@ -693,7 +699,7 @@ describe("sessions.abort agent scope", () => {
           sessionId: "idle-mcp",
           sessionKey,
           workspaceDir: "/workspace",
-          cfg: { mcp: { servers: {} } },
+          cfg: unopenedMcpConfig,
           manifestRegistry: { plugins: [] },
         });
         await callSessions(
@@ -992,27 +998,29 @@ describe("sessions.abort agent scope", () => {
   });
 
   it("protects bare global when its fixed-store owner is inferred", async () => {
-    const context = createContext({
-      extra: {
-        getRuntimeConfig: () => ({
-          session: { scope: "global", store: "/stores/shared.sqlite" },
-          agents: {
-            ownership: "explicit",
-            defaults: { sessionStore: { agentId: "ops" } },
-            entries: { ops: {}, research: {} },
-          },
-        }),
-      },
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const context = createContext({
+        extra: {
+          getRuntimeConfig: () => ({
+            session: { scope: "global", store: state.statePath("shared.sqlite") },
+            agents: {
+              ownership: "explicit",
+              defaults: { sessionStore: { agentId: "ops" } },
+              entries: { ops: {}, research: {} },
+            },
+          }),
+        },
+      });
+
+      const respond = await callSessions(
+        "sessions.delete",
+        { key: "global" },
+        { context, reqId: "req-persisted-global-delete" },
+      );
+
+      expectRespondErrorMessage(respond, "Cannot delete the main session (global).");
+      expect(loadSessionEntryMock).not.toHaveBeenCalled();
     });
-
-    const respond = await callSessions(
-      "sessions.delete",
-      { key: "global" },
-      { context, reqId: "req-persisted-global-delete" },
-    );
-
-    expectRespondErrorMessage(respond, "Cannot delete the main session (global).");
-    expect(loadSessionEntryMock).not.toHaveBeenCalled();
   });
 
   it("rejects unknown explicit agentId before session mutations", async () => {

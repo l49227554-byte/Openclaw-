@@ -52,10 +52,7 @@ import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../agent-run-ter
 import type { AgentRunTerminalReplySnapshot } from "../agent-run-terminal-reply.types.js";
 import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
 import { ensureAuthProfileStore } from "../auth-profiles/store-runtime.js";
-import {
-  resizeExecApprovalContinuationPrompt,
-  type ExecApprovalContinuationPromptRange,
-} from "../bash-tools.exec-approval-output.js";
+import { resizeExecApprovalContinuationPrompt } from "../bash-tools.exec-approval-output.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
 import {
@@ -104,6 +101,7 @@ import {
 } from "../subagents/announce/subagent-announce-handoff.js";
 import { isRuntimeToolAllowed, isToolAllowedByPolicies } from "../tool-policy-match.js";
 import { DEFAULT_MAX_LIVE_TOOL_RESULT_CHARS } from "../tool-result-limits.js";
+import { rebaseExecApprovalContinuationPromptRange } from "./attempt-execution-prompt.js";
 import {
   buildClaudeCliFallbackContextPrelude,
   claudeCliSessionTranscriptHasContent,
@@ -123,24 +121,6 @@ export {
 } from "./attempt-execution.helpers.js";
 
 const log = createSubsystemLogger("agents/agent-command");
-
-function rebaseExecApprovalContinuationPromptRange(params: {
-  body: string;
-  prompt: string;
-  range?: ExecApprovalContinuationPromptRange;
-}): ExecApprovalContinuationPromptRange | undefined {
-  if (!params.range) {
-    return undefined;
-  }
-  if (!params.prompt.endsWith(params.body)) {
-    throw new Error("exec approval continuation prompt range could not be rebased");
-  }
-  const offset = params.prompt.length - params.body.length;
-  return {
-    start: offset + params.range.start,
-    end: offset + params.range.end,
-  };
-}
 
 function shouldSuppressEmbeddedLiveStreamOutput(params: { opts: AgentCommandOpts }): boolean {
   return params.opts.sessionEffects === "internal" && params.opts.deliver !== true;
@@ -240,6 +220,8 @@ function isClaudeCliProvider(provider: string): boolean {
 }
 
 export function runAgentAttempt(params: {
+  quotaContinuation?: RunEmbeddedAgentInternalParams["quotaContinuation"];
+  quotaBudget?: RunEmbeddedAgentInternalParams["quotaBudget"];
   preparedRunAdmission: PreparedAgentRunAdmission;
   providerOverride: string;
   modelOverride: string;
@@ -648,6 +630,9 @@ export function runAgentAttempt(params: {
       bootstrapPromptWarningSignature,
     }) satisfies Partial<RunEmbeddedAgentInternalParams>;
   if (!isRawModelRun && isCliExecutionProvider) {
+    if (params.quotaContinuation) {
+      throw new Error("Settled quota continuation requires the embedded runtime, not a CLI replay");
+    }
     const expectedLifecycleRevision = params.sessionEntry?.lifecycleRevision;
     return withLocalSessionPlacementTurnSettlement(
       {
@@ -1016,6 +1001,8 @@ export function runAgentAttempt(params: {
 
   const embeddedRunParams: RunEmbeddedAgentInternalParams = {
     ...buildCommonRunParams(),
+    quotaContinuation: params.quotaContinuation,
+    quotaBudget: params.quotaBudget,
     sandboxSessionKey: params.sessionKey,
     // Subagent lifecycle owns the stricter explicit visible/silent/empty evidence check.
     terminalReplyExpectation: isSubagentLane ? "optional" : undefined,

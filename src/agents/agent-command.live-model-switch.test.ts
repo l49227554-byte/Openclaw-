@@ -13,6 +13,7 @@ import {
   resolveSqliteScope,
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
+import type { AgentEventPayload } from "../infra/agent-events.js";
 import { withInstallationTarget } from "../infra/installation-target-context.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import {
@@ -32,6 +33,7 @@ import {
   type AdmittedRunContext,
   type PreparedAgentRunAdmission,
 } from "./admitted-run-context.js";
+import { resetAgentEventMock } from "./agent-command-events.test-support.js";
 import {
   type CommandSessionEntryFixture,
   createChannelModelRuntimeConfig,
@@ -116,6 +118,7 @@ const state = vi.hoisted(() => ({
   resolveAutoFallbackPrimaryProbeMock: vi.fn((_params: unknown) => undefined as unknown),
   resolveChannelModelOverrideMock: vi.fn((_params: unknown) => null as unknown),
   assertLifecycleCurrentMock: vi.fn(),
+  agentEventListeners: new Map<string, Set<(event: AgentEventPayload) => void>>(),
   emitAgentEventMock: vi.fn(),
   registerAgentRunContextMock: vi.fn(),
   clearAgentRunContextMock: vi.fn(),
@@ -469,17 +472,10 @@ vi.mock("./internal-session-effects.js", async (importOriginal) => ({
     state.prepareInternalSessionEffectsSessionMock(...args),
 }));
 
-vi.mock("../infra/agent-events.js", () => ({
-  assertAgentRunLifecycleGenerationCurrent: (...args: unknown[]) =>
-    state.assertLifecycleCurrentMock(...args),
-  captureAgentRunLifecycleGeneration: () => "test-generation",
-  emitAgentEvent: (...args: unknown[]) => state.emitAgentEventMock(...args),
-  getAgentEventLifecycleGeneration: () => "test-generation",
-  isAgentEventLifecycleGenerationCurrent: (generation: string) => generation === "test-generation",
-  onAgentEvent: vi.fn(),
-  registerAgentEventLifecycleRotationHandler: vi.fn(),
-  withAgentRunLifecycleGeneration: (_generation: string, run: () => unknown) => run(),
-}));
+vi.mock("../infra/agent-events.js", async () => {
+  const { createAgentEventMock } = await import("./agent-command-events.test-support.js");
+  return createAgentEventMock(state);
+});
 vi.mock("../infra/agent-run-registry.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../infra/agent-run-registry.js")>();
   return {
@@ -1001,6 +997,7 @@ function getAgentCommandRecoveryFixture() {
 describe("agentCommand – LiveSessionModelSwitchError retry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetAgentEventMock(state);
     state.acpResolveSessionMock.mockReturnValue(null);
     state.resolveAcpAgentPolicyErrorMock.mockReturnValue(null);
     state.resolveAcpDispatchPolicyErrorMock.mockReturnValue(null);
@@ -1196,6 +1193,7 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
   });
 
   afterEach(async () => {
+    expect(state.agentEventListeners.size).toBe(0);
     await resetPreparedModelRuntimeSnapshotsForTest();
     vi.restoreAllMocks();
   });

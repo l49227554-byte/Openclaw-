@@ -456,6 +456,8 @@ export async function runEmbeddedAgentAttempt(params: RunEmbeddedAgentAttemptPar
           effectiveTurnThinkLevel = candidateThinkLevel;
           try {
             return await attemptExecutionRuntime.runAgentAttempt({
+              quotaBudget: runOptions.quotaBudget,
+              quotaContinuation: runOptions.quotaContinuation,
               preparedRunAdmission: params.preparedRunAdmission,
               providerOverride,
               modelOverride,

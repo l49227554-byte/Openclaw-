@@ -536,3 +536,20 @@ function readOpenAICompletionsContentPartDeltas(content: unknown): OpenAIComplet
   }
   return [];
 }
+
+export function withDefaultResponsesStreamEncoding(
+  fetch: typeof globalThis.fetch,
+): typeof globalThis.fetch {
+  return (input, init) => {
+    // Apply the SSE default after the SDK merges environment and caller headers.
+    const headers = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
+    if (headers.has("accept-encoding")) {
+      return fetch(input, init);
+    }
+    // Some compatible endpoints truncate compressed streams before the terminal event.
+    headers.set("accept-encoding", "identity");
+    return fetch(input, { ...init, headers });
+  };
+}

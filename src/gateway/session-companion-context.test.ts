@@ -9,25 +9,29 @@ import * as activeTranscriptEvents from "../config/sessions/session-accessor.sql
 import { waitForSessionTranscriptIndexReconcilesInStateDir } from "../config/sessions/session-transcript-reconcile.js";
 import * as redact from "../logging/redact.js";
 import {
-  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { defaultSessionCompanionContextReader } from "./session-companion-context.js";
 import { createSessionCompanion } from "./session-companion.js";
 import { notifyGatewaySessionReset } from "./session-reset-notifications.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(async () => {
-  // Deferred reconciliation must settle before its databases and fixture directories close.
-  for (const stateDir of tempDirs.dirs) {
-    await waitForSessionTranscriptIndexReconcilesInStateDir(stateDir);
-  }
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-  vi.unstubAllEnvs();
-});
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    try {
+      // Worker lease release still needs the database files; join it before deleting their roots.
+      for (const stateDir of tempDirs.dirs) {
+        await waitForSessionTranscriptIndexReconcilesInStateDir(stateDir);
+      }
+      await closeOpenClawAgentDatabasesAsync();
+      await closeOpenClawStateDatabaseAsync();
+      cleanup();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }),
+);
 
 function createScope(prefix: string) {
   const stateDir = tempDirs.make(prefix);

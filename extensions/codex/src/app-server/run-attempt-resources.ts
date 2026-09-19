@@ -191,7 +191,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       await releaseCodexSandboxExecServerEnvironment(sandbox, environment);
     }
   };
-  const releaseSharedClientLeaseAndRetireOneShotClient = async () => {
+  const releaseSharedClientLeaseAndRetireOneShotClient = async (required = false) => {
     if (connection.attemptClientFactory === createIsolatedCodexAppServerClient) {
       // Close the authorized node lease first; losing its socket first is a real disconnect.
       await releaseSandboxExecEnvironment();
@@ -202,7 +202,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
           exitTimeoutMs: 2_000,
           forceKillDelayMs: 250,
         });
-        if (params.oneShotCliRun && result.cleanup !== "closed") {
+        if ((params.oneShotCliRun || required) && result.cleanup !== "closed") {
           throw new Error("Codex isolated client cleanup could not be confirmed");
         }
       }
@@ -211,11 +211,16 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     releaseSharedClientLeaseOnce();
     await retireSharedCodexClientForOneShotCleanup();
   };
-  const runCleanupStep = (step: string, operation: () => Promise<void> | void | undefined) =>
+  const runCleanupStep = (
+    step: string,
+    operation: () => Promise<void> | void | undefined,
+    settlement?: "required",
+  ) =>
     runAgentCleanupStep({
       runId: params.runId,
       sessionId: params.sessionId,
       step,
+      settlement,
       log: embeddedAgentLog,
       cleanup: async () => {
         await operation();

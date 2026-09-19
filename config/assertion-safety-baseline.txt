@@ -304,7 +304,6 @@ extensions/discord/src/component-custom-id.ts	1
 extensions/discord/src/components-registry-state.ts	2
 extensions/discord/src/components-registry.ts	3
 extensions/discord/src/components.builders.ts	4
-extensions/discord/src/components.modal.ts	1
 extensions/discord/src/components.parse.ts	13
 extensions/discord/src/doctor-contract.ts	4
 extensions/discord/src/internal/api.commands.ts	1

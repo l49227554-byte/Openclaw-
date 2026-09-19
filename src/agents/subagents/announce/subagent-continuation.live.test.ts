@@ -298,13 +298,13 @@ describeLive("subagent continuation live", () => {
           throw toErrorObject(delivery.reason, "Task delivery failed");
         }
         stage = "verify expired activity after parent finishes";
+        await idleSend.waitFor({ state: "visible" });
+        expect(await stop.count()).toBe(0);
         const visibleParentReply = parentPage
           .getByRole("paragraph")
           .filter({ hasText: new RegExp(`^${parentToken}$`) });
         await visibleParentReply.waitFor();
         await visibleParentReply.scrollIntoViewIfNeeded();
-        await idleSend.waitFor({ state: "visible" });
-        expect(await stop.count()).toBe(0);
         await row.waitFor({ state: "detached", timeout: 80_000 });
         expect(await parentPage.locator(".chat-subagent-activity").count()).toBe(0);
         expect(await idleSend.isVisible()).toBe(true);
@@ -370,6 +370,10 @@ describeLive("subagent continuation live", () => {
         );
       } catch (error) {
         try {
+          await fs.writeFile(
+            path.join(artifactDir, "failure-messages.json"),
+            JSON.stringify(await readMessages(sessionKey), null, 2) + "\n",
+          );
           await page?.screenshot({ path: path.join(artifactDir, "failure-parent-chat.png") });
           const { task } = await gateway.request<TasksGetResult>("tasks.get", {
             taskId: originalTask.id,
@@ -382,6 +386,7 @@ describeLive("subagent continuation live", () => {
                 parentResultVisible: await page
                   .getByRole("paragraph")
                   .filter({ hasText: new RegExp(`^${parentToken}$`) })
+                  .first()
                   .isVisible(),
                 stopVisible: await page
                   .getByRole("button", { name: "Stop generating", exact: true })

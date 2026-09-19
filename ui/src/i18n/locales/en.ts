@@ -3586,7 +3586,7 @@ export const en: TranslationMap & {
     },
     mentions: {
       menu: "Mention a person",
-      empty: "No eligible people found.",
+      empty: "No people found",
       truncated: "Keep typing to find more people.",
       online: "Online",
       offline: "Offline",
@@ -4699,6 +4699,7 @@ export const en: TranslationMap & {
       readFailed: "Could not attach: {names}{more}",
       tooLarge: "Too large to send: {names}{more}",
       showInTextField: "Show in text field",
+      pastedText: "Pasted text",
       outsideAllowedFolders: "Outside allowed folders",
       unavailable: "Unavailable",
       failureDeliveryFailed: "Delivery failed. Try sending this file again.",

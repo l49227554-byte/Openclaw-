@@ -4,6 +4,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
+import { waitForControlUiDocument } from "../../../src/commands/control-ui-handoff.ts";
 import {
   appendTranscriptMessages,
   createSessionEntryWithTranscript,
@@ -308,9 +309,21 @@ suite.define(() => {
     let passed = false;
     const artifactDir = suite.artifactDir;
     try {
+      // Gateway readiness precedes background UI preparation. The JSON handoff
+      // deliberately fails fast, so await its document prerequisite here.
+      const document = await waitForControlUiDocument({
+        url: suite.server.baseUrl,
+        timeoutMs: 60_000,
+        onPending: () => console.log("[search-proof] waiting for the preparing UI document"),
+      });
+      expect(document.ready, document.ready ? "ready" : document.reason).toBe(true);
       const handoff = await owner.cli(["dashboard", "--json"]);
-      expect(handoff.code, "isolated dashboard handoff must succeed").toBe(0);
-      const browserUrl = requireRecord(JSON.parse(handoff.stdout)).browserUrl;
+      const result = requireRecord(JSON.parse(handoff.stdout));
+      expect(
+        handoff.code,
+        typeof result.reason === "string" ? result.reason : "isolated dashboard handoff",
+      ).toBe(0);
+      const browserUrl = result.browserUrl;
       if (typeof browserUrl !== "string") {
         throw new Error("Dashboard did not return a browser handoff");
       }
@@ -482,6 +495,15 @@ suite.define(() => {
       );
       passed = true;
     } finally {
+      if (!passed) {
+        await writeFile(
+          path.join(artifactDir, "gateway-failure.log"),
+          owner
+            .logs()
+            .replaceAll(owner.gatewayToken, "[redacted fixture token]")
+            .replaceAll(owner.hookToken, "[redacted fixture token]"),
+        );
+      }
       await writeFile(
         path.join(artifactDir, "search-proof.json"),
         JSON.stringify(

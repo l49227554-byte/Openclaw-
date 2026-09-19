@@ -2,12 +2,9 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
 
 /** Display/discovery classification; routing validates canonical keys separately. */
 export function isCronSessionDisplayKey(key: string): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(key);
-  const parts = normalized.split(":").filter(Boolean);
-  return (
-    normalized.startsWith("cron:") ||
-    (normalized.startsWith("agent:") && parts.length >= 4 && parts[2] === "cron")
-  );
+  // Display keys historically ignore empty segments and accept whitespace owners.
+  // Match those nonempty segments directly, without allocating an array per row.
+  return /^(?:cron:|agent::*[^:]+:+cron:+[^:])/u.test(normalizeLowercaseStringOrEmpty(key));
 }
 
 /**

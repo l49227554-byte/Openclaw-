@@ -160,6 +160,45 @@ describeTelegramDispatch("dispatchTelegramMessage draft-finalization", () => {
     expect(deliverReplies).not.toHaveBeenCalled();
   });
 
+  it("keeps the native status table on the finalized streamed preview", async () => {
+    const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
+      await dispatcherOptions.deliver(
+        {
+          text: "Gateway status as plain text",
+          presentationTextMode: "fallback",
+          presentation: {
+            blocks: [
+              {
+                type: "table",
+                caption: "Status",
+                headers: ["Key", "Value"],
+                rows: [["Gateway", "running"]],
+                rowHeaderColumnIndex: 0,
+              },
+            ],
+          },
+        },
+        { kind: "final" },
+      );
+      return { queuedFinal: true };
+    });
+
+    await dispatchWithContext({
+      context: createContext(),
+      streamMode: "partial",
+      telegramCfg: { richMessages: true, streaming: { mode: "partial" } },
+    });
+
+    // The streamed final renders the portable table island; the authored
+    // fallback text alone would silently drop the native table.
+    const finalUpdate = answerDraftStream.update.mock.calls.at(-1)?.[0] as string;
+    expect(finalUpdate).toContain("<table><caption>Status</caption>");
+    expect(finalUpdate).toContain("<td>running</td>");
+    expect(finalUpdate).not.toBe("Gateway status as plain text");
+    expect(deliverReplies).not.toHaveBeenCalled();
+  });
+
   it("renders dropped controls in the finalized streamed preview", async () => {
     const { answerDraftStream } = setupDraftStreams({ answerMessageId: 2001 });
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(

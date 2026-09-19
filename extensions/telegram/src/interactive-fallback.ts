@@ -328,3 +328,34 @@ export function resolveTelegramInteractiveTextFallback(params: {
   const fallback = renderMessagePresentationFallbackText({ presentation: interactivePresentation });
   return fallback.trim() ? fallback : text;
 }
+
+export function resolveFinalTelegramPresentationText(params: {
+  payload: ReplyPayload;
+  text: string;
+  richMessages: boolean;
+}): string | undefined {
+  if (params.payload.presentationTextMode !== "fallback") {
+    return undefined;
+  }
+  const presentation = normalizeMessagePresentation(params.payload.presentation);
+  if (!presentation) {
+    return undefined;
+  }
+  // Dispatch already routed interactive blocks to native controls or appended
+  // them to the authored text, so only presentational blocks are left for the
+  // streamed final message to render.
+  const presentationalBlocks = presentation.blocks.filter(
+    (block) => !isMessagePresentationInteractiveBlock(block),
+  );
+  if (presentationalBlocks.length === 0) {
+    return undefined;
+  }
+  const rendered = (
+    params.richMessages
+      ? renderTelegramRichFallbackText({ ...presentation, blocks: presentationalBlocks })
+      : renderMessagePresentationFallbackText({
+          presentation: { ...presentation, blocks: presentationalBlocks },
+        })
+  ).trimEnd();
+  return rendered && rendered !== params.text.trimEnd() ? rendered : undefined;
+}

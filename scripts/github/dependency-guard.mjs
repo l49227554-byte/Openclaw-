@@ -162,12 +162,14 @@ function renderDependencyChangeLines({
   dependencyFiles = [],
   dependencyManifestChanges,
 }) {
-  return [
-    ...[...new Set([...lockfileChanges, ...dependencyFiles])].map(
-      (path) => `- ${markdownCode(path)} changed.`,
-    ),
-    ...dependencyManifestChanges.map(renderManifestChangeLine),
-  ];
+  const files = new Set([...lockfileChanges, ...dependencyFiles]);
+  for (const change of dependencyManifestChanges) {
+    if (change.previousPath) {
+      files.add(change.previousPath);
+    }
+    files.add(change.path);
+  }
+  return [...files].map((path) => `- ${markdownCode(path)}`);
 }
 
 function renderApprovedDependencyComment(approval, changes) {
@@ -179,7 +181,7 @@ function renderApprovedDependencyComment(approval, changes) {
       : "### ✅ Dependency graph changes approved",
     "",
     approval.kind === "author"
-      ? "This PR makes dependency resolution changes. This comment is informational because the PR author has repository Maintain or Admin access."
+      ? "This PR makes dependency graph changes. This comment is informational because the PR author has repository Maintain or Admin access."
       : "A maintainer approved this revision with an explicit dependency approval comment.",
     "",
     `- Current SHA: ${markdownCode(approval.sha)}`,
@@ -292,7 +294,7 @@ export function renderBlockedDependencyComment({
     "",
     "### ⚠️ Maintainer dependency review required",
     "",
-    "This external contributor PR changes dependency resolution. A maintainer must review these changes before merging.",
+    "This external contributor PR changes the dependency graph. A maintainer must review these changes before merging.",
     "",
     `Current SHA: ${markdownCode(headSha ?? "<head-sha>")}`,
     "",
@@ -325,7 +327,10 @@ function renderAutoscrubStatusLines(status) {
     return [
       "",
       "Auto-scrub was not attempted because this PR changes package manifest dependency graph fields:",
-      ...status.changes.map(renderManifestChangeLine),
+      ...renderDependencyChangeLines({
+        lockfileChanges: [],
+        dependencyManifestChanges: status.changes,
+      }),
       "",
       "Dependency graph changes require maintainer review. Please remove lockfile changes manually if they are not needed.",
     ];
@@ -346,15 +351,6 @@ function renderAutoscrubStatusLines(status) {
     ];
   }
   return [];
-}
-
-function renderManifestChangeLine(change) {
-  const location = change.previousPath
-    ? `${markdownCode(change.previousPath)} moved to ${markdownCode(change.path)}`
-    : markdownCode(change.path);
-  const fields =
-    change.fields.length > 0 ? ` changed ${change.fields.map(markdownCode).join(", ")}` : "";
-  return `- ${location}${fields}.`;
 }
 
 export function githubApi(token, options = {}) {

@@ -39,6 +39,7 @@ type AgentSessionRowsHost = {
   readonly sessionData: SessionDataController;
   visibleSessionCatalogs(): readonly SessionCatalog[];
   selectedAgentMainSessionKey(agentId: string): string;
+  readonly sidebarHomePinned: boolean;
   readonly sessionsShowCron: boolean;
   readonly sessionsShowSystem: boolean;
   readonly sessionsStatusFilter: SidebarSessionStatusFilter;
@@ -116,7 +117,9 @@ export function projectSidebarAgentSessionRows({
     rows,
     childRowsByParent: childSessionRowsByParent,
   });
-  // Home belongs to its navigation entry (the agent header in team mode), never a session row.
+  // In chip mode, an unpinned Home returns to the ordinary session list. Team
+  // mode always keeps Home on the agent header instead of duplicating it.
+  const showMainSession = !grouped && !host.sidebarHomePinned;
   const canonicalMainKeys = agentIds.map((agentId) => host.selectedAgentMainSessionKey(agentId));
   const isMainSession = (key: string) =>
     canonicalMainKeys.some((mainKey) => areUiSessionKeysEquivalent(key, mainKey));
@@ -127,6 +130,21 @@ export function projectSidebarAgentSessionRows({
           return row ? [row] : [];
         })
       : filterVisibleSessionRows(rows.filter(inScope), visibilityOptions).toSorted(compareSessions);
+  if (showMainSession) {
+    // The generic chat filter excludes global streams, so add the advertised
+    // Home identity explicitly when it is returning to the session list.
+    for (const row of rows) {
+      if (
+        row.kind === "global" &&
+        inScope(row) &&
+        isMainSession(row.key) &&
+        sessionMatchesArchivedFilter(row, host.sessionsStatusFilter) &&
+        !rootRows.some((root) => areUiSessionKeysEquivalent(root.key, row.key))
+      ) {
+        rootRows.push(row);
+      }
+    }
+  }
   const lineageAgentId = normalizeAgentId(
     parseAgentSessionKey(lineageRoot?.key ?? "")?.agentId ?? "",
   );
@@ -138,10 +156,10 @@ export function projectSidebarAgentSessionRows({
       session.key === navigationState.activeRowKey &&
       !isSessionHidden(session) &&
       !adopted.has(session.key) &&
-      !isMainSession(session.key),
+      (!isMainSession(session.key) || showMainSession),
   );
   const mainSessionKeys = new Set(canonicalMainKeys);
-  const scopedRootRows = rootRows.filter((row) => !isMainSession(row.key));
+  const scopedRootRows = rootRows.filter((row) => !isMainSession(row.key) || showMainSession);
   const lineageRouteAgentId = normalizeAgentId(
     parseAgentSessionKey(navigationState.routeSessionKey)?.agentId ?? "",
   );
@@ -154,7 +172,7 @@ export function projectSidebarAgentSessionRows({
       ? inScope(lineageRoot)
       : lineageAgentId === selected || lineageRouteAgentId === selected) &&
     !adopted.has(lineageRoot.key) &&
-    !isMainSession(lineageRoot.key) &&
+    (!isMainSession(lineageRoot.key) || showMainSession) &&
     !scopedRootRows.some((row) => row.key === lineageRoot.key)
   ) {
     scopedRootRows.push(lineageRoot);
@@ -228,11 +246,16 @@ export function projectSidebarAgentSessionRows({
   });
   scopedRootRows.push(...categorizedChildRows);
   const scopedRootKeys = new Set(scopedRootRows.map((row) => row.key));
+  const hiddenMainSessionKeys = new Set(
+    [...mainSessionKeys].filter(
+      (key) => !scopedRootRows.some((row) => areUiSessionKeysEquivalent(row.key, key)),
+    ),
+  );
   const promotedRows = collectPromotedMainChildRows({
     rows: sessionCandidateRows,
     childKeysByParent,
     archivedFilter: host.sessionsStatusFilter,
-    mainSessionKeys,
+    mainSessionKeys: hiddenMainSessionKeys,
     scopedRootKeys,
     showCron: host.sessionsShowCron,
     showSystem: host.sessionsShowSystem,

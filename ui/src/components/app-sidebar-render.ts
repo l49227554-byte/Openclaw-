@@ -250,7 +250,7 @@ export function renderAppSidebarBrand(
 
 /** Home: the first page. Opens the rolling main session on its saved face. */
 export function renderAppSidebarHomeRow(host: AppSidebarRenderHost) {
-  if (host.sidebarAgentsMode === "roster") {
+  if (host.sidebarAgentsMode === "roster" || !host.sidebarHomePinned) {
     return nothing;
   }
   const agentId = host.expandedAgentId();

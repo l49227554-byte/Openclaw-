@@ -927,6 +927,29 @@ describe("attachChildProcessBridge", () => {
 });
 
 describe("child input admission", () => {
+  it.each([0, 1])("preserves exit %s when the admitted child closes stdin early", async (code) => {
+    const beforeInput = vi.fn();
+    const result = await runCommandWithTimeout(
+      [process.execPath, "-e", `process.stderr.write('receiver result');process.exitCode=${code}`],
+      {
+        // Exceed the pipe capacity so the child exits with input still pending.
+        input: "x".repeat(1024 * 1024),
+        beforeInput,
+        timeoutMs: 5_000,
+        killProcessTree: true,
+        requireProcessTreeExtinction: true,
+      },
+    );
+    expect(beforeInput).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      code,
+      stderr: "receiver result",
+      termination: "exit",
+      signal: null,
+      cleanup: "normal",
+    });
+  });
+
   it("publishes input only after binding the actual spawned PID and argv", async () => {
     let admittedPid: number | undefined;
     let admittedArgv: readonly string[] | undefined;

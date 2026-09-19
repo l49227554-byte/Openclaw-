@@ -135,6 +135,7 @@ export function assertControlUiE2eOwnership(makeTempDirectory: (prefix: string) 
     "ui/src/e2e/session-mention-involvement.e2e.test.ts",
     "ui/src/e2e/sidebar-account-footer.e2e.test.ts",
     "ui/src/e2e/sidebar-cached-list-stability.e2e.test.ts",
+    "ui/src/e2e/sidebar-home-pin.real-gateway.e2e.test.ts",
   ]);
   expect(uiE2eRealGatewayTestFiles.every((file) => uiE2eSerialTestFiles.includes(file))).toBe(true);
   expect(uiE2eSerialTestFiles).toContain(uiE2eRuntimeBudgetTestFile);

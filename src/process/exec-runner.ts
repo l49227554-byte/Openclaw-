@@ -1,6 +1,6 @@
 import process from "node:process";
 import { expectDefined } from "@openclaw/normalization-core";
-import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
+import { extractErrorCode, toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import {
@@ -500,6 +500,11 @@ async function runCommandWithOutputEncoding(
   let inputAdmissionError: Error | undefined;
   if (options.beforeInput) {
     nodeChild.stdin?.once("error", (cause) => {
+      // Like Execa's ordinary input path, preserve the receiver's outcome when
+      // it closes stdin early (including probes that never consume input).
+      if (extractErrorCode(cause) === "EPIPE") {
+        return;
+      }
       inputAdmissionError ??= toErrorObject(cause, "Command input failed");
       cancel("signal");
     });

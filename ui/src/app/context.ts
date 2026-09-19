@@ -61,6 +61,7 @@ export type ApplicationTheme = {
 export type ApplicationNavigationPreferencesSnapshot = {
   navCollapsed: boolean;
   navWidth: number;
+  sidebarHomePinned?: boolean;
   sidebarEntries: readonly string[];
   pinnedAgentIds: readonly string[];
 };

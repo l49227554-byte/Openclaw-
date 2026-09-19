@@ -180,6 +180,9 @@ and positive waits. Resume requires trusted in-process
 Gateway admission. Unrelated callers, completed tasks, and changed child sessions
 are rejected rather than falling back to ordinary messaging.
 Controller ownership remains bound to the originally recorded session store.
+Retained tasks created without store provenance keep ordinary default messaging
+and their existing explicit resume and cancellation controls. Newly registered
+tasks record their store and can use automatic continuation.
 
 `timeoutSeconds` limits the sending tool's wait, not the receiver's execution
 budget. For nonblocking coordination, use `sessions_send` with `timeoutSeconds: 0`.

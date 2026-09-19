@@ -2,6 +2,8 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { AgentWaitResult } from "../agents/run-wait.js";
+import { resolveSubagentController } from "../agents/subagents/registry/subagent-control-scope.js";
+import { killAllControlledSubagentRuns } from "../agents/subagents/registry/subagent-control.js";
 import { useSubagentControlFixture } from "../agents/subagents/registry/subagent-control.test-support.js";
 import { subagentRegistryDeps } from "../agents/subagents/registry/subagent-registry-deps.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
@@ -182,6 +184,40 @@ it.each(["selection", "admission"] as const)(
     expect(subagentRuns.has(nextRunId)).toBe(false);
     expect(subagentRuns.get(previousRunId)?.pauseReason).toBe("sessions_yield");
     expect(findTaskByRunId(previousRunId)).toEqual(task);
+  },
+);
+
+it.each(["resume", "cancel"] as const)(
+  "preserves %s for retained release-era tasks without store provenance",
+  async (action) => {
+    const state = await arrangePausedChild();
+    const storePath = state.entry.controllerStorePath!;
+    // v2026.9.5 registration persisted neither physical-store field.
+    delete state.entry.controllerStorePath;
+    delete state.entry.requesterStorePath;
+    persistSubagentRunsToDiskOrThrow(subagentRuns, [previousRunId]);
+    subagentRuns.set(previousRunId, loadSubagentRegistryFromSqlite().get(previousRunId)!);
+    publishSystemEventStoreResolver(() => storePath);
+    expect(shouldResumeParentSubagent(state)).toBe(false);
+    if (action === "resume") {
+      const resume = bindParentSubagentResume({ ...state, childSessionId: sessionId });
+      const adopt = await state.prepare({ resume });
+      expect(adopt()).toBe(previousRunId);
+      expect(subagentRuns.get(nextRunId)?.taskRunId).toBe(previousRunId);
+    } else {
+      const result = await killAllControlledSubagentRuns({
+        cfg: state.cfg,
+        controller: resolveSubagentController({
+          cfg: state.cfg,
+          agentId: state.caller.agentId,
+          agentSessionKey: state.caller.sessionKey,
+        }),
+        runs: [subagentRuns.get(previousRunId)!],
+        suppressTaskDelivery: true,
+      });
+      expect(result).toMatchObject({ killed: 1 });
+      expect(findTaskByRunId(previousRunId)?.status).toBe("cancelled");
+    }
   },
 );
 

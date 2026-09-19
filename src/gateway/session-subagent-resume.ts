@@ -22,6 +22,12 @@ export function shouldResumeParentSubagent(params: {
   if (!entry || entry.expectsCompletionMessage !== true) {
     return false;
   }
+  const controllerStorePath = entry.controllerSessionKey?.trim()
+    ? entry.controllerStorePath
+    : entry.requesterStorePath;
+  if (controllerStorePath === undefined) {
+    return false;
+  }
   const controller = resolveSubagentController({
     cfg: params.cfg,
     agentId: params.caller.agentId,

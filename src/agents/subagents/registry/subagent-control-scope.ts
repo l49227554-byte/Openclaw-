@@ -200,7 +200,8 @@ export function ensureSubagentControllerOwnsRun(params: {
   if (
     owner === params.controller.controllerSessionKey &&
     ownerAgentId === controllerAgentId &&
-    isSystemEventStoreCurrent(owner, ownerStorePath, ownerAgentId)
+    // Retained v2026.9.5 tasks lack store provenance; preserve their control until retirement.
+    (ownerStorePath === undefined || isSystemEventStoreCurrent(owner, ownerStorePath, ownerAgentId))
   ) {
     return undefined;
   }

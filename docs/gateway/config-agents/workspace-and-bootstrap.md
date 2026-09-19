@@ -43,9 +43,13 @@ process working directory. A distinct working directory requires an unsandboxed
 run; sandboxed runs reject it. When the directories differ, the system prompt
 identifies their separate roles so deliverables stay in the working directory.
 
-> **Note:** An explicitly configured `agents.entries.*.cwd` or `agents.defaults.cwd`
-> must not be blank. A blank value is a configuration error and OpenClaw rejects
-> it instead of silently inheriting the default working directory.
+> **Note:** Strict configuration validation rejects an explicitly configured
+> `agents.entries.*.cwd` or `agents.defaults.cwd` that is blank, reporting it as a
+> field error instead of silently accepting it. Saved configurations from older
+> versions that contain a blank value are migrated on load: the blank is removed
+> and the default working directory applies, so startup and unrelated settings
+> changes keep working. Authoring a new blank value via `openclaw config` still
+> fails validation.
 
 ## `agents.defaults.repoRoot`
 

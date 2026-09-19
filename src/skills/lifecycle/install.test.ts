@@ -18,6 +18,7 @@ import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import { buildWorkspaceSkillStatus } from "../discovery/status.js";
 import { hasBinary } from "../loading/config.js";
 import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
+import { closeSkillsWatchers } from "../runtime/refresh.js";
 import { runCommandWithTimeoutMock } from "../test-support/install-test-mocks.js";
 import type { SkillEntry, SkillInstallSpec } from "../types.js";
 import { resolveWorkshopSkillsDir } from "../workshop/skills-root.js";
@@ -125,7 +126,9 @@ afterAll(async () => {
   await workspaceSuite.cleanup();
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // skills.status acquires real watchers; retire them before another suite borrows the worker.
+  await closeSkillsWatchers(true);
   vi.restoreAllMocks();
 });
 

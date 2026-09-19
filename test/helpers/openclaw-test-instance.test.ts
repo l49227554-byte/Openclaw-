@@ -1879,8 +1879,10 @@ describe("openclaw test instance", () => {
   it("waits until the gateway readiness probe reports ready", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("not JSON", { status: 502 }))
+      .mockResolvedValueOnce(new Response('{"ready":true}', { status: 503 }))
       .mockResolvedValueOnce(
-        new Response('{"ready":false,"failing":["startup-sidecars"]}', { status: 503 }),
+        new Response('{"ready":false,"failing":["startup-sidecars"]}', { status: 200 }),
       )
       .mockResolvedValueOnce(new Response('{"ready":true,"failing":[]}', { status: 200 }));
 
@@ -1888,7 +1890,7 @@ describe("openclaw test instance", () => {
       testing.waitForGatewayReady(createGatewayProcessState(), [], [], 12345, 1_000, fetchImpl),
     ).resolves.toBeUndefined();
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe("http://127.0.0.1:12345/readyz");
   });
 
@@ -1945,6 +1947,12 @@ describe("openclaw test instance", () => {
         ],
         omittedFailing: 12,
       },
+      lastHttpFailure: {
+        attempt: fetchImpl.mock.calls.length,
+        phase: "complete",
+        status: 503,
+        ready: false,
+      },
       child: { pid: null, exitCode: null, signalCode: null },
     });
   });
@@ -1971,15 +1979,100 @@ describe("openclaw test instance", () => {
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("timeout waiting for gateway readiness");
       expect((error as Error).message).not.toContain(privateDetail);
-      expect(readReadinessReceipt(error)).toMatchObject({
+      const receipt = readReadinessReceipt(error);
+      expect(receipt).toMatchObject({
         lastProbe: {
           phase: category === "fetch-failed" ? "headers" : "body",
           error: category,
           ...(category === "fetch-failed" ? {} : { status: 503 }),
         },
       });
+      expect(receipt.lastHttpFailure).toEqual(
+        category === "fetch-failed"
+          ? undefined
+          : { attempt: fetchImpl.mock.calls.length, phase: "body", status: 503, error: category },
+      );
     },
   );
+
+  it.each(["headers", "body"] as const)(
+    "retains the last HTTP failure before a deadline-edge %s timeout",
+    async (phase) => {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const privateDetail = `http://fixture-user:fixture-secret@proxy.invalid/${"x".repeat(2_048)}`;
+      const processState = createGatewayProcessState();
+      const fetchImpl = createStalledReadinessFetch(phase)
+        .mockResolvedValueOnce(new Response('{"ready":false}', { status: 503 }))
+        .mockResolvedValueOnce(
+          new Response(privateDetail, {
+            status: 502,
+            headers: { "x-private-detail": privateDetail },
+          }),
+        )
+        .mockRejectedValueOnce(new Error(privateDetail));
+      const cleanup = new AbortController();
+      const completion = testing
+        .waitForGatewayReady(processState, [], [], 12345, 39, fetchImpl, cleanup.signal)
+        .catch((failure: unknown) => failure);
+      try {
+        await vi.advanceTimersByTimeAsync(38);
+        expect(fetchImpl).toHaveBeenCalledTimes(4);
+        expect(fetchImpl.mock.calls[3]?.[1]?.signal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const error = await completion;
+        expect(readReadinessReceipt(error)).toEqual({
+          attempts: 4,
+          elapsedMs: 39,
+          lastProbe: {
+            attempt: 4,
+            phase,
+            elapsedMs: 9,
+            error: "timeout",
+            ...(phase === "body" ? { status: 503 } : {}),
+          },
+          lastHttpFailure: { attempt: 2, phase: "body", status: 502, error: "invalid-json" },
+          child: { pid: null, exitCode: null, signalCode: null },
+        });
+        expect(String(error)).not.toContain(privateDetail);
+        expect(String(error)).not.toContain("x-private-detail");
+        expect(fetchImpl.mock.calls[3]?.[1]?.signal?.aborted).toBe(true);
+        expect(processState.listenerCount("exit")).toBe(0);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        cleanup.abort();
+        await vi.runAllTimersAsync();
+        await completion;
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("preserves owner cancellation after an HTTP failure", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const processState = createGatewayProcessState();
+    const fetchImpl = createStalledReadinessFetch("headers").mockResolvedValueOnce(
+      new Response("not JSON", { status: 502 }),
+    );
+    const controller = new AbortController();
+    const cancelled = new Error("fixture owner cancelled");
+    const completion = testing
+      .waitForGatewayReady(processState, [], [], 12345, 1_000, fetchImpl, controller.signal)
+      .catch((failure: unknown) => failure);
+    try {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      controller.abort(cancelled);
+      expect(await completion).toBe(cancelled);
+      expect(fetchImpl.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
+      expect(processState.listenerCount("exit")).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      controller.abort();
+      await vi.runAllTimersAsync();
+      await completion;
+      vi.useRealTimers();
+    }
+  });
 
   it.each(
     (["headers", "body"] as const).flatMap((phase) => [
@@ -2054,10 +2147,12 @@ describe("openclaw test instance", () => {
     });
     const response = new Response(null, { status: 503 });
     response.json = lateJson;
-    const fetchImpl = vi.fn<typeof fetch>(() => headers.promise);
+    const fetchImpl = vi
+      .fn<typeof fetch>(() => headers.promise)
+      .mockResolvedValueOnce(new Response("not JSON", { status: 502 }));
     const releaseLateHeaders = (event: string | symbol) => {
-      if (event === "exit") {
-        expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+      if (event === "exit" && fetchImpl.mock.calls.length === 2) {
+        expect(fetchImpl.mock.calls[1]?.[1]?.signal?.aborted).toBe(true);
         headers.resolve(response);
       }
     };
@@ -2072,16 +2167,17 @@ describe("openclaw test instance", () => {
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("gateway exited before readiness");
       expect(lateJson).toHaveBeenCalledOnce();
-      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
       expect(readReadinessReceipt(error)).toEqual({
-        attempts: 1,
+        attempts: 2,
         elapsedMs: expect.any(Number),
         lastProbe: {
-          attempt: 1,
+          attempt: 2,
           phase: "headers",
           elapsedMs: expect.any(Number),
           error: "timeout",
         },
+        lastHttpFailure: { attempt: 1, phase: "body", status: 502, error: "invalid-json" },
         child: { pid: 12345, exitCode: 7, signalCode: null },
       });
     } finally {

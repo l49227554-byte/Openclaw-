@@ -86,6 +86,8 @@ type RunManagedCommandOptions = ManagedCommandOptions & {
   abortKillGraceMs?: number;
   cleanupDrainTimeoutMs?: number;
   onSignal?: (signal: NodeJS.Signals) => void;
+  // Bounded cleanup can leave process signals with its invocation owner.
+  signalHandling?: "forward" | "caller";
 };
 
 type ManagedCommandOutcome =
@@ -463,8 +465,18 @@ export async function runManagedCommand({
   abortKillGraceMs,
   cleanupDrainTimeoutMs,
   onSignal,
+  signalHandling = "forward",
   ...commandOptions
 }: RunManagedCommandOptions) {
+  if (signalHandling !== "forward" && signalHandling !== "caller") {
+    throw new Error("Unknown managed command signal handling policy");
+  }
+  if (
+    signalHandling === "caller" &&
+    (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0)
+  ) {
+    throw new Error("Caller-owned signal handling requires a finite positive command timeout");
+  }
   if (platform === "win32" && requireProcessTreeExit) {
     throw Object.assign(
       new Error("Strict managed process-tree verification is not supported on Windows"),
@@ -513,7 +525,9 @@ export async function runManagedCommand({
     releaseClaim = undefined;
   };
   // Register before spawn: a child can become ready before spawn returns.
-  installSignalHandlers();
+  if (signalHandling === "forward") {
+    installSignalHandlers();
+  }
   let child: ChildProcess;
   try {
     child = spawnManagedChild(spawnSpec.command, spawnSpec.args, spawnSpec.options);
@@ -563,7 +577,9 @@ export async function runManagedCommand({
   const abort = () => {
     void stop({ type: "aborted" }, "SIGTERM", abortKillGraceMs);
   };
-  managedChildren.add(forwardSignal);
+  if (signalHandling === "forward") {
+    managedChildren.add(forwardSignal);
+  }
   try {
     child.once("error", (error) => {
       clearTimeout(timeoutTimer);

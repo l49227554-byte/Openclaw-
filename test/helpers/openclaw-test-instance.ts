@@ -352,12 +352,16 @@ async function waitForGatewayReady(
   let outcome: GatewayReadinessDiagnostic["outcome"] = "timeout";
   let attempts = 0;
   let lastProbe: ReadinessProbe | undefined;
+  let lastHttpFailure:
+    | Pick<ReadinessProbe, "attempt" | "phase" | "status" | "ready" | "error">
+    | undefined;
   const startupError = (message: string, probe = lastProbe) =>
     new Error(
       `${message}\n[openclaw-test-instance] readiness ${JSON.stringify({
         attempts,
         elapsedMs: Date.now() - startedAt,
         lastProbe: probe ?? null,
+        lastHttpFailure,
         child: { pid: proc.pid ?? null, exitCode: proc.exitCode, signalCode: proc.signalCode },
       })}\n${formatLogs(chunksOut, chunksErr)}`,
     );
@@ -471,6 +475,22 @@ async function waitForGatewayReady(
           probe.error ??= "aborted";
         }
         lastProbe = { ...probe, elapsedMs: Date.now() - attemptStartedAt };
+        if (
+          lastProbe.status !== undefined &&
+          ((lastProbe.phase === "complete" && !lastProbe.error && outcome !== "ready") ||
+            lastProbe.error === "invalid-json" ||
+            lastProbe.error === "body-failed")
+        ) {
+          // A deadline-edge timeout must not hide the preceding HTTP failure. Keep
+          // only fixed scalar facts, independent of late fetch mutations and history size.
+          lastHttpFailure = {
+            attempt: lastProbe.attempt,
+            phase: lastProbe.phase,
+            status: lastProbe.status,
+            ready: lastProbe.ready,
+            error: lastProbe.error,
+          };
+        }
         // The 60-second desktop wait cannot exceed this bound at its existing 10ms cadence.
         if (probes.length < 8192) {
           probes.push({

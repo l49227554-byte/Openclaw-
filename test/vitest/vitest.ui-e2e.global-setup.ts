@@ -5,6 +5,7 @@ import {
   canRunPlaywrightChromium,
   resolvePlaywrightChromiumExecutablePath,
 } from "../../ui/src/test-helpers/control-ui-e2e.ts";
+import { assertUiE2ePreflight } from "./vitest.ui-e2e-preflight.ts";
 
 declare module "vitest" {
   export interface ProvidedContext {
@@ -13,7 +14,9 @@ declare module "vitest" {
   }
 }
 
-export default function setup(project: TestProject) {
+const preflights = new WeakMap<TestProject, Promise<void>>();
+
+export default async function setup(project: TestProject) {
   const { pool, isolate, hookTimeout: timeoutMs } = project.config;
   if (pool !== "forks" || !isolate || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(
@@ -23,5 +26,19 @@ export default function setup(project: TestProject) {
   project.provide("controlUiE2eCleanup", { pool: "forks", isolate: true, timeoutMs });
   const executablePath = resolvePlaywrightChromiumExecutablePath(chromium.executablePath());
   const available = canRunPlaywrightChromium(executablePath);
+  if (!available && process.env.OPENCLAW_UI_E2E_REQUIRE_BROWSER === "1") {
+    throw new Error(
+      "UI E2E requires an executable Chromium runtime; check the prepared browser and image system libraries. No tests were started.",
+    );
+  }
+  if (available) {
+    const root = project.vitest.getRootProject();
+    let preflight = preflights.get(root);
+    if (!preflight) {
+      preflight = assertUiE2ePreflight();
+      preflights.set(root, preflight);
+    }
+    await preflight;
+  }
   project.provide("controlUiE2eChromium", { executablePath, available });
 }

@@ -18,7 +18,7 @@ import {
   type ExecTarget,
 } from "../infra/exec-approvals.js";
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
-import { findPathKey, mergePathPrepend, removePathPrepend } from "../infra/path-prepend.js";
+import { findPathKey, mergePathPrepend } from "../infra/path-prepend.js";
 import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEventWithReceipt } from "../infra/system-events.js";
 import { logWarn } from "../logger.js";
@@ -55,6 +55,7 @@ import {
   renderExecOutputText,
   renderExecUpdateText,
 } from "./bash-tools.exec-output.js";
+import { wrapPosixCommandWithPathPrepend } from "./bash-tools.exec-path-prepend.js";
 import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { chunkString, clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
@@ -597,41 +598,6 @@ export function buildExecRuntimeErrorOutcome(params: {
     failureKind: "runtime-error",
     reason: joinExecFailureOutput(params.aggregated, String(params.error)),
   };
-}
-
-/**
- * Apply PATH prepends inside the shell command.
- * This ensures our paths take precedence even if user RC files (e.g. ~/.zshenv)
- * prepend their own entries to PATH during shell startup.
- */
-function wrapPosixCommandWithPathPrepend(
-  command: string,
-  env: Record<string, string>,
-  pathPrepend?: string[],
-): string {
-  if (process.platform === "win32") {
-    return command;
-  }
-
-  if (!pathPrepend || pathPrepend.length === 0) {
-    return command;
-  }
-
-  // Strip prepended entries from the base env.PATH to avoid duplicate segments.
-  // The wrapper will re-apply them after shell startup.
-  const pathKey = findPathKey(env);
-  const currentPath = env[pathKey];
-  if (currentPath) {
-    const newPath = removePathPrepend(currentPath, pathPrepend);
-    if (newPath !== undefined) {
-      env[pathKey] = newPath;
-    }
-  }
-
-  // Pass the prepend string safely via a temporary environment variable.
-  env.OPENCLAW_PREPEND_PATH = pathPrepend.join(path.delimiter);
-
-  return `export PATH="\${OPENCLAW_PREPEND_PATH}\${PATH:+:$PATH}"; unset OPENCLAW_PREPEND_PATH; ${command}`;
 }
 
 /** Starts a host or sandbox exec process and registers it for polling/backgrounding. */

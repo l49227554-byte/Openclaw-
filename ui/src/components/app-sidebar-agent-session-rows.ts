@@ -169,6 +169,16 @@ export function projectSidebarAgentSessionRows({
           (!host.sessionInvolvingMeFilterActive || rowsByKey.has(key))),
     ),
   );
+  // A directly opened Home can live only in the accepted lineage descriptor,
+  // outside the bounded roster. Its links still own loading and child placement.
+  if (
+    lineageRoot &&
+    isMainSession(lineageRoot.key) &&
+    areUiSessionKeysEquivalent(lineageRoot.key, navigationState.routeSessionKey) &&
+    ![...visibleRowsByKey.keys()].some((key) => areUiSessionKeysEquivalent(key, lineageRoot.key))
+  ) {
+    visibleRowsByKey.set(lineageRoot.key, lineageRoot);
+  }
   if (grouped) {
     // Keep the existing current-route/lineage exceptions independently of the
     // bounded shared window and its ordinary status-filtered members.
@@ -299,7 +309,7 @@ export function projectSidebarHomeSession({
     roots: [row],
     mainSessionKeys: new Set([row.key, host.selectedAgentMainSessionKey(agentId)]),
     rowsByKey: collectSidebarSessionRowsByKey({
-      rows,
+      rows: [...rows, row],
       childRowsByParent: childSessionRowsByParent,
     }),
     loadingChildKeys: host.sessionData.loadingChildSessionKeys,

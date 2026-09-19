@@ -141,6 +141,56 @@ describe("AppSidebar agent roster", () => {
     },
   );
 
+  it.each(
+    (["chip", "roster"] as const).flatMap((mode) =>
+      [false, true].map((backref) => ({ mode, backref })),
+    ),
+  )(
+    "loads descendants from a directly opened out-of-window Home ($mode, backref=$backref)",
+    async ({ mode, backref }) => {
+      const homeKey = "agent:working:main";
+      const childKey = "agent:working:older-child";
+      const home = session("working", 1, { childSessions: [childKey] });
+      const { sidebar, context, sessions, result } = await mountRoster(
+        roster,
+        [session("main", 10, { key: "agent:main:recent", isMain: false })],
+        undefined,
+        [home],
+      );
+      sessions.list.mockImplementation(async (options) =>
+        options?.spawnedBy === homeKey
+          ? {
+              ...result,
+              count: 1,
+              sessions: [
+                session("working", 2, {
+                  key: childKey,
+                  isMain: false,
+                  ...(backref ? { spawnedBy: homeKey } : {}),
+                }),
+              ],
+            }
+          : result,
+      );
+      sidebar.sidebarAgentsMode = mode;
+      sidebar.activeRouteId = "chat";
+      sidebar.sessionKey = homeKey;
+      context.agentSelection.set("working");
+      await vi.waitFor(() =>
+        expect(sessions.list).toHaveBeenCalledWith(expect.objectContaining({ spawnedBy: homeKey })),
+      );
+      await vi.waitFor(() =>
+        expect(sessionKeys(sidebar).filter((key) => key === childKey)).toHaveLength(1),
+      );
+      expect(sessionKeys(sidebar)).not.toContain(homeKey);
+      if (mode === "roster") {
+        expect(
+          sidebar.querySelector('[data-agent-id="working"]')?.getAttribute("aria-current"),
+        ).toBe("page");
+      }
+    },
+  );
+
   it("keeps configured agent order when session activity changes", async () => {
     const { sidebar, context, result } = await mountRoster();
     sidebar.sidebarAgentsMode = "roster";

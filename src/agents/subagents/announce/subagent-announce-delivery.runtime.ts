@@ -30,6 +30,7 @@ import {
   isEmbeddedAgentRunActive,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
+  resolveActiveEmbeddedRunOwner,
   resolveEmbeddedRunAbandonment,
   type EmbeddedAgentQueueMessageOutcome,
 } from "../../embedded-agent-runner/runs.js";
@@ -52,6 +53,7 @@ export type SubagentAnnounceDeliveryDeps = {
     requesterAgentId?: string,
   ) => {
     sessionId?: string;
+    runId?: string;
     isActive: boolean;
   };
   resolveRequesterSessionAbandonment: (
@@ -155,8 +157,10 @@ const defaultSubagentAnnounceDeliveryDeps: SubagentAnnounceDeliveryDeps = {
       ? resolveActiveEmbeddedRunSessionId(requesterSessionKey)
       : undefined;
     const sessionId = activeSessionId ?? storedSessionId;
+    const activeOwner = sessionId ? resolveActiveEmbeddedRunOwner(sessionId) : undefined;
     return {
       sessionId,
+      ...(activeOwner?.runId ? { runId: activeOwner.runId } : {}),
       isActive: Boolean(sessionId && isEmbeddedAgentRunActive(sessionId)),
     };
   },

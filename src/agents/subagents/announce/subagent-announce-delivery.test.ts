@@ -1,5 +1,3 @@
-// Subagent announce delivery tests cover the last-mile routing used when child
-// runs report progress or completion back to the requester session.
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { validateAgentParams } from "../../../../packages/gateway-protocol/src/index.js";
@@ -51,12 +49,21 @@ import {
   musicCompletionEvents,
   taskCompletionEvents,
 } from "../../subagent-test-fixtures.test-helpers.js";
+import { deliverSlackChannelAnnouncement } from "./subagent-announce-delivery.slack-channel.test-support.js";
 import {
   testing,
   deliverSubagentAnnouncement,
   loadRequesterSessionEntry,
 } from "./subagent-announce-delivery.test-support.js";
 import { runDescendantWake } from "./subagent-announce-descendant-wake.js";
+
+const RETRYABLE_PENDING_COMPLETION_HANDOFF = {
+  delivered: false,
+  path: "direct",
+  reason: "completion_handoff_pending",
+  disposition: "retryable",
+  terminal: true,
+} as const;
 
 const sessionDeliveryQueueMocks = vi.hoisted(() => ({
   enqueueClaimedSessionDelivery: vi.fn(
@@ -131,6 +138,7 @@ afterEach(() => {
   vi.useRealTimers();
   setActivePluginRegistry(createTestRegistry());
   testing.setDepsForTest();
+  testing.clearRetainedCompletionHandoffKeysForTest();
   sessionDeliveryQueueMocks.enqueueClaimedSessionDelivery.mockClear();
   sessionDeliveryQueueMocks.releaseSessionDeliveryClaim.mockClear();
   sessionDeliveryQueueMocks.scheduleSessionDelivery.mockClear();
@@ -365,7 +373,6 @@ function createQueueOutcomeSequenceMock(
   queuedOutcomes: (boolean | EmbeddedAgentQueueFailureReason)[],
   onCall?: () => void,
 ): ReturnType<typeof vi.fn<QueueEmbeddedAgentMessageWithOutcome>> {
-  // Sequence mocks model retry paths where the embedded run can become
   // unavailable between announce attempts.
   let index = 0;
   return vi.fn((sessionId: string) => {
@@ -549,6 +556,7 @@ async function deliverDiscordDirectMessageCompletion(params: {
   sendMessage?: typeof runtimeSendMessage;
   completionTarget?: "parent";
   currentRequesterSessionId?: string | null;
+  directIdempotencyKey?: string;
   internalEvents?: AgentInternalEvent[];
   isActive?: boolean;
   requesterSessionKey?: string;
@@ -601,7 +609,7 @@ async function deliverDiscordDirectMessageCompletion(params: {
         }
       : {}),
     bestEffortDeliver: true,
-    directIdempotencyKey: "announce-dm-fallback-empty",
+    directIdempotencyKey: params.directIdempotencyKey ?? "announce-dm-fallback-empty",
     internalEvents: params.internalEvents,
     sourceRunId: "run-generated-media",
     sourceSessionKey: params.sourceSessionKey,
@@ -670,81 +678,6 @@ async function deliverTelegramDirectMessageCompletion(params: {
     internalEvents: params.internalEvents,
     sourceRunId: "run-generated-media",
     sourceTool: params.sourceTool,
-  });
-}
-
-async function deliverSlackChannelAnnouncement(params: {
-  callGateway: typeof runtimeCallGateway;
-  isActive?: boolean;
-  sessionId?: string;
-  expectsCompletionMessage?: boolean;
-  directIdempotencyKey: string;
-  requesterSessionKey?: string;
-  requesterOrigin?: {
-    channel?: string;
-    to?: string;
-    accountId?: string;
-    threadId?: string | number;
-  };
-  completionDirectOrigin?: {
-    channel?: string;
-    to?: string;
-    accountId?: string;
-    threadId?: string | number;
-  };
-  queueEmbeddedAgentMessageWithOutcome?: QueueEmbeddedAgentMessageWithOutcome;
-  sendMessage?: typeof runtimeSendMessage;
-  internalEvents?: AgentInternalEvent[];
-  sourceSessionKey?: string;
-  sourceTool?: string;
-  runtimeConfig?: Record<string, unknown>;
-  requesterSessionEntry?: SessionEntry;
-  isSourceSessionEffectsAllowed?: () => boolean;
-}) {
-  const origin = {
-    channel: "slack",
-    to: "channel:C123",
-    accountId: "acct-1",
-  } as const;
-  testing.setDepsForTest({
-    callGateway: params.callGateway,
-    getRequesterSessionActivity: () => ({
-      sessionId: params.sessionId ?? "requester-session-channel",
-      isActive: params.isActive === true,
-    }),
-    getRuntimeConfig: () => (params.runtimeConfig ?? {}) as never,
-    ...(params.requesterSessionEntry
-      ? {
-          loadRequesterSessionEntry: (sessionKey: string) => ({
-            cfg: (params.runtimeConfig ?? {}) as never,
-            entry: params.requesterSessionEntry,
-            canonicalKey: sessionKey,
-          }),
-        }
-      : {}),
-    sendMessage: params.sendMessage ?? runtimeSendMessage,
-    ...(params.queueEmbeddedAgentMessageWithOutcome
-      ? { queueEmbeddedAgentMessageWithOutcome: params.queueEmbeddedAgentMessageWithOutcome }
-      : {}),
-  });
-
-  return deliverSubagentAnnouncement({
-    requesterSessionKey: params.requesterSessionKey ?? "agent:main:slack:channel:C123",
-    targetRequesterSessionKey: params.requesterSessionKey ?? "agent:main:slack:channel:C123",
-    triggerMessage: "child done",
-    steerMessage: "child done",
-    requesterSessionOrigin: params.requesterOrigin ?? origin,
-    completionDirectOrigin: params.completionDirectOrigin ?? params.requesterOrigin ?? origin,
-    directOrigin: params.requesterOrigin ?? origin,
-    requesterIsSubagent: false,
-    expectsCompletionMessage: params.expectsCompletionMessage !== false,
-    bestEffortDeliver: true,
-    directIdempotencyKey: params.directIdempotencyKey,
-    internalEvents: params.internalEvents,
-    sourceRunId: "run-generated-media",
-    sourceSessionKey: params.sourceSessionKey,
-    sourceTool: params.sourceTool,
-    isSourceSessionEffectsAllowed: params.isSourceSessionEffectsAllowed,
   });
 }
 
@@ -2054,6 +1987,59 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(mockCallArg(sendMessage, 0, 0).content).toBe(
       "A delegated task failed before it could report a result. Please retry the task.",
     );
+  });
+
+  it("does not text-direct a failed-child notice while the original handoff is retained", async () => {
+    const directIdempotencyKey = "announce-dm-retained-no-text-direct";
+    const childSessionKey = "agent:worker:subagent:retained-failed-notice";
+    const callGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        runId: directIdempotencyKey,
+        status: "in_flight",
+        admissionPending: true,
+      })
+      .mockRejectedValueOnce(
+        new Error("original handoff replay failed"),
+      ) as unknown as typeof runtimeCallGateway;
+    const sendMessage = createSendMessageMock();
+    const internalEvents = taskCompletionEvents({
+      childSessionKey,
+      childSessionId: "child-session-id",
+      status: "error",
+      statusLabel: "failed: all models failed",
+      result: "(no output)",
+      noVisibleResult: true,
+    });
+
+    const pending = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      directIdempotencyKey,
+      sourceSessionKey: childSessionKey,
+      internalEvents,
+    });
+    expect(pending).toMatchObject(RETRYABLE_PENDING_COMPLETION_HANDOFF);
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    const failedReplay = await deliverDiscordDirectMessageCompletion({
+      callGateway,
+      sendMessage,
+      directIdempotencyKey,
+      sourceSessionKey: childSessionKey,
+      internalEvents,
+    });
+    expect(failedReplay).toMatchObject({
+      ...RETRYABLE_PENDING_COMPLETION_HANDOFF,
+      error: "original handoff replay failed",
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+    const replayKeys = vi
+      .mocked(callGateway)
+      .mock.calls.map(
+        (call) => (call[0] as { params?: Record<string, unknown> })?.params?.idempotencyKey,
+      );
+    expect(replayKeys).toEqual([directIdempotencyKey, directIdempotencyKey]);
   });
 
   it.each(["error", "timeout", "unknown"] as const)(
@@ -3966,7 +3952,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       }),
     });
 
-    expectDeliveryPath(result, "direct");
+    expect(result).toMatchObject(RETRYABLE_PENDING_COMPLETION_HANDOFF);
     expect(callGateway).toHaveBeenCalledTimes(1);
     expect(sendMessage).not.toHaveBeenCalled();
   });
@@ -4226,7 +4212,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
               reason: "completion_handoff_pending",
               disposition: "session_queued",
             }
-          : { delivered: true, path: "direct" },
+          : RETRYABLE_PENDING_COMPLETION_HANDOFF,
       );
       expect(result.phases?.map((phase) => phase.phase)).toEqual(["direct-primary"]);
       expect(callGateway).toHaveBeenCalledTimes(1);

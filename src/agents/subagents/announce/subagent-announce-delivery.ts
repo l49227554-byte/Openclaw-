@@ -30,6 +30,7 @@ import {
 import { admitCorrelatedSubagentSessionDelivery } from "../completion/subagent-completion-delivery.js";
 import { getSubagentDepthFromSessionStore } from "../spawn/subagent-depth.js";
 import { maybeSteerSubagentAnnounce } from "./subagent-announce-active-wake.js";
+import { clearRetainedCompletionHandoffKeysForTest } from "./subagent-announce-completion-handoff-retention.js";
 import {
   hasAnnounceSendEvidence,
   isWriterClaimReboundAnnounceError,
@@ -353,6 +354,7 @@ const testing = {
   setDepsForTest(overrides?: Partial<SubagentAnnounceDeliveryDeps>) {
     setSubagentAnnounceDeliveryDepsForTest(overrides);
   },
+  clearRetainedCompletionHandoffKeysForTest,
   hasAnnounceSendEvidence,
   isWriterClaimReboundAnnounceError,
 };

@@ -1,7 +1,6 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import {
-  avoidTrailingGraphemeBreak,
-  firstGraphemeClusterLength,
+  findGraphemeChunkEnd,
   skipWhitespaceGraphemes,
 } from "@openclaw/normalization-core/utf16-slice";
 
@@ -98,11 +97,7 @@ export function chunkTextRanges(text: string, options: ChunkTextRangesOptions): 
       options.mode === "preferred" && maxEnd < text.length
         ? findPreferredRangeEnd(text, start, maxEnd)
         : undefined;
-    const candidateEnd =
-      preferredEnd && preferredEnd >= start + firstGraphemeClusterLength(text.slice(start))
-        ? preferredEnd
-        : maxEnd;
-    const end = avoidTrailingGraphemeBreak(text, start, candidateEnd);
+    const end = findGraphemeChunkEnd(text, start, maxEnd, preferredEnd);
     ranges.push({ start, end });
     start = end;
   }
@@ -136,13 +131,7 @@ export function chunkText(text: string, limit: number): string[] {
     // Prefer block boundaries, then spaces, then a hard size cut when no
     // readable breakpoint exists inside this window.
     const breakOffset = lastNewline > 0 ? lastNewline : lastWhitespace;
-    const end = avoidTrailingGraphemeBreak(
-      text,
-      cursor,
-      breakOffset > 0 && breakOffset >= firstGraphemeClusterLength(text.slice(cursor))
-        ? cursor + breakOffset
-        : windowEnd,
-    );
+    const end = findGraphemeChunkEnd(text, cursor, windowEnd, cursor + breakOffset);
     chunks.push(text.slice(cursor, end));
     cursor = skipWhitespaceGraphemes(text, end);
   }

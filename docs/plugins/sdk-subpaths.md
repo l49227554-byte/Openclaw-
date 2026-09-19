@@ -439,7 +439,7 @@ Use `isLoopbackHost(host)` when a plugin must accept only the local machine. It 
     | `plugin-sdk/context-visibility-runtime` | Private-local after July 2026; Context visibility resolution and supplemental context filtering without broad config/security imports |
     | `plugin-sdk/string-coerce-runtime` | Browser-safe primitive coercion, string normalization, Date-valid timestamps, and UTF-16 truncation |
     | `plugin-sdk/html-entity-runtime` | Private-local after July 2026; Single-pass semicolon-terminated HTML5 entity decoding without broad text utilities |
-    | `plugin-sdk/text-utility-runtime` | Private-local after July 2026; Low-level text and path helpers, including grapheme-safe chunk boundaries, leading grapheme width, UTF-8 prefix truncation, and five-entity HTML escaping |
+    | `plugin-sdk/text-utility-runtime` | Private-local after July 2026; Low-level text and path helpers, including budget-aware grapheme chunk selection, UTF-8 prefix truncation, and five-entity HTML escaping |
     | `plugin-sdk/simple-completion-runtime` | Private-local after July 2026; Prepared simple-completion model helpers and assistant text extraction for lightweight agent tasks |
     | `plugin-sdk/widget-html` | Widget CDN origins, complete-document detection, size validation, and tool input errors |
     | `plugin-sdk/host-runtime` | Private-local after July 2026; Hostname and SCP host normalization helpers |

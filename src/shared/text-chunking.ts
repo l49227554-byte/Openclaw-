@@ -1,7 +1,6 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import {
-  avoidTrailingGraphemeBreak,
-  firstGraphemeClusterLength,
+  findGraphemeChunkEnd,
   skipWhitespaceGraphemes,
   trimEndWhitespaceGraphemes,
 } from "@openclaw/normalization-core/utf16-slice";
@@ -50,11 +49,8 @@ export function splitLongTextLine(
       if (breakIndex <= 0) {
         breakIndex = findCjkPunctuationBreak(window);
       }
-      if (breakIndex <= 0 || breakIndex < firstGraphemeClusterLength(remaining)) {
-        breakIndex = normalizedLimit;
-      }
     }
-    breakIndex = avoidTrailingGraphemeBreak(remaining, 0, breakIndex);
+    breakIndex = findGraphemeChunkEnd(remaining, 0, normalizedLimit, breakIndex);
     chunks.push(remaining.slice(0, breakIndex));
     remaining = remaining.slice(breakIndex);
   }
@@ -86,17 +82,12 @@ export function chunkTextByBreakResolver(
   let remaining = text;
   while (remaining.length > normalizedLimit) {
     const window = remaining.slice(0, normalizedLimit);
-    const candidateBreak = resolveBreakIndex(window);
-    // Invalid, fractional, or zero-width soft breaks would stall the loop.
-    const breakIdx =
-      Number.isInteger(candidateBreak) &&
-      candidateBreak > 0 &&
-      candidateBreak <= normalizedLimit &&
-      (candidateBreak === normalizedLimit ||
-        candidateBreak >= firstGraphemeClusterLength(remaining))
-        ? candidateBreak
-        : normalizedLimit;
-    const safeBreakIdx = avoidTrailingGraphemeBreak(remaining, 0, breakIdx);
+    const safeBreakIdx = findGraphemeChunkEnd(
+      remaining,
+      0,
+      normalizedLimit,
+      resolveBreakIndex(window),
+    );
     const chunk = trimEndWhitespaceGraphemes(remaining, safeBreakIdx);
     if (chunk.length > 0) {
       chunks.push(chunk);

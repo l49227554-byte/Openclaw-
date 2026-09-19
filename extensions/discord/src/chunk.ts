@@ -2,7 +2,7 @@ import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { resolveIntegerOption } from "openclaw/plugin-sdk/number-runtime";
 import { chunkByParagraph, type ChunkMode } from "openclaw/plugin-sdk/reply-chunking";
 import { chunkTextForOutbound, findCodeRegions } from "openclaw/plugin-sdk/text-chunking";
-import { avoidTrailingGraphemeBreak } from "openclaw/plugin-sdk/text-utility-runtime";
+import { findGraphemeChunkEnd } from "openclaw/plugin-sdk/text-utility-runtime";
 
 type ChunkDiscordTextOpts = {
   /** Max characters per Discord message. Default: 2000. */
@@ -425,7 +425,7 @@ function createDiscordRanges(source: string, maxChars: number, maxLines: number)
     return Boolean(span && span.start < end && start < span.end);
   };
   const boundary = (start: number, end: number) => {
-    let safe = avoidTrailingGraphemeBreak(source, start, end);
+    let safe = findGraphemeChunkEnd(source, start, end);
     // CRLF is one grapheme cluster, but this line loop already owns CRLF pairs: segments end
     // in `\r` and flush keeps the pair with the unconsumed source. Keep the historical cut
     // between them here; the code-span branch below still rejoins the pair inside code.

@@ -36,21 +36,39 @@ function getGraphemeSegmenter(): Intl.Segmenter {
 }
 
 /**
- * Retreats to a grapheme boundary, falling back to a surrogate-safe cut when the
- * leading cluster exceeds the budget. Interior cuts always advance; as with the
- * surrogate helper, a leading pair can exceed end by one code unit.
+ * Chooses a whole-grapheme cut within the hard budget, honoring a usable preference.
+ * If no whole grapheme fits, allowPartial permits a surrogate-safe progress cut;
+ * a leading surrogate pair can exceed maxEnd by one code unit.
  */
-export function avoidTrailingGraphemeBreak(text: string, start: number, end: number): number {
-  if (end <= start || end >= text.length) {
-    return end;
+export function findGraphemeChunkEnd(
+  text: string,
+  start: number,
+  maxEnd: number,
+  preferredEnd = maxEnd,
+  allowPartial = true,
+): number {
+  const hardEnd = Math.min(maxEnd, text.length);
+  if (hardEnd <= start) {
+    return start;
+  }
+  const preferred =
+    Number.isInteger(preferredEnd) && preferredEnd > start && preferredEnd <= hardEnd
+      ? preferredEnd
+      : hardEnd;
+  if (preferred === text.length) {
+    return preferred;
   }
 
-  // An interior end always belongs to a segment.
-  const cluster = getGraphemeSegmenter().segment(text).containing(end);
-  if (cluster === undefined || cluster.index === end) {
-    return end;
+  const segments = getGraphemeSegmenter().segment(text);
+  let end = segments.containing(preferred)?.index ?? preferred;
+  if (end <= start && preferred < hardEnd) {
+    end = hardEnd === text.length ? hardEnd : (segments.containing(hardEnd)?.index ?? hardEnd);
   }
-  return cluster.index > start ? cluster.index : avoidTrailingHighSurrogateBreak(text, start, end);
+  return end > start
+    ? end
+    : allowPartial
+      ? avoidTrailingHighSurrogateBreak(text, start, hardEnd)
+      : start;
 }
 
 /** Width to reserve for the first whole grapheme, or zero for empty text. */

@@ -1,5 +1,5 @@
 import {
-  avoidTrailingGraphemeBreak,
+  findGraphemeChunkEnd,
   firstGraphemeClusterLength,
   skipWhitespaceGraphemes,
   trimEndWhitespaceGraphemes,
@@ -163,7 +163,7 @@ export function chunkByNewline(
     }
 
     const rawLimit = Math.max(1, lineLimit - prefix.length);
-    const firstLimit = avoidTrailingGraphemeBreak(lineValue, 0, rawLimit);
+    const firstLimit = findGraphemeChunkEnd(lineValue, 0, rawLimit);
     const first = lineValue.slice(0, firstLimit);
     chunks.push(prefix + first);
     const remaining = lineValue.slice(firstLimit);
@@ -399,10 +399,7 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
     reopenFence = undefined;
     const windowEnd = Math.min(text.length, start + contentLimit);
     const softBreak = pickSafeBreakIndex(text, start, windowEnd, spans);
-    let breakIdx =
-      softBreak > start && softBreak >= start + firstGraphemeClusterLength(text.slice(start))
-        ? softBreak
-        : windowEnd;
+    let breakIdx = findGraphemeChunkEnd(text, start, windowEnd, softBreak);
 
     const initialFence = findFenceSpanAt(spans, breakIdx);
 
@@ -410,7 +407,7 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
     if (initialFence) {
       const closeLine = `${initialFence.indent}${initialFence.marker}`;
       if (!resolveFenceReopenLine(initialFence, normalizedLimit)) {
-        breakIdx = windowEnd;
+        breakIdx = findGraphemeChunkEnd(text, start, windowEnd);
         fenceToSplit = undefined;
       } else {
         const maxIdxIfNeedNewline = start + (contentLimit - (closeLine.length + 1));
@@ -440,27 +437,20 @@ export function chunkMarkdownText(text: string, limit: number): string[] {
         }
 
         if (!pickedNewline && minProgressIdx >= maxIdxIfAlreadyNewline) {
-          breakIdx = windowEnd;
+          breakIdx = findGraphemeChunkEnd(text, start, windowEnd);
           fenceToSplit = undefined;
           reopenFence = initialFence;
         } else {
-          if (!pickedNewline) {
-            breakIdx = Math.max(minProgressIdx, maxIdxIfNeedNewline);
-          }
+          breakIdx = findGraphemeChunkEnd(
+            text,
+            start,
+            pickedNewline ? maxIdxIfAlreadyNewline : maxIdxIfNeedNewline,
+            pickedNewline ? breakIdx : maxIdxIfNeedNewline,
+          );
           const fenceAtBreak = findFenceSpanAt(spans, breakIdx);
           fenceToSplit =
             fenceAtBreak && fenceAtBreak.start === initialFence.start ? fenceAtBreak : undefined;
         }
-      }
-    }
-
-    const safeBreakIdx = avoidTrailingGraphemeBreak(text, start, breakIdx);
-    if (safeBreakIdx !== breakIdx) {
-      breakIdx = safeBreakIdx;
-      if (fenceToSplit) {
-        const fenceAtBreak = findFenceSpanAt(spans, breakIdx);
-        fenceToSplit =
-          fenceAtBreak && fenceAtBreak.start === fenceToSplit.start ? fenceAtBreak : undefined;
       }
     }
 

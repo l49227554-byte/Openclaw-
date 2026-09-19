@@ -1,9 +1,5 @@
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
-import { avoidTrailingHighSurrogateBreak } from "openclaw/plugin-sdk/text-chunking";
-import {
-  avoidTrailingGraphemeBreak,
-  firstGraphemeClusterLength,
-} from "openclaw/plugin-sdk/text-utility-runtime";
+import { findGraphemeChunkEnd } from "openclaw/plugin-sdk/text-utility-runtime";
 
 export function escapeTelegramHtml(text: string): string {
   if (!/[&<>]/.test(text)) {
@@ -16,7 +12,8 @@ export function escapeTelegramHtmlAttr(text: string): string {
   return escapeTelegramHtml(text).replace(/"/g, "&quot;");
 }
 
-const TELEGRAM_HTML_ENTITY_PATTERN = /&(#[xX][0-9A-Fa-f]+|#\d+|amp|lt|gt|quot|apos);/g;
+const TELEGRAM_HTML_ENTITY_PATTERN = /&(#(?:[xX][0-9A-Fa-f]+|\d+)|[A-Za-z0-9]+);/g;
+const TELEGRAM_HTML_ENTITY_AT = new RegExp(TELEGRAM_HTML_ENTITY_PATTERN.source, "y");
 
 // Structural tags that force a line boundary when projecting HTML to plain text
 // (assistant transcript protection). Block-counting helpers for rich HTML are gone.
@@ -111,47 +108,9 @@ export function decodeTelegramHtmlEntities(text: string): string {
 }
 
 export function findTelegramHtmlEntityEnd(text: string, start: number): number {
-  if (text[start] !== "&") {
-    return -1;
-  }
-  let index = start + 1;
-  if (index >= text.length) {
-    return -1;
-  }
-  if (text[index] === "#") {
-    index += 1;
-    if (index >= text.length) {
-      return -1;
-    }
-    const isHex = text[index] === "x" || text[index] === "X";
-    if (isHex) {
-      index += 1;
-      const hexStart = index;
-      while (/[0-9A-Fa-f]/.test(text[index] ?? "")) {
-        index += 1;
-      }
-      if (index === hexStart) {
-        return -1;
-      }
-    } else {
-      const digitStart = index;
-      while (/[0-9]/.test(text[index] ?? "")) {
-        index += 1;
-      }
-      if (index === digitStart) {
-        return -1;
-      }
-    }
-  } else {
-    const nameStart = index;
-    while (/[A-Za-z0-9]/.test(text[index] ?? "")) {
-      index += 1;
-    }
-    if (index === nameStart) {
-      return -1;
-    }
-  }
-  return text[index] === ";" ? index : -1;
+  TELEGRAM_HTML_ENTITY_AT.lastIndex = start;
+  const match = TELEGRAM_HTML_ENTITY_AT.exec(text);
+  return match?.index === start ? TELEGRAM_HTML_ENTITY_AT.lastIndex - 1 : -1;
 }
 
 type TelegramHtmlTextEntity = {
@@ -159,14 +118,12 @@ type TelegramHtmlTextEntity = {
   sourceEnd: number;
   decodedStart: number;
   decodedEnd: number;
-  graphemeSourceStart: number;
 };
 
 function mapTelegramHtmlTextOffset(
   entities: readonly TelegramHtmlTextEntity[],
   offset: number,
-  toSource: boolean,
-  edge: "before" | "after" | "grapheme" = "before",
+  to: "source" | "decoded",
 ): number {
   let low = 0;
   let high = entities.length;
@@ -176,7 +133,7 @@ function mapTelegramHtmlTextOffset(
       entities[middle],
       "Telegram HTML entity binary-search midpoint",
     );
-    const start = toSource ? candidate.decodedStart : candidate.sourceStart;
+    const start = to === "source" ? candidate.decodedStart : candidate.sourceStart;
     if (start <= offset) {
       low = middle + 1;
     } else {
@@ -187,17 +144,10 @@ function mapTelegramHtmlTextOffset(
   if (!entity) {
     return offset;
   }
-  const fromStart = toSource ? entity.decodedStart : entity.sourceStart;
-  const fromEnd = toSource ? entity.decodedEnd : entity.sourceEnd;
-  const toStart = toSource ? entity.sourceStart : entity.decodedStart;
-  const toEnd = toSource ? entity.sourceEnd : entity.decodedEnd;
-  if (offset >= fromEnd) {
-    return toEnd + offset - fromEnd;
-  }
-  if (offset === fromStart) {
-    return toStart;
-  }
-  return edge === "after" ? toEnd : edge === "grapheme" ? entity.graphemeSourceStart : toStart;
+  const fromEnd = to === "source" ? entity.decodedEnd : entity.sourceEnd;
+  const toStart = to === "source" ? entity.sourceStart : entity.decodedStart;
+  const toEnd = to === "source" ? entity.sourceEnd : entity.decodedEnd;
+  return offset < fromEnd ? toStart : toEnd + offset - fromEnd;
 }
 
 function findTelegramHtmlWordSafeSplitIndex(text: string, start: number, end: number): number {
@@ -222,94 +172,44 @@ export type TelegramHtmlTextSplitter = (
 
 /** Prepares one text segment; returned cuts are offsets in its original HTML spelling. */
 export function prepareTelegramHtmlTextSplitter(source: string): TelegramHtmlTextSplitter {
+  // Each entity becomes one scalar for segmentation. Opaque spellings use "&":
+  // like their literal "&" and ";" edges, it attaches to Prepend and Extend.
+  // Sparse spans keep every returned cut outside the original entity spelling.
   const entities: TelegramHtmlTextEntity[] = [];
   const parts: string[] = [];
   let sourceOffset = 0;
   let decodedLength = 0;
-  for (let ampersand = source.indexOf("&"); ampersand !== -1;) {
-    const entityEnd = findTelegramHtmlEntityEnd(source, ampersand);
-    if (entityEnd === -1) {
-      ampersand = source.indexOf("&", ampersand + 1);
-      continue;
-    }
-    const prefix = source.slice(sourceOffset, ampersand);
-    const rawEntity = source.slice(ampersand, entityEnd + 1);
-    const decodedEntity = decodeTelegramHtmlEntity(
-      source.slice(ampersand + 1, entityEnd),
-      rawEntity,
-    );
+  for (const match of source.matchAll(TELEGRAM_HTML_ENTITY_PATTERN)) {
+    const sourceEnd = match.index + match[0].length;
+    const prefix = source.slice(sourceOffset, match.index);
+    const decodedEntity = decodeTelegramHtmlEntity(match[0].slice(1, -1), "&");
     parts.push(prefix, decodedEntity);
     decodedLength += prefix.length;
     entities.push({
-      sourceStart: ampersand,
-      sourceEnd: entityEnd + 1,
+      sourceStart: match.index,
+      sourceEnd,
       decodedStart: decodedLength,
       decodedEnd: decodedLength + decodedEntity.length,
-      graphemeSourceStart: ampersand,
     });
     decodedLength += decodedEntity.length;
-    sourceOffset = entityEnd + 1;
-    ampersand = source.indexOf("&", sourceOffset);
+    sourceOffset = sourceEnd;
   }
   parts.push(source.slice(sourceOffset));
   const decoded = entities.length > 0 ? parts.join("") : source;
-  const firstClusterEnd = firstGraphemeClusterLength(decoded);
-  for (const entity of entities) {
-    if (entity.decodedEnd - entity.decodedStart !== entity.sourceEnd - entity.sourceStart) {
-      continue;
-    }
-    // Unknown/invalid entities stay literal but indivisible. A grapheme cut inside
-    // their spelling must retreat before the whole entity and any attached prefix.
-    const decodedStart =
-      entity.decodedStart < firstClusterEnd
-        ? 0
-        : avoidTrailingGraphemeBreak(decoded, 0, entity.decodedStart);
-    entity.graphemeSourceStart = mapTelegramHtmlTextOffset(
-      entities,
-      decodedStart,
-      true,
-      "grapheme",
-    );
-  }
 
   return (start: number, maxLength: number, allowPartialGrapheme: boolean): number => {
-    const decodedStart = mapTelegramHtmlTextOffset(entities, start, false);
-    const decodedEnd = mapTelegramHtmlTextOffset(entities, start + maxLength, false);
-    const sourceEnd = mapTelegramHtmlTextOffset(entities, decodedEnd, true);
-    if (sourceEnd <= start) {
-      return start;
-    }
-    const leadingClusterLength =
-      decodedStart === 0
-        ? firstClusterEnd
-        : firstGraphemeClusterLength(decoded.slice(decodedStart));
-    const leadingClusterEnd = mapTelegramHtmlTextOffset(
+    const sourceEnd = start + maxLength;
+    const preferredEnd = findTelegramHtmlWordSafeSplitIndex(source, start, sourceEnd);
+    return mapTelegramHtmlTextOffset(
       entities,
-      decodedStart + leadingClusterLength,
-      true,
-      "after",
-    );
-    if (!allowPartialGrapheme && leadingClusterEnd > sourceEnd) {
-      return start;
-    }
-    let proposal = findTelegramHtmlWordSafeSplitIndex(source, start, sourceEnd);
-    if (proposal === start) {
-      proposal = sourceEnd;
-    } else if (leadingClusterEnd <= sourceEnd) {
-      proposal = Math.max(proposal, leadingClusterEnd);
-    }
-    const splitAt = mapTelegramHtmlTextOffset(
-      entities,
-      avoidTrailingGraphemeBreak(
+      findGraphemeChunkEnd(
         decoded,
-        decodedStart,
-        mapTelegramHtmlTextOffset(entities, proposal, false),
+        mapTelegramHtmlTextOffset(entities, start, "decoded"),
+        mapTelegramHtmlTextOffset(entities, sourceEnd, "decoded"),
+        mapTelegramHtmlTextOffset(entities, preferredEnd, "decoded"),
+        allowPartialGrapheme,
       ),
-      true,
-      "grapheme",
+      "source",
     );
-    // Only an oversized leading cluster may require a hard cut; entities stay
-    // atomic, and the shared UTF-16 helper owns the leading-surrogate exception.
-    return splitAt > start ? splitAt : avoidTrailingHighSurrogateBreak(source, start, sourceEnd);
   };
 }

@@ -562,7 +562,12 @@ describe("markdownToTelegramHtml", () => {
   );
 
   it("keeps a leading cluster whole when a preferred word break falls inside it", () => {
-    expect(splitTelegramHtmlChunks("\u0600 \u0301abc", 4)).toEqual(["\u0600 \u0301", "abc"]);
+    const cluster = "\u0600 \u0301";
+    const input = `${cluster}abc`;
+    const chunks = splitTelegramHtmlChunks(input, 4);
+    expect(chunks.join("")).toBe(input);
+    expect(chunks.every((chunk) => chunk.length <= 4)).toBe(true);
+    expect(chunks[0]).toContain(cluster);
   });
 
   it("keeps an HTML entity with its combining mark at the cap", () => {
@@ -594,6 +599,14 @@ describe("markdownToTelegramHtml", () => {
     "preserves an undecoded entity as an indivisible source atom: %s",
     (entity) => {
       expect(splitTelegramHtmlChunks(`A${entity}B`, entity.length)).toEqual(["A", entity, "B"]);
+    },
+  );
+
+  it.each(["&unknown;", "&#xD800;"])(
+    "keeps an opaque entity with its Prepend prefix and trailing combining mark: %s",
+    (entity) => {
+      const cluster = `\u0600${entity}\u0301`;
+      expect(splitTelegramHtmlChunks(`A${cluster}B`, cluster.length)).toEqual(["A", cluster, "B"]);
     },
   );
 

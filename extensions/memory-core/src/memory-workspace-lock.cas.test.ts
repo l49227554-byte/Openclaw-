@@ -214,7 +214,11 @@ describe("memory workspace lock comparisons", () => {
       throw unavailable;
     });
     const originalTask = vi.fn(async () => "must not run");
-    await expect(withMemoryWorkspaceLock(key, originalTask)).rejects.toBe(unavailable);
+    await expect(withMemoryWorkspaceLock(key, originalTask)).rejects.toMatchObject({
+      code: "MEMORY_WORKSPACE_LOCK_STORE_UNAVAILABLE",
+      outcome: { kind: "store-unavailable", reason: "storage-error" },
+      cause: unavailable,
+    });
     const orphan = await store.lookup(key);
     expect(orphan).toBeDefined();
     expect(originalTask).not.toHaveBeenCalled();

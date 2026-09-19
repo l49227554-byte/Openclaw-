@@ -277,7 +277,9 @@ describe("memory workspace release recovery", () => {
       await otherLocks.register(key, completed);
       const otherTask = vi.fn(async () => "must not run");
       await expect(withMemoryWorkspaceLock(workspace, otherTask)).rejects.toMatchObject({
-        code: "PLUGIN_STATE_INVALID_INPUT",
+        code: "MEMORY_WORKSPACE_LOCK_STORE_UNAVAILABLE",
+        outcome: { kind: "store-unavailable", reason: "storage-error" },
+        cause: { code: "PLUGIN_STATE_INVALID_INPUT" },
       });
       expect(otherTask).not.toHaveBeenCalled();
       expect(await otherLocks.lookup(key)).toEqual(completed);

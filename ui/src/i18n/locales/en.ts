@@ -1921,6 +1921,7 @@ export const en: TranslationMap & {
       host: "Host",
       session: "Session",
       cwd: "CWD",
+      requestedCwd: "Requested CWD",
       resolved: "Resolved",
       security: "Security",
       ask: "Ask",

@@ -247,6 +247,22 @@ export class TalkRealtimeRelayOutputOwnership {
   }
 }
 
+/**
+ * Assistant finals waiting for the durable session append while agent consults are admitted.
+ * `depth` counts open consult windows; `runs` maps chat runs whose settlement releases one of
+ * them; `drain` is the in-flight one-at-a-time replay once every window has closed.
+ */
+export type RelayAssistantTranscriptHold = {
+  depth: number;
+  held: string[];
+  heldChars: number;
+  runs: Map<string, () => void>;
+  startedAt: number;
+  /** Set by close: the replay must not pause for windows opened after the session ends. */
+  forced?: boolean;
+  drain?: Promise<void>;
+};
+
 export type RelaySession = {
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
@@ -282,6 +298,8 @@ export type RelaySession = {
   voiceSessionCreated: boolean;
   voiceTranscriptSeq: number;
   voiceTranscriptQueue: BoundedSerialQueue;
+  /** Assistant finals held back from the session while an agent consult is admitted. */
+  assistantTranscriptHold?: RelayAssistantTranscriptHold;
   confirmationReadiness: ReturnType<typeof createClientVoiceConfirmationReadiness>;
   voiceSessionClose?: Promise<void>;
   closing?: { reason: "completed" | "error"; completion?: Promise<void> };

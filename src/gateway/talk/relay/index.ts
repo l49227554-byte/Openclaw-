@@ -12,3 +12,4 @@ export {
   stopTalkRealtimeRelaySession,
   submitTalkRealtimeRelayToolResult,
 } from "./operations.js";
+export { beginTalkRealtimeRelayConsultTranscriptHold } from "./voice.js";

@@ -43,6 +43,7 @@ import {
   resolveTalkAgentConsultAuthority,
 } from "../client-gateway-control.js";
 import {
+  beginTalkRealtimeRelayConsultTranscriptHold,
   ensureTalkRealtimeRelayVoiceSession,
   flushTalkRealtimeRelayVoiceWrites,
 } from "../relay/index.js";
@@ -99,6 +100,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
     }
     let confirmationGrant: ClientVoiceConfirmationGrant | undefined;
     let voiceSessionId: string;
+    let transcriptHold: ReturnType<typeof beginTalkRealtimeRelayConsultTranscriptHold> | undefined;
     try {
       // Shipped clients may consult without ever creating a voice session (old app,
       // restarted gateway, ambiguous open records). Implicitly create one instead of
@@ -124,6 +126,10 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           connId,
           sessionKey: params.sessionKey,
         });
+        // Assistant voice finals must not reach the session between this flush and the
+        // run adopting its keyed user turn (#150204). The hold opens before the flush so a
+        // final admitted mid-flush waits too, and stays until the relay sees the run settle.
+        transcriptHold = beginTalkRealtimeRelayConsultTranscriptHold({ relaySessionId, connId });
         await flushTalkRealtimeRelayVoiceWrites({ relaySessionId, connId });
       }
       const parsedArgs = parseRealtimeVoiceAgentConsultArgs(params.args ?? {});
@@ -149,6 +155,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         rememberLegacyVoiceBinding({ connId, sessionKey: params.sessionKey, voiceSessionId });
       }
     } catch (err) {
+      transcriptHold?.release();
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
       return;
     }
@@ -160,6 +167,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
       relaySessionId: normalizeOptionalString(params.relaySessionId),
       connId,
       onRunStarted: (runId) => {
+        transcriptHold?.adoptRun(runId);
         registerClientVoiceConsultRun({
           agentId,
           sessionKey: params.sessionKey,
@@ -173,6 +181,7 @@ export const talkClientHandlers: GatewayRequestHandlers = {
       },
     });
     if (!result.ok) {
+      transcriptHold?.release();
       respond(false, undefined, result.error);
       return;
     }

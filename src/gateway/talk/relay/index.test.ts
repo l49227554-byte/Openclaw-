@@ -212,7 +212,7 @@ describe("talk realtime gateway relay", () => {
     let current = true;
     const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
       runPrompt as never,
-      () => current,
+      () => (current ? ({} as never) : undefined),
       async () => {},
     );
     (
@@ -246,7 +246,7 @@ describe("talk realtime gateway relay", () => {
     );
     const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
       runPrompt as never,
-      () => true,
+      () => ({}) as never,
       async () => {},
     );
 
@@ -748,7 +748,7 @@ describe("talk realtime gateway relay", () => {
         broadcastToConnIds: vi.fn(),
         chatAbortControllers: new Map(),
         getRuntimeConfig: () => ({}),
-        logGateway: { warn: vi.fn() },
+        logGateway: { warn: vi.fn(), debug: vi.fn() },
       } as never,
       connId: "conn-runner",
       provider,
@@ -778,7 +778,7 @@ describe("talk realtime gateway relay", () => {
         broadcastToConnIds: vi.fn(),
         chatAbortControllers: new Map(),
         getRuntimeConfig: () => ({}),
-        logGateway: { warn: vi.fn() },
+        logGateway: { warn: vi.fn(), debug: vi.fn() },
       } as never,
       connId: "conn-replaced-runner",
       provider,
@@ -854,7 +854,7 @@ describe("talk realtime gateway relay", () => {
             broadcastToConnIds,
             chatAbortControllers: new Map(),
             getRuntimeConfig: () => ({}),
-            logGateway: { warn: vi.fn() },
+            logGateway: { warn: vi.fn(), debug: vi.fn() },
           } as never,
           connId: "conn-early-terminal",
           provider,
@@ -891,7 +891,7 @@ describe("talk realtime gateway relay", () => {
           broadcastToConnIds,
           chatAbortControllers: new Map(),
           getRuntimeConfig: () => ({}),
-          logGateway: { warn: vi.fn() },
+          logGateway: { warn: vi.fn(), debug: vi.fn() },
         } as never,
         connId: "conn-construction-error",
         provider,
@@ -940,7 +940,7 @@ describe("talk realtime gateway relay", () => {
             broadcastToConnIds: vi.fn(),
             chatAbortControllers: new Map(),
             getRuntimeConfig: () => ({}),
-            logGateway: { warn: vi.fn() },
+            logGateway: { warn: vi.fn(), debug: vi.fn() },
           } as never,
           connId: "conn-voice",
           cfg,
@@ -1027,7 +1027,7 @@ describe("talk realtime gateway relay", () => {
           },
           chatAbortControllers: new Map(),
           getRuntimeConfig: () => ({}),
-          logGateway: { warn: vi.fn() },
+          logGateway: { warn: vi.fn(), debug: vi.fn() },
         } as never,
         connId: "conn-voice-overflow",
         provider,
@@ -1084,7 +1084,7 @@ describe("talk realtime gateway relay", () => {
         context: {
           broadcastToConnIds: vi.fn(),
           getRuntimeConfig: () => ({}),
-          logGateway: { warn: vi.fn() },
+          logGateway: { warn: vi.fn(), debug: vi.fn() },
         } as never,
         connId: "conn-voice-overflow",
         provider,
@@ -1097,7 +1097,7 @@ describe("talk realtime gateway relay", () => {
           context: {
             broadcastToConnIds: vi.fn(),
             getRuntimeConfig: () => ({}),
-            logGateway: { warn: vi.fn() },
+            logGateway: { warn: vi.fn(), debug: vi.fn() },
           } as never,
           connId: "conn-voice-overflow",
           provider,
@@ -1133,7 +1133,7 @@ describe("talk realtime gateway relay", () => {
           broadcastToConnIds: vi.fn(),
           chatAbortControllers: new Map(),
           getRuntimeConfig: () => ({}),
-          logGateway: { warn: vi.fn() },
+          logGateway: { warn: vi.fn(), debug: vi.fn() },
         } as never,
         connId: "conn-consult",
         cfg: {},
@@ -1196,7 +1196,7 @@ describe("talk realtime gateway relay", () => {
           broadcastToConnIds: vi.fn(),
           chatAbortControllers: new Map(),
           getRuntimeConfig: () => runtimeConfig,
-          logGateway: { warn: vi.fn() },
+          logGateway: { warn: vi.fn(), debug: vi.fn() },
         } as never,
         connId: "conn-owner-pin",
         provider: createIdleRelayProvider(),
@@ -1248,7 +1248,7 @@ describe("talk realtime gateway relay", () => {
           getRuntimeConfig: () => ({
             agents: { entries: { main: {}, ops: { default: true } } },
           }),
-          logGateway: { warn: vi.fn() },
+          logGateway: { warn: vi.fn(), debug: vi.fn() },
         } as never,
         connId: "conn-trimmed-owner",
         provider: createIdleRelayProvider(),
@@ -1299,7 +1299,7 @@ describe("talk realtime gateway relay", () => {
         context: {
           broadcastToConnIds: vi.fn(),
           getRuntimeConfig: () => ({}),
-          logGateway: { warn },
+          logGateway: { warn, debug: vi.fn() },
         } as never,
         connId: "conn-voice-failure",
         cfg: {},
@@ -1459,7 +1459,7 @@ describe("talk realtime gateway relay", () => {
       broadcastToConnIds,
       broadcast,
       nodeSendToSession,
-      logGateway: { warn: vi.fn() },
+      logGateway: { warn: vi.fn(), debug: vi.fn() },
       chatAbortControllers: new Map([
         [
           "run-1",
@@ -1585,7 +1585,7 @@ describe("talk realtime gateway relay", () => {
     const session = createTalkRealtimeRelaySession({
       context: {
         broadcastToConnIds: vi.fn(),
-        logGateway: { warn: vi.fn() },
+        logGateway: { warn: vi.fn(), debug: vi.fn() },
         getRuntimeConfig: () => ({}),
       } as never,
       connId: "conn-1",

@@ -13,7 +13,7 @@ export function controlContext(
   onTalkEvent?: (event: { type: string; payload: unknown }) => void,
 ) {
   return {
-    logGateway: { warn },
+    logGateway: { warn, debug: vi.fn() },
     chatAbortControllers: new Map(),
     broadcastToConnIds: vi.fn((_name: string, payload: { talkEvent?: unknown }) => {
       if (payload.talkEvent) {

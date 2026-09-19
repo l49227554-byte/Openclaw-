@@ -6,6 +6,7 @@ import {
   resolveRelayProviderToolCallId,
   type RelaySession,
 } from "./state.js";
+import { releaseRelayAgentRunTranscriptHold } from "./voice.js";
 
 export function suppressedToolResultOptions(
   session: RelaySession,
@@ -195,5 +196,6 @@ export function clearRelayAgentToolCall(session: RelaySession, callId: string): 
   const runStillActive = [...session.activeAgentToolCalls.values()].includes(runId);
   if (!runStillActive) {
     session.activeAgentRuns.delete(runId);
+    releaseRelayAgentRunTranscriptHold(session, runId);
   }
 }

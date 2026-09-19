@@ -1,5 +1,7 @@
 import type { RealtimeVoiceAgentConsultRunner } from "../../../talk/provider-types.js";
 import type { TalkAgentConsultRequest } from "../client-agent-consult.types.js";
+import type { RelaySession } from "./state.js";
+import { beginRelayAssistantTranscriptHold } from "./voice.js";
 
 type RelayAgentConsultRunner = RealtimeVoiceAgentConsultRunner & {
   adoptCompletionClaims: () => void;
@@ -11,18 +13,27 @@ type RelayAgentConsultRunner = RealtimeVoiceAgentConsultRunner & {
 
 export function bindTalkRealtimeRelayAgentConsult(
   runPrompt: RelayAgentConsultRunner,
-  isCurrent: () => boolean,
+  getRelay: () => RelaySession | undefined,
   waitForTranscript: (signal?: AbortSignal) => Promise<void>,
 ) {
+  const isCurrent = () => getRelay() !== undefined;
   const runAgentConsult = async (request: TalkAgentConsultRequest) => {
     if (!isCurrent()) {
       throw new Error("Realtime gateway-relay session is closed");
     }
-    await waitForTranscript(request.signal);
-    if (!isCurrent()) {
-      throw new Error("Realtime gateway-relay session is closed");
+    // Provider-driven consults never pass through talk.client.toolCall, so this wrapper is
+    // their hold owner. It opens before the readiness flush: a final admitted during that
+    // flush would otherwise persist after the keyed user turn and fail its adoption.
+    const release = beginRelayAssistantTranscriptHold(getRelay());
+    try {
+      await waitForTranscript(request.signal);
+      if (!isCurrent()) {
+        throw new Error("Realtime gateway-relay session is closed");
+      }
+      return await runPrompt(request);
+    } finally {
+      release();
     }
-    return await runPrompt(request);
   };
   const steer = runPrompt.steer;
   const lifecycleMethods = {
@@ -48,7 +59,12 @@ export function bindTalkRealtimeRelayAgentConsult(
             if (!isCurrent()) {
               throw new Error("Realtime relay session is no longer active");
             }
-            return await steer(request);
+            const release = beginRelayAssistantTranscriptHold(getRelay());
+            try {
+              return await steer(request);
+            } finally {
+              release();
+            }
           },
         }
       : {}),

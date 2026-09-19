@@ -174,7 +174,7 @@ export function createTalkRealtimeRelaySession(
   });
   const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
     consultRunner.runPrompt,
-    () => getActiveRelay() !== undefined,
+    getActiveRelay,
     (signal) => confirmationReadiness.wait(signal),
   );
   const runControl = createTalkRealtimeRunControlOwner({

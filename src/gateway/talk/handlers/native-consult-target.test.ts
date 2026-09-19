@@ -97,7 +97,7 @@ const context = {
   getClientConnIds: () => new Set([client.connId]),
   chatAbortControllers: new Map(),
   broadcastToConnIds: vi.fn(),
-  logGateway: { warn: vi.fn() },
+  logGateway: { warn: vi.fn(), debug: vi.fn() },
 } as unknown as GatewayRequestContext;
 
 async function dispatch(

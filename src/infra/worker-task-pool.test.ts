@@ -60,6 +60,23 @@ afterEach(async () => {
 });
 
 describe("worker task pool", () => {
+  it("acknowledges input custody on its channel without a host exchange and reuses the healthy worker", async () => {
+    const pool = createPool();
+    const released = vi.fn();
+    const onRequest = vi.fn(async () => {
+      throw new Error("Consumption-only task must not request host work");
+    });
+    const first = await pool.run(
+      { label: "closed", consumeInput: true },
+      { onInputConsumed: released, onRequest },
+    );
+    expect(released).toHaveBeenCalledOnce();
+    expect(onRequest).not.toHaveBeenCalled();
+    const next = await pool.run({ label: "next" }, {});
+    expect(next.threadId).toBe(first.threadId);
+    expect(workers).toHaveLength(1);
+  });
+
   it("rotates after active settlement and native exit while preserving queued order and deadlines", async () => {
     const pool = createPool();
     const counters = new Int32Array(new SharedArrayBuffer(8));

@@ -533,7 +533,26 @@ export async function publishStagedIncludeWrites(params: {
           filePath: target.absolutePath,
           skipOutputLogs: params.skipOutputLogs,
         });
-        const removal = { removed: false };
+        const publication: { phase: "none" | "removed" | "published" } = { phase: "none" };
+        const registerRestorer = (
+          committedRaw: string | null,
+          restorerProof: IncludeWriteRestorer["pathProof"],
+        ) =>
+          params.restorers.push({
+            targetPath: entry.targetPath,
+            canonicalTargetPath: target.absolutePath,
+            previousRaw: entry.previousRaw,
+            committedRaw,
+            pathProof: restorerProof,
+          });
+        const publicationProof: IncludePublicationProof = {
+          ...pathProof,
+          assertCurrent: () => {
+            pathProof.assertCurrent();
+            guardedFs.assertPublishedIdentity();
+          },
+          captureRollbackProof: (assertOwner) => guardedFs.captureRollbackProof(assertOwner),
+        };
         const guardedFs = createGuardedConfigFileSystem(
           target.absolutePath,
           fsNode,
@@ -544,18 +563,14 @@ export async function publishStagedIncludeWrites(params: {
             targetPathProof: pathProof,
             preserveDirectoryMode: true,
             onRootRemoved: () => {
-              removal.removed = true;
+              publication.phase = "removed";
+            },
+            onRootPublished: () => {
+              publication.phase = "published";
+              registerRestorer(entry.bytes, publicationProof);
             },
           },
         );
-        const publicationProof: IncludePublicationProof = {
-          ...pathProof,
-          assertCurrent: () => {
-            pathProof.assertCurrent();
-            guardedFs.assertPublishedIdentity();
-          },
-          captureRollbackProof: (assertOwner) => guardedFs.captureRollbackProof(assertOwner),
-        };
         await using preparedFile = await prepareConfigFileWrite({
           configPath: target.absolutePath,
           previousRaw: currentRaw,
@@ -565,27 +580,17 @@ export async function publishStagedIncludeWrites(params: {
           destinationHardlinks: "reject",
           durable: true,
         });
-        // publish()'s copy fallback removes the target (guarded rmSync ->
-        // onRootRemoved) before rewriting it; a throw after that removal must
-        // still register a restorer, fenced on what the failure actually left
-        // behind -- not on entry.bytes (never committed) and not unconditional
-        // (a writer could land in the gap before restoration runs). Reading
-        // the target now, while this per-target lock is still held, captures
-        // exactly the failure's own damage as the fence: restoration later
-        // proceeds only if the file still matches this snapshot, so a
-        // concurrent save after this point makes the fence miss and survives.
+        // The rename callback registers compensation before descriptor cleanup can throw;
+        // copy fallback damage instead uses the bytes left by its failed write.
         try {
           preparedFile.publish();
         } catch (error) {
-          if (removal.removed) {
+          if (publication.phase === "removed") {
             const damageRaw = await readRootBoundFileRawIfExists(target);
-            params.restorers.push({
-              targetPath: entry.targetPath,
-              canonicalTargetPath: target.absolutePath,
-              previousRaw: entry.previousRaw,
-              committedRaw: damageRaw,
-              pathProof: captureFailurePublicationProof(pathProof, target.absolutePath),
-            });
+            registerRestorer(
+              damageRaw,
+              captureFailurePublicationProof(pathProof, target.absolutePath),
+            );
           }
           throw error;
         }
@@ -594,13 +599,9 @@ export async function publishStagedIncludeWrites(params: {
         includeGraph.hashes[entry.includeGraphKey] = hashConfigIncludeRaw(entry.bytes);
         guardedFs.assertCurrent();
         guardedFs.assertPublishedIdentity();
-        params.restorers.push({
-          targetPath: entry.targetPath,
-          canonicalTargetPath: target.absolutePath,
-          previousRaw: entry.previousRaw,
-          committedRaw: entry.bytes,
-          pathProof: publicationProof,
-        });
+        if (publication.phase !== "published") {
+          registerRestorer(entry.bytes, publicationProof);
+        }
       },
       params.env,
       liveAuthority,

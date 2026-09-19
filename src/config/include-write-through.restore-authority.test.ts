@@ -251,6 +251,46 @@ describe("config io write / include write-through restore authority", () => {
   );
 
   itWithHome(
+    "restores a renamed include when descriptor cleanup throws after publication",
+    async (home) => {
+      const configPath = configPathForHome(home);
+      const tonyPath = path.join(home, ".openclaw", "tony.json5");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await writeConfigJson(tonyPath, { workspace: "/w/tony" });
+      await writeConfigJson(configPath, {
+        agents: { ownership: "explicit", entries: { tony: { $include: "./tony.json5" } } },
+      });
+      const originalRootRaw = await fs.readFile(configPath, "utf-8");
+      const originalTonyRaw = await fs.readFile(tonyPath, "utf-8");
+      let cleanupFailureInjected = false;
+      mockPrepareConfigFileWrite.mockImplementationOnce(async (params) => ({
+        publish: () => {
+          const stagedPath = `${params.configPath}.post-rename-test`;
+          params.fsModule.writeFileSync(stagedPath, params.content, "utf-8");
+          params.fsModule.renameSync(stagedPath, params.configPath);
+          cleanupFailureInjected = true;
+          throw new Error("synthetic descriptor cleanup failure after include rename");
+        },
+        [Symbol.asyncDispose]: async () => {},
+      }));
+      const io = createFastConfigIO(home);
+
+      await expect(
+        io.writeConfigFile({
+          agents: {
+            ownership: "explicit",
+            entries: { tony: { workspace: "/w/tony-next" } },
+          },
+        } as unknown as OpenClawConfig),
+      ).rejects.toThrow("synthetic descriptor cleanup failure after include rename");
+
+      expect(cleanupFailureInjected).toBe(true);
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRootRaw);
+      await expect(fs.readFile(tonyPath, "utf-8")).resolves.toBe(originalTonyRaw);
+    },
+  );
+
+  itWithHome(
     "leaves a concurrent writer's newer content in place when it lands before restoration runs",
     async (home) => {
       const configPath = configPathForHome(home);

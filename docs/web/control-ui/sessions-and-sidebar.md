@@ -302,13 +302,18 @@ These direct shortcuts do not change the command palette's **⌘K / Ctrl+K**, th
 
 The command palette can start an independent task without leaving your current
 conversation or settings page. Search sessions, settings, and commands as usual,
-or write a prompt in the same field. Multiline text or a prompt of 60 or more
-characters pauses palette searches and gently hides the search tabs, results, and
-hints. The input stays anchored in place. Search returns when the text is
-single-line and shortened to 50 characters or fewer, or cleared. Between 51 and
-59 characters, the palette keeps its current mode to avoid flickering while you
-edit. Counts exclude leading and trailing whitespace. Session-creation errors and
-recovery actions remain visible in either mode.
+or write a prompt and paste images in the same field. Pasted images appear as
+small, removable thumbnails above the text, like the main chat composer. You can
+start a session with images alone or combine them with a prompt; there is no
+attachment picker in the palette.
+
+Multiline text or a prompt of 60 or more characters pauses palette searches and
+gently hides the search tabs, results, and hints. The input stays anchored in
+place. Search returns when the text is single-line and shortened to 50 characters
+or fewer, or cleared. Between 51 and 59 characters, the palette keeps its current
+mode to avoid flickering while you edit. Counts exclude leading and trailing
+whitespace. Session-creation errors and recovery actions remain visible in either
+mode.
 
 - **Enter** opens or runs the selected result. With no result, Enter does not send.
 - **Shift+Enter** adds a line. The field grows downward to three lines, then scrolls
@@ -319,7 +324,7 @@ recovery actions remain visible in either mode.
 Open **New session settings** beside the input to choose the agent, workspace and
 machine, or whether to use a new worktree. These controls reuse the permissions
 and device/cloud availability rules of the full New session page. Model,
-attachment, and visibility controls remain on that page.
+file-picker, and visibility controls remain on that page.
 
 The palette starts with your usual defaults. Turn on **Remember settings** to
 reuse different choices for Cmd/Ctrl+K without changing those defaults. Clearing
@@ -327,8 +332,8 @@ the checkbox restores your usual choices immediately and leaves the prompt
 intact. One-off choices are not remembered for the next palette session.
 
 Accepted creation closes the palette and offers **Open session** without changing
-the foreground view or its draft. A failed submission retains the prompt and
-choices with an error. These settings do not affect sessions opened from search,
+the foreground view or its draft. A failed submission retains the prompt, images,
+and choices with an error. These settings do not affect sessions opened from search,
 and the existing conversation composer keeps its own send and steer/queue
 shortcuts. Long prompts remain intact for session creation and are never sent as
 search queries.

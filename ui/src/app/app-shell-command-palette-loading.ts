@@ -16,6 +16,7 @@ import {
   KEYBOARD_SHORTCUT_COMBOS,
   matchesShortcutCombo,
 } from "../lib/keyboard-shortcut-contract.ts";
+import { readChatClipboardImages } from "../pages/chat/components/chat-attachment-clipboard.ts";
 import type { ApplicationContext, ApplicationNavigationOptions } from "./context.ts";
 import { gatewayPresentationScope } from "./gateway-presentation-scope.ts";
 import type {
@@ -145,6 +146,7 @@ export class ShellCommandPaletteOwner {
 export class CommandPaletteLoadingState {
   submitRequested = false;
   #draft: CommandPaletteInputSnapshot | undefined;
+  #imageFiles: File[] = [];
   #input: HTMLTextAreaElement | undefined;
   #returnFocus: HTMLElement | null | undefined;
   #composing = false;
@@ -251,6 +253,17 @@ export class CommandPaletteLoadingState {
     });
   };
 
+  readonly handlePaste = (event: ClipboardEvent): void => {
+    if (!this.active || this.submitRequested) {
+      return;
+    }
+    const { files } = readChatClipboardImages(event.clipboardData);
+    if (files.length) {
+      event.preventDefault();
+      this.#imageFiles.push(...files);
+    }
+  };
+
   readonly handleKeydown = (event: KeyboardEvent): void => {
     if (this.#composing || event.isComposing || event.keyCode === 229) {
       event.stopPropagation();
@@ -261,7 +274,7 @@ export class CommandPaletteLoadingState {
       event.stopPropagation();
       if (
         !event.repeat &&
-        this.value.trim() &&
+        (this.value.trim() || this.#imageFiles.length > 0) &&
         matchesShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.modifiedEnter, event)
       ) {
         this.submitRequested = true;
@@ -296,6 +309,7 @@ export class CommandPaletteLoadingState {
     };
     const returnFocus = this.#returnFocus;
     const submitRequested = this.submitRequested;
+    const imageFiles = this.#imageFiles;
     // Retiring the loader must not restore the original field between the two
     // palette inputs. The replacement dialog inherits that original target.
     this.#input?.closest<OpenClawModalDialog>("openclaw-modal-dialog")?.setReturnFocusTarget(null);
@@ -305,6 +319,7 @@ export class CommandPaletteLoadingState {
       ...draft,
       returnFocus,
       ...(submitRequested ? { submitRequested: true as const } : {}),
+      ...(imageFiles.length ? { imageFiles } : {}),
     };
   }
 
@@ -320,6 +335,7 @@ export class CommandPaletteLoadingState {
     this.#composing = false;
     this.#input = undefined;
     this.#draft = undefined;
+    this.#imageFiles = [];
     this.#returnFocus = undefined;
   }
 }
@@ -347,6 +363,7 @@ export function renderCommandPaletteLoading(
         placeholder: label,
         onInputRef: state.inputRef,
         onValueChange: state.captureInput,
+        onPaste: state.handlePaste,
         readOnly: state.submitRequested,
       })}
       <div class="cmd-palette__empty" role="status">${t("common.loading")}</div>

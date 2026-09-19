@@ -351,6 +351,7 @@ export function resolveFinalTelegramPresentationText(params: {
     allowWebAppButtons: params.allowWebAppButtons === true,
     questionOptionIndices: resolveAskUserQuestionOptionIndices(params.payload),
   };
+  // SAFETY: channelData.telegram is untyped extension data; its buttons reference forwards unvalidated, like the canonicalization path above.
   const telegramData = params.payload.channelData?.telegram as
     | { buttons?: Parameters<typeof resolveTelegramInlineButtons>[0]["buttons"] }
     | undefined;

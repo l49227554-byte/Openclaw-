@@ -65,6 +65,7 @@ import {
   mergeReplyRunAdmissionSource,
   type ReplyRunAdmissionSource,
 } from "./reply-run-registry.state.js";
+import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
 
 /** Admission result for a reply turn attempting to own the session run slot. */
 type ReplyTurnAdmission =
@@ -268,6 +269,26 @@ export async function admitReplyTurn(
       });
     }
   };
+  const waitForRecovery = async (ownerRelease?: Promise<void>) => {
+    const recoveryRuntime = resolveGatewayContext?.()?.recoveryRuntime;
+    await waitForRestartRecoveryProgress({
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      ownerRelease,
+      signal: params.upstreamAbortSignal,
+    });
+    assertDatabaseOwnerCurrent();
+    if (
+      lifecycleGeneration !== getAgentEventLifecycleGeneration() ||
+      resolveGatewayContext?.()?.recoveryRuntime !== recoveryRuntime
+    ) {
+      rejectLifecycleInvalidatedWork({
+        kind: params.kind,
+        message: `Session "${params.sessionKey}" changed while waiting for recovery. Retry.`,
+        transientSessionChange: true,
+      });
+    }
+  };
   // Retries may release a lifecycle lease, but cannot replace the first physical
   // database owner after waiting for an active turn, delivery, or writer.
   try {
@@ -436,6 +457,15 @@ export async function admitReplyTurn(
           const gatewayContext = resolveGatewayContext?.();
           const recoveryRuntime = gatewayContext?.recoveryRuntime;
           if (
+            recoveryOwnerRelease &&
+            admittedSessionEntry?.abortedLastRun === true &&
+            params.kind === "visible"
+          ) {
+            admission?.release();
+            await waitForRecovery(recoveryOwnerRelease);
+            continue;
+          }
+          if (
             shouldClaimRecoveryOwner &&
             recoveryOwnerRelease === undefined &&
             admittedSessionEntry?.abortedLastRun === true &&
@@ -452,11 +482,9 @@ export async function admitReplyTurn(
               if (params.kind === "queued_followup") {
                 return { status: "skipped", reason: "active-run" };
               }
-              rejectLifecycleInvalidatedWork({
-                kind: params.kind,
-                message: `Session "${params.sessionKey}" is still waiting for restart recovery. Retry when recovery starts.`,
-                transientSessionChange: true,
-              });
+              await waitForRecovery();
+              recoveryDispatchAttempted = false;
+              continue;
             }
             recoveryDispatchAttempted = true;
             const assertRecoveryOwnerCurrent = () => {

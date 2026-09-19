@@ -224,6 +224,163 @@ describe.runIf("__vitest_browser__" in globalThis)("Web Awesome tooltip public l
     await expectVisibility(tooltip, !disabled);
   });
 
+  it.each(["click", "click manual"])("toggles only on click for the %s trigger", async (mode) => {
+    const { page } = await import("vitest/browser");
+    const { trigger, tooltip, events } = await fixture();
+    tooltip.trigger = mode;
+    await tooltip.updateComplete;
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    expect(tooltip.open).toBe(false);
+    expect(events).toEqual([]);
+    const shown = afterTransition(tooltip, "show");
+    await page.elementLocator(trigger).click();
+    await shown;
+    await expectVisibility(tooltip, true);
+    const hidden = afterTransition(tooltip, "hide");
+    await page.elementLocator(trigger).click();
+    await hidden;
+    await expectVisibility(tooltip, false);
+    expect(events).toEqual(["wa-show", "wa-after-show", "wa-hide", "wa-after-hide"]);
+  });
+
+  it.each(["click", "hover"])("reveals from %s and dismisses outside its anchor", async (mode) => {
+    const { page } = await import("vitest/browser");
+    const { host, trigger, tooltip, events } = await fixture();
+    const outside = document.createElement("button");
+    outside.textContent = "Outside";
+    outside.style.cssText = "position: fixed; left: 20px; top: 20px";
+    host.append(outside);
+    tooltip.trigger = mode;
+    tooltip.showDelay = 0;
+    tooltip.hideDelay = 0;
+    await tooltip.updateComplete;
+    const shown = afterTransition(tooltip, "show");
+    if (mode === "hover") {
+      await page.elementLocator(trigger).hover();
+    } else {
+      await page.elementLocator(trigger).click();
+    }
+    await shown;
+    await expectVisibility(tooltip, true);
+    const hidden = afterTransition(tooltip, "hide");
+    await page.elementLocator(outside).click();
+    await hidden;
+    await expectVisibility(tooltip, false);
+    expect(events).toEqual(["wa-show", "wa-after-show", "wa-hide", "wa-after-hide"]);
+  });
+
+  it("keeps manual press passive and rearms focus after a press dismissal blurs", async () => {
+    const { trigger, tooltip, events } = await fixture();
+    await tooltip.show();
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    trigger.click();
+    expect(tooltip.open).toBe(true);
+    await tooltip.hide();
+    tooltip.trigger = "focus";
+    await tooltip.updateComplete;
+    const shown = afterTransition(tooltip, "show");
+    trigger.focus();
+    await shown;
+    const hidden = afterTransition(tooltip, "hide");
+    trigger.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    await hidden;
+    events.length = 0;
+    trigger.dispatchEvent(new FocusEvent("focus"));
+    expect(tooltip.open).toBe(false);
+    expect(events).toEqual([]);
+    trigger.blur();
+    const reopened = afterTransition(tooltip, "show");
+    trigger.focus();
+    await reopened;
+    await expectVisibility(tooltip, true);
+    expect(events).toEqual(["wa-show", "wa-after-show"]);
+  });
+
+  it.each(["hide", "disconnect"] as const)(
+    "does not complete an opening revoked by a reposition listener (%s)",
+    async (action) => {
+      const { host, tooltip, events } = await fixture();
+      let opening: Promise<void> | undefined;
+      let interrupted = false;
+      await duringElementAnimation(
+        tooltip.popup.popup,
+        "show-with-scale",
+        () => {
+          opening = tooltip.show();
+        },
+        () => {
+          tooltip.addEventListener("wa-reposition", () => {
+            if (interrupted || tooltip.popup.popup.classList.contains("show-with-scale")) {
+              return;
+            }
+            interrupted = true;
+            if (action === "disconnect") {
+              host.remove();
+            } else {
+              void tooltip.hide();
+            }
+          });
+        },
+      );
+      await opening;
+      expect(interrupted).toBe(true);
+      if (action === "hide") {
+        await tooltip.hide();
+        await expectVisibility(tooltip, false);
+        expect(events).toEqual(["wa-show", "wa-hide", "wa-after-hide"]);
+      } else {
+        expect(tooltip.body.hidden).toBe(true);
+        expect(tooltip.popup.active).toBe(false);
+        expect(events).toEqual(["wa-show"]);
+      }
+    },
+  );
+
+  it("disabling during an opening retires it even when a hide listener vetoes", async () => {
+    const { tooltip, events } = await fixture();
+    tooltip.addEventListener("wa-hide", (event) => event.preventDefault());
+    const opening = tooltip.show();
+    await tooltip.updateComplete;
+    expect(events).toEqual(["wa-show"]);
+    tooltip.disabled = true;
+    await tooltip.updateComplete;
+    await Promise.all([opening, tooltip.hide()]);
+    await expectVisibility(tooltip, false);
+    expect(events).toEqual(["wa-show", "wa-hide", "wa-after-hide"]);
+  });
+
+  it("honors a hide requested immediately after reconnecting an open tooltip", async () => {
+    const { host, tooltip, events } = await fixture();
+    await tooltip.show();
+    host.remove();
+    events.length = 0;
+    document.body.append(host);
+    await tooltip.hide();
+    await expectVisibility(tooltip, false);
+    expect(events).toEqual([]);
+  });
+
+  it("moves focus listeners and preserves other labels when replacing the anchor", async () => {
+    const { host, trigger, tooltip } = await fixture();
+    trigger.setAttribute("aria-labelledby", "original-label " + tooltip.id);
+    const replacement = document.createElement("button");
+    replacement.id = "replacement-tooltip-trigger";
+    replacement.textContent = "Replacement";
+    replacement.setAttribute("aria-labelledby", "replacement-label");
+    host.append(replacement);
+    tooltip.trigger = "focus";
+    tooltip.for = replacement.id;
+    await tooltip.updateComplete;
+    expect(trigger.getAttribute("aria-labelledby")).toBe("original-label");
+    expect(replacement.getAttribute("aria-labelledby")).toBe("replacement-label " + tooltip.id);
+    trigger.focus();
+    expect(tooltip.open).toBe(false);
+    const shown = afterTransition(tooltip, "show");
+    replacement.focus();
+    await shown;
+    await expectVisibility(tooltip, true);
+  });
+
   it.each(["show", "hide"] as const)(
     "settles a public %s interrupted before its animation sample without stale completion",
     async (operation) => {

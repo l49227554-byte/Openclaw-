@@ -166,3 +166,60 @@ it.each([
     expect(exported.aggregates.byCreator[0].totals).toEqual(exported.totals);
   },
 );
+
+it("disables session-row exports without hiding complete creator totals beyond the loaded page", () => {
+  const base = createUsageProps();
+  const totals = {
+    ...createEmptyCostUsageTotals(),
+    input: 100,
+    totalTokens: 100,
+    inputCost: 1,
+    totalCost: 1,
+  };
+  const sessions = ["2026-05-14", "2026-05-15"].map((date, index) => ({
+    key: `session-${index}`,
+    creatorKey: `creator-${index}`,
+    createdActor: { type: "human" as const, id: `person-${index}`, label: `Person ${index}` },
+    usage: {
+      ...totals,
+      firstActivity: Date.parse(`${date}T12:00:00Z`),
+      activityDates: [date],
+      dailyBreakdown: [{ ...totals, date, tokens: 100, cost: 1 }],
+    },
+  }));
+  const onExportJson = vi.fn();
+  const container = document.createElement("div");
+  render(
+    renderUsage({
+      ...base,
+      data: {
+        ...base.data,
+        sessions: sessions.slice(0, 1),
+        sessionsLimitReached: true,
+        totals: { ...totals, input: 200, totalTokens: 200, inputCost: 2, totalCost: 2 },
+        costDaily: sessions.flatMap((session) => session.usage.dailyBreakdown),
+        aggregates: buildAggregatesFromSessions(sessions),
+      },
+      filters: { ...base.filters, endDate: "2026-05-15", selectedDays: ["2026-05-15"] },
+      callbacks: { ...base.callbacks, display: { ...base.callbacks.display, onExportJson } },
+    }),
+    container,
+  );
+
+  expect(container.querySelectorAll(".session-bar-row")).toHaveLength(0);
+  expect(container.querySelectorAll(".usage-metric-badge strong")[2]?.textContent).toBe("1");
+  const menu = container.querySelector(".usage-export-menu")!;
+  expect(menu.querySelector('[value="sessions-csv"]')!.hasAttribute("disabled")).toBe(true);
+  expect(menu.querySelector('[value="json"]')!.hasAttribute("disabled")).toBe(false);
+  menu.dispatchEvent(new CustomEvent("wa-select", { detail: { item: { value: "json" } } }));
+  expect(onExportJson).toHaveBeenCalledWith(
+    expect.objectContaining({
+      sessions: [],
+      totals: expect.objectContaining({ totalTokens: 100, totalCost: 1 }),
+      aggregates: expect.objectContaining({
+        sessionCount: 1,
+        byCreator: [expect.objectContaining({ key: "creator-1", sessionCount: 1 })],
+      }),
+    }),
+  );
+});

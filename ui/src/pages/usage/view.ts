@@ -511,7 +511,10 @@ export function renderUsage(props: UsageProps) {
                   >
                     ${data.exporting ? t("common.loading") : t("usage.export.label")} ▾
                   </button>
-                  <wa-dropdown-item value="sessions-csv" ?disabled=${displaySessionCount === 0}>
+                  <wa-dropdown-item
+                    value="sessions-csv"
+                    ?disabled=${aggregateSessions.length === 0}
+                  >
                     ${t("usage.export.sessionsCsv")}
                   </wa-dropdown-item>
                   <wa-dropdown-item value="daily-csv" ?disabled=${filteredDaily.length === 0}>
@@ -522,7 +525,7 @@ export function renderUsage(props: UsageProps) {
                     ?disabled=${
                       data.exporting ||
                       data.loading ||
-                      (displaySessionCount === 0 && filteredDaily.length === 0)
+                      (aggregateSessions.length === 0 && filteredDaily.length === 0)
                     }
                   >
                     ${t("usage.export.json")}

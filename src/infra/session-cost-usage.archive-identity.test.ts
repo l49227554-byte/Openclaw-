@@ -423,15 +423,7 @@ describe("usage archive identity", () => {
             generated: true,
           });
           const sourceStats = await fs.stat(sessionFile);
-          const readFile = vi.spyOn(fsSync, "readFileSync");
-          let sessions: Awaited<ReturnType<typeof discoverAllSessions>>;
-          try {
-            sessions = await discoverAllSessions({ agentId });
-            // Listing needs archive identity and modification time, not transcript payloads.
-            expect(readFile.mock.calls.filter(([file]) => file === sessionFile)).toEqual([]);
-          } finally {
-            readFile.mockRestore();
-          }
+          const sessions = await discoverAllSessions({ agentId });
           expect(sessions).toEqual([
             {
               sessionId,
@@ -511,6 +503,12 @@ describe("usage archive identity", () => {
       const mainArchive = await writeArchive({ state, manager, encoding });
       const workerArchive = await writeArchive({ state, manager, encoding, agentId: "worker" });
       const readFile = vi.spyOn(fsSync, "readFileSync");
+      try {
+        await listUsageCountedTranscriptStats("main");
+        expect(readFile.mock.calls.filter(([file]) => file === mainArchive)).toEqual([]);
+      } finally {
+        readFile.mockRestore();
+      }
 
       const sessions = await discoverAllSessions({ agentId: "main" });
       expect.soft(sessions).toHaveLength(1);
@@ -526,8 +524,6 @@ describe("usage archive identity", () => {
           endMs: Date.now() + 86_400_000,
         }),
       ).toMatchObject({ totals: { totalTokens: 17 } });
-      expect(readFile.mock.calls.filter(([file]) => file === mainArchive)).toEqual([]);
-      readFile.mockRestore();
       expect(await discoverAllSessions({ agentId: "worker" })).toEqual([
         expect.objectContaining({ sessionId, sessionFile: workerArchive }),
       ]);

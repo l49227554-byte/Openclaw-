@@ -6,11 +6,13 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
+import * as backoff from "../infra/backoff.js";
 import { registerClonedProjectRegistry } from "../projects/project-registry.test-support.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
+import { OpenClawStateLeaseError } from "../state/openclaw-state-lease.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { executeGitHubPublication } from "./github-publication-executor.js";
@@ -478,13 +480,23 @@ it("can hold publisher exclusion during an existing reclaim claim without taking
       assertOwned();
       entered = true;
       expect(placements.validateWorkspaceResultClaim(claim)).toBe(true);
+      const wait = vi.spyOn(backoff, "sleepWithAbort");
       await expect(
         placements.withWorkspaceExclusion(REQUEST.sessionId, async () => {}),
-      ).rejects.toThrow();
+      ).rejects.toThrow("another operation holds the lease");
+      expect(wait).not.toHaveBeenCalled();
       assertOwned();
       expect(placements.validateWorkspaceResultClaim(claim)).toBe(true);
     });
     expect(entered).toBe(true);
     expect(placements.validateWorkspaceResultClaim(claim)).toBe(true);
+    const operationTimeout = new OpenClawStateLeaseError("Nested operation timed out", {
+      code: "OPENCLAW_STATE_LEASE_TIMEOUT",
+    });
+    await expect(
+      placements.withWorkspaceExclusion(REQUEST.sessionId, async () => {
+        throw operationTimeout;
+      }),
+    ).rejects.toBe(operationTimeout);
   });
 });

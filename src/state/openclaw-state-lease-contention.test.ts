@@ -58,6 +58,12 @@ describe.each([undefined, "existing"] as const)(
                   ending === "timeout"
                     ? "OPENCLAW_STATE_LEASE_TIMEOUT"
                     : "OPENCLAW_STATE_LEASE_ABORTED",
+                ...(ending === "timeout"
+                  ? {
+                      message: expect.stringContaining("shared-state database is busy"),
+                      cause: { family: "state-lifecycle" },
+                    }
+                  : {}),
               });
               if (ending === "abort") {
                 controller.abort(new Error("cancel waiting acquisition"));

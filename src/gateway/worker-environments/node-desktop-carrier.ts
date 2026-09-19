@@ -114,7 +114,7 @@ function launchKey(binding: NodeDesktopBinding, app: WorkerDesktopApp): string {
 /** Carries one durable worker environment's desktop over its private node connection. */
 export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrierOptions) {
   let runtime: WorkerNodeCarrierRuntime | undefined;
-  const claimedEpochs = new Map<string, number>();
+  const ownedEnvironmentIds = new Set<string>();
   const activeStreams = new Set<ActiveNodeDesktopStream>();
   const activeLaunches = new Map<string, ActiveNodeDesktopLaunch>();
 
@@ -162,12 +162,12 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
       active.reservation?.release();
     }
     active.stream?.destroy();
-    activeStreams.delete(active);
   };
 
   const stopStream = async (active: ActiveNodeDesktopStream): Promise<void> => {
     retireStream(active);
     await active.invocation?.catch(() => undefined);
+    activeStreams.delete(active);
   };
 
   const stopLaunch = async (active: ActiveNodeDesktopLaunch): Promise<void> => {
@@ -198,10 +198,6 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
         throw new Error("Worker environment node desktop owner epoch is stale", { cause: error });
       }
       throw error;
-    }
-    const previousEpoch = claimedEpochs.get(binding.environmentId);
-    if (previousEpoch === undefined || binding.ownerEpoch > previousEpoch) {
-      claimedEpochs.set(binding.environmentId, binding.ownerEpoch);
     }
     if (!advanced) {
       return;
@@ -244,6 +240,7 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
     assertRequesterCurrent();
     // Publish ownership before discovery can yield so drain/destroy can abort this attempt.
     activeStreams.add(active);
+    ownedEnvironmentIds.add(binding.environmentId);
     try {
       await claimOwner(binding);
       assertRequesterCurrent();
@@ -280,6 +277,7 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
           ticket: active.ticket.ticket,
           attachPath: active.ticket.attachPath,
           port: binding.desktop.port,
+          ...(binding.desktop.username ? { username: binding.desktop.username } : {}),
           ...(binding.desktop.passwordFilePath
             ? { passwordFilePath: binding.desktop.passwordFilePath }
             : {}),
@@ -303,8 +301,9 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
       if (!bindingIsCurrent(binding, capturedRuntime, node)) {
         throw new Error("Worker environment node desktop owner changed before attachment");
       }
-      if (attached.auth !== "vnc-password" || !attached.vncPassword) {
-        throw new Error("Worker environment node desktop did not provide VNC authentication");
+      const expectedAuth = binding.desktop.username ? "ard-account" : "vnc-password";
+      if (attached.auth !== expectedAuth || !attached.vncPassword) {
+        throw new Error("Worker environment node desktop did not provide managed authentication");
       }
       const { DESKTOP_OBSERVE_PATH, mintDesktopObserverToken } =
         await import("../desktop/observe-bridge.js");
@@ -330,10 +329,12 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
         requester: request.requester,
         attachment,
         onAbandon: () => stopStream(active),
-        preauth: {
-          auth: "vnc-password",
-          credentials: { password: attached.vncPassword },
-        },
+        preauth: binding.desktop.username
+          ? {
+              auth: "ard-account",
+              credentials: { username: binding.desktop.username, password: attached.vncPassword },
+            }
+          : { auth: "vnc-password", credentials: { password: attached.vncPassword } },
         nowMs: issuedAtMs,
       });
       active.unclaimedTimer = setTimeout(
@@ -345,7 +346,12 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
         Math.max(0, minted.expiresAtMs - Date.now()),
       );
       active.unclaimedTimer.unref?.();
-      void active.invocation.finally(() => retireStream(active)).catch(() => undefined);
+      void active.invocation
+        .finally(() => {
+          retireStream(active);
+          activeStreams.delete(active);
+        })
+        .catch(() => undefined);
       return {
         transport: "rfb",
         wsPath: `${DESKTOP_OBSERVE_PATH}?token=${minted.token}`,
@@ -417,6 +423,7 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
     };
     // Stateful launch is visible to teardown before node discovery or dispatch begins.
     activeLaunches.set(key, entry);
+    ownedEnvironmentIds.add(binding.environmentId);
     void operation
       .finally(() => {
         if (activeLaunches.get(key) === entry) {
@@ -435,9 +442,7 @@ export function createWorkerNodeDesktopCarrier(options: WorkerNodeDesktopCarrier
   };
 
   const stopAll = async (): Promise<void> => {
-    await Promise.all(
-      [...claimedEpochs].map(([environmentId, ownerEpoch]) => stop(environmentId, ownerEpoch)),
-    );
+    await Promise.all([...ownedEnvironmentIds].map((environmentId) => stop(environmentId)));
   };
 
   return {

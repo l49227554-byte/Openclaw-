@@ -55,10 +55,9 @@ export type ModelProvidersPageTestElement = HTMLElement & {
   defaultsDraft: (DefaultModelSelection & Partial<ModelBehaviorConfig>) | null;
   keyDraft: string;
   keyEditorProvider: string | null;
-  profileActions: Pick<ModelProviderProfileActionsController, "logout" | "setOrder">;
+  profileActions: Pick<ModelProviderProfileActionsController, "logout" | "setOrder" | "probe">;
   messages: Record<string, { kind: "success" | "error"; text: string; warning?: string }>;
   profileOrders: Record<string, string[]>;
-  probe: (cardId: string, providers: string[]) => Promise<void>;
   probeResults: Record<string, ModelsProbeResult>;
   refresh: (reason: "forced") => Promise<void>;
   routeData: ModelProvidersRouteData | undefined;
@@ -382,8 +381,8 @@ export async function waitForProviders(
 }
 
 export async function advanceUsageRetries(): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await vi.advanceTimersByTimeAsync(5_000);
+  for (const delay of [5_000, 10_000, 20_000]) {
+    await vi.advanceTimersByTimeAsync(delay);
   }
 }
 

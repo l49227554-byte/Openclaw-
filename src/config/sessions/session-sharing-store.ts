@@ -15,13 +15,9 @@ import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite
 import {
   getSessionMemberKysely,
   hasSessionMemberInDatabase,
+  listSessionMembersInDatabase,
+  type SessionMember,
 } from "./session-sharing-store.kernel.js";
-
-type SessionMember = {
-  identityId: string;
-  addedBy: string;
-  addedAt: number;
-};
 
 function resolveDatabaseOptions(scope: SessionAccessScope): OpenClawAgentDatabaseOptions {
   return toDatabaseOptions(resolveSqliteScope(scope));
@@ -32,28 +28,14 @@ function readSessionMembers<T>(
   fallback: T,
   operation: (database: Pick<OpenClawAgentDatabase, "db">) => T,
 ): T {
-  const result = withOpenClawAgentDatabaseReadOnly(operation, resolveDatabaseOptions(scope), {
-    throwOnMissingTable: true,
-  });
+  const result = withOpenClawAgentDatabaseReadOnly(operation, resolveDatabaseOptions(scope));
   return result.found ? result.value : fallback;
 }
 
 export function listSessionMembers(scope: SessionAccessScope): SessionMember[] {
-  return readSessionMembers(scope, [], (database) => {
-    const db = getSessionMemberKysely(database);
-    return executeSqliteQuerySync(
-      database.db,
-      db
-        .selectFrom("session_members")
-        .select(["identity_id", "added_by", "added_at"])
-        .where("session_key", "=", resolveSqliteScope(scope).sessionKey)
-        .orderBy("identity_id"),
-    ).rows.map((row) => ({
-      identityId: row.identity_id,
-      addedBy: row.added_by,
-      addedAt: row.added_at,
-    }));
-  });
+  return readSessionMembers(scope, [], (database) =>
+    listSessionMembersInDatabase(database, resolveSqliteScope(scope).sessionKey),
+  );
 }
 
 export function isSessionMember(scope: SessionAccessScope, identityId: string): boolean {

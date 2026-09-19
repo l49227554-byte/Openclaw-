@@ -11,10 +11,10 @@ import {
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { collectRuntimeImportClosure } from "../../scripts/lib/runtime-import-closure.mts";
 import { detectWorktreeFilesystemBackend } from "../../src/agents/worktrees/filesystem-backend.js";
 import { listTemplates } from "../../src/agents/worktrees/template-registry.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
-import { collectEagerRuntimeImportClosure } from "./eager-import-closure.test-support.js";
 import { createMainRefreshFixture } from "./pr-main-refresh.test-support.js";
 import { copyPrWrapperSources } from "./pr-wrapper.test-support.js";
 
@@ -31,7 +31,9 @@ it("extracts the complete eager runtime import closure without duplicate wrapper
     .filter((entry) => entry.isFile())
     .map((entry) => relative(extracted, join(entry.parentPath, entry.name)));
   expect(
-    collectEagerRuntimeImportClosure(files).filter((file) => !existsSync(join(extracted, file))),
+    collectRuntimeImportClosure(process.cwd(), files).filter(
+      (file) => !existsSync(join(extracted, file)),
+    ),
   ).toEqual([]);
 });
 
@@ -402,7 +404,10 @@ ${changeLock}
       const templateNames = readdirSync(templates).toSorted();
       expect(templateNames.length).toBeGreaterThan(0);
       expect(first.stderr).toContain("PR source checkout: filesystem template clone.");
-      const template = listTemplates(f.env).find((entry) => entry.sourceCommit === f.main);
+      const template = listTemplates({
+        ...f.env,
+        OPENCLAW_STATE_DIR: join(f.canonical, ".local", "pr-state"),
+      }).find((entry) => entry.sourceCommit === f.main);
       expect(template?.backend).toBe("apfs");
       expect(template?.status).toBe("ready");
       const warmResult = nextPr(f, 43);

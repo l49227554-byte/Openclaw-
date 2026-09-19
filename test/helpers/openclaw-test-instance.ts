@@ -1,8 +1,9 @@
 // OpenClaw test instance helper spawns isolated OpenClaw processes.
-import { type ChildProcess, type ChildProcessByStdio, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess, type ChildProcessByStdio, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import net from "node:net";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
@@ -13,21 +14,28 @@ import {
 } from "../../scripts/lib/local-build-metadata-paths.mts";
 import {
   hasUnjoinedWork,
+  finalizeManagedChild,
   inspectManagedProcessGroup,
   runManagedCommand,
+  loadManagedChildSpawner,
   terminateManagedChild,
 } from "../../scripts/lib/managed-child-process.mts";
 import { hasErrnoCode } from "../../src/infra/errno.js";
+import { createFileLockManager } from "../../src/infra/file-lock-manager.js";
+import { FILE_LOCK_TIMEOUT_ERROR_CODE } from "../../src/infra/file-lock.js";
+import { isLockOwnerDefinitelyStale } from "../../src/infra/stale-lock-file.js";
 import {
   appendCapturedOutput,
   createCapturedOutputBuffers,
   finalizeCapturedOutput,
   resolveMaxOutputBytes,
 } from "../../src/process/exec-output.js";
+import { getFileLockProcessStartTime } from "../../src/shared/pid-alive.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../src/test-utils/openclaw-test-state.js";
+import { getDeterministicFreePortBlock } from "../../src/test-utils/ports.js";
 import { sleep } from "../../src/utils.js";
 import { decodeUtf8Tail } from "./bounded-child-output.js";
 import { runQaGatewayFixture } from "./qa-gateway-cleanup.js";
@@ -79,7 +87,7 @@ export type OpenClawTestInstance = {
   entrypoint: () => Promise<string[]>;
   cli: (
     args: string[],
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; execPath?: string },
   ) => Promise<OpenClawTestInstanceCommandResult>;
   startGateway: () => Promise<void>;
   stopGateway: () => Promise<void>;
@@ -108,6 +116,10 @@ export type GatewayReadinessDiagnostic = {
   probes: Array<ReadinessProbe & { startedAtMs: number; deadlineMs: number }>;
   omittedProbes: number;
   lastProbe: ReadinessProbe | null;
+  lastFailedResponse: Pick<
+    ReadinessProbe,
+    "attempt" | "phase" | "elapsedMs" | "status" | "ready" | "error"
+  > | null;
   child: { pid: number | null; exitCode: number | null; signalCode: NodeJS.Signals | null };
   logs: { stdout: string; stderr: string } | null;
 };
@@ -260,8 +272,48 @@ async function resolveGatewayEntrypoint(cwd: string): Promise<string[]> {
   return await promise;
 }
 
+const portClaims = createFileLockManager("openclaw.test-gateway-ports");
+let portClaimOwnerStartTime: number | null | undefined;
+const isDefinitelyStalePortClaim = ({ payload }: { payload: unknown }) =>
+  isLockOwnerDefinitelyStale({ payload: isRecord(payload) ? payload : null });
+
+async function claimGatewayPortBlock(port: number): Promise<() => Promise<void>> {
+  const root = await fs.realpath(tmpdir());
+  const claims: Awaited<ReturnType<typeof portClaims.acquire>>[] = [];
+  const release = () =>
+    runQaGatewayFixture(async () => {}, ...claims.map((claim) => () => claim.release()));
+  try {
+    for (const candidate of [port, port + 1]) {
+      claims.push(
+        await portClaims.acquire(path.join(root, `openclaw-test-port-${candidate}`), {
+          retry: { retries: 0 },
+          staleMs: 30_000,
+          staleRecovery: "remove-if-unchanged",
+          shouldReclaim: isDefinitelyStalePortClaim,
+          shouldRemoveStaleLock: isDefinitelyStalePortClaim,
+          payload: () => {
+            if (portClaimOwnerStartTime === undefined) {
+              portClaimOwnerStartTime = getFileLockProcessStartTime(process.pid);
+            }
+            return {
+              pid: process.pid,
+              createdAt: new Date().toISOString(),
+              ...(portClaimOwnerStartTime === null ? {} : { starttime: portClaimOwnerStartTime }),
+            };
+          },
+        }),
+      );
+    }
+    return release;
+  } catch (error) {
+    return runQaGatewayFixture(async (): Promise<never> => {
+      throw error;
+    }, release);
+  }
+}
+
 async function reserveGatewayPort(
-  port = 0,
+  port: number,
   verifyCleanup?: OpenClawTestInstanceOptions["verifyCleanup"],
 ) {
   // A probe must not retain a connection that can delay release before spawn.
@@ -278,11 +330,7 @@ async function reserveGatewayPort(
         resolve();
       });
     });
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("failed to reserve gateway port");
-    }
-    return { port: address.port, release };
+    return { release };
   } catch (error) {
     return await runQaGatewayFixture(
       async (): Promise<never> => {
@@ -291,6 +339,22 @@ async function reserveGatewayPort(
       () => (server.listening ? (verifyCleanup ? verifyCleanup(release) : release()) : undefined),
     );
   }
+}
+
+export function formatGatewayReadinessDiagnostic(
+  diagnostic: Pick<
+    GatewayReadinessDiagnostic,
+    "attempts" | "elapsedMs" | "lastProbe" | "lastFailedResponse" | "child"
+  >,
+): string {
+  const { attempts, elapsedMs, lastProbe, lastFailedResponse, child } = diagnostic;
+  return `[openclaw-test-instance] readiness ${JSON.stringify({
+    attempts,
+    elapsedMs,
+    lastProbe,
+    lastFailedResponse,
+    child,
+  })}`;
 }
 
 async function waitForGatewayReady(
@@ -308,12 +372,14 @@ async function waitForGatewayReady(
   let outcome: GatewayReadinessDiagnostic["outcome"] = "timeout";
   let attempts = 0;
   let lastProbe: ReadinessProbe | undefined;
+  let lastFailedResponse: GatewayReadinessDiagnostic["lastFailedResponse"] = null;
   const startupError = (message: string, probe = lastProbe) =>
     new Error(
-      `${message}\n[openclaw-test-instance] readiness ${JSON.stringify({
+      `${message}\n${formatGatewayReadinessDiagnostic({
         attempts,
         elapsedMs: Date.now() - startedAt,
         lastProbe: probe ?? null,
+        lastFailedResponse,
         child: { pid: proc.pid ?? null, exitCode: proc.exitCode, signalCode: proc.signalCode },
       })}\n${formatLogs(chunksOut, chunksErr)}`,
     );
@@ -427,6 +493,18 @@ async function waitForGatewayReady(
           probe.error ??= "aborted";
         }
         lastProbe = { ...probe, elapsedMs: Date.now() - attemptStartedAt };
+        // Preserve a completed failure when the budget's final probe stalls. Keep
+        // only scalar categories, never response bodies, headers, or error text.
+        if (
+          lastProbe.status !== undefined &&
+          outcome !== "ready" &&
+          (!lastProbe.error ||
+            lastProbe.error === "invalid-json" ||
+            lastProbe.error === "body-failed")
+        ) {
+          const { attempt, phase, elapsedMs, status, ready, error } = lastProbe;
+          lastFailedResponse = { attempt, phase, elapsedMs, status, ready, error };
+        }
         // The 60-second desktop wait cannot exceed this bound at its existing 10ms cadence.
         if (probes.length < 8192) {
           probes.push({
@@ -460,6 +538,7 @@ async function waitForGatewayReady(
       probes,
       omittedProbes: attempts - probes.length,
       lastProbe: lastProbe ?? null,
+      lastFailedResponse,
       child: { pid: proc.pid ?? null, exitCode: proc.exitCode, signalCode: proc.signalCode },
       logs: outcome === "ready" ? null : { stdout: chunksOut.join(""), stderr: chunksErr.join("") },
     });
@@ -517,7 +596,10 @@ async function stopGatewayProcess(
           },
     );
 
-  if (hasGatewayProcessClosed(child, platform)) {
+  const signals = ["SIGTERM", "SIGKILL"] as const;
+  // Preserve an exited leader's inherited output before terminating its writers.
+  // Windows still finalizes the retained Job after drainage, including handle closure.
+  if (hasChildExited(child) && (await waitForClose(signals.length + 1)) && platform !== "win32") {
     return true;
   }
   if (platform === "win32") {
@@ -575,35 +657,24 @@ async function stopGatewayProcess(
       );
       return false;
     };
-    if (hasChildExited(child) && (await waitForClose(2))) {
-      return true;
-    }
     if (Date.now() >= deadline) {
       return failed("close-incomplete");
     }
     // Taskkill owns its bounded synchronous TERM/force sequence. Node cannot observe
     // exit or pipe closure until it returns, so charge the existing close allowance afterward.
     try {
-      const termination = terminateManagedChild(
-        child,
-        options.forceWindowsTree ? "SIGKILL" : "SIGTERM",
-        { platform, runTaskkill },
-      );
-      if (termination?.processTreeState !== "terminated") {
-        return failed("termination-indeterminate");
-      }
-      return (
-        (await waitForGatewayClose(child, stopTimeoutMs, platform)) || failed("close-incomplete")
-      );
+      await finalizeManagedChild(child, options.forceWindowsTree ? "SIGKILL" : "SIGTERM", {
+        platform,
+        runTaskkill,
+        forceKillDelayMs: 0,
+        drainTimeoutMs: stopTimeoutMs,
+        retainOutputOnFailure: true,
+      });
+      return true;
     } catch (error) {
-      return failed("exception", error);
+      failed("exception", error);
+      throw error;
     }
-  }
-  const signals = ["SIGTERM", "SIGKILL"] as const;
-  // An exited leader can leave inherited stdio open in descendants. Let it
-  // settle briefly, then terminate the owned tree before releasing the slot.
-  if (hasChildExited(child) && (await waitForClose(signals.length + 1))) {
-    return true;
   }
   for (const [index, signal] of signals.entries()) {
     if (hasGatewayProcessClosed(child, platform)) {
@@ -715,6 +786,7 @@ export async function createOpenClawTestInstance(
       reservation = undefined;
     }
   };
+  let releasePortClaims: (() => Promise<void>) | undefined;
   let port: number;
   const gatewayToken = options.gatewayToken ?? `gateway-${options.name}-${randomUUID()}`;
   const hookToken = options.hookToken ?? `token-${options.name}-${randomUUID()}`;
@@ -722,7 +794,29 @@ export async function createOpenClawTestInstance(
   signal?.addEventListener("abort", closeAdmission, { once: true });
   try {
     signal?.throwIfAborted();
-    port = options.port ?? (reservation = await reserveGatewayPort(0, options.verifyCleanup)).port;
+    // The lazy sandbox uses port + 1; keep both listeners out of Linux's client-port pool.
+    if (options.port !== undefined) {
+      port = options.port;
+    } else {
+      const seen = new Set<number>();
+      while (true) {
+        signal?.throwIfAborted();
+        port = await getDeterministicFreePortBlock({ offsets: [0, 1] });
+        if (seen.has(port)) {
+          throw new Error("no unclaimed test Gateway port block available");
+        }
+        seen.add(port);
+        try {
+          releasePortClaims = await claimGatewayPortBlock(port);
+          break;
+        } catch (error) {
+          if (!hasErrnoCode(error, FILE_LOCK_TIMEOUT_ERROR_CODE)) {
+            throw error;
+          }
+        }
+      }
+      reservation = await reserveGatewayPort(port, options.verifyCleanup);
+    }
     signal?.throwIfAborted();
     state = await createOpenClawTestState({
       label: options.name,
@@ -758,6 +852,7 @@ export async function createOpenClawTestInstance(
         },
         () => (acquiredState ? verifyCleanup(() => acquiredState.cleanup()) : undefined),
         () => (reservation ? verifyCleanup(releasePort) : undefined),
+        () => (releasePortClaims ? verifyCleanup(releasePortClaims) : undefined),
       );
     } finally {
       signal?.removeEventListener("abort", closeAdmission);
@@ -802,10 +897,14 @@ export async function createOpenClawTestInstance(
     return next.promise;
   };
   const stopTimeoutMs = options.stopTimeoutMs ?? GATEWAY_STOP_TIMEOUT_MS;
-  const spawnGatewayProcess = (args: string[], attemptStderr: string[]): OpenClawTestProcess => {
+  const spawnGatewayProcess = (
+    spawnManagedChild: Awaited<ReturnType<typeof loadManagedChildSpawner>>,
+    args: string[],
+    attemptStderr: string[],
+  ): OpenClawTestProcess => {
     const [command = "node", ...prefixArgs] = options.gatewayCommandPrefix ?? [];
     signal?.throwIfAborted();
-    const next = spawn(command, [...prefixArgs, ...args], {
+    const next = spawnManagedChild(command, [...prefixArgs, ...args], {
       cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -813,6 +912,9 @@ export async function createOpenClawTestInstance(
     });
     next.stdout.setEncoding("utf8");
     next.stderr.setEncoding("utf8");
+    next.once("error", (error) =>
+      appendLogChunk(stderr, `gateway child startup error: ${error.message}\n`),
+    );
     next.stdout.on("data", (chunk) => appendLogChunk(stdout, chunk));
     next.stderr.on("data", (chunk) => {
       appendLogChunk(stderr, chunk);
@@ -881,7 +983,7 @@ export async function createOpenClawTestInstance(
         const commandEntrypoint = await entrypoint();
         signal?.throwIfAborted();
         return await runCommand({
-          args: ["node", ...commandEntrypoint, ...args],
+          args: [commandOptions.execPath ?? "node", ...commandEntrypoint, ...args],
           cwd,
           env,
           timeoutMs: commandOptions.timeoutMs ?? COMMAND_TIMEOUT_MS,
@@ -912,6 +1014,7 @@ export async function createOpenClawTestInstance(
         }
         readiness.length = 0;
         const commandEntrypoint = await entrypoint();
+        const spawnManagedChild = await loadManagedChildSpawner();
         signal?.throwIfAborted();
         const gatewayArgs = [
           ...commandEntrypoint,
@@ -941,7 +1044,7 @@ export async function createOpenClawTestInstance(
           signal?.throwIfAborted();
           let attempt: OpenClawTestProcess;
           try {
-            attempt = spawnGatewayProcess(gatewayArgs, attemptStderr);
+            attempt = spawnGatewayProcess(spawnManagedChild, gatewayArgs, attemptStderr);
           } catch (error) {
             await runQaGatewayFixture(async (): Promise<never> => {
               throw error;
@@ -1050,6 +1153,12 @@ export async function createOpenClawTestInstance(
           releasePort,
         );
         await state.cleanup();
+        // Keep the logical claim across the socket handoff, stop/restart, and
+        // failed shutdown. Only verified terminal cleanup releases either port.
+        if (releasePortClaims) {
+          await verifyCleanup(releasePortClaims);
+          releasePortClaims = undefined;
+        }
       }));
     },
   };

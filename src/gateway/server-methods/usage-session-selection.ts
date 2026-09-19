@@ -17,7 +17,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveExistingUsageSessionFile } from "../../infra/session-cost-usage.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../../sessions/session-id-resolution.js";
-import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import { resolveGatewaySessionDisplayName } from "../session-utils-display.js";
 import {
   loadCombinedSessionStoreForGatewayCore,
@@ -86,7 +86,7 @@ export type UsageSessionSelection = UsageSessionSummaryTarget & {
   sessionFamilyKey?: string;
   currentSessionId?: string;
   includedSessionIds?: string[];
-  contextTarget?: { storeTarget: GatewayStoredSessionTarget["storeTarget"]; storedKey: string };
+  contextTarget?: GatewayStoredSessionTarget["storeTarget"];
   contextWeight?: SessionEntry["systemPromptReport"];
 };
 
@@ -249,9 +249,9 @@ export async function selectUsageSessions(params: {
   const mergedEntries: UsageSessionSelection[] = [];
 
   if (specificKey) {
-    const scopedSpecificKey = resolveStoredSessionKeyForAgentStore({
+    const scopedSpecificKey = resolveSessionStoreKey({
       cfg: config,
-      agentId: expectDefined(effectiveAgentId, "specific session owner"),
+      storeAgentId: expectDefined(effectiveAgentId, "specific session owner"),
       sessionKey: specificKey,
     });
     const scopedParsed = parseAgentSessionKey(scopedSpecificKey);
@@ -397,7 +397,7 @@ export async function selectUsageSessions(params: {
     if (!target) {
       continue;
     }
-    row.contextTarget = { storeTarget: target.storeTarget, storedKey: target.storeKey ?? row.key };
+    row.contextTarget = target.storeTarget;
   }
 
   return mergedEntries;
@@ -407,16 +407,13 @@ export function loadUsageSessionContext(
   selected: UsageSessionSelection[],
   visibilityFilter?: (key: string, entry: SessionEntry) => boolean,
 ): void {
-  const contextRows = new Map<
-    GatewayStoredSessionTarget["storeTarget"],
-    Array<{ row: UsageSessionSelection; storedKey: string }>
-  >();
+  const contextRows = new Map<GatewayStoredSessionTarget["storeTarget"], UsageSessionSelection[]>();
   for (const row of selected) {
     const target = row.contextTarget;
     if (target) {
-      const rows = contextRows.get(target.storeTarget) ?? [];
-      rows.push({ row, storedKey: target.storedKey });
-      contextRows.set(target.storeTarget, rows);
+      const rows = contextRows.get(target) ?? [];
+      rows.push(row);
+      contextRows.set(target, rows);
     }
   }
   for (const [target, rows] of contextRows) {
@@ -424,11 +421,11 @@ export function loadUsageSessionContext(
       loadExactSessionEntryCandidates({
         readOnly: true,
         readSource: { agentId: target.agentId, path: target.storePath },
-        sessionKeys: rows.map(({ storedKey }) => storedKey),
+        sessionKeys: rows.map(({ key }) => key),
       }).map(({ sessionKey, entry }) => [sessionKey, entry]),
     );
-    for (const { row, storedKey } of rows) {
-      const entry = entries.get(storedKey);
+    for (const row of rows) {
+      const entry = entries.get(row.key);
       // Summary loading can yield across a reset or sharing change; never expose its successor's report.
       if (
         entry?.sessionId === row.sessionId &&

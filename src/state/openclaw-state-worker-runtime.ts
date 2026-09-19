@@ -404,6 +404,8 @@ export function executeSharedStateCommand(
     return countFailedDeliveryQueueEntriesInDatabase(database);
   }
   if (
+    command.type === "sessionDelivery.recordIdentityBlock" ||
+    command.type === "sessionDelivery.blockedSummary" ||
     command.type === "sessionDelivery.enqueue" ||
     command.type === "sessionDelivery.enqueueClaimed" ||
     command.type === "sessionDelivery.releaseClaim" ||

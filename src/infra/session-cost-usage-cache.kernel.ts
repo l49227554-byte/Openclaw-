@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { sql, type RawBuilder } from "kysely";
+import { expressionBuilder, type AliasableExpression } from "kysely";
 import type { DB as OpenClawAgentKyselyDatabase } from "../state/openclaw-agent-db.generated.js";
 import { chunkItems } from "../utils/chunk-items.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
@@ -12,6 +12,7 @@ const ROLLUP_SCOPE = "session-cost-usage-rollup-v2";
 const ROLLUP_PRUNE_BATCH_SIZE = 32;
 
 type AgentCacheDatabase = Pick<OpenClawAgentKyselyDatabase, "cache_entries">;
+const cacheExpressions = expressionBuilder<AgentCacheDatabase, "cache_entries">();
 
 export type SessionCostUsageRollupRow = {
   key: string;
@@ -30,8 +31,9 @@ export type SessionCostUsageRollupSnapshot = Omit<SessionCostUsageRollupRow, "va
 };
 
 function cacheJsonText(value: SessionCostUsageJson) {
-  // kysely-allow-raw: bind worker-prepared UTF-8 bytes as text without decoding them on the host.
-  return typeof value === "string" ? value : sql<string>`CAST(${value} AS TEXT)`;
+  return typeof value === "string"
+    ? value
+    : cacheExpressions.cast<string>(cacheExpressions.val(value), "text");
 }
 
 export function readSessionCostUsageRefreshLockInDatabase(db: DatabaseSync): string | null {
@@ -55,7 +57,7 @@ export function readSessionCostUsageRollupRowsInDatabase(
   return readSessionCostUsageRollupValuesInDatabase(
     db,
     filePaths,
-    sql.ref<string | null>("value_json"),
+    cacheExpressions.ref("value_json"),
   );
 }
 
@@ -66,15 +68,14 @@ export function readSessionCostUsageRollupByteRowsInDatabase(
   return readSessionCostUsageRollupValuesInDatabase(
     db,
     filePaths,
-    // kysely-allow-raw: read native bytes without decoding cache JSON on the host.
-    sql<Uint8Array | null>`CAST(value_json AS BLOB)`,
+    cacheExpressions.cast<Uint8Array | null>("value_json", "blob"),
   );
 }
 
 function readSessionCostUsageRollupValuesInDatabase<Value extends string | Uint8Array>(
   db: DatabaseSync,
   filePaths: readonly string[] | undefined,
-  valueJson: RawBuilder<Value | null>,
+  valueJson: AliasableExpression<Value | null>,
 ) {
   const kysely = getNodeSqliteKysely<AgentCacheDatabase>(db);
   // Bound SQL parameters even when a historical family contains many instances.

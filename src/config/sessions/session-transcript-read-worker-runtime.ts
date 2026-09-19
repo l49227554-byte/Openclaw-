@@ -12,7 +12,7 @@ import type {
   SessionEntryWorkerInput,
   SessionModelContextWorkerInput,
   SessionTranscriptWorkerReply,
-} from "./session-transcript.worker.js";
+} from "./session-transcript-worker.types.js";
 
 const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscript);
 const modelContextReads = new WorkerTaskPool<

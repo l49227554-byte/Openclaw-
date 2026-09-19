@@ -2,17 +2,13 @@ import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion"
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence.js";
-import type { SessionTranscriptWorkerReply } from "./session-transcript.worker.js";
+import type {
+  SessionTranscriptWorkerReply,
+  SessionTranscriptWorkerValues,
+} from "./session-transcript-worker.types.js";
 
 export function unwrapSessionTranscriptWorkerReply<
-  Kind extends
-    | "model-context"
-    | "session-entry"
-    | "history-page"
-    | "branch-summaries"
-    | "session-row-presence"
-    | "session-members"
-    | "usage-cache",
+  Kind extends keyof SessionTranscriptWorkerValues,
 >(reply: SessionTranscriptWorkerReply<Kind>) {
   if (reply.ok) {
     return reply.value;

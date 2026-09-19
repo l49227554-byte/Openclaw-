@@ -4,10 +4,7 @@
  * Agent startup uses this to merge configured channel capabilities with prompt
  * tools and thread-bound spawn features that depend on channel policy.
  */
-import {
-  GATEWAY_CLIENT_CAPS,
-  hasGatewayClientCap,
-} from "@openclaw/gateway-protocol/client-info";
+import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "@openclaw/gateway-protocol/client-info";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntriesLower } from "@openclaw/normalization-core/string-normalization";
 import { supportsThreadBindingSpawn } from "../channels/conversation-resolution.js";

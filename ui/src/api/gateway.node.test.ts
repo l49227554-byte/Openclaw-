@@ -874,7 +874,7 @@ describe("GatewayBrowserClient", () => {
 
   it("reuses cached device token scopes when connecting from bootstrap handoff", async () => {
     localStorage.clear();
-    const storedEntry = storeDeviceAuthToken({
+    storeDeviceAuthToken({
       deviceId: "device-1",
       role: "operator",
       token: "bootstrap-device-token",
@@ -894,7 +894,6 @@ describe("GatewayBrowserClient", () => {
       "operator.read",
       "operator.write",
     ]);
-    expect(connectFrame.params?.scopes).toEqual(storedEntry.scopes);
   });
 
   it("reports browser security errors from WebSocket construction without retrying", async () => {

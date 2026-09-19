@@ -993,7 +993,7 @@ tag, validation run and attempt, channel, plugin selection, waiver, and frozen
 publication tooling ref as the intended dispatch:
 
 ```bash
-node --import tsx scripts/release-publish-preflight.mts \
+pnpm release:publish-preflight \
   --tag vYYYY.M.PATCH \
   --full-release-validation-run-id <full-validation-run-id> \
   --full-release-validation-run-attempt <successful-run-attempt> \

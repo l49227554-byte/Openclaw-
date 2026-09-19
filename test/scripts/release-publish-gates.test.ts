@@ -78,11 +78,14 @@ describe("release publication control admission", () => {
     }
   });
 
-  it("surfaces the core rejection hidden by beta-profile parent admission", () => {
+  it.each([
+    { npmDistTag: "latest", failures: ["core-npm.performance"] },
+    { npmDistTag: "beta", failures: [] },
+  ])("preserves beta-profile parent and $npmDistTag core admission", ({ npmDistTag, failures }) => {
     const input = {
       manifest: { ...manifest, releaseProfile: "beta", controls: { performanceBlocking: false } },
       releaseTag: "v2026.9.5",
-      npmDistTag: "latest",
+      npmDistTag,
     };
     expect(
       evaluateReleasePublishGates({ ...input, consumer: "publisher" }).some(
@@ -90,10 +93,10 @@ describe("release publication control admission", () => {
       ),
     ).toBe(false);
     expect(
-      evaluateReleasePublishGates({ ...input, consumer: "core-npm" }).filter(
-        (gate) => gate.status === "FAIL",
-      ),
-    ).toMatchObject([{ id: "core-npm.performance" }]);
+      evaluateReleasePublishGates({ ...input, consumer: "core-npm" })
+        .filter((gate) => gate.status === "FAIL")
+        .map((gate) => gate.id),
+    ).toEqual(failures);
   });
 
   it.each([

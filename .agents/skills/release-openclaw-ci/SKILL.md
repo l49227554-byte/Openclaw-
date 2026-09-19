@@ -272,8 +272,8 @@ non-billable credentials fail before the expensive release matrix.
 
 ### Before publication
 
-For regular beta/stable protected publication, after evidence validation run `node --import tsx
-scripts/release-publish-preflight.mts` with the intended tag, exact Full Release
+For regular beta/stable protected publication, after evidence validation run
+`pnpm release:publish-preflight` with the intended tag, exact Full Release
 Validation run and attempt, npm dist-tag, plugin scope, approved soak waiver when
 applicable, and protected publication tooling ref. `pnpm release:candidate`
 invokes this check with its downloaded manifests; do not redownload them or

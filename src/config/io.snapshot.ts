@@ -53,6 +53,7 @@ import type {
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "./io.types.js";
 import { warnIfConfigFromFuture } from "./io.warnings.js";
+import { migrateBlankAgentDir } from "./legacy.blank-agent-dir.js";
 import {
   findLegacyConfigIssues,
   migrateLegacyContextBudgetConfig,
@@ -262,13 +263,21 @@ async function readConfigSnapshotWithPreparation(
       ...contextBudgetMigration.warnings,
       ...rosterMigration.diagnostics.map((message) => ({ path: "agents.entries", message })),
     );
-    // Note: blank agentDir migration intentionally does NOT run here. This
-    // snapshot path feeds strict CLI validation (`openclaw config validate`),
-    // which must still see an explicitly blank agentDir and report the
-    // field-level error. The load path (io.load.ts) applies the blank-agentDir
-    // migration for upgrade compatibility; validation is the diagnostic
-    // surface, not the loader.
-    const effectiveConfigRaw = rosterMigration.config;
+    // The blank agentDir migration runs on this snapshot path only for runtime
+    // consumption (default / "runtime" preparation): the Gateway startup and
+    // other runtime readers must keep loading a saved blank agentDir with its
+    // unchanged defaulted directory. Strict CLI validation (`openclaw config
+    // validate`, prepareValidation: "strict") deliberately skips the migration
+    // so an explicitly blank agentDir stays visible and the field-level error
+    // is reported — validation is the diagnostic surface, not the loader.
+    const shouldMigrateBlankAgentDir = options.prepareValidation !== "strict";
+    const blankAgentDirMigration = shouldMigrateBlankAgentDir
+      ? migrateBlankAgentDir(rosterMigration.config)
+      : { config: rosterMigration.config, changed: false, changes: [], warnings: [] };
+    if (shouldMigrateBlankAgentDir) {
+      envVarWarnings.push(...blankAgentDirMigration.changes, ...blankAgentDirMigration.warnings);
+    }
+    const effectiveConfigRaw = blankAgentDirMigration.config;
     const validationConfigRaw = effectiveConfigRaw;
     const snapshotRaw = raw;
     const snapshotParsed = effectiveParsed;

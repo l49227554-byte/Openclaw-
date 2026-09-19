@@ -10,6 +10,7 @@ import {
   runProviderCatalog,
 } from "../plugins/provider-discovery.js";
 import type { ProviderPlugin } from "../plugins/types.js";
+import { registerResolvedAgentDir, unregisterResolvedAgentDir } from "./agent-dir-registry.js";
 import {
   createAuthProfileStoreFixture,
   oauthCred,
@@ -88,44 +89,55 @@ it.each([true, false])(
             source: "none",
           }
         : { apiKey: undefined, mode: "oauth", source: "profile", profileId };
-    const prepared = await prepareProviderCatalogRun({
-      provider,
-      config: {},
-      agentDir,
-      authStore: store,
-      env: {},
-      isActive: () => true,
-      resolveProviderAuth: (providerId, options) => resolveAuth(providerId ?? provider.id, options),
-      resolveProviderApiKey: () => ({ apiKey: withApiKey ? "fallback-api-key" : undefined }),
-      reportCatalogOutcome: (outcome) => outcomes.push(outcome),
-    });
-    const result = await runProviderCatalog(prepared);
-    const finalized = prepared.finalizeCatalogResult?.(result) ?? result;
-    const providers = normalizePluginDiscoveryResult({ provider, result: finalized });
-    await loggerTestApi.flushFileLogQueueForTests();
-    const records = (await fs.readFile(logFile, "utf8"))
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const diagnostics = records.filter((record) =>
-      String(record["0"]).includes("agents/model-providers"),
-    );
-    expect(diagnostics).toHaveLength(1);
-    const diagnostic = String(diagnostics[0]?.["1"]);
-    expect(diagnostic).toContain(profileId);
-    expect(diagnostic).toContain("invalid_grant");
-    expect(diagnostic).toContain("models auth login --provider fixture");
-    expect(diagnostic).not.toContain(refresh);
-    if (withApiKey) {
-      expect(selectedCredentials).toEqual(["fallback-api-key"]);
-      expect(providers.fixture?.baseUrl).toBe(`https://catalog.example.test/v1?api_key=${refresh}`);
-      expect(diagnostic).toContain("https://catalog.example.test");
-      expect(outcomes).toEqual([]);
-    } else {
-      expect(selectedCredentials).toEqual([]);
-      expect(providers).toEqual({});
-      expect(outcomes).toEqual([{ provider: "fixture", profileId, status: "unavailable" }]);
+    const directoryOwner = { agentId: withApiKey ? "worker" : "main", agentDir };
+    registerResolvedAgentDir(directoryOwner);
+    try {
+      const prepared = await prepareProviderCatalogRun({
+        provider,
+        config: {},
+        agentDir,
+        authStore: store,
+        env: {},
+        isActive: () => true,
+        resolveProviderAuth: (providerId, options) =>
+          resolveAuth(providerId ?? provider.id, options),
+        resolveProviderApiKey: () => ({ apiKey: withApiKey ? "fallback-api-key" : undefined }),
+        reportCatalogOutcome: (outcome) => outcomes.push(outcome),
+      });
+      const result = await runProviderCatalog(prepared);
+      const finalized = prepared.finalizeCatalogResult?.(result) ?? result;
+      const providers = normalizePluginDiscoveryResult({ provider, result: finalized });
+      await loggerTestApi.flushFileLogQueueForTests();
+      const records = (await fs.readFile(logFile, "utf8"))
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const diagnostics = records.filter((record) =>
+        String(record["0"]).includes("agents/model-providers"),
+      );
+      expect(diagnostics).toHaveLength(1);
+      const diagnostic = String(diagnostics[0]?.["1"]);
+      expect(diagnostic).toContain(profileId);
+      expect(diagnostic).toContain("invalid_grant");
+      expect(diagnostic).toContain("models auth login --provider fixture");
+      expect(diagnostic).toContain(`--agent '${directoryOwner.agentId}'`);
+      expect(diagnostic).toContain(`--profile-id '${profileId}'`);
+      expect(diagnostic).not.toContain(refresh);
+      if (withApiKey) {
+        expect(selectedCredentials).toEqual(["fallback-api-key"]);
+        expect(providers.fixture?.baseUrl).toBe(
+          `https://catalog.example.test/v1?api_key=${refresh}`,
+        );
+        expect(diagnostic).toContain("https://catalog.example.test");
+        expect(outcomes).toEqual([]);
+      } else {
+        expect(selectedCredentials).toEqual([]);
+        expect(providers).toEqual({});
+        expect(outcomes).toEqual([{ provider: "fixture", profileId, status: "unavailable" }]);
+      }
+    } finally {
+      unregisterResolvedAgentDir(directoryOwner);
     }
   },
 );

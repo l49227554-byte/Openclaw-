@@ -15,6 +15,7 @@ import {
 import { matchesProviderPluginRef } from "../plugins/provider-registry-shared.js";
 import type { ProviderPlugin } from "../plugins/types.js";
 import { isTrustedSecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
+import { resolveRegisteredAgentIdForDir } from "./agent-dir-registry.js";
 import { buildOAuthRefreshFailureLoginCommand } from "./auth-profiles/oauth-refresh-failure.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import type { ProviderConfig } from "./models-config.providers.secret-helpers.js";
@@ -81,6 +82,7 @@ export async function prepareProviderCatalogRun(
   ) {
     return catalogParams;
   }
+  const agentId = resolveRegisteredAgentIdForDir(params.agentDir, params.env);
   // Preparation stays internal and provider-generic. The helper exits before
   // materialization unless this catalog's selected credential is expiring OAuth.
   const { prepareProviderCatalogOAuthAuth } =
@@ -129,6 +131,7 @@ export async function prepareProviderCatalogRun(
       for (const failure of failures) {
         const login = buildOAuthRefreshFailureLoginCommand(params.provider.id, {
           profileId: failure.profileId,
+          agentId,
         });
         log.warn(
           `${params.provider.id}: OAuth profile ${JSON.stringify(failure.profileId)} could not be resolved (${failure.message}); ${destination}. Re-authenticate with ${login}.`,

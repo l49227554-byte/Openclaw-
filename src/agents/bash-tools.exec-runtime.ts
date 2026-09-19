@@ -641,6 +641,7 @@ export async function runExecProcess({
   beforeSpawn: initialBeforeSpawn,
   assertCurrent: initialAssertCurrent,
   onSettledBeforeNotify: initialOnSettledBeforeNotify,
+  onActivity: initialOnActivity,
   ...opts
 }: {
   command: string;
@@ -675,6 +676,8 @@ export async function runExecProcess({
   onUpdate?: (partialResult: AgentToolResult<ExecToolDetails>) => void;
   /** Runs after process finalization and before the exit wake is queued. */
   onSettledBeforeNotify?: (outcome: ExecProcessOutcome) => void;
+  /** Process-owned invalidation survives foreground delivery and ends at settlement. */
+  onActivity?: (at: number) => void;
   /** Revalidates authorization after async preparation, immediately before each spawn attempt. */
   beforeSpawn?: () => Promise<AgentToolResult<ExecToolDetails> | undefined>;
   /** Rechecks host policy at the supervisor's final synchronous spawn boundary. */
@@ -728,6 +731,7 @@ export async function runExecProcess({
   let beforeSpawn = initialBeforeSpawn;
   let assertPolicyCurrent = initialAssertCurrent;
   let onSettledBeforeNotify = initialOnSettledBeforeNotify;
+  let onActivity = initialOnActivity;
 
   const emitUpdate = () => {
     if (!onUpdate || session.backgrounded || session.exited) {
@@ -760,6 +764,7 @@ export async function runExecProcess({
   const sanitizeStderr = createStreamingBinaryOutputSanitizer();
 
   const handleStdout = (data: string) => {
+    onActivity?.(session.processActivity?.lastOutputAtMs ?? Date.now());
     const str = sanitizeStdout(data);
     for (const chunk of chunkString(str)) {
       appendOutput(session, "stdout", chunk);
@@ -768,6 +773,7 @@ export async function runExecProcess({
   };
 
   const handleStderr = (data: string) => {
+    onActivity?.(session.processActivity?.lastOutputAtMs ?? Date.now());
     const str = sanitizeStderr(data);
     for (const chunk of chunkString(str)) {
       appendOutput(session, "stderr", chunk);
@@ -799,6 +805,7 @@ export async function runExecProcess({
   ): Promise<ExecProcessOutcome> => {
     let finalOutcome = outcome;
     session.finalizing = true;
+    onActivity?.(Date.now());
     try {
       if (!opts.sandbox && managedRun?.waitForExtinction) {
         // Root completion does not release descendants that retained the group's lineage fd.
@@ -1001,6 +1008,7 @@ export async function runExecProcess({
       }),
     ).finally(() => {
       onSettledBeforeNotify = undefined;
+      onActivity = undefined;
     });
     emitExecProcessCompleted({
       command: opts.command,
@@ -1055,6 +1063,7 @@ export async function runExecProcess({
       return finalOutcome;
     } finally {
       onSettledBeforeNotify = undefined;
+      onActivity = undefined;
     }
   });
 

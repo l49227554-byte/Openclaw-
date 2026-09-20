@@ -8,9 +8,8 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveUserPath } from "../infra/home-dir.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { readAgentDatabaseAdmissionRefusal } from "../state/agent-database-admission.js";
-import { listAgentIds, resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
+import { listAgentIds, resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope-config.js";
 import { resolveSandboxConfigForAgent } from "./sandbox/config.js";
-import { resolveSandboxRuntimeStatusesForPersistedSessions } from "./sandbox/runtime-status.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./sandbox/shared.js";
 import { listAgentWorkspaceDirs } from "./workspace-dirs.js";
 import { assertWorkspaceStateMigrationReady } from "./workspace-legacy-state.js";
@@ -71,6 +70,11 @@ export async function listWorkspaceStateDirs(params: {
     });
   }
 
+  if (agentWorkspaces.length === 0) {
+    return [...dirs];
+  }
+  const { resolveSandboxRuntimeStatusesForPersistedSessions } =
+    await import("./sandbox/runtime-status.js");
   // Empty requests retain agent/shared workspace order without reading their stores.
   const runtimeGroups = resolveSandboxRuntimeStatusesForPersistedSessions(
     agentWorkspaces.map(({ agentId, sessionKeys }) => ({

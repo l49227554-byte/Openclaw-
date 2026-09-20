@@ -265,12 +265,15 @@ ${completionInstruction}`;
     const prompt = appendHeartbeatScratch(taskPrompt, params.heartbeatScratchContent);
     return {
       prompt,
-      hasTaskContinuation: hasBackgroundTaskEvent,
+      // Scheduled work must not coalesce queued generic events whose delivery
+      // authority may belong to another conversation. Leave those events queued
+      // so their own wake can process them with their original delivery context.
+      hasTaskContinuation: false,
       hasExecCompletion: false,
       hasRelayableExecCompletion: false,
       hasCronEvents: false,
       usesHeartbeatResponseTool: params.useHeartbeatResponseTool,
-      genericEvents,
+      genericEvents: [],
       inspectedSystemEventsToConsume: cronNoise,
     };
   }

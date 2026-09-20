@@ -4,6 +4,7 @@ import {
   HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT,
 } from "../agents/failover/user-copy.js";
 import { classifyHeartbeatAgentOutcome } from "./heartbeat-delivery-normalization.js";
+import { resolveHeartbeatRunPrompt } from "./heartbeat-runner-prompt.js";
 
 describe("classifyHeartbeatAgentOutcome (#153543)", () => {
   it("does not rewrite generic failure to heartbeat failure copy for exec completions", () => {
@@ -62,5 +63,56 @@ describe("classifyHeartbeatAgentOutcome (#153543)", () => {
     if (outcome.kind === "failure") {
       expect(outcome.normalized.text).toBe(HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT);
     }
+  });
+});
+
+describe("resolveHeartbeatRunPrompt (#153543)", () => {
+  it("does not admit queued generic events into scheduled task turns", () => {
+    const result = resolveHeartbeatRunPrompt({
+      cfg: {},
+      preflight: {
+        isExecEventWake: false,
+        isCronWake: false,
+        isWakePayload: false,
+        session: {
+          sessionKey: "agent:main:heartbeat",
+          inspectsRunQueue: true,
+          entry: undefined,
+          run: { kind: "direct", sessionKey: "agent:main:heartbeat" },
+          conversationEntry: undefined,
+          storePath: "/tmp/store.json",
+          suppressOriginatingContext: false,
+        },
+        pendingEventEntries: [
+          {
+            id: "evt-discord-1",
+            text: "background event from Discord",
+            contextKey: "task:background-job",
+            deliveryContext: {
+              channel: "discord",
+              to: "discord-user",
+            },
+          },
+        ],
+        turnSourceDeliveryContext: { channel: "discord", to: "discord-user" },
+        hasTaggedCronEvents: false,
+        shouldInspectPendingEvents: true,
+        authoritativeScheduledTick: false,
+      },
+      canRelayToUser: true,
+      startedAt: Date.now(),
+      scheduledTasks: [
+        {
+          jobId: "job-scheduled-1",
+          name: "scheduled-task",
+          prompt: "run scheduled task",
+        },
+      ],
+      useHeartbeatResponseTool: false,
+    });
+
+    expect(result.genericEvents).toEqual([]);
+    expect(result.prompt).not.toContain("background event from Discord");
+    expect(result.hasTaskContinuation).toBe(false);
   });
 });

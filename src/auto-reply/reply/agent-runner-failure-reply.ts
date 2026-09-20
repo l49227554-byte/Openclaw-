@@ -437,6 +437,17 @@ export function resolveAgentRunFailureText(params: {
     : params.text;
 }
 
+export function shouldUseHeartbeatFailureCopy(params: {
+  isHeartbeat?: boolean;
+  sessionCtx?: Pick<TemplateContext, "InternalTurnSource">;
+}): boolean {
+  return (
+    params.isHeartbeat === true &&
+    params.sessionCtx?.InternalTurnSource !== "exec" &&
+    params.sessionCtx?.InternalTurnSource !== "cron"
+  );
+}
+
 export function buildTerminalAgentRunFailureReplyPayload(params: {
   isHeartbeat?: boolean;
   replyExpectation: ReplyExpectation;

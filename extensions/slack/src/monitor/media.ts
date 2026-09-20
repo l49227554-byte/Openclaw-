@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import type { WebClient as SlackWebClient } from "@slack/web-api";
 import { runTasksWithConcurrency } from "openclaw/plugin-sdk/concurrency-runtime";
-import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { formatErrorMessage, toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { normalizeHostname } from "openclaw/plugin-sdk/host-runtime";
 import { redactToolPayloadText } from "openclaw/plugin-sdk/logging-core";
 import { resolveRequestUrl } from "openclaw/plugin-sdk/request-url";
@@ -386,7 +386,7 @@ export async function resolveSlackMedia(params: {
       abortSignal: params.abortSignal,
     });
 
-  const { results } = await runTasksWithConcurrency({
+  const { results, hasError, firstError } = await runTasksWithConcurrency({
     tasks: limitedFiles.map((file) => async (): Promise<SlackMediaResult | null> => {
       assertCurrent?.();
       // Audio preflight keys the original event file object so admission can
@@ -415,8 +415,10 @@ export async function resolveSlackMedia(params: {
     }),
     limit: MAX_SLACK_MEDIA_CONCURRENCY,
     errorMode: "stop",
-    throwOnError: true,
   });
+  if (hasError) {
+    throw toErrorObject(firstError, "Slack media read failed");
+  }
   const resolved = results.filter((result): result is SlackMediaResult => result !== null);
 
   return resolved.length > 0 ? resolved : null;
@@ -506,62 +508,75 @@ export async function resolveSlackAttachmentContent(params: {
         return selected ? [selected] : [];
       }),
     });
-  const directMediaPromise = resolveFiles(params.files);
   const textBlocks: string[] = [];
-  const attachmentMedia: SlackMediaResult[] = [];
   let unavailableMediaCount = 0;
   const govSlack = isGovSlackClient(params.client);
 
-  for (const att of forwardedAttachments) {
-    const text = att.text?.trim() || att.fallback?.trim();
-    if (text) {
-      const author = att.author_name;
-      const heading = author ? `[Forwarded message from ${author}]` : "[Forwarded message]";
-      textBlocks.push(`${heading}\n${text}`);
-    }
+  // Observe both branches immediately and join all media work before propagating failure.
+  const { results, hasError, firstError } = await runTasksWithConcurrency({
+    tasks: [
+      () => resolveFiles(params.files),
+      async () => {
+        const attachmentMedia: SlackMediaResult[] = [];
+        for (const att of forwardedAttachments) {
+          const text = att.text?.trim() || att.fallback?.trim();
+          if (text) {
+            const author = att.author_name;
+            const heading = author ? `[Forwarded message from ${author}]` : "[Forwarded message]";
+            textBlocks.push(`${heading}\n${text}`);
+          }
 
-    const imageUrl = resolveForwardedAttachmentImageUrl(att, govSlack);
-    if (imageUrl) {
-      try {
-        const { url: slackUrl, requestInit } = createSlackMediaRequest(
-          imageUrl,
-          params.token,
-          govSlack,
-        );
-        const assertReadAuthority = captureSlackMediaReadGuard(params);
-        const fetchImpl = createSlackMediaFetch(govSlack, assertReadAuthority);
-        const saved = await saveSlackMedia({
-          options: {
-            url: slackUrl,
-            fetchImpl,
-            beforeRequest: assertReadAuthority,
-            assertCurrent: params.assertCurrent,
-            requestInit,
-            maxBytes: params.maxBytes,
-            ssrfPolicy: govSlack ? SLACK_GOV_MEDIA_SSRF_POLICY : SLACK_MEDIA_SSRF_POLICY,
-          },
-          readIdleTimeoutMs: params.readIdleTimeoutMs,
-          totalTimeoutMs: params.totalTimeoutMs ?? SLACK_MEDIA_TOTAL_TIMEOUT_MS,
-          abortSignal: params.abortSignal,
-        });
-        const label = saved.fileName ?? "forwarded image";
-        attachmentMedia.push({
-          path: saved.path,
-          contentType: saved.contentType,
-          ...(saved.fileName ? { fileName: saved.fileName } : {}),
-          placeholder: `[Forwarded image: ${label}]`,
-        });
-      } catch (error) {
-        unavailableMediaCount += 1;
-        slackMediaLog.warn(
-          `slack: forwarded image unavailable (${formatSlackMediaFailure(error)})`,
-        );
-      }
-    }
-    attachmentMedia.push(...((await resolveFiles(att.files)) ?? []));
+          const imageUrl = resolveForwardedAttachmentImageUrl(att, govSlack);
+          if (imageUrl) {
+            try {
+              const { url: slackUrl, requestInit } = createSlackMediaRequest(
+                imageUrl,
+                params.token,
+                govSlack,
+              );
+              const assertReadAuthority = captureSlackMediaReadGuard(params);
+              const fetchImpl = createSlackMediaFetch(govSlack, assertReadAuthority);
+              const saved = await saveSlackMedia({
+                options: {
+                  url: slackUrl,
+                  fetchImpl,
+                  beforeRequest: assertReadAuthority,
+                  assertCurrent: params.assertCurrent,
+                  requestInit,
+                  maxBytes: params.maxBytes,
+                  ssrfPolicy: govSlack ? SLACK_GOV_MEDIA_SSRF_POLICY : SLACK_MEDIA_SSRF_POLICY,
+                },
+                readIdleTimeoutMs: params.readIdleTimeoutMs,
+                totalTimeoutMs: params.totalTimeoutMs ?? SLACK_MEDIA_TOTAL_TIMEOUT_MS,
+                abortSignal: params.abortSignal,
+              });
+              const label = saved.fileName ?? "forwarded image";
+              attachmentMedia.push({
+                path: saved.path,
+                contentType: saved.contentType,
+                ...(saved.fileName ? { fileName: saved.fileName } : {}),
+                placeholder: `[Forwarded image: ${label}]`,
+              });
+            } catch (error) {
+              unavailableMediaCount += 1;
+              slackMediaLog.warn(
+                `slack: forwarded image unavailable (${formatSlackMediaFailure(error)})`,
+              );
+            }
+          }
+          attachmentMedia.push(...((await resolveFiles(att.files)) ?? []));
+        }
+        return attachmentMedia;
+      },
+    ],
+    limit: 2,
+    errorMode: "stop",
+  });
+  if (hasError) {
+    throw toErrorObject(firstError, "Slack attachment read failed");
   }
 
-  const allMedia = [...((await directMediaPromise) ?? []), ...attachmentMedia];
+  const allMedia = results.flatMap((media) => media ?? []);
   const unavailableFiles = allFiles.flatMap((file, index) => {
     const reason =
       index >= MAX_SLACK_MEDIA_FILES ? SLACK_MEDIA_LIMIT_REASON : unavailableFileReasons.get(file);

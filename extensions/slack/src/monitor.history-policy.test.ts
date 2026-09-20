@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { setImmediate } from "node:timers/promises";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { getMediaDir } from "openclaw/plugin-sdk/media-runtime";
@@ -15,6 +16,7 @@ import {
   resetSlackTestState,
   runSlackMessageOnce,
 } from "./monitor.test-helpers.js";
+import * as mediaRuntime from "./monitor/media.runtime.js";
 import type { SlackMessageEvent } from "./types.js";
 
 const mediaFetchMock = vi.hoisted(() =>
@@ -310,4 +312,108 @@ describe("Slack native history sender policy through monitor dispatch", () => {
       }
     },
   );
+
+  it("observes a rejected direct image while joining pending forwarded media", async () => {
+    const config: OpenClawConfig = {
+      channels: {
+        slack: {
+          groupPolicy: "open",
+          contextVisibility: "allowlist",
+          channels: { C1: { requireMention: true, users: ["U1"] } },
+        },
+      },
+    };
+    slackTestState.config = config;
+    setRuntimeConfigSnapshot(config, config);
+    const directUrl = "https://files.slack.com/direct.png";
+    getSlackClient().conversations.history.mockResolvedValue({
+      messages: [
+        {
+          ts: "100",
+          user: "U1",
+          text: "mixed historical media",
+          files: [
+            { id: "FDIRECT", name: "direct.png", mimetype: "image/png", url_private: directUrl },
+          ],
+          attachments: [{ is_share: true, image_url: "https://files.slack.com/forwarded.png" }],
+        },
+      ],
+    });
+    const bothStarted = createDeferred<void>();
+    const releaseDirect = createDeferred<void>();
+    const releaseForwarded = createDeferred<void>();
+    const directFinished = createDeferred<void>();
+    const bothFinished = createDeferred<void>();
+    const saveRemoteMedia = mediaRuntime.saveRemoteMedia;
+    let finishedSaves = 0;
+    const saveSpy = vi
+      .spyOn(mediaRuntime, "saveRemoteMedia")
+      .mockImplementation(async (options) => {
+        try {
+          return await saveRemoteMedia(options);
+        } finally {
+          if (options.url === directUrl) {
+            directFinished.resolve();
+          }
+          if (++finishedSaves === 2) {
+            bothFinished.resolve();
+          }
+        }
+      });
+    mediaFetchMock.mockImplementation(async (url) => {
+      if (mediaFetchMock.mock.calls.length === 2) {
+        bothStarted.resolve();
+      }
+      await (url === directUrl ? releaseDirect.promise : releaseForwarded.promise);
+      return new Response(Buffer.from("historical image"), {
+        headers: { "content-type": "image/png" },
+      });
+    });
+    const mediaDir = getMediaDir();
+    await fs.mkdir(mediaDir, { recursive: true });
+    let settled = false;
+    const run = runSlackMessageOnce(
+      monitorSlackProvider,
+      { event: makeSlackMessageEvent({ ts: "103", text: "<@bot-user> inspect mixed media" }) },
+      { awaitDispatch: true },
+    )
+      .catch((error: unknown) => {
+        expect(error).toBeInstanceOf(Error);
+      })
+      .finally(() => {
+        settled = true;
+      });
+    try {
+      await bothStarted.promise;
+      const revoked: OpenClawConfig = {
+        channels: { slack: { ...config.channels?.slack, enabled: false } },
+      };
+      setRuntimeConfigSnapshot(revoked, revoked);
+      releaseDirect.resolve();
+      await directFinished.promise;
+      await setImmediate();
+      expect(settled).toBe(false);
+      releaseForwarded.resolve();
+      await run;
+      expect(mediaFetchMock).toHaveBeenCalledTimes(2);
+      expect(replyMock).not.toHaveBeenCalled();
+      expect(sendMock).not.toHaveBeenCalled();
+      expect(
+        (await fs.readdir(mediaDir, { recursive: true, withFileTypes: true })).filter((entry) =>
+          entry.isFile(),
+        ),
+      ).toEqual([]);
+    } finally {
+      releaseDirect.resolve();
+      releaseForwarded.resolve();
+      await bothFinished.promise;
+      try {
+        await run;
+      } finally {
+        saveSpy.mockRestore();
+        clearRuntimeConfigSnapshot();
+        await fs.rm(mediaDir, { recursive: true, force: true });
+      }
+    }
+  });
 });

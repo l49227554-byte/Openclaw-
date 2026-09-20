@@ -186,4 +186,38 @@ describe("inspectTelegramConversationRouteOwner", () => {
       }),
     ).toBeNull();
   });
+
+  it("keeps binding-created accounts on inherited single-bot credentials", () => {
+    expect(
+      inspectTelegramConversationRouteOwner({
+        cfg: {
+          channels: {
+            telegram: { botToken: "123456:synthetic", threadBindings: { enabled: false } },
+          },
+          bindings: [{ agentId: "main", match: { channel: "telegram", accountId: "bot-main" } }],
+        },
+        accountId: "bot-main",
+        conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
+      }),
+    ).toEqual({ kind: "agent", agentId: "main" });
+  });
+
+  it("rejects binding-only accounts in an explicit multi-account setup", () => {
+    expect(
+      inspectTelegramConversationRouteOwner({
+        cfg: {
+          channels: {
+            telegram: {
+              botToken: "123456:synthetic",
+              accounts: { default: {} },
+              threadBindings: { enabled: false },
+            },
+          },
+          bindings: [{ agentId: "main", match: { channel: "telegram", accountId: "bot-main" } }],
+        },
+        accountId: "bot-main",
+        conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
+      }),
+    ).toBeNull();
+  });
 });

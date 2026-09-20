@@ -1,8 +1,7 @@
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveThreadBindingSpawnPolicy } from "openclaw/plugin-sdk/conversation-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
-import { resolveTelegramAccountConfig } from "./account-config.js";
 import { resolveTelegramAccount } from "./accounts.js";
 import { inspectTelegramConversationRoute } from "./conversation-route.js";
 import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
@@ -57,9 +56,16 @@ export function inspectTelegramConversationRouteOwner(params: {
   const account = resolveTelegramAccount({ cfg: params.cfg, accountId });
   // A removed or disabled account can never regain a binding owner, so reject its retained
   // history here instead of reporting the missing adapter as a temporary outage below.
+  const configuredAccounts = params.cfg.channels?.telegram?.accounts;
+  const hasExplicitAccounts =
+    configuredAccounts != null &&
+    !Array.isArray(configuredAccounts) &&
+    Object.keys(configuredAccounts).length > 0;
   const hasConfiguredAccount =
-    resolveTelegramAccountConfig(params.cfg, accountId) !== undefined ||
-    (accountId === DEFAULT_ACCOUNT_ID && account.tokenSource !== "none");
+    (!hasExplicitAccounts && account.tokenSource !== "none") ||
+    (configuredAccounts != null &&
+      !Array.isArray(configuredAccounts) &&
+      Object.keys(configuredAccounts).some((id) => normalizeAccountId(id) === accountId));
   if (!hasConfiguredAccount || !account.enabled) {
     return null;
   }

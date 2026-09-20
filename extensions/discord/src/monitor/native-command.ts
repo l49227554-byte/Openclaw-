@@ -541,7 +541,10 @@ async function dispatchDiscordCommandInteraction(params: {
 
   const isGuild = Boolean(interaction.guild);
   const channelId = rawChannelId || "unknown";
+  // Bare Discord model commands own a richer staged picker; generic argument menus must not intercept it.
+  const pickerCommandContext = shouldOpenDiscordModelPickerFromCommand({ command, commandArgs });
   const menuNeedsModelContext =
+    !pickerCommandContext &&
     !(commandArgs?.raw && !commandArgs.values) &&
     command.args?.some(
       (arg) => typeof arg.choices === "function" && commandArgs?.values?.[arg.name] == null,
@@ -571,12 +574,13 @@ async function dispatchDiscordCommandInteraction(params: {
   const menuRouteState = command.key === "verbose" ? await getNativeRouteState() : undefined;
   // Normal dispatch owns the unavailable-binding reply; do not offer choices it cannot apply.
   const menu =
-    menuRouteState?.bindingReadiness?.ok === false
+    pickerCommandContext || menuRouteState?.bindingReadiness?.ok === false
       ? null
       : resolveCommandArgMenu({
           command,
           args: commandArgs,
           cfg,
+          agentId: menuModelContext?.agentId,
           session: menuRouteState?.effectiveRoute,
           provider: menuModelContext?.provider,
           model: menuModelContext?.model,
@@ -679,10 +683,6 @@ async function dispatchDiscordCommandInteraction(params: {
     return { accepted: true, effectiveRoute };
   }
 
-  const pickerCommandContext = shouldOpenDiscordModelPickerFromCommand({
-    command,
-    commandArgs,
-  });
   if (pickerCommandContext) {
     await replyWithDiscordModelPickerProviders({
       interaction,

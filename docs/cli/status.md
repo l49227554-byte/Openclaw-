@@ -161,6 +161,9 @@ Use `openclaw skills check --agent <id>` to inspect the missing requirements.
   It also adds usage snapshots to `--all`; `--agent` keeps the same usage-only scope.
   Usage probes receive the remaining shared probe budget, capped by `--timeout` when set;
   providers that exceed that bound report `Timeout` in the usage output.
+  An exhausted budget reports `Timeout` without starting provider auth or usage
+  requests. Expiry cancels active usage requests and prevents late auth results
+  from starting another request; completed provider snapshots remain available.
 - In an explicit multi-agent setup, `--usage` reads the auth profiles owned by
   `agents.defaults.systemAgent.agentId` by default. Pass `--agent <id>` to
   inspect another agent; without either owner, OpenClaw does not guess one

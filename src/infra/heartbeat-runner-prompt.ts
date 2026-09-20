@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readHeartbeatMonitorScratch } from "../cron/scratch-store.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
+import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../sessions/session-state-event-kinds.js";
 import {
   hasDeliveryTargetFields,
   normalizeDeliveryContext,
@@ -37,7 +38,7 @@ import {
   type HeartbeatScheduledTask,
   type HeartbeatWakeSource,
 } from "./heartbeat-wake.js";
-import { selectAgentSystemEvents } from "./system-event-ownership.js";
+import { resolveSystemEventQueueKey } from "./system-event-ownership.js";
 import {
   peekSystemEventEntries,
   resolveSystemEventDeliveryContext,
@@ -142,9 +143,8 @@ export async function resolveHeartbeatPreflight(params: {
     params.heartbeat,
     params.sessionKey,
   );
-  const queuedEventEntries = selectAgentSystemEvents(
-    peekSystemEventEntries(session.sessionKey),
-    params.agentId,
+  const queuedEventEntries = peekSystemEventEntries(
+    resolveSystemEventQueueKey(session.sessionKey, params.agentId),
   ).filter((event) => !isHeartbeatDeliveryAwarenessEvent(event));
   const execPartition = partitionExecEventEntries(
     queuedEventEntries,
@@ -295,7 +295,9 @@ export function resolveHeartbeatRunPrompt(params: {
   // Select once: admission owns generic text; completed delivery owns dedicated
   // prompts and filtered cron noise. Late arrivals retain their queue identities.
   for (const event of pendingEventEntries) {
-    if (isExecCompletionEvent(event.text)) {
+    if (event.contextKey?.startsWith(SESSION_CREATED_NOTICE_CONTEXT_PREFIX)) {
+      genericEvents.push(event);
+    } else if (isExecCompletionEvent(event.text)) {
       if (params.preflight.shouldInspectPendingEvents) {
         execEvents.push(event);
       }

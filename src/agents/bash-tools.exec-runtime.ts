@@ -12,12 +12,17 @@ import {
   type ExecApprovalDecision,
   type ExecTarget,
 } from "../infra/exec-approvals.js";
-import { findPathKey, mergePathPrepend, removePathPrepend } from "../infra/path-prepend.js";
+import { findPathKey, mergePathPrepend } from "../infra/path-prepend.js";
 import { logWarn } from "../logger.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import type { ManagedRun } from "../process/supervisor/index.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
 import type { RunExit, SpawnInput, TerminationReason } from "../process/supervisor/types.js";
+import type {
+  SecretEgressProcessGrant,
+  SecretEgressSentinelBinding,
+} from "../secrets/egress-proxy/proxy-server.js";
+import { registerSecretEgressProxyProcess } from "../secrets/egress-proxy/registry.js";
 /**
  * Bash exec runtime.
  * Spawns host/sandbox processes, manages session updates/backgrounding,
@@ -38,6 +43,7 @@ import {
   markExited,
   resolveProcessCleanupMs,
 } from "./bash-process-registry.js";
+import { prepareHostExecSpawn } from "./bash-tools.exec-host-spawn.js";
 import { maybeNotifyOnExecExit, normalizeNotifyOutput } from "./bash-tools.exec-notify.js";
 import {
   appendExecTimeoutRetryGuidance,
@@ -47,12 +53,10 @@ import {
 import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { chunkString, clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
-import { buildGitHubExecLaunchArgv } from "./github-exec-launch.js";
 import { recordAgentCleanupFailure } from "./run-cleanup-timeout.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { createSessionSlug } from "./session-slug.js";
-import { maybeWrapCommandWithShellSnapshot } from "./shell-snapshot.js";
-import { createStreamingBinaryOutputSanitizer, getShellConfig } from "./shell-utils.js";
+import { createStreamingBinaryOutputSanitizer } from "./shell-utils.js";
 import { registerTrustedToolNoStartError } from "./tool-result-error.js";
 import { withoutGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 export { normalizeNotifyOutput };
@@ -97,6 +101,7 @@ export const DEFAULT_PENDING_MAX_OUTPUT = clampWithDefault(
 /** Fallback PATH used when the process environment has no PATH. */
 export const DEFAULT_PATH =
   process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+/** Tail length used in background completion notifications. */
 /** Default time an approval can remain pending. */
 export const DEFAULT_APPROVAL_TIMEOUT_MS = DEFAULT_EXEC_APPROVAL_TIMEOUT_MS;
 /** Gateway request timeout for approval registration/wait calls. */
@@ -500,41 +505,6 @@ export function buildExecRuntimeErrorOutcome(params: {
   };
 }
 
-/**
- * Apply PATH prepends inside the shell command.
- * This ensures our paths take precedence even if user RC files (e.g. ~/.zshenv)
- * prepend their own entries to PATH during shell startup.
- */
-function wrapPosixCommandWithPathPrepend(
-  command: string,
-  env: Record<string, string>,
-  pathPrepend?: string[],
-): string {
-  if (process.platform === "win32") {
-    return command;
-  }
-
-  if (!pathPrepend || pathPrepend.length === 0) {
-    return command;
-  }
-
-  // Strip prepended entries from the base env.PATH to avoid duplicate segments.
-  // The wrapper will re-apply them after shell startup.
-  const pathKey = findPathKey(env);
-  const currentPath = env[pathKey];
-  if (currentPath) {
-    const newPath = removePathPrepend(currentPath, pathPrepend);
-    if (newPath !== undefined) {
-      env[pathKey] = newPath;
-    }
-  }
-
-  // Pass the prepend string safely via a temporary environment variable.
-  env.OPENCLAW_PREPEND_PATH = pathPrepend.join(path.delimiter);
-
-  return `export PATH="\${OPENCLAW_PREPEND_PATH}\${PATH:+:$PATH}"; unset OPENCLAW_PREPEND_PATH; ${command}`;
-}
-
 /** Starts a host or sandbox exec process and registers it for polling/backgrounding. */
 export async function runExecProcess({
   startupSignal: initialStartupSignal,
@@ -542,6 +512,7 @@ export async function runExecProcess({
   beforeSpawn: initialBeforeSpawn,
   assertCurrent: initialAssertCurrent,
   onSettledBeforeNotify: initialOnSettledBeforeNotify,
+  onActivity: initialOnActivity,
   ...opts
 }: {
   command: string;
@@ -550,6 +521,7 @@ export async function runExecProcess({
   execCommand?: string;
   workdir: string;
   env: Record<string, string>;
+  secretEgressBindings?: readonly SecretEgressSentinelBinding[];
   /** Host-selected managed profile; never inferred from the requested environment. */
   githubProfileDir?: string;
   pathPrepend?: string[];
@@ -576,6 +548,8 @@ export async function runExecProcess({
   onUpdate?: (partialResult: AgentToolResult<ExecToolDetails>) => void;
   /** Runs after process finalization and before the exit wake is queued. */
   onSettledBeforeNotify?: (outcome: ExecProcessOutcome) => void;
+  /** Process-owned invalidation survives foreground delivery and ends at settlement. */
+  onActivity?: (at: number) => void;
   /** Revalidates authorization after async preparation, immediately before each spawn attempt. */
   beforeSpawn?: () => Promise<AgentToolResult<ExecToolDetails> | undefined>;
   /** Rechecks host policy at the supervisor's final synchronous spawn boundary. */
@@ -605,8 +579,6 @@ export async function runExecProcess({
     notifyOnExit: opts.notifyOnExit,
     notifyOnExitEmptySuccess: opts.notifyOnExitEmptySuccess === true,
     exitNotified: false,
-    stdin: undefined,
-    pid: undefined,
     startedAt,
     cwd: opts.workdir,
     maxOutputChars: opts.maxOutput,
@@ -619,8 +591,6 @@ export async function runExecProcess({
     aggregated: "",
     tail: "",
     exited: false,
-    exitCode: undefined as number | null | undefined,
-    exitSignal: undefined as NodeJS.Signals | number | null | undefined,
     truncated: false,
     backgrounded: false,
     cursorKeyMode: opts.usePty ? "unknown" : "normal",
@@ -633,6 +603,7 @@ export async function runExecProcess({
   let beforeSpawn = initialBeforeSpawn;
   let assertPolicyCurrent = initialAssertCurrent;
   let onSettledBeforeNotify = initialOnSettledBeforeNotify;
+  let onActivity = initialOnActivity;
 
   const emitUpdate = () => {
     if (!onUpdate || session.backgrounded || session.exited) {
@@ -665,6 +636,7 @@ export async function runExecProcess({
   const sanitizeStderr = createStreamingBinaryOutputSanitizer();
 
   const handleStdout = (data: string) => {
+    onActivity?.(session.processActivity?.lastOutputAtMs ?? Date.now());
     const str = sanitizeStdout(data);
     for (const chunk of chunkString(str)) {
       appendOutput(session, "stdout", chunk);
@@ -673,6 +645,7 @@ export async function runExecProcess({
   };
 
   const handleStderr = (data: string) => {
+    onActivity?.(session.processActivity?.lastOutputAtMs ?? Date.now());
     const str = sanitizeStderr(data);
     for (const chunk of chunkString(str)) {
       appendOutput(session, "stderr", chunk);
@@ -685,6 +658,7 @@ export async function runExecProcess({
   let assertSandboxCurrent: (() => void) | undefined;
   let sandboxPrepared = false;
   let sandboxFinalized = false;
+  let secretEgressGrant: SecretEgressProcessGrant | undefined;
   const finalizeSandboxExec = async (params: {
     status: "completed" | "failed";
     exitCode: number | null;
@@ -702,9 +676,16 @@ export async function runExecProcess({
   const finalizeAndSettleSession = async (
     outcome: ExecProcessOutcome,
   ): Promise<ExecProcessOutcome> => {
+    secretEgressGrant?.revoke();
     let finalOutcome = outcome;
     session.finalizing = true;
+    onActivity?.(Date.now());
     try {
+      if (!opts.sandbox && managedRun?.waitForExtinction) {
+        // Root completion does not release descendants that retained the group's lineage fd.
+        managedRun.cancel();
+        await managedRun.waitForExtinction();
+      }
       await finalizeSandboxExec({
         status: outcome.status,
         exitCode: outcome.exitCode,
@@ -722,7 +703,7 @@ export async function runExecProcess({
         // Background observers need the finalizer failure in the same bounded, redacted output.
         appendOutput(session, "stderr", `\n${redactToolPayloadText(formatErrorMessage(error))}\n`);
       } else {
-        logWarn(`exec: sandbox finalize after process failure failed (${String(error)}).`);
+        logWarn(`exec: finalization after process failure failed (${String(error)}).`);
       }
     } finally {
       // Finalization can release remote process/session resources. Keep the
@@ -792,35 +773,7 @@ export async function runExecProcess({
         stdinMode: backendExecSpec.stdinMode,
       };
     }
-    const { shell, args: shellArgs } = getShellConfig();
-
-    // Wrap the command to enforce PATH prepend precedence over shell RC overrides.
-    const commandWithPathPrepend = wrapPosixCommandWithPathPrepend(
-      execCommand,
-      shellRuntimeEnv,
-      opts.pathPrepend,
-    );
-    const commandWithShellSnapshot = await maybeWrapCommandWithShellSnapshot({
-      // A bound execution plan must not load aliases/functions or replace its PATH.
-      enabled: opts.execCommand === undefined,
-      command: commandWithPathPrepend,
-      shell,
-      shellArgs,
-      cwd: opts.workdir,
-      env: shellRuntimeEnv,
-    });
-
-    const shellArgv = [shell, ...shellArgs, commandWithShellSnapshot];
-    const argv = opts.githubProfileDir
-      ? buildGitHubExecLaunchArgv(shellArgv, opts.githubProfileDir)
-      : shellArgv;
-    return {
-      mode: opts.usePty ? ("pty" as const) : ("child" as const),
-      argv,
-      env: shellRuntimeEnv,
-      cwd: opts.workdir,
-      stdinMode: opts.usePty ? ("pipe-open" as const) : ("pipe-closed" as const),
-    };
+    return prepareHostExecSpawn({ ...opts, env: shellRuntimeEnv });
   };
 
   let managedRun: ManagedRun | null = null;
@@ -833,7 +786,7 @@ export async function runExecProcess({
       throw new ExecProcessPreflightError(denied);
     }
   };
-  const spawn = (input: SpawnInput) => {
+  const spawn = async (input: SpawnInput) => {
     const assertSourceCurrent = assertSourceActive;
     const assertRuntimeCurrent = assertSandboxCurrent;
     const assertHostPolicyCurrent = assertPolicyCurrent;
@@ -844,9 +797,23 @@ export async function runExecProcess({
     // Source authority covers construction; approval policy ends at native launch.
     assertCurrent();
     assertHostPolicyCurrent?.();
-    return withoutGatewayToolCallerIdentity(() =>
-      supervisor.spawn({ ...input, assertCurrent, beforeSpawn: assertHostPolicyCurrent }),
-    );
+    const grant = opts.secretEgressBindings
+      ? registerSecretEgressProxyProcess(opts.secretEgressBindings)
+      : undefined;
+    secretEgressGrant = grant;
+    try {
+      return await withoutGatewayToolCallerIdentity(() =>
+        supervisor.spawn({
+          ...input,
+          ...(grant ? { env: { ...input.env, ...grant.env }, onCancel: grant.revoke } : {}),
+          assertCurrent,
+          beforeSpawn: assertHostPolicyCurrent,
+        }),
+      );
+    } catch (error) {
+      grant?.revoke();
+      throw error;
+    }
   };
 
   try {
@@ -855,7 +822,7 @@ export async function runExecProcess({
     usingPty = spawnSpec.mode === "pty";
     const spawnBase = {
       runId: sessionId,
-      ...(opts.sandbox ? { cleanupOwnership: "external" as const } : {}),
+      ...(opts.sandbox ? { cleanupOwnership: "external" as const, exactEnv: true as const } : {}),
       scopeKey: opts.scopeKey,
       cwd: spawnSpec.cwd ?? opts.workdir,
       env: spawnSpec.env,
@@ -901,6 +868,7 @@ export async function runExecProcess({
       }),
     ).finally(() => {
       onSettledBeforeNotify = undefined;
+      onActivity = undefined;
     });
     emitExecProcessCompleted({
       command: opts.command,
@@ -955,6 +923,7 @@ export async function runExecProcess({
       return finalOutcome;
     } finally {
       onSettledBeforeNotify = undefined;
+      onActivity = undefined;
     }
   });
 

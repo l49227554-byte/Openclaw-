@@ -25,34 +25,32 @@ export type ExecCompletionRoutingOptions = {
   execCompletionSessionGeneration?: ExecCompletionSessionGeneration;
 };
 
-export function resolveExecCompletionRouting(params: {
-  cfg?: OpenClawConfig;
-  sessionKey?: string;
-  runSessionKey?: string;
-  completionSessionKey?: string;
-  completionSessionGeneration?: ExecCompletionSessionGeneration;
-  channel?: string;
-  accountId?: string;
-}): {
+export function resolveExecCompletionRouting(
+  options?: ExecCompletionRoutingOptions & {
+    config?: OpenClawConfig;
+    messageProvider?: string;
+  },
+): {
   notifySessionKey?: string;
   eventRouting: EventSessionRoutingPolicy;
 } {
-  const notifySessionKey = params.completionSessionKey ?? params.runSessionKey ?? params.sessionKey;
+  const notifySessionKey =
+    options?.execCompletionSessionKey ?? options?.runSessionKey ?? options?.sessionKey;
   return {
     notifySessionKey,
     eventRouting: {
       ...resolveEventSessionRoutingPolicy({
-        cfg: params.cfg,
+        cfg: options?.config,
         sessionKey: notifySessionKey,
-        channel: params.channel,
-        accountId: params.accountId,
+        channel: options?.messageProvider,
+        accountId: options?.agentAccountId,
       }),
-      ...(params.completionSessionKey &&
-      params.completionSessionKey !== (params.runSessionKey ?? params.sessionKey)
+      ...(options?.execCompletionSessionKey &&
+      options.execCompletionSessionKey !== (options.runSessionKey ?? options.sessionKey)
         ? {
             isolateCompletionRun: true,
-            expectedSessionGeneration: params.completionSessionGeneration,
-            sessionStore: params.cfg?.session?.store,
+            expectedSessionGeneration: options.execCompletionSessionGeneration,
+            sessionStore: options.config?.session?.store,
           }
         : {}),
     },

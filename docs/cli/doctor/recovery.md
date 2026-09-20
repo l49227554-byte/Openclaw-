@@ -23,9 +23,23 @@ interactively to review the findings and confirm supported cleanup. Cleanup
 reports what it removed or skipped; it does not guarantee a replacement service
 will be installed. Explicit repair maintenance skips this separate cleanup flow.
 
+If Doctor stopped a managed Gateway for repair, a failed or timed-out restoration
+probe produces a warning and Doctor still attempts to start that service and
+verify readiness. Live maintenance custody and update admission still apply;
+observed changes to the service command, account, or manager require operator review.
+An explicit ownership refusal is reported as a refusal, without attempting to
+start the rejected service. On systemd, Doctor retains the native manager and
+unit identity before stopping the service and revalidates it at activation. If
+that identity cannot be captured, Doctor leaves the service running and reports
+the inspection warning; live state writers still prevent unsafe offline repair.
+
 When service inspection blocks repair, Doctor and `gateway status --deep` name
 the failed native probe:
 
+- **Linux inspection deadline expired:** the manager probe or its custody/admission
+  guards exhausted the inspection budget. This does not mean the user session bus
+  is missing. Check the reported restoration result and run
+  `openclaw gateway status --deep` after recovery.
 - **Linux user session bus unavailable:** check `XDG_RUNTIME_DIR` and
   `DBUS_SESSION_BUS_ADDRESS` for the service account. A working `systemctl --user`
   command alone is insufficient: effective service inspection also uses
@@ -56,6 +70,15 @@ maintenance inspection and service mutations; it retains Gateway/state
 coordinators and agent-database lease checks. Shutdown and restart remain with
 the deployment owner. A failed native probe is never treated as proof that the
 Gateway is stopped.
+
+For a system template such as `openclaw@.service` with `User=%i`, inspection
+follows the current account's instance (`openclaw@<user>.service`) while
+preserving the shared template. Run Doctor as that account after the system
+service owner stops its instance.
+
+Doctor waits for a starting local Gateway using the shared 60-second readiness budget, both on its initial check and after an approved restart. It reports the observed startup phase while waiting. A Gateway that still reports startup at the deadline produces a non-failing “still starting” result; Doctor leaves it running and does not offer another restart. Connection failure without startup evidence remains a diagnostic failure. This also applies when an installed updater invokes the candidate Doctor.
+
+Plugin initialization and database startup checks can make a cold start take longer than ten seconds on a loaded or older host. Let the existing Gateway finish starting before requesting a separate restart. Remote Gateway diagnostics keep using the configured remote target.
 
 ## Remote Gateway recovery
 
@@ -88,6 +111,25 @@ inline token, run `openclaw doctor --fix --generate-gateway-token`, then restart
 the Gateway. For a SecretRef, rotate the external secret source instead; doctor
 preserves its reference and leaves password, `none`, and trusted-proxy auth modes
 unchanged. An absent token still uses the normal startup token generation flow.
+
+Known redaction placeholders, including `__OPENCLAW_REDACTED__`, are also invalid
+credentials. Doctor and `gateway status --deep` name the affected reference even
+if an older Gateway process still works with its previous in-memory token.
+For a store-backed Gateway token, run `openclaw doctor --fix` (or
+`openclaw doctor --generate-gateway-token`). Doctor verifies a database backup,
+regenerates the referenced value, preserves the SecretRef and the entry's current
+`secret`/`env` kind and allowed hosts, and prints the backup path. A credential
+changed during backup is preserved. Restart the Gateway,
+then reconnect or re-pair devices with the new token.
+
+Explicit token generation reports when it skips a healthy SecretRef. Other
+placeholder secrets require a real replacement from their provider; Doctor
+reports them without deleting their stored values.
+
+In trusted-proxy mode, a redacted inline or environment-supplied optional password
+does not block proxy authentication. Startup, Doctor, and status warn that local
+password fallback is unavailable. Replace or remove the optional password and
+restart; Doctor preserves trusted-proxy mode instead of generating a token.
 
 ## macOS: `launchctl` env overrides
 

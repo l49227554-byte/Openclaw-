@@ -1,5 +1,8 @@
 /** Reads channel plugin output/threading policy for isolated cron delivery. */
-import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeOptionalLowercaseString,
+  normalizeOptionalStringifiedId,
+} from "@openclaw/normalization-core/string-coerce";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 
 type ChannelPluginRuntime = typeof import("../../channels/plugins/index.js");
@@ -48,4 +51,15 @@ export async function resolveCurrentChannelTarget(params: {
       threadId: params.threadId,
     }) ?? params.to
   );
+}
+
+export async function resolveCurrentChannelContext(params: {
+  channel?: string;
+  to?: string;
+  threadId?: string | number | null;
+}): Promise<{ currentChannelId?: string; currentThreadTs?: string }> {
+  return {
+    currentChannelId: await resolveCurrentChannelTarget(params),
+    currentThreadTs: normalizeOptionalStringifiedId(params.threadId),
+  };
 }

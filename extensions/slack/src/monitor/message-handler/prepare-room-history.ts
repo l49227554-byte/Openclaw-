@@ -29,6 +29,7 @@ export async function resolveSlackRoomHistory(params: {
   contextVisibilityMode: ContextVisibilityMode;
   eventScope?: SlackEventScope;
   assertCurrent: () => void;
+  abortSignal?: AbortSignal;
 }): Promise<HistoryEntry[]> {
   if (params.ctx.historyLimit <= 0 || !params.message.ts) {
     return [];
@@ -104,6 +105,8 @@ export async function resolveSlackRoomHistory(params: {
               ctx: params.ctx,
               eventScope: params.eventScope,
               maxAttachments: mediaRemaining,
+              assertCurrent: params.assertCurrent,
+              abortSignal: params.abortSignal,
               message: {
                 type: "message",
                 channel: params.message.channel,
@@ -209,6 +212,8 @@ async function resolveSlackHistoryMedia(params: {
   message: SlackMessageEvent;
   eventScope?: SlackEventScope;
   maxAttachments: number;
+  assertCurrent: () => void;
+  abortSignal?: AbortSignal;
 }) {
   const candidate = buildSlackHistoryMediaCandidateMessage(params.message, params.maxAttachments);
   if (!candidate) {
@@ -224,6 +229,8 @@ async function resolveSlackHistoryMedia(params: {
     mediaMaxBytes: Math.min(params.ctx.mediaMaxBytes, SLACK_HISTORY_MEDIA_MAX_BYTES),
     mediaReadIdleTimeoutMs: SLACK_HISTORY_MEDIA_IDLE_TIMEOUT_MS,
     mediaTotalTimeoutMs: SLACK_HISTORY_MEDIA_TOTAL_TIMEOUT_MS,
+    assertCurrent: params.assertCurrent,
+    abortSignal: params.abortSignal,
   });
   return {
     media: await toInboundMediaFactsWithMetadata(content?.effectiveDirectMedia, {

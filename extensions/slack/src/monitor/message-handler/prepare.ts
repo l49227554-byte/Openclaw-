@@ -1449,6 +1449,7 @@ export async function prepareSlackMessage(params: {
     historyLimit: isRoomish ? ctx.historyLimit : undefined,
     excludedMessageIds,
     assertHistoryCurrent,
+    abortSignal: opts.abortSignal,
   });
   const { threadLabel, threadStarterMedia } = threadContextData;
   let { threadStarterBody, threadHistoryBody, shouldSeedInitialThreadContext } = threadContextData;
@@ -1474,6 +1475,7 @@ export async function prepareSlackMessage(params: {
         contextVisibilityMode,
         eventScope: opts.eventScope,
         assertCurrent: assertHistoryCurrent,
+        abortSignal: opts.abortSignal,
       });
     }
   }

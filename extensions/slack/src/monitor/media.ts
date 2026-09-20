@@ -66,6 +66,22 @@ function createSlackAuthHeaders(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}` };
 }
 
+function captureSlackMediaReadGuard(params: {
+  assertCurrent?: () => void;
+  abortSignal?: AbortSignal;
+}): (() => void) | undefined {
+  const inherited = captureChannelReadAuthority();
+  const { assertCurrent, abortSignal } = params;
+  if (!assertCurrent && !abortSignal) {
+    return inherited;
+  }
+  return () => {
+    inherited?.();
+    abortSignal?.throwIfAborted();
+    assertCurrent?.();
+  };
+}
+
 function createSlackMediaRequest(
   url: string,
   token: string,
@@ -218,12 +234,17 @@ async function fetchFreshSlackFileUrl(params: {
   file: SlackFile;
   client?: SlackWebClient;
   isRefreshedFileAllowed?: (file: SlackFile) => boolean;
+  assertCurrent?: () => void;
+  abortSignal?: AbortSignal;
 }): Promise<string | null> {
   if (!params.file.id || !params.client) {
     return null;
   }
+  const assertCurrent = captureSlackMediaReadGuard(params);
   try {
+    assertCurrent?.();
     const info = await params.client.files.info({ file: params.file.id });
+    assertCurrent?.();
     const freshFile = info.file as SlackFile | undefined;
     if (freshFile && params.isRefreshedFileAllowed?.(freshFile) === false) {
       logVerbose(`slack: refreshed file metadata rejected for file id=${params.file.id}`);
@@ -237,6 +258,7 @@ async function fetchFreshSlackFileUrl(params: {
     logVerbose(`slack: files.info returned no private URL for file id=${params.file.id}`);
     return null;
   } catch (error) {
+    assertCurrent?.();
     logVerbose(
       `slack: files.info failed for file id=${params.file.id}: ${formatErrorMessage(error)}`,
     );
@@ -252,9 +274,10 @@ async function downloadSlackMediaFile(params: {
   readIdleTimeoutMs?: number;
   totalTimeoutMs?: number;
   abortSignal?: AbortSignal;
+  assertCurrent?: () => void;
   govSlack: boolean;
 }): Promise<SlackMediaResult> {
-  const assertReadAuthority = captureChannelReadAuthority();
+  const assertReadAuthority = captureSlackMediaReadGuard(params);
   assertReadAuthority?.();
   const { url: slackUrl, requestInit } = createSlackMediaRequest(
     params.url,
@@ -267,6 +290,8 @@ async function downloadSlackMediaFile(params: {
       url: slackUrl,
       fetchImpl,
       beforeRequest: assertReadAuthority,
+      // The store inherits its parent scope; this is only the additional recovery guard.
+      assertCurrent: params.assertCurrent,
       requestInit,
       filePathHint: params.file.name,
       fallbackContentType: resolveSlackMediaMimetype(params.file, params.file.mimetype),
@@ -340,9 +365,11 @@ export async function resolveSlackMedia(params: {
   readIdleTimeoutMs?: number;
   totalTimeoutMs?: number;
   abortSignal?: AbortSignal;
+  assertCurrent?: () => void;
   preloadedMedia?: ReadonlyMap<SlackFile, SlackMediaResult>;
   unavailableFiles?: Map<SlackFile, string>;
 }): Promise<SlackMediaResult[] | null> {
+  const assertCurrent = captureSlackMediaReadGuard(params);
   const govSlack = isGovSlackClient(params.client);
   const files = params.files ?? [];
   const limitedFiles =
@@ -355,10 +382,13 @@ export async function resolveSlackMedia(params: {
       file,
       client: params.client,
       isRefreshedFileAllowed: params.isRefreshedFileAllowed,
+      assertCurrent: params.assertCurrent,
+      abortSignal: params.abortSignal,
     });
 
   const { results } = await runTasksWithConcurrency({
     tasks: limitedFiles.map((file) => async (): Promise<SlackMediaResult | null> => {
+      assertCurrent?.();
       // Audio preflight keys the original event file object so admission can
       // reuse that exact download without turning this into a persistent cache.
       const preloaded = params.preloadedMedia?.get(file);
@@ -374,6 +404,7 @@ export async function resolveSlackMedia(params: {
         } catch (error) {
           reason = formatSlackMediaFailure(error);
         }
+        assertCurrent?.();
         // Only a failed event URL gets the existing files.info retry. Record
         // the final outcome once so a recovered download is not called unavailable.
         url = attempt === 0 && eventUrl ? await refreshFileUrl(file) : null;
@@ -401,6 +432,7 @@ export async function resolveSlackAttachmentContent(params: {
   readIdleTimeoutMs?: number;
   totalTimeoutMs?: number;
   abortSignal?: AbortSignal;
+  assertCurrent?: () => void;
   preloadedMedia?: ReadonlyMap<SlackFile, SlackMediaResult>;
 }): Promise<{
   text: string;
@@ -496,11 +528,14 @@ export async function resolveSlackAttachmentContent(params: {
           params.token,
           govSlack,
         );
-        const fetchImpl = createSlackMediaFetch(govSlack);
+        const assertReadAuthority = captureSlackMediaReadGuard(params);
+        const fetchImpl = createSlackMediaFetch(govSlack, assertReadAuthority);
         const saved = await saveSlackMedia({
           options: {
             url: slackUrl,
             fetchImpl,
+            beforeRequest: assertReadAuthority,
+            assertCurrent: params.assertCurrent,
             requestInit,
             maxBytes: params.maxBytes,
             ssrfPolicy: govSlack ? SLACK_GOV_MEDIA_SSRF_POLICY : SLACK_MEDIA_SSRF_POLICY,

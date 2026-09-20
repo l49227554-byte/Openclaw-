@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { getMediaDir } from "openclaw/plugin-sdk/media-runtime";
 import { resetInboundDedupe } from "openclaw/plugin-sdk/reply-runtime";
 import {
   clearRuntimeConfigSnapshot,
@@ -198,6 +200,113 @@ describe("Slack native history sender policy through monitor dispatch", () => {
         expect(sendMock).not.toHaveBeenCalled();
       } finally {
         clearRuntimeConfigSnapshot();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "settles historical media before dispatch when mid-download revocation is %s",
+    async (revoke) => {
+      const config: OpenClawConfig = {
+        channels: {
+          slack: {
+            groupPolicy: "open",
+            contextVisibility: "allowlist",
+            channels: { C1: { requireMention: true, users: ["U1"] } },
+          },
+        },
+      };
+      slackTestState.config = config;
+      setRuntimeConfigSnapshot(config, config);
+      const client = getSlackClient();
+      const files = [1, 2, 3, 4].map((id) => ({
+        id: `F${id}`,
+        name: `${id}.png`,
+        mimetype: "image/png",
+        url_private: `https://files.slack.com/${id}.png`,
+      }));
+      client.conversations.history.mockResolvedValue({
+        messages: [{ ts: "100", user: "U1", text: "four historical images", files }],
+      });
+      const refresh = vi.fn().mockResolvedValue({
+        file: { ...files[1], url_private: "https://files.slack.com/2-refreshed.png" },
+      });
+      const previousFiles = Reflect.get(client, "files");
+      Reflect.set(client, "files", { info: refresh });
+      const started = createDeferred<void>();
+      const release = createDeferred<void>();
+      mediaFetchMock.mockImplementation(async (url) => {
+        if (mediaFetchMock.mock.calls.length === 3) {
+          started.resolve();
+        }
+        await release.promise;
+        return url === "https://files.slack.com/2.png"
+          ? new Response("expired URL", { status: 404 })
+          : new Response(Buffer.from("historical image"), {
+              headers: { "content-type": "image/png" },
+            });
+      });
+      const captured = captureReplyContexts<{
+        InboundHistory?: Array<{ media?: Array<{ path?: string }> }>;
+      }>();
+      const mediaDir = getMediaDir();
+      await fs.mkdir(mediaDir, { recursive: true });
+      const run = runSlackMessageOnce(
+        monitorSlackProvider,
+        { event: makeSlackMessageEvent({ ts: "103", text: "<@bot-user> inspect images" }) },
+        { awaitDispatch: true },
+      ).catch((error: unknown) => {
+        if (!revoke) {
+          throw error;
+        }
+        expect(error).toBeInstanceOf(Error);
+      });
+      try {
+        await started.promise;
+        if (revoke) {
+          const revoked: OpenClawConfig = {
+            channels: { slack: { ...config.channels?.slack, enabled: false } },
+          };
+          setRuntimeConfigSnapshot(revoked, revoked);
+        }
+        release.resolve();
+        await run;
+        const writtenFiles = (
+          await fs.readdir(mediaDir, { recursive: true, withFileTypes: true })
+        ).filter((entry) => entry.isFile());
+        if (revoke) {
+          expect(mediaFetchMock).toHaveBeenCalledTimes(3);
+          expect(refresh).not.toHaveBeenCalled();
+          expect(writtenFiles).toEqual([]);
+          expect(replyMock).not.toHaveBeenCalled();
+          expect(sendMock).not.toHaveBeenCalled();
+        } else {
+          expect(mediaFetchMock).toHaveBeenCalledTimes(5);
+          expect(refresh).toHaveBeenCalledExactlyOnceWith({ file: "F2" });
+          expect(captured).toHaveLength(1);
+          const media = captured[0]?.InboundHistory?.flatMap((entry) => entry.media ?? []) ?? [];
+          expect(media).toHaveLength(4);
+          expect(writtenFiles).toHaveLength(4);
+          for (const item of media) {
+            if (!item.path) {
+              throw new Error("Expected local history media");
+            }
+            expect(await fs.readFile(item.path, "utf8")).toBe("historical image");
+          }
+        }
+      } finally {
+        release.resolve();
+        try {
+          await run;
+        } finally {
+          clearRuntimeConfigSnapshot();
+          if (previousFiles === undefined) {
+            Reflect.deleteProperty(client, "files");
+          } else {
+            Reflect.set(client, "files", previousFiles);
+          }
+          await fs.rm(mediaDir, { recursive: true, force: true });
+        }
       }
     },
   );

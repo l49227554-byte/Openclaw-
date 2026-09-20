@@ -144,6 +144,7 @@ export async function resolveSlackThreadContextData(params: {
   historyLimit?: number;
   excludedMessageIds?: ReadonlySet<string>;
   assertHistoryCurrent?: () => void;
+  abortSignal?: AbortSignal;
 }): Promise<SlackThreadContextData> {
   const botIdentity = {
     botUserId: params.ctx.botUserId,
@@ -253,6 +254,8 @@ export async function resolveSlackThreadContextData(params: {
         client: params.eventScope?.client ?? params.ctx.app.client,
         token: params.ctx.botToken,
         maxBytes: params.ctx.mediaMaxBytes,
+        assertCurrent: params.assertHistoryCurrent,
+        abortSignal: params.abortSignal,
       });
       params.assertHistoryCurrent?.();
       threadStarterMedia = attachmentContent?.media.length ? attachmentContent.media : null;

@@ -1902,13 +1902,16 @@ async function prepareCliRunContextWithinReadFence(
               binding: params.cliSessionBinding,
               authProfileId: effectiveAuthProfileId,
               authEpoch,
-              authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+              // authEpochVersion defaults to the current runtime version in the helper.
               extraSystemPromptHash,
               messageToolPolicyHash,
               promptToolNamesHash,
               cwdHash,
               mcpConfigHash: preparedBackendFinal.mcpConfigHash,
               mcpResumeHash: preparedBackendFinal.mcpResumeHash,
+              // Operator-declared equivalent identities keep the transcript across
+              // a credit/limit failover between two of the operator's own profiles.
+              historyEquivalenceGroups: params.config?.auth?.historyEquivalenceGroups,
             })
           : params.cliSessionId
             ? { mode: "reuse", sessionId: params.cliSessionId }

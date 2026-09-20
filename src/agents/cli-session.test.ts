@@ -8,6 +8,7 @@ import {
   normalizeCliSessionReseedReceipt,
   rebindCliSessionReseedReceiptsForReset,
 } from "../config/sessions/cli-session-binding.js";
+import { CLI_AUTH_EPOCH_VERSION } from "./cli-auth-epoch.js";
 import {
   clearAllCliSessions,
   clearCliSession,
@@ -678,5 +679,272 @@ describe("cli-session helpers", () => {
     expect(shouldClearFailedCliSessionBinding({ error, binding: { sessionId: "reused" } })).toBe(
       invalidatesSession,
     );
+  });
+
+  it("defaults an omitted authEpochVersion to the current runtime epoch version", () => {
+    // The production reuse path omits authEpochVersion; the helper must assume
+    // the current CLI_AUTH_EPOCH_VERSION so a binding stored at that version still
+    // engages the epoch gate (here: profile rotated but the versioned epoch held).
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work-alias",
+        authEpoch: "auth-epoch-a",
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    // A binding stored at a DIFFERENT version does not match the default gate,
+    // so the rotated profile invalidates (proves the default is not a wildcard).
+    expect(
+      resolveCliSessionReuse({
+        binding: { ...binding, authEpochVersion: CLI_AUTH_EPOCH_VERSION - 1 },
+        authProfileId: "anthropic:work-alias",
+        authEpoch: "auth-epoch-a",
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+  });
+
+  describe("operator-equivalent failover session preservation", () => {
+    // Models the confirmed bug: a credit/limit-driven failover rebinds BOTH the
+    // profile id (auth-profile branch) AND the per-leg auth epoch (auth-epoch
+    // branch). Legs are `type=token`, so their epochs are `profile:<id>:<hash>`
+    // and differ across the swap. See cli-auth-epoch.test.ts for the epoch proof.
+    const failoverBinding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:sc",
+      authEpoch: "epoch-sc",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+    const failoverTurn = {
+      binding: failoverBinding,
+      authProfileId: "anthropic:scm",
+      authEpoch: "epoch-scm",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    it("preserves the session across a failover between two grouped profiles", () => {
+      // THE regression: without the fix this returns invalidate/auth-profile.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    });
+
+    it("keeps strict cross-account invalidation when the swap leaves the group", () => {
+      // Current profile is NOT in the stored profile's declared group.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          authProfileId: "anthropic:someone-else",
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
+
+    it("keeps strict invalidation when only one endpoint is grouped", () => {
+      // The stored profile is not a declared member alongside the current one.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          historyEquivalenceGroups: [["anthropic:scm", "anthropic:personal"]],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
+
+    it("matches today's strict behavior when no group is configured", () => {
+      // Byte-for-byte default: the failover invalidates exactly as before.
+      expect(resolveCliSessionReuse(failoverTurn)).toEqual({
+        mode: "invalidate",
+        invalidatedReason: "auth-profile",
+      });
+      expect(resolveCliSessionReuse({ ...failoverTurn, historyEquivalenceGroups: [] })).toEqual({
+        mode: "invalidate",
+        invalidatedReason: "auth-profile",
+      });
+    });
+
+    it("still invalidates non-identity drift for a grouped failover", () => {
+      const group = [["anthropic:sc", "anthropic:scm"]];
+      // cwd drift is a real topology change, not a routing change.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          cwdHash: hashCliSessionText("/work/b"),
+          binding: { ...failoverBinding, cwdHash: hashCliSessionText("/work/a") },
+          historyEquivalenceGroups: group,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "cwd" });
+      // mcp topology drift.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          mcpConfigHash: "mcp-b",
+          historyEquivalenceGroups: group,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "mcp" });
+      // message-tool policy drift.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          messageToolPolicyHash: "policy-b",
+          binding: { ...failoverBinding, messageToolPolicyHash: "policy-a" },
+          historyEquivalenceGroups: group,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "message-policy" });
+    });
+
+    it("still surfaces content drift as reuse-with-drift for a grouped failover", () => {
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          extraSystemPromptHash: "prompt-b",
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
+        }),
+      ).toEqual({
+        mode: "reuse-with-drift",
+        sessionId: "cli-session-1",
+        drift: { reasons: ["system-prompt"] },
+      });
+    });
+
+    it("does not bypass a same-profile epoch change even inside a group", () => {
+      // Guardrail: the group only excuses an actual profile SWAP. A credential
+      // change on the SAME profile (ids equal) must still invalidate via epoch.
+      expect(
+        resolveCliSessionReuse({
+          binding: failoverBinding,
+          authProfileId: "anthropic:sc",
+          authEpoch: "epoch-sc-rotated",
+          authEpochVersion: 2,
+          extraSystemPromptHash: "prompt-a",
+          mcpConfigHash: "mcp-a",
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-epoch" });
+    });
+  });
+
+  describe("history-equivalence group resolution (via resolveCliSessionReuse)", () => {
+    // Exercise the internal group resolution through the public reuse API so the
+    // group edge cases are covered without exporting a helper only tests consume.
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:a",
+      authEpoch: "epoch-a",
+      authEpochVersion: 2,
+    };
+    const turn = {
+      binding,
+      authProfileId: "anthropic:b",
+      authEpoch: "epoch-b",
+      authEpochVersion: 2,
+    };
+
+    it("preserves the session for a grouped swap even with duplicate members", () => {
+      expect(
+        resolveCliSessionReuse({
+          ...turn,
+          historyEquivalenceGroups: [
+            ["anthropic:a", "anthropic:b", "anthropic:b"],
+            ["anthropic:c", "anthropic:d"],
+          ],
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    });
+
+    it("invalidates when the active profile shares no configured group", () => {
+      expect(
+        resolveCliSessionReuse({
+          ...turn,
+          historyEquivalenceGroups: [["anthropic:c", "anthropic:d"]],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
+
+    it("invalidates for a degenerate single-member or whitespace-collapsed group", () => {
+      expect(
+        resolveCliSessionReuse({
+          ...turn,
+          historyEquivalenceGroups: [["anthropic:a"], ["anthropic:a", " "]],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
+
+    it("invalidates when no groups are configured (undefined)", () => {
+      expect(resolveCliSessionReuse({ ...turn, historyEquivalenceGroups: undefined })).toEqual({
+        mode: "invalidate",
+        invalidatedReason: "auth-profile",
+      });
+    });
+
+    // Overlapping-group coverage (clawsweeper P2). With groups
+    // [["a","b"],["b","c"]] a swap between b and c is equivalent via the SECOND
+    // group. The pre-fix code resolved a single set from the ACTIVE profile only
+    // (the first group containing it), so a stored=c → current=b swap wrongly
+    // invalidated because stored `c` was absent from the resolved {a,b} set.
+    const overlappingGroups = [
+      ["anthropic:a", "anthropic:b"],
+      ["anthropic:b", "anthropic:c"],
+    ];
+    const bcBinding = {
+      sessionId: "cli-session-1",
+      authEpochVersion: 2,
+    };
+
+    it("preserves a stored=c → current=b swap sharing the second overlapping group", () => {
+      expect(
+        resolveCliSessionReuse({
+          binding: { ...bcBinding, authProfileId: "anthropic:c", authEpoch: "epoch-c" },
+          authProfileId: "anthropic:b",
+          authEpoch: "epoch-b",
+          authEpochVersion: 2,
+          historyEquivalenceGroups: overlappingGroups,
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    });
+
+    it("preserves the reverse stored=b → current=c swap sharing the second overlapping group", () => {
+      expect(
+        resolveCliSessionReuse({
+          binding: { ...bcBinding, authProfileId: "anthropic:b", authEpoch: "epoch-b" },
+          authProfileId: "anthropic:c",
+          authEpoch: "epoch-c",
+          authEpochVersion: 2,
+          historyEquivalenceGroups: overlappingGroups,
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    });
+
+    it("still invalidates a swap whose endpoints never co-occur in one group", () => {
+      // a and c each appear only through b; they never share a SINGLE group, so
+      // the swap must stay strictly invalidated.
+      expect(
+        resolveCliSessionReuse({
+          binding: { ...bcBinding, authProfileId: "anthropic:a", authEpoch: "epoch-a" },
+          authProfileId: "anthropic:c",
+          authEpoch: "epoch-c",
+          authEpochVersion: 2,
+          historyEquivalenceGroups: overlappingGroups,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
   });
 });

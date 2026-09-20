@@ -18,6 +18,13 @@ export {
 
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 
+/**
+ * Default epoch-encoding version assumed when a caller omits `authEpochVersion`.
+ * Mirrors `CLI_AUTH_EPOCH_VERSION` (kept in sync by an assertion in the epoch
+ * tests) so the production reuse path need not thread the constant explicitly.
+ */
+const DEFAULT_CLI_AUTH_EPOCH_VERSION = 7;
+
 /** Whether a failover proves the provider-side conversation can no longer be resumed. */
 export function isCliSessionInvalidatingFailoverReason(reason: FailoverReason): boolean {
   // Auth identity changes are handled by the reuse fingerprint's auth epoch.
@@ -218,18 +225,71 @@ export function stripCliSessionDriftNote(text: string): string {
   return text;
 }
 
+/**
+ * Report whether the operator declared `storedProfileId` and `currentProfileId`
+ * as their OWN equivalent identities — i.e. whether some SINGLE group in
+ * `historyEquivalenceGroups` contains BOTH (normalized) ids, and the ids are
+ * distinct. Membership is decided per group, so overlapping groups such as
+ * `[["a","b"],["b","c"]]` correctly recognize the `b`↔`c` swap via the second
+ * group in either direction; a swap whose endpoints never co-occur in one group,
+ * or a same-profile pair (ids equal), returns `false` and keeps today's strict
+ * per-profile invalidation.
+ */
+function areOperatorEquivalentProfiles(
+  historyEquivalenceGroups: readonly (readonly string[])[] | undefined,
+  storedProfileId: string | undefined,
+  currentProfileId: string | undefined,
+): boolean {
+  const stored = normalizeOptionalString(storedProfileId);
+  const current = normalizeOptionalString(currentProfileId);
+  if (!stored || !current || stored === current || !historyEquivalenceGroups) {
+    return false;
+  }
+  for (const group of historyEquivalenceGroups) {
+    let containsStored = false;
+    let containsCurrent = false;
+    for (const member of group) {
+      const normalized = normalizeOptionalString(member);
+      if (normalized === undefined) {
+        continue;
+      }
+      if (normalized === stored) {
+        containsStored = true;
+      }
+      if (normalized === current) {
+        containsCurrent = true;
+      }
+    }
+    if (containsStored && containsCurrent) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Decide whether a stored CLI session can be reused for the current auth/prompt/cwd/MCP state. */
 export function resolveCliSessionReuse(params: {
   binding?: CliSessionBinding;
   authProfileId?: string;
   authEpoch?: string;
-  authEpochVersion: number;
+  /** Epoch-encoding version; defaults to the current runtime version when omitted. */
+  authEpochVersion?: number;
   extraSystemPromptHash?: string;
   messageToolPolicyHash?: string;
   promptToolNamesHash?: string;
   cwdHash?: string;
   mcpConfigHash?: string;
   mcpResumeHash?: string;
+  /**
+   * Operator-declared groups of auth profile ids that name the SAME person's own
+   * equivalent identities (`auth.historyEquivalenceGroups`, passed straight from
+   * config). A failover BETWEEN two profiles that share a declared group is a
+   * routing change of the operator's own identities, not a cross-account identity
+   * change, so it must not discard the reused session's transcript. Undefined or a
+   * profile that shares no group preserves today's strict per-profile
+   * invalidation byte-for-byte.
+   */
+  historyEquivalenceGroups?: readonly (readonly string[])[];
 }): CliSessionReuseResult {
   const binding = params.binding;
   const sessionId = normalizeOptionalString(binding?.sessionId);
@@ -241,6 +301,7 @@ export function resolveCliSessionReuse(params: {
   }
   const currentAuthProfileId = normalizeOptionalString(params.authProfileId);
   const currentAuthEpoch = normalizeOptionalString(params.authEpoch);
+  const authEpochVersion = params.authEpochVersion ?? DEFAULT_CLI_AUTH_EPOCH_VERSION;
   const currentExtraSystemPromptHash = normalizeOptionalString(params.extraSystemPromptHash);
   const currentMessageToolPolicyHash = normalizeOptionalString(params.messageToolPolicyHash);
   const currentPromptToolNamesHash = normalizeOptionalString(params.promptToolNamesHash);
@@ -250,18 +311,33 @@ export function resolveCliSessionReuse(params: {
   const storedAuthProfileId = normalizeOptionalString(binding?.authProfileId);
   const storedAuthEpoch = normalizeOptionalString(binding?.authEpoch);
   const hasMatchingVersionedAuthEpoch =
-    binding?.authEpochVersion === params.authEpochVersion &&
+    binding?.authEpochVersion === authEpochVersion &&
     storedAuthEpoch !== undefined &&
     currentAuthEpoch !== undefined &&
     storedAuthEpoch === currentAuthEpoch;
+  // A failover BETWEEN two operator-declared-equivalent profiles rebinds the
+  // live session's profile id and its per-leg auth epoch. That is a routing
+  // change of the operator's OWN identities, so it must not discard the reused
+  // transcript. Gate strictly on the stored and current ids being distinct
+  // profiles that co-occur in a SINGLE declared group (per-group membership, so
+  // overlapping groups resolve in both directions): a same-profile credential
+  // rotation (ids equal) still falls through to the epoch check below, and a
+  // swap whose endpoints never share a group keeps today's strict cross-account
+  // guard.
+  const isOperatorEquivalentProfileSwap = areOperatorEquivalentProfiles(
+    params.historyEquivalenceGroups,
+    storedAuthProfileId,
+    currentAuthProfileId,
+  );
   if (storedAuthProfileId !== currentAuthProfileId) {
-    if (!hasMatchingVersionedAuthEpoch) {
+    if (!hasMatchingVersionedAuthEpoch && !isOperatorEquivalentProfileSwap) {
       return { mode: "invalidate", invalidatedReason: "auth-profile" };
     }
   }
   if (
-    binding?.authEpochVersion === params.authEpochVersion &&
-    storedAuthEpoch !== currentAuthEpoch
+    binding?.authEpochVersion === authEpochVersion &&
+    storedAuthEpoch !== currentAuthEpoch &&
+    !isOperatorEquivalentProfileSwap
   ) {
     return { mode: "invalidate", invalidatedReason: "auth-epoch" };
   }

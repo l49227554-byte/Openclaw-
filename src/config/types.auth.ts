@@ -21,4 +21,13 @@ export type AuthConfig = {
   profiles?: Record<string, AuthProfileConfig>;
   /** Preferred profile order per provider id. */
   order?: Record<string, string[]>;
+  /**
+   * Operator-declared groups of auth profile ids that are the SAME person's own
+   * equivalent identities (e.g. their own Max/SC/SCM subscriptions). A
+   * credit/limit-driven failover BETWEEN two profiles in one group preserves the
+   * reused CLI session's transcript instead of discarding it as an identity
+   * change. Profiles not sharing a declared group keep strict per-account session
+   * invalidation. Never affects billing or routing.
+   */
+  historyEquivalenceGroups?: string[][];
 };

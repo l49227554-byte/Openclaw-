@@ -32,7 +32,7 @@ const runtimeConsumers = [
       "test/vitest/vitest.gateway.config.ts",
     ],
     mode: "runtime",
-    dir: "src/gateway",
+    dir: "",
   },
   {
     file: "src/plugins/loader.test.ts",
@@ -127,7 +127,7 @@ const runtimeConsumers = [
   {
     file: "test/plugins/codex-model-catalog.gateway.test.ts",
     configs: [
-      "test/vitest/vitest.gateway-methods.config.ts",
+      "test/vitest/vitest.gateway-database-workers.config.ts",
       "test/vitest/vitest.gateway.config.ts",
     ],
     mode: "runtime",
@@ -140,7 +140,7 @@ const runtimeConsumers = [
       "test/vitest/vitest.gateway.config.ts",
     ],
     mode: "runtime",
-    dir: "src/gateway",
+    dir: "",
   },
   {
     file: "src/gateway/server-methods/models-list.worker-recovery.integration.test.ts",
@@ -298,7 +298,7 @@ const runtimeConsumers = [
       "test/vitest/vitest.gateway.config.ts",
     ],
     mode: "runtime" as const,
-    dir: "src/gateway",
+    dir: "",
   })),
 ] as const;
 

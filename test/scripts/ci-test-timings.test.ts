@@ -29,6 +29,7 @@ import {
   type RuntimePlacementTiming,
 } from "../../scripts/lib/ci-test-timings-schema.mts";
 import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
+import { listVitestRuntimeConsumerFiles } from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { createCompactSplitTimingGeneration } from "../../scripts/lib/vitest-shard-metadata.mts";
 import { fullSuiteVitestShards } from "../vitest/vitest.test-shards.mjs";
 
@@ -305,10 +306,21 @@ describe("runtime placement observations", () => {
       const originalShards = fullSuiteVitestShards.slice();
       const runtimeConfig = "test/vitest/vitest.runtime-config.config.ts";
       const infrastructure = "test/vitest/vitest.infra.config.ts";
+      const gatewayServer = "test/vitest/vitest.gateway-server-isolated.config.ts";
+      const gatewayWorkers = "test/vitest/vitest.gateway-database-workers.config.ts";
+      const gatewayConfigs = [gatewayServer, gatewayWorkers];
+      const requiredGatewayConsumers = new Map([
+        ["src/gateway/server.chat-cli-auth.test.ts", gatewayServer],
+        ["src/gateway/server.cli-watchdog.test.ts", gatewayServer],
+        ["src/gateway/server.codex-failure-recovery.test.ts", gatewayServer],
+        ["src/gateway/server-methods/models-list.freshness.integration.test.ts", gatewayWorkers],
+        ["src/gateway/setup-inference.first-signin.integration.test.ts", gatewayWorkers],
+        ["test/plugins/codex-model-catalog.gateway.test.ts", gatewayWorkers],
+      ]);
       const configs = new Set([
         runtimeConfig,
         infrastructure,
-        ...(gatewayRecipient ? [] : ["test/vitest/vitest.gateway-methods.config.ts"]),
+        ...(gatewayRecipient ? [] : gatewayConfigs),
       ]);
       const compactSpy = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
       const spy = vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
@@ -343,6 +355,45 @@ describe("runtime placement observations", () => {
           .flatMap((job) => job.groups)
           .filter((group) => group.pretestBuildMode === "runtime");
         expect(runtimeGroups).toHaveLength(gatewayRecipient ? 3 : 4);
+        if (!gatewayRecipient) {
+          const gatewayRuntimeGroup = runtimeGroups.find((group) =>
+            group.configs.includes(gatewayWorkers),
+          );
+          expect(gatewayRuntimeGroup?.configs.toSorted()).toEqual(gatewayConfigs.toSorted());
+          const requiredFiles = new Set(requiredGatewayConsumers.keys());
+          const projected = before.flatMap(({ groups }) =>
+            groups.flatMap((group) =>
+              (group.includePatterns ?? [])
+                .filter((file) => requiredFiles.has(file))
+                .map((file) => ({
+                  file,
+                  configs: group.configs.toSorted(),
+                  pretestBuildMode: group.pretestBuildMode,
+                })),
+            ),
+          );
+          expect(projected.toSorted((a, b) => a.file.localeCompare(b.file))).toEqual(
+            [...requiredFiles]
+              .toSorted((a, b) => a.localeCompare(b))
+              .map((file) => ({
+                file,
+                configs: gatewayConfigs.toSorted(),
+                pretestBuildMode: "runtime",
+              })),
+          );
+          for (const config of gatewayConfigs) {
+            expect(
+              listVitestRuntimeConsumerFiles([config])
+                .filter((file) => requiredFiles.has(file))
+                .toSorted(),
+            ).toEqual(
+              [...requiredGatewayConsumers]
+                .filter(([, owner]) => owner === config)
+                .map(([file]) => file)
+                .toSorted(),
+            );
+          }
+        }
         const selected = ["src/config/state-startup-corpus.test.ts"];
         const preciseBefore = createSelectedNodeTestShardBundles(selected, {
           runnerBackend: "hybrid",

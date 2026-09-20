@@ -3,7 +3,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { hydrateOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
 import { SqliteWorkerBroker } from "./sqlite-worker-broker.js";
 import type {
-  PreparedSqliteWorkerOpen,
+  SqliteWorkerOpenCustody,
   SqliteWorkerStoreOptions,
 } from "./sqlite-worker-broker.types.js";
 import {
@@ -206,7 +206,7 @@ export function openSharedStateSqliteWorkerStore<Operations extends SqliteWorker
   options: Omit<SqliteWorkerStoreOptions, "input">,
   stateContext: SqliteWorkerStateContext,
   assertCurrent?: () => void,
-  lifecycle?: Pick<PreparedSqliteWorkerOpen, "maintenanceScope" | "retainCleanup">,
+  lifecycle?: SqliteWorkerOpenCustody,
 ): Promise<SqliteWorkerStore<Operations> | undefined> {
   if (!isMainThread) {
     return Promise.reject(

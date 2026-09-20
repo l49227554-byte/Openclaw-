@@ -22,6 +22,7 @@ import type {
 import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.js";
 import type { DeliveryQueueWorkerOperations } from "../infra/delivery-queue.worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
+import type { DeviceIdentity } from "../infra/device-identity-store.js";
 import type { PreparedPromotionClaim } from "../infra/promotions-feed.kernel.js";
 import type { ApnsRegistration } from "../infra/push-apns-store.types.js";
 import type { WebPushWorkerOperations } from "../infra/push-web-store.worker-contract.js";
@@ -62,6 +63,8 @@ import type {
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 
+export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; identityKey: string };
+
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   AuditWriterOperations &
@@ -80,6 +83,8 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TaskRegistryWorkerOperations & {
+    "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
+    "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
     "skillUploads.commit": {
       input: Parameters<typeof commitSkillUploadInDatabase>[0];
       output: ReturnType<typeof commitSkillUploadInDatabase>;
@@ -244,6 +249,7 @@ export type OpenClawStateWorkerBackend = SqliteWorkerPreparedBackend<
 
 /** Host-only admission options; never serialized with a worker command. */
 export type OpenClawStateWorkerOperationOptions = {
+  preparation?: OpenClawStateWorkerOpenPreparation;
   /** Acquire matching lifecycle custody for each dispatched command. */
   requireStateLifecycle?: boolean;
   existingOnly?: boolean;

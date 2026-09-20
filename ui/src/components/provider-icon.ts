@@ -132,6 +132,7 @@ const PROVIDER_ICON_ALIASES: Readonly<Record<string, string>> = {
 const PROVIDER_DISPLAY_LABELS: Readonly<Record<string, string>> = {
   "acp-copilot": "GitHub Copilot CLI",
   anthropic: "Anthropic",
+  "claude-cli": "Claude CLI",
   google: "Google",
   "github-copilot": "GitHub",
   "llama-cpp": "llama.cpp",

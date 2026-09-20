@@ -2254,8 +2254,8 @@ export const en: TranslationMap & {
       saving: "Saving…",
       loading: "Checking installed agents…",
       empty:
-        "No models are available from installed agents. Sign in through your agent, then open the picker again.",
-      signIn: "Sign in through the installed agent, then check again.",
+        "No models are available from installed agents. Check the installed app, then open the picker again.",
+      unconfirmed: "Availability not confirmed",
     },
     empty: {
       title: "Recommended installs",

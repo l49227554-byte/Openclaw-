@@ -247,6 +247,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/conversation-binding.sqlite.test.ts",
   "src/plugins/legacy-session-surfaces.state-migration.test.ts",
   "src/state/backup-run-records.test.ts",
+  "src/skills/workshop/curator.test.ts",
+  "test/skill-usage.codex.integration.test.ts",
   "src/tasks/task-registry.async-restore.test.ts",
   "src/tasks/task-registry-agent-events.test.ts",
   "src/tasks/task-registry-agent-events.lineage.test.ts",

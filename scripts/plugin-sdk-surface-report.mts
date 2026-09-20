@@ -388,7 +388,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +13: twelve decision contract types and one prepared plugin secret reader.
       // +6: shared delivery facts, source-reply detection, argument sanitization, and media comparison.
       // +1: workspace Memory file client.
-      4518,
+      // +2: prepare admitted input attachments and bind a workspace transfer adapter.
+      // +1: approved host workspace Skill resource reader.
+      4522,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -536,7 +538,9 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: prepared plugin capability secret reader.
       // +6: shared delivery facts, source-reply detection, argument sanitization, and media comparison.
       // +1: workspace Memory file client.
-      2662,
+      // +2: prepare admitted input attachments and bind a workspace transfer adapter.
+      // +1: approved host workspace Skill resource reader.
+      2666,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

@@ -1914,7 +1914,7 @@ src/agents/tools-effective-inventory-build.ts	2
 src/agents/tools-effective-inventory.ts	4
 src/agents/tools/agent-step.ts	2
 src/agents/tools/agents-wait-tool.ts	1
-src/agents/tools/ask-user-tool-normalization.ts	3
+src/agents/tools/ask-user-tool-normalization.ts	1
 src/agents/tools/ask-user-tool.ts	8
 src/agents/tools/automations-tool-name.ts	1
 src/agents/tools/chat-history-text.ts	3
@@ -3392,7 +3392,7 @@ src/state/config-machine-state.ts	1
 src/state/local-onboarding-state.ts	1
 src/state/openclaw-agent-board-schema.ts	1
 src/state/openclaw-agent-db-permissions.ts	1
-src/state/openclaw-agent-db-registry-listing.ts	3
+src/state/openclaw-agent-db-registry-listing.ts	2
 src/state/openclaw-agent-db-registry.ts	1
 src/state/openclaw-agent-db-schema.ts	2
 src/state/openclaw-agent-db-session-migrations.ts	4

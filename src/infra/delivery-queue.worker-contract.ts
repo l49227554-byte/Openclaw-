@@ -1,7 +1,13 @@
 import type { OpenClawStateWorkerErrorPayload } from "../state/openclaw-state-worker-error.js";
-import type { countFailedDeliveryQueueEntriesInDatabase } from "./delivery-queue-sqlite.kernel.js";
+import type {
+  countFailedDeliveryQueueEntriesInDatabase,
+  prepareDeliveryQueueTerminalEntry,
+} from "./delivery-queue-sqlite.kernel.js";
 import type { loadDeliveryQueueMediaRetentionSnapshotInDatabase } from "./outbound/delivery-queue-media-staging.kernel.js";
-import type { AckDeliveryOptions } from "./outbound/delivery-queue-settlement.types.js";
+import type {
+  AckDeliveryOptions,
+  FailPendingDeliveryResult,
+} from "./outbound/delivery-queue-settlement.types.js";
 
 export type DeliveryQueueWorkerOperations = {
   "deliveryQueue.ack": {
@@ -22,6 +28,17 @@ export type DeliveryQueueWorkerOperations = {
       | "destination-exists"
       | "staging-missing"
       | { status: "not-published"; error: OpenClawStateWorkerErrorPayload };
+  };
+  "deliveryQueue.failPending": {
+    input: {
+      id: string;
+      entryJson: string;
+      expectedPlatformSendAttemptId?: string | null;
+      retainSpoolArtifacts?: boolean;
+      stateDir: string;
+      prepared?: ReturnType<typeof prepareDeliveryQueueTerminalEntry>;
+    };
+    output: { result: FailPendingDeliveryResult; spoolPaths: string[] };
   };
   "deliveryQueue.countFailed": {
     input: undefined;

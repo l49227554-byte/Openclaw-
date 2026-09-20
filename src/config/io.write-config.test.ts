@@ -952,6 +952,30 @@ describe("config io write", () => {
     ]);
   });
 
+  itWithHome("prefix recovery restores a saved blank agent agentDir", async (home) => {
+    const configPath = configPathForHome(home);
+    const cleanConfig = {
+      gateway: { mode: "local", auth: { mode: "none" } },
+      agents: { entries: { alpha: { agentDir: " " } } },
+    } satisfies ConfigFileSnapshot["config"];
+    const cleanRaw = formatConfig(cleanConfig);
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, `Found and updated: False\n${cleanRaw}`, "utf-8");
+    const warn = vi.fn();
+    const io = createHomeConfigIO(home, {
+      env: { VITEST: "true" } as NodeJS.ProcessEnv,
+      logger: { warn, error: vi.fn() },
+    });
+
+    const initialSnapshot = await io.readConfigFileSnapshot();
+    expect(initialSnapshot.valid).toBe(false);
+
+    await expect(io.recoverConfigFromJsonRootSuffix(initialSnapshot)).resolves.toBe(true);
+    const recoveredSnapshot = await io.readConfigFileSnapshot();
+    expect(recoveredSnapshot.valid).toBe(true);
+    expect(recoveredSnapshot.config.gateway?.mode).toBe("local");
+  });
+
   for (const failure of ["write", "chmod", "rename"] as const) {
     itWithHome(`prefix recovery preserves the config after a failed ${failure}`, async (home) => {
       const configPath = configPathForHome(home);

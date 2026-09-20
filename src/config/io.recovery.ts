@@ -7,8 +7,9 @@ import {
   resolveConfigForRead,
   resolveConfigIncludesForRead,
 } from "./io.read-helpers.js";
+import { migrateBlankAgentDir } from "./legacy.blank-agent-dir.js";
 import { resolveIsConfigReadOnly } from "./paths.js";
-import type { ConfigFileSnapshot } from "./types.js";
+import type { ConfigFileSnapshot, OpenClawConfig } from "./types.js";
 import { validateConfigObjectWithPlugins } from "./validation.js";
 
 function findJsonRootSuffix(
@@ -90,7 +91,12 @@ export async function recoverConfigFromJsonRootSuffixWithContext(
     context.deps.env,
     context.deps.lowerPrecedenceEnv,
   );
-  const validated = validateConfigObjectWithPlugins(resolution.resolvedConfigRaw, {
+  // Prefix recovery handles a previously saved config that may carry a blank
+  // agentDir (accepted before the strict check). Migrate saved blanks so
+  // recovery persists the recoverable configuration; new authoring still fails
+  // strict validation elsewhere.
+  const migrated = migrateBlankAgentDir(resolution.resolvedConfigRaw as OpenClawConfig);
+  const validated = validateConfigObjectWithPlugins(migrated.config as never, {
     ...context.pathResolution,
     sourceRaw: suffixRecovery.parsed,
   });

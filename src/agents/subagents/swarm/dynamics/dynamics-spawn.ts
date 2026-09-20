@@ -49,15 +49,24 @@ export function prepareDynamicsSpawn(params: {
     throw new Error("dynamics accepts only profile and handoff");
   }
   const profile = resolveDynamicsProfile(readText(options.profile, "dynamics.profile", 64));
-  const raw = options.handoff === undefined ? {} : readRecord(options.handoff, "dynamics.handoff");
-  if (Object.keys(raw).some((key) => !["candidateDigest", "artifactRefs", "evidenceRefs", "summary"].includes(key))) {
+  const raw =
+    options.handoff === undefined ? {} : readRecord(options.handoff, "dynamics.handoff");
+  if (
+    Object.keys(raw).some(
+      (key) => !["candidateDigest", "artifactRefs", "evidenceRefs", "summary"].includes(key),
+    )
+  ) {
     throw new Error("unsupported dynamics handoff field");
   }
   const payload: HandoffPayload = {
     artifactRefs: readRefs(raw.artifactRefs, "artifactRefs"),
     evidenceRefs: readRefs(raw.evidenceRefs, "evidenceRefs"),
-    ...(raw.candidateDigest !== undefined ? { candidateDigest: readText(raw.candidateDigest, "candidateDigest", 256) } : {}),
-    ...(raw.summary !== undefined ? { summary: readText(raw.summary, "summary", 4096) } : {}),
+    ...(raw.candidateDigest !== undefined
+      ? { candidateDigest: readText(raw.candidateDigest, "candidateDigest", 256) }
+      : {}),
+    ...(raw.summary !== undefined
+      ? { summary: readText(raw.summary, "summary", 4096) }
+      : {}),
   };
   const handoff = buildHandoffManifest({
     sourceReplicaId: readText(params.sourceReplicaId, "source replica", 1024),
@@ -65,12 +74,16 @@ export function prepareDynamicsSpawn(params: {
     boundary: profile.contextBoundary,
     payload,
   });
-  if (profile.id === "independent-verifier" && (!handoff.candidateDigest || handoff.artifactRefs.length === 0)) {
+  if (
+    profile.id === "independent-verifier" &&
+    (!handoff.candidateDigest || handoff.artifactRefs.length === 0)
+  ) {
     throw new Error("independent-verifier requires a candidate digest and artifact references");
   }
-  const instructions = profile.mutationBudget === 0
-    ? "Check the referenced candidate without changing it; report failures and missing evidence."
-    : "Work within the requested role and report artifacts, failures, and uncertainty.";
+  const instructions =
+    profile.mutationBudget === 0
+      ? "Check the referenced candidate without changing it; report failures and missing evidence."
+      : "Work within the requested role and report artifacts, failures, and uncertainty.";
   const task = [
     "OpenClaw cognitive profile (experimental, search-only):",
     JSON.stringify(profile),

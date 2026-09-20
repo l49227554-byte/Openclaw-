@@ -105,9 +105,9 @@ final class QuickChatPresentationTests: XCTestCase {
             in: panel, description: "the live reply before collapsing")
         { elements in
             elements
-                .first {
-                    ($0.accessibilityValue?() as? String)?
-                        .contains("I am checking the remaining conversations.") == true
+                .first { element in
+                    let value: Any? = element.accessibilityValue?()
+                    return (value as? String)?.contains("I am checking the remaining conversations.") == true
                 }
         }
         let releaseHistory = AsyncTestGate()

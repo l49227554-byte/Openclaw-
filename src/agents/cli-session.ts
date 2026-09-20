@@ -18,6 +18,13 @@ export {
 
 const CLAUDE_CLI_BACKEND_ID = "claude-cli";
 
+/**
+ * Default epoch-encoding version assumed when a caller omits `authEpochVersion`.
+ * Mirrors `CLI_AUTH_EPOCH_VERSION` (kept in sync by an assertion in the epoch
+ * tests) so the production reuse path need not thread the constant explicitly.
+ */
+const DEFAULT_CLI_AUTH_EPOCH_VERSION = 7;
+
 /** Whether a failover proves the provider-side conversation can no longer be resumed. */
 export function isCliSessionInvalidatingFailoverReason(reason: FailoverReason): boolean {
   // Auth identity changes are handled by the reuse fingerprint's auth epoch.
@@ -259,7 +266,8 @@ export function resolveCliSessionReuse(params: {
   binding?: CliSessionBinding;
   authProfileId?: string;
   authEpoch?: string;
-  authEpochVersion: number;
+  /** Epoch-encoding version; defaults to the current runtime version when omitted. */
+  authEpochVersion?: number;
   extraSystemPromptHash?: string;
   messageToolPolicyHash?: string;
   promptToolNamesHash?: string;
@@ -267,15 +275,15 @@ export function resolveCliSessionReuse(params: {
   mcpConfigHash?: string;
   mcpResumeHash?: string;
   /**
-   * Operator-declared equivalent auth profile ids: the single equivalence group
-   * that contains the current turn's active profile (resolved by the caller from
-   * `auth.historyEquivalenceGroups`). A failover BETWEEN two profiles that both
-   * belong to this set is a routing change of the operator's own identities, not
-   * a cross-account identity change, so it must not discard the reused session's
-   * transcript. Empty/undefined preserves today's strict per-profile invalidation
-   * byte-for-byte.
+   * Operator-declared groups of auth profile ids that name the SAME person's own
+   * equivalent identities (`auth.historyEquivalenceGroups`, passed straight from
+   * config). A failover BETWEEN two profiles that share a declared group is a
+   * routing change of the operator's own identities, not a cross-account identity
+   * change, so it must not discard the reused session's transcript. Undefined or a
+   * profile that shares no group preserves today's strict per-profile
+   * invalidation byte-for-byte.
    */
-  operatorEquivalentProfileIds?: readonly string[];
+  historyEquivalenceGroups?: readonly (readonly string[])[];
 }): CliSessionReuseResult {
   const binding = params.binding;
   const sessionId = normalizeOptionalString(binding?.sessionId);
@@ -287,6 +295,7 @@ export function resolveCliSessionReuse(params: {
   }
   const currentAuthProfileId = normalizeOptionalString(params.authProfileId);
   const currentAuthEpoch = normalizeOptionalString(params.authEpoch);
+  const authEpochVersion = params.authEpochVersion ?? DEFAULT_CLI_AUTH_EPOCH_VERSION;
   const currentExtraSystemPromptHash = normalizeOptionalString(params.extraSystemPromptHash);
   const currentMessageToolPolicyHash = normalizeOptionalString(params.messageToolPolicyHash);
   const currentPromptToolNamesHash = normalizeOptionalString(params.promptToolNamesHash);
@@ -296,7 +305,7 @@ export function resolveCliSessionReuse(params: {
   const storedAuthProfileId = normalizeOptionalString(binding?.authProfileId);
   const storedAuthEpoch = normalizeOptionalString(binding?.authEpoch);
   const hasMatchingVersionedAuthEpoch =
-    binding?.authEpochVersion === params.authEpochVersion &&
+    binding?.authEpochVersion === authEpochVersion &&
     storedAuthEpoch !== undefined &&
     currentAuthEpoch !== undefined &&
     storedAuthEpoch === currentAuthEpoch;
@@ -307,7 +316,10 @@ export function resolveCliSessionReuse(params: {
   // both belong to the declared group: a same-profile credential rotation (ids
   // equal) still falls through to the epoch check below, and a swap where either
   // endpoint is outside the group keeps today's strict cross-account guard.
-  const equivalentProfiles = params.operatorEquivalentProfileIds;
+  const equivalentProfiles = resolveOperatorEquivalentProfileIds(
+    params.historyEquivalenceGroups,
+    currentAuthProfileId,
+  );
   const isOperatorEquivalentProfileSwap =
     equivalentProfiles !== undefined &&
     storedAuthProfileId !== undefined &&
@@ -321,7 +333,7 @@ export function resolveCliSessionReuse(params: {
     }
   }
   if (
-    binding?.authEpochVersion === params.authEpochVersion &&
+    binding?.authEpochVersion === authEpochVersion &&
     storedAuthEpoch !== currentAuthEpoch &&
     !isOperatorEquivalentProfileSwap
   ) {

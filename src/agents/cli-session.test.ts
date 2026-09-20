@@ -8,6 +8,7 @@ import {
   normalizeCliSessionReseedReceipt,
   rebindCliSessionReseedReceiptsForReset,
 } from "../config/sessions/cli-session-binding.js";
+import { CLI_AUTH_EPOCH_VERSION } from "./cli-auth-epoch.js";
 import {
   clearAllCliSessions,
   clearCliSession,
@@ -681,6 +682,41 @@ describe("cli-session helpers", () => {
     );
   });
 
+  it("defaults an omitted authEpochVersion to the current runtime epoch version", () => {
+    // The production reuse path omits authEpochVersion; the helper must assume
+    // the current CLI_AUTH_EPOCH_VERSION so a binding stored at that version still
+    // engages the epoch gate (here: profile rotated but the versioned epoch held).
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:work",
+      authEpoch: "auth-epoch-a",
+      authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    expect(
+      resolveCliSessionReuse({
+        binding,
+        authProfileId: "anthropic:work-alias",
+        authEpoch: "auth-epoch-a",
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    // A binding stored at a DIFFERENT version does not match the default gate,
+    // so the rotated profile invalidates (proves the default is not a wildcard).
+    expect(
+      resolveCliSessionReuse({
+        binding: { ...binding, authEpochVersion: CLI_AUTH_EPOCH_VERSION - 1 },
+        authProfileId: "anthropic:work-alias",
+        authEpoch: "auth-epoch-a",
+        extraSystemPromptHash: "prompt-a",
+        mcpConfigHash: "mcp-a",
+      }),
+    ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+  });
+
   describe("operator-equivalent failover session preservation", () => {
     // Models the confirmed bug: a credit/limit-driven failover rebinds BOTH the
     // profile id (auth-profile branch) AND the per-leg auth epoch (auth-epoch
@@ -708,7 +744,7 @@ describe("cli-session helpers", () => {
       expect(
         resolveCliSessionReuse({
           ...failoverTurn,
-          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
         }),
       ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
     });
@@ -719,7 +755,7 @@ describe("cli-session helpers", () => {
         resolveCliSessionReuse({
           ...failoverTurn,
           authProfileId: "anthropic:someone-else",
-          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
         }),
       ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
     });
@@ -729,7 +765,7 @@ describe("cli-session helpers", () => {
       expect(
         resolveCliSessionReuse({
           ...failoverTurn,
-          operatorEquivalentProfileIds: ["anthropic:scm", "anthropic:personal"],
+          historyEquivalenceGroups: [["anthropic:scm", "anthropic:personal"]],
         }),
       ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
     });
@@ -740,20 +776,21 @@ describe("cli-session helpers", () => {
         mode: "invalidate",
         invalidatedReason: "auth-profile",
       });
-      expect(resolveCliSessionReuse({ ...failoverTurn, operatorEquivalentProfileIds: [] })).toEqual(
-        { mode: "invalidate", invalidatedReason: "auth-profile" },
-      );
+      expect(resolveCliSessionReuse({ ...failoverTurn, historyEquivalenceGroups: [] })).toEqual({
+        mode: "invalidate",
+        invalidatedReason: "auth-profile",
+      });
     });
 
     it("still invalidates non-identity drift for a grouped failover", () => {
-      const group = ["anthropic:sc", "anthropic:scm"];
+      const group = [["anthropic:sc", "anthropic:scm"]];
       // cwd drift is a real topology change, not a routing change.
       expect(
         resolveCliSessionReuse({
           ...failoverTurn,
           cwdHash: hashCliSessionText("/work/b"),
           binding: { ...failoverBinding, cwdHash: hashCliSessionText("/work/a") },
-          operatorEquivalentProfileIds: group,
+          historyEquivalenceGroups: group,
         }),
       ).toEqual({ mode: "invalidate", invalidatedReason: "cwd" });
       // mcp topology drift.
@@ -761,7 +798,7 @@ describe("cli-session helpers", () => {
         resolveCliSessionReuse({
           ...failoverTurn,
           mcpConfigHash: "mcp-b",
-          operatorEquivalentProfileIds: group,
+          historyEquivalenceGroups: group,
         }),
       ).toEqual({ mode: "invalidate", invalidatedReason: "mcp" });
       // message-tool policy drift.
@@ -770,7 +807,7 @@ describe("cli-session helpers", () => {
           ...failoverTurn,
           messageToolPolicyHash: "policy-b",
           binding: { ...failoverBinding, messageToolPolicyHash: "policy-a" },
-          operatorEquivalentProfileIds: group,
+          historyEquivalenceGroups: group,
         }),
       ).toEqual({ mode: "invalidate", invalidatedReason: "message-policy" });
     });
@@ -780,7 +817,7 @@ describe("cli-session helpers", () => {
         resolveCliSessionReuse({
           ...failoverTurn,
           extraSystemPromptHash: "prompt-b",
-          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
         }),
       ).toEqual({
         mode: "reuse-with-drift",
@@ -800,7 +837,7 @@ describe("cli-session helpers", () => {
           authEpochVersion: 2,
           extraSystemPromptHash: "prompt-a",
           mcpConfigHash: "mcp-a",
-          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+          historyEquivalenceGroups: [["anthropic:sc", "anthropic:scm"]],
         }),
       ).toEqual({ mode: "invalidate", invalidatedReason: "auth-epoch" });
     });

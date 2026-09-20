@@ -2,6 +2,7 @@
 
 ### Fixes
 
+- Sessions: preserve a CLI conversation's transcript across a credit/limit-driven failover between auth profiles the operator declares as their own equivalent identities. Add opt-in `auth.historyEquivalenceGroups` (arrays of auth profile ids); a failover between two profiles in the same group is treated as a routing change rather than an account switch, so the reused session is not discarded. Profiles that share no declared group keep strict per-account invalidation, and the default (no groups configured) is unchanged. (#PRNUMBER)
 - Codex: restore background memory narratives and isolated text completions on agent-scoped local runtimes with administrator-managed hooks, preserving managed hooks and existing native-account/proxy routing while keeping ordinary hooks and model tools isolated. (#151658)
 
 ### Changes

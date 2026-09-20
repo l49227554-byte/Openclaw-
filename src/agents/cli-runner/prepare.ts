@@ -95,7 +95,6 @@ import {
   buildCliSessionDriftNote,
   hashCliSessionText,
   resolveCliSessionReuse,
-  resolveOperatorEquivalentProfileIds,
 } from "../cli-session.js";
 import {
   claudeCliSessionTranscriptHasContent,
@@ -1795,15 +1794,6 @@ async function prepareCliRunContextWithinReadFence(
       authProfileId: effectiveAuthProfileId,
       skipLocalCredential: skipLocalCredentialEpoch,
     });
-    // A credit/limit-driven failover rebinds the live session to another leg,
-    // changing its profile id and per-leg auth epoch. When the operator has
-    // declared the from/to profiles as their own equivalent identities, that
-    // routing change must preserve the reused transcript instead of discarding
-    // it as a cross-account switch. Ungrouped profiles keep strict invalidation.
-    const operatorEquivalentProfileIds = resolveOperatorEquivalentProfileIds(
-      params.config?.auth?.historyEquivalenceGroups,
-      effectiveAuthProfileId,
-    );
     const authBindingFingerprint = params.onSuccessfulAuthBinding
       ? resolveCliAuthBindingFingerprint({
           provider: params.provider,
@@ -1912,14 +1902,16 @@ async function prepareCliRunContextWithinReadFence(
               binding: params.cliSessionBinding,
               authProfileId: effectiveAuthProfileId,
               authEpoch,
-              authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+              // authEpochVersion defaults to the current runtime version in the helper.
               extraSystemPromptHash,
               messageToolPolicyHash,
               promptToolNamesHash,
               cwdHash,
               mcpConfigHash: preparedBackendFinal.mcpConfigHash,
               mcpResumeHash: preparedBackendFinal.mcpResumeHash,
-              ...(operatorEquivalentProfileIds ? { operatorEquivalentProfileIds } : {}),
+              // Operator-declared equivalent identities keep the transcript across
+              // a credit/limit failover between two of the operator's own profiles.
+              historyEquivalenceGroups: params.config?.auth?.historyEquivalenceGroups,
             })
           : params.cliSessionId
             ? { mode: "reuse", sessionId: params.cliSessionId }

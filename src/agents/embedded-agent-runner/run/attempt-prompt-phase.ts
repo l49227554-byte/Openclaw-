@@ -164,7 +164,8 @@ export async function runEmbeddedAttemptPromptPhase(
       systemPromptText,
       setActiveSessionSystemPrompt,
       applyPromptBuildToolsAllow: (toolsAllow) => {
-        return promptToolPolicy.apply(toolsAllow).activeToolNames;
+        // Hook authority follows reachable capabilities, not just provider-visible controls.
+        return promptToolPolicy.apply(toolsAllow).callableToolNames;
       },
       prepareSystemPrompt: async (currentSystemPrompt) => {
         const refresh = await prepared.systemPrompt.prepareToolPrompt?.(

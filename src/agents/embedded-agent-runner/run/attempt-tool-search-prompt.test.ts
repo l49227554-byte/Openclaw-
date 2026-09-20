@@ -138,7 +138,9 @@ describe("embedded Tool Search prompt parity", () => {
           typeof import("./attempt-prompt-build.js").prepareEmbeddedAttemptPromptAssembly
         >[0];
         mocks.preparePromptAssembly.mockImplementation(async (input: AssemblyInput) => {
-          input.applyPromptBuildToolsAllow(toolsAllow);
+          const callableToolNames = input.applyPromptBuildToolsAllow(toolsAllow);
+          expect(callableToolNames.includes("fixture_allowed")).toBe(toolsAllow?.length !== 0);
+          expect(callableToolNames.includes("fixture_denied")).toBe(toolsAllow === undefined);
           if (input.prepareSystemPrompt) {
             input.setActiveSessionSystemPrompt(
               await input.prepareSystemPrompt(sessionRuntime.state.systemPromptText),

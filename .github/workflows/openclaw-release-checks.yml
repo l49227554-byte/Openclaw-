@@ -491,6 +491,9 @@ jobs:
             exit 1
           fi
           upgrade_survivor_baseline_version="${BASH_REMATCH[1]}"
+          if [[ "$upgrade_survivor_baseline_version" == "latest" ]]; then
+            upgrade_survivor_baseline_version=""
+          fi
           candidate_artifact_json=""
           release_package_spec=""
           package_acceptance_package_spec=""

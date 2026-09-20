@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { buildFullReleaseCandidateBinding } from "../../scripts/full-release-candidate-contract.mjs";
 import { FULL_RELEASE_WAIT_TIMEOUT_MINUTES } from "../../scripts/full-release-validation-at-sha.mts";
+import { resolveFrozenExtendedStableUpgradeBaseline } from "../../scripts/lib/release-upgrade-baseline.mts";
 import { createReleaseWorkflowMatrixPlan } from "../../scripts/plan-release-workflow-matrix.mjs";
 import {
   fullReleaseCandidateArtifact,
@@ -5758,21 +5759,38 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     expect(output).toContain("package_acceptance_scheduled=true\n");
   });
 
-  it("normalizes the selected frozen baseline for every candidate upgrade consumer", () => {
-    const { outputPath, result } = runReleaseChecksInputValidation(
-      "stable",
-      "false",
-      "all",
-      "false",
-      "",
-      { upgradeSurvivorBaseline: "openclaw@2026.8.2" },
-    );
+  it.each([
+    ["openclaw@2026.8.2", "2026.8.2"],
+    ["openclaw@latest", ""],
+  ])(
+    "routes frozen baseline %s through the release-month resolver",
+    (upgradeSurvivorBaseline, expectedPreviousVersion) => {
+      const { outputPath, result } = runReleaseChecksInputValidation(
+        "stable",
+        "false",
+        "all",
+        "false",
+        "",
+        { upgradeSurvivorBaseline },
+      );
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(readFileSync(outputPath, "utf8")).toContain(
-      "upgrade_survivor_baseline_version=2026.8.2\n",
-    );
-  });
+      expect(result.status, result.stderr).toBe(0);
+      const routedPreviousVersion = /^upgrade_survivor_baseline_version=(.*)$/mu.exec(
+        readFileSync(outputPath, "utf8"),
+      )?.[1];
+      expect(routedPreviousVersion).toBe(expectedPreviousVersion);
+      expect(
+        resolveFrozenExtendedStableUpgradeBaseline(
+          "2026.8.33",
+          ["2026.7.34", "2026.8.1", "2026.8.2", "2026.9.1"],
+          {
+            ...(routedPreviousVersion ? { previousVersion: routedPreviousVersion } : {}),
+            targetContextRef: "extended-stable/2026.8.33",
+          },
+        ),
+      ).toBe("openclaw@2026.8.2");
+    },
+  );
 
   it.each([
     ["beta", "all", "false", "false", "false"],

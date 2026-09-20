@@ -5,6 +5,7 @@ import { runWithCliHistoryWriter } from "../../config/sessions/cli-history-bound
 import { setActiveNodeContext } from "../../infra/active-node-context.js";
 import * as globalHooks from "../../plugins/hook-runner-global.js";
 import { saveAuthProfileStore } from "../auth-profiles/store-runtime.js";
+import { CLI_AUTH_EPOCH_VERSION, resolveCliAuthEpoch } from "../cli-auth-epoch.js";
 import { testing as cliBackendsTesting } from "../cli-backends.test-support.js";
 import {
   buildDefaultTestCliBackend,
@@ -340,4 +341,159 @@ describe("CLI durable session context", () => {
       }
     },
   );
+});
+
+// Drives the reuse decision through the REAL production runner
+// (prepareCliRunContext), not the resolveCliSessionReuse helper in isolation.
+// The fixture computes each profile's real auth epoch with the same
+// resolveCliAuthEpoch call the runner uses, builds a stored cliSessionBinding
+// for the stored leg, then prepares a turn on the current leg and asserts on the
+// runner-computed `context.reusableCliSession`. This proves the operator
+// history-equivalence bypass (and the overlapping-group fix) at the level the
+// native-CLI-resume path actually decides session reuse.
+describe("CLI operator-equivalent failover through the real prepare runner", () => {
+  let fixture: ReturnType<typeof createCliRunnerPrepareFixture>;
+  const cleanups: Array<() => Promise<void> | void> = [];
+
+  const PROFILE_A = "history-equiv:a";
+  const PROFILE_B = "history-equiv:b";
+  const PROFILE_C = "history-equiv:c";
+
+  // Distinct token material per profile => distinct real auth epochs, exactly
+  // the credit/limit-failover shape (both auth-profile and auth-epoch branches
+  // fire without the bypass).
+  function persistThreeAccountStore(agentDir: string): void {
+    saveAuthProfileStore(
+      {
+        version: 1,
+        profiles: {
+          [PROFILE_A]: { type: "token", provider: "test-cli", token: "token-a" },
+          [PROFILE_B]: { type: "token", provider: "test-cli", token: "token-b" },
+          [PROFILE_C]: { type: "token", provider: "test-cli", token: "token-c" },
+        },
+      },
+      agentDir,
+    );
+  }
+
+  async function realEpochFor(agentDir: string, authProfileId: string): Promise<string> {
+    const epoch = await resolveCliAuthEpoch({
+      provider: "test-cli",
+      agentDir,
+      authProfileId,
+    });
+    expect(typeof epoch, `epoch for ${authProfileId}`).toBe("string");
+    return epoch as string;
+  }
+
+  /**
+   * Prepare a turn on `currentProfileId` while the stored native session was
+   * bound to `storedProfileId` (with that leg's real epoch), returning the
+   * runner's own reuse decision.
+   */
+  async function prepareFailover(params: {
+    storedProfileId: string;
+    currentProfileId: string;
+    historyEquivalenceGroups?: string[][];
+  }) {
+    const agentDir = path.join(fixture.session.dir, "agents", "main", "agent");
+    persistThreeAccountStore(agentDir);
+    const storedEpoch = await realEpochFor(agentDir, params.storedProfileId);
+    const prepared = await fixture.prepare({
+      authProfileId: params.currentProfileId,
+      cliSessionBinding: {
+        sessionId: "existing-native-session",
+        authProfileId: params.storedProfileId,
+        authEpoch: storedEpoch,
+        authEpochVersion: CLI_AUTH_EPOCH_VERSION,
+      },
+      ...(params.historyEquivalenceGroups
+        ? { config: { auth: { historyEquivalenceGroups: params.historyEquivalenceGroups } } }
+        : {}),
+    });
+    cleanups.push(() => prepared.preparedBackend.cleanup?.());
+    return prepared;
+  }
+
+  beforeEach(() => {
+    setCliRunnerPrepareTestDeps({
+      isWorkspaceBootstrapPending: async () => false,
+      resolveBootstrapContextForRun: async () => ({ bootstrapFiles: [], contextFiles: [] }),
+      resolveOpenClawReferencePaths: async () => ({ docsPath: null, sourcePath: null }),
+      prepareClaudeCliSkillsPlugin: async () => ({ args: [], cleanup: async () => {} }),
+      loadManifestModelCatalog: () => [],
+    });
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [buildDefaultTestCliBackend()],
+    });
+    fixture = createCliRunnerPrepareFixture(prepareCliRunContext);
+  });
+
+  afterEach(async () => {
+    try {
+      for (const cleanup of cleanups.splice(0).toReversed()) {
+        await cleanup();
+      }
+    } finally {
+      vi.restoreAllMocks();
+      resetCliRunnerPrepareTestDeps();
+      cliBackendsTesting.resetDepsForTest();
+      fixture.cleanup();
+    }
+  });
+
+  it("(a) preserves the reused session for a grouped-equivalent failover", async () => {
+    const context = await prepareFailover({
+      storedProfileId: PROFILE_A,
+      currentProfileId: PROFILE_B,
+      historyEquivalenceGroups: [[PROFILE_A, PROFILE_B]],
+    });
+    expect(context.reusableCliSession).toEqual({
+      mode: "reuse",
+      sessionId: "existing-native-session",
+    });
+  });
+
+  it("(b) still refuses the session for a non-grouped account transition", async () => {
+    const context = await prepareFailover({
+      storedProfileId: PROFILE_A,
+      currentProfileId: PROFILE_B,
+      // No groups configured: today's strict per-account invalidation.
+    });
+    expect(context.reusableCliSession).toEqual({
+      mode: "invalidate",
+      invalidatedReason: "auth-profile",
+    });
+  });
+
+  it("(c) preserves via the SECOND of two overlapping groups (stored=c → current=b)", async () => {
+    const context = await prepareFailover({
+      storedProfileId: PROFILE_C,
+      currentProfileId: PROFILE_B,
+      historyEquivalenceGroups: [
+        [PROFILE_A, PROFILE_B],
+        [PROFILE_B, PROFILE_C],
+      ],
+    });
+    expect(context.reusableCliSession).toEqual({
+      mode: "reuse",
+      sessionId: "existing-native-session",
+    });
+  });
+
+  it("(c') refuses when overlapping-group endpoints never co-occur (stored=a → current=c)", async () => {
+    const context = await prepareFailover({
+      storedProfileId: PROFILE_A,
+      currentProfileId: PROFILE_C,
+      historyEquivalenceGroups: [
+        [PROFILE_A, PROFILE_B],
+        [PROFILE_B, PROFILE_C],
+      ],
+    });
+    expect(context.reusableCliSession).toEqual({
+      mode: "invalidate",
+      invalidatedReason: "auth-profile",
+    });
+  });
 });

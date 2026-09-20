@@ -226,39 +226,45 @@ export function stripCliSessionDriftNote(text: string): string {
 }
 
 /**
- * Resolve the operator-declared equivalence group that contains `activeProfileId`.
- * Returns the distinct profile ids of the FIRST group the active profile belongs
- * to (deduped), or `undefined` when no group is configured or the active profile
- * is ungrouped — which keeps strict per-profile session invalidation. Only groups
- * with at least two distinct members can preserve a session across a failover, so
- * degenerate single-member groups collapse to `undefined`.
+ * Report whether the operator declared `storedProfileId` and `currentProfileId`
+ * as their OWN equivalent identities — i.e. whether some SINGLE group in
+ * `historyEquivalenceGroups` contains BOTH (normalized) ids, and the ids are
+ * distinct. Membership is decided per group, so overlapping groups such as
+ * `[["a","b"],["b","c"]]` correctly recognize the `b`↔`c` swap via the second
+ * group in either direction; a swap whose endpoints never co-occur in one group,
+ * or a same-profile pair (ids equal), returns `false` and keeps today's strict
+ * per-profile invalidation.
  */
-function resolveOperatorEquivalentProfileIds(
+function areOperatorEquivalentProfiles(
   historyEquivalenceGroups: readonly (readonly string[])[] | undefined,
-  activeProfileId: string | undefined,
-): readonly string[] | undefined {
-  const active = normalizeOptionalString(activeProfileId);
-  if (!active || !historyEquivalenceGroups) {
-    return undefined;
+  storedProfileId: string | undefined,
+  currentProfileId: string | undefined,
+): boolean {
+  const stored = normalizeOptionalString(storedProfileId);
+  const current = normalizeOptionalString(currentProfileId);
+  if (!stored || !current || stored === current || !historyEquivalenceGroups) {
+    return false;
   }
   for (const group of historyEquivalenceGroups) {
-    const members = new Set<string>();
-    let containsActive = false;
+    let containsStored = false;
+    let containsCurrent = false;
     for (const member of group) {
       const normalized = normalizeOptionalString(member);
       if (normalized === undefined) {
         continue;
       }
-      members.add(normalized);
-      if (normalized === active) {
-        containsActive = true;
+      if (normalized === stored) {
+        containsStored = true;
+      }
+      if (normalized === current) {
+        containsCurrent = true;
       }
     }
-    if (containsActive && members.size >= 2) {
-      return [...members];
+    if (containsStored && containsCurrent) {
+      return true;
     }
   }
-  return undefined;
+  return false;
 }
 
 /** Decide whether a stored CLI session can be reused for the current auth/prompt/cwd/MCP state. */
@@ -312,21 +318,17 @@ export function resolveCliSessionReuse(params: {
   // A failover BETWEEN two operator-declared-equivalent profiles rebinds the
   // live session's profile id and its per-leg auth epoch. That is a routing
   // change of the operator's OWN identities, so it must not discard the reused
-  // transcript. Gate strictly on BOTH endpoints being distinct profiles that
-  // both belong to the declared group: a same-profile credential rotation (ids
-  // equal) still falls through to the epoch check below, and a swap where either
-  // endpoint is outside the group keeps today's strict cross-account guard.
-  const equivalentProfiles = resolveOperatorEquivalentProfileIds(
+  // transcript. Gate strictly on the stored and current ids being distinct
+  // profiles that co-occur in a SINGLE declared group (per-group membership, so
+  // overlapping groups resolve in both directions): a same-profile credential
+  // rotation (ids equal) still falls through to the epoch check below, and a
+  // swap whose endpoints never share a group keeps today's strict cross-account
+  // guard.
+  const isOperatorEquivalentProfileSwap = areOperatorEquivalentProfiles(
     params.historyEquivalenceGroups,
+    storedAuthProfileId,
     currentAuthProfileId,
   );
-  const isOperatorEquivalentProfileSwap =
-    equivalentProfiles !== undefined &&
-    storedAuthProfileId !== undefined &&
-    currentAuthProfileId !== undefined &&
-    storedAuthProfileId !== currentAuthProfileId &&
-    equivalentProfiles.includes(storedAuthProfileId) &&
-    equivalentProfiles.includes(currentAuthProfileId);
   if (storedAuthProfileId !== currentAuthProfileId) {
     if (!hasMatchingVersionedAuthEpoch && !isOperatorEquivalentProfileSwap) {
       return { mode: "invalidate", invalidatedReason: "auth-profile" };

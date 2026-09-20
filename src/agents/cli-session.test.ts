@@ -894,5 +894,57 @@ describe("cli-session helpers", () => {
         invalidatedReason: "auth-profile",
       });
     });
+
+    // Overlapping-group coverage (clawsweeper P2). With groups
+    // [["a","b"],["b","c"]] a swap between b and c is equivalent via the SECOND
+    // group. The pre-fix code resolved a single set from the ACTIVE profile only
+    // (the first group containing it), so a stored=c → current=b swap wrongly
+    // invalidated because stored `c` was absent from the resolved {a,b} set.
+    const overlappingGroups = [
+      ["anthropic:a", "anthropic:b"],
+      ["anthropic:b", "anthropic:c"],
+    ];
+    const bcBinding = {
+      sessionId: "cli-session-1",
+      authEpochVersion: 2,
+    };
+
+    it("preserves a stored=c → current=b swap sharing the second overlapping group", () => {
+      expect(
+        resolveCliSessionReuse({
+          binding: { ...bcBinding, authProfileId: "anthropic:c", authEpoch: "epoch-c" },
+          authProfileId: "anthropic:b",
+          authEpoch: "epoch-b",
+          authEpochVersion: 2,
+          historyEquivalenceGroups: overlappingGroups,
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    });
+
+    it("preserves the reverse stored=b → current=c swap sharing the second overlapping group", () => {
+      expect(
+        resolveCliSessionReuse({
+          binding: { ...bcBinding, authProfileId: "anthropic:b", authEpoch: "epoch-b" },
+          authProfileId: "anthropic:c",
+          authEpoch: "epoch-c",
+          authEpochVersion: 2,
+          historyEquivalenceGroups: overlappingGroups,
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    });
+
+    it("still invalidates a swap whose endpoints never co-occur in one group", () => {
+      // a and c each appear only through b; they never share a SINGLE group, so
+      // the swap must stay strictly invalidated.
+      expect(
+        resolveCliSessionReuse({
+          binding: { ...bcBinding, authProfileId: "anthropic:a", authEpoch: "epoch-a" },
+          authProfileId: "anthropic:c",
+          authEpoch: "epoch-c",
+          authEpochVersion: 2,
+          historyEquivalenceGroups: overlappingGroups,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
   });
 });

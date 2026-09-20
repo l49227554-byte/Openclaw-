@@ -53,6 +53,7 @@ vi.mock("../../runtime.js", () => ({
 }));
 
 vi.mock("../../infra/restart-intent.js", () => ({
+  prepareGatewayRestartIntentLegacyProcess: async () => undefined,
   clearGatewayRestartIntentSync: () => clearGatewayRestartIntentSync(),
   writeGatewayRestartIntentSync: (opts: unknown) => writeGatewayRestartIntentSync(opts),
   writeGatewayServiceRestartIntentSync: (opts: unknown) => writeGatewayRestartIntentSync(opts),

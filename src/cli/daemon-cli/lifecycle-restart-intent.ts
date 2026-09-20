@@ -7,7 +7,9 @@ import { GatewayRestartPreparationError } from "../../infra/restart-intent-error
 import {
   clearGatewayRestartIntentSync,
   type GatewayRestartIntent,
+  type GatewayRestartIntentLegacyProcess,
   type GatewayRestartIntentService,
+  prepareGatewayRestartIntentLegacyProcess,
   writeGatewayRestartIntentSync,
   writeGatewayServiceRestartIntentSync,
 } from "../../infra/restart-intent.js";
@@ -28,6 +30,7 @@ export function createServiceRestartIntent(params: {
       assertGatewayServiceUpdateCurrent();
       const nativeService = process.platform === "linux" || process.platform === "darwin";
       let service: GatewayRestartIntentService | undefined;
+      let legacyProcess: GatewayRestartIntentLegacyProcess | undefined;
       if (nativeService) {
         try {
           const command = await params.service.readCommand(process.env, { requireEffective: true });
@@ -43,6 +46,13 @@ export function createServiceRestartIntent(params: {
                   name: runtime?.systemd?.unit ?? resolveSystemdServiceName(process.env),
                 }
               : { kind: "launchd", name: resolveLaunchAgentLabel(process.env) };
+          legacyProcess = await prepareGatewayRestartIntentLegacyProcess({
+            env,
+            command,
+            runtimePid: runtime?.pid,
+            readRuntime: () => params.service.readRuntime(process.env),
+            assertCurrent: assertGatewayServiceUpdateCurrent,
+          });
         } catch {
           assertGatewayServiceUpdateCurrent();
           throw new GatewayRestartPreparationError("service-command");
@@ -58,6 +68,7 @@ export function createServiceRestartIntent(params: {
         ? writeGatewayServiceRestartIntentSync({
             ...options,
             service,
+            legacyProcess,
             nativeStopped: runtime?.status === "stopped" && runtime.pid === undefined,
             assertCurrent: assertGatewayServiceUpdateCurrent,
           })

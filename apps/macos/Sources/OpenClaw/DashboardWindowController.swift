@@ -1467,11 +1467,7 @@ extension DashboardWindowController {
         if Self.shouldAllowNavigation(
             to: url,
             dashboardURL: self.currentURL,
-            isMainFrame: navigationAction.targetFrame?.isMainFrame == true,
-            isTrustedDashboardSource: navigationAction.sourceFrame.isMainFrame &&
-                Self.isTrustedLinkSource(
-                    navigationAction.sourceFrame.request.url,
-                    dashboardURL: self.currentURL))
+            isMainFrame: navigationAction.targetFrame?.isMainFrame == true)
         {
             decisionHandler(.allow)
             return

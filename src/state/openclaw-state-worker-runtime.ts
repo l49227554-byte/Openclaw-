@@ -107,10 +107,7 @@ import {
   withExistingOpenClawStateDatabaseReadOnly,
 } from "./openclaw-state-db-readonly.js";
 import { runOpenClawStateWriteTransaction } from "./openclaw-state-db.js";
-import {
-  acquireOpenClawStateLeaseInWorker,
-  assertOpenClawStateLeaseWorkerOwnedInTransaction,
-} from "./openclaw-state-lease-worker.js";
+import { assertOpenClawStateLeaseWorkerOwnedInTransaction } from "./openclaw-state-lease-worker.js";
 import type {
   OpenClawStateWorkerOperations,
   OpenClawStateWorkerInspectionOperations,
@@ -127,7 +124,7 @@ type Operations = OpenClawStateWorkerOperations &
 export function executeSharedStateCommand(
   command: Exclude<
     SqliteWorkerCommand<Operations>,
-    { type: "plugins.metadata.read" | "database.inspectIdle" }
+    { type: "plugins.metadata.read" | "database.inspectIdle" | "stateLease.acquire" }
   >,
   context: { databasePath: string },
   open: () => OpenClawStateDatabase,
@@ -278,10 +275,6 @@ export function executeSharedStateCommand(
   }
   if (command.type === "plugins.conversationBindingApprovals.read") {
     return readPluginBindingApprovalsInDatabase(open().db);
-  }
-  // Existing-schema acquisition must precede normal database bootstrap.
-  if (command.type === "stateLease.acquire") {
-    return acquireOpenClawStateLeaseInWorker(command.input, context.databasePath, open);
   }
   if (command.type === "plugins.conversationBindingApprovals.upsert") {
     const database = open();

@@ -69,6 +69,79 @@ describe("isInternalFormattingArtifact", () => {
     expect(isInternalFormattingArtifact("```js\nconsole.log('hi')\n```")).toBe(false);
     expect(isInternalFormattingArtifact("**bold** and *italic* text")).toBe(false);
   });
+
+  it("matches whole tool-call invocations emitted as plain text (#153594)", () => {
+    expect(
+      isInternalFormattingArtifact(
+        '<function_calls>\n<invoke name="Bash">\n<parameter name="command">echo end1</parameter>\n</invoke>\n</function_calls>',
+      ),
+    ).toBe(true);
+    expect(
+      isInternalFormattingArtifact(
+        '<invoke name="Bash"><parameter name="command">echo end1</parameter></invoke>',
+      ),
+    ).toBe(true);
+    expect(
+      isInternalFormattingArtifact(
+        '<antml:invoke name="Bash"><antml:parameter name="command">ls -la</antml:parameter></antml:invoke>',
+      ),
+    ).toBe(true);
+    expect(
+      isInternalFormattingArtifact(
+        '<invoke name="Bash"><parameter name="command">echo end1</parameter></invoke>\n' +
+          '<invoke name="Bash"><parameter name="command">echo end2</parameter></invoke>',
+      ),
+    ).toBe(true);
+    expect(
+      isInternalFormattingArtifact(
+        '<invoke name="Bash"><parameter name="command">sort < file | head</parameter></invoke>',
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps standalone parameter content and lookalike element names (#153594)", () => {
+    // assistant-visible-text unwraps a standalone parameter wrapper; it must not be silenced.
+    expect(isInternalFormattingArtifact('<parameter name="data">{"key":"value"}</parameter>')).toBe(
+      false,
+    );
+    expect(isInternalFormattingArtifact("<parameter-value>42</parameter-value>")).toBe(false);
+    expect(isInternalFormattingArtifact("<parameterized>text</parameterized>")).toBe(false);
+  });
+
+  it("keeps prose between or inside invocation markup (#153594)", () => {
+    // A parameter body must stop at its own closing tag, not expand to a later one.
+    expect(
+      isInternalFormattingArtifact(
+        '<invoke name="Bash"><parameter name="command">echo end1</parameter></invoke>' +
+          " The answer is 42. " +
+          '<invoke name="Bash"><parameter name="command">echo end2</parameter></invoke>',
+      ),
+    ).toBe(false);
+    // An invocation marker inside a parameter payload is content, not invocation context.
+    expect(
+      isInternalFormattingArtifact(
+        '<parameter name="data">Use <invoke name="Bash"> for execution.</parameter>',
+      ),
+    ).toBe(false);
+  });
+
+  it("handles a long run of invocation blocks without exponential backtracking (#153594)", () => {
+    const block = '<invoke name="Bash"><parameter name="command">echo end1</parameter></invoke>';
+    expect(isInternalFormattingArtifact(block.repeat(300))).toBe(true);
+    expect(isInternalFormattingArtifact(`${block.repeat(300)} trailing prose`)).toBe(false);
+  });
+
+  it("returns false for prose that mentions tool-call markup (#153594)", () => {
+    expect(isInternalFormattingArtifact('Use <invoke name="Bash"> to call a tool.')).toBe(false);
+    expect(isInternalFormattingArtifact('<invoke name="Bash">run the tests</invoke>')).toBe(false);
+    expect(
+      isInternalFormattingArtifact("<function_calls>Here is your answer: 42</function_calls>"),
+    ).toBe(false);
+    expect(isInternalFormattingArtifact("<tool_call>hello</tool_call>")).toBe(false);
+    expect(isInternalFormattingArtifact('<parameter name="command">echo hi</parameter> done')).toBe(
+      false,
+    );
+  });
 });
 
 describe("isSilentReplyText", () => {

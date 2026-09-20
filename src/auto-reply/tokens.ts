@@ -9,11 +9,61 @@ export const SILENT_REPLY_TOKEN = "NO_REPLY";
 const HARMONY_CHANNEL_MARKER_RE = /^\s*(?:set-thought\s+)?<[\w]*\|[^>]*>\s*$/;
 const BOX_DRAWING_HR_ONLY_RE = /^\s*─{3,}\s*$/;
 
+// Anthropic-style tool-call markup a model can emit as plain assistant text (#153594).
+// Scanned linearly, because a regex over repeated blocks can expand a parameter body past its
+// closing tag (dropping prose between blocks) and backtrack exponentially on a rejecting suffix.
+const TOOL_CALL_TAG_RE =
+  /^<\s*(\/?)\s*(?:antml:|mm:)?(function_calls|invoke|parameter)(?=[\s/>])[^<>]*>$/i;
+const SELF_CLOSING_TAG_RE = /\/\s*>$/;
+
+// True only for a whole invocation: an `<invoke>`/`<function_calls>` outside parameter content,
+// with every non-whitespace character inside a `<parameter>` payload. A standalone parameter
+// wrapper keeps its content (assistant-visible-text unwraps it), and `(?=[\s/>])` keeps lookalike
+// element names such as `<parameter-value>` out.
+function isToolCallMarkupOnly(text: string): boolean {
+  let parameterDepth = 0;
+  let hasInvocation = false;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "<") {
+      if (parameterDepth === 0 && !/\s/.test(text[index])) {
+        return false;
+      }
+      continue;
+    }
+    const end = text.indexOf(">", index + 1);
+    const raw = end === -1 ? null : text.slice(index, end + 1);
+    const tag = raw === null ? null : TOOL_CALL_TAG_RE.exec(raw);
+    if (!tag) {
+      // A "<" that opens no tool-call tag is payload text inside a parameter, prose otherwise.
+      if (parameterDepth === 0) {
+        return false;
+      }
+      continue;
+    }
+    if (tag[2].toLowerCase() === "parameter") {
+      if (raw !== null && !SELF_CLOSING_TAG_RE.test(raw)) {
+        parameterDepth += tag[1] === "/" ? -1 : 1;
+        if (parameterDepth < 0) {
+          return false;
+        }
+      }
+    } else if (parameterDepth === 0) {
+      hasInvocation = true;
+    }
+    index = end;
+  }
+  return hasInvocation && parameterDepth === 0;
+}
+
 export function isInternalFormattingArtifact(text: string | undefined): boolean {
   if (!text) {
     return false;
   }
-  return HARMONY_CHANNEL_MARKER_RE.test(text) || BOX_DRAWING_HR_ONLY_RE.test(text);
+  return (
+    HARMONY_CHANNEL_MARKER_RE.test(text) ||
+    BOX_DRAWING_HR_ONLY_RE.test(text) ||
+    isToolCallMarkupOnly(text)
+  );
 }
 
 function createTokenRegex(createRegex: (escaped: string) => RegExp) {

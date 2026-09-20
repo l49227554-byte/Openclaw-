@@ -30,6 +30,7 @@ type PluginReleasePlanItem = PublishablePluginPackage & {
 
 type PluginReleasePlan = {
   all: PluginReleasePlanItem[];
+  warnings: string[];
   candidates: PluginReleasePlanItem[];
   skippedPublished: PluginReleasePlanItem[];
 };
@@ -420,14 +421,14 @@ function resolveNpmLatestVersion(packageName: string): string {
   return parsed.trim();
 }
 
-export function collectPluginReleaseDependencyFreshnessErrors(
+export function collectPluginReleaseDependencyFreshnessWarnings(
   plugins: readonly PublishablePluginPackage[],
   resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
 ): string[] {
-  // Only plugin-owned opt-ins use this strict gate. It prevents release branches
-  // from silently carrying old executable pins while leaving normal dependencies alone.
+  // Release validation owns pin compatibility. A moving npm dist-tag must not
+  // invalidate a frozen, tested candidate, including when the lookup is unavailable.
   const latestVersions = new Map<string, string>();
-  const errors: string[] = [];
+  const warnings: string[] = [];
 
   for (const plugin of plugins) {
     for (const dependency of plugin.requiredLatestDependencies ?? []) {
@@ -437,37 +438,33 @@ export function collectPluginReleaseDependencyFreshnessErrors(
           latestVersion = resolveLatestVersion(dependency.packageName);
           latestVersions.set(dependency.packageName, latestVersion);
         } catch (error) {
-          errors.push(
-            `${plugin.packageName}@${plugin.version}: could not resolve npm latest for ${dependency.packageName}: ${error instanceof Error ? error.message : String(error)}`,
+          warnings.push(
+            `${plugin.packageName}@${plugin.version}: could not resolve npm latest for ${dependency.packageName} (pinned "${dependency.version}"); freshness is advisory: ${error instanceof Error ? error.message : String(error)}`,
           );
           continue;
         }
       }
       if (dependency.version !== latestVersion) {
-        errors.push(
-          `${plugin.packageName}@${plugin.version}: ${dependency.packageName} must match npm latest for release; found "${dependency.version}", latest is "${latestVersion}".`,
+        warnings.push(
+          `${plugin.packageName}@${plugin.version}: ${dependency.packageName} pinned "${dependency.version}", npm latest is "${latestVersion}". Freshness is advisory; retain the release-validated pin.`,
         );
       }
     }
   }
 
-  return errors;
+  return warnings;
 }
 
 export function assertPluginReleaseDependencyFreshness(
   plugins: readonly PublishablePluginPackage[],
   label: string,
   resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
-): void {
-  const errors = collectPluginReleaseDependencyFreshnessErrors(plugins, resolveLatestVersion);
-  if (errors.length === 0) {
-    return;
+): string[] {
+  const warnings = collectPluginReleaseDependencyFreshnessWarnings(plugins, resolveLatestVersion);
+  for (const warning of warnings) {
+    console.warn(`${label}: warning: ${warning}`);
   }
-  throw new Error(
-    `${label} rejected stale required release dependencies:\n${errors
-      .map((error) => `- ${error}`)
-      .join("\n")}`,
-  );
+  return warnings;
 }
 
 function isPluginVersionPublished(packageName: string, version: string): boolean {
@@ -527,7 +524,10 @@ export function collectPluginReleasePlan(params?: {
   if (explicitPublishSelection) {
     assertPluginReleaseVersionFloors(selectedPublishable, "Plugin NPM release plan");
   }
-  assertPluginReleaseDependencyFreshness(selectedPublishable, "Plugin NPM release plan");
+  const warnings = assertPluginReleaseDependencyFreshness(
+    selectedPublishable,
+    "Plugin NPM release plan",
+  );
 
   const all = selectedPublishable.map((plugin) =>
     Object.assign({}, plugin, {
@@ -537,6 +537,7 @@ export function collectPluginReleasePlan(params?: {
 
   return {
     all,
+    warnings,
     candidates: all.filter((plugin) => !plugin.alreadyPublished),
     skippedPublished: all.filter((plugin) => plugin.alreadyPublished),
   };

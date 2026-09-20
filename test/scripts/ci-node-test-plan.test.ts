@@ -23,6 +23,7 @@ import {
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { isRuntimePlacementIncludePatterns } from "../../scripts/lib/ci-test-timings-schema.mts";
 import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
+import { isExclusiveCiTestConfig } from "../../scripts/lib/local-check-runtime.mts";
 import * as buildPrerequisites from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { listVitestRuntimeConsumerFiles } from "../../scripts/lib/vitest-build-prerequisites.mts";
 import {
@@ -144,8 +145,10 @@ function usesParallelPacking(job: CompactNodeTestShard | undefined) {
     (job?.planConcurrency === 1 &&
       job.runner === EXTRA_LARGE_NODE_TEST_RUNNER &&
       job.groups.length > 1 &&
-      job.groups.some((group) =>
-        /^agentic-gateway-core-2(?:-hosted-\d+)?$/u.test(group.shard_name),
+      job.groups.some(
+        (group) =>
+          (group.fallbackMaxWorkers === 2 && group.configs.some(isExclusiveCiTestConfig)) ||
+          group.configs.includes("test/vitest/vitest.commands.config.ts"),
       ))
   );
 }
@@ -926,7 +929,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(dense.some((shard) => shard.groups.length > 10)).toBe(profile !== "github");
       for (const shard of dense.filter((entry) => entry.groups.length > 10)) {
         expect(shard).toMatchObject({
-          planConcurrency: shard.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" ? 1 : 2,
+          planConcurrency: shard.groups.some((group) => group.configs.some(isExclusiveCiTestConfig))
+            ? 1
+            : 2,
           requiresDist: false,
           runner: EXTRA_LARGE_NODE_TEST_RUNNER,
         });
@@ -965,7 +970,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       requiresDist: false,
       shard_name: "agentic-commands-runtime",
     });
-    expect(commandRuntimeGroup.env).toEqual({ OPENCLAW_VITEST_MAX_WORKERS: "2" });
+    expect(commandRuntimeGroup.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
+    expect(commandRuntimeGroup.fallbackMaxWorkers).toBe(2);
     expect(commandRuntimeGroup.includePatterns?.toSorted()).toEqual([
       "src/commands/doctor-config-flow.legacy-composition.test.ts",
       "src/commands/doctor-config-preflight.process.test.ts",
@@ -1467,9 +1473,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         for (const group of groups.filter((entry) =>
           entry.configs.includes("test/vitest/vitest.commands.config.ts"),
         )) {
-          expect(group.env?.OPENCLAW_VITEST_MAX_WORKERS, group.shard_name).toBe("2");
-          expect(group.timing_key, group.shard_name).toContain("#file-parallel-2");
-          expect(group.fallbackMaxWorkers, group.shard_name).toBeUndefined();
+          expect(group.env?.OPENCLAW_VITEST_MAX_WORKERS, group.shard_name).toBeUndefined();
+          const job = plan.find((entry) => entry.groups.includes(group))!;
+          const workers =
+            profile.name !== "GitHub-hosted" &&
+            job.runner === EXTRA_LARGE_NODE_TEST_RUNNER &&
+            job.planConcurrency === 1
+              ? 8
+              : 2;
+          expect(group.timing_key, group.shard_name).toContain(`#file-parallel-${workers}`);
+          expect(group.fallbackMaxWorkers, group.shard_name).toBe(2);
         }
         for (const stripe of [1, 2, 3]) {
           const owner = `agentic-gateway-core-${stripe}`;
@@ -2450,7 +2463,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(new Set(placements.map(({ jobIndex }) => jobIndex)).size).toBe(placements.length);
     for (const { group } of placements) {
       expect(group.configs).toEqual(doctor.configs);
-      expect(group.env).toEqual({ ...doctor.env, OPENCLAW_VITEST_MAX_WORKERS: "2" });
+      expect(group.env).toEqual(doctor.env);
+      expect(group.fallbackMaxWorkers).toBe(2);
       expect(group.requiresDist).toBe(doctor.requiresDist);
       expect(group.runner).toBe(BUNDLED_NODE_TEST_RUNNER);
     }
@@ -4051,8 +4065,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             continue;
           }
           const parallelCommands = group.configs.includes("test/vitest/vitest.commands.config.ts");
-          if (parallelCommands && group.timing_key.endsWith("#file-parallel-2")) {
-            expect(group.timing_key).toBe(`${group.shard_name}#file-parallel-2`);
+          if (parallelCommands && /#file-parallel-(?:2|8)$/u.test(group.timing_key)) {
+            expect(group.timing_key).toMatch(
+              new RegExp(`^${group.shard_name}#file-parallel-(2|8)$`),
+            );
             continue;
           }
           const key = expectDefined(
@@ -4063,14 +4079,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           const part = key.part;
           const hostedName = /^(.+)-hosted-([1-9]\d*)$/u.exec(group.shard_name);
           expect(parent, "timing key parent must match hosted group name").toBe(
-            `${hostedName?.[1] ?? group.shard_name}${parallelCommands ? "#file-parallel-2" : ""}`,
+            `${hostedName?.[1] ?? group.shard_name}${parallelCommands ? group.timing_key.match(/#file-parallel-(?:2|8)/u)?.[0] : ""}`,
           );
           expect(part, "timing key part must match hosted group ordinal").toBe(
             hostedName ? Number(hostedName[2]) : 1,
           );
-          const family = families.get(parent) ?? [];
+          const familyParent = parent.replace("#file-parallel-8", "#file-parallel-2");
+          const family = families.get(familyParent) ?? [];
           family.push({ group, part });
-          families.set(parent, family);
+          families.set(familyParent, family);
         }
         for (const family of families.values()) {
           family.sort((a, b) => a.part - b.part);
@@ -4100,13 +4117,21 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           admission.flatMap((job) =>
             job.planConcurrency === 2
               ? job.groups
-                  .filter((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined)
+                  .filter(
+                    (group) =>
+                      group.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined &&
+                      group.fallbackMaxWorkers === undefined,
+                  )
                   .map((group): [string, Group] => [group.shard_name, group])
               : [],
           ),
         );
         for (const job of admission) {
-          if (!job.groups.some((group) => group.fallbackMaxWorkers === 2)) {
+          if (
+            runnerBackend === "github" ||
+            !job.groups.some((group) => group.fallbackMaxWorkers === 2) ||
+            !job.groups.some((group) => group.configs.some(isExclusiveCiTestConfig))
+          ) {
             continue;
           }
           expect(job.planConcurrency).toBe(1);
@@ -4228,7 +4253,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         return createCompactSplitTimingGeneration({
           parentShardName: parent,
           configs: first.configs,
-          env,
+          env: first.configs.includes("test/vitest/vitest.commands.config.ts")
+            ? { ...env, OPENCLAW_VITEST_MAX_WORKERS: "2" }
+            : env,
           stripes: family.map(({ group }) => {
             expect(group.configs).toEqual(first.configs);
             expect(declarationEnv(group, plan, originals)).toEqual(env);
@@ -4243,9 +4270,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           expect(family.map(({ part }) => part)).toEqual(
             Array.from({ length: family.length }, (_, index) => index + 1),
           );
-          expect(family.map(({ group }) => group.timing_key)).toEqual(
-            expectedTimingKeys(parent, family, plan, originals),
-          );
+          expect(
+            family.map(({ group }) =>
+              group.timing_key?.replace("#file-parallel-8", "#file-parallel-2"),
+            ),
+          ).toEqual(expectedTimingKeys(parent, family, plan, originals));
         }
       };
       const policies = (plan: typeof before, originals: Map<string, Group>) => {
@@ -4256,6 +4285,12 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           descriptors: nonPlugin
             .filter((group) => !isRepartitionableTooling(group))
             .map(({ runner: _runner, ...group }) => {
+              if (group.configs.includes("test/vitest/vitest.commands.config.ts")) {
+                group.timing_key = group.timing_key?.replace(
+                  "#file-parallel-8",
+                  "#file-parallel-2",
+                );
+              }
               const env = declarationEnv(group, plan, originals);
               if (env === undefined) {
                 delete group.env;

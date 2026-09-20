@@ -230,6 +230,26 @@ function expectAllExtensionConfigs(
 }
 
 describe("CI changed Node test plan", () => {
+  it.each(["blacksmith", "github", "hybrid"])(
+    "retains a directly changed release-only report composition with its tooling owner (%s)",
+    (runnerBackend) => {
+      const target = "test/scripts/vitest-report-owner.test.ts";
+      const shards = createChangedNodeTestShards([target], { runnerBackend });
+      expect(shards).not.toBeNull();
+      const owners = shards?.flatMap((job) =>
+        (job.groups ?? []).filter((group) => group.includePatterns?.includes(target)),
+      );
+      expect(owners).toHaveLength(1);
+      const owner = expectDefined(owners?.[0], "report composition tooling owner");
+      expect(owner).toMatchObject({
+        configs: ["test/vitest/vitest.tooling.config.ts"],
+        env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        requiresDist: false,
+      });
+      expect(shards?.find((job) => job.groups?.includes(owner))?.planConcurrency).toBe(1);
+    },
+  );
+
   it("retains the paired tooling group for direct Docker helper selection", () => {
     const shards = createSelectedNodeTestShardBundles(["test/scripts/docker-build-helper.test.ts"]);
     expect(shards).not.toBeNull();

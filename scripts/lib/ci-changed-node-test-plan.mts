@@ -109,6 +109,7 @@ const publicPluginSdkEntrySources = Object.values(
 
 const fullNodeTestShards = createNodeTestShards({
   includeReleaseOnlyPluginShards: false,
+  includeReleaseOnlyToolingTests: true,
 });
 const configsRequiringCanonicalMetadata = new Set(
   fullNodeTestShards

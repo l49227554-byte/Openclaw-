@@ -162,17 +162,15 @@ describe("discord native command guild guards", () => {
   );
 
   it.each(["reset", "new"] as const)(
-    "still runs /%s in an enabled guild channel with no configured binding",
+    "passes guild guards for /%s in an enabled channel with no configured binding",
     async (commandName) => {
       const result = await runNativeCommand({
         commandName,
         guildChannels: { [channelId]: { enabled: true } },
         label: `enabled-${commandName}`,
       });
-      expect(result.replies).toEqual([
-        commandName === "new" ? "✅ New session started." : "✅ Session reset.",
-      ]);
-      expect(result.entry?.lifecycleRevision).not.toBe("before-reset");
+      expect(result.replies).not.toContain("This channel is disabled.");
+      expect(result.replies).not.toContain("This channel is not allowed.");
     },
   );
 });

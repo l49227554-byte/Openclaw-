@@ -38,15 +38,9 @@ import {
   type TaskRegistryWorkerMutationContext,
 } from "./task-registry-worker-publication.js";
 import {
-  updateRunIdIndex,
+  updateTaskIndexes,
   addTaskIndexes,
   removeTaskIndexes,
-  addOwnerKeyIndex,
-  deleteOwnerKeyIndex,
-  addParentFlowIdIndex,
-  deleteParentFlowIdIndex,
-  addRelatedSessionKeyIndex,
-  deleteRelatedSessionKeyIndex,
   getTaskRegistryProcessState,
   selectTaskRegistryScopes,
   captureTaskRegistryPublicationRollback,
@@ -504,23 +498,7 @@ function installSnapshot(
       if (!current) {
         addTaskIndexes(next);
       } else {
-        updateRunIdIndex(current, next);
-        if (current.ownerKey !== next.ownerKey) {
-          deleteOwnerKeyIndex(taskId, current);
-          addOwnerKeyIndex(taskId, next);
-        }
-        if (current.parentFlowId !== next.parentFlowId) {
-          deleteParentFlowIdIndex(taskId, current);
-          addParentFlowIdIndex(taskId, next);
-        }
-        if (
-          current.ownerKey !== next.ownerKey ||
-          current.requesterSessionKey !== next.requesterSessionKey ||
-          current.childSessionKey !== next.childSessionKey
-        ) {
-          deleteRelatedSessionKeyIndex(taskId, current);
-          addRelatedSessionKeyIndex(taskId, next);
-        }
+        updateTaskIndexes(current, next);
       }
     } else if (recordWrites && recordWrites !== "refresh" && recordWrites.has(taskId)) {
       recordTaskRegistryProjectionWrite(recordWrites, taskId);

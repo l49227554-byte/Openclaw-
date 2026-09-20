@@ -189,10 +189,10 @@ function reconcileSelectedTabElement(
   });
 }
 
-export function renderPanelTabStrip(params: {
-  tabs: PanelTabStripTab[];
+export function renderPanelTabStrip<T extends PanelTabStripTab>(params: {
+  tabs: T[];
   activeId: string | null;
-  ariaControls: string;
+  ariaControls: string | ((tab: T) => string);
   onSelect: (id: string) => void;
   onClose: (id: string) => void | Promise<void>;
   onNew: () => void;
@@ -203,6 +203,8 @@ export function renderPanelTabStrip(params: {
   separateTabs?: boolean;
   onReorder?: (sourceId: string, targetId: string, placement: "before" | "after") => void;
 }) {
+  const controlsFor = (tab: T) =>
+    typeof params.ariaControls === "string" ? params.ariaControls : params.ariaControls(tab);
   const newButton = (slotted: boolean) =>
     params.newControl === nothing
       ? nothing
@@ -286,7 +288,7 @@ export function renderPanelTabStrip(params: {
               id=${tab.domId}
               class=${`tabstrip-tab ${tab.className ?? ""}`}
               panel=${tab.id}
-              aria-controls=${params.ariaControls}
+              aria-controls=${controlsFor(tab)}
               aria-selected=${selected ? "true" : "false"}
               title=${tab.title || nothing}
               ?active=${selected}
@@ -437,9 +439,10 @@ export function renderPanelTabStrip(params: {
                     HTMLElement & { updateComplete?: Promise<unknown> }
                   >("wa-tab-group") ?? []),
                 ].find((candidate) =>
-                  [...candidate.querySelectorAll<HTMLElement>("wa-tab")].some(
-                    (renderedTab) =>
-                      renderedTab.getAttribute("aria-controls") === params.ariaControls,
+                  [...candidate.querySelectorAll<HTMLElement>("wa-tab")].some((renderedTab) =>
+                    params.tabs.some(
+                      (entry) => renderedTab.getAttribute("aria-controls") === controlsFor(entry),
+                    ),
                   ),
                 );
                 await settledGroup?.updateComplete;

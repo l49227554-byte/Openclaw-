@@ -23,6 +23,7 @@ import {
 import { installMarkdownGitHubRefs } from "./markdown-github-refs.ts";
 import { installMarkdownHumanMentions } from "./markdown-human-mentions.ts";
 import { hasMarkdownLinkBoundaries } from "./markdown-link-boundary.ts";
+import { installMarkdownMath } from "./markdown-math.ts";
 import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 import { installMarkdownSessionLinks, SESSION_LINK_SCAN_RE } from "./markdown-session-links.ts";
 import { installMarkdownTables } from "./markdown-tables.ts";
@@ -157,6 +158,7 @@ export function createMarkdownParser(): MarkdownItParser {
   markdownParser.enable("strikethrough");
   installAssistantTranscriptRoleMarkdown(markdownParser, escapeMarkdownHtml);
   installMarkdownDetails(markdownParser);
+  installMarkdownMath(markdownParser);
   installMarkdownTables(markdownParser);
 
   // Disable fuzzy link detection to prevent bare filenames like "README.md"

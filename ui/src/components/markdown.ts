@@ -1,4 +1,5 @@
 import DOMPurify from "dompurify";
+import "katex/dist/katex.min.css";
 import { CONTROL_UI_ROOT_PUBLIC_ASSETS } from "../../../src/gateway/control-ui-root-assets.js";
 import { stripUnsupportedCitationControlMarkers } from "../../../src/shared/text/citation-control-markers.js";
 import { routeIdFromPath } from "../app-route-paths.ts";
@@ -14,6 +15,7 @@ import {
   prepareMarkdownHumanMentions,
   restoreMarkdownHumanMentions,
 } from "./markdown-human-mentions.ts";
+import { resetMarkdownMathBudget } from "./markdown-math.ts";
 import { createMarkdownParser } from "./markdown-parser.ts";
 import { stripProgressCardRawContentBlocks } from "./markdown-raw-content.ts";
 import {
@@ -59,6 +61,37 @@ const allowedTags = [
   "tr",
   "ul",
   "img",
+  "math",
+  "annotation",
+  "menclose",
+  "merror",
+  "mfrac",
+  "mi",
+  "mmultiscripts",
+  "mn",
+  "mo",
+  "mover",
+  "mpadded",
+  "mphantom",
+  "mroot",
+  "mrow",
+  "ms",
+  "mspace",
+  "msqrt",
+  "mstyle",
+  "msub",
+  "msup",
+  "msubsup",
+  "mtable",
+  "mtd",
+  "mtr",
+  "munder",
+  "munderover",
+  "semantics",
+  "svg",
+  "path",
+  "line",
+  "use",
 ];
 
 const allowedAttrs = [
@@ -90,6 +123,21 @@ const allowedAttrs = [
   "aria-label",
   "aria-pressed",
   "role",
+  "aria-hidden",
+  "aria-level",
+  "xmlns",
+  "viewBox",
+  "width",
+  "height",
+  "x",
+  "y",
+  "d",
+  "fill",
+  "stroke",
+  "stroke-width",
+  "focusable",
+  "preserveAspectRatio",
+  "style",
 ];
 const sanitizeOptions = {
   ALLOWED_TAGS: allowedTags,
@@ -474,6 +522,11 @@ function installHooks() {
   hooksInstalled = true;
 
   DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node instanceof HTMLElement && node.localName === "progress") {
+      // Progress markup is authored content; it must not inherit KaTeX's
+      // geometry-preserving inline styles.
+      node.removeAttribute("style");
+    }
     if (!(node instanceof HTMLAnchorElement)) {
       return;
     }
@@ -572,12 +625,14 @@ function renderSanitizedMarkdown(renderInput: string, renderOptions: MarkdownRen
   }
   let rendered: string | HTMLDivElement;
   try {
+    resetMarkdownMathBudget();
     rendered = markdownParser.render(input, renderOptions);
   } catch (err) {
     // Fall back to escaped plain text when md.render() throws (#36213).
     console.warn("[markdown] md.render failed, falling back to plain text:", err);
     rendered = toPlainTextElement(input, renderOptions);
   }
+  resetMarkdownMathBudget();
   return DOMPurify.sanitize(rendered, activeSanitizeOptions);
 }
 

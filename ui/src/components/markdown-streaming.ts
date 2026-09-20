@@ -10,6 +10,7 @@ import {
   type MarkdownDetailsFrame,
   scanMarkdownDisclosureLine,
 } from "./markdown-details.ts";
+import { findUnescapedMathDelimiter } from "./markdown-math.ts";
 import { createMarkdownParser } from "./markdown-parser.ts";
 
 const FENCE_OPEN_RE = /^[ \t]{0,3}(`{3,}|~{3,})/;
@@ -86,6 +87,7 @@ type StreamingMarkdownCursor = {
   lastLiteralOffset: number;
   lineMode: "fence" | "plain" | null;
   openFence: FenceMarker | null;
+  openMath: "$$" | "\\[" | null;
 };
 
 type StreamingMarkdownCacheEntry = {
@@ -151,11 +153,13 @@ function scanStableStreamingMarkdown(
     lastLiteralOffset: 0,
     lineMode: null,
     openFence: null,
+    openMath: null,
   },
 ): { cursor: StreamingMarkdownCursor; rawTail: boolean; result: StreamingMarkdownSplit } {
   let { boundary, firstListOffset, hasLinkReferenceDefinition, index, lastLiteralOffset } = cursor;
   let lineMode = cursor.lineMode;
   let openFence = cursor.openFence;
+  let openMath = cursor.openMath;
   const detailsStack: MarkdownDetailsFrame[] = [];
   // Completed literal blocks cannot gain indentation ownership from later prose. Keep
   // list containers and unfinished fences intact when parsing the retained suffix.
@@ -195,6 +199,7 @@ function scanStableStreamingMarkdown(
         lastLiteralOffset,
         lineMode,
         openFence,
+        openMath,
       };
       continue;
     }
@@ -207,6 +212,18 @@ function scanStableStreamingMarkdown(
         openFence = null;
         lastLiteralOffset = lineEnd;
         if (detailsStack.length === 0) {
+          boundary = lineEnd;
+        }
+      }
+    } else if (openMath) {
+      const close = openMath === "$$" ? "$$" : "\\]";
+      // Native block parsing removes indentation, not quote/list markers.
+      // Container-owned formulas retain their suffix rather than guessing here.
+      const content = line.trimStart();
+      const closeIndex = findUnescapedMathDelimiter(content, close, 0);
+      if (closeIndex >= 0 && !content.slice(closeIndex + close.length).trim()) {
+        openMath = null;
+        if (detailsStack.length === 0 && nextLineBreak !== -1) {
           boundary = lineEnd;
         }
       }
@@ -232,6 +249,19 @@ function scanStableStreamingMarkdown(
           openFence = openingFence;
           lastLiteralOffset = lineEnd;
         } else {
+          const content = line.trimStart();
+          const delimiter = content.startsWith("$$")
+            ? "$$"
+            : content.startsWith("\\[")
+              ? "\\["
+              : null;
+          if (delimiter) {
+            const close = delimiter === "$$" ? "$$" : "\\]";
+            const closeIndex = findUnescapedMathDelimiter(content, close, 2);
+            if (closeIndex < 0) {
+              openMath = delimiter;
+            }
+          }
           if (DISCLOSURE_LINE_CANDIDATE_RE.test(strippedLine.content)) {
             updateDetailsStack(
               line,
@@ -257,7 +287,7 @@ function scanStableStreamingMarkdown(
     if (
       detailsStack.length === 0 &&
       !rawHtmlLine &&
-      (nextLineBreak !== -1 || canResumeStreamingLine(line, lineFence))
+      (nextLineBreak !== -1 || (!openMath && canResumeStreamingLine(line, lineFence)))
     ) {
       lineMode = nextLineBreak === -1 ? (lineFence ? "fence" : "plain") : null;
       resumeCursor = {
@@ -268,6 +298,7 @@ function scanStableStreamingMarkdown(
         lastLiteralOffset,
         lineMode,
         openFence,
+        openMath,
       };
     }
   }
@@ -300,13 +331,19 @@ function scanStableStreamingMarkdown(
     rawTail,
     result: {
       boundary,
-      tailRepairStart: openFence ? null : Math.max(boundary, lastLiteralEnd),
+      tailRepairStart: openFence || openMath ? null : Math.max(boundary, lastLiteralEnd),
     },
   };
 }
 
 function canResumeStreamingLine(line: string, fence: FenceMarker | null): boolean {
-  const first = stripMarkdownContainerPrefixes(line).content.charAt(0);
+  const content = stripMarkdownContainerPrefixes(line).content;
+  const first = content.charAt(0);
+  // A partial opener or closer can change ownership of this line on append.
+  // Keep math-bearing lines at their start until the newline is available.
+  if (!fence && /[$\\]/u.test(content)) {
+    return false;
+  }
   if (!first) {
     return false;
   }
@@ -350,8 +387,7 @@ export function splitStableStreamingMarkdown(
     : scanStableStreamingMarkdown(markdownLocal, scanned.cursor).result;
 }
 
-// Streaming-tail repair config: math is not rendered by this pipeline, so
-// completing `$$` would inject visible characters into ordinary prose.
+// The parser owns math delimiters; remend must not invent closers in prose.
 const streamingRemendOptions = { katex: false, linkMode: "text-only" } satisfies RemendOptions;
 
 // repairStart is the splitter-owned literal boundary relative to this tail.

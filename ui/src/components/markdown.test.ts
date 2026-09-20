@@ -292,6 +292,116 @@ describe("toSanitizedMarkdownHtml", () => {
     });
   });
 
+  describe("LaTeX", () => {
+    it.each([
+      ["$x^2$", false],
+      ["\\(x^2\\)", false],
+      ["$$x^2$$", true],
+      ["\\[x^2\\]", true],
+      ["$$\nx^2\n\n+ y^2\n$$", true],
+      ["\\[\nx^2\n\n+ y^2\n\\]", true],
+    ])("renders delimiter variant %j", (source, display) => {
+      const fragment = htmlFragment(toSanitizedMarkdownHtml(source));
+      expect(fragment.querySelectorAll(".katex")).toHaveLength(1);
+      expect(fragment.querySelector(".katex-display") !== null).toBe(display);
+      expect(fragment.querySelector("math")).not.toBeNull();
+    });
+
+    it.each(["```tex\n$x^2$\n\\[y\\]\n```", "    $x^2$\n\n    \\(y\\)", "\\$x^2\\$"])(
+      "does not interpret code or escaped delimiters: %j",
+      (source) => {
+        expect(htmlFragment(toSanitizedMarkdownHtml(source)).querySelector(".katex")).toBeNull();
+      },
+    );
+
+    it("renders inline and display math with KaTeX", () => {
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml("Inline $x^2$ and:\n\n$$\n\\frac{1}{2}\n$$"),
+      );
+
+      expect(fragment.querySelector(".katex")).not.toBeNull();
+      expect(fragment.querySelector(".katex-display")).not.toBeNull();
+      expect(fragment.textContent).toContain("x2");
+    });
+
+    it("keeps math-looking code literal", () => {
+      const fragment = htmlFragment(toSanitizedMarkdownHtml("`$x^2$` and `\\(y\\)`"));
+
+      expect(fragment.querySelectorAll(".katex")).toHaveLength(0);
+      expect(fragment.textContent?.trim()).toBe("$x^2$ and \\(y\\)");
+    });
+
+    it("does not allow KaTeX trust commands to create links", () => {
+      const html = toSanitizedMarkdownHtml("$\\href{javascript:alert(1)}{x}$");
+
+      expect(html).not.toContain("javascript:");
+      expect(html).not.toContain("<a");
+    });
+
+    it("preserves compact currency ranges and bare URL paths", () => {
+      const html = toSanitizedMarkdownHtml(
+        "Prices: $5-$10; docs: https://example.com/$schema$/query?$x$=1 and www.example.com/$path$/$next$/docs",
+      );
+      expect(html).toContain("$5-$10");
+      expect(html).toContain("$schema$");
+      expect(html).not.toContain("katex");
+    });
+
+    it("escapes text when the math rendering budget is exhausted", () => {
+      const input = Array.from({ length: 201 }, (_, index) => `$x_${index}$`).join(" ");
+      const html = toSanitizedMarkdownHtml(`${input} $<img src=x onerror=alert(1)>$`);
+      expect(html).not.toContain("<img");
+      expect(html).toContain("&lt;img");
+    });
+
+    it("preserves currency prose and display-math suffixes", () => {
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml("Costs rose from $5 to $10. Result: $$x^2$$ and explanation."),
+      );
+
+      expect(fragment.textContent).toContain("Costs rose from $5 to $10.");
+      expect(fragment.textContent).toContain("and explanation.");
+      expect(fragment.querySelector(".katex-display")).not.toBeNull();
+    });
+
+    it("retains accessible MathML and KaTeX geometry", () => {
+      const fragment = htmlFragment(toSanitizedMarkdownHtml("$\\frac{1}{2}$"));
+
+      expect(fragment.querySelector("math")).not.toBeNull();
+      expect(fragment.querySelector(".katex-html[aria-hidden='true']")).not.toBeNull();
+      expect(fragment.querySelector(".strut[style]")).not.toBeNull();
+    });
+
+    it("escapes authored HTML instead of granting KaTeX geometry styles", () => {
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml(
+          '<a href="https://example.com" style="position:fixed;inset:0;z-index:9999">fake</a>',
+        ),
+      );
+      expect(fragment.querySelector("a")).toBeNull();
+      expect(fragment.querySelector("[style]")).toBeNull();
+      expect(fragment.textContent).toContain("<a href=");
+    });
+
+    it("does not preserve authored progress styles", () => {
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml(
+          '<progress value="1" max="2" style="position:fixed;inset:0"></progress>',
+          {
+            progressBars: true,
+          },
+        ),
+      );
+      expect(fragment.querySelector("progress")?.hasAttribute("style")).toBe(false);
+    });
+
+    it("supports math inside link labels during silent lookahead", () => {
+      const fragment = htmlFragment(toSanitizedMarkdownHtml("[$x$](https://example.com)"));
+
+      expect(fragment.querySelector("a .katex")).not.toBeNull();
+    });
+  });
+
   describe("assistant transcript-role annotations", () => {
     it("marks parsed role headers without exposing Markdown delimiters", () => {
       const fragment = htmlFragment(

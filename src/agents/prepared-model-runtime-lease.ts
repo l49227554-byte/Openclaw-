@@ -110,6 +110,7 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
   const admission = createPreparedModelRuntimeAdmissionClaim(context);
   let lastExternalPublication: Promise<unknown> | undefined;
   let previousAttempt: readonly unknown[] | undefined;
+  let supersededPublication: PreparedModelRuntimePublicationSupersededError | undefined;
   for (;;) {
     admission.release();
     assertAdmission();
@@ -128,11 +129,16 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
       lastExternalPublication,
     ];
     if (previousAttempt?.every((value, index) => value === attempt[index])) {
-      throw new PreparedModelRuntimeOwnerNotPublishedError(
-        `prepared model runtime lease admission made no publication progress for ${input.agentDir}; retry the request`,
+      // Failed construction can retire its owner, hiding supersession from this checkpoint.
+      throw (
+        supersededPublication ??
+        new PreparedModelRuntimeOwnerNotPublishedError(
+          `prepared model runtime lease admission made no publication progress for ${input.agentDir}; retry the request`,
+        )
       );
     }
     previousAttempt = attempt;
+    supersededPublication = undefined;
     if (replacement) {
       lastExternalPublication = replacement.promise;
       await racePromiseWithAbortSignal(replacement.promise, options.abortSignal);
@@ -356,6 +362,7 @@ export async function acquirePreparedModelRuntimeLeaseFromOwners(
     } catch (error) {
       admission.release();
       if (error instanceof PreparedModelRuntimePublicationSupersededError) {
+        supersededPublication = error;
         continue;
       }
       throw error;

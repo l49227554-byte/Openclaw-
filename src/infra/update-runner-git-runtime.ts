@@ -106,7 +106,7 @@ async function collectDisposableRuntimeCaches(
         break;
       }
       for (const cache of caches) {
-        if (targets.some((target) => overlaps(cache, target))) {
+        if (targets.some((dependency) => overlaps(cache, dependency))) {
           caches.delete(cache);
           pending.push(cache);
         }

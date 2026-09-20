@@ -201,14 +201,19 @@ describe("PDF document extractor", () => {
   });
 
   it("filters selected pages and renders them in selection order", async () => {
-    pageTextMock.mockReturnValueOnce("");
+    pdfDocument.page.mockImplementation((pageNumber: number) => ({
+      width: 5,
+      height: 10,
+      text: () => "",
+      render: () => ({ width: 5, height: 10, rgba: Uint8Array.of(pageNumber) }),
+    }));
+    encodePngMock.mockImplementation(async (rgba: Uint8Array) => rgba);
     const result = await extractPdfContent(
       request({ pageNumbers: [3, 2, 0, 1], maxPages: 2 }),
       control,
     );
 
-    expect(result.images).toHaveLength(2);
-    expect(pdfDocument.page.mock.calls).toEqual([[2], [1], [2], [1]]);
+    expect(result.images.map((image) => Buffer.from(image.data, "base64")[0])).toEqual([2, 1]);
   });
 
   it("rejects selected pages outside the PDF page count before extraction", async () => {

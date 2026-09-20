@@ -587,6 +587,47 @@ describe("recoverEmbeddedRunOverflow", () => {
     expect(state.overflowCompactionAttempts).toBe(1);
   });
 
+  it("restores the once-per-episode truncation fallback when the budget renews", async () => {
+    const state = createEmbeddedRunContextRecoveryState();
+    mocks.compact.mockResolvedValue({
+      ok: false,
+      compacted: false,
+      reason: "nothing to compact",
+    } as CompactionResult);
+    mocks.sessionLikelyHasOversizedToolResults.mockReturnValue(true);
+    mocks.truncateOversizedToolResults.mockReturnValue({
+      truncated: true,
+      truncatedCount: 1,
+    });
+    const attempt: Partial<EmbeddedRunAttemptResult> = {
+      terminal: { kind: "failed", source: "prompt", error: overflowError() },
+      sessionIdUsed: "session-1",
+      messagesSnapshot: [
+        {
+          role: "toolResult",
+          content: [{ type: "text", text: "x".repeat(64_000) }],
+        },
+      ] as EmbeddedRunAttemptResult["messagesSnapshot"],
+    };
+
+    // The first overflow episode spends the once-per-episode truncation fallback.
+    expect(await recoverEmbeddedRunOverflow(makeInput({ state, attempt }))).toEqual({
+      action: "retry",
+    });
+    expect(state.toolResultTruncationAttempted).toBe(true);
+    expect(mocks.truncateOversizedToolResults).toHaveBeenCalledTimes(1);
+
+    // Real model progress renews the whole episode budget, truncation included.
+    state.observeContextAccounting({ kind: "model", contextTokens: 25_000, stopReason: "stop" });
+    expect(state.toolResultTruncationAttempted).toBe(false);
+
+    // A later overflow episode in the same run earns its own truncation fallback.
+    expect(await recoverEmbeddedRunOverflow(makeInput({ state, attempt }))).toEqual({
+      action: "retry",
+    });
+    expect(mocks.truncateOversizedToolResults).toHaveBeenCalledTimes(2);
+  });
+
   it("does not renew the overflow recovery budget on model completions without usage", async () => {
     const state = createEmbeddedRunContextRecoveryState();
     for (let attempt = 0; attempt < 3; attempt += 1) {

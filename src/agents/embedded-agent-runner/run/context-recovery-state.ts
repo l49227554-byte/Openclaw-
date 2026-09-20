@@ -38,8 +38,10 @@ export function createEmbeddedRunContextRecoveryState() {
         // real progress, so a later overflow in this run earns a fresh
         // recovery budget. Error/length/aborted responses carry prompt usage
         // too but establish no progress: renewing on them would let repeated
-        // overflow failures recycle the budget.
+        // overflow failures recycle the budget. The fresh budget also restores
+        // the once-per-episode tool-result truncation fallback.
         state.overflowCompactionAttempts = 0;
+        state.toolResultTruncationAttempted = false;
       }
     },
     retainTimeoutRecoveryMarker(marker: EmbeddedRunTimeoutRecoveryMarker) {

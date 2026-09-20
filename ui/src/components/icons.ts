@@ -2,6 +2,7 @@
 import { svg, type TemplateResult } from "lit";
 import { githubMark } from "./github-mark.ts";
 import { strokeIcon, toolIcons } from "./icons-tools.ts";
+import pencilSparklesUrl from "./pencil-sparkles.svg?url&no-inline";
 
 // Lucide-style SVG icons rendered through the shared strokeIcon() shell,
 // which carries the stroke presentation attributes inline (see icons-tools.ts).
@@ -294,16 +295,9 @@ export const icons = {
       d="m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z"
     />
     <path d="m2 22 .414-.414" />`),
-  pencilSparkles: strokeIcon(svg` <path d="M10 3H8" />
-    <path d="m15.007 5.008 3.987 3.986" />
-    <path d="M20 15v4" />
-    <path
-      d="M21.174 6.813a2.82 2.82 0 0 0-3.986-3.987L3.842 16.175a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"
-    />
-    <path d="M22 17h-4" />
-    <path d="M4 5v4" />
-    <path d="M6 7H2" />
-    <path d="M9 2v2" />`),
+  // The skill picker and Markdown file masks share this exact geometry.
+  // Keep the asset external: SVG use references cannot target data URLs.
+  pencilSparkles: strokeIcon(svg`<use href="${pencilSparklesUrl}#pencil-sparkles" />`),
   layoutComfortable: strokeIcon(svg` <rect width="16" height="5" x="4" y="4" rx="1.5" />
     <rect width="16" height="5" x="4" y="15" rx="1.5" />
     <line x1="7" x2="16" y1="7" y2="7" />

@@ -82,6 +82,21 @@ describe("openclaw-file-preview-modal", () => {
     expect(shadowText(modal)).toContain("noreply@example.com");
   });
 
+  it("uses the composer skill glyph for skill files but keeps ordinary Markdown icons", async () => {
+    const modal = await renderPreview({
+      activePath: "SKILL.md",
+      previewFiles: [
+        { path: "SKILL.md", size: "1 KB", contents: "Skill instructions" },
+        { path: "README.md", size: "1 KB", contents: "Documentation" },
+      ],
+    });
+    const skillIcon = modal.shadowRoot?.querySelector('[data-path="SKILL.md"] .item-icon use');
+    expect(skillIcon?.getAttribute("href")).toMatch(/pencil-sparkles\.svg.*#pencil-sparkles$/u);
+    const markdownIcon = modal.shadowRoot?.querySelector('[data-path="README.md"] .item-icon');
+    expect(markdownIcon?.querySelector("use")).toBeNull();
+    expect(markdownIcon?.querySelector("path")).not.toBeNull();
+  });
+
   it("shows the Escape shortcut only on the close button", async () => {
     const modal = await renderPreview();
     const state = modal.shadowRoot?.querySelector<HTMLElement>(".state");

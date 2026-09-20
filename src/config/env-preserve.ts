@@ -533,10 +533,11 @@ export function restoreEnvVarRefs(
 }
 
 /** Restore only references owned by the matching authored/resolved planning read. */
-function restoreEnvVarRefsFromResolved(
+export function restoreEnvVarRefsFromResolved(
   incoming: unknown,
   parsed: unknown,
   resolved: unknown,
+  explicitSetPaths?: readonly (readonly string[])[],
 ): unknown {
   // If parsed has no env var refs at this level, return incoming as-is
   if (parsed === null || parsed === undefined) {
@@ -545,6 +546,11 @@ function restoreEnvVarRefsFromResolved(
 
   // String leaf: check if parsed was a ${VAR} template that resolves to incoming
   if (typeof incoming === "string" && typeof parsed === "string") {
+    // An explicitly authored template is intent, even when an old escaped
+    // template resolved to the same string. Literal descendants still restore.
+    if (hasEnvVarRef(incoming) && explicitSetPaths?.some((path) => path.length === 0)) {
+      return incoming;
+    }
     if (hasEnvVarRef(parsed)) {
       if (resolved === incoming) {
         // The incoming value matches what the env var resolves to — restore the reference
@@ -553,6 +559,11 @@ function restoreEnvVarRefsFromResolved(
     }
     return incoming;
   }
+
+  const childExplicitPaths = (key: string) =>
+    explicitSetPaths?.flatMap((path) =>
+      path.length === 0 ? [path] : path[0] === key ? [path.slice(1)] : [],
+    );
 
   // Array template entries must retain a unique identity before authored refs
   // can be restored; ambiguous moves would attach secrets or activate escaped
@@ -564,7 +575,12 @@ function restoreEnvVarRefsFromResolved(
     ) {
       return incoming.map((item, index) =>
         index < parsed.length
-          ? restoreEnvVarRefsFromResolved(item, parsed[index], resolved[index])
+          ? restoreEnvVarRefsFromResolved(
+              item,
+              parsed[index],
+              resolved[index],
+              childExplicitPaths(String(index)),
+            )
           : item,
       );
     }
@@ -585,6 +601,7 @@ function restoreEnvVarRefsFromResolved(
         incoming[incomingIndex],
         parsed[parsedIndex],
         resolved[parsedIndex],
+        childExplicitPaths(String(incomingIndex)),
       );
     }
     for (let index = 0; index < incoming.length && index < parsed.length; index += 1) {
@@ -597,6 +614,7 @@ function restoreEnvVarRefsFromResolved(
           incoming[index],
           parsed[index],
           resolved[index],
+          childExplicitPaths(String(index)),
         );
       }
     }
@@ -614,6 +632,11 @@ function restoreEnvVarRefsFromResolved(
       ) {
         continue;
       }
+      const stableIdentity = resolveStableArrayIdentityMatch({
+        incoming,
+        parsed,
+        parsedIndex: escapedParsedIndex,
+      });
       const hasUnaccountedActiveReference = next.some((item, incomingIndex) => {
         const matchedParsedIndex = matchedParsedIndexByIncoming.get(incomingIndex);
         return containsUnaccountedActiveEscapedEnvRef(
@@ -622,6 +645,13 @@ function restoreEnvVarRefsFromResolved(
           incoming[incomingIndex],
           matchedParsedIndex === undefined ? undefined : parsed[matchedParsedIndex],
           matchedParsedIndex === undefined ? undefined : resolved[matchedParsedIndex],
+          // Explicit intent may activate only the same escaped leaf on its
+          // uniquely retained owner, never a scalar move or another owner.
+          matchedParsedIndex === escapedParsedIndex &&
+            stableIdentity.kind === "match" &&
+            stableIdentity.incomingIndex === incomingIndex
+            ? childExplicitPaths(String(incomingIndex))
+            : undefined,
         );
       });
       if (hasUnaccountedActiveReference) {
@@ -636,7 +666,12 @@ function restoreEnvVarRefsFromResolved(
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(incoming)) {
       if (Object.hasOwn(parsed, key)) {
-        result[key] = restoreEnvVarRefsFromResolved(value, parsed[key], resolved[key]);
+        result[key] = restoreEnvVarRefsFromResolved(
+          value,
+          parsed[key],
+          resolved[key],
+          childExplicitPaths(key),
+        );
       } else {
         // New key added by caller — keep as-is
         result[key] = value;

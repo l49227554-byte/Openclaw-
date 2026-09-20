@@ -22,7 +22,10 @@ import {
   stripRetiredTuningKnobs,
 } from "./legacy-config-migrations.runtime.retired-media.js";
 import { LEGACY_CONFIG_MIGRATION_RUNTIME_MEMORY_QMD } from "./legacy-config-migrations.runtime.retired-memory-qmd.js";
-import { migrateTierEvalTranche } from "./legacy-config-migrations.runtime.tier-eval.js";
+import {
+  migrateTierEvalConfigAliases,
+  migrateTierEvalTranche,
+} from "./legacy-config-migrations.runtime.tier-eval.js";
 import { visitAgentConfigScopes, visitChannelEntries } from "./legacy-config-record-shared.js";
 
 const rule = (
@@ -538,6 +541,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec
   }),
   defineLegacyConfigMigration({
     id: "runtime.doctor-tier-eval-tranche",
+    beforePluginConvergence: migrateTierEvalConfigAliases,
     describe: "Consolidate approved tier-eval configuration surfaces",
     legacyRules: [
       rule([], "Approved tier-eval configuration surfaces were consolidated.", (_value, root) => {
@@ -550,6 +554,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec
   }),
   defineLegacyConfigMigration({
     id: "runtime.final-layout-polish",
+    beforePluginConvergence: migrateFinalLayoutRenames,
     describe: "Normalize final configuration layout names",
     legacyRules: [
       rule([], "Final layout aliases were retired.", (_value, root) => {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { shouldDeferConfiguredPluginInstallRepair } from "../commands/doctor/shared/update-phase.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { findStartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
@@ -312,7 +313,11 @@ async function readConfigSnapshotWithPreparation(
     if (!validated.ok) {
       const availableSnapshot = pluginMetadata.getSnapshot();
       const collect = () =>
-        context.options.pluginValidation === "core-only"
+        // Keep validation plugin-aware, but defer executable repair diagnostics until
+        // the updater selects the target plugin generation, including writer snapshots.
+        context.options.deferDoctorLegacyIssues ||
+        context.options.pluginValidation === "core-only" ||
+        shouldDeferConfiguredPluginInstallRepair(deps.env)
           ? findLegacyConfigIssues(effectiveConfigRaw, effectiveParsed)
           : collectInvalidConfigLegacyIssues(effectiveConfigRaw, effectiveParsed);
       const legacyIssues = await deps.measure("config.snapshot.read.legacy-issues", () =>

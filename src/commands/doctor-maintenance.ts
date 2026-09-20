@@ -80,6 +80,7 @@ export async function beginDoctorMaintenance(params: {
   assertCurrent?: () => void;
 }): Promise<
   | {
+      assertCurrent(): void;
       run<T>(operation: () => T): T;
       releaseState(): Promise<void>;
       release(): Promise<void>;
@@ -690,6 +691,17 @@ export async function beginDoctorMaintenance(params: {
     warnings,
     failureFacts,
     run: <T>(operation: () => T) => resources!.run(operation),
+    assertCurrent() {
+      if (
+        this !== maintenance ||
+        custody !== "held" ||
+        coordinators.length !== 2 ||
+        cleanupFailure
+      ) {
+        throw new Error("Doctor maintenance authority has expired.");
+      }
+      assertUpdateAdmissionCurrent?.();
+    },
     releaseState: () => settle(releaseState),
     async release() {
       if (this !== maintenance) {

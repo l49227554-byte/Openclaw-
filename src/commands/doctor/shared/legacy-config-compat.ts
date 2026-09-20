@@ -40,6 +40,8 @@ export type LegacyDoctorMigrationOptions = {
   context?: LegacyConfigMigrationContext;
   // State-free previews skip plugin contracts; the committed result always uses a full run.
   pluginContracts?: boolean;
+  /** Run only pure aliases; leave plugin contracts, ownership and state inputs for the full pass. */
+  beforePluginConvergence?: boolean;
 };
 
 /** Apply all legacy doctor migrations to raw config, returning null when nothing changed. */
@@ -58,7 +60,16 @@ export function applyLegacyDoctorMigrations(
   const next = cloneConfigWithResolutionFacts(original);
   const changes: string[] = [];
   for (const migration of LEGACY_CONFIG_MIGRATIONS) {
-    migration.apply(next, changes, options.context);
+    const apply = options.beforePluginConvergence
+      ? migration.beforePluginConvergence
+      : migration.apply;
+    apply?.(next, changes, options.context);
+  }
+  if (options.beforePluginConvergence) {
+    return {
+      next: changes.length > 0 ? inheritLegacyDefaultAgentId(original, next) : null,
+      changes,
+    };
   }
   const compat = applyChannelDoctorCompatibilityMigrations(next, {
     pluginContracts: options.pluginContracts !== false,

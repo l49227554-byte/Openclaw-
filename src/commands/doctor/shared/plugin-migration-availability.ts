@@ -16,7 +16,10 @@ import {
   isActivatedManifestOwner,
   passesManifestOwnerBasePolicy,
 } from "../../../plugins/manifest-owner-policy.js";
-import { isPayloadMissing } from "../../../plugins/payload-verification.js";
+import {
+  isPayloadMissing,
+  runPluginPayloadSmokeCheckForManifestRecords,
+} from "../../../plugins/payload-verification.js";
 import { createPluginCache, withPluginCache } from "../../../plugins/plugin-cache.js";
 import {
   isArtifactPreservingStateRead,
@@ -51,6 +54,8 @@ export async function inspectPluginMigrationAvailability(params: {
   installRecords?: Record<string, PluginInstallRecord>;
   retainedPluginIds?: readonly string[];
   deferInstallation: boolean;
+  /** Verify retained manifest roots when no managed convergence is scheduled. */
+  verifyRetainedPayloads?: boolean;
 }): Promise<PluginMigrationAvailability> {
   const artifactPreserving = isArtifactPreservingStateRead();
   const env = artifactPreserving ? cloneEnvWithPlatformSemantics(params.env) : params.env;
@@ -88,7 +93,8 @@ export async function inspectPluginMigrationAvailability(params: {
             configuredChannelOwnerPluginIds: context.configuredChannelOwnerPluginIds,
             blockedPluginIds,
           });
-          const inspectedIds = new Set([...selected, ...(params.retainedPluginIds ?? [])]);
+          const retainedIds = new Set(params.retainedPluginIds ?? []);
+          const inspectedIds = new Set([...selected, ...retainedIds]);
           const requiredPluginIds: string[] = [];
           const inspectionRequiredPluginIds: string[] = [];
           const statelessCandidates = new Set<string>();
@@ -110,6 +116,9 @@ export async function inspectPluginMigrationAvailability(params: {
               requiredPluginIds.push(plugin.id);
             } else if (
               legacySetup ||
+              plugin.doctorContract?.configRepair ||
+              plugin.doctorContract?.resolveSessionStoreAgentIds ||
+              plugin.doctorContract?.sessionRouteStateOwners ||
               (artifact && (!plugin.doctorContract || Array.isArray(declaration)))
             ) {
               inspectionRequiredPluginIds.push(plugin.id);
@@ -121,13 +130,36 @@ export async function inspectPluginMigrationAvailability(params: {
           const inspectionRequiredIds = new Set(inspectionRequiredPluginIds);
           const statelessPluginIds: string[] = [];
           const normalizedConfig = normalizePluginsConfig(params.cfg.plugins);
-          const pending = [...selected].toSorted().flatMap((pluginId) => {
-            if (!passesManifestOwnerBasePolicy({ plugin: { id: pluginId }, normalizedConfig })) {
+          const retainedPayloads = params.verifyRetainedPayloads
+            ? await runPluginPayloadSmokeCheckForManifestRecords({
+                plugins: metadata.plugins.filter(
+                  (plugin) =>
+                    retainedIds.has(plugin.id) &&
+                    isActivatedManifestOwner({ plugin, normalizedConfig, rootConfig: params.cfg }),
+                ),
+                env,
+              })
+            : { failures: [] };
+          const payloadFailures = new Map(
+            retainedPayloads.failures.map((failure) => [failure.pluginId, failure]),
+          );
+          const pending = [...inspectedIds].toSorted().flatMap((pluginId) => {
+            if (
+              !retainedIds.has(pluginId) &&
+              !passesManifestOwnerBasePolicy({ plugin: { id: pluginId }, normalizedConfig })
+            ) {
               return [];
             }
             const plugin = metadata.plugins.find((candidate) => candidate.id === pluginId);
             const bundled = context.bundledPluginsById.has(pluginId);
+            const payloadFailure = payloadFailures.get(pluginId);
+            const inactiveRetainedOwner =
+              retainedIds.has(pluginId) &&
+              (!plugin ||
+                !isActivatedManifestOwner({ plugin, normalizedConfig, rootConfig: params.cfg }));
             const unavailable =
+              payloadFailure !== undefined ||
+              inactiveRetainedOwner ||
               !context.knownIds.has(pluginId) ||
               (Object.hasOwn(context.records, pluginId) &&
                 isPayloadMissing(env, context.records[pluginId]?.installPath)) ||
@@ -138,7 +170,7 @@ export async function inspectPluginMigrationAvailability(params: {
             // package convergence would hide its Doctor contract from the canary. Ordinary
             // config paths stay deferred because their source may be stale during an update.
             const availableWithoutPackageConvergence =
-              bundled ||
+              (bundled && !inactiveRetainedOwner && !payloadFailure) ||
               (plugin?.origin === "config" &&
                 rehearsalRoot !== undefined &&
                 isPathInside(rehearsalRoot, plugin.rootDir) &&
@@ -166,9 +198,11 @@ export async function inspectPluginMigrationAvailability(params: {
                   pluginId,
                   compatibilityMigrationPaths: plugin?.configContracts?.compatibilityMigrationPaths,
                 }),
-                reason: params.deferInstallation
-                  ? "Package convergence must wait until the updating parent releases its install records."
-                  : "The configured plugin package is missing or has not converged.",
+                reason: payloadFailure
+                  ? `Plugin payload verification failed (${payloadFailure.reason}): ${payloadFailure.detail}`
+                  : params.deferInstallation
+                    ? "Package convergence must wait until the updating parent releases its install records."
+                    : "The configured plugin package is missing or has not converged.",
                 command: "openclaw update repair",
               },
             ];

@@ -2,7 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
-import * as taskMutationEffects from "./task-executor-create.async.js";
+import * as taskMutationEffects from "./task-executor-mutation-effects.async.js";
 import { createTaskFlowForTask } from "./task-flow-registry.js";
 import * as taskRegistryListenerState from "./task-registry-listener-state.js";
 import { updateTask } from "./task-registry-mutation.js";

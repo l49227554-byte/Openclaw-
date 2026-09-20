@@ -282,7 +282,6 @@ export function applyVerifiedGitHubIdentity(params: {
     : undefined;
   if (
     params.preserveEmailProfile &&
-    aliasProfileId &&
     ((existingProfileId && existingProfileId !== aliasProfileId) ||
       (aliasGitHubIdentity &&
         !aliasGitHubIdentity.accounts.some(
@@ -290,7 +289,7 @@ export function applyVerifiedGitHubIdentity(params: {
         )))
   ) {
     throw new Error(
-      "GitHub identity conflicts with the existing email profile; ask an administrator to link the profiles with users.linkEmail",
+      "GitHub identity requires explicit linking to this email; ask an administrator to use users.linkEmail",
     );
   }
   const reusableAliasProfileId =

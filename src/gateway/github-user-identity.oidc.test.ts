@@ -17,6 +17,7 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createAuthenticatedGitHubIdentitySync } from "./github-user-identity.js";
 import { resolveAuthenticatedHttpUserProfile } from "./http-auth-user-profile.js";
+import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import { resolveGatewayConnectUserProfile } from "./server/ws-connection/connect-user-profile.js";
 
 const accessOrigin = "https://team.cloudflareaccess.com";
@@ -268,6 +269,58 @@ describe("Cloudflare Access OIDC profile resolution", () => {
         expect(result.authenticatedUserProfile?.profileId).toBe(primary.id);
         expect(getUserProfileListItem(primary.id).githubIdentity?.login).toBe("primary");
         expect(resolveUserProfileGitHubAttribution([primary.id]).get(primary.id)).toBeNull();
+      } finally {
+        request.req.destroy();
+      }
+    });
+  });
+
+  it("requires explicit linking before a new email can use an existing profile's authority", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const maintainer = syncGitHubIdentity({
+        identity: { accountId: 101, login: "canonical-ada" },
+        authenticationAlias: { kind: "email", email: "owner@example.test" },
+      });
+      setUserProfileRole(maintainer.id, "maintainer");
+      setUserPreferences(maintainer.id, { [GIT_COAUTHOR_PREFERENCE_KEY]: false });
+      const before = getUserProfileListItem(maintainer.id);
+      const transport = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (url) =>
+          identityResponse(
+            url === `${accessOrigin}/cdn-cgi/access/get-identity`
+              ? oidcIdentity()
+              : { id: 101, login: "canonical-ada" },
+          ),
+        );
+      const request = accessRequest("ada@example.test", githubCfg);
+      try {
+        await expect(resolveAuthenticatedHttpUserProfile(request)).rejects.toThrow(
+          "users.linkEmail",
+        );
+        expect(getUserProfileListItem(maintainer.id)).toEqual(before);
+
+        transport.mockResolvedValueOnce(identityResponse({ ...oidcIdentity(), oidc_fields: {} }));
+        const emailOnly = await resolveAuthenticatedHttpUserProfile(request);
+        expect(emailOnly.authenticatedUserProfile?.profileId).not.toBe(maintainer.id);
+        expect(emailOnly.operatorRolePolicy?.scopes).toEqual([]);
+
+        linkEmail("ada@example.test", maintainer.id);
+        const linked = await resolveAuthenticatedHttpUserProfile(request);
+        expect(linked.authenticatedUserProfile?.profileId).toBe(maintainer.id);
+        expect(linked.operatorRolePolicy?.scopes).toEqual(["operator.admin"]);
+        expect(resolveUserProfileGitHubAttribution([maintainer.id]).get(maintainer.id)).toBeNull();
+
+        setUserProfileRole(maintainer.id, null);
+        invalidateOperatorRolePolicy(maintainer.id);
+        const restricted = await resolveAuthenticatedHttpUserProfile(request);
+        expect(restricted.authenticatedUserProfile?.profileId).toBe(maintainer.id);
+        expect(restricted.operatorRolePolicy?.scopes).toEqual([]);
+
+        transport.mockResolvedValueOnce(identityResponse({}, 401));
+        await expect(resolveAuthenticatedHttpUserProfile(request)).rejects.toThrow(
+          "Cloudflare Access identity lookup failed",
+        );
       } finally {
         request.req.destroy();
       }

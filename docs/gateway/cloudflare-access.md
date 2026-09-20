@@ -117,8 +117,10 @@ resolution. A malformed trusted claim or failed identity verification fails
 identity enrichment instead of inventing credit. Existing email profiles retain
 their identity, role, and saved co-author preference. A conflicting GitHub account
 does not automatically merge profiles or move the email; an administrator must
-resolve it through the existing `users.linkEmail` operation. Explicitly linked
-secondary accounts retain the profile's primary account for public credit.
+resolve it through the existing `users.linkEmail` operation. This also applies
+to a first-time email claiming an account that already belongs to another
+profile: link that email explicitly before it can inherit the profile's role.
+Explicitly linked secondary accounts retain the profile's primary account for public credit.
 See [Gateway profiles and GitHub credit](/concepts/user-model#gateway-profile-and-github-credit).
 
 ## Step 3: Trust those headers in the Gateway

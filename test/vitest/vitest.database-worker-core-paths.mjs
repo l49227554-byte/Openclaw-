@@ -102,7 +102,12 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/media-generate-tool.donor-resources.test.ts",
   "src/agents/tools/media-generate-tool.resources.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
+  "src/agents/subagents/registry/subagent-control.recovery.test.ts",
+  "src/agents/subagents/registry/subagent-control.retirement.test.ts",
   "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
+  "src/agents/subagents/spawn/subagent-spawn.authority.test.ts",
+  "src/agents/subagents/spawn/subagent-spawn.in-process-gateway.test.ts",
+  "src/agents/tools/swarm-tools.integration.test.ts",
   "src/tasks/task-registry-session-index.test.ts",
   "src/tasks/task-registry.store.test.ts",
   "src/claws/provenance-runtime-read.async.test.ts",
@@ -243,6 +248,9 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/services.cron.test.ts",
   "test/plugins/memory-dreaming-cron.test.ts",
   "src/state/creator-namespace-migration.test.ts",
+  "src/agents/auth-profiles/store-owner-publication.test.ts",
+  "src/agents/auth-profiles/usage.inherited-owner.test.ts",
+  "test/helpers/stage-live-auth-profiles.test.ts",
 ];
 
 const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);

@@ -776,7 +776,7 @@ describe("native device settings pages", () => {
       expect(native.capability.requestPermission).toHaveBeenCalledWith("calendars");
       row(page, "Reminders").querySelector<HTMLButtonElement>("button")!.click();
       expect(native.capability.openSystemSettings).toHaveBeenCalledWith("reminders");
-      expect(page.textContent).not.toContain("Active computer presence");
+      expect(page.textContent).not.toContain("System-wide presence detection");
       expect(row(page, "Precise location").querySelector("wa-switch")).toBeNull();
       expect(row(page, "Precise location").textContent).toContain("Disabled");
       const settings = row(page, "Precise location").querySelector<HTMLButtonElement>("button")!;
@@ -819,13 +819,13 @@ describe("native device settings pages", () => {
     );
     toggle(page, "Precise location", true);
     expect(native.capability.set).toHaveBeenCalledWith("permissions.location.precise", true);
-    toggle(page, "Active computer presence", true);
+    toggle(page, "System-wide presence detection", true);
     expect(native.capability.set).toHaveBeenCalledWith(
       "capabilities.activeComputerPresenceEnabled",
       true,
     );
-    expect(row(page, "Active computer presence").textContent).toContain(
-      "Never sends keys, pointer positions, app names, or window titles.",
+    expect(row(page, "System-wide presence detection").textContent).toContain(
+      "Shares only idle duration, never keys, pointer positions, app names, or window titles.",
     );
   });
 });

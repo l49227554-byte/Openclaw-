@@ -1701,7 +1701,7 @@ describe("config observe recovery", () => {
 
   it("auto-restores a backup carrying a saved blank agent cwd", async () => {
     await withSuiteHome(async (home) => {
-      const { deps, configPath, auditPath, warn } = makeDeps(home);
+      const { io, configPath, warn } = createTestConfigIO(home);
       await seedConfigBackup(configPath, {
         meta: { lastTouchedVersion: "2026.4.22" },
         gateway: { mode: "local", auth: { mode: "none" } },
@@ -1711,12 +1711,12 @@ describe("config observe recovery", () => {
         meta: { lastTouchedVersion: "2026.5.28" },
       });
 
-      const recovered = await recoverSuspiciousConfigRead({ deps, configPath, ...clobbered });
+      const snapshot = await io.readConfigFileSnapshot({ recoverSuspicious: true });
 
-      expect((recovered.parsed as { gateway?: { mode?: string } }).gateway?.mode).toBe("local");
-      const observe = await readLastObserveEvent(auditPath);
-      expect(observe?.restoredFromBackup).toBe(true);
+      expect(snapshot.valid).toBe(true);
+      expect(snapshot.config.gateway?.mode).toBe("local");
       expectWarnContaining(warn, "Config auto-restored from backup:");
+      await expect(fsp.readFile(configPath, "utf-8")).resolves.not.toBe(clobbered.raw);
     });
   });
 });

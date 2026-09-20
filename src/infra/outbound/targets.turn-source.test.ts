@@ -1,23 +1,72 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { SessionDeliveryState, SessionEntry } from "../../config/sessions/types.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { resolveHeartbeatDeliveryTarget } from "./targets.js";
 import {
   createGenericTargetTestPlugin,
   createTargetsTestRegistry,
+  createTestChannelPlugin,
+  telegramMessagingForTest,
 } from "./targets.test-helpers.js";
+
+function createOwnerAllowlistTargetTestPlugin(params: {
+  id: ChannelPlugin["id"];
+  label: string;
+  ownerId: string;
+  inferTargetChatType?: NonNullable<ChannelPlugin["messaging"]>["inferTargetChatType"];
+}): ChannelPlugin {
+  const plugin = createTestChannelPlugin({
+    id: params.id,
+    label: params.label,
+    outbound: {
+      deliveryMode: "direct",
+      resolveTarget: ({ to }) =>
+        to
+          ? { ok: true as const, to: to.trim() }
+          : { ok: false as const, error: new Error("target required") },
+    },
+    messaging: {
+      ...(params.inferTargetChatType ? { inferTargetChatType: params.inferTargetChatType } : {}),
+      targetPrefixes: [String(params.id)],
+      targetResolver: { looksLikeId: () => true },
+    },
+  });
+  plugin.config = { ...plugin.config, resolveAllowFrom: () => [params.ownerId] };
+  return plugin;
+}
 
 describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
   const previousRegistry = getActivePluginRegistry();
 
   afterEach(() => {
-    setActivePluginRegistry(previousRegistry);
+    if (previousRegistry) {
+      setActivePluginRegistry(previousRegistry);
+    }
   });
 
   it("delivers origin-carrying event wakes to event origin instead of explicit heartbeat target (#153543)", () => {
     const discord = createGenericTargetTestPlugin("discord", "Discord");
     const feishu = createGenericTargetTestPlugin("feishu", "Feishu");
     setActivePluginRegistry(createTargetsTestRegistry([feishu, discord]));
+
+    const directDelivery: SessionDeliveryState = {
+      kind: "external",
+      route: {
+        channel: "discord",
+        target: { to: "557519782434308115", chatType: "direct" },
+      },
+      context: {
+        channel: "discord",
+        to: "557519782434308115",
+      },
+      origin: {
+        provider: "discord",
+        to: "557519782434308115",
+        chatType: "direct",
+      },
+    };
 
     const resolved = resolveHeartbeatDeliveryTarget({
       cfg: {
@@ -33,10 +82,9 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
       entry: {
         sessionId: "sess-discord-direct",
         updatedAt: 1,
-        lastChannel: "discord",
-        lastTo: "557519782434308115",
         chatType: "direct",
-      },
+        delivery: directDelivery,
+      } as unknown as SessionEntry,
       heartbeat: {
         target: "feishu",
         to: "user:ou_feishu_owner",
@@ -55,6 +103,23 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
     const feishu = createGenericTargetTestPlugin("feishu", "Feishu");
     setActivePluginRegistry(createTargetsTestRegistry([feishu, discord]));
 
+    const directDelivery: SessionDeliveryState = {
+      kind: "external",
+      route: {
+        channel: "discord",
+        target: { to: "557519782434308115", chatType: "direct" },
+      },
+      context: {
+        channel: "discord",
+        to: "557519782434308115",
+      },
+      origin: {
+        provider: "discord",
+        to: "557519782434308115",
+        chatType: "direct",
+      },
+    };
+
     const resolved = resolveHeartbeatDeliveryTarget({
       cfg: {
         agents: {
@@ -69,10 +134,9 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
       entry: {
         sessionId: "sess-discord-direct",
         updatedAt: 1,
-        lastChannel: "discord",
-        lastTo: "557519782434308115",
         chatType: "direct",
-      },
+        delivery: directDelivery,
+      } as unknown as SessionEntry,
       heartbeat: {
         target: "feishu",
         to: "user:ou_feishu_owner",
@@ -84,8 +148,30 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
 
   it("never reuses an ambient group session route for originless owner delivery", () => {
     const discord = createGenericTargetTestPlugin("discord", "Discord");
-    const telegram = createGenericTargetTestPlugin("telegram", "Telegram");
+    const telegram = createOwnerAllowlistTargetTestPlugin({
+      id: "telegram",
+      label: "Telegram",
+      ownerId: "123456789",
+      inferTargetChatType: telegramMessagingForTest.inferTargetChatType,
+    });
     setActivePluginRegistry(createTargetsTestRegistry([telegram, discord]));
+
+    const groupDelivery: SessionDeliveryState = {
+      kind: "external",
+      route: {
+        channel: "discord",
+        target: { to: "channel:general-discussion", chatType: "group" },
+      },
+      context: {
+        channel: "discord",
+        to: "channel:general-discussion",
+      },
+      origin: {
+        provider: "discord",
+        to: "channel:general-discussion",
+        chatType: "group",
+      },
+    };
 
     const resolved = resolveHeartbeatDeliveryTarget({
       cfg: {
@@ -106,10 +192,9 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
       entry: {
         sessionId: "sess-discord-group",
         updatedAt: 1,
-        lastChannel: "discord",
-        lastTo: "channel:general-discussion",
         chatType: "group",
-      },
+        delivery: groupDelivery,
+      } as unknown as SessionEntry,
       heartbeat: {
         target: "owner",
       },
@@ -122,3 +207,5 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
     expect(resolved.to).not.toBe("channel:general-discussion");
   });
 });
+
+

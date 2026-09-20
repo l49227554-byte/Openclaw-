@@ -129,6 +129,25 @@ describe("buildEmbeddedExtensionFactories", () => {
     });
   });
 
+  it("wires shadow semantic curation into safeguard runtime", () => {
+    const { sessionManager } = buildSafeguardFactories({
+      agents: {
+        defaults: {
+          compaction: {
+            mode: "safeguard",
+            semanticCuration: {
+              mode: "shadow",
+              timeoutMs: 650,
+            },
+          },
+        },
+      },
+    } as OpenClawConfig);
+
+    expect(getCompactionSafeguardRuntime(sessionManager)?.semanticCurationMode).toBe("shadow");
+    expect(getCompactionSafeguardRuntime(sessionManager)?.semanticCurationTimeoutMs).toBe(650);
+  });
+
   it("wires the run workspace into safeguard runtime", () => {
     const { sessionManager } = buildSafeguardFactories(
       {

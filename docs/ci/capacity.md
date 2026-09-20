@@ -237,6 +237,12 @@ no-output watchdog are unchanged.
 Shared test port claims cover both child-process startup and in-process listener
 lifetimes, including the handoff before a child binds its socket.
 
+Infrastructure and host-owned SQLite test consumers also follow the existing
+worker ceiling, retaining isolated forks and fixture-owned home/state directories.
+Directory-sensitive regressions run in joined child processes, and backup command
+fixtures consume the invocation's prepared runtime. File parallelism does not add
+compact groups, runner registrations, or a separate worker budget.
+
 Complete hybrid main and pull-request plans retain their existing jobs and runner
 allocations while admitting measured runtime groups within 440 seconds, including
 the existing 100-second build allowance. This reserves 40 seconds of the

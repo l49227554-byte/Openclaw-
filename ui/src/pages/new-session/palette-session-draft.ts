@@ -253,7 +253,6 @@ export class PaletteSessionDraft implements ReactiveController {
   close() {
     this.coldSubmitReadSignal = undefined;
     const submission = this.draft?.submission;
-    submission?.attachmentDraft.abortReads();
     // A failed create or rejected turn retains the same retry/recovery draft.
     // Ordinary dismissal discards its previews immediately, not on next open.
     if (
@@ -264,6 +263,8 @@ export class PaletteSessionDraft implements ReactiveController {
       !submission.error
     ) {
       submission.attachmentDraft.reset({ release: true });
+    } else {
+      submission?.attachmentDraft.abortReads();
     }
     this.settings.close();
     this.draft?.browser.close();

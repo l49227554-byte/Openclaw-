@@ -11,7 +11,6 @@ type CommandPaletteInputProps = {
   onInputRef: (element: Element | undefined) => void;
   onValueChange: (value: string) => void;
   actions?: TemplateResult | typeof nothing;
-  attachments?: TemplateResult | typeof nothing;
   onPaste?: (event: ClipboardEvent) => void;
   disabled?: boolean;
   readOnly?: boolean;
@@ -129,7 +128,6 @@ const paletteInputLayout = directive(PaletteInputLayoutDirective);
 
 export function renderCommandPaletteInput(props: CommandPaletteInputProps) {
   return html`
-    ${props.attachments ?? nothing}
     <div class="cmd-palette__entry">
       <div class="cmd-palette__input-scroll">
         <textarea

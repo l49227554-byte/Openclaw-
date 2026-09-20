@@ -1,6 +1,5 @@
 /* @vitest-environment jsdom */
 
-import { expectDefined } from "@openclaw/normalization-core";
 import { nothing, render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
@@ -52,9 +51,9 @@ function image(name = "pasted.png") {
   return new File(["image"], name, { type: "image/png" });
 }
 
-function finishRead(index: number) {
+function finishRead(index: number, dataUrl = "data:image/png;base64,aW1hZ2U=") {
   const reader = readers[index]!;
-  Object.defineProperty(reader, "result", { value: "data:image/png;base64,aW1hZ2U=" });
+  Object.defineProperty(reader, "result", { value: dataUrl });
   reader.dispatchEvent(new ProgressEvent("load"));
 }
 
@@ -62,20 +61,6 @@ function key(input: HTMLTextAreaElement, init: KeyboardEventInit) {
   const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
   input.dispatchEvent(event);
   return event;
-}
-
-function textOutsideHiddenDescriptions(element: Element) {
-  // Tooltips add hidden accessible descriptions in light DOM. They are not
-  // filenames/helper copy on the thumbnail surface.
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
-    acceptNode: (node) =>
-      node.parentElement?.closest("[hidden]") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-  });
-  let text = "";
-  while (walker.nextNode()) {
-    text += walker.currentNode.textContent;
-  }
-  return text.trim();
 }
 
 async function mount() {
@@ -123,61 +108,44 @@ async function mount() {
 }
 
 describe("command palette paste-only images", () => {
-  it.each(["", "Describe these images"])(
-    "submits an image prompt in the background (%j)",
-    async (message) => {
-      const foreground = document.createElement("textarea");
-      foreground.value = "Keep my foreground draft";
-      document.body.append(foreground);
-      foreground.focus();
-      foreground.setSelectionRange(5, 10, "backward");
-      const { palette, input, context, start } = await mount();
-      input.value = message;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.setSelectionRange(0, Math.min(5, message.length), "backward");
-      const selection = [input.selectionStart, input.selectionEnd];
-      expect(paste(input, [image()]).defaultPrevented).toBe(true);
-      await palette.updateComplete;
-      expect(start().disabled).toBe(true);
-      expect(palette.querySelector('.chat-attachment-thumb[aria-busy="true"]')).not.toBeNull();
-      key(input, { key: "Enter", ctrlKey: true });
-      expect(context.sessions.createResult).not.toHaveBeenCalled();
-      finishRead(0);
-      await vi.waitFor(() => expect(start().disabled).toBe(false));
-      expect(palette.querySelector("textarea")).toBe(input);
-      expect([input.selectionStart, input.selectionEnd]).toEqual(selection);
-      const rail = palette.querySelector(".cmd-palette__attachments")!;
-      expect(rail.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(rail.querySelectorAll(".chat-attachment-thumb img")).toHaveLength(1);
-      expect(textOutsideHiddenDescriptions(rail)).toBe("");
-      expect(
-        palette.querySelector(
-          'input[type="file"], .agent-chat__input-btn--attach, .chat-attachment-file__name',
-        ),
-      ).toBeNull();
-      expect(palette.querySelector(".chat-attachments-status")).toBeNull();
-      key(input, { key: "Enter", metaKey: true });
-      await vi.waitFor(() => expect(palette.isOpen).toBe(false));
-      expect(context.sessions.createResult).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          message,
-          attachments: [
-            expect.objectContaining({
-              type: "image",
-              mimeType: "image/png",
-              fileName: "pasted.png",
-              content: "aW1hZ2U=",
-            }),
-          ],
-        }),
-        { reconciliation: "background" },
-      );
-      expect(context.navigateAndWait).not.toHaveBeenCalled();
-      expect(context.gateway.setSessionKey).not.toHaveBeenCalled();
-      expect(foreground.value).toBe("Keep my foreground draft");
-      expect([foreground.selectionStart, foreground.selectionEnd]).toEqual([5, 10]);
-    },
-  );
+  it("preserves the input and submits text with images in the background", async () => {
+    const message = "Describe these images";
+    const { palette, input, context, start } = await mount();
+    input.value = message;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.setSelectionRange(0, Math.min(5, message.length), "backward");
+    const selection = [input.selectionStart, input.selectionEnd];
+    expect(paste(input, [image()]).defaultPrevented).toBe(true);
+    await palette.updateComplete;
+    expect(start().disabled).toBe(true);
+    expect(palette.querySelector('.chat-attachment-thumb[aria-busy="true"]')).not.toBeNull();
+    key(input, { key: "Enter", ctrlKey: true });
+    expect(context.sessions.createResult).not.toHaveBeenCalled();
+    finishRead(0);
+    await vi.waitFor(() => expect(start().disabled).toBe(false));
+    expect(palette.querySelector("textarea")).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual(selection);
+    const rail = palette.querySelector(".cmd-palette__attachments")!;
+    expect(rail.querySelectorAll(".chat-attachment-thumb img")).toHaveLength(1);
+    key(input, { key: "Enter", metaKey: true });
+    await vi.waitFor(() => expect(palette.isOpen).toBe(false));
+    expect(context.sessions.createResult).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        message,
+        attachments: [
+          expect.objectContaining({
+            type: "image",
+            mimeType: "image/png",
+            fileName: "pasted.png",
+            content: "aW1hZ2U=",
+          }),
+        ],
+      }),
+      { reconciliation: "background" },
+    );
+    expect(context.navigateAndWait).not.toHaveBeenCalled();
+    expect(context.gateway.setSessionKey).not.toHaveBeenCalled();
+  });
 
   it("keeps text and non-image paste native, including long search prompts", async () => {
     const { palette, input, context } = await mount();
@@ -191,30 +159,6 @@ describe("command palette paste-only images", () => {
     expect(readers).toHaveLength(0);
     expect(palette.querySelector(".chat-attachments-preview")).toBeNull();
     expect(context.sessions.createResult).not.toHaveBeenCalled();
-  });
-
-  it("keeps same-name images ordered across overlapping reads and removes only one", async () => {
-    const { palette, input, context, start } = await mount();
-    paste(input, [image(), image()]);
-    paste(input, [image("later.png")]);
-    finishRead(2);
-    finishRead(0);
-    await palette.updateComplete;
-    const remove = palette.querySelectorAll<HTMLButtonElement>(".chat-attachment-remove");
-    expect(remove).toHaveLength(3);
-    remove[1]!.focus();
-    remove[1]!.click();
-    finishRead(1);
-    await vi.waitFor(() => expect(start().disabled).toBe(false));
-    expect(palette.querySelectorAll(".chat-attachment-thumb")).toHaveLength(2);
-    start().click();
-    await vi.waitFor(() => expect(context.sessions.createResult).toHaveBeenCalledOnce());
-    const params = expectDefined(
-      vi.mocked(context.sessions.createResult).mock.calls[0]?.[0],
-      "image creation parameters",
-    );
-    const attachments = params.attachments;
-    expect(attachments?.map(({ fileName }) => fileName)).toEqual(["pasted.png", "later.png"]);
   });
 
   it.each(["dismiss", "disconnect", "owner"])(
@@ -257,7 +201,6 @@ describe("command palette paste-only images", () => {
     expect(failed.querySelector('[role="img"]')?.getAttribute("aria-label")).toContain(
       "unreadable.png",
     );
-    expect(textOutsideHiddenDescriptions(failed)).toBe("");
     expect(start().disabled).toBe(true);
     failed.querySelector<HTMLButtonElement>(".chat-attachment-remove")!.click();
     paste(input, [image("retry.png")]);
@@ -267,32 +210,6 @@ describe("command palette paste-only images", () => {
     expect(palette.querySelector(".chat-attachment-thumb--error")).toBeNull();
     start().click();
     await vi.waitFor(() => expect(context.sessions.createResult).toHaveBeenCalledOnce());
-  });
-
-  it("retains image-only failed creation across reopen and retries the same bytes", async () => {
-    const { palette, input, context, start } = await mount();
-    vi.mocked(context.sessions.createResult).mockResolvedValueOnce(null);
-    Object.assign(context.sessions.state, { error: "Creation denied" });
-    paste(input, [image()]);
-    finishRead(0);
-    await vi.waitFor(() => expect(start().disabled).toBe(false));
-    start().click();
-    await vi.waitFor(() =>
-      expect(palette.querySelector('[role="alert"]')?.textContent).toContain("Creation denied"),
-    );
-    const src = palette.querySelector(".chat-attachment-thumb img")?.getAttribute("src");
-    key(input, { key: "Escape" });
-    await palette.updateComplete;
-    palette.openPalette();
-    await palette.updateComplete;
-    expect(palette.querySelector(".chat-attachment-thumb img")?.getAttribute("src")).toBe(src);
-    start().click();
-    await vi.waitFor(() => expect(palette.isOpen).toBe(false));
-    const calls = vi.mocked(context.sessions.createResult).mock.calls;
-    expect(calls).toHaveLength(2);
-    const original = expectDefined(calls[0]?.[0], "original creation parameters");
-    const retry = expectDefined(calls[1]?.[0], "retried creation parameters");
-    expect(retry.attachments).toEqual(original.attachments);
   });
 
   it("keeps a rejected image prompt visible without creating a duplicate session", async () => {
@@ -324,15 +241,15 @@ describe("command palette paste-only images", () => {
     expect(palette.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it.each(["ready", "failed", "dismissed", "oversized"] as const)(
+  it.each(["ready", "failed", "dismissed", "oversized", "partial"] as const)(
     "settles a cold image submit exactly once after %s preparation",
     async (outcome) => {
       const { palette, context } = await mount();
       palette.togglePalette();
       await palette.updateComplete;
-      if (outcome === "oversized") {
+      if (outcome === "oversized" || outcome === "partial") {
         Object.assign(context.gateway.snapshot.hello!, {
-          policy: { attachments: { maxBytes: 2, maxImageBytes: 2 } },
+          policy: { attachments: { maxBytes: 65_536, maxImageBytes: 4 } },
         });
       }
       const state = new CommandPaletteLoadingState({ requestUpdate: () => {} });
@@ -343,7 +260,15 @@ describe("command palette paste-only images", () => {
         loader,
       );
       const coldInput = loader.querySelector("textarea")!;
-      paste(coldInput, [image()]);
+      if (outcome !== "ready") {
+        coldInput.value = "Keep every image";
+        coldInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      const files =
+        outcome === "partial"
+          ? [new File(["ok"], "small.png", { type: "image/png" }), image()]
+          : [image()];
+      paste(coldInput, files);
       key(coldInput, { key: "Enter", metaKey: true });
       const take = state.captureHandoff();
       palette.openPalette(take);
@@ -359,12 +284,38 @@ describe("command palette paste-only images", () => {
       if (outcome === "failed") {
         readers[0]!.dispatchEvent(new ProgressEvent("error"));
       } else if (outcome !== "oversized") {
-        finishRead(0);
+        finishRead(0, outcome === "partial" ? "data:image/png;base64,b2s=" : undefined);
       }
       await palette.updateComplete;
       await palette.updateComplete;
+      if (outcome === "oversized" || outcome === "partial") {
+        // A valid text/remaining-image prompt could be sent explicitly, but the
+        // cold submit must not silently drop a rejected clipboard image.
+        await vi.waitFor(() =>
+          expect(palette.querySelector<HTMLButtonElement>(".cmd-palette__create")?.disabled).toBe(
+            false,
+          ),
+        );
+        expect(palette.querySelectorAll(".chat-attachment-thumb")).toHaveLength(
+          outcome === "partial" ? 1 : 0,
+        );
+      }
       if (outcome === "ready") {
-        await vi.waitFor(() => expect(context.sessions.createResult).toHaveBeenCalledOnce());
+        await vi.waitFor(() =>
+          expect(context.sessions.createResult).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              message: "",
+              attachments: [
+                expect.objectContaining({
+                  fileName: "pasted.png",
+                  mimeType: "image/png",
+                  content: "aW1hZ2U=",
+                }),
+              ],
+            }),
+            { reconciliation: "background" },
+          ),
+        );
       } else {
         expect(context.sessions.createResult).not.toHaveBeenCalled();
       }

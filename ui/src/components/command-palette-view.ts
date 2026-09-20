@@ -261,7 +261,6 @@ export function renderCommandPalette(props: CommandPaletteProps) {
           onInputRef: props.onInputRef,
           onValueChange: props.onQueryChange,
           onPaste: props.draft.pasteImages,
-          attachments: props.draft.renderAttachments(),
           disabled: props.draft.submitting,
           readOnly: props.draft.messageLocked,
           controls: props.promptMode ? undefined : paletteListboxId,
@@ -283,6 +282,7 @@ export function renderCommandPalette(props: CommandPaletteProps) {
             ${props.draft.renderControls()}
           `,
         })}
+        ${props.draft.renderAttachments()}
         <div
           class="cmd-palette__search"
           ?inert=${props.promptMode}

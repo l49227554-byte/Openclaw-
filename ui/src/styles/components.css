@@ -4954,7 +4954,7 @@ td.data-table-key-col {
   --chat-box-inset: 8px;
   flex: 0 0 auto;
   min-width: 0;
-  margin: 6px 12px 0 4px;
+  margin: 0 12px 6px 4px;
 }
 
 .cmd-palette__entry {

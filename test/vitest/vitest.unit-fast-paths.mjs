@@ -141,6 +141,7 @@ export const forcedUnitFastTestFiles = [
   "src/routing/resolve-route.test.ts",
   "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/status/status-message.test.ts",
+  "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/trajectory/cleanup.test.ts",
   "src/trajectory/export.test.ts",
   "src/trajectory/metadata.test.ts",

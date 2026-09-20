@@ -37,19 +37,6 @@ const cases = [
     compatibility: OPENCLAW_STATE_MAINTENANCE_SCHEMA_COMPATIBILITY,
     indexes: [
       {
-        name: "idx_task_runs_trim_run_id",
-        table: "task_runs",
-        primaryKey: "task_id",
-        query: "SELECT task_id AS id FROM task_runs WHERE trim(run_id) = 'run' ORDER BY task_id",
-      },
-      {
-        name: "idx_task_runs_trim_child_session_key",
-        table: "task_runs",
-        primaryKey: "task_id",
-        query:
-          "SELECT task_id AS id FROM task_runs WHERE trim(child_session_key) = 'child' ORDER BY task_id",
-      },
-      {
         name: "idx_task_runs_requester_session_key",
         table: "task_runs",
         primaryKey: "task_id",

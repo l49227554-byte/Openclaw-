@@ -35,8 +35,8 @@ intact. The accepted design is recorded in the
 [session label index decision](https://github.com/openclaw/openclaw/pull/147837#issuecomment-5658783288).
 
 Task and maintenance lookups add nonunique indexes without changing state schema
-17 or agent schema 21: trimmed task run and child-session identifiers, task
-requester sessions, worker placements by environment, and session entries whose
+17 or agent schema 21: task requester sessions, worker placements by environment,
+and session entries whose
 validity is not yet confirmed. Existing task matching, stored rows, retention,
 and ownership checks are unchanged. Read-only admission accepts missing indexes;
 the canonical writable schema owner installs or repairs them. Initial construction

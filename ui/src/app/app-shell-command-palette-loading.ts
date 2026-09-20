@@ -16,7 +16,6 @@ import {
   KEYBOARD_SHORTCUT_COMBOS,
   matchesShortcutCombo,
 } from "../lib/keyboard-shortcut-contract.ts";
-import { readChatClipboardImages } from "../pages/chat/components/chat-attachment-clipboard.ts";
 import type { ApplicationContext, ApplicationNavigationOptions } from "./context.ts";
 import { gatewayPresentationScope } from "./gateway-presentation-scope.ts";
 import type {
@@ -257,7 +256,9 @@ export class CommandPaletteLoadingState {
     if (!this.active || this.submitRequested) {
       return;
     }
-    const { files } = readChatClipboardImages(event.clipboardData);
+    const files = Array.from(event.clipboardData?.items ?? [], (item) => item.getAsFile()).filter(
+      (file): file is File => file?.type.startsWith("image/") === true,
+    );
     if (files.length) {
       event.preventDefault();
       this.#imageFiles.push(...files);

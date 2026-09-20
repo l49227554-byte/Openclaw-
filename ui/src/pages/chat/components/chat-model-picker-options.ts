@@ -132,12 +132,9 @@ export function renderChatModelPickerOption(params: {
       ? formatAgentRuntimeLabel(params.entry.agentRuntimeId)
       : "";
   const routeDetail = route ? t(`chat.modelControls.routes.${route}.detail`) : "";
-  const detail = [
-    routeDetail,
-    params.entry.supportsTools === false ? t("chat.modelControls.chatOnlyHelp") : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const chatOnlyHelp =
+    params.entry.supportsTools === false ? t("chat.modelControls.chatOnlyHelp") : "";
+  const detail = [routeDetail, chatOnlyHelp].filter(Boolean).join(" ");
   // A session with a recorded pin (even one pinned to the default's own value)
   // can always return to Default when the default model is unavailable: the row
   // commits the reset, not that model. Otherwise an unavailable default routes
@@ -181,7 +178,9 @@ export function renderChatModelPickerOption(params: {
     hidden
     aria-selected=${selected ? "true" : "false"}
     title=${accessibleStatus || nothing}
-    aria-label=${[modelLabel, runtimeLabel, accessibleStatus].filter(Boolean).join(". ")}
+    aria-label=${[modelLabel, runtimeLabel, accessibleStatus, chatOnlyHelp]
+      .filter(Boolean)
+      .join(". ")}
     type="button"
     ?disabled=${params.disabled || (params.entry.disabled && !onModelSetup && !resetsPin)}
     data-chat-model-setup=${onModelSetup ? "true" : nothing}

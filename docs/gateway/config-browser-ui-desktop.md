@@ -215,9 +215,11 @@ a Gateway connection keep TTL-only tokens.
 }
 ```
 
-- `desktop.host.enabled`: advertises **This machine** as a desktop source after
-  the Gateway restarts. Turning Host Desktop off in Labs writes `enabled: false`
-  and preserves its managed mode, port, and password-file settings.
+- `desktop.host.enabled`: advertises **This machine** as a desktop source.
+  Changes apply without restarting the Gateway and update connected desktop
+  pickers. Turning Host Desktop off in Labs writes `enabled: false`, closes host
+  desktop observations, and preserves its managed mode, port, and password-file
+  settings. The existing system VNC or Screen Sharing service stays running.
 - `desktop.host.managed`: Linux only. Starts a gateway-supervised, loopback-only
   TigerVNC/XFCE desktop lazily on the first observation or computer discovery.
   Stops it after the desktop session's linger period when no observer or active

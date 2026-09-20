@@ -31,16 +31,18 @@ Custom plugin UI flag below controls user-installed native browser code only.
 
 ## Control UI Labs
 
-Open **Settings → Agents & Tools → Labs** to manage experiments that have a
+Open **Settings → Labs** to manage experiments that have a
 Control UI switch. Enabling or disabling a lab patches the canonical Gateway
-config immediately; the page shows a restart hint only when a feature requires
-one.
+config immediately without restarting the Gateway.
 
 Labs includes Code Mode, Tool Search for all models, Custom plugin UI,
-Host Desktop, and Cloud Worker Desktop. Custom plugin UI and both desktop
-features require a Gateway restart. Custom plugin UI also requires reloading
-connected browser tabs. Code Mode and Tool Search changes normally take effect
-for future agent runs without restarting.
+Host Desktop, and Cloud Worker Desktop. Under the default reload mode, custom
+plugin views and desktop availability update in connected Control UI pages.
+Code Mode and Tool Search changes take effect for future agent runs.
+Reload browser tabs after disabling Custom plugin UI to clear plugin JavaScript
+that already ran. The Cloud Worker Desktop lab controls access to existing
+desktop-capable workers; changing a profile's `settings.desktop` affects only
+newly provisioned workers.
 
 Custom plugin UI is off by default. Enabled bundled plugins, including
 Workboard, retain their native UI with the setting off. Backend APIs and

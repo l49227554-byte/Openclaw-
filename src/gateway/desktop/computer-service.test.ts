@@ -88,6 +88,7 @@ function createFixture() {
   > = [];
   const stops: Array<() => Promise<void>> = [];
   const desktop: HostDesktopService = {
+    reconcileRuntimePolicy: async () => {},
     observe: async () => {
       throw new Error("Computer control must not acquire an observer token");
     },

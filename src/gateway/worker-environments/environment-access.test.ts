@@ -1,4 +1,6 @@
+import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocket } from "../../../packages/gateway-client/src/websocket.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -295,6 +297,60 @@ describe("worker environment service", () => {
     },
   );
 
+  it("revokes unopened desktop tickets across disable and re-enable of the same worker", async () => {
+    support.testState.nowMs = Date.now();
+    const record = support.seedReadyDesktop("worker-desktop-old-ticket");
+    const tunnelManager = {
+      desktop: {
+        acquire: vi.fn(async () => ({
+          attachment: { kind: "unix-socket" as const, socketPath: "/tmp/worker-desktop.sock" },
+        })),
+        stop: vi.fn(async () => {}),
+      },
+      stopAll: vi.fn(async () => {}),
+    } as unknown as WorkerTunnelManager;
+    const workerService = support.createService(support.createProvider(), { tunnelManager });
+    const observed = await workerService.observeDesktop({
+      environmentId: record.environmentId,
+      control: false,
+    });
+    support.testState.config.cloudWorkers!.desktop = false;
+    await workerService.reconcileDesktopPolicy();
+    support.testState.config.cloudWorkers!.desktop = true;
+    await workerService.reconcileDesktopPolicy();
+    expect(observed.expiresAtMs).toBeGreaterThan(Date.now());
+
+    const registry = { attachObserver: vi.fn(), claimStream: vi.fn() };
+    const server = createServer();
+    server.on("upgrade", (request, socket, head) => {
+      observeBridge.handleDesktopObserveUpgrade(request, socket, head, { registry });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected desktop observer server address");
+    }
+    const observer = new WebSocket(`ws://127.0.0.1:${address.port}${observed.wsPath}`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        observer.once("open", () => reject(new Error("Retired desktop ticket was accepted")));
+        observer.once("unexpected-response", (_request, response) => {
+          response.resume();
+          if (response.statusCode === 401) {
+            resolve();
+          } else {
+            reject(new Error(`Expected revoked ticket rejection, got ${response.statusCode}`));
+          }
+        });
+        observer.once("error", () => undefined);
+      });
+      expect(registry.attachObserver).not.toHaveBeenCalled();
+    } finally {
+      observer.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("stops the node transport that owns a timed-out start", async () => {
     support.testState.config.cloudWorkers!.profiles!.development!.provider = "device";
     support.testState.config.cloudWorkers!.profiles!.development!.settings = {
@@ -588,7 +644,6 @@ describe("worker environment service", () => {
         }),
       );
       const mintedRequester = mint.mock.calls[0]?.[0].requester;
-      expect(mintedRequester).toBe(requester);
       expect(mintedRequester?.isCurrent()).toBe(true);
       client.invalidated = true;
       expect(mintedRequester?.isCurrent()).toBe(false);
@@ -664,7 +719,10 @@ describe("worker environment service", () => {
           desktop,
         }),
         control: true,
-        requester,
+        requester: expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          isCurrent: expect.any(Function),
+        }),
       });
 
       await expect(
@@ -771,6 +829,58 @@ describe("worker environment service", () => {
     });
     expect(tunnelManager.desktop.acquire).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { operation: "observe", reenable: false },
+    { operation: "launch", reenable: false },
+    { operation: "observe", reenable: true },
+    { operation: "launch", reenable: true },
+  ] as const)(
+    "rejects desktop $operation results after disabling the lab during startup (reenable: $reenable)",
+    async ({ operation, reenable }) => {
+      const record = support.seedReadyDesktop(`worker-desktop-policy-${operation}`);
+      const startup = createDeferred();
+      const acquire = vi.fn(async () => {
+        await startup.promise;
+        return {
+          attachment: { kind: "unix-socket" as const, socketPath: "/tmp/worker-desktop.sock" },
+        };
+      });
+      const launchApp = vi.fn(async () => await startup.promise);
+      const tunnelManager = {
+        desktop: { acquire, launchApp, stop: vi.fn(async () => {}) },
+        stopAll: vi.fn(async () => {}),
+      } as unknown as WorkerTunnelManager;
+      const workerService = support.createService(support.createProvider(), { tunnelManager });
+      const mint = vi.spyOn(observeBridge, "mintDesktopObserverToken");
+      const pending =
+        operation === "observe"
+          ? workerService.observeDesktop({ environmentId: record.environmentId, control: false })
+          : workerService.launchDesktopApp({ environmentId: record.environmentId, app: "browser" });
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: "invalid_state",
+        message: reenable
+          ? "Worker desktop policy changed; retry the request"
+          : expect.stringContaining(`worker desktop ${operation} is disabled`),
+      });
+      try {
+        await support.waitForFast(() =>
+          expect(operation === "observe" ? acquire : launchApp).toHaveBeenCalledOnce(),
+        );
+        support.testState.config.cloudWorkers!.desktop = false;
+        if (reenable) {
+          await workerService.reconcileDesktopPolicy();
+          support.testState.config.cloudWorkers!.desktop = true;
+          await workerService.reconcileDesktopPolicy();
+        }
+        startup.resolve();
+        await rejected;
+        expect(mint).not.toHaveBeenCalled();
+      } finally {
+        startup.resolve();
+      }
+    },
+  );
 
   it("fences a draining tunnel before reporting an unavailable provider", async () => {
     support.seedReady("worker-provider-missing");

@@ -6,6 +6,7 @@ import { ensureCliExecutionBootstrap } from "../cli/command-execution-startup.js
 import { resolveCliStartupPolicy } from "../cli/command-startup-policy.js";
 import { loadCliDotEnv } from "../cli/dotenv.js";
 import { withConsoleLogsRoutedToStderrForJson } from "../cli/json-output-mode.js";
+import { runCliWithExitFinalization } from "../cli/one-shot-exit.js";
 import { applyCliProfileEnv, parseCliProfileArgs } from "../cli/profile.js";
 import { normalizeEnv } from "../infra/env.js";
 import { isMainModule } from "../infra/is-main.js";
@@ -71,8 +72,13 @@ async function runMacNodeWorkerEntry(argv: string[] = process.argv): Promise<voi
 }
 
 if (isMainModule({ currentFile: fileURLToPath(import.meta.url) })) {
-  await runMacNodeWorkerEntry().catch((error: unknown) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
+  // The worker records its exit request after draining runtime-owned resources.
+  // Finalize it here so plugin-owned pipes cannot pin shutdown or startup failure.
+  await runCliWithExitFinalization({
+    run: () => runMacNodeWorkerEntry(),
+    onError: (error: unknown) => {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    },
   });
 }

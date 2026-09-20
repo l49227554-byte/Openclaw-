@@ -14,7 +14,7 @@ import { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
-import { readUpdateRunRecord, readUpdateRuns } from "../infra/update-run-reader.js";
+import { readUpdateRunRecord, readUpdateRuns } from "../infra/update-run-read.kernel.js";
 import { serveOwnedWorkerTasks } from "../infra/worker-task-server.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";

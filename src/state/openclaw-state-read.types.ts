@@ -12,7 +12,11 @@ import type {
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
-import type { getUpdateRun, listUpdateRuns } from "../infra/update-run-reader.js";
+import type {
+  readUpdateRunRecord,
+  readUpdateRuns,
+  UpdateRunListInput,
+} from "../infra/update-run-read.kernel.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { OnboardingRecommendationsRecord } from "./onboarding-recommendations.contract.js";
 import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-db-contract.js";
@@ -41,7 +45,7 @@ export type OpenClawStateReadCommand =
   | { type: "userProfiles.avatar.reconcile"; profileId: string }
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "updateRuns.get"; runId: string }
-  | { type: "updateRuns.list"; input: NonNullable<Parameters<typeof listUpdateRuns>[0]> }
+  | { type: "updateRuns.list"; input: UpdateRunListInput }
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" }
@@ -91,12 +95,17 @@ export type OpenClawStateReadReply = (
       sourceAdmitted: true;
       row: ReturnType<typeof readExecApprovalsConfigRow>;
     }
-  | { ok: true; type: "updateRuns.get"; sourceAdmitted: true; run: ReturnType<typeof getUpdateRun> }
+  | {
+      ok: true;
+      type: "updateRuns.get";
+      sourceAdmitted: true;
+      run: ReturnType<typeof readUpdateRunRecord>;
+    }
   | {
       ok: true;
       type: "updateRuns.list";
       sourceAdmitted: true;
-      runs: ReturnType<typeof listUpdateRuns>;
+      runs: ReturnType<typeof readUpdateRuns>;
     }
   | { ok: true; type: "fleet.list"; sourceAdmitted: true; cells: FleetCellRecord[] }
   | { ok: true; type: "fleet.get"; sourceAdmitted: true; cell: FleetCellRecord | undefined }

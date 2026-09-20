@@ -12,12 +12,17 @@ import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import {
   executeSqliteQuerySync,
-  executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
   iterateSqliteQuerySync,
 } from "./kysely-sync.js";
 import { inspectUpdateRunAbandonment } from "./update-run-activity.js";
-import { decodeRun } from "./update-run-codec.js";
+import {
+  decodeRun,
+  readActiveUpdateRun,
+  readUpdateRunRecord,
+  readUpdateRuns,
+  type UpdateRunListInput,
+} from "./update-run-read.kernel.js";
 import {
   isAcknowledgedAbandonedUpdateRun,
   type UpdateFetchFailure,
@@ -25,15 +30,6 @@ import {
 } from "./update-run-record.js";
 import { hasStoredUpdateRecovery } from "./update-run-recovery-store.js";
 import { ABANDONED_UPDATE_RUN_MS } from "./update-run-timeouts.js";
-
-export function readUpdateRunRecord(db: DatabaseSync, runId: string): UpdateRunRecord | undefined {
-  const query = getNodeSqliteKysely<Pick<DB, "update_runs">>(db)
-    .selectFrom("update_runs")
-    .selectAll()
-    .where("run_id", "=", runId);
-  const row = executeSqliteQueryTakeFirstSync(db, query);
-  return row ? decodeRun(row) : undefined;
-}
 
 export function getUpdateRun(
   runId: string,
@@ -84,15 +80,6 @@ export function readUpdateRunResolutionHistory(options: OpenClawStateDatabaseOpt
   );
 }
 
-/** Read activity on the caller's connection so maintenance can fence its mutation. */
-export function readActiveUpdateRun(db: DatabaseSync): UpdateRunRecord | undefined {
-  return readUpdateRuns(db, { limit: 1, active: true })[0];
-}
-
-export function readLatestUpdateRun(db: DatabaseSync): UpdateRunRecord | undefined {
-  return readUpdateRuns(db, { limit: 1 })[0];
-}
-
 export async function getUpdateRunAsync(
   runId: string,
   options: OpenClawStateDatabaseOptions = {},
@@ -109,40 +96,8 @@ export async function getUpdateRunAsync(
   return reply.run;
 }
 
-type ListInput = { limit?: number; active?: boolean; reason?: string; includeRunId?: string };
-
-export function readUpdateRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
-  if (!tableExists(db, "update_runs")) {
-    return [];
-  }
-  let query = getNodeSqliteKysely<Pick<DB, "update_runs">>(db)
-    .selectFrom("update_runs")
-    .selectAll();
-  if (input.active) {
-    query = query.where("status", "=", "running");
-  }
-  if (input.reason) {
-    query = query.where("reason", "=", input.reason);
-  }
-  const runs = executeSqliteQuerySync(
-    db,
-    query
-      .orderBy("created_at_ms", "desc")
-      .orderBy("run_id", "desc")
-      .limit(Math.max(1, Math.min(100, Math.trunc(input.limit ?? 20)))),
-  ).rows.map(decodeRun);
-  // Restoration must retain its captured owner even after that row becomes terminal.
-  if (input.includeRunId && !runs.some((run) => run.runId === input.includeRunId)) {
-    const captured = readUpdateRunRecord(db, input.includeRunId);
-    if (captured) {
-      runs.push(captured);
-    }
-  }
-  return runs;
-}
-
 export function listUpdateRuns(
-  input: ListInput = {},
+  input: UpdateRunListInput = {},
   options: OpenClawStateDatabaseOptions = {},
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
 ): UpdateRunRecord[] {
@@ -157,7 +112,7 @@ export function listUpdateRuns(
 
 /** Doctor retains its maintenance owner while the worker reads the private snapshot. */
 export async function listUpdateRunsAsync(
-  input: ListInput = {},
+  input: UpdateRunListInput = {},
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<UpdateRunRecord[]> {
   const reply = await withArtifactPreservingStateReads(() =>

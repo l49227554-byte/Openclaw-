@@ -125,6 +125,13 @@ When the [requirements](/tools/swarm#requirements) are met, Code Mode exposes
 this guest API:
 
 ```typescript
+type DynamicsProfileId =
+  | "explorer"
+  | "builder"
+  | "critic"
+  | "independent-verifier"
+  | "glass-breaker";
+
 type AgentRunOptions = {
   label?: string;
   model?: string;
@@ -133,6 +140,15 @@ type AgentRunOptions = {
   agentId?: string;
   schema?: Record<string, unknown>;
   phase?: string;
+  dynamics?: {
+    profile: DynamicsProfileId;
+    handoff?: {
+      candidateDigest?: string;
+      artifactRefs?: string[];
+      evidenceRefs?: string[];
+      summary?: string;
+    };
+  };
 };
 
 agents.run(prompt: string, options?: AgentRunOptions & { schema?: undefined }): Promise<string>;
@@ -156,6 +172,15 @@ Use `label` for a recognizable child name in transcript activity and Tasks views
 starts, or call `phase()` when several children belong to the same stage.
 `log()` publishes a short progress note. Progress calls are fire-and-forget.
 They do not delay the script if the UI is unavailable.
+
+The optional `dynamics` field selects an experimental, host-owned cognitive profile for
+the collector launch. It changes search guidance and the explicit handoff bytes prepared
+for that child; it does not grant tools, change approvals, or set the model sampling
+temperature. `independent-verifier` requires a candidate digest plus artifact
+references and asks the existing spawn owner for a required sandbox. If that sandbox
+cannot be provided, the launch fails rather than retrying unsandboxed. Handoff filtering
+only controls the explicit `dynamics.handoff` payload; it is not a security boundary for
+the original task, workspace, memory, or tool visibility.
 
 ### Fan out in parallel with structured results
 

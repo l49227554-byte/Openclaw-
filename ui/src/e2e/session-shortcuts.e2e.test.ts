@@ -111,7 +111,10 @@ suite.define(() => {
       await composer.press(`${modifier}+Shift+O`);
       await newComposer.waitFor({ state: "visible" });
       await page.evaluate(
-        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+        () =>
+          new Promise<void>((resolve) => {
+            requestAnimationFrame(() => resolve());
+          }),
       );
       await expect
         .poll(() => newComposer.evaluate((element) => element === document.activeElement))

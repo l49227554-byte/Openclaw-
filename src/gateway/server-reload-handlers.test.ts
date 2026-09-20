@@ -117,13 +117,20 @@ import {
   createConfigWriteNotification,
   createDirectConfigWriteFixture,
   createDefaultGatewayReloadState,
+  makePluginReloadResult,
   createTestCronState,
+  createTestCronReconciliation,
+  createCronRestartPlan,
+  createHotTailPlan,
+  createGatewayRestartPlan,
+  createPluginReloadPlan,
   createValidConfigSnapshot,
   publishConfigWrite,
 } from "./server-reload-handlers.config.test-support.js";
 import { createGatewayReloadHandlers as createGatewayReloadHandlersImpl } from "./server-reload-hot.js";
 import { createManagedReloadSecretHandlers } from "./server-reload-managed-secrets.js";
 import { startManagedGatewayConfigReloader as startManagedGatewayConfigReloaderImpl } from "./server-reload-managed.js";
+import { runManagedResponseRestartScenario } from "./server-reload-response.test-support.js";
 import { enforceSharedGatewaySessionGenerationForConfigWrite } from "./server-shared-auth-generation.js";
 import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
 import { createTerminalLaunchPolicy } from "./terminal/launch.js";
@@ -576,16 +583,6 @@ function makeActiveTaskBlocker(
   };
 }
 
-function makePluginReloadResult(
-  overrides: Partial<GatewayPluginReloadResult> = {},
-): GatewayPluginReloadResult {
-  return {
-    runtime: { operationId: "test-reload", generation: 1, pluginIds: [] },
-    activeChannels: new Set(),
-    ...overrides,
-  };
-}
-
 function enableChannelReloadsForTest() {
   const previousSkipChannels = process.env.OPENCLAW_SKIP_CHANNELS;
   const previousSkipProviders = process.env.OPENCLAW_SKIP_PROVIDERS;
@@ -603,58 +600,6 @@ function enableChannelReloadsForTest() {
       process.env.OPENCLAW_SKIP_PROVIDERS = previousSkipProviders;
     }
   };
-}
-
-function createTestCronReconciliation() {
-  const complete = vi.fn<() => Promise<void>>(async () => {});
-  return {
-    arm: vi.fn<() => { complete: () => Promise<void> }>(() => ({ complete })),
-    complete,
-    invalidate: vi.fn(),
-  };
-}
-
-function createCronRestartPlan(): GatewayReloadPlan {
-  return createHotTailPlan({
-    changedPaths: ["cron"],
-    hotReasons: ["cron"],
-    restartCron: true,
-  });
-}
-
-function createHotTailPlan(overrides: Partial<GatewayReloadPlan> = {}): GatewayReloadPlan {
-  return {
-    changedPaths: ["logging.level"],
-    restartGateway: false,
-    restartReasons: [],
-    hotReasons: ["logging.level"],
-    reloadHooks: false,
-    restartGmailWatcher: false,
-    restartCron: false,
-    restartHeartbeat: false,
-    reloadPlugins: false,
-    restartChannels: new Set(),
-    disposeMcpRuntimes: false,
-    noopPaths: [],
-    ...overrides,
-  };
-}
-
-function createGatewayRestartPlan(changedPath = "gateway.port"): GatewayReloadPlan {
-  return createHotTailPlan({
-    changedPaths: [changedPath],
-    restartGateway: true,
-    restartReasons: [changedPath],
-    hotReasons: [],
-  });
-}
-
-function createPluginReloadPlan(): GatewayReloadPlan {
-  return createHotTailPlan({
-    changedPaths: ["plugins.enabled"],
-    hotReasons: ["plugins.enabled"],
-    reloadPlugins: true,
-  });
 }
 
 function createReloadHandlersForTest(
@@ -1706,6 +1651,25 @@ describe("managed channel credential publication", () => {
 });
 
 describe("managed reload transaction ownership", () => {
+  it.each(["direct", "watcher echo", "newer write", "stop"] as const)(
+    "keeps responses ahead of a forced managed restart across %s",
+    async (transition) => {
+      await runManagedResponseRestartScenario(transition, {
+        startReloader: startManagedGatewayConfigReloader,
+        prepareSecrets: makePreparedSecretsSnapshot,
+        setActiveTask: (active) => {
+          hoisted.activeTaskCount.value = active ? 1 : 0;
+          hoisted.activeTaskBlockers.length = 0;
+          if (active) {
+            hoisted.activeTaskBlockers.push(
+              makeActiveTaskBlocker({ taskId: "response-gate-blocker" }),
+            );
+          }
+        },
+      });
+    },
+  );
+
   it("rotates shared auth on a provider-only no-op without replacing services", async () => {
     const result = await runManagedOwnershipScenario({
       kind: "noop",
@@ -3738,6 +3702,35 @@ describe("gateway hot reload commit policy", () => {
 });
 
 describe("gateway restart deferral preflight", () => {
+  it("does not emit a superseding restart before the earlier response gate opens", async () => {
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const requestRecoveryRestart = vi
+      .fn<NonNullable<ReloadHandlerParams["requestRecoveryRestart"]>>()
+      .mockReturnValue({ status: "emitted" });
+    const { requestGatewayRestart } = createReloadHandlersForTest(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      requestRecoveryRestart,
+    );
+
+    const result = requestGatewayRestart(createGatewayRestartPlan(), {}, {
+      beforeRestartEmission: async () => await responseGate,
+    } as never);
+
+    expect(result.status).toBe("accepted");
+    expect(requestGatewayRestart(createGatewayRestartPlan(), {}).status).toBe("accepted");
+    await Promise.resolve();
+    expect(requestRecoveryRestart).not.toHaveBeenCalled();
+
+    releaseResponse();
+    await waitForFast(() => expect(requestRecoveryRestart).toHaveBeenCalledOnce());
+  });
+
   it("retries an immediate restart when signal admission fails", async () => {
     restartTesting.resetRestartSignalState();
     resetGatewayWorkAdmission();

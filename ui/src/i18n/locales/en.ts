@@ -596,6 +596,7 @@ export const en: TranslationMap & {
       version: "v{version}",
       commitBehind: "{count} commit behind",
       commitsBehind: "{count} commits behind",
+      viewChanges: "Compare on GitHub",
     },
     sidebar: {
       campaignTarget: "{status} · {target}",
@@ -4233,6 +4234,7 @@ export const en: TranslationMap & {
       removeNamedAttachment: "Remove {name}",
       removeBrowserAnnotation: "Remove browser annotation: {name}",
       addAttachment: "Add attachment",
+      attach: "Attach…",
       attachPhoto: "Photo",
       attachFileOption: "File",
       menu: {

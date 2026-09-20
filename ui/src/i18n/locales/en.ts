@@ -239,6 +239,17 @@ export const en: TranslationMap & {
   sessionHovercard: {
     ariaLabel: "Session information",
     agentNotepad: "Agent Notepad",
+    linkedChannel: "Linked to {channel}",
+    viaAccount: "Via {account}",
+    topicNumber: "Topic {id}",
+    sessionParticipants: "In this session",
+    chatKinds: {
+      direct: "Direct chat",
+      group: "Group chat",
+      channel: "Channel",
+      thread: "Thread",
+      topic: "Topic",
+    },
     attributionOther: "& {count} other",
     attributionOthers: "& {count} others",
     moreParticipants: "+{count}",
@@ -4448,6 +4459,8 @@ export const en: TranslationMap & {
       previewUnavailable: "Preview unavailable",
       textPreviewUnavailable:
         "Could not preview this file. Text previews require UTF-8 files up to 256 KiB. Download it to read the full file.",
+      htmlPreviewUnavailable:
+        "Could not preview this HTML file. HTML previews require UTF-8 files up to 2 MiB. Download it to read the full file.",
       readFailed: "Could not attach: {names}{more}",
       tooLarge: "Too large to send: {names}{more}",
       showInTextField: "Show in text field",
@@ -5070,7 +5083,7 @@ export const en: TranslationMap & {
         "Condition triggers require an interval, cron, or stream schedule.",
       systemTextRequired: "System text is required.",
       agentMessageRequired: "Agent message is required.",
-      timeoutInvalid: "If set, timeout must be greater than 0 seconds.",
+      timeoutInvalid: "If set, timeout must be 0 or greater (0 disables this timeout).",
       webhookUrlRequired: "Webhook URL is required.",
       webhookUrlInvalid: "Webhook URL must start with http:// or https://.",
       invalidRunTime: "Invalid run time.",

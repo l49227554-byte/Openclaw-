@@ -1,5 +1,8 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "test/loopback-ask-user-telegram-channel.test.ts",
+  "test/slack-outbound-permanent-rejection-loopback.test.ts",
+  "test/telegram-outbound-permanent-rejection-loopback.test.ts",
   "src/agents/worktrees/empty-source.test.ts",
   "src/agents/worktrees/registry-read.test.ts",
   "src/agents/worktrees/service-branches.test.ts",
@@ -62,6 +65,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/user-profiles.test.ts",
   "src/commands/agents.commands.list.worker.test.ts",
   "src/state/openclaw-agent-worker-store.test.ts",
+  "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/sessions/session-state-events.test.ts",
   "src/sessions/session-upstream-links.test.ts",
   "src/sessions/session-upstream-monitor.test.ts",
@@ -98,8 +102,12 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/media-generate-tool.donor-resources.test.ts",
   "src/agents/tools/media-generate-tool.resources.test.ts",
   "src/agents/embedded-agent-runner/context-engine-maintenance.lifecycle.test.ts",
-  "src/agents/subagents/registry/subagent-registry-recovery-acceptance.test.ts",
+  "src/agents/subagents/registry/subagent-control.recovery.test.ts",
+  "src/agents/subagents/registry/subagent-control.retirement.test.ts",
   "src/agents/subagents/registry/subagent-registry-task-replacement.test.ts",
+  "src/agents/subagents/spawn/subagent-spawn.authority.test.ts",
+  "src/agents/subagents/spawn/subagent-spawn.in-process-gateway.test.ts",
+  "src/agents/tools/swarm-tools.integration.test.ts",
   "src/tasks/task-registry-session-index.test.ts",
   "src/tasks/task-registry.store.test.ts",
   "src/claws/provenance-runtime-read.async.test.ts",
@@ -130,6 +138,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/doctor/auth-alias-import-recovery.test.ts",
   "src/commands/doctor/auth-alias-preservation.test.ts",
   "src/commands/doctor/shared/missing-configured-plugin-install.test.ts",
+  "src/commands/doctor/shared/missing-configured-plugin-install.dependency-health.test.ts",
   "src/plugins/registry-refresh.test.ts",
   "src/plugins/loader.trust-diagnostics.test.ts",
   "src/plugins/loader.runtime-registry.test.ts",
@@ -184,6 +193,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/commands/doctor-device-pairing.worker.test.ts",
   "src/commands/doctor-device-pairing.test.ts",
   "src/commands/doctor-maintenance.worker.test.ts",
+  "src/commands/doctor-lint.crabbox.test.ts",
   "src/fleet/doctor.runtime.test.ts",
   "src/fleet/registry.test.ts",
   "src/fleet/registry-read.test.ts",
@@ -244,6 +254,7 @@ const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/state/openclaw-agent-execution-cleanup.test.ts", "unitFastIsolated"],
   ["src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts", "unitFast"],
   ["src/infra/device-pairing.test.ts", "unitFast"],
   ["src/logging/diagnostic-stuck-session-recovery.runtime.test.ts", "unitFast"],

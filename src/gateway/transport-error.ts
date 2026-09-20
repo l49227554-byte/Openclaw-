@@ -1,3 +1,4 @@
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { GatewayConnectionDetails } from "./connection-details.js";
 
 export type GatewayTransportErrorKind = "closed" | "timeout";
@@ -53,20 +54,92 @@ export function isGatewayTransportError(value: unknown): value is GatewayTranspo
  * Shared by every transport failure that interrupts an already-dispatched request,
  * so the deadline and close formatters cannot drift apart on the same uncertainty.
  */
-export const DISPATCHED_REQUEST_OUTCOME_GUIDANCE =
+const DISPATCHED_REQUEST_OUTCOME_GUIDANCE =
   "The request was already sent to the gateway, so the operation may have been applied " +
   "even though no response arrived; its outcome is unknown. " +
   "Verify the current state (for example, re-run the equivalent read-only command) " +
   "before retrying, especially for write actions.";
 
 /** Format the wrapper-deadline message, flagging dispatched requests whose outcome is unknown. */
-export function formatGatewayTimeoutError(
+function formatGatewayTimeoutError(
   timeoutMs: number,
   connectionDetails: GatewayConnectionDetails,
   requestDispatched: boolean,
 ): string {
   const message = `gateway timeout after ${timeoutMs}ms\n${connectionDetails.message}`;
   return requestDispatched ? `${message}\n\n${DISPATCHED_REQUEST_OUTCOME_GUIDANCE}` : message;
+}
+
+/** Format the close message, flagging dispatched requests whose outcome is unknown. */
+function formatGatewayCloseError(
+  code: number,
+  reason: string,
+  connectionDetails: GatewayConnectionDetails,
+  requestDispatched: boolean,
+): string {
+  const reasonText = normalizeOptionalString(reason) || "no close reason";
+  const hint =
+    code === 1006 ? "abnormal closure (no close frame)" : code === 1000 ? "normal closure" : "";
+  const suffix = hint ? ` ${hint}` : "";
+  let message = `gateway closed (${code}${suffix}): ${reasonText}\n${connectionDetails.message}`;
+  if (code === 1006) {
+    // Handshake-phase causes cannot explain a close that arrives after the request was
+    // sent, and their bare retry advice is what a dispatched write must not be given
+    // while its outcome is unknown.
+    message += [
+      "",
+      "",
+      "Possible causes:",
+      requestDispatched
+        ? "- Connection dropped without a close frame (check network and gateway load)"
+        : "- Connection dropped without a close frame (retry; check network and gateway load)",
+      ...(requestDispatched
+        ? []
+        : [
+            "- Gateway not yet ready to accept connections (retry after a moment)",
+            "- TLS mismatch (connecting with ws:// to a wss:// gateway, or vice versa)",
+          ]),
+      "- Gateway process stopped or became unreachable (confirm it is still running)",
+      "Run `openclaw doctor` for diagnostics.",
+    ].join("\n");
+  }
+  return requestDispatched ? `${message}\n\n${DISPATCHED_REQUEST_OUTCOME_GUIDANCE}` : message;
+}
+
+/** Raise a connection close, carrying whether the request had already been dispatched. */
+export function createGatewayCloseTransportError(params: {
+  code: number;
+  reason: string;
+  connectionDetails: GatewayConnectionDetails;
+  requestDispatched: boolean;
+}): GatewayTransportError {
+  return new GatewayTransportError({
+    kind: "closed",
+    code: params.code,
+    reason: normalizeOptionalString(params.reason) || "no close reason",
+    connectionDetails: params.connectionDetails,
+    message: formatGatewayCloseError(
+      params.code,
+      params.reason,
+      params.connectionDetails,
+      params.requestDispatched,
+    ),
+  });
+}
+
+/** Raise a wrapper deadline, carrying whether the request had already been dispatched. */
+export function createGatewayTimeoutTransportError(params: {
+  timeoutMs: number;
+  connectionDetails: GatewayConnectionDetails;
+  requestDispatched: boolean;
+}): GatewayTransportError {
+  const { timeoutMs, connectionDetails, requestDispatched } = params;
+  return new GatewayTransportError({
+    kind: "timeout",
+    timeoutMs,
+    connectionDetails,
+    message: formatGatewayTimeoutError(timeoutMs, connectionDetails, requestDispatched),
+  });
 }
 
 /** Transport uncertainty permits read recovery or an exclusively ownership-locked mutation. */

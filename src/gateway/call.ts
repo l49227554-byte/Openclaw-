@@ -95,8 +95,8 @@ import { assertGatewayCliMessageContext } from "./operator-cli-message-input.js"
 import {
   GatewayTransportError,
   type GatewayTransportErrorKind,
-  DISPATCHED_REQUEST_OUTCOME_GUIDANCE,
-  formatGatewayTimeoutError,
+  createGatewayCloseTransportError,
+  createGatewayTimeoutTransportError,
   isGatewayTransportError,
 } from "./transport-error.js";
 export type { GatewayConnectionDetails };
@@ -638,46 +638,6 @@ function ensureRemoteModeUrlConfigured(params: {
 
 export { resolveGatewayCredentialsWithSecretInputs } from "./credentials-secret-inputs.js";
 
-function formatGatewayCloseError(
-  code: number,
-  reason: string,
-  connectionDetails: GatewayConnectionDetails,
-  requestDispatched: boolean,
-): string {
-  const reasonText = normalizeOptionalString(reason) || "no close reason";
-  const hint =
-    code === 1006 ? "abnormal closure (no close frame)" : code === 1000 ? "normal closure" : "";
-  const suffix = hint ? ` ${hint}` : "";
-  let message = `gateway closed (${code}${suffix}): ${reasonText}\n${connectionDetails.message}`;
-  // Add troubleshooting hints for common issues
-  if (code === 1006) {
-    // Handshake-phase causes cannot explain a close that arrives after the request
-    // was sent, and their bare retry advice is exactly what a dispatched write
-    // must not be given while its outcome is unknown.
-    const preDispatchCauses = requestDispatched
-      ? []
-      : [
-          "- Gateway not yet ready to accept connections (retry after a moment)",
-          "- TLS mismatch (connecting with ws:// to a wss:// gateway, or vice versa)",
-        ];
-    message += [
-      "",
-      "",
-      "Possible causes:",
-      requestDispatched
-        ? "- Connection dropped without a close frame (check network and gateway load)"
-        : "- Connection dropped without a close frame (retry; check network and gateway load)",
-      ...preDispatchCauses,
-      "- Gateway process stopped or became unreachable (confirm it is still running)",
-      "Run `openclaw doctor` for diagnostics.",
-    ].join("\n");
-  }
-  if (requestDispatched) {
-    message += `\n\n${DISPATCHED_REQUEST_OUTCOME_GUIDANCE}`;
-  }
-  return message;
-}
-
 /** Wrap raw socket-level connect failures (ECONNREFUSED etc.) into one actionable message. */
 function createGatewayUnreachableTransportError(params: {
   cause: Error;
@@ -693,41 +653,6 @@ function createGatewayUnreachableTransportError(params: {
       "Start it with `openclaw gateway run` or check `openclaw gateway status`.",
       params.connectionDetails.message,
     ].join("\n"),
-  });
-}
-
-function createGatewayCloseTransportError(params: {
-  code: number;
-  reason: string;
-  connectionDetails: GatewayConnectionDetails;
-  requestDispatched: boolean;
-}): GatewayTransportError {
-  const reasonText = normalizeOptionalString(params.reason) || "no close reason";
-  return new GatewayTransportError({
-    kind: "closed",
-    code: params.code,
-    reason: reasonText,
-    connectionDetails: params.connectionDetails,
-    message: formatGatewayCloseError(
-      params.code,
-      params.reason,
-      params.connectionDetails,
-      params.requestDispatched,
-    ),
-  });
-}
-
-function createGatewayTimeoutTransportError(params: {
-  timeoutMs: number;
-  connectionDetails: GatewayConnectionDetails;
-  requestDispatched: boolean;
-}): GatewayTransportError {
-  const { timeoutMs, connectionDetails, requestDispatched } = params;
-  return new GatewayTransportError({
-    kind: "timeout",
-    timeoutMs,
-    connectionDetails,
-    message: formatGatewayTimeoutError(timeoutMs, connectionDetails, requestDispatched),
   });
 }
 

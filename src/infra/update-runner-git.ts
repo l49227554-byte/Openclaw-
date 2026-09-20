@@ -105,7 +105,9 @@ export async function updateGitCheckout(params: {
   let mutationPrepared = false;
   let sourceMutationStarted = false;
   let runtimePromotion: Awaited<ReturnType<typeof prepareGitRuntimePromotion>> | undefined;
-  let candidateTransfer: Awaited<ReturnType<typeof prepareGitCandidateTransfer>>;
+  let candidateTransfer:
+    | Extract<Awaited<ReturnType<typeof prepareGitCandidateTransfer>>, { status: "ok" }>
+    | undefined;
   let stateMigrationStarted = false;
   let recovery = await verifyGitUpdateRecovery({ root: gitRoot, sha: beforeSha });
   let rollbackOutcome: NonNullable<UpdateRunResult["rollbackOutcome"]> = {
@@ -374,8 +376,8 @@ export async function updateGitCheckout(params: {
           step: inspectionWorkStep("git pack update", [], inspectionRoot),
           probeTimeoutMs: timeoutMs,
         });
-        if (!transfer) {
-          return { status: "error" as const, reason: "fetch-failed" };
+        if (!transfer || transfer.status === "error") {
+          return { status: "error" as const, reason: transfer?.reason ?? "fetch-failed" };
         }
         const sourceChanged = await checkSourceUnchanged();
         if (sourceChanged) {

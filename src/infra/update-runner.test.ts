@@ -381,12 +381,7 @@ describe("runGatewayUpdate", () => {
     return { calls, runCommand };
   }
 
-  type TestCommandOptions = {
-    env?: NodeJS.ProcessEnv;
-    cwd?: string;
-    input?: string | Uint8Array;
-    timeoutMs?: number;
-  };
+  type TestCommandOptions = processExec.CommandOptions;
 
   function createDevGitRunner(params?: {
     targetSha?: string;
@@ -531,6 +526,7 @@ describe("runGatewayUpdate", () => {
         return await runCommandWithTimeout(argv, {
           cwd: options.cwd,
           input: options.input,
+          stdinFileDescriptor: options.stdinFileDescriptor,
           env: options.env,
           timeoutMs: options.timeoutMs ?? 5000,
         });

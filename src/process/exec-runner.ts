@@ -54,6 +54,8 @@ export type CommandOptions = {
   timeoutMs?: number;
   cwd?: string;
   input?: string | Uint8Array;
+  /** Caller-owned native stdin; cannot defer input until beforeInput admission. */
+  stdinFileDescriptor?: number;
   /** Synchronous admission with the spawned PID and argv, before input is released. */
   beforeInput?: (pid: number, argv?: readonly string[]) => void;
   baseEnv?: NodeJS.ProcessEnv;
@@ -134,6 +136,7 @@ async function runCommandWithOutputEncoding(
     timeoutMs,
     cwd,
     input,
+    stdinFileDescriptor,
     baseEnv,
     env,
     noOutputTimeoutMs,
@@ -148,6 +151,14 @@ async function runCommandWithOutputEncoding(
     throw new Error("Process-tree extinction requires process-tree ownership");
   }
   const hasInput = input !== undefined;
+  if (stdinFileDescriptor !== undefined) {
+    if (!Number.isInteger(stdinFileDescriptor) || stdinFileDescriptor < 0) {
+      throw new Error("stdinFileDescriptor must be a nonnegative integer");
+    }
+    if (hasInput) {
+      throw new Error("Command accepts either input or stdinFileDescriptor, not both");
+    }
+  }
   if (options.beforeInput && !hasInput) {
     throw new Error("Child input admission requires explicit input");
   }
@@ -223,7 +234,15 @@ async function runCommandWithOutputEncoding(
     killSignal,
     ...(hasInput && !options.beforeInput ? { input } : {}),
     reject: false,
-    stdio: [hasInput ? "pipe" : "inherit", "pipe", "pipe"],
+    stdio: [
+      stdinFileDescriptor !== undefined
+        ? (stdinFileDescriptor as 0) // SAFETY: Execa supports native fds; its type only permits 0.
+        : hasInput
+          ? "pipe"
+          : "inherit",
+      "pipe",
+      "pipe",
+    ],
     stripFinalNewline: false,
     windowsVerbatimArguments: options.windowsVerbatimArguments,
   });

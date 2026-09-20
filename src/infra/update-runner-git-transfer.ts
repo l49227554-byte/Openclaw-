@@ -1,15 +1,16 @@
 import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { tryReadDiskSpace } from "./disk-space.js";
 import { hasErrnoCode } from "./errno.js";
-import { readLocalFileSafely } from "./fs-safe.js";
+import { sameFileIdentity } from "./fs-safe-advanced.js";
+import { openLocalFileSafely } from "./fs-safe.js";
 import { runStep } from "./update-runner-command.js";
 import { classifyPartialCloneGitFailure } from "./update-runner-git-target.js";
 import type { RunStepOptions, UpdateStepResult } from "./update-runner-types.js";
 
-// Bound the retained import buffer independently of Git's pack-file size. An
-// oversized candidate must fail in staging while the installed runtime still serves.
-const MAX_CANDIDATE_PACK_BYTES = 256 * 1024 * 1024;
+const LARGE_CANDIDATE_PACK_WARNING_BYTES = 256 * 1024 * 1024;
 
 function recordStagingFailure(
   step: RunStepOptions,
@@ -112,7 +113,7 @@ export async function prepareGitCandidateTransfer(params: {
     return undefined;
   }
   const retained = new Set<string>();
-  // Capability probing is read-only. Older Git safely transfers the full bounded
+  // Capability probing is read-only. Older Git safely transfers the full
   // candidate instead of risking a lazy fetch while checking installed objects.
   const probe = beforeSha
     ? await step.runCommand(["git", "--no-lazy-fetch", "version"], {
@@ -195,14 +196,18 @@ export async function prepareGitCandidateTransfer(params: {
   if (!hash) {
     return undefined;
   }
-  let pack: Buffer;
   const packPath = `${prefix}-${hash}.pack`;
   const readStarted = Date.now();
+  let packStat: Stats;
+  let requiredBytes: number;
   try {
-    ({ buffer: pack } = await readLocalFileSafely({
-      filePath: packPath,
-      maxBytes: MAX_CANDIDATE_PACK_BYTES,
-    }));
+    const opened = await openLocalFileSafely({ filePath: packPath });
+    try {
+      packStat = opened.stat;
+      requiredBytes = packStat.size + (await fs.stat(`${prefix}-${hash}.idx`)).size;
+    } finally {
+      await opened.handle.close();
+    }
   } catch (error) {
     return recordStagingFailure(
       step,
@@ -212,15 +217,77 @@ export async function prepareGitCandidateTransfer(params: {
       Date.now() - readStarted,
     );
   }
+  const objectDirectory = await runGit(
+    "git update object directory",
+    ["rev-parse", "--path-format=absolute", "--git-path", "objects"],
+    undefined,
+    installedRoot,
+  );
+  if (!objectDirectory) {
+    return undefined;
+  }
+  // Objects must live on this volume; the state snapshot allocator still owns
+  // choosing among temporary volumes for the separate rollback snapshot.
+  const capacity = tryReadDiskSpace(objectDirectory);
+  if (capacity && capacity.availableBytes < requiredBytes) {
+    const reason = "snapshot-capacity-insufficient" as const;
+    recordStagingFailure(
+      step,
+      "git update pack capacity",
+      "measure Git update pack capacity",
+      `${reason}: Git update pack and index need ${requiredBytes} bytes in ${objectDirectory}; ${capacity.availableBytes} bytes available. Free space on this volume and retry; the installed checkout is unchanged.`,
+      Date.now() - readStarted,
+    );
+    return { status: "error" as const, reason };
+  }
+  const warnings: string[] = [];
+  if (packStat.size > LARGE_CANDIDATE_PACK_WARNING_BYTES) {
+    warnings.push(
+      `Large Git update pack: ${packStat.size} bytes; importing from disk without buffering it in memory.`,
+    );
+  }
+  if (!capacity) {
+    warnings.push("Git object-volume free space could not be measured; continuing the update.");
+  }
+  const measured: UpdateStepResult = {
+    name: "git update pack capacity",
+    command: "measure Git update pack capacity",
+    cwd: installedRoot,
+    durationMs: Date.now() - readStarted,
+    exitCode: 0,
+    stdoutTail: `Git update pack and index: ${requiredBytes} bytes; ${capacity ? `${capacity.availableBytes} bytes available` : "free space unknown"} in ${objectDirectory}.`,
+    ...(warnings.length ? { warnings } : {}),
+  };
+  step.results?.push(measured);
+  step.progress?.onStepComplete?.({ ...measured, index: step.stepIndex, total: step.totalSteps });
   const keepMessage = `openclaw-update-${randomUUID()}`;
   return {
+    status: "ok" as const,
     async importInto(target: RunStepOptions): Promise<boolean> {
       const imported = await runStep({
         ...target,
         // Repack may run before checkout makes the candidate reachable. Keep its
         // pack until activation/rollback finishes, including source publication.
         argv: ["git", "-C", target.cwd, "index-pack", "--stdin", `--keep=${keepMessage}`],
-        runCommand: (argv, options) => target.runCommand(argv, { ...options, input: pack }),
+        runCommand: async (argv, options) => {
+          const opened = await openLocalFileSafely({ filePath: packPath });
+          try {
+            if (
+              !sameFileIdentity(packStat, opened.stat) ||
+              packStat.size !== opened.stat.size ||
+              packStat.mtimeMs !== opened.stat.mtimeMs ||
+              packStat.ctimeMs !== opened.stat.ctimeMs
+            ) {
+              throw new Error("Git update pack changed after staging");
+            }
+            return await target.runCommand(argv, {
+              ...options,
+              stdinFileDescriptor: opened.handle.fd,
+            });
+          } finally {
+            await opened.handle.close();
+          }
+        },
       });
       if (imported.exitCode !== 0) {
         return false;

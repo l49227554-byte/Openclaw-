@@ -96,14 +96,14 @@ it
   .each([
     "none",
     "inventory",
-    "pack",
+    "large-pack",
     "retry",
     "missing-before",
     "legacy-git",
     "configured-limit",
-  ] as const)("bounds transfer inventories and binary input (failure=%s)", async (failure) => {
+  ] as const)("transfers Git objects without buffering the pack (scenario=%s)", async (failure) => {
   const overflow = failure === "inventory";
-  const oversized = failure === "pack";
+  const largePack = failure === "large-pack";
   const root = temporary.make("git-transfer-bounds-");
   const source = path.join(root, "source");
   const install = path.join(root, "install");
@@ -156,6 +156,13 @@ it
     );
     fs.writeFileSync(path.join(source, `object-${index}`), bytes);
   }
+  if (largePack) {
+    // Uncompressed Git objects keep this sparse fixture above the old pack cap.
+    await git(source, "config", "core.compression", "0");
+    const payload = path.join(source, "large-payload");
+    fs.writeFileSync(payload, "");
+    fs.truncateSync(payload, 257 * 1024 * 1024);
+  }
   await git(source, "add", ".");
   await git(source, "commit", "-m", "candidate");
   const candidateSha = await git(source, "rev-parse", "HEAD");
@@ -196,15 +203,10 @@ it
       inventoryBytes = Buffer.byteLength(options.input as string);
     }
     if (argv.includes("index-pack")) {
-      packBytes = (options.input as Buffer).byteLength;
+      expect(options.input).toBeUndefined();
+      packBytes = fs.fstatSync(options.stdinFileDescriptor!).size;
     }
     const result = await runCommandWithTimeout(argv, { ...options, env });
-    if (oversized && argv.includes("pack-objects") && result.code === 0) {
-      // Grow a real staged pack sparsely; refusal must precede a large allocation.
-      const packPath = `${argv.at(-1)}-${result.stdout.trim()}.pack`;
-      fs.chmodSync(packPath, 0o600);
-      fs.truncateSync(packPath, 256 * 1024 * 1024 + 1);
-    }
     return result;
   };
   const step = (cwd: string): RunStepOptions => ({
@@ -226,26 +228,29 @@ it
     step: step(source),
   });
   expect(historyInventoryAllowsMissingObjects).toBe(true);
-  if (overflow || oversized) {
+  if (overflow) {
     expect(transfer).toBeUndefined();
-    if (overflow) {
-      expect(boundedExitObserved).toBe(true);
-      expect(inventoryBytes).toBe(0);
-    } else {
-      expect(results).toContainEqual(
-        expect.objectContaining({
-          exitCode: 1,
-          stderrTail: expect.stringContaining("file exceeds limit of 268435456 bytes"),
-        }),
-      );
-    }
+    expect(boundedExitObserved).toBe(true);
+    expect(inventoryBytes).toBe(0);
     expect(await git(install, "rev-parse", "HEAD")).toBe(beforeSha);
     return;
   }
-  expect(transfer).toBeDefined();
+  expect(transfer, JSON.stringify(results.filter((entry) => entry.exitCode !== 0))).toBeDefined();
+  if (transfer?.status !== "ok") {
+    throw new Error("Git transfer preparation failed");
+  }
   expect(inventoryBytes).toBeGreaterThan(8000);
   expect(await transfer!.importInto(step(install))).toBe(true);
   expect(packBytes).toBeGreaterThan(8000);
+  if (largePack) {
+    expect(packBytes).toBeGreaterThan(256 * 1024 * 1024);
+    expect(results).toContainEqual(
+      expect.objectContaining({
+        exitCode: 0,
+        warnings: [expect.stringContaining("Large Git update pack")],
+      }),
+    );
+  }
   if (failure === "none") {
     expect(packBytes).toBeLessThan(baseBytes.length);
   }
@@ -265,8 +270,11 @@ it
       probeTimeoutMs: 15_000,
       step: step(inspection),
     });
-    expect(transfer).toBeDefined();
-    expect(await transfer!.importInto(step(install))).toBe(true);
+    expect(transfer, JSON.stringify(results.filter((entry) => entry.exitCode !== 0))).toBeDefined();
+    if (transfer?.status !== "ok") {
+      throw new Error("Git transfer retry preparation failed");
+    }
+    expect(await transfer.importInto(step(install))).toBe(true);
     await git(install, "repack", "-a", "-d");
   }
   await git(install, "checkout", "--detach", candidateSha);
@@ -274,6 +282,12 @@ it
   if (failure === "configured-limit") {
     expect(packBytes).toBeGreaterThan(1024 * 1024);
     expect(await git(source, "config", "pack.packSizeLimit")).toBe("1m");
+  }
+  if (largePack) {
+    expect(fs.statSync(path.join(install, "large-payload")).size).toBe(257 * 1024 * 1024);
+    expect(await git(install, "rev-parse", "HEAD:large-payload")).toBe(
+      await git(source, "rev-parse", "HEAD:large-payload"),
+    );
   }
   expect(fs.readFileSync(path.join(install, "base"))).toEqual(baseBytes);
   for (let index = 0; index < 250; index++) {

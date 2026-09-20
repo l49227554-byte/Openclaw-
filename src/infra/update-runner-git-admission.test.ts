@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import * as diskSpace from "./disk-space.js";
 import { resolveStableNodePath } from "./stable-node-path.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { buildUpdateCommandRunner } from "./update-runner-command.js";
@@ -92,6 +93,7 @@ function fixture(relativeRemote = false, partialClone = false) {
       env: { ...env, ...options.env },
       encoding: "utf8",
       input: options.input,
+      stdio: [options.stdinFileDescriptor ?? "pipe", "pipe", "pipe"],
       timeout: 15_000,
     });
     return { code: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
@@ -210,13 +212,60 @@ describe("Git database admission", () => {
     },
   );
 
+  it("refuses insufficient object-volume capacity before stopping the Gateway", async () => {
+    const state = fixture();
+    const before = state.git(state.install, "rev-parse", "HEAD");
+    const prepareMutation = vi.fn();
+    const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue({
+      targetPath: state.install,
+      checkedPath: state.install,
+      availableBytes: 0,
+      totalBytes: 1024,
+    });
+    try {
+      const result = await state.run({ beforeGitMutation: prepareMutation });
+      expect(result).toMatchObject({ status: "error", reason: "snapshot-capacity-insufficient" });
+      expect(result.steps).toContainEqual(
+        expect.objectContaining({
+          name: "git update pack capacity",
+          stderrTail: expect.stringContaining("0 bytes available"),
+        }),
+      );
+      expect(prepareMutation).not.toHaveBeenCalled();
+      expect(state.git(state.install, "rev-parse", "HEAD")).toBe(before);
+    } finally {
+      capacity.mockRestore();
+    }
+  });
+
+  it("continues with a warning when object-volume capacity is unknown", async () => {
+    const state = fixture();
+    const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue(null);
+    try {
+      const result = await state.run({ beforeGitMutation: async () => undefined });
+      expect(result.status, JSON.stringify(result)).toBe("ok");
+      expect(result.steps).toContainEqual(
+        expect.objectContaining({
+          name: "git update pack capacity",
+          exitCode: 0,
+          warnings: [expect.stringContaining("free space could not be measured")],
+        }),
+      );
+      expect(state.git(state.install, "rev-parse", "HEAD")).toBe(state.target);
+    } finally {
+      capacity.mockRestore();
+    }
+  });
+
   it("does not release another owner's keep file after import", async () => {
     const state = fixture();
     let keepPath = "";
     const command: CommandRunner = async (argv, options) => {
       if (argv[2] === state.install && argv[3] === "index-pack") {
-        const pack = options.input as Buffer;
-        const hash = pack.subarray(-20).toString("hex");
+        const descriptor = options.stdinFileDescriptor!;
+        const trailer = Buffer.alloc(20);
+        fs.readSync(descriptor, trailer, 0, trailer.length, fs.fstatSync(descriptor).size - 20);
+        const hash = trailer.toString("hex");
         keepPath = path.join(state.install, ".git", "objects", "pack", `pack-${hash}.keep`);
         fs.writeFileSync(keepPath, "operator retention\n");
       }

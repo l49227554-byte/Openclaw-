@@ -126,6 +126,7 @@ export function classifyHeartbeatAgentOutcome(params: {
     replyPayload?: ReplyPayload;
   };
   hasRelayableExecCompletion: boolean;
+  hasCronEvents?: boolean;
   suppressUnmarkedSourceReplies: boolean;
   responsePrefix: string | undefined;
   ackMaxChars: number;
@@ -162,7 +163,7 @@ export function classifyHeartbeatAgentOutcome(params: {
   ) {
     return { kind: "ack", eventStatus: "ok-empty" } as const;
   }
-  const mode = params.hasRelayableExecCompletion ? "message" : "heartbeat";
+  const mode = params.hasRelayableExecCompletion || params.hasCronEvents ? "message" : "heartbeat";
   const normalized =
     heartbeatToolResponse && !shouldSuppressSourceReply && !(hasExplicitFailure && replyPayload)
       ? normalizeHeartbeatToolNotification(heartbeatToolResponse, params.responsePrefix)

@@ -238,6 +238,7 @@ async function prepareHeartbeatDispatchReply(
       replyPayload: selected,
     },
     hasRelayableExecCompletion: prepared.hasRelayableExecCompletion,
+    hasCronEvents: prepared.hasCronEvents,
     suppressUnmarkedSourceReplies:
       resolveSourceReplyDeliveryMode({
         cfg,

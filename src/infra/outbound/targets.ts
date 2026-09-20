@@ -175,9 +175,6 @@ function resolveHeartbeatOwnerRoute(params: {
   // configured owner on a later channel.
   const configuredOwners = concreteAllowFromEntries(params.cfg.commands?.ownerAllowFrom);
   for (const { plugin } of plugins) {
-    if (session?.channel && plugin.id !== session.channel) {
-      continue;
-    }
     const configuredOwner = configuredOwners.find((ownerId) => {
       const prefixedChannel = resolveTargetPrefixedChannel(ownerId);
       return (
@@ -190,9 +187,6 @@ function resolveHeartbeatOwnerRoute(params: {
     }
   }
   for (const { plugin, accountId } of plugins) {
-    if (session?.channel && plugin.id !== session.channel) {
-      continue;
-    }
     const ownerId = concreteAllowFromEntries(
       plugin.config.resolveAllowFrom?.({
         cfg: params.cfg,
@@ -271,9 +265,10 @@ export function resolveHeartbeatDeliveryTarget(params: {
 
   const sessionDelivery = deliveryContextFromSession(entry);
   const ownerMode = target === "owner";
-  const ownerTurnSource = ownerMode && hasDeliverableHeartbeatTurnSource(params.turnSource);
+  const deliverableTurnSource = hasDeliverableHeartbeatTurnSource(params.turnSource);
+  const ownerTurnSource = ownerMode && deliverableTurnSource;
   const resolvedTurnSource =
-    target === "last" || ownerTurnSource
+    target === "last" || deliverableTurnSource
       ? mergeDeliveryContext(params.turnSource, sessionDelivery)
       : undefined;
   const ownerRoute =
@@ -291,7 +286,7 @@ export function resolveHeartbeatDeliveryTarget(params: {
   const ownerSession = ownerRoute?.reuseSessionRoute ? sessionDelivery : undefined;
 
   const resolvedTarget =
-    preparedExplicitPlugin && preparedExplicitTo
+    !deliverableTurnSource && preparedExplicitPlugin && preparedExplicitTo
       ? resolveSessionDeliveryTarget({
           entry,
           requestedChannel: target,
@@ -308,8 +303,8 @@ export function resolveHeartbeatDeliveryTarget(params: {
           })
         : resolveSessionDeliveryTarget({
             entry,
-            requestedChannel: target === "last" || ownerTurnSource ? "last" : target,
-            explicitTo: ownerMode ? undefined : heartbeat?.to,
+            requestedChannel: target === "last" || deliverableTurnSource ? "last" : target,
+            explicitTo: ownerMode || deliverableTurnSource ? undefined : heartbeat?.to,
             mode: "heartbeat",
             turnSourceChannel:
               resolvedTurnSource?.channel && isDeliverableMessageChannel(resolvedTurnSource.channel)
@@ -322,13 +317,13 @@ export function resolveHeartbeatDeliveryTarget(params: {
             turnSourceThreadId: params.turnSource?.threadId,
           });
 
-  const heartbeatAccountId = ownerTurnSource ? undefined : heartbeat?.accountId?.trim();
+  const heartbeatAccountId = deliverableTurnSource ? undefined : heartbeat?.accountId?.trim();
   // Use explicit accountId from heartbeat config if provided, otherwise fall back to session
   let effectiveAccountId = heartbeatAccountId || resolvedTarget.accountId;
 
   if (!resolvedTarget.channel || !resolvedTarget.to) {
     return buildNoHeartbeatDeliveryTarget({
-      reason: target === "last" || ownerMode ? "no-route" : "no-target",
+      reason: target === "last" || ownerMode || deliverableTurnSource ? "no-route" : "no-target",
       accountId: effectiveAccountId,
       lastChannel: resolvedTarget.lastChannel,
       lastAccountId: resolvedTarget.lastAccountId,
@@ -356,7 +351,7 @@ export function resolveHeartbeatDeliveryTarget(params: {
       );
       if (!normalizedAccountIds.has(normalizedAccountId)) {
         return buildNoHeartbeatDeliveryTarget({
-          reason: ownerMode ? "no-route" : "unknown-account",
+          reason: ownerMode || deliverableTurnSource ? "no-route" : "unknown-account",
           accountId: normalizedAccountId,
           lastChannel: resolvedTarget.lastChannel,
           lastAccountId: resolvedTarget.lastAccountId,

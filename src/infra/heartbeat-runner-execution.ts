@@ -65,6 +65,7 @@ import {
   type HeartbeatWakeIntent,
   type HeartbeatWakeSource,
 } from "./heartbeat-wake.js";
+import { deliveryContextFromSession } from "../utils/delivery-context.shared.js";
 import type { OutboundSendDeps } from "./outbound/deliver.js";
 import {
   resolveHeartbeatDeliveryTargetWithSessionRoute,
@@ -377,6 +378,14 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // a new session ID (empty transcript) each run, avoiding the cost of
   // sending the full conversation history (~100K tokens) to the LLM.
   // Delivery routing uses the selected conversation, not the fresh execution row.
+  const isEventWake =
+    preflight.isExecEventWake ||
+    preflight.isCronWake ||
+    preflight.isWakePayload ||
+    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text));
+  const turnSource =
+    (preflight.session.inspectsRunQueue ? preflight.turnSourceDeliveryContext : undefined) ??
+    (isEventWake ? deliveryContextFromSession(conversationEntry) : undefined);
   const delivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
     cfg,
     agentId,
@@ -385,9 +394,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     currentSessionKey: sessionKey,
     // A base queue's route stays excluded; events on the actual isolated queue
     // own their route, including exec completion after the base route moves.
-    turnSource: preflight.session.inspectsRunQueue
-      ? preflight.turnSourceDeliveryContext
-      : undefined,
+    turnSource,
   });
   // Operator-chosen suppression is the resolver's verdict, not a config string:
   // an explicit target that never resolves to a route also reports `target-none`.

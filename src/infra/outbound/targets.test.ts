@@ -706,17 +706,20 @@ describe("resolveSessionDeliveryTarget", () => {
     expect(resolved).toMatchObject({ channel: "alpha", to: "user:alpha-owner" });
   });
 
-  it("does not route owner delivery cross-channel when session is on a different channel (#153543)", () => {
+  it("delivers origin-carrying event wakes to event origin instead of explicit heartbeat target (#153543)", () => {
     const discord = createGenericTargetTestPlugin("discord", "Discord");
-    discord.config = { ...discord.config, resolveAllowFrom: () => [] };
     const feishu = createGenericTargetTestPlugin("feishu", "Feishu");
-    feishu.config = { ...feishu.config, resolveAllowFrom: () => ["user:ou_feishu_owner"] };
     setActivePluginRegistry(createTargetsTestRegistry([feishu, discord]));
 
     const resolved = resolveHeartbeatDeliveryTarget({
       cfg: {
-        channels: {
-          feishu: { allowFrom: ["user:ou_feishu_owner"] },
+        agents: {
+          defaults: {
+            heartbeat: {
+              target: "feishu",
+              to: "user:ou_feishu_owner",
+            },
+          },
         },
       } as OpenClawConfig,
       entry: {
@@ -726,9 +729,49 @@ describe("resolveSessionDeliveryTarget", () => {
         lastTo: "557519782434308115",
         chatType: "direct",
       },
+      heartbeat: {
+        target: "feishu",
+        to: "user:ou_feishu_owner",
+      },
+      turnSource: {
+        channel: "discord",
+        to: "557519782434308115",
+      },
     });
 
-    expect(resolved).toMatchObject({ channel: "none", reason: "no-route" });
+    expect(resolved).toMatchObject({ channel: "discord", to: "557519782434308115" });
+  });
+
+  it("delivers scheduled heartbeat to explicit target when no turnSource is present (#153543)", () => {
+    const discord = createGenericTargetTestPlugin("discord", "Discord");
+    const feishu = createGenericTargetTestPlugin("feishu", "Feishu");
+    setActivePluginRegistry(createTargetsTestRegistry([feishu, discord]));
+
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {
+        agents: {
+          defaults: {
+            heartbeat: {
+              target: "feishu",
+              to: "user:ou_feishu_owner",
+            },
+          },
+        },
+      } as OpenClawConfig,
+      entry: {
+        sessionId: "sess-discord-direct",
+        updatedAt: 1,
+        lastChannel: "discord",
+        lastTo: "557519782434308115",
+        chatType: "direct",
+      },
+      heartbeat: {
+        target: "feishu",
+        to: "user:ou_feishu_owner",
+      },
+    });
+
+    expect(resolved).toMatchObject({ channel: "feishu", to: "user:ou_feishu_owner" });
   });
 
   it.each(["cold", "disabled", "inspection-unavailable", "stale"] as const)(

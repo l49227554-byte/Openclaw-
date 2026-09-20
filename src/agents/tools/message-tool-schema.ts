@@ -213,7 +213,7 @@ function buildSendSchema(options: {
         {
           additionalProperties: false,
           description:
-            "Search official ClawHub capabilities and show install or Installed cards in the current Control UI conversation. Omit kind to check plugins, then skills. This presents options; the user chooses installation.",
+            'Search official ClawHub capabilities and show install or Installed cards in the current Control UI conversation. Include this object only for an intended capability lookup; omit it entirely for ordinary sends and never use a sentinel query such as "none". Omit kind to check plugins, then skills. This presents options; the user chooses installation.',
         },
       ),
     );

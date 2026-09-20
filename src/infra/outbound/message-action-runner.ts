@@ -44,9 +44,8 @@ import { executeMessagePlugin, executeMessagePoll } from "./message-action-execu
 import {
   collectActionMediaSourceHints,
   hydrateAttachmentParamsForAction,
+  normalizeMessageActionParams,
   normalizeSandboxMediaParams,
-  parseInteractiveParam,
-  parseJsonMessageParam,
   resolveAttachmentMediaPolicy,
   resolveExtraActionMediaSourceParamKeys,
 } from "./message-action-params.js";
@@ -540,9 +539,7 @@ export async function runMessageAction(input: MessageActionInput): Promise<Messa
     (input.sessionKey
       ? resolveSessionAgentId({ sessionKey: input.sessionKey, config: cfg })
       : undefined);
-  parseJsonMessageParam(params, "presentation");
-  parseJsonMessageParam(params, "delivery");
-  parseInteractiveParam(params);
+  normalizeMessageActionParams(params);
 
   const action = input.action;
   enforceMessageActionAllowlist({

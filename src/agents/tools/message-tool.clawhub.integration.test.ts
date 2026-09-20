@@ -223,6 +223,21 @@ describe("ClawHub message recommendations", () => {
     ]);
   });
 
+  it('ignores a synthesized ClawHub query of "none" on an ordinary send', async () => {
+    const result = await messageTool().execute("ordinary-send", {
+      action: "send",
+      message: "Completed successfully.",
+      clawhub: { query: "none", kind: "skill" },
+    });
+    const reply = extractMessagingToolSourceReplyPayload(result);
+    expect(reply?.text).toBe("Completed successfully.");
+    expect(readClawHubRecommendations(reply?.channelData)).toEqual([]);
+    expect(registry.plugins).not.toHaveBeenCalled();
+    expect(registry.local).not.toHaveBeenCalled();
+    expect(registry.skills).not.toHaveBeenCalled();
+    expect(registry.skillStatus).not.toHaveBeenCalled();
+  });
+
   it("does not expose catalog cards on external channel tool schemas", () => {
     expect(messageTool().parameters).toHaveProperty("properties.clawhub");
     expect(messageTool({}, { currentChannelProvider: "telegram" }).parameters).not.toHaveProperty(

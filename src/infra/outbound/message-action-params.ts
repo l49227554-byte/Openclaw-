@@ -681,3 +681,18 @@ export function parseJsonMessageParam(params: Record<string, unknown>, key: stri
 export function parseInteractiveParam(params: Record<string, unknown>): void {
   parseJsonMessageParam(params, "interactive");
 }
+
+export function normalizeMessageActionParams(params: Record<string, unknown>): void {
+  parseJsonMessageParam(params, "presentation");
+  parseJsonMessageParam(params, "delivery");
+  parseInteractiveParam(params);
+  const clawhub = params.clawhub;
+  // Models can fill optional tool fields with "none" when no lookup was intended.
+  if (
+    isRecord(clawhub) &&
+    typeof clawhub.query === "string" &&
+    clawhub.query.trim().toLowerCase() === "none"
+  ) {
+    delete params.clawhub;
+  }
+}

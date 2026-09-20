@@ -98,20 +98,40 @@ final class QuickChatPresentationTests: XCTestCase {
         XCTAssertEqual(self.composerCount(in: content), 1, "Expanded Quick Chat must keep a single composer")
         XCTAssertEqual(reply.sessionKey, "agent:main:main")
 
+        await transport.beginThinking()
+        try await self.waitUntil { reply.streamingAssistantText != nil }
+        let streamingText = try XCTUnwrap(reply.streamingAssistantText)
+        _ = try await AppKitTestSupport.waitForAccessibilityElement(
+            in: panel, description: "the live reply before collapsing")
+        { elements in
+            elements
+                .first {
+                    ($0.accessibilityValue?() as? String)?
+                        .contains("I am checking the remaining conversations.") == true
+                }
+        }
+        let releaseHistory = AsyncTestGate()
+        defer { releaseHistory.open() }
+        await transport.holdHistory(until: releaseHistory)
+
         controller.toggleReply()
-        try await self.waitUntil { controller.replyBinding.route == nil }
+        try await self.waitForDisclosure(in: panel, expanded: false)
         XCTAssertTrue(controller.replyBinding.viewModel === reply)
         XCTAssertEqual(model.text, "Can you show me what changed?")
         try await self.captureQuickChat(content, name: "collapsed-with-draft")
         XCTAssertEqual(self.composerCount(in: content), 1)
 
         controller.toggleReply()
-        try await self.waitUntil { controller.replyBinding.route != nil }
+        try await self.waitForDisclosure(in: panel, expanded: true)
         XCTAssertTrue(controller.replyBinding.viewModel === reply)
         XCTAssertEqual(model.text, "Can you show me what changed?")
+        XCTAssertEqual(
+            reply.streamingAssistantText,
+            streamingText,
+            "Reopening must retain the live reply while history is unavailable")
+        XCTAssertFalse(reply.isLoading, "Reopening must not restart history bootstrap")
+        releaseHistory.open()
 
-        await transport.beginThinking()
-        try await self.waitUntil { reply.streamingAssistantText != nil }
         try await self.captureQuickChat(content, name: "thinking")
         XCTAssertEqual(model.text, "Can you show me what changed?")
 
@@ -122,12 +142,12 @@ final class QuickChatPresentationTests: XCTestCase {
         let pendingSend = Task { await model.send() }
         await sendEntered.wait()
         controller.toggleReply()
-        XCTAssertNil(controller.replyBinding.route)
+        try await self.waitForDisclosure(in: panel, expanded: false)
         acknowledgeSend.open()
         let followupAccepted = await pendingSend.value
         XCTAssertTrue(followupAccepted)
         controller.handleSendAcceptedForTesting(openChat: false)
-        XCTAssertNil(controller.replyBinding.route, "A late send acknowledgement cannot undo a newer collapse")
+        try await self.waitForDisclosure(in: panel, expanded: false)
         model.text = "Keep this next draft."
 
         let history = try await AppKitTestSupport.waitForAccessibilityElement(
@@ -143,6 +163,18 @@ final class QuickChatPresentationTests: XCTestCase {
         XCTAssertNil(controller.replyBinding.route)
         XCTAssertNil(controller.replyBinding.viewModel, "Hidden replies cannot retain another conversation's context")
         XCTAssertEqual(model.text, "Keep this next draft.")
+    }
+
+    private func waitForDisclosure(in panel: NSWindow, expanded: Bool) async throws {
+        _ = try await AppKitTestSupport.waitForAccessibilityElement(
+            in: panel, description: expanded ? "the expanded conversation" : "the collapsed composer")
+        { elements in
+            elements.first {
+                $0.accessibilityLabel?() == (expanded ? "Collapse conversation" : "Expand conversation")
+            }
+        }
+        // Wait for the rendered panel, so consecutive toggles cannot coalesce into one SwiftUI update.
+        try await self.waitUntil { expanded ? panel.frame.height > 400 : panel.frame.height < 200 }
     }
 
     private func composerCount(in view: NSView) -> Int {
@@ -246,6 +278,7 @@ private actor QuickChatPresentationTransport: OpenClawChatTransport {
     private let continuation: AsyncStream<OpenClawChatTransportEvent>.Continuation
     private var acceptedKey = ""
     private var heldSend: (entered: AsyncTestGate, acknowledgement: AsyncTestGate)?
+    private var historyRelease: AsyncTestGate?
 
     init() {
         (self.stream, self.continuation) = AsyncStream.makeStream()
@@ -262,6 +295,10 @@ private actor QuickChatPresentationTransport: OpenClawChatTransport {
 
     func holdNextSend(entered: AsyncTestGate, acknowledgement: AsyncTestGate) {
         self.heldSend = (entered, acknowledgement)
+    }
+
+    func holdHistory(until release: AsyncTestGate) {
+        self.historyRelease = release
     }
 
     nonisolated func events() -> AsyncStream<OpenClawChatTransportEvent> {
@@ -313,6 +350,9 @@ private actor QuickChatPresentationTransport: OpenClawChatTransport {
     }
 
     func requestHistory(sessionKey: String) async throws -> OpenClawChatHistoryPayload {
+        if let historyRelease = self.historyRelease {
+            await historyRelease.wait()
+        }
         let messages = [
             AnyCodable([
                 "role": "user", "content": [["type": "text", "text": "Clean up the confirmed test sessions."]],
@@ -355,7 +395,7 @@ private actor QuickChatPresentationTransport: OpenClawChatTransport {
             message: AnyCodable([
                 "role": "assistant", "content": [[
                     "type": "text",
-                    "text": "<think>Reviewing the changes and checking the remaining conversations.</think>",
+                    "text": "<think>Reviewing the changes.</think>I am checking the remaining conversations.",
                 ]],
             ]), errorMessage: nil)))
     }

@@ -383,7 +383,7 @@ final class QuickChatController: NSObject {
 
     func toggleReply() {
         guard self.isVisible else { return }
-        if self.replyBinding.route != nil {
+        if self.replyBinding.isExpanded {
             self.replyBinding.hide()
         } else if let route = self.model.routingTarget {
             self.replyBinding.show(route: route)

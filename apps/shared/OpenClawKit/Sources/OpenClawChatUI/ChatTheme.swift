@@ -50,7 +50,7 @@ public enum OpenClawChatTheme {
                 : Color(.sRGB, red: 32 / 255.0, green: 33 / 255.0, blue: 36 / 255.0)
         }
         return colorScheme == .dark
-            ? Color(.sRGB, red: 188 / 255.0, green: 188 / 255.0, blue: 192 / 255.0)
+            ? Color(.sRGB, red: 200 / 255.0, green: 200 / 255.0, blue: 204 / 255.0)
             : Color(.sRGB, red: 64 / 255.0, green: 60 / 255.0, blue: 53 / 255.0)
     }
 

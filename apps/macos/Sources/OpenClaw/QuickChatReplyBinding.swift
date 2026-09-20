@@ -7,6 +7,7 @@ final class QuickChatReplyBinding {
     typealias ViewModelFactory = @MainActor (QuickChatRoutingTarget) -> OpenClawChatViewModel
 
     private(set) var route: QuickChatRoutingTarget?
+    private(set) var isExpanded = false
     private(set) var viewModel: OpenClawChatViewModel?
     private(set) var isPastingReply = false
     private(set) var pasteStatusMessage: String?
@@ -36,12 +37,13 @@ final class QuickChatReplyBinding {
     func show(route: QuickChatRoutingTarget) {
         self.prepare(route: route)
         self.route = route
+        self.isExpanded = true
         self.disclosureRevision &+= 1
     }
 
     func rebindIfActive(route: QuickChatRoutingTarget) {
         // A target change retires hidden context without expanding the conversation.
-        guard self.route != nil else {
+        guard self.isExpanded else {
             if self.preparedRoute != route { self.clear() }
             return
         }
@@ -49,13 +51,14 @@ final class QuickChatReplyBinding {
     }
 
     func hide() {
-        self.route = nil
+        self.isExpanded = false
         self.disclosureRevision &+= 1
     }
 
     func clear() {
         self.disclosureRevision &+= 1
         self.route = nil
+        self.isExpanded = false
         self.preparedRoute = nil
         self.viewModel = nil
         self.isPastingReply = false

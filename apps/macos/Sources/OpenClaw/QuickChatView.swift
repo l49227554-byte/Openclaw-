@@ -29,7 +29,7 @@ struct QuickChatView: View {
     @State private var editorHeight: CGFloat = 34
 
     private var isExpanded: Bool {
-        self.replyBinding.route != nil
+        self.replyBinding.isExpanded
     }
 
     private var accent: Color {
@@ -46,9 +46,16 @@ struct QuickChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if self.isExpanded, let viewModel = self.replyBinding.viewModel {
-                self.header
-                self.replyArea(viewModel: viewModel)
+            // Keep the transcript mounted so reopening does not reload and reset a live reply.
+            if let viewModel = self.replyBinding.viewModel, self.replyBinding.route != nil {
+                VStack(spacing: 0) {
+                    self.header
+                    self.replyArea(viewModel: viewModel)
+                }
+                .frame(height: self.isExpanded ? nil : 0)
+                .clipped()
+                .allowsHitTesting(self.isExpanded)
+                .accessibilityHidden(!self.isExpanded)
             }
 
             if let status = self.statusLine {

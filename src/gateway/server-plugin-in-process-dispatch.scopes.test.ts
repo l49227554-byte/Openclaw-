@@ -25,6 +25,12 @@ describe("synthetic operator scope attenuation", () => {
       allowed: true,
     },
     {
+      method: "talk.config",
+      requiredScope: "operator.talk.secrets",
+      allowedScope: "operator.write",
+      allowed: false,
+    },
+    {
       method: "tools.invoke",
       requiredScope: "operator.write",
       allowedScope: "operator.read",

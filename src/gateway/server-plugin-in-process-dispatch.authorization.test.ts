@@ -248,52 +248,72 @@ describe("typed in-process agent authorization", () => {
     },
   );
 
-  it("preserves read access after a tool-routed followup admits a write-only agent turn", async () => {
-    const owner = createOperatorClient({
-      profileId: "followup-owner",
-      scopes: ["operator.read", "operator.write"],
-    });
-    const readHandler = vi.fn(({ client, respond }: GatewayRequestHandlerOptions) => {
-      expect(client?.connect.scopes).toEqual(["operator.read"]);
-      expect(client?.authenticatedUserProfile?.profileId).toBe("followup-owner");
-      respond(true, { sessions: [] });
-    });
-    const context = createContext();
-    context.getGatewayMethodRegistry = () =>
-      createGatewayMethodRegistry([
-        {
-          name: "sessions.list",
-          scope: "operator.read",
-          owner: { kind: "core", area: "sessions" },
-          handler: readHandler,
-        },
-      ]);
-    startTurn.mockImplementation(async ({ principal, io }) => {
-      expect(principal.connect.scopes).toEqual(["operator.write"]);
-      await expect(callInProcessGatewayTool("sessions.list", {})).resolves.toEqual({
-        sessions: [],
+  it.each(["sessions_send", "subagent_announce", "subagent_settle"] as const)(
+    "preserves read access after %s admits a write-only continuation",
+    async (sourceTool) => {
+      const owner = createOperatorClient({
+        profileId: "continuation-owner",
+        scopes: ["operator.read", "operator.write"],
       });
-      io.emitAcceptance([true, { runId: "followup-run", status: "accepted" }, undefined]);
-    });
-    await withPluginRuntimeGatewayRequestScope(
-      { client: owner, context, isWebchatConnect: () => false },
-      () =>
-        callAgentToolGatewayRequest({
-          method: "agent",
-          params: {
-            message: "Continue the delegated task",
-            idempotencyKey: "followup-run",
-            inputProvenance: {
-              kind: "inter_session",
-              sourceSessionKey: "agent:main:parent",
-              sourceTool: "sessions_send",
-            },
+      const readHandler = vi.fn(({ client, respond }: GatewayRequestHandlerOptions) => {
+        expect(client?.connect.scopes).toEqual(["operator.read"]);
+        expect(client?.authenticatedUserProfile?.profileId).toBe("continuation-owner");
+        respond(true, { sessions: [] });
+      });
+      const context = createContext();
+      context.getGatewayMethodRegistry = () =>
+        createGatewayMethodRegistry([
+          {
+            name: "sessions.list",
+            scope: "operator.read",
+            owner: { kind: "core", area: "sessions" },
+            handler: readHandler,
           },
-        }),
-    );
-    expect(startTurn).toHaveBeenCalledOnce();
-    expect(readHandler).toHaveBeenCalledOnce();
-  });
+        ]);
+      const runId = `continuation-${sourceTool}`;
+      startTurn.mockImplementation(async ({ principal, io }) => {
+        expect(principal.connect.scopes).toEqual(["operator.write"]);
+        io.emitAcceptance([true, { runId, status: "accepted" }, undefined]);
+        await expect(callInProcessGatewayTool("sessions.list", {})).resolves.toEqual({
+          sessions: [],
+        });
+        io.emitFinal([true, { runId, status: "ok" }, undefined]);
+      });
+      const params = {
+        message: "Continue the delegated task",
+        idempotencyKey: runId,
+        inputProvenance: {
+          kind: "inter_session" as const,
+          sourceSessionKey: "agent:main:child",
+          sourceTool,
+        },
+      };
+      await expect(
+        withPluginRuntimeGatewayRequestScope(
+          { client: owner, context, isWebchatConnect: () => false },
+          async () => {
+            if (sourceTool === "sessions_send") {
+              return await callAgentToolGatewayRequest({
+                method: "agent",
+                params,
+                expectFinal: true,
+              });
+            }
+            const { runAnnounceAgentCall } =
+              await import("../agents/subagents/announce/subagent-announce-completion-delivery.js");
+            return await runAnnounceAgentCall({
+              agentParams: params,
+              expectFinal: true,
+              isExecutionAllowed: () => true,
+              resolveGatewayContext: () => context,
+            });
+          },
+        ),
+      ).resolves.toEqual({ runId, status: "ok" });
+      expect(startTurn).toHaveBeenCalledOnce();
+      expect(readHandler).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     { method: "sessions.patch", cleanup: false, scopedActor: false },

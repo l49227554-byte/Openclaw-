@@ -316,6 +316,94 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     }
   });
 
+  it.each(
+    ["blacksmith", "hybrid", "github"].flatMap((runnerBackend) =>
+      [false, true].map((gateway) => ({ runnerBackend, gateway })),
+    ),
+  )(
+    "gives fast $runnerBackend jobs less work without losing owners (Gateway=$gateway)",
+    ({ runnerBackend, gateway }) => {
+      const original = fullSuiteVitestShards.slice();
+      const fixtures = Array.from({ length: 48 }, (_, index) => ({
+        name: `tier-fixture-${index}`,
+        config: `fixture-${index}.config.ts`,
+        projects: [
+          gateway
+            ? "test/vitest/vitest.gateway-core.config.ts"
+            : `test/vitest/vitest.tier-fixture-${index}.config.ts`,
+        ],
+      }));
+      vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(
+        Object.fromEntries(fixtures.map(({ name }) => [name, 80])),
+      );
+      vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
+      vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
+      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...fixtures);
+      try {
+        const options = {
+          compactMode: "pull-request" as const,
+          runnerBackend,
+          includeReleaseOnlyPluginShards: false,
+        };
+        const standard = createNodeTestShardBundles(options);
+        expect(createNodeTestShardBundles({ ...options, tier: "standard" })).toEqual(standard);
+        const fast = createNodeTestShardBundles({ ...options, tier: "fast" });
+        expect(fast.length).toBeGreaterThan(standard.length);
+        const owners = (jobs: CompactNodeTestShard[]) =>
+          jobs
+            .flatMap((job) => job.groups)
+            .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name));
+        expect(owners(fast)).toEqual(owners(standard));
+        expect(Math.max(...fast.map((job) => job.predictedSeconds ?? 0))).toBeLessThan(
+          Math.max(...standard.map((job) => job.predictedSeconds ?? 0)),
+        );
+        expect(
+          fast.every(
+            (job) => (job.predictedSeconds ?? 0) <= (job.planConcurrency === 2 ? 240 : 150),
+          ),
+        ).toBe(true);
+      } finally {
+        fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
+      }
+    },
+  );
+
+  it("keeps measured fast hybrid runtime floors out of unrelated packed work", () => {
+    const original = fullSuiteVitestShards.slice();
+    const configs = new Set([
+      "test/vitest/vitest.infra.config.ts",
+      "test/vitest/vitest.runtime-config.config.ts",
+    ]);
+    fullSuiteVitestShards.splice(
+      0,
+      fullSuiteVitestShards.length,
+      ...original
+        .filter((shard) => shard.name === "core-runtime")
+        .map((shard) =>
+          Object.assign({}, shard, {
+            projects: shard.projects.filter((config) => configs.has(config)),
+          }),
+        ),
+    );
+    try {
+      const jobs = createNodeTestShardBundles({
+        compactMode: "pull-request",
+        runnerBackend: "hybrid",
+        tier: "fast",
+        includeReleaseOnlyPluginShards: false,
+      });
+      const overBudget = jobs.filter(
+        (job) => job.pretestBuildMode === "runtime" && (job.predictedSeconds ?? 0) > 250,
+      );
+      expect(overBudget.length).toBeGreaterThan(0);
+      for (const job of overBudget) {
+        expect(job.groups, job.checkName).toHaveLength(1);
+      }
+    } finally {
+      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
+    }
+  });
+
   // Read-only cases share this baseline; inventory and timing mutations build fresh plans.
   let defaultShards: ReturnType<typeof createNodeTestShards>;
 

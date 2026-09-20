@@ -184,11 +184,11 @@ default.
 
 In **Systems**, select the **Gateway host** to check for an existing screen-sharing
 server. When one is available, **Enable desktop access in OpenClaw** turns on Host
-Desktop and requests a Gateway restart; the page reconnects automatically. This
-requires Gateway administrator access. Detection does not expose the desktop or
-change system permissions. Existing managed Linux desktops can be enabled from
-the same view. **Settings → Labs → Host Desktop** remains available to turn access
-off or manage it separately.
+Desktop without restarting the Gateway; the desktop becomes available on the
+same connection. Gateway administrator access is required. Detection does not
+expose the desktop or change system permissions. Existing managed Linux desktops
+can be enabled from the same view. **Settings → Labs → Host Desktop** remains
+available to turn access off or manage it separately.
 
 Enabling macOS Screen Sharing, a paired node's Desktop sharing, or screenshot
 capture alone does not enable the Gateway's desktop. On macOS, Remote Management

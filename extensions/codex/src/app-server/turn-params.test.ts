@@ -1,5 +1,7 @@
 import { resolveThinkingDefault } from "openclaw/plugin-sdk/agent-runtime";
+import type { ModelCompatConfig } from "openclaw/plugin-sdk/provider-model-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createCodexTestModel } from "./test-support.js";
 import {
   createAppServerOptions,
   createParams,
@@ -285,6 +287,64 @@ describe("buildTurnStartParams source-delivery context", () => {
       expect(unavailable.additionalContext?.openclaw_source_delivery?.value).not.toContain(
         "target required",
       );
+    },
+  );
+});
+
+describe("buildTurnStartParams native supervised settings", () => {
+  it.each([undefined, "Permission change. Continue with updated permissions."])(
+    "does not overwrite native supervised turn settings (notice: %s)",
+    (notice) => {
+      const params = createParams("/tmp/session.jsonl", "/repo");
+      params.provider = "anthropic";
+      params.thinkLevel = "off";
+      const compat: ModelCompatConfig = { supportedReasoningEfforts: ["none", "high"] };
+      params.model = {
+        ...createCodexTestModel("anthropic"),
+        compat,
+      };
+      if (notice) {
+        params.permissionChange = {
+          owner: {},
+          baseExecOverrides: {},
+          notice,
+          request: vi.fn(),
+          applied: () => true,
+          recordApplied: vi.fn(),
+        };
+      }
+      const request = buildTurnStartParams(params, {
+        threadId: "thread-supervised",
+        cwd: "/repo",
+        model: "native-model",
+        modelProvider: "native-provider",
+        appServer: createAppServerOptions(),
+        preserveNativeTurnSettings: true,
+      });
+
+      expect(request).not.toHaveProperty("model");
+      expect(request).not.toHaveProperty("effort");
+      expect(request).not.toHaveProperty("collaborationMode");
+      expect(request).not.toHaveProperty("personality");
+      expect(request.additionalContext).toEqual({
+        openclaw_active_computer: {
+          kind: "application",
+          value: "Current active computer: active_node=unknown (host presence unavailable)",
+        },
+        openclaw_source_delivery: {
+          kind: "application",
+          value: expect.stringContaining("reply normally in your final assistant message"),
+        },
+        openclaw_temporal_context: {
+          kind: "application",
+          value: expect.stringContaining("## Temporal Context"),
+        },
+        ...(notice
+          ? {
+              openclaw_permission_change: { kind: "application", value: notice },
+            }
+          : {}),
+      });
     },
   );
 });

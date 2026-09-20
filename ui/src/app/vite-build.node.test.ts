@@ -57,6 +57,7 @@ describe("Control UI Vite build", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -140,100 +141,109 @@ describe("Control UI Vite build", () => {
     await expect(fs.stat(path.join(outDir, "asset-manifest.json"))).resolves.toBeDefined();
   });
 
-  it.each(["configured", "absolute override", "relative override", "output override"] as const)(
-    "finalizes assets in the %s output directory, excluding source maps",
-    async (output) => {
-      const configuredOutDir = outDir;
-      if (output !== "configured") {
-        outDir = path.join(root, "overridden-output");
-        config.build =
-          output === "output override"
-            ? {
-                ...config.build,
-                rolldownOptions: {
-                  ...config.build?.rolldownOptions,
-                  output: { dir: outDir },
-                },
-              }
-            : {
-                ...config.build,
-                outDir: output === "relative override" ? path.relative(root, outDir) : outDir,
-              };
-      }
-      config.publicDir = fileURLToPath(new URL("../../public", import.meta.url));
-      await fs.writeFile(
-        path.join(root, "index.html"),
-        '<html><body><button>Load</button><script type="module" src="./main.js"></script></body></html>',
-      );
-      await build(config);
-      expect(info).not.toHaveBeenCalled();
-      if (output !== "configured") {
-        await expect(fs.stat(configuredOutDir)).rejects.toMatchObject({ code: "ENOENT" });
-      }
+  it.each(
+    (["configured", "absolute override", "relative override", "output override"] as const).flatMap(
+      (output) => [false, true].map((release) => ({ output, release })),
+    ),
+  )("finalizes $output assets and maps (release=$release)", async ({ output, release }) => {
+    vi.stubEnv("OPENCLAW_CONTROL_UI_RELEASE_BUILD", release ? "1" : undefined);
+    config = { ...config, ...controlUiViteConfig({ outDir }) };
+    const configuredOutDir = outDir;
+    if (output !== "configured") {
+      outDir = path.join(root, "overridden-output");
+      config.build =
+        output === "output override"
+          ? {
+              ...config.build,
+              rolldownOptions: {
+                ...config.build?.rolldownOptions,
+                output: { dir: outDir },
+              },
+            }
+          : {
+              ...config.build,
+              outDir: output === "relative override" ? path.relative(root, outDir) : outDir,
+            };
+    }
+    config.publicDir = fileURLToPath(new URL("../../public", import.meta.url));
+    await fs.writeFile(
+      path.join(root, "index.html"),
+      '<html><body><button>Load</button><script type="module" src="./main.js"></script></body></html>',
+    );
+    await build(config);
+    expect(info).not.toHaveBeenCalled();
+    if (output !== "configured") {
+      await expect(fs.stat(configuredOutDir)).rejects.toMatchObject({ code: "ENOENT" });
+    }
 
-      const manifest: ControlUiAssetManifest = JSON.parse(
-        await fs.readFile(path.join(outDir, "asset-manifest.json"), "utf8"),
-      );
-      const emitted = (await fs.readdir(path.join(outDir, "assets"))).toSorted();
-      expect(emitted.some((name) => name.endsWith(".map"))).toBe(true);
-      expect(manifest.assets.map((entry) => entry.path).toSorted()).toEqual(
-        emitted.filter((name) => !name.endsWith(".map")).map((name) => `assets/${name}`),
-      );
-      for (const entry of manifest.assets) {
-        const source = await fs.readFile(path.join(outDir, entry.path));
-        expect(entry.size).toBe(source.byteLength);
-        expect(entry.sha256).toBe(createHash("sha256").update(source).digest("hex"));
-      }
+    const manifest: ControlUiAssetManifest = JSON.parse(
+      await fs.readFile(path.join(outDir, "asset-manifest.json"), "utf8"),
+    );
+    const emitted = (await fs.readdir(path.join(outDir, "assets"))).toSorted();
+    expect(emitted.some((name) => name.endsWith(".map"))).toBe(true);
+    expect(manifest.assets.map((entry) => entry.path).toSorted()).toEqual(
+      emitted.filter((name) => !name.endsWith(".map")).map((name) => `assets/${name}`),
+    );
+    for (const entry of manifest.assets) {
+      const source = await fs.readFile(path.join(outDir, entry.path));
+      expect(entry.size).toBe(source.byteLength);
+      expect(entry.sha256).toBe(createHash("sha256").update(source).digest("hex"));
+    }
 
-      const scripts = emitted.filter((name) => name.endsWith(".js"));
-      expect(scripts.length).toBeGreaterThan(1);
-      expect(emitted.some((name) => name.endsWith(".css"))).toBe(true);
-      for (const name of emitted.filter((fileName) => /\.(js|css)$/u.test(fileName))) {
-        const source = await fs.readFile(path.join(outDir, "assets", name));
-        const brotli = await fs.readFile(path.join(outDir, "assets", `${name}.br`));
-        const gzip = await fs.readFile(path.join(outDir, "assets", `${name}.gz`));
-        expect(brotliDecompressSync(brotli)).toEqual(source);
-        expect(gunzipSync(gzip)).toEqual(source);
+    const scripts = emitted.filter((name) => name.endsWith(".js"));
+    expect(scripts.length).toBeGreaterThan(1);
+    expect(scripts.some((name) => emitted.includes(`${name}.map`))).toBe(true);
+    expect(emitted.some((name) => name.endsWith(".css"))).toBe(true);
+    for (const name of emitted.filter((fileName) => /\.(js|css)$/u.test(fileName))) {
+      const source = await fs.readFile(path.join(outDir, "assets", name));
+      const brotli = await fs.readFile(path.join(outDir, "assets", `${name}.br`));
+      const gzip = await fs.readFile(path.join(outDir, "assets", `${name}.gz`));
+      expect(brotliDecompressSync(brotli)).toEqual(source);
+      expect(gunzipSync(gzip)).toEqual(source);
+      if (name.endsWith(".js")) {
+        expect(source.toString("utf8").includes("sourceMappingURL="), name).toBe(
+          !release && emitted.includes(`${name}.map`),
+        );
       }
-      const serviceWorker = await fs.readFile(path.join(outDir, "sw.js"), "utf8");
-      const embeddedBuildId = /const EMBEDDED_CACHE_VERSION = "([^"]+)"/u.exec(serviceWorker)?.[1];
-      const buildInfo = JSON.parse(config.define?.["globalThis.OPENCLAW_CONTROL_UI_BUILD_INFO"]);
-      expect(embeddedBuildId).toBe(buildInfo.buildId);
+    }
+    const serviceWorker = await fs.readFile(path.join(outDir, "sw.js"), "utf8");
+    const embeddedBuildId = /const EMBEDDED_CACHE_VERSION = "([^"]+)"/u.exec(serviceWorker)?.[1];
+    const buildInfo = JSON.parse(config.define?.["globalThis.OPENCLAW_CONTROL_UI_BUILD_INFO"]);
+    expect(embeddedBuildId).toBe(buildInfo.buildId);
 
-      const html = await fs.readFile(path.join(outDir, "index.html"), "utf8");
-      const cacheId = /data-openclaw-control-ui-build-id="([^"]+)"/u.exec(html)?.[1];
-      expect(cacheId?.startsWith(`${buildInfo.buildId}-`)).toBe(true);
-      expect(cacheId?.slice(buildInfo.buildId.length + 1)).toMatch(/^[a-f0-9]{64}$/u);
-      const fonts = await fs.readdir(path.join(outDir, "fonts"));
-      for (const fontCss of fonts.filter((name) => name.endsWith(".css"))) {
-        const source = await fs.readFile(path.join(outDir, "fonts", fontCss), "utf8");
-        const references = [...source.matchAll(/url\("([^"]+)"\)/gu)];
-        expect(references.length).toBeGreaterThan(0);
-        for (const [, reference] of references) {
-          const fontUrl = new URL(
-            reference!,
-            `https://control.example/ui/fonts/${fontCss}?v=${cacheId}`,
-          );
-          expect(fontUrl.searchParams.get("v")).toBe(cacheId);
-          expect(fontUrl.pathname).toMatch(/^\/ui\/fonts\/[^/]+\.woff2$/u);
-          await expect(
-            fs.stat(path.join(outDir, fontUrl.pathname.slice("/ui/".length))),
-          ).resolves.toBeDefined();
-        }
-      }
-      const webManifest: { start_url: string; icons: Array<{ src: string }> } = JSON.parse(
-        await fs.readFile(path.join(outDir, "manifest.webmanifest"), "utf8"),
-      );
-      expect(webManifest.start_url).toBe("./");
-      for (const icon of webManifest.icons) {
-        const iconUrl = new URL(icon.src, "https://control.example/ui/manifest.webmanifest");
-        expect(iconUrl.searchParams.get("v")).toBe(cacheId);
+    const html = await fs.readFile(path.join(outDir, "index.html"), "utf8");
+    const cacheId = /data-openclaw-control-ui-build-id="([^"]+)"/u.exec(html)?.[1];
+    expect(cacheId?.startsWith(`${buildInfo.buildId}-`)).toBe(true);
+    expect(cacheId?.slice(buildInfo.buildId.length + 1)).toMatch(/^[a-f0-9]{64}$/u);
+    const fonts = await fs.readdir(path.join(outDir, "fonts"));
+    for (const fontCss of fonts.filter((name) => name.endsWith(".css"))) {
+      const source = await fs.readFile(path.join(outDir, "fonts", fontCss), "utf8");
+      const references = [...source.matchAll(/url\("([^"]+)"\)/gu)];
+      expect(references.length).toBeGreaterThan(0);
+      for (const [, reference] of references) {
+        const fontUrl = new URL(
+          reference!,
+          `https://control.example/ui/fonts/${fontCss}?v=${cacheId}`,
+        );
+        expect(fontUrl.searchParams.get("v")).toBe(cacheId);
+        expect(fontUrl.pathname).toMatch(/^\/ui\/fonts\/[^/]+\.woff2$/u);
         await expect(
-          fs.stat(path.join(outDir, iconUrl.pathname.slice("/ui/".length))),
+          fs.stat(path.join(outDir, fontUrl.pathname.slice("/ui/".length))),
         ).resolves.toBeDefined();
       }
-    },
-  );
+    }
+    const webManifest: { start_url: string; icons: Array<{ src: string }> } = JSON.parse(
+      await fs.readFile(path.join(outDir, "manifest.webmanifest"), "utf8"),
+    );
+    expect(webManifest.start_url).toBe("./");
+    for (const icon of webManifest.icons) {
+      const iconUrl = new URL(icon.src, "https://control.example/ui/manifest.webmanifest");
+      expect(iconUrl.searchParams.get("v")).toBe(cacheId);
+      await expect(
+        fs.stat(path.join(outDir, iconUrl.pathname.slice("/ui/".length))),
+      ).resolves.toBeDefined();
+    }
+  });
 
   it("changes the public asset version after a same-commit rebuild without changing worker identity", async () => {
     const publicDir = path.join(root, "public");

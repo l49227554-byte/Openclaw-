@@ -64,3 +64,38 @@ it("opens a pasted text excerpt in the side panel with the text-field action", a
     "Show in text field",
   );
 });
+
+it("returns pasted text directly from the composer without opening a side panel", () => {
+  let attachments: ChatAttachment[] = [];
+  onTestFinished(() => releaseChatAttachmentPayloads(attachments));
+  const producer = renderAttachmentHarness(
+    () => attachments,
+    (next) => {
+      attachments = next;
+    },
+  );
+  const text = "  Preserve indentation 🦞\n" + "x".repeat(1100);
+  producer.querySelector("textarea")!.dispatchEvent(createPasteEvent(text));
+  const onOpenSidebar = vi.fn();
+  const onDraftChange = vi.fn();
+  const container = renderChatView({
+    attachments,
+    getAttachments: () => attachments,
+    getDraft: () => "Newer draft",
+    onAttachmentsChange: (next) => {
+      attachments = next;
+    },
+    onDraftChange,
+    onOpenSidebar,
+  });
+  const action = expectDefined(
+    container.querySelector<HTMLButtonElement>(
+      ".chat-attachments-preview .chat-attachment-text-action",
+    ),
+    "inline Show in text field action",
+  );
+  action.click();
+  expect(onDraftChange).toHaveBeenCalledWith("Newer draft\n\n" + text);
+  expect(attachments).toEqual([]);
+  expect(onOpenSidebar).not.toHaveBeenCalled();
+});

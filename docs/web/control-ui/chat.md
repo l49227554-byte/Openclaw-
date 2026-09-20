@@ -357,8 +357,10 @@ Markdown formatting removed. Empty or unavailable excerpts show **Pasted text**.
 In the transcript, chips sit above the text bubble alongside other attachments;
 multiple chips share a row and wrap when needed. Click a chip or press Enter to
 open the existing attachment side panel and copy the original text, preserving
-markup, line breaks, and indentation. The composer panel also offers **Show in
-text field** and removal. Messages containing only comment or pasted-text chips
+markup, line breaks, and indentation. Select **Show in text field** beneath a
+composer chip to return its text to the draft without opening the side panel.
+The composer side panel also offers the same action and removal. Messages
+containing only comment or pasted-text chips
 use a transparent shell.
 Newly uploaded text files remain file cards, even when their names resemble
 pasted-text attachments. Older history without origin metadata recognizes

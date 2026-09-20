@@ -36,6 +36,30 @@ async function paste(composer: Locator) {
 }
 
 suite.define(() => {
+  it.each([1280, 390])("restores pasted text directly from the %ipx composer", async (width) => {
+    await suite.withPage(
+      { ...contextOptions, viewport: { width, height: 900 } },
+      async ({ page }) => {
+        const gateway = await installMockGateway(page);
+        await page.goto(`${suite.server.baseUrl}chat`);
+        const composer = page.locator(".agent-chat__composer-combobox textarea");
+        await composer.waitFor({ state: "visible" });
+        await composer.fill("Keep this draft");
+        await paste(composer);
+        const restore = page.locator(".chat-attachments-preview").getByRole("button", {
+          name: "Show in text field",
+          exact: true,
+        });
+        await restore.focus();
+        await page.keyboard.press("Enter");
+        await expect.poll(() => composer.inputValue()).toBe(`Keep this draft\n\n${pastedText}`);
+        expect(await page.locator(".chat-attachments-preview").count()).toBe(0);
+        expect(await page.locator("openclaw-chat-detail-panel:visible").count()).toBe(0);
+        expect(await gateway.getRequests("chat.send")).toHaveLength(0);
+      },
+    );
+  });
+
   it("opens the exact pasted text by keyboard, copies it, and returns it to the text field", async () => {
     await suite.withPage(contextOptions, async ({ page }) => {
       const gateway = await installMockGateway(page);

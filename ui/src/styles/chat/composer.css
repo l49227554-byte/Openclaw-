@@ -1826,6 +1826,16 @@ html[dir="rtl"] .chat-attachment-loading > span {
   white-space: nowrap;
 }
 
+.chat-composer-pasted-text {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .chat-attachment-text-action {
   display: inline-flex;
   width: fit-content;

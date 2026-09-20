@@ -69,6 +69,19 @@ export function renderComposerPastedText(att: ChatAttachment, props: ChatAttachm
   const removeLabel = att.fileName?.trim()
     ? t("chat.composer.removeNamedAttachment", { name: att.fileName })
     : t("chat.composer.removeAttachment");
+  const renderRestoreAction = () => html`<button
+    class="chat-attachment-text-action"
+    type="button"
+    ?disabled=${props.disabled}
+    @click=${() => {
+      const attachment = current();
+      if (attachment && !props.disabled) {
+        showPastedTextInComposer(attachment, props);
+      }
+    }}
+  >
+    ${t("chat.attachments.showInTextField")}
+  </button>`;
   const open = () => {
     if (!current()) {
       return;
@@ -90,19 +103,7 @@ export function renderComposerPastedText(att: ChatAttachment, props: ChatAttachm
           ? { status: "ready", src, sizeBytes: attachment.sizeBytes }
           : { status: "unavailable" };
       },
-      renderActions: () => html`<button
-          class="chat-attachment-text-action"
-          type="button"
-          ?disabled=${props.disabled}
-          @click=${() => {
-            const attachment = current();
-            if (attachment && !props.disabled) {
-              showPastedTextInComposer(attachment, props);
-            }
-          }}
-        >
-          ${t("chat.attachments.showInTextField")}
-        </button>
+      renderActions: () => html`${renderRestoreAction()}
         <button
           class="btn btn--sm"
           type="button"
@@ -120,10 +121,13 @@ export function renderComposerPastedText(att: ChatAttachment, props: ChatAttachm
         </button>`,
     });
   };
-  return html`<openclaw-chat-pasted-text
-    .src=${getChatAttachmentDataUrl(att)}
-    .sizeBytes=${att.sizeBytes}
-    .scope=${att.id}
-    .onOpen=${open}
-  ></openclaw-chat-pasted-text>`;
+  return html`<div class="chat-composer-pasted-text">
+    <openclaw-chat-pasted-text
+      .src=${getChatAttachmentDataUrl(att)}
+      .sizeBytes=${att.sizeBytes}
+      .scope=${att.id}
+      .onOpen=${open}
+    ></openclaw-chat-pasted-text>
+    ${renderRestoreAction()}
+  </div>`;
 }

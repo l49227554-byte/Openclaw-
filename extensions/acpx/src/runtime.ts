@@ -56,6 +56,11 @@ import { AcpxGenerationRegistry } from "./runtime-generations.js";
 import { prepareAcpxProcessCleanup } from "./runtime-process-cleanup.js";
 import type { CompleteAcpRuntime, CompleteAcpRuntimeTurn } from "./runtime-proxy.js";
 import {
+  prepareResumeSafeSessionInput,
+  withResumeEnsureErrorNormalization,
+  withSessionResumeCapability,
+} from "./runtime-session-ensure.js";
+import {
   type AcpLoadedSessionRecord,
   type ResetAwareSessionStore,
   type AcpxLaunchLeaseContext,
@@ -975,7 +980,10 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       agentId: logicalInput.agentId,
       bridgeSession: logicalInput.bridgeSession,
     };
-    const input = { ...logicalInput, sessionKey: resolveAcpxSessionResource(logicalInput) };
+    const input = prepareResumeSafeSessionInput({
+      input: { ...logicalInput, sessionKey: resolveAcpxSessionResource(logicalInput) },
+      markFresh: (sessionKey) => this.sessionStore.markFresh(sessionKey),
+    });
     const isCodexAcp =
       normalizeAgentName(input.agent) === CODEX_ACP_AGENT_ID && isCodexAcpCommand(command);
     const dropInheritedCodexMax =
@@ -1019,29 +1027,37 @@ export class AcpxRuntime implements CompleteAcpRuntime {
         : command;
     const reusableCommand = await this.readReusablePersistentSessionCommand({
       sessionKey: input.sessionKey,
-      mode: input.mode,
+      mode: ensureInput.mode,
       cwd: input.cwd,
       command: stableLaunchCommand,
       resumeSessionId: input.resumeSessionId,
     });
 
-    const handle = await this.runWithLaunchLease({
-      agent: ensureInput.agent,
-      sessionKey: ensureInput.sessionKey,
-      command: stableLaunchCommand,
-      reusableCommand,
+    const handle = await withResumeEnsureErrorNormalization({
+      input: ensureInput,
       run: () =>
-        this.withCodexWrapperDiagnostics({
+        this.runWithLaunchLease({
+          agent: ensureInput.agent,
+          sessionKey: ensureInput.sessionKey,
           command: stableLaunchCommand,
-          fallbackCode: "ACP_SESSION_INIT_FAILED",
+          reusableCommand,
           run: () =>
-            codexModelOverride
-              ? delegate.ensureSession(withAcpxSessionOptions(ensureInput))
-              : ensureDelegateSessionWithModelFallback(delegate, ensureInput),
+            this.withCodexWrapperDiagnostics({
+              command: stableLaunchCommand,
+              fallbackCode: "ACP_SESSION_INIT_FAILED",
+              run: () =>
+                codexModelOverride
+                  ? delegate.ensureSession(withAcpxSessionOptions(ensureInput))
+                  : ensureDelegateSessionWithModelFallback(delegate, ensureInput),
+            }),
         }),
     });
+    // Capability lookup enriches an owned handle; a read failure must not strand its client.
+    const record = await this.sessionStore
+      .load(handle.acpxRecordId ?? input.sessionKey)
+      .catch(() => undefined);
     return {
-      ...handle,
+      ...withSessionResumeCapability(handle, record),
       ...logicalTarget,
       ...(appliedModel ? { appliedModel } : {}),
       ...(dropInheritedCodexMax ? { appliedThinking: { kind: "dropped" as const } } : {}),

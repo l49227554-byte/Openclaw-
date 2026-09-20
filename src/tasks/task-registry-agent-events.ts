@@ -19,7 +19,10 @@ import {
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { hasAuthoritativeTaskBacking } from "./task-backing-authority.js";
-import { finishTaskMutation, retainTaskMutationFlowEffects } from "./task-executor-create.async.js";
+import {
+  finishTaskMutation,
+  retainTaskMutationFlowEffects,
+} from "./task-executor-mutation-effects.async.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import { clearTaskActivity, flushTaskActivity } from "./task-registry-activity.js";
 import { recoverTaskAgentEventPublication } from "./task-registry-agent-event-commit.js";
@@ -398,6 +401,13 @@ async function persist(pending: PendingEvent): Promise<void> {
           },
           beforeObservers: async (assertCurrentPublication) => {
             if (pending.publication && pending.phase.kind !== "consumed") {
+              const assertCurrentOwners = () => {
+                assertCurrentPublication();
+                if (getTaskRegistryStore() !== store || getTaskFlowRegistryStore() !== flowStore) {
+                  throw new Error("Task event publication owners changed");
+                }
+              };
+              assertCurrentOwners();
               const current = tasks.get(taskId);
               if (
                 pending.publication.becomesTerminal &&
@@ -408,16 +418,9 @@ async function persist(pending: PendingEvent): Promise<void> {
               }
               await finishTaskMutation(context, store, flowStore, taskId, {
                 operation: "update",
-                assertCurrent: () => {
-                  assertCurrentPublication();
-                  if (
-                    getTaskRegistryStore() !== store ||
-                    getTaskFlowRegistryStore() !== flowStore
-                  ) {
-                    throw new Error("Task event publication owners changed");
-                  }
-                },
+                assertCurrent: assertCurrentOwners,
               });
+              assertCurrentOwners();
               flowEffectsSettled = true;
             }
           },

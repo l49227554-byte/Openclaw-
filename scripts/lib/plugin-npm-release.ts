@@ -467,7 +467,7 @@ export function collectPluginReleaseDependencyFreshnessWarnings(
   return collectPluginReleaseDependencyFreshnessMessages(plugins, resolveLatestVersion, "advisory");
 }
 
-export function collectPluginReleaseDependencyFreshnessErrors(
+function collectPluginReleaseDependencyFreshnessErrors(
   plugins: readonly PublishablePluginPackage[],
   resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
 ): string[] {

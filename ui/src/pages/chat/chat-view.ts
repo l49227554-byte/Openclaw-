@@ -41,6 +41,10 @@ import { createAsyncQuestionPresentation } from "./components/chat-async-questio
 import { createChatAttachmentDropHandlers } from "./components/chat-attachments.ts";
 import "./components/chat-comment-controller.ts";
 import { resolveChatCommentAnchor } from "./components/chat-comment-anchor.ts";
+import {
+  renderComposerQuestionDock,
+  resolveComposerQuestionPanel,
+} from "./components/chat-composer-question.ts";
 import { getChatComposerState } from "./components/chat-composer-state.ts";
 import type { ChatComposerProps } from "./components/chat-composer-types.ts";
 import { isChatRunWorking, renderChatComposer } from "./components/chat-composer.ts";
@@ -388,6 +392,13 @@ export function renderChat(props: ChatProps) {
     html`<div class="chat-footer__context">
       ${footerContent}
       <div class="agent-chat__composer-notices">${notices}</div>
+      ${renderComposerQuestionDock(
+        resolveComposerQuestionPanel(
+          { ...props, asyncQuestions },
+          getChatComposerState(props.paneId),
+          requestUpdate,
+        ),
+      )}
       ${
         props.suggestionComposer
           ? nothing

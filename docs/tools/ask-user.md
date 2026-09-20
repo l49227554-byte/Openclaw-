@@ -78,6 +78,7 @@ without taking keyboard focus and leave the message box available while the agen
 continues working. Collapse the panel to keep a compact unanswered-question count
 and the current question visible. New messages, completed turns, and collapsed
 work history do not dismiss the question or reopen a minimized panel.
+The question dock also stays available when a plugin replaces the composer.
 
 Use the panel's request arrows to switch between pending requests without losing
 answer drafts. A new blocking question takes priority; async questions remain

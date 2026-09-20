@@ -1,3 +1,4 @@
+import { html, nothing } from "lit";
 import { areUiSessionKeysEquivalent } from "../../../lib/sessions/session-key.ts";
 import { createAsyncQuestionPanelProps } from "./chat-async-question.ts";
 import type { ChatComposerProps, ChatComposerState } from "./chat-composer-types.ts";
@@ -6,6 +7,14 @@ import {
   type QuestionPanelOptions,
   type QuestionPanelProps,
 } from "./chat-question-card.ts";
+
+export function renderComposerQuestionDock(panel: QuestionPanelProps | null) {
+  return panel
+    ? html`<div class="agent-chat__question-dock">
+        <openclaw-chat-question-panel .props=${panel}></openclaw-chat-question-panel>
+      </div>`
+    : nothing;
+}
 
 export function resolveComposerQuestionPanel(
   props: ChatComposerProps,

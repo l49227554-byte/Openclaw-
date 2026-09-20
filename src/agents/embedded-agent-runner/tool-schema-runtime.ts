@@ -69,19 +69,7 @@ export function normalizeProviderToolSchemas<
  * Logs provider-owned tool-schema diagnostics after normalization.
  */
 export function logProviderToolSchemaDiagnostics(params: ProviderToolSchemaParams): void {
-  const provider = params.provider.trim();
-  const diagnostics = inspectProviderToolSchemasWithPlugin({
-    provider,
-    config: params.config,
-    workspaceDir: params.workspaceDir,
-    env: params.env,
-    runtimeHandle: params.runtimeHandle,
-    allowRuntimePluginLoad: params.allowRuntimePluginLoad,
-    context: buildProviderToolSchemaContext(params, provider),
-  });
-  if (!Array.isArray(diagnostics)) {
-    return;
-  }
+  const diagnostics = inspectProviderToolSchemas(params);
   if (diagnostics.length === 0) {
     return;
   }
@@ -102,6 +90,26 @@ export function logProviderToolSchemaDiagnostics(params: ProviderToolSchemaParam
       })),
     },
   );
+}
+
+/** Inspects the exact provider-facing tool schemas used by runtime diagnostics. */
+export function inspectProviderToolSchemas(
+  params: ProviderToolSchemaParams,
+): ProviderToolSchemaDiagnostic[] {
+  const provider = params.provider.trim();
+  const diagnostics = inspectProviderToolSchemasWithPlugin({
+    provider,
+    config: params.config,
+    workspaceDir: params.workspaceDir,
+    env: params.env,
+    runtimeHandle: params.runtimeHandle,
+    allowRuntimePluginLoad: params.allowRuntimePluginLoad,
+    context: buildProviderToolSchemaContext(params, provider),
+  });
+  if (!Array.isArray(diagnostics)) {
+    return [];
+  }
+  return diagnostics;
 }
 
 function summarizeProviderToolSchemaDiagnostics(

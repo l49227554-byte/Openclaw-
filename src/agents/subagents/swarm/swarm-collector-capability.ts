@@ -20,6 +20,7 @@ type SpawnCapability = {
   signal?: AbortSignal;
 };
 const spawnCapabilities = new WeakMap<AgentToolAvailabilityBinding, SpawnCapability>();
+const collectorFieldsByTool = new WeakMap<object, Record<string, unknown>>();
 type JoinedSpawn = {
   owner: AgentToolAvailabilityBinding;
   assertCurrent: () => void;
@@ -51,6 +52,19 @@ function collectorSchema(
   return { ...schema, properties: { ...properties, ...fields } };
 }
 
+function collectorFieldsFromSchema(schema: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(schema) || !isRecord(schema.properties)) {
+    return undefined;
+  }
+  const fields = Object.fromEntries(
+    COLLECTOR_FIELDS.filter((field) => field in schema.properties).map((field) => [
+      field,
+      schema.properties[field],
+    ]),
+  );
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
 export function bindCollectorSpawnTool<T extends AnyAgentTool>(
   tool: T,
   properties: Record<string, unknown>,
@@ -65,6 +79,11 @@ export function bindCollectorSpawnTool<T extends AnyAgentTool>(
   const capability: SpawnCapability = { nativeReader: undefined, signal };
   const binding: AgentToolAvailabilityBinding = {
     prepare(current, callableTools) {
+      const currentFields =
+        collectorFieldsByTool.get(current) ??
+        collectorFieldsFromSchema(current.parameters) ??
+        fields;
+      collectorFieldsByTool.set(current, currentFields);
       const reader = callableTools.get("agents_wait");
       capability.nativeReader =
         reader &&
@@ -74,7 +93,7 @@ export function bindCollectorSpawnTool<T extends AnyAgentTool>(
           : undefined;
       current.parameters = collectorSchema(
         current.parameters,
-        capability.nativeReader ? fields : {},
+        capability.nativeReader ? currentFields : {},
       );
       const description = current.description
         .replace(WAIT_GUIDANCE, "")

@@ -1,3 +1,4 @@
+import { inspectProviderToolSchemas } from "../agents/embedded-agent-runner/tool-schema-runtime.js";
 import { normalizeAgentRuntimeTools } from "../agents/runtime-plan/tools.js";
 import {
   inspectRuntimeToolInputSchemas,
@@ -17,6 +18,7 @@ function toolSchemaDiagnosticToFinding(params: {
   tools: readonly AnyAgentTool[];
   diagnostic: RuntimeToolSchemaDiagnostic;
   rawToolsByName?: ReadonlyMap<string, AnyAgentTool>;
+  provider?: string;
 }): HealthFinding {
   let tool: AnyAgentTool | undefined;
   try {
@@ -43,7 +45,9 @@ function toolSchemaDiagnosticToFinding(params: {
   return {
     checkId: "core/doctor/runtime-tool-schemas",
     severity: "error",
-    message: `${agent}tool ${params.diagnostic.toolName}${owner} has an unsupported input schema for runtime projection.`,
+    message: params.provider
+      ? `${agent}tool ${params.diagnostic.toolName}${owner} has an unsupported input schema for provider ${params.provider}.`
+      : `${agent}tool ${params.diagnostic.toolName}${owner} has an unsupported input schema for runtime projection.`,
     path,
     target: params.diagnostic.toolName,
     requirement: params.diagnostic.violations.join(", "),
@@ -112,6 +116,24 @@ export function collectNormalizedToolSchemaFindings(params: {
       tools: normalizedTools,
       rawToolsByName,
     }),
+    ...inspectProviderToolSchemas({
+      tools: normalizedTools,
+      provider: params.modelRef.provider,
+      config: params.cfg,
+      workspaceDir: params.workspaceDir,
+      env: process.env,
+      modelId: params.modelRef.model,
+      modelApi: params.model.api,
+      model: params.model,
+    }).map((diagnostic) =>
+      toolSchemaDiagnosticToFinding({
+        agentId: params.agentId,
+        tools: normalizedTools,
+        rawToolsByName,
+        diagnostic,
+        provider: params.modelRef.provider,
+      }),
+    ),
   ];
 }
 

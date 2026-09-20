@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   disposeBundleRuntime: vi.fn(),
   loadModelCatalog: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
   normalizeProviderToolSchemasWithPlugin: vi.fn(),
+  inspectProviderToolSchemasWithPlugin: vi.fn(() => []),
   buildGatewayProbeConnectionDetails: vi.fn(),
   callGateway: vi.fn(),
   isGatewayCredentialsRequiredError: vi.fn(),
@@ -90,7 +91,7 @@ vi.mock("../daemon/systemd.js", () => ({
 }));
 
 vi.mock("../plugins/provider-runtime.js", () => ({
-  inspectProviderToolSchemasWithPlugin: () => [],
+  inspectProviderToolSchemasWithPlugin: mocks.inspectProviderToolSchemasWithPlugin,
   normalizeProviderToolSchemasWithPlugin: mocks.normalizeProviderToolSchemasWithPlugin,
 }));
 
@@ -132,6 +133,7 @@ describe("doctor runtime tool schema checks", () => {
     mocks.normalizeProviderToolSchemasWithPlugin
       .mockReset()
       .mockImplementation(({ context }) => context.tools);
+    mocks.inspectProviderToolSchemasWithPlugin.mockReset().mockReturnValue([]);
     mocks.readGatewayServiceState.mockReset().mockResolvedValue({
       installed: true,
       loadState: { status: "loaded" },
@@ -143,6 +145,27 @@ describe("doctor runtime tool schema checks", () => {
     mocks.resolveGatewayService.mockClear();
     mocks.resolvePluginProvidersCore.mockReset().mockReturnValue([]);
     mocks.resolveDefaultModelForAgent.mockClear();
+  });
+
+  it("reports provider-facing schema diagnostics from the normalized tool surface", async () => {
+    mocks.createOpenClawCodingTools.mockReturnValueOnce([
+      tool("sessions_spawn", { type: "object", properties: {} }),
+    ]);
+    mocks.inspectProviderToolSchemasWithPlugin.mockReturnValueOnce([
+      {
+        toolName: "sessions_spawn",
+        toolIndex: 0,
+        violations: ["sessions_spawn.parameters.properties.outputSchema.patternProperties"],
+      },
+    ]);
+
+    await expect(collectRuntimeToolSchemaFindings({})).resolves.toContainEqual(
+      expect.objectContaining({
+        target: "sessions_spawn",
+        message: expect.stringContaining("unsupported input schema for provider openai"),
+        requirement: "sessions_spawn.parameters.properties.outputSchema.patternProperties",
+      }),
+    );
   });
 
   it("reports active bundle MCP tool schemas that would be quarantined before a model turn", async () => {

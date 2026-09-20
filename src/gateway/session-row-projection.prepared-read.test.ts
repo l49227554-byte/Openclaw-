@@ -1,6 +1,9 @@
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import {
+  loadSessionEntryReadOnly,
+  replaceSessionEntrySync,
+} from "../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { sessionByKeyReadHandlers } from "./server-methods/sessions-read-by-key.js";
@@ -14,6 +17,53 @@ afterEach(() => vi.restoreAllMocks());
 
 const cfg = { agents: { entries: { main: {} } } };
 const query = { agentId: "main", key: "agent:main:dashboard:incognito-prepared" };
+
+it.each([false, true])(
+  "preserves stored session ID spelling in placement facts (archived: %s)",
+  async (archived) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const target = { agentId: "main", sessionKey: "agent:main:placement-spelling" };
+      const sessionId = " placement-spelling ";
+      replaceSessionEntrySync(target, {
+        sessionId,
+        updatedAt: 1,
+        ...(archived ? { archivedAt: 1 } : {}),
+      });
+      expect(loadSessionEntryReadOnly(target)?.sessionId).toBe(sessionId);
+      const placements = createWorkerSessionPlacementStore();
+      placements.startDispatch({ ...target, sessionId });
+      const projection = await createSessionRowProjection({
+        cfg,
+        modelCatalog: [],
+        placementFactsReader: placements,
+      });
+      const context = bindSessionRowProjection(requestContext(cfg), () => projection);
+      const respond = vi.fn();
+      try {
+        await projection.ensureMaterialized();
+        expect(projection.materializedCount).toBe(archived ? 0 : 1);
+        await sessionByKeyReadHandlers["sessions.describe"]!({
+          req: { type: "req", id: "placement-spelling", method: "sessions.describe" },
+          params: { key: target.sessionKey },
+          client: null,
+          context,
+          isWebchatConnect: () => false,
+          respond,
+        });
+        expect(respond).toHaveBeenCalledExactlyOnceWith(true, {
+          session: expect.objectContaining({
+            key: target.sessionKey,
+            sessionId,
+            placement: expect.objectContaining({ state: "requested" }),
+          }),
+        });
+        expect(loadSessionEntryReadOnly(target)?.sessionId).toBe(sessionId);
+      } finally {
+        projection.dispose();
+      }
+    });
+  },
+);
 
 it("consumes an incognito describe response without SQLite or resident private rows", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {

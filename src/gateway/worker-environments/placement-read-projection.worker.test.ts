@@ -102,16 +102,27 @@ describe("worker placement read projection", () => {
       ),
     ];
     try {
-      const snapshot = await store.readProjection(["pending", "moving", "missing"]);
+      const snapshot = await store.readProjection([
+        "pending",
+        " pending ",
+        "moving",
+        " moving ",
+        "missing",
+      ]);
       expect(snapshot.placements.get("pending")).toMatchObject({
         state: "draining",
         generation: draining.generation,
         workspaceResultConflict: { paths: ["changed.txt"], stagedResultRef, totalCount: 1 },
       });
       expect(snapshot.placements.get("moving")).toEqual(move.placement);
+      expect(snapshot.placements.get(" pending ")).toEqual(snapshot.placements.get("pending"));
+      expect(snapshot.placements.get(" moving ")).toEqual(move.placement);
       expect(snapshot.placements.has("missing")).toBe(false);
       expect(snapshot.moves.get("moving")).toEqual(move.intent);
-      expect([...snapshot.workspaceResultReconcilingSessionIds]).toEqual(["pending"]);
+      expect(snapshot.moves.get(" moving ")).toEqual(move.intent);
+      expect(snapshot.workspaceResultReconcilingSessionIds).toEqual(
+        new Set(["pending", " pending "]),
+      );
       expect(snapshot.environments.get(placement.environmentId)).toEqual({
         environmentId: placement.environmentId,
         providerId: "fake",

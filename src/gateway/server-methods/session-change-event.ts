@@ -285,6 +285,7 @@ async function publishSessionChange(context: SessionChangeContext, change: Sessi
         () => {
           broadcast(!captured || projection.isCurrent(captured));
         },
+        { includeAncestors: true },
       );
       if (prepared.kind !== "complete") {
         broadcast(false);

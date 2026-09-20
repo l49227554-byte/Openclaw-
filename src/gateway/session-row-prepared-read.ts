@@ -6,6 +6,8 @@ import * as records from "./session-row-projection-record.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 
+export type SessionRowPreparationOptions = { includeAncestors?: boolean };
+
 export type SessionRowReadView = {
   describe(query: records.Lookup, captured?: records.Row): records.MaterializedRow | undefined;
   present(
@@ -37,13 +39,15 @@ export async function withReadySessionRows<T>(
     withPreparedExactRows<U>(
       queries: (config: OpenClawConfig) => readonly records.Lookup[],
       consume: (read: SessionRowReadView) => U,
+      options?: SessionRowPreparationOptions,
     ): ReturnType<typeof withPreparedSessionRows<U>>;
   },
   queries: (config: OpenClawConfig) => readonly records.Lookup[],
   consume: (read: SessionRowReadView) => T,
+  options?: SessionRowPreparationOptions,
 ): Promise<T> {
   while (true) {
-    const prepared = await owner.withPreparedExactRows(queries, consume);
+    const prepared = await owner.withPreparedExactRows(queries, consume, options);
     if (prepared.kind === "complete") {
       return prepared.value;
     }

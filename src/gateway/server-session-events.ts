@@ -53,7 +53,7 @@ async function withPreparedEventRow(
     publish();
     return;
   }
-  await withReadySessionRows(projection, () => [query], publish);
+  await withReadySessionRows(projection, () => [query], publish, { includeAncestors: true });
 }
 
 function readTranscriptUpdateLifecycleOwner(

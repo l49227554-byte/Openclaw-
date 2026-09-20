@@ -37,6 +37,7 @@ export function createSessionRowPlacementProjection(
     reader ? [...new Set(ids)].filter((id) => !resident.has(id)) : [];
   const owner = {
     getProjectionFacts: (id: string) => exact?.get(id) ?? resident.get(id),
+    isPrepared: (id: string) => !reader || exact?.has(id) === true || resident.has(id),
     get needsPreparation() {
       return !disposed && dirty.size > 0;
     },

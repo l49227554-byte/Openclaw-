@@ -187,7 +187,8 @@ export function createWorkerSessionPlacementStore(
     },
 
     async readProjection(sessionIds: readonly string[]): Promise<WorkerSessionPlacementProjection> {
-      const ids = [...new Set(sessionIds.map((id) => required(id, "session id")))];
+      const requestedIds = new Map(sessionIds.map((id) => [id, required(id, "session id")]));
+      const ids = [...new Set(requestedIds.values())];
       const conflicts = new Map(
         ids.flatMap((id) => {
           const conflict = workspaceResultConflicts.get(id);
@@ -221,7 +222,26 @@ export function createWorkerSessionPlacementStore(
           placements.set(id, { ...record, workspaceResultConflict: captured.conflict });
         }
       }
-      return { ...projection, placements };
+      const byRequestedId = <T>(records: ReadonlyMap<string, T>) => {
+        const requested = new Map<string, T>();
+        for (const [original, normalized] of requestedIds) {
+          const value = records.get(normalized);
+          if (value !== undefined) {
+            requested.set(original, value);
+          }
+        }
+        return requested;
+      };
+      return {
+        ...projection,
+        placements: byRequestedId(placements),
+        moves: byRequestedId(projection.moves),
+        workspaceResultReconcilingSessionIds: new Set(
+          [...requestedIds].flatMap(([original, normalized]) =>
+            projection.workspaceResultReconcilingSessionIds.has(normalized) ? [original] : [],
+          ),
+        ),
+      };
     },
 
     getMany(sessionIds: readonly string[]): ReadonlyMap<string, WorkerSessionPlacementRecord> {

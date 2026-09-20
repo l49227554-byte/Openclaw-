@@ -21,8 +21,8 @@ import type { readSessionRowFacts } from "./server-methods/session-placement-rea
 import { yieldSessionListWork } from "./session-projection-work.js";
 import { readSessionRowModelFacts } from "./session-row-model-facts.js";
 import { createSessionRowPlacementProjection } from "./session-row-placement-projection.js";
-import { withPreparedSessionRows, type SessionRowReadView } from "./session-row-prepared-read.js";
-import { readSessionRowAncestors } from "./session-row-projection-ancestors.js";
+import type { SessionRowReadView } from "./session-row-prepared-read.js";
+import { createSessionRowAncestorReads } from "./session-row-projection-ancestors.js";
 import {
   createSessionRowProjectionArchive,
   isColdArchivedSessionRow as isCold,
@@ -636,8 +636,16 @@ export async function createSessionRowProjection(params: {
       return findSessionRowById(query, { disposed, lookup, matching });
     },
     describe,
-    ancestorRows: (record: records.MaterializedRow) =>
-      readSessionRowAncestors(record, { cfg, context: metadata.current, referenced, describe }),
+    ...createSessionRowAncestorReads({
+      state: () => ({ cfg, context: metadata.current }),
+      referenced,
+      lookup,
+      describe,
+      inOwnerContext,
+      placementFacts,
+      isActive: () => !disposed,
+      projection: (): SessionRowReadView & { isCurrent(row: records.Row): boolean } => projection,
+    }),
     setArchivePageSize: archive.setPageSize,
     modelFacts(row: records.EntryRow) {
       return readSessionRowModelFacts({
@@ -650,12 +658,6 @@ export async function createSessionRowProjection(params: {
     },
     present: (record: records.MaterializedRow, options?: records.SnapshotOptions) =>
       records.present(record, metadata.current, options),
-    async withPreparedExactRows<T>(
-      queries: (config: OpenClawConfig) => readonly records.Lookup[],
-      consume: (read: SessionRowReadView) => T,
-    ): ReturnType<typeof withPreparedSessionRows<T>> {
-      return placementFacts.withPreparedRows(projection, () => !disposed, lookup, queries, consume);
-    },
     ensureMaterialized,
     get materializedCount() {
       return materializedCount;

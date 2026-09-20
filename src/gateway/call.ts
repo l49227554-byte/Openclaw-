@@ -93,6 +93,7 @@ import { assertGatewayCliMessageContext } from "./operator-cli-message-input.js"
 import {
   GatewayTransportError,
   type GatewayTransportErrorKind,
+  formatGatewayTimeoutError,
   isGatewayTransportError,
 } from "./transport-error.js";
 export type { GatewayConnectionDetails };
@@ -686,13 +687,6 @@ function formatGatewayCloseError(
   return message;
 }
 
-function formatGatewayTimeoutError(
-  timeoutMs: number,
-  connectionDetails: GatewayConnectionDetails,
-): string {
-  return `gateway timeout after ${timeoutMs}ms\n${connectionDetails.message}`;
-}
-
 /** Wrap raw socket-level connect failures (ECONNREFUSED etc.) into one actionable message. */
 function createGatewayUnreachableTransportError(params: {
   cause: Error;
@@ -729,12 +723,14 @@ function createGatewayCloseTransportError(params: {
 function createGatewayTimeoutTransportError(params: {
   timeoutMs: number;
   connectionDetails: GatewayConnectionDetails;
+  requestDispatched: boolean;
 }): GatewayTransportError {
+  const { timeoutMs, connectionDetails, requestDispatched } = params;
   return new GatewayTransportError({
     kind: "timeout",
-    timeoutMs: params.timeoutMs,
-    connectionDetails: params.connectionDetails,
-    message: formatGatewayTimeoutError(params.timeoutMs, params.connectionDetails),
+    timeoutMs,
+    connectionDetails,
+    message: formatGatewayTimeoutError(timeoutMs, connectionDetails, requestDispatched),
   });
 }
 
@@ -1041,6 +1037,7 @@ async function executeGatewayRequestWithScopes<T>(params: {
         createGatewayTimeoutTransportError({
           timeoutMs: wrapperTimeoutMs,
           connectionDetails: params.connectionDetails,
+          requestDispatched: primaryRequestStarted,
         }),
       );
     }, safeTimerTimeoutMs);
@@ -1058,6 +1055,7 @@ async function executeGatewayRequestWithScopes<T>(params: {
           createGatewayTimeoutTransportError({
             timeoutMs: startupTimeoutMs,
             connectionDetails: params.connectionDetails,
+            requestDispatched: false,
           }),
         );
       })

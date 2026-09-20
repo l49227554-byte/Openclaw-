@@ -14997,7 +14997,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     ]);
 
     expect(
-      evaluateWorkflowExpression(uiE2E.if, {
+      evaluateWorkflowExpression(`\${{ ${uiE2E.if} }}`, {
         eventName: "workflow_dispatch",
         preflightOutputs: { compatibility_target: "true", run_ui_tests: "true" },
         repository: "openclaw/openclaw",
@@ -15005,78 +15005,6 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       }),
     ).toBe(false);
   });
-
-  it.skipIf(process.platform === "win32")(
-    "shares one exact Control UI E2E bundle across current shards",
-    () => {
-      const workflow = readCiWorkflow();
-      const producer = workflow.jobs["build-ui-e2e"];
-      const consumers = workflow.jobs["checks-ui-e2e"];
-      const build = producer.steps.find(
-        (step: WorkflowStep) => step.name === "Build shared Control UI E2E bundle",
-      );
-      const upload = producer.steps.find(
-        (step: WorkflowStep) => step.name === "Upload shared Control UI E2E bundle",
-      );
-      const download = consumers.steps.find(
-        (step: WorkflowStep) => step.name === "Download shared Control UI E2E bundle",
-      );
-      const unpack = consumers.steps.find(
-        (step: WorkflowStep) => step.name === "Unpack shared Control UI E2E bundle",
-      );
-      expect(producer.needs).toEqual(["preflight"]);
-      expect(upload.uses).toBe(UPLOAD_ARTIFACT_V7);
-      expect(download.uses).toBe(DOWNLOAD_ARTIFACT_V8);
-      // Failed-job-only attempts reuse the successful producer's same-run artifact.
-      expect(upload.with).toMatchObject({
-        name: "control-ui-e2e-bundle",
-        overwrite: true,
-        "if-no-files-found": "error",
-      });
-      expect(download.with.name).toBe(upload.with.name);
-      expect(unpack.if).toBe(download.if);
-      for (const frozen of [false, true]) {
-        const context = {
-          eventName: "push" as const,
-          repository: "openclaw/openclaw",
-          runAttempt: 1,
-          matrix: { task: "control-ui" },
-          preflightOutputs: { run_ui_e2e: "true", frozen_target: String(frozen) },
-        };
-        expect(evaluateWorkflowExpression(`\${{ ${producer.if} }}`, context)).toBe(!frozen);
-        expect(evaluateWorkflowExpression(`\${{ ${download.if} }}`, context)).toBe(!frozen);
-        expect(evaluateWorkflowExpression(consumers.if, context)).toBe(true);
-        expect(evaluateWorkflowExpression(consumers.if, { ...context, cancelled: true })).toBe(
-          false,
-        );
-      }
-      const root = tempDirs.make("control-ui-bundle-artifact-");
-      const bin = path.join(root, "bin");
-      mkdirSync(bin);
-      writeFileSync(
-        path.join(bin, "node"),
-        '#!/bin/sh\nmkdir -p "$5/assets"\nprintf "fixture index" > "$5/index.html"\nprintf "fixture module" > "$5/assets/index.js"\n',
-        { mode: 0o755 },
-      );
-      const env = { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` };
-      const built = runWorkflowShellScript(build.run, { cwd: root, env });
-      expect(built.status, built.stdout + built.stderr).toBe(0);
-      rmSync(path.join(root, ".artifacts/control-ui-e2e-bundle"), { recursive: true });
-      mkdirSync(path.join(root, download.with.path), { recursive: true });
-      copyFileSync(
-        path.join(root, upload.with.path),
-        path.join(root, download.with.path, upload.with.path),
-      );
-      const restored = runWorkflowShellScript(unpack.run, { cwd: root, env });
-      expect(restored.status, restored.stdout + restored.stderr).toBe(0);
-      expect(
-        readFileSync(path.join(root, ".artifacts/control-ui-e2e-bundle/index.html"), "utf8"),
-      ).toBe("fixture index");
-      expect(
-        readFileSync(path.join(root, ".artifacts/control-ui-e2e-bundle/assets/index.js"), "utf8"),
-      ).toBe("fixture module");
-    },
-  );
 
   it("gates current Control UI changes on ordinary and real-Gateway Chromium E2E", () => {
     const workflow = readCiWorkflow();
@@ -15089,9 +15017,9 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
 
     expect(uiE2e.permissions).toEqual({ contents: "read" });
-    expect(uiE2e.needs).toEqual(["preflight", "build-ui-e2e"]);
+    expect(uiE2e.needs).toEqual(["preflight"]);
     expect(uiE2e.if).toBe(
-      "${{ !cancelled() && always() && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}",
+      "needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'",
     );
     expect(uiE2e["runs-on"]).not.toBe(ui["runs-on"]);
     expect(uiE2e["timeout-minutes"]).toBe(25);
@@ -15135,10 +15063,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(workflow.jobs["ci-gate"].needs).toContain("checks-ui-e2e-real-gateway");
 
     expect(uiE2eRealGateway.permissions).toEqual(uiE2e.permissions);
-    expect(uiE2eRealGateway.needs).toEqual(["preflight"]);
-    expect(uiE2eRealGateway.if).toBe(
-      "needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'",
-    );
+    expect(uiE2eRealGateway.needs).toEqual(uiE2e.needs);
+    expect(uiE2eRealGateway.if).toBe(uiE2e.if);
     expect(uiE2eRealGateway.env).toBeUndefined();
 
     const uiE2eSetup = expectDefined(
@@ -15354,8 +15280,6 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(scenario.if).toBe("matrix.task == 'control-ui'");
     expect(scenario.env).toEqual({
-      OPENCLAW_UI_E2E_BUNDLE_DIR:
-        "${{ needs.preflight.outputs.frozen_target != 'true' && format('{0}/.artifacts/control-ui-e2e-bundle', github.workspace) || '' }}",
       OPENCLAW_UI_E2E_DIAGNOSTIC_DIR:
         ".artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}",
       VITEST_SHARD_INDEX: "${{ matrix.shard }}",
@@ -16948,7 +16872,6 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "control-ui-performance",
       "native-i18n",
       "checks-ui",
-      "build-ui-e2e",
       "checks-ui-e2e",
       "checks-ui-e2e-real-gateway",
       "control-ui-i18n",

@@ -22,14 +22,11 @@ export default async function setup(project: TestProject) {
     return undefined;
   }
 
-  // CI lends the exact invocation bundle to every shard. Local builds stay private
-  // so concurrent processes cannot clobber each other or canonical dist.
-  const preparedBundle = process.env.OPENCLAW_UI_E2E_BUNDLE_DIR?.trim();
+  // Local full-suite runs can fan shards into separate processes in one checkout.
+  // Keep every build out of canonical dist so those processes cannot clobber it.
   const tempDirs = createTempDirTracker();
-  const outDir = preparedBundle || tempDirs.make("openclaw-ui-e2e-");
-  const server = await startBundledControlUiE2eServer(outDir, {
-    prebuilt: Boolean(preparedBundle),
-  }).catch(async (error: unknown) => {
+  const outDir = tempDirs.make("openclaw-ui-e2e-");
+  const server = await startBundledControlUiE2eServer(outDir).catch(async (error: unknown) => {
     try {
       tempDirs.cleanup();
     } catch {}

@@ -7,8 +7,8 @@ import { chromium, webkit, type Browser, type Page } from "playwright";
 import { beforeEach, afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CONTROL_UI_BOOTSTRAP_CONFIG_PATH } from "../../../src/gateway/control-ui-contract.js";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import { buildProductionControlUiE2e } from "../test-helpers/control-ui-e2e-build.ts";
 import {
+  buildProductionControlUiE2e,
   createControlUiMockBootstrapConfig,
   canRunPlaywrightChromium,
   captureControlUiE2eFailureDiagnostics,

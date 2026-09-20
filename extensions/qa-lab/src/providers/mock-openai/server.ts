@@ -186,13 +186,16 @@ import {
   extractCurrentImageRequest,
   parseToolOutputJson,
 } from "./mock-openai-input.js";
+import { resolvePerTurnSendBudgetResponse } from "./mock-openai-per-turn-send-budget.js";
 import { attachQaMockResponsesWebSocketServer } from "./mock-openai-responses-websocket.js";
 import { resolveMockSubagentHandoff } from "./mock-openai-subagent-completion.js";
+import { findToolCallByCallId, parseToolCallArguments } from "./mock-openai-tool-call-input.js";
 import {
   readTargetFromPrompt,
   execCommandFromToolProgressPrompt,
   buildCustomToolCallEventsWithInput,
   buildToolCallEventsWithArgs as buildRawToolCallEventsWithArgs,
+  buildDuplicateToolCallEventsWithArgs,
   extractOrbitCode,
   extractToolSearchTarget,
   toolSearchOutputHasCandidate,
@@ -419,27 +422,6 @@ function resolveCurrentToolDeclarationSurface(
         ...body,
         tools: [...(Array.isArray(body.tools) ? body.tools : []), ...additionalTools],
       };
-}
-
-function findToolCallByCallId(input: ResponsesInputItem[], callId: string) {
-  return input.toReversed().find((item) => {
-    const type = item.type;
-    return (type === "function_call" || type === "custom_tool_call") && item.call_id === callId;
-  });
-}
-
-function parseToolCallArguments(toolCall: ResponsesInputItem) {
-  if (typeof toolCall.arguments !== "string") {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(toolCall.arguments) as unknown;
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function readProgressCommandOutput(input: ResponsesInputItem[], command: string, isPoll = false) {
@@ -989,6 +971,17 @@ async function buildResponsesPayload(
     )
       ? extractLatestToolOutput(input)
       : "");
+  const perTurnSendBudgetResponse = resolvePerTurnSendBudgetResponse({
+    allInputText,
+    input,
+    hasDeclaredTool: (tool: string) => hasDeclaredTool(body, tool),
+    buildToolCallEventsWithArgs,
+    buildDuplicateToolCallEventsWithArgs,
+    buildAssistantEvents,
+  });
+  if (perTurnSendBudgetResponse) {
+    return perTurnSendBudgetResponse;
+  }
   // The queued followup carries the stalled prompt in transcript history, so
   // current-turn dispatch must win before the persistent recovery fixture.
   if (QA_REPEATED_REQUEST_QUEUED_REPLY_PROMPT_RE.test(prompt)) {

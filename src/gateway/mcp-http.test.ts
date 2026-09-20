@@ -38,6 +38,7 @@ import {
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
 import type { McpLoopbackRequestContext } from "./mcp-grant-store.js";
 import { buildMcpToolSchema } from "./mcp-http.schema.js";
+import { angleSchema, objectSchema } from "./mcp-http.test-support.js";
 import type { resolveGatewayScopedTools } from "./tool-resolution.js";
 
 type MockGatewayTool = {
@@ -567,18 +568,6 @@ function expectMcpResultText(payload: McpToolResultPayload, text: string, isErro
     expect(payload.result?.isError).toBe(isError);
   }
   expect(payload.result?.content?.[0]?.text).toBe(text);
-}
-
-function objectSchema(properties: Record<string, unknown>, required?: string[]) {
-  return {
-    type: "object",
-    properties,
-    ...(required ? { required } : {}),
-  };
-}
-
-function angleSchema(property: unknown, required: string[] = []) {
-  return objectSchema({ angle: property }, required);
 }
 
 function getScopedToolsCall(index: number): ScopedToolsCall {
@@ -1420,6 +1409,10 @@ describe("mcp loopback server", () => {
       clientCaps: ["tool-events"],
       pinnedWidgetAuthoring: true,
       currentChannelId: "discord:bound",
+      // Native channel id and routable target diverge (Slack-style native
+      // conversation vs user route). turnSourceTo must carry the routable
+      // target on both the hook and the admitted caller identity.
+      currentMessagingTarget: "discord:user:routable",
       currentThreadTs: "bound-thread",
       currentMessageId: "bound-message",
       currentInboundAudio: true,
@@ -1523,7 +1516,7 @@ describe("mcp loopback server", () => {
       approvalReviewerDeviceId: "bound-reviewer",
       channelId: "discord:bound",
       turnSourceChannel: "discord",
-      turnSourceTo: "discord:bound",
+      turnSourceTo: "discord:user:routable",
       turnSourceAccountId: "bound-account",
       turnSourceThreadId: "bound-thread",
     });
@@ -1533,7 +1526,7 @@ describe("mcp loopback server", () => {
       sessionKey: boundContext.sessionKey,
       operationalRunInstance: admittedRunContext.operationalRunInstance,
       turnSourceChannel: boundContext.messageProvider,
-      turnSourceTo: boundContext.currentChannelId,
+      turnSourceTo: boundContext.currentMessagingTarget,
       turnSourceAccountId: boundContext.accountId,
       turnSourceThreadId: boundContext.currentThreadTs,
     });

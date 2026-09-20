@@ -35,7 +35,6 @@ import { onAgentEventForRun } from "../../infra/agent-events.js";
 import {
   clearMemoryPluginState,
   registerMemoryCapability,
-  type MemoryFlushPlan,
   type MemoryFlushPlanResolver,
 } from "../../plugins/memory-state.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
@@ -46,7 +45,9 @@ import {
   runSessionCompactionIfNeeded as runSessionCompactionIfNeededRaw,
 } from "./agent-runner-memory.js";
 import {
+  createMemoryFlushPlan,
   createMemoryRunEntryMockImplementation,
+  createModifiedMemoryFlushPlan,
   type ModelFallbackParams,
 } from "./agent-runner-memory.test-support.js";
 import {
@@ -139,21 +140,6 @@ async function runSessionCompactionIfNeeded(params: PreflightCompactionTestParam
       contextTokens: modelContextTokens,
     }),
   });
-}
-
-function createMemoryFlushPlan(): MemoryFlushPlan {
-  return {
-    softThresholdTokens: 4_000,
-    forceFlushTranscriptBytes: 1_000_000_000,
-    reserveTokensFloor: 20_000,
-    prompt: "Pre-compaction memory flush.\nNO_REPLY",
-    systemPrompt: "Write memory to memory/YYYY-MM-DD.md.",
-    relativePath: "memory/2023-11-14.md",
-  };
-}
-
-function createModifiedMemoryFlushPlan(overrides: Partial<MemoryFlushPlan>): MemoryFlushPlan {
-  return { ...createMemoryFlushPlan(), ...overrides };
 }
 
 function createFlushSessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {

@@ -21,7 +21,6 @@ import {
   disposeRemoteSkillsWatcher,
   ensureRemoteSkillsWatcher,
 } from "./refresh-remote.js";
-import { resolveSkillsWatchSourceRoots } from "./refresh-source-roots.js";
 import {
   bumpSkillsSnapshotVersion,
   markSkillsSupportingFilesChanged,
@@ -42,8 +41,8 @@ import {
   toWatchRoot,
 } from "./refresh-watch-path.js";
 import {
-  addSkillSourceWatchTargets,
-  GROUPED_SKILLS_WATCH_DEPTH,
+  resolveSkillsWatchTargets,
+  type SkillsWatchTargetCacheEntry,
   type WatchTarget,
 } from "./refresh-watch-targets.js";
 export { registerSkillsChangeListener } from "./refresh-state.js";
@@ -62,11 +61,6 @@ type SkillsPathWatchState = {
   pendingPath?: string;
   pendingChange?: SkillsWatchChange;
   readonly subscribers: Set<string>;
-};
-
-type WatchTargetCacheEntry = {
-  signature: string;
-  targets: WatchTarget[];
 };
 
 const log = createSubsystemLogger("gateway/skills");
@@ -93,7 +87,7 @@ const workspaceWatchOwners = new Map<
 // Resolved nested skill watch roots are filesystem-derived. Cache them so the
 // per-turn watcher reconciliation path stays cheap until config or watched
 // filesystem changes require a fresh root scan.
-const workspaceWatchTargetCache = new Map<string, WatchTargetCacheEntry>();
+const workspaceWatchTargetCache = new Map<string, SkillsWatchTargetCacheEntry>();
 const workspaceWatchLastEnsuredAt = new Map<string, number>();
 // Session turns re-ensure their workspace; entries older than this are treated
 // as abandoned subscriptions and evicted by the next ensure call.
@@ -103,77 +97,6 @@ const MAX_SKILLS_WORKSPACE_WATCH_STATES = 128;
 setSkillsChangeListenerErrorHandler((err) => {
   log.warn(`skills change listener failed: ${String(err)}`);
 });
-
-function resolveWatchTargets(
-  workspaceDir: string,
-  config: OpenClawConfig | undefined,
-  agentId: string | undefined,
-  executionWorkspaceDir: string | undefined,
-  watcherKey: string,
-  pluginMetadataSnapshot: PluginMetadataSnapshot | undefined,
-  sourcePlan?: WorkspaceSkillSourcePlan,
-): WatchTarget[] {
-  const { executionRoots, baseRoots, extraDirs, pluginSkillDirs, allowedSymlinkTargetRealPaths } =
-    resolveSkillsWatchSourceRoots(
-      workspaceDir,
-      config,
-      agentId,
-      executionWorkspaceDir,
-      pluginMetadataSnapshot,
-      sourcePlan,
-    );
-  const signature = JSON.stringify({
-    basePaths: baseRoots.map((root) => toWatchRoot(root.path)),
-    executionPaths: executionRoots.map((root) => toWatchRoot(root.dir)),
-    extraDirs: extraDirs.map(toWatchRoot),
-    pluginSkillDirs: pluginSkillDirs.map(toWatchRoot),
-    allowSymlinkTargets: allowedSymlinkTargetRealPaths,
-  });
-  const cached = workspaceWatchTargetCache.get(watcherKey);
-  if (cached?.signature === signature) {
-    return cached.targets;
-  }
-
-  const targets = new Map<string, WatchTarget>();
-  for (const root of baseRoots) {
-    addSkillSourceWatchTargets(
-      targets,
-      root.path,
-      root.source,
-      allowedSymlinkTargetRealPaths,
-      GROUPED_SKILLS_WATCH_DEPTH,
-    );
-  }
-  for (const resolved of extraDirs) {
-    addSkillSourceWatchTargets(targets, resolved, "openclaw-extra", allowedSymlinkTargetRealPaths);
-  }
-  for (const dir of pluginSkillDirs) {
-    addSkillSourceWatchTargets(targets, dir, "openclaw-plugin", allowedSymlinkTargetRealPaths);
-  }
-  const executionTargets = new Map<string, WatchTarget>();
-  for (const root of executionRoots) {
-    addSkillSourceWatchTargets(
-      executionTargets,
-      root.dir,
-      root.source,
-      allowedSymlinkTargetRealPaths,
-      GROUPED_SKILLS_WATCH_DEPTH,
-    );
-  }
-  for (const [key, target] of executionTargets) {
-    const shared = targets.get(key);
-    if (shared) {
-      shared.depth = Math.max(shared.depth, target.depth);
-    } else {
-      targets.set(key, { ...target, executionOnly: true });
-    }
-  }
-  const sortedTargets = Array.from(targets.values()).toSorted((a, b) =>
-    a.path.localeCompare(b.path),
-  );
-  workspaceWatchTargetCache.set(watcherKey, { signature, targets: sortedTargets });
-  return sortedTargets;
-}
 
 type PendingSkillsWatchChange = {
   targetPath: string;
@@ -732,16 +655,21 @@ export function ensureSkillsWatcher(params: {
     bumpSkillsSnapshotVersion({ workspaceDir, refreshInputs, reason: "watch" });
     return;
   }
-  const watchTargets = resolveWatchTargets(
+  const cachedTargets = workspaceWatchTargetCache.get(watcherKey);
+  const resolvedTargets = resolveSkillsWatchTargets(
     workspaceDir,
     params.config,
     params.agentId,
     access?.loadSkills ? undefined : executionWorkspaceDir,
-    watcherKey,
     params.pluginMetadataSnapshot,
     localPlan,
+    cachedTargets,
   );
-  // resolveWatchTargets returns stable sorted order, so positional equality is intentional.
+  if (resolvedTargets !== cachedTargets) {
+    workspaceWatchTargetCache.set(watcherKey, resolvedTargets);
+  }
+  const watchTargets = resolvedTargets.targets;
+  // Resolved targets have stable sorted order, so positional equality is intentional.
   const targetsMatch = (previous: WatchTarget, next: WatchTarget) =>
     previous.path === next.path &&
     previous.watchRoot === next.watchRoot &&

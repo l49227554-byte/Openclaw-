@@ -25,7 +25,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { minimatch } from "minimatch";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import * as qaEvidence from "../../extensions/qa-lab/api.js";
+import * as qaEvidence from "../../extensions/qa-lab/test-api.js";
 import {
   detectChangedScope,
   detectNodeFastScope,
@@ -3176,7 +3176,7 @@ NODE
   });
 
   it.each([
-    ["macos-swift", false, "workflow_dispatch", false, ["release", "tests"]],
+    ["macos-swift", false, "workflow_dispatch", false, ["release", "tests", "packages"]],
     ["ios-build", false, "workflow_dispatch", false, ["release", "tests"]],
     ["ios-build", true, "workflow_dispatch", false, ["tests"]],
     ["ios-build", false, "pull_request", false, ["smoke"]],
@@ -3220,11 +3220,11 @@ NODE
                 "Swift lint",
                 "Swift build (release)",
               ],
-              tests: [
+              tests: ["Swift test"],
+              packages: [
                 "OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)",
                 "OpenClawKit tests",
                 "Swabble tests",
-                "Swift test",
               ],
             }
           : {
@@ -3330,7 +3330,8 @@ NODE
       const phases: string[] = Array.isArray(job.strategy.matrix.phase)
         ? job.strategy.matrix.phase
         : evaluateWorkflowExpression(job.strategy.matrix.phase, context);
-      expect(phases).toEqual(full ? ["release", "tests"] : ["tests"]);
+      expect(phases).toEqual(full ? ["release", "tests", "packages"] : ["tests", "packages"]);
+      expect(job.strategy["max-parallel"]).toBe(2);
       const env = Object.fromEntries(
         Object.entries(job.env).map(([key, value]) => [
           key,
@@ -3373,12 +3374,19 @@ NODE
       for (const name of [
         "OpenClawKit Talk-trait opt-out (no ElevenLabsKit when default traits disabled)",
         "OpenClawKit tests",
-        "Swift test",
       ]) {
-        expect(selectedPhases(name), name).toEqual(["tests"]);
+        expect(selectedPhases(name), name).toEqual(["packages"]);
       }
-      expect(selectedPhases("Swabble tests")).toEqual(historical ? [] : ["tests"]);
+      expect(selectedPhases("Swift test")).toEqual(["tests"]);
+      expect(selectedPhases("Swabble tests")).toEqual(historical ? [] : ["packages"]);
       expect(selectedPhases("Swift build (release)")).toEqual(full ? ["release"] : []);
+      for (const name of [
+        "Detect Swift toolchain cache key",
+        "Restore Swift build directory cache",
+        "Validate Swift build cache",
+      ]) {
+        expect(selectedPhases(name), name).toEqual(full ? ["release", "tests"] : ["tests"]);
+      }
       expect(selectedPhases("Render isolated macOS health fixtures")).toEqual(
         full ? ["tests"] : [],
       );
@@ -14567,7 +14575,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(swiftLint.run).toContain("swiftlint lint --config config/swiftlint.yml");
     expect(swiftLint.run).toContain('elif [[ "$HISTORICAL_TARGET" == "true" ]]');
     expect(openClawKitTests.if).toBe(
-      "matrix.phase == 'tests' && needs.preflight.outputs.run_openclawkit_tests == 'true'",
+      "matrix.phase == 'packages' && needs.preflight.outputs.run_openclawkit_tests == 'true'",
     );
 
     const checkShard = workflow.jobs["check-shard"].steps.find(
@@ -19524,6 +19532,7 @@ describe("Linux App validation routing", () => {
               steps: {
                 "inline-browser": { outputs: {}, outcome: "success" },
                 "gateway-switch": { outputs: {}, outcome: "success" },
+                "desktop-sharing": { outputs: {}, outcome: "success" },
               },
             }),
         );
@@ -19545,9 +19554,15 @@ describe("Linux App validation routing", () => {
       expect(
         linux.find((step) => step.name === "Test packaged runtime ABI scanner")?.run,
       ).toContain("-s apps/linux/tests -p 'test_packaged_runtime_smoke.py'");
+      expect(
+        linux.find((step) => step.name === "Test desktop sharing proof report ordering")?.run,
+      ).toContain("-s apps/linux/tests -p 'test_desktop_sharing_reports.py'");
       expect(linux.map((step) => step.run)).toContain("cargo +stable build --locked");
       expect(linux.find((step) => step.id === "inline-browser")?.run).toContain("--inline-browser");
       expect(linux.find((step) => step.id === "gateway-switch")?.run).toContain("--gateway-switch");
+      expect(linux.find((step) => step.id === "desktop-sharing")?.run).toContain(
+        "--desktop-sharing",
+      );
       for (const name of packagingSteps) {
         expect(
           linuxSteps.some((step) => step.name === name),
@@ -19563,17 +19578,18 @@ describe("Linux App validation routing", () => {
           linux
             .filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
             .map((step) => step.with?.name),
-        ).toEqual(["linux-inline-browser", "linux-gateway-switch"]);
+        ).toEqual(["linux-inline-browser", "linux-gateway-switch", "linux-desktop-sharing"]);
       }
     },
   );
 
   it.each(["success", "failure", "cancelled", "skipped"] as const)(
-    "uploads native browser proof after an attempted run: %s",
+    "uploads native proof after an attempted run: %s",
     (outcome) => {
       for (const [name, id] of [
         ["Upload native inline browser proof", "inline-browser"],
         ["Upload native Gateway switching proof", "gateway-switch"],
+        ["Upload native desktop sharing proof", "desktop-sharing"],
       ] as const) {
         const upload = expectDefined(
           linuxSteps.find((step) => step.name === name),

@@ -350,6 +350,16 @@ describe("chat annotation editor", () => {
     expect(onCancel).not.toHaveBeenCalled();
   });
 
+  it("still closes an untouched editor when the transcript scrolls", () => {
+    editor({ comment: "Saved comment", expanded: true });
+    const transcript = document.createElement("div");
+    transcript.className = "chat-transcript";
+    document.body.appendChild(transcript);
+    transcript.dispatchEvent(new Event("scroll", { bubbles: false }));
+
+    expect(document.querySelector("[role=dialog]")).toBeNull();
+  });
+
   it.each([
     [
       "an outside interaction",

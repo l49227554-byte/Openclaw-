@@ -105,9 +105,9 @@ function mountPopup(
   onEscape?: () => void,
   anchorElement?: HTMLElement,
   // A layout-driven transcript scroll must not dismiss in-progress input. The
-  // annotation editor keeps its own dismissal policy; the selection toolbar
-  // keeps the default scroll dismissal.
-  dismissOnScroll = true,
+  // annotation editor supplies its own policy; the selection toolbar keeps the
+  // default scroll dismissal.
+  shouldDismissOnScroll: () => boolean = () => true,
 ) {
   removeChatSelectionPopup();
   document.body.appendChild(popup);
@@ -137,17 +137,17 @@ function mountPopup(
     },
     { signal },
   );
-  if (dismissOnScroll) {
-    document.addEventListener(
-      "scroll",
-      (event) => {
-        if (!(event.target instanceof Node) || !popup.contains(event.target)) {
+  document.addEventListener(
+    "scroll",
+    (event) => {
+      if (!(event.target instanceof Node) || !popup.contains(event.target)) {
+        if (shouldDismissOnScroll()) {
           removeChatSelectionPopup();
         }
-      },
-      { capture: true, passive: true, signal },
-    );
-  }
+      }
+    },
+    { capture: true, passive: true, signal },
+  );
   window.addEventListener("resize", position, { signal });
   window.visualViewport?.addEventListener("resize", position, { signal });
   return signal;
@@ -286,17 +286,18 @@ export function showChatAnnotationEditor(options: {
       }
     }
   });
-  // Width/height changes reposition the editor, and the transcript follows its
-  // end by scrolling. Treating that incidental scroll as a dismissal discarded
-  // the unsaved comment, so the editor retires only through its explicit
-  // controls, Escape, an outside interaction, or its owner's signal.
+  // A width or height change repositions the editor and makes the transcript
+  // follow its end by scrolling. That layout compensation must not discard a
+  // comment the user is still writing, so an edited comment survives the
+  // scroll; an untouched editor still closes, keeping its existing behavior.
+  const originalComment = options.comment;
   const signal = mountPopup(
     popup,
     options.anchorRect,
     options.paneId,
     options.onCancel,
     options.anchorElement,
-    false,
+    () => input.value === originalComment,
   );
   const resizeInput = () => {
     const scrollTop = input.scrollTop;

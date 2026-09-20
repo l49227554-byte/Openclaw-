@@ -1,7 +1,7 @@
 // Broad coverage for embedded runner model resolution behavior.
 import fs from "node:fs";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import type { ProviderPlugin } from "../../plugins/types.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
@@ -31,6 +31,19 @@ import { createPreparedConfiguredRuntimeModelLookup } from "./model.static-id.js
 
 let state: OpenClawTestState;
 let auth: ReturnType<typeof guardModelFixtureAuth>;
+beforeEach(async () => {
+  state = await createOpenClawTestState({ label: "model-resolution" });
+  auth = guardModelFixtureAuth(state.root);
+});
+afterEach(async () => {
+  try {
+    auth.verify();
+  } finally {
+    auth.spy.mockRestore();
+    clearRuntimeAuthProfileStoreSnapshots();
+    await state.cleanup();
+  }
+});
 
 const resolveBundledStaticCatalogModelMock = vi.hoisted(() => vi.fn());
 const resolveBundledProviderStaticCatalogModelMock = vi.hoisted(() => vi.fn());
@@ -575,25 +588,6 @@ function makeVllmQwenConfig(
 }
 
 describe("resolveModel", () => {
-  // Persisted lifecycle cases below own fresh state; resolution cases only read this fixture.
-  beforeAll(async () => {
-    state = await createOpenClawTestState({ label: "model-resolution" });
-  });
-  afterAll(async () => {
-    await state.cleanup();
-  });
-  beforeEach(() => {
-    auth = guardModelFixtureAuth(state.root);
-  });
-  afterEach(() => {
-    try {
-      auth.verify();
-    } finally {
-      auth.spy.mockRestore();
-      clearRuntimeAuthProfileStoreSnapshots();
-    }
-  });
-
   registerModelAuthReadTests({
     getAgentDir: () => state.agentDir(),
     getAuthSpy: () => auth.spy,
@@ -765,6 +759,75 @@ describe("resolveModel", () => {
     expect(discoverModels).toHaveBeenCalledTimes(1);
   });
 
+  it("does not poll generated plugin catalogs between lifecycle generations", async () => {
+    const agentDir = state.agentDir();
+    fs.mkdirSync(agentDir, { recursive: true });
+    mockDiscoveredModel(discoverModels, {
+      provider: "zai",
+      modelId: "glm-5.1",
+      templateModel: {
+        provider: "zai",
+        ...makeModel("glm-5.1"),
+      },
+    });
+
+    const first = await resolveModelAsync("zai", "glm-5.1", agentDir, undefined, {
+      runtimeHooks: createRuntimeHooks(),
+    });
+    replacePersistedPluginModelCatalogs({
+      agentDir,
+      pluginCatalogWrites: {
+        [encodePluginModelCatalogRelativePath("zai")]: JSON.stringify({
+          generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
+          providers: {},
+        }),
+      },
+    });
+    const second = await resolveModelAsync("zai", "glm-5.1", agentDir, undefined, {
+      runtimeHooks: createRuntimeHooks(),
+    });
+
+    expectResolvedModel(first);
+    expectResolvedModel(second);
+    expect(discoverModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses inherited auth from one lifecycle generation", async () => {
+    const agentDir = state.agentDir("worker");
+    const defaultAgentDir = state.agentDir();
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(defaultAgentDir, { recursive: true });
+    const cfg = makeOpenClawConfigFixture({
+      agents: {
+        list: [
+          { id: "main", default: true, agentDir: defaultAgentDir },
+          { id: "worker", agentDir },
+        ],
+      },
+    });
+    mockModelDiscovery();
+
+    const first = await resolveModelAsync("openai", "gpt-5.5", agentDir, cfg, {
+      runtimeHooks: createRuntimeHooks(),
+    });
+    saveAuthProfileStore(
+      {
+        version: 1,
+        profiles: { "openai:default": { type: "api_key", provider: "openai", key: "one" } },
+      },
+      defaultAgentDir,
+      { filterExternalAuthProfiles: false, syncExternalCli: false },
+    );
+    const second = await resolveModelAsync("openai", "gpt-5.5", agentDir, cfg, {
+      runtimeHooks: createRuntimeHooks(),
+    });
+
+    expectResolvedModel(first);
+    expectResolvedModel(second);
+    expect(discoverAuthStorage).toHaveBeenCalledTimes(1);
+    expect(discoverModels).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the resolved default agent workspace for prepared model discovery", async () => {
     const agentDir = state.agentDir("workspace-agent");
     const workspaceDir = state.workspaceDir;
@@ -817,6 +880,34 @@ describe("resolveModel", () => {
       config: cfg,
       workspaceDir,
     });
+  });
+
+  it("does not poll implicit main auth during request resolution", async () => {
+    const agentDir = state.agentDir("worker");
+    const mainAgentDir = state.agentDir();
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(mainAgentDir, { recursive: true });
+    mockModelDiscovery();
+
+    const first = await resolveModelAsync("openai", "gpt-5.5", agentDir, undefined, {
+      runtimeHooks: createRuntimeHooks(),
+    });
+    saveAuthProfileStore(
+      {
+        version: 1,
+        profiles: { "openai:default": { type: "api_key", provider: "openai", key: "one" } },
+      },
+      mainAgentDir,
+      { filterExternalAuthProfiles: false, syncExternalCli: false },
+    );
+    const second = await resolveModelAsync("openai", "gpt-5.5", agentDir, undefined, {
+      runtimeHooks: createRuntimeHooks(),
+    });
+
+    expectResolvedModel(first);
+    expectResolvedModel(second);
+    expect(discoverAuthStorage).toHaveBeenCalledTimes(1);
+    expect(discoverModels).toHaveBeenCalledTimes(1);
   });
 
   it("keeps runtime auth snapshots inside the lifecycle generation", async () => {
@@ -5043,119 +5134,6 @@ describe("resolveModel", () => {
       api: "openai-responses",
       baseUrl: "https://api.x.ai/v1",
     });
-  });
-});
-
-describe("resolveModel persisted lifecycle", () => {
-  beforeEach(async () => {
-    state = await createOpenClawTestState({ label: "model-resolution" });
-    auth = guardModelFixtureAuth(state.root);
-  });
-  afterEach(async () => {
-    try {
-      auth.verify();
-    } finally {
-      auth.spy.mockRestore();
-      clearRuntimeAuthProfileStoreSnapshots();
-      await state.cleanup();
-    }
-  });
-
-  it("does not poll generated plugin catalogs between lifecycle generations", async () => {
-    const agentDir = state.agentDir();
-    fs.mkdirSync(agentDir, { recursive: true });
-    mockDiscoveredModel(discoverModels, {
-      provider: "zai",
-      modelId: "glm-5.1",
-      templateModel: {
-        provider: "zai",
-        ...makeModel("glm-5.1"),
-      },
-    });
-
-    const first = await resolveModelAsync("zai", "glm-5.1", agentDir, undefined, {
-      runtimeHooks: createRuntimeHooks(),
-    });
-    replacePersistedPluginModelCatalogs({
-      agentDir,
-      pluginCatalogWrites: {
-        [encodePluginModelCatalogRelativePath("zai")]: JSON.stringify({
-          generatedBy: PLUGIN_MODEL_CATALOG_GENERATED_BY,
-          providers: {},
-        }),
-      },
-    });
-    const second = await resolveModelAsync("zai", "glm-5.1", agentDir, undefined, {
-      runtimeHooks: createRuntimeHooks(),
-    });
-
-    expectResolvedModel(first);
-    expectResolvedModel(second);
-    expect(discoverModels).toHaveBeenCalledTimes(1);
-  });
-
-  it("reuses inherited auth from one lifecycle generation", async () => {
-    const agentDir = state.agentDir("worker");
-    const defaultAgentDir = state.agentDir();
-    fs.mkdirSync(agentDir, { recursive: true });
-    fs.mkdirSync(defaultAgentDir, { recursive: true });
-    const cfg = makeOpenClawConfigFixture({
-      agents: {
-        list: [
-          { id: "main", default: true, agentDir: defaultAgentDir },
-          { id: "worker", agentDir },
-        ],
-      },
-    });
-    mockModelDiscovery();
-
-    const first = await resolveModelAsync("openai", "gpt-5.5", agentDir, cfg, {
-      runtimeHooks: createRuntimeHooks(),
-    });
-    saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: { "openai:default": { type: "api_key", provider: "openai", key: "one" } },
-      },
-      defaultAgentDir,
-      { filterExternalAuthProfiles: false, syncExternalCli: false },
-    );
-    const second = await resolveModelAsync("openai", "gpt-5.5", agentDir, cfg, {
-      runtimeHooks: createRuntimeHooks(),
-    });
-
-    expectResolvedModel(first);
-    expectResolvedModel(second);
-    expect(discoverAuthStorage).toHaveBeenCalledTimes(1);
-    expect(discoverModels).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not poll implicit main auth during request resolution", async () => {
-    const agentDir = state.agentDir("worker");
-    const mainAgentDir = state.agentDir();
-    fs.mkdirSync(agentDir, { recursive: true });
-    fs.mkdirSync(mainAgentDir, { recursive: true });
-    mockModelDiscovery();
-
-    const first = await resolveModelAsync("openai", "gpt-5.5", agentDir, undefined, {
-      runtimeHooks: createRuntimeHooks(),
-    });
-    saveAuthProfileStore(
-      {
-        version: 1,
-        profiles: { "openai:default": { type: "api_key", provider: "openai", key: "one" } },
-      },
-      mainAgentDir,
-      { filterExternalAuthProfiles: false, syncExternalCli: false },
-    );
-    const second = await resolveModelAsync("openai", "gpt-5.5", agentDir, undefined, {
-      runtimeHooks: createRuntimeHooks(),
-    });
-
-    expectResolvedModel(first);
-    expectResolvedModel(second);
-    expect(discoverAuthStorage).toHaveBeenCalledTimes(1);
-    expect(discoverModels).toHaveBeenCalledTimes(1);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

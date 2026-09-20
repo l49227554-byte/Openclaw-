@@ -15,7 +15,7 @@ import { formatUnknownError } from "../errors.js";
 import { normalizeMSTeamsConversationId, parseMSTeamsActivityTimestamp } from "../inbound.js";
 import type { MSTeamsMessageHandlerDeps } from "../monitor-handler.types.js";
 import type { MSTeamsIngressLifecycle } from "../msteams-ingress.js";
-import { resolveMSTeamsReplyPolicy } from "../policy.js";
+import { resolveMSTeamsReplyPolicy, resolveMSTeamsThreadSessionPolicy } from "../policy.js";
 import { extractMSTeamsPollVote } from "../polls.js";
 import { getMSTeamsRuntime } from "../runtime.js";
 import type { MSTeamsTurnContext } from "../sdk-types.js";
@@ -166,6 +166,11 @@ export function createMSTeamsMessageHandler(deps: MSTeamsMessageHandlerDeps) {
       context,
       isDirectMessage,
       isChannel,
+      threadSessionPolicy: resolveMSTeamsThreadSessionPolicy({
+        globalConfig: msteamsCfg,
+        teamConfig: channelGate.teamConfig,
+        channelConfig: channelGate.channelConfig,
+      }),
       senderId,
       conversationId,
       conversationMessageId: conversationMessageId ?? undefined,

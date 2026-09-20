@@ -17,6 +17,7 @@ import { msTeamsChannelConfigUiHints } from "./config-ui-hints.js";
 
 const SecretInputSchema = buildSecretInputSchema();
 const ToolPolicyBySenderSchema = z.record(z.string(), ToolPolicySchema).optional();
+const MSTeamsThreadSessionPolicySchema = z.enum(["thread", "channel"]);
 
 const MSTeamsChannelSchema = z
   .object({
@@ -24,6 +25,7 @@ const MSTeamsChannelSchema = z
     tools: ToolPolicySchema,
     toolsBySender: ToolPolicyBySenderSchema,
     replyStyle: MSTeamsReplyStyleSchema.optional(),
+    threadSessionPolicy: MSTeamsThreadSessionPolicySchema.optional(),
   })
   .strict();
 
@@ -33,6 +35,7 @@ const MSTeamsTeamSchema = z
     tools: ToolPolicySchema,
     toolsBySender: ToolPolicyBySenderSchema,
     replyStyle: MSTeamsReplyStyleSchema.optional(),
+    threadSessionPolicy: MSTeamsThreadSessionPolicySchema.optional(),
     channels: z.record(z.string(), MSTeamsChannelSchema.optional()).optional(),
   })
   .strict();
@@ -115,6 +118,7 @@ export const MSTeamsConfigSchema = z
     graphMediaFallback: z.boolean().optional(),
     requireMention: z.boolean().optional(),
     replyStyle: MSTeamsReplyStyleSchema.optional(),
+    threadSessionPolicy: MSTeamsThreadSessionPolicySchema.optional(),
     teams: z.record(z.string(), MSTeamsTeamSchema.optional()).optional(),
     /** Max inbound and outbound media size in MB (default: 100MB). */
     /** SharePoint site ID for file uploads in group chats/channels (e.g., "contoso.sharepoint.com,guid1,guid2") */

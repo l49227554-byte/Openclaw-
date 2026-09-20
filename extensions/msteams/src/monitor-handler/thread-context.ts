@@ -1,6 +1,6 @@
 import { resolveInboundSupplementalSenderAllowed } from "openclaw/plugin-sdk/channel-inbound";
 import { filterSupplementalContextItems } from "openclaw/plugin-sdk/context-visibility-runtime";
-import type { OpenClawConfig } from "../../runtime-api.js";
+import type { MSTeamsConfig, OpenClawConfig } from "../../runtime-api.js";
 import { formatUnknownError } from "../errors.js";
 import {
   buildThreadContext,
@@ -30,6 +30,7 @@ export function prepareMSTeamsThreadRouting(params: {
   context: MSTeamsTurnContext;
   isDirectMessage: boolean;
   isChannel: boolean;
+  threadSessionPolicy?: MSTeamsConfig["threadSessionPolicy"];
   senderId: string;
   conversationId: string;
   conversationMessageId?: string;
@@ -49,6 +50,7 @@ export function prepareMSTeamsThreadRouting(params: {
   route.sessionKey = resolveMSTeamsRouteSessionKey({
     baseSessionKey: route.sessionKey,
     isChannel: params.isChannel,
+    threadSessionPolicy: params.threadSessionPolicy,
     conversationMessageId: params.conversationMessageId,
     replyToId: params.context.activity.replyToId,
   });

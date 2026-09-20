@@ -3,10 +3,15 @@ import {
   createDirectoryTestRuntime,
   expectDirectorySurface,
 } from "openclaw/plugin-sdk/channel-test-helpers";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OpenClawConfig, RuntimeEnv } from "../runtime-api.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MSTeamsConfig, OpenClawConfig, RuntimeEnv } from "../runtime-api.js";
 import { msteamsPlugin } from "./channel.js";
 import { resolveMSTeamsOutboundSessionRoute } from "./session-route.js";
+
+const { getConversation } = vi.hoisted(() => ({ getConversation: vi.fn() }));
+vi.mock("./conversation-store-state.js", () => ({
+  createMSTeamsConversationStoreState: () => ({ get: getConversation }),
+}));
 
 const msteamsDirectoryAdapter = msteamsPlugin.directory;
 
@@ -125,8 +130,9 @@ describe("msteams directory", () => {
 });
 
 describe("msteams session route", () => {
-  it("builds direct routes for explicit user targets", () => {
-    const route = resolveMSTeamsOutboundSessionRoute({
+  beforeEach(() => getConversation.mockReset().mockResolvedValue(null));
+  it("builds direct routes for explicit user targets", async () => {
+    const route = await resolveMSTeamsOutboundSessionRoute({
       cfg: {},
       agentId: "main",
       accountId: "default",
@@ -142,8 +148,8 @@ describe("msteams session route", () => {
     expect(route?.recipientSessionExact).toBe(true);
   });
 
-  it("does not claim display-name user targets as canonical sessions", () => {
-    const route = resolveMSTeamsOutboundSessionRoute({
+  it("does not claim display-name user targets as canonical sessions", async () => {
+    const route = await resolveMSTeamsOutboundSessionRoute({
       cfg: {},
       agentId: "main",
       accountId: "default",
@@ -156,8 +162,8 @@ describe("msteams session route", () => {
 
   it.each(["29:1a2b3c4d5e6f", "8:orgid:2d8c2d2c-1111-2222-3333-444444444444"])(
     "does not claim Bot Framework user id %s as the canonical AAD session",
-    (userId) => {
-      const route = resolveMSTeamsOutboundSessionRoute({
+    async (userId) => {
+      const route = await resolveMSTeamsOutboundSessionRoute({
         cfg: {},
         agentId: "main",
         accountId: "default",
@@ -168,8 +174,8 @@ describe("msteams session route", () => {
     },
   );
 
-  it("builds channel routes for thread conversations and strips suffix metadata", () => {
-    const route = resolveMSTeamsOutboundSessionRoute({
+  it("builds channel routes for thread conversations and strips suffix metadata", async () => {
+    const route = await resolveMSTeamsOutboundSessionRoute({
       cfg: {},
       agentId: "main",
       accountId: "default",
@@ -184,8 +190,8 @@ describe("msteams session route", () => {
     expect(route?.recipientSessionExact).toBe(true);
   });
 
-  it("does not claim an exact channel session without its thread root", () => {
-    const route = resolveMSTeamsOutboundSessionRoute({
+  it("does not claim an exact channel session without its thread root", async () => {
+    const route = await resolveMSTeamsOutboundSessionRoute({
       cfg: {},
       agentId: "main",
       accountId: "default",
@@ -196,8 +202,180 @@ describe("msteams session route", () => {
     expect(route?.recipientSessionExact).toBe(false);
   });
 
-  it("returns group routes for non-user, non-channel conversations", () => {
-    const route = resolveMSTeamsOutboundSessionRoute({
+  it.each([
+    { target: "19:abc123@thread.tacv2", threadId: undefined },
+    { target: "19:abc123@thread.tacv2;messageid=42", threadId: "42" },
+    { target: "team-aad-id/19:abc123@thread.tacv2;messageid=42", threadId: "42" },
+  ])(
+    "shares channel sessions while preserving destination $target",
+    async ({ target, threadId }) => {
+      const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+        cfg: { channels: { msteams: { threadSessionPolicy: "channel" } } },
+        agentId: "main",
+        target,
+      });
+      expect(route).toMatchObject({
+        peer: { kind: "channel", id: "19:abc123@thread.tacv2" },
+        sessionKey: "agent:main:msteams:channel:19:abc123@thread.tacv2",
+        recipientSessionExact: true,
+      });
+      expect(route?.threadId).toBe(threadId);
+      expect(getConversation).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each<{
+    title: string;
+    teams: NonNullable<MSTeamsConfig["teams"]>;
+    expectedPolicy: "thread" | "channel";
+  }>([
+    {
+      title: "team-only policy with no channel entries",
+      teams: { "team-1": { threadSessionPolicy: "channel" as const } },
+      expectedPolicy: "channel",
+    },
+    {
+      title: "exact channel overrides team policy",
+      teams: {
+        "team-1": {
+          threadSessionPolicy: "channel" as const,
+          channels: { "19:abc123@thread.tacv2": { threadSessionPolicy: "thread" as const } },
+        },
+      },
+      expectedPolicy: "thread",
+    },
+    {
+      title: "wildcard channel overrides team policy",
+      teams: {
+        "team-1": {
+          threadSessionPolicy: "thread" as const,
+          channels: { "*": { threadSessionPolicy: "channel" as const } },
+        },
+      },
+      expectedPolicy: "channel",
+    },
+    {
+      title: "exact team hides unrelated wildcard channel policy",
+      teams: {
+        "team-1": { threadSessionPolicy: "thread" as const },
+        "*": { channels: { "*": { threadSessionPolicy: "channel" as const } } },
+      },
+      expectedPolicy: "thread",
+    },
+  ])("resolves stored ownership for $title", async ({ teams, expectedPolicy }) => {
+    getConversation.mockResolvedValue({ teamId: "team-1" });
+    const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+      cfg: { channels: { msteams: { teams } } },
+      agentId: "main",
+      target: "19:abc123@thread.tacv2",
+      threadId: "42",
+    });
+    expect(getConversation).toHaveBeenCalledWith("19:abc123@thread.tacv2");
+    expect(route?.sessionKey).toBe(
+      `agent:main:msteams:channel:19:abc123@thread.tacv2${expectedPolicy === "thread" ? ":thread:42" : ""}`,
+    );
+    expect(route?.threadId).toBe("42");
+    expect(route?.recipientSessionExact).toBe(true);
+  });
+
+  it("marks a bare channel exact under its stored team's shared policy", async () => {
+    getConversation.mockResolvedValue({ teamId: "team-1" });
+    const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+      cfg: {
+        channels: { msteams: { teams: { "team-1": { threadSessionPolicy: "channel" } } } },
+      },
+      agentId: "main",
+      target: "19:abc123@thread.tacv2",
+    });
+    expect(route).toMatchObject({
+      sessionKey: "agent:main:msteams:channel:19:abc123@thread.tacv2",
+      recipientSessionExact: true,
+    });
+    expect(route?.threadId).toBeUndefined();
+  });
+
+  it("does not infer team ownership from another team's wildcard channel", async () => {
+    const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+      cfg: {
+        channels: {
+          msteams: {
+            teams: { "other-team": { channels: { "*": { threadSessionPolicy: "channel" } } } },
+          },
+        },
+      },
+      agentId: "main",
+      target: "19:abc123@thread.tacv2",
+    });
+    expect(route?.recipientSessionExact).toBe(false);
+  });
+
+  it("does not load conversation state for allowlist-only team configuration", async () => {
+    const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+      cfg: { channels: { msteams: { teams: { "team-1": { channels: { "*": {} } } } } } },
+      agentId: "main",
+      target: "19:abc123@thread.tacv2;messageid=42",
+    });
+    expect(route?.sessionKey).toBe("agent:main:msteams:channel:19:abc123@thread.tacv2:thread:42");
+    expect(getConversation).not.toHaveBeenCalled();
+  });
+
+  it.each(["19:legacy@thread.skype", "team-id/19:legacy@thread.skype"])(
+    "uses stored channel type for scoped policy on %s",
+    async (target) => {
+      getConversation.mockResolvedValue({
+        teamId: "team-1",
+        conversation: { conversationType: "channel" },
+      });
+      const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+        cfg: {
+          channels: { msteams: { teams: { "team-1": { threadSessionPolicy: "channel" } } } },
+        },
+        agentId: "main",
+        target,
+        threadId: "42",
+      });
+      expect(getConversation).toHaveBeenCalledWith("19:legacy@thread.skype");
+      expect(route).toMatchObject({
+        peer: { kind: "channel", id: "19:legacy@thread.skype" },
+        sessionKey: "agent:main:msteams:channel:19:legacy@thread.skype",
+        recipientSessionExact: true,
+        threadId: "42",
+      });
+    },
+  );
+
+  it.each(["channel", "groupChat", undefined])(
+    "uses stored %s type for legacy targets under global channel policy",
+    async (conversationType) => {
+      getConversation.mockResolvedValue(
+        conversationType ? { teamId: "team-1", conversation: { conversationType } } : null,
+      );
+      const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+        cfg: { channels: { msteams: { threadSessionPolicy: "channel" } } },
+        agentId: "main",
+        target: "19:legacy@thread.skype",
+      });
+      const kind = conversationType === "channel" ? "channel" : "group";
+      expect(route).toMatchObject({
+        peer: { kind, id: "19:legacy@thread.skype" },
+        sessionKey: `agent:main:msteams:${kind}:19:legacy@thread.skype`,
+        recipientSessionExact: conversationType === "channel",
+      });
+    },
+  );
+
+  it("does not load state or change legacy target inference without a session policy", async () => {
+    const route = await msteamsPlugin.messaging?.resolveOutboundSessionRoute?.({
+      cfg: { channels: { msteams: { teams: { "team-1": { channels: { "*": {} } } } } } },
+      agentId: "main",
+      target: "19:legacy@thread.skype",
+    });
+    expect(route?.peer).toEqual({ kind: "group", id: "19:legacy@thread.skype" });
+    expect(getConversation).not.toHaveBeenCalled();
+  });
+
+  it("returns group routes for non-user, non-channel conversations", async () => {
+    const route = await resolveMSTeamsOutboundSessionRoute({
       cfg: {},
       agentId: "main",
       accountId: "default",
@@ -210,9 +388,9 @@ describe("msteams session route", () => {
     expect(route?.recipientSessionExact).toBe(false);
   });
 
-  it("returns null when the target cannot be normalized", () => {
+  it("returns null when the target cannot be normalized", async () => {
     expect(
-      resolveMSTeamsOutboundSessionRoute({
+      await resolveMSTeamsOutboundSessionRoute({
         cfg: {},
         agentId: "main",
         accountId: "default",

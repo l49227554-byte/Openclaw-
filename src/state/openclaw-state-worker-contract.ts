@@ -219,11 +219,11 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
       output: { value_json: string } | undefined;
     };
     "plugins.deferredMigrations.read": {
-      input: undefined;
+      input: { artifactPreservingReadOnly: boolean };
       output: readonly DeferredPluginMigration[];
     };
     "claws.install-schema-versions": {
-      input: undefined;
+      input: { artifactPreservingReadOnly: boolean };
       output: ClawInstallSchemaVersionRow[] | undefined;
     };
     "config.health.read": { input: { artifactPreserving: boolean }; output: ConfigHealthSnapshot };

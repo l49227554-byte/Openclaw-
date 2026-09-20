@@ -201,6 +201,7 @@ describe.each(["HTTP", "WebSocket"] as const)(
             client.authenticatedUserProfile = {
               profileId: profile.id,
               displayName: profile.displayName,
+              avatarRevision: "test-avatar",
               hasAvatar: false,
               updatedAt: profile.updatedAt,
             };

@@ -134,6 +134,7 @@ type CompactNodeTestPlanMode = "pull-request" | "push";
 
 type PolicyTestWatch = {
   ownerGlobs?: readonly string[];
+  sourceOnly?: boolean;
   testFile: string;
   watchGlobs: readonly string[];
 };
@@ -145,7 +146,14 @@ const RELEASE_ONLY_TOOLING_TESTS = new Map<string, readonly string[]>([
     "test/scripts/vitest-report-owner.test.ts",
     [
       "scripts/**",
-      "test/**",
+      "test/vitest/**",
+      "test/fixtures/**",
+      "test/helpers/**",
+      "test/setup*.ts",
+      "test/test-env.ts",
+      "test/test-home*.{ts,mts}",
+      "test/non-isolated-runner.ts",
+      "test/scripts/vitest-report-fixture.ts",
       // Native child configs also load the shared test-home/runtime bootstrap.
       "src/{cli,config,daemon,infra,process,shared,test-utils}/**",
       "packages/**",
@@ -169,6 +177,7 @@ const RELEASE_ONLY_TOOLING_TESTS = new Map<string, readonly string[]>([
 // discover from imports alone.
 const policyTestWatches = [
   ...Array.from(RELEASE_ONLY_TOOLING_TESTS, ([testFile, watchGlobs]): PolicyTestWatch => ({
+    sourceOnly: true,
     testFile,
     watchGlobs,
   })),
@@ -252,9 +261,11 @@ const policyTestWatches = [
 /** Resolve policy tests whose scanned source surface intersects this diff. */
 export function resolvePolicyTestTargets(changedPaths: readonly string[]): string[] {
   return policyTestWatches
-    .filter(({ watchGlobs }) =>
-      changedPaths.some((changedPath) =>
-        watchGlobs.some((watchGlob) => matchesGlob(changedPath, watchGlob)),
+    .filter(({ sourceOnly, watchGlobs }) =>
+      changedPaths.some(
+        (changedPath) =>
+          (!sourceOnly || !isTestFileTarget(changedPath)) &&
+          watchGlobs.some((watchGlob) => matchesGlob(changedPath, watchGlob)),
       ),
     )
     .map(({ testFile }) => testFile);

@@ -53,6 +53,7 @@ describe("inspectTelegramConversationRouteOwner", () => {
     const cfg: OpenClawConfig = {
       channels: {
         telegram: {
+          accounts: { default: {} },
           groups: { "-100123": { topics: { "42": { agentId: "configured" } } } },
         },
       },
@@ -92,11 +93,17 @@ describe("inspectTelegramConversationRouteOwner", () => {
     };
 
     expect(
-      inspectTelegramConversationRouteOwner({ cfg: {}, accountId: "default", conversation }),
+      inspectTelegramConversationRouteOwner({
+        cfg: { channels: { telegram: { accounts: { default: {} } } } },
+        accountId: "default",
+        conversation,
+      }),
     ).toEqual({ kind: "unavailable" });
     expect(
       inspectTelegramConversationRouteOwner({
-        cfg: { channels: { telegram: { threadBindings: { enabled: false } } } },
+        cfg: {
+          channels: { telegram: { accounts: { default: {} }, threadBindings: { enabled: false } } },
+        },
         accountId: "default",
         conversation,
       }),
@@ -121,7 +128,7 @@ describe("inspectTelegramConversationRouteOwner", () => {
 
     expect(
       inspectTelegramConversationRouteOwner({
-        cfg: {},
+        cfg: { channels: { telegram: { accounts: { default: {} } } } },
         accountId: "default",
         conversation: { kind: "direct", peerId: "1001", target: "2002" },
       }),
@@ -135,6 +142,11 @@ describe("inspectTelegramConversationRouteOwner", () => {
       name: "removed account",
       accountId: "retired",
       telegram: { accounts: { default: {} } },
+    },
+    {
+      name: "removed default account",
+      accountId: "default",
+      telegram: { accounts: {} } as NonNullable<OpenClawConfig["channels"]>["telegram"],
     },
     {
       name: "disabled account",
@@ -157,6 +169,19 @@ describe("inspectTelegramConversationRouteOwner", () => {
       inspectTelegramConversationRouteOwner({
         cfg: { channels: { telegram } },
         accountId,
+        conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects a binding-only account after its configured account is removed", () => {
+    expect(
+      inspectTelegramConversationRouteOwner({
+        cfg: {
+          channels: { telegram: { accounts: { default: {} } } },
+          bindings: [{ agentId: "main", match: { channel: "telegram", accountId: "retired" } }],
+        },
+        accountId: "retired",
         conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
       }),
     ).toBeNull();

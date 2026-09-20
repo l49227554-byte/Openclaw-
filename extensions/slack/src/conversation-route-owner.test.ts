@@ -44,7 +44,7 @@ describe("inspectSlackConversationRouteOwner", () => {
 
     expect(
       inspectSlackConversationRouteOwner({
-        cfg: {},
+        cfg: { channels: { slack: { accounts: { default: {} } } } },
         accountId: "default",
         conversation: { kind: "channel", peerId: "channel-1", threadId: "thread-1" },
       }),
@@ -65,7 +65,7 @@ describe("inspectSlackConversationRouteOwner", () => {
 
     expect(
       inspectSlackConversationRouteOwner({
-        cfg: {},
+        cfg: { channels: { slack: { accounts: { default: {} } } } },
         accountId: "default",
         conversation: { kind: "channel", peerId: "C456" },
       }),
@@ -73,7 +73,7 @@ describe("inspectSlackConversationRouteOwner", () => {
     installation.update("workspace");
     expect(
       inspectSlackConversationRouteOwner({
-        cfg: {},
+        cfg: { channels: { slack: { accounts: { default: {} } } } },
         accountId: "default",
         conversation: { kind: "channel", peerId: "team:T123:channel:C456" },
       }),
@@ -95,7 +95,7 @@ describe("inspectSlackConversationRouteOwner", () => {
       }),
     });
     const input = {
-      cfg: {},
+      cfg: { channels: { slack: { accounts: { default: {} } } } },
       accountId: "default",
       conversation: { kind: "channel" as const, peerId: "C456" },
     };
@@ -113,6 +113,11 @@ describe("inspectSlackConversationRouteOwner", () => {
       name: "removed account",
       accountId: "retired",
       slack: { accounts: { default: {} } },
+    },
+    {
+      name: "removed default account",
+      accountId: "default",
+      slack: { accounts: {} } as NonNullable<OpenClawConfig["channels"]>["slack"],
     },
     {
       name: "disabled account",

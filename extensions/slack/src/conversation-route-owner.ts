@@ -1,7 +1,8 @@
-import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
-import { listSlackAccountIds, resolveSlackAccount } from "./accounts.js";
+import { inspectSlackAccount } from "./account-inspect.js";
+import { resolveSlackAccount } from "./accounts.js";
 import {
   normalizeSlackRouteBindingConfig,
   resolveSlackConversationBindingRoute,
@@ -25,10 +26,16 @@ export function inspectSlackConversationRouteOwner(params: {
   };
 }) {
   const accountId = normalizeAccountId(params.accountId);
+  const configuredAccounts = params.cfg.channels?.slack?.accounts;
+  const hasConfiguredAccount = Object.keys(configuredAccounts ?? {}).some(
+    (id) => normalizeAccountId(id) === accountId,
+  );
   // A removed or disabled account keeps no installation identity, so reject its retained history
   // here instead of reporting the missing identity as a temporary outage below.
   if (
-    !listSlackAccountIds(params.cfg).some((id) => normalizeAccountId(id) === accountId) ||
+    (!hasConfiguredAccount &&
+      (accountId !== DEFAULT_ACCOUNT_ID ||
+        !inspectSlackAccount({ cfg: params.cfg, accountId }).configured)) ||
     !resolveSlackAccount({ cfg: params.cfg, accountId }).enabled
   ) {
     return null;

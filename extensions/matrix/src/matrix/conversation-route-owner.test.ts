@@ -299,6 +299,11 @@ describe("inactive Matrix account scopes", () => {
       matrix: { accounts: { default: {} } },
     },
     {
+      name: "removed default account",
+      accountId: "default",
+      matrix: { accounts: {} },
+    },
+    {
       name: "disabled account",
       accountId: "default",
       matrix: { accounts: { default: { enabled: false } } },

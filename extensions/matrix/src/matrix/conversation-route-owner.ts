@@ -1,8 +1,23 @@
-import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
-import { listMatrixAccountIds, resolveMatrixAccountConfig } from "./accounts.js";
+import { listMatrixEnvAccountIds } from "../env-vars.js";
+import {
+  hasExplicitMatrixAccountConfig,
+  listNormalizedMatrixAccountIds,
+} from "./account-config.js";
+import { resolveMatrixAccountConfig } from "./accounts.js";
 import { resolveMatrixInboundRoute } from "./monitor/route.js";
+
+function hasConfiguredMatrixAccount(cfg: OpenClawConfig, accountId: string): boolean {
+  if (listNormalizedMatrixAccountIds(cfg).includes(accountId)) {
+    return true;
+  }
+  if (accountId === DEFAULT_ACCOUNT_ID && hasExplicitMatrixAccountConfig(cfg, accountId)) {
+    return true;
+  }
+  return listMatrixEnvAccountIds().some((id) => normalizeAccountId(id) === accountId);
+}
 
 export function resolveMatrixConversationRouteOwner(params: {
   cfg: OpenClawConfig;
@@ -27,7 +42,7 @@ export function resolveMatrixConversationRouteOwner(params: {
   // history here instead of reporting the missing adapter as a temporary outage below.
   if (
     cfg.channels?.matrix?.enabled === false ||
-    !listMatrixAccountIds(cfg).some((id) => normalizeAccountId(id) === accountId) ||
+    !hasConfiguredMatrixAccount(cfg, accountId) ||
     accountConfig.enabled === false
   ) {
     return null;

@@ -3,6 +3,7 @@
  * for native Codex turns.
  */
 import crypto from "node:crypto";
+import { codexAppIdentityKey } from "./app-identity.js";
 import { defaultCodexAppInventoryCache, CodexAppInventoryCache } from "./app-inventory-cache.js";
 import {
   resolveCodexPluginsPolicy,
@@ -14,10 +15,7 @@ import {
   ensureCodexPluginActivation,
   type CodexPluginActivationResult,
 } from "./plugin-activation.js";
-import {
-  clearPersistedAppApprovalOverrides,
-  type CodexAppApprovalOverrideDiagnostic,
-} from "./plugin-app-approval-overrides.js";
+import { buildCodexAppApprovalOverrides } from "./plugin-app-approval-overrides.js";
 import {
   readCodexPluginInventory,
   type CodexPluginInventory,
@@ -78,7 +76,6 @@ export type PluginAppPolicyContext = {
 type CodexPluginThreadConfigDiagnostic =
   | CodexPluginInventoryDiagnostic
   | CodexPluginThreadAppAdmissionDiagnostic
-  | CodexAppApprovalOverrideDiagnostic
   | {
       code:
         | "account_app_ownership_unavailable"
@@ -116,7 +113,7 @@ type BuildCodexPluginThreadConfigParams = {
 
 // Admission changes must rebuild existing bindings too, or older bindings can
 // bypass updated app approval checks after the gateway has been upgraded.
-const CODEX_PLUGIN_THREAD_CONFIG_INPUT_FINGERPRINT_VERSION = 5;
+const CODEX_PLUGIN_THREAD_CONFIG_INPUT_FINGERPRINT_VERSION = 13;
 const CODEX_PLUGIN_THREAD_CONFIG_FINGERPRINT_VERSION = 2;
 
 /** Returns true when plugin config exists and thread config may need app patches. */
@@ -190,7 +187,8 @@ export async function buildCodexPluginThreadConfig(
           policy,
           request: threadRequest,
           appCache,
-          appCacheKey: threadAppCacheKey,
+          appCacheKey: params.appCacheKey,
+          appInventoryCacheKey: threadAppCacheKey,
           configCwd: params.configCwd,
           metadataCache: params.metadataCache,
           nowMs: params.nowMs,
@@ -214,7 +212,8 @@ export async function buildCodexPluginThreadConfig(
       policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       nowMs: params.nowMs,
@@ -234,7 +233,8 @@ export async function buildCodexPluginThreadConfig(
       identity: record.policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       deferAppInventoryRefresh: true,
@@ -269,7 +269,8 @@ export async function buildCodexPluginThreadConfig(
       policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       nowMs: params.nowMs,
@@ -290,7 +291,8 @@ export async function buildCodexPluginThreadConfig(
       policy,
       request: threadRequest,
       appCache,
-      appCacheKey: threadAppCacheKey,
+      appCacheKey: params.appCacheKey,
+      appInventoryCacheKey: threadAppCacheKey,
       configCwd: params.configCwd,
       metadataCache: params.metadataCache,
       nowMs: params.nowMs,
@@ -304,11 +306,10 @@ export async function buildCodexPluginThreadConfig(
   const accountAppsResult: Awaited<ReturnType<typeof readCodexThreadAdmissibleAccountApps>> =
     policy.allowAllPlugins
       ? await readCodexThreadAdmissibleAccountApps(params, appCache)
-      : { apps: [] };
+      : { apps: [], installedApps: [] };
   // A deny-all thread needs no native settings; read them only before admitting an app.
   let appAdmissionConfig: Promise<CodexPluginThreadAppAdmissionConfig> | undefined;
-  const getAdmissionConfig = () =>
-    (appAdmissionConfig ??= requireCodexConfigForAppAdmission(params));
+  const getAdmissionConfig = () => (appAdmissionConfig ??= readCodexConfigForAppAdmission(params));
 
   const diagnostics: CodexPluginThreadConfigDiagnostic[] = [
     ...inventory.diagnostics,
@@ -320,12 +321,12 @@ export async function buildCodexPluginThreadConfig(
   const policyApps: Record<string, CodexAppPolicyContextEntry> = {};
   const pluginAppIds: Record<string, string[]> = {};
   const pluginOwnedAppIds = collectCodexReservedPluginAppIds({
-    policy,
+    policy: inventory.policy,
     inventory,
     accountApps: accountAppsResult.apps,
   });
   const unresolvedDisabledPluginOwnership = policy.allowAllPlugins
-    ? policy.pluginPolicies.find((pluginPolicy) => {
+    ? inventory.policy.pluginPolicies.find((pluginPolicy) => {
         const record = inventory.records.find(
           (candidate) => candidate.policy.configKey === pluginPolicy.configKey,
         );
@@ -384,21 +385,13 @@ export async function buildCodexPluginThreadConfig(
         });
         continue;
       }
-      if (
-        record.policy.destructiveApprovalMode === "ask" &&
-        !(await clearPersistedAppApprovalOverrides({
-          request: params.request,
-          configCwd: params.configCwd,
-          config: admissionConfig.config,
-          plugin: record.policy,
-          app,
-          diagnostics,
-        }))
-      ) {
-        continue;
-      }
       provisionalAppIds.add(app.id);
-      apps[app.id] = buildEnabledAppConfig(record.policy);
+      apps[app.id] = buildEnabledAppConfig(
+        record.policy,
+        record.policy.destructiveApprovalMode === "ask"
+          ? buildCodexAppApprovalOverrides(admissionConfig.config, app)
+          : undefined,
+      );
       policyApps[app.id] = {
         configKey: record.policy.configKey,
         marketplaceName: record.policy.marketplaceName,
@@ -415,30 +408,25 @@ export async function buildCodexPluginThreadConfig(
     // An explicit plugin policy is more specific than the account-wide policy.
     // Reserve proven ownership even when activation/readiness fails so a broad
     // account policy cannot re-admit an app that the explicit path excluded.
-    if (pluginOwnedAppIds.has(app.id)) {
+    if (pluginOwnedAppIds.has(codexAppIdentityKey(app.id))) {
       continue;
     }
     const admissionConfig = await getAdmissionConfig();
     if (resolveCodexExplicitAppEnablement(admissionConfig.layers, app.id) === false) {
       continue;
     }
-    const accountApp = toCodexPluginOwnedAccountApp(app);
-    if (
-      policy.destructiveApprovalMode === "ask" &&
-      !(await clearPersistedAppApprovalOverrides({
-        request: params.request,
-        configCwd: params.configCwd,
-        config: admissionConfig.config,
-        app: accountApp,
-        diagnostics,
-      }))
-    ) {
-      continue;
-    }
-    // Global callability does not prove this thread's workspace/managed
-    // policy. Attest only apps that also passed destructive-approval checks.
+    const accountApp = toCodexPluginOwnedAccountApp(
+      app,
+      accountAppsResult.installedApps.find((installed) => installed.id === app.id),
+    );
+    // Global callability does not prove this thread's workspace/managed policy.
     provisionalAppIds.add(app.id);
-    apps[app.id] = buildEnabledAppConfig(policy);
+    apps[app.id] = buildEnabledAppConfig(
+      policy,
+      policy.destructiveApprovalMode === "ask"
+        ? buildCodexAppApprovalOverrides(admissionConfig.config, accountApp)
+        : undefined,
+    );
     policyApps[app.id] = {
       source: "account",
       appName: app.name,
@@ -544,18 +532,6 @@ export function buildDisabledAppsConfigPatch(): JsonObject & { apps: JsonObject 
   };
 }
 
-async function requireCodexConfigForAppAdmission(
-  params: Parameters<typeof readCodexConfigForAppAdmission>[0],
-): Promise<CodexPluginThreadAppAdmissionConfig> {
-  const config = await readCodexConfigForAppAdmission(params);
-  if (!config) {
-    throw new Error(
-      "Could not verify the Codex app allowlist. No native thread was started; retry when native app configuration is available.",
-    );
-  }
-  return config;
-}
-
 export function disableUnlistedCodexApps(
   configPatch: { apps: JsonObject },
   nativeConfig: Record<string, unknown>,
@@ -571,12 +547,16 @@ export function disableUnlistedCodexApps(
   return { ...configPatch, apps };
 }
 
-function buildEnabledAppConfig(policy: {
-  allowDestructiveActions: boolean;
-  allowOpenWorld?: boolean;
-  destructiveApprovalMode?: CodexPluginDestructiveApprovalMode;
-}): JsonObject {
+function buildEnabledAppConfig(
+  policy: {
+    allowDestructiveActions: boolean;
+    allowOpenWorld?: boolean;
+    destructiveApprovalMode?: CodexPluginDestructiveApprovalMode;
+  },
+  approvalOverrides: JsonObject = {},
+): JsonObject {
   return {
+    ...approvalOverrides,
     enabled: true,
     destructive_enabled: policy.allowDestructiveActions,
     open_world_enabled: policy.allowOpenWorld !== false,
@@ -599,7 +579,7 @@ export function buildCodexPluginAppsConfigPatchFromPolicyContext(
   return Object.keys(policyContext.apps).length > 0 ? { apps } : disabledConfigPatch;
 }
 
-/** Rechecks durable ask overrides before a side thread replays its bound app policy. */
+/** Projects current ask overrides before a side thread replays its bound app policy. */
 export async function refreshCodexPluginAppApprovalPolicy(params: {
   policyContext: PluginAppPolicyContext;
   request: CodexPluginRuntimeRequest;
@@ -614,10 +594,10 @@ export async function refreshCodexPluginAppApprovalPolicy(params: {
       diagnostics: [],
     };
   }
-  const targetAppIds = Object.entries(params.policyContext.apps)
+  const targetApps = Object.entries(params.policyContext.apps)
     .filter(([, app]) => app.destructiveApprovalMode === "ask")
-    .map(([id]) => id)
-    .toSorted();
+    .toSorted(([left], [right]) => left.localeCompare(right));
+  const targetAppIds = targetApps.map(([id]) => id);
   const diagnostics: CodexPluginThreadConfigDiagnostic[] = [];
   // A persisted binding can be replayed before any normal turn after restart.
   // Fresh targeted inventory retains the current non-read-only tool scope.
@@ -626,31 +606,34 @@ export async function refreshCodexPluginAppApprovalPolicy(params: {
     targetAppIds.length > 0
       ? refreshCodexPluginAppInventory(readParams, new CodexAppInventoryCache(), { targetAppIds })
       : undefined,
-    requireCodexConfigForAppAdmission(readParams),
+    readCodexConfigForAppAdmission(readParams),
   ]);
   const configPatch = disableUnlistedCodexApps(
     buildCodexPluginAppsConfigPatchFromPolicyContext(params.policyContext),
     admissionConfig.config,
   );
   const currentApps = new Map(
-    inventory?.apps.map((app) => [app.id, toCodexPluginOwnedAccountApp(app)]),
+    inventory?.apps.map((app) => [
+      app.id,
+      toCodexPluginOwnedAccountApp(
+        app,
+        inventory.installedApps.find((installed) => installed.id === app.id),
+      ),
+    ]),
   );
   const apps = { ...params.policyContext.apps };
-  for (const id of targetAppIds) {
+  for (const [id, policy] of targetApps) {
     const app = currentApps.get(id);
     if (!app) {
       diagnostics.push({
-        code: "approval_overrides_clear_failed",
+        code: "app_not_ready",
         message: `Could not verify current Codex app approval policy for ${id}; the app was not exposed.`,
       });
-    } else if (
-      await clearPersistedAppApprovalOverrides({
-        ...params,
-        config: admissionConfig.config,
-        app,
-        diagnostics,
-      })
-    ) {
+    } else {
+      configPatch.apps[id] = buildEnabledAppConfig(
+        policy,
+        buildCodexAppApprovalOverrides(admissionConfig.config, app),
+      );
       continue;
     }
     delete apps[id];
@@ -733,29 +716,32 @@ function policyFingerprint(policy: ResolvedCodexPluginsPolicy): JsonValue {
 }
 
 function mergeJsonObjects(left: JsonObject, right: JsonObject): JsonObject {
-  const merged: JsonObject = { ...left };
+  // Spreading creates own data properties, including literal native config keys
+  // such as __proto__; assignment into an empty object would drop those overrides.
+  const merged: JsonObject = { ...left, ...right };
   for (const [key, value] of Object.entries(right)) {
-    const existing = merged[key];
-    merged[key] =
-      isJsonObject(existing) && isJsonObject(value) ? mergeJsonObjects(existing, value) : value;
+    const existing = left[key];
+    if (Object.hasOwn(left, key) && isJsonObject(existing) && isJsonObject(value)) {
+      merged[key] = mergeJsonObjects(existing, value);
+    }
   }
   return merged;
 }
 
 function fingerprintJson(value: JsonValue): string {
-  return crypto.createHash("sha256").update(stableStringify(value)).digest("hex");
+  return crypto.createHash("sha256").update(stringifyCodexPluginPolicy(value)).digest("hex");
 }
 
-function stableStringify(value: JsonValue | undefined): string {
+export function stringifyCodexPluginPolicy(value: unknown): string {
   // Fingerprints must be process-stable across object insertion order so prompt
   // cache and thread-binding comparisons do not churn between runs.
   if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+    return `[${value.map((item) => stringifyCodexPluginPolicy(item)).join(",")}]`;
   }
   if (value && typeof value === "object") {
     return `{${Object.entries(value)
       .toSorted(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .map(([key, item]) => `${JSON.stringify(key)}:${stringifyCodexPluginPolicy(item)}`)
       .join(",")}}`;
   }
   return JSON.stringify(value);

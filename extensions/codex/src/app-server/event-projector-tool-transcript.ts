@@ -406,7 +406,8 @@ export class CodexToolTranscriptProjection {
     result.content = replacement.content;
   }
 
-  async recordNativeToolResultWithDetails(item: CodexThreadItem | undefined): Promise<void> {
+  // Preparation can outlive finalization; the projector owns recording after its close guard.
+  async prepareNativeToolResultDetails(item: CodexThreadItem | undefined): Promise<unknown> {
     const preparedDetails = await this.prepareNativeMcpAppResultDetails(item);
     const approvalReviewState = item ? this.approvalReviewsByCallId.get(item.id) : undefined;
     // The terminal tool result is the durable owner for its reviews. Live
@@ -417,7 +418,7 @@ export class CodexToolTranscriptProjection {
           approvalReviewOutcome: toolApprovalReviewOutcome(approvalReviewState),
         }
       : undefined;
-    const details = reviewDetails
+    return reviewDetails
       ? isJsonObject(preparedDetails)
         ? { ...preparedDetails, ...reviewDetails }
         : {
@@ -425,7 +426,6 @@ export class CodexToolTranscriptProjection {
             ...reviewDetails,
           }
       : preparedDetails;
-    this.recordNativeToolResult(item, details);
   }
 
   private async prepareNativeMcpAppResultDetails(
@@ -588,18 +588,24 @@ export class CodexToolTranscriptProjection {
       : `${MISSING_TOOL_RESULT_ERROR} missingToolResultCount=${missingCount}`;
   }
 
-  async readMirroredSessionMessages(): Promise<AgentMessage[]> {
+  async readMirroredSessionMessages(signal?: AbortSignal): Promise<AgentMessage[]> {
     return (
-      (await readCodexMirroredSessionHistoryMessages({
-        agentId: this.params.agentId,
-        sessionFile: this.params.sessionFile,
-        sessionId: this.params.sessionId,
-        sessionKey: this.params.sessionKey,
-      })) ?? []
+      (await readCodexMirroredSessionHistoryMessages(
+        {
+          agentId: this.params.agentId,
+          sessionFile: this.params.sessionFile,
+          sessionId: this.params.sessionId,
+          sessionKey: this.params.sessionKey,
+          sessionTarget: this.params.sessionTarget,
+        },
+        undefined,
+        signal,
+        this.params.contextTokenBudget,
+      )) ?? []
     );
   }
 
-  private recordToolCall(params: ToolTranscriptCallInput): void {
+  recordToolCall(params: ToolTranscriptCallInput): void {
     if (!params.id || !params.name || this.callIds.has(params.id)) {
       return;
     }
@@ -614,7 +620,7 @@ export class CodexToolTranscriptProjection {
     this.options.checkpointMessage?.({ read: () => message });
   }
 
-  private recordToolResult(params: ToolTranscriptResultInput): void {
+  recordToolResult(params: ToolTranscriptResultInput): void {
     if (!params.id || !params.name || this.resultIds.has(params.id)) {
       return;
     }
@@ -676,16 +682,14 @@ export class CodexToolTranscriptProjection {
     const attribution = resolveCodexLocalRuntimeAttribution(this.params);
     return {
       role: "assistant",
-      content: [
-        { type: "toolCall", id: params.id, name: params.name, arguments: args, input: args },
-      ],
+      content: [{ type: "toolCall", id: params.id, name: params.name, arguments: args }],
       api: attribution.api ?? "openai-chatgpt-responses",
       provider: attribution.provider,
       model: this.params.modelId,
       usage: ZERO_USAGE,
       stopReason: "toolUse",
       timestamp: this.nextTranscriptTimestamp(),
-    } as unknown as AgentMessage;
+    };
   }
 
   private createToolResultMessage(
@@ -697,25 +701,13 @@ export class CodexToolTranscriptProjection {
       toolCallId: params.id,
       toolName: params.name,
       isError: params.isError,
-      content: [
-        {
-          type: "toolResult",
-          id: params.id,
-          name: params.name,
-          toolName: params.name,
-          toolCallId: params.id,
-          toolUseId: params.id,
-          tool_use_id: params.id,
-          content: text,
-          text,
-        },
-      ],
+      content: [{ type: "text", text }],
       ...(params.details !== undefined ? { details: params.details } : {}),
       ...(params.resultContentSource
         ? { __openclaw: { resultContentSource: params.resultContentSource } }
         : {}),
       timestamp: this.nextTranscriptTimestamp(),
-    } as unknown as Extract<AgentMessage, { role: "toolResult" }>;
+    };
   }
 }
 

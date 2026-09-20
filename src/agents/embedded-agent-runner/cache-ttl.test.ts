@@ -1,56 +1,43 @@
-// Cache-TTL eligibility coverage for native and provider-routed model families.
+// Cache-TTL delegation, built-in fallback, and session-marker coverage.
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("../../plugins/provider-runtime.js", async () => {
-  const actual = await vi.importActual<typeof import("../../plugins/provider-runtime.js")>(
-    "../../plugins/provider-runtime.js",
-  );
-  return {
-    ...actual,
-    resolveProviderCacheTtlEligibility: (params: {
-      context: {
-        provider: string;
-        modelId: string;
-        modelApi?: string;
-        baseUrl?: string;
-        supportsPromptCacheKey?: boolean;
-      };
-    }) => {
-      // Provider runtime owns model-family-specific eligibility; tests mirror
-      // plugin decisions without loading actual provider plugins.
-      if (params.context.provider === "anthropic") {
-        return true;
-      }
-      if (params.context.provider === "openai") {
-        return (
-          params.context.supportsPromptCacheKey ??
-          (params.context.baseUrl === "https://api.openai.com/v1" ||
-            params.context.baseUrl === "https://chatgpt.com/backend-api/codex")
-        );
-      }
-      if (params.context.provider === "moonshot" || params.context.provider === "zai") {
-        return true;
-      }
-      if (params.context.provider === "openrouter") {
-        return ["anthropic/", "deepseek/", "moonshot/", "moonshotai/", "zai/"].some((prefix) =>
-          params.context.modelId.startsWith(prefix),
-        );
-      }
-      return undefined;
-    },
-  };
-});
+const providerEligibility = vi.hoisted(() => vi.fn());
+
+vi.mock("../../plugins/provider-runtime.js", () => ({
+  resolveProviderCacheTtlEligibility: (params: { context: { provider: string } }) => {
+    providerEligibility(params);
+    if (params.context.provider === "moonshot" || params.context.provider === "zai") {
+      return true;
+    }
+    if (params.context.provider === "openrouter") {
+      return false;
+    }
+    return undefined;
+  },
+}));
 
 import { isCacheTtlEligibleProvider, readLastCacheTtlTimestamp } from "./cache-ttl.js";
 
 describe("isCacheTtlEligibleProvider", () => {
-  it("allows anthropic", () => {
-    expect(isCacheTtlEligibleProvider("anthropic", "claude-sonnet-4-20250514")).toBe(true);
-  });
-
-  it("allows moonshot and zai providers", () => {
-    expect(isCacheTtlEligibleProvider("moonshot", "kimi-k2.5")).toBe(true);
-    expect(isCacheTtlEligibleProvider("zai", "glm-5")).toBe(true);
+  it("forwards only the normalized identity and bounded resolved route", () => {
+    providerEligibility.mockClear();
+    const route = {
+      baseUrl: "https://proxy.example/v1",
+      supportsPromptCacheKey: false,
+      headers: { "x-test-private": "not-for-provider-hooks" },
+      apiKey: "synthetic-not-for-provider-hooks",
+    };
+    isCacheTtlEligibleProvider(" OPENAI ", " GPT-4O ", "openai-responses", route);
+    expect(providerEligibility).toHaveBeenCalledExactlyOnceWith({
+      provider: "openai",
+      context: {
+        provider: "openai",
+        modelId: "gpt-4o",
+        modelApi: "openai-responses",
+        baseUrl: "https://proxy.example/v1",
+        supportsPromptCacheKey: false,
+      },
+    });
   });
 
   it("is case-insensitive for native providers", () => {
@@ -58,99 +45,39 @@ describe("isCacheTtlEligibleProvider", () => {
     expect(isCacheTtlEligibleProvider("ZAI", "GLM-5")).toBe(true);
   });
 
-  it("allows openrouter cache-ttl models", () => {
-    expect(isCacheTtlEligibleProvider("openrouter", "anthropic/claude-sonnet-4")).toBe(true);
-    expect(isCacheTtlEligibleProvider("openrouter", "deepseek/deepseek-v3.2")).toBe(true);
-    expect(isCacheTtlEligibleProvider("openrouter", "moonshotai/kimi-k2.5")).toBe(true);
-    expect(isCacheTtlEligibleProvider("openrouter", "moonshot/kimi-k2.5")).toBe(true);
-    expect(isCacheTtlEligibleProvider("openrouter", "zai/glm-5")).toBe(true);
-  });
-
-  it.each([
-    {
-      name: "native OpenAI",
-      baseUrl: "https://api.openai.com/v1",
-      compat: undefined,
-      expected: true,
-    },
-    {
-      name: "ChatGPT OAuth",
-      api: "openai-chatgpt-responses",
-      baseUrl: "https://chatgpt.com/backend-api/codex",
-      compat: undefined,
-      expected: true,
-    },
-    {
-      name: "custom proxy",
-      baseUrl: "https://openai-proxy.example/v1",
-      compat: undefined,
-      expected: false,
-    },
-    {
-      name: "opted-in custom proxy",
-      baseUrl: "https://openai-proxy.example/v1",
-      compat: { supportsPromptCacheKey: true },
-      expected: true,
-    },
-    {
-      name: "opted-out native OpenAI",
-      baseUrl: "https://api.openai.com/v1",
-      compat: { supportsPromptCacheKey: false },
-      expected: false,
-    },
-  ])(
-    "passes the resolved route to the $name provider hook",
-    ({ api, baseUrl, compat, expected }) => {
-      expect(
-        isCacheTtlEligibleProvider("openai", "gpt-4o", {
-          provider: "openai",
-          id: "gpt-4o",
-          api: api ?? "openai-responses",
-          baseUrl,
-          compat,
-        } as never),
-      ).toBe(expected);
-    },
-  );
-
-  it("does not widen OpenRouter while consulting provider hooks", () => {
+  it("rejects unsupported providers and models", () => {
+    expect(isCacheTtlEligibleProvider("openai", "gpt-4o")).toBe(false);
     expect(isCacheTtlEligibleProvider("openrouter", "openai/gpt-4o")).toBe(false);
   });
 
   it("allows direct Google Gemini cache-ttl models", () => {
     expect(
-      isCacheTtlEligibleProvider("google", "gemini-3.1-pro-preview", {
-        api: "google-generative-ai",
-      } as never),
+      isCacheTtlEligibleProvider("google", "gemini-3.1-pro-preview", "google-generative-ai"),
     ).toBe(true);
-    expect(
-      isCacheTtlEligibleProvider("google", "gemini-2.5-flash", {
-        api: "google-generative-ai",
-      } as never),
-    ).toBe(true);
+    expect(isCacheTtlEligibleProvider("google", "gemini-2.5-flash", "google-generative-ai")).toBe(
+      true,
+    );
   });
 
   it("rejects non-cacheable Google model families", () => {
     expect(
-      isCacheTtlEligibleProvider("google", "gemini-live-2.5-flash-preview", {
-        api: "google-generative-ai",
-      } as never),
+      isCacheTtlEligibleProvider("google", "gemini-live-2.5-flash-preview", "google-generative-ai"),
     ).toBe(false);
   });
 
   it("allows custom anthropic-messages providers", () => {
-    expect(
-      isCacheTtlEligibleProvider("litellm", "claude-sonnet-4-6", {
-        api: "anthropic-messages",
-      } as never),
-    ).toBe(true);
+    expect(isCacheTtlEligibleProvider("litellm", "claude-sonnet-4-6", "anthropic-messages")).toBe(
+      true,
+    );
   });
 
   it("allows anthropic Bedrock models", () => {
     expect(
-      isCacheTtlEligibleProvider("amazon-bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0", {
-        api: "anthropic-messages",
-      } as never),
+      isCacheTtlEligibleProvider(
+        "amazon-bedrock",
+        "us.anthropic.claude-sonnet-4-20250514-v1:0",
+        "anthropic-messages",
+      ),
     ).toBe(true);
   });
 });
@@ -179,6 +106,14 @@ describe("readLastCacheTtlTimestamp", () => {
             timestamp: 1_700_000_001_000,
             provider: "google",
             modelId: "gemini-3.1-pro-preview",
+          },
+        },
+        {
+          type: "custom",
+          customType: "openclaw.cache-ttl",
+          data: {
+            prunedToolResults: [],
+            frozenToolResults: [{ key: "tool:new:43", sourceHash: "hash" }],
           },
         },
       ],

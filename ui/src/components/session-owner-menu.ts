@@ -107,17 +107,19 @@ export class SessionOwnerMenu {
           ?disabled=${params.disabled || checked}
           title=${params.disabledReason ?? nothing}
         >
-          <span slot="icon" class="session-menu__icon" aria-hidden="true"
+          <span slot="icon" class="session-menu__avatar" aria-hidden="true"
             >${renderSessionOwnerAvatar(owner)}</span
           >
           <span class="session-menu__text"
             >${owner === self ? t("sessionsView.assignToMe") : (owner.label ?? owner.id)}</span
           >
-          ${checked
-            ? html`<span slot="details" class="session-menu__check" aria-hidden="true"
-                >${icons.check}</span
-              >`
-            : nothing}
+          ${
+            checked
+              ? html`<span slot="details" class="session-menu__check" aria-hidden="true"
+                  >${icons.check}</span
+                >`
+              : nothing
+          }
         </wa-dropdown-item>`;
       })}
       ${this.profiles.render({

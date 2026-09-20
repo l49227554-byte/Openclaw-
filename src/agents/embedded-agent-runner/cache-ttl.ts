@@ -9,8 +9,8 @@ import {
   isAnthropicFamilyCacheTtlEligible,
   isAnthropicModelRef,
 } from "../../llm/providers/stream-wrappers/anthropic-family-cache-semantics.js";
-import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { resolveProviderCacheTtlEligibility } from "../../plugins/provider-runtime.js";
+import type { ProviderCacheTtlEligibilityContext } from "../../plugins/provider-transport.types.js";
 import { isGooglePromptCacheEligible } from "./prompt-cache-retention.js";
 
 type CustomEntryLike = { type?: unknown; customType?: unknown; data?: unknown };
@@ -32,7 +32,8 @@ type CacheTtlContext = {
 export function isCacheTtlEligibleProvider(
   provider: string,
   modelId: string,
-  model?: ProviderRuntimeModel,
+  modelApi?: string,
+  route?: Pick<ProviderCacheTtlEligibilityContext, "baseUrl" | "supportsPromptCacheKey">,
 ): boolean {
   const normalizedProvider = normalizeLowercaseStringOrEmpty(provider);
   const normalizedModelId = normalizeLowercaseStringOrEmpty(modelId);
@@ -41,9 +42,9 @@ export function isCacheTtlEligibleProvider(
     context: {
       provider: normalizedProvider,
       modelId: normalizedModelId,
-      modelApi: model?.api,
-      baseUrl: model?.baseUrl,
-      supportsPromptCacheKey: model?.compat?.supportsPromptCacheKey,
+      modelApi,
+      baseUrl: route?.baseUrl,
+      supportsPromptCacheKey: route?.supportsPromptCacheKey,
     },
   });
   if (pluginEligibility !== undefined) {
@@ -53,10 +54,10 @@ export function isCacheTtlEligibleProvider(
     isAnthropicFamilyCacheTtlEligible({
       provider: normalizedProvider,
       modelId: normalizedModelId,
-      modelApi: model?.api,
+      modelApi,
     }) ||
     (normalizedProvider === "kilocode" && isAnthropicModelRef(normalizedModelId)) ||
-    isGooglePromptCacheEligible({ modelApi: model?.api, modelId: normalizedModelId })
+    isGooglePromptCacheEligible({ modelApi, modelId: normalizedModelId })
   );
 }
 
@@ -83,7 +84,7 @@ function matchesCacheTtlContext(
 }
 
 /** Transcript entries visible to cache-TTL marker readers; stores without entries read as empty. */
-export function readCacheTtlEntries(sessionManager: unknown): CustomEntryLike[] {
+function readCacheTtlEntries(sessionManager: unknown): CustomEntryLike[] {
   const sm = sessionManager as { getEntries?: () => CustomEntryLike[] };
   return sm?.getEntries ? sm.getEntries() : [];
 }

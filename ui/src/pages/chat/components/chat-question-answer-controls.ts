@@ -1,13 +1,16 @@
-// Control UI question module renders selectable and free-text answer controls.
+import type { Question } from "@openclaw/gateway-protocol";
 import { html, nothing } from "lit";
-import type { QuestionPrompt } from "../../../app/question-prompt.ts";
+import type { QuestionDraft } from "../../../app/question-prompt.ts";
 import { t } from "../../../i18n/index.ts";
 
-type Question = QuestionPrompt["questions"][number];
+export function questionDraftValues(draft: QuestionDraft | undefined, isSecret = false): string[] {
+  const freeText = isSecret ? draft?.freeText : draft?.freeText.trim();
+  return [...(draft?.selected ?? []), ...(freeText ? [freeText] : [])];
+}
 
 type QuestionOptionsProps = {
   question: Question;
-  selected: readonly string[];
+  selected: ReadonlySet<string>;
   disabled: boolean;
   onSelect: (label: string) => void;
 };
@@ -32,13 +35,13 @@ export function renderQuestionOptions(props: QuestionOptionsProps) {
       aria-label=${question.header}
     >
       ${question.options.map((option, index) => {
-        const selected = props.selected.includes(option.label);
-        const radioTabIndex = selected || (props.selected.length === 0 && index === 0) ? 0 : -1;
+        const selected = props.selected.has(option.label);
+        const radioTabIndex = selected || (props.selected.size === 0 && index === 0) ? 0 : -1;
         return html`
           <button
-            class="chat-question-panel__option ${selected
-              ? "chat-question-panel__option--selected"
-              : ""}"
+            class="chat-question-panel__option ${
+              selected ? "chat-question-panel__option--selected" : ""
+            }"
             type="button"
             role=${question.multiSelect ? "checkbox" : "radio"}
             aria-checked=${selected ? "true" : "false"}
@@ -93,9 +96,9 @@ export function renderQuestionFreeText(props: QuestionFreeTextProps) {
   }
   return html`
     <label
-      class="chat-question-panel__option chat-question-panel__option--other ${props.selected
-        ? "chat-question-panel__option--selected"
-        : ""}"
+      class="chat-question-panel__option chat-question-panel__option--other ${
+        props.selected ? "chat-question-panel__option--selected" : ""
+      }"
     >
       <span class="chat-question-panel__option-marker" aria-hidden="true"></span>
       <input

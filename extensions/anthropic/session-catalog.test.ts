@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type {
   OpenClawPluginApi,
   OpenClawPluginNodeHostCommand,
@@ -10,13 +11,11 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { SessionCatalogProvider as RegisteredSessionCatalogProvider } from "openclaw/plugin-sdk/session-catalog";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adoptedSourceKey } from "./session-catalog-adoption.js";
 import { listClaudeSessions } from "./session-catalog-discovery.js";
 import {
   createClaudeSessionNodeInvokePolicies,
   registerClaudeSessionDiscovery,
 } from "./session-catalog-registration.js";
-import { listBoundClaudeSessions } from "./session-catalog-runtime.js";
 import {
   CLAUDE_CLI_NODE_RUN_COMMAND,
   CLAUDE_SESSIONS_LIST_COMMAND,
@@ -590,53 +589,35 @@ afterEach(async () => {
 });
 
 describe("Claude session catalog", () => {
-  it.each([
-    {
-      label: "catalog marker",
-      nodeEntry: {
-        pluginOwnerId: "anthropic",
-        modelSelectionLocked: true,
-        pluginExtensions: {
-          anthropic: {
-            sessionCatalog: { sourceHostId: "node:node-a", sourceThreadId: "shared-thread" },
-          },
-        },
-      },
-    },
-    { label: "exec binding", nodeEntry: { execHost: "node", execNode: "node-a" } },
-  ])("keeps local and paired-node bindings distinct via $label", ({ nodeEntry }) => {
-    const threadId = "shared-thread";
-    const api = {
-      id: "anthropic",
-      config: {},
-      runtime: {
-        config: { current: () => ({}) },
-        agent: {
-          session: {
-            listSessionEntries: () => [
-              {
-                sessionKey: "agent:main:local",
-                entry: { cliSessionBindings: { "claude-cli": { sessionId: threadId } } },
-              },
-              {
-                sessionKey: "agent:main:node",
-                entry: {
-                  cliSessionBindings: { "claude-cli": { sessionId: threadId } },
-                  ...nodeEntry,
-                },
-              },
-            ],
-          },
-        },
-      },
-    } as unknown as OpenClawPluginApi;
-
-    expect(listBoundClaudeSessions(api)).toEqual(
-      new Map([
-        [adoptedSourceKey("gateway:local", threadId), "agent:main:local"],
-        [adoptedSourceKey("node:node-a", threadId), "agent:main:node"],
-      ]),
-    );
+  it("does not start paired hosts when retired during node inventory", async () => {
+    const inventory = createDeferred<Awaited<ReturnType<PluginRuntime["nodes"]["list"]>>>();
+    const inventoryStarted = createDeferred<void>();
+    const listNodes = vi.fn(() => {
+      inventoryStarted.resolve();
+      return inventory.promise;
+    });
+    const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async () => ({
+      payloadJSON: JSON.stringify({ sessions: [] }),
+    }));
+    const provider = captureCatalogProvider({
+      nodes: { list: listNodes, invoke },
+    } as unknown as PluginRuntime);
+    const controller = new AbortController();
+    const reason = new Error("catalog retired during inventory");
+    const listed = provider
+      .list({
+        hostIds: ["node:late"],
+        signal: controller.signal,
+      })
+      .catch((error: unknown) => error);
+    await inventoryStarted.promise;
+    controller.abort(reason);
+    inventory.resolve({
+      nodes: [{ nodeId: "late", connected: true, commands: [CLAUDE_SESSIONS_LIST_COMMAND] }],
+    });
+    const result = await listed;
+    expect(invoke).not.toHaveBeenCalled();
+    expect(result).toBe(reason);
   });
 
   it("lists an explicit CLAUDE_CONFIG_DIR while isolated", async () => {
@@ -975,26 +956,12 @@ describe("Claude session catalog", () => {
     expect(provider?.resolveCreateSession?.({ agentId: "research" })).toBeUndefined();
   });
 
-  it.each([
-    {
-      label: "CLI binding",
-      entry: (sessionId: string) => ({
-        cliSessionBindings: { "claude-cli": { sessionId } },
-      }),
-    },
-    {
-      label: "catalog marker when the CLI binding is empty",
-      entry: (sessionId: string) => ({
-        cliSessionBindings: { "claude-cli": { sessionId: "" } },
-        pluginOwnerId: "anthropic",
-        modelSelectionLocked: true,
-        pluginExtensions: { anthropic: { sessionCatalog: { sourceThreadId: sessionId } } },
-      }),
-    },
-  ])("links a catalog row to an existing OpenClaw session via $label", async ({ entry }) => {
+  async function listCatalogWithBoundSession(
+    entry: (sessionId: string) => Record<string, unknown>,
+    sessionId = "claude-bound-session",
+  ) {
     const home = await createHome();
     process.env.HOME = home;
-    const sessionId = "claude-bound-session";
     await writeProject({
       home,
       entries: [
@@ -1017,9 +984,41 @@ describe("Claude session catalog", () => {
         },
       },
     } as unknown as PluginRuntime);
+    return await provider?.list({});
+  }
 
-    const hosts = await provider?.list({});
+  it.each([
+    {
+      label: "CLI binding",
+      entry: (sessionId: string) => ({
+        cliSessionBindings: { "claude-cli": { sessionId } },
+        pluginOwnerId: "anthropic",
+        modelSelectionLocked: true,
+      }),
+    },
+    {
+      label: "catalog marker when the CLI binding is empty",
+      entry: (sessionId: string) => ({
+        cliSessionBindings: { "claude-cli": { sessionId: "" } },
+        pluginOwnerId: "anthropic",
+        modelSelectionLocked: true,
+        pluginExtensions: { anthropic: { sessionCatalog: { sourceThreadId: sessionId } } },
+      }),
+    },
+  ])("links a catalog row to the session it adopted via $label", async ({ entry }) => {
+    const hosts = await listCatalogWithBoundSession(entry);
     expect(hosts?.[0]?.sessions[0]?.sessionKey).toBe("agent:main:claude-bound");
+  });
+
+  // An OpenClaw session that merely routes its turns through the Claude CLI keeps
+  // its own sidebar row, in whatever group the operator filed it under. Listing
+  // its thread here would hide that row inside the Claude catalog instead.
+  it("omits a thread an unadopted OpenClaw session drives through the Claude CLI", async () => {
+    const hosts = await listCatalogWithBoundSession((sessionId) => ({
+      cliSessionBindings: { "claude-cli": { sessionId } },
+      category: "Home Assistant",
+    }));
+    expect(hosts?.[0]?.sessions).toEqual([]);
   });
 
   it("continues a local Desktop-app row and lists it as continuable", async () => {
@@ -1170,6 +1169,7 @@ describe("Claude session catalog", () => {
       kind: "node",
       nodeId: "node-a",
       command: CLAUDE_TERMINAL_RESUME_COMMAND,
+      uploadPathStyle: "native",
       cwd: "/work/on-node",
     });
     await expect(provider?.continueSession?.({ hostId: "node:node-a", threadId })).resolves.toEqual(
@@ -1651,6 +1651,16 @@ describe("Claude session catalog", () => {
         "sidechain-session": [message("sidechain-session", "user", "sidechain", 1)],
         "unindexed-session": [message("unindexed-session", "user", "unindexed", 1)],
         "cli-session": [
+          {
+            ...message(
+              "cli-session",
+              "user",
+              "<local-command-caveat>CLI metadata</local-command-caveat>",
+              1,
+            ),
+            entrypoint: "cli",
+            isMeta: true,
+          },
           {
             ...message("cli-session", "user", "Interactive CLI prompt", 1),
             entrypoint: "cli",
@@ -3066,6 +3076,7 @@ describe("Claude session catalog", () => {
       kind: "node",
       nodeId: "paired-node",
       command: CLAUDE_TERMINAL_START_COMMAND,
+      uploadPathStyle: "native",
       paramsJSON: JSON.stringify({ cwd: "/work/new-session" }),
       cwd: "/work/new-session",
       title: "claude",
@@ -3524,20 +3535,34 @@ describe("Claude session catalog", () => {
       name: "returns cold paired-node discovery before the fail-soft response",
       delayMs: 10_000,
       timedOut: false,
+      cancelled: false,
     },
     {
       name: "publishes a paired-node page that finishes after the fail-soft response",
       delayMs: 20_000,
       timedOut: true,
+      cancelled: false,
     },
-  ])("$name", async ({ delayMs, timedOut }) => {
+    {
+      name: "settles paired-node publication when its owner cancels after the fail-soft response",
+      delayMs: 20_000,
+      timedOut: true,
+      cancelled: true,
+    },
+  ])("$name", async ({ delayMs, timedOut, cancelled }) => {
     vi.useFakeTimers();
     try {
-      let resolveInvoke!: (value: unknown) => void;
-      const invokeResult = new Promise<unknown>((resolve) => {
-        resolveInvoke = resolve;
+      const invokeResult = createDeferred<unknown>();
+      const controller = new AbortController();
+      const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async ({ signal }) => {
+        const abort = () => invokeResult.reject(signal?.reason);
+        signal?.addEventListener("abort", abort, { once: true });
+        try {
+          return await invokeResult.promise;
+        } finally {
+          signal?.removeEventListener("abort", abort);
+        }
       });
-      const invoke = vi.fn<PluginRuntime["nodes"]["invoke"]>(async () => await invokeResult);
       const provider = captureCatalogProvider({
         nodes: {
           list: vi.fn().mockResolvedValue({
@@ -3553,8 +3578,23 @@ describe("Claude session catalog", () => {
           invoke,
         },
       } as unknown as PluginRuntime);
+      const completions: Promise<void>[] = [];
+      const completed = vi.fn();
       const onHost = vi.fn();
-      const pending = provider.list({ hostIds: ["node:slow-node"], onHost });
+      const pending = provider.list({
+        hostIds: ["node:slow-node"],
+        limitPerHost: 40,
+        signal: controller.signal,
+        waitUntil: (completion) => {
+          completions.push(
+            completion.then(() => {
+              expect(onHost).toHaveBeenCalledOnce();
+              completed();
+            }),
+          );
+        },
+        onHost,
+      });
 
       await vi.advanceTimersByTimeAsync(delayMs);
       if (timedOut) {
@@ -3564,22 +3604,36 @@ describe("Claude session catalog", () => {
           }),
         ]);
       }
+      expect(completions).toHaveLength(1);
+      expect(completed).not.toHaveBeenCalled();
       expect(onHost).not.toHaveBeenCalled();
-
-      resolveInvoke({
-        payloadJSON: JSON.stringify({
-          sessions: [
-            {
-              threadId: "late-thread",
-              status: "stored",
-              source: "claude-cli",
-              modelProvider: "anthropic",
-              archived: false,
-            },
-          ],
-        }),
+      expect(invoke).toHaveBeenCalledWith({
+        nodeId: "slow-node",
+        command: CLAUDE_SESSIONS_LIST_COMMAND,
+        params: { limit: 40 },
+        timeoutMs: 30_000,
+        scopes: ["operator.write"],
+        signal: controller.signal,
       });
-      await vi.advanceTimersByTimeAsync(0);
+
+      if (cancelled) {
+        controller.abort(new Error("catalog owner retired"));
+      } else {
+        invokeResult.resolve({
+          payloadJSON: JSON.stringify({
+            sessions: [
+              {
+                threadId: "late-thread",
+                status: "stored",
+                source: "claude-cli",
+                modelProvider: "anthropic",
+                archived: false,
+              },
+            ],
+          }),
+        });
+      }
+      await Promise.all(completions);
 
       if (!timedOut) {
         await expect(pending).resolves.toEqual([
@@ -3592,9 +3646,21 @@ describe("Claude session catalog", () => {
       expect(onHost).toHaveBeenCalledWith(
         expect.objectContaining({
           hostId: "node:slow-node",
-          sessions: [expect.objectContaining({ threadId: "late-thread" })],
+          ...(cancelled
+            ? { sessions: [], error: { code: "NODE_INVOKE_FAILED", message: expect.any(String) } }
+            : {
+                sessions: [
+                  expect.objectContaining({
+                    threadId: "late-thread",
+                    canContinue: false,
+                    canArchive: false,
+                    canOpenTerminal: false,
+                  }),
+                ],
+              }),
         }),
       );
+      expect(completed).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -3629,14 +3695,31 @@ describe("Claude session catalog", () => {
       nodes: { list: runtimeListNodes },
     } as unknown as PluginRuntime);
 
-    const listing = provider.list({ listNodes: requestListNodes });
+    const completions: Promise<void>[] = [];
+    const onHost = vi.fn();
+    const listing = provider.list({
+      listNodes: requestListNodes,
+      onHost,
+      waitUntil: (completion) => {
+        completions.push(completion);
+      },
+    });
     await opened;
+    expect(completions).toHaveLength(1);
+    expect(onHost).not.toHaveBeenCalled();
     expect(requestListNodes).toHaveBeenCalledOnce();
     expect(runtimeListNodes).not.toHaveBeenCalled();
     releaseOpen();
     await expect(listing).resolves.toMatchObject([
       { hostId: "gateway:local", sessions: [expect.objectContaining({ threadId: sessionId })] },
     ]);
+    await Promise.all(completions);
+    expect(onHost).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hostId: "gateway:local",
+        sessions: [expect.objectContaining({ threadId: sessionId, canArchive: false })],
+      }),
+    );
   });
 
   it("falls back to the plugin node runtime without a request snapshot", async () => {

@@ -3,12 +3,14 @@
  * Message, tool, compaction, and liveness handlers all mutate this single
  * state shape while keeping their implementation files decoupled.
  */
+import type { AgentRunTimeoutPhase } from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import type { InlineCodeState } from "../../packages/markdown-core/src/code-spans.js";
 import type { FenceScanState } from "../../packages/markdown-core/src/fences.js";
 import type { HeartbeatToolResponse } from "../auto-reply/heartbeat-tool-response.js";
 import type { ReplyMediaAttachment } from "../auto-reply/reply-payload.js";
 import type { ReplyDirectiveParseResult } from "../auto-reply/reply/reply-directives.js";
 import type { ReasoningLevel } from "../auto-reply/thinking.js";
+import type { AssistantMessage, ThinkingContent } from "../llm/types.js";
 import type { HookRunner } from "../plugins/hooks.js";
 import type { AssistantPhase } from "../shared/chat-message-content.js";
 import type { AcceptedSessionSpawn } from "./accepted-session-spawn.js";
@@ -30,7 +32,7 @@ import type {
 } from "./embedded-agent-utils.js";
 import type { McpConnectAction } from "./mcp-connect-action.js";
 import type { McpAppChannelView } from "./mcp-ui-resource.js";
-import type { AgentRunTimeoutPhase } from "./run-timeout-attribution.js";
+import type { ReplyDeliveryState } from "./reply-completion.js";
 import type { AgentMessage } from "./runtime/index.js";
 import type { AgentSessionEvent } from "./sessions/index.js";
 import type { ToolErrorSummary } from "./tool-error-summary.js";
@@ -55,6 +57,13 @@ export type ToolCallSummary = {
   replaySafe: boolean;
   mutatingAction: boolean;
   ownerKey?: string;
+};
+
+export type ExecLiveItemMetadata = {
+  name: string;
+  meta?: string;
+  commandBearing?: boolean;
+  hideFromChannelProgress: boolean;
 };
 
 /** User-visible assistant stream payload emitted to subscribers. */
@@ -88,6 +97,12 @@ export type StreamBlockState = {
 /** Mutable subscription state shared by embedded-agent event handlers. */
 export type EmbeddedAgentSubscribeState = {
   assistantTexts: string[];
+  answerSegments: Array<{
+    textEnd: number;
+    messageEnd: number;
+    finalMessageStart: number;
+    lastAssistant: AssistantMessage;
+  }>;
   toolMetas: Array<{
     toolName?: string;
     toolCallId?: string;
@@ -103,7 +118,10 @@ export type EmbeddedAgentSubscribeState = {
   acceptedSessionSpawns: AcceptedSessionSpawn[];
   toolMetaById: Map<string, ToolCallSummary>;
   toolSummaryById: Set<string>;
-  execLiveUpdateStateById?: Map<string, { lastEmittedAtMs: number }>;
+  execLiveUpdateStateById?: Map<
+    string,
+    { lastEmittedAtMs: number; itemMetadata: ExecLiveItemMetadata }
+  >;
   liveEditDiffStateById: Map<
     string,
     {
@@ -206,10 +224,9 @@ export type EmbeddedAgentSubscribeState = {
   messagingToolSentMediaUrls: string[];
   messagingToolSourceReplyPayloads: MessagingToolSourceReplyPayload[];
   messageToolOnlySourceReplyDelivered: boolean;
-  pendingMessagingTexts: Map<string, string>;
-  pendingMessagingTargets: Map<string, MessagingToolSend>;
+  sourceReplyDelivered?: true;
+  sourceReplyDeliveryState?: ReplyDeliveryState;
   successfulCronAdds: number;
-  pendingMessagingMediaUrls: Map<string, string[]>;
   pendingToolMediaUrls: string[];
   pendingToolMediaAttachments?: ReplyMediaAttachment[];
   /** Per-URL local-media trust; keys are normalized pending media URLs. */
@@ -227,7 +244,7 @@ export type EmbeddedAgentSubscribeState = {
   >;
   deterministicApprovalPromptPending: boolean;
   deterministicApprovalPromptSent: boolean;
-  lastAssistant?: AgentMessage;
+  lastAssistant?: AssistantMessage;
 };
 
 /** Handler context bundling params, mutable state, emitters, and helper hooks. */
@@ -254,8 +271,11 @@ export type EmbeddedAgentSubscribeContext = {
   emitBlockChunk: (
     text: string,
     options?: {
+      sourceText?: string;
       assistantMessageIndex?: number;
       final?: boolean;
+      completeMarkdownChunk?: boolean;
+      startsAtLineStart?: boolean;
       finalReply?: ReplyDirectiveParseResult;
     },
   ) => void;
@@ -264,7 +284,7 @@ export type EmbeddedAgentSubscribeContext = {
     final?: boolean;
     finalReply?: ReplyDirectiveParseResult;
   }) => void | Promise<void>;
-  emitReasoningStream: (text: string) => void;
+  emitReasoningStream: (text: string | ThinkingContent, fallback?: string) => void;
   consumePartialReplyDirectives: (
     text: string,
     options?: { final?: boolean },
@@ -297,10 +317,14 @@ export type EmbeddedAgentSubscribeContext = {
   ) => void;
   emitBlockReply: (
     payload: BlockReplyPayload,
-    options?: { assistantMessageIndex?: number; consumePendingToolMedia?: boolean },
+    options?: {
+      assistantMessageIndex?: number;
+      consumePendingToolMedia?: boolean;
+      blockSourceText?: string;
+    },
   ) => void;
   flushAssistantStream: () => void;
-  flushDeferredBlockReplies: () => void;
+  releaseDeferredReplies: () => void;
   clearAssistantStream: () => void;
   clearDeferredBlockReplies: () => void;
 };
@@ -357,9 +381,6 @@ type ToolHandlerState = Pick<
   | "lastToolError"
   | "latestMcpAppChannelView"
   | "latestMcpConnectAction"
-  | "pendingMessagingTargets"
-  | "pendingMessagingTexts"
-  | "pendingMessagingMediaUrls"
   | "pendingToolMediaUrls"
   | "pendingToolMediaAttachments"
   | "pendingToolMediaTrustByUrl"
@@ -374,6 +395,8 @@ type ToolHandlerState = Pick<
   | "messagingToolSentMediaUrls"
   | "messagingToolSourceReplyPayloads"
   | "messageToolOnlySourceReplyDelivered"
+  | "sourceReplyDelivered"
+  | "sourceReplyDeliveryState"
   | "messagingToolSentTargets"
   | "heartbeatToolResponse"
   | "successfulCronAdds"

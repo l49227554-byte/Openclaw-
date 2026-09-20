@@ -5,6 +5,8 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
+import * as clientReadiness from "../../packages/gateway-client/src/readiness.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import { parseStatusRouteArgs } from "../cli/program/route-args.js";
 import {
@@ -14,6 +16,8 @@ import {
   sendMinimalGatewayConnectChallenge,
   sendMinimalGatewayResponse,
 } from "../gateway/minimal-gateway.test-helpers.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import { createUnreachableGatewayProbe } from "./gateway-status/test-support.js";
 import {
   buildTailscaleHttpsUrl,
   resolveGatewayProbeSnapshot as resolveGatewayProbeSnapshotOwner,
@@ -267,22 +271,9 @@ describe("resolveGatewayProbeSnapshot", () => {
       gatewayMode: "local",
       remoteUrlMissing: false,
     });
-    mocks.probeGateway.mockResolvedValue({
-      ok: false,
-      url: "ws://127.0.0.1:18789",
-      connectLatencyMs: null,
-      error: "timeout",
-      close: null,
-      auth: {
-        role: null,
-        scopes: [],
-        capability: "unknown",
-      },
-      health: null,
-      status: null,
-      presence: null,
-      configSnapshot: null,
-    });
+    mocks.probeGateway.mockResolvedValue(
+      createUnreachableGatewayProbe("ws://127.0.0.1:18789", "timeout"),
+    );
     mocks.callGateway.mockResolvedValue({ sessions: 1 });
 
     const result = await resolveGatewayProbeSnapshot({
@@ -320,22 +311,9 @@ describe("resolveGatewayProbeSnapshot", () => {
       gatewayMode: "local",
       remoteUrlMissing: false,
     });
-    mocks.probeGateway.mockResolvedValue({
-      ok: false,
-      url: "ws://localhost.:18789",
-      connectLatencyMs: null,
-      error: "timeout",
-      close: null,
-      auth: {
-        role: null,
-        scopes: [],
-        capability: "unknown",
-      },
-      health: null,
-      status: null,
-      presence: null,
-      configSnapshot: null,
-    });
+    mocks.probeGateway.mockResolvedValue(
+      createUnreachableGatewayProbe("ws://localhost.:18789", "timeout"),
+    );
 
     const result = await resolveGatewayProbeSnapshot({
       cfg: {},
@@ -352,22 +330,9 @@ describe("resolveGatewayProbeSnapshot", () => {
       gatewayMode: "local",
       remoteUrlMissing: false,
     });
-    mocks.probeGateway.mockResolvedValue({
-      ok: false,
-      url: "ws://127.0.0.1:18789",
-      connectLatencyMs: null,
-      error: "timeout",
-      close: null,
-      auth: {
-        role: null,
-        scopes: [],
-        capability: "unknown",
-      },
-      health: null,
-      status: null,
-      presence: null,
-      configSnapshot: null,
-    });
+    mocks.probeGateway.mockResolvedValue(
+      createUnreachableGatewayProbe("ws://127.0.0.1:18789", "timeout"),
+    );
     mocks.callGateway.mockResolvedValue({ sessions: 1 });
 
     await resolveGatewayProbeSnapshot({
@@ -391,22 +356,9 @@ describe("resolveGatewayProbeSnapshot", () => {
         gatewayMode: "local",
         remoteUrlMissing: false,
       });
-      mocks.probeGateway.mockResolvedValue({
-        ok: false,
-        url: "ws://127.0.0.1:18789",
-        connectLatencyMs: null,
-        error: "timeout",
-        close: null,
-        auth: {
-          role: null,
-          scopes: [],
-          capability: "unknown",
-        },
-        health: null,
-        status: null,
-        presence: null,
-        configSnapshot: null,
-      });
+      mocks.probeGateway.mockResolvedValue(
+        createUnreachableGatewayProbe("ws://127.0.0.1:18789", "timeout"),
+      );
       mocks.callGateway.mockResolvedValue({ sessions: 1 });
 
       await resolveGatewayProbeSnapshot({
@@ -421,12 +373,16 @@ describe("resolveGatewayProbeSnapshot", () => {
     },
   );
 
-  it("enforces an explicit CLI timeout against a real local fallback status RPC", async () => {
+  it("enforces an explicit CLI timeout against a real local fallback status RPC", async ({
+    signal,
+  }) => {
     const gateway = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await once(gateway, "listening");
     const address = gateway.address() as AddressInfo;
     const url = `ws://127.0.0.1:${address.port}`;
     const observedMethods: string[] = [];
+    const presenceRequested = createDeferred();
+    const statusRequested = createDeferred();
     gateway.on("connection", (socket) => {
       sendMinimalGatewayConnectChallenge(socket);
       socket.on("message", (data) => {
@@ -447,7 +403,11 @@ describe("resolveGatewayProbeSnapshot", () => {
           return;
         }
         observedMethods.push(frame.method);
+        if (frame.method === "system-presence") {
+          presenceRequested.resolve();
+        }
         if (frame.method === "status") {
+          statusRequested.resolve();
           const responseTimer = setTimeout(() => {
             if (socket.readyState === socket.OPEN) {
               sendMinimalGatewayResponse(socket, requestId, { sessions: 1 });
@@ -481,11 +441,57 @@ describe("resolveGatewayProbeSnapshot", () => {
     const parsed = parseStatusRouteArgs(["node", "openclaw", "status", "--timeout", "250"]);
     expect(parsed?.timeoutMs).toBe(250);
 
+    const startups = Array.from({ length: 2 }, () =>
+      createDeferred<{
+        completion: ReturnType<typeof clientReadiness.startGatewayClientWhenEventLoopReady>;
+      }>(),
+    );
+    let startupIndex = 0;
+    const startClient = clientReadiness.startGatewayClientWhenEventLoopReady;
+    const startupSpy = vi
+      .spyOn(clientReadiness, "startGatewayClientWhenEventLoopReady")
+      .mockImplementation((...args) => {
+        const completion = startClient(...args);
+        const startup = startups[startupIndex++];
+        if (!startup) {
+          throw new Error("Unexpected extra Gateway client startup");
+        }
+        startup.resolve({ completion });
+        return completion;
+      });
+    const driveStartup = async (startup: (typeof startups)[number]) => {
+      const { completion } = await racePromiseWithAbortSignal(startup.promise, signal);
+      const startupState = { settled: false };
+      void completion.then(
+        () => {
+          startupState.settled = true;
+        },
+        () => {
+          startupState.settled = true;
+        },
+      );
+      while (!startupState.settled) {
+        signal.throwIfAborted();
+        await vi.advanceTimersToNextTimerAsync();
+      }
+      await completion;
+    };
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    let pending: ReturnType<typeof resolveGatewayProbeSnapshot> | undefined;
     try {
-      const result = await resolveGatewayProbeSnapshot({
-        cfg: { gateway: { auth: { mode: "none" } } },
+      pending = resolveGatewayProbeSnapshot({
+        cfg: { gateway: { auth: { mode: "token", token: "tok" } } },
         opts: { timeoutMs: parsed?.timeoutMs },
       });
+
+      // Drive deadline time only after real socket requests cross their boundary.
+      await driveStartup(startups[0]!);
+      await racePromiseWithAbortSignal(presenceRequested.promise, signal);
+      await vi.advanceTimersByTimeAsync(250);
+      await driveStartup(startups[1]!);
+      await racePromiseWithAbortSignal(statusRequested.promise, signal);
+      await vi.advanceTimersByTimeAsync(250);
+      const result = await pending;
 
       expect(readProbeCall().timeoutMs).toBe(250);
       expect(readGatewayCall().timeoutMs).toBe(250);
@@ -493,7 +499,11 @@ describe("resolveGatewayProbeSnapshot", () => {
       expect(result.gatewayProbe?.ok).toBe(false);
       expect(result.gatewayProbe?.error).toContain("timeout");
     } finally {
+      await vi.runOnlyPendingTimersAsync();
+      vi.useRealTimers();
+      startupSpy.mockRestore();
       await closeMinimalGatewayServer(gateway);
+      await Promise.allSettled([pending]);
     }
   });
 
@@ -547,22 +557,9 @@ describe("resolveGatewayProbeSnapshot", () => {
       gatewayMode: "remote",
       remoteUrlMissing: false,
     });
-    mocks.probeGateway.mockResolvedValue({
-      ok: false,
-      url: "wss://gateway.example/ws",
-      connectLatencyMs: null,
-      error: "timeout",
-      close: null,
-      auth: {
-        role: null,
-        scopes: [],
-        capability: "unknown",
-      },
-      health: null,
-      status: null,
-      presence: null,
-      configSnapshot: null,
-    });
+    mocks.probeGateway.mockResolvedValue(
+      createUnreachableGatewayProbe("wss://gateway.example/ws", "timeout"),
+    );
 
     const result = await resolveGatewayProbeSnapshot({
       cfg: { gateway: { mode: "remote", remote: { url: "wss://gateway.example/ws" } } },

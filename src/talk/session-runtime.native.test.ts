@@ -84,7 +84,12 @@ describe("native delegation session facade", () => {
       reply?.("late result");
       expect(respond).not.toHaveBeenCalled();
       expect(handleDelegationInput).toHaveBeenCalledOnce();
-      expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "final flush", true);
+      expect(onTranscript).toHaveBeenCalledExactlyOnceWith(
+        "assistant",
+        "final flush",
+        true,
+        undefined,
+      );
     },
   );
 

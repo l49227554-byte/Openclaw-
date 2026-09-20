@@ -59,8 +59,8 @@ describe("realtime voice bridge finalization", () => {
       callbacks?.onTranscript?.("user", "active fragment", false);
       callbacks?.onTranscript?.("assistant", "active final", true);
       expect(onTranscript.mock.calls).toEqual([
-        ["user", "active fragment", false],
-        ["assistant", "active final", true],
+        ["user", "active fragment", false, undefined],
+        ["assistant", "active final", true, undefined],
       ]);
       onTranscript.mockClear();
 
@@ -84,7 +84,12 @@ describe("realtime voice bridge finalization", () => {
       expect(onTranscript).not.toHaveBeenCalled();
       callbacks?.onTranscript?.("assistant", "final words", true);
       await expect(session.connect()).rejects.toThrow("Realtime voice session is closed");
-      expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "final words", true);
+      expect(onTranscript).toHaveBeenCalledExactlyOnceWith(
+        "assistant",
+        "final words",
+        true,
+        undefined,
+      );
       expect(onToolCall).not.toHaveBeenCalled();
       expect(sendAudio).not.toHaveBeenCalled();
       for (const method of [

@@ -1050,7 +1050,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     await bridge.close();
 
     expect(onTranscript).toHaveBeenCalledOnce();
-    expect(onTranscript).toHaveBeenCalledWith("user", "OpenClaw", true);
+    expect(onTranscript).toHaveBeenCalledWith("user", "OpenClaw", true, "item_1");
   });
 
   it("forwards standard incremental input-transcription events", async () => {

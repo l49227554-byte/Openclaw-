@@ -39,23 +39,7 @@ export function ensureRelayVoiceSession(session: RelaySession): boolean {
   }
 }
 
-/**
- * Server VAD re-finalizes one growing input item, so a single spoken sentence can
- * reach the relay as several finals. The durable transcript is append-only and
- * idempotent by event id -- re-appending one entry id with revised text is rejected
- * as an admission conflict -- so the refinement must win before the row is written.
- */
-function continuesPendingUtterance(pendingText: string, nextText: string): boolean {
-  const comparable = (value: string) =>
-    value
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}]+/gu, " ")
-      .trim();
-  const pending = comparable(pendingText);
-  return pending.length > 0 && comparable(nextText).startsWith(pending);
-}
-
-/** Write the turn's held user final once the utterance can no longer grow. */
+/** Write the held user final once its provider utterance can no longer be revised. */
 export function commitPendingRelayVoiceTranscript(session: RelaySession | undefined): boolean {
   const pending = session?.voicePendingUserFinal;
   if (!session || !pending) {
@@ -95,6 +79,7 @@ export function enqueueRelayVoiceTranscript(
   session: RelaySession,
   role: "user" | "assistant",
   text: string,
+  utteranceId?: string,
 ): boolean {
   const observed =
     role === "user" && !session.closing
@@ -113,31 +98,29 @@ export function enqueueRelayVoiceTranscript(
   if (!normalizedText) {
     return true;
   }
-  // A live spoken-confirmation challenge is already blocked on this final's durable
-  // row, so it keeps the immediate append; only ordinary speech is held and refined.
-  const turnId = readClientVoiceConfirmationReadiness(session.sessionTarget.agentId, session.id)
-    ? undefined
-    : session.harness?.talk?.activeTurnId;
+  // Only the provider's own input-item id proves two finals are revisions of one utterance.
+  // Text similarity cannot: "Hi." is a prefix of "History please.", and a repeated sentence
+  // is indistinguishable from a re-transcription. Without an id, every final keeps its row.
+  //
+  // A live spoken-confirmation challenge is already blocked on this final's durable row,
+  // so it keeps the immediate append; only ordinary speech is held and revised.
+  const revisable =
+    utteranceId !== undefined &&
+    !readClientVoiceConfirmationReadiness(session.sessionTarget.agentId, session.id);
   const pending = session.voicePendingUserFinal;
-  if (
-    pending &&
-    pending.turnId !== undefined &&
-    pending.turnId === turnId &&
-    continuesPendingUtterance(pending.text, normalizedText)
-  ) {
+  if (revisable && pending?.utteranceId === utteranceId) {
     // The superseded observation owns no row; release it so readiness never waits on it.
     pending.observed?.persisted();
-    session.voicePendingUserFinal = { turnId, text: normalizedText, observed };
+    session.voicePendingUserFinal = { utteranceId, text: normalizedText, observed };
     return true;
   }
   if (!commitPendingRelayVoiceTranscript(session)) {
     return false;
   }
-  if (turnId === undefined) {
-    // No live turn owns this final, so there is no window to supersede within.
+  if (!revisable) {
     return appendRelayVoiceTranscriptEntry(session, role, normalizedText, observed);
   }
-  session.voicePendingUserFinal = { turnId, text: normalizedText, observed };
+  session.voicePendingUserFinal = { utteranceId, text: normalizedText, observed };
   return true;
 }
 

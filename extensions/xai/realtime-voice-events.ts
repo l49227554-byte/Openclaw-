@@ -145,7 +145,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         const transcript = event.transcript ?? this.inputTranscriptReplacements.get(key);
         this.inputTranscriptReplacements.delete(key);
         if (transcript) {
-          this.config.onTranscript?.("user", transcript, true);
+          this.config.onTranscript?.("user", transcript, true, event.item_id);
         }
         return;
       }

@@ -334,8 +334,6 @@ export function createTalkRealtimeRelaySession(
         return;
       }
       if (event.type === "response.created") {
-        // The provider committed to answering, so this turn's user input cannot grow.
-        commitPendingRelayVoiceTranscript(getActiveRelay());
         // Response admission owns work status; asynchronous input transcripts do not.
         const turnId = outputOwnership.resolve(false);
         if (turnId) {
@@ -379,6 +377,9 @@ export function createTalkRealtimeRelaySession(
       if (!relay) {
         return;
       }
+      // Accepted speech must reach history even when the response is cancelled or
+      // ends without an assistant transcript to settle behind.
+      commitPendingRelayVoiceTranscript(relay);
       const responseId = outcome.responseId ?? outputOwnership.responseId;
       const disposition = outputOwnership.finish(responseId);
       if (disposition === "ignore") {
@@ -416,7 +417,7 @@ export function createTalkRealtimeRelaySession(
         });
       }
     },
-    onTranscript: (role, text, final) => {
+    onTranscript: (role, text, final, utteranceId) => {
       const relay = getActiveRelay() ?? (relayRef.current?.closing ? relayRef.current : undefined);
       if (!relay || relay.voiceSessionClose) {
         return;
@@ -427,7 +428,7 @@ export function createTalkRealtimeRelaySession(
       if (!relay.closing && role === "user" && !final) {
         confirmationReadiness.observeUserTranscript(text, false);
       }
-      if (final && !enqueueRelayVoiceTranscript(relay, role, text)) {
+      if (final && !enqueueRelayVoiceTranscript(relay, role, text, utteranceId)) {
         return;
       }
       if (relay.closing) {

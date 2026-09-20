@@ -55,6 +55,7 @@ import {
 } from "./state.js";
 import {
   closeRelayVoiceSession,
+  commitPendingRelayVoiceTranscript,
   ensureRelayVoiceSession,
   settleRelayVoiceSpeech,
 } from "./voice.js";
@@ -684,6 +685,8 @@ export function resetTalkRealtimeRelayContinuity(
   session: RelaySession,
   reason = "session.continuity.reset",
 ): TalkEvent | undefined {
+  // A continuity reset abandons the provider's input items; write what was accepted.
+  commitPendingRelayVoiceTranscript(session);
   session.toolResultEpoch += 1;
   const retiredCallIds = new Set<string>([
     ...session.activeAgentToolCalls.keys(),

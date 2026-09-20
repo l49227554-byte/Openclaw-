@@ -240,7 +240,7 @@ describe("realtime voice bridge session runtime", () => {
     expect(expectBridgeRequest(request).handleDelegationInput?.("status", vi.fn())).toBe("control");
     expect(handleDelegationInput).toHaveBeenCalledExactlyOnceWith("status", expect.any(Function));
     expectBridgeRequest(request).onTranscript?.("user", "status", true);
-    expect(onTranscript).toHaveBeenCalledExactlyOnceWith("user", "status", true);
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith("user", "status", true, undefined);
     expect(expectBridgeRequest(request).agentId).toBe("voice-agent");
     expect(expectBridgeRequest(request).audioFormat).toEqual(
       REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
@@ -573,7 +573,12 @@ describe("realtime voice bridge session runtime", () => {
     expect(connect).not.toHaveBeenCalled();
     expect(sendProviderAudio).not.toHaveBeenCalled();
     expect(sendSinkAudio).not.toHaveBeenCalled();
-    expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "final transcript", true);
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith(
+      "assistant",
+      "final transcript",
+      true,
+      undefined,
+    );
   });
 
   it("stops audio admission after provider close and still closes the provider once", () => {

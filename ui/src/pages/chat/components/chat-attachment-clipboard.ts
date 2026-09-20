@@ -2,30 +2,16 @@ export function dataImageClipboardFile(
   dataUrl: string,
   baseName = "pasted-image",
 ): { file: File; dataUrl: string } | null {
-  const trimmed = dataUrl.trim();
-  const commaIndex = trimmed.indexOf(",");
-  const match =
-    commaIndex >= 0
-      ? /^data:(image\/[a-z0-9.+-]+);base64$/i.exec(trimmed.slice(0, commaIndex))
-      : null;
-  if (!match) {
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(dataUrl.trim());
+  const mimeType = match?.[1]?.toLowerCase();
+  const base64 = match?.[2]?.replace(/\s+/g, "");
+  if (!mimeType || !base64) {
     return null;
   }
-  const mimeType = match[1]?.toLowerCase();
-  const base64Source = trimmed.slice(commaIndex + 1);
-  if (!mimeType || !base64Source) {
-    return null;
-  }
-  const base64 = base64Source.replace(/\s+/g, "");
   try {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    const extension = mimeType.split("/")[1]?.replace(/[^a-z0-9.+-]/gi, "") || "png";
+    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
     return {
-      file: new File([bytes], `${baseName}.${extension}`, { type: mimeType }),
+      file: new File([bytes], `${baseName}.${mimeType.slice("image/".length)}`, { type: mimeType }),
       dataUrl: `data:${mimeType};base64,${base64}`,
     };
   } catch {

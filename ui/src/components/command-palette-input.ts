@@ -146,11 +146,7 @@ export function renderCommandPaletteInput(props: CommandPaletteInputProps) {
           ?disabled=${props.disabled}
           ?readonly=${props.readOnly}
           @scroll=${handlePaletteInputScroll}
-          @paste=${(event: ClipboardEvent) => {
-            if (!props.disabled && !props.readOnly) {
-              props.onPaste?.(event);
-            }
-          }}
+          @paste=${props.onPaste ?? nothing}
           ${ref(props.onInputRef)}
           @input=${(event: Event) => {
             if (event.currentTarget instanceof HTMLTextAreaElement) {

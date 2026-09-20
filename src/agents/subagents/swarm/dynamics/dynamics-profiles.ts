@@ -49,7 +49,7 @@ const BUILTIN_PROFILES = {
   },
 } as const satisfies Record<string, DynamicsProfile>;
 
-export type BuiltinDynamicsProfileId = keyof typeof BUILTIN_PROFILES;
+type BuiltinDynamicsProfileId = keyof typeof BUILTIN_PROFILES;
 
 function stableProfileInput(profile: DynamicsProfile): string {
   return JSON.stringify({
@@ -75,6 +75,3 @@ export function resolveDynamicsProfile(id: string): ResolvedDynamicsProfile {
   };
 }
 
-export function listDynamicsProfileIds(): BuiltinDynamicsProfileId[] {
-  return Object.keys(BUILTIN_PROFILES) as BuiltinDynamicsProfileId[];
-}

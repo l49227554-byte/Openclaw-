@@ -615,7 +615,10 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                       })
                     : {
                         runId: clientRunId,
-                        status: "ok",
+                        // Only a finished standalone refresh may retire its retry intent.
+                        // Steering and queued admission acknowledge custody, not completion.
+                        status:
+                          progressRefresh && !queuedFollowup.isEnqueued() ? "completed" : "ok",
                         ...(replyDispatchResult?.terminalOutcome?.stopReason
                           ? { stopReason: replyDispatchResult.terminalOutcome.stopReason }
                           : {}),

@@ -560,7 +560,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["sessions.assignOwner", "sessions-mutations", "operator.write", "2026.8"],
   ["progressCard.get", "progress-card", "operator.read", "2026.8"],
   ["progressCard.put", "progress-card", "operator.write", "2026.8"],
-  ["progressCard.refresh", "progress-card", "operator.write", "2026.9"],
   ["tools.github.status", "tools-github", "operator.read", "2026.8"],
   ["tools.github.configure", "tools-github", "operator.admin", "2026.8", CONTROL_PLANE_WRITE],
   ["tools.github.authorize.start", "tools-github", "operator.admin", "2026.8", CONTROL_PLANE_WRITE],
@@ -704,4 +703,5 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["themes.set", "themes", "operator.write", "2026.9"],
   ["themes.import", "themes", "operator.write", "2026.9"],
   ["controlUi.githubDetail", "control-ui", "operator.read", "2026.9"],
+  ["progressCard.refresh", "progress-card", "operator.write", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

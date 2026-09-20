@@ -447,6 +447,7 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
       if (!scope || !entry || entry.card !== card || entry.refresh?.state === "pending") {
         return;
       }
+      const retry = entry.refresh?.state === "failed" || entry.refresh?.state === "timeout";
       // A timed-out request may still be running. Retry the same intent rather
       // than starting duplicate agent work after an uncertain outcome.
       const refresh: ProgressCardRefresh = {
@@ -511,6 +512,12 @@ function createStore(gateway: ApplicationGateway): SessionProgressCardStore {
             notify();
           }
         });
+      if (retry && current()) {
+        // Replayed admission does not replay a missed event or its failed read.
+        // Use the shared loader to coalesce reads and retain its ownership guards.
+        entry.dirty = true;
+        void load(entry.target).catch(() => undefined);
+      }
     },
     getRefreshState: (target) => entries.get(resolveTarget(target).key)?.refresh?.state,
     dismiss: async (target, card) => {

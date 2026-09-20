@@ -333,13 +333,17 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
       session: captureAgentJobSession(params.sessionBinding),
       entry: {
         ts: Date.now(),
-        ok: !indeterminate,
+        ok: progressRefresh || !indeterminate,
         payload: {
           runId: clientRunId,
-          status: indeterminate ? "error" : "ok",
+          // An accepted refresh steer is not a completed status turn, even if
+          // its transcript receipt is unconfirmed. Retrying must not replay it.
+          status: progressRefresh ? "accepted" : indeterminate ? "error" : "ok",
           ...(indeterminate ? { summary: indeterminate } : {}),
         },
-        ...(indeterminate ? { error: errorShape(ErrorCodes.UNAVAILABLE, indeterminate) } : {}),
+        ...(!progressRefresh && indeterminate
+          ? { error: errorShape(ErrorCodes.UNAVAILABLE, indeterminate) }
+          : {}),
       },
     });
     if (indeterminate) {

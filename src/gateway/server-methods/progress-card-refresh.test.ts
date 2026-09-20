@@ -106,6 +106,45 @@ describe("progressCard.refresh", () => {
     await f.invoke();
     expect(f.respond.mock.calls[1]?.[1]).toMatchObject({ status: "accepted", revision: 7 });
   });
+  it.each([false, true])(
+    "reconciles a completed refresh before permitting a new intent (updated=%s)",
+    async (updated) => {
+      const f = fixture();
+      await f.invoke();
+      if (updated) {
+        f.get.mockResolvedValue({ ...card, revision: 8, updatedAt: 2 });
+      }
+      send.mockImplementation(async (request) => request.respond(true, { status: "completed" }));
+      await f.invoke();
+      if (updated) {
+        expect(f.respond).toHaveBeenLastCalledWith(
+          true,
+          expect.objectContaining({ status: "accepted", revision: 7 }),
+          undefined,
+          undefined,
+        );
+      } else {
+        expect(f.respond).toHaveBeenLastCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ details: { code: "PROGRESS_CARD_REFRESH_TERMINAL" } }),
+          undefined,
+        );
+      }
+    },
+  );
+  it("does not treat a cached steering acknowledgment as completed work", async () => {
+    const f = fixture();
+    await f.invoke();
+    send.mockImplementation(async (request) => request.respond(true, { status: "ok" }));
+    await f.invoke();
+    expect(f.respond).toHaveBeenLastCalledWith(
+      true,
+      expect.objectContaining({ status: "accepted", revision: 7 }),
+      undefined,
+      undefined,
+    );
+  });
   it("refuses missing cards and arbitrary prompt/visibility fields", async () => {
     const f = fixture();
     f.get.mockResolvedValue(null);

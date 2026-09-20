@@ -90,6 +90,27 @@ describe("registered progress refresh admission", () => {
         expect((await progressCardStore.get(f.scope.sessionKey, f.scope.agentId))?.markdown).toBe(
           "Previous status",
         );
+        const retry = vi.fn<RespondFn>();
+        await handleGatewayRequest({
+          req: {
+            type: "req",
+            id: "retry",
+            method: "progressCard.refresh",
+            params: { sessionKey: f.scope.sessionKey, idempotencyKey: "refresh-click" },
+          },
+          client: f.client,
+          context: f.context,
+          respond: retry,
+          isWebchatConnect: () => true,
+          extraHandlers: createProgressCardHandlers(),
+        });
+        expect(retry).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ details: { code: "PROGRESS_CARD_REFRESH_TERMINAL" } }),
+          expect.anything(),
+        );
+        expect(dispatchInboundMessageMock).toHaveBeenCalledOnce();
         expect(
           vi.mocked(f.context.broadcast).mock.calls.filter(([event]) => event === "chat"),
         ).toHaveLength(0);
@@ -176,6 +197,27 @@ describe("registered progress refresh admission", () => {
           projectSessionMessages: true,
         });
         await f.finishDispatch();
+        const retry = vi.fn<RespondFn>();
+        await handleGatewayRequest({
+          req: {
+            type: "req",
+            id: "retry-steer",
+            method: "progressCard.refresh",
+            params: { sessionKey: f.scope.sessionKey, idempotencyKey: "active-refresh" },
+          },
+          client: f.client,
+          context: f.context,
+          respond: retry,
+          isWebchatConnect: () => true,
+          extraHandlers: createProgressCardHandlers(),
+        });
+        expect(retry).toHaveBeenCalledWith(
+          true,
+          expect.objectContaining({ status: "accepted", revision: 1 }),
+          undefined,
+          expect.anything(),
+        );
+        expect(queueMessage).toHaveBeenCalledOnce();
         expect(cancel).not.toHaveBeenCalled();
         expect(
           vi.mocked(f.context.broadcast).mock.calls.filter(([event]) => event === "chat"),

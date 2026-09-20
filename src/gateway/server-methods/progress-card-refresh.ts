@@ -47,7 +47,12 @@ export async function requestProgressCardRefresh(
       },
       respond: (ok, payload, error, meta) => {
         const result = asOptionalRecord(payload);
+        // A lost ACK can be retried after the new card is already written. Keep
+        // the original baseline in the existing bounded Gateway dedupe owner.
+        const receipt = asOptionalRecord(invocation.context.dedupe.get(receiptKey)?.payload);
+        const revision = typeof receipt?.revision === "number" ? receipt.revision : card.revision;
         const terminalFailure =
+          (result?.status === "completed" && card.revision <= revision) ||
           result?.status === "error" ||
           result?.status === "timeout" ||
           result?.status === "aborted";
@@ -70,10 +75,6 @@ export async function requestProgressCardRefresh(
           );
           return;
         }
-        // A lost ACK can be retried after the new card is already written. Keep
-        // the original baseline in the existing bounded Gateway dedupe owner.
-        const receipt = asOptionalRecord(invocation.context.dedupe.get(receiptKey)?.payload);
-        const revision = typeof receipt?.revision === "number" ? receipt.revision : card.revision;
         const accepted = { runId, status: "accepted", revision };
         invocation.context.dedupe.set(receiptKey, { ts: Date.now(), ok: true, payload: accepted });
         invocation.respond(true, accepted, undefined, meta);

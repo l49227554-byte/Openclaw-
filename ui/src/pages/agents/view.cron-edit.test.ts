@@ -35,7 +35,7 @@ it.each([
     renderAgents({
       ...props,
       access: { ...props.access, canRunCron },
-      cron: { ...props.cron, jobs: [job] },
+      cron: { ...props.cron, cronJobs: [job] },
     }),
     container,
   );

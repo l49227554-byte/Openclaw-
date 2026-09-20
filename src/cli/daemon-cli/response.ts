@@ -1,5 +1,6 @@
 // JSON/text response helpers for Gateway service lifecycle commands.
 import { Writable } from "node:stream";
+import { currentGatewayServiceRebindReceipt } from "../../daemon/service-rebind.js";
 import type { GatewayServiceDefinitionBackupReceipt } from "../../daemon/service-stage.js";
 import type { GatewayService } from "../../daemon/service.js";
 import {
@@ -49,7 +50,8 @@ type DaemonActionResponse = {
 };
 
 function emitDaemonActionJson(payload: DaemonActionResponse) {
-  defaultRuntime.writeJson(payload);
+  const rebind = currentGatewayServiceRebindReceipt();
+  defaultRuntime.writeJson({ ...payload, ...(rebind ? { rebind } : {}) });
 }
 
 function classifyDaemonHintText(text: string): DaemonHintKind {
@@ -247,6 +249,8 @@ export async function installDaemonServiceAndEmit(params: {
   emit: (payload: Omit<DaemonActionResponse, "action">) => void;
   fail: (message: string, hints?: string[]) => void;
   install: () => Promise<void>;
+  /** Distinguishes successful registration from application readiness. */
+  successMessage?: string;
   /**
    * Runs only after the service has been written AND verified as loaded, but
    * before the success payload is emitted. Use this for post-success
@@ -294,6 +298,7 @@ export async function installDaemonServiceAndEmit(params: {
   params.emit({
     ok: true,
     result: "installed",
+    ...(params.successMessage ? { message: params.successMessage } : {}),
     service: buildDaemonServiceSnapshot(params.service, installed),
     warnings: params.warnings.length ? params.warnings : undefined,
   });

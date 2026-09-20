@@ -175,6 +175,9 @@ function resolveHeartbeatOwnerRoute(params: {
   // configured owner on a later channel.
   const configuredOwners = concreteAllowFromEntries(params.cfg.commands?.ownerAllowFrom);
   for (const { plugin } of plugins) {
+    if (session?.channel && plugin.id !== session.channel) {
+      continue;
+    }
     const configuredOwner = configuredOwners.find((ownerId) => {
       const prefixedChannel = resolveTargetPrefixedChannel(ownerId);
       return (
@@ -187,6 +190,9 @@ function resolveHeartbeatOwnerRoute(params: {
     }
   }
   for (const { plugin, accountId } of plugins) {
+    if (session?.channel && plugin.id !== session.channel) {
+      continue;
+    }
     const ownerId = concreteAllowFromEntries(
       plugin.config.resolveAllowFrom?.({
         cfg: params.cfg,

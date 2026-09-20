@@ -706,6 +706,31 @@ describe("resolveSessionDeliveryTarget", () => {
     expect(resolved).toMatchObject({ channel: "alpha", to: "user:alpha-owner" });
   });
 
+  it("does not route owner delivery cross-channel when session is on a different channel (#153543)", () => {
+    const discord = createGenericTargetTestPlugin("discord", "Discord");
+    discord.config = { ...discord.config, resolveAllowFrom: () => [] };
+    const feishu = createGenericTargetTestPlugin("feishu", "Feishu");
+    feishu.config = { ...feishu.config, resolveAllowFrom: () => ["user:ou_feishu_owner"] };
+    setActivePluginRegistry(createTargetsTestRegistry([feishu, discord]));
+
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {
+        channels: {
+          feishu: { allowFrom: ["user:ou_feishu_owner"] },
+        },
+      } as OpenClawConfig,
+      entry: {
+        sessionId: "sess-discord-direct",
+        updatedAt: 1,
+        lastChannel: "discord",
+        lastTo: "557519782434308115",
+        chatType: "direct",
+      },
+    });
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-route" });
+  });
+
   it.each(["cold", "disabled", "inspection-unavailable", "stale"] as const)(
     "keeps heartbeat owner discovery usable when an account is %s",
     (state) => {

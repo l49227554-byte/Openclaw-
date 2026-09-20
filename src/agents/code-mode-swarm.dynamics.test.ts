@@ -6,13 +6,26 @@ import type { ToolSearchToolContext } from "./tool-search-types.js";
 const state = vi.hoisted(() => ({
   enabled: true,
   blocked: false,
-  existing: undefined as undefined | { runId: string; childSessionKey: string; swarmLaunchRequestFingerprint: string },
+  existing: undefined as
+    | undefined
+    | {
+        runId: string;
+        childSessionKey: string;
+        swarmLaunchRequestFingerprint: string;
+      },
 }));
 
-vi.mock("../sessions/session-lifecycle-events.js", () => ({ emitSessionLifecycleEvent: vi.fn() }));
+vi.mock("../sessions/session-lifecycle-events.js", () => ({
+  emitSessionLifecycleEvent: vi.fn(),
+}));
 vi.mock("./agent-tool-source-execution-guard.js", () => ({
-  captureAgentToolSourceExecutionGuard: (signal?: AbortSignal) => () => signal?.throwIfAborted(),
-  runAgentToolSourceExecutionGuard: () => { if (state.blocked) { throw new Error("source revoked"); } },
+  captureAgentToolSourceExecutionGuard: (signal?: AbortSignal) => () =>
+    signal?.throwIfAborted(),
+  runAgentToolSourceExecutionGuard: () => {
+    if (state.blocked) {
+      throw new Error("source revoked");
+    }
+  },
 }));
 vi.mock("./subagents/registry/subagent-registry.js", () => ({
   getSwarmRunByLaunchReplayKey: () => state.existing,
@@ -20,56 +33,119 @@ vi.mock("./subagents/registry/subagent-registry.js", () => ({
 }));
 vi.mock("./subagents/swarm/swarm-collector-capability.js", () => ({
   isCollectorSpawnTool: () => true,
-  runWithJoinedCollectorSpawn: async (_tool: unknown, check: () => void, run: () => Promise<unknown>) => {
+  runWithJoinedCollectorSpawn: async (
+    _tool: unknown,
+    check: () => void,
+    run: () => Promise<unknown>,
+  ) => {
     check();
     return await run();
   },
 }));
-vi.mock("./subagents/swarm/swarm-config.js", () => ({ resolveSwarmConfig: () => ({ enabled: state.enabled }) }));
-vi.mock("./tool-policy-shared.js", () => ({ isToolExecutionAllowed: (allow: readonly string[], name: string) => allow.includes(name) }));
-vi.mock("./tools/agents-wait-tool.js", () => ({ waitForCollectorCompletion: vi.fn() }));
-vi.mock("./tools/common.js", () => ({ ToolInputError: class ToolInputError extends Error {} }));
+vi.mock("./subagents/swarm/swarm-config.js", () => ({
+  resolveSwarmConfig: () => ({ enabled: state.enabled }),
+}));
+vi.mock("./tool-policy-shared.js", () => ({
+  isToolExecutionAllowed: (allow: readonly string[], name: string) => allow.includes(name),
+}));
+vi.mock("./tools/agents-wait-tool.js", () => ({
+  waitForCollectorCompletion: vi.fn(),
+}));
+vi.mock("./tools/common.js", () => ({
+  ToolInputError: class ToolInputError extends Error {},
+}));
 vi.mock("./tools/sessions-resolution.js", () => ({
   resolveMainSessionAlias: () => ({ mainKey: "main", alias: "main" }),
   resolveInternalSessionKey: ({ key }: { key: string }) => key,
 }));
 
 function setup(dynamics?: unknown) {
-  const tool = { name: "sessions_spawn", label: "Sessions", description: "Native collector", parameters: Type.Object({}), execute: vi.fn() };
-  const ctx: ToolSearchToolContext = {
-    agentId: "main", sessionKey: "agent:main:main", runId: "parent-run",
-    catalogRef: { current: {
-      counterScope: "test", searchCount: 0, describeCount: 0, callCount: 0,
-      entries: [{ id: "native-spawn", source: "openclaw", name: "sessions_spawn", description: "Native collector", tool }],
-    } },
+  const tool = {
+    name: "sessions_spawn",
+    label: "Sessions",
+    description: "Native collector",
+    parameters: Type.Object({}),
+    execute: vi.fn(),
   };
-  const callExactId = vi.fn().mockResolvedValue({ result: { details: { status: "accepted", runId: "child-run" } } });
+  const ctx: ToolSearchToolContext = {
+    agentId: "main",
+    sessionKey: "agent:main:main",
+    runId: "parent-run",
+    catalogRef: {
+      current: {
+        counterScope: "test",
+        searchCount: 0,
+        describeCount: 0,
+        callCount: 0,
+        entries: [
+          {
+            id: "native-spawn",
+            source: "openclaw",
+            name: "sessions_spawn",
+            description: "Native collector",
+            tool,
+          },
+        ],
+      },
+    },
+  };
+  const callExactId = vi
+    .fn()
+    .mockResolvedValue({ result: { details: { status: "accepted", runId: "child-run" } } });
   return {
-    ctx, callExactId,
+    ctx,
+    callExactId,
     params: {
-      runtime: { callExactId }, parentToolCallId: "tool-call", codeModeRunId: "code-run", ctx,
-      request: { id: "request-1", method: "agentSpawn" as const, args: ["Check the candidate", dynamics === undefined ? {} : { dynamics }] },
+      runtime: { callExactId },
+      parentToolCallId: "tool-call",
+      codeModeRunId: "code-run",
+      ctx,
+      request: {
+        id: "request-1",
+        method: "agentSpawn" as const,
+        args: ["Check the candidate", dynamics === undefined ? {} : { dynamics }],
+      },
     },
   };
 }
 
-beforeEach(() => { state.enabled = true; state.blocked = false; state.existing = undefined; });
+beforeEach(() => {
+  state.enabled = true;
+  state.blocked = false;
+  state.existing = undefined;
+});
 
 describe("dynamics through the actual native spawn bridge", () => {
   it("dispatches a filtered sandbox-required verifier through the existing native tool", async () => {
-    const fixture = setup({ profile: "independent-verifier", handoff: { candidateDigest: "candidate:a", artifactRefs: ["artifact:a"], summary: "builder-secret-rationale" } });
+    const fixture = setup({
+      profile: "independent-verifier",
+      handoff: {
+        candidateDigest: "candidate:a",
+        artifactRefs: ["artifact:a"],
+        summary: "builder-secret-rationale",
+      },
+    });
     await codeModeSwarmHandlers.agentSpawn(fixture.params);
     const input = fixture.callExactId.mock.calls[0]![1];
-    expect(input).toMatchObject({ collect: true, context: "isolated", sandbox: "require" });
+    expect(input).toMatchObject({
+      collect: true,
+      context: "isolated",
+      sandbox: "require",
+    });
     expect(input.task).not.toContain("builder-secret-rationale");
     expect(input.task).toContain("artifact:a");
   });
+
   it("leaves legacy calls untouched", async () => {
     const fixture = setup();
     await codeModeSwarmHandlers.agentSpawn(fixture.params);
-    expect(fixture.callExactId.mock.calls[0]![1]).toMatchObject({ task: "Check the candidate", collect: true });
+    expect(fixture.callExactId.mock.calls[0]![1]).toMatchObject({
+      task: "Check the candidate",
+      collect: true,
+    });
     expect(fixture.callExactId.mock.calls[0]![1].sandbox).toBeUndefined();
   });
+
   it("does not dispatch on disabled swarm, denied policy, or revoked source", async () => {
     const fixture = setup({ profile: "explorer" });
     state.enabled = false;
@@ -79,26 +155,50 @@ describe("dynamics through the actual native spawn bridge", () => {
     await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow();
     fixture.ctx.toolExecutionAllow = ["sessions_spawn"];
     state.blocked = true;
-    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow("source revoked");
+    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow(
+      "source revoked",
+    );
     expect(fixture.callExactId).not.toHaveBeenCalled();
   });
+
   it("rechecks the source after awaited dispatch", async () => {
     const fixture = setup({ profile: "explorer" });
     fixture.callExactId.mockImplementation(async () => {
       state.blocked = true;
       return { result: { details: { status: "accepted", runId: "child-run" } } };
     });
-    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow("source revoked");
+    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow(
+      "source revoked",
+    );
   });
+
   it("rejects an inherited profile before dispatch", async () => {
     const fixture = setup({ profile: "constructor" });
-    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow("Unknown cognitive dynamics profile");
+    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow(
+      "Unknown cognitive dynamics profile",
+    );
     expect(fixture.callExactId).not.toHaveBeenCalled();
   });
+
   it("does not silently downgrade a sandbox-required spawn rejected by the owner", async () => {
-    const fixture = setup({ profile: "independent-verifier", handoff: { candidateDigest: "candidate:a", artifactRefs: ["artifact:a"] } });
-    fixture.callExactId.mockResolvedValue({ result: { details: { status: "forbidden", error: "sandbox unavailable" } } });
-    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow("sandbox unavailable");
+    const fixture = setup({
+      profile: "independent-verifier",
+      handoff: {
+        candidateDigest: "candidate:a",
+        artifactRefs: ["artifact:a"],
+      },
+    });
+    fixture.callExactId.mockResolvedValue({
+      result: {
+        details: {
+          status: "forbidden",
+          error: "sandbox unavailable",
+        },
+      },
+    });
+    await expect(codeModeSwarmHandlers.agentSpawn(fixture.params)).rejects.toThrow(
+      "sandbox unavailable",
+    );
     expect(fixture.callExactId).toHaveBeenCalledTimes(1);
   });
 });

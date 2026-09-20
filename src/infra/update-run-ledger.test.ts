@@ -2,11 +2,13 @@ import { fork } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { UPDATE_RUN_PHASES } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { withOpenClawStateDatabaseReadSnapshot } from "../state/openclaw-state-db-readonly.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
@@ -68,8 +70,9 @@ function snapshotDatabaseFiles(filename: string) {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   tempDirs.cleanup();
 });
@@ -274,13 +277,15 @@ describe("update run ledger", () => {
     },
   );
 
-  it("keeps reads non-creating and adds the table on first write without changing the older schema", () => {
+  it("keeps reads non-creating and adds the table on first write without changing the older schema", async () => {
     const options = isolatedOptions();
     const runId = randomUUID();
     const filename = resolveOpenClawStateSqlitePath(options.env);
     expect(getUpdateRun(runId, options)).toBeUndefined();
     expect(listUpdateRuns({}, options)).toEqual([]);
     expect(findActiveUpdateRun(options)).toBeUndefined();
+    expect(await getUpdateRunAsync(runId, options)).toBeUndefined();
+    expect(await listUpdateRunsAsync({}, options)).toEqual([]);
     expect(fs.existsSync(filename)).toBe(false);
     expect(fs.readdirSync(options.env.OPENCLAW_STATE_DIR)).toEqual([]);
 
@@ -360,6 +365,15 @@ describe("update run ledger", () => {
       expect(fs.existsSync(`${filename}-shm`)).toBe(false);
       expect(fs.existsSync(`${filename}-wal`)).toBe(retainedWal);
       const before = snapshotDatabaseFiles(filename);
+      const nativeCalls = reader.endsWith("-async")
+        ? [
+            vi.spyOn(DatabaseSync.prototype, "prepare"),
+            vi.spyOn(DatabaseSync.prototype, "exec"),
+            ...(["get", "all", "run", "iterate"] as const).map((method) =>
+              vi.spyOn(StatementSync.prototype, method),
+            ),
+          ]
+        : [];
       const result =
         reader === "get"
           ? getUpdateRun(created.runId, options)
@@ -371,6 +385,8 @@ describe("update run ledger", () => {
                 ? await listUpdateRunsAsync({}, options)
                 : findActiveUpdateRun(options);
       expect(result).toEqual(reader === "list" || reader === "list-async" ? [expected] : expected);
+      expect(nativeCalls.reduce((total, call) => total + call.mock.calls.length, 0)).toBe(0);
+      vi.restoreAllMocks();
       expect(snapshotDatabaseFiles(filename)).toEqual(before);
     },
   );
@@ -417,6 +433,17 @@ describe("update run ledger", () => {
     expect(snapshotDatabaseFiles(filename)).toEqual(before);
     expect(db.isOpen).toBe(true);
     expect(recordUpdateRunPhase(created.runId, "staging", {}, options).phase).toBe("staging");
+  });
+
+  it("keeps asynchronous history reads on the inherited snapshot", async () => {
+    const options = isolatedOptions();
+    const created = createUpdateRun({ trigger: "cli" }, options);
+    await withOpenClawStateDatabaseReadSnapshot(async () => {
+      recordUpdateRunPhase(created.runId, "staging", {}, options);
+      expect(await getUpdateRunAsync(created.runId, options)).toEqual(created);
+      expect(await listUpdateRunsAsync({}, options)).toEqual([created]);
+    }, options);
+    expect((await getUpdateRunAsync(created.runId, options))?.phase).toBe("staging");
   });
 
   it("reads committed history without consuming the cached writer's transaction", () => {
@@ -619,7 +646,7 @@ describe("update run ledger", () => {
     expect(recordUpdateRunPhase(run.runId, "verifying", {}, options).phase).toBe("verifying");
   });
 
-  it("lists newest runs deterministically and excludes terminal runs from active discovery", () => {
+  it("lists newest runs deterministically and excludes terminal runs from active discovery", async () => {
     const options = isolatedOptions();
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
     const oldest = createUpdateRun({ trigger: "cli" }, options);
@@ -631,11 +658,23 @@ describe("update run ledger", () => {
     expect(listUpdateRuns({ limit: 2 }, options).map((run) => run.runId)).toEqual(
       tied.map((run) => run.runId),
     );
+    expect((await listUpdateRunsAsync({ limit: 2 }, options)).map((run) => run.runId)).toEqual(
+      tied.map((run) => run.runId),
+    );
     expect(findActiveUpdateRun(options)).toEqual(tied[0]);
     for (const run of tied) {
       finishUpdateRun(run.runId, { status: "skipped", reason: "dry-run" }, options);
     }
     expect(listUpdateRuns({ active: true }, options)).toEqual([oldest]);
+    expect(await listUpdateRunsAsync({ active: true }, options)).toEqual([oldest]);
+    expect(
+      (
+        await listUpdateRunsAsync(
+          { reason: "dry-run", limit: 1, includeRunId: oldest.runId },
+          options,
+        )
+      ).map((run) => run.runId),
+    ).toEqual([tied[0]?.runId, oldest.runId]);
     finishUpdateRun(oldest.runId, { status: "succeeded" }, options);
     expect(findActiveUpdateRun(options)).toBeUndefined();
     expect(listUpdateRuns({}, options)).toHaveLength(3);

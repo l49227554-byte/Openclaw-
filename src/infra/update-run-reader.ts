@@ -5,7 +5,8 @@ import type {
 } from "../state/openclaw-state-db-contract.js";
 import {
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly,
-  withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync,
+  executeExistingOpenClawStateRead,
+  withArtifactPreservingStateReads,
 } from "../state/openclaw-state-db-readonly.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
@@ -85,26 +86,32 @@ export function readUpdateRunResolutionHistory(options: OpenClawStateDatabaseOpt
 
 /** Read activity on the caller's connection so maintenance can fence its mutation. */
 export function readActiveUpdateRun(db: DatabaseSync): UpdateRunRecord | undefined {
-  return readRuns(db, { limit: 1, active: true })[0];
+  return readUpdateRuns(db, { limit: 1, active: true })[0];
 }
 
 export function readLatestUpdateRun(db: DatabaseSync): UpdateRunRecord | undefined {
-  return readRuns(db, { limit: 1 })[0];
+  return readUpdateRuns(db, { limit: 1 })[0];
 }
 
 export async function getUpdateRunAsync(
   runId: string,
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<UpdateRunRecord | undefined> {
-  return await withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync(
-    ({ db }) => (tableExists(db, "update_runs") ? readUpdateRunRecord(db, runId) : undefined),
-    options,
+  const reply = await withArtifactPreservingStateReads(() =>
+    executeExistingOpenClawStateRead(options, { type: "updateRuns.get", runId }),
   );
+  if (!reply) {
+    return undefined;
+  }
+  if (!reply.ok || reply.type !== "updateRuns.get") {
+    throw new Error("Unexpected update run lookup result");
+  }
+  return reply.run;
 }
 
 type ListInput = { limit?: number; active?: boolean; reason?: string; includeRunId?: string };
 
-function readRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
+export function readUpdateRuns(db: DatabaseSync, input: ListInput): UpdateRunRecord[] {
   if (!tableExists(db, "update_runs")) {
     return [];
   }
@@ -141,24 +148,28 @@ export function listUpdateRuns(
 ): UpdateRunRecord[] {
   return (
     withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
-      ({ db }) => readRuns(db, input),
+      ({ db }) => readUpdateRuns(db, input),
       options,
       openStateSchemaReadAdmission,
     ) ?? []
   );
 }
 
-/** Doctor awaits a private snapshot while its real maintenance owner is retained. */
+/** Doctor retains its maintenance owner while the worker reads the private snapshot. */
 export async function listUpdateRunsAsync(
   input: ListInput = {},
   options: OpenClawStateDatabaseOptions = {},
 ): Promise<UpdateRunRecord[]> {
-  return (
-    (await withExistingOpenClawStateDatabaseArtifactPreservingReadOnlyAsync(
-      ({ db }) => readRuns(db, input),
-      options,
-    )) ?? []
+  const reply = await withArtifactPreservingStateReads(() =>
+    executeExistingOpenClawStateRead(options, { type: "updateRuns.list", input: { ...input } }),
   );
+  if (!reply) {
+    return [];
+  }
+  if (!reply.ok || reply.type !== "updateRuns.list") {
+    throw new Error("Unexpected update run list result");
+  }
+  return reply.runs;
 }
 
 /** Only a later recorded fetch completion clears an updater fetch failure. */

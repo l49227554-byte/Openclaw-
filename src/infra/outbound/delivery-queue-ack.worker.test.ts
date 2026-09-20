@@ -69,11 +69,10 @@ describe("outbound acknowledgement worker", () => {
       expect(await loadPendingDelivery(id, stateDir)).toMatchObject({ producerClaimId: claimId });
       await ackDelivery(id, stateDir, { expectedPlatformSendAttemptId: claimId });
       expect(await loadPendingDelivery(id, stateDir)).toBeNull();
-      // Explicit owner checks still reject a missing row; omission alone is idempotent.
       await expect(ackDelivery(id, stateDir, { expectedPlatformSendAttemptId })).rejects.toThrow(
         `Delivery platform claim was lost: ${id}`,
       );
-      await ackDelivery(id, stateDir);
+      await expect(ackDelivery(id, stateDir)).resolves.toBeUndefined();
     },
   );
   it("captures ACK facts before admission and settles an expired exact owner before media cleanup", async () => {

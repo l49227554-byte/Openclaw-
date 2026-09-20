@@ -324,8 +324,13 @@ suite.define(() => {
                 Math.min(stackBounds.y + stackBounds.height, bodyBounds.y + bodyBounds.height)) /
               2,
           };
-          // A touch fling can already hand off and exhaust the outer scroll range.
-          // Measure the entire native gesture sequence, not just its final swipe.
+          expect(
+            await body.evaluate(
+              (element, point) => element.contains(document.elementFromPoint(point.x, point.y)),
+              scrollPoint,
+            ),
+          ).toBe(true);
+          // Touch inertia can already hand off during the first swipes.
           const beforeHandoff = await persistentContext.evaluate((element) => element.scrollTop);
           // Reach the inner boundary through native input before checking scroll chaining.
           await scrollDown(page, scrollPoint, touchClient);

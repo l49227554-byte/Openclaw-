@@ -1,5 +1,8 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "test/loopback-ask-user-telegram-channel.test.ts",
+  "test/slack-outbound-permanent-rejection-loopback.test.ts",
+  "test/telegram-outbound-permanent-rejection-loopback.test.ts",
   "src/agents/worktrees/empty-source.test.ts",
   "src/agents/worktrees/registry-read.test.ts",
   "src/agents/worktrees/service-branches.test.ts",

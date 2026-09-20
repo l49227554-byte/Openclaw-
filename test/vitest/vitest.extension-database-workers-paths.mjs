@@ -6,6 +6,10 @@ export const databaseWorkerExtensionTestRoots = [
 ];
 
 export const databaseWorkerExtensionTestFiles = [
+  "extensions/discord/src/durable-delivery.test.ts",
+  "extensions/discord/src/monitor/monitor.test.ts",
+  "extensions/imessage/src/test-plugin.test.ts",
+  "extensions/mattermost/src/outbound-delivery.test.ts",
   "extensions/feishu/src/dedup.test.ts",
   "extensions/feishu/src/bot.broadcast.test.ts",
   "extensions/feishu/src/feishu-ingress.test.ts",

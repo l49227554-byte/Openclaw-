@@ -101,7 +101,6 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
       SessionKey: runSessionKey,
       AgentId: agentId,
     } satisfies MsgContext;
-    const isHeartbeatRun = !prepared.hasExecCompletion && !prepared.hasCronEvents;
     await dispatchInboundMessageWithRoutedChannelDispatcher({
       cfg,
       ctx: heartbeatContext,
@@ -109,14 +108,14 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
       suppressOutboundHooks: true,
       replyOptions: withReplySystemEventContext<InternalGetReplyOptions>(
         {
-          isHeartbeat: isHeartbeatRun,
+          isHeartbeat: true,
           // Isolated heartbeats mint a fresh session ID per run, so nothing later
           // reuses this run's bundle MCP runtime; retire it at settlement.
           ...(prepared.run.kind === "isolated" ? { cleanupBundleMcpOnRunEnd: true } : {}),
           replyConversation: prepareReplyConversation({
             ctx: heartbeatContext,
             sessionEntry: suppressOriginatingContext ? undefined : prepared.conversationEntry,
-            isHeartbeat: isHeartbeatRun,
+            isHeartbeat: true,
           }),
           [REPLY_OPERATION_RUN_STATE]: state,
           heartbeatModelOverride: heartbeat?.model?.trim(),

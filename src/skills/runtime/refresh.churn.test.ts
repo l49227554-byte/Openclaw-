@@ -13,13 +13,17 @@ import {
 } from "./refresh.watcher.test-support.js";
 
 type SkillsChangeEvent = NonNullable<Parameters<typeof bumpSkillsSnapshotVersion>[0]>;
-const { createdWatchers, watchMock, watchForSkillRoot } = createSkillsWatcherMock();
+const { createdWatchers, watchMock, nativeWatchMock, watchForSkillRoot } =
+  createSkillsWatcherMock();
 let refreshModule: typeof import("./refresh.js");
 let buildSkillSnapshot: typeof import("../loading/workspace-skill-prompt.js").buildSkillSnapshot;
 let syncWorkspaceSkills: typeof import("../loading/workspace-skill-sync.runtime.js").syncWorkspaceSkills;
 let fixtureWorkspaceDir: string;
 
 vi.mock("chokidar", () => ({ default: { watch: watchMock } }));
+vi.mock("./refresh-ancestor-native.js", () => ({
+  createNativeSkillsAncestorWatcher: nativeWatchMock,
+}));
 vi.mock("../loading/plugin-skills.js", () => ({
   resolvePluginSkillRoots: () => [],
   resolvePluginSkillRootsFromMetadata: () => [],
@@ -51,6 +55,11 @@ describe("skills watcher churn", () => {
       vi.useFakeTimers();
       const workspaceDir = fixtureWorkspaceDir;
       const executionWorkspaceDir = await createFixtureDirectory("busy-worktree");
+      for (const root of [workspaceDir, executionWorkspaceDir]) {
+        for (const directory of ["skills", ".agents/skills"]) {
+          await fs.mkdir(path.join(root, directory), { recursive: true });
+        }
+      }
       refreshModule.ensureSkillsWatcher({ workspaceDir, executionWorkspaceDir });
       const version = getSkillsSnapshotVersion(workspaceDir);
       const seen: SkillsChangeEvent[] = [];

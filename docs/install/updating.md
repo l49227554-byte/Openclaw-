@@ -39,6 +39,16 @@ prints `candidate-config-read-failed` and leaves the service definition unchange
 Reads follow the restored package after a rollback. Inspect the reported problem
 with the updated CLI after the update.
 
+When a writable managed Gateway service points at another global installation,
+the update keeps the active CLI's installation as its target and refreshes the
+service through `gateway install --force` before verifying the restarted Gateway.
+The old service command remains the recovery identity until that handoff succeeds.
+Reconciliation failures are recorded as warnings with a manual repair command.
+Deployment-owned definitions retain their existing installation owner.
+Pending package-publication recovery in either the CLI or selected service
+installation blocks writable preparation. Follow the package recovery command
+reported by the update before retrying; Doctor does not clear those artifacts.
+
 The installed 2026.9.4 updater can refuse with `managed-service-preflight` before
 the target code runs. To reach a release containing this repair, use the
 [manual package-manager procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun)
@@ -46,6 +56,21 @@ with the same owning package manager, prefix, and state/configuration. Back up
 first, stop the Gateway through its actual supervisor or foreground process owner,
 replace the package, run Doctor, and restart through that same owner.
 `--no-restart` cannot repair the old admission check.
+
+<Note>
+On macOS, the 2026.9.4 Gateway's `update.run` action or `/update` can hand off
+successfully, then fail at activation with `managed-service-preflight` and
+"This command is running inside the gateway process tree." The installed
+updater refuses its own managed helper before swapping packages, so a newer
+candidate cannot repair that first update.
+
+For this ancestry refusal, the owner should run `openclaw update` once from an
+independent Terminal outside the Gateway process tree, using the same owning
+account, installation, and state/configuration. After installing a release
+containing the managed-helper authority fix, subsequent updates started through
+`update.run` or `/update` use the corrected updater. The fix applies to updates
+**from** the fixed version; it does not repair the 2026.9.4 macOS handoff in place.
+</Note>
 
 Registry updates inspect the exact candidate's Node requirement before staging.
 An incompatible runtime produces `node-runtime-preflight`, with the target
@@ -78,7 +103,7 @@ owner around the manual replacement. This recovery does not add CLI-managed
 FreeBSD rc.d service updates.
 </Note>
 
-An already-installed registry package version or Git target SHA still runs plugin maintenance, repairs eligible old OpenClaw release pins, and restarts a running managed Gateway only when plugins change and `--no-restart` is not set; unchanged runs finish as `skipped` / `already-current`.
+An already-installed registry package version or Git target SHA still runs plugin maintenance, repairs eligible old OpenClaw release pins, and restarts a running managed Gateway when plugins change or its service points at another installation, unless `--no-restart` is set. Unchanged runs finish as `skipped` / `already-current`.
 
 Plugin maintenance does not fail an otherwise successful core update. If a plugin
 cannot be updated, OpenClaw continues with the remaining plugins, keeps the previous
@@ -278,9 +303,10 @@ restrictions still apply.
 or access to the `gateway` tool. The tool, slash command, and Control UI all use
 the same Gateway update handler and current authorization checks.
 
-The new version is checked while the old Gateway serves, and an already-current
-update restarts it only when plugins change. Update runs can send these notices
-in that chat as the Gateway observes the recorded milestones:
+The new version is checked while the old Gateway serves. An already-current
+update restarts a running Gateway when plugins change or its service points at a
+different installation. Update runs can send these notices in that chat as the
+Gateway observes the recorded milestones:
 
 1. An acknowledgement when the update is accepted.
 2. `⏳ Restarting the gateway now (v<from> → v<to>)…` when activation is recorded before the Gateway stops.

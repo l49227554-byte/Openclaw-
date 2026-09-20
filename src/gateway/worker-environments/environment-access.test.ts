@@ -12,7 +12,7 @@ import type { WorkerNodeDesktopCarrier } from "./node-desktop-carrier.js";
 import { createWorkerNodePortalCarrier } from "./portal-node-carrier.js";
 import * as support from "./service.test-support.js";
 import { createWorkerEnvironmentStore } from "./store.js";
-import type { WorkerTunnelManager } from "./tunnel.js";
+import { createWorkerTunnelManager, type WorkerTunnelManager } from "./tunnel.js";
 import { measureLaunchTurn } from "./worker-turn-launcher.test-support.js";
 
 type WorkerEnvironmentServiceError = support.WorkerEnvironmentServiceError;
@@ -297,59 +297,65 @@ describe("worker environment service", () => {
     },
   );
 
-  it("revokes unopened desktop tickets across disable and re-enable of the same worker", async () => {
-    support.testState.nowMs = Date.now();
-    const record = support.seedReadyDesktop("worker-desktop-old-ticket");
-    const tunnelManager = {
-      desktop: {
-        acquire: vi.fn(async () => ({
-          attachment: { kind: "unix-socket" as const, socketPath: "/tmp/worker-desktop.sock" },
-        })),
-        stop: vi.fn(async () => {}),
-      },
-      stopAll: vi.fn(async () => {}),
-    } as unknown as WorkerTunnelManager;
-    const workerService = support.createService(support.createProvider(), { tunnelManager });
-    const observed = await workerService.observeDesktop({
-      environmentId: record.environmentId,
-      control: false,
-    });
-    support.testState.config.cloudWorkers!.desktop = false;
-    await workerService.reconcileDesktopPolicy();
-    support.testState.config.cloudWorkers!.desktop = true;
-    await workerService.reconcileDesktopPolicy();
-    expect(observed.expiresAtMs).toBeGreaterThan(Date.now());
-
-    const registry = { attachObserver: vi.fn(), claimStream: vi.fn() };
-    const server = createServer();
-    server.on("upgrade", (request, socket, head) => {
-      observeBridge.handleDesktopObserveUpgrade(request, socket, head, { registry });
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected desktop observer server address");
-    }
-    const observer = new WebSocket(`ws://127.0.0.1:${address.port}${observed.wsPath}`);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        observer.once("open", () => reject(new Error("Retired desktop ticket was accepted")));
-        observer.once("unexpected-response", (_request, response) => {
-          response.resume();
-          if (response.statusCode === 401) {
-            resolve();
-          } else {
-            reject(new Error(`Expected revoked ticket rejection, got ${response.statusCode}`));
-          }
-        });
-        observer.once("error", () => undefined);
+  it.each([true, false])(
+    "revokes unopened desktop tickets across disable and re-enable (initially enabled: %s)",
+    async (initiallyEnabled) => {
+      support.testState.nowMs = Date.now();
+      const record = support.seedReadyDesktop("worker-desktop-old-ticket");
+      const tunnelManager = createWorkerTunnelManager();
+      vi.spyOn(tunnelManager.desktop, "acquire").mockResolvedValue({
+        attachment: { kind: "unix-socket", socketPath: "/tmp/worker-desktop.sock" },
       });
-      expect(registry.attachObserver).not.toHaveBeenCalled();
-    } finally {
-      observer.terminate();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-    }
-  });
+      support.testState.config.cloudWorkers!.desktop = initiallyEnabled;
+      const workerService = support.createService(support.createProvider(), { tunnelManager });
+      // Config publication can admit a request before its policy reconciliation runs.
+      support.testState.config.cloudWorkers!.desktop = true;
+      const observed = await workerService.observeDesktop({
+        environmentId: record.environmentId,
+        control: false,
+      });
+      await workerService.reconcileDesktopPolicy();
+      support.testState.config.cloudWorkers!.desktop = false;
+      await workerService.reconcileDesktopPolicy();
+      support.testState.config.cloudWorkers!.desktop = true;
+      await workerService.reconcileDesktopPolicy();
+      expect(observed.expiresAtMs).toBeGreaterThan(Date.now());
+
+      const registry = { attachObserver: vi.fn(), claimStream: vi.fn() };
+      const server = createServer();
+      server.on("upgrade", (request, socket, head) => {
+        observeBridge.handleDesktopObserveUpgrade(request, socket, head, { registry });
+      });
+      await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected desktop observer server address");
+      }
+      const observer = new WebSocket(`ws://127.0.0.1:${address.port}${observed.wsPath}`);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          observer.once("open", () => reject(new Error("Retired desktop ticket was accepted")));
+          observer.once("unexpected-response", (_request, response) => {
+            response.resume();
+            if (response.statusCode === 401) {
+              resolve();
+            } else {
+              reject(new Error(`Expected revoked ticket rejection, got ${response.statusCode}`));
+            }
+          });
+          observer.once("error", () => undefined);
+        });
+        expect(registry.attachObserver).not.toHaveBeenCalled();
+      } finally {
+        observer.terminate();
+        await new Promise<void>((resolve) => {
+          server.close(() => resolve());
+        });
+      }
+    },
+  );
 
   it("stops the node transport that owns a timed-out start", async () => {
     support.testState.config.cloudWorkers!.profiles!.development!.provider = "device";
@@ -840,17 +846,16 @@ describe("worker environment service", () => {
     async ({ operation, reenable }) => {
       const record = support.seedReadyDesktop(`worker-desktop-policy-${operation}`);
       const startup = createDeferred();
-      const acquire = vi.fn(async () => {
+      const tunnelManager = createWorkerTunnelManager();
+      const acquire = vi.spyOn(tunnelManager.desktop, "acquire").mockImplementation(async () => {
         await startup.promise;
         return {
           attachment: { kind: "unix-socket" as const, socketPath: "/tmp/worker-desktop.sock" },
         };
       });
-      const launchApp = vi.fn(async () => await startup.promise);
-      const tunnelManager = {
-        desktop: { acquire, launchApp, stop: vi.fn(async () => {}) },
-        stopAll: vi.fn(async () => {}),
-      } as unknown as WorkerTunnelManager;
+      const launchApp = vi
+        .spyOn(tunnelManager.desktop, "launchApp")
+        .mockImplementation(async () => await startup.promise);
       const workerService = support.createService(support.createProvider(), { tunnelManager });
       const mint = vi.spyOn(observeBridge, "mintDesktopObserverToken");
       const pending =

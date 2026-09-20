@@ -582,6 +582,7 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
     if (enabled !== desktopEnabled) {
       desktopEnabled = enabled;
       if (enabled) {
+        desktopPolicy.abort();
         desktopPolicy = new AbortController();
       }
     }

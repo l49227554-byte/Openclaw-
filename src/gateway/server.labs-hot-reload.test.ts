@@ -1,5 +1,6 @@
 // Exercise Labs through the same authenticated config RPC used by Settings.
 import net from "node:net";
+import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { afterEach, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import type {
@@ -52,7 +53,9 @@ afterEach(async () => {
         peer.destroy();
       }
       if (rfbServer) {
-        await new Promise<void>((resolve) => rfbServer!.close(() => resolve()));
+        await new Promise<void>((resolve) => {
+          rfbServer!.close(() => resolve());
+        });
         rfbServer = undefined;
       }
     },
@@ -215,7 +218,7 @@ it("applies all Labs switches through config.patch without restarting the Gatewa
     const observer = new WebSocket(`ws://127.0.0.1:${port}${wsPath}`);
     observers.push(observer);
     const banner = new Promise<string>((resolve, reject) => {
-      observer.once("message", (data) => resolve(data.toString()));
+      observer.once("message", (data) => resolve(rawDataToString(data)));
       observer.once("error", reject);
       observer.once("close", () => reject(new Error("desktop closed before VNC banner")));
     });

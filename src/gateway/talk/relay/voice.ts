@@ -98,14 +98,22 @@ export function enqueueRelayVoiceTranscript(
   if (!normalizedText) {
     return true;
   }
-  // Only the provider's own input-item id proves two finals are revisions of one utterance.
-  // Text similarity cannot: "Hi." is a prefix of "History please.", and a repeated sentence
-  // is indistinguishable from a re-transcription. Without an id, every final keeps its row.
+  // Two independent questions decide whether this final may wait for a revision.
+  //
+  // What may coalesce: only the provider's own input-item id proves two finals are
+  // revisions of one utterance. Text similarity cannot -- "Hi." is a prefix of "History
+  // please.", and a repeated sentence is indistinguishable from a re-transcription.
+  //
+  // Whether waiting is safe: only while a turn is live, because the turn's terminal is what
+  // settles a held final. Providers may finish input transcription after the response ends
+  // (OpenAI explicitly allows it), and a final arriving then has nothing left to drain it,
+  // so it persists immediately instead.
   //
   // A live spoken-confirmation challenge is already blocked on this final's durable row,
-  // so it keeps the immediate append; only ordinary speech is held and revised.
+  // so it also keeps the immediate append; only ordinary speech is held and revised.
   const revisable =
     utteranceId !== undefined &&
+    session.harness?.talk?.activeTurnId !== undefined &&
     !readClientVoiceConfirmationReadiness(session.sessionTarget.agentId, session.id);
   const pending = session.voicePendingUserFinal;
   if (revisable && pending?.utteranceId === utteranceId) {

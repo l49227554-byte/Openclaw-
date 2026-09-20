@@ -131,6 +131,20 @@ describe("realtime relay voice transcript rows", () => {
     expect(await userRows()).toEqual(["Hi.", "History please.", "History please."]);
   });
 
+  // OpenAI allows input transcription to finish after the response events, so a completed
+  // user transcript can arrive once the turn has already ended. Nothing is left to settle a
+  // held final at that point, so it must persist immediately. Drained directly rather than
+  // through flushTalkRealtimeRelayVoiceWrites, which would settle it and hide the defect.
+  it("persists a completed final that arrives after the response ended", async () => {
+    const { relay, request, onTranscript, userRows } = await startRelay();
+
+    request.onResponseDone?.({ responseId: "response-1", status: "completed" });
+    onTranscript("user", "Late transcription of my question.", true, "item_a");
+    await relay.voiceTranscriptQueue.flush();
+
+    expect(await userRows()).toEqual(["Late transcription of my question."]);
+  });
+
   it("persists a held final when its response is cancelled", async () => {
     const { relay, request, onTranscript, userRows } = await startRelay();
 

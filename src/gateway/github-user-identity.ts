@@ -29,7 +29,7 @@ const GITHUB_ETAG_MAX_LENGTH = 1_024;
 type ResolvedGitHubUserIdentity = { accountId: number; login: string; name?: string };
 type ResolvedCloudflareAccessIdentity =
   | { provider: "github"; accountId: number; initialDisplayName?: string }
-  | { provider: "oidc"; email: string; accountId?: number };
+  | { provider: "oidc"; accountId?: number };
 type GitHubIdentityLookup = { identity: ResolvedGitHubUserIdentity; refreshed: boolean };
 type GitHubIdentityMetadataCache = {
   values: Map<string, { identity: ResolvedGitHubUserIdentity; expiresAt: number; etag?: string }>;
@@ -121,7 +121,7 @@ async function resolveCloudflareAccessIdentity(
       !isRecord(payload.oidc_fields) ||
       !Object.hasOwn(payload.oidc_fields, oidcConfig.githubAccountIdClaim)
     ) {
-      return { provider: "oidc", email };
+      return { provider: "oidc" };
     }
     const claim = payload.oidc_fields[oidcConfig.githubAccountIdClaim];
     if (
@@ -131,7 +131,7 @@ async function resolveCloudflareAccessIdentity(
     ) {
       throw new Error("Cloudflare Access OIDC GitHub account id is invalid");
     }
-    return { provider: "oidc", email, accountId: Number(claim) };
+    return { provider: "oidc", accountId: Number(claim) };
   }
   if (payload.idp.type !== "github") {
     throw new Error("Cloudflare Access identity provider is unsupported");
@@ -316,17 +316,18 @@ export function createAuthenticatedGitHubIdentitySync(params: {
       access.principal,
       params.authConfig?.trustedProxy?.cloudflareAccessOidc,
     );
-    if (accessIdentity.accountId === undefined) {
-      const profile = ensureProfileForEmail(accessIdentity.email);
+    const accountId = accessIdentity.accountId;
+    if (accountId === undefined) {
+      const profile = ensureProfileForEmail(access.principal);
       return { profileId: profile.id, updatedAt: profile.updatedAt };
     }
-    const identityBinding = { accountId: accessIdentity.accountId, email: access.principal };
+    const identityBinding = { accountId, email: access.principal };
     // Service auth raises public-data quota; Access still owns the signed-in account id.
     const token = githubApiToken();
     let lookup: GitHubIdentityLookup;
     try {
       lookup = await gitHubPublicApi.withOptionalGitHubAuth(token, (requestToken) =>
-        resolveGitHubUserIdentityById(accessIdentity.accountId, requestToken, fetch),
+        resolveGitHubUserIdentityById(accountId, requestToken, fetch),
       );
     } catch (error) {
       if (error instanceof gitHubPublicApi.ControlUiGitHubError && error.retryable) {

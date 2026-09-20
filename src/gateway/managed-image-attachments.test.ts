@@ -40,8 +40,10 @@ import {
 } from "../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseByPathAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { createFixture } from "./managed-image-attachments.test-support.js";
@@ -291,6 +293,53 @@ async function prepareManagedSessionStore(stateDir: string): Promise<void> {
   getRuntimeConfigMock.mockReturnValue({ session: { store: storePath } });
 }
 
+function usePreparedManagedImageState(prefix: string, bindState: (stateDir: string) => void): void {
+  let stateDir: string;
+  const suiteDirs = useAutoCleanupTempDirTracker((cleanup) =>
+    afterAll(async () => {
+      if (stateDir) {
+        await closeOpenClawStateDatabaseByPathAsync(
+          resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: stateDir }),
+        );
+        closeOpenClawAgentDatabasesForTest();
+      }
+      cleanup();
+    }),
+  );
+  beforeAll(async () => {
+    stateDir = suiteDirs.make(prefix);
+    bindState(stateDir);
+    await prepareManagedSessionStore(stateDir);
+  });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authorizeGatewayHttpRequestOrReplyMock.mockReset();
+    resolveOpenAiCompatibleHttpOperatorScopesMock.mockReset();
+    resolveOpenAiCompatibleHttpSenderIsOwnerMock.mockReset();
+    loadSessionEntryMock.mockReset();
+    readSessionMessagesMock.mockReset();
+    resolvePlaybackTranscodeMock.mockReset().mockResolvedValue({ kind: "passthrough" });
+    getRuntimeConfigMock.mockReturnValue({
+      session: { store: path.join(stateDir, "sessions.sqlite") },
+    });
+  });
+  afterEach(async () => {
+    await cleanupManagedOutgoingImageRecords({ stateDir, forceDeleteSessionRecords: true });
+    // Keep both database identities and their workers; discard only case-owned artifacts.
+    const retained = new Set([
+      "state",
+      "sessions.sqlite",
+      "sessions.sqlite-wal",
+      "sessions.sqlite-shm",
+    ]);
+    await Promise.all(
+      (await fs.readdir(stateDir))
+        .filter((name) => !retained.has(name))
+        .map((name) => fs.rm(path.join(stateDir, name), { recursive: true, force: true })),
+    );
+  });
+}
+
 async function requestManagedImage(params: {
   stateDir: string;
   pathName: string;
@@ -401,17 +450,8 @@ async function requestManagedImage(params: {
 
 describe("handleManagedOutgoingImageHttpRequest", () => {
   let stateDir: string;
-
-  beforeEach(async () => {
-    stateDir = tempDirs.make("managed-images-");
-    vi.clearAllMocks();
-    await prepareManagedSessionStore(stateDir);
-  });
-
-  afterEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(stateDir, { recursive: true, force: true });
+  usePreparedManagedImageState("managed-images-", (prepared) => {
+    stateDir = prepared;
   });
 
   it("serves full images for authorized chat-history readers", async () => {
@@ -1378,11 +1418,8 @@ describe("handleManagedOutgoingImageHttpRequest", () => {
 
 describe("createManagedOutgoingImageBlocks", () => {
   let stateDir: string;
-
-  beforeEach(async () => {
-    stateDir = tempDirs.make("managed-image-blocks-");
-    vi.clearAllMocks();
-    await prepareManagedSessionStore(stateDir);
+  usePreparedManagedImageState("managed-image-blocks-", (prepared) => {
+    stateDir = prepared;
   });
 
   it("prepares deduplicated media with metadata and per-item trust aligned by URL", () => {
@@ -1419,12 +1456,6 @@ describe("createManagedOutgoingImageBlocks", () => {
         trustedLocal: true,
       },
     ]);
-  });
-
-  afterEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(stateDir, { recursive: true, force: true });
   });
 
   it("creates inline/open blocks that both point at the full image", async () => {
@@ -1958,8 +1989,9 @@ describe("createManagedOutgoingImageBlocks", () => {
         },
       );
     } finally {
-      await closeOpenClawStateDatabaseAsync();
-      closeOpenClawStateDatabaseForTest();
+      await closeOpenClawStateDatabaseByPathAsync(
+        resolveOpenClawStateSqlitePath({ OPENCLAW_STATE_DIR: splitStateDir }),
+      );
       await fs.rm(openClawHome, { recursive: true, force: true });
       await fs.rm(externalConfigDir, { recursive: true, force: true });
     }
@@ -2519,17 +2551,8 @@ describe("createManagedOutgoingImageBlocks", () => {
 
 describe("attachManagedOutgoingImagesToMessage", () => {
   let stateDir: string;
-
-  beforeEach(async () => {
-    stateDir = tempDirs.make("managed-image-attach-");
-    vi.clearAllMocks();
-    await prepareManagedSessionStore(stateDir);
-  });
-
-  afterEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    await fs.rm(stateDir, { recursive: true, force: true });
+  usePreparedManagedImageState("managed-image-attach-", (prepared) => {
+    stateDir = prepared;
   });
 
   it("upgrades transient image records to history when the message is committed", async () => {

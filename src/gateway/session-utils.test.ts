@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
 import { resolveExecDefaults } from "../agents/exec-defaults.js";
 import { resolveLegacyInheritedAuthAgentId } from "../agents/legacy-inherited-auth-dir.js";
@@ -35,6 +36,8 @@ import {
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
 import { withStateDirEnv as withRawStateDirEnv } from "../test-helpers/state-dir-env.js";
+import { withEnvAsync } from "../test-utils/env.js";
+import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import { registerSessionAutomationSource } from "./session-automation-index.js";
@@ -183,6 +186,29 @@ async function withStateDirEnv<T>(
     } finally {
       await closeSessionSqliteDatabasesForTest();
     }
+  });
+}
+
+let agentPermissionStateDir: string | undefined;
+let pristineAgentApprovals:
+  | ReturnType<typeof execApprovalsStore.readExecApprovalsSnapshot>
+  | undefined;
+const agentPermissionDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterAll(async () => {
+    if (agentPermissionStateDir) {
+      await cleanupSessionStateForTest({ stateDir: agentPermissionStateDir });
+    }
+    cleanup();
+  }),
+);
+
+async function withAgentPermissionState<T>(fn: () => Promise<T>): Promise<T> {
+  // Permission rows share empty provenance; only their persisted approval policy varies.
+  agentPermissionStateDir ??= agentPermissionDirs.make("openclaw-agent-permission-");
+  return withEnvAsync({ OPENCLAW_STATE_DIR: agentPermissionStateDir }, async () => {
+    pristineAgentApprovals ??= execApprovalsStore.readExecApprovalsSnapshot();
+    execApprovalsStore.restoreExecApprovalsSnapshot(pristineAgentApprovals);
+    return fn();
   });
 }
 
@@ -4636,7 +4662,7 @@ describe("gateway session utils", () => {
   ] as const)(
     "listAgentsForGateway labels global %j plus agent %j as %s",
     async (globalExec, agentExec, expected) => {
-      await withStateDirEnv("openclaw-agent-permission-label-", async () => {
+      await withAgentPermissionState(async () => {
         const cfg: OpenClawConfig = {
           tools: { exec: globalExec },
           agents: { entries: { main: { tools: { exec: agentExec } } } },
@@ -4712,7 +4738,7 @@ describe("gateway session utils", () => {
       expected: "guarded",
     },
   ])("listAgentsForGateway never overstates $name", async ({ cfg, approvals, expected }) => {
-    await withStateDirEnv("openclaw-agent-permission-floor-", async () => {
+    await withAgentPermissionState(async () => {
       execApprovalsStore.saveExecApprovals(approvals);
       const agent = (await listAgentsForGateway(cfg)).agents.find((entry) => entry.id === "main");
       expect(agent).toBeDefined();
@@ -4731,7 +4757,7 @@ describe("gateway session utils", () => {
   });
 
   test("listAgentsForGateway shares one approvals read across agent permission labels", async () => {
-    await withStateDirEnv("openclaw-agent-permission-roster-", async () => {
+    await withAgentPermissionState(async () => {
       const cfg: OpenClawConfig = {
         tools: { exec: { mode: "ask" } },
         agents: {

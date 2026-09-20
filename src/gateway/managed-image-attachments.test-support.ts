@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -20,8 +21,9 @@ export async function createFixture(
 ) {
   const attachmentId = options?.attachmentId ?? "11111111-1111-4111-8111-111111111111";
   const sessionKey = options?.sessionKey ?? "agent:main:main";
-  const filename = options?.filename ?? `${attachmentId}-cat-full.png`;
-  const originalPath = path.join(stateDir, "media", MANAGED_OUTGOING_ORIGINALS_SUBDIR, filename);
+  const filename = options?.filename ?? "cat.png";
+  const mediaId = `${randomUUID()}-${filename}`;
+  const originalPath = path.join(stateDir, "media", MANAGED_OUTGOING_ORIGINALS_SUBDIR, mediaId);
   await fs.mkdir(path.dirname(originalPath), { recursive: true });
   const body = options?.body ?? Buffer.from("original-image");
   await fs.writeFile(originalPath, body);
@@ -35,13 +37,13 @@ export async function createFixture(
       alt: "Cat",
       original: {
         mediaRoot: path.join(stateDir, "media"),
-        mediaId: filename,
+        mediaId,
         mediaSubdir: MANAGED_OUTGOING_ORIGINALS_SUBDIR,
         contentType: options?.contentType ?? "image/png",
         width: options?.contentType?.startsWith("image/") === false ? null : 1024,
         height: options?.contentType?.startsWith("image/") === false ? null : 768,
         sizeBytes: body.byteLength,
-        filename: options?.filename ?? "cat.png",
+        filename,
       },
     },
     stateDir,

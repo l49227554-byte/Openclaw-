@@ -251,6 +251,27 @@ function selectRouteCompatibleEventCohort(events: readonly SystemEvent[]): {
 }
 
 /**
+ * Generic queue content rides along with a dedicated cohort only when it cannot
+ * redirect the turn: the cohort's route owns delivery, so a generic event must
+ * carry that same route or carry none at all. Differently routed events stay
+ * queued for a wake that owns their conversation.
+ */
+function selectRouteCompatibleGenericEvents(
+  candidates: readonly SystemEvent[],
+  authority: DeliveryContext | undefined,
+): SystemEvent[] {
+  const authorityKey = authority ? channelRouteDedupeKey(authority) : undefined;
+  return candidates.filter((event) => {
+    if (event.deliveryContext === undefined) {
+      return true;
+    }
+    return (
+      authorityKey !== undefined && channelRouteDedupeKey(event.deliveryContext) === authorityKey
+    );
+  });
+}
+
+/**
  * Selects one route-authorized event cohort for this turn. Content admission,
  * delivery authority, and queue consumption must all use this same selection.
  * Differently routed events remain queued for a later wake.
@@ -278,6 +299,8 @@ export function resolveHeartbeatTurnEventSelection(params: {
     }
   }
 
+  // A scheduled turn is not event-derived: its authority comes from the job's own
+  // configured destination, so no queued event supplies a route to ride along on.
   if (params.scheduledTasks.length > 0) {
     return {
       execEvents: [],
@@ -297,7 +320,10 @@ export function resolveHeartbeatTurnEventSelection(params: {
       // Preserve awareness of queued cron work without admitting or consuming it.
       cronEvents: cronCandidates,
       cronNoise,
-      genericEvents: [],
+      genericEvents: selectRouteCompatibleGenericEvents(
+        genericCandidates,
+        selected.turnSourceDeliveryContext,
+      ),
       turnSourceDeliveryContext: routeAuthority(selected),
     };
   }
@@ -308,7 +334,10 @@ export function resolveHeartbeatTurnEventSelection(params: {
       execEvents: [],
       cronEvents: selected.events,
       cronNoise,
-      genericEvents: [],
+      genericEvents: selectRouteCompatibleGenericEvents(
+        genericCandidates,
+        selected.turnSourceDeliveryContext,
+      ),
       turnSourceDeliveryContext: routeAuthority(selected),
     };
   }

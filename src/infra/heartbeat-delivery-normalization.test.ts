@@ -7,6 +7,7 @@ import { classifyHeartbeatAgentOutcome } from "./heartbeat-delivery-normalizatio
 import {
   resolveHeartbeatRunPrompt,
   resolveHeartbeatTurnEventSelection,
+  type HeartbeatPreflight,
 } from "./heartbeat-runner-prompt.js";
 
 describe("classifyHeartbeatAgentOutcome (#153543)", () => {
@@ -71,7 +72,7 @@ describe("classifyHeartbeatAgentOutcome (#153543)", () => {
 
 describe("resolveHeartbeatRunPrompt (#153543)", () => {
   it("selects one route cohort and excludes foreign queued content", () => {
-    const preflight = {
+    const preflight: HeartbeatPreflight = {
       isExecEventWake: true,
       isCronWake: false,
       isWakePayload: false,
@@ -79,7 +80,7 @@ describe("resolveHeartbeatRunPrompt (#153543)", () => {
         sessionKey: "agent:main:heartbeat",
         inspectsRunQueue: true,
         entry: undefined,
-        run: { kind: "shared" as const, sessionKey: "agent:main:heartbeat" },
+        run: { kind: "shared", sessionKey: "agent:main:heartbeat" },
         conversationEntry: undefined,
         storePath: "/tmp/store.json",
         suppressOriginatingContext: false,
@@ -127,6 +128,86 @@ describe("resolveHeartbeatRunPrompt (#153543)", () => {
       eventSelection,
     });
     expect(result.genericEvents).toEqual([]);
+    expect(result.prompt).not.toContain("private task content from conversation B");
+  });
+
+  it("admits route-compatible generic events alongside the selected exec cohort", () => {
+    const preflight: HeartbeatPreflight = {
+      isExecEventWake: true,
+      isCronWake: false,
+      isWakePayload: false,
+      session: {
+        sessionKey: "agent:main:heartbeat",
+        inspectsRunQueue: true,
+        entry: undefined,
+        run: { kind: "shared", sessionKey: "agent:main:heartbeat" },
+        conversationEntry: undefined,
+        storePath: "/tmp/store.json",
+        suppressOriginatingContext: false,
+      },
+      pendingEventEntries: [
+        {
+          id: "exec-a",
+          ts: 1,
+          text: "exec finished: route-a",
+          contextKey: "exec:a",
+          deliveryContext: { channel: "discord", to: "conversation-a" },
+        },
+        {
+          id: "generic-same-route",
+          ts: 2,
+          text: "Gateway restart ok: queued notification",
+          contextKey: "task:same-route",
+          deliveryContext: { channel: "discord", to: "conversation-a" },
+        },
+        {
+          id: "generic-unrouted",
+          ts: 3,
+          text: "Gateway restart ok: no route of its own",
+          contextKey: "task:unrouted",
+        },
+        {
+          id: "generic-foreign",
+          ts: 4,
+          text: "private task content from conversation B",
+          contextKey: "task:b",
+          deliveryContext: { channel: "feishu", to: "user:b" },
+        },
+      ],
+      turnSourceDeliveryContext: { channel: "feishu", to: "user:b" },
+      hasTaggedCronEvents: false,
+      shouldInspectPendingEvents: true,
+      authoritativeScheduledTick: false,
+    };
+
+    const eventSelection = resolveHeartbeatTurnEventSelection({
+      preflight,
+      scheduledTasks: [],
+    });
+
+    // Same-route and unrouted content rides along; conversation B stays queued.
+    expect(eventSelection.genericEvents.map((event) => event.id)).toEqual([
+      "generic-same-route",
+      "generic-unrouted",
+    ]);
+    expect(eventSelection.turnSourceDeliveryContext).toMatchObject({
+      channel: "discord",
+      to: "conversation-a",
+    });
+
+    const result = resolveHeartbeatRunPrompt({
+      cfg: {},
+      preflight,
+      canRelayToUser: true,
+      startedAt: 5,
+      scheduledTasks: [],
+      useHeartbeatResponseTool: false,
+      eventSelection,
+    });
+    expect(result.genericEvents.map((event) => event.id)).toEqual([
+      "generic-same-route",
+      "generic-unrouted",
+    ]);
     expect(result.prompt).not.toContain("private task content from conversation B");
   });
 

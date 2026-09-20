@@ -132,6 +132,7 @@ it.each(["running", "queued", "capacity-wait"] as const)(
               visited++;
               yield entry;
             }
+            return undefined;
           });
           replaceSessionEntrySync(
             { agentId: "main", sessionKey: movedParent },

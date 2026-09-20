@@ -78,8 +78,11 @@ async function installNative(page: Page) {
                   const snapshot = selectedAgent;
                   return new Promise<typeof selectedAgent>((resolve, reject) => {
                     releaseIdentity = (fail) => {
-                      if (fail) reject(new Error("Identity refresh unavailable"));
-                      else resolve(snapshot);
+                      if (fail) {
+                        reject(new Error("Identity refresh unavailable"));
+                      } else {
+                        resolve(snapshot);
+                      }
                     };
                   });
                 }

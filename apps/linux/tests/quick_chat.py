@@ -214,18 +214,26 @@ class QuickChatFixture(GatewayFixture):
         def value():
             return Atspi.Text.get_text(message().get_text_iface(), 0, -1)
 
+        def point_at(bounds):
+            if bounds.width <= 0 or bounds.height <= 0:
+                raise RuntimeError("Quick Chat control has no visible bounds")
+            x, y = bounds.x + bounds.width // 2, bounds.y + bounds.height // 2
+            # Querying coordinates also handles a pointer already resting at the target.
+            self.chrome.command("xdotool", "mousemove", str(x), str(y))
+            location = dict(line.split("=", 1) for line in self.chrome.command(
+                "xdotool", "getmouselocation", "--shell",
+            ).splitlines())
+            if (int(location["X"]), int(location["Y"])) != (x, y):
+                raise RuntimeError("The native pointer did not reach the Quick Chat control")
+            return int(location["WINDOW"])
+
         def fill(text):
             control = wait(
                 "Quick Chat message", ("entry", "text", "text entry"),
                 predicate=lambda node: node.get_state_set().contains(Atspi.StateType.EDITABLE),
             )
-            bounds = control.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
-            if bounds.width <= 0 or bounds.height <= 0:
-                raise RuntimeError("Quick Chat message has no visible bounds")
-            self.chrome.command(
-                "xdotool", "mousemove", "--sync", str(bounds.x + bounds.width // 2),
-                str(bounds.y + bounds.height // 2), "click", "1",
-            )
+            point_at(control.get_component_iface().get_extents(Atspi.CoordType.SCREEN))
+            self.chrome.command("xdotool", "click", "1")
             self.chrome.command("xdotool", "key", "--clearmodifiers", "ctrl+a")
             self.chrome.command("xdotool", "type", "--clearmodifiers", "--delay", "10", text)
             self.chrome.until(lambda: value() == text, "the entered Quick Chat draft")
@@ -233,13 +241,8 @@ class QuickChatFixture(GatewayFixture):
         def click(label, roles=("button", "push button")):
             control = wait(label, roles, predicate=lambda node:
                            node.get_state_set().contains(Atspi.StateType.SENSITIVE))
-            rect = control.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
-            if rect.width <= 0 or rect.height <= 0:
-                raise RuntimeError(f"Quick Chat control has no visible bounds: {label}")
-            self.chrome.command(
-                "xdotool", "mousemove", "--sync", str(rect.x + rect.width // 2),
-                str(rect.y + rect.height // 2), "click", "1",
-            )
+            point_at(control.get_component_iface().get_extents(Atspi.CoordType.SCREEN))
+            self.chrome.command("xdotool", "click", "1")
 
         def disclosure(expanded):
             self.chrome.until(
@@ -320,17 +323,7 @@ class QuickChatFixture(GatewayFixture):
         child = wait("Mark item reviewed", ("button", "push button"))
         child_bounds = child.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
 
-        def widget_hit_window():
-            self.chrome.command(
-                "xdotool", "mousemove", "--sync", str(child_bounds.x + child_bounds.width // 2),
-                str(child_bounds.y + child_bounds.height // 2),
-            )
-            location = dict(line.split("=", 1) for line in self.chrome.command(
-                "xdotool", "getmouselocation", "--shell",
-            ).splitlines())
-            return int(location["WINDOW"])
-
-        self.widget_hit_windows["expanded"] = widget_hit_window()
+        self.widget_hit_windows["expanded"] = point_at(child_bounds)
         self.capture("widget-expanded", expanded=True)
         click("Collapse reply")
         disclosure(False)
@@ -341,7 +334,7 @@ class QuickChatFixture(GatewayFixture):
                 str(self.artifacts_dir / "quick-chat-widget-collapsed-desktop.png"),
             )
         # WebKit retains descendant SHOWING after GTK hides its WebView. Test native hit behavior.
-        self.widget_hit_windows["collapsed"] = widget_hit_window()
+        self.widget_hit_windows["collapsed"] = point_at(child_bounds)
         if self.widget_hit_windows["collapsed"] == self.widget_hit_windows["expanded"]:
             raise RuntimeError("The collapsed widget remained the native pointer target")
         click("Expand reply")
@@ -349,7 +342,7 @@ class QuickChatFixture(GatewayFixture):
         wait("Items reviewed: 1")
         if self.widget_state != {"count": 1, "trusted": True}:
             raise RuntimeError("Collapsing or reopening changed the retained widget counter")
-        self.widget_hit_windows["reopened"] = widget_hit_window()
+        self.widget_hit_windows["reopened"] = point_at(child_bounds)
         if self.widget_hit_windows["reopened"] != self.widget_hit_windows["expanded"]:
             raise RuntimeError("Reopening did not restore the native widget pointer target")
         click("Mark item reviewed")

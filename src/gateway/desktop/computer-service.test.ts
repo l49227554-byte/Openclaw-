@@ -245,11 +245,13 @@ describe("Gateway computer service", () => {
     f.config.desktop!.host!.enabled = false;
     const started = createDeferredCore();
     const ready = createDeferredCore();
+    const close = vi.fn<ComputerHostProcess["close"]>();
     const startProcess = vi.mocked(startComputerHostProcess).getMockImplementation()!;
     vi.mocked(startComputerHostProcess).mockImplementationOnce((options) => {
       const child = startProcess(options);
+      close.mockImplementation((execution) => child.close(execution));
       started.resolve();
-      return { ...child, ready: ready.promise.then(() => child.ready) };
+      return { ...child, close, ready: ready.promise.then(() => child.ready) };
     });
     const discovering = f.service.status();
     try {
@@ -259,7 +261,7 @@ describe("Gateway computer service", () => {
       ready.resolve();
     }
     expect(await discovering).toMatchObject({ available: false });
-    expect(f.children[0]!.close).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
     expect(await f.service.status()).toMatchObject({ available: true });
     expect(startComputerHostProcess).toHaveBeenCalledTimes(2);
     expect(vi.mocked(startComputerHostProcess).mock.calls[1]![0].env === f.leases[0]!.env).toBe(

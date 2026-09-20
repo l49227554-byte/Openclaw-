@@ -266,7 +266,7 @@ suite.define(() => {
               path: path.join(suite.artifactDir, "02-recovered-image.png"),
             });
           }
-          await preview.click();
+          await recoveredPane.locator(".chat-message-image-button").press("Enter");
           const expanded = page.locator("openclaw-image-lightbox .image");
           await expanded.waitFor({ state: "visible" });
           await expect

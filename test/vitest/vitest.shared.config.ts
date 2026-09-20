@@ -32,7 +32,7 @@ export type { LocalVitestScheduling };
 
 export const jsdomOptimizedDeps = {
   optimizer: {
-    web: {
+    client: {
       enabled: true,
       include: ["lit", "lit-html", "@lit/reactive-element"] as string[],
     },

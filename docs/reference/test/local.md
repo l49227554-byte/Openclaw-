@@ -94,6 +94,11 @@ Filesystem transform caching uses `test.fsModuleCache` and
 `test.fsModuleCachePath`; the existing `OPENCLAW_VITEST_FS_MODULE_CACHE` and
 `OPENCLAW_VITEST_FS_MODULE_CACHE_PATH` controls retain their ownership and
 disable behavior. Cache-key plugins use `defineCacheKeyGenerator`.
+The jsdom lanes optimize Lit dependencies through `deps.optimizer.client`.
+When `NODE_COMPILE_CACHE` is configured, test launchers preserve it for Vitest
+and its workers. Vitest disables bytecode caching in workers and their child
+processes for V8 and custom coverage providers; explicit
+`NODE_DISABLE_COMPILE_CACHE=1` still disables caching for the entire invocation.
 Inline projects inherit root configuration in Vitest 5, including concatenated
 setup and include arrays. The four UI E2E resource projects declare
 `extends: false` because each supplies its complete inventory and setup.

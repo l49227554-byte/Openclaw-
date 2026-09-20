@@ -81,35 +81,27 @@ type DetectLegacyStateParams = Parameters<typeof detectLegacyStateMigrationsWith
 type RunLegacyStateParams = Parameters<typeof runLegacyStateMigrationsWithSurfaces>[0];
 type AutoMigrateLegacyStateParams = Parameters<typeof autoMigrateLegacyStateWithSurfaces>[0];
 
+type CoreMigrationParams<T> = Omit<T, "legacySessionSurfaces"> & {
+  legacySessionSurfaces?: DetectLegacyStateParams["legacySessionSurfaces"];
+};
+
 // This broad core suite intentionally exercises migration mechanics without plugin-owned keys.
 // Package-shaped coverage owns configured plugin resolution and setup-sidecar loading.
-function detectLegacyStateMigrations(
-  params: Omit<DetectLegacyStateParams, "legacySessionSurfaces"> & {
-    legacySessionSurfaces?: DetectLegacyStateParams["legacySessionSurfaces"];
-  },
-) {
+function detectLegacyStateMigrations(params: CoreMigrationParams<DetectLegacyStateParams>) {
   return detectLegacyStateMigrationsWithSurfaces({
     legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
     ...params,
   });
 }
 
-function runLegacyStateMigrations(
-  params: Omit<RunLegacyStateParams, "legacySessionSurfaces"> & {
-    legacySessionSurfaces?: RunLegacyStateParams["legacySessionSurfaces"];
-  },
-) {
+function runLegacyStateMigrations(params: CoreMigrationParams<RunLegacyStateParams>) {
   return runLegacyStateMigrationsWithSurfaces({
     legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
     ...params,
   });
 }
 
-function autoMigrateLegacyState(
-  params: Omit<AutoMigrateLegacyStateParams, "legacySessionSurfaces"> & {
-    legacySessionSurfaces?: AutoMigrateLegacyStateParams["legacySessionSurfaces"];
-  },
-) {
+function autoMigrateLegacyState(params: CoreMigrationParams<AutoMigrateLegacyStateParams>) {
   return autoMigrateLegacyStateWithSurfaces({
     legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
     ...params,
@@ -1110,14 +1102,7 @@ describe("state migrations", () => {
         const result = await autoMigrateLegacyState({ cfg, env, homedir: () => root });
         expect(result).toMatchObject({ changes: [], warnings: [] });
         const ids = result.stepReceipts.map((receipt) => receipt.id);
-        const workshopIndex = ids.indexOf("skill-workshop");
-        expect(workshopIndex).toBeGreaterThan(ids.indexOf("workspace-state"));
-        expect(workshopIndex).toBeLessThan(ids.indexOf("plugin-doctor-state"));
-        expect(result.stepReceipts[workshopIndex]).toMatchObject({
-          outcome: "skipped",
-          changes: [],
-          requiredness: "conditional",
-        });
+        expect(ids).not.toContain("skill-workshop");
         if (bundle) {
           await expect(fs.readFile(bundle.path, "utf8")).resolves.toBe(bundle.content);
         }
@@ -1156,6 +1141,13 @@ describe("state migrations", () => {
         },
       });
       const workshop = result.stepReceipts.find((receipt) => receipt.id === "skill-workshop");
+      if (mode === "automatic") {
+        expect(result.warnings).toEqual([]);
+        expect(workshop).toBeUndefined();
+        expect(callbackSamples).toEqual([]);
+        await expect(fs.readFile(indexPath, "utf8")).resolves.toBe("{}\n");
+        return;
+      }
       expect(workshop).toMatchObject({
         phase: "final",
         source: [
@@ -1247,7 +1239,11 @@ describe("state migrations", () => {
           database
             .prepare("SELECT agent_id, app_version FROM schema_meta WHERE meta_key = ?")
             .get("historical-transcript-directives-v1"),
-        ).toEqual({ agent_id: "main", app_version: JSON.stringify({ phase: "complete" }) });
+        ).toEqual(
+          doctorOnlyStateMigrations
+            ? { agent_id: "main", app_version: JSON.stringify({ phase: "complete" }) }
+            : undefined,
+        );
         expect(
           database.prepare("SELECT session_key FROM session_nodes ORDER BY session_key").all(),
         ).toEqual([{ session_key: "agent:qa:proof" }]);
@@ -1320,7 +1316,7 @@ describe("state migrations", () => {
       agents: { ownership: "explicit", entries: { main: {} } },
       cron: { store },
     };
-    const result = await autoMigrateLegacyState({ cfg, env });
+    const result = await autoMigrateLegacyState({ cfg, env, invocationPurpose: "doctor" });
     expect(result.warnings).toContainEqual(
       expect.stringContaining("invalid historical transcript migration cursor"),
     );
@@ -3824,56 +3820,6 @@ describe("state migrations", () => {
     await expect(readRestartSentinel(env)).resolves.toMatchObject({ payload: expectedSentinel });
     await expectMissingPath(path.join(settingsDir, "voicewake.json"));
     await expectMissingPath(restartSentinelPath);
-  });
-
-  it("runs plugin doctor migrations after repairing shared state schema", async () => {
-    const { root, stateDir, env } = createMigrationContext(await createTempDir());
-    const cfg = createConfig();
-    const stateDbPath = path.join(stateDir, "state", "openclaw.sqlite");
-    await fs.mkdir(path.dirname(stateDbPath), { recursive: true });
-    const db = new DatabaseSync(stateDbPath);
-    try {
-      db.exec(`
-        CREATE TABLE agent_databases (
-          agent_id TEXT PRIMARY KEY,
-          path TEXT NOT NULL,
-          schema_version INTEGER NOT NULL,
-          last_seen_at INTEGER NOT NULL,
-          size_bytes INTEGER
-        );
-        INSERT INTO agent_databases VALUES ('main', 'agent.sqlite', 1, 10, 20);
-      `);
-    } finally {
-      db.close();
-    }
-    const migrateLegacyState = vi.fn(() => ({
-      changes: ["plugin state migrated"],
-      warnings: [],
-    }));
-    pluginDoctorStateMigrationEntries.entries = [
-      {
-        pluginId: "memory-core",
-        migration: {
-          id: "memory-core-test",
-          label: "Memory Core test migration",
-          detectLegacyState: () => ({ preview: ["plugin state"] }),
-          migrateLegacyState,
-        },
-      },
-    ];
-
-    const result = await autoMigrateLegacyPluginDoctorState({
-      config: cfg,
-      env,
-      homedir: () => root,
-    });
-
-    expect(result.warnings).toStrictEqual([]);
-    expect(result.changes).toContain(
-      "Migrated shared state agent database registry primary key → agent_id,path",
-    );
-    expect(result.changes).toContain("plugin state migrated");
-    expect(migrateLegacyState).toHaveBeenCalledOnce();
   });
 
   it("previews and repairs the released audit ledger before other state migrations", async () => {

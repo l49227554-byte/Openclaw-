@@ -186,7 +186,12 @@ These are intentionally guarded by `test/scripts/ci-workflow-guards.test.ts`:
   `security-fast` waits for its hosted budget decision and still runs after
   preflight failure unless the workflow was canceled. The protected `vitest-cache-warm` workflow
   publishes the immutable semantic dependency archive after setup succeeds,
-  before build and transform warming. Preflight and downstream Node jobs are
+  in an independent short job. Dependency and code publishers serialize per
+  backend/platform/ref without a workflow-wide lock or cross-platform dependency.
+  Hybrid adds a bounded hosted tooling/contract/UI seed and native SDK archive,
+  without repeating the full Linux build. Docs-only pushes skip warming. The split
+  adds one Blacksmith registration per eligible warmer admission, not per CI job;
+  include short-publisher turnover in burst estimates. Preflight and downstream Node jobs are
   restore-only consumers on eligible self-hosted runners. Exact misses and
   hosted paths, including Mac Node jobs, use the ordinary pnpm-store cache.
 - `ci-gate` always uses `ubuntu-24.04` for its Bash-only result aggregation,

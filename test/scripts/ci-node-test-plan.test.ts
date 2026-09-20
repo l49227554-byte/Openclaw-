@@ -1002,6 +1002,24 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     });
   });
 
+  it("bounds the hybrid hosted seed to real consumer configs without runtime builds", () => {
+    const groups = createVitestCacheWarmGroups("hybrid-hosted");
+    expect(groups).toHaveLength(7);
+    expect(groups.every((group) => group.configs.length === 1)).toBe(true);
+    expect(groups.every((group) => (group.includePatterns?.length ?? 0) > 0)).toBe(true);
+    const files = groups.flatMap((group) => group.includePatterns ?? []);
+    expect(files).toHaveLength(11);
+    expect(files.every((file) => existsSync(file))).toBe(true);
+    expect(buildPrerequisites.resolveVitestPretestBuildMode(groups)).toBeUndefined();
+    const configs = groups.flatMap((group) => group.configs);
+    expect(configs).toContain("test/vitest/vitest.tooling.config.ts");
+    expect(configs).toContain("ui/vitest.config.ts");
+    expect(configs.filter((config) => config.includes("vitest.contracts-"))).toHaveLength(5);
+    expect(groups.find((group) => group.configs[0] === "ui/vitest.config.ts")).toEqual(
+      createVitestCacheWarmGroups().find((group) => group.configs[0] === "ui/vitest.config.ts"),
+    );
+  });
+
   it("creates split shards without walking test roots", () => {
     const payload = expectNoNodeFsScans<{
       includePatterns: number;

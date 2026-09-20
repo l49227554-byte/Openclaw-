@@ -4783,8 +4783,8 @@ jobs:
           which node
           node -v
           pnpm -v
-          # Persist Windows-native postinstall outputs in the pnpm store so restored
-          # caches can skip repeated rebuild/download work on later shards/runs.
+          # Reuse native postinstall outputs within this job's pnpm store.
+          # Windows setup does not restore or publish a shared dependency cache.
           pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true || pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
 
       - name: Run ${{ matrix.task }} (${{ matrix.runtime }})

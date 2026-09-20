@@ -44,12 +44,14 @@ run; sandboxed runs reject it. When the directories differ, the system prompt
 identifies their separate roles so deliverables stay in the working directory.
 
 > **Note:** Strict configuration validation rejects an explicitly configured
-> `agents.entries.*.cwd` or `agents.defaults.cwd` that is blank, reporting it as a
-> field error instead of silently accepting it. Saved configurations from older
-> versions that contain a blank value are migrated on load: the blank is removed
-> and the default working directory applies, so startup and unrelated settings
-> changes keep working. Authoring a new blank value via `openclaw config` still
-> fails validation.
+> `agents.entries.*.cwd` that is blank, reporting it as a field error instead of
+> silently accepting it. A blank `agents.defaults.cwd` is only rejected when at
+> least one agent relies on the default cwd (every agent with an explicit valid
+> `cwd` keeps the default exception). Saved configurations from older versions
+> that contain a blank value are migrated on load: the blank is removed and the
+> default working directory applies, so startup and unrelated settings changes
+> keep working. Authoring a new blank value via `openclaw config` still fails
+> validation.
 
 ## `agents.defaults.repoRoot`
 

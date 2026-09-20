@@ -90,6 +90,50 @@ it.each(["pending custody", "transcript"] as const)(
   },
 );
 
+it("keeps a peer's attribution on queued custody until canonical promotion", () => {
+  const historyState = makeChatHost({ currentSessionId: "attributed-input-session" });
+  const message = {
+    role: "user",
+    content: "Review the shared deployment",
+    timestamp: 100,
+    __openclaw: {
+      id: "pending:attributed-input",
+      senderId: "profile-alice",
+      senderName: "Alice Example",
+      senderIdentity: { type: "profile" as const, id: "profile-alice" },
+    },
+  };
+  applyChatPendingInputs(historyState, {
+    total: 1,
+    items: [
+      {
+        id: "attributed-input",
+        runId: "attributed-run",
+        acceptedAt: 100,
+        state: "queued",
+        message,
+      },
+    ],
+  });
+
+  const queued = renderChatView({ historyState, userId: "profile-viewer" });
+  const custodyRow = expectDefined(
+    queued.querySelector(".agent-chat__composer-shell .chat-queue__item"),
+    "attributed custody row",
+  );
+  expect(custodyRow.querySelector(".chat-author-avatar")?.getAttribute("title")).toBe(
+    "Alice Example",
+  );
+
+  applyChatPendingInputs(historyState, { total: 0, items: [] });
+  const promoted = renderChatView({
+    historyState,
+    messages: [message],
+    userId: "profile-viewer",
+  });
+  expect(promoted.querySelector(".agent-chat__composer-shell .chat-queue__item")).toBeNull();
+});
+
 it("keeps history cached while worker setup updates the composer custody notice", async () => {
   const sessionKey = "agent:main:worker-setup";
   const historyState = makeChatHost({ sessionKey, currentSessionId: "worker-setup-session" });

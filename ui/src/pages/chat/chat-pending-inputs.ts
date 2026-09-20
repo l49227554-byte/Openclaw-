@@ -1,3 +1,4 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   CHAT_INPUT_RECEIPT_MAX_RUN_IDS,
   CHAT_INPUT_RUN_ID_MAX_CHARS,
@@ -11,6 +12,7 @@ import { t } from "../../i18n/index.ts";
 import type { ChatAttachment, ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { findChatSubmissionMessage } from "../../lib/chat/history-message-identity.ts";
 import { extractTextCached, readTranscriptMediaEntries } from "../../lib/chat/message-extract.ts";
+import { resolveMessageSender } from "../../lib/chat/message-normalizer.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { resolveUiSelectedSessionAgentId } from "../../lib/sessions/session-key.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
@@ -82,6 +84,9 @@ export function buildPendingInputQueueItems(
           )
         : undefined;
     const sourceClients = readMessageClientSources(input.message);
+    const sender = resolveMessageSender(
+      asOptionalRecord(asOptionalRecord(input.message)?.["__openclaw"]),
+    );
     return [
       {
         id: `pending-input:${input.id}`,
@@ -89,6 +94,7 @@ export function buildPendingInputQueueItems(
         createdAt: input.acceptedAt,
         ...(input.runId ? { sendRunId: input.runId } : {}),
         ...(media.length ? { attachments: buildPendingInputAttachments(input.id, media) } : {}),
+        ...(sender ? { sender } : {}),
         custody: {
           kind: "pending-input",
           ...(stateLabel ? { stateLabel } : {}),

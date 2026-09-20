@@ -1,5 +1,6 @@
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import { isActiveWorkboardCard, normalizeString, workboardCardSessionKey } from "./card-state.ts";
+import { loadWorkboardPreferences } from "./preferences.ts";
 import { WORKBOARD_STATUSES, type WorkboardTaskLinkState, type WorkboardUiState } from "./types.ts";
 
 export type WorkboardHost = object;
@@ -295,6 +296,7 @@ export function workboardLifecycleTaskRefreshContinuationWaiting(
 }
 
 function createDefaultState(): WorkboardUiState {
+  const prefs = loadWorkboardPreferences();
   return {
     loading: false,
     loaded: false,
@@ -317,9 +319,9 @@ function createDefaultState(): WorkboardUiState {
     agentFilter: "all",
     boardFilter: "__all__",
     showArchived: false,
-    layout: "comfortable",
-    viewMode: "board",
-    emptyColumnMode: "show",
+    layout: prefs.layout,
+    viewMode: prefs.viewMode,
+    emptyColumnMode: prefs.emptyColumnMode,
     collapsedStatuses: new Set(),
     expandedEmptyStatuses: new Set(),
     lastRefreshAt: null,

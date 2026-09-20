@@ -44,7 +44,7 @@ vi.mock("./update-repair-agent.runtime.js", async () => {
 async function runRepairEnvelope(
   params: UpdateRepairParams,
   delegation?:
-    | { grant: UpdateCommandChildGrant; bindChild: (pid: number) => void }
+    | { grant: UpdateCommandChildGrant; bindChild?: (pid: number) => void }
     | "unowned-turn",
 ): Promise<UpdateRepairResult | UpdateRepairTurnResult> {
   const child = spawn(
@@ -90,7 +90,7 @@ async function runRepairEnvelope(
           const message = updateRepairWorkerMessageSchema.parse(raw);
           if (message.type === "ready") {
             if (delegation) {
-              if (typeof delegation !== "string") {
+              if (typeof delegation !== "string" && delegation.bindChild) {
                 if (!child.pid) {
                   throw new Error("Repair worker has no PID.");
                 }
@@ -202,6 +202,7 @@ describe("update repair with a local model provider", () => {
     { phase: "verifying", revoke: "none", entry: "manual" },
     { phase: "validating", revoke: "none", entry: "turn" },
     { phase: "verifying", revoke: "none", entry: "turn" },
+    { phase: "verifying", revoke: "none", entry: "wrong-receiver-turn" },
     { phase: "verifying", revoke: "none", entry: "unowned-turn" },
     { phase: "verifying", revoke: "none", entry: "unidentified-turn" },
   ] as const)(
@@ -363,11 +364,39 @@ describe("update repair with a local model provider", () => {
                     return withUpdateCommandExecutorChild(
                       fence,
                       params.target.installRoot,
-                      (grant, bindChild) =>
-                        runRepairEnvelope(
-                          entry === "unidentified-turn" ? { ...params, runId: undefined } : params,
-                          { grant, bindChild },
-                        ),
+                      async (grant, bindChild) => {
+                        if (entry !== "wrong-receiver-turn") {
+                          return runRepairEnvelope(
+                            entry === "unidentified-turn"
+                              ? { ...params, runId: undefined }
+                              : params,
+                            { grant, bindChild },
+                          );
+                        }
+                        const boundReceiver = spawn(
+                          process.execPath,
+                          ["-e", "setInterval(() => {}, 60_000)"],
+                          { stdio: "ignore" },
+                        );
+                        const closed = new Promise<void>((resolve, reject) => {
+                          boundReceiver.once("error", reject);
+                          boundReceiver.once("close", () => resolve());
+                        });
+                        if (!boundReceiver.pid) {
+                          boundReceiver.kill("SIGKILL");
+                          await closed;
+                          throw new Error("Bound repair receiver has no PID.");
+                        }
+                        // The live grant names this process identity. Sending it to the
+                        // repair worker must fail before inference or tool effects.
+                        try {
+                          bindChild(boundReceiver.pid);
+                          return await runRepairEnvelope(params, { grant });
+                        } finally {
+                          boundReceiver.kill("SIGKILL");
+                          await closed;
+                        }
+                      },
                     );
                   },
                   { existingAuthority: { ...identity, installKey: state.workspaceDir } },
@@ -378,6 +407,13 @@ describe("update repair with a local model provider", () => {
                   entry === "unowned-turn" ? runRepairEnvelope(params, entry) : runTurn(),
                 ).rejects.toThrow("worker exited 1");
                 expect(issuedRepair).toBe(false);
+                await expect(fs.stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
+                return;
+              }
+              if (entry === "wrong-receiver-turn") {
+                const result = await runTurn();
+                expect(result, JSON.stringify(result)).toMatchObject({ status: "aborted" });
+                expect(requests).toEqual([]);
                 await expect(fs.stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
                 return;
               }

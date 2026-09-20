@@ -264,7 +264,7 @@ describe("CUA Driver direct session", () => {
       message: "desktop input is unavailable",
       errorCode: "desktop_unavailable",
     });
-    mocks.isToolError.mockImplementation(DriverError.Tool.instanceOf);
+    mocks.isToolError.mockImplementation((error) => DriverError.Tool.instanceOf(error));
     mocks.click.mockRejectedValueOnce(refusal);
     const driver = createCuaDriver({ loadSdk: () => sdk as never });
     try {

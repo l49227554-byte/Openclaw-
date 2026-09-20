@@ -168,6 +168,17 @@ export async function observeConfigSnapshot(
 }
 
 /**
+ * Compensation record published by {@link advanceConfigHealthBaselineForAcceptedWrite}
+ * so a rolled-back write can restore the health baseline it replaced.
+ */
+export type ConfigHealthBaselineCompensation = {
+  configPath: string;
+  candidate: ConfigHealthFingerprint;
+  previousLastKnownGood: ConfigHealthFingerprint;
+  previousSuspiciousSignature: string | null;
+};
+
+/**
  * Advance the last-known-good baseline after the config owner accepts a write.
  * Accepted writes include formatting normalization that shrinks raw bytes and
  * intentionally permitted size drops (`allowConfigSizeDrop`); the writer
@@ -175,7 +186,8 @@ export async function observeConfigSnapshot(
  * baseline. Stub-shaped results (missing meta, missing gateway mode,
  * update-channel-only root) keep the older baseline so external truncations
  * stay rejected by promotion and observation. Best-effort: health metadata
- * failures never fail the accepted write.
+ * failures never fail the accepted write. Returns the compensation record the
+ * writer uses to restore the baseline if the committed write later rolls back.
  */
 export function advanceConfigHealthBaselineForAcceptedWrite(
   deps: NormalizedConfigIoDeps,
@@ -185,12 +197,13 @@ export function advanceConfigHealthBaselineForAcceptedWrite(
     parsed: unknown;
     resolved?: unknown;
   },
-): void {
+): ConfigHealthBaselineCompensation | null {
   try {
     const healthState = readConfigHealthStateFromStore(deps);
     const entry = readConfigHealthEntry(healthState, params.configPath);
-    if (!entry.lastKnownGood) {
-      return;
+    const previousLastKnownGood = entry.lastKnownGood;
+    if (!previousLastKnownGood) {
+      return null;
     }
     const stat = deps.fs.statSync(params.configPath, { throwIfNoEntry: false }) ?? null;
     const current = createConfigHealthFingerprint({
@@ -207,15 +220,58 @@ export function advanceConfigHealthBaselineForAcceptedWrite(
       lastKnownGood: entry.lastKnownGood,
     });
     if (suspicious.some((reason) => !reason.startsWith("size-drop-vs-last-good:"))) {
-      return;
+      return null;
     }
     patchConfigHealthEntryToStore(deps, params.configPath, {
       lastKnownGood: current,
       lastObservedSuspiciousSignature: null,
     });
+    return {
+      configPath: params.configPath,
+      candidate: current,
+      previousLastKnownGood,
+      previousSuspiciousSignature: entry.lastObservedSuspiciousSignature ?? null,
+    };
   } catch (error) {
     deps.logger.warn(
       `Config last-known-good baseline advance failed: ${formatErrorMessage(error)}`,
+    );
+  }
+  return null;
+}
+
+/**
+ * Restore the last-known-good baseline recorded before an accepted write when
+ * that write's runtime activation fails and the committed file rolls back.
+ * The rolled-back bytes are the pre-write config, so keeping the candidate
+ * baseline would make the next promotion reject the valid restored file as a
+ * size drop. Newer observations win: the restore is skipped when the persisted
+ * baseline no longer matches the candidate this writer published. Best-effort:
+ * health metadata failures never fail the rollback.
+ */
+export function restoreConfigHealthBaselineForRolledBackWrite(
+  deps: NormalizedConfigIoDeps,
+  compensation: ConfigHealthBaselineCompensation | null,
+): void {
+  try {
+    if (!compensation) {
+      return;
+    }
+    const healthState = readConfigHealthStateFromStore(deps);
+    const entry = readConfigHealthEntry(healthState, compensation.configPath);
+    if (entry.lastKnownGood?.hash !== compensation.candidate.hash) {
+      return;
+    }
+    patchConfigHealthEntryToStore(deps, compensation.configPath, {
+      lastKnownGood: compensation.previousLastKnownGood,
+      // Only rewind the anomaly marker when nothing newer recorded one.
+      ...(entry.lastObservedSuspiciousSignature == null
+        ? { lastObservedSuspiciousSignature: compensation.previousSuspiciousSignature }
+        : {}),
+    });
+  } catch (error) {
+    deps.logger.warn(
+      `Config last-known-good baseline restore failed: ${formatErrorMessage(error)}`,
     );
   }
 }

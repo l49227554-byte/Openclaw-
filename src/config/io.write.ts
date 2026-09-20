@@ -51,7 +51,10 @@ import {
 import type { ConfigIoContext } from "./io.context.js";
 import { prepareCronOwnerWriteRefusal } from "./io.cron-owner-refusal.js";
 import { recordConfigWriteMetadata } from "./io.meta.js";
-import { advanceConfigHealthBaselineForAcceptedWrite } from "./io.observe.js";
+import {
+  advanceConfigHealthBaselineForAcceptedWrite,
+  restoreConfigHealthBaselineForRolledBackWrite,
+} from "./io.observe.js";
 import {
   collectEnvRefPaths,
   containsConfigIncludeDirective,
@@ -566,7 +569,7 @@ export async function writeConfigFileFromContext(
       undefined,
       await deps.fs.promises.stat(configPath).catch(() => null),
     );
-    advanceConfigHealthBaselineForAcceptedWrite(deps, {
+    const healthBaselineCompensation = advanceConfigHealthBaselineForAcceptedWrite(deps, {
       configPath,
       raw: json,
       parsed: stampedOutputConfig,
@@ -656,6 +659,7 @@ export async function writeConfigFileFromContext(
               previousWarningFingerprint,
             );
           }
+          restoreConfigHealthBaselineForRolledBackWrite(deps, healthBaselineCompensation);
         },
       },
     };

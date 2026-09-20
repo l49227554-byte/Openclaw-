@@ -23,7 +23,11 @@ import {
 } from "./legacy-config-migrations.runtime.retired-media.js";
 import { LEGACY_CONFIG_MIGRATION_RUNTIME_MEMORY_QMD } from "./legacy-config-migrations.runtime.retired-memory-qmd.js";
 import { migrateTierEvalTranche } from "./legacy-config-migrations.runtime.tier-eval.js";
-import { visitAgentConfigScopes, visitChannelEntries } from "./legacy-config-record-shared.js";
+import {
+  deepCloneForMigrationProbe,
+  visitAgentConfigScopes,
+  visitChannelEntries,
+} from "./legacy-config-record-shared.js";
 
 const rule = (
   path: string[],
@@ -542,7 +546,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec
     legacyRules: [
       rule([], "Approved tier-eval configuration surfaces were consolidated.", (_value, root) => {
         const changes: string[] = [];
-        migrateTierEvalTranche(structuredClone(root), changes);
+        migrateTierEvalTranche(deepCloneForMigrationProbe(root), changes);
         return changes.length > 0;
       }),
     ],
@@ -554,7 +558,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec
     legacyRules: [
       rule([], "Final layout aliases were retired.", (_value, root) => {
         const changes: string[] = [];
-        migrateFinalLayoutRenames(structuredClone(root), changes);
+        migrateFinalLayoutRenames(deepCloneForMigrationProbe(root), changes);
         return changes.length > 0;
       }),
     ],
@@ -566,7 +570,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec
     legacyRules: [
       rule([], "Final layout tuning knobs were retired.", (_value, root) => {
         const changes: string[] = [];
-        migrateFinalLayoutKills(structuredClone(root), changes);
+        migrateFinalLayoutKills(deepCloneForMigrationProbe(root), changes);
         return changes.length > 0;
       }),
     ],
@@ -606,7 +610,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_RETIRED: LegacyConfigMigrationSpec
       rule(
         [],
         "Numeric runtime tuning knobs were retired and now use built-in defaults.",
-        (_value, root) => stripRetiredTuningKnobs(structuredClone(root)),
+        (_value, root) => stripRetiredTuningKnobs(deepCloneForMigrationProbe(root)),
       ),
     ],
     apply: stripRetiredTuningKnobs,

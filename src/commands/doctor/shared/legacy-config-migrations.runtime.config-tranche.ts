@@ -1,7 +1,11 @@
 // Config-tranche migrations move legacy aliases before canonical validation.
 import { ensureRecord, getRecord } from "../../../config/legacy.shared.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../../../routing/account-id.js";
-import { deleteRetiredPath, visitAgentEntries } from "./legacy-config-record-shared.js";
+import {
+  deepCloneForMigrationProbe,
+  deleteRetiredPath,
+  visitAgentEntries,
+} from "./legacy-config-record-shared.js";
 
 function stripRetiredPresentationPrefs(raw: Record<string, unknown>, changes: string[]): void {
   const prefs = getRecord(getRecord(raw.ui)?.prefs);
@@ -172,6 +176,6 @@ export function migrateConfigTranche(raw: Record<string, unknown>, changes: stri
 
 export function hasConfigTrancheLegacyKeys(root: Record<string, unknown>): boolean {
   const changes: string[] = [];
-  migrateConfigTranche(structuredClone(root), changes);
+  migrateConfigTranche(deepCloneForMigrationProbe(root), changes);
   return changes.length > 0;
 }

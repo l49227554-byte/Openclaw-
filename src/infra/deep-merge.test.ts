@@ -60,4 +60,19 @@ describe("mergeDeep", () => {
       mergeDeep({ value: { enabled: true } }, { value: ["override"] }, { arrays: "concat" }),
     ).toEqual({ value: ["override"] });
   });
+  it("merges deeply nested documents without overflowing the call stack", () => {
+    let base: unknown = "leaf";
+    for (let i = 0; i < 4_000; i += 1) {
+      base = { x: base };
+    }
+    const merged = mergeDeep(base, base) as Record<string, unknown>;
+    // Walk the merged tree iteratively: a recursive toEqual would overflow the
+    // test's own call stack at the depth under test.
+    let current = merged;
+    for (let depth = 0; depth < 4_000; depth += 1) {
+      expect(Object.keys(current)).toEqual(["x"]);
+      current = current.x as Record<string, unknown>;
+    }
+    expect(current).toBe("leaf");
+  });
 });

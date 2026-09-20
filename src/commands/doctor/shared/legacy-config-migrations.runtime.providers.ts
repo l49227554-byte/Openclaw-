@@ -5,7 +5,7 @@ import {
   type LegacyConfigRule,
 } from "../../../config/legacy.shared.js";
 import { mergeMissing } from "../../../config/merge-missing.js";
-import { isRecord } from "./legacy-config-record-shared.js";
+import { deepCloneForMigrationProbe, isRecord } from "./legacy-config-record-shared.js";
 import {
   migrateLegacyXSearchConfig,
   resolveLegacyXSearchModelTarget,
@@ -236,7 +236,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_PROVIDERS: LegacyConfigMigrationSp
           'plugins.entries.codex-supervisor and related plugin policy references are retired; use plugins.entries.codex.config.supervision. Run "openclaw doctor --fix".',
         requireSourceLiteral: true,
         match: (_value, root) =>
-          migrateLegacyCodexSupervisorPlugin(structuredClone(root)).length > 0,
+          migrateLegacyCodexSupervisorPlugin(deepCloneForMigrationProbe(root)).length > 0,
       },
     ],
     apply: (raw, changes) => {
@@ -253,7 +253,7 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_PROVIDERS: LegacyConfigMigrationSp
           'plugins.openai-codex references are retired; use the openai plugin id. Run "openclaw doctor --fix".',
         requireSourceLiteral: true,
         match: (_value, root) =>
-          rewriteLegacyOpenAICodexPluginPolicy(structuredClone(root)).length > 0,
+          rewriteLegacyOpenAICodexPluginPolicy(deepCloneForMigrationProbe(root)).length > 0,
       },
     ],
     apply: (raw, changes) => {

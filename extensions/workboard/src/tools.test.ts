@@ -642,7 +642,7 @@ describe("workboard tools", () => {
     expect(claimed.card).toMatchObject({ status: "review" });
   });
 
-  it("lets another agent mutate a card whose claim expired past the reclaim grace", async () => {
+  it("admits recovery mutations but rejects tokenless completion on an expired claim", async () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(1_000);
@@ -663,6 +663,7 @@ describe("workboard tools", () => {
       // Grace boundary: store-level takeover already works one ms past grace.
       vi.setSystemTime(expiresAt + 5 * 60_000 + 1);
 
+      // Recovery mutations succeed for another agent on an expired claim.
       const commented = readPayload(
         await tools.get("workboard_comment")?.execute("comment-past-grace", {
           id: card.id,
@@ -675,6 +676,34 @@ describe("workboard tools", () => {
         },
       });
 
+      const logged = readPayload(
+        await tools.get("workboard_worker_log")?.execute("worker-log-past-grace", {
+          id: card.id,
+          message: "prior owner stalled; logging handoff context",
+        }),
+      );
+      expect(logged.card).toMatchObject({
+        metadata: {
+          workerLogs: [
+            expect.objectContaining({ message: "prior owner stalled; logging handoff context" }),
+          ],
+        },
+      });
+
+      // Regression guard: tokenless completion by another agent stays rejected
+      // even when the claim is expired past the reclaim grace window.
+      await expect(
+        tools.get("workboard_complete")?.execute("complete-past-grace", { id: card.id }),
+      ).rejects.toThrow(/claimed by agent-a/);
+
+      await expect(
+        tools.get("workboard_move")?.execute("move-past-grace", {
+          id: card.id,
+          status: "review",
+        }),
+      ).rejects.toThrow(/claimed by agent-a/);
+
+      // Documented recovery path still clears the claim.
       const reclaimed = readPayload(
         await tools.get("workboard_reclaim")?.execute("reclaim-past-grace", {
           id: card.id,

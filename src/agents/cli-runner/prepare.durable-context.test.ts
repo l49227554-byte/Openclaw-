@@ -1,4 +1,5 @@
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWithCliHistoryWriter } from "../../config/sessions/cli-history-boundary.js";
 import { setActiveNodeContext } from "../../infra/active-node-context.js";
@@ -10,6 +11,7 @@ import {
   createCliRunnerPrepareFixture,
 } from "../cli-runner.test-helpers.js";
 import * as maintenance from "../embedded-agent-runner/context-engine-maintenance.js";
+import { SessionManager } from "../sessions/session-manager.js";
 import { prepareCliRunContext } from "./prepare.js";
 import {
   resetCliRunnerPrepareTestDeps,
@@ -187,6 +189,51 @@ describe("CLI durable session context", () => {
       expect(revoked.params.transcriptPrompt).toBe("latest ask");
     },
   );
+
+  it("builds fresh-session caller-memory prompts from hook-mutated prompts", async () => {
+    const { dir, sessionTarget } = fixture.session;
+    const manager = SessionManager.open(sessionTarget, dir);
+    manager.appendMessage({ role: "user", content: "earlier ask", timestamp: 1 });
+    manager.appendCompaction(
+      "compacted earlier ask",
+      expectDefined(manager.getLeafId(), "retained history entry"),
+      10_000,
+    );
+    cliBackendsTesting.setDepsForTest({
+      resolvePluginSetupCliBackend: () => undefined,
+      resolveRuntimeCliBackends: () => [
+        {
+          ...buildDefaultTestCliBackend(),
+          config: {
+            command: "test-cli",
+            args: ["--print"],
+            output: "text",
+            input: "arg",
+            sessionMode: "existing",
+          },
+        },
+      ],
+    });
+    const hookRunner = {
+      hasHooks: vi.fn((hookName: string) => hookName === "before_prompt_build"),
+      runBeforePromptBuild: vi.fn(async () => ({ prependContext: "hook context" })),
+    };
+    vi.spyOn(globalHooks, "getGlobalHookRunner").mockReturnValue(hookRunner as never);
+    const context = await fixture.prepare({
+      config: { agents: { defaults: { workspace: dir } } },
+      prompt: "current ask",
+      // This test supplies explicit memory; durable account provenance has separate coverage.
+      sessionManager: SessionManager.fromEntries(manager.getEntries(), dir),
+    });
+    cleanups.push(() => context.preparedBackend.cleanup?.());
+
+    expect(context.params.prompt).toBe(
+      "hook context\n\ncurrent ask\n\nCurrent active computer (latest physical input, not message origin): active_node=unknown",
+    );
+    expect(context.openClawHistoryPrompt).toContain("Compaction summary: compacted earlier ask");
+    expect(context.openClawHistoryPrompt).toContain("hook context");
+    expect(context.openClawHistoryPrompt).toContain("current ask");
+  });
 
   it("joins deferred maintenance before reading durable context", async () => {
     cliBackendsTesting.setDepsForTest({

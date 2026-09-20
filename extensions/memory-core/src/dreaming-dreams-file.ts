@@ -507,7 +507,8 @@ export async function appendNarrativeEntry(params: {
       if (
         sourceKeys.some((key) => !currentSources?.[key]) ||
         params.recentDiaryEntries?.some(
-          (block) => !currentDiary.has(clampDreamDiaryContextEntry(block)),
+          (block) =>
+            !currentDiary.has(block) && !currentDiary.has(clampDreamDiaryContextEntry(block)),
         )
       ) {
         return { content: existing, result: undefined, shouldWrite: false };

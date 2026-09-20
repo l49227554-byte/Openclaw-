@@ -4,6 +4,7 @@ import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  appendNarrativeEntry,
   dedupeDreamDiaryEntries,
   readDreamsFile,
   readRecentDreamDiaryEntries,
@@ -146,6 +147,29 @@ describe("dream diary file behavior", () => {
     await expect(readRecentDreamDiaryEntries({ workspaceDir, limit: 1 })).resolves.toEqual([
       `${prefix}...`,
     ]);
+  });
+
+  it("publishes a narrative when recent diary context is already clamped", async () => {
+    const workspaceDir = await createTempWorkspace("dreaming-narrative-clamped-context-");
+    const body = (("x".repeat(8) + " ").repeat(60)).trim();
+    await writeBackfillDiaryEntries({
+      workspaceDir,
+      entries: [{ isoDay: "2026-04-05", bodyLines: [body] }],
+      timezone: "UTC",
+    });
+
+    const recentDiaryEntries = await readRecentDreamDiaryEntries({ workspaceDir, limit: 1 });
+    const dreamsPath = await appendNarrativeEntry({
+      workspaceDir,
+      narrative: "The light phase completed.",
+      nowMs: Date.parse("2026-04-06T12:00:00.000Z"),
+      recentDiaryEntries,
+    });
+
+    if (!dreamsPath) {
+      throw new Error("expected narrative append to write DREAMS.md");
+    }
+    await expect(readDreamsFile(dreamsPath)).resolves.toContain("The light phase completed.");
   });
 
   it("skips symlinked and non-file DREAMS.md when reading recent context", async () => {

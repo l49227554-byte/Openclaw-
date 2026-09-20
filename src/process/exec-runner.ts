@@ -228,8 +228,8 @@ async function runCommandWithOutputEncoding(
     killSignal,
     ...(hasInput && !options.beforeInput ? { input } : {}),
     reject: false,
-    // Execa forwards arbitrary numeric descriptors to Node; its stdin type narrows them to fd 0.
     stdio: [
+      // SAFETY: Execa forwards arbitrary numeric descriptors to Node; its stdin type narrows them to fd 0.
       (options.stdinFileDescriptor as 0 | undefined) ?? (hasInput ? "pipe" : "inherit"),
       "pipe",
       "pipe",

@@ -270,6 +270,22 @@ function restoreTaskRegistryOnce() {
     }
     installRestoredTaskRegistrySnapshot(restored);
     taskRegistryRestoreState = { status: "ready", admission: reader.admission };
+    const installed = taskRegistryRestoreState;
+    const database = openClawStateDatabaseCache.getOpenClawStateDatabaseIfOpenAtPath(databasePath);
+    if (database?.db.isTransaction) {
+      stageSqliteTransactionState(database.db, {
+        stage() {},
+        commit() {},
+        rollback() {
+          if (taskRegistryRestoreState === installed) {
+            // An enclosing rollback can undo orphan settlement and snapshot inputs.
+            taskRegistryRestoreState = { status: "uninitialized", admission: reader.admission };
+            projection.dirty = true;
+            bumpTaskRegistryRevision();
+          }
+        },
+      });
+    }
     markTaskRegistryProjectionRestored();
     for (const task of settledTasks) {
       const flowId = task.parentFlowId?.trim();

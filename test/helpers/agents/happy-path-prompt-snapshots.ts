@@ -455,6 +455,7 @@ function createAttempt(params: {
     currentMessageId: params.scenario.ctx.MessageSid,
     sourceReplyDeliveryMode: "message_tool_only",
     forceMessageTool: true,
+    authProfileStore: { version: 1, profiles: {} },
     authStorage: {} as EmbeddedRunAttemptParams["authStorage"],
     modelRegistry: {} as EmbeddedRunAttemptParams["modelRegistry"],
   } as EmbeddedRunAttemptParams;

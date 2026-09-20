@@ -171,6 +171,7 @@ type OwnershipProbe = {
 function probeOwnership(
   options: {
     prebuilt?: boolean;
+    preparedBundle?: boolean;
     filters?: string[];
     cli?: string[];
     project?: string[];
@@ -186,6 +187,11 @@ function probeOwnership(
   const eventsFile = path.join(directory, "leases.jsonl");
   const admissionsFile = path.join(directory, "admissions.jsonl");
   const resourceFile = path.join(directory, "resources.mjs");
+  const bundleDir = path.join(directory, "prepared-bundle");
+  if (options.preparedBundle) {
+    fs.mkdirSync(bundleDir);
+    fs.writeFileSync(path.join(bundleDir, "bundle.html"), "prepared fixture");
+  }
   fs.writeFileSync(
     resourceFile,
     `
@@ -199,8 +205,15 @@ function probeOwnership(
       fs.appendFileSync(${JSON.stringify(admissionsFile)}, JSON.stringify(project.name) + "\\n");
       if (${JSON.stringify(options.failure)} === "admission") throw new Error("fixture admission failed");
     }
-    export async function startBundledControlUiE2eServer(outDir) {
-      fs.writeFileSync(outDir + "/bundle.html", "fixture");
+    export async function startBundledControlUiE2eServer(outDir, options = {}) {
+      if (options.prebuilt) {
+        if (fs.readFileSync(outDir + "/bundle.html", "utf8") !== "prepared fixture") {
+          throw new Error("fixture prepared bundle was replaced");
+        }
+      } else {
+        if (outDir === ${JSON.stringify(bundleDir)}) throw new Error("fixture rebuilt prepared bundle");
+        fs.writeFileSync(outDir + "/bundle.html", "fixture");
+      }
       const record = (closed) => fs.appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({ outDir, closed }) + "\\n");
       record(false);
       if (${JSON.stringify(options.failure)} === "build") throw new Error("fixture build failed");
@@ -313,6 +326,7 @@ function probeOwnership(
         ...process.env,
         OPENCLAW_VITEST_INCLUDE_FILE: options.include ? includeFile : "",
         OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: options.skipRealGateway ? "1" : "",
+        OPENCLAW_UI_E2E_BUNDLE_DIR: options.preparedBundle ? bundleDir : "",
       },
     },
   );
@@ -339,6 +353,8 @@ describe("Control UI E2E resource ownership", () => {
     }),
     { filters: [privateFile], files: [privateFile], leases: 0 },
     { filters: [bundledFile], files: [bundledFile], leases: 1 },
+    { filters: [bundledFile], preparedBundle: true, files: [bundledFile], leases: 1 },
+    { filters: [privateFile], preparedBundle: true, files: [privateFile], leases: 0 },
     { filters: [serialBundledFile], files: [serialBundledFile], leases: 1 },
     {
       filters: [bundledFile, serialBundledFile],
@@ -412,7 +428,11 @@ describe("Control UI E2E resource ownership", () => {
         files.toSorted(compareFiles),
       );
       expect(result.leases).toHaveLength(leases);
-      expect(result.leases.every((lease) => lease.closed && lease.removed)).toBe(true);
+      expect(
+        result.leases.every(
+          (lease) => lease.closed && lease.removed !== Boolean(options.preparedBundle),
+        ),
+      ).toBe(true);
       for (const context of result.contexts) {
         expect(context.chromium?.available).toBe(options.available !== false);
         const consumesBundle = ["ui-e2e-bundled", "ui-e2e-serial", "ui-e2e-real-gateway"].includes(

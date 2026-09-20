@@ -2801,14 +2801,46 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  build-ui-e2e:
+    permissions:
+      contents: read
+    needs: [preflight]
+    if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' && needs.preflight.outputs.frozen_target != 'true'
+    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    timeout-minutes: 25
+    steps:
+      - *linux_node_checkout_step
+      - name: Setup Node environment
+        uses: ./.ci-harness/.github/actions/setup-node-env
+        with:
+          cache-mode: ${{ needs.preflight.outputs.cache_mode }}
+          node-version: "24.x"
+          install-bun: "false"
+          dependency-cache: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || runner.environment != 'self-hosted' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'false' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false') }}
+
+      - name: Build shared Control UI E2E bundle
+        run: |
+          node --import tsx ui/src/test-helpers/control-ui-e2e-build.ts --bundle-build .artifacts/control-ui-e2e-bundle
+          tar -czf control-ui-e2e-bundle.tar.gz -C .artifacts/control-ui-e2e-bundle .
+
+      - name: Upload shared Control UI E2E bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: control-ui-e2e-bundle
+          path: control-ui-e2e-bundle.tar.gz
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 1
+
   checks-ui-e2e:
     permissions:
       contents: read
     name: checks-ui-e2e (${{ matrix.shard }}/${{ matrix.shard_count }})
-    needs: [preflight]
+    needs: [preflight, build-ui-e2e]
     # Compatibility targets pin a frozen Control UI whose e2e expectations track
     # that release, not current main.
-    if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
+    if: ${{ !cancelled() && always() && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}
     # Only the browser-extension row can consume the optional hosted budget.
     # Keep Control UI on available 16-class capacity and retain browser-extension placement.
     runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && needs.preflight.outputs.hybrid_hosted_offload == 'true' && matrix.task == 'browser-extension') && 'ubuntu-24.04' || vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
@@ -2860,9 +2892,24 @@ jobs:
         # HOME. Project config keeps the warmed cache reachable without the registry.
         run: npm config set cache="$HOME/.npm" offline=true --location=project
 
+      - name: Download shared Control UI E2E bundle
+        if: matrix.task == 'control-ui' && needs.preflight.outputs.frozen_target != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: control-ui-e2e-bundle
+          path: .artifacts/control-ui-e2e-download
+
+      - name: Unpack shared Control UI E2E bundle
+        if: matrix.task == 'control-ui' && needs.preflight.outputs.frozen_target != 'true'
+        run: |
+          mkdir -p .artifacts/control-ui-e2e-bundle
+          tar -xzf .artifacts/control-ui-e2e-download/control-ui-e2e-bundle.tar.gz -C .artifacts/control-ui-e2e-bundle
+          test -f .artifacts/control-ui-e2e-bundle/index.html
+
       - name: Test Control UI end-to-end
         if: matrix.task == 'control-ui'
         env:
+          OPENCLAW_UI_E2E_BUNDLE_DIR: ${{ needs.preflight.outputs.frozen_target != 'true' && format('{0}/.artifacts/control-ui-e2e-bundle', github.workspace) || '' }}
           OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: .artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           VITEST_SHARD_INDEX: ${{ matrix.shard }}
           VITEST_SHARD_COUNT: ${{ matrix.vitest_shard_count }}
@@ -6142,6 +6189,7 @@ jobs:
       - control-ui-performance
       - native-i18n
       - checks-ui
+      - build-ui-e2e
       - checks-ui-e2e
       - checks-ui-e2e-real-gateway
       - control-ui-i18n
@@ -6182,6 +6230,7 @@ jobs:
             control-ui-performance=${{ needs.control-ui-performance.result }}|${{ needs.preflight.outputs.run_control_ui_performance }}
             native-i18n=${{ needs.native-i18n.result }}|${{ needs.preflight.outputs.run_native_i18n }}
             checks-ui=${{ needs.checks-ui.result }}|${{ needs.preflight.outputs.run_ui_tests }}
+            build-ui-e2e=${{ needs.build-ui-e2e.result }}|${{ needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' && needs.preflight.outputs.frozen_target != 'true' }}
             checks-ui-e2e=${{ needs.checks-ui-e2e.result }}|${{ needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}
             checks-ui-e2e-real-gateway=${{ needs.checks-ui-e2e-real-gateway.result }}|${{ needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}
             control-ui-i18n=${{ needs.control-ui-i18n.result }}|${{ needs.preflight.outputs.run_control_ui_i18n }}

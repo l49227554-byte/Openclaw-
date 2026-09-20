@@ -49,6 +49,7 @@ the job's uploaded artifacts.
 | `preflight`                      | Detect changed scopes and build the CI manifest; all-Blacksmith canonical Node-relevant runs also restore the exact dependency cache before fanout                                                                                                                                                       | Always on non-draft pushes and PRs                 |
 | `security-fast`                  | Private key detection, changed-workflow audit via `zizmor`, and production lockfile audit                                                                                                                                                                                                                | Always on non-draft pushes and PRs                 |
 | `build-artifacts`                | Build `dist/`, Control UI, built-CLI smoke checks, startup memory, and embedded built-artifact checks                                                                                                                                                                                                    | Node-relevant changes                              |
+| `build-ui-e2e`                   | Build and upload the shared mocked Control UI E2E bundle once for the ordinary browser shards                                                                                                                                                                                                            | Current targets with Control UI E2E selected       |
 | `control-ui-performance`         | Compare Control UI CSS with the exact base revision and enforce asset budgets independently of artifact generation                                                                                                                                                                                       | UI/build/dependency/import owners and manual CI    |
 | `control-ui-i18n`                | Verify generated Control UI locale bundles, metadata, and translation memory; advisory on automatic runs, blocking on manual release CI                                                                                                                                                                  | Control UI i18n-relevant changes and manual CI     |
 | `checks-fast-core`               | Fast Linux correctness lanes: environment-variable, max-lines suppression and PR line-cap growth ratchets, assertion-safety baseline, bundled + protocol, Bun launcher, and the CI-routing fast task                                                                                                     | Node-relevant changes                              |
@@ -138,6 +139,20 @@ without repeating dedicated UI E2E jobs. Browser and Node test entries, shared
 fixtures/helpers, production or build inputs, and tests imported by another
 owner retain E2E coverage. Main pushes, manual validation, and frozen targets
 keep their existing selection.
+
+Current ordinary E2E shards wait for `build-ui-e2e`, then restore its same-run
+artifact into `.artifacts/control-ui-e2e-bundle`. The producer uses the same Vite
+configuration, synthetic build identity, and `/` base as local E2E setup. Each
+shard owns its preview server but borrows the bundle without rebuilding or
+deleting it. An explicit `OPENCLAW_UI_E2E_BUNDLE_DIR` requires an existing bundle;
+missing artifacts fail instead of silently rebuilding. Without that variable,
+local runs build into invocation-owned temporary directories as before.
+Source-module, custom-build, and publication fixtures retain their private
+servers and builds. The real-Gateway job retains its independently built runtime
+and canonical UI so same-origin build admission continues to compare matching
+identities. Frozen targets retain their historical local bundle setup. Artifact
+names stay stable within a run so failed-job-only attempts can consume a
+successful producer from an earlier attempt.
 
 The `docker-seed-e2e` job selects the executable owners of changed E2E helpers
 and the published-upgrade regression gate through one scheduler invocation.

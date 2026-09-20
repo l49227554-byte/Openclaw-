@@ -53,7 +53,11 @@ import {
   resolveRelayProviderToolCallId,
   type RelaySession,
 } from "./state.js";
-import { closeRelayVoiceSession, ensureRelayVoiceSession } from "./voice.js";
+import {
+  closeRelayVoiceSession,
+  ensureRelayVoiceSession,
+  settleRelayVoiceSpeech,
+} from "./voice.js";
 
 export function adoptTalkRealtimeRelaySession(
   session: RelaySession,
@@ -482,7 +486,9 @@ export async function flushTalkRealtimeRelayVoiceWrites(params: {
   relaySessionId: string;
   connId: string;
 }): Promise<void> {
-  await getRelaySession(params.relaySessionId, params.connId).voiceTranscriptQueue.flush();
+  await settleRelayVoiceSpeech(getRelaySession(params.relaySessionId, params.connId), (relay) =>
+    relay.voiceTranscriptQueue.flush(),
+  );
 }
 
 /** Applies realtime voice-control text to the active agent-consult chat run. */

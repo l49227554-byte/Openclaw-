@@ -48,9 +48,18 @@ function createRelaySession(): {
     voiceSessionCreated: false,
     voiceTranscriptSeq: 0,
     voiceTranscriptQueue: VOICE_TRANSCRIPT_QUEUE_POLICY.createQueue(),
+    // The relay turn owner delimits one spoken utterance; see ensureRelayTurn.
+    harness: { talk: { activeTurnId: undefined as string | undefined } },
     failSession,
   } as unknown as RelaySession;
   return { session, failSession };
+}
+
+function appendedUserTexts(): string[] {
+  return voiceSessionMocks.appendRelayVoiceTranscript.mock.calls
+    .map(([params]) => params as { role: string; text: string })
+    .filter((params) => params.role === "user")
+    .map((params) => params.text);
 }
 
 describe("realtime relay voice transcript persistence", () => {
@@ -121,6 +130,63 @@ describe("realtime relay voice transcript persistence", () => {
     ).toBe(true);
     expect(voiceSessionMocks.closeRelayVoiceSessionRecord).toHaveBeenCalledOnce();
     expect(enqueueRelayVoiceTranscript(session, "user", "too late")).toBe(false);
+  });
+
+  // Regression for #150610: xAI server VAD re-finalizes one growing input item, so a
+  // single spoken sentence reaches the relay as several talkFinal transcripts inside
+  // one turn.started -> turn.ended window.
+  it("keeps one user row when a turn re-finalizes the same utterance", async () => {
+    voiceSessionMocks.appendRelayVoiceTranscript.mockResolvedValue(undefined);
+    const { session } = createRelaySession();
+    session.harness.talk.activeTurnId = "turn-1";
+
+    for (const text of [
+      "Hey chief.",
+      "Hey Chief, what is the weather in New York?",
+      "Hey Chief, what is the weather in New York right now?",
+    ]) {
+      expect(enqueueRelayVoiceTranscript(session, "user", text)).toBe(true);
+    }
+    await closeRelayVoiceSession(session);
+
+    expect(appendedUserTexts()).toEqual(["Hey Chief, what is the weather in New York right now?"]);
+  });
+
+  // The turn is open before the first final only because every inbound mic frame calls
+  // ensureRelayTurn (operations.ts). enqueueRelayVoiceTranscript itself runs before the
+  // ensureRelayTurn in session-create.ts, so without a live turn there is no window to
+  // supersede within and each final keeps its own row. Pin that boundary explicitly.
+  it("appends every final when no turn is live", async () => {
+    voiceSessionMocks.appendRelayVoiceTranscript.mockResolvedValue(undefined);
+    const { session } = createRelaySession();
+    session.harness.talk.activeTurnId = undefined;
+
+    expect(enqueueRelayVoiceTranscript(session, "user", "Hey chief.")).toBe(true);
+    expect(enqueueRelayVoiceTranscript(session, "user", "Hey Chief, what is the weather?")).toBe(
+      true,
+    );
+    await closeRelayVoiceSession(session);
+
+    expect(appendedUserTexts()).toEqual(["Hey chief.", "Hey Chief, what is the weather?"]);
+  });
+
+  it("keeps a separate user row per turn and per distinct utterance", async () => {
+    voiceSessionMocks.appendRelayVoiceTranscript.mockResolvedValue(undefined);
+    const { session } = createRelaySession();
+
+    session.harness.talk.activeTurnId = "turn-1";
+    expect(enqueueRelayVoiceTranscript(session, "user", "What is the weather?")).toBe(true);
+    // A genuine second utterance inside the same turn is not a refinement of the first.
+    expect(enqueueRelayVoiceTranscript(session, "user", "Also, cancel my alarm.")).toBe(true);
+    session.harness.talk.activeTurnId = "turn-2";
+    expect(enqueueRelayVoiceTranscript(session, "user", "What is the weather?")).toBe(true);
+    await closeRelayVoiceSession(session);
+
+    expect(appendedUserTexts()).toEqual([
+      "What is the weather?",
+      "Also, cancel my alarm.",
+      "What is the weather?",
+    ]);
   });
 
   it("terminally closes the durable record after bounded transcript retries fail", async () => {

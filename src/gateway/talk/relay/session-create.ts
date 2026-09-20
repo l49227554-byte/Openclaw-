@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../../../talk/agent-consult-tool.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
-import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
 import {
   REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
   type RealtimeVoiceAudioClearReason,
@@ -56,7 +55,12 @@ import {
   MAX_RELAY_TOOL_CALL_IDENTITY_BYTES,
   RelayToolCallLedger,
 } from "./tool-call-ledger.js";
-import { enqueueRelayVoiceTranscript } from "./voice.js";
+import {
+  commitPendingRelayVoiceTranscript,
+  createRelayVoiceConfirmationReadiness,
+  enqueueRelayVoiceTranscript,
+  settleRelayVoiceSpeech,
+} from "./voice.js";
 
 // The relay contract is 20 ms of 24 kHz mono PCM16 per browser event.
 const RELAY_OUTPUT_AUDIO_FRAME_BYTES = 960;
@@ -142,13 +146,11 @@ export function createTalkRealtimeRelaySession(
     },
   );
   const { agentId: relayAgentId, canonicalKey } = params.sessionTarget;
-  const confirmationReadiness = createClientVoiceConfirmationReadiness({
-    agentId: relayAgentId,
-    voiceSessionId: relaySessionId,
-    flushTranscript: async () => {
-      await getActiveRelay()?.voiceTranscriptQueue.flush();
-    },
-  });
+  const confirmationReadiness = createRelayVoiceConfirmationReadiness(
+    relayAgentId,
+    relaySessionId,
+    getActiveRelay,
+  );
   const consultRunner = createTalkClientAgentConsultRunner({
     config: params.cfg ?? params.context.getRuntimeConfig(),
     context: params.context,
@@ -175,7 +177,8 @@ export function createTalkRealtimeRelaySession(
   const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
     consultRunner.runPrompt,
     () => getActiveRelay() !== undefined,
-    (signal) => confirmationReadiness.wait(signal),
+    // Guards a challenge raised between a hold and its commit, which would block wait().
+    (signal) => settleRelayVoiceSpeech(getActiveRelay(), () => confirmationReadiness.wait(signal)),
   );
   const runControl = createTalkRealtimeRunControlOwner({
     controlSource: params.controlSource,
@@ -331,6 +334,8 @@ export function createTalkRealtimeRelaySession(
         return;
       }
       if (event.type === "response.created") {
+        // The provider committed to answering, so this turn's user input cannot grow.
+        commitPendingRelayVoiceTranscript(getActiveRelay());
         // Response admission owns work status; asynchronous input transcripts do not.
         const turnId = outputOwnership.resolve(false);
         if (turnId) {

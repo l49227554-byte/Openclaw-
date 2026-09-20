@@ -1,4 +1,6 @@
 import { formatErrorMessage } from "../../../infra/errors.js";
+import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
+import { readClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation.js";
 import {
   appendRelayVoiceTranscript,
   closeRelayVoiceSessionRecord,
@@ -37,6 +39,58 @@ export function ensureRelayVoiceSession(session: RelaySession): boolean {
   }
 }
 
+/**
+ * Server VAD re-finalizes one growing input item, so a single spoken sentence can
+ * reach the relay as several finals. The durable transcript is append-only and
+ * idempotent by event id -- re-appending one entry id with revised text is rejected
+ * as an admission conflict -- so the refinement must win before the row is written.
+ */
+function continuesPendingUtterance(pendingText: string, nextText: string): boolean {
+  const comparable = (value: string) =>
+    value
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+  const pending = comparable(pendingText);
+  return pending.length > 0 && comparable(nextText).startsWith(pending);
+}
+
+/** Write the turn's held user final once the utterance can no longer grow. */
+export function commitPendingRelayVoiceTranscript(session: RelaySession | undefined): boolean {
+  const pending = session?.voicePendingUserFinal;
+  if (!session || !pending) {
+    return true;
+  }
+  session.voicePendingUserFinal = undefined;
+  return appendRelayVoiceTranscriptEntry(session, "user", pending.text, pending.observed);
+}
+
+/**
+ * Anything that gates on finalized user speech must settle the held final first:
+ * readiness blocks on the pending observation before it ever flushes the queue.
+ */
+export function settleRelayVoiceSpeech(
+  session: RelaySession | undefined,
+  gate: (session: RelaySession) => Promise<void>,
+): Promise<void> {
+  commitPendingRelayVoiceTranscript(session);
+  return session ? gate(session) : Promise.resolve();
+}
+
+/** Readiness for one relay session; its flush contract owns the held final. */
+export function createRelayVoiceConfirmationReadiness(
+  agentId: string,
+  voiceSessionId: string,
+  getActiveRelay: () => RelaySession | undefined,
+): RelaySession["confirmationReadiness"] {
+  return createClientVoiceConfirmationReadiness({
+    agentId,
+    voiceSessionId,
+    flushTranscript: () =>
+      settleRelayVoiceSpeech(getActiveRelay(), (relay) => relay.voiceTranscriptQueue.flush()),
+  });
+}
+
 export function enqueueRelayVoiceTranscript(
   session: RelaySession,
   role: "user" | "assistant",
@@ -47,9 +101,52 @@ export function enqueueRelayVoiceTranscript(
       ? session.confirmationReadiness.observeUserTranscript(text, true)
       : undefined;
   const normalizedText = normalizeVoiceTranscriptText(text);
+  if (role !== "user") {
+    // Assistant output never joins a held user utterance, but it must not overtake one.
+    if (!commitPendingRelayVoiceTranscript(session)) {
+      return false;
+    }
+    return normalizedText
+      ? appendRelayVoiceTranscriptEntry(session, role, normalizedText, observed)
+      : true;
+  }
   if (!normalizedText) {
     return true;
   }
+  // A live spoken-confirmation challenge is already blocked on this final's durable
+  // row, so it keeps the immediate append; only ordinary speech is held and refined.
+  const turnId = readClientVoiceConfirmationReadiness(session.sessionTarget.agentId, session.id)
+    ? undefined
+    : session.harness?.talk?.activeTurnId;
+  const pending = session.voicePendingUserFinal;
+  if (
+    pending &&
+    pending.turnId !== undefined &&
+    pending.turnId === turnId &&
+    continuesPendingUtterance(pending.text, normalizedText)
+  ) {
+    // The superseded observation owns no row; release it so readiness never waits on it.
+    pending.observed?.persisted();
+    session.voicePendingUserFinal = { turnId, text: normalizedText, observed };
+    return true;
+  }
+  if (!commitPendingRelayVoiceTranscript(session)) {
+    return false;
+  }
+  if (turnId === undefined) {
+    // No live turn owns this final, so there is no window to supersede within.
+    return appendRelayVoiceTranscriptEntry(session, role, normalizedText, observed);
+  }
+  session.voicePendingUserFinal = { turnId, text: normalizedText, observed };
+  return true;
+}
+
+function appendRelayVoiceTranscriptEntry(
+  session: RelaySession,
+  role: "user" | "assistant",
+  normalizedText: string,
+  observed: ReturnType<RelaySession["confirmationReadiness"]["observeUserTranscript"]>,
+): boolean {
   if (!ensureRelayVoiceSession(session)) {
     session.confirmationReadiness.fail(new Error("Realtime voice session could not be recorded"));
     return true;
@@ -108,6 +205,7 @@ export function closeRelayVoiceSession(session: RelaySession): Promise<void> {
   if (session.voiceSessionClose) {
     return session.voiceSessionClose;
   }
+  commitPendingRelayVoiceTranscript(session);
   session.voiceTranscriptQueue.seal();
   if (!ensureRelayVoiceSession(session)) {
     session.voiceSessionClose = Promise.resolve();

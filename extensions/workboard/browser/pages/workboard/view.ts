@@ -17,6 +17,10 @@ import {
   type WorkboardStatus,
 } from "../../lib/workboard/index.ts";
 import {
+  extractWorkboardPreferences,
+  saveWorkboardPreferences,
+} from "../../lib/workboard/preferences.ts";
+import {
   agentDisplayName,
   buildAgentFilterOptions,
   normalizeActiveAgentFilter,
@@ -503,6 +507,7 @@ export function renderWorkboard(props: WorkboardProps & { onRefresh: () => void 
                     ],
                     onChange: (value) => {
                       state.viewMode = value;
+                      saveWorkboardPreferences(extractWorkboardPreferences(state));
                       props.onRequestUpdate?.();
                     },
                   })}
@@ -523,6 +528,7 @@ export function renderWorkboard(props: WorkboardProps & { onRefresh: () => void 
                     ],
                     onChange: (value) => {
                       state.layout = value;
+                      saveWorkboardPreferences(extractWorkboardPreferences(state));
                       props.onRequestUpdate?.();
                     },
                   })}
@@ -552,6 +558,7 @@ export function renderWorkboard(props: WorkboardProps & { onRefresh: () => void 
                     onChange: (value) => {
                       state.emptyColumnMode = value;
                       state.expandedEmptyStatuses.clear();
+                      saveWorkboardPreferences(extractWorkboardPreferences(state));
                       props.onRequestUpdate?.();
                     },
                   })}

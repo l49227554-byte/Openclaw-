@@ -473,6 +473,7 @@ function prepareHarnessFinalizationParams(
   const {
     hostCapabilities: _hostCapabilities,
     systemAgentTool: _systemAgentTool,
+    semanticStallReplanState: _semanticStallReplanState,
     ...withoutCapabilities
   } = params;
   if (builtIn) {
@@ -504,6 +505,8 @@ function withoutPluginHarnessPrivateState(
     hostCapabilities: _hostCapabilities,
     onContextEngineTurnCandidate: _onContextEngineTurnCandidate,
     trajectoryRecorder: _trajectoryRecorder,
+    semanticNoProgressObserver: _semanticNoProgressObserver,
+    semanticStallReplanState: _semanticStallReplanState,
     __openclawSourceReplyDeliveryRuntime: _sourceReplyDeliveryRuntime,
     ...pluginParams
   } = params as EmbeddedRunAttemptInternalParams & {

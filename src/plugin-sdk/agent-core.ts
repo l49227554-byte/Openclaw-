@@ -56,12 +56,14 @@ export {
   IMAGE_BLOCK_TOKENS,
 } from "../../packages/agent-core/src/index.js";
 export type {
+  AgentContext,
   AfterToolCallResult,
   AfterToolOutcomeContext,
   AgentEvent,
   AgentMessage,
   AfterToolCallContext,
   AgentOptions,
+  AgentLoopTurnUpdate,
   AgentState,
   AgentTool,
   AgentToolProgress,
@@ -80,6 +82,7 @@ export type {
   FileOperations,
   Result,
   SessionTreeEntry,
+  PrepareNextTurnContext,
   StreamFn,
   ThinkingLevel,
   ToolExecutionMode,

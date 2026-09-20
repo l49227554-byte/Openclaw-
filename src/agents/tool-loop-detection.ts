@@ -53,6 +53,8 @@ const GLOBAL_CIRCUIT_BREAKER_THRESHOLD = 30;
 
 type ToolLoopDetectionScope = {
   runId?: string;
+  /** Internal observer re-checks reuse the detector without duplicating warning logs. */
+  suppressLogs?: boolean;
 };
 
 function selectHistoryForScope(
@@ -540,6 +542,7 @@ export function detectToolCallLoop(
   const pingPong = getPingPongStreak(history, currentHash);
   const argumentChurnLivenessSignal =
     argumentChurn.count >= TOOL_LOOP_WARNING_THRESHOLD ? ("argument_churn" as const) : undefined;
+  const emitLogs = scope?.suppressLogs !== true;
 
   if (unknownToolStreak.count >= UNKNOWN_TOOL_THRESHOLD) {
     return {
@@ -553,9 +556,11 @@ export function detectToolCallLoop(
   }
 
   if (noProgressStreak >= GLOBAL_CIRCUIT_BREAKER_THRESHOLD) {
-    log.error(
-      `Global circuit breaker triggered: ${toolName} repeated ${noProgressStreak} times with no progress`,
-    );
+    if (emitLogs) {
+      log.error(
+        `Global circuit breaker triggered: ${toolName} repeated ${noProgressStreak} times with no progress`,
+      );
+    }
     return {
       stuck: true,
       level: "critical",
@@ -567,7 +572,9 @@ export function detectToolCallLoop(
   }
 
   if (knownPollTool && noProgressStreak >= CRITICAL_THRESHOLD) {
-    log.error(`Critical polling loop detected: ${toolName} repeated ${noProgressStreak} times`);
+    if (emitLogs) {
+      log.error(`Critical polling loop detected: ${toolName} repeated ${noProgressStreak} times`);
+    }
     return {
       stuck: true,
       level: "critical",
@@ -579,7 +586,9 @@ export function detectToolCallLoop(
   }
 
   if (knownPollTool && noProgressStreak >= TOOL_LOOP_WARNING_THRESHOLD) {
-    log.warn(`Polling loop warning: ${toolName} repeated ${noProgressStreak} times`);
+    if (emitLogs) {
+      log.warn(`Polling loop warning: ${toolName} repeated ${noProgressStreak} times`);
+    }
     return {
       stuck: true,
       level: "warning",
@@ -596,9 +605,11 @@ export function detectToolCallLoop(
     : `pingpong:${toolName}:${currentHash}`;
 
   if (pingPong.count >= CRITICAL_THRESHOLD && pingPong.noProgressEvidence) {
-    log.error(
-      `Critical ping-pong loop detected: alternating calls count=${pingPong.count} currentTool=${toolName}`,
-    );
+    if (emitLogs) {
+      log.error(
+        `Critical ping-pong loop detected: alternating calls count=${pingPong.count} currentTool=${toolName}`,
+      );
+    }
     return {
       stuck: true,
       level: "critical",
@@ -611,9 +622,11 @@ export function detectToolCallLoop(
   }
 
   if (pingPong.count >= TOOL_LOOP_WARNING_THRESHOLD) {
-    log.warn(
-      `Ping-pong loop warning: alternating calls count=${pingPong.count} currentTool=${toolName}`,
-    );
+    if (emitLogs) {
+      log.warn(
+        `Ping-pong loop warning: alternating calls count=${pingPong.count} currentTool=${toolName}`,
+      );
+    }
     return {
       stuck: true,
       level: "warning",
@@ -632,7 +645,9 @@ export function detectToolCallLoop(
     (h) => h.toolName === toolName && h.argsHash === currentHash,
   ).length;
   if (!knownPollTool && noProgressStreak >= CRITICAL_THRESHOLD) {
-    log.error(`Critical generic loop detected: ${toolName} repeated ${noProgressStreak} times`);
+    if (emitLogs) {
+      log.error(`Critical generic loop detected: ${toolName} repeated ${noProgressStreak} times`);
+    }
     return {
       stuck: true,
       level: "critical",
@@ -644,12 +659,16 @@ export function detectToolCallLoop(
   }
 
   if (argumentChurn.count >= TOOL_LOOP_WARNING_THRESHOLD) {
-    log.warn(`Argument churn warning: ${toolName} cycled through stable argument patterns`);
+    if (emitLogs) {
+      log.warn(`Argument churn warning: ${toolName} cycled through stable argument patterns`);
+    }
     return buildArgumentChurnWarning(toolName, argumentChurn);
   }
 
   if (!knownPollTool && recentCount >= TOOL_LOOP_WARNING_THRESHOLD) {
-    log.warn(`Loop warning: ${toolName} called ${recentCount} times with identical arguments`);
+    if (emitLogs) {
+      log.warn(`Loop warning: ${toolName} called ${recentCount} times with identical arguments`);
+    }
     return {
       stuck: true,
       level: "warning",

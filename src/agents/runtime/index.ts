@@ -26,11 +26,13 @@ export {
   IMAGE_BLOCK_TOKENS,
 } from "../../plugin-sdk/agent-core.js";
 export type {
+  AgentContext,
   AfterToolCallContext,
   AfterToolCallResult,
   AgentEvent,
   AgentMessage,
   AgentOptions,
+  AgentLoopTurnUpdate,
   AgentState,
   AgentTool,
   AgentToolResult,
@@ -48,6 +50,7 @@ export type {
   FileOperations,
   Result,
   SessionTreeEntry,
+  PrepareNextTurnContext,
   StreamFn,
   ThinkingLevel,
   ToolExecutionMode,

@@ -87,6 +87,7 @@ import {
 } from "./registry.js";
 import { ensureSelectedAgentHarnessPlugin } from "./runtime-plugin.js";
 import { resolveAgentHarnessDeliveryDefaults } from "./selection-decision.js";
+import { privateHarnessParamCases } from "./selection-private-params.test-support.js";
 import {
   resolveAvailableAgentHarnessPolicy,
   runAgentHarnessAttempt,
@@ -126,12 +127,6 @@ const contextEngineTurnAttemptMocks = vi.hoisted(() => ({
   drainPendingContextEngineTurnsBeforeRun: vi.fn(async (_params: unknown) => {}),
 }));
 const builtInHarnesses = vi.hoisted(() => new WeakSet<object>());
-const privateHarnessParamCases = [
-  { field: "__openclawSourceReplyDeliveryRuntime", value: { currentMode: "automatic" } },
-  { field: "compactionCountOwner", value: "caller" },
-  { field: "onContextAccountingEvent", value: () => undefined },
-  { field: "onCompactionRequestBudget", value: () => undefined },
-] as const;
 
 function createTranscriptRecorder(
   admission: ReturnType<typeof createTranscriptAnchor> & {

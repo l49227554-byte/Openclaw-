@@ -38,6 +38,7 @@ Global setting:
   tools: {
     loopDetection: {
       enabled: false, // master switch for the rolling-history detectors
+      semanticNoProgress: "off", // "shadow" observes; "replan" permits one strong-stall instruction
     },
   },
 }
@@ -68,9 +69,18 @@ You can also enable the global rolling-history detectors in **Settings → Agent
 
 ### Field behavior
 
-| Field     | Default | Effect                                                                                            |
-| --------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `enabled` | `false` | Master switch for the rolling-history detectors. `false` also disables the post-compaction guard. |
+| Field                | Default | Effect                                                                                                                                                                                                                            |
+| -------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`            | `false` | Master switch for the rolling-history detectors. `false` also disables the post-compaction guard.                                                                                                                                 |
+| `semanticNoProgress` | `off`   | With `enabled: true`, `shadow` asks the Decision model for a bounded observation only after deterministic loop evidence; `replan` additionally permits one fixed instruction for a current stalled judgment at ≥0.95 probability. |
+
+Semantic no-progress handling keeps at most a small run-local trajectory and
+one outstanding Decision request. It records only aggregate, content-free
+metrics; the raw trajectory is not written to routine logs. `shadow` never
+chooses a tool, cancels or terminates a run, starts a retry, or changes goal
+status. `replan` has one run-scoped instruction budget and does not alter any
+of those controls either. The instruction is a temporary next-turn projection;
+it is removed at the following boundary without changing the persistent system prompt.
 
 For `exec`, no-progress hashing compares stable command outcomes (status,
 exit code, timed-out flag, output) and ignores volatile runtime metadata such
@@ -170,3 +180,5 @@ spend and lockups while preserving normal tool access.
     Full `tools.loopDetection` schema and merging semantics.
   </Card>
 </CardGroup>
+
+The semantic observer uses a cooperative 750 ms Decision budget, not a hard return deadline. Tool-result delivery and run close join started provider work before returning; a provider that ignores cancellation can therefore exceed this budget. Observer control state remains private to the run owner, not a plugin lifecycle contract.

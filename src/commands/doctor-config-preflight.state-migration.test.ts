@@ -435,7 +435,10 @@ describe("runDoctorConfigPreflight state migration", () => {
     });
     autoMigrateLegacyState.mockImplementationOnce(async (params) => {
       migrationOrder.push("state");
-      expect(params).toMatchObject({ doctorOnlyStateMigrations: true });
+      expect(params).toMatchObject({
+        doctorOnlyStateMigrations: true,
+        invocationPurpose: "startup",
+      });
       return { migrated: true, skipped: false, changes: [], warnings: [] };
     });
     noteSessionTranscriptHealth.mockImplementationOnce(async (params) => {

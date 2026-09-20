@@ -37,7 +37,9 @@ export async function withDoctorConfigPreflightWorkerScope<T>(
           throw new Error("Startup state migration requires Doctor maintenance ownership.");
         }
         try {
-          return await maintenance.run(() => run({ ...options, doctorOnlyStateMigrations: true }));
+          return await maintenance.run(() =>
+            run({ ...options, doctorOnlyStateMigrations: true, invocationPurpose: "startup" }),
+          );
         } finally {
           await maintenance.release();
         }

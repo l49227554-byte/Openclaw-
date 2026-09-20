@@ -9,7 +9,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
-import { readAgentDatabasePreflightTargets } from "../state/openclaw-agent-db-registry-listing.js";
+import { readAgentDatabasePreflightTargets } from "../state/openclaw-agent-db-registry.read.js";
 import { repairAuditEventsSchema } from "../state/openclaw-state-db-audit-migration.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import {

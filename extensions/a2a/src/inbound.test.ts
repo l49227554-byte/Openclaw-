@@ -69,6 +69,7 @@ describe("A2A channel inbound dispatch", () => {
         CommandAuthorized: false,
         CommandInterpretationSuppressed: true,
       });
+      expect(turn.replyOptions?.sourceReplyDeliveryMode).toBe("automatic");
       await turn.delivery.deliver({ text: "preview" }, { kind: "block" });
       expect(fixture.store.get(fixture.task.id)?.status.state).toBe("TASK_STATE_WORKING");
       await turn.delivery.deliver({ text: "agent answer" }, { kind: "final" });

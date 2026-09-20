@@ -17,11 +17,17 @@ import {
   createSidebarAttentionStore,
   type SidebarAttentionStore,
 } from "../app/sidebar-attention-store.ts";
+import { captureChatOutboxAdmission } from "../lib/chat/outbox-store.ts";
 import { invalidateModelAuthStatusRequests } from "../lib/model-auth-request-state.ts";
+import {
+  admitStoredChatComposerQueueItem,
+  removeStoredChatComposerQueueItem,
+} from "../pages/chat/composer-persistence.ts";
 import { hiddenScopeUpgradeCapability } from "../test-helpers/application-context.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
 import { waitForFast } from "../test-helpers/wait-for.ts";
 import { dismissSidebarAttention, loadDismissals } from "./sidebar-attention-dismissals.ts";
+import { sidebarInboxTabCounts } from "./sidebar-attention-entries.ts";
 import { SidebarAttentionStoreController } from "./sidebar-attention-store.ts";
 
 type CompactCronPage = CronJobsListResult<CronCompactJob>;
@@ -88,6 +94,66 @@ describe("sidebar attention source publication", () => {
       connectionBootstrap,
     });
   }
+
+  it("keeps only nondismissable local incidents available offline and observes canonical removal", async () => {
+    vi.stubGlobal("sessionStorage", createStorageMock());
+    const request = vi.fn(async (method: string) =>
+      method === "cron.list"
+        ? cronPage("failed-job")
+        : method === "cron.status"
+          ? { enabled: true, jobs: 1 }
+          : { ts: 1, providers: [] },
+    );
+    const client = mockClient(request);
+    Object.defineProperties(client, {
+      recoveryScope: { value: "owner-a" },
+      recoveryScopeReady: { value: true },
+    });
+    const harness = createGatewayHarness(client);
+    const host = {
+      client,
+      connected: true,
+      settings: harness.gateway.connection,
+      sessionKey: "agent:main:review",
+    };
+    const row = {
+      id: "local-review",
+      text: "private submission",
+      createdAt: 1,
+      sendState: "unconfirmed" as const,
+      sendRunId: "run-review",
+    };
+    expect(
+      admitStoredChatComposerQueueItem(
+        host,
+        captureChatOutboxAdmission(host, host.sessionKey),
+        row,
+      ),
+    ).toBe(true);
+    store = createStore(harness.gateway);
+    store.activate(SidebarAttentionStoreController);
+    await waitForFast(() =>
+      expect(store?.entries.map((entry) => entry.type)).toEqual(["outbox", "attention"]),
+    );
+    expect(sidebarInboxTabCounts(store.entries)).toMatchObject({
+      all: 2,
+      system: 1,
+      automations: 1,
+    });
+    expect(store.entries[0]?.dismissal).toBeNull();
+    expect(JSON.stringify(store.entries[0])).not.toContain("private submission");
+    harness.update({ phase: "reconnecting", hello: null });
+    const calls = request.mock.calls.length;
+    expect(store.entries.map((entry) => entry.type)).toEqual(["outbox"]);
+    expect(sidebarInboxTabCounts(store.entries)).toMatchObject({
+      all: 1,
+      system: 1,
+      automations: 0,
+    });
+    expect(removeStoredChatComposerQueueItem(host, host.sessionKey, row.id, row)).toBe(true);
+    expect(store.entries).toEqual([]);
+    expect(request.mock.calls).toHaveLength(calls);
+  });
 
   it.each(["ready", "hidden", "disposed"] as const)(
     "holds automatic cron inventory until chat is ready and respects a %s owner",

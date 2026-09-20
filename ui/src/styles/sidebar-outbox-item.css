@@ -1,0 +1,35 @@
+.sidebar-issues-panel__summary.sidebar-outbox-row {
+  box-sizing: border-box;
+  min-height: 72px;
+  padding-block: 12px;
+}
+
+.sidebar-outbox-row .sidebar-outbox-row__icon--warning {
+  color: var(--warn);
+}
+
+.sidebar-outbox-row .sidebar-outbox-row__icon--error {
+  color: var(--danger);
+}
+
+.sidebar-outbox-row__meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.sidebar-outbox-row__offline {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--control-ui-text-xs);
+  line-height: 1.4;
+}
+
+.sidebar-outbox-row__review {
+  flex: none;
+  white-space: nowrap;
+}

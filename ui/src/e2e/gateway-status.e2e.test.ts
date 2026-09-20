@@ -227,8 +227,8 @@ suite.define(() => {
         expect(await footer.locator(".sidebar-identity-card [role=status]").count()).toBe(0);
         const announcement = footer.getByRole("status");
         expect(await announcement.textContent()).toContain("Reconnecting…");
-        expect(await announcement.textContent()).toContain("2 in outbox");
-        expect(await footer.textContent()).toContain("2 in outbox");
+        expect(await announcement.textContent()).not.toContain("in outbox");
+        expect(await footer.textContent()).not.toContain("in outbox");
         expect(await page.locator(".chat-queue__item").count()).toBe(2);
         expect(await gateway.getRequests("chat.send")).toHaveLength(0);
 
@@ -236,7 +236,7 @@ suite.define(() => {
         const mobileStatus = page.locator(".shell-connection-status");
         await mobileStatus.waitFor({ state: "visible" });
         await expect.poll(() => connectionStatusOverlapsComposer(page)).toBe(false);
-        expect(await mobileStatus.textContent()).toContain("2 in outbox");
+        expect(await mobileStatus.textContent()).not.toContain("in outbox");
         await page.setViewportSize({ width: 1280, height: 900 });
         await footer.waitFor({ state: "visible" });
 

@@ -3041,7 +3041,6 @@ export const en: TranslationMap & {
     },
     disconnectedTitle: "Disconnected",
     connecting: "Connecting…",
-    queuedCount: "{count} in outbox",
     starting: "Starting…",
     restoring: "Restoring…",
     "reload-required": "Refresh required",

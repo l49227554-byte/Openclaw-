@@ -2370,8 +2370,9 @@ export function createVitestCacheWarmGroups(profile: "full" | "hybrid-hosted" = 
     // tooling tests or building the runtime. Ordinary CI still runs every test.
     return [
       {
-        configs: ["test/vitest/vitest.tooling.config.ts"],
+        configs: ["test/vitest/vitest.unit-fast.config.ts", "test/vitest/vitest.tooling.config.ts"],
         includePatterns: [
+          "src/commands/status.scan-result.test.ts",
           "test/scripts/ci-workflow-guards.test.ts",
           "test/scripts/ci-run-node-test-shard.test.ts",
         ],

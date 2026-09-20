@@ -9353,15 +9353,17 @@ server.listen(0, "127.0.0.1", () => {
             "vitest-fs-cache": "true",
             "vitest-worker-cache": String(full),
           });
-          for (const step of [buildStep, boundaryCleanupStep]) {
+          for (const step of [buildStep, boundaryCleanupStep, seedStep]) {
             expect(evaluateWorkflowExpression(step.if, context), step.name).toBe(full);
           }
-          for (const step of [boundaryPrepareStep, seedStep, warmStep]) {
+          for (const step of [boundaryPrepareStep, warmStep]) {
             expect(step.if, step.name).toBeUndefined();
           }
           expect(evaluateWorkflowExpression(warmAssertionStep.if, context)).toBe(true);
-          expect(evaluateWorkflowExpression(seedStep.env.CACHE_SEED_PROFILE, context)).toBe(
-            full ? "full" : "hybrid-hosted",
+          expect(evaluateWorkflowExpression(warmStep.run, context)).toBe(
+            full
+              ? "node --import tsx scripts/ci-run-node-test-shard.mts"
+              : "node --import tsx scripts/ci-warm-hosted-vitest-caches.mts",
           );
         }
       }
@@ -9373,7 +9375,7 @@ server.listen(0, "127.0.0.1", () => {
       'import { createVitestCacheWarmGroups } from "./scripts/lib/ci-node-test-plan.mts";',
     );
     expect(seedStep.run).toMatch(
-      /const groups = createVitestCacheWarmGroups\(process\.env\.CACHE_SEED_PROFILE\);[\s\S]*appendFileSync\(\s*process\.env\.GITHUB_ENV,[\s\S]*OPENCLAW_NODE_TEST_GROUPS_JSON=\$\{JSON\.stringify\(groups\)\}/u,
+      /const groups = createVitestCacheWarmGroups\(\);[\s\S]*appendFileSync\(\s*process\.env\.GITHUB_ENV,[\s\S]*OPENCLAW_NODE_TEST_GROUPS_JSON=\$\{JSON\.stringify\(groups\)\}/u,
     );
     expect(warmerSource).not.toContain("OPENCLAW_NODE_TEST_CONFIGS_JSON");
     expect(warmerSource).toContain('"OPENCLAW_NODE_TEST_PLAN_CONCURRENCY=1"');
@@ -9442,7 +9444,7 @@ server.listen(0, "127.0.0.1", () => {
     // No close-time cleanup workflow is needed; Actions cache LRU/TTL expires
     // old hosted-writer and warmer generations.
     expect(existsSync(".github/workflows/pr-cache-cleanup.yml")).toBe(false);
-    expect(seedStep.if).toBeUndefined();
+    expect(seedStep.if).toBe("${{ matrix.platform == 'linux' }}");
     expect(warmStep.if).toBeUndefined();
     const distSave = expectDefined(
       saveSteps.find((step) => step.name === "Save dist build cache"),

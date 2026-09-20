@@ -29,6 +29,7 @@ import {
   createCompactSplitTimingGeneration,
   parseCompactSplitTimingKey,
 } from "../../scripts/lib/vitest-shard-metadata.mts";
+import { createVitestRunSpecs } from "../../scripts/test-projects.test-support.mts";
 import { expectNoNodeFsScans } from "../../src/test-utils/fs-scan-assertions.js";
 import { listGitTrackedFiles, sortRepoPaths, toRepoPath } from "../../src/test-utils/repo-files.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
@@ -1005,12 +1006,21 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   it("bounds the hybrid hosted seed to real consumer configs without runtime builds", () => {
     const groups = createVitestCacheWarmGroups("hybrid-hosted");
     expect(groups).toHaveLength(7);
-    expect(groups.every((group) => group.configs.length === 1)).toBe(true);
+
     expect(groups.every((group) => (group.includePatterns?.length ?? 0) > 0)).toBe(true);
     const files = groups.flatMap((group) => group.includePatterns ?? []);
-    expect(files).toHaveLength(11);
+    expect(files).toHaveLength(12);
     expect(files.every((file) => existsSync(file))).toBe(true);
     expect(buildPrerequisites.resolveVitestPretestBuildMode(groups)).toBeUndefined();
+    const tooling = expectDefined(
+      groups.find((group) => group.shard_name === "cache-warm:hosted-tooling"),
+      "hosted tooling seed",
+    );
+    expect(
+      createVitestRunSpecs(expectDefined(tooling.includePatterns, "hosted tooling files"), {
+        baseEnv: { CI: "true", OPENCLAW_TEST_PROJECTS_PARALLEL: "3" },
+      }).map((spec) => spec.config),
+    ).toEqual(tooling.configs);
     const configs = groups.flatMap((group) => group.configs);
     expect(configs).toContain("test/vitest/vitest.tooling.config.ts");
     expect(configs).toContain("ui/vitest.config.ts");

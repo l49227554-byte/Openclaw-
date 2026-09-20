@@ -173,8 +173,22 @@ final class QuickChatPresentationTests: XCTestCase {
                 $0.accessibilityLabel?() == (expanded ? "Collapse conversation" : "Expand conversation")
             }
         }
-        // Wait for the rendered panel, so consecutive toggles cannot coalesce into one SwiftUI update.
-        try await self.waitUntil { expanded ? panel.frame.height > 400 : panel.frame.height < 200 }
+        // SwiftUI retains outgoing views until their transition finishes.
+        let deadline = ContinuousClock.now + .seconds(5)
+        var frame = panel.frame
+        var stableSince = ContinuousClock.now
+        repeat {
+            try await Task.sleep(for: .milliseconds(20))
+            if panel.frame != frame {
+                frame = panel.frame
+                stableSince = .now
+            }
+            let hasExpectedSize = expanded ? frame.height > 400 : frame.height < 200
+            if hasExpectedSize, stableSince.duration(to: .now) >= .milliseconds(350) {
+                return
+            }
+        } while ContinuousClock.now < deadline
+        XCTFail("The conversation disclosure animation must settle")
     }
 
     private func composerCount(in view: NSView) -> Int {

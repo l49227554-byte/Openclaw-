@@ -12,18 +12,21 @@ const edge = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock("node:sqlite", () => ({ DatabaseSync: edge.forbidden }));
-vi.mock("node:worker_threads", () => ({ Worker: edge.forbidden }));
-vi.mock("../infra/runtime-worker-url.js", () => ({
+// The non-isolated CI shard may have cached the production cleanup module first.
+// Register runtime mocks after invalidating that shared module graph.
+vi.resetModules();
+vi.doMock("node:sqlite", () => ({ DatabaseSync: edge.forbidden }));
+vi.doMock("node:worker_threads", () => ({ Worker: edge.forbidden }));
+vi.doMock("../infra/runtime-worker-url.js", () => ({
   resolveRuntimeWorkerUrl: () => new URL("file:///synthetic/shared-state.worker.js"),
 }));
-vi.mock("../infra/sqlite-worker-identity.js", () => ({
+vi.doMock("../infra/sqlite-worker-identity.js", () => ({
   readDatabasePathIdentity: async (canonicalPath: string) => ({
     key: "file:synthetic-state",
     canonicalPath,
   }),
 }));
-vi.mock("../infra/sqlite-worker-store.js", () => ({
+vi.doMock("../infra/sqlite-worker-store.js", () => ({
   openSharedStateSqliteWorkerStore: async (
     options: { databasePath: string },
     context: SqliteWorkerStateContext,
@@ -46,8 +49,6 @@ vi.mock("../infra/sqlite-worker-store.js", () => ({
   ) => runWithSqliteWorkerStateContext(context, () => operation(store)),
 }));
 
-// The non-isolated CI shard may have cached the production cleanup module first.
-vi.resetModules();
 const { runWithSqliteWorkerStateContext } = await import("../infra/sqlite-worker-state-context.js");
 const { assertOpenClawStateSchemaRepairAllowed, getExistingOpenClawStateSchemaPath } =
   await import("./openclaw-state-db-schema-policy.js");

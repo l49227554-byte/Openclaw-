@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("worker placement move schema", () => {
-  it("survives a same-version previous reader and candidate reopen", () => {
+  it("survives a same-version previous reader and candidate reopen", async () => {
     const stateDir = tempDirs.make("openclaw-placement-move-schema-");
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const database = openOpenClawStateDatabase(options);
@@ -59,11 +59,10 @@ describe("worker placement move schema", () => {
       );
     `);
     const store = createWorkerSessionPlacementStore({ database, now: () => 2_000 });
-    expect(store.getProjectionFacts("session-move")).toMatchObject({
-      placement: { state: "active" },
-      move: undefined,
-      workspaceResultReconciling: false,
-    });
+    const beforeMove = await store.readProjection(["session-move"]);
+    expect(beforeMove.placements.get("session-move")).toMatchObject({ state: "active" });
+    expect(beforeMove.moves.size).toBe(0);
+    expect(beforeMove.workspaceResultReconcilingSessionIds.size).toBe(0);
     const begun = store.beginPlacementMove({
       sessionId: "session-move",
       source: { generation: 4, environmentId: "environment-source", ownerEpoch: 7 },
@@ -108,7 +107,9 @@ describe("worker placement move schema", () => {
     const reopened = openOpenClawStateDatabase(options);
     const reopenedStore = createWorkerSessionPlacementStore({ database: reopened });
     expect(reopenedStore.getPlacementMove("session-move")).toEqual(begun.intent);
-    expect(reopenedStore.getProjectionFacts("session-move").move).toEqual(begun.intent);
+    expect(
+      (await reopenedStore.readProjection(["session-move"])).moves.get("session-move"),
+    ).toEqual(begun.intent);
     expect(reopened.db.prepare("PRAGMA user_version").get()).toEqual(versionBefore);
     expect(
       reopened.db

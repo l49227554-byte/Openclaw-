@@ -94,7 +94,7 @@ describe("worker session placement moves", () => {
     seedAttachedPlacementEnvironment(database, input);
   }
 
-  it("lazily begins one exact-source move in the drain transaction", () => {
+  it("lazily begins one exact-source move in the drain transaction", async () => {
     database.db.exec("DROP TABLE worker_session_placement_moves");
     expect(
       database.db
@@ -102,10 +102,11 @@ describe("worker session placement moves", () => {
         .get("worker_session_placement_moves"),
     ).toBeUndefined();
     expect(store.listPlacementMoves()).toEqual([]);
-    expect(store.getProjectionFacts(SESSION.sessionId)).toEqual({
-      placement: undefined,
-      move: undefined,
-      workspaceResultReconciling: false,
+    expect(await store.readProjection([SESSION.sessionId])).toEqual({
+      placements: new Map(),
+      moves: new Map(),
+      environments: new Map(),
+      workspaceResultReconcilingSessionIds: new Set(),
     });
     expect(
       database.db
@@ -161,10 +162,10 @@ describe("worker session placement moves", () => {
       user_version: OPENCLAW_STATE_SCHEMA_VERSION,
     });
     expect(store.getPlacementMove(SESSION.sessionId)).toEqual(begun.intent);
-    expect(store.getProjectionFacts(SESSION.sessionId)).toEqual({
-      placement: begun.placement,
-      move: begun.intent,
-      workspaceResultReconciling: false,
+    expect(await store.readProjection([SESSION.sessionId])).toMatchObject({
+      placements: new Map([[SESSION.sessionId, begun.placement]]),
+      moves: new Map([[SESSION.sessionId, begun.intent]]),
+      workspaceResultReconcilingSessionIds: new Set(),
     });
     expect(store.getPlacementMoves([SESSION.sessionId, "missing"])).toEqual(
       new Map([[SESSION.sessionId, begun.intent]]),

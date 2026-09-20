@@ -403,7 +403,7 @@ function nextGlobalOwnerEpoch(db: DatabaseSync): number {
     Math.max(latestEnvironment?.owner_epoch ?? 0, latestTranscriptCommit?.run_epoch ?? 0),
   );
 }
-function fromRow(row: Row, fallbackPorts: readonly number[]): WorkerEnvironmentRecord {
+export function fromRow(row: Row, fallbackPorts: readonly number[]): WorkerEnvironmentRecord {
   const record = {
     environmentId: row.environment_id,
     providerId: row.provider_id,

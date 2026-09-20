@@ -31,6 +31,28 @@ export async function withPreparedSessionRows<T>(
   });
 }
 
+/** Reenter the same synchronous consumer after canonical readiness finishes. */
+export async function withReadySessionRows<T>(
+  owner: {
+    withPreparedExactRows<U>(
+      queries: (config: OpenClawConfig) => readonly records.Lookup[],
+      consume: (read: SessionRowReadView) => U,
+    ): ReturnType<typeof withPreparedSessionRows<U>>;
+  },
+  queries: (config: OpenClawConfig) => readonly records.Lookup[],
+  consume: (read: SessionRowReadView) => T,
+): Promise<T> {
+  while (true) {
+    const prepared = await owner.withPreparedExactRows(queries, consume);
+    if (prepared.kind === "complete") {
+      return prepared.value;
+    }
+    const { certifySessionCanonicalValidationPending } =
+      await import("../config/sessions/session-canonical-validation-readiness.js");
+    await certifySessionCanonicalValidationPending(prepared.database);
+  }
+}
+
 /** Private rows belong only to this synchronous consumer, never to the resident roster. */
 function consumePreparedSessionRows<T>(
   owner: SessionRowReadView & { isCurrent(row: records.Row): boolean },

@@ -1,12 +1,14 @@
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { sessionByKeyReadHandlers } from "./server-methods/sessions-read-by-key.js";
 import { requestContext } from "./server-methods/sessions-read-cache.test-support.js";
 import type { SessionRowReadView } from "./session-row-prepared-read.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
+import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -24,7 +26,13 @@ it("consumes an incognito describe response without SQLite or resident private r
         incognito: true,
       },
     );
-    const projection = await createSessionRowProjection({ cfg });
+    const placements = createWorkerSessionPlacementStore();
+    placements.startDispatch({
+      agentId: query.agentId,
+      sessionKey: query.key,
+      sessionId: "private-description",
+    });
+    const projection = await createSessionRowProjection({ cfg, placementFactsReader: placements });
     const prepare = projection.withPreparedExactRows.bind(projection);
     let retained: SessionRowReadView | undefined;
     const prepared = vi
@@ -55,7 +63,16 @@ it("consumes an incognito describe response without SQLite or resident private r
           }
         });
       });
-    const respond = vi.fn();
+    const escapedPlacement = createDeferredCore<unknown>();
+    const respond = vi.fn(() => {
+      queueMicrotask(() => {
+        try {
+          escapedPlacement.resolve(projection.snapshot(query).row?.placement);
+        } catch (error) {
+          escapedPlacement.reject(error);
+        }
+      });
+    });
     const context = bindSessionRowProjection(requestContext(cfg), () => projection);
     try {
       await sessionByKeyReadHandlers["sessions.describe"]!({
@@ -68,8 +85,13 @@ it("consumes an incognito describe response without SQLite or resident private r
       });
       expect(prepared).toHaveBeenCalledOnce();
       expect(respond).toHaveBeenCalledExactlyOnceWith(true, {
-        session: expect.objectContaining({ key: query.key, sessionId: "private-description" }),
+        session: expect.objectContaining({
+          key: query.key,
+          sessionId: "private-description",
+          placement: expect.objectContaining({ state: "requested" }),
+        }),
       });
+      expect(await escapedPlacement.promise).toBeUndefined();
       expect(projection.selectEntries()).toEqual([]);
       expect(() => retained?.describe(query)).toThrow("no longer active");
     } finally {

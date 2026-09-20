@@ -139,7 +139,6 @@ export const forcedUnitFastTestFiles = [
   "src/security/audit-config-include-perms.test.ts",
   "src/realtime-transcription/websocket-session.test.ts",
   "src/routing/resolve-route.test.ts",
-  "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/status/status-message.test.ts",
   "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/trajectory/cleanup.test.ts",

@@ -79,7 +79,7 @@ import {
 } from "./subagent-registry-deps.js";
 import {
   mockBlockedCompletionDeliveryOwner,
-  registerPrivateCompletionSettlementTests,
+  registerInjectedLifecycleSuites,
 } from "./subagent-registry-lifecycle-completion.test-support.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-registry-lifecycle-delivery.js";
 import {
@@ -4722,7 +4722,7 @@ describe("subagent registry lifecycle hardening", () => {
     expect(persist).toHaveBeenCalled();
   });
 
-  registerPrivateCompletionSettlementTests({
+  registerInjectedLifecycleSuites({
     createRunEntry,
     createLifecycleController,
     waitForLifecycleState,
@@ -7122,4 +7122,5 @@ describe("requester settle wake trigger", () => {
     }
   });
 });
+
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -6,6 +6,7 @@ import type {
 } from "../completion/subagent-completion-admission.store.js";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
 import { clearSubagentPendingDelivery } from "./subagent-registry-lifecycle-delivery.js";
+import { registerRequesterSettleWakeFailureTests } from "./subagent-registry-lifecycle-settle-wake.test-support.js";
 import type {
   SubagentLifecycleController,
   SubagentLifecycleOptions,
@@ -108,7 +109,13 @@ export function mockBlockedCompletionDeliveryOwner(
   );
 }
 
-export function registerPrivateCompletionSettlementTests({
+/**
+ * Registers the lifecycle suites that need this file's injected scaffolding
+ * (`createRunEntry`, the controller factory, the state waiter and the
+ * completion-delivery mocks). They live outside subagent-registry-lifecycle.test.ts
+ * because it is a grandfathered oversized file.
+ */
+export function registerInjectedLifecycleSuites({
   createRunEntry,
   createLifecycleController,
   waitForLifecycleState,
@@ -129,8 +136,15 @@ export function registerPrivateCompletionSettlementTests({
   waitForLifecycleState: (assertion: () => void) => Promise<unknown>;
   completionDeliveryMocks: {
     blockSubagentCompletionDelivery: Mock<typeof blockSubagentCompletionDelivery>;
+    settleRequesterCompletionBatch: Mock<typeof settleRequesterCompletionBatch>;
   };
 }): void {
+  registerRequesterSettleWakeFailureTests({
+    createRunEntry,
+    createLifecycleController,
+    waitForLifecycleState,
+    completionDeliveryMocks,
+  });
   it.each([false, true])(
     "delivers private results held past the individual deadline until requester settlement (yielded: %s)",
     async (requesterYielded) => {

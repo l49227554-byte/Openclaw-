@@ -258,6 +258,33 @@ class SecurePrefs(
   private val _voiceWakeEnabled = MutableStateFlow(plainPrefs.getBoolean(voiceWakeEnabledKey, false))
   val voiceWakeEnabled: StateFlow<Boolean> = _voiceWakeEnabled
 
+  private val _incomingCallsEnabled = MutableStateFlow(plainPrefs.getBoolean("voice.incomingCallsEnabled", false))
+  val incomingCallsEnabled: StateFlow<Boolean> = _incomingCallsEnabled
+
+  fun setIncomingCallsEnabled(value: Boolean) {
+    plainPrefs.edit { putBoolean("voice.incomingCallsEnabled", value) }
+    _incomingCallsEnabled.value = value
+  }
+
+  /** Small expiry-bounded replay ledger survives process death without storing call content. */
+  @Synchronized
+  internal fun consumeIncomingCallId(
+    callId: String,
+    expiresAtMs: Long,
+  ): Boolean {
+    val now = System.currentTimeMillis()
+    val entries =
+      plainPrefs
+        .getStringSet("voice.incomingCallIds", emptySet())
+        .orEmpty()
+        .filter { (it.substringAfterLast('|').toLongOrNull() ?: 0L) > now }
+        .toMutableSet()
+    if (entries.any { it.substringBefore('|') == callId } || entries.size >= 128) return false
+    entries.add("$callId|$expiresAtMs")
+    // Commit before ringing so a process crash cannot reopen an accepted invitation.
+    return plainPrefs.edit().putStringSet("voice.incomingCallIds", entries).commit()
+  }
+
   private val _voiceWakeWords = MutableStateFlow(loadVoiceWakeWords())
   val voiceWakeWords: StateFlow<List<String>> = _voiceWakeWords
 

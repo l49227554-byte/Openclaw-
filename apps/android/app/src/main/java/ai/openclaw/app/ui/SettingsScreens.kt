@@ -690,6 +690,17 @@ private fun VoiceSettingsScreen(
   val isConnected by viewModel.isConnected.collectAsState()
   val talkSetupReadiness by viewModel.talkSetupReadiness.collectAsState()
   val voiceWakeEnabled by viewModel.voiceWakeEnabled.collectAsState()
+  val incomingCallsEnabled by viewModel.incomingCallsEnabled.collectAsState()
+  val incomingCallPermissions =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+      if (grants.values.all { it }) {
+        runCatching {
+          ai.openclaw.app.calls.IncomingCallController
+            .registerAccount(context)
+        }.onSuccess { viewModel.setIncomingCallsEnabled(true) }
+          .onFailure { Toast.makeText(context, "Android call integration unavailable", Toast.LENGTH_LONG).show() }
+      }
+    }
   val voiceWakeAvailable by viewModel.voiceWakeAvailable.collectAsState()
   val voiceWakeIsListening by viewModel.voiceWakeIsListening.collectAsState()
   val voiceWakeStatusText by viewModel.voiceWakeStatusText.collectAsState()
@@ -731,6 +742,45 @@ private fun VoiceSettingsScreen(
   }
 
   SettingsDetailFrame(title = nativeString("Voice"), subtitle = nativeString("Configure wake words, talk, and playback."), icon = Icons.Default.Mic, onBack = onBack) {
+    Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
+      Text(text = "Incoming data calls", style = ClawTheme.type.section, color = ClawTheme.colors.text)
+      SettingsTogglePanel(
+        rows =
+          listOf(
+            SettingsToggleRow(
+              title = "Receive calls from this Gateway",
+              subtitle = "Uses your private connection, including Tailscale. Microphone starts only after you answer.",
+              icon = Icons.Default.Mic,
+              checked = incomingCallsEnabled,
+              onCheckedChange = { enabled ->
+                if (!enabled) {
+                  viewModel.setIncomingCallsEnabled(false)
+                } else {
+                  incomingCallPermissions.launch(
+                    buildList {
+                      add(Manifest.permission.RECORD_AUDIO)
+                      if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+                    }.toTypedArray(),
+                  )
+                }
+              },
+            ),
+          ),
+      )
+      Text(
+        text = "Keep OpenClaw connected in the background and Tailscale running. Calls cannot arrive while the app is force-stopped, offline, or disconnected. Android may require unrestricted battery use for reliable background ringing.",
+        style = ClawTheme.type.body,
+        color = ClawTheme.colors.textMuted,
+      )
+      if (Build.VERSION.SDK_INT >= 34) {
+        ClawSecondaryButton(text = "Allow full-screen call alerts", onClick = {
+          context.startActivity(Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${context.packageName}")))
+        })
+      }
+      ClawSecondaryButton(text = "App notifications and battery settings", onClick = {
+        context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+      })
+    }
     Column(verticalArrangement = Arrangement.spacedBy(ClawTheme.spacing.xxs)) {
       Text(text = nativeString("Voice Wake"), style = ClawTheme.type.section, color = ClawTheme.colors.text)
       SettingsTogglePanel(

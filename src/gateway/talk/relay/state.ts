@@ -92,6 +92,7 @@ export type RelayAgentControlProviderSubmission = {
 
 type RelayProvider = RealtimeVoiceProviderPlugin;
 export class TalkRealtimeRelayOutputOwnership {
+  private continuousOutput = false;
   mode: "turn-bound" | "exact-response" = "turn-bound";
   phase: "unowned" | "owned" | "cancelling" = "unowned";
   outputGeneration = 0;
@@ -129,7 +130,13 @@ export class TalkRealtimeRelayOutputOwnership {
   }
 
   resolve(claim: boolean): string | undefined {
-    const activeTurnId = this.activeTurnId();
+    // Continuous providers own an audio stream, not response.created boundaries.
+    // Their initial stream can arrive before any client microphone frame.
+    const activeTurnId =
+      this.activeTurnId() ??
+      (this.continuousOutput && claim && this.phase !== "cancelling" && this.mode === "turn-bound"
+        ? this.ensureTurn()
+        : undefined);
     if (
       this.phase !== "cancelling" &&
       activeTurnId &&
@@ -164,8 +171,8 @@ export class TalkRealtimeRelayOutputOwnership {
   bind(provider: RelayProvider, runAgentConsult: RealtimeVoiceAgentConsultRunner): RelayProvider {
     return {
       ...provider,
-      createBridge: (request) =>
-        provider.createBridge({
+      createBridge: (request) => {
+        const bridge = provider.createBridge({
           ...request,
           onEvent: (event) => {
             if (
@@ -178,7 +185,10 @@ export class TalkRealtimeRelayOutputOwnership {
             request.onEvent?.(event);
           },
           runAgentConsult,
-        }),
+        });
+        this.continuousOutput = bridge.outputAudioMode === "continuous";
+        return bridge;
+      },
     };
   }
 }
@@ -222,6 +232,7 @@ export type RelaySession = {
   voiceSessionClose?: Promise<void>;
   closing?: { reason: "completed" | "error"; completion?: Promise<void> };
   failSession: (message: string) => void;
+  noteClientAudioAdmitted?: () => void;
 };
 
 export type CreateTalkRealtimeRelaySessionParams = {
@@ -237,6 +248,9 @@ export type CreateTalkRealtimeRelaySessionParams = {
   voiceChangeId?: string;
   voiceSelectionVoices?: readonly string[];
   initialItems?: Array<{ role: "user" | "assistant"; text: string }>;
+  greeting?: string;
+  /** Rechecks retained request/session authority immediately before opening speech. */
+  assertGreetingAllowed?: () => void;
   instructions: string;
   tools: RealtimeVoiceTool[];
   model?: string;

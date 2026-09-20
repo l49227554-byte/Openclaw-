@@ -146,6 +146,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
     client,
     sessionMutationAuthorization,
     sessionMutationCommitGuard,
+    hasCurrentClientAuthority,
   }) => {
     if (
       !assertValidParams(params, validateTalkSessionCreateParams, "talk.session.create", respond)
@@ -166,6 +167,13 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
     }
     try {
       sessionMutationAuthorization?.assertCurrent();
+      if (
+        params.greeting !== undefined &&
+        (mode !== "realtime" || transport !== "gateway-relay" || params.voiceChangeId)
+      ) {
+        respondInvalidRequest(respond, "An opening greeting requires a new realtime relay session");
+        return;
+      }
       if (params.voiceChangeId && (mode !== "realtime" || transport !== "gateway-relay")) {
         respondInvalidRequest(respond, "A voice replacement requires a realtime relay session");
         return;
@@ -348,9 +356,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           });
           replacement?.assertCurrent(target);
         };
-        const initialItems = replacement
-          ? await readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent)
-          : [];
+        const initialItems = await readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent);
         assertEnsuredTargetCurrent();
         const model =
           normalizeOptionalString(relayLaunch.providerConfig.model) ??
@@ -373,6 +379,17 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           clientCapabilities: params.capabilities,
           voiceChangeId: params.voiceChangeId,
           initialItems,
+          ...(params.greeting !== undefined
+            ? {
+                greeting: params.greeting.trim(),
+                assertGreetingAllowed: () => {
+                  if (hasCurrentClientAuthority && !hasCurrentClientAuthority()) {
+                    throw new Error("Talk greeting connection is no longer authorized");
+                  }
+                  assertEnsuredTargetCurrent();
+                },
+              }
+            : {}),
           voiceSelectionVoices: voices,
           instructions:
             (controlSource === "delegation"

@@ -748,9 +748,8 @@ function Install-Node {
                 Write-Host "[OK] Node.js repaired via winget" -ForegroundColor Green
                 return $true
             }
-            # A failed repair must not be reported as a successful installation by another provider.
+            # Repair failed; an independently validated fallback may still install Node.js.
             Write-Host "[!] winget could not repair a supported Node.js runtime" -ForegroundColor Yellow
-            return $false
         }
     }
 

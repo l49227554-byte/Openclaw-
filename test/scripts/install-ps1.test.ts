@@ -2384,10 +2384,39 @@ describe("install.ps1 stale Winget repair", () => {
     { name: "does not repair another HRESULT", installExit: -1978335188 },
     { name: "does not repair successful install with missing Node", installExit: 0 },
     {
-      name: "rejects unsupported repair without replacing it through another provider",
+      name: "recovers unsupported repair through Chocolatey",
       repairExit: -1978335174,
       repair: true,
       fallback: "choco",
+      success: true,
+    },
+    {
+      name: "recovers failed repair through Scoop",
+      repairExit: 1,
+      repair: true,
+      fallback: "scoop",
+      success: true,
+    },
+    {
+      name: "recovers unusable repair through portable Node",
+      afterRepair: "old-sqlite",
+      repair: true,
+      fallback: "portable",
+      success: true,
+    },
+    {
+      name: "rejects unusable Chocolatey fallback after failed repair",
+      repairExit: 1,
+      repair: true,
+      fallback: "choco",
+      afterFallback: "old-sqlite",
+    },
+    {
+      name: "rejects unusable portable fallback after failed repair",
+      repairExit: 1,
+      repair: true,
+      fallback: "portable",
+      afterFallback: "text",
     },
     {
       name: "recovers a generic Winget failure through portable Node",
@@ -2438,6 +2467,7 @@ describe("install.ps1 stale Winget repair", () => {
       success: false,
       installThrows: false,
       fallback: "none",
+      afterFallback: "healthy",
       ...testCase,
     };
     const functions = [
@@ -2464,6 +2494,7 @@ function Reset-Fixture {
     $global:Events = New-Object 'System.Collections.Generic.List[string]'
     $global:WingetCalls = New-Object 'System.Collections.Generic.List[object]'
     $global:Fallbacks = New-Object 'System.Collections.Generic.List[string]'
+    $global:Messages = New-Object 'System.Collections.Generic.List[string]'
     $global:InstallExitCode = 0
     $global:Advanced = 0
     $global:ProbeCount = 0
@@ -2474,7 +2505,7 @@ function Get-Command {
     param([string]$Name, [string]$CommandType)
     if ($Name -eq 'winget') { return $true }
     if ($Name -eq 'choco') { return ($case.fallback -eq 'choco') }
-    if ($Name -eq 'scoop') { return $false }
+    if ($Name -eq 'scoop') { return ($case.fallback -eq 'scoop') }
     if ($Name -eq 'node') {
         $global:Events.Add("check:$global:State")
         if ($global:State -eq 'missing') { throw 'fixture Node is missing' }
@@ -2518,13 +2549,20 @@ function Add-InstalledNodeToProcessPath {
 }
 function choco {
     $global:Fallbacks.Add('choco')
-    $global:State = 'healthy'
+    $global:State = $case.afterFallback
     $global:LASTEXITCODE = 0
     Write-Output 'Chocolatey output must not become a Boolean result'
 }
+function scoop {
+    $global:Fallbacks.Add("scoop:$($args -join ' ')")
+    $global:State = $case.afterFallback
+    $global:LASTEXITCODE = 0
+    Write-Output 'Scoop output must not become a Boolean result'
+}
+function Write-Host { $global:Messages.Add(($args -join ' ')) }
 function Install-PortableNode {
     $global:Fallbacks.Add('portable')
-    if ($case.fallback -eq 'portable') { $global:State = 'healthy'; return }
+    if ($case.fallback -eq 'portable') { $global:State = $case.afterFallback; return }
     throw 'fixture portable recovery unavailable'
 }
 function Check-ExistingOpenClaw { return $false }
@@ -2540,10 +2578,10 @@ $InstallMethod = 'npm'
 Reset-Fixture
 $result = @(Install-Node)
 if ($result.Count -ne 1 -or $result[0] -isnot [bool]) { throw "Install-Node output leaked: $result" }
-$direct = @{ success = $result[0]; events = $global:Events.ToArray(); calls = $global:WingetCalls.ToArray(); probes = $global:ProbeCount; fallbacks = $global:Fallbacks.ToArray() }
+$direct = @{ success = $result[0]; events = $global:Events.ToArray(); calls = $global:WingetCalls.ToArray(); probes = $global:ProbeCount; fallbacks = $global:Fallbacks.ToArray(); messages = $global:Messages.ToArray() }
 Reset-Fixture
 $null = Main
-$main = @{ advanced = $global:Advanced; exit = $global:InstallExitCode; events = $global:Events.ToArray(); calls = $global:WingetCalls.ToArray(); probes = $global:ProbeCount; fallbacks = $global:Fallbacks.ToArray() }
+$main = @{ advanced = $global:Advanced; exit = $global:InstallExitCode; events = $global:Events.ToArray(); calls = $global:WingetCalls.ToArray(); probes = $global:ProbeCount; fallbacks = $global:Fallbacks.ToArray(); messages = $global:Messages.ToArray() }
 Reset-Fixture
 $global:State = 'healthy'
 $null = Main
@@ -2584,11 +2622,25 @@ Write-Output ('RESULT:' + (@{ direct = $direct; main = $main; healthy = $healthy
     ];
     for (const run of [proof.direct, proof.main]) {
       expect(run.calls).toEqual(options.repair ? [installArgs, repairArgs] : [installArgs]);
+      const repaired =
+        options.repair && options.repairExit === 0 && options.afterRepair === "healthy";
       const fallbackExpected =
-        !options.repair && (options.installThrows || options.afterInstall !== "healthy");
-      expect(run.fallbacks).toEqual(
-        fallbackExpected ? [options.fallback === "choco" ? "choco" : "portable"] : [],
-      );
+        !repaired && (options.installThrows || options.afterInstall !== "healthy");
+      const fallbacks: string[] = [];
+      if (fallbackExpected) {
+        if (options.fallback === "choco") {
+          fallbacks.push("choco");
+        } else if (options.fallback === "scoop") {
+          fallbacks.push("scoop:update", "scoop:install nodejs-lts", "scoop:update nodejs-lts");
+        }
+        if (!["choco", "scoop"].includes(options.fallback) || options.afterFallback !== "healthy") {
+          fallbacks.push("portable");
+        }
+      }
+      expect(run.fallbacks).toEqual(fallbacks);
+      expect(
+        run.messages.filter((message: string) => message.includes("Node.js repaired via winget")),
+      ).toHaveLength(repaired ? 1 : 0);
       const events = run === proof.main ? run.events.slice(1) : run.events;
       expect(events.slice(0, 4)).toEqual([
         "install",

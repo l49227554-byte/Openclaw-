@@ -21,7 +21,9 @@ import ai.openclaw.app.ui.design.ClawTextBadge
 import ai.openclaw.app.ui.design.ClawTheme
 import ai.openclaw.app.uppercaseFirstGraphemeOrNull
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -41,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -135,7 +138,7 @@ internal fun NodesDevicesSettingsScreen(
 }
 
 @Composable
-private fun NodesDevicesPanel(
+internal fun NodesDevicesPanel(
   summary: GatewayNodesDevicesSummary,
   pairingCapabilities: GatewayDevicePairingCapabilities,
   callerScopes: List<String>,
@@ -424,32 +427,26 @@ private fun PendingDeviceRow(
   onApprove: () -> Unit,
   onReject: () -> Unit,
 ) {
-  Column {
-    DeviceListRow(
-      badge = nodeBadge(device.displayName ?: device.deviceId),
-      title = device.displayName ?: nativeString("New device"),
-      subtitle = pendingDeviceSubtitle(device),
-      statusText = if (device.repair) nativeString("Repair") else nativeString("Review"),
-      status = ClawStatus.Warning,
-    )
-    if (canApprove || canReject) {
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 39.dp, end = 4.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.End,
-      ) {
-        if (canReject) {
-          TextButton(onClick = onReject, enabled = actionsEnabled) {
-            Text(nativeString("Reject"))
+  DeviceListRow(
+    badge = nodeBadge(device.displayName ?: device.deviceId),
+    title = device.displayName ?: nativeString("New device"),
+    subtitle = pendingDeviceSubtitle(device),
+    statusText = if (device.repair) nativeString("Repair") else nativeString("Review"),
+    status = ClawStatus.Warning,
+    actions =
+      if (canApprove || canReject) {
+        {
+          if (canReject) {
+            TextButton(onClick = onReject, enabled = actionsEnabled) { Text(nativeString("Reject")) }
+          }
+          if (canApprove) {
+            TextButton(onClick = onApprove, enabled = actionsEnabled) { Text(nativeString("Approve")) }
           }
         }
-        if (canApprove) {
-          TextButton(onClick = onApprove, enabled = actionsEnabled) {
-            Text(nativeString("Approve"))
-          }
-        }
-      }
-    }
-  }
+      } else {
+        null
+      },
+  )
 }
 
 @Composable
@@ -459,25 +456,19 @@ private fun PairedDeviceRow(
   actionEnabled: Boolean,
   onRemove: () -> Unit,
 ) {
-  Column {
-    DeviceListRow(
-      badge = nodeBadge(device.displayName ?: device.deviceId),
-      title = device.displayName ?: nativeString("Paired device"),
-      subtitle = pairedDeviceSubtitle(device),
-      statusText = pairedDeviceStatusText(device.tokens),
-      status = pairedDeviceStatus(device.tokens),
-    )
-    if (canRemove) {
-      Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 39.dp, end = 4.dp, bottom = 4.dp),
-        horizontalArrangement = Arrangement.End,
-      ) {
-        TextButton(onClick = onRemove, enabled = actionEnabled) {
-          Text(nativeString("Remove"))
-        }
-      }
-    }
-  }
+  DeviceListRow(
+    badge = nodeBadge(device.displayName ?: device.deviceId),
+    title = device.displayName ?: nativeString("Paired device"),
+    subtitle = pairedDeviceSubtitle(device),
+    statusText = pairedDeviceStatusText(device.tokens),
+    status = pairedDeviceStatus(device.tokens),
+    actions =
+      if (canRemove) {
+        { TextButton(onClick = onRemove, enabled = actionEnabled) { Text(nativeString("Remove")) } }
+      } else {
+        null
+      },
+  )
 }
 
 @Composable
@@ -487,13 +478,28 @@ private fun DeviceListRow(
   subtitle: String,
   statusText: String,
   status: ClawStatus,
+  actions: (@Composable () -> Unit)? = null,
 ) {
-  ClawListItem(
-    title = title,
-    subtitle = subtitle,
-    leading = { ClawTextBadge(text = badge) },
-    trailing = { ClawStatusPill(text = statusText, status = status) },
-  )
+  BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+    val inlineActions = maxWidth >= 600.dp
+    ClawListItem(
+      title = title,
+      subtitle = subtitle,
+      leading = { ClawTextBadge(text = badge) },
+      trailing = {
+        // Keep actions with their status instead of adding a full-width row below the identity.
+        // Wide windows have room for one action strip; compact windows retain readable metadata.
+        FlowRow(
+          maxItemsInEachRow = if (inlineActions) Int.MAX_VALUE else 1,
+          horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+          itemVerticalAlignment = Alignment.CenterVertically,
+        ) {
+          ClawStatusPill(text = statusText, status = status)
+          actions?.invoke()
+        }
+      },
+    )
+  }
 }
 
 /** True when the gateway returned no node or device rows to render. */

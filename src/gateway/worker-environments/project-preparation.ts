@@ -236,7 +236,11 @@ export function createWorkerProjectPreparation(params: {
         if (bytes > MAX_WORKSPACE_INVENTORY_TOTAL_BYTES) {
           throw new Error("Project Git pack exceeds the workspace byte limit");
         }
-        const { digest: sha256 } = await sha256File(pack, { signal });
+        let sha256: string;
+        {
+          await using handle = await fsp.open(pack, "r");
+          ({ digest: sha256 } = await sha256File(handle, { signal }));
+        }
         requireCurrent();
         await transport.upload(pack, path.posix.join(directory, "base.pack"), signal);
         requireCurrent();

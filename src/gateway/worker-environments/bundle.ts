@@ -465,13 +465,14 @@ async function prepareWorkerBundle(
     if (!(await cachedTarballMatches(tarballPath, manifest))) {
       await writeTarball({ stagingRoot, entries: manifest, tarballPath });
     }
+    await using handle = await fs.open(tarballPath, "r");
     return {
       install: "bundle",
       bundleHash,
       openclawVersion,
       protocolFeatures,
       tarballBytes: (await fs.stat(tarballPath)).size,
-      tarballSha256: (await sha256File(tarballPath)).digest,
+      tarballSha256: (await sha256File(handle)).digest,
       tarballPath,
     };
   } finally {

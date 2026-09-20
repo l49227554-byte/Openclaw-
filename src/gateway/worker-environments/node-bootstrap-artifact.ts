@@ -545,7 +545,8 @@ async function prepareNodeBootstrapArtifact(
     }
     throw new Error("Node bootstrap archive does not match the verified distribution");
   }
-  const { digest: tarballSha256 } = await sha256File(tarballPath);
+  await using handle = await fs.open(tarballPath, "r");
+  const { digest: tarballSha256 } = await sha256File(handle);
   return Object.freeze({
     tarballPath,
     tarballSha256,

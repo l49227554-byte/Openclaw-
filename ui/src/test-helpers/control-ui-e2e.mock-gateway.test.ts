@@ -234,8 +234,11 @@ describe("mock gateway stateful config", () => {
       expectProjections(json5Reloaded, { logging: { level: "warn" } });
 
       const gateway = (
-        gatewayPage.window as Window & { openclawControlUiE2eGateway: ControlUiMockGateway }
+        gatewayPage.window as Window & { openclawControlUiE2eGateway?: ControlUiMockGateway }
       ).openclawControlUiE2eGateway;
+      if (!gateway) {
+        throw new Error("Mock Gateway was not installed");
+      }
       const replacement = { logging: { level: "error" } };
       gateway.setMethodResponse("config.get", {
         raw: JSON.stringify(replacement),

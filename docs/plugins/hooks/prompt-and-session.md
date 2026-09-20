@@ -29,7 +29,12 @@ provider payloads, start the Gateway with `--raw-stream` and
 Use the phase-specific hooks for new plugins:
 
 - `before_model_resolve`: receives only the current prompt and attachment
-  metadata. Return `providerOverride` or `modelOverride`.
+  metadata. Return `providerOverride` or `modelOverride` to change the host
+  selection. Hosts that advertise `routingCapabilities: "model-effort-v1"`
+  also accept `reasoningEffortOverride` and a short `preDispatchNotice`; the
+  notice is delivered by the host after classification and before model
+  dispatch. The event's optional `signal` is aborted with the turn, so a
+  classifier should stop its work when cancellation is requested.
 - `agent_turn_prepare`: receives the current prompt, prepared session
   messages, and queued injections consumed for this session.
   Return `prependContext` or `appendContext`.
@@ -71,11 +76,21 @@ ordinary `before_prompt_build` → finalized tool policy → authorized prompt
 enrichment. `agent_turn_prepare` and queued-injection draining are not wired
 into the Codex or Copilot prompt paths.
 
-For multiple registrations, the first defined provider/model override and
-`systemPrompt` win. Context additions concatenate in priority order, and tool
-restrictions intersect. A nested ordinary `before_prompt_build` dispatch on
-the same runner is skipped while its outer dispatch is active; other hook
-families and independent turns remain available.
+For multiple registrations, legacy `before_model_resolve` handlers compose the
+first defined provider and model fields. When any handler returns an effort or
+pre-dispatch notice, the first priority-ordered route result becomes an atomic
+tuple: later handlers cannot fill its missing provider, model, effort, or
+notice fields. Missing provider/model fields remain the original host choice.
+Context additions concatenate in priority order, and tool restrictions
+intersect. A nested ordinary `before_prompt_build` dispatch on the same runner
+is skipped while its outer dispatch is active; other hook families and
+independent turns remain available.
+
+The embedded, CLI, and other durable host renderers must await delivery of a
+`preDispatchNotice` before submitting the selected model request. A transport
+that cannot provide that ordering may use a bounded fallback, but the notice
+can then arrive after dispatch. Plugins must treat the notice as informational
+and keep routing correct when a host does not advertise the capability.
 
 Message-consuming prompt hooks receive a detached model-context snapshot. Mutating nested messages does not change the caller's history, including when a handler retains its input after returning. Registrations within one dispatch share that snapshot in priority order; prepare, ordinary prompt-build, authorized enrichment, and subsequent prompt rebuilds receive separate snapshots. Storage-only native prompt text and tool-result details are excluded from these snapshots.
 

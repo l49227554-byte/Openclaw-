@@ -74,6 +74,7 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
   sessionId?: string;
   expectedSessionId?: string;
   expectedLifecycleRevision?: SessionLifecycleRevisionExpectation;
+  assertCommitAllowed?: () => void;
   sessionKey?: string;
   agentId?: string;
   message: string;
@@ -169,6 +170,7 @@ export async function appendInjectedAssistantMessageToTranscript(params: {
       {
         expectedSessionId: params.expectedSessionId,
         expectedLifecycleRevision: params.expectedLifecycleRevision,
+        assertCommitAllowed: params.assertCommitAllowed,
         updateMode: "inline",
         ...(params.abortMeta ? { runId: params.abortMeta.runId } : {}),
         touchSessionEntry: Boolean(params.storePath && params.sessionId && params.sessionKey),

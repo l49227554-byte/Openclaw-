@@ -383,14 +383,100 @@ export function createHookRunner(
   const lastDefined = <T>(prev: T | undefined, next: T | undefined): T | undefined => next ?? prev;
   const stickyTrue = (prev?: boolean, next?: boolean): true | undefined =>
     prev === true || next === true ? true : undefined;
+  const hasLegacyBeforeModelResolveRoute = (result: PluginHookBeforeModelResolveResult): boolean =>
+    result.modelOverride !== undefined || result.providerOverride !== undefined;
+  const hasAtomicBeforeModelResolveField = (result: PluginHookBeforeModelResolveResult): boolean =>
+    result.reasoningEffortOverride !== undefined || result.preDispatchNotice !== undefined;
+
+  type BeforeModelResolveMergeState = {
+    mode: "legacy" | "atomic";
+    firstRouteResult?: PluginHookBeforeModelResolveResult;
+    winner?: PluginHookBeforeModelResolveResult;
+  };
+  // Keep the reduction state private to this dispatch. Results are also handed
+  // back to plugin callers, so attaching a marker to them would expose an
+  // implementation detail and allow a plugin to accidentally influence the
+  // next hook's reduction.
+  const beforeModelResolveMergeState = new WeakMap<
+    PluginHookBeforeModelResolveResult,
+    BeforeModelResolveMergeState
+  >();
+  const cloneBeforeModelResolveResult = (
+    result: PluginHookBeforeModelResolveResult,
+  ): PluginHookBeforeModelResolveResult => ({
+    ...result,
+    ...(result.preDispatchNotice ? { preDispatchNotice: { ...result.preDispatchNotice } } : {}),
+  });
   const mergeBeforeModelResolve = (
     acc: PluginHookBeforeModelResolveResult | undefined,
     next: PluginHookBeforeModelResolveResult,
-  ): PluginHookBeforeModelResolveResult => ({
-    // Keep the first defined override so higher-priority hooks win.
-    modelOverride: firstDefined(acc?.modelOverride, next.modelOverride),
-    providerOverride: firstDefined(acc?.providerOverride, next.providerOverride),
-  });
+  ): PluginHookBeforeModelResolveResult => {
+    if (!acc) {
+      // Never key dispatch state by a plugin-owned object. A plugin can return
+      // one shared constant for concurrent turns, which would otherwise let a
+      // later dispatch overwrite the reduction state of an earlier one.
+      const aggregate = cloneBeforeModelResolveResult(next);
+      const atomic = hasAtomicBeforeModelResolveField(aggregate);
+      beforeModelResolveMergeState.set(aggregate, {
+        mode: atomic ? "atomic" : "legacy",
+        ...(atomic
+          ? { winner: aggregate }
+          : hasLegacyBeforeModelResolveRoute(aggregate)
+            ? { firstRouteResult: aggregate }
+            : {}),
+      });
+      return aggregate;
+    }
+
+    const previous = beforeModelResolveMergeState.get(acc) ?? {
+      mode: hasAtomicBeforeModelResolveField(acc) ? "atomic" : "legacy",
+      ...(hasAtomicBeforeModelResolveField(acc)
+        ? { winner: acc }
+        : hasLegacyBeforeModelResolveRoute(acc)
+          ? { firstRouteResult: acc }
+          : {}),
+    };
+
+    // The pre-existing model/provider-only contract composes the first
+    // defined value for each field. Keep that behavior until a hook opts into
+    // the newer atomic effort/notice contract.
+    if (previous.mode === "legacy" && !hasAtomicBeforeModelResolveField(next)) {
+      const merged = {
+        modelOverride: firstDefined(acc.modelOverride, next.modelOverride),
+        providerOverride: firstDefined(acc.providerOverride, next.providerOverride),
+      };
+      const nextRouteResult = hasLegacyBeforeModelResolveRoute(next)
+        ? cloneBeforeModelResolveResult(next)
+        : undefined;
+      beforeModelResolveMergeState.set(merged, {
+        mode: "legacy",
+        ...(previous.firstRouteResult
+          ? { firstRouteResult: previous.firstRouteResult }
+          : nextRouteResult
+            ? { firstRouteResult: nextRouteResult }
+            : {}),
+      });
+      return merged;
+    }
+
+    // Once a hook returns effort or a host-delivered notice, the first
+    // priority-ordered route result is one tuple. This must retain the first
+    // hook's identity across the entire reduction: an earlier legacy result
+    // may already have been composed with another legacy result by the time a
+    // lower-priority atomic result arrives. Setup derives omitted provider or
+    // model fields from the original host selection instead of filling them
+    // from a lower-priority hook.
+    if (previous.mode === "atomic") {
+      return previous.winner ?? acc;
+    }
+    const winner = previous.firstRouteResult ?? cloneBeforeModelResolveResult(next);
+    beforeModelResolveMergeState.set(winner, {
+      mode: "atomic",
+      winner,
+      ...(previous.firstRouteResult ? { firstRouteResult: previous.firstRouteResult } : {}),
+    });
+    return winner;
+  };
 
   const normalizeHookToolsAllow = (value: unknown): string[] | undefined => {
     if (value === undefined) {

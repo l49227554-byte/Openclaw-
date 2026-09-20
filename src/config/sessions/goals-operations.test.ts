@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import {
@@ -440,6 +441,37 @@ describe("typed Goal operation persistence", () => {
     expect(
       lookupSessionGoalOperation({ ...scope(), expectedSessionId: sessionId, operation }),
     ).toBeUndefined();
+  });
+
+  it("does not append a captured turn when authority closes before the queued commit", async () => {
+    let current = true;
+    const prepared = createDeferred<void>();
+    const release = createDeferred<void>();
+    const write = persistSessionTranscriptTurn(scope(), {
+      expectedSessionId: sessionId,
+      assertCommitAllowed: () => {
+        if (!current) {
+          throw new Error("authority closed");
+        }
+      },
+      messages: [
+        {
+          message: { role: "user", content: "captured before replacement" },
+          shouldAppend: async () => {
+            prepared.resolve();
+            await release.promise;
+            return true;
+          },
+        },
+      ],
+      updateMode: "none",
+    });
+
+    await prepared.promise;
+    current = false;
+    release.resolve();
+    await expect(write).rejects.toThrow("authority closed");
+    expect(await loadTranscriptEvents(scope())).toEqual([]);
   });
 
   it("revalidates admission authority inside the queued commit before writing", async () => {

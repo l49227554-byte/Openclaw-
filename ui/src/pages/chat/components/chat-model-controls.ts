@@ -524,6 +524,16 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     modelOptions.length,
     selectionKnown,
   );
+  const modelSelectionMode = props.selectedSession?.modelSelection?.mode;
+  const modelSelectionLabel =
+    modelSelectionMode === "auto" ? "Auto" : modelSelectionMode === "shadow" ? "Shadow" : undefined;
+  const modelSelectionHelp =
+    props.selectedSession?.modelSelection?.recoveryHint ??
+    (modelSelectionMode === "auto"
+      ? t("chat.modelControls.modelSelectionAutoHelp")
+      : modelSelectionMode === "shadow"
+        ? t("chat.modelControls.modelSelectionShadowHelp")
+        : undefined);
   const hasResolvableModel =
     managedCatalog.status === "ready" &&
     activeModelOption?.disabled !== true &&
@@ -535,7 +545,16 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   const effortMutationDisabled = Boolean(props.effortMutationDisabledReason);
   // Loading owns the menu contents, not the trigger. Keeping the trigger
   // interactive lets the first gesture open the picker and observe that state.
-  const modelDisabled = commonDisabled || Boolean(props.modelMutationDisabledReason);
+  const modelDisabled =
+    commonDisabled || Boolean(props.modelMutationDisabledReason) || modelSelectionMode === "auto";
+  const modelDisabledReason =
+    modelSelectionMode === "auto" ? modelSelectionHelp : props.modelMutationDisabledReason;
+  const modelSelectionScopeDescription = [
+    modelSelectionHelp,
+    resolveModelSelectionScopeDescription(props.modelSelectionTarget),
+  ]
+    .filter(Boolean)
+    .join(" ");
   const thinkingDisabled =
     commonDisabled ||
     effortMutationDisabled ||
@@ -553,7 +572,10 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
   const effortDisabled =
     commonDisabled ||
     effortMutationDisabled ||
+    modelSelectionMode === "auto" ||
     (thinking.options.length === 0 && fastMode.disabled);
+  const effortDisabledReason =
+    modelSelectionMode === "auto" ? modelSelectionHelp : props.effortMutationDisabledReason;
   // Floating UI deliberately tracks a live anchor. Keep the eventual effort
   // control in layout while catalog state is transient (and until an open model
   // menu closes), so a sibling appearing cannot move that anchor mid-interaction.
@@ -578,13 +600,11 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
               }
             : undefined,
         disabled: modelDisabled,
-        disabledReason: props.modelMutationDisabledReason,
+        disabledReason: modelDisabledReason,
         modelCatalogState: managedCatalog,
         open: props.modelPickerOpen,
         modelSelectionLocked: props.modelSelectionLocked === true,
-        selectionScopeDescription: resolveModelSelectionScopeDescription(
-          props.modelSelectionTarget,
-        ),
+        selectionScopeDescription: modelSelectionScopeDescription || undefined,
         modelOptions,
         targetGroups: props.modelPickerTargetGroups,
         selectedModelValue: pickerValue,
@@ -594,13 +614,15 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
         triggerModelLabel: formatPickerModelLabel(committedModelLabel),
         triggerModelValue: modelPending && !modelStarting ? "" : triggerModelValue || undefined,
         triggerStarting: modelStarting,
-        triggerStatusLabel: modelStarting
-          ? undefined
-          : modelPending
-            ? t("chat.modelControls.modelPending")
-            : props.modelSelectionLocked
-              ? undefined
-              : catalogTriggerStatus,
+        triggerStatusLabel:
+          modelSelectionLabel ??
+          (modelStarting
+            ? undefined
+            : modelPending
+              ? t("chat.modelControls.modelPending")
+              : props.modelSelectionLocked
+                ? undefined
+                : catalogTriggerStatus),
         triggerLoading:
           !modelPending &&
           !props.modelSelectionLocked &&
@@ -620,7 +642,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
           ? nothing
           : renderChatEffortPicker({
               disabled: effortDisabled,
-              disabledReason: props.effortMutationDisabledReason,
+              disabledReason: effortDisabledReason,
               fastMode: {
                 ...fastMode,
                 disabled: fastMode.disabled || commonDisabled || effortMutationDisabled,

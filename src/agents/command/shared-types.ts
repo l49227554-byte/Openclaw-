@@ -208,6 +208,8 @@ export type AgentRunLifecycle = {
   abortSignal?: AbortSignal;
   onPartialReply?: (payload: PartialReplyPayload) => boolean | void | Promise<boolean | void>;
   onBlockReply?: (payload: BlockReplyPayload, context?: BlockReplyContext) => void | Promise<void>;
+  /** Host-owned renderer for status notices emitted after routing and before model dispatch. */
+  onPreDispatchNotice?: (payload: BlockReplyPayload) => boolean | void | Promise<boolean | void>;
   replyOperation?: ReplyOperation;
   /**
    * Dispose bundled MCP runtimes when the overall run ends instead of preserving

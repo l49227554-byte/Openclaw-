@@ -19,9 +19,11 @@ import type { ModelRef } from "../../model-selection.js";
 import { resolveSelectedOpenAIRuntimeProvider } from "../../openai-routing.js";
 import { assertPreparedModelRuntimeInputCurrent } from "../../prepared-model-runtime.errors.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
+import { log } from "../logger.js";
 import { resolveTieredModel } from "../model-resolution.js";
 import { createEmptyAgentDiscoveryStores } from "../model.js";
 import type { RunEmbeddedAgentInternalParams } from "./internal-params.js";
+import { deliverPreDispatchNotice } from "./pre-dispatch-notice.js";
 import { resolveRequestStreamTransportOverrides } from "./runtime-resolution.js";
 import type { assertAgentHarnessRunAdmission } from "./session-bootstrap.js";
 import {
@@ -129,9 +131,31 @@ export async function resolveEmbeddedRunModelSetup(params: {
     modelSelectionLocked: runParams.modelSelectionLocked,
     hookRunner: params.hookRunner,
     hookContext: params.hookContext,
+    signal: runParams.abortSignal,
   });
-  const modelSelectionChangedByHook =
+  // The hook may have awaited external work. Revalidate lifecycle custody
+  // before emitting a notice so a stale attempt cannot speak for a new run.
+  runParams.abortSignal?.throwIfAborted();
+  params.assertCurrent();
+  // Effort-only decisions must preserve an already-resolved selected-model alias.
+  // Only a provider/model route change opts back into raw alias resolution.
+  const modelRouteChangedByHook =
     hookSelection.provider !== params.provider || hookSelection.modelId !== params.modelId;
+  const modelSelectionChangedByHook =
+    modelRouteChangedByHook || hookSelection.reasoningEffortOverride !== undefined;
+  const noticeDelivery = await deliverPreDispatchNotice({
+    notice: hookSelection.preDispatchNotice,
+    runId: `${runParams.sessionId}:${runParams.runId}`,
+    signal: runParams.abortSignal,
+    onPreDispatchNotice: runParams.onPreDispatchNotice,
+    onBlockReply: runParams.onBlockReply,
+    onBlockReplyFlush: runParams.onBlockReplyFlush,
+  });
+  if (noticeDelivery === "failed") {
+    log.warn("[hooks] before_model_resolve pre-dispatch notice could not be delivered");
+  }
+  runParams.abortSignal?.throwIfAborted();
+  params.assertCurrent();
   let provider = hookSelection.provider;
   let modelId = hookSelection.modelId;
   const requestStreamTransportOverrides = resolveRequestStreamTransportOverrides(
@@ -270,7 +294,7 @@ export async function resolveEmbeddedRunModelSetup(params: {
       ...(selectedRuntimeProvider !== provider ? { fallbackProvider: provider } : {}),
       modelId,
       agentDir: params.agentDir,
-      requestedRouteResolution: modelSelectionChangedByHook
+      requestedRouteResolution: modelRouteChangedByHook
         ? "raw"
         : runParams.requestedRouteResolution,
       config: runParams.config,
@@ -305,6 +329,7 @@ export async function resolveEmbeddedRunModelSetup(params: {
     modelId,
     requestedModelId,
     modelSelectionChangedByHook,
+    reasoningEffortOverride: hookSelection.reasoningEffortOverride,
     requestStreamTransportOverrides,
     expectedHarnessArtifact,
     agentHarness,

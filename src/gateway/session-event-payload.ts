@@ -128,6 +128,7 @@ function buildGatewaySessionEventFields(params: {
     model: sessionRow.model,
     activeModelProvider: sessionRow.activeModelProvider ?? null,
     activeModel: sessionRow.activeModel ?? null,
+    modelSelection: sessionRow.modelSelection ?? null,
     modelOverrideSource: sessionRow.modelOverrideSource,
     agentRuntime: sessionRow.agentRuntime,
     runtimeSelectionLocked: sessionRow.runtimeSelectionLocked,

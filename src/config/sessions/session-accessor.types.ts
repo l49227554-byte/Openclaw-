@@ -421,6 +421,12 @@ export type SessionTranscriptTurnPersistOptions = {
   expectedWriterRunId?: SessionTranscriptTurnExpectedState["expectedWriterRunId"];
   /** Rejects the turn unless the persisted row still has this exact lifecycle owner state. */
   expectedSessionState?: SessionTranscriptTurnExpectedState;
+  /**
+   * Synchronous owner assertion evaluated inside the SQLite commit immediately
+   * before transcript rows are mutated. Callers use this for authority that
+   * can change while target preparation or the writer queue is awaiting.
+   */
+  assertCommitAllowed?: () => void;
   /** Lifecycle metadata committed when the guarded turn inserts or idempotently matches a message. */
   sessionLifecyclePatch?: SessionTranscriptTurnLifecyclePatch;
   /** Closed mutation committed with the admitted turn, never as a separate client write. */

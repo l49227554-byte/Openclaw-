@@ -149,6 +149,162 @@ describe("model override pipeline wiring", () => {
     ] as const)("$name", async ({ event, expected, withBrokenHook, catchErrors }) => {
       await expectBeforeModelResolve({ event, expected, withBrokenHook, catchErrors });
     });
+
+    it("keeps effort and notice paired with the hook that won route selection", async () => {
+      addBeforeModelResolveHook(
+        registry,
+        "high-priority-router",
+        () => ({
+          modelOverride: "high-model",
+          providerOverride: "high-provider",
+          reasoningEffortOverride: "high",
+        }),
+        10,
+      );
+      addBeforeModelResolveHook(
+        registry,
+        "lower-priority-router",
+        () => ({
+          modelOverride: "low-model",
+          providerOverride: "low-provider",
+          reasoningEffortOverride: "low",
+        }),
+        1,
+      );
+
+      await expect(
+        createHookRunner(registry).runBeforeModelResolve({ prompt: "test" }, stubCtx),
+      ).resolves.toEqual({
+        modelOverride: "high-model",
+        providerOverride: "high-provider",
+        reasoningEffortOverride: "high",
+      });
+    });
+
+    it("does not attach a lower-priority notice to a higher-priority route", async () => {
+      addBeforeModelResolveHook(
+        registry,
+        "high-priority-router",
+        () => ({ modelOverride: "high-model", providerOverride: "high-provider" }),
+        10,
+      );
+      addBeforeModelResolveHook(
+        registry,
+        "lower-priority-router",
+        () => ({
+          modelOverride: "low-model",
+          providerOverride: "low-provider",
+          preDispatchNotice: { text: "low route" },
+        }),
+        1,
+      );
+
+      await expect(
+        createHookRunner(registry).runBeforeModelResolve({ prompt: "test" }, stubCtx),
+      ).resolves.toEqual({
+        modelOverride: "high-model",
+        providerOverride: "high-provider",
+      });
+    });
+
+    it.each([
+      {
+        name: "a model-only winner blocks lower effort and provider fields",
+        winner: { modelOverride: "high-model" },
+        lower: {
+          providerOverride: "low-provider",
+          reasoningEffortOverride: "low" as const,
+          preDispatchNotice: { text: "low route" },
+        },
+        expected: { modelOverride: "high-model" },
+      },
+      {
+        name: "an effort-only winner blocks lower model and provider fields",
+        winner: { reasoningEffortOverride: "high" as const },
+        lower: {
+          modelOverride: "low-model",
+          providerOverride: "low-provider",
+          preDispatchNotice: { text: "low route" },
+        },
+        expected: { reasoningEffortOverride: "high" as const },
+      },
+      {
+        name: "a provider-only winner blocks lower model and effort fields",
+        winner: { providerOverride: "high-provider" },
+        lower: {
+          modelOverride: "low-model",
+          reasoningEffortOverride: "low" as const,
+          preDispatchNotice: { text: "low route" },
+        },
+        expected: { providerOverride: "high-provider" },
+      },
+    ])("keeps the first partial route tuple atomic: $name", async ({ winner, lower, expected }) => {
+      addBeforeModelResolveHook(registry, "high-priority-router", () => winner, 10);
+      addBeforeModelResolveHook(registry, "lower-priority-router", () => lower, 1);
+
+      await expect(
+        createHookRunner(registry).runBeforeModelResolve({ prompt: "test" }, stubCtx),
+      ).resolves.toEqual(expected);
+    });
+
+    it("does not let a lower atomic result expose fields composed from earlier legacy hooks", async () => {
+      addBeforeModelResolveHook(
+        registry,
+        "highest-priority-model-router",
+        () => ({ modelOverride: "highest-model" }),
+        10,
+      );
+      addBeforeModelResolveHook(
+        registry,
+        "middle-priority-provider-router",
+        () => ({ providerOverride: "middle-provider" }),
+        5,
+      );
+      addBeforeModelResolveHook(
+        registry,
+        "lower-priority-atomic-router",
+        () => ({
+          reasoningEffortOverride: "low",
+          preDispatchNotice: { text: "lower route" },
+        }),
+        1,
+      );
+      addBeforeModelResolveHook(
+        registry,
+        "lowest-priority-provider-router",
+        () => ({ providerOverride: "lowest-provider" }),
+        0,
+      );
+
+      await expect(
+        createHookRunner(registry).runBeforeModelResolve({ prompt: "test" }, stubCtx),
+      ).resolves.toEqual({ modelOverride: "highest-model" });
+    });
+
+    it("keeps atomic mode sticky after a partial winner", async () => {
+      addBeforeModelResolveHook(
+        registry,
+        "highest-priority-model-router",
+        () => ({ modelOverride: "highest-model" }),
+        10,
+      );
+      addBeforeModelResolveHook(
+        registry,
+        "lower-priority-effort-router",
+        () => ({ reasoningEffortOverride: "high" }),
+        1,
+      );
+      addBeforeModelResolveHook(
+        registry,
+        "lowest-priority-provider-router",
+        () => ({ providerOverride: "lowest-provider" }),
+        0,
+      );
+
+      await expect(
+        createHookRunner(registry).runBeforeModelResolve({ prompt: "test" }, stubCtx),
+      ).resolves.toEqual({ modelOverride: "highest-model" });
+    });
   });
 
   describe("before_prompt_build (attempt.ts pattern)", () => {

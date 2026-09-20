@@ -68,6 +68,30 @@ describe("buildStatusMessageParts presentation", () => {
     expect(parts.presentation.title).toContain("(aaaaaaa)");
   });
 
+  it("reports the active automatic selection and last decision", () => {
+    const parts = buildStatusMessageParts({
+      modelRefs: statusModelRefs({ provider: "anthropic", model: "claude-haiku-4-5" }),
+      now: 1_751_529_600_000,
+      config: { agents: { defaults: { userTimezone: "UTC", timeFormat: "24" } } },
+      agent: { model: "anthropic/claude-haiku-4-5" },
+      sessionKey: "agent:main:main",
+      sessionScope: "per-sender",
+      queue: { mode: "steer", depth: 0 },
+      modelAuth: "api-key",
+      modelSelection: {
+        mode: "auto",
+        lastDecision: { model: "openai/gpt-5.6-luna", reason: "complex task", at: 1234 },
+      },
+    });
+
+    expect(parts.text).toContain("🎯 Selection: Auto · last openai/gpt-5.6-luna (complex task)");
+    const table = parts.presentation.blocks.find((block) => block.type === "table");
+    expect(table?.type === "table" ? table.rows : []).toContainEqual([
+      "🎯 Selection",
+      "Auto · last openai/gpt-5.6-luna (complex task)",
+    ]);
+  });
+
   it("mirrors the text body as a titled status table with context lines", () => {
     const parts = buildStatusMessageParts({
       modelRefs: statusModelRefs({ provider: "anthropic", model: "claude-haiku-4-5" }),

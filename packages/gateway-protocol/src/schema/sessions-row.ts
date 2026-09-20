@@ -50,6 +50,20 @@ export const SessionToolOverridesSchema = closedObject({
   webSearch: Type.Optional(Type.Boolean()),
 });
 
+/** Host projection of a plugin-owned model selector's current session mode. */
+export const SessionModelSelectionSchema = closedObject({
+  mode: Type.Union([Type.Literal("auto"), Type.Literal("shadow"), Type.Literal("off")]),
+  /** Bounded recovery instruction supplied by the active selector plugin. */
+  recoveryHint: Type.Optional(NonEmptyString),
+  lastDecision: Type.Optional(
+    closedObject({
+      model: Type.Optional(NonEmptyString),
+      reason: Type.Optional(NonEmptyString),
+      at: Type.Optional(Type.Number({ minimum: 0 })),
+    }),
+  ),
+});
+
 /** Projected actor that caused a session node to be created. */
 export const SessionCreatedActorSchema = closedObject({
   type: Type.Union([Type.Literal("human"), Type.Literal("agent"), Type.Literal("system")]),
@@ -241,6 +255,8 @@ export const SessionRowSchema = Type.Object(
     /** Runtime model serving this session while it differs from the selected model. */
     activeModel: Type.Optional(Type.String()),
     activeModelProvider: Type.Optional(Type.String()),
+    /** Active plugin-owned model selection mode; absent when no selector is active. */
+    modelSelection: Type.Optional(SessionModelSelectionSchema),
     /** Effective override provenance; null means configured default, omission means not projected. */
     modelOverrideSource: Type.Optional(
       Type.Union([
@@ -260,5 +276,6 @@ export type SessionPermissionMode = Static<typeof SessionPermissionModeSchema>;
 export type SessionOwner = Static<typeof SessionOwnerSchema>;
 export type SessionRunStatus = Static<typeof SessionRunStatusSchema>;
 export type SessionToolOverrides = Static<typeof SessionToolOverridesSchema>;
+export type SessionModelSelection = Static<typeof SessionModelSelectionSchema>;
 export type SessionRow = Static<typeof SessionRowSchema>;
 export type SessionEntryArchiveReason = Static<typeof SessionEntryArchiveReasonSchema>;

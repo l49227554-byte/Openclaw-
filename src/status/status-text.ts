@@ -31,12 +31,14 @@ import { normalizeThinkLevel } from "../auto-reply/thinking.shared.js";
 import { toAgentModelListLike } from "../config/model-input.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { hasSessionAutoModelFallbackProvenance } from "../config/sessions/model-override-provenance.js";
+import { resolveSessionModelSelectionFromExtensions } from "../config/sessions/model-selection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   formatUsageWindowSummary,
   loadProviderUsageSummary,
   resolveUsageProviderId,
 } from "../infra/provider-usage.js";
+import { projectPluginSessionExtensionsSync } from "../plugins/host-hook-state.js";
 import { resolveActiveProviderThinkingProfile } from "../plugins/provider-thinking-active.js";
 import { normalizeAccountId } from "../routing/account-id.js";
 import { resolveNormalizedAccountEntry } from "../routing/account-lookup.js";
@@ -312,6 +314,11 @@ export async function buildStatusReplyParts(
     defaultGroupActivation,
   } = params;
   const statusAgentId = resolveSessionAgentId({ sessionKey, config: cfg, agentId: params.agentId });
+  const modelSelection = sessionEntry
+    ? resolveSessionModelSelectionFromExtensions(
+        projectPluginSessionExtensionsSync({ sessionKey, entry: sessionEntry }),
+      )
+    : undefined;
   const statusAgentDir = resolveAgentDir(cfg, statusAgentId);
   const statusWorkspaceDir =
     params.workspaceDir ??
@@ -659,6 +666,7 @@ export async function buildStatusReplyParts(
     agentId: statusAgentId,
     configuredDefaultModelLabel,
     modelRefs,
+    modelSelection,
     activeModel,
     selectedContextWindow: selectedCatalogEntry?.contextWindow,
     selectedContextTokens:

@@ -7,6 +7,9 @@ import type { ProviderRuntimeModel } from "../../../plugins/provider-runtime-mod
 import type {
   PluginHookBeforeModelResolveAttachment,
   PluginHookBeforeModelResolveEvent,
+  PluginHookBeforeModelResolveNotice,
+  PluginHookBeforeModelResolveReasoningEffort,
+  PluginHookBeforeModelResolveResult,
 } from "../../../plugins/types.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -45,8 +48,45 @@ type HookRunnerLike = {
   runBeforeModelResolve(
     input: PluginHookBeforeModelResolveEvent,
     context: HookContext,
-  ): Promise<{ providerOverride?: string; modelOverride?: string } | undefined>;
+  ): Promise<PluginHookBeforeModelResolveResult | undefined>;
 };
+
+const REASONING_EFFORTS = new Set<PluginHookBeforeModelResolveReasoningEffort>([
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+function normalizeReasoningEffortOverride(
+  value: unknown,
+): PluginHookBeforeModelResolveReasoningEffort | undefined {
+  return typeof value === "string" &&
+    REASONING_EFFORTS.has(value as PluginHookBeforeModelResolveReasoningEffort)
+    ? (value as PluginHookBeforeModelResolveReasoningEffort)
+    : undefined;
+}
+
+const MAX_PRE_DISPATCH_NOTICE_CHARS = 1_200;
+
+function normalizePreDispatchNotice(
+  value: unknown,
+): PluginHookBeforeModelResolveNotice | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const text = (value as { text?: unknown }).text;
+  if (typeof text !== "string") {
+    return undefined;
+  }
+  const normalized = text.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return { text: normalized.slice(0, MAX_PRE_DISPATCH_NOTICE_CHARS) };
+}
 
 /** Durable harness sessions run only with their exact persisted identity and runtime lock. */
 export function resolveAgentHarnessRunAdmissionError(params: {
@@ -101,13 +141,14 @@ export async function resolveHookModelSelection(params: {
   modelSelectionLocked?: boolean;
   hookRunner?: HookRunnerLike | null;
   hookContext: HookContext;
+  signal?: AbortSignal;
 }) {
   let provider = params.provider;
   let modelId = params.modelId;
   if (params.modelSelectionLocked === true) {
     return { provider, modelId };
   }
-  let modelResolveOverride: { providerOverride?: string; modelOverride?: string } | undefined;
+  let modelResolveOverride: PluginHookBeforeModelResolveResult | undefined;
   const hookRunner = params.hookRunner;
 
   // Run before_model_resolve hooks early so plugins can override the
@@ -115,8 +156,17 @@ export async function resolveHookModelSelection(params: {
   if (hookRunner?.hasHooks("before_model_resolve")) {
     try {
       const event: PluginHookBeforeModelResolveEvent = params.attachments
-        ? { prompt: params.prompt, attachments: params.attachments }
-        : { prompt: params.prompt };
+        ? {
+            prompt: params.prompt,
+            attachments: params.attachments,
+            routingCapabilities: "model-effort-v1",
+            ...(params.signal ? { signal: params.signal } : {}),
+          }
+        : {
+            prompt: params.prompt,
+            routingCapabilities: "model-effort-v1",
+            ...(params.signal ? { signal: params.signal } : {}),
+          };
       modelResolveOverride = await hookRunner.runBeforeModelResolve(event, params.hookContext);
     } catch (hookErr) {
       log.warn(`before_model_resolve hook failed: ${String(hookErr)}`);
@@ -132,9 +182,16 @@ export async function resolveHookModelSelection(params: {
     log.info(`[hooks] model overridden to ${modelId}`);
   }
 
+  const reasoningEffortOverride = normalizeReasoningEffortOverride(
+    modelResolveOverride?.reasoningEffortOverride,
+  );
+  const preDispatchNotice = normalizePreDispatchNotice(modelResolveOverride?.preDispatchNotice);
+
   return {
     provider,
     modelId,
+    ...(reasoningEffortOverride ? { reasoningEffortOverride } : {}),
+    ...(preDispatchNotice ? { preDispatchNotice } : {}),
   };
 }
 

@@ -59,6 +59,10 @@ const enModelControls = {
       loadingModels: "Loading models…",
       modelPending: "Model pending",
       modelStarting: "Starting…",
+      modelSelectionAutoHelp:
+        "Automatic selection is managed by the active plugin. Use its control to choose manually.",
+      modelSelectionShadowHelp:
+        "Shadow selection is managed by the active plugin. Use its control to enable automatic dispatch.",
       modelsUnavailable: "Models unavailable",
       runtimeUnavailable: "This harness is unavailable for this model.",
       modelsRefreshFailed: "Some models could not be refreshed. Open Models to try again.",

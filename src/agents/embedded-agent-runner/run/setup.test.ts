@@ -181,7 +181,7 @@ describe("resolveHookModelSelection", () => {
     });
 
     expect(hookRunner.runBeforeModelResolve).toHaveBeenCalledWith(
-      { prompt: "describe this image", attachments },
+      { prompt: "describe this image", attachments, routingCapabilities: "model-effort-v1" },
       hookContext,
     );
     expect(result.provider).toBe("vision-provider");
@@ -203,9 +203,88 @@ describe("resolveHookModelSelection", () => {
     });
 
     expect(hookRunner.runBeforeModelResolve).toHaveBeenCalledWith(
-      { prompt: "text only" },
+      { prompt: "text only", routingCapabilities: "model-effort-v1" },
       hookContext,
     );
+  });
+
+  it("normalizes the atomic effort and pre-dispatch notice result", async () => {
+    const signal = new AbortController().signal;
+    const hookRunner = {
+      hasHooks: vi.fn(() => true),
+      runBeforeModelResolve: vi.fn(async () => ({
+        modelOverride: "routed-model",
+        providerOverride: "routed-provider",
+        reasoningEffortOverride: "high",
+        preDispatchNotice: { text: "  routed before dispatch  " },
+      })),
+    };
+
+    await expect(
+      resolveHookModelSelection({
+        prompt: "route this",
+        provider: "default-provider",
+        modelId: "default-model",
+        hookRunner,
+        hookContext,
+        signal,
+      }),
+    ).resolves.toEqual({
+      provider: "routed-provider",
+      modelId: "routed-model",
+      reasoningEffortOverride: "high",
+      preDispatchNotice: { text: "routed before dispatch" },
+    });
+    expect(hookRunner.runBeforeModelResolve).toHaveBeenCalledWith(
+      { prompt: "route this", routingCapabilities: "model-effort-v1", signal },
+      hookContext,
+    );
+  });
+
+  it("derives omitted provider and model fields from the original host selection", async () => {
+    const hookRunner = {
+      hasHooks: vi.fn(() => true),
+      runBeforeModelResolve: vi.fn(async () => ({
+        modelOverride: "routed-model",
+        reasoningEffortOverride: "high",
+        preDispatchNotice: { text: "routed before dispatch" },
+      })),
+    };
+
+    await expect(
+      resolveHookModelSelection({
+        prompt: "route this",
+        provider: "default-provider",
+        modelId: "default-model",
+        hookRunner,
+        hookContext,
+      }),
+    ).resolves.toEqual({
+      provider: "default-provider",
+      modelId: "routed-model",
+      reasoningEffortOverride: "high",
+      preDispatchNotice: { text: "routed before dispatch" },
+    });
+  });
+
+  it("drops malformed effort and empty notices from hook output", async () => {
+    const hookRunner = {
+      hasHooks: vi.fn(() => true),
+      runBeforeModelResolve: vi.fn(async () => ({
+        reasoningEffortOverride: "bogus",
+        preDispatchNotice: { text: "   " },
+      })),
+    };
+
+    await expect(
+      resolveHookModelSelection({
+        prompt: "route this",
+        provider: "default-provider",
+        modelId: "default-model",
+        hookRunner,
+        hookContext,
+      }),
+    ).resolves.toEqual({ provider: "default-provider", modelId: "default-model" });
   });
 });
 

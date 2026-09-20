@@ -356,6 +356,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 changes.forEach((change) => emitSessionsChanged(context, change)),
               replyOptions: {
                 prepareAssistantTranscriptMessage: replyDispatch.prepareAssistantTranscriptMessage,
+                onPreDispatchNotice: replyDispatch.onPreDispatchNotice,
                 ...(isInternalSourceReplyChannel(ctx)
                   ? { resolveReplyDelivery: replyDispatch.resolveReplyDelivery }
                   : {}),

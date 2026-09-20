@@ -47,6 +47,7 @@ import {
   hasSessionAutoModelFallbackProvenance,
   hasUserPinnedModelSelection,
 } from "../config/sessions/model-override-provenance.js";
+import type { SessionModelSelection } from "../config/sessions/model-selection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readRecentSessionUsageFromTranscript } from "../gateway/session-transcript-usage.js";
 import { formatDurationCompact } from "../infra/format-time/format-duration.ts";
@@ -92,6 +93,7 @@ type QueueStatus = {
 type StatusArgs = {
   config: OpenClawConfig;
   modelRefs: ReturnType<typeof resolveSelectedAndActiveModel>;
+  modelSelection?: SessionModelSelection;
   agent: AgentConfig;
   agentId?: string;
   configuredDefaultModelLabel?: string;
@@ -967,6 +969,26 @@ export function buildStatusMessageParts(args: StatusArgs): StatusMessageParts {
   const modelLines = [
     `🧠 Model: ${selectedModelLabel}${modelNote}${overrideLabel}${liveSwitchNote}`,
   ];
+  const modelSelectionLine = args.modelSelection
+    ? `🎯 Selection: ${
+        args.modelSelection.mode === "auto"
+          ? "Auto"
+          : args.modelSelection.mode === "shadow"
+            ? "Shadow"
+            : "Off"
+      }${
+        args.modelSelection.lastDecision?.model
+          ? ` · last ${args.modelSelection.lastDecision.model}`
+          : ""
+      }${
+        args.modelSelection.lastDecision?.reason
+          ? ` (${args.modelSelection.lastDecision.reason})`
+          : ""
+      }`
+    : null;
+  if (modelSelectionLine) {
+    modelLines.push(modelSelectionLine);
+  }
 
   // Show configured fallback models (from agent model config)
   const configuredFallbacks = (() => {
@@ -1060,6 +1082,7 @@ export function buildStatusMessageParts(args: StatusArgs): StatusMessageParts {
     }
   };
   pushStatusRow("🧠 Model", `${selectedModelLabel}${modelNote}${overrideLabel}${liveSwitchNote}`);
+  pushStatusRow("🎯 Selection", modelSelectionLine?.replace("🎯 Selection: ", ""));
   pushStatusRow("🔑 Auth", selectedAuthLabelValue);
   pushStatusRow("🔄 Fallbacks", configuredFallbacks?.join(", "));
   pushStatusRow("↪️ Fallback", fallbackValue);

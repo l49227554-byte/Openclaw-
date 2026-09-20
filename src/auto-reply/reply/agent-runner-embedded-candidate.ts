@@ -192,6 +192,7 @@ export async function runEmbeddedFallbackCandidate(
         images: params.currentTurnImages.images,
         imageOrder: params.currentTurnImages.imageOrder,
         abortSignal: params.runAbortSignal,
+        onPreDispatchNotice: turn.opts?.onPreDispatchNotice,
         replyOperation: turn.replyOperation,
         deferTerminalLifecycle: true,
         onAttemptStart: lifecycleBackstop.beginAttempt,

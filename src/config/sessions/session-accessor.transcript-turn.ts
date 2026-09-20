@@ -340,6 +340,7 @@ async function persistExpectedSessionTranscriptTurn(
           expectedWriterRunId:
             options.expectedWriterRunId ?? inheritedWriterFence?.expectedWriterRunId,
           expectedSessionState: options.expectedSessionState,
+          assertCommitAllowed: options.assertCommitAllowed,
           expectedSessionId,
           initialSessionEntry: options.initialSessionEntry,
           atomicGroup: options.atomicGroup,

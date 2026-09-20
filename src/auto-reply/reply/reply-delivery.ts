@@ -4,6 +4,7 @@ import { logVerbose } from "../../globals.js";
 import { trimTextPreservingCode } from "../../shared/text/text-projection.js";
 import {
   copyReplyPayloadMetadata,
+  isReplyPayloadStatusNotice,
   getReplyPayloadMetadata,
   isReplyPayloadTerminalContent,
   setReplyPayloadMetadata,
@@ -35,6 +36,7 @@ export async function resolveReplyFailureVisibility(
     directBlockDeliveries.some(
       (delivery) =>
         delivery.outcome === "delivered" &&
+        !isReplyPayloadStatusNotice(delivery.payload) &&
         hasOutboundReplyContent(delivery.payload, { trimText: true }),
     )
   );
@@ -209,8 +211,16 @@ export function createBlockReplyDeliveryHandler(params: {
       });
     }
 
-    // Use pipeline if available (block streaming enabled), otherwise send directly.
-    if (params.blockStreamingEnabled && params.blockReplyPipeline) {
+    // Status notices are host-owned point-in-time updates. Send them directly
+    // so the callback's completion is the delivery boundary even when a block
+    // pipeline is active; they must not wait behind model output coalescing.
+    if (isReplyPayloadStatusNotice(blockPayload)) {
+      await sendDirectBlockReply({
+        onBlockReply: params.onBlockReply,
+        directBlockDeliveries: params.directBlockDeliveries,
+        payload: blockPayload,
+      });
+    } else if (params.blockStreamingEnabled && params.blockReplyPipeline) {
       params.blockReplyPipeline.enqueue(blockPayload);
     } else if (
       params.blockStreamingEnabled ||

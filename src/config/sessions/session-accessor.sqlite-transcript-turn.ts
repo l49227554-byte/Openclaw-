@@ -67,6 +67,7 @@ export async function appendExpectedSessionTranscriptTurn(
     expectedLifecycleRevision?: SessionLifecycleRevisionExpectation;
     expectedWriterRunId?: SessionTranscriptTurnExpectedState["expectedWriterRunId"];
     expectedSessionState?: SessionTranscriptTurnExpectedState;
+    assertCommitAllowed?: SessionTranscriptTurnPersistOptions["assertCommitAllowed"];
     expectedSessionId: string;
     initialSessionEntry?: SessionEntry;
     messages: readonly SessionTranscriptTurnMessageAppend[];
@@ -202,6 +203,11 @@ export async function appendExpectedSessionTranscriptTurn(
               continue;
             }
           }
+          // Target preparation and the SQLite writer queue both yield before
+          // this transaction. Recheck the caller's live authority at the
+          // synchronous side-effect boundary so a canceled/replaced run
+          // cannot append a stale transcript notice.
+          options.assertCommitAllowed?.();
           let message = appendOptions.message;
           if (mutation && goal && isRecord(message) && message.role === "user") {
             message = {

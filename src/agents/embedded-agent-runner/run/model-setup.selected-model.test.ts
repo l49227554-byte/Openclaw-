@@ -44,6 +44,13 @@ const cases = [
     expected: "middle",
   },
   {
+    name: "selected effort override",
+    input: { provider, model: "middle", requestedRouteResolution: "resolved" },
+    hook: { reasoningEffortOverride: "high" },
+    planned: "middle",
+    expected: "middle",
+  },
+  {
     name: "selected model hook redirect",
     input: { provider, model: "middle", requestedRouteResolution: "resolved" },
     hook: { modelOverride: "entry" },

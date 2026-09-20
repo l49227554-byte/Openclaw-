@@ -202,6 +202,64 @@ export function createChatSendReplyDispatch(params: {
     );
     return params.prepareAssistantTranscriptMessage?.(prepared, sourceText) ?? prepared;
   };
+  const onPreDispatchNotice = async (payload: ReplyPayload): Promise<boolean> => {
+    if (!isReplyPayloadStatusNotice(payload) || !payload.text?.trim()) {
+      return false;
+    }
+    if (params.isRunCurrent && !params.isRunCurrent()) {
+      // A replaced run no longer has delivery authority. Claim the notice as
+      // handled so the generic dispatcher cannot fall back to transport output.
+      return true;
+    }
+    if (params.abortSignal?.aborted) {
+      return false;
+    }
+    const current = loadSessionEntry(session.sessionKey, sessionLoadOptions);
+    const sessionId = current.entry?.sessionId;
+    if (!sessionId || !current.storePath) {
+      logGateway.warn("webchat pre-dispatch notice skipped: transcript identity unavailable");
+      // A missing live session has no authority for either durable or fallback delivery.
+      return true;
+    }
+    const appended = await appendAssistantTranscriptMessage({
+      sessionKey: session.sessionKey,
+      message: payload.text.trim(),
+      sessionId,
+      storePath: current.storePath,
+      expectedSessionId: sessionId,
+      ...(current.entry?.lifecycleRevision
+        ? { expectedLifecycleRevision: current.entry.lifecycleRevision }
+        : {}),
+      assertCommitAllowed: () => {
+        if (params.abortSignal?.aborted) {
+          throw new Error("Chat pre-dispatch notice run was aborted.");
+        }
+        if (params.isRunCurrent && !params.isRunCurrent()) {
+          throw new Error("Chat pre-dispatch notice run is no longer current.");
+        }
+      },
+      ...(session.agentId ? { agentId: session.agentId } : {}),
+      createIfMissing: true,
+      // A notice is visible transcript state, but must not become model context
+      // or perturb the next provider prompt cache.
+      contextFreeCommand: true,
+      idempotencyKey: `${clientRunId}:pre-dispatch-notice`,
+      cfg,
+    });
+    if (!appended.ok) {
+      // A replacement can invalidate the run without aborting its signal. Do
+      // not fall back to transport delivery for a notice whose durable commit
+      // was correctly rejected by the same live-authority guard.
+      if (params.abortSignal?.aborted || (params.isRunCurrent && !params.isRunCurrent())) {
+        return true;
+      }
+      logGateway.warn(
+        `webchat pre-dispatch notice append failed: ${appended.error ?? "unknown error"}`,
+      );
+      return false;
+    }
+    return true;
+  };
   const resolveReplyDelivery = async (
     minimumAssistantMessageIndex = 0,
   ): Promise<ReplyDeliveryState> => {
@@ -714,6 +772,7 @@ export function createChatSendReplyDispatch(params: {
     dispatcherOptions,
     hasAppendedWebchatAgentMedia: () => appendedWebchatAgentMedia,
     onModelSelected,
+    onPreDispatchNotice,
     prepareAssistantTranscriptMessage,
     resolveReplyDelivery,
     runAgentMediaTranscript,

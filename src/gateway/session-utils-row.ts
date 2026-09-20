@@ -19,6 +19,7 @@ import {
   SESSION_TOTAL_TOKENS_VERSION,
 } from "../config/sessions.js";
 import { resolveSessionModelOverrideSource } from "../config/sessions/model-override-provenance.js";
+import { resolveSessionModelSelectionFromExtensions } from "../config/sessions/model-selection.js";
 import { sessionEntryForkedFromParent } from "../config/sessions/session-entry-lineage.js";
 import {
   sessionCreatorProfileId,
@@ -192,8 +193,11 @@ export function readSessionRowInputs(params: {
   });
   const resolvedModelContextTokens = resolvePositiveNumber(modelContext.contextTokens);
 
-  const pluginExtensions =
-    !lightweight && entry ? projectPluginSessionExtensionsSync({ sessionKey: key, entry }) : [];
+  const projectedPluginExtensions = entry
+    ? projectPluginSessionExtensionsSync({ sessionKey: key, entry })
+    : [];
+  const pluginExtensions = lightweight ? [] : projectedPluginExtensions;
+  const modelSelection = resolveSessionModelSelectionFromExtensions(projectedPluginExtensions);
   const repositoryWorkspace = entry?.repositoryWorkspaceId
     ? getSessionRepositoryWorkspaceStore().get(entry.repositoryWorkspaceId)
     : undefined;
@@ -255,6 +259,7 @@ export function readSessionRowInputs(params: {
         authoredContextTokens: resolvePositiveNumber(modelContext.authoredContextTokens),
       }),
       pluginExtensions,
+      modelSelection,
       includeSwarmSummary: params.rowContext !== undefined,
       childLinks: (
         params.storeChildSessionLinksByKey ??
@@ -595,6 +600,7 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     compactionCheckpointCount: compactionSummary.compactionCheckpointCount,
     latestCompactionCheckpoint: compactionSummary.latestCompactionCheckpoint,
     pluginExtensions: input.pluginExtensions.length > 0 ? input.pluginExtensions : undefined,
+    modelSelection: input.modelSelection,
   };
   return { row, source: input };
 }

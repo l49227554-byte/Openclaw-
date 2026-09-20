@@ -8962,7 +8962,7 @@ server.listen(0, "127.0.0.1", () => {
       generationStep?.run?.match(/\$\{\{(.*?)\}\}/u)?.[1],
       "transform generation expression",
     );
-    const sourceFiles: Record<string, string> = {
+    const sourceFiles = {
       "pnpm-lock.yaml": "lockfileVersion: '9.0'",
       "pnpm-workspace.yaml": "packages: ['packages/*']",
       "package.json": '{"name":"fixture"}',
@@ -8974,7 +8974,7 @@ server.listen(0, "127.0.0.1", () => {
       ".github/actions/setup-security-review/package.json": '{"name":"review"}',
       ".ci-harness-source/package.json": '{"name":"real-source"}',
     };
-    const files = { ...sourceFiles };
+    const files: Record<string, string> = { ...sourceFiles };
     const fingerprint = () =>
       runInNewContext(expression, {
         hashFiles: (...patterns: string[]) => {
@@ -8983,12 +8983,14 @@ server.listen(0, "127.0.0.1", () => {
             .filter((pattern) => pattern.startsWith("!"))
             .map((pattern) => pattern.slice(1));
           const hash = createHash("sha256");
-          for (const file of Object.keys(files).toSorted()) {
+          for (const [file, contents] of Object.entries(files).toSorted(([left], [right]) =>
+            left.localeCompare(right),
+          )) {
             if (
               includes.some((pattern) => minimatch(file, pattern, { dot: true })) &&
               !excludes.some((pattern) => minimatch(file, pattern, { dot: true }))
             ) {
-              hash.update(createHash("sha256").update(files[file]).digest());
+              hash.update(createHash("sha256").update(contents).digest());
             }
           }
           return hash.digest("hex");

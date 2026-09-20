@@ -39,10 +39,8 @@ jobs:
           --reporter verbose
       - name: Run packaged launcher shutdown regression
         run: >-
-          timeout 600s node scripts/run-vitest.mjs run
-          test/openclaw-launcher.e2e.test.ts
-          -t "preserves foreground Gateway shutdown grace with packaged compile cache"
-          --reporter verbose
+          timeout 600s node scripts/proof/gateway-launcher-drain-shutdown-proof.mjs
+          --mode=packaged
       - name: Run real bounded denial and failure proof
         run: |
           node scripts/proof/gateway-launcher-drain-shutdown-proof.mjs --mode=generic

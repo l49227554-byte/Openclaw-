@@ -812,7 +812,38 @@ function readCompactGroupSeconds(
   return serialSeconds === undefined ? undefined : serialSeconds / 2;
 }
 
+function isParallelToolingGroup(group: NodeTestShardGroup): boolean {
+  return /^core-tooling-\d+(?:-hosted-\d+)?$/u.test(group.shard_name);
+}
+
+function estimateParallelToolingSeconds(
+  group: Pick<NodeTestShardGroup, "env">,
+  files: readonly string[],
+  runnerBackend: string | undefined,
+): number {
+  const workers = Math.min(
+    files.length,
+    Number(
+      group.env?.OPENCLAW_VITEST_MAX_WORKERS ??
+        PINNED_COMPACT_GROUP_ENV.OPENCLAW_VITEST_MAX_WORKERS,
+    ),
+  );
+  const weights = files.map(toolingFileWeight);
+  // File observations retain their elapsed cost under parallel execution. Old
+  // numbered parent/child spans describe serial files and cannot price this lane.
+  return (
+    Math.max(
+      0,
+      ...weights,
+      weights.reduce((sum, seconds) => sum + seconds, 0) / Math.max(1, workers),
+    ) * (runnerBackend === "github" ? COMPACT_GITHUB_GROUP_SECONDS_SCALE : 1)
+  );
+}
+
 function estimateDefaultCompactGroupSeconds(group: NodeTestShardGroup): number {
+  if (isParallelToolingGroup(group) && group.includePatterns) {
+    return estimateParallelToolingSeconds(group, group.includePatterns, "blacksmith");
+  }
   const hint =
     readCompactGroupSeconds(group, "blacksmith") ??
     COMPACT_GROUP_SECONDS_HINTS.get(group.shard_name);
@@ -820,9 +851,6 @@ function estimateDefaultCompactGroupSeconds(group: NodeTestShardGroup): number {
     return hint;
   }
   if (Array.isArray(group.includePatterns)) {
-    if (/^core-tooling-\d+$/u.test(group.shard_name)) {
-      return group.includePatterns.reduce((seconds, file) => seconds + toolingFileWeight(file), 0);
-    }
     return Math.max(3, Math.round(group.includePatterns.length * DEFAULT_SECONDS_PER_TEST_FILE));
   }
   return DEFAULT_WHOLE_GROUP_SECONDS;
@@ -861,6 +889,9 @@ function estimateCompactGroupSeconds(
   group: NodeTestShardGroup,
   runnerBackend: string | undefined,
 ): number {
+  if (isParallelToolingGroup(group) && group.includePatterns) {
+    return estimateParallelToolingSeconds(group, group.includePatterns, runnerBackend);
+  }
   const defaultSeconds = estimateDefaultCompactGroupSeconds(group);
   // Hybrid attempt 1 runs on Blacksmith. It keeps the expanded topology for
   // hosted retries, but its packing weights must describe the runner that
@@ -882,6 +913,9 @@ function estimateCompactStripeSeconds(
   group: NodeTestShardGroup,
   runnerBackend: string | undefined,
 ): number {
+  if (isParallelToolingGroup(group) && group.includePatterns) {
+    return estimateParallelToolingSeconds(group, group.includePatterns, runnerBackend);
+  }
   if (group.timing_key) {
     // The parent-derived floor owns a new split until its exact child has samples.
     // File-count fallbacks would price the same work again after partitioning.
@@ -1818,8 +1852,8 @@ function createUnitFastSplitShards(): NodeTestSplitShard[] {
   ];
 }
 
-// Run 33364935118 spent 2412s across the tooling files. Sixteen weighted
-// stripes retain all files and leave the three ~190s process fixtures alone.
+// Price the sixteen parent stripes with the same file workers as their compact
+// children, so a long file can share spare worker capacity with shorter files.
 // Push compacts omit tooling; retained compact groups stay exclusive.
 function createToolingSplitShards(): NodeTestSplitShard[] {
   const files = listCompactToolingTestFiles();
@@ -1828,7 +1862,7 @@ function createToolingSplitShards(): NodeTestSplitShard[] {
   const toolingBatchWeight = (batch: string[]) => {
     const mode = mergeVitestPretestBuildModes(batch.map((file) => buildModes.get(file)));
     return (
-      batch.reduce((sum, file) => sum + toolingFileWeight(file), 0) +
+      estimateParallelToolingSeconds({ env: PINNED_COMPACT_GROUP_ENV }, batch, "blacksmith") +
       (mode ? VITEST_PRETEST_BUILD_SECONDS[mode] : 0)
     );
   };
@@ -2000,10 +2034,21 @@ function createAgenticGatewayCoreSplitShards(): NodeTestSplitShard[] {
   ];
 }
 
-const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
-  ["core-unit-fast", createUnitFastSplitShards()],
-  ["core-tooling", createToolingSplitShards()],
-  ["core-unit-src", createCoreUnitSrcSecuritySplitShards()],
+const TUI_PTY_NODE_TEST_SHARD: NodeTestSplitShard = {
+  shardName: "core-runtime-tui-pty",
+  configs: ["test/vitest/vitest.tui-pty.config.ts"],
+  env: {
+    OPENCLAW_TUI_PTY_INCLUDE_LOCAL: "1",
+    OPENCLAW_TUI_PTY_USE_BUILT_CLI: "1",
+  },
+  requiresDist: true,
+  runner: "blacksmith-4vcpu-ubuntu-2404",
+};
+
+const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[] | (() => NodeTestSplitShard[])>([
+  ["core-unit-fast", createUnitFastSplitShards],
+  ["core-tooling", createToolingSplitShards],
+  ["core-unit-src", createCoreUnitSrcSecuritySplitShards],
   ["core-unit-security", []],
   [
     "core-unit-support",
@@ -2017,7 +2062,7 @@ const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
   ],
   [
     "core-runtime",
-    [
+    () => [
       {
         shardName: "core-runtime-hooks",
         configs: ["test/vitest/vitest.hooks.config.ts"],
@@ -2046,16 +2091,7 @@ const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
         requiresDist: false,
         runner: "blacksmith-4vcpu-ubuntu-2404",
       },
-      {
-        shardName: "core-runtime-tui-pty",
-        configs: ["test/vitest/vitest.tui-pty.config.ts"],
-        env: {
-          OPENCLAW_TUI_PTY_INCLUDE_LOCAL: "1",
-          OPENCLAW_TUI_PTY_USE_BUILT_CLI: "1",
-        },
-        requiresDist: true,
-        runner: "blacksmith-4vcpu-ubuntu-2404",
-      },
+      TUI_PTY_NODE_TEST_SHARD,
       ...createCoreRuntimeMediaUiSplitShards(),
       {
         shardName: "core-runtime-shared",
@@ -2072,7 +2108,7 @@ const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
   ],
   [
     "auto-reply",
-    [
+    () => [
       {
         shardName: "auto-reply-core-top-level",
         configs: [
@@ -2086,7 +2122,7 @@ const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
   ],
   [
     "agentic",
-    [
+    () => [
       ...createGatewayServerSplitShards(),
       {
         shardName: "agentic-gateway-server-isolated",
@@ -2160,6 +2196,44 @@ const SPLIT_NODE_SHARDS = new Map<string, NodeTestSplitShard[]>([
   ],
 ]);
 const DIST_DEPENDENT_NODE_SHARD_NAMES = new Set(["core-support-boundary"]);
+// Definitions are immutable for a planner process; defer file discovery until an
+// owner is requested while retaining the original canonical metadata snapshot.
+const canonicalNodeTestOwners = fullSuiteVitestShards.map((shard) => ({
+  ...shard,
+  projects: [...shard.projects],
+}));
+let canonicalMetadataConfigs: ReadonlySet<string> | undefined;
+
+function resolveSplitNodeShards(name: string): NodeTestSplitShard[] | undefined {
+  const entry = SPLIT_NODE_SHARDS.get(name);
+  if (typeof entry !== "function") {
+    return entry;
+  }
+  const shards = entry();
+  SPLIT_NODE_SHARDS.set(name, shards);
+  return shards;
+}
+
+export function nodeTestConfigRequiresCanonicalMetadata(config: string): boolean {
+  if (config === TOOLING_CONFIG) {
+    return canonicalNodeTestOwners.some(
+      (owner) => owner.name === "core-tooling" && owner.projects.includes(config),
+    );
+  }
+  canonicalMetadataConfigs ??= new Set(
+    createNodeTestShardsForOwners(canonicalNodeTestOwners, {
+      includeReleaseOnlyPluginShards: false,
+    })
+      .filter(
+        (shard) =>
+          shard.env ||
+          shard.shardName.startsWith("core-tooling") ||
+          shard.configs.some(isExclusiveCiTestConfig),
+      )
+      .flatMap((shard) => shard.configs),
+  );
+  return canonicalMetadataConfigs.has(config);
+}
 
 function formatNodeTestShardCheckName(shardName: string): string {
   const normalizedShardName = shardName.startsWith("core-unit-")
@@ -2170,6 +2244,14 @@ function formatNodeTestShardCheckName(shardName: string): string {
 
 /** Create node test shard descriptors for CI, optionally excluding release-only plugin shards. */
 export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTestShard[] {
+  return createNodeTestShardsForOwners(fullSuiteVitestShards, options);
+}
+
+function createNodeTestShardsForOwners(
+  owners: readonly (typeof fullSuiteVitestShards)[number][],
+  options: NodeTestPlanOptions,
+  toolingOnly = false,
+): NodeTestShard[] {
   const includeReleaseOnlyPluginShards = options.includeReleaseOnlyPluginShards ?? true;
   const changedTestPlans = includeReleaseOnlyPluginShards
     ? []
@@ -2182,8 +2264,14 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
         )
         .flatMap((file) => buildVitestRunPlans([file]));
 
-  return fullSuiteVitestShards.flatMap((shard) => {
-    if (EXCLUDED_FULL_SUITE_SHARDS.has(shard.config)) {
+  return owners.flatMap((shard) => {
+    if (
+      EXCLUDED_FULL_SUITE_SHARDS.has(shard.config) ||
+      (toolingOnly &&
+        shard.name !== "core-tooling" &&
+        shard.name !== "core-runtime" &&
+        !DIST_DEPENDENT_NODE_SHARD_NAMES.has(shard.name))
+    ) {
       return [];
     }
 
@@ -2192,7 +2280,10 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
       return [];
     }
 
-    const splitShards = SPLIT_NODE_SHARDS.get(shard.name);
+    const splitShards =
+      toolingOnly && shard.name === "core-runtime"
+        ? [TUI_PTY_NODE_TEST_SHARD]
+        : resolveSplitNodeShards(shard.name);
     if (splitShards) {
       return splitShards.flatMap((splitShard) => {
         const splitConfigs = splitShard.includeExternalConfigs
@@ -2669,8 +2760,7 @@ type HostedToolingTailDonation = {
 
 function selectHostedToolingTailDonation(
   stripes: readonly string[][],
-  weightForFile: (file: string) => number,
-  secondsForWeight: (weight: number) => number,
+  secondsForFiles: (files: readonly string[]) => number,
   selectedFile?: string,
   selectedToolingFiles?: ReadonlySet<string>,
 ): { file: string; donorIndex: number; freedSeconds: number } | undefined {
@@ -2678,22 +2768,19 @@ function selectHostedToolingTailDonation(
   if (!tail) {
     return undefined;
   }
-  const tailWeight = tail.reduce((sum, file) => sum + weightForFile(file), 0);
   let best: { file: string; donorIndex: number; freedSeconds: number } | undefined;
   for (const [donorIndex, donor] of stripes.slice(0, -1).entries()) {
-    const donorWeight = donor.reduce((sum, file) => sum + weightForFile(file), 0);
-    const donorSeconds = secondsForWeight(donorWeight);
+    const donorSeconds = secondsForFiles(donor);
     if (donor.length < 2 || donorSeconds <= COMPACT_EXCLUSIVE_JOB_SECONDS / 2) {
       continue;
     }
     for (const file of donor) {
-      const weight = weightForFile(file);
-      const freedSeconds = donorSeconds - secondsForWeight(donorWeight - weight);
+      const freedSeconds = donorSeconds - secondsForFiles(donor.filter((entry) => entry !== file));
       if (
         (selectedFile !== undefined && file !== selectedFile) ||
         (selectedToolingFiles !== undefined && !selectedToolingFiles.has(file)) ||
         freedSeconds <= 0 ||
-        secondsForWeight(tailWeight + weight) > COMPACT_EXCLUSIVE_JOB_SECONDS / 2
+        secondsForFiles([...tail, file]) > COMPACT_EXCLUSIVE_JOB_SECONDS / 2
       ) {
         continue;
       }
@@ -2722,6 +2809,7 @@ function splitOversizedCompactGroup(
   // Hybrid groups must fit both the first-attempt runner and hosted retries;
   // a faster retry estimate must not leave a slow first attempt unsplit.
   const isCliProcess = group.shard_name === "agentic-cli-process";
+  const isTooling = isParallelToolingGroup(group);
   const storageStateFileLimit =
     runnerBackend === "github" && group.shard_name === "core-runtime-infra-storage-state"
       ? COMPACT_HOSTED_STORAGE_STATE_MAX_FILES
@@ -2732,9 +2820,13 @@ function splitOversizedCompactGroup(
   const measuredProfileSeconds = estimateCompactGroupSeconds(group, runnerBackend);
   const measuredHostedSeconds = estimateCompactGroupSeconds(group, "github");
   const splitTimingPrefix = `${group.shard_name}#selector-`;
-  const hasSplitTimingHistory = (["blacksmith", "github"] as const).some((profile) =>
-    Object.keys(readCompactGroupTimings(profile)).some((key) => key.startsWith(splitTimingPrefix)),
-  );
+  const hasSplitTimingHistory =
+    !isTooling &&
+    (["blacksmith", "github"] as const).some((profile) =>
+      Object.keys(readCompactGroupTimings(profile)).some((key) =>
+        key.startsWith(splitTimingPrefix),
+      ),
+    );
   if (
     !isCliProcess &&
     !exceedsStorageStateFileLimit &&
@@ -2748,7 +2840,6 @@ function splitOversizedCompactGroup(
   const buildModes = new Map(
     includePatterns?.map((file) => [file, resolveTestFilesBuildMode([file])]) ?? [],
   );
-  const isTooling = /^core-tooling-\d+$/u.test(group.shard_name);
   const packTooling = isTooling && runnerBackend === "github";
   const weightForFile = isTooling ? toolingFileWeight : stripeFileWeight;
   const totalWeight =
@@ -2776,13 +2867,13 @@ function splitOversizedCompactGroup(
   const createStripes = (seconds: number) => {
     tailDonation = undefined;
     const files = runtimePartition?.otherFiles ?? includePatterns;
-    const secondsForWeight = (weight: number) =>
-      packTooling ? Math.ceil((seconds * weight) / totalWeight) : weight;
     const batchWeight = (patterns: readonly string[]) => {
       const mode = mergeVitestPretestBuildModes(patterns.map((file) => buildModes.get(file)));
       const weight = patterns.reduce((sum, file) => sum + weightForFile(file), 0);
       return (
-        secondsForWeight(weight) +
+        (isTooling
+          ? estimateParallelToolingSeconds(group, patterns, packTooling ? "github" : runnerBackend)
+          : weight) +
         Math.round(
           (mode ? VITEST_PRETEST_BUILD_SECONDS[mode] : 0) *
             (packTooling ? COMPACT_GITHUB_GROUP_SECONDS_SCALE : 1),
@@ -2790,7 +2881,7 @@ function splitOversizedCompactGroup(
       );
     };
     const weightForValue =
-      isCliProcess || packTooling ? (file: string) => batchWeight([file]) : weightForFile;
+      isCliProcess || isTooling ? (file: string) => batchWeight([file]) : weightForFile;
     let stripes: string[][];
     if (packTooling) {
       // Balanced thirds of a ~301s parent each consume a 150s job. Fill the
@@ -2834,8 +2925,7 @@ function splitOversizedCompactGroup(
       ) {
         const donation = selectHostedToolingTailDonation(
           stripes,
-          weightForFile,
-          secondsForWeight,
+          batchWeight,
           selectedDonation?.file,
           selectedToolingFiles,
         );
@@ -2859,9 +2949,11 @@ function splitOversizedCompactGroup(
     } else {
       // The fixed build stays with its runtime child; only remaining test
       // work benefits from more stripes. Empty include lists run the whole config.
-      const remainingSeconds = runtimePartition
-        ? (seconds * files.reduce((sum, file) => sum + weightForFile(file), 0)) / totalWeight
-        : seconds;
+      const remainingSeconds = isTooling
+        ? estimateParallelToolingSeconds(group, files, "github")
+        : runtimePartition
+          ? (seconds * files.reduce((sum, file) => sum + weightForFile(file), 0)) / totalWeight
+          : seconds;
       stripes = createStripedBatches(
         files,
         Math.min(
@@ -2869,7 +2961,7 @@ function splitOversizedCompactGroup(
           Math.max(1, Math.ceil(remainingSeconds / COMPACT_GITHUB_MAX_PREDICTED_SECONDS)),
         ),
         weightForValue,
-        isCliProcess ? batchWeight : undefined,
+        isCliProcess || isTooling ? batchWeight : undefined,
       );
     }
     const partitioned = runtimePartition ? [runtimePartition.runtimeFiles, ...stripes] : stripes;
@@ -2902,13 +2994,15 @@ function splitOversizedCompactGroup(
         stripes,
       })
     : undefined;
-  const selectors = [timingGeneration.selectorKey, previousWorkerGeneration?.selectorKey].filter(
-    (selector): selector is string => selector !== undefined,
-  );
+  const selectors = (
+    isTooling ? [] : [timingGeneration.selectorKey, previousWorkerGeneration?.selectorKey]
+  ).filter((selector): selector is string => selector !== undefined);
   const completeBlacksmithSeconds = Math.max(
+    0,
     ...selectors.map((selector) => readCompleteSplitGenerationSeconds("blacksmith", selector) ?? 0),
   );
   const completeHostedSeconds = Math.max(
+    0,
     ...selectors.map((selector) => readCompleteSplitGenerationSeconds("github", selector) ?? 0),
   );
   const completeMeasuredSeconds =
@@ -2958,17 +3052,19 @@ function splitOversizedCompactGroup(
     },
     // Round once at the job boundary; per-child rounding can duplicate a build
     // when many small consumers together still fit one preparation budget.
-    seconds: Math.max(
-      (distributedProfileSeconds *
-        patterns.reduce((seconds, file) => seconds + weightForFile(file), 0)) /
-        totalWeight,
-      previousWorkerTimingKeys[index]
-        ? estimateCompactStripeSeconds(
-            { ...group, timing_key: previousWorkerTimingKeys[index] },
-            runnerBackend,
-          )
-        : 0,
-    ),
+    seconds: isTooling
+      ? estimateParallelToolingSeconds(group, patterns, runnerBackend)
+      : Math.max(
+          (distributedProfileSeconds *
+            patterns.reduce((seconds, file) => seconds + weightForFile(file), 0)) /
+            totalWeight,
+          previousWorkerTimingKeys[index]
+            ? estimateCompactStripeSeconds(
+                { ...group, timing_key: previousWorkerTimingKeys[index] },
+                runnerBackend,
+              )
+            : 0,
+        ),
   }));
 }
 
@@ -3037,7 +3133,6 @@ export function createSelectedNodeTestShardBundles(
   targets: readonly string[],
   options: Pick<NodeTestPlanOptions, "runnerBackend"> = {},
 ): CompactNodeTestShard[] | null {
-  const shards = createNodeTestShards({ includeReleaseOnlyPluginShards: false });
   const selected = new Set(targets);
   const configs = new Map<string, string>();
   for (const target of selected) {
@@ -3059,6 +3154,11 @@ export function createSelectedNodeTestShardBundles(
     return null;
   }
   const tooling = new Set([...selected].filter((target) => configs.get(target) === TOOLING_CONFIG));
+  const shards = createNodeTestShardsForOwners(
+    fullSuiteVitestShards,
+    { includeReleaseOnlyPluginShards: false },
+    tooling.size === selected.size,
+  );
   const owners = new Set<NodeTestShard>();
   for (const target of tooling) {
     const matches = shards.filter(

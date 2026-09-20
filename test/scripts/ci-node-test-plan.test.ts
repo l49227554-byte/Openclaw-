@@ -25,11 +25,13 @@ import { isRuntimePlacementIncludePatterns } from "../../scripts/lib/ci-test-tim
 import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
 import * as buildPrerequisites from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { listVitestRuntimeConsumerFiles } from "../../scripts/lib/vitest-build-prerequisites.mts";
+import * as shardMetadata from "../../scripts/lib/vitest-shard-metadata.mts";
 import {
   createCompactSplitTimingGeneration,
   parseCompactSplitTimingKey,
 } from "../../scripts/lib/vitest-shard-metadata.mts";
 import { expectNoNodeFsScans } from "../../src/test-utils/fs-scan-assertions.js";
+import { spawnNodeEvalSync } from "../../src/test-utils/node-process.js";
 import { listGitTrackedFiles, sortRepoPaths, toRepoPath } from "../../src/test-utils/repo-files.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { createAgentsCoreIsolatedVitestConfig } from "../vitest/vitest.agents-core-isolated.config.ts";
@@ -365,6 +367,42 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     defaultShards = createNodeTestShards();
   });
 
+  it("discovers only tooling files for a cold precise tooling plan", () => {
+    const result = spawnNodeEvalSync(`
+      import fs from "node:fs";
+      import path from "node:path";
+      import { syncBuiltinESMExports } from "node:module";
+      let sourceReads = 0;
+      const readFileSync = fs.readFileSync;
+      fs.readFileSync = function(file, ...args) {
+        const relative = path.relative(process.cwd(), String(file)).replaceAll("\\\\", "/");
+        if (relative.startsWith("src/") && relative.endsWith(".test.ts")) sourceReads += 1;
+        return readFileSync.call(this, file, ...args);
+      };
+      syncBuiltinESMExports();
+      const { createChangedNodeTestShards } = await import("./scripts/lib/ci-changed-node-test-plan.mts");
+      const importReads = sourceReads;
+      const target = "test/scripts/managed-child-process.test.ts";
+      const plan = createChangedNodeTestShards([target], { runnerBackend: "github" });
+      console.log(JSON.stringify({
+        importReads,
+        sourceReads,
+        distOwners: plan?.filter((shard) => shard.requiresDist).map((shard) => shard.groups.flatMap((group) => group.configs)).flat().sort(),
+        selected: plan?.filter((shard) => !shard.requiresDist).flatMap((shard) => shard.groups?.flatMap((group) => group.includePatterns ?? []) ?? []).sort(),
+      }));
+    `);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      importReads: 0,
+      sourceReads: 0,
+      distOwners: ["test/vitest/vitest.boundary.config.ts", "test/vitest/vitest.tui-pty.config.ts"],
+      selected: [
+        "test/scripts/managed-child-process.test.ts",
+        "test/scripts/test-projects.test.ts",
+      ],
+    });
+  });
+
   it("binds split timing identity to exact complete-file membership", () => {
     const common = {
       configs: ["test/vitest/vitest.gateway-server.config.ts"],
@@ -572,16 +610,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   ])(
     "bounds $runnerBackend child groups by the slower $slowerProfile path",
     ({ runnerBackend, slowerProfile }) => {
-      const consumer = "test/e2e/qa-lab/runtime/gateway-support-export-runtime.test.ts";
-      const target = createNodeTestShards().find((shard) =>
-        shard.includePatterns?.includes(consumer),
-      )!;
-      const runtimeConsumers = target.includePatterns!.filter(
-        (file) => file === consumer || file === PRIVATE_QA_TOOLING_TEST,
-      );
-      const buildMode = runtimeConsumers.includes(PRIVATE_QA_TOOLING_TEST)
-        ? "private-qa"
-        : "runtime";
+      // This lane still uses profile-specific group spans; tooling now prices
+      // current per-file costs and has separate worker/longest-file coverage.
+      const target = {
+        ...createNodeTestShards().find((shard) => shard.shardName === "core-runtime-config")!,
+        includePatterns: listMatchedTestFiles(createRuntimeConfigVitestConfig({})),
+      };
+      const runtimeFiles = new Set(listVitestRuntimeConsumerFiles(target.configs));
+      const runtimeConsumers = target.includePatterns.filter((file) => runtimeFiles.has(file));
+      const buildMode = "runtime";
       const originalShards = fullSuiteVitestShards.slice();
       // Exercise this owner's split without consuming unrelated suite families' job budget.
       const fixtureShards = originalShards
@@ -2783,9 +2820,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     const tooling = defaultShards.filter((shard) => /^core-tooling-\d+$/u.test(shard.shardName));
     const selected = tooling.flatMap((shard) => shard.includePatterns ?? []).slice(0, 96);
     expect(selected).toHaveLength(96);
-    vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(
-      Object.fromEntries(tooling.map((shard) => [shard.shardName, 20_000])),
-    );
+    vi.spyOn(shardMetadata, "estimateVitestToolingFileSeconds").mockReturnValue(20_000);
     // Every selected file is now indivisible above the admission cap. Overflow
     // must retain these 96 files plus two dist owners, never resurrect the full suite.
     expect(() => createSelectedNodeTestShardBundles(selected, { runnerBackend: "github" })).toThrow(
@@ -2930,10 +2965,185 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     },
   );
 
-  it("keeps hosted tooling within the GitHub job cap when its inventory grows", async () => {
+  async function createToolingFixturePlan(params: {
+    files: string[];
+    shards: typeof fullSuiteVitestShards;
+    timings: Record<string, number>;
+    fileSeconds: (file: string) => number;
+    options: {
+      compactMode: "pull-request";
+      runnerBackend: string;
+      includeReleaseOnlyPluginShards: false;
+    };
+  }) {
     const unitFastPaths = await vi.importActual<
       typeof import("../vitest/vitest.unit-fast-paths.mjs")
     >("../vitest/vitest.unit-fast-paths.mjs");
+    vi.resetModules();
+    vi.doMock("../vitest/vitest.unit-fast-paths.mjs", () => ({
+      ...unitFastPaths,
+      getUnitFastTestFiles: () => [],
+      getUnitFastIsolatedTestFiles: () => [],
+      getUnitFastTimerTestFiles: () => [],
+      getUnitFastTestFilesForIncludePatterns: () => [],
+    }));
+    vi.doMock("../vitest/vitest.test-shards.mjs", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../vitest/vitest.test-shards.mjs")>()),
+      fullSuiteVitestShards: params.shards,
+    }));
+    vi.doMock("../../scripts/lib/ci-test-timings.mts", () => ({
+      ...testTimings,
+      readCompactGroupTimings: () => params.timings,
+    }));
+    vi.doMock("../../scripts/lib/vitest-shard-metadata.mts", () => ({
+      ...shardMetadata,
+      estimateVitestToolingFileSeconds: params.fileSeconds,
+    }));
+    vi.doMock("../../scripts/lib/list-test-files.mts", () => ({
+      listTrackedTestFiles: (rootDir: string) =>
+        rootDir === "test" ? params.files.toSorted() : [],
+    }));
+    try {
+      const { createNodeTestShardBundles: createPlan } =
+        await import("../../scripts/lib/ci-node-test-plan.mts");
+      return createPlan(params.options);
+    } finally {
+      vi.doUnmock("../../scripts/lib/list-test-files.mts");
+      vi.doUnmock("../../scripts/lib/ci-test-timings.mts");
+      vi.doUnmock("../../scripts/lib/vitest-shard-metadata.mts");
+      vi.doUnmock("../vitest/vitest.test-shards.mjs");
+      vi.doUnmock("../vitest/vitest.unit-fast-paths.mjs");
+      vi.resetModules();
+    }
+  }
+
+  it.each([
+    { profile: "blacksmith", expectedSeconds: 840, whaleSeconds: 200 },
+    { profile: "hybrid", expectedSeconds: 840, whaleSeconds: 200 },
+    { profile: "github", expectedSeconds: 1_344, whaleSeconds: 320 },
+  ])(
+    "prices parallel tooling files without dividing the slowest file in $profile",
+    async ({ profile, expectedSeconds, whaleSeconds }) => {
+      const whale = "test/scripts/fixture-whale.test.ts";
+      const files = [
+        ...Array.from({ length: 64 }, (_, index) => `test/scripts/fixture-${index}.test.ts`),
+        whale,
+      ];
+      const params = {
+        files,
+        shards: [
+          {
+            config: "test/vitest/vitest.full-core-tooling.config.ts",
+            name: "core-tooling",
+            projects: ["test/vitest/vitest.tooling.config.ts"],
+          },
+        ],
+        timings: Object.fromEntries(
+          Array.from({ length: 16 }, (_, index) => [`core-tooling-${index + 1}`, 20_000]),
+        ),
+        fileSeconds: (file: string) => (file === whale ? 200 : 20),
+        options: {
+          compactMode: "pull-request" as const,
+          runnerBackend: profile,
+          includeReleaseOnlyPluginShards: false as const,
+        },
+      };
+      const plan = await createToolingFixturePlan(params);
+      expect(
+        plan
+          .flatMap((job) => job.groups.flatMap((group) => group.includePatterns ?? []))
+          .toSorted(),
+      ).toEqual(files.toSorted());
+      expect(
+        plan.every(
+          (job) =>
+            job.planConcurrency === 1 &&
+            job.groups.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2"),
+        ),
+      ).toBe(true);
+      // Sixty-four 20-second files share two workers; the 200-second file stays indivisible.
+      expect(plan.reduce((seconds, job) => seconds + job.predictedSeconds!, 0)).toBe(
+        expectedSeconds,
+      );
+      expect(
+        plan.find((job) => job.groups.some((group) => group.includePatterns?.includes(whale)))
+          ?.predictedSeconds,
+      ).toBe(whaleSeconds);
+      for (const group of plan.flatMap((job) => job.groups)) {
+        if (group.timing_key) {
+          params.timings[group.timing_key] = 20_000;
+        }
+      }
+      expect(await createToolingFixturePlan(params)).toEqual(plan);
+    },
+  );
+
+  it("shares a small hosted tooling tail without lowering its runner owner", async () => {
+    const compiler = "test/scripts/write-unified-entry-dts.test.ts";
+    const shortFiles = ["test/scripts/fixture-short.test.ts"];
+    const fileSeconds = new Map<string, number>([
+      ...Array.from(
+        { length: 32 },
+        (_, index) => [`test/scripts/fixture-long-${index}.test.ts`, 300] as const,
+      ),
+      [compiler, 74],
+      [shortFiles[0]!, 10],
+    ]);
+    const files = [...fileSeconds.keys()];
+    const plan = await createToolingFixturePlan({
+      files,
+      shards: [
+        {
+          config: "test/vitest/vitest.full-core-tooling.config.ts",
+          name: "core-tooling",
+          projects: ["test/vitest/vitest.tooling.config.ts"],
+        },
+      ],
+      timings: {},
+      fileSeconds: (file) => fileSeconds.get(file)!,
+      options: {
+        compactMode: "pull-request",
+        runnerBackend: "github",
+        includeReleaseOnlyPluginShards: false,
+      },
+    });
+    // The compiler child costs 118.4s and the separate 10s file costs 16s on hosted.
+    // Their 135s job must retain the compiler's stronger runner and serial children.
+    const shared = plan.filter((job) => job.groups.some((group) => group.runner !== job.runner));
+    expect(shared).toHaveLength(1);
+    const job = shared[0]!;
+    expect(job).toMatchObject({
+      runner: DEFAULT_NODE_TEST_RUNNER,
+      predictedSeconds: 135,
+      requiresDist: false,
+      planConcurrency: 1,
+    });
+    expect(job.pretestBuildMode).toBeUndefined();
+    expect(job.groups.map((group) => group.runner)).toEqual([
+      DEFAULT_NODE_TEST_RUNNER,
+      BUNDLED_NODE_TEST_RUNNER,
+    ]);
+    expect(
+      job.groups.every(
+        (group) =>
+          group.pretestBuildMode === undefined &&
+          /^core-tooling-\d+-hosted-\d+$/u.test(group.shard_name),
+      ),
+    ).toBe(true);
+    expect(
+      new Set(job.groups.map((group) => group.shard_name.replace(/-hosted-\d+$/u, ""))).size,
+    ).toBe(2);
+    expect(job.groups.flatMap((group) => group.includePatterns ?? []).toSorted()).toEqual(
+      [compiler, ...shortFiles].toSorted(),
+    );
+    expect(
+      plan
+        .flatMap((entry) => entry.groups.flatMap((group) => group.includePatterns ?? []))
+        .toSorted(),
+    ).toEqual(files.toSorted());
+  });
+
+  it("keeps hosted tooling within the GitHub job cap when its inventory grows", async () => {
     // Sixty-six full-budget anchors leave 24 of the 90 jobs for tooling.
     const anchors = Array.from({ length: 66 }, (_, index) => ({
       config: `test/vitest/vitest.capacity-anchor-${index}.config.ts`,
@@ -2965,10 +3175,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ]),
     ]);
     const options = {
-      compactMode: "pull-request" as const,
+      compactMode: "pull-request",
       runnerBackend: "github",
       includeReleaseOnlyPluginShards: false,
-    };
+    } as const;
     const inventoryGrowthFile = "test/scripts/resolve-fs-safe-native-contract.test.ts";
     const extraInventories = [
       ["test/scripts/npm-package-locks-report.test.ts"],
@@ -2988,48 +3198,28 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       [DEFAULT_NODE_TEST_RUNNER, 1],
       [EXTRA_LARGE_NODE_TEST_RUNNER, 2],
     ]);
+    const measuredFixtureFiles = new Set(fixtureFiles);
     const createPlanWithInventory = async (
       includeGrowthFile: boolean,
       extraFiles: string[] = [],
     ) => {
-      vi.resetModules();
-      vi.doMock("../vitest/vitest.unit-fast-paths.mjs", () => ({
-        ...unitFastPaths,
-        getUnitFastTestFiles: () => [],
-        getUnitFastIsolatedTestFiles: () => [],
-        getUnitFastTimerTestFiles: () => [],
-        getUnitFastTestFilesForIncludePatterns: () => [],
-      }));
-      vi.doMock("../vitest/vitest.test-shards.mjs", async (importOriginal) => ({
-        ...(await importOriginal<typeof import("../vitest/vitest.test-shards.mjs")>()),
-        fullSuiteVitestShards: fixtureShards,
-      }));
-      vi.doMock("../../scripts/lib/ci-test-timings.mts", () => ({
-        ...testTimings,
-        readCompactGroupTimings: () => fixtureTimings,
-      }));
-      vi.doMock("../../scripts/lib/list-test-files.mts", () => ({
-        listTrackedTestFiles(rootDir: string) {
-          return rootDir === "test"
-            ? [
-                ...fixtureFiles,
-                ...extraFiles,
-                ...(includeGrowthFile ? [inventoryGrowthFile] : []),
-              ].toSorted()
-            : [];
-        },
-      }));
-      try {
-        const { createNodeTestShardBundles: createPlan } =
-          await import("../../scripts/lib/ci-node-test-plan.mts");
-        return createPlan(options);
-      } finally {
-        vi.doUnmock("../../scripts/lib/list-test-files.mts");
-        vi.doUnmock("../../scripts/lib/ci-test-timings.mts");
-        vi.doUnmock("../vitest/vitest.test-shards.mjs");
-        vi.doUnmock("../vitest/vitest.unit-fast-paths.mjs");
-        vi.resetModules();
-      }
+      return createToolingFixturePlan({
+        files: [
+          ...fixtureFiles,
+          ...extraFiles,
+          ...(includeGrowthFile ? [inventoryGrowthFile] : []),
+        ],
+        shards: fixtureShards,
+        timings: fixtureTimings,
+        // Known files fill the admission budget; new files retain the cold fallback.
+        fileSeconds: (file) =>
+          file === "test/scripts/write-unified-entry-dts.test.ts"
+            ? 74
+            : measuredFixtureFiles.has(file)
+              ? 25
+              : shardMetadata.estimateVitestToolingFileSeconds(file),
+        options,
+      });
     };
     const baseline = await createPlanWithInventory(false);
     const baselineToolingFiles = baseline
@@ -3041,7 +3231,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     const grown = await createPlanWithInventory(true);
     const toolingGroups = grown.flatMap((job) => job.groups).filter(isNumberedToolingGroup);
     const toolingFiles = toolingGroups.flatMap((group) => group.includePatterns ?? []);
-    const crossRunnerHostedJobs: CompactNodeTestShard[] = [];
 
     expect(grown.length).toBeLessThanOrEqual(90);
     expect(new Set(toolingFiles).size).toBe(toolingFiles.length);
@@ -3075,16 +3264,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         ),
       ).toBe(true);
       if (hostedToolingGroups.some((group) => group.runner !== job.runner)) {
-        crossRunnerHostedJobs.push(job);
         expect(job.groups.every(isHostedToolingGroup)).toBe(true);
         expect(job.pretestBuildMode).toBeUndefined();
         expect(job.groups.every((group) => group.pretestBuildMode === undefined)).toBe(true);
       }
     }
-    // Inventory growth can move numbered stripes; validate every mixed-capacity
-    // job above instead of pinning one incidental packing layout.
-    expect(crossRunnerHostedJobs.length).toBeGreaterThan(0);
-
     for (const extraFiles of extraInventories) {
       const extraBaseline = await createPlanWithInventory(false, extraFiles);
       const expanded = await createPlanWithInventory(true, extraFiles);

@@ -56,6 +56,7 @@ type CanaryResult = {
   logTail: string[];
   steps: UpdateStepResult[];
   candidateSchemaVersions?: OpenClawSchemaVersions;
+  gatewayRestartCompletion?: boolean;
   doctorConfigWrites?: boolean;
   doctorConfigChanges?: UpdateDoctorConfigChange[];
   retainedRehearsal?: { rehearsal: UpdateCandidateRehearsal; cleanup: () => Promise<void> };
@@ -95,7 +96,7 @@ export async function validateUpdateCandidateCanary(params: {
   const sourceEnv = params.env ?? process.env;
   const logTail: string[] = [];
   const stepLogTail: string[] = [];
-  let activeStep = { name: "Checking update runtime", command: "Checking update runtime" };
+  let activeStep = { name: "candidate-runtime", command: "Checking update runtime" };
   let stepStartedAt = started;
   let activeLintStep: UpdateStepResult | undefined;
   const steps: UpdateStepResult[] = [];
@@ -109,8 +110,8 @@ export async function validateUpdateCandidateCanary(params: {
         root: params.root,
         name:
           directory === rehearsal.stateDir
-            ? "Removing temporary update files"
-            : "Removing temporary plugin inventory",
+            ? "candidate-state-cleanup"
+            : "candidate-plugin-inventory-cleanup",
         onWarning: (step) => {
           steps.push(step);
           params.onStep?.(step);
@@ -119,6 +120,7 @@ export async function validateUpdateCandidateCanary(params: {
     }
   };
   let candidateSchemaVersions: OpenClawSchemaVersions | undefined;
+  let gatewayRestartCompletion = false;
   let doctorConfigWrites = false;
   let doctorConfigChanges: UpdateDoctorConfigChange[] = [];
   let listenerIsolation: CanaryResult["listenerIsolation"];
@@ -161,7 +163,7 @@ export async function validateUpdateCandidateCanary(params: {
       return true;
     }
     const step: UpdateStepResult = {
-      name: `${name} cleanup`,
+      name: `${name}-cleanup`,
       command: "SIGTERM, SIGKILL",
       cwd: params.root,
       durationMs: Date.now() - cleanupStarted,
@@ -194,7 +196,7 @@ export async function validateUpdateCandidateCanary(params: {
       }
       const message = "This version uses the current updater to finish installation";
       const step: UpdateStepResult = {
-        name: "Checking update recovery",
+        name: "candidate-recovery",
         command: "--check",
         cwd: params.root,
         durationMs: Date.now() - started,
@@ -215,7 +217,7 @@ export async function validateUpdateCandidateCanary(params: {
       throw new Error("Cannot check migrations without changing the running service");
     }
     phase = "snapshot";
-    activeStep = { name: "Preparing update checks", command: "Preparing update checks" };
+    activeStep = { name: "candidate-state-snapshot", command: "Preparing update checks" };
     stepStartedAt = Date.now();
     rehearsal ??= await prepareUpdateCandidateRehearsal({
       candidateRoot: params.root,
@@ -249,27 +251,27 @@ export async function validateUpdateCandidateCanary(params: {
     const commands: Array<{ phase: CanaryPhase; name: string; args: string[]; entry?: string }> = [
       {
         phase: "doctor",
-        name: "Checking data migrations",
+        name: "candidate-doctor",
         args: ["doctor", "--fix", "--non-interactive", "--no-workspace-suggestions"],
       },
       {
         phase: "lint",
-        name: "Checking update health",
+        name: "candidate-doctor-lint",
         args: ["doctor", "--lint", "--json", "--severity-min", "error"],
       },
       {
         phase: "config",
-        name: "Checking configuration",
+        name: "candidate-config",
         args: ["config", "validate", "--json"],
       },
       {
         phase: "plugins",
-        name: "Checking plugins",
+        name: "candidate-plugins",
         args: ["plugins", "list", "--json"],
       },
       {
         phase: "runtime",
-        name: "Checking update recovery",
+        name: "candidate-recovery",
         // After a schema bump only a fresh candidate may finalize the run;
         // prove its full recovery import graph before live state changes.
         entry: continuationEntry,
@@ -450,6 +452,7 @@ export async function validateUpdateCandidateCanary(params: {
           ? undefined
           : JSON.parse(running.stdout());
         candidateSchemaVersions = parseOpenClawSchemaVersions(contract);
+        gatewayRestartCompletion = isRecord(contract) && contract.gatewayRestartCompletion === true;
         doctorConfigWrites = isRecord(contract) && contract.doctorConfigWrites === "pid-start-v1";
         if (!candidateSchemaVersions) {
           code = 1;
@@ -513,13 +516,12 @@ export async function validateUpdateCandidateCanary(params: {
       throw new Error("The update did not report its supported database versions");
     }
     phase = "startup";
-    activeStep = { name: "Checking Gateway startup", command: "gateway run" };
+    activeStep = { name: "candidate-gateway-startup", command: "gateway run" };
     stepStartedAt = Date.now();
     stepLogTail.length = 0;
     remaining();
-    const args = ["gateway", "run", "--update-canary", "--bind", "loopback", "--port"];
-    args.push(String(port));
-    const running = launch(entry, args);
+    const args = ["gateway", "run", "--update-canary", "--bind", "loopback"];
+    const running = launch(entry, [...args, "--port", String(port)]);
     try {
       const probeFailure = await waitForUpdateCandidateReadiness({
         port,
@@ -554,7 +556,7 @@ export async function validateUpdateCandidateCanary(params: {
       steps.push(step);
       params.onStep?.(step);
     } finally {
-      await stopCanary(running, "Checking Gateway startup", deadline);
+      await stopCanary(running, "candidate-gateway-startup", deadline);
     }
     return {
       status: "ok",
@@ -562,6 +564,7 @@ export async function validateUpdateCandidateCanary(params: {
       durationMs: Date.now() - started,
       logTail,
       candidateSchemaVersions,
+      gatewayRestartCompletion,
       ...(doctorConfigWrites ? { doctorConfigWrites } : {}),
       ...(doctorConfigChanges.length ? { doctorConfigChanges } : {}),
       listenerIsolation,
@@ -623,6 +626,7 @@ export async function validateUpdateCandidateCanary(params: {
       durationMs: Date.now() - started,
       logTail,
       candidateSchemaVersions,
+      gatewayRestartCompletion,
       ...(doctorConfigChanges.length ? { doctorConfigChanges } : {}),
       ...(retainedRehearsal ? { retainedRehearsal } : {}),
       listenerIsolation,

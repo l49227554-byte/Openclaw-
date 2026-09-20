@@ -546,6 +546,46 @@ describe("resolveCliAuthEpoch", () => {
     expect(second).not.toBe(first);
   });
 
+  it("emits distinct epochs for two token-only legs (proves failover hits auth-epoch too)", async () => {
+    // Empirical proof for the session-preservation fix's open question: on a
+    // credit/limit-driven failover between two token-only legs, the auth epoch
+    // is `profile:<authProfileId>:<credentialHash>`, so it DIFFERS across the
+    // swap. That is why relaxing only the auth-profile branch is insufficient —
+    // the auth-epoch branch would also fire. The reuse-site group bypass must
+    // cover BOTH branches (see cli-session.test.ts).
+    const store: AuthProfileStore = createAuthProfileStoreFixture({
+      "anthropic:sc": {
+        type: "token",
+        provider: "anthropic",
+        token: "token-sc",
+        displayName: "SC",
+      },
+      "anthropic:scm": {
+        type: "token",
+        provider: "anthropic",
+        token: "token-scm",
+        displayName: "SCM",
+      },
+    });
+    setCliAuthEpochTestDeps({
+      readGeminiCliCredentialsCached: () => null,
+      loadAuthProfileStoreForRuntime: () => store,
+    });
+
+    const legSc = await resolveCliAuthEpoch({
+      provider: "google-gemini-cli",
+      authProfileId: "anthropic:sc",
+    });
+    const legScm = await resolveCliAuthEpoch({
+      provider: "google-gemini-cli",
+      authProfileId: "anthropic:scm",
+    });
+
+    expectCliAuthEpoch(legSc);
+    expectCliAuthEpoch(legScm);
+    expect(legScm).not.toBe(legSc);
+  });
+
   it("changes token auth-profile epochs when the email identity changes", async () => {
     let store: AuthProfileStore = createAuthProfileStoreFixture({
       "anthropic:work": {

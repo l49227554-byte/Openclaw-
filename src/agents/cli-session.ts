@@ -218,6 +218,42 @@ export function stripCliSessionDriftNote(text: string): string {
   return text;
 }
 
+/**
+ * Resolve the operator-declared equivalence group that contains `activeProfileId`.
+ * Returns the distinct profile ids of the FIRST group the active profile belongs
+ * to (deduped), or `undefined` when no group is configured or the active profile
+ * is ungrouped — which keeps strict per-profile session invalidation. Only groups
+ * with at least two distinct members can preserve a session across a failover, so
+ * degenerate single-member groups collapse to `undefined`.
+ */
+export function resolveOperatorEquivalentProfileIds(
+  historyEquivalenceGroups: readonly (readonly string[])[] | undefined,
+  activeProfileId: string | undefined,
+): readonly string[] | undefined {
+  const active = normalizeOptionalString(activeProfileId);
+  if (!active || !historyEquivalenceGroups) {
+    return undefined;
+  }
+  for (const group of historyEquivalenceGroups) {
+    const members = new Set<string>();
+    let containsActive = false;
+    for (const member of group) {
+      const normalized = normalizeOptionalString(member);
+      if (normalized === undefined) {
+        continue;
+      }
+      members.add(normalized);
+      if (normalized === active) {
+        containsActive = true;
+      }
+    }
+    if (containsActive && members.size >= 2) {
+      return [...members];
+    }
+  }
+  return undefined;
+}
+
 /** Decide whether a stored CLI session can be reused for the current auth/prompt/cwd/MCP state. */
 export function resolveCliSessionReuse(params: {
   binding?: CliSessionBinding;
@@ -230,6 +266,16 @@ export function resolveCliSessionReuse(params: {
   cwdHash?: string;
   mcpConfigHash?: string;
   mcpResumeHash?: string;
+  /**
+   * Operator-declared equivalent auth profile ids: the single equivalence group
+   * that contains the current turn's active profile (resolved by the caller from
+   * `auth.historyEquivalenceGroups`). A failover BETWEEN two profiles that both
+   * belong to this set is a routing change of the operator's own identities, not
+   * a cross-account identity change, so it must not discard the reused session's
+   * transcript. Empty/undefined preserves today's strict per-profile invalidation
+   * byte-for-byte.
+   */
+  operatorEquivalentProfileIds?: readonly string[];
 }): CliSessionReuseResult {
   const binding = params.binding;
   const sessionId = normalizeOptionalString(binding?.sessionId);
@@ -254,14 +300,30 @@ export function resolveCliSessionReuse(params: {
     storedAuthEpoch !== undefined &&
     currentAuthEpoch !== undefined &&
     storedAuthEpoch === currentAuthEpoch;
+  // A failover BETWEEN two operator-declared-equivalent profiles rebinds the
+  // live session's profile id and its per-leg auth epoch. That is a routing
+  // change of the operator's OWN identities, so it must not discard the reused
+  // transcript. Gate strictly on BOTH endpoints being distinct profiles that
+  // both belong to the declared group: a same-profile credential rotation (ids
+  // equal) still falls through to the epoch check below, and a swap where either
+  // endpoint is outside the group keeps today's strict cross-account guard.
+  const equivalentProfiles = params.operatorEquivalentProfileIds;
+  const isOperatorEquivalentProfileSwap =
+    equivalentProfiles !== undefined &&
+    storedAuthProfileId !== undefined &&
+    currentAuthProfileId !== undefined &&
+    storedAuthProfileId !== currentAuthProfileId &&
+    equivalentProfiles.includes(storedAuthProfileId) &&
+    equivalentProfiles.includes(currentAuthProfileId);
   if (storedAuthProfileId !== currentAuthProfileId) {
-    if (!hasMatchingVersionedAuthEpoch) {
+    if (!hasMatchingVersionedAuthEpoch && !isOperatorEquivalentProfileSwap) {
       return { mode: "invalidate", invalidatedReason: "auth-profile" };
     }
   }
   if (
     binding?.authEpochVersion === params.authEpochVersion &&
-    storedAuthEpoch !== currentAuthEpoch
+    storedAuthEpoch !== currentAuthEpoch &&
+    !isOperatorEquivalentProfileSwap
   ) {
     return { mode: "invalidate", invalidatedReason: "auth-epoch" };
   }

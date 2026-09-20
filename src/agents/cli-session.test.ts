@@ -16,6 +16,7 @@ import {
   isCliSessionInvalidatingFailoverReason,
   resolveCliSessionClearReason,
   resolveCliSessionReuse,
+  resolveOperatorEquivalentProfileIds,
   setCliSessionBinding,
   shouldClearFailedCliSessionBinding,
 } from "./cli-session.js";
@@ -678,5 +679,160 @@ describe("cli-session helpers", () => {
     expect(shouldClearFailedCliSessionBinding({ error, binding: { sessionId: "reused" } })).toBe(
       invalidatesSession,
     );
+  });
+
+  describe("operator-equivalent failover session preservation", () => {
+    // Models the confirmed bug: a credit/limit-driven failover rebinds BOTH the
+    // profile id (auth-profile branch) AND the per-leg auth epoch (auth-epoch
+    // branch). Legs are `type=token`, so their epochs are `profile:<id>:<hash>`
+    // and differ across the swap. See cli-auth-epoch.test.ts for the epoch proof.
+    const failoverBinding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:sc",
+      authEpoch: "epoch-sc",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+    const failoverTurn = {
+      binding: failoverBinding,
+      authProfileId: "anthropic:scm",
+      authEpoch: "epoch-scm",
+      authEpochVersion: 2,
+      extraSystemPromptHash: "prompt-a",
+      mcpConfigHash: "mcp-a",
+    };
+
+    it("preserves the session across a failover between two grouped profiles", () => {
+      // THE regression: without the fix this returns invalidate/auth-profile.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
+    });
+
+    it("keeps strict cross-account invalidation when the swap leaves the group", () => {
+      // Current profile is NOT in the stored profile's declared group.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          authProfileId: "anthropic:someone-else",
+          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
+
+    it("keeps strict invalidation when only one endpoint is grouped", () => {
+      // The stored profile is not a declared member alongside the current one.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          operatorEquivalentProfileIds: ["anthropic:scm", "anthropic:personal"],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
+    });
+
+    it("matches today's strict behavior when no group is configured", () => {
+      // Byte-for-byte default: the failover invalidates exactly as before.
+      expect(resolveCliSessionReuse(failoverTurn)).toEqual({
+        mode: "invalidate",
+        invalidatedReason: "auth-profile",
+      });
+      expect(resolveCliSessionReuse({ ...failoverTurn, operatorEquivalentProfileIds: [] })).toEqual(
+        { mode: "invalidate", invalidatedReason: "auth-profile" },
+      );
+    });
+
+    it("still invalidates non-identity drift for a grouped failover", () => {
+      const group = ["anthropic:sc", "anthropic:scm"];
+      // cwd drift is a real topology change, not a routing change.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          cwdHash: hashCliSessionText("/work/b"),
+          binding: { ...failoverBinding, cwdHash: hashCliSessionText("/work/a") },
+          operatorEquivalentProfileIds: group,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "cwd" });
+      // mcp topology drift.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          mcpConfigHash: "mcp-b",
+          operatorEquivalentProfileIds: group,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "mcp" });
+      // message-tool policy drift.
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          messageToolPolicyHash: "policy-b",
+          binding: { ...failoverBinding, messageToolPolicyHash: "policy-a" },
+          operatorEquivalentProfileIds: group,
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "message-policy" });
+    });
+
+    it("still surfaces content drift as reuse-with-drift for a grouped failover", () => {
+      expect(
+        resolveCliSessionReuse({
+          ...failoverTurn,
+          extraSystemPromptHash: "prompt-b",
+          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+        }),
+      ).toEqual({
+        mode: "reuse-with-drift",
+        sessionId: "cli-session-1",
+        drift: { reasons: ["system-prompt"] },
+      });
+    });
+
+    it("does not bypass a same-profile epoch change even inside a group", () => {
+      // Guardrail: the group only excuses an actual profile SWAP. A credential
+      // change on the SAME profile (ids equal) must still invalidate via epoch.
+      expect(
+        resolveCliSessionReuse({
+          binding: failoverBinding,
+          authProfileId: "anthropic:sc",
+          authEpoch: "epoch-sc-rotated",
+          authEpochVersion: 2,
+          extraSystemPromptHash: "prompt-a",
+          mcpConfigHash: "mcp-a",
+          operatorEquivalentProfileIds: ["anthropic:sc", "anthropic:scm"],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-epoch" });
+    });
+  });
+
+  describe("resolveOperatorEquivalentProfileIds", () => {
+    it("returns the deduped group containing the active profile", () => {
+      expect(
+        resolveOperatorEquivalentProfileIds(
+          [
+            ["a", "b", "b"],
+            ["c", "d"],
+          ],
+          "a",
+        ),
+      ).toEqual(["a", "b"]);
+    });
+
+    it("returns undefined when no group is configured", () => {
+      expect(resolveOperatorEquivalentProfileIds(undefined, "a")).toBeUndefined();
+    });
+
+    it("returns undefined for an ungrouped active profile", () => {
+      expect(resolveOperatorEquivalentProfileIds([["a", "b"]], "z")).toBeUndefined();
+    });
+
+    it("returns undefined for a degenerate single-member group", () => {
+      expect(resolveOperatorEquivalentProfileIds([["a"], ["a", " "]], "a")).toBeUndefined();
+    });
+
+    it("returns undefined when the active profile is absent", () => {
+      expect(resolveOperatorEquivalentProfileIds([["a", "b"]], undefined)).toBeUndefined();
+    });
   });
 });

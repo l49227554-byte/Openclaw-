@@ -251,6 +251,15 @@ export const OpenClawSchemaShape = {
         )
         .optional(),
       order: z.record(z.string(), z.array(z.string())).optional(),
+      /**
+       * Operator-declared groups of auth profile ids that are the SAME person's
+       * own equivalent identities (e.g. their own Max/SC/SCM subscriptions). A
+       * credit/limit-driven failover BETWEEN two profiles in one group preserves
+       * the reused CLI session's transcript instead of discarding it as an
+       * identity change. Profiles NOT sharing a declared group keep strict
+       * per-account session invalidation. This never affects billing or routing.
+       */
+      historyEquivalenceGroups: z.array(z.array(z.string())).optional(),
     })
     .optional(),
   accessGroups: AccessGroupsSchema,

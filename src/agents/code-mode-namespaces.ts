@@ -467,6 +467,25 @@ function createMcpNamespaceModel(
 
 const SWARM_AGENTS_API_CONTENT = `type AgentJsonSchema = Record<string, unknown>;
 
+type DynamicsProfileId =
+  | "explorer"
+  | "builder"
+  | "critic"
+  | "independent-verifier"
+  | "glass-breaker";
+
+interface DynamicsHandoff {
+  candidateDigest?: string;
+  artifactRefs?: string[];
+  evidenceRefs?: string[];
+  summary?: string;
+}
+
+interface DynamicsOptions {
+  profile: DynamicsProfileId;
+  handoff?: DynamicsHandoff;
+}
+
 interface AgentRunOptions {
   label?: string;
   model?: string;
@@ -475,6 +494,7 @@ interface AgentRunOptions {
   agentId?: string;
   schema?: AgentJsonSchema;
   phase?: string;
+  dynamics?: DynamicsOptions;
 }
 
 interface AgentsApi {

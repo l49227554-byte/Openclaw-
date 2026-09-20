@@ -9,6 +9,7 @@ import {
   handleAbortChat,
   hasAbortableSessionRun,
   hasDirectSessionRun,
+  reconcileChatRunLifecycle,
   replayPendingChatAbort,
 } from "./run-lifecycle.ts";
 
@@ -135,6 +136,58 @@ describe("handleAbortChat", () => {
 
     expect(refreshCurrentChat).not.toHaveBeenCalled();
     expect(host.chatRunId).toBe("run-live");
+  });
+
+  it("shows a transcript warning after the stopped run terminalizes before the response", async () => {
+    const warning = "The streamed assistant message could not be saved.";
+    const response = createDeferred<{ aborted: boolean; warning: string }>();
+    const host = makeAbortHost({
+      client: createTestGatewayClient(vi.fn(() => response.promise)),
+      chatRunId: "run-live",
+    });
+
+    const stopped = handleAbortChat(host, { preserveDraft: true });
+    reconcileChatRunLifecycle(host, {
+      outcome: "interrupted",
+      sessionStatus: "killed",
+      runId: "run-live",
+      sessionKey: host.sessionKey,
+      clearLocalRun: true,
+      clearChatStream: true,
+      armLocalTerminalReconcile: true,
+    });
+    response.resolve({ aborted: true, warning });
+    await stopped;
+
+    expect(host.chatRunId).toBeNull();
+    expect(host.lastLocalTerminalReconcile?.runId).toBe("run-live");
+    expect(host.chatError).toBe(warning);
+  });
+
+  it("does not publish a stopped run warning over replacement work", async () => {
+    const warning = "The streamed assistant message could not be saved.";
+    const response = createDeferred<{ aborted: boolean; warning: string }>();
+    const host = makeAbortHost({
+      client: createTestGatewayClient(vi.fn(() => response.promise)),
+      chatRunId: "run-live",
+    });
+
+    const stopped = handleAbortChat(host, { preserveDraft: true });
+    reconcileChatRunLifecycle(host, {
+      outcome: "interrupted",
+      sessionStatus: "killed",
+      runId: "run-live",
+      sessionKey: host.sessionKey,
+      clearLocalRun: true,
+      clearChatStream: true,
+      armLocalTerminalReconcile: true,
+    });
+    host.chatRunId = "replacement-run";
+    response.resolve({ aborted: true, warning });
+    await stopped;
+
+    expect(host.chatRunId).toBe("replacement-run");
+    expect(host.chatError ?? null).toBeNull();
   });
 
   it("settles a recovered embedded run when sessions.abort reports no active run", async () => {
@@ -318,6 +371,70 @@ describe("replayPendingChatAbort", () => {
       runId: "run-main",
     });
     expect(host.pendingAbort).toBeNull();
+  });
+
+  it("shows a replayed abort warning after the run terminalizes before the response", async () => {
+    const warning = "The streamed assistant message could not be saved.";
+    const response = createDeferred<{ aborted: boolean; warning: string }>();
+    const client = createTestGatewayClient(vi.fn(() => response.promise));
+    const host = makeAbortHost({
+      client,
+      chatRunId: "run-main",
+      pendingAbort: {
+        sourceClient: client,
+        runId: "run-main",
+        sessionKey: "agent:main",
+      },
+    });
+
+    const replayed = replayPendingChatAbort(host);
+    reconcileChatRunLifecycle(host, {
+      outcome: "interrupted",
+      sessionStatus: "killed",
+      runId: "run-main",
+      sessionKey: host.sessionKey,
+      clearLocalRun: true,
+      clearChatStream: true,
+      armLocalTerminalReconcile: true,
+    });
+    response.resolve({ aborted: true, warning });
+
+    await expect(replayed).resolves.toBe(true);
+    expect(host.chatRunId).toBeNull();
+    expect(host.lastLocalTerminalReconcile?.runId).toBe("run-main");
+    expect(host.chatError).toBe(warning);
+  });
+
+  it("does not publish a replayed warning over replacement work", async () => {
+    const warning = "The streamed assistant message could not be saved.";
+    const response = createDeferred<{ aborted: boolean; warning: string }>();
+    const client = createTestGatewayClient(vi.fn(() => response.promise));
+    const host = makeAbortHost({
+      client,
+      chatRunId: "run-main",
+      pendingAbort: {
+        sourceClient: client,
+        runId: "run-main",
+        sessionKey: "agent:main",
+      },
+    });
+
+    const replayed = replayPendingChatAbort(host);
+    reconcileChatRunLifecycle(host, {
+      outcome: "interrupted",
+      sessionStatus: "killed",
+      runId: "run-main",
+      sessionKey: host.sessionKey,
+      clearLocalRun: true,
+      clearChatStream: true,
+      armLocalTerminalReconcile: true,
+    });
+    host.chatRunId = "replacement-run";
+    response.resolve({ aborted: true, warning });
+
+    await expect(replayed).resolves.toBe(true);
+    expect(host.chatRunId).toBe("replacement-run");
+    expect(host.chatError ?? null).toBeNull();
   });
 
   it("denies a queued exact-run stop when the reconnect is read-only", async () => {

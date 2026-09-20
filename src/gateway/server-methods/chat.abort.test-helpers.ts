@@ -47,6 +47,17 @@ type ChatAbortTestContext = Record<string, unknown> & {
 
 type ChatAbortRespondMock = Mock<RespondFn>;
 
+type TestChatRunRecord =
+  ReturnType<typeof createChatRunState>["runs"] extends Map<string, infer Record> ? Record : never;
+
+export function createAbortTestRunState(entries: Array<[string, Partial<TestChatRunRecord>]>) {
+  const state = createChatRunState();
+  for (const [runId, record] of entries) {
+    Object.assign(state.getOrCreate(runId), record);
+  }
+  return state;
+}
+
 export function createChatAbortContext(
   overrides: Record<string, unknown> = {},
 ): ChatAbortTestContext {

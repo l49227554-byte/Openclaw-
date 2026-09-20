@@ -20,6 +20,7 @@ import {
   uiSessionRowMatchesSelectedChat,
   type UiSessionDefaultsHost,
 } from "../../lib/sessions/session-key.ts";
+import { readChatAbortResponse, type ChatAbortRequestResult } from "./chat-abort-response.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
 import { readChatSessionActionAccess } from "./chat-session-action-access.ts";
 import { formatConnectError } from "./connect-error.ts";
@@ -122,6 +123,7 @@ type ChatAbortRunState = SessionScopeHost & {
   chatRunSessionAbortable?: boolean;
   lastError?: string | null;
   chatError?: string | null;
+  lastLocalTerminalReconcile?: LocalTerminalReconcile | null;
   /** Reloads history and the authoritative session row. */
   refreshCurrentChat?: () => Promise<void>;
 };
@@ -268,23 +270,6 @@ function queuedSessionAbortParams(
 
 type ChatAbortOptions = { preserveDraft?: boolean };
 
-type ChatAbortRequestResult = { ok: true; noActiveRun: boolean } | { ok: false; error: unknown };
-
-/**
- * Only an explicit Gateway "nothing to abort" answer counts: chat.abort
- * reports `aborted: false`, sessions.abort reports `status: "no-active-run"`.
- * Any other shape keeps the run owned so live events settle it as before.
- */
-function readNoActiveRunResponse(response: unknown): boolean {
-  if (!response || typeof response !== "object") {
-    return false;
-  }
-  return (
-    ("aborted" in response && response.aborted === false) ||
-    ("status" in response && response.status === "no-active-run")
-  );
-}
-
 async function requestChatAbort(
   client: GatewayBrowserClient,
   intent: ChatAbortIntent,
@@ -317,22 +302,42 @@ async function requestChatAbort(
         ...(intent.clearQueued ? { clearQueued: true } : {}),
       });
     }
-    return { ok: true, noActiveRun: readNoActiveRunResponse(response) };
+    return readChatAbortResponse(response);
   } catch (err) {
     return { ok: false, error: err };
   }
 }
 
-// Non-abortable runs can still be finalizing; only the refreshed session owner
-// may retire them. Check the captured UI scope before starting that refresh.
-async function settleNoopAbort(state: ChatAbortRunState, intent: ChatAbortIntent): Promise<void> {
+// An abort response may arrive after its terminal event cleared chatRunId. The
+// terminal tombstone keeps that completed run's result owned without allowing a
+// replacement run, selected chat, agent, connection, or client to inherit it.
+function isCurrentChatAbortIntent(state: ChatAbortRunState, intent: ChatAbortIntent): boolean {
   if (
     !state.connected ||
     state.client !== intent.sourceClient ||
     state.sessionKey !== intent.sessionKey ||
-    (state.chatRunId ?? null) !== intent.runId ||
     scopedAgentParamsForSession(state, state.sessionKey).agentId !== intent.agentId
   ) {
+    return false;
+  }
+  const currentRunId = state.chatRunId ?? null;
+  if (currentRunId === intent.runId) {
+    return true;
+  }
+  const terminal = state.lastLocalTerminalReconcile;
+  return Boolean(
+    intent.runId !== null &&
+    currentRunId === null &&
+    terminal?.runId === intent.runId &&
+    terminal.sessionKey === intent.sessionKey &&
+    (intent.agentId === undefined || terminal.agentId === intent.agentId),
+  );
+}
+
+// Non-abortable runs can still be finalizing; only the refreshed session owner
+// may retire them. Check the captured UI scope before starting that refresh.
+async function settleNoopAbort(state: ChatAbortRunState, intent: ChatAbortIntent): Promise<void> {
+  if (!isCurrentChatAbortIntent(state, intent)) {
     return;
   }
   await state.refreshCurrentChat?.();
@@ -372,6 +377,9 @@ async function abortChatRun(state: ChatAbortRunState): Promise<void> {
   if (result.noActiveRun) {
     await settleNoopAbort(state, intent);
   }
+  if (result.warning && isCurrentChatAbortIntent(state, intent)) {
+    setChatError(state, result.warning);
+  }
 }
 
 export async function replayPendingChatAbort(host: ChatAbortHost): Promise<boolean> {
@@ -400,6 +408,9 @@ export async function replayPendingChatAbort(host: ChatAbortHost): Promise<boole
   if (result.ok) {
     if (result.noActiveRun) {
       await settleNoopAbort(host, intent);
+    }
+    if (result.warning && isCurrentChatAbortIntent(host, intent)) {
+      setChatError(host, result.warning);
     }
     return true;
   }

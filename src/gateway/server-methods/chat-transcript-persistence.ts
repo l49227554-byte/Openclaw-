@@ -476,23 +476,23 @@ export function captureAbortedPartial(params: {
 export async function persistAbortedPartials(params: {
   context: { logGateway: { warn: (message: string) => void } };
   snapshots: AbortedPartialSnapshot[];
-}): Promise<void> {
+}): Promise<boolean> {
+  let failed = false;
   for (const snapshot of params.snapshots) {
     if (!snapshot.ok) {
       throw snapshot.error;
     }
     const appended = await appendAssistantTranscriptMessage(snapshot.value);
-    if (appended.skipped) {
-      continue;
-    }
-    if (!appended.ok) {
+    if (!appended.skipped && !appended.ok) {
       const error = `chat.abort transcript append failed: ${appended.error ?? "unknown error"}`;
       params.context.logGateway.warn(error);
       if (snapshot.abortOrigin === "placement-abandon") {
         throw new Error(error);
       }
+      failed = true;
     }
   }
+  return failed;
 }
 
 async function touchAssistantTranscriptSessionEntry(

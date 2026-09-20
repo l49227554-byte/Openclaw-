@@ -23,10 +23,13 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 function createRelaySession(): {
   session: RelaySession;
   failSession: ReturnType<typeof vi.fn>;
+  setActiveTurn: (turnId: string | undefined) => void;
 } {
   const failSession = vi.fn(() => {
     void closeRelayVoiceSession(session);
   });
+  // The Talk controller exposes activeTurnId as a getter, so the fixture owns the value.
+  let activeTurnId: string | undefined;
   const session = {
     id: "relay-voice-bounded",
     sessionTarget: {
@@ -49,10 +52,22 @@ function createRelaySession(): {
     voiceTranscriptSeq: 0,
     voiceTranscriptQueue: VOICE_TRANSCRIPT_QUEUE_POLICY.createQueue(),
     // Deferring a final is only safe while a turn is live to settle it.
-    harness: { talk: { activeTurnId: undefined as string | undefined } },
+    harness: {
+      talk: {
+        get activeTurnId() {
+          return activeTurnId;
+        },
+      },
+    },
     failSession,
   } as unknown as RelaySession;
-  return { session, failSession };
+  return {
+    session,
+    failSession,
+    setActiveTurn: (turnId) => {
+      activeTurnId = turnId;
+    },
+  };
 }
 
 function appendedUserTexts(): string[] {
@@ -137,8 +152,8 @@ describe("realtime relay voice transcript persistence", () => {
   // provider's own item id proves they are revisions of one utterance.
   it("keeps one user row when the provider re-finalizes one input item", async () => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockResolvedValue(undefined);
-    const { session } = createRelaySession();
-    session.harness.talk.activeTurnId = "turn-1";
+    const { session, setActiveTurn } = createRelaySession();
+    setActiveTurn("turn-1");
 
     for (const text of [
       "Hey chief.",
@@ -156,8 +171,8 @@ describe("realtime relay voice transcript persistence", () => {
   // and repeated identical speech is indistinguishable from a re-transcription.
   it("keeps distinct input items apart even when their text overlaps", async () => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockResolvedValue(undefined);
-    const { session } = createRelaySession();
-    session.harness.talk.activeTurnId = "turn-1";
+    const { session, setActiveTurn } = createRelaySession();
+    setActiveTurn("turn-1");
 
     expect(enqueueRelayVoiceTranscript(session, "user", "Hi.", "item_a")).toBe(true);
     expect(enqueueRelayVoiceTranscript(session, "user", "History please.", "item_b")).toBe(true);
@@ -169,8 +184,8 @@ describe("realtime relay voice transcript persistence", () => {
 
   it("appends every final when the provider supplies no item id", async () => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockResolvedValue(undefined);
-    const { session } = createRelaySession();
-    session.harness.talk.activeTurnId = "turn-1";
+    const { session, setActiveTurn } = createRelaySession();
+    setActiveTurn("turn-1");
 
     expect(enqueueRelayVoiceTranscript(session, "user", "Hey chief.")).toBe(true);
     expect(enqueueRelayVoiceTranscript(session, "user", "Hey chief, the weather?")).toBe(true);
@@ -183,8 +198,8 @@ describe("realtime relay voice transcript persistence", () => {
   // settle a held final then, so it must not be deferred.
   it("appends an identified final when no turn is live to settle it", async () => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockResolvedValue(undefined);
-    const { session } = createRelaySession();
-    session.harness.talk.activeTurnId = undefined;
+    const { session, setActiveTurn } = createRelaySession();
+    setActiveTurn(undefined);
 
     expect(enqueueRelayVoiceTranscript(session, "user", "Late one.", "item_a")).toBe(true);
     expect(appendedUserTexts()).toEqual(["Late one."]);

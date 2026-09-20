@@ -243,9 +243,9 @@ it("delivers post files to agent context over real SDK HTTP without changing sta
     }
     server.closeAllConnections();
     if (server.listening) {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
     }
     await closeOpenClawStateDatabaseAsync();
     feishuDedupeState.reset();

@@ -9,6 +9,7 @@ import { createPluginRecord } from "../plugins/loader-records.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { evaluateDecisionInRegistry, prepareDecisionProviderReload } from "./runtime.js";
 import type {
   DecisionBatch,
@@ -591,6 +592,25 @@ it("leaves a timed-out rollback fenced after late physical settlement", async ()
     await pending;
     vi.useRealTimers();
   }
+});
+
+it("settles a provider callback before disposal cleanup waits on its host", async () => {
+  const started = createDeferredCore();
+  const release = createDeferredCore();
+  const host = registered(async () => {
+    started.resolve();
+    await release.promise;
+    return answer;
+  });
+  const pending = host.run();
+  await started.promise;
+
+  const disposal = getPluginInstance(host.record)!.dispose();
+  release.resolve();
+
+  await expect(pending).resolves.toEqual({ status: "unavailable", reason: "retiring" });
+  await expect(disposal).resolves.toEqual({ errors: [] });
+  expect(host.registry.decisionProviders[0]!.host.inspect(config).activeRequests).toBe(0);
 });
 
 it.each(["stop", "superseded", "canceled"] as const)(

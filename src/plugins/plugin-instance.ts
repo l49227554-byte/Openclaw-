@@ -128,7 +128,11 @@ export class PluginInstance {
     return this.invoke(run);
   }
 
-  runInRegistry<T>(registry: PluginRegistry, run: () => T): T {
+  runInRegistry<T>(
+    registry: PluginRegistry,
+    run: () => T,
+    options?: { joinDisposal?: boolean },
+  ): T {
     const current = this.activeCall();
     if (current) {
       return this.enter(current.token, run);
@@ -137,7 +141,7 @@ export class PluginInstance {
     if (!this.accepting || this.owner?.revoked) {
       throw new PluginInstanceUnavailableError(this.pluginId);
     }
-    return this.invoke(run, this.lease(true, registry));
+    return this.invoke(run, this.lease(options?.joinDisposal !== false, registry));
   }
 
   /** Associates an identity-sensitive public value without replacing it with a view. */

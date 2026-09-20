@@ -1,0 +1,16 @@
+{
+  "name": "@openclaw/tool-prefilter",
+  "version": "2026.9.4",
+  "private": true,
+  "description": "Dynamic two-stage skill and tool pre-filtering using decision models to reduce context overhead and eliminate tool hallucinations.",
+  "type": "module",
+  "dependencies": {},
+  "devDependencies": {
+    "@openclaw/plugin-sdk": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "id": "tool-prefilter",
+  "name": "Tool Pre-filter",
+  "description": "Dynamic two-stage skill and tool pre-filtering using decision models to reduce context overhead and eliminate tool hallucinations.",
+  "categories": [
+    "developer-tools"
+  ],
+  "enabledByDefault": false,
+  "activation": {
+    "onStartup": true
+  },
+  "hooks": [
+    "before_prompt_build"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "thresholdAnyTool": {
+        "type": "number",
+        "default": 0.35,
+        "description": "Probability threshold below which all tool schemas are stripped for pure conversational turns."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "default": 500,
+        "description": "Timeout in milliseconds for the decision model evaluation."
+      }
+    }
+  },
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Semantic Tool Filtering",
+      "help": "When enabled, uses the configured Decision Model to strip unneeded tool schemas before calling the primary LLM."
+    },
+    "thresholdAnyTool": {
+      "label": "Tool Need Threshold",
+      "help": "Requests with a tool-need probability below this value are treated as pure conversation, saving context tokens."
+    }
+  }
+}

@@ -67,5 +67,9 @@ export function buildHandoffManifest(params: {
         evidenceRefs,
         summary: params.payload.summary,
       };
+    default: {
+      const exhaustiveBoundary: never = params.boundary;
+      throw new Error(`Unsupported dynamics handoff boundary: ${String(exhaustiveBoundary)}`);
+    }
   }
 }

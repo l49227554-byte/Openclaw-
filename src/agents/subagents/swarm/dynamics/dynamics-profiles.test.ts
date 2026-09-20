@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildHandoffManifest } from "./dynamics-handoffs.js";
-import { listDynamicsProfileIds, resolveDynamicsProfile } from "./dynamics-profiles.js";
+import { resolveDynamicsProfile } from "./dynamics-profiles.js";
 
 describe("cognitive dynamics profiles", () => {
   it("resolves deterministic built-in profiles", () => {
@@ -20,14 +20,16 @@ describe("cognitive dynamics profiles", () => {
     );
   });
 
-  it("ships a deliberately small first profile catalog", () => {
-    expect(listDynamicsProfileIds()).toEqual([
+  it("resolves the deliberately small documented profile catalog", () => {
+    for (const id of [
       "explorer",
       "builder",
       "critic",
       "independent-verifier",
       "glass-breaker",
-    ]);
+    ]) {
+      expect(resolveDynamicsProfile(id).id).toBe(id);
+    }
   });
 });
 

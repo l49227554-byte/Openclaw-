@@ -7,6 +7,7 @@ import {
   runAgentHarnessSettledTurnFinalization,
 } from "../../harness/selection.js";
 import type { AgentHarness } from "../../harness/types.js";
+import { getMcpRequestContext, runWithMcpRequestContext } from "../../mcp-request-context.js";
 import type { AgentRuntimeModelAttempt, AgentRuntimePlan } from "../../runtime-plan/types.js";
 import { copyCoreTtsAttemptResultProvenance } from "../../tools/tts-tool-result-provenance.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
@@ -32,7 +33,15 @@ export async function runEmbeddedAttemptWithBackend(
   params: EmbeddedRunAttemptParams,
   nativeSessionRuntime?: Parameters<typeof runAgentHarnessAttempt>[1],
 ): Promise<EmbeddedRunAttemptResult> {
-  const result = await runAgentHarnessAttempt(params, nativeSessionRuntime);
+  const result = await runWithMcpRequestContext(
+    {
+      ...getMcpRequestContext(),
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      runId: params.runId,
+    },
+    () => runAgentHarnessAttempt(params, nativeSessionRuntime),
+  );
   // Only the logical run can settle its full child batch after all retries.
   const {
     modelAttempt: _backendModelAttempt,

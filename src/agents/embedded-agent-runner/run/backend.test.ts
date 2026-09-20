@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperationalRunInstanceRef } from "../../admitted-run-context.js";
+import { getMcpRequestContext, runWithMcpRequestContext } from "../../mcp-request-context.js";
 import { makeEmbeddedRunnerAttempt } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import {
   getCoreTtsAttemptResultMediaUrls,
@@ -19,6 +20,33 @@ vi.mock("../../harness/selection.js", () => ({
 describe("embedded attempt backend", () => {
   beforeEach(() => {
     harnessMocks.runAttempt.mockReset();
+  });
+
+  it("binds MCP attribution to the attempted run while preserving caller metadata", async () => {
+    harnessMocks.runAttempt.mockImplementation(async () => {
+      expect(getMcpRequestContext()).toEqual({
+        runId: "actual-turn",
+        sessionId: "actual-session",
+        sessionKey: "actual-key",
+        metadata: { traceparent: "trace-from-caller" },
+      });
+      return makeEmbeddedRunnerAttempt({});
+    });
+    await runWithMcpRequestContext(
+      {
+        runId: "outer",
+        sessionId: "outer",
+        metadata: { traceparent: "trace-from-caller" },
+      },
+      () =>
+        runEmbeddedAttemptWithBackend({
+          runId: "actual-turn",
+          sessionId: "actual-session",
+          sessionKey: "actual-key",
+          admittedRunContext: { operationalRunInstance: createOperationalRunInstanceRef("test") },
+        } as never),
+    );
+    expect(getMcpRequestContext()).toBeUndefined();
   });
 
   it("carries child receipts across model candidates only for the same admitted instance", async () => {

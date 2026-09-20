@@ -1,5 +1,5 @@
 import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
-import type { NodeSession } from "./node-registry.js";
+import type { NodeSession } from "./node-session.types.js";
 import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 
 export type NodePresenceActivityUpdate = {

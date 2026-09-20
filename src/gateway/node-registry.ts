@@ -25,10 +25,7 @@ import {
 } from "../infra/node-pairing-surface.js";
 import { logRejectedLargePayload } from "../logging/diagnostic-payload.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import {
-  parseComputerUseCapabilityDescriptor,
-  type ComputerUseCapabilityDescriptor,
-} from "../plugins/computer-use-contract.js";
+import { parseComputerUseCapabilityDescriptor } from "../plugins/computer-use-contract.js";
 import type { NodeHostStats } from "../shared/node-host-stats.js";
 import {
   recordRemoteSkillNodeInfo,
@@ -76,6 +73,7 @@ import {
   type NodePresenceActivityUpdate,
 } from "./node-registry.presence.js";
 import { isNodeWorkerHostClientId } from "./node-runner-inventory-runtime.js";
+import type { NodeSession } from "./node-session.types.js";
 import { normalizeNodeSkillDescriptors } from "./node-skill-descriptors.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
@@ -85,45 +83,7 @@ export type { NodeInvokeResult } from "./node-invoke.types.js";
 export { serializeEventPayload } from "./node-event-payload.js";
 export type { SerializedEventPayload } from "./node-event-payload.js";
 
-/** Connected node session advertised over Gateway websocket. */
-export type NodeSession = {
-  nodeId: string;
-  connId: string;
-  /** Persistent device key and node-token identity authenticated for this connection. */
-  pairingIdentity?: string;
-  /** Persistent pairing generation authenticated before this session was registered. */
-  pairingGeneration?: string;
-  client: GatewayWsClient;
-  clientId?: string;
-  clientMode?: string;
-  displayName?: string;
-  platform?: string;
-  version?: string;
-  coreVersion?: string;
-  uiVersion?: string;
-  deviceFamily?: string;
-  modelIdentifier?: string;
-  remoteIp?: string;
-  declaredCaps: string[];
-  sessionCapsCeiling?: string[];
-  caps: string[];
-  declaredCommands: string[];
-  sessionCommandsCeiling?: string[];
-  commands: string[];
-  declaredComputerUse?: ComputerUseCapabilityDescriptor;
-  computerUse?: ComputerUseCapabilityDescriptor;
-  declaredNodePluginTools: NodePluginToolDescriptor[];
-  nodePluginTools: NodePluginToolDescriptor[];
-  nodeSkills: NodeSkillDescriptor[];
-  declaredPermissions?: Record<string, boolean>;
-  permissions?: Record<string, boolean>;
-  pathEnv?: string;
-  connectedAtMs: number;
-  lastActiveAtMs?: number;
-  presenceUpdatedAtMs?: number;
-  hostStats?: NodeHostStats;
-  desktopAvailability?: DesktopAvailability;
-};
+export type { NodeSession } from "./node-session.types.js";
 
 type PairingBoundNodeSession = NodeSession & { pairingIdentity: string };
 export type NodeSessionConnectParams = GatewayWsClient["connect"] &

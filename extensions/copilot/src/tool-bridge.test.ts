@@ -2,7 +2,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Tool as SdkTool, ToolInvocation, ToolResultObject } from "@github/copilot-sdk";
+import type { Tool as SdkTool, ToolResultObject } from "@github/copilot-sdk";
 import { expectDefined } from "@openclaw/normalization-core";
 import { createOpenClawCodingTools as createRealOpenClawCodingTools } from "openclaw/plugin-sdk/agent-harness";
 import {
@@ -29,6 +29,8 @@ import { createCopilotToolBridge as createCopilotToolBridgeImpl } from "./tool-b
 import {
   convertOpenClawToolToSdkToolForTest,
   createCopilotToolBridge,
+  makeInvocation,
+  runSdkTool,
   type CopilotCodingToolsOptions,
   type CopilotToolBridgeInput,
 } from "./tool-bridge.test-support.js";
@@ -40,16 +42,6 @@ type FakeTool = AnyAgentTool & {
 
 function flushAsync() {
   return Promise.resolve().then(() => {});
-}
-
-function makeInvocation(overrides: Partial<ToolInvocation> = {}): ToolInvocation {
-  return {
-    arguments: { value: "input" },
-    sessionId: "session-1",
-    toolCallId: "call-1",
-    toolName: "tool-a",
-    ...overrides,
-  };
 }
 
 function makeTool(
@@ -74,13 +66,6 @@ function makeTool(
 
 function getError(result: ToolResultObject): string | undefined {
   return result.error;
-}
-
-function runSdkTool(tool: SdkTool, args: unknown, invocation = makeInvocation()) {
-  if (!tool.handler) {
-    throw new Error(`SDK tool '${tool.name}' has no handler`);
-  }
-  return tool.handler(args, invocation);
 }
 
 afterEach(() => {

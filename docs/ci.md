@@ -52,6 +52,10 @@ Vitest transform-cache fingerprints exclude the generated `.ci-harness` checkout
 Linux PR tests use Bun for the measured compatible lanes. Full Release Validation
 keeps their Node coverage and runs them on Bun too; see [test runtime selection](/ci/pipeline#test-runtime-selection).
 
+Commands tests share the existing worker budget across independent files. The
+Doctor session SQLite cases are split by operation while preserving the complete
+repair and recovery coverage; see [shard weights](/ci/capacity#measured-shard-weights).
+
 The complete [startup corpus](/ci/pipeline) uses eight state test files so existing workers can share its release/config matrix. Its explicit fallback prepares the runtime once and uses four workers; historical frozen targets retain their legacy process layout.
 
 | Page                                                           | Read it when                                                                                                        |

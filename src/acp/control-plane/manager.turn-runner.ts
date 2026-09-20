@@ -32,7 +32,11 @@ import { applyManagerRuntimeControls } from "./manager.runtime-controls.js";
 import type { ManagerRuntimeHandleCache } from "./manager.runtime-handle-cache.js";
 import { createSupersededActorError } from "./manager.runtime-handle-ensure.js";
 import { isAcpOwnerRepairRequired } from "./manager.runtime-owner.js";
-import { prepareFreshManagerRuntimeHandleRetry } from "./manager.runtime-resume-state.js";
+import {
+  discardPersistedManagerRuntimeState,
+  isConfirmedMissingManagerResumeTargetError,
+  prepareFreshManagerRuntimeHandleRetry,
+} from "./manager.runtime-resume-state.js";
 import { consumeAcpTurnStream } from "./manager.turn-stream.js";
 import {
   awaitTurnWithTimeout,
@@ -221,6 +225,7 @@ export async function runManagerTurn(params: {
         let completionEvidenceBytes = 0;
         let completionEvidenceOverflowed = false;
         let runtimeIdentifiersReconciled = false;
+        let runtimeResumeStateInvalidated = false;
         let turnReachedTerminal = false;
         try {
           const ensured = await params.ensureRuntimeHandle({
@@ -503,20 +508,37 @@ export async function runManagerTurn(params: {
           if (!params.isCurrentActor()) {
             throw createSupersededActorError(sessionKey);
           }
-          retryFreshHandle = await prepareFreshManagerRuntimeHandleRetry({
-            attempt,
-            cfg: input.cfg,
-            sessionKey,
-            agentId,
-            error: acpError,
-            promptStarted,
-            sawTurnOutput: sawTurnOutput || turnReachedTerminal,
-            runtime,
-            meta,
-            runtimeHandles: params.runtimeHandles,
-            writeSessionMeta: params.writeSessionMeta,
-            isCurrentActor: params.isCurrentActor,
-          });
+          if (
+            resumedOneShotBackend &&
+            meta?.mode === "oneshot" &&
+            !isAcpOwnerRepairRequired(acpError) &&
+            isConfirmedMissingManagerResumeTargetError(acpError)
+          ) {
+            // Do not restore an invalidated target from the old handle during final reconciliation.
+            runtimeResumeStateInvalidated = true;
+            await discardPersistedManagerRuntimeState({
+              cfg: input.cfg,
+              sessionKey,
+              agentId,
+              isCurrentActor: params.isCurrentActor,
+              writeSessionMeta: params.writeSessionMeta,
+            });
+          } else {
+            retryFreshHandle = await prepareFreshManagerRuntimeHandleRetry({
+              attempt,
+              cfg: input.cfg,
+              sessionKey,
+              agentId,
+              error: acpError,
+              promptStarted,
+              sawTurnOutput: sawTurnOutput || turnReachedTerminal,
+              runtime,
+              meta,
+              runtimeHandles: params.runtimeHandles,
+              writeSessionMeta: params.writeSessionMeta,
+              isCurrentActor: params.isCurrentActor,
+            });
+          }
           if (!params.isCurrentActor()) {
             throw createSupersededActorError(sessionKey);
           }
@@ -554,6 +576,7 @@ export async function runManagerTurn(params: {
             !retryFreshHandle &&
             !skipPostTurnCleanup &&
             !runtimeIdentifiersReconciled &&
+            !runtimeResumeStateInvalidated &&
             runtime &&
             handle &&
             meta &&

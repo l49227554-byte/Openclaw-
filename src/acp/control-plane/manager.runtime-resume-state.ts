@@ -35,10 +35,22 @@ const SESSION_RESUME_REQUIRED_DETAIL_CODE = "SESSION_RESUME_REQUIRED";
  * thread permanently stuck (#87830).
  */
 export function isMissingManagerResumeTargetError(error: AcpRuntimeError): boolean {
+  return (
+    hasResumeDetailCode(error, SESSION_RESUME_REQUIRED_DETAIL_CODE) ||
+    isConfirmedMissingManagerResumeTargetError(error)
+  );
+}
+
+/** One-shot invalidation requires adapter-correlated missing-target evidence, not a load failure. */
+export function isConfirmedMissingManagerResumeTargetError(error: AcpRuntimeError): boolean {
+  return hasResumeDetailCode(error, "SESSION_RESUME_TARGET_NOT_FOUND");
+}
+
+function hasResumeDetailCode(error: AcpRuntimeError, detailCode: string): boolean {
   let current: unknown = error;
   // Depth-capped to defend against self-referential cause cycles.
   for (let depth = 0; current && depth < 8; depth += 1) {
-    if ((current as { detailCode?: unknown }).detailCode === SESSION_RESUME_REQUIRED_DETAIL_CODE) {
+    if ((current as { detailCode?: unknown }).detailCode === detailCode) {
       return true;
     }
     current = (current as { cause?: unknown }).cause;

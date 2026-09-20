@@ -25,7 +25,7 @@ import {
 } from "./manager.runtime-owner.js";
 import {
   discardPersistedManagerRuntimeState,
-  isMissingManagerResumeTargetError,
+  isConfirmedMissingManagerResumeTargetError,
 } from "./manager.runtime-resume-state.js";
 import type {
   AcpSessionManagerDeps,
@@ -210,7 +210,7 @@ export async function ensureManagerRuntimeHandle(params: {
         throw acpError;
       }
       if (mode === "oneshot") {
-        if (isMissingManagerResumeTargetError(acpError)) {
+        if (isConfirmedMissingManagerResumeTargetError(acpError)) {
           await discardPersistedManagerRuntimeState({
             cfg: params.cfg,
             sessionKey: params.sessionKey,

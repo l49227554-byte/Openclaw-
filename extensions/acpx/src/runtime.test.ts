@@ -2598,6 +2598,71 @@ describe("AcpxRuntime fresh reset wrapper", () => {
   });
 
   it.each([
+    ['Session "resume-target" not found', true],
+    ["no rollout found for thread id resume-target", true],
+    ["Resource not found: resume-target", true],
+    ["Resource not found: resume-target", false, "another-target"],
+    ["Resource not found", false],
+    ["Resource not found: another-target", false],
+    ['Session "another-target" not found', false],
+    ["Session not found", false],
+    ["Resource not found: workspace file", false],
+    ["session/load timed out", false],
+    ["authentication required", false],
+    ["connection reset", false],
+  ] as const)(
+    "requires correlated missing-target evidence during reconnect: %s",
+    async (reason, missing, outerId: string = "resume-target") => {
+      const { runtime, delegate } = makeRuntime(makeEmptySessionStore());
+      vi.spyOn(delegate, "ensureSession").mockResolvedValue({
+        sessionKey: "agent:main:acp:resumed-one-shot",
+        backend: "acpx",
+        runtimeSessionName: "agent:main:acp:resumed-one-shot",
+        backendSessionId: "resume-target",
+      });
+      const handle = await runtime.ensureSession({
+        sessionKey: "agent:main:acp:resumed-one-shot",
+        agentId: "main",
+        agent: "claude",
+        mode: "oneshot",
+        resumeSessionId: "resume-target",
+      });
+      const error = {
+        code: "ACP_TURN_FAILED",
+        detailCode: "SESSION_RESUME_REQUIRED",
+        message: `Persistent ACP session ${outerId} could not be resumed: ${reason}`,
+        retryable: true,
+      };
+      vi.spyOn(delegate, "startTurn").mockReturnValue(
+        makeTurn(
+          { requestId: "reconnect" },
+          {
+            events: (async function* () {
+              yield { type: "error" as const, ...error };
+            })(),
+            result: Promise.resolve({ status: "failed", error }),
+          },
+        ),
+      );
+      const turn = runtime.startTurn({
+        handle,
+        text: "follow-up",
+        mode: "prompt",
+        requestId: "reconnect",
+      });
+      const expected = missing
+        ? { ...error, detailCode: "SESSION_RESUME_TARGET_NOT_FOUND", retryable: false }
+        : error;
+      const events = [];
+      for await (const event of turn.events) {
+        events.push(event);
+      }
+      expect(events).toEqual([{ type: "error", ...expected }]);
+      expect(await turn.result).toEqual({ status: "failed", error: expected });
+    },
+  );
+
+  it.each([
     new Error("no rollout found for thread id codex-session-missing"),
     new Error("thread not found: codex-session-missing"),
     new Error("Session codex-session-missing not found"),
@@ -2644,7 +2709,7 @@ describe("AcpxRuntime fresh reset wrapper", () => {
       }),
     ).rejects.toMatchObject({
       code: "ACP_SESSION_INIT_FAILED",
-      detailCode: "SESSION_RESUME_REQUIRED",
+      detailCode: "SESSION_RESUME_TARGET_NOT_FOUND",
       cause: resumeError,
     });
   });

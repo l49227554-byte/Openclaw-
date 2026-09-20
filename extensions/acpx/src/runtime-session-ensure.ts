@@ -1,4 +1,9 @@
-import { AcpRuntimeError, type AcpRuntime } from "../runtime-api.js";
+import {
+  AcpRuntimeError,
+  type AcpRuntime,
+  type AcpRuntimeHandle,
+  type AcpRuntimeTurnResultError,
+} from "../runtime-api.js";
 
 type RuntimeEnsureInput = Parameters<AcpRuntime["ensureSession"]>[0];
 
@@ -62,9 +67,30 @@ export async function withResumeEnsureErrorNormalization<T>(params: {
     const detail = error instanceof Error ? error.message : "resume target not found";
     throw new AcpRuntimeError("ACP_SESSION_INIT_FAILED", detail, {
       cause: error,
-      detailCode: "SESSION_RESUME_REQUIRED",
+      detailCode: "SESSION_RESUME_TARGET_NOT_FOUND",
     });
   }
+}
+
+/** ACPX's generic resume-required code includes transient failures; require the exact missing ID. */
+export function normalizeMissingResumeTargetError<T extends AcpRuntimeTurnResultError>(
+  error: T,
+  handle: AcpRuntimeHandle,
+): T {
+  const sessionId = handle.backendSessionId?.trim() || handle.agentSessionId?.trim();
+  if (!sessionId || error.detailCode !== "SESSION_RESUME_REQUIRED") {
+    return error;
+  }
+  const prefix = `Persistent ACP session ${sessionId} could not be resumed: `;
+  const reason = error.message.slice(prefix.length);
+  if (
+    !error.message.startsWith(prefix) ||
+    (reason !== `Resource not found: ${sessionId}` &&
+      !isRequestedResumeTargetNotFound(reason, sessionId))
+  ) {
+    return error;
+  }
+  return { ...error, detailCode: "SESSION_RESUME_TARGET_NOT_FOUND", retryable: false };
 }
 
 export function prepareResumeSafeSessionInput<T extends RuntimeEnsureInput>(params: {

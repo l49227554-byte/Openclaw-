@@ -56,6 +56,7 @@ import { AcpxGenerationRegistry } from "./runtime-generations.js";
 import { prepareAcpxProcessCleanup } from "./runtime-process-cleanup.js";
 import type { CompleteAcpRuntime, CompleteAcpRuntimeTurn } from "./runtime-proxy.js";
 import {
+  normalizeMissingResumeTargetError,
   prepareResumeSafeSessionInput,
   withResumeEnsureErrorNormalization,
   withSessionResumeCapability,
@@ -1131,7 +1132,11 @@ export class AcpxRuntime implements CompleteAcpRuntime {
         async *[Symbol.asyncIterator](): AsyncIterator<AcpRuntimeEvent> {
           const { command, turn } = await turnPromise;
           try {
-            yield* turn.events;
+            for await (const event of turn.events) {
+              yield event.type === "error"
+                ? normalizeMissingResumeTargetError(event, input.handle)
+                : event;
+            }
           } catch (error) {
             if (!isGenericInternalAcpError(error)) {
               throw error;
@@ -1143,6 +1148,12 @@ export class AcpxRuntime implements CompleteAcpRuntime {
       result: turnPromise.then(({ command, turn }) =>
         withTurnDiagnostics(command, async (): Promise<AcpRuntimeTurnResult> => {
           const result = await turn.result;
+          if (result.status === "failed") {
+            const error = normalizeMissingResumeTargetError(result.error, input.handle);
+            if (error !== result.error) {
+              return { ...result, error };
+            }
+          }
           if (
             result.status !== "failed" ||
             !isCodexAcpCommand(command) ||

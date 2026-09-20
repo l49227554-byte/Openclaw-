@@ -622,6 +622,7 @@ function runCiManifestFixture(options: {
   nodeFastCiRouting?: boolean;
   runNode?: boolean;
   historicalReader?: boolean;
+  toolingOwnerSelection?: boolean;
   runnerBackend?: "blacksmith" | "github" | "hybrid";
   runnerProfile?: "blacksmith" | "github" | "hybrid";
   targetHostedRunnerProfileContract?: boolean;
@@ -695,6 +696,12 @@ function runCiManifestFixture(options: {
         `,
       "utf8",
     );
+    if (options.toolingOwnerSelection) {
+      appendFileSync(
+        path.join(scriptsDir, "ci-node-test-plan.mts"),
+        `\nexport { isToolingTestOwnerPath } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/ci-node-test-plan.mts")).href)};\n`,
+      );
+    }
     if (options.startupCorpusCoverage) {
       appendFileSync(
         path.join(scriptsDir, "ci-node-test-plan.mts"),
@@ -14199,6 +14206,30 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
   );
 
   it.each([
+    { changedPath: "scripts/lib/ci-changed-node-test-plan.mts", docsOnly: false },
+    { changedPath: "scripts/README.md", docsOnly: true },
+    { changedPath: "test/scripts/changed-lanes.test.ts", docsOnly: false },
+  ])("retains full tooling over scope shortcuts for $changedPath", ({ changedPath, docsOnly }) => {
+    const manifest = runCiManifestFixture({
+      bundledPlanner: true,
+      toolingOwnerSelection: true,
+      changedPaths: [changedPath],
+      eventName: "pull_request",
+      nodeFastOnly: true,
+      runNode: !docsOnly,
+      scopeEnv: { OPENCLAW_CI_DOCS_ONLY: String(docsOnly) },
+    });
+    expect(manifest.status, manifest.output).toBe(0);
+    expect(manifest.outputs.run_node).toBe("true");
+    expect(manifest.outputs.run_checks_node_core_nondist).toBe("true");
+    const rows = JSON.parse(
+      expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "tooling matrix"),
+    ).include;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].check_name).toBe("bundled-node-plan");
+  });
+
+  it.each([
     ["pull_request", "openclaw/openclaw", true],
     ["pull_request", "example/openclaw", false],
     ["push", "openclaw/openclaw", false],
@@ -14213,6 +14244,15 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       ];
       const manifest = runCiManifestFixture({
         bundledPlanner: true,
+        changedPlannerSource: `
+          export const createChangedNodeTestShards = (_paths, options) => {
+            if (options.includeReleaseOnlyToolingShards !== false) {
+              throw new Error("automatic precise plan must defer unrelated tooling");
+            }
+            return null;
+          };
+          export const createChangedExtensionFallbackShards = () => [];
+        `,
         changedPaths,
         eventName,
         repository,
@@ -14226,7 +14266,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       );
       expect(plannerOptions).toMatchObject({
         includeReleaseOnlyPluginShards: false,
-        includeReleaseOnlyToolingTests:
+        includeReleaseOnlyToolingShards:
           eventName === "workflow_dispatch" || repository !== "openclaw/openclaw",
       });
       const rows = JSON.parse(

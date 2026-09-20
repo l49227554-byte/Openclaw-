@@ -156,11 +156,11 @@ export const MODEL_FIELD_HELP: Record<string, string> = {
   "agents.defaults.cwd":
     "Working directory for agent reply runs, separate from workspace bootstrap and memory files. Agent-specific cwd and session-spawned cwd take precedence. Supports ~ and relative paths; a distinct cwd requires an unsandboxed run.",
   "agents.defaults.skipBootstrap":
-    'Skips automatic creation of workspace bootstrap files. Existing files can still be injected by OpenClaw; set agents.defaults.contextInjection to "never" to disable OpenClaw bootstrap/context-file injection.',
+    'Skips automatic creation of workspace bootstrap files, not injection of existing files. For the embedded runtime, set agents.defaults.contextInjection to "never" to disable injection unless overridden per agent.',
   "agents.defaults.skipOptionalBootstrapFiles":
     "Optional bootstrap files that should not be created in agent workspaces. Valid values: SOUL.md, USER.md, IDENTITY.md (HEARTBEAT.md is accepted but a no-op).",
   "agents.defaults.contextInjection":
-    'Controls OpenClaw bootstrap/context-file injection: "always" injects on every turn (default), "continuation-skip" skips reinjection on safe continuation turns after a completed assistant response, and "never" disables injection on every turn.',
+    'Controls workspace bootstrap-file injection in the embedded runtime: "always" uses normal injection (default), "continuation-skip" skips eligible continuation turns after a recorded full-bootstrap turn, and "never" disables injection. Does not control CLI-backed prompt preparation.',
   "agents.defaults.bootstrapMaxChars":
     "Max characters of each workspace bootstrap file injected into the system prompt before truncation (default: 20000).",
   "agents.defaults.bootstrapTotalMaxChars":

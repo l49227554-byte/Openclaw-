@@ -15,12 +15,52 @@ import { fixture, native, readRetainedReceipt } from "./service-definition-backu
 import {
   GatewayServiceDefinitionBackupReceiptSchema,
   publishServiceFile,
+  readServiceFileState,
 } from "./service-stage.js";
 import { stageSystemdService } from "./systemd-install.js";
 import { restartSystemdService } from "./systemd-lifecycle.js";
 import { parseSystemdExecStart } from "./systemd-unit.js";
 
 describe("service definition backup receipts", () => {
+  it.each(["linux", "darwin", "win32"] as const)(
+    "reports unchanged without publishing or activating an untouched %s receipt",
+    async (platform) => {
+      const f = await fixture(platform);
+      const before = await readServiceFileState(f.sourcePath);
+      const rename = vi.spyOn(fs, "rename");
+      const unlink = vi.spyOn(fs, "unlink");
+      native.identity.mockClear();
+      native.task.mockClear();
+      native.launchctl.mockClear();
+      await expect(f.capture.compensate()).resolves.toBe(false);
+      expect(await readServiceFileState(f.sourcePath)).toEqual(before);
+      expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
+      expect(rename).not.toHaveBeenCalled();
+      expect(unlink).not.toHaveBeenCalled();
+      expect(native.identity.mock.calls.some(([, args]) => args.includes("daemon-reload"))).toBe(
+        false,
+      );
+      expect(native.task.mock.calls.some(([args]) => args[0] !== "/Query")).toBe(false);
+      expect(native.launchctl.mock.calls.some(([args]) => args[0] !== "print")).toBe(false);
+    },
+  );
+
+  it("reports restoration for an acknowledged publication with the original bytes", async () => {
+    const f = await fixture("linux");
+    await publishServiceFile({
+      filePath: f.sourcePath,
+      contents: f.original,
+      mode: 0o600,
+      definitionTransaction: f.capture.hooks,
+    });
+    native.identity.mockClear();
+    await expect(f.capture.compensate()).resolves.toBe(true);
+    expect(await fs.readFile(f.sourcePath)).toEqual(f.original);
+    expect(
+      native.identity.mock.calls.filter(([, args]) => args.includes("daemon-reload")),
+    ).toHaveLength(1);
+  });
+
   it("accepts an acknowledged restoration without replacing an open Windows launcher again", async () => {
     const f = await fixture("win32");
     await f.install();
@@ -46,12 +86,19 @@ describe("service definition backup receipts", () => {
     "rejects an operator replacement with %s bytes before acknowledgement",
     async (bytes) => {
       const f = await fixture("win32");
+      const replacement = `${f.sourcePath}.operator`;
+      // Allocate before publication can free the original inode for reuse.
+      await fs.writeFile(replacement, f.original, { mode: 0o600 });
+      const originalFile = await fs.stat(f.sourcePath);
+      const operatorFile = await fs.stat(replacement);
+      expect([operatorFile.dev, operatorFile.ino]).not.toEqual([
+        originalFile.dev,
+        originalFile.ino,
+      ]);
       const acknowledge = f.capture.hooks.fileWritten;
       vi.spyOn(f.capture.hooks, "fileWritten").mockImplementationOnce(async (source, contents) => {
-        const replacement = `${source}.operator`;
-        await fs.copyFile(source, replacement);
-        if (bytes === "original") {
-          await fs.writeFile(replacement, f.original);
+        if (bytes === "candidate") {
+          await fs.writeFile(replacement, await fs.readFile(source));
         }
         await fs.rename(replacement, source);
         await acknowledge(source, contents);
@@ -734,8 +781,8 @@ describe("service definition backup receipts", () => {
   it("does not admit a new systemd drop-in after capture", async () => {
     const f = await fixture("linux");
     const dropIn = `${f.sourcePath}.d/operator.conf`;
-    await fs.mkdir(path.dirname(dropIn));
-    await fs.writeFile(dropIn, "[Service]\nNice=7\n");
+    await fs.mkdir(path.dirname(dropIn), { mode: 0o700 });
+    await fs.writeFile(dropIn, "[Service]\nNice=7\n", { mode: 0o600 });
     f.command.definitionPaths!.push(dropIn);
     await expect(f.install()).rejects.toThrow("different managed artifacts");
     expect(await fs.readFile(f.sourcePath)).toEqual(f.original);

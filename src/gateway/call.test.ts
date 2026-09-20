@@ -22,6 +22,7 @@ import {
   pickPrimaryTailnetIPv4Mock as pickPrimaryTailnetIPv4,
 } from "./gateway-connection.test-mocks.js";
 import { createExpectedBroadOperatorScopes } from "./scope-expectations.test-support.js";
+import { DISPATCHED_REQUEST_OUTCOME_GUIDANCE } from "./transport-error.js";
 
 const TLS_FINGERPRINT = "ab".repeat(32);
 
@@ -2333,6 +2334,49 @@ describe("callGateway error details", () => {
     );
     expect(message).not.toContain("crashed or was terminated unexpectedly");
     expect(message).toContain("Run `openclaw doctor`");
+  });
+
+  it.each([
+    { dispatched: false, label: "before dispatch" },
+    { dispatched: true, label: "after dispatch" },
+  ])("scopes 1006 close outcome guidance to dispatch ($label)", async ({ dispatched }) => {
+    setLocalLoopbackGatewayConfig();
+    if (dispatched) {
+      startMode = "hello";
+      gatewayClientRequest = (method, params, opts) => {
+        lastRequestOptions = { method, params, opts };
+        return createDeferred<unknown>().promise;
+      };
+    } else {
+      startMode = "close";
+      closeCode = 1006;
+      closeReason = "";
+    }
+
+    const rejection = callGateway({ method: "health" }).catch((caught: unknown) => caught);
+    if (dispatched) {
+      await waitForFast(() => expect(lastRequestOptions?.method).toBe("health"));
+      lastClientOptions?.onClose?.(1006, "");
+    }
+    const error = await rejection;
+    if (!isGatewayTransportError(error)) {
+      throw new Error("Expected a gateway close transport error");
+    }
+
+    expect(error).toMatchObject({ kind: "closed", code: 1006 });
+    expect(error.message).toContain(
+      "gateway closed (1006 abnormal closure (no close frame)): no close reason",
+    );
+    expect(error.message.includes(DISPATCHED_REQUEST_OUTCOME_GUIDANCE)).toBe(dispatched);
+    expect(error.message.includes("(retry; check network and gateway load)")).toBe(!dispatched);
+    expect(error.message.includes("Gateway not yet ready to accept connections")).toBe(!dispatched);
+    expect(error.message.includes("TLS mismatch")).toBe(!dispatched);
+    expect(error.message).toContain(
+      "- Gateway process stopped or became unreachable (confirm it is still running)",
+    );
+    expect(formatGatewayTransportErrorJson(error)?.error.message).toBe(
+      "gateway closed (1006 abnormal closure (no close frame)): no close reason",
+    );
   });
 
   it("formats typed request errors for CLI JSON output", () => {

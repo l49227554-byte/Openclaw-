@@ -95,6 +95,7 @@ import { assertGatewayCliMessageContext } from "./operator-cli-message-input.js"
 import {
   GatewayTransportError,
   type GatewayTransportErrorKind,
+  DISPATCHED_REQUEST_OUTCOME_GUIDANCE,
   formatGatewayTimeoutError,
   isGatewayTransportError,
 } from "./transport-error.js";
@@ -641,6 +642,7 @@ function formatGatewayCloseError(
   code: number,
   reason: string,
   connectionDetails: GatewayConnectionDetails,
+  requestDispatched: boolean,
 ): string {
   const reasonText = normalizeOptionalString(reason) || "no close reason";
   const hint =
@@ -649,13 +651,29 @@ function formatGatewayCloseError(
   let message = `gateway closed (${code}${suffix}): ${reasonText}\n${connectionDetails.message}`;
   // Add troubleshooting hints for common issues
   if (code === 1006) {
-    message +=
-      "\n\nPossible causes:" +
-      "\n- Connection dropped without a close frame (retry; check network and gateway load)" +
-      "\n- Gateway not yet ready to accept connections (retry after a moment)" +
-      "\n- TLS mismatch (connecting with ws:// to a wss:// gateway, or vice versa)" +
-      "\n- Gateway process stopped or became unreachable (confirm it is still running)" +
-      "\nRun `openclaw doctor` for diagnostics.";
+    // Handshake-phase causes cannot explain a close that arrives after the request
+    // was sent, and their bare retry advice is exactly what a dispatched write
+    // must not be given while its outcome is unknown.
+    const preDispatchCauses = requestDispatched
+      ? []
+      : [
+          "- Gateway not yet ready to accept connections (retry after a moment)",
+          "- TLS mismatch (connecting with ws:// to a wss:// gateway, or vice versa)",
+        ];
+    message += [
+      "",
+      "",
+      "Possible causes:",
+      requestDispatched
+        ? "- Connection dropped without a close frame (check network and gateway load)"
+        : "- Connection dropped without a close frame (retry; check network and gateway load)",
+      ...preDispatchCauses,
+      "- Gateway process stopped or became unreachable (confirm it is still running)",
+      "Run `openclaw doctor` for diagnostics.",
+    ].join("\n");
+  }
+  if (requestDispatched) {
+    message += `\n\n${DISPATCHED_REQUEST_OUTCOME_GUIDANCE}`;
   }
   return message;
 }
@@ -682,6 +700,7 @@ function createGatewayCloseTransportError(params: {
   code: number;
   reason: string;
   connectionDetails: GatewayConnectionDetails;
+  requestDispatched: boolean;
 }): GatewayTransportError {
   const reasonText = normalizeOptionalString(params.reason) || "no close reason";
   return new GatewayTransportError({
@@ -689,7 +708,12 @@ function createGatewayCloseTransportError(params: {
     code: params.code,
     reason: reasonText,
     connectionDetails: params.connectionDetails,
-    message: formatGatewayCloseError(params.code, params.reason, params.connectionDetails),
+    message: formatGatewayCloseError(
+      params.code,
+      params.reason,
+      params.connectionDetails,
+      params.requestDispatched,
+    ),
   });
 }
 
@@ -982,6 +1006,7 @@ async function executeGatewayRequestWithScopes<T>(params: {
             code,
             reason,
             connectionDetails: params.connectionDetails,
+            requestDispatched: primaryRequestStarted,
           }),
         );
       },

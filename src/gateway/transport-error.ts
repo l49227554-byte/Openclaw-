@@ -49,21 +49,24 @@ export function isGatewayTransportError(value: unknown): value is GatewayTranspo
   );
 }
 
+/**
+ * Shared by every transport failure that interrupts an already-dispatched request,
+ * so the deadline and close formatters cannot drift apart on the same uncertainty.
+ */
+export const DISPATCHED_REQUEST_OUTCOME_GUIDANCE =
+  "The request was already sent to the gateway, so the operation may have been applied " +
+  "even though no response arrived; its outcome is unknown. " +
+  "Verify the current state (for example, re-run the equivalent read-only command) " +
+  "before retrying, especially for write actions.";
+
 /** Format the wrapper-deadline message, flagging dispatched requests whose outcome is unknown. */
 export function formatGatewayTimeoutError(
   timeoutMs: number,
   connectionDetails: GatewayConnectionDetails,
   requestDispatched: boolean,
 ): string {
-  let message = `gateway timeout after ${timeoutMs}ms\n${connectionDetails.message}`;
-  if (requestDispatched) {
-    message +=
-      "\n\nThe request was already sent to the gateway, so the operation may have been applied " +
-      "even though no response arrived; its outcome is unknown. " +
-      "Verify the current state (for example, re-run the equivalent read-only command) " +
-      "before retrying, especially for write actions.";
-  }
-  return message;
+  const message = `gateway timeout after ${timeoutMs}ms\n${connectionDetails.message}`;
+  return requestDispatched ? `${message}\n\n${DISPATCHED_REQUEST_OUTCOME_GUIDANCE}` : message;
 }
 
 /** Transport uncertainty permits read recovery or an exclusively ownership-locked mutation. */

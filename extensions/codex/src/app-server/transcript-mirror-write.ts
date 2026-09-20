@@ -251,9 +251,8 @@ export async function mirror(params: {
         // Whole-message hooks can replace metadata, but cannot erase source-owned taint.
         messageToAppend = applyCodexTranscriptTaint(messageToAppend, taint);
         messageToAppend = projectAgentHarnessTranscriptMessageForDisplay({
-          hidden: false,
+          hidden: message.display === false,
           message: messageToAppend,
-          sourceMessage: message,
         });
         assertWritable();
         const {

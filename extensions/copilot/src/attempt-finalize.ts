@@ -189,9 +189,9 @@ function includePreparedUser(
     return messages;
   }
   const projected = projectAgentHarnessTranscriptMessageForDisplay({
-    hidden,
+    hidden: hidden || (prepared as { display?: boolean }).display === false,
     message: prepared,
-  });
+  }) as Extract<AgentMessage, { role: "user" }>;
   const tail = messages.at(-1);
   if (isSamePreparedUser(tail, projected, currentRunUserKey)) {
     return [...messages.slice(0, -1), projected];

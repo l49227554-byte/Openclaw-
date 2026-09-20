@@ -90,11 +90,10 @@ export function createAttemptTranscriptJournal(params: {
   sdkSessionId: string;
 }) {
   const hiddenTurn = params.attempt.trigger === "memory";
-  const projectDisplay = (message: AgentMessage, sourceMessage?: AgentMessage) =>
+  const projectDisplay = (message: AgentMessage) =>
     projectAgentHarnessTranscriptMessageForDisplay({
-      hidden: hiddenTurn,
+      hidden: hiddenTurn || (message as { display?: boolean }).display === false,
       message,
-      sourceMessage,
     });
   const messagesSnapshot = [...params.messages];
   let turnTainted = isActiveTurnTainted(messagesSnapshot);
@@ -215,20 +214,16 @@ export function createAttemptTranscriptJournal(params: {
       message.role === "toolResult"
         ? { toolCallId: message.toolCallId, toolName: message.toolName }
         : {};
-    const projected = projectDisplay(
-      {
-        ...hooked,
-        ...toolIdentity,
-        ...(taintMetadata
-          ? { __openclaw: { ...readTurnTaintMetadata(hooked), ...taintMetadata } }
-          : {}),
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-        ...(message.role === "user" && message.provenance
-          ? { provenance: message.provenance }
-          : {}),
-      },
-      message,
-    ) as TranscriptMessage;
+    const projected = projectDisplay({
+      ...hooked,
+      ...toolIdentity,
+      ...(taintMetadata
+        ? { __openclaw: { ...readTurnTaintMetadata(hooked), ...taintMetadata } }
+        : {}),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+      ...(message.role === "user" && message.provenance ? { provenance: message.provenance } : {}),
+      ...((message as { display?: boolean }).display === false ? { display: false } : {}),
+    }) as TranscriptMessage;
     const prepared =
       message.role === "user"
         ? restorePreparedUserTurnOperationalMetaForRuntime({

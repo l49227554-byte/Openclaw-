@@ -13,16 +13,13 @@ export function projectAgentHarnessTranscriptMessageForDisplay<T extends AgentMe
   hidden: boolean;
   inputProvenance?: InputProvenance;
   message: T;
-  sourceMessage?: AgentMessage;
 }): T {
   const inputProvenance =
     params.message.role === "user"
       ? (normalizeInputProvenance(Reflect.get(params.message, "provenance")) ??
         params.inputProvenance)
       : params.inputProvenance;
-  const sourceHidden =
-    params.sourceMessage !== undefined && Reflect.get(params.sourceMessage, "display") === false;
-  if (!params.hidden && !sourceHidden && !isSubagentCoordinationInputProvenance(inputProvenance)) {
+  if (!params.hidden && !isSubagentCoordinationInputProvenance(inputProvenance)) {
     return params.message;
   }
   if (Reflect.get(params.message, "display") === false) {

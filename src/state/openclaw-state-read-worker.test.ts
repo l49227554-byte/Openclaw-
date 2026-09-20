@@ -587,7 +587,12 @@ it("closes only the operation matching a state path while its sibling finishes n
   expect(mock.closePool).toHaveBeenCalledOnce();
 });
 
-it.each(["fleet.get", "userProfiles.avatar.reconcile", "workspace.snapshot"] as const)(
+it.each([
+  "fleet.get",
+  "userProfiles.avatar.reconcile",
+  "onboardingRecommendations.read",
+  "workspace.snapshot",
+] as const)(
   "captures and charges the retained UTF-8 selector while dispatch waits (%s)",
   async (type) => {
     const { options } = source();
@@ -597,7 +602,9 @@ it.each(["fleet.get", "userProfiles.avatar.reconcile", "workspace.snapshot"] as 
         ? { type, tenantId: selector }
         : type === "userProfiles.avatar.reconcile"
           ? { type, profileId: selector }
-          : { type, workspaceDir: selector };
+          : type === "onboardingRecommendations.read"
+            ? { type, configKey: selector }
+            : { type, workspaceDir: selector };
     const expected = { ...command };
     const dispatch = createDeferredCore();
     const task = queueTask(dispatch.promise);
@@ -608,6 +615,8 @@ it.each(["fleet.get", "userProfiles.avatar.reconcile", "workspace.snapshot"] as 
       command.tenantId = "different tenant after admission";
     } else if (command.type === "userProfiles.avatar.reconcile") {
       command.profileId = "different profile after admission";
+    } else if (command.type === "onboardingRecommendations.read") {
+      command.configKey = "different key after admission";
     } else {
       command.workspaceDir = "different workspace after admission";
     }
@@ -617,16 +626,18 @@ it.each(["fleet.get", "userProfiles.avatar.reconcile", "workspace.snapshot"] as 
         ? { ok: true, type, sourceAdmitted: true, cell: undefined }
         : type === "userProfiles.avatar.reconcile"
           ? { ok: true, type, sourceAdmitted: true, profile: undefined }
-          : {
-              ok: true,
-              type,
-              sourceAdmitted: true,
-              snapshot: {
-                identity: createWorkspaceStateIdentity(selector),
-                setup: { version: 1 },
-                setupExists: false,
-              },
-            };
+          : type === "onboardingRecommendations.read"
+            ? { ok: true, type, sourceAdmitted: true, record: null }
+            : {
+                ok: true,
+                type,
+                sourceAdmitted: true,
+                snapshot: {
+                  identity: createWorkspaceStateIdentity(selector),
+                  setup: { version: 1 },
+                  setupExists: false,
+                },
+              };
     try {
       expect(Number.isSafeInteger(submitted.inputBytes)).toBe(true);
       expect(submitted.inputBytes).toBeGreaterThanOrEqual(Buffer.byteLength(selector));

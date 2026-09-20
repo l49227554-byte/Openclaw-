@@ -36,19 +36,14 @@ import type {
   OpenClawStateWorkerOperations,
   OpenClawStateWorkerInspectionOperations,
   OpenClawStateWorkerCleanupOperations,
+  OpenClawStateWorkerOperationOptions as OperationOptions,
 } from "./openclaw-state-worker-contract.js";
 import { hydrateOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
 
 type StoreOperations = OpenClawStateWorkerOperations & OpenClawStateWorkerInspectionOperations;
 type Store = SqliteWorkerStore<StoreOperations>;
 type DomainScope = Pick<SqliteWorkerStore<OpenClawStateWorkerOperations>, "execute">;
-type OperationOptions = {
-  /** Acquire matching lifecycle custody for each dispatched command. */
-  requireStateLifecycle?: boolean;
-  existingOnly?: boolean;
-  assertCurrent?: (commandType?: PropertyKey) => void;
-  createAdmission?: SqliteWorkerAdmissionFactory;
-};
+
 const log = createSubsystemLogger("state/worker");
 const SHARED_STATE_WORKER_IDLE_INSPECT_MS = 60_000;
 const SHARED_STATE_WORKER_IDLE_RETIRE_MS = 30 * 60_000;
@@ -574,11 +569,6 @@ export async function executeOpenClawStateWorker<Key extends keyof OpenClawState
 }
 
 /** Retain the actor through its durable result and main-process reconciliation. */
-export function runOpenClawStateWorkerOperation<T>(
-  context: OpenClawStateWorkerContext,
-  operation: (scope: DomainScope) => Promise<T>,
-  options: OperationOptions & { existingOnly: true },
-): Promise<T | undefined>;
 export function runOpenClawStateWorkerOperation<T>(
   context: OpenClawStateWorkerContext,
   operation: (scope: DomainScope) => Promise<T>,

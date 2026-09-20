@@ -28,6 +28,7 @@ import type { SessionDeliveryWorkerOperations } from "../infra/session-delivery-
 import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type { SqliteWorkerPreparedBackend } from "../infra/sqlite-worker-contract.js";
+import type { SqliteWorkerAdmissionFactory } from "../infra/sqlite-worker-operation-admission.js";
 import type { TelemetryWorkerOperations } from "../infra/telemetry-worker-contract.js";
 import type { readRemoteModelCatalog } from "../model-catalog/remote-store.js";
 import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-worker-contract.js";
@@ -236,3 +237,12 @@ export type OpenClawStateWorkerBackend = SqliteWorkerPreparedBackend<
     OpenClawStateWorkerInspectionOperations &
     OpenClawStateWorkerCleanupOperations
 >;
+
+/** Host-only admission options; never serialized with a worker command. */
+export type OpenClawStateWorkerOperationOptions = {
+  /** Acquire matching lifecycle custody for each dispatched command. */
+  requireStateLifecycle?: boolean;
+  existingOnly?: boolean;
+  assertCurrent?: (commandType?: PropertyKey) => void;
+  createAdmission?: SqliteWorkerAdmissionFactory;
+};

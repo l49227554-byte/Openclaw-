@@ -1042,6 +1042,7 @@ src/process/spawn-broker/host.ts
 src/process/spawn-broker/ipc.ts
 src/process/spawn-broker/pipe.ts
 src/process/spawn-broker/protocol.ts
+src/process/spawn-utils.ts
 src/process/supervisor/cancellation-policy.ts
 src/process/supervisor/service-child-windows-job-native.ts
 src/process/windows-command.ts

@@ -228,6 +228,7 @@ export function applyVerifiedGitHubIdentity(params: {
   db: DatabaseSync;
   alias: { kind: "email"; email: string } | { kind: "github-login"; subject: string };
   identity: { accountId: number; login: string };
+  preserveEmailProfile?: boolean;
   createProfile: () => string;
   mergeProfiles: (sourceProfileId: string, targetProfileId: string) => void;
 }): { profileId: string; changed: boolean } {
@@ -276,6 +277,22 @@ export function applyVerifiedGitHubIdentity(params: {
   const aliasGitHubIdentity = aliasProfileId
     ? selectStoredGitHubIdentities(db, [aliasProfileId]).get(aliasProfileId)
     : undefined;
+  const existingProfileId = existing
+    ? selectResolvedUserProfileMetadataById(db, existing.profile_id)?.id
+    : undefined;
+  if (
+    params.preserveEmailProfile &&
+    aliasProfileId &&
+    ((existingProfileId && existingProfileId !== aliasProfileId) ||
+      (aliasGitHubIdentity &&
+        !aliasGitHubIdentity.accounts.some(
+          (account) => account.accountId === params.identity.accountId,
+        )))
+  ) {
+    throw new Error(
+      "GitHub identity conflicts with the existing email profile; ask an administrator to link the profiles with users.linkEmail",
+    );
+  }
   const reusableAliasProfileId =
     aliasProfileId &&
     (aliasGitHubIdentity === undefined ||
@@ -284,13 +301,8 @@ export function applyVerifiedGitHubIdentity(params: {
       ))
       ? aliasProfileId
       : undefined;
-  const currentProfileId =
-    reusableAliasProfileId ??
-    (existing ? selectResolvedUserProfileMetadataById(db, existing.profile_id)?.id : undefined) ??
-    params.createProfile();
-  const targetProfileId = existing
-    ? (selectResolvedUserProfileMetadataById(db, existing.profile_id)?.id ?? currentProfileId)
-    : currentProfileId;
+  const currentProfileId = reusableAliasProfileId ?? existingProfileId ?? params.createProfile();
+  const targetProfileId = existingProfileId ?? currentProfileId;
   // An email linked by older code must not turn shared owner attribution into a person.
   if (
     aliasIdentity?.profile_id === GATEWAY_OWNER_PROFILE_ID ||
@@ -305,6 +317,7 @@ export function applyVerifiedGitHubIdentity(params: {
       ? aliasGitHubIdentity
       : selectStoredGitHubIdentities(db, [currentProfileId]).get(currentProfileId);
   if (
+    !params.preserveEmailProfile &&
     targetProfileId === currentProfileId &&
     !currentIdentity?.accounts.some((account) => account.accountId === params.identity.accountId)
   ) {

@@ -26,6 +26,8 @@ async function git(root: string, ...args: string[]) {
 
 type VirtualStoreLayout =
   | "node_modules/.pnpm"
+  | "node_modules/.cache/jiti"
+  | "node_modules/.vite/deps"
   | ".pnpm"
   | "cache/deps"
   | "../store"
@@ -607,6 +609,8 @@ describe("Git candidate activation", () => {
 
   it.each([
     { layout: "node_modules/.pnpm", localCommit: false, inspection: false },
+    { layout: "node_modules/.cache/jiti", localCommit: false, inspection: false },
+    { layout: "node_modules/.vite/deps", localCommit: false, inspection: false },
     { layout: "node_modules/.pnpm", localCommit: true, inspection: false },
     { layout: ".pnpm", localCommit: false, inspection: false },
     { layout: "cache/deps", localCommit: false, inspection: false },
@@ -726,6 +730,134 @@ describe("Git candidate activation", () => {
       }
       expect(await git(root, "rev-parse", "HEAD")).toBe(beforeSha);
       await expectRuntime(root, beforeSha);
+    },
+  );
+
+  it("omits generated tool caches while preserving runtime files during promotion", async () => {
+    const target = await advanceRemote();
+    const omitted = [
+      "node_modules/.cache/jiti",
+      "node_modules/.vite",
+      "node_modules/.vite-temp",
+      "ui/node_modules/.cache/jiti",
+    ];
+    const retained = [
+      "node_modules/.cache/other-tool",
+      "node_modules/package/.cache/jiti",
+      "node_modules/package/.vite",
+      "packages/runtime/node_modules/.cache/jiti",
+      "dist/.cache/jiti",
+      "dist-runtime/.vite",
+    ];
+    const result = await update({
+      validateCandidate: async (candidateRoot) => {
+        for (const relative of [...omitted, ...retained]) {
+          await fs.mkdir(path.join(candidateRoot, relative), { recursive: true });
+          await fs.writeFile(path.join(candidateRoot, relative, "content"), "keep or regenerate");
+        }
+        await expectRuntime(candidateRoot, target);
+      },
+    });
+    expect(result.status, JSON.stringify(result)).toBe("ok");
+    for (const relative of omitted) {
+      await expect(fs.stat(path.join(root, relative))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    for (const relative of retained) {
+      expect(await fs.readFile(path.join(root, relative, "content"), "utf8")).toBe(
+        "keep or regenerate",
+      );
+    }
+    await expectRuntime(root, target);
+    await expectNoRuntimeStagingPaths();
+  });
+
+  it.each(["dependency", "cache-link", "parent-link"] as const)(
+    "preserves tool cache paths owned by a %s",
+    async (layout) => {
+      const target = await advanceRemote();
+      const result = await update({
+        validateCandidate: async (candidateRoot) => {
+          const modules = path.join(candidateRoot, "node_modules");
+          const payload = path.join(modules, layout === "dependency" ? ".vite" : "payload");
+          await fs.mkdir(payload, { recursive: true });
+          await fs.writeFile(path.join(payload, "index.cjs"), "module.exports = 'retained';\n");
+          if (layout === "dependency") {
+            await fs.symlink(payload, path.join(modules, "linked-runtime"), "junction");
+            // Once retained, this cache's own link must keep the second cache too.
+            await fs.mkdir(path.join(modules, ".cache", "jiti"), { recursive: true });
+            await fs.writeFile(
+              path.join(modules, ".cache", "jiti", "value.cjs"),
+              "module.exports = 'nested';\n",
+            );
+            await fs.symlink(
+              path.join(modules, ".cache", "jiti"),
+              path.join(payload, "nested"),
+              "junction",
+            );
+          } else if (layout === "cache-link") {
+            await fs.symlink(payload, path.join(modules, ".vite"), "junction");
+          } else {
+            await fs.mkdir(path.join(payload, "jiti"));
+            await fs.writeFile(
+              path.join(payload, "jiti", "index.cjs"),
+              "module.exports = 'retained';\n",
+            );
+            await fs.symlink(payload, path.join(modules, ".cache"), "junction");
+          }
+        },
+      });
+      expect(result.status, JSON.stringify(result)).toBe("ok");
+      const relative =
+        layout === "dependency"
+          ? "linked-runtime"
+          : layout === "cache-link"
+            ? ".vite"
+            : ".cache/jiti";
+      const probe = await runCommandWithTimeout(
+        [
+          process.execPath,
+          "-e",
+          `console.log(require(${JSON.stringify(path.join(root, "node_modules", relative, "index.cjs"))}));`,
+        ],
+        { timeoutMs: 5000 },
+      );
+      expect(probe.code, probe.stderr).toBe(0);
+      expect(probe.stdout.trim()).toBe("retained");
+      if (layout === "dependency") {
+        expect(
+          await fs.readFile(
+            path.join(root, "node_modules", "linked-runtime", "nested", "value.cjs"),
+            "utf8",
+          ),
+        ).toContain("nested");
+      }
+      await expectRuntime(root, target);
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each(["missing", "cycle"])(
+    "preserves unresolved %s links without blocking runtime promotion",
+    async (layout) => {
+      const target = await advanceRemote();
+      const result = await update({
+        validateCandidate: async (candidateRoot) => {
+          const modules = path.join(candidateRoot, "node_modules");
+          await fs.mkdir(path.join(modules, ".vite"));
+          await fs.writeFile(path.join(modules, ".vite", "content"), "retained");
+          await fs.symlink(
+            layout === "cycle" ? "unresolved" : "missing",
+            path.join(modules, "unresolved"),
+          );
+        },
+      });
+      expect(result.status, JSON.stringify(result)).toBe("ok");
+      expect(await fs.readlink(path.join(root, "node_modules", "unresolved"))).toBe(
+        layout === "cycle" ? "unresolved" : "missing",
+      );
+      expect(await fs.readFile(path.join(root, "node_modules", ".vite", "content"), "utf8")).toBe(
+        "retained",
+      );
+      await expectRuntime(root, target);
     },
   );
 
@@ -855,6 +987,9 @@ describe("Git candidate activation", () => {
     async ({ layout, restoreSource, restoreRuntime, timeoutMs }) => {
       virtualStoreLayout = layout;
       await writeRuntime(root, beforeSha, path.join(directory, "shared-store"), layout);
+      const originalCache = path.join(root, "node_modules", ".cache", "jiti", "original.cjs");
+      await fs.mkdir(path.dirname(originalCache), { recursive: true });
+      await fs.writeFile(originalCache, "original runtime cache");
       const candidateSha = await advanceRemote();
       const command = runCommand;
       let resetFaultInjected = false;
@@ -966,6 +1101,7 @@ describe("Git candidate activation", () => {
         return;
       }
       await expectRuntime(root, beforeSha);
+      expect(await fs.readFile(originalCache, "utf8")).toBe("original runtime cache");
     },
   );
 

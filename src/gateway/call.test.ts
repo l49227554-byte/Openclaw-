@@ -2249,15 +2249,14 @@ describe("callGateway error details", () => {
       );
       await vi.advanceTimersByTimeAsync(5);
       const error = await result;
-      expect(isGatewayTransportError(error)).toBe(true);
+      if (!isGatewayTransportError(error)) {
+        throw new Error("Expected a Gateway timeout");
+      }
       expect(error).toMatchObject({
         name: "GatewayTransportError",
         kind: "timeout",
         timeoutMs: 5,
       });
-      if (!(error instanceof Error)) {
-        throw new Error("Expected a Gateway timeout");
-      }
       expect(error.message).toContain("gateway timeout after 5ms");
       expect(error.message).toContain("Gateway target: ws://127.0.0.1:18789");
       expect(error.message).toContain("Source: local loopback");

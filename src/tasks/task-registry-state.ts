@@ -38,10 +38,9 @@ import {
   type TaskRegistryWorkerMutationContext,
 } from "./task-registry-worker-publication.js";
 import {
-  addRunIdIndex,
+  updateRunIdIndex,
   addTaskIndexes,
   removeTaskIndexes,
-  deleteRunIdIndex,
   addOwnerKeyIndex,
   deleteOwnerKeyIndex,
   addParentFlowIdIndex,
@@ -515,10 +514,7 @@ function installSnapshot(
       if (!current) {
         addTaskIndexes(next);
       } else {
-        if (current.runId !== next.runId) {
-          deleteRunIdIndex(taskId, current.runId);
-          addRunIdIndex(taskId, next.runId);
-        }
+        updateRunIdIndex(current, next);
         if (current.ownerKey !== next.ownerKey) {
           deleteOwnerKeyIndex(taskId, current);
           addOwnerKeyIndex(taskId, next);

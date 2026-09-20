@@ -6,7 +6,6 @@ import { bundledPluginFile, bundledPluginRoot } from "openclaw/plugin-sdk/test-f
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { collectClawHubPublishablePluginPackages } from "../scripts/lib/plugin-clawhub-release.ts";
 import {
-  assertPluginReleaseDependencyFreshness,
   collectChangedExtensionIdsFromPaths,
   collectPluginReleaseDependencyFreshnessWarnings,
   collectPluginNpmGitRangeSelection,
@@ -21,6 +20,7 @@ import {
   parsePluginReleaseSelectionMode,
   resolveChangedPublishablePluginPackages,
   resolveSelectedPublishablePluginPackages,
+  warnPluginReleaseDependencyFreshness,
   type PublishablePluginPackage,
 } from "../scripts/lib/plugin-npm-release.ts";
 import { writePublishablePluginFixture } from "./helpers/publishable-plugin-fixture.js";
@@ -498,7 +498,7 @@ describe("collectPluginReleaseDependencyFreshnessWarnings", () => {
 
   it("logs advisory warnings without blocking the caller", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const warnings = assertPluginReleaseDependencyFreshness(
+    const warnings = warnPluginReleaseDependencyFreshness(
       [plugin],
       "release check",
       () => "0.142.5",

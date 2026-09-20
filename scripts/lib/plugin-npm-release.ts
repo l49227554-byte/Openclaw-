@@ -421,14 +421,13 @@ function resolveNpmLatestVersion(packageName: string): string {
   return parsed.trim();
 }
 
-export function collectPluginReleaseDependencyFreshnessWarnings(
+function collectPluginReleaseDependencyFreshnessMessages(
   plugins: readonly PublishablePluginPackage[],
-  resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
+  resolveLatestVersion: NpmLatestVersionResolver,
+  policy: "advisory" | "strict",
 ): string[] {
-  // Release validation owns pin compatibility. A moving npm dist-tag must not
-  // invalidate a frozen, tested candidate, including when the lookup is unavailable.
   const latestVersions = new Map<string, string>();
-  const warnings: string[] = [];
+  const messages: string[] = [];
 
   for (const plugin of plugins) {
     for (const dependency of plugin.requiredLatestDependencies ?? []) {
@@ -438,24 +437,60 @@ export function collectPluginReleaseDependencyFreshnessWarnings(
           latestVersion = resolveLatestVersion(dependency.packageName);
           latestVersions.set(dependency.packageName, latestVersion);
         } catch (error) {
-          warnings.push(
-            `${plugin.packageName}@${plugin.version}: could not resolve npm latest for ${dependency.packageName} (pinned "${dependency.version}"); freshness is advisory: ${error instanceof Error ? error.message : String(error)}`,
+          messages.push(
+            policy === "advisory"
+              ? `${plugin.packageName}@${plugin.version}: could not resolve npm latest for ${dependency.packageName} (pinned "${dependency.version}"); freshness is advisory: ${error instanceof Error ? error.message : String(error)}`
+              : `${plugin.packageName}@${plugin.version}: could not resolve npm latest for ${dependency.packageName}: ${error instanceof Error ? error.message : String(error)}`,
           );
           continue;
         }
       }
       if (dependency.version !== latestVersion) {
-        warnings.push(
-          `${plugin.packageName}@${plugin.version}: ${dependency.packageName} pinned "${dependency.version}", npm latest is "${latestVersion}". Freshness is advisory; retain the release-validated pin.`,
+        messages.push(
+          policy === "advisory"
+            ? `${plugin.packageName}@${plugin.version}: ${dependency.packageName} pinned "${dependency.version}", npm latest is "${latestVersion}". Freshness is advisory; retain the release-validated pin.`
+            : `${plugin.packageName}@${plugin.version}: ${dependency.packageName} must match npm latest for release; found "${dependency.version}", latest is "${latestVersion}".`,
         );
       }
     }
   }
 
-  return warnings;
+  return messages;
+}
+
+export function collectPluginReleaseDependencyFreshnessWarnings(
+  plugins: readonly PublishablePluginPackage[],
+  resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
+): string[] {
+  // Release validation owns pin compatibility. A moving npm dist-tag must not
+  // invalidate a frozen, tested candidate, including when the lookup is unavailable.
+  return collectPluginReleaseDependencyFreshnessMessages(plugins, resolveLatestVersion, "advisory");
+}
+
+export function collectPluginReleaseDependencyFreshnessErrors(
+  plugins: readonly PublishablePluginPackage[],
+  resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
+): string[] {
+  return collectPluginReleaseDependencyFreshnessMessages(plugins, resolveLatestVersion, "strict");
 }
 
 export function assertPluginReleaseDependencyFreshness(
+  plugins: readonly PublishablePluginPackage[],
+  label: string,
+  resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
+): void {
+  const errors = collectPluginReleaseDependencyFreshnessErrors(plugins, resolveLatestVersion);
+  if (errors.length === 0) {
+    return;
+  }
+  throw new Error(
+    `${label} rejected stale required release dependencies:\n${errors
+      .map((error) => `- ${error}`)
+      .join("\n")}`,
+  );
+}
+
+export function warnPluginReleaseDependencyFreshness(
   plugins: readonly PublishablePluginPackage[],
   label: string,
   resolveLatestVersion: NpmLatestVersionResolver = resolveNpmLatestVersion,
@@ -524,7 +559,7 @@ export function collectPluginReleasePlan(params?: {
   if (explicitPublishSelection) {
     assertPluginReleaseVersionFloors(selectedPublishable, "Plugin NPM release plan");
   }
-  const warnings = assertPluginReleaseDependencyFreshness(
+  const warnings = warnPluginReleaseDependencyFreshness(
     selectedPublishable,
     "Plugin NPM release plan",
   );

@@ -1,5 +1,6 @@
 /** Tests silent-reply and heartbeat token parsing helpers. */
 import { describe, it, expect } from "vitest";
+import { findCodeRegions, isInsideCode } from "../shared/text/code-regions.js";
 import {
   isInternalFormattingArtifact,
   isSilentReplyPrefixText,
@@ -129,6 +130,57 @@ describe("isInternalFormattingArtifact", () => {
     const block = '<invoke name="Bash"><parameter name="command">echo end1</parameter></invoke>';
     expect(isInternalFormattingArtifact(block.repeat(300))).toBe(true);
     expect(isInternalFormattingArtifact(`${block.repeat(300)} trailing prose`)).toBe(false);
+  });
+
+  it("stays linear on repeated invalid delimiters inside a parameter (#153594)", () => {
+    // Each "<" used to re-search the whole remaining suffix for a ">", which is quadratic in
+    // model-controlled text. 200k of them is milliseconds for a single forward scan.
+    const delimiters = "<".repeat(200_000);
+    const started = performance.now();
+    expect(
+      isInternalFormattingArtifact(
+        `<invoke name="Bash"><parameter name="command">${delimiters}</parameter></invoke>`,
+      ),
+    ).toBe(true);
+    const elapsed = performance.now() - started;
+    // Generous bound: this is a blow-up guard, not a benchmark. The rescanning revision needs
+    // tens of seconds here.
+    expect(elapsed).toBeLessThan(1000);
+    // Truncated output never closes the parameter, so it is not a complete invocation.
+    expect(
+      isInternalFormattingArtifact(`<invoke name="Bash"><parameter name="command">${delimiters}`),
+    ).toBe(false);
+  });
+
+  it("keeps markup inside a protected code region (#153594)", () => {
+    // An indented example is Markdown code the sanitizer already owns; silencing it would drop a
+    // reply the user asked for. The caller supplies the regions, so the offsets stand in for them.
+    const indented =
+      '    <invoke name="Bash"><parameter name="command">echo hi</parameter></invoke>';
+    const tabbed = '\t<invoke name="Bash"><parameter name="command">echo hi</parameter></invoke>';
+    const protectedFrom = (offset: number) => (index: number) => index >= offset;
+    expect(isInternalFormattingArtifact(indented, { isProtected: protectedFrom(4) })).toBe(false);
+    expect(isInternalFormattingArtifact(tabbed, { isProtected: protectedFrom(1) })).toBe(false);
+    // Unprotected, the same text is still the artifact from #153594.
+    expect(isInternalFormattingArtifact(indented)).toBe(true);
+    expect(isInternalFormattingArtifact(tabbed)).toBe(true);
+  });
+
+  it("keeps indented code samples the real sanitizer protects (#153594)", () => {
+    const markup = '<invoke name="Bash"><parameter name="command">echo hi</parameter></invoke>';
+    const protect = (text: string) => (offset: number) =>
+      isInsideCode(offset, findCodeRegions(text));
+    // CommonMark treats four spaces or a tab as an indented code block; the sanitizer preserves
+    // those regions, so silencing them would delete a code sample the user asked for.
+    const indented = `    ${markup}`;
+    const tabbed = `\t${markup}`;
+    expect(findCodeRegions(indented)).toHaveLength(1);
+    expect(findCodeRegions(tabbed)).toHaveLength(1);
+    expect(findCodeRegions(markup)).toHaveLength(0);
+    expect(isInternalFormattingArtifact(indented, { isProtected: protect(indented) })).toBe(false);
+    expect(isInternalFormattingArtifact(tabbed, { isProtected: protect(tabbed) })).toBe(false);
+    // The reported case is bare text, with no code region to protect it.
+    expect(isInternalFormattingArtifact(markup, { isProtected: protect(markup) })).toBe(true);
   });
 
   it("returns false for prose that mentions tool-call markup (#153594)", () => {

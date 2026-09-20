@@ -16,32 +16,62 @@ const TOOL_CALL_TAG_RE =
   /^<\s*(\/?)\s*(?:antml:|mm:)?(function_calls|invoke|parameter)(?=[\s/>])[^<>]*>$/i;
 const SELF_CLOSING_TAG_RE = /\/\s*>$/;
 
+/**
+ * An artifact is markup the model wrote as ordinary reply text. Markup the sanitizer already owns
+ * as Markdown code is not an artifact: `    <invoke …>` is an indented code sample the user asked
+ * for, and `sanitizeUserFacingText` protects code regions for exactly that reason. The caller knows
+ * the code regions, so this module stays free of Markdown and only asks about offsets.
+ */
+export type InternalFormattingArtifactOptions = {
+  /** True when the offset sits inside a protected region, treated as literal text. */
+  isProtected?: (offset: number) => boolean;
+};
+
 // True only for a whole invocation: an `<invoke>`/`<function_calls>` outside parameter content,
 // with every non-whitespace character inside a `<parameter>` payload. A standalone parameter
 // wrapper keeps its content (assistant-visible-text unwraps it), and `(?=[\s/>])` keeps lookalike
 // element names such as `<parameter-value>` out.
-function isToolCallMarkupOnly(text: string): boolean {
+function isToolCallMarkupOnly(text: string, isProtected?: (offset: number) => boolean): boolean {
   let parameterDepth = 0;
   let hasInvocation = false;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] !== "<") {
-      if (parameterDepth === 0 && !/\s/.test(text[index])) {
+  let index = 0;
+  while (index < text.length) {
+    const char = text[index] ?? "";
+    if (char !== "<") {
+      if (parameterDepth === 0 && /\S/.test(char)) {
         return false;
       }
+      index += 1;
       continue;
     }
-    const end = text.indexOf(">", index + 1);
-    const raw = end === -1 ? null : text.slice(index, end + 1);
-    const tag = raw === null ? null : TOOL_CALL_TAG_RE.exec(raw);
+    // A tag cannot contain "<" or ">", so it ends at whichever comes first. Stopping there keeps
+    // the scan linear: a run of "<" that opens nothing advances one character at a time instead of
+    // re-searching the whole remaining suffix for a ">" on every character.
+    let close = index + 1;
+    while (close < text.length && text[close] !== ">" && text[close] !== "<") {
+      close += 1;
+    }
+    if (close >= text.length) {
+      // No ">" remains, so no later tag can close and the depth can never return to zero.
+      return false;
+    }
+    const tag = text[close] === ">" ? TOOL_CALL_TAG_RE.exec(text.slice(index, close + 1)) : null;
     if (!tag) {
       // A "<" that opens no tool-call tag is payload text inside a parameter, prose otherwise.
       if (parameterDepth === 0) {
         return false;
       }
+      index += 1;
       continue;
     }
-    if (tag[2].toLowerCase() === "parameter") {
-      if (raw !== null && !SELF_CLOSING_TAG_RE.test(raw)) {
+    if (isProtected?.(index)) {
+      // Code sample, not artifact: leave it for the sanitizer's code-region handling.
+      index = close + 1;
+      continue;
+    }
+    const raw = text.slice(index, close + 1);
+    if (tag[2]?.toLowerCase() === "parameter") {
+      if (!SELF_CLOSING_TAG_RE.test(raw)) {
         parameterDepth += tag[1] === "/" ? -1 : 1;
         if (parameterDepth < 0) {
           return false;
@@ -50,19 +80,22 @@ function isToolCallMarkupOnly(text: string): boolean {
     } else if (parameterDepth === 0) {
       hasInvocation = true;
     }
-    index = end;
+    index = close + 1;
   }
   return hasInvocation && parameterDepth === 0;
 }
 
-export function isInternalFormattingArtifact(text: string | undefined): boolean {
+export function isInternalFormattingArtifact(
+  text: string | undefined,
+  options: InternalFormattingArtifactOptions = {},
+): boolean {
   if (!text) {
     return false;
   }
   return (
     HARMONY_CHANNEL_MARKER_RE.test(text) ||
     BOX_DRAWING_HR_ONLY_RE.test(text) ||
-    isToolCallMarkupOnly(text)
+    isToolCallMarkupOnly(text, options.isProtected)
   );
 }
 

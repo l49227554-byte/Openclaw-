@@ -447,6 +447,7 @@ function runReleaseChecksInputValidation(
     phase?: "all" | "candidate" | "independent";
     releasePackageSpec?: string;
     runMaturityScorecard?: string;
+    upgradeSurvivorBaseline?: string;
   } = {},
 ) {
   const step = workflowStep(
@@ -488,6 +489,7 @@ function runReleaseChecksInputValidation(
       RELEASE_RUN_MATURITY_SCORECARD_INPUT: options.runMaturityScorecard ?? "false",
       RELEASE_RUN_RELEASE_SOAK_INPUT: runReleaseSoak,
       RELEASE_SKIP_PACKAGE_TELEGRAM_E2E_INPUT: skipTelegram,
+      RELEASE_UPGRADE_SURVIVOR_BASELINE_INPUT: options.upgradeSurvivorBaseline ?? "openclaw@latest",
       TELEGRAM_WAIVER: options.telegramWaiver ?? "",
     },
   });
@@ -5756,6 +5758,22 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     expect(output).toContain("package_acceptance_scheduled=true\n");
   });
 
+  it("normalizes the selected frozen baseline for every candidate upgrade consumer", () => {
+    const { outputPath, result } = runReleaseChecksInputValidation(
+      "stable",
+      "false",
+      "all",
+      "false",
+      "",
+      { upgradeSurvivorBaseline: "openclaw@2026.8.2" },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(outputPath, "utf8")).toContain(
+      "upgrade_survivor_baseline_version=2026.8.2\n",
+    );
+  });
+
   it.each([
     ["beta", "all", "false", "false", "false"],
     ["beta", "all", "true", "true", "true"],
@@ -5847,6 +5865,13 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
 
   it("includes package acceptance in release checks", () => {
     const workflow = readFileSync(RELEASE_CHECKS_WORKFLOW, "utf8");
+    const releaseChecksWorkflow = readWorkflow(RELEASE_CHECKS_WORKFLOW);
+    const resolveTargetJob = workflowJob(RELEASE_CHECKS_WORKFLOW, "resolve_target");
+    const crossOsReleaseChecksJob = workflowJob(RELEASE_CHECKS_WORKFLOW, "cross_os_release_checks");
+    const dockerReleaseChecksJob = workflowJob(
+      RELEASE_CHECKS_WORKFLOW,
+      "docker_e2e_release_checks",
+    );
     const filterValidator = readFileSync(RELEASE_FILTER_VALIDATOR, "utf8");
     const packageAcceptanceWorkflow = parse(readFileSync(PACKAGE_ACCEPTANCE_WORKFLOW, "utf8")) as {
       on?: {
@@ -5946,6 +5971,24 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
       "${{ inputs.published_upgrade_survivor_baseline }}",
     );
     expect(packageAcceptanceJob.with?.published_upgrade_survivor_baselines).toBe(
+      "${{ inputs.published_upgrade_survivor_baselines }}",
+    );
+    expect(releaseChecksWorkflow.on?.workflow_dispatch?.inputs).toMatchObject({
+      published_upgrade_survivor_baseline: {
+        default: "openclaw@latest",
+        type: "string",
+      },
+    });
+    expect(resolveTargetJob.outputs?.upgrade_survivor_baseline_version).toBe(
+      "${{ steps.inputs.outputs.upgrade_survivor_baseline_version }}",
+    );
+    expect(crossOsReleaseChecksJob.with?.previous_version).toBe(
+      "${{ needs.resolve_target.outputs.upgrade_survivor_baseline_version }}",
+    );
+    expect(dockerReleaseChecksJob.with?.published_upgrade_survivor_baseline).toBe(
+      "${{ inputs.published_upgrade_survivor_baseline }}",
+    );
+    expect(dockerReleaseChecksJob.with?.published_upgrade_survivor_baselines).toBe(
       "${{ inputs.published_upgrade_survivor_baselines }}",
     );
     expect(workflow).toContain(

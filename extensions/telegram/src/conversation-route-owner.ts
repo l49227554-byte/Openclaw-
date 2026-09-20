@@ -2,7 +2,7 @@ import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveThreadBindingSpawnPolicy } from "openclaw/plugin-sdk/conversation-runtime";
 import { parseStrictNonNegativeInteger } from "openclaw/plugin-sdk/number-runtime";
-import { resolveTelegramAccount } from "./accounts.js";
+import { hasTelegramAccountConfig, mergeTelegramAccountConfig } from "./account-config.js";
 import { inspectTelegramConversationRoute } from "./conversation-route.js";
 import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
 import { parseTelegramTarget } from "./targets.js";
@@ -53,24 +53,16 @@ export function inspectTelegramConversationRouteOwner(params: {
     return null;
   }
   const accountId = normalizeAccountId(params.accountId);
-  const account = resolveTelegramAccount({ cfg: params.cfg, accountId });
-  // A removed or disabled account can never regain a binding owner, so reject its retained
-  // history here instead of reporting the missing adapter as a temporary outage below.
-  const configuredAccounts = params.cfg.channels?.telegram?.accounts;
-  const hasExplicitAccounts =
-    configuredAccounts != null &&
-    !Array.isArray(configuredAccounts) &&
-    Object.keys(configuredAccounts).length > 0;
-  const hasConfiguredAccount =
-    (!hasExplicitAccounts && account.tokenSource !== "none") ||
-    (configuredAccounts != null &&
-      !Array.isArray(configuredAccounts) &&
-      Object.keys(configuredAccounts).some((id) => normalizeAccountId(id) === accountId));
-  if (!hasConfiguredAccount || !account.enabled) {
+  const accountConfig = mergeTelegramAccountConfig(params.cfg, accountId);
+  if (
+    params.cfg.channels?.telegram?.enabled === false ||
+    accountConfig.enabled === false ||
+    !hasTelegramAccountConfig(params.cfg, accountId)
+  ) {
     return null;
   }
   const { topicConfig } = resolveTelegramScopedGroupConfig(
-    account.config,
+    accountConfig,
     parsed.chatId,
     parsed.threadSpec.id,
   );

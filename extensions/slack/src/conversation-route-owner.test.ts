@@ -11,6 +11,9 @@ describe("inspectSlackConversationRouteOwner", () => {
   let releaseInstallation: (() => void) | undefined;
 
   beforeEach(() => {
+    for (const key of ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_USER_TOKEN"]) {
+      vi.stubEnv(key, undefined);
+    }
     sessionBindingTesting.resetSessionBindingAdaptersForTests();
     releaseInstallation = registerSlackInstallationState("default", "workspace").release;
   });
@@ -18,6 +21,7 @@ describe("inspectSlackConversationRouteOwner", () => {
   afterEach(() => {
     releaseInstallation?.();
     sessionBindingTesting.resetSessionBindingAdaptersForTests();
+    vi.unstubAllEnvs();
   });
 
   it("checks the thread before its parent without touching liveness", () => {
@@ -117,7 +121,7 @@ describe("inspectSlackConversationRouteOwner", () => {
     {
       name: "removed default account",
       accountId: "default",
-      slack: { accounts: {} } as NonNullable<OpenClawConfig["channels"]>["slack"],
+      slack: { accounts: {} },
     },
     {
       name: "disabled account",
@@ -144,5 +148,30 @@ describe("inspectSlackConversationRouteOwner", () => {
         conversation: { kind: "channel", peerId: "C456" },
       }),
     ).toBeNull();
+  });
+
+  it("preserves a configured default while its token and installation are unavailable", () => {
+    vi.stubEnv("OPENCLAW_TEST_MISSING_SLACK_BOT_TOKEN", undefined);
+    releaseInstallation?.();
+    releaseInstallation = undefined;
+    expect(
+      inspectSlackConversationRouteOwner({
+        cfg: {
+          channels: {
+            slack: {
+              botToken: {
+                source: "env",
+                provider: "default",
+                id: "OPENCLAW_TEST_MISSING_SLACK_BOT_TOKEN",
+              },
+              appToken: "synthetic-app-token",
+              accounts: { secondary: {} },
+            },
+          },
+        },
+        accountId: "default",
+        conversation: { kind: "channel", peerId: "C456" },
+      }),
+    ).toEqual({ kind: "unavailable" });
   });
 });

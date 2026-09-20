@@ -17,6 +17,7 @@ describe("inspectTelegramConversationRouteOwner", () => {
   let adapter: SessionBindingAdapter;
 
   beforeEach(() => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", undefined);
     resetPluginRuntimeStateForTest();
     setActivePluginRegistry(
       createTestRegistry([
@@ -47,6 +48,7 @@ describe("inspectTelegramConversationRouteOwner", () => {
   afterEach(() => {
     resetPluginRuntimeStateForTest();
     testing.resetSessionBindingAdaptersForTests();
+    vi.unstubAllEnvs();
   });
 
   it("replays topic config and runtime precedence without touching liveness", () => {
@@ -146,7 +148,7 @@ describe("inspectTelegramConversationRouteOwner", () => {
     {
       name: "removed default account",
       accountId: "default",
-      telegram: { accounts: {} } as NonNullable<OpenClawConfig["channels"]>["telegram"],
+      telegram: { accounts: {} },
     },
     {
       name: "disabled account",
@@ -174,32 +176,22 @@ describe("inspectTelegramConversationRouteOwner", () => {
     ).toBeNull();
   });
 
-  it("rejects a binding-only account after its configured account is removed", () => {
-    expect(
-      inspectTelegramConversationRouteOwner({
-        cfg: {
-          channels: { telegram: { accounts: { default: {} } } },
-          bindings: [{ agentId: "main", match: { channel: "telegram", accountId: "retired" } }],
-        },
-        accountId: "retired",
-        conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
-      }),
-    ).toBeNull();
-  });
-
   it("keeps binding-created accounts on inherited single-bot credentials", () => {
     expect(
       inspectTelegramConversationRouteOwner({
         cfg: {
+          agents: { ownership: "explicit", entries: { main: {}, specialist: {} } },
           channels: {
             telegram: { botToken: "123456:synthetic", threadBindings: { enabled: false } },
           },
-          bindings: [{ agentId: "main", match: { channel: "telegram", accountId: "bot-main" } }],
+          bindings: [
+            { agentId: "specialist", match: { channel: "telegram", accountId: "bot-main" } },
+          ],
         },
         accountId: "bot-main",
         conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
       }),
-    ).toEqual({ kind: "agent", agentId: "main" });
+    ).toEqual({ kind: "agent", agentId: "specialist" });
   });
 
   it("rejects binding-only accounts in an explicit multi-account setup", () => {
@@ -219,5 +211,45 @@ describe("inspectTelegramConversationRouteOwner", () => {
         conversation: { kind: "group", peerId: "-100123:topic:42", threadId: "42" },
       }),
     ).toBeNull();
+  });
+
+  it("keeps an implicit default alongside named accounts", () => {
+    expect(
+      inspectTelegramConversationRouteOwner({
+        cfg: {
+          channels: {
+            telegram: {
+              botToken: "123456:synthetic",
+              accounts: { secondary: { botToken: "654321:synthetic" } },
+              threadBindings: { enabled: false },
+            },
+          },
+        },
+        accountId: "default",
+        conversation: { kind: "group", peerId: "-100123" },
+      }),
+    ).toEqual({ kind: "agent", agentId: "main" });
+  });
+
+  it("does not confuse an unavailable token with a removed account", () => {
+    vi.stubEnv("OPENCLAW_TEST_MISSING_TELEGRAM_TOKEN", undefined);
+    unregisterSessionBindingAdapter({ channel: "telegram", accountId: "default", adapter });
+    expect(
+      inspectTelegramConversationRouteOwner({
+        cfg: {
+          channels: {
+            telegram: {
+              botToken: {
+                source: "env",
+                provider: "default",
+                id: "OPENCLAW_TEST_MISSING_TELEGRAM_TOKEN",
+              },
+            },
+          },
+        },
+        accountId: "default",
+        conversation: { kind: "group", peerId: "-100123" },
+      }),
+    ).toEqual({ kind: "unavailable" });
   });
 });

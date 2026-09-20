@@ -196,7 +196,9 @@ it
       inventoryBytes = Buffer.byteLength(options.input as string);
     }
     if (argv.includes("index-pack")) {
-      packBytes = (options.input as Buffer).byteLength;
+      expect(options.input).toBeUndefined();
+      expect(options.stdinFileDescriptor).toBeTypeOf("number");
+      packBytes = fs.fstatSync(options.stdinFileDescriptor!).size;
     }
     const result = await runCommandWithTimeout(argv, { ...options, env });
     if (missingPack && argv.includes("pack-objects") && result.code === 0) {
@@ -214,7 +216,7 @@ it
     totalSteps: 1,
     results,
   });
-  let transfer = await prepareGitCandidateTransfer({
+  await using initialTransfer = await prepareGitCandidateTransfer({
     candidateSha,
     beforeSha,
     installedRoot: install,
@@ -222,6 +224,7 @@ it
     probeTimeoutMs: 15_000,
     step: step(source),
   });
+  let transfer = initialTransfer;
   expect(historyInventoryAllowsMissingObjects).toBe(true);
   if (overflow || missingPack) {
     expect(transfer).toBeUndefined();
@@ -242,6 +245,11 @@ it
   }
   expect(transfer).toBeDefined();
   expect(inventoryBytes).toBeGreaterThan(8000);
+  if (failure === "none") {
+    // The pinned descriptor survives removal of the staging pathname.
+    const packName = fs.readdirSync(source).find((name) => name.endsWith(".pack"))!;
+    fs.unlinkSync(path.join(source, packName));
+  }
   expect(await transfer!.importInto(step(install))).toBe(true);
   expect(packBytes).toBeGreaterThan(8000);
   if (failure === "none") {
@@ -255,7 +263,7 @@ it
     const inspection = path.join(root, "inspection.git");
     await git(root, "clone", "--mirror", "--shared", install, inspection);
     await git(inspection, "update-ref", "refs/heads/candidate", candidateSha);
-    transfer = await prepareGitCandidateTransfer({
+    await using retryTransfer = await prepareGitCandidateTransfer({
       candidateSha,
       beforeSha,
       installedRoot: install,
@@ -263,6 +271,7 @@ it
       probeTimeoutMs: 15_000,
       step: step(inspection),
     });
+    transfer = retryTransfer;
     expect(transfer).toBeDefined();
     expect(await transfer!.importInto(step(install))).toBe(true);
     await git(install, "repack", "-a", "-d");

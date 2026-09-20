@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { hasErrnoCode } from "./errno.js";
-import { readLocalFileSafely } from "./fs-safe.js";
+import { openLocalFileSafely, type OpenResult } from "./fs-safe.js";
 import { runStep } from "./update-runner-command.js";
 import { classifyPartialCloneGitFailure } from "./update-runner-git-target.js";
 import type { RunStepOptions, UpdateStepResult } from "./update-runner-types.js";
@@ -191,13 +191,13 @@ export async function prepareGitCandidateTransfer(params: {
   if (!hash) {
     return undefined;
   }
-  let pack: Buffer;
+  let pack: OpenResult;
   const packPath = `${prefix}-${hash}.pack`;
   const readStarted = Date.now();
   try {
-    ({ buffer: pack } = await readLocalFileSafely({
-      filePath: packPath,
-    }));
+    // Pin the staged file before admission; Git reads this descriptor directly
+    // instead of retaining and copying the entire pack through JavaScript.
+    pack = await openLocalFileSafely({ filePath: packPath });
   } catch (error) {
     return recordStagingFailure(
       step,
@@ -209,13 +209,15 @@ export async function prepareGitCandidateTransfer(params: {
   }
   const keepMessage = `openclaw-update-${randomUUID()}`;
   return {
+    [Symbol.asyncDispose]: () => pack[Symbol.asyncDispose](),
     async importInto(target: RunStepOptions): Promise<boolean> {
       const imported = await runStep({
         ...target,
         // Repack may run before checkout makes the candidate reachable. Keep its
         // pack until activation/rollback finishes, including source publication.
         argv: ["git", "-C", target.cwd, "index-pack", "--stdin", `--keep=${keepMessage}`],
-        runCommand: (argv, options) => target.runCommand(argv, { ...options, input: pack }),
+        runCommand: (argv, options) =>
+          target.runCommand(argv, { ...options, stdinFileDescriptor: pack.handle.fd }),
       });
       if (imported.exitCode !== 0) {
         return false;

@@ -114,6 +114,18 @@ enablement and sizing.
 
 ## Sidebar navigation
 
+In a desktop browser, collapsing the sidebar leaves a narrow navigation rail.
+The expand button stays at the top, beside the project and session title on
+session pages. Search, New session, Home (when available), and Inbox stack at
+the bottom. The rail reserves its own space so it does not cover the composer.
+Narrow screens keep the navigation drawer; native desktop apps keep their
+existing window controls. The top expand control has no resting button fill or
+border; hover adds a background and keyboard focus remains visible. In a single
+main conversation, the message-history marks share the middle of the collapsed
+rail and expand only to the right on hover. Split views, swapped conversations,
+and open left-, bottom-, or vertically stacked panels keep pane-local history
+rails so each conversation retains its own navigation.
+
 Drag page destinations, including plugin-provided pages, to reorder them together.
 The order is saved in your sidebar preferences and survives reloads. A temporarily
 unavailable plugin keeps its saved position for when it returns. **Home** stays

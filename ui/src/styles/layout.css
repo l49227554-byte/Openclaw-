@@ -117,6 +117,141 @@
   gap: var(--shell-chrome-controls-gap);
 }
 
+/* Keep the legacy in-page strip's visual order; the browser rail below follows
+   the actions' DOM order for keyboard navigation. Native titlebar controls
+   remain owned by their host. */
+.shell-chrome-controls__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--shell-chrome-controls-gap);
+}
+
+.shell-chrome-controls__actions > :has(.shell-chrome-controls__new-thread) {
+  order: -1;
+}
+
+/* Only browser windows get the rail. Native hosts reserve their own traffic
+   lights, drag regions and caption controls, including older macOS hosts. */
+html:not(
+    .openclaw-native-macos,
+    .openclaw-native-nav,
+    .openclaw-native-web-chrome,
+    .openclaw-native-desktop
+  )
+  .shell--nav-collapsed:not(.shell--mobile-nav):not(.shell--onboarding):not(.shell--settings) {
+  --shell-nav-width: 52px;
+  --shell-chrome-safe-area-left: 12px;
+  --shell-attention-width: 0px;
+
+  grid-template-columns: var(--shell-nav-width) minmax(0, 1fr);
+
+  .shell-chrome-controls {
+    top: 8px;
+    left: var(--shell-chrome-controls-inset);
+  }
+
+  .shell-chrome-controls__nav-toggle {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+
+    &:hover {
+      background: var(--bg-hover);
+    }
+
+    &:focus-visible {
+      box-shadow: var(--focus-ring);
+    }
+  }
+
+  /* The 48px session header and 32px toggle share a 24px centerline. The
+     divider belongs to session chrome, not New Session or page headings. */
+  .shell-chrome-controls--session::after {
+    position: absolute;
+    top: 8px;
+    left: calc(var(--shell-chrome-control-size) + 9px);
+    width: 1px;
+    height: 16px;
+    background: var(--border);
+    content: "";
+  }
+
+  .shell-chrome-controls__actions {
+    position: fixed;
+    bottom: calc(
+      10px + env(safe-area-inset-bottom, 0px) + var(--shell-chrome-control-size) +
+        var(--shell-chrome-controls-gap)
+    );
+    left: var(--shell-chrome-controls-inset);
+    flex-direction: column;
+
+    > :has(.shell-chrome-controls__new-thread) {
+      order: 0;
+    }
+  }
+
+  openclaw-sidebar-attention.sidebar-attention--floating {
+    top: auto;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    left: var(--shell-chrome-controls-inset);
+  }
+
+  .sidebar-attention--floating ~ .sidebar-update-card--floating .sidebar-update-card {
+    margin-top: 12px;
+  }
+
+  /* Layout owns placement through the local anchor; its transcript owns the
+     single presentation outside size-query containers. */
+  .chat-split-view__column:only-child
+    > .chat-split-view__cell:only-child
+    > .chat-pane-cache
+    > .chat-pane-cache__pane--visible[aria-hidden="false"]
+    .sidebar-region:not(.sidebar-region--expanded):not(
+      :is(
+        .sidebar-region--left,
+        .sidebar-region--bottom,
+        .sidebar-region--narrow
+      ).sidebar-region--open
+    )
+    > .sidebar-region__primary[data-region="main"]
+    .chat-main__conversation
+    > .chat-thread
+    > .chat-position-rail-anchor {
+    /* The bottom stack swaps the old horizontal strip's toggle for Inbox,
+       so its span already accounts for the optional Home button. */
+    --chat-position-rail-viewport-height: max(
+      0px,
+      calc(100dvh - 58px - var(--shell-controls-width) - env(safe-area-inset-bottom, 0px))
+    );
+
+    position: fixed;
+    z-index: 44;
+    top: calc(48px + var(--chat-position-rail-top));
+    left: 0;
+    display: block;
+
+    @container chat-transcript (max-height: 360px) {
+      display: none;
+    }
+  }
+}
+
+/* Match the document-direction contract used by the page-header layout. */
+html[dir="rtl"]:not(
+    .openclaw-native-macos,
+    .openclaw-native-nav,
+    .openclaw-native-web-chrome,
+    .openclaw-native-desktop
+  )
+  .shell--nav-collapsed:not(.shell--mobile-nav):not(.shell--onboarding):not(.shell--settings) {
+  grid-template-columns: minmax(0, 1fr) var(--shell-nav-width);
+  grid-template-areas:
+    "topbar nav"
+    "content nav";
+}
+
 .shell-chrome-controls__nav-toggle[data-env-avatar]::before {
   display: inline-flex;
   align-items: center;
@@ -4552,7 +4687,7 @@ wa-dropdown.sidebar-identity-menu::part(menu) {
   gap: 0;
 }
 
-.content:has(.plugin-tab-embed) > * + * {
+.content:has(.plugin-tab-embed) > :where(:not(:first-child)) {
   margin-top: 0;
 }
 

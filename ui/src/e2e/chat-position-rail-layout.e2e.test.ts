@@ -14,16 +14,21 @@ const suite = createChatFlowE2eSuite();
 const POSITION_RAIL_MIN_TRANSCRIPT_HEIGHT = 360;
 
 suite.define(() => {
-  it.each([
-    { count: 1, direction: "ltr" },
-    { count: 2, direction: "ltr" },
-    { count: 5, direction: "ltr" },
-    { count: 8, direction: "ltr" },
-    { count: 80, direction: "ltr" },
-    { count: 80, direction: "rtl" },
-  ])(
-    "keeps the rail anchored as Task progress and the composer grow ($count, $direction messages)",
-    async ({ count, direction }) => {
+  it.each(
+    [
+      { count: 1, direction: "ltr" },
+      { count: 2, direction: "ltr" },
+      { count: 5, direction: "ltr" },
+      { count: 8, direction: "ltr" },
+      { count: 80, direction: "ltr" },
+      { count: 80, direction: "rtl" },
+      { count: 2, direction: "ltr", collapsedNav: true },
+      { count: 80, direction: "ltr", collapsedNav: true },
+      { count: 80, direction: "rtl", collapsedNav: true },
+    ].map((scenario) => ({ collapsedNav: false, ...scenario })),
+  )(
+    "keeps the rail anchored as Task progress and the composer grow ($count, $direction messages, collapsed sidebar: $collapsedNav)",
+    async ({ count, direction, collapsedNav }) => {
       await suite.withPage(
         { colorScheme: "dark", viewport: { width: 1440, height: 900 } },
         async ({ page }) => {
@@ -66,6 +71,19 @@ suite.define(() => {
           await page.addInitScript(createControlUiMockSameOriginGatewayScript());
           await page.goto(`${suite.server.baseUrl}chat`);
           await page.locator(`.chat-text[dir="${direction}"]`).first().waitFor();
+          if (collapsedNav) {
+            await page.locator(".sidebar-brand__collapse").click();
+            await page.evaluate((dir) => {
+              document.documentElement.dir = dir;
+            }, direction);
+            await expect
+              .poll(() =>
+                page
+                  .locator(".chat-position-rail")
+                  .evaluate((element) => getComputedStyle(element).position),
+              )
+              .toBe("fixed");
+          }
           const card = page.locator(".session-progress-card--composer");
           await card.waitFor();
           // Let the transcript settle before measuring the rail and toggling the card.
@@ -88,7 +106,9 @@ suite.define(() => {
           await expect
             .poll(() =>
               marks.evaluate((element) => {
-                const thread = element.closest(".chat-thread")!;
+                const thread = element.ownerDocument
+                  .querySelector(`[aria-controls="${element.closest(".chat-position-rail")!.id}"]`)!
+                  .closest(".chat-thread")!;
                 const current = element.querySelector('[aria-current="true"]');
                 const message = current
                   ? thread.querySelector(
@@ -115,6 +135,10 @@ suite.define(() => {
           const bounds = () =>
             track.evaluate((element) => element.getBoundingClientRect().toJSON());
           const collapsed = await bounds();
+          if (collapsedNav) {
+            expect(collapsed.left).toBe(4);
+            expect(collapsed.width).toBe(44);
+          }
           const collapsedComposer = (await composer.boundingBox())!;
           if (count === 80 && direction === "ltr") {
             const transcript = page.locator(".chat-thread");
@@ -147,7 +171,23 @@ suite.define(() => {
               const tick = element.querySelectorAll(".chat-position-rail__tick")[index]!;
               const positions = [];
               for (let frame = 0; frame < 30; frame++) {
-                const transcript = element.closest<HTMLElement>(".chat-thread")!;
+                // Sample the completed rendering update, not the rAF phase before
+                // container-query layout and ResizeObserver delivery. No delay or
+                // settling frames: the posted task follows this frame's paint.
+                await new Promise<void>((resolve) => {
+                  requestAnimationFrame(() => {
+                    const channel = new MessageChannel();
+                    channel.port1.onmessage = () => {
+                      channel.port1.close();
+                      channel.port2.close();
+                      resolve();
+                    };
+                    channel.port2.postMessage(null);
+                  });
+                });
+                const transcript = element.ownerDocument
+                  .querySelector(`[aria-controls="${element.closest(".chat-position-rail")!.id}"]`)!
+                  .closest<HTMLElement>(".chat-thread")!;
                 const style = getComputedStyle(transcript);
                 positions.push({
                   track: element.getBoundingClientRect().top,
@@ -160,9 +200,6 @@ suite.define(() => {
                     Number.parseFloat(style.paddingBottom) -
                     Number.parseFloat(style.borderTopWidth) -
                     Number.parseFloat(style.borderBottomWidth),
-                });
-                await new Promise<void>((resolve) => {
-                  requestAnimationFrame(() => resolve());
                 });
               }
               return positions;

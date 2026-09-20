@@ -504,6 +504,7 @@ function withoutPluginHarnessPrivateState(
     hostCapabilities: _hostCapabilities,
     onContextEngineTurnCandidate: _onContextEngineTurnCandidate,
     trajectoryRecorder: _trajectoryRecorder,
+    semanticNoProgressObserver: _semanticNoProgressObserver,
     __openclawSourceReplyDeliveryRuntime: _sourceReplyDeliveryRuntime,
     ...pluginParams
   } = params as EmbeddedRunAttemptInternalParams & {

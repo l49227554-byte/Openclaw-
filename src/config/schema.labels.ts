@@ -3,6 +3,7 @@ import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
 import { GATEWAY_FIELD_LABELS } from "./schema.gateway-labels.js";
 import { AGENT_MODEL_FIELD_LABELS } from "./schema.labels.agent-models.js";
 import { SESSION_FIELD_LABELS } from "./schema.labels.session.js";
+import { TOOL_EXECUTION_FIELD_LABELS } from "./schema.labels.tool-execution.js";
 import { WORKSPACE_FIELD_LABELS } from "./schema.labels.workspace.js";
 import { META_FIELD_LABELS } from "./schema.meta.js";
 import { NODE_CAPABILITY_FIELD_LABELS } from "./schema.node-capabilities.js";
@@ -193,11 +194,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.entries.*.tools.message.crossContext.allowAcrossProviders":
     "Agent Cross-Context Messaging (Across Providers)",
   "agents.entries.*.tools.message.actions.allow": "Agent Message Action Allowlist",
-  "tools.exec.applyPatch.enabled": "Enable apply_patch",
-  "tools.exec.applyPatch.workspaceOnly": "apply_patch Workspace-Only",
-  "tools.exec.applyPatch.allowModels": "apply_patch Model Allowlist",
-  "tools.loopDetection.enabled": "Tool-loop Detection",
-  "tools.fs.workspaceOnly": "Workspace-only FS tools",
+  ...TOOL_EXECUTION_FIELD_LABELS,
   "tools.sessions.visibility": "Session Tools Visibility",
   "tools.exec.notifyOnExit": "Exec Notify On Exit",
   "tools.exec.notifyOnExitEmptySuccess": "Exec Notify On Empty Success",

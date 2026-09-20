@@ -9,7 +9,11 @@ import { createAgentHarnessHostCapabilities } from "../agents/harness/host-capab
 
 type AgentHarnessHostTestAttempt = Omit<
   EmbeddedRunAttemptParams,
-  "admittedRunContext" | "hostCapabilities" | "disableToolSearch" | "sessionReadScopeKey"
+  | "admittedRunContext"
+  | "hostCapabilities"
+  | "disableToolSearch"
+  | "sessionReadScopeKey"
+  | "semanticNoProgressObserver"
 >;
 
 /** Builds the production admitted-run host boundary for plugin integration tests. */

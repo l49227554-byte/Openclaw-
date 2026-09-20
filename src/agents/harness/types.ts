@@ -105,6 +105,7 @@ type AgentHarnessAttemptParamsBase = Omit<
   | "contextEngineLogicalTurnLease"
   | "onContextEngineTurnCandidate"
   | "trajectoryRecorder"
+  | "semanticNoProgressObserver"
 >;
 /**
  * @deprecated Use AgentHarnessAttemptParamsV2. The optional capability keeps

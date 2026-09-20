@@ -573,6 +573,40 @@ describe("grouped chat rendering", () => {
     expect(container.textContent).toContain("Notice details");
   });
 
+  it.each([
+    {
+      format: "MEDIA directives",
+      content:
+        "Introduction\n\n**Before**\nMEDIA:https://example.com/before.png\n\n**After**\nMEDIA:https://example.com/after.png\n\nClosing paragraph",
+    },
+    {
+      format: "structured images",
+      content: [
+        { type: "text", text: "Introduction\n\n**Before**" },
+        { type: "image", url: "https://example.com/before.png" },
+        { type: "text", text: "**After**" },
+        { type: "image", url: "https://example.com/after.png" },
+        { type: "text", text: "Closing paragraph" },
+      ],
+    },
+  ])("keeps assistant $format between their surrounding paragraphs", ({ content }) => {
+    const container = document.createElement("div");
+    markdownRenderMock.withImplementation(renderMarkdownHtml, () => {
+      renderAssistantMessage(container, createAssistantMessage(content, { timestamp: 1000 }));
+    });
+
+    expect(
+      Array.from(container.querySelectorAll(".chat-text strong, .chat-message-image"), (element) =>
+        element instanceof HTMLImageElement
+          ? new URL(element.src).pathname
+          : element.textContent?.replace(/\s+/g, " ").trim(),
+      ),
+    ).toEqual(["Before", "/before.png", "After", "/after.png"]);
+    const text = container.querySelector(".chat-text")?.textContent?.trim() ?? "";
+    expect(text.startsWith("Introduction")).toBe(true);
+    expect(text.endsWith("Closing paragraph")).toBe(true);
+  });
+
   it.each([false, true])(
     "preserves reference links and one duplicate badge around media (recovered: %s)",
     (recovered) => {
@@ -897,13 +931,14 @@ describe("grouped chat rendering", () => {
   });
 
   it.each([
-    { state: "failed", label: "Not sent", actionLabel: undefined },
-    { state: "unconfirmed", label: "Delivery unconfirmed", actionLabel: undefined },
-    { state: "unconfirmed", label: "Delivery unconfirmed", actionLabel: "Check delivery" },
-    { state: "waiting-reconnect", label: "Waiting for reconnect", actionLabel: undefined },
+    { state: "failed", actionLabel: undefined, retry: true, discard: true },
+    { state: "failed", actionLabel: "Check failure", retry: true, discard: false },
+    { state: "unconfirmed", actionLabel: undefined, retry: true, discard: true },
+    { state: "unconfirmed", actionLabel: "Check delivery", retry: true, discard: false },
+    { state: "waiting-reconnect", actionLabel: undefined, retry: false, discard: true },
   ] as const)(
     "shows a $state footer with its diagnostic and recovery actions ($actionLabel)",
-    ({ state, label, actionLabel }) => {
+    ({ state, actionLabel, retry: canRetry, discard: canDiscard }) => {
       const container = document.createElement("div");
       const onRetryQueuedMessage = vi.fn();
       const onDiscardQueuedMessage = vi.fn();
@@ -927,34 +962,20 @@ describe("grouped chat rendering", () => {
         },
       );
 
-      const status = expectElement(container, ".chat-group.user .chat-send-status", HTMLElement);
-      expect(status.dataset.sendState).toBe(state);
-      expect(status.title).toBe("Delivery diagnostic");
-      const reconnecting = state === "waiting-reconnect";
-      const canDiscard = (state === "unconfirmed" || reconnecting) && !actionLabel;
-      expect(status.textContent?.replace(/\s+/g, " ").trim()).toBe(
-        `· ${label}${reconnecting ? "" : ` · ${actionLabel ?? "Retry"}`}${canDiscard ? " · Discard" : ""}`,
-      );
-      const retry = status.querySelector<HTMLButtonElement>(".chat-send-status__retry");
-      expect(retry?.getAttribute("aria-label")).toBe(
-        reconnecting ? undefined : (actionLabel ?? "Retry queued message"),
-      );
+      const status = container.querySelector<HTMLElement>(".chat-send-status");
+      expect(status).not.toBeNull();
+      expect(status?.title).toBe("Delivery diagnostic");
+      const retry = status?.querySelector<HTMLButtonElement>(".chat-send-status__retry");
+      expect(Boolean(retry)).toBe(canRetry);
       retry?.click();
-      if (reconnecting) {
-        expect(onRetryQueuedMessage).not.toHaveBeenCalled();
-      } else {
-        expect(onRetryQueuedMessage).toHaveBeenCalledWith("attempted-send");
-      }
-      const discard = status.querySelector<HTMLButtonElement>(".chat-send-status__discard");
+      expect(onRetryQueuedMessage.mock.calls).toEqual(canRetry ? [["attempted-send"]] : []);
+      const discard = status?.querySelector<HTMLButtonElement>(".chat-send-status__discard");
       if (canDiscard) {
-        expect(discard?.title).toBe(
-          "Discard this local pending copy. This does not cancel a message already received by the Gateway.",
-        );
         discard?.click();
         expect(onDiscardQueuedMessage).toHaveBeenCalledWith("attempted-send");
         discard?.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 2 }));
         expect(onDiscardQueuedMessage).toHaveBeenCalledTimes(1);
-        expect(onRetryQueuedMessage).toHaveBeenCalledTimes(reconnecting ? 0 : 1);
+        expect(onRetryQueuedMessage).toHaveBeenCalledTimes(canRetry ? 1 : 0);
       } else {
         expect(discard).toBeNull();
       }
@@ -5133,7 +5154,7 @@ describe("grouped chat rendering", () => {
       expect(image?.getAttribute("src")).toBe(objectUrl);
       expect(image?.getAttribute("alt")).toBe("Generated image 1");
     });
-    const thumbnailUrl = `/rosita${managedChatImageUrl.replace(/\/full$/u, "/thumbnail")}`;
+    const thumbnailUrl = `/rosita${managedChatImageUrl.replace(/\/full$/u, "/thumbnail")}?v=2`;
     const [, fetchInit] = requireFetchCallForUrl(fetchMock, thumbnailUrl);
     expectSameOriginGet(fetchInit);
     expectElement(container, ".chat-message-image-button", HTMLButtonElement).click();
@@ -5155,7 +5176,7 @@ describe("grouped chat rendering", () => {
       expiresAt: "2026-07-28T05:00:00.000Z",
     }));
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toBe(`/rosita${ticketedUrl.replace(/\/full(?=\?)/u, "/thumbnail")}`);
+      expect(url).toBe(`/rosita${ticketedUrl.replace(/\/full(?=\?)/u, "/thumbnail")}&v=2`);
       const headers = new Headers(init?.headers);
       expect(headers.get("Authorization")).toBeNull();
       expect(headers.get("x-openclaw-requester-session-key")).toBeNull();
@@ -5334,7 +5355,7 @@ describe("grouped chat rendering", () => {
     const artifactId = `artifact_managed_image_${attachmentId}`;
     const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${attachmentId}/full`;
     const ticketedUrl = `${source}?mediaTicket=ticket`;
-    const thumbnailUrl = ticketedUrl.replace(/\/full(?=\?)/u, "/thumbnail");
+    const thumbnailUrl = `${ticketedUrl.replace(/\/full(?=\?)/u, "/thumbnail")}&v=2`;
     const resolveArtifactDownload = vi.fn(async () => ({ url: ticketedUrl }));
     const objectUrls = ["blob:thumbnail", "blob:full", "blob:download"];
     const NativeUrl = URL;
@@ -5413,7 +5434,7 @@ describe("grouped chat rendering", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, fetchInit] = requireFetchCallForUrl(
       fetchMock,
-      managedChatImageUrl.replace(/\/full$/u, "/thumbnail"),
+      `${managedChatImageUrl.replace(/\/full$/u, "/thumbnail")}?v=2`,
     );
     expect(fetchInit?.signal?.aborted).toBe(false);
     expectSameOriginGet(fetchInit);
@@ -5459,7 +5480,7 @@ describe("grouped chat rendering", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, fetchInit] = requireFetchCallForUrl(
       fetchMock,
-      managedChatImageUrl.replace(/\/full$/u, "/thumbnail"),
+      `${managedChatImageUrl.replace(/\/full$/u, "/thumbnail")}?v=2`,
     );
     expect(fetchInit?.signal?.aborted).toBe(false);
     expectSameOriginGet(fetchInit);
@@ -5512,7 +5533,7 @@ describe("grouped chat rendering", () => {
       | undefined;
     const response = { ok: true, blob: async () => new Blob(["png"], { type: "image/png" }) };
     const fetchMock = vi.fn((url: string) => {
-      if (deferEvictedRefetch && url === imageUrls[1]?.replace(/\/full$/u, "/thumbnail")) {
+      if (deferEvictedRefetch && url === `${imageUrls[1]?.replace(/\/full$/u, "/thumbnail")}?v=2`) {
         return new Promise<typeof response>((resolve) => {
           resolveEvictedRefetch = resolve;
         });

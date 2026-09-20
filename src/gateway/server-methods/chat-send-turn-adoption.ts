@@ -33,6 +33,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
     "agentId" | "backingSessionId" | "cfg" | "clientRunId" | "sessionKey" | "sessionLoadOptions"
   >;
   hasCronCreatorAuthority: boolean;
+  suppressReplies?: boolean;
   retainWorkAdmission: () => () => void;
 }): {
   lifecycle: TurnAdoptionLifecycle;
@@ -46,13 +47,15 @@ export function createChatSendTurnAdoptionLifecycle(params: {
     runId: params.runId,
     originatingChannel: params.originatingChannel,
     logGateway: params.context.logGateway,
-    deliver: createChatSendLateReplyFinalizer({
-      requesterContext: params.requesterContext,
-      abortSignal: params.controller.signal,
-      accountId: params.accountId,
-      context: params.context,
-      session: params.session,
-    }),
+    deliver: params.suppressReplies
+      ? async () => ({ kind: "dropped" as const, reason: "no-visible-content" as const })
+      : createChatSendLateReplyFinalizer({
+          requesterContext: params.requesterContext,
+          abortSignal: params.controller.signal,
+          accountId: params.accountId,
+          context: params.context,
+          session: params.session,
+        }),
   });
   const lifecycle: TurnAdoptionLifecycle = {
     // Gateway cancel identity only — share collect key via ownerKey.

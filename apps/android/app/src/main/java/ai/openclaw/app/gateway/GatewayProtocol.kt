@@ -893,6 +893,7 @@ enum class GatewayMethod(
   SessionsAssignOwner("sessions.assignOwner"),
   ProgressCardGet("progressCard.get"),
   ProgressCardPut("progressCard.put"),
+  ProgressCardRefresh("progressCard.refresh"),
   ToolsGithubStatus("tools.github.status"),
   ToolsGithubConfigure("tools.github.configure"),
   ToolsGithubAuthorizeStart("tools.github.authorize.start"),

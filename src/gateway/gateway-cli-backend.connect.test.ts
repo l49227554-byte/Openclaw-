@@ -18,8 +18,9 @@ import {
   sendMinimalGatewayResponse,
 } from "./minimal-gateway.test-helpers.js";
 
-const GATEWAY_CONNECT_OPERATION_TIMEOUT_MS = 1_000;
-const GATEWAY_CONNECT_TEST_TIMEOUT_MS = 15_000;
+// This runs in a 2,000+ test database-worker shard; allow for event-loop scheduling stalls.
+const GATEWAY_CONNECT_OPERATION_TIMEOUT_MS = 5_000;
+const GATEWAY_CONNECT_TEST_TIMEOUT_MS = 30_000;
 const tempDirs = createSuiteTempRootTracker({ prefix: "openclaw-gateway-connect-" });
 
 async function createTempDeviceIdentity() {

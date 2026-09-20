@@ -353,6 +353,12 @@ export const taskAgentEventMutations = {
       );
     }
   },
+  /** Waits for every accepted event drain, including work queued by an earlier drain. */
+  async settleForTest(): Promise<void> {
+    while (drains.size > 0) {
+      await Promise.allSettled(drains);
+    }
+  },
 };
 
 async function persist(pending: PendingEvent): Promise<void> {

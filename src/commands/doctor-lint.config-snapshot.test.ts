@@ -1,3 +1,5 @@
+// Prepare the real check graph before test-scoped deadlines and stdout captures begin.
+import "../flows/doctor-core-checks.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import * as bundledHealthChecks from "../flows/bundled-health-checks.js";

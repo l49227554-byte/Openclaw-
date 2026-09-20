@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as nodeSqlite from "../../../node-sqlite.mjs";
+import { runDoctorLintCli as runDoctorLintCliEntry } from "../../commands/doctor-lint.js";
 import { parseReleasedDoctorLintReport } from "../../infra/test-fixtures/update-doctor-lint.v2026-9-5.js";
 import { ExitError } from "../../runtime.js";
 import { UpdateSchemaRefusalError } from "../../state/openclaw-update-schema-refusal.js";
@@ -22,15 +23,9 @@ const mocks = vi.hoisted(() => ({
   runDoctorLintCli: vi.fn(),
 }));
 
-const {
-  doctorCommand,
-  triageCommand,
-  dashboardCommand,
-  resetCommand,
-  uninstallCommand,
-  runtime,
-  runDoctorLintCli,
-} = mocks;
+const { doctorCommand, triageCommand, dashboardCommand, resetCommand, uninstallCommand, runtime } =
+  mocks;
+const runDoctorLintCli = vi.mocked(runDoctorLintCliEntry);
 
 const DOCTOR_MUTATION_OPTIONS = [
   "--repair",

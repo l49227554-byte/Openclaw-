@@ -11,6 +11,15 @@ export function escapeMarkdownHtml(value: string): string {
 }
 
 export function normalizeMarkdownLineBreaks(value: string): string {
+  // Most streamed text already uses LF. Avoid allocating a second full string
+  // and running the WebKit regexp engine when there is nothing to normalize.
+  if (
+    value.indexOf("\r") === -1 &&
+    value.indexOf("\u2028") === -1 &&
+    value.indexOf("\u2029") === -1
+  ) {
+    return value;
+  }
   return value.replace(/\r\n?|[\u2028\u2029]/g, "\n");
 }
 

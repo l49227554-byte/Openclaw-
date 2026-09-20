@@ -155,6 +155,15 @@ describe("toStreamingMarkdownParts", () => {
     );
   });
 
+  it("normalizes an appended CRLF boundary without rescanning the prefix", () => {
+    const key = "incremental-line-ending-normalization";
+    toStreamingMarkdownParts("before\r", {}, key);
+
+    expect(toStreamingMarkdownParts("before\r\nafter", {}, key).join("")).toBe(
+      toStreamingMarkdownParts("before\r\nafter").join(""),
+    );
+  });
+
   it.each(["- item", "1. item"])(
     "keeps details inside a loose %s list continuation while streaming",
     (item) => {

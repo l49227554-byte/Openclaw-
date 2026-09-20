@@ -8,7 +8,7 @@ import { createZeroUsageFixture } from "../../agents/test-helpers/usage-fixtures
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { embeddedRunMock } from "../test-helpers.runtime-state.js";
 
-export const getSessionManagerModule = createLazyRuntimeModule(
+const getSessionManagerModule = createLazyRuntimeModule(
   () => import("../../agents/sessions/index.js"),
 );
 

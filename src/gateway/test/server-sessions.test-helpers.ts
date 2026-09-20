@@ -23,10 +23,7 @@ import {
   type GatewaySessionsSuiteSetup,
 } from "./server-sessions-resources.test-helpers.js";
 
-export {
-  createCompactedSessionFixture,
-  getSessionManagerModule,
-} from "./server-sessions-compaction.test-helpers.js";
+export { createCompactedSessionFixture } from "./server-sessions-compaction.test-helpers.js";
 
 export const getGatewayConfigModule = createLazyRuntimeModule(
   () => import("../../config/config.js"),

@@ -48,6 +48,10 @@ import {
   setGatewayDedupeEntries,
 } from "./agent-dedupe.js";
 import { createAgentRunAdmissionRevalidator } from "./agent-run-admission-revalidation.js";
+import type {
+  PrepareAgentRunDispatchParams,
+  PreparedAgentRunDispatch,
+} from "./agent-run-admission-types.js";
 import {
   prepareAgentRunTaskTracking,
   registerSessionFollowupTask,
@@ -63,7 +67,6 @@ import {
   releasePreparedAgentRunUserTurnAfterFailure,
   type PreparedAgentRunUserTurn,
 } from "./agent-run-user-turn.js";
-import type { PrepareAgentRunDispatchParams, PreparedAgentRunDispatch } from "./types.js";
 
 export async function prepareAgentRunDispatch(
   params: PrepareAgentRunDispatchParams,

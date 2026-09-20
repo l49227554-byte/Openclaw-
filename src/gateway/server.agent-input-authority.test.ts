@@ -17,7 +17,7 @@ import {
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
-import type { PreparedAgentRunDispatch } from "./agent-turn/types.js";
+import type { PreparedAgentRunDispatch } from "./agent-turn/agent-run-admission-types.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugins.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { loadSessionEntry } from "./session-utils.js";
@@ -140,7 +140,9 @@ describe("spawn input ownership transfer", () => {
     signal.addEventListener("abort", release, { once: true });
     let writer: Promise<unknown> | undefined;
     let execution: Promise<void> | undefined;
-    let prepared: import("./agent-turn/types.js").PreparedAgentRunDispatch | undefined;
+    let prepared:
+      | import("./agent-turn/agent-run-admission-types.js").PreparedAgentRunDispatch
+      | undefined;
     const executionModule = await import("./agent-turn/agent-run-execution-phase.js");
     const execute = executionModule.startAgentRunExecution;
     const executionSpy = vi

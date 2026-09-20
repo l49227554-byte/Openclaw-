@@ -55,6 +55,7 @@ import {
   resolveAgentRestartRecoveryContext,
   resolveAgentRestartRecoveryExecutionIdentityAdmission,
 } from "./agent-restart-recovery-context.js";
+import type { PreparedAgentRunDispatch } from "./agent-run-admission-types.js";
 import { withAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
 import {
   resolveAbortedAgentStopReason,
@@ -66,12 +67,7 @@ import {
   finalizePreparedAgentRunUserTurn,
   releasePreparedAgentRunUserTurn,
 } from "./agent-run-user-turn.js";
-import type {
-  AgentTurnContext,
-  AgentTurnIo,
-  AgentTurnPrincipal,
-  PreparedAgentRunDispatch,
-} from "./types.js";
+import type { AgentTurnContext, AgentTurnIo, AgentTurnPrincipal } from "./types.js";
 
 export async function startAgentRunExecution(params: {
   assertContextCurrent?: () => void;

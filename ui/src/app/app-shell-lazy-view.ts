@@ -1,7 +1,6 @@
 import { html, nothing } from "lit";
 import type { RouteId } from "../app-routes.ts";
 import { renderLazyElementModal } from "../components/lazy-view-error.ts";
-import { readSessionMethodAccess } from "../lib/session-method-access.ts";
 import {
   debugOverlayTemplate,
   renderPendingDebugOverlay,
@@ -11,7 +10,7 @@ import {
   renderCommandPaletteLoading,
   type CommandPaletteLoadingState,
 } from "./app-shell-command-palette-loading.ts";
-import { openShellNewSession, type ShellNewSessionHost } from "./app-shell-new-session.ts";
+import type { ShellNewSessionHost } from "./app-shell-new-session.ts";
 import type { ApplicationNavigationOptions } from "./context.ts";
 import {
   isOptionalElementDefined,
@@ -40,19 +39,7 @@ export function renderShellLazyOverlays(
   nativeEmbed: boolean,
 ) {
   const lazyElementState = host.lazyCustomElements.visibleState;
-  const context = host.context;
-  const uiSettings = context?.theme.settings;
-  const onNewSession =
-    !host.onboardingMode &&
-    readSessionMethodAccess(context?.gateway.snapshot, { method: "sessions.create", params: {} })
-      .allowed
-      ? () => {
-          // Help dismissal is asynchronous; do not carry its intent into another Gateway.
-          if (host.isConnected && host.context === context) {
-            openShellNewSession(host, "shortcut");
-          }
-        }
-      : undefined;
+  const uiSettings = host.context?.theme.settings;
   return html`
     ${
       host.commandPaletteLoading.active &&
@@ -81,7 +68,7 @@ export function renderShellLazyOverlays(
       !nativeEmbed && isOptionalElementDefined(KEYBOARD_SHORTCUTS_ELEMENT)
         ? html`<openclaw-keyboard-shortcuts-dialog
             .sendShortcut=${normalizeChatSendShortcut(uiSettings?.chatSendShortcut)}
-            .onNewSession=${onNewSession}
+            .newSessionHost=${host}
           ></openclaw-keyboard-shortcuts-dialog>`
         : nothing
     }

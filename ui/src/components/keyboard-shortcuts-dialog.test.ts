@@ -1,6 +1,8 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ShellNewSessionHost } from "../app/app-shell-new-session.ts";
+import type { ApplicationContext } from "../app/context.ts";
 import { getRenderedModalDialog, installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import "./keyboard-shortcuts-dialog.ts";
 
@@ -8,7 +10,7 @@ type KeyboardShortcutsTestDialog = HTMLElement & {
   isOpen: boolean;
   sendShortcut: "enter" | "modifier-enter";
   toggle(): void;
-  onNewSession?: () => void;
+  newSessionHost?: ShellNewSessionHost;
   updateComplete: Promise<boolean>;
 };
 
@@ -87,10 +89,31 @@ describe("keyboard shortcuts dialog", () => {
       const dialog = document.body.appendChild(
         document.createElement("openclaw-keyboard-shortcuts-dialog") as KeyboardShortcutsTestDialog,
       );
-      const onNewSession = vi.fn(() => {
+      const openNewSession = vi.fn(() => {
         expect(document.openClawModalLayers?.size ?? 0).toBe(0);
       });
-      dialog.onNewSession = onNewSession;
+      const context = {
+        gateway: {
+          snapshot: {
+            client: {},
+            phase: "connected",
+            hello: {
+              auth: { role: "operator", scopes: ["operator.write"] },
+              features: { methods: ["sessions.create"] },
+            },
+          },
+        },
+        agentSelection: { state: { selectedId: "research" } },
+      };
+      const sessionHost = document.body.appendChild(
+        Object.assign(document.createElement("div"), {
+          context: context as unknown as ApplicationContext,
+          onboardingMode: false,
+          pendingNativeNewSession: false,
+          openNewSession,
+        }),
+      );
+      dialog.newSessionHost = sessionHost;
       const modifier = platform === "MacIntel" ? { metaKey: true } : { ctrlKey: true };
       try {
         dialog.toggle();
@@ -125,17 +148,22 @@ describe("keyboard shortcuts dialog", () => {
         expect(key({}).defaultPrevented).toBe(false);
         expect(dialog.isOpen).toBe(true);
         otherModal.remove();
-        dialog.onNewSession = undefined;
+        dialog.newSessionHost = undefined;
         expect(key({}).defaultPrevented).toBe(false);
         expect(dialog.isOpen).toBe(true);
-        dialog.onNewSession = onNewSession;
-        expect(onNewSession).not.toHaveBeenCalled();
+        dialog.newSessionHost = sessionHost;
+        context.gateway.snapshot.hello.auth.scopes = ["operator.read"];
+        expect(key({}).defaultPrevented).toBe(false);
+        expect(dialog.isOpen).toBe(true);
+        context.gateway.snapshot.hello.auth.scopes = ["operator.write"];
+        expect(openNewSession).not.toHaveBeenCalled();
         expect(key({}).defaultPrevented).toBe(true);
         await dialog.updateComplete;
         expect(dialog.isOpen).toBe(false);
-        expect(onNewSession).toHaveBeenCalledOnce();
+        expect(openNewSession).toHaveBeenCalledExactlyOnceWith("research");
       } finally {
         dialog.remove();
+        sessionHost.remove();
         restoreDialog();
       }
     },

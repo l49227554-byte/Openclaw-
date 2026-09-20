@@ -1,5 +1,6 @@
 import { css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
+import { openShellNewSession, type ShellNewSessionHost } from "../app/app-shell-new-session.ts";
 import type { ChatSendShortcut } from "../app/settings.ts";
 import { t } from "../i18n/index.ts";
 import {
@@ -8,12 +9,13 @@ import {
   matchesShortcutCombo,
   resolveKeyboardShortcutSections,
 } from "../lib/keyboard-shortcut-catalog.ts";
+import { readSessionMethodAccess } from "../lib/session-method-access.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
 import "./modal-dialog.ts";
 
 class KeyboardShortcutsDialog extends OpenClawLitElement {
   @property({ attribute: false }) sendShortcut: ChatSendShortcut = "enter";
-  @property({ attribute: false }) onNewSession?: () => void;
+  @property({ attribute: false }) newSessionHost?: ShellNewSessionHost;
   @state() private open = false;
 
   static override styles = css`
@@ -138,13 +140,15 @@ class KeyboardShortcutsDialog extends OpenClawLitElement {
     ) {
       return;
     }
-    const openNewSession = matchesShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.newSession, event)
-      ? this.onNewSession
-      : undefined;
-    if (
-      !openNewSession &&
-      !matchesShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.keyboardShortcuts, event)
-    ) {
+    const host = this.newSessionHost;
+    const context = host?.context;
+    const newSession =
+      matchesShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.newSession, event) &&
+      host &&
+      !host.onboardingMode &&
+      readSessionMethodAccess(context?.gateway.snapshot, { method: "sessions.create", params: {} })
+        .allowed;
+    if (!newSession && !matchesShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.keyboardShortcuts, event)) {
       return;
     }
     event.preventDefault();
@@ -153,8 +157,14 @@ class KeyboardShortcutsDialog extends OpenClawLitElement {
     // Release modal ownership and restore its previous focus before shell navigation
     // focuses the new composer. Other dialogs keep the global shortcut guard.
     await this.updateComplete;
-    if (this.isConnected && !this.open) {
-      openNewSession?.();
+    if (
+      this.isConnected &&
+      !this.open &&
+      newSession &&
+      host.isConnected &&
+      host.context === context
+    ) {
+      openShellNewSession(host, "shortcut");
     }
   };
 

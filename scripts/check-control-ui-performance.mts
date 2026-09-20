@@ -290,27 +290,10 @@ export function evaluateControlUiPerformanceBudgets(
       "count",
     ],
   ];
-  let violations = checks.flatMap(([metric, actual, limit, unit]) =>
+  const violations = checks.flatMap(([metric, actual, limit, unit]) =>
     actual > limit ? [{ metric, actual, limit, unit }] : [],
   );
   if (baseMetrics) {
-    const baseStartupJsGzipBytes = baseMetrics.startup.js.gzipBytes;
-    if (baseStartupJsGzipBytes > startupJsLimits.enforcementLimit) {
-      // A same-toolchain base comparison must not make an unrelated PR own
-      // pre-existing startup-JS debt. While the base is already over the
-      // committed ratchet, fail closed on real growth: only measured build
-      // variance is tolerated until main repairs or re-baselines the debt.
-      violations = violations.filter((violation) => violation.metric !== "startup JS gzip");
-      const startupJsGrowth = metrics.startup.js.gzipBytes - baseStartupJsGzipBytes;
-      if (startupJsGrowth > CONTROL_UI_STARTUP_JS_GZIP_BUILD_VARIANCE_BYTES) {
-        violations.push({
-          metric: "startup JS gzip growth over inherited base",
-          actual: startupJsGrowth,
-          limit: CONTROL_UI_STARTUP_JS_GZIP_BUILD_VARIANCE_BYTES,
-          unit: "bytes",
-        });
-      }
-    }
     for (const area of ["startup", "largest"] as const) {
       const growth = metrics[area].css.gzipBytes - baseMetrics[area].css.gzipBytes;
       if (growth >= CONTROL_UI_CSS_GZIP_GROWTH_BYTES) {
@@ -444,10 +427,6 @@ export function formatControlUiPerformanceReport(
     `  all CSS: ${formatAssetSummary(metrics.total.css)}`,
   );
   if (baseMetrics) {
-    const startupJsGrowth = metrics.startup.js.gzipBytes - baseMetrics.startup.js.gzipBytes;
-    lines.push(
-      `  startup JS gzip vs base: ${baseMetrics.startup.js.gzipBytes} B -> ${metrics.startup.js.gzipBytes} B (${startupJsGrowth >= 0 ? "+" : ""}${startupJsGrowth} B; inherited over-budget bases allow at most ${CONTROL_UI_STARTUP_JS_GZIP_BUILD_VARIANCE_BYTES} B build variance)`,
-    );
     for (const area of ["startup", "largest"] as const) {
       const growth = metrics[area].css.gzipBytes - baseMetrics[area].css.gzipBytes;
       lines.push(

@@ -73,12 +73,6 @@ export class CodexAppServerEventProjector extends CodexTurnProjection {
     }
   }
 
-  recordRawNativeToolCallReceipt(item: JsonObject): void {
-    if (!this.projectionClosed) {
-      this.toolTranscriptProjection.recordRawNativeToolCallReceipt(item);
-    }
-  }
-
   buildSteeringTranscriptPrefix(): AgentMessage[] {
     const snapshot = buildCodexSteeringMessagesSnapshot({
       runParams: this.params,

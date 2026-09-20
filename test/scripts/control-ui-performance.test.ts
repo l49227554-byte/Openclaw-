@@ -482,45 +482,6 @@ describe("Control UI performance budgets", () => {
     expect(report.report).toContain(`${css} B`);
   });
 
-  it("does not charge a PR for inherited startup JS debt and forbids new growth", () => {
-    const budgets = {
-      ...looseBudgets,
-      startupJsGzipBytes: 1_100,
-      largestJsGzipBytes: 10_000,
-    };
-    const baseline = startupBaseline(1_000);
-    const base = createMetrics(1_600);
-
-    expect(
-      evaluateControlUiPerformanceBudgets(
-        createMetrics(1_600),
-        budgets,
-        baseline,
-        512,
-        base,
-      ).filter((entry) => entry.metric.includes("startup JS")),
-    ).toEqual([]);
-
-    expect(
-      evaluateControlUiPerformanceBudgets(
-        createMetrics(1_665),
-        budgets,
-        baseline,
-        512,
-        base,
-      ).filter((entry) => entry.metric.includes("startup JS")),
-    ).toEqual([
-      expect.objectContaining({
-        metric: "startup JS gzip growth over inherited base",
-        actual: 65,
-        limit: 64,
-      }),
-    ]);
-    expect(
-      formatControlUiPerformanceReport(createMetrics(1_600), budgets, baseline, 512, base),
-    ).toContain("startup JS gzip vs base: 1600 B -> 1600 B (+0 B");
-  });
-
   it("keeps budget violations visible in report-only mode without rejecting artifacts", () => {
     const { rootDir, scriptPath } = createCliFixture(51_201);
     const enforced = runControlUiPerformanceCli(scriptPath, ["--json"], rootDir);

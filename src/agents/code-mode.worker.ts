@@ -67,6 +67,7 @@ type BridgeState = {
   pendingRequests: PendingBridgeRequest[];
   canceledRequestIds: string[];
   admissionFailure?: CodeModeWorkerFailure;
+  networkContentObserved?: true;
 };
 
 // QuickJS error stacks are backtrace frames only ("    at file:line:col"), with
@@ -225,6 +226,13 @@ async function createVm(input: CodeModeWorkerPayload, bridge: BridgeState): Prom
     const callbacks = [
       ["__openclawHostRequest", createHostRequestHandler({ vm, bridge, config: input.config })],
       ["__openclawHostCancelRequest", createHostCancelRequestHandler({ vm, bridge })],
+      [
+        "__openclawHostObserveNetworkContent",
+        () => {
+          bridge.networkContentObserved = true;
+          return vm.undefined;
+        },
+      ],
     ] as const;
     for (const [name, callback] of callbacks) {
       if (input.kind === "resume") {
@@ -336,18 +344,13 @@ function workerFailureResult(params: {
   if (params.error instanceof CodeModeWorkerFailure) {
     return failedWorkerResult(params.error.code, params.error.message, output);
   }
-  if (output.length > 0) {
-    return failedWorkerResult(
-      "internal_error",
-      errorMessage(params.error, readSourceLocation(params.vm)),
-      output,
-    );
-  }
-  if (params.error instanceof JSException) {
-    // Preserve guest coordinates before the VM is disposed and the outer catch formats the error.
-    throw new Error(errorMessage(params.error, readSourceLocation(params.vm)));
-  }
-  throw params.error;
+  // Return while the VM still owns the source coordinates and provenance, even
+  // when the guest throws before emitting output.
+  return failedWorkerResult(
+    params.error instanceof ToolInputError ? "invalid_input" : "internal_error",
+    errorMessage(params.error, readSourceLocation(params.vm)),
+    output,
+  );
 }
 
 async function readCompletedResult(vm: QuickJS, resultHandle: JSValueHandle): Promise<unknown> {
@@ -460,6 +463,9 @@ async function runVmExecution(params: {
             params.pauseBudget();
             const response = await params.channel.request({
               status: "boundary",
+              ...(params.bridge.networkContentObserved
+                ? { networkContentObserved: true as const }
+                : {}),
               pendingRequests: params.bridge.pendingRequests,
               canceledRequestIds: params.bridge.canceledRequestIds,
               settlementMode,
@@ -594,7 +600,7 @@ async function run(
     canceledRequestIds: [],
   };
   const { vm, didTimeout, setBudget, pauseBudget } = await createVm({ ...input, config }, bridge);
-  return runVmExecution({
+  const result = await runVmExecution({
     vm,
     didTimeout,
     setBudget,
@@ -620,6 +626,7 @@ async function run(
       settleRequests(vm, input.settledRequests);
     },
   });
+  return bridge.networkContentObserved ? { ...result, networkContentObserved: true } : result;
 }
 
 function isQuickJsWasmModule(value: unknown): value is WebAssembly.Module {

@@ -114,6 +114,7 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
   runtimeModel: string;
   systemPromptText: string;
   applyPromptBuildToolsAllow: (toolsAllow: string[] | undefined) => string[];
+  prepareSystemPrompt?: (currentSystemPrompt: string) => Promise<string>;
   setActiveSessionSystemPrompt: (systemPrompt: string) => void;
   setLeasedSteering: (lease: EmbeddedAttemptSteeringLease) => void;
 }): Promise<EmbeddedAttemptPromptAssembly> {
@@ -177,6 +178,14 @@ export async function prepareEmbeddedAttemptPromptAssembly(input: {
         bootstrapContextRunKind: attempt.bootstrapContextRunKind,
       });
   const promptCacheToolNames = input.applyPromptBuildToolsAllow(hookResult?.toolsAllow);
+  // Regenerate owned capability guidance before composing hook additions, without
+  // rerunning hooks or altering already-recorded conversation messages.
+  if (input.prepareSystemPrompt) {
+    const preparedSystemPrompt = await input.prepareSystemPrompt(systemPromptText);
+    if (preparedSystemPrompt !== systemPromptText) {
+      setSystemPrompt(preparedSystemPrompt);
+    }
+  }
   const hookRunner = input.hookRunner;
   const assertHostActive = resolveAdmittedRunActiveAssertion(
     attempt.admittedRunContext,

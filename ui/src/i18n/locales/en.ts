@@ -2584,7 +2584,7 @@ export const en: TranslationMap & {
     toolSearch: {
       title: "Tool Search for all models",
       description:
-        "Local models use Tool Search automatically. Enable this override to defer tool schemas for all models; turning it off restores each model's default.",
+        "Defer tool schemas and discover tools on demand. Enabled by default with structured tool calls; turning it off disables the global default.",
     },
 
     customPluginUi: {

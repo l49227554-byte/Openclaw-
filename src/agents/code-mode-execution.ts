@@ -323,6 +323,7 @@ function createInlineHost(
 ): CodeModeWorkerInlineHost {
   return {
     onInputConsumed,
+    onNetworkContent: () => params.runtime.observeNetworkContent(params.parentToolCallId),
     onBoundary: async (boundary, context) => {
       params.output.append(boundary.output);
       cancelPendingBridgeStatesById(pending, boundary.canceledRequestIds);

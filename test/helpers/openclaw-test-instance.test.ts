@@ -554,6 +554,8 @@ describe("openclaw test instance", () => {
 
   it("leaves explicitly supplied ports owned by the caller", async () => {
     const caller = net.createServer();
+    const closed = vi.fn();
+    caller.on("close", closed);
     await new Promise<void>((resolve, reject) => {
       caller.once("error", reject);
       caller.listen(0, "127.0.0.1", resolve);
@@ -571,13 +573,16 @@ describe("openclaw test instance", () => {
       await instance.stopGateway();
       await instance.cleanup();
       expect(caller.listening).toBe(true);
+      expect(closed).not.toHaveBeenCalled();
       await expect(isPortReserved(address.port)).resolves.toBe(true);
     } finally {
       await new Promise<void>((resolve, reject) => {
         caller.close((error) => (error ? reject(error) : resolve()));
       });
     }
-    await expect(isPortReserved(address.port)).resolves.toBe(false);
+    expect(closed).toHaveBeenCalledOnce();
+    expect(caller.listening).toBe(false);
+    expect(caller.address()).toBeNull();
   });
 
   it.each(["complete", "overflow", "overflow-close"] as const)(

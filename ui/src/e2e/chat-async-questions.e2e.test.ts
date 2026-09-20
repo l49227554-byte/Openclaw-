@@ -1,4 +1,5 @@
 import path from "node:path";
+import { expect as expectBrowser } from "playwright/test";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import { defaultControlUiFeatureMethods } from "../test-helpers/control-ui-e2e.ts";
@@ -25,6 +26,57 @@ const questionMessage = {
 };
 
 suite.define(() => {
+  it.each(
+    [390, 430].flatMap((width) => (["light", "dark"] as const).map((theme) => ({ width, theme }))),
+  )(
+    "keeps the docked question and composer within a $width px $theme viewport",
+    async ({ width, theme }) => {
+      await suite.withPage(
+        { viewport: { width: 1440, height: 1200 }, colorScheme: theme, reducedMotion: "reduce" },
+        async ({ page }) => {
+          await installMockGateway(page, { historyMessages: [questionMessage] });
+          await page.goto(`${suite.server.baseUrl}chat`);
+          const panel = page.locator(".agent-chat__question-dock .chat-question-panel");
+          const composer = page.locator(".agent-chat__input");
+          await expectBrowser(panel).toBeVisible();
+          await page.evaluate(() => document.fonts.ready);
+          const desktop = await panel.boundingBox();
+          expect(desktop).not.toBeNull();
+          await page.setViewportSize({ width, height: 844 });
+          const assertDock = async () => {
+            await expectBrowser(panel).toBeInViewport({ ratio: 1 });
+            await expectBrowser(composer).toBeInViewport({ ratio: 1 });
+            const questionBox = (await panel.boundingBox())!;
+            const composerBox = (await composer.boundingBox())!;
+            expect(questionBox.x).toBeCloseTo(composerBox.x, 0);
+            expect(questionBox.width).toBeCloseTo(composerBox.width, 0);
+            expect(questionBox.y + questionBox.height).toBeLessThanOrEqual(composerBox.y);
+            expect(
+              await page.evaluate(() => document.documentElement.scrollWidth),
+            ).toBeLessThanOrEqual(width);
+          };
+          await assertDock();
+          await panel.getByRole("button", { name: "Collapse question" }).click();
+          await assertDock();
+          await expectBrowser(panel).toContainText("1 unanswered question");
+          await panel.getByRole("button", { name: "Expand question" }).click();
+          await assertDock();
+          await page.setViewportSize({ width: 1440, height: 1200 });
+          await expect
+            .poll(async () => {
+              const restored = (await panel.boundingBox())!;
+              return Math.max(
+                ...(["x", "y", "width", "height"] as const).map((key) =>
+                  Math.abs(restored[key] - desktop![key]),
+                ),
+              );
+            })
+            .toBeLessThanOrEqual(0.5);
+        },
+      );
+    },
+  );
+
   it.each([false, true])(
     "submits an async answer as ordinary chat with an active run=%s",
     async (active) => {

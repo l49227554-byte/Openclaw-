@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
 import { resolveExecDefaults } from "../agents/exec-defaults.js";
 import { resolveLegacyInheritedAuthAgentId } from "../agents/legacy-inherited-auth-dir.js";
@@ -35,9 +34,6 @@ import {
   closeOpenClawAgentDatabasesForTest,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
-import { withStateDirEnv as withRawStateDirEnv } from "../test-helpers/state-dir-env.js";
-import { withEnvAsync } from "../test-utils/env.js";
-import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import { registerSessionAutomationSource } from "./session-automation-index.js";
@@ -66,7 +62,11 @@ import {
   resolveCanonicalGatewaySessionStoreKey,
   resolveDeletedAgentIdFromSessionKey,
 } from "./session-utils-store.js";
-import { closeSessionSqliteDatabasesForTest } from "./session-utils.test-support.js";
+import { withAgentPermissionState } from "./session-utils.permissions.test-support.js";
+import {
+  closeSessionSqliteDatabasesForTest,
+  withStateDirEnv,
+} from "./session-utils.test-support.js";
 import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 
 const providerArtifactMocks = vi.hoisted(() => ({
@@ -175,42 +175,6 @@ test("projects a channel avatar route without exposing its media-store reference
   expect(replacedRow.channelAvatarUrl).toBeDefined();
   expect(replacedRow.channelAvatarUrl).not.toBe(row.channelAvatarUrl);
 });
-
-async function withStateDirEnv<T>(
-  prefix: string,
-  fn: (ctx: { tempRoot: string; stateDir: string }) => Promise<T>,
-): Promise<T> {
-  return withRawStateDirEnv(prefix, async (ctx) => {
-    try {
-      return await fn(ctx);
-    } finally {
-      await closeSessionSqliteDatabasesForTest();
-    }
-  });
-}
-
-let agentPermissionStateDir: string | undefined;
-let pristineAgentApprovals:
-  | ReturnType<typeof execApprovalsStore.readExecApprovalsSnapshot>
-  | undefined;
-const agentPermissionDirs = useAutoCleanupTempDirTracker((cleanup) =>
-  afterAll(async () => {
-    if (agentPermissionStateDir) {
-      await cleanupSessionStateForTest({ stateDir: agentPermissionStateDir });
-    }
-    cleanup();
-  }),
-);
-
-async function withAgentPermissionState<T>(fn: () => Promise<T>): Promise<T> {
-  // Permission rows share empty provenance; only their persisted approval policy varies.
-  agentPermissionStateDir ??= agentPermissionDirs.make("openclaw-agent-permission-");
-  return withEnvAsync({ OPENCLAW_STATE_DIR: agentPermissionStateDir }, async () => {
-    pristineAgentApprovals ??= execApprovalsStore.readExecApprovalsSnapshot();
-    execApprovalsStore.restoreExecApprovalsSnapshot(pristineAgentApprovals);
-    return fn();
-  });
-}
 
 async function seedSessionEntries(
   storePath: string,

@@ -17,7 +17,6 @@ import {
   isCliSessionInvalidatingFailoverReason,
   resolveCliSessionClearReason,
   resolveCliSessionReuse,
-  resolveOperatorEquivalentProfileIds,
   setCliSessionBinding,
   shouldClearFailedCliSessionBinding,
 } from "./cli-session.js";
@@ -843,33 +842,57 @@ describe("cli-session helpers", () => {
     });
   });
 
-  describe("resolveOperatorEquivalentProfileIds", () => {
-    it("returns the deduped group containing the active profile", () => {
+  describe("history-equivalence group resolution (via resolveCliSessionReuse)", () => {
+    // Exercise the internal group resolution through the public reuse API so the
+    // group edge cases are covered without exporting a helper only tests consume.
+    const binding = {
+      sessionId: "cli-session-1",
+      authProfileId: "anthropic:a",
+      authEpoch: "epoch-a",
+      authEpochVersion: 2,
+    };
+    const turn = {
+      binding,
+      authProfileId: "anthropic:b",
+      authEpoch: "epoch-b",
+      authEpochVersion: 2,
+    };
+
+    it("preserves the session for a grouped swap even with duplicate members", () => {
       expect(
-        resolveOperatorEquivalentProfileIds(
-          [
-            ["a", "b", "b"],
-            ["c", "d"],
+        resolveCliSessionReuse({
+          ...turn,
+          historyEquivalenceGroups: [
+            ["anthropic:a", "anthropic:b", "anthropic:b"],
+            ["anthropic:c", "anthropic:d"],
           ],
-          "a",
-        ),
-      ).toEqual(["a", "b"]);
+        }),
+      ).toEqual({ mode: "reuse", sessionId: "cli-session-1" });
     });
 
-    it("returns undefined when no group is configured", () => {
-      expect(resolveOperatorEquivalentProfileIds(undefined, "a")).toBeUndefined();
+    it("invalidates when the active profile shares no configured group", () => {
+      expect(
+        resolveCliSessionReuse({
+          ...turn,
+          historyEquivalenceGroups: [["anthropic:c", "anthropic:d"]],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
     });
 
-    it("returns undefined for an ungrouped active profile", () => {
-      expect(resolveOperatorEquivalentProfileIds([["a", "b"]], "z")).toBeUndefined();
+    it("invalidates for a degenerate single-member or whitespace-collapsed group", () => {
+      expect(
+        resolveCliSessionReuse({
+          ...turn,
+          historyEquivalenceGroups: [["anthropic:a"], ["anthropic:a", " "]],
+        }),
+      ).toEqual({ mode: "invalidate", invalidatedReason: "auth-profile" });
     });
 
-    it("returns undefined for a degenerate single-member group", () => {
-      expect(resolveOperatorEquivalentProfileIds([["a"], ["a", " "]], "a")).toBeUndefined();
-    });
-
-    it("returns undefined when the active profile is absent", () => {
-      expect(resolveOperatorEquivalentProfileIds([["a", "b"]], undefined)).toBeUndefined();
+    it("invalidates when no groups are configured (undefined)", () => {
+      expect(resolveCliSessionReuse({ ...turn, historyEquivalenceGroups: undefined })).toEqual({
+        mode: "invalidate",
+        invalidatedReason: "auth-profile",
+      });
     });
   });
 });

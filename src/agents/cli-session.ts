@@ -233,7 +233,7 @@ export function stripCliSessionDriftNote(text: string): string {
  * with at least two distinct members can preserve a session across a failover, so
  * degenerate single-member groups collapse to `undefined`.
  */
-export function resolveOperatorEquivalentProfileIds(
+function resolveOperatorEquivalentProfileIds(
   historyEquivalenceGroups: readonly (readonly string[])[] | undefined,
   activeProfileId: string | undefined,
 ): readonly string[] | undefined {

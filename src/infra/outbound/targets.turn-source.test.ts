@@ -206,6 +206,58 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
     expect(resolved.channel).not.toBe("discord");
     expect(resolved.to).not.toBe("channel:general-discussion");
   });
+
+  it("preserves configured explicit destination for scheduled work even when ambient session has another route", () => {
+    const discord = createGenericTargetTestPlugin("discord", "Discord");
+    const feishu = createGenericTargetTestPlugin("feishu", "Feishu");
+    setActivePluginRegistry(createTargetsTestRegistry([feishu, discord]));
+
+    const groupDelivery: SessionDeliveryState = {
+      kind: "external",
+      route: {
+        channel: "discord",
+        target: { to: "channel:general-discussion", chatType: "group" },
+      },
+      context: {
+        channel: "discord",
+        to: "channel:general-discussion",
+      },
+      origin: {
+        provider: "discord",
+        to: "channel:general-discussion",
+        chatType: "group",
+      },
+    };
+
+    const resolved = resolveHeartbeatDeliveryTarget({
+      cfg: {
+        agents: {
+          defaults: {
+            heartbeat: {
+              target: "feishu",
+              to: "user:ou_feishu_owner",
+            },
+          },
+        },
+      } as OpenClawConfig,
+      entry: {
+        sessionId: "sess-discord-group",
+        updatedAt: 1,
+        chatType: "group",
+        delivery: groupDelivery,
+      } as unknown as SessionEntry,
+      heartbeat: {
+        target: "feishu",
+        to: "user:ou_feishu_owner",
+      },
+      // Scheduled work selects no unconsumed turnSource
+      turnSource: undefined,
+    });
+
+    expect(resolved).toMatchObject({ channel: "feishu", to: "user:ou_feishu_owner" });
+    expect(resolved.channel).not.toBe("discord");
+    expect(resolved.to).not.toBe("channel:general-discussion");
+  });
 });
 
 

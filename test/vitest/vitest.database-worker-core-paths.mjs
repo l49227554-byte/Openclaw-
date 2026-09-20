@@ -348,6 +348,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/sandbox/registry.test.ts",
   "src/agents/sandbox/runtime-reservation.test.ts",
   "src/commands/doctor-sandbox-legacy-registry.test.ts",
+  "src/agents/tools/sessions-tool.batch.test.ts",
   "src/agents/subagents/completion/subagent-completion-admission.store.test.ts",
   "src/commands/doctor-db-bloat.worker.test.ts",
   "src/commands/doctor-device-pairing.worker.test.ts",

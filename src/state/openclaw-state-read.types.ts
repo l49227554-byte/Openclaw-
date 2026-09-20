@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
+import type { WorkspaceStateSnapshot } from "../agents/workspace-state-store.kernel.js";
 import type {
   ExecutionIdentityInspectionQuery,
   ExecutionIdentityInspectionOutcome,
@@ -30,7 +31,8 @@ export type OpenClawStateReadCommand =
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string }
-  | { type: "nodeHost.config" };
+  | { type: "nodeHost.config" }
+  | { type: "workspace.snapshot"; workspaceDir: string };
 export type OpenClawStateReadRequest = {
   context: SqliteWorkerStateContext;
   databasePath: string;
@@ -62,6 +64,7 @@ export type OpenClawStateReadReply = (
       sourceAdmitted: true;
       row: Pick<Selectable<ConfigMachineState>, "value_json" | "updated_at_ms"> | undefined;
     }
+  | { ok: true; type: "workspace.snapshot"; sourceAdmitted: true; snapshot: WorkspaceStateSnapshot }
   | {
       ok: false;
       sourceAdmitted?: true;

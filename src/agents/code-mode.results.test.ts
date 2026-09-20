@@ -236,8 +236,6 @@ it.each(["before-cell", "while-parked"] as const)(
     try {
       const saved = resultDetails(
         await h.tools[0]!.execute("save", {
-          language: "typescript",
-          typecheck: true,
           code: 'const ref = await results.save({name:"sample"}); return {id:ref.id, count:ref.count};',
         }),
       );

@@ -9,6 +9,7 @@ import {
   listNativeHookRelayBridgeSnapshotsInDatabase,
 } from "../agents/harness/native-hook-relay-store.kernel.js";
 import { executeNativeHookRelayMutation } from "../agents/harness/native-hook-relay-store.worker.js";
+import { importSandboxRegistryRow } from "../agents/sandbox/registry-import.worker.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { listRegistryWorktreesInDatabase } from "../agents/worktrees/registry-read.kernel.js";
 import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
@@ -460,6 +461,9 @@ export function executeSharedStateCommand(
     path: context.databasePath,
     env: getSqliteWorkerStateContext().environment,
   };
+  if (command.type === "sandboxRegistry.insertIfMissing") {
+    return importSandboxRegistryRow(command.input, writeOptions);
+  }
   if (command.type === "sessionGroups.register") {
     return registerSessionGroupInDatabase(database, command.input.name, writeOptions.env);
   }

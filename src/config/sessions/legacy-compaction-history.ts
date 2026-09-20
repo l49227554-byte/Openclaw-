@@ -14,6 +14,15 @@ type LegacyCompactionHistory = {
   tokensAfter?: number;
 };
 
+export function readLegacyCompactionSnapshotPaths(entry: unknown): string[] {
+  return readLegacyCompactionHistory(entry).flatMap((checkpoint) =>
+    [
+      checkpoint.preCompaction.sessionFile?.trim(),
+      checkpoint.postCompaction.sessionFile?.trim(),
+    ].filter((filePath): filePath is string => Boolean(filePath)),
+  );
+}
+
 export function readLegacyCompactionHistory(entry: unknown): readonly LegacyCompactionHistory[] {
   const checkpoints = asOptionalRecord(entry)?.compactionCheckpoints;
   if (checkpoints == null) {

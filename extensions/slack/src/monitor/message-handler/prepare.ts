@@ -1446,7 +1446,6 @@ export async function prepareSlackMessage(params: {
     envelopeOptions,
     effectiveDirectMedia,
     eventScope: opts.eventScope,
-    historyEnabled: !isRoomish || ctx.historyLimit > 0,
     historyLimit: isRoomish ? ctx.historyLimit : undefined,
     excludedMessageIds,
     assertHistoryCurrent,

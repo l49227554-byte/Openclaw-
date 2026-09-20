@@ -1,7 +1,4 @@
-import {
-  resolveInboundSupplementalSenderAllowed,
-  toInboundMediaFactsWithMetadata,
-} from "openclaw/plugin-sdk/channel-inbound";
+import { toInboundMediaFactsWithMetadata } from "openclaw/plugin-sdk/channel-inbound";
 import type { ContextVisibilityMode } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { mimeTypeFromFilePath } from "openclaw/plugin-sdk/media-mime";
@@ -9,7 +6,7 @@ import { DEFAULT_GROUP_HISTORY_LIMIT, type HistoryEntry } from "openclaw/plugin-
 import { shouldIncludeSupplementalContext } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { SlackAttachment, SlackFile, SlackMessageEvent } from "../../types.js";
-import { resolveSlackAllowListMatch } from "../allow-list.js";
+import { resolveSlackUserAllowed } from "../allow-list.js";
 import type { SlackMonitorContext } from "../context.js";
 import type { SlackEventScope } from "../event-scope.js";
 import { resolveSlackChannelHistory, resolveSlackThreadHistory } from "../thread.js";
@@ -76,21 +73,12 @@ export async function resolveSlackRoomHistory(params: {
         ? await params.ctx.resolveUserName(message.userId, params.eventScope)
         : undefined;
       params.assertCurrent();
-      const senderAllowed = resolveInboundSupplementalSenderAllowed({
-        isGroup: true,
-        groupPolicy: params.allowFromLower.length > 0 ? "allowlist" : "open",
-        allowFrom: params.allowFromLower,
-        isSenderAllowed: (allowFrom) =>
-          Boolean(message.botId) ||
-          Boolean(
-            message.userId &&
-            resolveSlackAllowListMatch({
-              allowList: allowFrom,
-              id: message.userId,
-              name: user?.name,
-              allowNameMatching: params.ctx.allowNameMatching,
-            }).allowed,
-          ),
+      const senderAllowed = resolveSlackUserAllowed({
+        allowList: params.allowFromLower,
+        teamId: params.eventScope?.teamId ?? params.ctx.teamId,
+        userId: message.userId ?? message.botId,
+        userName: user?.name,
+        allowNameMatching: params.ctx.allowNameMatching,
       });
       if (
         !shouldIncludeSupplementalContext({

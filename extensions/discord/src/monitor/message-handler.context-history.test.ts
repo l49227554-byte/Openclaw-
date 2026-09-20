@@ -1,5 +1,5 @@
 import path from "node:path";
-import { ChannelType, type APIMessage } from "discord-api-types/v10";
+import { ChannelType, MessageType, type APIMessage } from "discord-api-types/v10";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -241,80 +241,57 @@ describe("Discord native recent history through process context", () => {
     expect(get).toHaveBeenCalledWith("/guilds/g1/members/111");
   });
 
-  it("uses fresh edits and deletion absence instead of old ingress text or replaced media", async () => {
-    const stale = cachedEntry("900", "old edited caption");
-    stale.mediaIds = ["attachment:old-image"];
-    stale.media = [
-      { messageId: "900", path: "/tmp/old-image.png", contentType: "image/png", kind: "image" },
-    ];
-    const fresh = nativeMessage(900, "fresh edited caption", {
-      edited_timestamp: new Date(startedAt + 9_500).toISOString(),
-      attachments: [
+  it.each(["unchanged-image", "replacement-image"])(
+    "uses native edits and deletions while validating cached media against %s",
+    async (attachmentId) => {
+      const cached = cachedEntry("900", "stale caption");
+      cached.mediaIds = ["attachment:unchanged-image"];
+      cached.media = [
         {
-          id: "new-image",
-          filename: "new.png",
-          size: 40,
-          url: "https://cdn.discordapp.com/new.png",
-          proxy_url: "https://media.discordapp.net/new.png",
-          content_type: "image/png",
+          messageId: "900",
+          path: "/tmp/unchanged-image.png",
+          contentType: "image/png",
+          kind: "image",
         },
-      ],
-    });
-    const result = await buildContext(
-      await recentContext({
-        client: { rest: { get: vi.fn().mockResolvedValue([fresh]) } },
-        guildHistories: new Map([["c1", [cachedEntry("899", "deleted discussion"), stale]]]),
-      }),
-    );
+      ];
+      const fresh = nativeMessage(900, "current caption", {
+        edited_timestamp: new Date(startedAt + 9_500).toISOString(),
+        attachments: [
+          {
+            id: attachmentId,
+            filename: "image.png",
+            size: 40,
+            url: "https://cdn.discordapp.com/image.png",
+            proxy_url: "https://media.discordapp.net/image.png",
+            content_type: "image/png",
+          },
+        ],
+      });
+      const result = await buildContext(
+        await recentContext({
+          client: { rest: { get: vi.fn().mockResolvedValue([fresh]) } },
+          guildHistories: new Map([["c1", [cachedEntry("899", "deleted discussion"), cached]]]),
+        }),
+      );
 
-    expect(result?.ctxPayload.Body).toContain("fresh edited caption");
-    expect(result?.ctxPayload.Body).toContain("historical attachment unavailable");
-    expect(result?.ctxPayload.Body).not.toContain("old edited caption");
-    expect(result?.ctxPayload.Body).not.toContain("deleted discussion");
-    expect(result?.ctxPayload.InboundHistory).toEqual([
-      expect.objectContaining({
-        messageId: "900",
-        body: expect.stringContaining("fresh edited caption"),
-      }),
-    ]);
-    expect(result?.ctxPayload.InboundHistory?.[0]?.media).toBeUndefined();
-  });
-
-  it("preserves receipt-time image media only while native attachment identity still matches", async () => {
-    const cached = cachedEntry("900", "stale caption");
-    cached.mediaIds = ["attachment:unchanged-image"];
-    cached.media = [
-      {
-        messageId: "900",
-        path: "/tmp/unchanged-image.png",
-        contentType: "image/png",
-        kind: "image",
-      },
-    ];
-    const fresh = nativeMessage(900, "current caption", {
-      attachments: [
-        {
-          id: "unchanged-image",
-          filename: "image.png",
-          size: 40,
-          url: "https://cdn.discordapp.com/image.png",
-          proxy_url: "https://media.discordapp.net/image.png",
-          content_type: "image/png",
-        },
-      ],
-    });
-    const result = await buildContext(
-      await recentContext({
-        client: { rest: { get: vi.fn().mockResolvedValue([fresh]) } },
-        guildHistories: new Map([["c1", [cached]]]),
-      }),
-    );
-
-    expect(result?.ctxPayload.InboundHistory?.[0]?.media).toEqual(cached.media);
-    expect(result?.ctxPayload.Body).toContain("current caption");
-    expect(result?.ctxPayload.Body).not.toContain("stale caption");
-    expect(result?.ctxPayload.Body).not.toContain("historical attachment unavailable");
-  });
+      expect(result?.ctxPayload.Body).toContain("current caption");
+      expect(result?.ctxPayload.Body).not.toContain("stale caption");
+      expect(result?.ctxPayload.Body).not.toContain("deleted discussion");
+      expect(result?.ctxPayload.InboundHistory).toEqual([
+        expect.objectContaining({
+          messageId: "900",
+          body: expect.stringContaining("current caption"),
+        }),
+      ]);
+      if (attachmentId === "unchanged-image") {
+        expect(result?.ctxPayload.InboundHistory?.[0]?.media).toEqual(cached.media);
+        expect(result?.ctxPayload.Body).not.toContain("historical attachment unavailable");
+      } else {
+        expect(result?.ctxPayload.InboundHistory?.[0]?.media).toBeUndefined();
+        expect(result?.ctxPayload.Body).toContain("historical attachment unavailable");
+      }
+    },
+  );
 
   it("keeps an addressed turn and logs omission when native history fails, without a stale fallback", async () => {
     const error = vi.fn();
@@ -513,28 +490,38 @@ describe("Discord native recent history through process context", () => {
 
   it.each([
     { allowBots: false, expected: ["898"] },
-    { allowBots: true, expected: ["898", "899"] },
+    { allowBots: true, expected: ["894", "895", "896", "897", "898", "899"] },
+    { allowBots: "mentions", expected: ["895", "896", "898"] },
   ])(
     "excludes own-bot history while respecting allowBots=$allowBots",
     async ({ allowBots, expected }) => {
-      const bot = { ...nativeMessage(900).author, bot: true };
-      const result = await buildContext(
-        await recentContext({
-          botUserId: "self",
-          discordConfig: { allowBots },
-          client: {
-            rest: {
-              get: vi
-                .fn()
-                .mockResolvedValue([
-                  nativeMessage(900, "own bot output", { author: { ...bot, id: "self" } }),
-                  nativeMessage(899, "other bot output", { author: { ...bot, id: "other-bot" } }),
-                  nativeMessage(898, "human discussion"),
-                ]),
-            },
+      const bot = { ...nativeMessage(900).author, id: "other-bot", bot: true };
+      const reply = {
+        author: bot,
+        type: MessageType.Reply,
+        mentions: [{ ...bot, id: "self" }],
+      };
+      const ctx = await recentContext({
+        botUserId: "self",
+        discordConfig: { allowBots },
+        client: {
+          rest: {
+            get: vi
+              .fn()
+              .mockResolvedValue([
+                nativeMessage(900, "own bot output", { author: { ...bot, id: "self" } }),
+                nativeMessage(899, "other bot output", { author: bot }),
+                nativeMessage(898, "human discussion"),
+                nativeMessage(897, "passive reply ping", reply),
+                nativeMessage(896, "<@self> active bot reply", reply),
+                nativeMessage(895, "history-helper, assist", { author: bot }),
+                nativeMessage(894, "`history-helper`", reply),
+              ]),
           },
-        }),
-      );
+        },
+      });
+      ctx.cfg = { ...ctx.cfg, messages: { groupChat: { mentionPatterns: ["history-helper"] } } };
+      const result = await buildContext(ctx);
 
       expect(result?.ctxPayload.InboundHistory?.map((entry) => entry.messageId)).toEqual(expected);
       expect(result?.ctxPayload.Body).not.toContain("own bot output");

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import type { App } from "@slack/bolt";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { ContextVisibilityMode, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import type * as SystemEventRuntime from "openclaw/plugin-sdk/system-event-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,14 +33,14 @@ describe("Slack platform-authoritative automatic room history", () => {
   beforeEach(() => mediaFetchMock.mockReset());
   afterEach(() => vi.restoreAllMocks());
 
-  function fixture(limit = 3) {
+  function fixture(limit = 3, contextVisibility: ContextVisibilityMode = "allowlist") {
     const { storePath } = storeFixture.makeTmpStorePath();
     const history = vi.fn().mockResolvedValue({ messages: [] });
     const replies = vi.fn().mockResolvedValue({ messages: [] });
     const cfg: OpenClawConfig = {
       session: { store: storePath },
       channels: {
-        slack: { enabled: true, groupPolicy: "open", contextVisibility: "allowlist" },
+        slack: { enabled: true, groupPolicy: "open", contextVisibility },
       },
     };
     const createContext = () => {
@@ -243,6 +243,72 @@ describe("Slack platform-authoritative automatic room history", () => {
       /future|first source|denied history|assistant output/,
     );
   });
+
+  it.each([
+    { mode: "allowlist", allowed: false },
+    { mode: "allowlist", allowed: true },
+    { mode: "allowlist_quote", allowed: false },
+    { mode: "all", allowed: false },
+  ] as const)(
+    "gates initial bot thread text and media ($mode, allowed: $allowed)",
+    async ({ mode, allowed }) => {
+      const f = fixture(5, mode);
+      const root = {
+        ts: "10.000",
+        user: allowed ? "U1" : "UDENIED",
+        bot_id: "BOTHER",
+        text: "bot root decision",
+        files: [
+          {
+            id: "FROOT",
+            name: "root.png",
+            mimetype: "image/png",
+            url_private: "https://files.slack.com/root.png",
+          },
+        ],
+      };
+      f.replies.mockImplementation(async ({ limit }: { limit: number }) => ({
+        messages:
+          limit === 1
+            ? [root]
+            : [
+                root,
+                { ts: "11.000", user: "UDENIED", bot_id: "BOTHER", text: "denied bot follow-up" },
+                { ts: "12.000", user: "U1", bot_id: "BOTHER", text: "allowed bot follow-up" },
+              ],
+      }));
+      mediaFetchMock.mockImplementation(
+        async () =>
+          new Response(Buffer.from("root image"), {
+            headers: { "content-type": "image/png" },
+          }),
+      );
+      const prepared = await prepareSlackMessage({
+        ctx: f.ctx,
+        account: f.account,
+        message: { ...f.message, thread_ts: "10.000" },
+        opts: { source: "app_mention" },
+      });
+      try {
+        const includeRoot = allowed || mode === "all";
+        expect(prepared?.ctxPayload.RawBody).toContain("current request");
+        expect(prepared?.ctxPayload.ThreadHistoryBody).toContain("allowed bot follow-up");
+        expect(prepared?.ctxPayload.ThreadStarterBody).toBe(includeRoot ? root.text : undefined);
+        expect(prepared?.ctxPayload.ThreadHistoryBody?.includes(root.text)).toBe(includeRoot);
+        expect(prepared?.ctxPayload.ThreadHistoryBody?.includes("denied bot follow-up")).toBe(
+          mode === "all",
+        );
+        expect(mediaFetchMock).toHaveBeenCalledTimes(includeRoot ? 1 : 0);
+        expect(prepared?.ctxPayload.media ?? []).toHaveLength(includeRoot ? 1 : 0);
+      } finally {
+        for (const media of prepared?.ctxPayload.media ?? []) {
+          if (media.path) {
+            await fs.rm(media.path, { force: true });
+          }
+        }
+      }
+    },
+  );
 
   it("uses only the event workspace client for a recovered channel window", async () => {
     const f = fixture();

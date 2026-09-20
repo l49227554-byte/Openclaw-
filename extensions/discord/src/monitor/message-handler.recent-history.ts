@@ -1,5 +1,8 @@
 import type { APIGuildMember, APIMessage } from "discord-api-types/v10";
-import { formatInboundMediaUnavailableText } from "openclaw/plugin-sdk/channel-inbound";
+import {
+  buildMentionRegexes,
+  formatInboundMediaUnavailableText,
+} from "openclaw/plugin-sdk/channel-inbound";
 import { isRecentOutboundMessageIdentity } from "openclaw/plugin-sdk/channel-outbound";
 import type { ContextVisibilityMode } from "openclaw/plugin-sdk/config-contracts";
 import { danger } from "openclaw/plugin-sdk/runtime-env";
@@ -12,12 +15,17 @@ import {
   type DiscordHistoryEntry,
 } from "./message-handler.history.js";
 import {
+  hasRawDiscordUserMention,
   isBoundThreadBotSystemMessage,
+  matchesActiveDiscordMentionPatterns,
   shouldIgnoreBoundThreadWebhookMessage,
 } from "./message-handler.preflight-helpers.js";
 import { resolveDiscordPreflightPluralKitInfo } from "./message-handler.preflight-pluralkit.js";
 import type { DiscordMessagePreflightContext } from "./message-handler.preflight.types.js";
-import { resolveDiscordMessageHistoryText } from "./message-text.js";
+import {
+  resolveDiscordMessageHistoryText,
+  resolveDiscordMessageMentionDocuments,
+} from "./message-text.js";
 import { resolveDiscordSenderIdentity } from "./sender-identity.js";
 
 type HistoryMessage = APIMessage & {
@@ -37,13 +45,13 @@ export async function recoverDiscordChannelHistory(params: {
   if (ctx.historyLimit <= 0 || !isCurrent()) {
     return [];
   }
-  const sourceIds = new Set([ctx.message.id, ...(ctx.sourceMessageIds ?? [])]);
+  const excludedIds = new Set([ctx.message.id, ...(ctx.sourceMessageIds ?? [])]);
   if (ctx.canonicalMessageId) {
-    sourceIds.add(ctx.canonicalMessageId);
+    excludedIds.add(ctx.canonicalMessageId);
   }
   // Batch originals already appear in the current body; budget their physical rows without
   // allowing policy exclusions to turn this into an unbounded search for matching senders.
-  let remaining = ctx.historyLimit + sourceIds.size - 1;
+  let remaining = ctx.historyLimit + excludedIds.size - 1;
   let before = ctx.message.id;
   const triggerTimestamp = resolveTimestampMs(ctx.message.timestamp);
   const guildId = ctx.data.guild?.id ?? ctx.data.guild_id;
@@ -52,7 +60,14 @@ export async function recoverDiscordChannelHistory(params: {
   );
   const members = new Map<string, Pick<APIGuildMember, "roles" | "nick">>();
   const roleAllowList = ctx.channelConfig?.roles ?? ctx.guildInfo?.roles ?? [];
-  const seen = new Set<string>();
+  const mentionRegexes =
+    ctx.discordConfig?.allowBots === "mentions"
+      ? buildMentionRegexes(ctx.cfg, ctx.route.agentId, {
+          provider: "discord",
+          conversationId: ctx.messageChannelId,
+          providerPolicy: ctx.discordConfig.mentionPatterns,
+        })
+      : [];
   const entries: DiscordHistoryEntry[] = [];
   try {
     while (remaining > 0 && isCurrent()) {
@@ -72,8 +87,7 @@ export async function recoverDiscordChannelHistory(params: {
         if (
           row.channel_id !== ctx.messageChannelId ||
           (row.guild_id && row.guild_id !== guildId) ||
-          sourceIds.has(row.id) ||
-          seen.has(row.id) ||
+          excludedIds.has(row.id) ||
           (/^\d+$/u.test(row.id) &&
             /^\d+$/u.test(ctx.message.id) &&
             BigInt(row.id) >= BigInt(ctx.message.id)) ||
@@ -86,7 +100,7 @@ export async function recoverDiscordChannelHistory(params: {
         ) {
           continue;
         }
-        seen.add(row.id);
+        excludedIds.add(row.id);
         const message = new Message(ctx.client, row);
         let body = resolveDiscordMessageHistoryText(message, { includeForwarded: true });
         if (
@@ -132,11 +146,21 @@ export async function recoverDiscordChannelHistory(params: {
         });
         if (row.author.bot && !sender.isPluralKit) {
           const allowBots = ctx.discordConfig?.allowBots;
-          if (
-            !allowBots ||
-            (allowBots === "mentions" && !row.mentions.some((user) => user.id === ctx.botUserId))
-          ) {
+          if (!allowBots) {
             continue;
+          }
+          if (allowBots === "mentions") {
+            const documents = resolveDiscordMessageMentionDocuments(message);
+            const activeNativeMention =
+              row.mentions.some((user) => user.id === ctx.botUserId) &&
+              (row.type !== MessageType.Reply ||
+                documents.some((text) => hasRawDiscordUserMention(text, ctx.botUserId)));
+            if (
+              !activeNativeMention &&
+              !documents.some((text) => matchesActiveDiscordMentionPatterns(text, mentionRegexes))
+            ) {
+              continue;
+            }
           }
         }
         let member = row.member;

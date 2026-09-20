@@ -1,5 +1,6 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/workspace-state-store.kernel.js";
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
@@ -8,6 +9,7 @@ import { runWithSqliteWorkerStateContext } from "../infra/sqlite-worker-state-co
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../infra/state-database-coordinator.js";
 import { serveWorkerTasks } from "../infra/worker-task-pool.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
+import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
 import { readRegisteredAgentDatabaseRows } from "./openclaw-agent-db-registry.read.js";
 import { openClawStateDatabaseCache } from "./openclaw-state-db-cache.js";
 import {
@@ -50,8 +52,12 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
         typeof input.command.input.now === "number" &&
         (typeof input.command.input.runId === "string" ||
           typeof input.command.input.executionId === "string")) ||
+      (input.command.type === "workspace.snapshot" &&
+        typeof input.command.workspaceDir === "string") ||
       input.command.type === "fleet.list" ||
       input.command.type === "nodeHost.config" ||
+      (input.command.type === "onboardingRecommendations.read" &&
+        typeof input.command.configKey === "string") ||
       (input.command.type === "fleet.get" && typeof input.command.tenantId === "string"))
   );
 }
@@ -107,6 +113,14 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
           return withOpenClawStateReadOnlyLocation(
             ({ db }) => {
               sourceAdmitted = true;
+              if (command.type === "onboardingRecommendations.read") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  record: readOnboardingRecommendationsInDatabase(db, command.configKey),
+                };
+              }
               if (command.type === "audit.run.inspect") {
                 try {
                   return {
@@ -136,6 +150,17 @@ serveWorkerTasks((input): OpenClawStateReadReply => {
                   type: command.type,
                   sourceAdmitted,
                   row: readConfigMachineStateRowInDatabase(db, command.type),
+                };
+              }
+              if (command.type === "workspace.snapshot") {
+                return {
+                  ok: true,
+                  type: command.type,
+                  sourceAdmitted,
+                  snapshot: readWorkspaceStateSnapshotForDirectoryInDatabase({
+                    workspaceDir: command.workspaceDir,
+                    database: { db, path: input.databasePath },
+                  }),
                 };
               }
               if (command.type === "userProfiles.avatar.reconcile") {

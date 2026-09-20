@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
+import type { WorkspaceStateSnapshot } from "../agents/workspace-state-store.kernel.js";
 import type {
   ExecutionIdentityInspectionQuery,
   ExecutionIdentityInspectionOutcome,
@@ -7,6 +8,7 @@ import type {
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
+import type { OnboardingRecommendationsRecord } from "./onboarding-recommendations.contract.js";
 import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-db-contract.js";
 import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
@@ -28,11 +30,13 @@ export type OpenClawStateReadAuthority = {
 
 export type OpenClawStateReadCommand =
   | { type: "agentDatabaseRegistry.read" }
+  | { type: "onboardingRecommendations.read"; configKey: string }
   | { type: "userProfiles.avatar.reconcile"; profileId: string }
   | { type: "audit.run.inspect"; input: ExecutionIdentityInspectionQuery }
   | { type: "fleet.list" }
   | { type: "fleet.get"; tenantId: string }
-  | { type: "nodeHost.config" };
+  | { type: "nodeHost.config" }
+  | { type: "workspace.snapshot"; workspaceDir: string };
 export type OpenClawStateReadRequest = {
   context: SqliteWorkerStateContext;
   databasePath: string;
@@ -48,6 +52,12 @@ export type OpenClawStateReadReply = (
       type: "agentDatabaseRegistry.read";
       sourceAdmitted?: true;
       result: OpenClawAgentDatabaseRegistryReadResult;
+    }
+  | {
+      ok: true;
+      type: "onboardingRecommendations.read";
+      sourceAdmitted: true;
+      record: OnboardingRecommendationsRecord | null;
     }
   | {
       ok: true;
@@ -70,6 +80,7 @@ export type OpenClawStateReadReply = (
       sourceAdmitted: true;
       row: Pick<Selectable<ConfigMachineState>, "value_json" | "updated_at_ms"> | undefined;
     }
+  | { ok: true; type: "workspace.snapshot"; sourceAdmitted: true; snapshot: WorkspaceStateSnapshot }
   | {
       ok: false;
       sourceAdmitted?: true;

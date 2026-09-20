@@ -32,6 +32,12 @@ Task cancellation, session aborts, and queue clearing can discard work; do not u
 
 If the owner lacks controlled interruption, report or repair that gap within scope. Do not invent force flags, bypass persistence/compatibility gates, or repeat the interruption approval question.
 
+## Follow through
+
+Retain ownership of an explicit update request across busy deferral, failure, rollback, and recovery until the selected owner's full acceptance or a concrete external/access blocker requiring outside action. Respect user pauses and cancellations. Before ending with work pending, establish an active completion/observation path or supported continuation through that owner; return without waiting for another prompt. If no continuation path exists, state that blocker instead of promising one. An existing cadence or restored old process alone does not complete the request.
+
+Keep deployment-specific recovery and target selection with the linked owner. Make necessary code repairs in an isolated worktree through normal PR review, CI, and `scripts/pr` landing; persistence does not authorize bypassing locks, safeguards, or branch protection.
+
 ## Verify
 
-Use the owner's verification to prove the intended version/commit is serving, RPC/health and configured channels work, and UI/assets load through actual ingress when enabled. Inspect startup/recovery errors without exposing secrets. A build, handoff acknowledgement, or healthy old process is not completion. Report the serving version and remaining issues.
+Use the owner's verification to prove the intended version/commit is serving, RPC/health and configured channels work, and UI/assets load through actual ingress when enabled. Inspect startup/recovery errors without exposing secrets. Read the native deployment result separately from an observer or wrapper exit status: a successful observer can report a deferred or failed update. A build, handoff acknowledgement, or healthy old process is not completion. Keep detailed receipts private; report the result, next action or exact blocker in one to three short, friendly lines, with a short SHA only when useful and no repeated logs or full hashes.

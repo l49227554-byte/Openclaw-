@@ -32,8 +32,8 @@ import { CommandLane } from "../process/lanes.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
-import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
+import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { formatErrorMessage } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
 import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
@@ -48,7 +48,6 @@ import {
   shouldPreflightWakeBeforeBusy,
   type HeartbeatPreflight,
 } from "./heartbeat-runner-prompt.js";
-import { resolveSystemEventDeliveryContext, type SystemEvent } from "./system-events.js";
 import {
   resolveHeartbeatSession,
   resolveStaleHeartbeatIsolatedSessionKey,
@@ -73,6 +72,7 @@ import {
   resolveHeartbeatDeliveryTargetWithSessionRoute,
   resolveHeartbeatSenderContext,
 } from "./outbound/targets.js";
+import { resolveSystemEventDeliveryContext, type SystemEvent } from "./system-events.js";
 
 const CRON_COMMAND_LANE: string = CommandLane.Cron;
 

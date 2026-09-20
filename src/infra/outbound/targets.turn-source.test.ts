@@ -259,5 +259,3 @@ describe("resolveHeartbeatDeliveryTarget turnSource routing (#153543)", () => {
     expect(resolved.to).not.toBe("channel:general-discussion");
   });
 });
-
-

@@ -2242,7 +2242,7 @@ describe("callGateway error details", () => {
     async (mode) => {
       startMode = mode;
       setLocalLoopbackGatewayConfig();
-      gatewayClientRequest = () => Promise.withResolvers<unknown>().promise;
+      gatewayClientRequest = () => createDeferred<unknown>().promise;
       vi.useFakeTimers();
       const result = callGateway({ method: "health", timeoutMs: 5 }).catch(
         (error: unknown) => error,

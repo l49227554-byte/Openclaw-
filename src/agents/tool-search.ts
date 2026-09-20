@@ -346,19 +346,44 @@ export function createToolSearchTools(ctx: ToolSearchToolContext): AnyAgentTool[
           ),
         ),
       }),
-      execute: async (_toolCallId: string, args: unknown): Promise<AgentToolResult<unknown>> => {
+      execute: async (
+        _toolCallId: string,
+        args: unknown,
+        signal?: AbortSignal,
+      ): Promise<AgentToolResult<unknown>> => {
         const request = readToolSearchRequest(args, config);
         if (request.kind === "single") {
           return jsonResult(
-            await runtime.search(request.search.query, { limit: request.search.limit }),
+            await runtime.search(request.search.query, {
+              limit: request.search.limit,
+              signal,
+            }),
           );
         }
-        const results = await Promise.all(
+        // Await every independent search before surfacing a rejection. A
+        // canceled batch must not leave a sibling Decision provider call
+        // physically unsettled in the background.
+        const settled = await Promise.allSettled(
           request.searches.map(async (search) => ({
             query: search.query,
-            candidates: await runtime.search(search.query, { limit: search.limit }),
+            candidates: await runtime.search(search.query, {
+              limit: search.limit,
+              signal,
+            }),
           })),
         );
+        const rejected = settled.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (rejected) {
+          throw rejected.reason;
+        }
+        const results = settled.map((result) => {
+          if (result.status === "rejected") {
+            throw result.reason;
+          }
+          return result.value;
+        });
         return formatToolSearchBatchResponse(results);
       },
     },

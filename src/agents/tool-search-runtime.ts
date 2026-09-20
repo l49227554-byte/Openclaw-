@@ -1,6 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
-import { sortAndLimitBy } from "../shared/sort-and-limit.js";
 import { resolveAgentToolExecutionSchema } from "./agent-tool-availability.js";
 import {
   finalizeToolTerminalPresentation,
@@ -36,13 +35,7 @@ import {
   renderToolSearchControlText,
   serializeToolSearchControlResult,
 } from "./tool-search-control-result.js";
-import {
-  buildLexicalIndex,
-  readParameterText,
-  scoreLexical,
-  tokenizeDocument,
-  tokenizeQuery,
-} from "./tool-search-ranking.js";
+import { ToolSearchQuery } from "./tool-search-query.js";
 import {
   formatCatalogInputError,
   formatCatalogOutputError,
@@ -51,6 +44,7 @@ import {
 } from "./tool-search-recovery.js";
 import { readToolSearchLimit } from "./tool-search-request.js";
 import { runScheduledToolSearchCall } from "./tool-search-scheduling.js";
+import { observeSemanticRanking } from "./tool-search-semantic-ranking.js";
 import { snapshotToolSearchTargetTranscriptResult } from "./tool-search-transcript.js";
 import type {
   CatalogVisibilityOptions,
@@ -71,25 +65,6 @@ function describeEntry(entry: ToolSearchCatalogEntry) {
     parameters: entry.parameters ?? {},
     ...(entry.outputSchema ? { outputSchema: entry.outputSchema } : {}),
   };
-}
-
-/**
- * Text indexed for one catalog entry. Parameter names and their descriptions are
- * included because they often carry the only words a task shares with a tool:
- * "post a message to a channel" reaches a tool whose description says only
- * "Send a message" through its `channel` parameter. Codex and the Claude API
- * tool-search tools index argument metadata for the same reason.
- */
-function toolSearchEntryText(entry: ToolSearchCatalogEntry, parameterText?: string): string {
-  // Only first-party schemas are walked. MCP and client parameters are untrusted
-  // and deliberately never traversed: compactToolSearchCatalogEntry reports them
-  // as "unknown" for the same reason, and a client may hand us a lazy object that
-  // throws on property access.
-  const parameters =
-    parameterText ?? (entry.source === "openclaw" ? readParameterText(entry.parameters) : "");
-  return [entry.name, entry.id, entry.label ?? "", entry.description, parameters]
-    .filter(Boolean)
-    .join(" ");
 }
 
 function findEntry(
@@ -130,6 +105,15 @@ function findEntryByExactId(
 }
 
 const TOOL_SEARCH_SELECTOR_KEYS = ["id", "toolId", "name"] as const;
+function resolveToolSearchSearchSignal(
+  ownerSignal: AbortSignal | undefined,
+  callSignal: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (ownerSignal && callSignal && ownerSignal !== callSignal) {
+    return AbortSignal.any([ownerSignal, callSignal]);
+  }
+  return ownerSignal ?? callSignal;
+}
 
 function readToolSearchSelector(params: Record<string, unknown>): string | undefined {
   const value = params.id ?? params.toolId ?? params.name;
@@ -226,46 +210,6 @@ type CatalogSchemaName = "inputSchema" | "outputSchema";
 type CatalogSchemaValidation = ReturnType<
   typeof import("../plugins/schema-validator.js").validateJsonSchemaValue
 >;
-type CachedToolSearchIndex = {
-  entries: Array<
-    Pick<
-      ToolSearchCatalogEntry,
-      "id" | "source" | "name" | "label" | "description" | "parameters"
-    > & {
-      entry: ToolSearchCatalogEntry;
-      parameterText: string;
-    }
-  >;
-  index: ReturnType<typeof buildLexicalIndex<ToolSearchCatalogEntry>>;
-};
-type ToolSearchIndexCache = Map<
-  boolean | NonNullable<CatalogVisibilityOptions["allowedIds"]>,
-  CachedToolSearchIndex
->;
-
-function matchesCachedToolSearchIndex(
-  cached: CachedToolSearchIndex,
-  entries: readonly ToolSearchCatalogEntry[],
-): boolean {
-  return (
-    cached.entries.length === entries.length &&
-    entries.every((entry, index) => {
-      const snapshot = cached.entries[index];
-      return (
-        snapshot?.entry === entry &&
-        snapshot.id === entry.id &&
-        snapshot.source === entry.source &&
-        snapshot.name === entry.name &&
-        snapshot.label === entry.label &&
-        snapshot.description === entry.description &&
-        snapshot.parameters === entry.parameters &&
-        snapshot.parameterText ===
-          (entry.source === "openclaw" ? readParameterText(entry.parameters) : "")
-      );
-    })
-  );
-}
-
 let schemaValidatorModulePromise:
   | Promise<typeof import("../plugins/schema-validator.js")>
   | undefined;
@@ -383,7 +327,7 @@ export class ToolSearchRuntime {
   private callSequence = 0;
   private readonly terminalTargetBatchByParent = new Map<string, boolean>();
   private readonly networkInvocations = new Map<string, { active: number; observed: boolean }>();
-  private readonly searchIndexes = new WeakMap<ToolSearchCatalogSession, ToolSearchIndexCache>();
+  private readonly query = new ToolSearchQuery();
 
   constructor(
     private readonly ctx: ToolSearchToolContext,
@@ -391,77 +335,49 @@ export class ToolSearchRuntime {
     private readonly options: { prepareInput?: boolean; validateInput?: boolean } = {},
   ) {}
 
-  search = async (query: string, options?: { limit?: number } & CatalogVisibilityOptions) => {
+  search = async (
+    query: string,
+    options?: { limit?: number; signal?: AbortSignal } & CatalogVisibilityOptions,
+  ) => {
     const catalog = resolveCatalog(this.ctx);
     catalog.searchCount += 1;
     const limit = readToolSearchLimit(options?.limit, this.config);
-    const entries = visibleCatalogEntries(catalog, options);
-    // A query that is exactly a tool name or id is a request for that tool, not
-    // a description of one. BM25 alone can rank a shorter entry that merely
-    // mentions the word above it, and the limit then drops the tool asked for.
-    const spelling = query.trim();
-    const exact = spelling.toLowerCase();
-    const exactIdEntry = entries.find((entry) => entry.id === spelling);
-    const exactMatches = exactIdEntry
-      ? [exactIdEntry]
-      : entries.filter(
-          (entry) => entry.name.toLowerCase() === exact || entry.id.toLowerCase() === exact,
-        );
-    // An unambiguous exact lookup never needs schema traversal or a BM25 index.
-    if (limit === 1 && exactMatches.length === 1) {
-      return exactMatches.slice(0, limit).map((entry) => compactToolSearchCatalogEntry(entry));
+    const { results, exactMatches } = this.query.compute(catalog, query, limit, options);
+    // Exact names/IDs are explicit selections. Preserve the existing result
+    // behavior and keep this fast path free of semantic calls, including when
+    // the caller asks for additional lexical context around the exact match.
+    if (
+      exactMatches.length > 0 ||
+      !this.config.enabled ||
+      this.config.semanticRanking !== "shadow" ||
+      results.length < 2
+    ) {
+      return results;
     }
-    const indexKey = options?.allowedIds ?? options?.includeMcp !== false;
-    let catalogIndexes = this.searchIndexes.get(catalog);
-    if (!catalogIndexes) {
-      catalogIndexes = new Map();
-      this.searchIndexes.set(catalog, catalogIndexes);
+    const signal = resolveToolSearchSearchSignal(this.ctx.abortSignal, options?.signal);
+    // Shadow inference belongs to the live run owner. A caller without an
+    // owner-bound signal gets the deterministic search result only; an invented
+    // controller would have no lifecycle to cancel it.
+    if (!signal) {
+      return results;
     }
-    let cachedIndex = catalogIndexes.get(indexKey);
-    if (!cachedIndex || !matchesCachedToolSearchIndex(cachedIndex, entries)) {
-      const indexedEntries = entries.map((entry) => ({
-        entry,
-        id: entry.id,
-        source: entry.source,
-        name: entry.name,
-        label: entry.label,
-        description: entry.description,
-        parameters: entry.parameters,
-        parameterText: entry.source === "openclaw" ? readParameterText(entry.parameters) : "",
-      }));
-      cachedIndex = {
-        entries: indexedEntries,
-        index: buildLexicalIndex(
-          indexedEntries.map(({ entry, parameterText }) => ({
-            value: entry,
-            terms: tokenizeDocument(toolSearchEntryText(entry, parameterText)),
-          })),
-        ),
-      };
-      catalogIndexes.set(indexKey, cachedIndex);
-    }
-    const hits = scoreLexical(cachedIndex.index, tokenizeQuery(query));
-    const exactMatchSet = new Set(exactMatches);
-    // A tool whose name is a stopword ("do") tokenizes to nothing and so never
-    // reaches the ranking at all. Naming it exactly is still an unambiguous
-    // request for it, which the previous scorer honored.
-    const exactEntries = exactMatches.filter((entry) => !hits.some((hit) => hit.value === entry));
-    const remaining = limit - exactEntries.length;
-    const ranked =
-      remaining > 0
-        ? sortAndLimitBy(
-            hits,
-            remaining,
-            (a, b) =>
-              Number(exactMatchSet.has(b.value)) - Number(exactMatchSet.has(a.value)) ||
-              Number(b.matchedLiteral) - Number(a.matchedLiteral) ||
-              b.score - a.score ||
-              a.value.id.localeCompare(b.value.id),
-          ).map((hit) => hit.value)
-        : [];
-    return [...exactEntries, ...ranked]
-      .slice(0, limit)
-      .map((entry) => compactToolSearchCatalogEntry(entry));
+    signal.throwIfAborted();
+    this.pluginRuntimeRefresh.assertCurrent();
+    await observeSemanticRanking(
+      this.ctx,
+      this.config,
+      catalog,
+      query,
+      results.slice(0, 8),
+      signal,
+    );
+    this.pluginRuntimeRefresh.assertCurrent();
+    const currentCatalog = resolveCatalog(this.ctx);
+    // Re-render the deterministic selection after the await, even if catalog
+    // entry objects retain identity: descriptors and policy can mutate in place.
+    // Do not issue another Decision request for the refreshed view.
+    signal.throwIfAborted();
+    return this.query.compute(currentCatalog, query, limit, options).results;
   };
 
   all = (options?: CatalogVisibilityOptions) =>

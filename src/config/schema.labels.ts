@@ -3,6 +3,7 @@ import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
 import { GATEWAY_FIELD_LABELS } from "./schema.gateway-labels.js";
 import { AGENT_MODEL_FIELD_LABELS } from "./schema.labels.agent-models.js";
 import { SESSION_FIELD_LABELS } from "./schema.labels.session.js";
+import { TOOL_SEARCH_FIELD_LABELS } from "./schema.labels.tool-search.js";
 import { WORKSPACE_FIELD_LABELS } from "./schema.labels.workspace.js";
 import { META_FIELD_LABELS } from "./schema.meta.js";
 import { NODE_CAPABILITY_FIELD_LABELS } from "./schema.node-capabilities.js";
@@ -18,6 +19,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "channels.discord.activities.clientSecret": "Discord Activities Client Secret",
   "channels.discord.activities.applicationId": "Discord Activities Application ID",
   ...META_FIELD_LABELS,
+  ...TOOL_SEARCH_FIELD_LABELS,
   env: "Environment",
   "env.shellEnv": "Shell Environment Import",
   "env.shellEnv.enabled": "Shell Environment Import Enabled",
@@ -216,12 +218,6 @@ export const FIELD_LABELS: Record<string, string> = {
   "tools.agentToAgent.enabled": "Enable Agent-to-Agent Tool",
   "tools.agentToAgent.allow": "Agent-to-Agent Target Allowlist",
   "tools.updatePlan": "Enable Structured Plan Tool",
-  "tools.toolSearch": "Tool Search",
-  "tools.toolSearch.enabled": "Enable Tool Search",
-  "tools.toolSearch.mode": "Tool Search Surface",
-  "tools.toolSearch.codeTimeoutMs": "Tool Search Code Timeout",
-  "tools.toolSearch.searchDefaultLimit": "Tool Search Default Results",
-  "tools.toolSearch.maxSearchLimit": "Tool Search Max Results",
   "tools.codeMode": "Code Mode",
   "tools.codeMode.enabled": "Enable Code Mode",
   "tools.codeMode.runtime": "Code Mode Runtime",

@@ -194,6 +194,20 @@ describe("inspectTelegramConversationRouteOwner", () => {
     ).toEqual({ kind: "agent", agentId: "specialist" });
   });
 
+  it("does not recreate a removed account from remaining single-bot credentials", () => {
+    expect(
+      inspectTelegramConversationRouteOwner({
+        cfg: {
+          channels: {
+            telegram: { botToken: "123456:synthetic", threadBindings: { enabled: false } },
+          },
+        },
+        accountId: "retired",
+        conversation: { kind: "group", peerId: "-100123" },
+      }),
+    ).toBeNull();
+  });
+
   it("rejects binding-only accounts in an explicit multi-account setup", () => {
     expect(
       inspectTelegramConversationRouteOwner({

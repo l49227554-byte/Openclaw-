@@ -1,7 +1,5 @@
 // Telegram helper module supports account config behavior.
 import {
-  DEFAULT_ACCOUNT_ID,
-  hasConfiguredAccountValue,
   mergeAccountConfig,
   normalizeAccountId,
   resolveNormalizedAccountEntry,
@@ -18,22 +16,6 @@ export function resolveTelegramAccountConfig(
     cfg.channels?.telegram?.accounts,
     normalized,
     normalizeAccountId,
-  );
-}
-
-export function hasTelegramAccountConfig(cfg: OpenClawConfig, accountId: string): boolean {
-  const normalized = normalizeAccountId(accountId);
-  if (resolveTelegramAccountConfig(cfg, normalized)) {
-    return true;
-  }
-  const channel = cfg.channels?.telegram;
-  if (normalized !== DEFAULT_ACCOUNT_ID && Object.keys(channel?.accounts ?? {}).length > 0) {
-    return false;
-  }
-  return (
-    hasConfiguredAccountValue(channel?.botToken) ||
-    hasConfiguredAccountValue(channel?.tokenFile) ||
-    (normalized === DEFAULT_ACCOUNT_ID && hasConfiguredAccountValue(process.env.TELEGRAM_BOT_TOKEN))
   );
 }
 

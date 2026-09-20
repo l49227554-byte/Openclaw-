@@ -2,19 +2,18 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { assertSqliteSchemaContains } from "../../infra/sqlite-schema-contract.js";
-import {
-  closeOpenClawStateDatabaseForTest,
-  openOpenClawStateDatabase,
-} from "../../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { getOpenClawStateRuntimeSchema } from "../../state/openclaw-state-schema-compatibility.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js";
+import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-
-afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
-});
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await closeStateDatabaseForTest();
+    cleanup();
+  }),
+);
 
 describe("worker placement move schema", () => {
   it("survives a same-version previous reader and candidate reopen", async () => {
@@ -85,7 +84,7 @@ describe("worker placement move schema", () => {
       ]),
     );
     const databasePath = database.path;
-    closeOpenClawStateDatabaseForTest();
+    await closeStateDatabaseForTest();
 
     const previousReader = new DatabaseSync(databasePath);
     expect(() =>

@@ -28,6 +28,7 @@ import {
   type SessionsDirFileStat,
 } from "./disk-budget-files.js";
 import { measureSessionPhysicalDiskUsage } from "./disk-budget-runtime.js";
+import { readLegacyCompactionHistory } from "./legacy-compaction-history.js";
 import { resolveSessionArtifactDirectory, resolveSessionFilePathCore } from "./paths.js";
 import type { SqliteSessionArchivePruningDiagnostics } from "./session-accessor.sqlite-contract.js";
 import { timeArchivePruningAsync } from "./session-history-archive-pruning-diagnostics.js";
@@ -196,7 +197,7 @@ function resolveReferencedSessionArtifactPaths(params: {
     })) {
       referenced.add(resolved);
     }
-    for (const checkpoint of entry.compactionCheckpoints ?? []) {
+    for (const checkpoint of readLegacyCompactionHistory(entry)) {
       const checkpointFiles = [
         checkpoint.preCompaction.sessionFile?.trim(),
         checkpoint.postCompaction.sessionFile?.trim(),

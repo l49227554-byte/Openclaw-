@@ -152,6 +152,21 @@ describe("isInternalFormattingArtifact", () => {
     ).toBe(false);
   });
 
+  it("stays linear on a whitespace-filled malformed tag inside a parameter (#153594)", () => {
+    // `<\s*\/?\s*name` repeats whitespace either side of an optional slash, so rejecting this
+    // candidate used to explore every partition of the run before the scan could advance.
+    const spaces = " ".repeat(200_000);
+    const started = performance.now();
+    expect(
+      isInternalFormattingArtifact(
+        `<invoke name="Bash"><parameter name="command"><${spaces}x></parameter></invoke>`,
+      ),
+    ).toBe(true);
+    const elapsed = performance.now() - started;
+    // Generous bound: a blow-up guard, not a benchmark. Partition search needs minutes here.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
   it("keeps markup inside a protected code region (#153594)", () => {
     // An indented example is Markdown code the sanitizer already owns; silencing it would drop a
     // reply the user asked for. The caller supplies the regions, so the offsets stand in for them.

@@ -10,11 +10,59 @@ const HARMONY_CHANNEL_MARKER_RE = /^\s*(?:set-thought\s+)?<[\w]*\|[^>]*>\s*$/;
 const BOX_DRAWING_HR_ONLY_RE = /^\s*─{3,}\s*$/;
 
 // Anthropic-style tool-call markup a model can emit as plain assistant text (#153594).
-// Scanned linearly, because a regex over repeated blocks can expand a parameter body past its
-// closing tag (dropping prose between blocks) and backtrack exponentially on a rejecting suffix.
-const TOOL_CALL_TAG_RE =
-  /^<\s*(\/?)\s*(?:antml:|mm:)?(function_calls|invoke|parameter)(?=[\s/>])[^<>]*>$/i;
-const SELF_CLOSING_TAG_RE = /\/\s*>$/;
+// Everything below is scanned by walking characters. A regex over repeated blocks can expand a
+// parameter body past its closing tag (dropping prose between blocks), backtrack exponentially on a
+// rejecting suffix, and — because `<\s*\/?\s*name` repeats whitespace either side of an optional
+// slash — explore every partition of a run of spaces inside one malformed tag before the scan can
+// advance.
+const TOOL_CALL_NAMES = ["function_calls", "invoke", "parameter"] as const;
+const NAMESPACE_PREFIXES = ["antml:", "mm:"] as const;
+
+type ToolCallTag = { closing: boolean; name: string; selfClosing: boolean };
+
+/**
+ * Parses `< [/] [antml:|mm:] name … >` by walking it once. `raw` starts with `<`, ends with `>`,
+ * and contains no other angle bracket, so one forward pass is enough and no amount of whitespace
+ * can send the matcher back to try another split.
+ */
+function parseToolCallTag(raw: string): ToolCallTag | null {
+  const end = raw.length - 1;
+  const isSpace = (char: string) => /\s/.test(char);
+  let index = 1;
+  while (index < end && isSpace(raw[index] ?? "")) {
+    index += 1;
+  }
+  let closing = false;
+  if (raw[index] === "/") {
+    closing = true;
+    index += 1;
+    while (index < end && isSpace(raw[index] ?? "")) {
+      index += 1;
+    }
+  }
+  const lower = raw.toLowerCase();
+  for (const prefix of NAMESPACE_PREFIXES) {
+    if (lower.startsWith(prefix, index)) {
+      index += prefix.length;
+      break;
+    }
+  }
+  const name = TOOL_CALL_NAMES.find((candidate) => lower.startsWith(candidate, index));
+  if (name === undefined) {
+    return null;
+  }
+  index += name.length;
+  // The name needs a delimiter, which keeps lookalike element names such as `<parameter-value>` out.
+  const next = index < end ? (raw[index] ?? "") : ">";
+  if (next !== "/" && next !== ">" && !isSpace(next)) {
+    return null;
+  }
+  let tail = end - 1;
+  while (tail > index && isSpace(raw[tail] ?? "")) {
+    tail -= 1;
+  }
+  return { closing, name, selfClosing: raw[tail] === "/" };
+}
 
 /**
  * An artifact is markup the model wrote as ordinary reply text. Markup the sanitizer already owns
@@ -29,8 +77,8 @@ export type InternalFormattingArtifactOptions = {
 
 // True only for a whole invocation: an `<invoke>`/`<function_calls>` outside parameter content,
 // with every non-whitespace character inside a `<parameter>` payload. A standalone parameter
-// wrapper keeps its content (assistant-visible-text unwraps it), and `(?=[\s/>])` keeps lookalike
-// element names such as `<parameter-value>` out.
+// wrapper keeps its content (assistant-visible-text unwraps it), and the delimiter check in
+// parseToolCallTag keeps lookalike element names such as `<parameter-value>` out.
 function isToolCallMarkupOnly(text: string, isProtected?: (offset: number) => boolean): boolean {
   let parameterDepth = 0;
   let hasInvocation = false;
@@ -55,7 +103,7 @@ function isToolCallMarkupOnly(text: string, isProtected?: (offset: number) => bo
       // No ">" remains, so no later tag can close and the depth can never return to zero.
       return false;
     }
-    const tag = text[close] === ">" ? TOOL_CALL_TAG_RE.exec(text.slice(index, close + 1)) : null;
+    const tag = text[close] === ">" ? parseToolCallTag(text.slice(index, close + 1)) : null;
     if (!tag) {
       // A "<" that opens no tool-call tag is payload text inside a parameter, prose otherwise.
       if (parameterDepth === 0) {
@@ -69,10 +117,9 @@ function isToolCallMarkupOnly(text: string, isProtected?: (offset: number) => bo
       index = close + 1;
       continue;
     }
-    const raw = text.slice(index, close + 1);
-    if (tag[2]?.toLowerCase() === "parameter") {
-      if (!SELF_CLOSING_TAG_RE.test(raw)) {
-        parameterDepth += tag[1] === "/" ? -1 : 1;
+    if (tag.name === "parameter") {
+      if (!tag.selfClosing) {
+        parameterDepth += tag.closing ? -1 : 1;
         if (parameterDepth < 0) {
           return false;
         }

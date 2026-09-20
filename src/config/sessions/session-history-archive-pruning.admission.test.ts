@@ -12,10 +12,12 @@ import * as logging from "../../logging/logger.js";
 import { invalidateOpenClawAgentDatabaseValidation } from "../../state/openclaw-agent-db-validation-cache.js";
 import {
   closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
   getOpenClawAgentDatabaseIfOpen,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { clearOpenClawAgentIntegrityVerification } from "../../state/openclaw-quarantine-store.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -25,6 +27,7 @@ import {
   deleteSessionEntryLifecycle,
   replaceSessionEntry,
 } from "./session-accessor.js";
+import * as admissionScope from "./session-accessor.sqlite-scope.js";
 import {
   getSessionKysely,
   runExclusiveSqliteSessionWrite,
@@ -377,6 +380,19 @@ it.each([
       () => releaseBlocker.resolve(),
     );
 
+    let nativeClosed: Promise<boolean> | undefined;
+    if (boundary === "drain" && cold && outcome === "complete") {
+      const admit = admissionScope.withSqliteSessionDatabase;
+      vi.spyOn(admissionScope, "withSqliteSessionDatabase").mockImplementation(async (...args) => {
+        // Exercise the legal close-first ordering: the retained reclamation Worker
+        // can publish clean-close proof before the next vacuum pass reopens the DB.
+        if (args[0].path === database.path) {
+          await nativeClosed;
+        }
+        return admit(...args);
+      });
+    }
+
     const arrive = () => {
       if (reached) {
         return;
@@ -386,7 +402,12 @@ it.each([
       inTransaction = database.db.isTransaction;
       if (cold) {
         closed = closeOpenClawAgentDatabaseByPath(database.path);
+        if (boundary === "drain" && outcome === "complete") {
+          nativeClosed = own(closeOpenClawAgentDatabaseByPathAsync(database.path));
+        }
         invalidateOpenClawAgentDatabaseValidation(database.path);
+        // A cold integrity check needs both runtime and durable proof revoked.
+        clearOpenClawAgentIntegrityVerification(database.path, state.env);
       }
       observing = true;
     };

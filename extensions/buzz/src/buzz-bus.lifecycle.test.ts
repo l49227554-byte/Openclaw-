@@ -684,13 +684,9 @@ describe("Buzz bus lifecycle", () => {
       onFatalError,
     });
 
-    await vi.waitFor(() =>
-      expect(onFatalError).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: `Buzz room ${CHANNEL_ID} archive status changed; rebuilding subscriptions`,
-        }),
-      ),
-    );
+    await vi.waitFor(() => expect(bus.directory.isRoomArchived(CHANNEL_ID)).toBe(true));
+    expect(onFatalError).not.toHaveBeenCalled();
+    expect(relayMocks.close).not.toHaveBeenCalled();
     await bus.close();
   });
 

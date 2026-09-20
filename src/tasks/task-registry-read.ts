@@ -118,13 +118,14 @@ export async function prepareTaskRegistryReadOwner(): Promise<TaskRegistryReadOw
 export async function prepareTaskRegistryRead(
   owner?: TaskRegistryReadOwner,
 ): Promise<TaskRegistryRead | undefined> {
-  const { context, store } = owner ?? (await prepareTaskRegistryReadOwner());
+  const {
+    context,
+    store,
+    assertCurrent: assertOwnerCurrent,
+  } = owner ?? (await prepareTaskRegistryReadOwner());
   if (!(await prepareTaskRegistryProjectionAsync(context, store, 3))) {
     return undefined;
   }
-  const assertOwnerCurrent = () => {
-    assertTaskRegistryOwnerCurrent(context, store);
-  };
   const assertCurrent = () => {
     assertOwnerCurrent();
     if (getTaskRegistryProcessState().projection.dirty) {

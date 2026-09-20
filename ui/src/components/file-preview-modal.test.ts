@@ -1,9 +1,11 @@
 /* @vitest-environment jsdom */
 
+import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { i18n } from "../i18n/index.ts";
 import { OpenClawFilePreviewModal } from "./file-preview-modal.ts";
+import { icons } from "./icons.ts";
 
 type FilePreviewModalElement = HTMLElement & {
   files: typeof files;
@@ -90,11 +92,13 @@ describe("openclaw-file-preview-modal", () => {
         { path: "README.md", size: "1 KB", contents: "Documentation" },
       ],
     });
-    const skillIcon = modal.shadowRoot?.querySelector('[data-path="SKILL.md"] .item-icon use');
-    expect(skillIcon?.getAttribute("href")).toMatch(/pencil-sparkles\.svg.*#pencil-sparkles$/u);
-    const markdownIcon = modal.shadowRoot?.querySelector('[data-path="README.md"] .item-icon');
-    expect(markdownIcon?.querySelector("use")).toBeNull();
-    expect(markdownIcon?.querySelector("path")).not.toBeNull();
+    const reference = document.createElement("div");
+    render(icons.pencilSparkles, reference);
+    const expectedIcon = reference.querySelector("svg")?.outerHTML;
+    const skillIcon = modal.shadowRoot?.querySelector('[data-path="SKILL.md"] .item-icon svg');
+    const markdownIcon = modal.shadowRoot?.querySelector('[data-path="README.md"] .item-icon svg');
+    expect(skillIcon?.outerHTML).toBe(expectedIcon);
+    expect(markdownIcon?.outerHTML).not.toBe(expectedIcon);
   });
 
   it("shows the Escape shortcut only on the close button", async () => {

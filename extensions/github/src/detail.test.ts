@@ -72,14 +72,14 @@ function publicFetch(payload: unknown) {
   return vi
     .fn<typeof fetch>()
     .mockImplementation(async (url) => {
-      const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
-      if (requestUrl.endsWith("/check-runs?filter=latest&per_page=100")) {
+      const href = requestUrl(url);
+      if (href.endsWith("/check-runs?filter=latest&per_page=100")) {
         return json({ total_count: 0, check_runs: [] });
       }
-      if (requestUrl.endsWith("/status?per_page=100")) {
+      if (href.endsWith("/status?per_page=100")) {
         return json({ sha, total_count: 0, state: "pending", statuses: [] });
       }
-      throw new Error("Unexpected request " + requestUrl);
+      throw new Error("Unexpected request " + href);
     })
     .mockResolvedValueOnce(json({ private: false, visibility: "public" }))
     .mockResolvedValueOnce(json(payload));

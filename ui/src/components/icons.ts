@@ -2,7 +2,9 @@
 import { svg, type TemplateResult } from "lit";
 import { githubMark } from "./github-mark.ts";
 import { strokeIcon, toolIcons } from "./icons-tools.ts";
-import pencilSparklesUrl from "./pencil-sparkles.svg?url&no-inline";
+
+// A URL rather than an asset import also keeps this shared module importable in Node.
+const pencilSparklesUrl = new URL("./pencil-sparkles.svg?no-inline", import.meta.url).href;
 
 // Lucide-style SVG icons rendered through the shared strokeIcon() shell,
 // which carries the stroke presentation attributes inline (see icons-tools.ts).

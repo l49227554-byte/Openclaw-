@@ -8397,6 +8397,12 @@ server.listen(0, "127.0.0.1", () => {
     expect(save.if).toContain("steps.setup-node-env.outputs.cache-mode == 'read-write'");
     expect(save.if).not.toMatch(/always\(|failure\(|cancelled\(/u);
     expect(warmerSteps.indexOf(prepare)).toBeLessThan(warmerSteps.indexOf(save));
+    for (const step of [prepare, save]) {
+      expect(step.if).toContain("matrix.platform == 'linux'");
+    }
+    expect(warmer.jobs.dependencies.steps.map((step: WorkflowStep) => step.name)).not.toContain(
+      "Prepare compiled Vitest workers",
+    );
     expect(warmerSteps.indexOf(save)).toBeLessThan(
       warmerSteps.findIndex((step) => step.name === "Prepare native SDK boundary cache"),
     );
@@ -9240,7 +9246,12 @@ server.listen(0, "127.0.0.1", () => {
     const setup = dependencies.steps.find(
       (step: WorkflowStep) => step.name === "Setup Node environment",
     );
-    for (const key of ["vitest-fs-cache", "node-compile-cache", "build-all-cache-scope"]) {
+    for (const key of [
+      "vitest-fs-cache",
+      "vitest-worker-cache",
+      "node-compile-cache",
+      "build-all-cache-scope",
+    ]) {
       expect(setup.with).not.toHaveProperty(key);
     }
     for (const save of dependencies.steps.filter((step: WorkflowStep) =>
@@ -9413,9 +9424,14 @@ server.listen(0, "127.0.0.1", () => {
         warmerSteps.indexOf(warmerSetup),
       );
       if (saveStep.name === "Save compiled Vitest workers") {
-        expect(warmerSteps.indexOf(saveStep)).toBeLessThan(warmerSteps.indexOf(boundaryPrepareStep));
+        expect(warmerSteps.indexOf(saveStep)).toBeLessThan(
+          warmerSteps.indexOf(boundaryPrepareStep),
+        );
         expect(saveStep.if).not.toMatch(/always\(|failure\(|cancelled\(/u);
       } else if (
+        saveStep.name === "Save build-all cache" ||
+        saveStep.name === "Save dist build cache"
+      ) {
         expect(warmerSteps.indexOf(saveStep), saveStep.name).toBeGreaterThan(
           warmerSteps.findIndex((step) => step.name === "Warm build cache"),
         );

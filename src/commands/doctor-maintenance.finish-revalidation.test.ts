@@ -13,6 +13,8 @@ import type { GatewayService } from "../daemon/service.js";
 import { createMockGatewayService, mockSystemAccountHome } from "../daemon/service.test-helpers.js";
 import { createSystemdCommandQuery } from "../daemon/systemd-command-query.js";
 import { readLoadedSystemdServiceRuntime } from "../daemon/systemd-loaded-runtime.js";
+import type { CallGatewayOptions } from "../gateway/call.js";
+import { gatewayHealthResponse } from "../gateway/health-response.test-support.js";
 import * as gatewayLock from "../infra/gateway-lock.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { tryAcquireExclusiveSqliteCoordinator } from "../infra/sqlite-coordinator.js";
@@ -36,6 +38,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
+import * as runtimeUtils from "../utils.js";
 import { beginDoctorMaintenance } from "./doctor-maintenance.js";
 import { stoppedSystemdBinding } from "./doctor-maintenance.test-support.js";
 
@@ -43,6 +46,17 @@ const mocks = vi.hoisted(() => ({
   resolveService: vi.fn<() => GatewayService>(),
   coordinatorRuntimeDir: "",
   stops: 0,
+  health: vi.fn(
+    async (
+      _params: Parameters<
+        typeof import("../cli/daemon-cli/restart-health.js").waitForGatewayHealthyRestart
+      >[0],
+    ) => ({
+      healthy: true,
+    }),
+  ),
+  ports: vi.fn<typeof import("../infra/ports-inspect.js").inspectPortUsage>(),
+  call: vi.fn<(opts: CallGatewayOptions) => Promise<unknown>>(),
 }));
 
 vi.mock("../daemon/service.js", async (importOriginal) => ({
@@ -57,7 +71,12 @@ vi.mock("./doctor-service-repair-policy.js", async (importOriginal) => ({
 
 vi.mock("../cli/daemon-cli/restart-health.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../cli/daemon-cli/restart-health.js")>()),
-  waitForGatewayHealthyRestart: vi.fn(async () => ({ healthy: true })),
+  waitForGatewayHealthyRestart: mocks.health,
+}));
+vi.mock("../infra/ports-inspect.js", () => ({ inspectPortUsage: mocks.ports }));
+vi.mock("../gateway/call.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../gateway/call.js")>()),
+  callGateway: mocks.call,
 }));
 
 // Keep coordinator files inside the isolated workspace on every host.
@@ -97,7 +116,14 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 beforeEach(() => {
   mockSystemAccountHome();
   mocks.stops = 0;
-  vi.mocked(waitForGatewayHealthyRestart).mockClear();
+  mocks.health.mockReset().mockResolvedValue({ healthy: true });
+  mocks.ports.mockReset().mockImplementation(async (port) => ({
+    port,
+    status: "free",
+    listeners: [],
+    hints: [],
+  }));
+  mocks.call.mockReset();
 });
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
@@ -110,6 +136,7 @@ type StoppedUnitState =
   | "unloaded"
   | "changed-manager"
   | "changed-command"
+  | "launchd-throttle"
   | "restart-failed"
   | "slow-admission"
   | "slow-loadunit-admission"
@@ -339,7 +366,28 @@ async function runDoctorFinishForStoppedUnit(
           };
         }
       }
-      mockProcessPlatform("linux");
+      mockProcessPlatform(scenario === "launchd-throttle" ? "darwin" : "linux");
+      let nowMs = 0;
+      if (scenario === "launchd-throttle") {
+        vi.spyOn(performance, "now").mockImplementation(() => nowMs);
+        vi.spyOn(runtimeUtils, "sleep").mockImplementation(async (ms) => {
+          nowMs += ms;
+        });
+        mocks.ports.mockImplementation(async (port) => ({
+          port,
+          status: nowMs < 14_000 ? "free" : "busy",
+          listeners: nowMs < 14_000 ? [] : [{ pid: 4300, command: "openclaw-gateway" }],
+          hints: [],
+        }));
+        mocks.call.mockImplementation(
+          gatewayHealthResponse({ server: { bootId: "doctor-replacement" } }),
+        );
+        const { waitForGatewayHealthyRestart: waitForRealGatewayHealthyRestart } =
+          await vi.importActual<typeof import("../cli/daemon-cli/restart-health.js")>(
+            "../cli/daemon-cli/restart-health.js",
+          );
+        mocks.health.mockImplementation(waitForRealGatewayHealthyRestart);
+      }
       let running =
         continuation !== "parked" &&
         continuation !== "normal-update-parked" &&
@@ -391,7 +439,8 @@ async function runDoctorFinishForStoppedUnit(
         createMockGatewayService({
           isAbsent: async () => false,
           hasInstalledDefinition: async () => true,
-          isLoaded: async () => scenario === "retained" || boundedInspection,
+          isLoaded: async () =>
+            scenario === "retained" || scenario === "launchd-throttle" || boundedInspection,
           readCommand: async (env, opts) => {
             await releaseDuringInspection?.();
             if (stopObserved && scenario.startsWith("ownership-refused")) {
@@ -469,6 +518,13 @@ async function runDoctorFinishForStoppedUnit(
           readRuntime: async (env, opts) => {
             if (stopObserved && scenario === "runtime-ownership-refused") {
               throw new ServiceOwnershipRefusalError("systemd-manager-changed");
+            }
+            if (scenario === "launchd-throttle" && restart.mock.calls.length > 0) {
+              return nowMs < 4000
+                ? { status: "running", pid: 4200 }
+                : nowMs < 14_000
+                  ? { status: "stopped" }
+                  : { status: "running", pid: 4300 };
             }
             if (running) {
               return {
@@ -907,6 +963,21 @@ it("rechecks update admission after passive native inspection before restoring t
   );
   expect(finishError).toMatchObject({ message: expect.stringContaining("is still in progress") });
   expect(restartCalls).toBe(0);
+});
+
+it("Doctor finish waits through loaded launchd throttling using the real health owner", async () => {
+  const { finishError, restartCalls, logs } =
+    await runDoctorFinishForStoppedUnit("launchd-throttle");
+  expect(finishError).toBeUndefined();
+  expect(restartCalls).toBe(1);
+  expect(mocks.health).toHaveBeenCalledOnce();
+  await expect(mocks.health.mock.results[0]?.value).resolves.toMatchObject({
+    healthy: true,
+    waitOutcome: "healthy",
+    elapsedMs: 14_000,
+    runtime: { status: "running", pid: 4300 },
+  });
+  expect(logs).toContain("Gateway restarted and verified after Doctor repair.");
 });
 
 it.each([

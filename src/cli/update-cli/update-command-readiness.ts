@@ -19,7 +19,6 @@ import {
   gatewayServiceCommandUsesRoot,
   resolveUpdatedGatewayRestartPort,
 } from "./update-command-service-plan.js";
-import { hasLoadedLaunchdKeepAliveSupervisor } from "./update-command-supervisor.js";
 
 export async function verifyPreviousGatewayForUpdate(params: {
   root: string;
@@ -183,18 +182,12 @@ export async function observeUpdateGatewayReadiness(params: UpdateGatewayReadine
   };
   const waitForHealthy = async () => {
     assertCurrent();
-    const supervisorKeepsAlive = await hasLoadedLaunchdKeepAliveSupervisor({
-      service,
-      env: params.serviceEnv,
-    });
-    assertCurrent();
     const health = await waitForGatewayHealthyRestart({
       ...probeParams,
       // The restart owner adds settling itself; reserve it once in the shared deadline.
       timeoutMs: Math.max(1, remainingMs() - settleDurationMs),
       requireRunningService: params.requireRunningService,
       settle,
-      supervisorKeepsAlive,
     });
     assertCurrent();
     return health;

@@ -223,12 +223,14 @@ function pruneTerminalTurns(params: {
           eb.fn<number>("octet_length", ["terminal_json"]).as("terminal_bytes"),
         ),
       ).rows
-    : executeSqliteQuerySync(params.db, retained.select("terminal_json")).rows.map(
-        ({ terminal_json, ...row }) => ({
-          ...row,
-          terminal_bytes: Buffer.byteLength(terminal_json ?? "", "utf8"),
-        }),
-      );
+    : executeSqliteQuerySync(params.db, retained.select("terminal_json")).rows.map((row) => ({
+        session_id: row.session_id,
+        run_epoch: row.run_epoch,
+        run_id: row.run_id,
+        turn_id: row.turn_id,
+        updated_at_ms: row.updated_at_ms,
+        terminal_bytes: Buffer.byteLength(row.terminal_json ?? "", "utf8"),
+      }));
   const isPreserved = (row: TurnIdentityRow) =>
     params.preserve !== undefined &&
     row.session_id === params.preserve.sessionId &&

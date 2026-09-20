@@ -191,62 +191,63 @@ describe("native Codex tool response fidelity", () => {
       const threadId = started.thread.id;
       const notifications: CodexServerNotification[] = [];
       const completed = createDeferred<unknown>();
-      void completed.promise.catch(() => undefined);
+      const commandCompleted = createDeferred<JsonObject>();
+      const rawFunctionResult = createDeferred<JsonObject>();
+      for (const pending of [
+        completed.promise,
+        commandCompleted.promise,
+        rawFunctionResult.promise,
+      ]) {
+        void pending.catch(() => undefined);
+      }
       const removeHandler = client.addNotificationHandler((notification) => {
         if (!isJsonObject(notification.params) || notification.params.threadId !== threadId) {
           return;
         }
         notifications.push(notification);
+        const item = isJsonObject(notification.params.item) ? notification.params.item : undefined;
         if (notification.method === "turn/completed") {
           completed.resolve(notification.params.turn);
+        } else if (
+          notification.method === "item/completed" &&
+          item?.type === "commandExecution" &&
+          item.id === callId
+        ) {
+          commandCompleted.resolve(item);
+        } else if (
+          notification.method === "rawResponseItem/completed" &&
+          item?.type === "function_call_output" &&
+          item.call_id === callId
+        ) {
+          rawFunctionResult.resolve(item);
         }
       });
       context.onTestFinished(removeHandler);
-      const timer = setTimeout(
-        () => completed.reject(new Error("Native output fidelity turn timed out")),
-        30_000,
-      );
+      const timer = setTimeout(() => {
+        const error = new Error("Native output fidelity evidence timed out");
+        completed.reject(error);
+        commandCompleted.reject(error);
+        rawFunctionResult.reject(error);
+      }, 30_000);
       timer.unref();
       context.onTestFinished(() => clearTimeout(timer));
       const turn = await client.request("turn/start", {
         threadId,
         input: [{ type: "text", text: "Read source.txt.", text_elements: [] }],
       });
-      await expect(completed.promise).resolves.toMatchObject({ status: "completed" });
+      const [completedTurn, command, rawResult] = await Promise.all([
+        completed.promise,
+        commandCompleted.promise,
+        rawFunctionResult.promise,
+      ]);
+      expect(completedTurn).toMatchObject({ status: "completed" });
       clearTimeout(timer);
       expect(failures).toEqual([]);
       expect(requests).toHaveLength(2);
-
-      const responseItems = notifications
-        .filter((notification) => notification.method === "rawResponseItem/completed")
-        .map((notification) =>
-          requireRecord(
-            requireRecord(notification.params, "raw notification").item,
-            "raw response item",
-          ),
-        );
-      const rawResult = requireRecord(
-        responseItems.find(
-          (item) => item.type === "function_call_output" && item.call_id === callId,
-        ),
-        "native function result",
-      );
       const output = rawResult.output;
       if (typeof output !== "string") {
         throw new Error("Expected native exec response text");
       }
-      const command = requireRecord(
-        notifications
-          .filter((notification) => notification.method === "item/completed")
-          .map((notification) =>
-            requireRecord(
-              requireRecord(notification.params, "item notification").item,
-              "completed item",
-            ),
-          )
-          .find((item) => item.type === "commandExecution" && item.id === callId),
-        "native command execution",
-      );
       expect(command).toMatchObject({ status: "completed", exitCode: 0, aggregatedOutput: source });
       expect(output).not.toBe(command.aggregatedOutput);
       expect(output).toContain("Process exited with code 0\n");

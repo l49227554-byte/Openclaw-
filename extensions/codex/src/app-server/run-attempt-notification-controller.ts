@@ -14,7 +14,7 @@ import {
 } from "./attempt-notifications.js";
 import { isCodexNotificationForTurn } from "./notification-correlation.js";
 import { readCodexTurnCompletedNotification } from "./protocol-validators.js";
-import type { CodexServerNotification } from "./protocol.js";
+import { isJsonObject, type CodexServerNotification } from "./protocol.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import type { CodexAttemptResources } from "./run-attempt-resources.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
@@ -237,6 +237,13 @@ export function createCodexAttemptNotificationController(
       deadlines.beginSettlement(receivedAtMs);
     }
     if (scope.turnId === turnId) {
+      if (
+        notification.method === "rawResponseItem/completed" &&
+        isJsonObject(notification.params) &&
+        isJsonObject(notification.params.item)
+      ) {
+        projector.recordRawNativeToolCallReceipt(notification.params.item);
+      }
       const modelToolCallId = readRawResponseToolCallId(notification);
       if (modelToolCallId) {
         allocateCodexToolOutcomeOrdinal?.(modelToolCallId);

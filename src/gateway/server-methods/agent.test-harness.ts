@@ -32,7 +32,6 @@ import type { GatewaySessionRow } from "../session-utils.types.js";
 import {
   flushScheduledDispatchStep,
   setDateOnlyFakeClockActive,
-  waitForAssertion,
 } from "./agent-clock.test-helpers.js";
 import { agentIdentityHandlers } from "./agent-identity.js";
 import { agentHandlers } from "./agent.js";
@@ -953,10 +952,27 @@ export function operatorWriteCliClient(
   };
 }
 
+async function waitForAgentCommandCount(minimumCallCount: number): Promise<void> {
+  if (mocks.agentCommand.mock.calls.length >= minimumCallCount) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const onCommand = () => {
+      if (mocks.agentCommand.mock.calls.length < minimumCallCount) {
+        return;
+      }
+      mocks.agentCommandListeners.delete(onCommand);
+      resolve();
+    };
+    mocks.agentCommandListeners.add(onCommand);
+    onCommand();
+  });
+}
+
 export async function waitForAgentCommandCall<
   T extends AgentCommandCall = AgentCommandCall,
 >(): Promise<T> {
-  await waitForAssertion(() => expect(mocks.agentCommand).toHaveBeenCalled());
+  await waitForAgentCommandCount(1);
   const call = readLastAgentCommandCall();
   if (!call) {
     throw new Error("expected agentCommand call");
@@ -967,19 +983,7 @@ export async function waitForAgentCommandCall<
 export async function waitForAgentCommandCallAfter<T extends AgentCommandCall = AgentCommandCall>(
   commandCallCount: number,
 ): Promise<T> {
-  if (mocks.agentCommand.mock.calls.length <= commandCallCount) {
-    await new Promise<void>((resolve) => {
-      const onCommand = () => {
-        if (mocks.agentCommand.mock.calls.length <= commandCallCount) {
-          return;
-        }
-        mocks.agentCommandListeners.delete(onCommand);
-        resolve();
-      };
-      mocks.agentCommandListeners.add(onCommand);
-      onCommand();
-    });
-  }
+  await waitForAgentCommandCount(commandCallCount + 1);
   const call = mocks.agentCommand.mock.calls[commandCallCount];
   if (!call) {
     throw new Error(`expected agentCommand call ${commandCallCount}`);
@@ -1124,6 +1128,7 @@ export const describe0AfterEach0 = async () => {
   resetSubagentRegistryForTests({ persist: false });
   applyGatewaySubagentRegistryTestDeps();
   mocks.agentCommand.mockReset();
+  mocks.agentCommandListeners.clear();
   mocks.updateSessionStore.mockReset().mockResolvedValue(undefined);
   mocks.loadConfigReturn = {};
   mocks.emitGatewaySessionEndPluginHook.mockReset();
@@ -1157,6 +1162,7 @@ async function resetIntegrationState() {
   resetSubagentRegistryForTests({ persist: false });
   applyGatewaySubagentRegistryTestDeps();
   mocks.agentCommand.mockReset();
+  mocks.agentCommandListeners.clear();
   mocks.loadConfigReturn = {};
   mocks.loadSessionEntry.mockReset();
   mocks.updateSessionStore.mockReset();

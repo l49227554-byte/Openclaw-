@@ -224,6 +224,25 @@ export class CodexToolTranscriptProjection {
     }
   }
 
+  recordRawNativeToolCallReceipt(item: JsonObject): void {
+    const type = typeof item.type === "string" ? item.type : undefined;
+    const callId =
+      typeof item.call_id === "string"
+        ? item.call_id
+        : typeof item.callId === "string"
+          ? item.callId
+          : undefined;
+    if (
+      callId &&
+      (type === "custom_tool_call" || type === "function_call") &&
+      typeof item.name === "string"
+    ) {
+      // Receipt precedes asynchronous projection. Fence execution previews now so
+      // they cannot checkpoint before the provider's authoritative raw result.
+      this.pendingRawOutputIds.add(callId);
+    }
+  }
+
   recordRawNativeToolItem(item: JsonObject): void {
     const type = typeof item.type === "string" ? item.type : undefined;
     const callId =
@@ -235,6 +254,7 @@ export class CodexToolTranscriptProjection {
     if (!callId) {
       return;
     }
+    this.recordRawNativeToolCallReceipt(item);
     if (
       (type === "custom_tool_call" || type === "function_call") &&
       typeof item.name === "string"

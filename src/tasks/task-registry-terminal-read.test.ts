@@ -17,6 +17,7 @@ import { linkTaskToFlowById } from "./task-registry-record-api.js";
 import { tasks } from "./task-registry-state.js";
 import { getTaskRegistryStore, onTaskRegistryChange } from "./task-registry.store.js";
 import { loadTaskRegistryStateFromSqliteReadOnly } from "./task-registry.store.sqlite.js";
+import { prepareTaskFixtureRead } from "./task-registry.test-support.js";
 
 afterEach(resetReadState);
 
@@ -29,6 +30,7 @@ describe("task registry terminal read preparation", () => {
         const task = createReadTask(runId);
         const flow = expectDefined(createTaskFlowForTask({ task }), "terminal task flow");
         expect(linkTaskToFlowById({ taskId: task.taskId, flowId: flow.flowId })).not.toBeNull();
+        await prepareTaskFixtureRead(task);
         const request = () => requestTasks(task.ownerKey);
         const terminalInstalled = createDeferred();
         const releaseEffects = createDeferred();

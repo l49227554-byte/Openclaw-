@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import type { AgentCommandOpts } from "../../agents/command/types.js";
 import type { CreatedDetachedTaskRun } from "../../tasks/detached-task-runtime-contract.js";
 import type { TaskRunOwner } from "../../tasks/task-registry.process-state.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
@@ -12,8 +13,8 @@ const mocks = vi.hoisted(() => ({
   createTaskReceipt:
     vi.fn<(params: unknown, assertCurrent: () => void) => Promise<CreatedDetachedTaskRun | null>>(),
   createRunningTaskRun: vi.fn<() => TaskRecord | null>(),
-  agentCommand: vi.fn(async (options: { onExecutionStarted?: () => void }) => {
-    options.onExecutionStarted?.();
+  agentCommand: vi.fn(async (options: Pick<AgentCommandOpts, "onExecutionStarted">) => {
+    await options.onExecutionStarted?.();
     return { payloads: [], meta: {} };
   }),
   taskRunOwners: new Map<string, TaskRunOwner>(),
@@ -106,7 +107,7 @@ describe("Gateway dispatch task creation ownership", () => {
     });
     mocks.getTaskRunOwner.mockImplementation((task) => mocks.taskRunOwners.get(task.taskId));
     mocks.agentCommand.mockImplementation(async (options) => {
-      options.onExecutionStarted?.();
+      await options.onExecutionStarted?.();
       return { payloads: [], meta: {} };
     });
   });
@@ -120,7 +121,7 @@ describe("Gateway dispatch task creation ownership", () => {
       const settleUnstarted = vi.fn(async () => false);
       mocks.createTaskReceipt.mockResolvedValue(taskReceipt(task, settleUnstarted));
       mocks.agentCommand.mockImplementationOnce(async (options) => {
-        options.onExecutionStarted?.();
+        await options.onExecutionStarted?.();
         if (outcome === "failure") {
           throw new Error("Synthetic active run failure");
         }
@@ -421,7 +422,7 @@ describe("Gateway dispatch task creation ownership", () => {
       };
       mocks.agentCommand.mockImplementationOnce(async (options) => {
         if (phase === "execution") {
-          options.onExecutionStarted?.();
+          await options.onExecutionStarted?.();
         }
         if (replacement === "different-session" || replacement === "same-session") {
           context.chatAbortControllers.set(runId, successor);

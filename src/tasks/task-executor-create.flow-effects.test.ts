@@ -14,7 +14,7 @@ import {
   createInMemoryTaskRegistryStore,
 } from "../test-utils/task-registry-store.js";
 import { createRunningTaskRunCoreWithReceiptAsync } from "./task-executor-create.async.js";
-import { getTaskFlowById } from "./task-flow-registry.js";
+import { getTaskFlowById, prepareTaskFlowRegistryRead } from "./task-flow-registry.js";
 import { applyFlowPatch } from "./task-flow-registry.records.js";
 import { getTaskFlowRegistryStore } from "./task-flow-registry.store.js";
 import type { TaskFlowRecord } from "./task-flow-registry.types.js";
@@ -248,13 +248,11 @@ it.each(["metadata", "removal", "replacement", "adoption", "prior adoption"] as 
           expect(f.commands.filter((command) => command === "tasks.finalizeActive")).toHaveLength(
             1,
           );
-          if (change === "prior adoption") {
-            return;
-          } else if (change === "removal") {
+          if (change === "removal") {
             deleteTaskRecordById(second.task.taskId);
           } else if (change === "adoption") {
             releaseAdoption = bindTaskRunOwner(second.task, async () => err("Synthetic successor"));
-          } else {
+          } else if (change !== "prior adoption") {
             const replacement = {
               ...second.task,
               progressSummary: "Newer observer progress",
@@ -495,6 +493,12 @@ it.each([
   expect(f.store.loadSnapshot().tasks.get(second.task.taskId)?.status).toBe("running");
   expect(f.commands.filter((command) => command === "tasks.finalizeActive")).toHaveLength(1);
   await drainRetry();
+  if (failure.endsWith("flow publication")) {
+    const commands = f.commands.length;
+    const read = await prepareTaskFlowRegistryRead();
+    expect(read?.getTaskFlowById(flow.flowId)?.status).toBe(managed ? "cancelled" : "succeeded");
+    expect(f.commands).toHaveLength(commands);
+  }
   expect(f.store.loadSnapshot().tasks.get(first.task.taskId)?.status).toBe("succeeded");
   expect(f.store.loadSnapshot().tasks.get(second.task.taskId)?.status).toBe("running");
   expect(f.commands.filter((command) => command === "tasks.finalizeActive")).toHaveLength(1);
@@ -848,29 +852,32 @@ it("keeps cancellation overload inside the existing finite retry budget", async 
   expect(f.flows.loadSnapshot().flows.get(flow.flowId)?.status).toBe("running");
 });
 
-it("does not retry uncertain cancellation outcomes", async () => {
-  const f = await fixture("managed");
-  const created = await f.create();
-  if (!created) {
-    throw new Error("Expected a created task");
-  }
-  f.flows.upsertFlow({
-    ...flow,
-    syncMode: "managed",
-    controllerId: "proof",
-    status: "running",
-    cancelRequestedAt: Date.now(),
-  });
-  f.beforeFinalize.mockImplementation(() => {
-    throw new SqliteWorkerError("Synthetic uncertain cancellation outcome", "outcome-unknown");
-  });
-  expect(await created.settleUnstarted({ status: "failed", endedAt: Date.now() }, () => true)).toBe(
-    true,
-  );
-  await drainRetry(751_000);
-  expect(f.beforeFinalize).toHaveBeenCalledTimes(1);
-  expect(f.commands.filter((command) => command === "tasks.settleUnstarted")).toHaveLength(1);
-});
+it.each(["settleUnstarted", "finalizeActive"] as const)(
+  "does not retry uncertain cancellation outcomes (%s)",
+  async (finalize) => {
+    const f = await fixture("managed");
+    const created = await f.create();
+    if (!created) {
+      throw new Error("Expected a created task");
+    }
+    f.flows.upsertFlow({
+      ...flow,
+      syncMode: "managed",
+      controllerId: "proof",
+      status: "running",
+      cancelRequestedAt: Date.now(),
+    });
+    f.beforeFinalize.mockImplementation(() => {
+      throw new SqliteWorkerError("Synthetic uncertain cancellation outcome", "outcome-unknown");
+    });
+    expect(await created[finalize]({ status: "failed", endedAt: Date.now() }, () => true)).toBe(
+      finalize === "settleUnstarted" ? true : undefined,
+    );
+    await drainRetry(751_000);
+    expect(f.beforeFinalize).toHaveBeenCalledTimes(1);
+    expect(f.commands.filter((command) => command === `tasks.${finalize}`)).toHaveLength(1);
+  },
+);
 
 it.each(
   (["mirror-only", "callback"] as const).flatMap((pendingKind) =>

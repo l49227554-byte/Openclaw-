@@ -136,6 +136,7 @@ scripts/lib/vitest-unhandled-errors.mts
 scripts/lib/vitest-worker-artifacts.mts
 scripts/lib/vitest-worker-declarations.mts
 scripts/lib/vitest-worker-run.mts
+scripts/lib/watch-pr-ci-rollup.mts
 scripts/lib/windows-taskkill.mjs
 scripts/pnpm-runner.mts
 scripts/pr-crabbox-gate-publisher.mjs

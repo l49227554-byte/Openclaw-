@@ -114,7 +114,7 @@ it.each([
           });
           await allowActivation.promise;
           if (active) {
-            options.onExecutionStarted?.();
+            await options.onExecutionStarted?.();
           }
           providerStarted.resolve();
           await releaseProvider.promise;

@@ -1,6 +1,7 @@
 import { html, nothing } from "lit";
 import type { RouteId } from "../app-routes.ts";
 import { renderLazyElementModal } from "../components/lazy-view-error.ts";
+import { readSessionMethodAccess } from "../lib/session-method-access.ts";
 import {
   debugOverlayTemplate,
   renderPendingDebugOverlay,
@@ -10,7 +11,8 @@ import {
   renderCommandPaletteLoading,
   type CommandPaletteLoadingState,
 } from "./app-shell-command-palette-loading.ts";
-import type { ApplicationContext, ApplicationNavigationOptions } from "./context.ts";
+import { openShellNewSession, type ShellNewSessionHost } from "./app-shell-new-session.ts";
+import type { ApplicationNavigationOptions } from "./context.ts";
 import {
   isOptionalElementDefined,
   type LazyCustomElementRequestController,
@@ -20,8 +22,7 @@ import {
 } from "./lazy-custom-element.ts";
 import { normalizeChatSendShortcut } from "./settings.ts";
 
-export interface ShellLazyOverlayHost extends DebugOverlayFrameHost {
-  readonly context: ApplicationContext | undefined;
+export interface ShellLazyOverlayHost extends DebugOverlayFrameHost, ShellNewSessionHost {
   readonly commandPaletteElement: OptionalCustomElement;
   readonly commandPaletteLoading: CommandPaletteLoadingState;
   closePendingPalette(): void;
@@ -39,7 +40,19 @@ export function renderShellLazyOverlays(
   nativeEmbed: boolean,
 ) {
   const lazyElementState = host.lazyCustomElements.visibleState;
-  const uiSettings = host.context?.theme.settings;
+  const context = host.context;
+  const uiSettings = context?.theme.settings;
+  const onNewSession =
+    !host.onboardingMode &&
+    readSessionMethodAccess(context?.gateway.snapshot, { method: "sessions.create", params: {} })
+      .allowed
+      ? () => {
+          // Help dismissal is asynchronous; do not carry its intent into another Gateway.
+          if (host.isConnected && host.context === context) {
+            openShellNewSession(host, "shortcut");
+          }
+        }
+      : undefined;
   return html`
     ${
       host.commandPaletteLoading.active &&
@@ -68,6 +81,7 @@ export function renderShellLazyOverlays(
       !nativeEmbed && isOptionalElementDefined(KEYBOARD_SHORTCUTS_ELEMENT)
         ? html`<openclaw-keyboard-shortcuts-dialog
             .sendShortcut=${normalizeChatSendShortcut(uiSettings?.chatSendShortcut)}
+            .onNewSession=${onNewSession}
           ></openclaw-keyboard-shortcuts-dialog>`
         : nothing
     }

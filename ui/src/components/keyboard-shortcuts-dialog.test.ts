@@ -1,12 +1,14 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getRenderedModalDialog, installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import "./keyboard-shortcuts-dialog.ts";
 
 type KeyboardShortcutsTestDialog = HTMLElement & {
   isOpen: boolean;
   sendShortcut: "enter" | "modifier-enter";
   toggle(): void;
+  onNewSession?: () => void;
   updateComplete: Promise<boolean>;
 };
 
@@ -74,6 +76,68 @@ describe("keyboard shortcuts dialog", () => {
       await dialog.updateComplete;
       expect(dialog.isOpen).toBe(false);
       expect(dialog.shadowRoot?.querySelector("openclaw-modal-dialog")).toBeNull();
+    },
+  );
+
+  it.each(["MacIntel", "Win32", "Linux x86_64"])(
+    "hands New Session off only after releasing the help modal on %s",
+    async (platform) => {
+      vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+      const restoreDialog = installDialogPolyfill();
+      const dialog = document.body.appendChild(
+        document.createElement("openclaw-keyboard-shortcuts-dialog") as KeyboardShortcutsTestDialog,
+      );
+      const onNewSession = vi.fn(() => {
+        expect(document.openClawModalLayers?.size ?? 0).toBe(0);
+      });
+      dialog.onNewSession = onNewSession;
+      const modifier = platform === "MacIntel" ? { metaKey: true } : { ctrlKey: true };
+      try {
+        dialog.toggle();
+        await dialog.updateComplete;
+        const { dialog: modal } = await getRenderedModalDialog(dialog.shadowRoot!);
+        const key = (init: KeyboardEventInit) => {
+          const event = new KeyboardEvent("keydown", {
+            ...modifier,
+            key: "O",
+            code: "KeyO",
+            shiftKey: true,
+            bubbles: true,
+            composed: true,
+            cancelable: true,
+            ...init,
+          });
+          modal.dispatchEvent(event);
+          return event;
+        };
+        for (const init of [
+          { repeat: true },
+          { isComposing: true },
+          { keyCode: 229 },
+          { altKey: true },
+          { key: "A", code: "KeyA" },
+        ]) {
+          expect(key(init).defaultPrevented).toBe(false);
+        }
+        const otherModal = document.body.appendChild(
+          document.createElement("openclaw-modal-dialog"),
+        );
+        expect(key({}).defaultPrevented).toBe(false);
+        expect(dialog.isOpen).toBe(true);
+        otherModal.remove();
+        dialog.onNewSession = undefined;
+        expect(key({}).defaultPrevented).toBe(false);
+        expect(dialog.isOpen).toBe(true);
+        dialog.onNewSession = onNewSession;
+        expect(onNewSession).not.toHaveBeenCalled();
+        expect(key({}).defaultPrevented).toBe(true);
+        await dialog.updateComplete;
+        expect(dialog.isOpen).toBe(false);
+        expect(onNewSession).toHaveBeenCalledOnce();
+      } finally {
+        dialog.remove();
+        restoreDialog();
+      }
     },
   );
 

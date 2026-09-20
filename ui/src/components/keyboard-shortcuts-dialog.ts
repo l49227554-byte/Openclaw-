@@ -4,6 +4,8 @@ import type { ChatSendShortcut } from "../app/settings.ts";
 import { t } from "../i18n/index.ts";
 import {
   formatKeyboardShortcutParts,
+  KEYBOARD_SHORTCUT_COMBOS,
+  matchesShortcutCombo,
   resolveKeyboardShortcutSections,
 } from "../lib/keyboard-shortcut-catalog.ts";
 import { OpenClawLitElement } from "../lit/openclaw-element.ts";
@@ -11,6 +13,7 @@ import "./modal-dialog.ts";
 
 class KeyboardShortcutsDialog extends OpenClawLitElement {
   @property({ attribute: false }) sendShortcut: ChatSendShortcut = "enter";
+  @property({ attribute: false }) onNewSession?: () => void;
   @state() private open = false;
 
   static override styles = css`
@@ -122,6 +125,39 @@ class KeyboardShortcutsDialog extends OpenClawLitElement {
     this.open = !this.open;
   }
 
+  private readonly handleKeydown = async (event: KeyboardEvent): Promise<void> => {
+    const modal = event.currentTarget;
+    const layers = document.openClawModalLayers;
+    if (
+      event.defaultPrevented ||
+      event.repeat ||
+      !this.open ||
+      !(modal instanceof HTMLElement) ||
+      layers?.size !== 1 ||
+      !layers.has(modal)
+    ) {
+      return;
+    }
+    const openNewSession = matchesShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.newSession, event)
+      ? this.onNewSession
+      : undefined;
+    if (
+      !openNewSession &&
+      !matchesShortcutCombo(KEYBOARD_SHORTCUT_COMBOS.keyboardShortcuts, event)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.open = false;
+    // Release modal ownership and restore its previous focus before shell navigation
+    // focuses the new composer. Other dialogs keep the global shortcut guard.
+    await this.updateComplete;
+    if (this.isConnected && !this.open) {
+      openNewSession?.();
+    }
+  };
+
   override render() {
     if (!this.open) {
       return nothing;
@@ -130,7 +166,11 @@ class KeyboardShortcutsDialog extends OpenClawLitElement {
       this.open = false;
     };
     return html`
-      <openclaw-modal-dialog label=${t("shortcutsOverlay.title")} @modal-cancel=${close}>
+      <openclaw-modal-dialog
+        label=${t("shortcutsOverlay.title")}
+        @modal-cancel=${close}
+        @keydown=${this.handleKeydown}
+      >
         <div class="dialog">
           <header class="header">
             <h2>${t("shortcutsOverlay.title")}</h2>
